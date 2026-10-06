@@ -20,43 +20,26 @@ pub const LOG_RETENTION: usize = 10;
 
 /// Crea `<dir>/<family>_<pid>_<ms>.log` con el PID del proceso propio, el
 /// directorio si falta, y poda la familia. Recibe el directorio por parámetro
-/// para que las pruebas no toquen los logs reales.
-pub fn create_log(dir: &Path, family: &str) -> std::io::Result<(PathBuf, File)> {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    create_log_at(dir, family, std::process::id(), millis)
-}
-
-/// Crea `<dir>/<family>_<pid>_<ms>.log` con el PID indicado en vez del propio.
-///
-/// Existe para el log de un proceso hijo (el daemon): el nombre identifica al
-/// proceso que escribe, no al lanzador que creó el fichero.
-pub fn create_log_for_pid(dir: &Path, family: &str, pid: u32) -> std::io::Result<(PathBuf, File)> {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    create_log_at(dir, family, pid, millis)
-}
-
-/// Si el nombre ya existe (dos logs del mismo proceso en el mismo milisegundo) se
-/// reintenta con el milisegundo siguiente, que conserva el orden por antigüedad.
-fn create_log_at(
+/// para que las pruebas no toquen los logs reales, y el sondeo de viveza de
+/// PID que decide qué logs ajenos la poda conserva.
+pub fn create_log(
     dir: &Path,
     family: &str,
-    pid: u32,
-    millis: u128,
+    pid_alive: &dyn Fn(u32) -> bool,
 ) -> std::io::Result<(PathBuf, File)> {
-    create_log_at_with(dir, family, pid, millis, &|p| {
-        p != std::process::id() && pid_alive(p)
-    })
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    create_log_at_with(dir, family, std::process::id(), millis, pid_alive)
 }
 
 /// El cuerpo de la creación, con el sondeo de viveza de la poda inyectado: las
 /// pruebas fijan qué PID están vivos sin lanzar procesos reales, y el resto de la
 /// poda (patrón del nombre, `keep`, retención) es el mismo.
+///
+/// Si el nombre ya existe (dos logs del mismo proceso en el mismo milisegundo) se
+/// reintenta con el milisegundo siguiente, que conserva el orden por antigüedad.
 fn create_log_at_with(
     dir: &Path,
     family: &str,
@@ -122,12 +105,13 @@ fn log_millis(name: &str, family: &str) -> Option<u128> {
 /// `pid_alive` decide qué PID sigue en marcha. Un log cuyo PID distinto del
 /// propio esté vivo se conserva siempre y no cuenta para la retención: borrarlo
 /// dejaría al proceso vivo sin su traza justo cuando más la necesita. El PID
-/// propio no se consulta, para que los logs antiguos del proceso que poda sigan
-/// siendo podables.
+/// propio no se consulta (la exclusión vive aquí, no en el sondeo), para que los
+/// logs antiguos del proceso que poda sigan siendo podables.
 fn prune(dir: &Path, family: &str, keep: &Path, pid_alive: &dyn Fn(u32) -> bool) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
+    let own_pid = std::process::id();
     let mut logs: Vec<(u128, String)> = entries
         .filter_map(|e| e.ok())
         .filter_map(|e| {
@@ -135,7 +119,7 @@ fn prune(dir: &Path, family: &str, keep: &Path, pid_alive: &dyn Fn(u32) -> bool)
             log_id(&name, family).map(|(pid, ms)| (pid, ms, name))
         })
         .filter(|(_, _, name)| dir.join(name) != keep)
-        .filter(|(pid, _, _)| !pid_alive(*pid))
+        .filter(|(pid, _, _)| *pid == own_pid || !pid_alive(*pid))
         .map(|(_, ms, name)| (ms, name))
         .collect();
     logs.sort();
@@ -144,15 +128,6 @@ fn prune(dir: &Path, family: &str, keep: &Path, pid_alive: &dyn Fn(u32) -> bool)
     for (_, name) in logs.into_iter().take(excess) {
         let _ = std::fs::remove_file(dir.join(name));
     }
-}
-
-/// Viveza exacta de un PID a nivel de sistema, para la poda.
-///
-/// Delega en `avi_process::pid_alive_exact` (`OpenProcess` +
-/// `GetExitCodeProcess` en Windows; `libc::kill(pid, 0)` en Unix), que consulta
-/// el PID puntual y no compara texto, a diferencia de `tasklist`.
-fn pid_alive(pid: u32) -> bool {
-    avi_process::pid_alive_exact(pid)
 }
 
 #[cfg(test)]
@@ -191,7 +166,7 @@ mod tests {
     fn create_log_keeps_ten_most_recent_per_family() {
         let dir = unique_dir();
         for ms in 1..=12u128 {
-            create_log_at(&dir, "daemon", std::process::id(), ms).unwrap();
+            create_log_at_with(&dir, "daemon", std::process::id(), ms, &none_alive).unwrap();
         }
         let pid = std::process::id();
         let present = names(&dir);
@@ -205,6 +180,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Sondeo fijo: ningún PID ajeno está vivo.
+    fn none_alive(_pid: u32) -> bool {
+        false
+    }
+
     /// La poda no toca otras familias ni ficheros ajenos al patrón.
     #[test]
     fn create_log_leaves_other_families_and_foreign_files() {
@@ -213,10 +193,10 @@ mod tests {
         std::fs::write(dir.join("daemon.log"), "x").unwrap();
         std::fs::write(dir.join("notas.txt"), "x").unwrap();
         for ms in 1..=12u128 {
-            create_log_at(&dir, "qwen3-tts", std::process::id(), ms).unwrap();
+            create_log_at_with(&dir, "qwen3-tts", std::process::id(), ms, &none_alive).unwrap();
         }
         for ms in 1..=12u128 {
-            create_log_at(&dir, "daemon", std::process::id(), 100 + ms).unwrap();
+            create_log_at_with(&dir, "daemon", std::process::id(), 100 + ms, &none_alive).unwrap();
         }
         let present = names(&dir);
         assert!(present.contains(&"daemon.log".to_string()));
@@ -235,8 +215,8 @@ mod tests {
     fn create_log_retries_when_the_name_is_taken() {
         let dir = unique_dir();
         let pid = std::process::id();
-        let (first, _a) = create_log_at(&dir, "daemon", pid, 7).unwrap();
-        let (second, _b) = create_log_at(&dir, "daemon", pid, 7).unwrap();
+        let (first, _a) = create_log_at_with(&dir, "daemon", pid, 7, &none_alive).unwrap();
+        let (second, _b) = create_log_at_with(&dir, "daemon", pid, 7, &none_alive).unwrap();
         assert_ne!(first, second);
         assert!(second.to_string_lossy().ends_with("_8.log"), "{second:?}");
         let _ = std::fs::remove_dir_all(&dir);
@@ -245,26 +225,11 @@ mod tests {
     #[test]
     fn create_log_names_family_pid_and_millis() {
         let dir = unique_dir();
-        let (path, _file) = create_log_at(&dir, "daemon", std::process::id(), 42).unwrap();
+        let (path, _file) =
+            create_log_at_with(&dir, "daemon", std::process::id(), 42, &none_alive).unwrap();
         assert_eq!(
             path.file_name().unwrap().to_string_lossy(),
             format!("daemon_{}_42.log", std::process::id())
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    /// El log se nombra con el PID del proceso indicado, no con el del propio:
-    /// es el caso del daemon, cuyo log crea el lanzador.
-    #[test]
-    fn create_log_for_pid_names_the_given_pid() {
-        let dir = unique_dir();
-        let (path, _file) = create_log_for_pid(&dir, "daemon", 4242).unwrap();
-        assert!(
-            path.file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with("daemon_4242_"),
-            "{path:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -326,7 +291,8 @@ mod tests {
     #[test]
     fn rename_log_to_pid_puts_the_child_pid_in_the_name() {
         let dir = unique_dir();
-        let (path, _file) = create_log_at(&dir, "daemon", std::process::id(), 77).unwrap();
+        let (path, _file) =
+            create_log_at_with(&dir, "daemon", std::process::id(), 77, &none_alive).unwrap();
         let renamed = rename_log_to_pid(&path, "daemon", 555);
         assert_eq!(
             renamed.file_name().unwrap().to_string_lossy(),

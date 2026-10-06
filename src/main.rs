@@ -3520,8 +3520,11 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         // tenga una implementación silenciosa.
         #[cfg(windows)]
         {
-            let (log, _) = lifecycle::create_log(&self.logs_dir, "cleaner")
-                .map_err(|e| anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}"))?;
+            let (log, _) =
+                lifecycle::create_log(&self.logs_dir, "cleaner", &avi_process::pid_alive_exact)
+                    .map_err(|e| {
+                        anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}")
+                    })?;
             avi_process::schedule_clean_removal(program_dir, pid, &log)?;
             Ok(())
         }
@@ -3561,8 +3564,11 @@ impl lifecycle::update::PathRemover for LifecyclePaths {
         // tenga una implementación silenciosa.
         #[cfg(windows)]
         {
-            let (log, _) = lifecycle::create_log(&self.logs_dir, "cleaner")
-                .map_err(|e| anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}"))?;
+            let (log, _) =
+                lifecycle::create_log(&self.logs_dir, "cleaner", &avi_process::pid_alive_exact)
+                    .map_err(|e| {
+                        anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}")
+                    })?;
             avi_process::schedule_clean_removal(path, pid, &log)?;
             Ok(())
         }
@@ -3685,14 +3691,18 @@ async fn launch_daemon(
     // Invalidar la señal previa: el fichero es determinista por instancia y
     // un contenido rancio se leería como resultado de este arranque.
     let _ = std::fs::remove_file(&ready_path);
-    let (log_path, log_file) = store::create_log(&store::logs_dir(), daemon::DAEMON_LOG_FAMILY)
-        .map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "daemon_error",
-                format!("No se pudo crear el log del daemon: {}", e),
-            )
-        })?;
+    let (log_path, log_file) = store::create_log(
+        &store::logs_dir(),
+        daemon::DAEMON_LOG_FAMILY,
+        &avi_process::pid_alive_exact,
+    )
+    .map_err(|e| {
+        CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            format!("No se pudo crear el log del daemon: {}", e),
+        )
+    })?;
     let mut child = match daemon::spawn_background(
         auto_restart,
         max_retries,

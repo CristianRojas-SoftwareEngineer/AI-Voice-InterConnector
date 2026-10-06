@@ -948,14 +948,17 @@ pub fn clone_voice(
             "El binario de clonado Qwen3-TTS no está provisionado."
         ));
     };
-    let (log_path, log_file) =
-        match avi_store::create_log(&avi_store::logs_dir(), ENGINE_LOG_FAMILY) {
-            Ok(log) => log,
-            Err(e) => {
-                let _ = std::fs::remove_file(&ref_wav);
-                return Err(anyhow!("No se pudo crear el log del motor: {}", e));
-            }
-        };
+    let (log_path, log_file) = match avi_store::create_log(
+        &avi_store::logs_dir(),
+        ENGINE_LOG_FAMILY,
+        &avi_process::pid_alive_exact,
+    ) {
+        Ok(log) => log,
+        Err(e) => {
+            let _ = std::fs::remove_file(&ref_wav);
+            return Err(anyhow!("No se pudo crear el log del motor: {}", e));
+        }
+    };
     // La entrada del motor es una tubería con `--watch-stdin`: el motor termina
     // si su entrada se cierra, así que el proceso que clona muere con él aunque
     // sea abatido. El extremo de escritura queda retenido en el hijo
@@ -1077,9 +1080,12 @@ pub mod resident {
             // `fprintf(stderr, *)` del motor C (cuyos mensajes se perdían a null,
             // dejando ciego el diagnóstico del warmup, la síntesis por petición y
             // la terminación del residente).
-            let (log_path, log_file) =
-                avi_store::create_log(&avi_store::logs_dir(), crate::ENGINE_LOG_FAMILY)
-                    .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
+            let (log_path, log_file) = avi_store::create_log(
+                &avi_store::logs_dir(),
+                crate::ENGINE_LOG_FAMILY,
+                &avi_process::pid_alive_exact,
+            )
+            .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
             let child =
                 launch_resident_process(&bin, model_dir.as_ref(), port, load_voice, log_file)?;
             Self::spawn_with_child(child, port, log_path, 60, 500)

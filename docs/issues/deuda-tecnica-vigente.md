@@ -37,7 +37,6 @@ retrocompatibilidad y fallbacks.
   - [H2 — Dos pruebas sin puerta require](#h2--dos-pruebas-sin-puerta-require)
   - [H6 — Avisos por stop](#h6--avisos-por-stop)
   - [H9 — Caso rancio sin documentar](#h9--caso-rancio-sin-documentar)
-  - [H12 — Arista avi-shared a avi-process](#h12--arista-avi-shared-a-avi-process)
 - [3. Hallazgos parciales y pendientes de decisión](#3-hallazgos-parciales-y-pendientes-de-decisión)
   - [H5 — Degradación de la garantía de T7](#h5--degradación-de-la-garantía-de-t7)
   - [H8 — let _ de disco fuera de T9](#h8--let-_-de-disco-fuera-de-t9)
@@ -138,40 +137,6 @@ ya cubierto por la guía y por una prueba, `:1452`). **Categoría 1. VERIFICADO.
 añadir los dos casos omitidos; en la guía, solo el de identidad ausente. El
 comportamiento es correcto y principista (sin identidad no hay propiedad
 demostrable); terminar el cambio no es parchear.
-
-### H12 — Arista avi-shared a avi-process
-
-`avi-shared/Cargo.toml:12` consume `pid_alive_exact` (vía el wrapper privado
-`pid_alive`, `logs.rs:154-156`, que invoca el closure de `create_log_at`),
-símbolo de definición T2 (plan:96), y arrastra `avi-process` a todo
-consumidor de `avi-store` y `avi-lifecycle` (re-exportan `create_log`:
-`avi-store/src/lib.rs:8`, `avi-lifecycle/src/lib.rs:42`; consumidores en
-`avi-tts/src/lib.rs:952/1080` y `src/main.rs:3523/3564/3688`). El plan T7
-ofrecía "trait o parámetro inyectado". **Categoría 1. VERIFICADO.**
-
-**Solución.** La costura ya existe: `create_log_at_with` y `prune` reciben el
-sondeo; solo `create_log_at` (`logs.rs:46-55`, closure en `:52-54`) lo
-hardcodea. Los 5 llamadores no llaman a `create_log_at` (privada) sino a
-`create_log` (`:24`, la API pública), así que el cambio es de firma: `create_log`
-recibe el sondeo (`&dyn Fn(u32) -> bool`) y llama a `create_log_at_with`. Se
-borran `create_log_at`, el wrapper `pid_alive` y la dependencia
-(`avi-shared/Cargo.toml:9-12`). La exclusión del PID propio (hoy dentro del
-closure; `prune` documenta que «el PID propio no se consulta») es invariante de
-la poda y no puede replicarse en cada llamador: se mueve dentro de
-`create_log_at_with`/`prune`, de modo que los llamadores pasan el sondeo puro,
-`&avi_process::pid_alive_exact` (`fn(u32) -> bool`, una por plataforma,
-`avi-process/src/lib.rs:137/:166`). Llamadores (5; barrido en `crates`, `src`,
-`tests`, `xtask` y `benches`, sin más alias tras los re-exports
-`avi-store/src/lib.rs:8` y `avi-lifecycle/src/lib.rs:42`): 3 en
-`main.rs:3523/3564/3688` —los dos primeros bajo `cfg(windows)`— y 2 en
-`avi-tts:952/1080`. De paso, borrar `create_log_for_pid` (`logs.rs:32-42`): sin
-llamador en producción (solo su propio test, `:261`) y su propósito documentado
-lo sirve `rename_log_to_pid`, que sí se usa (`main.rs:3720`); al borrarla, la
-mención de `create_log_for_pid` en §5 («Allows y matices de código muerto») queda
-obsoleta y se retira. Sin altas en `Cargo.toml`: la raíz (`:25`) y `avi-tts`
-(`:14`) ya dependen de `avi-process`. Las 7 llamadas de test a `create_log_at`
-(`:194/:216/:219/:238/:239/:248/:329`) pasan a `create_log_at_with` con un
-sondeo fijo; se borra el test `:261`.
 
 ## 3. Hallazgos parciales y pendientes de decisión
 
@@ -329,5 +294,4 @@ objetivo T12 se cumple aquí.
 Legítimos: `unix_claim_verified` se llama en `src/main.rs:2830` bajo
 `cfg(unix)`; `stdin_holder` se puebla en `restricted_spawn.rs:317` y se mueve
 al struct en `:366` (retenido solo por `Drop`, lo declarado). Y precisión:
-`extra_allowed` no es código muerto sino API viva nunca poblada (H11), y
-`create_log_for_pid` es una entrada sin llamador, no un subárbol muerto (H12).
+`extra_allowed` no es código muerto sino API viva nunca poblada (H11).
