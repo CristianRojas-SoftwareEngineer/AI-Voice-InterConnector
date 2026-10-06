@@ -195,11 +195,15 @@ pub fn kill_tree_by_pid_exact(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
+    use std::os::windows::process::CommandExt;
+    // Sin consola propia, un invocador sin consola vería abrirse y cerrarse una
+    // ventana por cada `taskkill`.
     std::process::Command::new("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

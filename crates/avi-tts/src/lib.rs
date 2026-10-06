@@ -1251,11 +1251,15 @@ pub mod resident {
     pub fn sweep_resident_by_image() -> bool {
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
+            // Sin consola propia, un invocador sin consola vería abrirse y cerrarse
+            // una ventana por cada `taskkill`.
             Command::new("taskkill")
                 .args(["/F", "/IM", RESIDENT_IMAGE_NAME])
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
+                .creation_flags(avi_process::CREATE_NO_WINDOW)
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false)
@@ -1724,12 +1728,20 @@ fn main() {
         } else {
             "engine_double"
         });
-        let compiled = Command::new("rustc")
+        let mut rustc = Command::new("rustc");
+        rustc
             .arg("--edition")
             .arg("2021")
             .arg(&src)
             .arg("-o")
-            .arg(&bin)
+            .arg(&bin);
+        // Sin consola propia, un invocador sin consola vería abrirse una ventana.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            rustc.creation_flags(avi_process::CREATE_NO_WINDOW);
+        }
+        let compiled = rustc
             .output()
             .expect("rustc debe estar disponible para compilar el doble");
         assert!(
