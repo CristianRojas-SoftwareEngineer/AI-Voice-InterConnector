@@ -670,7 +670,7 @@ mod tests {
     /// provisionado la máquina que ejecuta la suite.
     #[test]
     fn doctor_reports_models_of_the_root_it_describes() {
-        let env = env("raiz-modelos");
+        let env = env("models-root");
         // El layout es el de la caché HF: `models--<org>--<repo>/snapshots/<rev>`.
         // La revisión pinneada se toma de `MODEL_REVISIONS` en vez de fijarla a
         // mano, para que un bump de pin no pueda volver obsoleta la prueba.
@@ -746,7 +746,7 @@ mod tests {
     /// lista los pines `opus-mt-*`.
     #[test]
     fn translation_models_have_no_derived_check() {
-        let env = env("traduccion-sin-derivado");
+        let env = env("translation-without-derived");
         plant_required_models(&env);
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(
@@ -767,7 +767,7 @@ mod tests {
     /// chequeo pasa y `base` lo informa como opt-in.
     #[test]
     fn models_provisioned_passes_without_opt_in_base() {
-        let env = env("modelos-sin-base");
+        let env = env("models-without-base");
         plant_required_models(&env);
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(models_check(&report).ok, "{:?}", report.models.missing);
@@ -779,7 +779,7 @@ mod tests {
     /// Con el clonado seleccionado, la ausencia del Base sí hace fallar el chequeo.
     #[test]
     fn models_provisioned_fails_when_cloning_selected_and_base_absent() {
-        let env = env("modelos-clonado");
+        let env = env("models-cloning");
         plant_required_models(&env);
         crate::setup::write_selection_to(
             &env.roots.data_dir,
@@ -804,7 +804,7 @@ mod tests {
     /// modelo, que es justo lo que hacía fallar la suite.
     #[test]
     fn doctor_reports_absent_models_for_an_empty_root() {
-        let env = env("raiz-vacia");
+        let env = env("empty-root");
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert_eq!(
             report.models.base, "missing_opt_in",
@@ -821,7 +821,7 @@ mod tests {
         let mut env = env("coexistence");
         let registered = env.roots.program_dir.clone();
         write_file(&registered.join(exe_name()), "binario");
-        let second = env.roots.temp_root.join("segunda-instalacion");
+        let second = env.roots.temp_root.join("second-install");
         write_file(&second.join(exe_name()), "binario");
         // La del Cask va la primera, y no deja recibo: se reconoce por el prefijo.
         let cask = env
@@ -868,15 +868,15 @@ mod tests {
             .roots
             .program_dir
             .join(format!("{}1234", crate::PARKED_DIR_PREFIX));
-        write_file(&parked.join("anterior"), "v1");
+        write_file(&parked.join("previous"), "v1");
         let staging = env
             .roots
             .program_dir
             .parent()
             .unwrap()
             .join(format!("{}9999", crate::STAGING_DIR_PREFIX));
-        write_file(&staging.join("descargado"), "bundle");
-        let temp = env.roots.temp_root.join("avi-huerfano.tmp");
+        write_file(&staging.join("downloaded"), "bundle");
+        let temp = env.roots.temp_root.join("avi-orphan.tmp");
         write_file(&temp, "x");
 
         let findings = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");

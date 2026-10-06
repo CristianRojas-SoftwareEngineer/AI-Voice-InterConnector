@@ -277,7 +277,7 @@ mod tests {
     fn ct2translationengine_new_with_nonexistent_path_returns_err() {
         use crate::Ct2TranslationEngine;
 
-        let result = Ct2TranslationEngine::new("ruta/que/no/existe/opus-mt-es-en");
+        let result = Ct2TranslationEngine::new("path/that/does/not/exist/opus-mt-es-en");
         assert!(
             result.is_err(),
             "una ruta de modelo inexistente debe fallar"
@@ -291,7 +291,7 @@ mod tests {
     fn ct2_dir_with_only_model_bin_loader_fails() {
         use crate::Ct2TranslationEngine;
 
-        let dir = std::env::temp_dir().join(format!("avi_ct2_roto_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("avi_ct2_broken_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("crear dir temporal");
         std::fs::write(dir.join("model.bin"), b"senyuelo-sin-tokenizador")
@@ -485,7 +485,7 @@ mod tests {
             "Hola, ¿cómo estás?",
             "es",
             "en",
-            "ruta/que/no/existe/opus-mt-es-en",
+            "path/that/does/not/exist/opus-mt-es-en",
         );
         assert!(result.is_err(), "un model_dir inexistente debe fallar");
     }

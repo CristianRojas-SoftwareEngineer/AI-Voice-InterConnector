@@ -397,7 +397,7 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
 
     // Y la segunda mitad: el temporal del hijo está dentro de su sandbox, así que el
     // barrido tiene el universo acotado aunque el prefijo volviera a colisionar.
-    let sandbox = Sandbox::new("invarianteprefijo");
+    let sandbox = Sandbox::new("invariantprefix");
     for variable in ["TEMP", "TMP", "TMPDIR"] {
         let value = PathBuf::from(
             sandbox
@@ -436,7 +436,7 @@ fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
 /// `reason` del fallo de provisión.
 #[test]
 fn self_install_setup_failure_exits_11_with_partial_success() {
-    let sandbox = Sandbox::new("setupfallido");
+    let sandbox = Sandbox::new("setupfailed");
     let (code, actual) = sandbox.run(&[
         "--json",
         "self",

@@ -2481,7 +2481,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(800));
             "hecho"
         });
-        let res = with_heartbeats(&tx, "etapa_test", work)
+        let res = with_heartbeats(&tx, "test_stage", work)
             .await
             .expect("sin desconexión hay resultado");
         assert_eq!(res.expect("join ok"), "hecho");
@@ -2490,7 +2490,7 @@ mod tests {
         while let Some(line) = rx.recv().await {
             let ev: Value = serde_json::from_str(&line).expect("cada evento es JSON");
             if ev["event"] == "heartbeat" {
-                assert_eq!(ev["stage"], "etapa_test");
+                assert_eq!(ev["stage"], "test_stage");
                 heartbeats += 1;
             }
         }
@@ -2512,41 +2512,41 @@ mod tests {
         events
     }
 
-    /// Espera a que el canal entregue al menos `objetivo` latidos de la etapa
-    /// `stage`, con `plazo` como límite duro, y devuelve todos los eventos
+    /// Espera a que el canal entregue al menos `target` latidos de la etapa
+    /// `stage`, con `deadline` como límite duro, y devuelve todos los eventos
     /// leídos hasta ese momento (los que sobren, para las aserciones
     /// posteriores).
     ///
     /// El hecho que espera es «llegaron N latidos de esta etapa», no «ha pasado
     /// un tiempo»: por eso sondea el canal en vez de dormir, y por eso al
     /// agotarse el plazo falla diciendo cuántos llegaron y en cuánto.
-    async fn esperar_latidos(
+    async fn wait_for_heartbeats(
         rx: &mut tokio::sync::mpsc::Receiver<String>,
         stage: &str,
-        objetivo: usize,
-        plazo: std::time::Duration,
+        target: usize,
+        deadline: std::time::Duration,
     ) -> Vec<Value> {
-        let limite = std::time::Instant::now() + plazo;
-        let mut eventos = Vec::new();
-        let mut vistos = 0usize;
-        while vistos < objetivo {
-            let restante = limite.saturating_duration_since(std::time::Instant::now());
-            let line = tokio::time::timeout(restante, rx.recv())
+        let limit = std::time::Instant::now() + deadline;
+        let mut events = Vec::new();
+        let mut seen = 0usize;
+        while seen < target {
+            let remaining = limit.saturating_duration_since(std::time::Instant::now());
+            let line = tokio::time::timeout(remaining, rx.recv())
                 .await
                 .unwrap_or_else(|_| {
                     panic!(
-                        "no llegaron {objetivo} latidos de la etapa `{stage}` en {plazo:?} \
-                         (llegaron {vistos})"
+                        "no llegaron {target} latidos de la etapa `{stage}` en {deadline:?} \
+                         (llegaron {seen})"
                     )
                 })
                 .expect("la fase sigue viva: su emisor no debe cerrarse antes de los latidos");
-            let evento: Value = serde_json::from_str(&line).expect("cada evento es JSON");
-            if evento["event"] == "heartbeat" && evento["stage"] == stage {
-                vistos += 1;
+            let event: Value = serde_json::from_str(&line).expect("cada evento es JSON");
+            if event["event"] == "heartbeat" && event["stage"] == stage {
+                seen += 1;
             }
-            eventos.push(evento);
+            events.push(event);
         }
-        eventos
+        events
     }
 
     fn heartbeats_with_stage(events: &[Value], stage: &str) -> usize {
@@ -2580,7 +2580,7 @@ mod tests {
         // latidos `queued` que este test afirma, y solo entonces se suelta el
         // lock. Un plazo fijo dependería de que la máquina llegue a esos 150 ms.
         let mut events =
-            esperar_latidos(&mut rx, "queued", 2, std::time::Duration::from_secs(5)).await;
+            wait_for_heartbeats(&mut rx, "queued", 2, std::time::Duration::from_secs(5)).await;
         drop(guard);
         let res = phase.await.expect("join").expect("hay resultado");
         assert_eq!(res.expect("el trabajo termina bien"), 7);
@@ -2611,7 +2611,7 @@ mod tests {
         // Igual que arriba: se espera el hecho (los latidos `warming`), no un
         // tiempo, antes de soltar el lock.
         let mut events =
-            esperar_latidos(&mut rx, "warming", 2, std::time::Duration::from_secs(5)).await;
+            wait_for_heartbeats(&mut rx, "warming", 2, std::time::Duration::from_secs(5)).await;
         drop(guard);
         assert!(phase.await.expect("join").is_some());
         events.extend(drain_events(&mut rx));
@@ -2629,7 +2629,7 @@ mod tests {
     async fn synthesis_phase_slow_job_keeps_heartbeats_and_succeeds() {
         let state = Arc::new(test_state());
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
-        let (suelta, espera) = std::sync::mpsc::channel::<()>();
+        let (release, hold) = std::sync::mpsc::channel::<()>();
         let phase_state = state.clone();
         let phase = tokio::spawn(async move {
             run_synthesis_phase_with(
@@ -2640,7 +2640,7 @@ mod tests {
                 std::time::Duration::from_secs(1),
                 move |_cancel| {
                     // Bloquea el hilo del trabajo hasta que la prueba lo libera.
-                    espera.recv().map_err(|_| {
+                    hold.recv().map_err(|_| {
                         anyhow::anyhow!("la prueba soltó el trabajo antes de tiempo")
                     })?;
                     Ok("listo")
@@ -2649,8 +2649,8 @@ mod tests {
             .await
         });
         let mut events =
-            esperar_latidos(&mut rx, "synthesis", 3, std::time::Duration::from_secs(5)).await;
-        suelta
+            wait_for_heartbeats(&mut rx, "synthesis", 3, std::time::Duration::from_secs(5)).await;
+        release
             .send(())
             .expect("el trabajo sigue esperando a que lo liberen");
         let res = phase.await.expect("join").expect("hay resultado");

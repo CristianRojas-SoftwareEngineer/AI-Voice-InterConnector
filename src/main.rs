@@ -4798,7 +4798,7 @@ mod tests {
     /// previa es `not_running`, con ella `shutdown_sent`. La parada completa
     /// (`daemon_fully_stopped`) la verifica el motor en `StopOutcome`.
     #[test]
-    fn stop_status_follows_was_running_from_motor() {
+    fn stop_status_follows_was_running_from_engine() {
         assert_eq!(stop_status(false), "not_running");
         assert_eq!(stop_status(true), "shutdown_sent");
     }

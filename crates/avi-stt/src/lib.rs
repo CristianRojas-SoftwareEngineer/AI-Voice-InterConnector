@@ -66,7 +66,7 @@ mod tests {
     #[cfg(feature = "native-stt")]
     #[test]
     fn parakeet_engine_new_with_nonexistent_path_returns_err() {
-        let result = ParakeetEngine::new("ruta/que/no/existe/parakeet");
+        let result = ParakeetEngine::new("path/that/does/not/exist/parakeet");
         assert!(
             result.is_err(),
             "una ruta de modelo inexistente debe fallar"
@@ -104,13 +104,13 @@ mod tests {
         let holder = EngineHolder::new();
         assert!(
             holder
-                .get_or_try_init("ruta/que/no/existe/parakeet")
+                .get_or_try_init("path/that/does/not/exist/parakeet")
                 .is_err(),
             "una ruta inexistente debe fallar sin crear instancia"
         );
         assert!(
             holder
-                .get_or_try_init("ruta/que/no/existe/parakeet")
+                .get_or_try_init("path/that/does/not/exist/parakeet")
                 .is_err(),
             "la segunda resolución repite el fallo retenido"
         );

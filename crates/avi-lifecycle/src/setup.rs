@@ -678,7 +678,7 @@ pub(crate) mod tests {
     /// que es lo que permite que `self install` lo invoque sin preguntar.
     #[test]
     fn provisioning_is_idempotent() {
-        let (_guard, root) = cache_relocated("setup-idempotente");
+        let (_guard, root) = cache_relocated("setup-idempotent");
         let store = avi_store::ModelStore::new();
         let with_clone = Options::user(true, false, true);
 
@@ -721,7 +721,7 @@ pub(crate) mod tests {
     /// local falta por producir.
     #[test]
     fn nothing_is_pending_when_every_pin_is_provisioned() {
-        let (_guard, root) = cache_relocated("setup-todo-pinneado");
+        let (_guard, root) = cache_relocated("setup-all-pinned");
         for pin in avi_store::MODEL_REVISIONS {
             fake_snapshot(&pin.repo.replace('/', "--"), pin.revision);
         }
@@ -738,7 +738,7 @@ pub(crate) mod tests {
     /// seleccionado y **no** lo que el usuario no pidió.
     #[test]
     fn force_update_respects_selection() {
-        let (_guard, root) = cache_relocated("setup-purga");
+        let (_guard, root) = cache_relocated("setup-purge");
         let store = avi_store::ModelStore::new();
 
         // Snapshot del modelo de clonado, que solo se purga si se pidió.
@@ -786,7 +786,7 @@ pub(crate) mod tests {
     #[test]
     fn selection_survives_update_via_saved_file() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let root = scratch("setup-seleccion");
+        let root = scratch("setup-selection");
         std::env::set_var("AVI_CACHE_DIR", root.join("models"));
         std::env::set_var("AVI_DATA_DIR", root.join("data"));
         let store = avi_store::ModelStore::new();
@@ -838,7 +838,7 @@ pub(crate) mod tests {
     /// ficheros sueltos se ignoran, y una segunda pasada no encuentra nada.
     #[test]
     fn prune_removes_only_obsolete_revisions() {
-        let root = scratch("setup-poda");
+        let root = scratch("setup-prune");
         let (repo, revision) =
             avi_store::ModelStore::revision_of("qwen3-tts-0.6b").expect("el modelo base tiene pin");
         let snapshots = root
@@ -848,7 +848,7 @@ pub(crate) mod tests {
         assert_ne!(old, revision, "la fixture obsoleta no es el pin");
         write_file(&snapshots.join(revision).join("config.json"), "{}");
         write_file(&snapshots.join(old).join("config.json"), "{}");
-        write_file(&snapshots.join("LEEME.txt"), "no es un snapshot");
+        write_file(&snapshots.join("README.txt"), "no es un snapshot");
 
         // Pin por `refs/`: el hash vivo se conserva y el resto se poda.
         let (translation_repo, translation_rev) =
@@ -888,7 +888,7 @@ pub(crate) mod tests {
         );
         assert!(!snapshots.join(old).exists(), "lo obsoleto se va");
         assert!(
-            snapshots.join("LEEME.txt").is_file(),
+            snapshots.join("README.txt").is_file(),
             "los ficheros sueltos se ignoran"
         );
 
@@ -904,7 +904,7 @@ pub(crate) mod tests {
     /// `.locks` son de todos y R3 prohíbe borrarlos —la poda ni los contempla.
     #[test]
     fn prune_shared_root_keeps_unattributable() {
-        let root = scratch("setup-poda-compartida");
+        let root = scratch("setup-prune-shared");
         let (repo, revision) =
             avi_store::ModelStore::revision_of("parakeet-tdt-v3").expect("parakeet tiene pin");
         let snapshots = root
@@ -916,8 +916,8 @@ pub(crate) mod tests {
             "x",
         );
         write_file(&snapshots.join(old).join("encoder-model.int8.onnx"), "x");
-        write_file(&root.join("xet").join("centinela"), "caché global");
-        write_file(&root.join(".locks").join("centinela"), "locks globales");
+        write_file(&root.join("xet").join("sentinel"), "caché global");
+        write_file(&root.join(".locks").join("sentinel"), "locks globales");
 
         let outcome = prune_obsolete_at(&root);
         assert_eq!(
@@ -927,11 +927,11 @@ pub(crate) mod tests {
         );
         assert!(outcome.is_clean());
         assert!(
-            root.join("xet").join("centinela").is_file(),
+            root.join("xet").join("sentinel").is_file(),
             "`xet` no se toca en raíz compartida"
         );
         assert!(
-            root.join(".locks").join("centinela").is_file(),
+            root.join(".locks").join("sentinel").is_file(),
             "ni `.locks`"
         );
         std::fs::remove_dir_all(&root).ok();
@@ -942,12 +942,12 @@ pub(crate) mod tests {
     /// resultado es el mismo.
     #[test]
     fn migration_is_idempotent_and_preserves_choice() {
-        let root = scratch("setup-migracion");
+        let root = scratch("setup-migration");
         let data = root.join("data");
 
         // 1. Sin fichero: la lectura da la base y la migración la crea.
         assert_eq!(
-            read_selection_from(&root.join("ausente")),
+            read_selection_from(&root.join("absent")),
             SetupSelection::base(),
             "leer lo ausente da la base"
         );

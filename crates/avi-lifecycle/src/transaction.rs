@@ -533,7 +533,7 @@ mod tests {
         let dir = scratch("txn-ok");
         let triple = target::host_triple();
         let executable = manifest::target_section(triple).unwrap().executable;
-        let program = dir.join("programa");
+        let program = dir.join("program");
         let source = dir.join("staging");
         std::fs::create_dir_all(&program).unwrap();
         bundle(&source, "v2");
@@ -596,8 +596,8 @@ mod tests {
             FaultPoint::BeforeFixPermissions,
             FaultPoint::BeforeCommit,
         ] {
-            let dir = scratch(&format!("txn-interrumpida-{}", point.as_str()));
-            let program = dir.join("programa");
+            let dir = scratch(&format!("txn-interrupted-{}", point.as_str()));
+            let program = dir.join("program");
             let source = dir.join("staging");
             std::fs::create_dir_all(&program).unwrap();
             bundle(&source, "v2");

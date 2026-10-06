@@ -356,7 +356,7 @@ mod tests {
         assert!(now <= before && before - now < 60, "instante razonable");
 
         // Sin recibo no hay instalación: se distingue de un recibo ilegible.
-        assert_eq!(read_from(&scratch("receipt-vacio")).unwrap(), None);
+        assert_eq!(read_from(&scratch("receipt-empty")).unwrap(), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -364,7 +364,7 @@ mod tests {
     /// recibo escrito por uno nuevo.
     #[test]
     fn receipt_ignores_unknown_fields() {
-        let dir = scratch("receipt-desconocidos");
+        let dir = scratch("receipt-unknown");
         let mut text =
             serde_json::to_string_pretty(&sample_receipt()).expect("el recibo se serializa");
         // Campo nuevo en la raíz, en `path_integration` y en `roots`.
@@ -442,7 +442,7 @@ mod tests {
     fn receipt_roots_survive_missing_env() {
         let _guard = ENV_LOCK.lock().unwrap();
         let dir = scratch("receipt-roots");
-        let relocated = dir.join("reubicadas");
+        let relocated = dir.join("relocated");
         std::env::set_var("AVI_DATA_DIR", relocated.join("data"));
         std::env::set_var("AVI_CACHE_DIR", relocated.join("cache"));
         let roots = Roots {

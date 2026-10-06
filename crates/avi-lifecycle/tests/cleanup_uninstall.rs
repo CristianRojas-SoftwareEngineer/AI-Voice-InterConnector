@@ -72,7 +72,7 @@ impl uninstall::ProgramDirRemover for Deferred {
     fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<()> {
         // El helper real escribe un script en el temporal del sistema; aquí basta con
         // registrar que se pidió, que es lo que el motor decide.
-        write(&program_dir.join("borrado-programado"), &pid.to_string());
+        write(&program_dir.join("scheduled-removal"), &pid.to_string());
         Ok(())
     }
 }
@@ -207,8 +207,8 @@ impl Sandbox {
         write(
             &self
                 .models_dir
-                .join("models--otra--herramienta")
-                .join("otro.safetensors"),
+                .join("models--other--tool")
+                .join("other.safetensors"),
             "ajeno",
         );
         // Voces: dos de fábrica y una de usuario, con su namespace de habla.
@@ -224,7 +224,7 @@ impl Sandbox {
         }
         for voice in ["default", "mia"] {
             write(
-                &self.data_dir.join("speech").join(voice).join("hola.wav"),
+                &self.data_dir.join("speech").join(voice).join("hello.wav"),
                 "wav",
             );
         }
@@ -563,7 +563,7 @@ fn shared_hf_cache_keeps_foreign_entries() {
     sandbox.models_shared = true;
     sandbox.seed_state();
     let hub = sandbox.models_dir.clone();
-    let foreign = hub.join("models--otra--herramienta");
+    let foreign = hub.join("models--other--tool");
     write(
         &hub.join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
             .join("snapshots")
@@ -655,7 +655,7 @@ fn orphan_temporary_without_pid_is_swept() {
     let sandbox = Sandbox::new("temp");
     let temp = sandbox.temp_root.join("avi_clone_x_1.qvoice");
     write(&temp, "audio");
-    let foreign = sandbox.temp_root.join("lifecycle-test-ajeno.txt");
+    let foreign = sandbox.temp_root.join("lifecycle-test-foreign.txt");
     write(&foreign, "no es del producto");
 
     let outcome = runtime()
@@ -773,7 +773,7 @@ fn uninstall_keep_data_preserves_models_voices_and_speech() {
 /// Repetido sobre un sistema limpio termina con éxito y `not_installed` (criterio 21).
 #[test]
 fn uninstall_is_idempotent() {
-    let sandbox = Sandbox::new("idempotente");
+    let sandbox = Sandbox::new("idempotent");
     let receipt = sandbox.install();
     sandbox.seed_state();
     let runtime = runtime();
@@ -918,7 +918,7 @@ fn uninstall_refuses_unsafe_program_dir() {
 /// programa y el desenlace es `removal_scheduled`, que es un éxito.
 #[test]
 fn uninstall_schedules_removal_when_the_executable_is_inside() {
-    let sandbox = Sandbox::new("diferido");
+    let sandbox = Sandbox::new("deferred");
     let receipt = sandbox.install();
     sandbox.seed_state();
 
@@ -944,7 +944,7 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
         "el directorio sigue ahí, pendiente del proceso auxiliar"
     );
     assert!(
-        sandbox.program_dir.join("borrado-programado").is_file(),
+        sandbox.program_dir.join("scheduled-removal").is_file(),
         "el borrado quedó programado con el PID del proceso"
     );
     // El estado sí se borró: el programa es lo único que espera.
@@ -958,7 +958,7 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
 /// desinstalación se completó y el directorio queda intacto, sin borrado parcial.
 #[test]
 fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
-    let sandbox = Sandbox::new("no-programable");
+    let sandbox = Sandbox::new("unschedulable");
     let receipt = sandbox.install();
     sandbox.seed_state();
     let names_of = |dir: &Path| {
@@ -1100,9 +1100,9 @@ fn uninstall_reverts_path_from_the_receipt() {
     );
 
     // Un enlace que apunta a otro sitio es de otra instalación y no se toca.
-    let other = sandbox.root.join("otra-instalacion");
+    let other = sandbox.root.join("other-install");
     write(&other.join(uninstall::executable_name_default()), "binario");
-    let foreign_link = bin_dir.join("ajeno");
+    let foreign_link = bin_dir.join("foreign");
     symlink(
         other.join(uninstall::executable_name_default()),
         &foreign_link,

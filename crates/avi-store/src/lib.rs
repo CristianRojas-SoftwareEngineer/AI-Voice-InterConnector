@@ -1074,8 +1074,8 @@ mod tests {
             PathBuf::from("/hf_home_custom").join("hub")
         );
 
-        std::env::set_var("AVI_CACHE_DIR", "/raiz_aislada");
-        assert_eq!(models_cache_dir(), PathBuf::from("/raiz_aislada"));
+        std::env::set_var("AVI_CACHE_DIR", "/isolated_root");
+        assert_eq!(models_cache_dir(), PathBuf::from("/isolated_root"));
         assert!(
             models_root_is_shared(),
             "reubicar no cambia la propiedad: el contenido sigue siendo compartido"
@@ -1134,14 +1134,14 @@ mod tests {
             );
         }
 
-        std::env::set_var("AVI_INSTALL_DIR", "/opt/avi_reubicado");
+        std::env::set_var("AVI_INSTALL_DIR", "/opt/avi_relocated");
         std::env::set_var("AVI_BIN_DIR", "/usr/local/bin");
-        assert_eq!(install_dir(), PathBuf::from("/opt/avi_reubicado"));
+        assert_eq!(install_dir(), PathBuf::from("/opt/avi_relocated"));
         assert_eq!(bin_dir(), PathBuf::from("/usr/local/bin"));
         if cfg!(windows) {
             // Sin reubicar el enlace, la entrada del PATH cae en el programa.
             std::env::remove_var("AVI_BIN_DIR");
-            assert_eq!(bin_dir(), PathBuf::from("/opt/avi_reubicado"));
+            assert_eq!(bin_dir(), PathBuf::from("/opt/avi_relocated"));
         }
 
         env_restore(saved);
@@ -1183,16 +1183,16 @@ mod tests {
         );
 
         std::env::set_var("HF_HOME", "/hf_home_custom");
-        std::env::set_var("HF_XET_CACHE", "/xet_del_usuario");
+        std::env::set_var("HF_XET_CACHE", "/user_xet");
         assert_eq!(
             models_cache_dir(),
             PathBuf::from("/hf_home_custom").join("hub")
         );
-        assert_eq!(xet_cache_dir(), PathBuf::from("/xet_del_usuario"));
+        assert_eq!(xet_cache_dir(), PathBuf::from("/user_xet"));
         let _store = ModelStore::new();
         assert_eq!(
             std::env::var("HF_XET_CACHE").ok(),
-            Some("/xet_del_usuario".to_string()),
+            Some("/user_xet".to_string()),
             "con raíz compartida la variable es del usuario y no se toca"
         );
 
@@ -1236,7 +1236,7 @@ mod tests {
         };
         assert!(!canonical_path_entry_matches(
             sibling,
-            &root.join("Programs").join("otro")
+            &root.join("Programs").join("other")
         ));
 
         // Una variable sin valor deja la entrada intacta: dos referencias
@@ -1281,23 +1281,23 @@ mod tests {
             "el prefijo se quita antes que cualquier otra normalización"
         );
 
-        // La forma de red: `\\?\UNC\servidor\recurso` es `\\servidor\recurso`, con la
+        // La forma de red: `\\?\UNC\server\resource` es `\\server\resource`, con la
         // barra inicial, que es la que la distingue de una ruta local.
         assert_eq!(
-            canonical_path_key(Path::new(r"\\?\UNC\servidor\recurso\bin")),
-            canonical_path_key(Path::new(r"\\servidor\recurso\bin")),
+            canonical_path_key(Path::new(r"\\?\UNC\server\resource\bin")),
+            canonical_path_key(Path::new(r"\\server\resource\bin")),
             "la UNC verbatim se normaliza a la UNC normal"
         );
         assert_ne!(
-            canonical_path_key(Path::new(r"\\?\UNC\servidor\recurso\bin")),
-            canonical_path_key(Path::new(r"C:\servidor\recurso\bin")),
+            canonical_path_key(Path::new(r"\\?\UNC\server\resource\bin")),
+            canonical_path_key(Path::new(r"C:\server\resource\bin")),
             "y no se confunde con una ruta local del mismo nombre"
         );
 
         // Una ruta que solo se parece no se toca: el prefijo no amplía lo que compara
         // igual.
         assert_ne!(
-            canonical_path_key(Path::new(r"\\?\C:\otro-programa")),
+            canonical_path_key(Path::new(r"\\?\C:\other-program")),
             canonical_path_key(Path::new(r"C:\ai-voice-interconnector"))
         );
 
@@ -1499,7 +1499,7 @@ mod tests {
     fn save_reference_qvoice_canonical_without_fallback_wav() {
         let dir = temp_dir("ref");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
-        let src = dir.join("clon.qvoice");
+        let src = dir.join("clone.qvoice");
         std::fs::write(&src, b"QVCE").unwrap();
         let saved = voices.save_reference("MiVoz", &src).unwrap();
         assert_eq!(
@@ -1529,7 +1529,7 @@ mod tests {
         let voices_dir = dir.join("voices");
         std::fs::create_dir_all(&voices_dir).unwrap();
         let voices = VoiceStore::with_base_dir(voices_dir);
-        let missing = dir.join("no-existe.qvoice");
+        let missing = dir.join("missing.qvoice");
         assert!(voices.save_reference("nueva", &missing).is_err());
         assert!(
             !voices.voice_dir("nueva").exists(),
@@ -1548,10 +1548,10 @@ mod tests {
     fn save_reference_missing_source_keeps_existing_reference() {
         let dir = temp_dir("ref_missing_existing");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
-        let src = dir.join("clon.qvoice");
+        let src = dir.join("clone.qvoice");
         std::fs::write(&src, b"QVCE").unwrap();
         let saved = voices.save_reference("existente", &src).unwrap();
-        let missing = dir.join("no-existe.qvoice");
+        let missing = dir.join("missing.qvoice");
         assert!(voices.save_reference("existente", &missing).is_err());
         assert!(voices.voice_dir("existente").is_dir());
         assert_eq!(std::fs::read(&saved).unwrap(), b"QVCE");

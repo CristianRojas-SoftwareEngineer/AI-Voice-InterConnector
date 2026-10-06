@@ -617,8 +617,8 @@ mod tests {
         let native_dir = target.join(host_triple());
         std::fs::create_dir_all(native_dir.join("debug")).unwrap();
         // PDB reciente (vigente) y PDB viejo (obsoleto).
-        let fresh = debug_deps.join("vigente.pdb");
-        let stale = debug_deps.join("obsoleto.pdb");
+        let fresh = debug_deps.join("current.pdb");
+        let stale = debug_deps.join("obsolete.pdb");
         std::fs::write(&fresh, b"x").unwrap();
         std::fs::write(&stale, b"x").unwrap();
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(8 * 86400);

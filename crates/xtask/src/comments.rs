@@ -305,7 +305,7 @@ mod tests {
         format!("{}9.1", section_sign())
     }
 
-    fn localizador() -> String {
+    fn line_locator() -> String {
         ["crates/avi-store/src/lib", ".rs", ":", "660"].concat()
     }
 
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn line_locator_in_a_comment_is_rejected() {
-        let body = format!("/// Ver `{}` para la constante.\n", localizador());
+        let body = format!("/// Ver `{}` para la constante.\n", line_locator());
         let hits = scan_fixture(&[("src/demo.rs", body)]);
         assert_eq!(hits.len(), 1, "un localizador debe rechazarse: {hits:?}");
         assert_eq!(hits[0].kind, "localizador de línea");
@@ -402,7 +402,10 @@ mod tests {
         let citation = section_citation();
         let hits = scan_fixture(&[
             ("src/ok.rs", "//! Limpio.\n".to_string()),
-            ("vendor/tercero.rs", format!("//! Apunta a {citation}.\n")),
+            (
+                "vendor/third_party.rs",
+                format!("//! Apunta a {citation}.\n"),
+            ),
             ("target/build.rs", format!("//! Apunta a {citation}.\n")),
         ]);
         assert!(

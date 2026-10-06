@@ -396,7 +396,7 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     assert!(!planted.is_empty(), "criterio 9: el bundle tiene archivos");
 
     // Un hermano del directorio de programa, en cuarentena, que no se debe tocar.
-    let sibling = sandbox.root.join("opt").join("hermano.txt");
+    let sibling = sandbox.root.join("opt").join("sibling.txt");
     std::fs::write(&sibling, "fuera del programa\n").expect("se escribe el hermano");
     quarantine::put(&sibling).expect("se pone la cuarentena del hermano");
 
@@ -473,13 +473,13 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
-    let tree = Tree::new("c9-otros");
+    let tree = Tree::new("c9-others");
     let placed = tree.materialize();
     let planted = seed_quarantine(&tree.staging);
     assert!(!planted.is_empty(), "criterio 9: el bundle tiene archivos");
 
     // El hermano, con su propio atributo, es el control del alcance.
-    let sibling = tree.root.join("opt").join("hermano.txt");
+    let sibling = tree.root.join("opt").join("sibling.txt");
     std::fs::write(&sibling, "fuera del programa\n").expect("se escribe el hermano");
     quarantine::put(&sibling).expect("`put` fuera de macOS no falla");
     assert!(
@@ -548,7 +548,7 @@ fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     assert!(
         !with_attribute
             .iter()
-            .any(|r| r.contains("..") || r.contains("hermano")),
+            .any(|r| r.contains("..") || r.contains("sibling")),
         "criterio 9: y no incluye nada de fuera del directorio de programa"
     );
     let clean = keep_quarantine(&tree.program, &fake);
@@ -620,7 +620,7 @@ fn intermediate_dirs(root: &Path) -> usize {
 /// preguntando por ellos.
 #[test]
 fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
-    let tree = Tree::new("recorrido");
+    let tree = Tree::new("traversal");
     let program = tree.program.clone();
     let placed = tree.materialize();
     // El sandbox tiene cosas **fuera** del directorio de programa: el staging hermano,
@@ -709,7 +709,7 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
 /// limpiar, que es exactamente la información que el resumen final muestra.
 #[test]
 fn quarantine_strip_reports_failures_and_keeps_going() {
-    let tree = Tree::new("fallos");
+    let tree = Tree::new("failures");
     let placed = tree.materialize();
     let fake = Fake::new();
     for placed in &placed {
@@ -751,7 +751,7 @@ fn quarantine_strip_reports_failures_and_keeps_going() {
 /// directamente en el directorio de programa, y ni un nivel más adentro.
 #[test]
 fn quarantine_strip_respects_the_depth_limit() {
-    let tree = Tree::new("profundidad");
+    let tree = Tree::new("depth");
     let program = tree.program.clone();
     let placed = tree.materialize();
     let at_root: Vec<&PathBuf> = placed
@@ -810,7 +810,7 @@ fn quarantine_strip_respects_the_depth_limit() {
 /// quitar. Es la idempotencia del mismo paso que la instalación repetida.
 #[test]
 fn quarantine_strip_is_idempotent() {
-    let tree = Tree::new("idempotencia");
+    let tree = Tree::new("idempotence");
     let placed = tree.materialize();
     let fake = Fake::new();
     for placed in &placed {
@@ -876,11 +876,11 @@ fn quarantine_attribute_name_is_the_one_the_spec_names() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn quarantine_outside_macos_has_nothing_to_do_and_touches_nothing() {
-    let tree = Tree::new("sin-atributo");
+    let tree = Tree::new("no-attribute");
     let placed = tree.materialize();
     // Un hermano del directorio de programa, que es de la aplicación pero no es el
     // directorio de programa: si la limpieza se saliera, lo tocaría.
-    let sibling = tree.root.join("opt").join("hermano.txt");
+    let sibling = tree.root.join("opt").join("sibling.txt");
     std::fs::write(&sibling, "no tocar\n").expect("se escribe el hermano");
 
     // Punto de partida: en esta plataforma ningún archivo tiene el atributo.
@@ -918,7 +918,7 @@ fn quarantine_outside_macos_has_nothing_to_do_and_touches_nothing() {
 #[cfg(not(target_os = "macos"))]
 #[test]
 fn quarantine_outside_macos_attributes_are_inert() {
-    let tree = Tree::new("atributos-inertes");
+    let tree = Tree::new("inert-attributes");
     let scheduled = tree.materialize();
     for file in &scheduled {
         quarantine::put(file).expect("`put` fuera de macOS no falla");
@@ -964,7 +964,7 @@ impl ProcessControl for Inert {
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn install_strips_quarantine_from_whole_program_dir() {
-    let tree = Tree::new("criterio-9");
+    let tree = Tree::new("criterion-9");
     let exe = tree
         .files
         .iter()
@@ -1058,14 +1058,14 @@ async fn install_strips_quarantine_from_whole_program_dir() {
 #[cfg(target_os = "macos")]
 #[test]
 fn quarantine_strip_survives_a_real_directory_loop() {
-    let root = unique("lazo");
+    let root = unique("loop");
     let program = root.join("opt/ai-voice-interconnector");
     let dir = program.join("vendor/qwen3-tts");
     std::fs::create_dir_all(&dir).expect("se crea el árbol");
     let engine = dir.join("qwen_tts");
     std::fs::write(&engine, "motor").expect("se escribe el derivado");
     quarantine::put(&engine).expect("se pone la cuarentena");
-    std::os::unix::fs::symlink(&root, dir.join("vuelta")).expect("se crea el lazo");
+    std::os::unix::fs::symlink(&root, dir.join("back")).expect("se crea el lazo");
 
     let outcome = quarantine::strip(&program);
     assert!(

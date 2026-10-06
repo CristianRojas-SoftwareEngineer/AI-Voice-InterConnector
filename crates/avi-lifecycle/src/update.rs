@@ -407,7 +407,7 @@ mod tests {
     #[tokio::test]
     async fn update_handover_missing_exe_fails() {
         let request = HandoverRequest {
-            staging_exe: PathBuf::from("/ruta/inexistente/ai-voice-interconnector"),
+            staging_exe: PathBuf::from("/nonexistent/path/ai-voice-interconnector"),
             no_setup: false,
             no_modify_path: false,
             force: false,
@@ -481,7 +481,7 @@ mod tests {
     /// transacción no pudo borrar.
     #[test]
     fn transaction_leftovers_are_scheduled_not_discarded() {
-        let leftovers = vec![std::path::PathBuf::from("/programa/.old-tx/viejo.exe")];
+        let leftovers = vec![std::path::PathBuf::from("/program/.old-tx/old.exe")];
         let scheduled = super::schedule_leftovers(
             &leftovers,
             &FakeRemover {

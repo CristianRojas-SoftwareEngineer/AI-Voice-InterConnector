@@ -1284,7 +1284,7 @@ mod tests {
         // `ldconfig` puede no estar en el PATH aunque exista en `/sbin`: el
         // primer candidato que produce salida gana, sea por nombre o absoluto.
         // `--list` lo acepta el propio arnés libtest en todas las plataformas.
-        let missing = "programa-que-no-existe-xtask-doctor";
+        let missing = "program-that-does-not-exist-xtask-doctor";
         assert!(probe_first(&[missing], &["--list"]).is_none());
         let exe = std::env::current_exe().expect("ejecutable de pruebas");
         let found = probe_first(&[missing, &exe.to_string_lossy()], &["--list"]);

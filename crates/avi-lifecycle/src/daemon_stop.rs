@@ -961,7 +961,7 @@ mod tests {
     /// v0.18.25, y por eso la comprobación no es "si el PID existe, mátalo".
     #[tokio::test]
     async fn stop_never_kills_its_own_process() {
-        let data = scratch("autoguardia");
+        let data = scratch("self-guard");
         let control = Inert::new();
         let own = std::process::id();
         write_pid(
@@ -995,7 +995,7 @@ mod tests {
     /// de la tabla cerrada, y no se toca nada.
     #[tokio::test]
     async fn unstoppable_daemon_yields_daemon_stop_failed() {
-        let data = scratch("falla");
+        let data = scratch("failure");
         let pid = 424_242;
         let control = Alive {
             pid,
@@ -1046,7 +1046,7 @@ mod tests {
     /// sin PID registrado: con PID, la vía es el árbol preciso.
     #[tokio::test]
     async fn resident_sweep_only_without_registered_pid() {
-        let data = scratch("residente");
+        let data = scratch("resident");
 
         let without_pid = Inert::new();
         write_pid(
@@ -1122,7 +1122,7 @@ mod tests {
     /// un ready obsoleto haría creer al siguiente arranque que el daemon sigue listo.
     #[tokio::test]
     async fn stop_removes_ready_file_after_verified_stop() {
-        let data = scratch("ready-borrado");
+        let data = scratch("ready-deleted");
         write_pid(
             &data,
             999_999,
@@ -1147,7 +1147,7 @@ mod tests {
     /// borra aunque el pidfile no lo mencione: es la única pista de ese proceso.
     #[tokio::test]
     async fn stop_keeps_ready_file_while_its_pid_is_alive() {
-        let data = scratch("ready-vivo");
+        let data = scratch("ready-alive");
         let ready_pid = 777_001;
         crate::test_support::write_file(
             &data.join(READY_FILE),
@@ -1208,7 +1208,7 @@ mod tests {
     /// pidfile como pista y se nombra al residente.
     #[tokio::test]
     async fn surviving_resident_prevents_complete_stop() {
-        let data = scratch("residente-vivo");
+        let data = scratch("resident-alive");
         let resident = 888_888;
         let resident_id = identity_of("222", "qwen_tts.exe");
         write_pid(
@@ -1322,7 +1322,7 @@ mod tests {
     /// El pidfile guarda y devuelve las dos identidades.
     #[test]
     fn pid_file_roundtrips_identities() {
-        let data = scratch("identidades-ida-vuelta");
+        let data = scratch("identities-round-trip");
         write_pid(
             &data,
             4242,
@@ -1345,7 +1345,7 @@ mod tests {
     /// Un pidfile escrito sin identidades es ilegible: se propaga como ausencia.
     #[test]
     fn pid_file_without_identities_is_illegible() {
-        let data = scratch("sin-identidades");
+        let data = scratch("no-identities");
         crate::test_support::write_file(
             &pid_path(&data),
             r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 77}"#,
@@ -1364,7 +1364,7 @@ mod tests {
     /// fichero válido es presente.
     #[test]
     fn observe_pid_file_distinguishes_three_outcomes() {
-        let data = scratch("observa-desenlaces");
+        let data = scratch("observes-outcomes");
         assert!(matches!(observe_pid_file(&data), PidFileRead::Absent));
 
         crate::test_support::write_file(&pid_path(&data), "{\"pid\": 4242, \"add");
@@ -1398,7 +1398,7 @@ mod tests {
     /// lee, pero no habilita clasificación `Ours`: el ausente no es nuestro.
     #[test]
     fn pid_file_with_null_identities_does_not_classify_as_ours() {
-        let data = scratch("identidades-nulas");
+        let data = scratch("null-identities");
         crate::test_support::write_file(
             &pid_path(&data),
             r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 77, "identity": null, "resident_identity": null}"#,
@@ -1416,7 +1416,7 @@ mod tests {
     /// Un PID de daemon reasignado a otro programa no bloquea la parada y no se mata.
     #[tokio::test]
     async fn stop_spares_daemon_pid_with_foreign_identity() {
-        let data = scratch("daemon-ajeno");
+        let data = scratch("foreign-daemon");
         let pid = 424_243;
         write_pid(
             &data,
@@ -1426,7 +1426,7 @@ mod tests {
             identity_of("111", "ai-voice-interconnector.exe"),
         )
         .unwrap();
-        let control = Observed::new(&[pid], &[(pid, identity_of("999", "otro.exe"))]);
+        let control = Observed::new(&[pid], &[(pid, identity_of("999", "other.exe"))]);
 
         let outcome = stop(&data, &dead_port(), &control).await;
         assert!(!outcome.was_running, "el PID registrado es de un ajeno");
@@ -1445,7 +1445,7 @@ mod tests {
     /// Un PID de residente reasignado a otro programa no bloquea la parada y no se mata.
     #[tokio::test]
     async fn stop_spares_resident_pid_with_foreign_identity() {
-        let data = scratch("residente-ajeno");
+        let data = scratch("foreign-resident");
         let resident = 424_244;
         write_pid(
             &data,
@@ -1458,7 +1458,7 @@ mod tests {
         let mut file = read_pid_file(&data).unwrap();
         file.resident_identity = Some(identity_of("222", "qwen_tts.exe"));
         crate::test_support::write_file(&pid_path(&data), &serde_json::to_string(&file).unwrap());
-        let control = Observed::new(&[resident], &[(resident, identity_of("999", "otro.exe"))]);
+        let control = Observed::new(&[resident], &[(resident, identity_of("999", "other.exe"))]);
 
         let outcome = stop(&data, &dead_port(), &control).await;
         assert!(outcome.stopped, "un proceso ajeno no bloquea la parada");
@@ -1476,7 +1476,7 @@ mod tests {
     /// Con la identidad registrada coincidente, el daemon es nuestro y se mata.
     #[tokio::test]
     async fn stop_kills_daemon_pid_with_matching_identity() {
-        let data = scratch("daemon-propio");
+        let data = scratch("own-daemon");
         let pid = 424_245;
         let id = identity_of("111", "ai-voice-interconnector.exe");
         write_pid(&data, pid, &dead_port(), 0, id.clone()).unwrap();
@@ -1493,14 +1493,14 @@ mod tests {
     /// Un pidfile sin identidad, aunque su PID siga vivo, no es nuestro: la
     /// lectura lo descarta como ausente (con aviso) y la parada no lo mata.
     #[tokio::test]
-    async fn pidfile_sin_identidad_no_clasifica_como_nuestro_ni_mata() {
-        let data = scratch("sin-identidad");
+    async fn pidfile_without_identity_is_not_classified_as_ours_nor_killed() {
+        let data = scratch("no-identity");
         let pid = 424_248;
         crate::test_support::write_file(
             &pid_path(&data),
             &format!(r#"{{"pid": {pid}, "addr": "127.0.0.1:7001", "resident_pid": 0}}"#),
         );
-        let control = Observed::new(&[pid], &[(pid, identity_of("999", "otro.exe"))]);
+        let control = Observed::new(&[pid], &[(pid, identity_of("999", "other.exe"))]);
 
         assert!(
             read_pid_file(&data).is_none(),
@@ -1528,7 +1528,7 @@ mod tests {
     /// Un ready cuyo PID pertenece ya a otro programa es obsoleto y se borra.
     #[tokio::test]
     async fn stop_removes_ready_file_whose_pid_is_foreign() {
-        let data = scratch("ready-ajeno");
+        let data = scratch("foreign-ready");
         let pid = 424_247;
         crate::test_support::write_file(
             &data.join(READY_FILE),
@@ -1537,7 +1537,7 @@ mod tests {
                 ready_content(pid)
             ),
         );
-        let control = Observed::new(&[pid], &[(pid, identity_of("999", "otro.exe"))]);
+        let control = Observed::new(&[pid], &[(pid, identity_of("999", "other.exe"))]);
 
         let outcome = stop(&data, &dead_port(), &control).await;
         assert!(outcome.stopped);

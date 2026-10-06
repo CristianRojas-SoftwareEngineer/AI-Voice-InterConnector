@@ -40,7 +40,7 @@ fn test_key(tag: &str) -> String {
 /// criterio 7 nombra —una entrada con `%SystemRoot%` y otra con `%USERPROFILE%`— y
 /// una ruta absoluta sin variable.
 const INITIAL_VALUE: &str =
-    r"%SystemRoot%\system32;%USERPROFILE%\AppData\Local\Programs;C:\herramientas\bin";
+    r"%SystemRoot%\system32;%USERPROFILE%\AppData\Local\Programs;C:\tools\bin";
 
 /// El directorio de programa que se integraría, escrito en la forma absoluta que
 /// el motor usaría.
@@ -76,7 +76,7 @@ fn entry() -> PathBuf {
 #[test]
 fn criterion_7_windows_user_path_type_and_vars_survive() {
     let _guard = support::exclusively();
-    let mut sandbox = Sandbox::new("reversion-path-windows");
+    let mut sandbox = Sandbox::new("revert-path-windows");
     sandbox.bin_dir = sandbox.program_dir.clone();
     sandbox.seed_env();
     let key = sandbox.registry_subkey.clone();
@@ -209,7 +209,7 @@ fn criterion_7_windows_user_path_type_and_vars_survive() {
 /// prueba deja el tipo y las entradas `%VAR%` exactamente como estaban.
 #[test]
 fn windows_user_path_type_and_vars_survive() {
-    let key = test_key("tipo");
+    let key = test_key("type");
     let entry = entry();
 
     create_key_for_test(&key, INITIAL_VALUE, REG_EXPAND_SZ).expect("se crea la clave de prueba");
@@ -305,7 +305,7 @@ fn windows_user_path_type_and_vars_survive() {
 fn windows_user_path_keeps_reg_sz_type() {
     let key = test_key("regsz");
     let entry = entry();
-    create_key_for_test(&key, r"C:\Windows;C:\herramientas", REG_SZ).expect("se crea la clave");
+    create_key_for_test(&key, r"C:\Windows;C:\tools", REG_SZ).expect("se crea la clave");
 
     assert_eq!(read_path(&key).unwrap().unwrap().kind, REG_SZ);
     integrate(&key, &entry).expect("se integra");
@@ -324,7 +324,7 @@ fn windows_user_path_keeps_reg_sz_type() {
 #[test]
 fn windows_user_path_absent_value_is_created_expandable() {
     let entry = entry();
-    let key = test_key("ausente");
+    let key = test_key("absent");
     // Clave **sin** valor: es el caso real de "el valor no existía".
     avi_lifecycle::path_windows::create_key(&key).expect("se crea la clave de prueba");
     assert!(
@@ -346,7 +346,7 @@ fn windows_user_path_absent_value_is_created_expandable() {
 
     // Un valor presente pero vacío **no** es un valor ausente: se distingue, porque
     // "vacío" puede querer decir que el usuario lo vació y eso hay que conservarlo.
-    let empty = test_key("vacio");
+    let empty = test_key("empty");
     create_key_for_test(&empty, "", REG_EXPAND_SZ).expect("se crea la clave con valor vacío");
     let loaded = read_path(&empty)
         .unwrap()
@@ -364,7 +364,7 @@ fn windows_user_path_absent_value_is_created_expandable() {
     delete_key(&empty).expect("se borra la clave de prueba");
 
     // Y una clave que no existe, directamente: leerla da `None`, no un error.
-    let missing = test_key("inexistente");
+    let missing = test_key("nonexistent");
     assert!(
         read_path(&missing).unwrap().is_none(),
         "una clave ausente no es un error de lectura"

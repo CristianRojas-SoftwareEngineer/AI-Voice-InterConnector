@@ -464,7 +464,7 @@ mod tests {
         // Una entrada que solo se parece no se quita.
         let neighbor = RawPath {
             value: format!(
-                r"C:\Windows;{}\otro-programa",
+                r"C:\Windows;{}\other-program",
                 entry
                     .display()
                     .to_string()

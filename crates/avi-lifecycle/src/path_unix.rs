@@ -362,7 +362,7 @@ mod tests {
     /// distinto sería un contrato distinto.
     #[test]
     fn profile_block_is_idempotent() {
-        let home = sandbox("idempotente");
+        let home = sandbox("idempotent");
         let bin = home.join(".local/bin");
         let profile = home.join(".profile");
         let original = "# mi perfil\nexport LANG=es_ES.UTF-8\n";
@@ -410,8 +410,8 @@ mod tests {
 
         // Un bloque nuestro con la ruta reubicada lleva la ruta absoluta, no
         // `$HOME`: es la misma integración con otro destino.
-        let relocated = sandbox("reubicada");
-        let other = relocated.join("bin-personalizado");
+        let relocated = sandbox("relocated");
+        let other = relocated.join("custom-bin");
         let block = block_text(&other, &relocated);
         assert!(
             block.contains(&other.display().to_string()),
@@ -427,7 +427,7 @@ mod tests {
     /// `trim_end` ingenuo añadiría uno de más.
     #[test]
     fn profile_block_revert_restores_exactly() {
-        let home = sandbox("revierte");
+        let home = sandbox("reverts");
         let bin = home.join(".local/bin");
         let profile = home.join(".profile");
 
@@ -478,14 +478,14 @@ mod tests {
     /// solo `exists()` rompería en cada reejecución.
     #[test]
     fn preexisting_foreign_path_is_conflict() {
-        let home = sandbox("conflicto");
+        let home = sandbox("conflict");
         let bin = home.join(".local/bin");
         std::fs::create_dir_all(&bin).unwrap();
         let link = bin.join(crate::APP_NAME);
 
         // Ausente: se puede seguir.
         assert_eq!(
-            classify_existing(&link, &home.join("opt/ejecutable")),
+            classify_existing(&link, &home.join("opt/executable")),
             Existing::Absent
         );
         assert!(decide_existing(&Existing::Absent, &link, false).is_ok());
@@ -547,7 +547,7 @@ mod tests {
         // El enlace propio que hay en `link` se quita antes: `symlink` no sobrescribe
         // un destino existente, y sin quitarlo la prueba falla con `AlreadyExists` antes
         // de llegar a la clasificación.
-        let other = home.join("opt/otra-cosa/ai-voice-interconnector");
+        let other = home.join("opt/other-thing/ai-voice-interconnector");
         write_file(&other, "otro binario");
         std::fs::remove_file(&link).unwrap();
         std::os::unix::fs::symlink(&other, &link).unwrap();
@@ -637,7 +637,7 @@ mod tests {
     /// `PATH`, y se reconoce en las dos formas en que puede estar escrito.
     #[test]
     fn block_only_needed_when_bin_dir_absent_from_path() {
-        let home = sandbox("necesita");
+        let home = sandbox("needs");
         let bin = home.join(".local/bin");
         // El `PATH` se compone con `join_paths`, que usa el separador de cada
         // plataforma: en Windows la letra de la unidad lleva `:` y trocear por `:`
@@ -695,7 +695,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn block_not_needed_when_path_has_the_unexpanded_form() {
-        let home = sandbox("sin-expandir");
+        let home = sandbox("unexpanded");
         let bin = home.join(".local/bin");
         assert!(
             !needs_block("/usr/bin:$HOME/.local/bin", &bin, &home),
@@ -706,7 +706,7 @@ mod tests {
             "pero una variable distinta no"
         );
         assert!(
-            needs_block("/usr/bin:$OTRA/.local/bin", &bin, &home),
+            needs_block("/usr/bin:$OTHER/.local/bin", &bin, &home),
             "ni una variable que no es `HOME`"
         );
         std::fs::remove_dir_all(&home).ok();

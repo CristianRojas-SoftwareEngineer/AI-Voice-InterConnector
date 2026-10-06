@@ -43,27 +43,17 @@ use support::{Inert, Now, Sandbox};
 /// muere, si ese estado se revierte o se completa como commit, y un nombre estable para
 /// el sandbox y los mensajes.
 const POINTS: [(&str, &str, JournalState, bool); 5] = [
-    ("inicio", "antes de aparcar", JournalState::Started, false),
+    ("start", "antes de aparcar", JournalState::Started, false),
+    ("parked", "después de aparcar", JournalState::Parked, false),
+    ("placed", "después de colocar", JournalState::Placed, false),
     (
-        "aparcado",
-        "después de aparcar",
-        JournalState::Parked,
-        false,
-    ),
-    (
-        "colocado",
-        "después de colocar",
-        JournalState::Placed,
-        false,
-    ),
-    (
-        "permisos",
+        "permissions",
         "después de los permisos",
         JournalState::Permissions,
         false,
     ),
     (
-        "confirmado",
+        "committed",
         "después de confirmar",
         JournalState::Committed,
         true,
@@ -254,7 +244,7 @@ fn interrupted_transaction_is_recovered_next_run() {
 
     for (slug, point, state, commit) in POINTS {
         // ── Capa 1: la recuperación resuelve el estado plantado ──────────────────
-        let sandbox = Sandbox::new(&format!("recuperacion-{slug}"));
+        let sandbox = Sandbox::new(&format!("recovery-{slug}"));
         sandbox.seed_env();
         let txid = interrupt_at(&sandbox, slug, state);
         let parked = sandbox
@@ -377,7 +367,7 @@ fn interrupted_transaction_is_recovered_next_run() {
         );
 
         // ── Capa 2: la operación siguiente completa la recuperación ───────────────
-        let s2 = Sandbox::new(&format!("operacion-{slug}"));
+        let s2 = Sandbox::new(&format!("operation-{slug}"));
         s2.seed_env();
         let _txid = interrupt_at(&s2, slug, state);
         // El bootstrap extrae en un staging nuevo cada vez, así que el bundle se repone
@@ -459,7 +449,7 @@ fn interrupted_install_recovers_next_run() {
     ];
 
     for (point, inside_transaction) in points {
-        let sandbox = Sandbox::new(&format!("inyectado-{}", point.as_str()));
+        let sandbox = Sandbox::new(&format!("injected-{}", point.as_str()));
         sandbox.seed_env();
         seed_previous_version(&sandbox);
 
@@ -536,7 +526,7 @@ fn fault_injection_is_inert_without_the_feature() {
     use avi_lifecycle::faults::{self, FaultPoint};
 
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("inyeccion-inerte");
+    let sandbox = Sandbox::new("inert-injection");
     sandbox.seed_env();
     let exe = sandbox.write_bundle(&sandbox.staging);
 
@@ -570,9 +560,9 @@ fn fault_injection_is_inert_without_the_feature() {
 #[test]
 fn uninstall_recovers_before_it_plans() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("recuperar-desinstalar");
+    let sandbox = Sandbox::new("recover-uninstall");
     sandbox.seed_env();
-    let _txid = interrupt_at(&sandbox, "colocado", JournalState::Placed);
+    let _txid = interrupt_at(&sandbox, "placed", JournalState::Placed);
     sandbox.seed_state();
 
     let runtime = support::runtime();
@@ -629,25 +619,25 @@ fn uninstall_recovers_before_it_plans() {
 #[test]
 fn sweep_never_touches_a_foreign_test_sandbox() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("barrido-sandboxes");
+    let sandbox = Sandbox::new("sandbox-sweep");
     sandbox.seed_env();
 
     // Los tres nombres que convivían en un `%TEMP%` real, con el mismo contenido.
-    let own_with_dead_pid = sandbox.temp_root.join("avi-huerfano-4294967000.tmp");
+    let own_with_dead_pid = sandbox.temp_root.join("avi-orphan-4294967000.tmp");
     let own_without_pid = sandbox.temp_root.join("avi_clone_x_1.qvoice");
     support::write(&own_with_dead_pid, "temporal propio");
     support::write(&own_without_pid, "temporal propio sin PID");
     // El prefijo exacto de `tests/cli_golden.rs`, y un sandbox de contrato.
-    let golden = sandbox.temp_root.join("golden-sandbox_invariante_12345_0");
+    let golden = sandbox.temp_root.join("golden-sandbox_invariant_12345_0");
     let contract = sandbox
         .temp_root
-        .join("contract-sandbox_setupfallido_12345_0");
+        .join("contract-sandbox_setupfailed_12345_0");
     // Y dos controles de lo ajeno, uno con nuestro prefijo y otro sin él. La diferencia de
     // cómo acaban los dos es **toda** la regla: decide el prefijo, no quién lo escribió.
-    let third_party_our_prefix = sandbox.temp_root.join("avi-sistema-de-tercero.tmp");
-    let third_party_without_prefix = sandbox.temp_root.join("otro-programa.tmp");
-    support::write(&golden.join("install").join("estado"), "sandbox vivo");
-    support::write(&contract.join("opt").join("programa"), "sandbox vivo");
+    let third_party_our_prefix = sandbox.temp_root.join("avi-third-party-system.tmp");
+    let third_party_without_prefix = sandbox.temp_root.join("other-program.tmp");
+    support::write(&golden.join("install").join("state"), "sandbox vivo");
+    support::write(&contract.join("opt").join("program"), "sandbox vivo");
     support::write(
         &third_party_our_prefix,
         "nuestro prefijo, no nuestro temporal",
@@ -678,8 +668,8 @@ fn sweep_never_touches_a_foreign_test_sandbox() {
         );
     }
     assert!(
-        support::exists(&golden.join("install").join("estado"))
-            && support::exists(&contract.join("opt").join("programa")),
+        support::exists(&golden.join("install").join("state"))
+            && support::exists(&contract.join("opt").join("program")),
         "y con su contenido dentro, que es lo que se pierde cuando el barrido acierta"
     );
     // Los dos controles, y la asimetría es el punto: manda el prefijo, no la autoría.
@@ -708,7 +698,7 @@ fn sweep_never_touches_a_foreign_test_sandbox() {
 #[test]
 fn own_prefix_without_pid_is_swept_even_though_the_test_is_alive() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("barrido-sin-pid");
+    let sandbox = Sandbox::new("sweep-without-pid");
     sandbox.seed_env();
     let with_prefix_and_without_pid = sandbox.temp_root.join("avi_test_sandbox_x_1");
     support::write(
@@ -717,7 +707,7 @@ fn own_prefix_without_pid_is_swept_even_though_the_test_is_alive() {
     );
     let with_previous = sandbox
         .temp_root
-        .join(format!("avi-mio-{}.tmp", std::process::id()));
+        .join(format!("avi-mine-{}.tmp", std::process::id()));
     support::write(&with_previous, "temporal de este proceso, que sigue vivo");
 
     let outcome = recovery::recover(recovery::Roots {
@@ -755,7 +745,7 @@ fn own_prefix_without_pid_is_swept_even_though_the_test_is_alive() {
 #[test]
 fn unreadable_journal_stops_the_operation_without_deleting() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("diario-ilegible");
+    let sandbox = Sandbox::new("unreadable-journal");
     sandbox.seed_env();
     sandbox.seed_state();
     support::write(

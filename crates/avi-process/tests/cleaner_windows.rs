@@ -69,27 +69,27 @@ fn cleaner_removes_path_after_watched_process_death() {
 /// agotar los reintentos, en vez de dejarla en silencio.
 #[test]
 fn cleaner_reports_failure_when_path_stays_blocked() {
-    let dir = std::env::temp_dir().join(format!("avi-cleaner-bloq-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("avi-cleaner-blocked-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("retenido.txt"), "x").unwrap();
+    std::fs::write(dir.join("held.txt"), "x").unwrap();
     // El handle abierto retiene el archivo en Windows (sin compartir el
     // borrado), así que el borrado fracasa mientras viva este guardián.
     // `File::open` comparte el borrado por defecto y no retendría nada: se
     // abre con modo de compartición explícito sin `FILE_SHARE_DELETE`.
-    let _retenido = std::fs::OpenOptions::new()
+    let _held = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(
             windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ
                 | windows_sys::Win32::Storage::FileSystem::FILE_SHARE_WRITE,
         )
-        .open(dir.join("retenido.txt"))
+        .open(dir.join("held.txt"))
         .unwrap();
 
-    let muerto = 2_000_000_000u32;
-    let log = std::env::temp_dir().join(format!("avi-cleaner-bloq-{}.log", std::process::id()));
+    let dead_pid = 2_000_000_000u32;
+    let log = std::env::temp_dir().join(format!("avi-cleaner-blocked-{}.log", std::process::id()));
     let _ = std::fs::remove_file(&log);
-    avi_process::schedule_clean_removal(&dir, muerto, &log).expect("programar el limpiador");
+    avi_process::schedule_clean_removal(&dir, dead_pid, &log).expect("programar el limpiador");
 
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline && !log.exists() {
@@ -98,7 +98,7 @@ fn cleaner_reports_failure_when_path_stays_blocked() {
 
     let log_text = std::fs::read_to_string(&log).unwrap_or_default();
     let dir_left = dir.exists();
-    drop(_retenido);
+    drop(_held);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&log);
 

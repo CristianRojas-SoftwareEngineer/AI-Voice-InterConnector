@@ -221,7 +221,7 @@ fn dead_port() -> String {
 /// mismo estado final, sin entradas de `PATH` ni bloques de perfil duplicados.
 #[tokio::test]
 async fn install_twice_is_idempotent() {
-    let sandbox = Sandbox::new("doble");
+    let sandbox = Sandbox::new("double");
     let exe = sandbox.write_bundle(&sandbox.staging);
     let env = sandbox.env(&exe);
     let options = Sandbox::options();
@@ -387,27 +387,27 @@ async fn install_twice_is_idempotent() {
     sandbox.clear();
 }
 
-/// Sondea el reloj hasta que `medida` tenga al menos `resolucion` de antigüedad
-/// (1 s es el peor caso conocido de resolución de `mtime`), con `plazo` como
+/// Sondea el reloj hasta que `measured` tenga al menos `RESOLUTION` de antigüedad
+/// (1 s es el peor caso conocido de resolución de `mtime`), con `deadline` como
 /// límite duro: agotado el plazo, falla con `panic!` en vez de seguir y
 /// comparar marcas que aún no se distinguen.
 ///
 /// El hecho que espera es «la marca medida ya está fuera del tick del reloj», no
 /// «ha pasado un segundo»: por eso sondea y no duerme, y por eso el diagnóstico
 /// dice cuánto faltó en vez de callar.
-fn esperar_resolucion_mtime(medida: std::time::SystemTime, plazo: std::time::Duration) {
-    const RESOLUCION: std::time::Duration = std::time::Duration::from_secs(1);
+fn wait_for_mtime_resolution(measured: std::time::SystemTime, deadline: std::time::Duration) {
+    const RESOLUTION: std::time::Duration = std::time::Duration::from_secs(1);
     let start = std::time::Instant::now();
     loop {
-        let transcurrido = medida.elapsed().unwrap_or_default();
-        if transcurrido >= RESOLUCION {
+        let elapsed = measured.elapsed().unwrap_or_default();
+        if elapsed >= RESOLUTION {
             return;
         }
         assert!(
-            start.elapsed() < plazo,
+            start.elapsed() < deadline,
             "el reloj no avanzó lo necesario para separar la mtime (faltaban {:?} de {:?})",
-            RESOLUCION - transcurrido,
-            RESOLUCION
+            RESOLUTION - elapsed,
+            RESOLUTION
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
@@ -421,7 +421,7 @@ fn esperar_resolucion_mtime(medida: std::time::SystemTime, plazo: std::time::Dur
 /// de programa se habría recreado y la marca de tiempo sería posterior.
 #[tokio::test]
 async fn repair_from_inside_program_dir_copies_nothing() {
-    let sandbox = Sandbox::new("reparacion");
+    let sandbox = Sandbox::new("repair");
     let exe = sandbox.write_bundle(&sandbox.staging);
     let options = Sandbox::options();
 
@@ -452,7 +452,7 @@ async fn repair_from_inside_program_dir_copies_nothing() {
     // el peor caso conocido). Ese margen es lo que hace concluyente la
     // comparación posterior: sin él, una copia hecha durante la reparación
     // podría caer en el mismo tick y conservar la marca.
-    esperar_resolucion_mtime(before, std::time::Duration::from_secs(5));
+    wait_for_mtime_resolution(before, std::time::Duration::from_secs(5));
 
     // Ahora se invoca **desde dentro** del directorio de programa.
     let env = sandbox.env(&placed);
@@ -507,7 +507,7 @@ async fn repair_from_inside_program_dir_copies_nothing() {
 /// nada, que es el tercer modo de la operación.
 #[tokio::test]
 async fn bundle_without_required_files_is_rejected() {
-    let sandbox = Sandbox::new("incompleto");
+    let sandbox = Sandbox::new("incomplete");
 
     // Un "bundle" con el ejecutable y nada más: es el caso de `target/release`, que
     // el flujo de la instalación nombra explícitamente.
@@ -591,7 +591,7 @@ async fn no_modify_path_leaves_path_untouched() {
 /// previo lo dice; antes de integrar, el mismo resumen anuncia el cambio.
 #[tokio::test]
 async fn integrated_install_announces_no_path_change() {
-    let sandbox = Sandbox::new("integrada");
+    let sandbox = Sandbox::new("integrated");
     let exe = sandbox.write_bundle(&sandbox.staging);
     let options = Sandbox::options();
 
@@ -660,7 +660,7 @@ async fn foreign_path_is_conflict_and_installs_nothing() {
     if !cfg!(unix) {
         return;
     }
-    let sandbox = Sandbox::new("conflicto");
+    let sandbox = Sandbox::new("conflict");
     let exe = sandbox.write_bundle(&sandbox.staging);
     let busy = sandbox.bin_dir.join("ai-voice-interconnector");
     std::fs::write(&busy, "no soy un enlace\n").expect("se ocupa la ruta del enlace");

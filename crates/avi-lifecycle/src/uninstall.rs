@@ -985,9 +985,9 @@ mod r2_tests {
     fn roots(home: &Path, program: &Path) -> Roots {
         Roots {
             program_dir: program.to_path_buf(),
-            data_dir: home.join("datos"),
-            models_dir: home.join("modelos"),
-            temp_root: home.join("temporales"),
+            data_dir: home.join("data"),
+            models_dir: home.join("models"),
+            temp_root: home.join("temp"),
             home: home.to_path_buf(),
             models_shared: false,
         }
@@ -1000,9 +1000,9 @@ mod r2_tests {
 
     #[test]
     fn program_under_home_with_receipt_is_removable() {
-        let root = sandbox("bajo-home");
+        let root = sandbox("under-home");
         let home = root.join("home").join("ana");
-        let program = home.join("programas").join("ai-voice-interconnector");
+        let program = home.join("programs").join("ai-voice-interconnector");
         with_receipt(&program);
         assert!(
             program_dir_is_removable(&roots(&home, &program), &program),
@@ -1013,7 +1013,7 @@ mod r2_tests {
 
     #[test]
     fn home_as_program_dir_is_not_removable() {
-        let root = sandbox("home-igual");
+        let root = sandbox("home-equal");
         let home = root.join("home").join("ana");
         with_receipt(&home);
         assert!(
@@ -1025,7 +1025,7 @@ mod r2_tests {
 
     #[test]
     fn home_ancestor_is_not_removable() {
-        let root = sandbox("ancestro");
+        let root = sandbox("ancestor");
         let home = root.join("home").join("ana");
         with_receipt(&root);
         assert!(
@@ -1037,13 +1037,13 @@ mod r2_tests {
 
     #[test]
     fn data_root_is_not_removable() {
-        let root = sandbox("datos");
+        let root = sandbox("data");
         let home = root.join("home").join("ana");
-        let datos = home.join("datos");
-        with_receipt(&datos);
-        let r = roots(&home, &datos);
+        let data = home.join("data");
+        with_receipt(&data);
+        let r = roots(&home, &data);
         assert!(
-            !program_dir_is_removable(&r, &datos),
+            !program_dir_is_removable(&r, &data),
             "otra raíz del producto nunca es borrable"
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -1051,9 +1051,9 @@ mod r2_tests {
 
     #[test]
     fn without_receipt_or_exe_is_not_removable() {
-        let root = sandbox("sin-recibo");
+        let root = sandbox("no-receipt");
         let home = root.join("home").join("ana");
-        let program = home.join("programas").join("ai-voice-interconnector");
+        let program = home.join("programs").join("ai-voice-interconnector");
         std::fs::create_dir_all(&program).expect("se crea el programa");
         assert!(
             !program_dir_is_removable(&roots(&home, &program), &program),

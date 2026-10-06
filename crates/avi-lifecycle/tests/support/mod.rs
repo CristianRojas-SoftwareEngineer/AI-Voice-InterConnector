@@ -120,7 +120,7 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or_default();
-        let root = std::env::temp_dir().join(format!("criterio-{tag}-{}-{n}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("criterion-{tag}-{}-{n}", std::process::id()));
         let sandbox = Self::built(tag, root, mode);
         sandbox.create_directories();
         sandbox
@@ -346,7 +346,7 @@ impl Sandbox {
                 &hub.join(repo_dir(pin.repo))
                     .join("snapshots")
                     .join(pin.revision)
-                    .join("pesos.bin"),
+                    .join("weights.bin"),
                 "pesos",
             );
             // Y su lock, que R3 declara atribuible a la aplicación.
@@ -358,15 +358,12 @@ impl Sandbox {
         // `xet` y el `.locks` completo: globales de la caché, nunca nuestros.
         write(&hub.join("xet").join("shard"), "xet");
         write(
-            &hub.join(".locks")
-                .join("models--otra--herramienta")
-                .join("lock"),
+            &hub.join(".locks").join("models--other--tool").join("lock"),
             "",
         );
         // Y el repo de otra herramienta, con su lock propio.
         write(
-            &hub.join("models--otra--herramienta")
-                .join("otro.safetensors"),
+            &hub.join("models--other--tool").join("other.safetensors"),
             "ajeno",
         );
         // Estado de usuario: voces de fábrica y de usuario, habla, configuración, logs
@@ -383,7 +380,7 @@ impl Sandbox {
         }
         for voice in ["default", "mia"] {
             write(
-                &self.data_dir.join("speech").join(voice).join("hola.wav"),
+                &self.data_dir.join("speech").join(voice).join("hello.wav"),
                 "wav",
             );
         }
@@ -394,21 +391,21 @@ impl Sandbox {
         // (criterio 23). `sccache` se planta en dos sitios porque son los dos que
         // existen en producción: la caché del usuario y el temporal del sistema.
         write(
-            &self.home.join(".cargo").join("registry").join("indice"),
+            &self.home.join(".cargo").join("registry").join("index"),
             "carga",
         );
         write(
-            &self.home.join(".cache").join("sccache").join("objeto"),
+            &self.home.join(".cache").join("sccache").join("object"),
             "sccache",
         );
-        write(&self.temp_root.join("sccache").join("objeto"), "sccache");
+        write(&self.temp_root.join("sccache").join("object"), "sccache");
     }
 
     /// Un temporal propio huérfano, que la regla obliga a barrer, plantado junto a los
     /// compartidos del párrafo anterior: es el contraste que demuestra que el barrido es
     /// selectivo por prefijo y no por directorio.
     pub fn seed_own_temp(&self) -> PathBuf {
-        let temp = self.temp_root.join("avi-huerfano.tmp");
+        let temp = self.temp_root.join("avi-orphan.tmp");
         write(&temp, "temporal propio");
         temp
     }

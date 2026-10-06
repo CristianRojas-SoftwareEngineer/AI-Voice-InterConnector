@@ -49,7 +49,7 @@ pub struct AudioDevice {
 /// audio, así que el veneno deja traza y la operación continúa sobre el estado
 /// recuperado (`PoisonError::into_inner`): lo que envenenó el mutex fue el
 /// pánico del hilo anterior, no el dato que guarda.
-fn tomar_lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
+fn acquire_lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
     mutex.lock().unwrap_or_else(|poisoned| {
         eprintln!("Aviso: mutex «{label}» envenenado; se sigue sobre el estado recuperado");
         poisoned.into_inner()
@@ -152,7 +152,7 @@ impl AudioService {
                 device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _| {
-                        let mut idx = tomar_lock(&idx_arc, "índice de reproducción");
+                        let mut idx = acquire_lock(&idx_arc, "índice de reproducción");
                         for sample in data.iter_mut() {
                             if *idx < samples.len() {
                                 *sample = samples[*idx];
@@ -171,7 +171,7 @@ impl AudioService {
                 device.build_output_stream(
                     &config,
                     move |data: &mut [i16], _| {
-                        let mut idx = tomar_lock(&idx_arc, "índice de reproducción");
+                        let mut idx = acquire_lock(&idx_arc, "índice de reproducción");
                         for sample in data.iter_mut() {
                             if *idx < samples.len() {
                                 *sample = (samples[*idx].clamp(-1.0, 1.0) * 32767.0) as i16;
@@ -190,7 +190,7 @@ impl AudioService {
                 device.build_output_stream(
                     &config,
                     move |data: &mut [u16], _| {
-                        let mut idx = tomar_lock(&idx_arc, "índice de reproducción");
+                        let mut idx = acquire_lock(&idx_arc, "índice de reproducción");
                         for sample in data.iter_mut() {
                             if *idx < samples.len() {
                                 *sample = (((samples[*idx].clamp(-1.0, 1.0) + 1.0) * 0.5)
@@ -212,7 +212,7 @@ impl AudioService {
         stream.play()?;
 
         // Esperar a que finalice la reproducción de las muestras
-        while *tomar_lock(&sample_idx, "índice de reproducción") < total_samples {
+        while *acquire_lock(&sample_idx, "índice de reproducción") < total_samples {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
@@ -238,7 +238,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[f32], _| {
-                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
+                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
                         buffer.extend_from_slice(data);
                     },
                     |err| eprintln!("Error en captura de micrófono: {}", err),
@@ -250,7 +250,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[i16], _| {
-                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
+                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
                         buffer.extend(data.iter().map(|&s| s as f32 / 32768.0));
                     },
                     |err| eprintln!("Error en captura de micrófono: {}", err),
@@ -262,7 +262,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[u16], _| {
-                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
+                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
                         buffer.extend(
                             data.iter()
                                 .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
@@ -279,7 +279,7 @@ impl AudioService {
         std::thread::sleep(std::time::Duration::from_secs(duration_secs));
         drop(stream);
 
-        let raw_samples = tomar_lock(&recorded_samples, "buffer de grabación").clone();
+        let raw_samples = acquire_lock(&recorded_samples, "buffer de grabación").clone();
         Ok(finish(raw_samples, channels, sample_rate))
     }
 
@@ -308,7 +308,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[f32], _| {
-                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
+                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
                         buffer.extend_from_slice(data);
                     },
                     |err| eprintln!("Error en captura de micrófono: {}", err),
@@ -320,7 +320,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[i16], _| {
-                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
+                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
                         buffer.extend(data.iter().map(|&s| s as f32 / 32768.0));
                     },
                     |err| eprintln!("Error en captura de micrófono: {}", err),
@@ -332,7 +332,7 @@ impl AudioService {
                 device.build_input_stream(
                     &config.config(),
                     move |data: &[u16], _| {
-                        let mut buffer = tomar_lock(&rec, "buffer de grabación");
+                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
                         buffer.extend(
                             data.iter()
                                 .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
@@ -373,7 +373,7 @@ impl AudioService {
 
         drop(stream);
 
-        let raw_samples = tomar_lock(&recorded_samples, "buffer de grabación").clone();
+        let raw_samples = acquire_lock(&recorded_samples, "buffer de grabación").clone();
         Ok(finish(raw_samples, channels, sample_rate))
     }
 }
@@ -632,7 +632,7 @@ mod tests {
     /// Un mutex de audio envenenado no tumba el proceso: el recover entrega
     /// el estado que el hilo muerto dejó puesto y la operación sigue sobre él.
     #[test]
-    fn test_tomar_lock_recupera_el_veneno() {
+    fn test_acquire_lock_recovers_poisoned_mutex() {
         let mutex = std::sync::Arc::new(std::sync::Mutex::new(7usize));
         // Un hilo muere con el mutex tomado: eso es lo que lo envenena.
         let dying = std::sync::Arc::clone(&mutex);
@@ -644,9 +644,9 @@ mod tests {
         assert!(mutex.is_poisoned(), "el mutex debe quedar envenenado");
 
         // Un `unwrap()` habría tumbado el test aquí; el recover no.
-        assert_eq!(*crate::tomar_lock(&mutex, "índice de reproducción"), 7);
+        assert_eq!(*crate::acquire_lock(&mutex, "índice de reproducción"), 7);
         // El estado recuperado sigue siendo utilizable.
-        *crate::tomar_lock(&mutex, "índice de reproducción") += 1;
+        *crate::acquire_lock(&mutex, "índice de reproducción") += 1;
         assert_eq!(*mutex.lock().unwrap_or_else(|p| p.into_inner()), 8);
     }
 
@@ -713,7 +713,7 @@ mod tests {
 
     #[test]
     fn test_load_wav_16k_mono_pcm_missing_file_is_not_found() {
-        let path = std::env::temp_dir().join("avi_audio_test_no_existe_jamas.wav");
+        let path = std::env::temp_dir().join("avi_audio_test_never_exists.wav");
         std::fs::remove_file(&path).ok();
         let err = crate::load_wav_16k_mono_pcm(&path).unwrap_err();
         assert!(
@@ -724,7 +724,7 @@ mod tests {
 
     #[test]
     fn test_load_wav_16k_mono_pcm_garbage_bytes_is_invalid() {
-        let path = std::env::temp_dir().join("avi_audio_test_basura.wav");
+        let path = std::env::temp_dir().join("avi_audio_test_garbage.wav");
         std::fs::write(&path, b"esto no es un archivo wav, solo bytes basura").unwrap();
         let result = crate::load_wav_16k_mono_pcm(&path);
         std::fs::remove_file(&path).ok();
@@ -829,7 +829,7 @@ mod tests {
 
     #[test]
     fn test_load_wav_16k_mono_pcm_truncated_is_invalid() {
-        let path = write_truncated_wav("truncado_16k");
+        let path = write_truncated_wav("truncated_16k");
         let result = crate::load_wav_16k_mono_pcm(&path);
         std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
@@ -841,7 +841,7 @@ mod tests {
 
     #[test]
     fn test_load_wav_24k_mono_pcm_truncated_is_invalid() {
-        let path = write_truncated_wav("truncado_24k");
+        let path = write_truncated_wav("truncated_24k");
         let result = crate::load_wav_24k_mono_pcm(&path);
         std::fs::remove_file(&path).ok();
         let err = result.unwrap_err();
@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn test_load_wav_24k_mono_pcm_garbage_bytes_is_invalid() {
         let path = std::env::temp_dir().join(format!(
-            "avi_audio_test_basura_24k_{}.wav",
+            "avi_audio_test_garbage_24k_{}.wav",
             std::process::id()
         ));
         std::fs::write(&path, b"esto no es un archivo wav, solo bytes basura").unwrap();

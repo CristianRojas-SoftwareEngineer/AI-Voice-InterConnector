@@ -191,7 +191,7 @@ mod tests {
         let dir = unique_dir();
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("daemon.log"), "x").unwrap();
-        std::fs::write(dir.join("notas.txt"), "x").unwrap();
+        std::fs::write(dir.join("notes.txt"), "x").unwrap();
         for ms in 1..=12u128 {
             create_log_at_with(&dir, "qwen3-tts", std::process::id(), ms, &none_alive).unwrap();
         }
@@ -200,7 +200,7 @@ mod tests {
         }
         let present = names(&dir);
         assert!(present.contains(&"daemon.log".to_string()));
-        assert!(present.contains(&"notas.txt".to_string()));
+        assert!(present.contains(&"notes.txt".to_string()));
         let tts = present
             .iter()
             .filter(|n| n.starts_with("qwen3-tts_"))

@@ -844,7 +844,7 @@ mod tests {
         let sandbox = scratch("fetch-tampered");
         let program_dir = sandbox.join("opt").join("ai-voice-interconnector");
         std::fs::create_dir_all(&program_dir).expect("se crea el programa previo");
-        let marker = program_dir.join("conservado.txt");
+        let marker = program_dir.join("kept.txt");
         std::fs::write(&marker, "instalación previa").expect("se planta el marcador");
         let (base, _, handle) = serve_responses(vec![
             FakeResponse::new(200, archive),

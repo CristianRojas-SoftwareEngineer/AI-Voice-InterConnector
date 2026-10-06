@@ -66,7 +66,7 @@ async fn pointer_and_blob_are_the_same_file() {
         .build()
         .expect("el cliente se construye con endpoint y caché explícitos");
     let pointer = client
-        .model("propietario", "modelo")
+        .model("owner", "model")
         .download_file()
         .filename("config.json")
         .revision("main")
@@ -74,7 +74,7 @@ async fn pointer_and_blob_are_the_same_file() {
         .await
         .expect("la descarga contra el servidor local termina");
 
-    let repo_dir = cache.join("models--propietario--modelo");
+    let repo_dir = cache.join("models--owner--model");
     let blob = repo_dir.join("blobs").join(ETAG);
     assert_eq!(
         pointer,

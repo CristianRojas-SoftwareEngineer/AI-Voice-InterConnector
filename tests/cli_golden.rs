@@ -555,7 +555,7 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
             }
             if start.elapsed() >= timeout {
                 reaper_on_failure(
-                    &format!("wait_for_daemon_state({})-agotado", expected),
+                    &format!("wait_for_daemon_state({})-exhausted", expected),
                     true,
                 );
                 panic!(
@@ -582,7 +582,7 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
     reaper_on_failure(
-        &format!("wait_for_daemon_state({})-agotado", expected),
+        &format!("wait_for_daemon_state({})-exhausted", expected),
         true,
     );
     panic!(
@@ -627,7 +627,7 @@ fn wait_for_running_without_warm(retries: u32, envs: &[(&str, &str)]) -> Value {
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
-    reaper_on_failure("wait_for_running_without_warm(running)-agotado", true);
+    reaper_on_failure("wait_for_running_without_warm(running)-exhausted", true);
     panic!(
         "el daemon no alcanzó el estado 'running' (sin exigir warm) tras {} reintentos (último: {})",
         retries, last
@@ -693,13 +693,13 @@ fn d03_reaper_without_live_pid_does_not_fail() {
     let stale = serde_json::json!({
         "pid": dead_pid,
         "resident_pid": 0,
-        "identity": { "start": "0", "image": "identidad-falsa.exe" },
+        "identity": { "start": "0", "image": "fake-identity.exe" },
         "resident_identity": serde_json::Value::Null,
     });
     std::fs::write(&path, stale.to_string()).expect("escribir pidfile obsoleto en el sandbox");
     // El reaper best-effort no debe fallar con PID muerto y sin residente:
     // llegar hasta aquí ya prueba que retornó sin hacer panic.
-    reaper_on_failure("d03-prueba", false);
+    reaper_on_failure("d03-test", false);
     // No aseveramos quiescencia global de máquina: el reaper de d03 solo mata un
     // PID ya muerto —nunca abre el 8765 ni arranca un residente `qwen_tts`—, así
     // que cualquier puerto/residente presente aquí proviene de un daemon test
@@ -908,7 +908,7 @@ fn sandbox_unique_state(tag: &str) -> (PathBuf, Vec<(String, String)>) {
     // `%TEMP%` de la máquina. Con el temporal dentro del sandbox, el universo del barrido
     // está acotado al sandbox aunque el prefijo volviera a colisionar, y las dos
     // protections son independientes a propósito.
-    let temp = dir.join("tmp-hijo");
+    let temp = dir.join("child-tmp");
     std::fs::create_dir_all(&temp).expect("crear temporal del sandbox");
     for variable in ["TEMP", "TMP", "TMPDIR"] {
         envs.push((variable.to_string(), temp.to_string_lossy().to_string()));
@@ -951,7 +951,7 @@ fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
     );
 
     // Y el temporal del hijo está dentro del sandbox, que es la otra mitad.
-    let (dir, envs) = sandbox_unique_state("invarianteprefijo");
+    let (dir, envs) = sandbox_unique_state("invariantprefix");
     let value = |k: &str| {
         envs.iter()
             .find(|(n, _)| n == k)
@@ -1024,7 +1024,7 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
         last = std::fs::read_to_string(path).unwrap_or_default();
         std::thread::sleep(Duration::from_millis(15));
     }
-    reaper_on_failure("wait_for_ready_file-agotado", true);
+    reaper_on_failure("wait_for_ready_file-exhausted", true);
     panic!(
         "el fichero ready {} no publicó addr válida tras {:?} (último contenido: {:?})",
         path.display(),
@@ -1366,7 +1366,7 @@ fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) {
         .expect("dirección del puerto reservado")
         .port();
     let dead_pid = u32::MAX - 1;
-    let fake = serde_json::json!({ "start": "0", "image": "identidad-falsa.exe" });
+    let fake = serde_json::json!({ "start": "0", "image": "fake-identity.exe" });
     let content = serde_json::json!({
         "pid": dead_pid,
         "addr": format!("127.0.0.1:{port}"),
@@ -1393,15 +1393,15 @@ fn plain_version_outputs_name_and_package_version() {
     let expected = format!("ai-voice-interconnector {}", env!("CARGO_PKG_VERSION"));
     let (dir, envs) = contract_sandbox("plain_version");
     for args in [["version"], ["--version"]] {
-        let salida = bin_command()
+        let output = bin_command()
             .args(args)
             .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(std::process::Stdio::null())
             .output()
             .expect("el binario debe ejecutarse");
-        assert!(salida.status.success(), "`{}` debe salir con 0", args[0]);
+        assert!(output.status.success(), "`{}` debe salir con 0", args[0]);
         assert_eq!(
-            String::from_utf8_lossy(&salida.stdout).trim(),
+            String::from_utf8_lossy(&output.stdout).trim(),
             expected,
             "salida de `{}`",
             args[0]
@@ -1474,7 +1474,7 @@ fn transcribe_missing_audio_exits_3() {
         "speech",
         "transcribe",
         "--audio",
-        "no_existe_avi_test.wav",
+        "avi_test_missing.wav",
         "--source-language",
         "es-latam",
     ]);
@@ -1490,7 +1490,7 @@ fn dub_missing_audio_exits_3() {
         "speech",
         "dub",
         "--audio",
-        "no_existe_avi_test.wav",
+        "avi_test_missing.wav",
         "--source-language",
         "es-latam",
         "--target-language",
@@ -1758,7 +1758,7 @@ fn assert_audio_too_long(what: &str, result: (i32, Value)) {
 fn transcribe_audio_over_limit_is_audio_too_long() {
     for mode in ["--no-daemon", "--daemon"] {
         let (dir, envs) = contract_sandbox("transcribe_limit");
-        let wav = dir.join("largo_301s.wav");
+        let wav = dir.join("long_301s.wav");
         write_silent_wav(&wav, 301);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let result = run_json_env(
@@ -1785,7 +1785,7 @@ fn transcribe_audio_over_limit_is_audio_too_long() {
 fn clone_reference_over_limit_is_audio_too_long() {
     for mode in ["--no-daemon", "--daemon"] {
         let (dir, envs) = contract_sandbox("clone_limit");
-        let wav = dir.join("referencia_31s.wav");
+        let wav = dir.join("reference_31s.wav");
         write_silent_wav(&wav, 31);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let result = run_json_env(
@@ -1795,7 +1795,7 @@ fn clone_reference_over_limit_is_audio_too_long() {
                 "voice",
                 "clone",
                 "--name",
-                "referencia_larga",
+                "long_reference",
                 "--speech-reference",
                 wav.to_str().expect("ruta UTF-8"),
             ],
@@ -1815,7 +1815,7 @@ fn clone_reference_over_limit_is_audio_too_long() {
 fn dub_audio_over_limit_is_audio_too_long() {
     for mode in ["--no-daemon", "--daemon"] {
         let (dir, envs) = contract_sandbox("dub_limit");
-        let wav = dir.join("doblaje_41s.wav");
+        let wav = dir.join("dubbing_41s.wav");
         write_silent_wav(&wav, 41);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let result = run_json_env(
@@ -1844,7 +1844,7 @@ fn dub_audio_over_limit_is_audio_too_long() {
 fn clone_reference_zero_sample_rate_is_invalid_audio() {
     for mode in ["--no-daemon", "--daemon"] {
         let (dir, envs) = contract_sandbox("clone_zero_rate");
-        let wav = dir.join("referencia_rate0.wav");
+        let wav = dir.join("reference_rate0.wav");
         avi_audio::write_zero_rate_wav(&wav);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let (code, actual) = run_json_env(
@@ -1854,7 +1854,7 @@ fn clone_reference_zero_sample_rate_is_invalid_audio() {
                 "voice",
                 "clone",
                 "--name",
-                "referencia_rate0",
+                "reference_rate0",
                 "--speech-reference",
                 wav.to_str().expect("ruta UTF-8"),
             ],
@@ -1999,7 +1999,7 @@ impl FakeDaemon {
     /// ellas el pidfile se descarta y la orden consultaría el 8765 real.
     fn publish_in(&self, data_dir: &std::path::Path) {
         let dead_pid = u32::MAX - 1;
-        let fake = serde_json::json!({ "start": "0", "image": "identidad-falsa.exe" });
+        let fake = serde_json::json!({ "start": "0", "image": "fake-identity.exe" });
         let content = serde_json::json!({
             "pid": dead_pid,
             "addr": self.addr.to_string(),
@@ -2034,7 +2034,7 @@ fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<Strin
     let fake = FakeDaemon::start(404, body);
     let (dir, envs) = contract_sandbox(tag);
     fake.publish_in(&dir);
-    let wav = dir.join("entrada_1s.wav");
+    let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
@@ -2299,7 +2299,7 @@ fn cleanup_model_real_run_reports_paths() {
     // Las variables HF se vacían porque `models_cache_dir` da prioridad a
     // `AVI_CACHE_DIR` pero, sin ella, un `HF_HUB_CACHE` del entorno de la máquina
     // haría que la raíz se resolviera a otro sitio y la prueba probaría otra cosa.
-    let exclusive = sandbox.join("models-exclusiva");
+    let exclusive = sandbox.join("models-exclusive");
     seed_models(&exclusive);
     let install = sandbox.join("install");
     std::fs::create_dir_all(&install).unwrap();
@@ -2360,7 +2360,7 @@ fn cleanup_model_real_run_reports_paths() {
     );
 
     // ── Caso compartido: `HF_HUB_CACHE` elige la raíz, y R3 manda ────────────────
-    let shared = sandbox.join("hub-compartida");
+    let shared = sandbox.join("hub-shared");
     seed_models(&shared);
     std::fs::create_dir_all(shared.join("models--Qwen--Qwen3-TTS-0.6B")).unwrap();
     std::fs::write(
@@ -2370,7 +2370,7 @@ fn cleanup_model_real_run_reports_paths() {
         b"{}",
     )
     .unwrap();
-    let foreign = shared.join("models--otra--herramienta");
+    let foreign = shared.join("models--other--tool");
     let shared_envs = [
         ("AVI_DATA_DIR", data.to_str().unwrap()),
         ("AVI_INSTALL_DIR", install.to_str().unwrap()),
@@ -2446,7 +2446,7 @@ fn seed_models(root: &std::path::Path) {
     .unwrap();
     std::fs::create_dir_all(root.join(".locks").join("models--x--y")).unwrap();
     std::fs::create_dir_all(root.join("xet")).unwrap();
-    std::fs::create_dir_all(root.join("models--otra--herramienta")).unwrap();
+    std::fs::create_dir_all(root.join("models--other--tool")).unwrap();
 }
 /// `doctor --json` emite **un solo objeto** también cuando falla, con el veredicto
 /// dentro y la salida 1.
@@ -2523,10 +2523,10 @@ fn doctor_repair_collects_leftovers() {
     let install = dir.join("install");
     let parked = install.join(format!("{}9999", avi_lifecycle::PARKED_DIR_PREFIX));
     std::fs::create_dir_all(&parked).expect("plantar aparcado");
-    std::fs::write(parked.join("anterior"), "v1").expect("rellenar aparcado");
+    std::fs::write(parked.join("previous"), "v1").expect("rellenar aparcado");
     let staging = dir.join(format!("{}9999", avi_lifecycle::STAGING_DIR_PREFIX));
     std::fs::create_dir_all(&staging).expect("plantar staging");
-    std::fs::write(staging.join("descargado"), "bundle").expect("rellenar staging");
+    std::fs::write(staging.join("downloaded"), "bundle").expect("rellenar staging");
 
     let (code, _out, _err) = run_text_env(&["doctor", "--repair"], &envs);
     assert!(
@@ -2553,15 +2553,15 @@ fn doctor_repair_collects_leftovers() {
 /// sale 1 con restos, los deja en disco y la pista aparece en stderr.
 #[test]
 fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
-    let (dir, envs) = sandbox_unique_state("doctorpista");
+    let (dir, envs) = sandbox_unique_state("doctorhint");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let install = dir.join("install");
     let parked = install.join(format!("{}8888", avi_lifecycle::PARKED_DIR_PREFIX));
     std::fs::create_dir_all(&parked).expect("plantar aparcado");
-    std::fs::write(parked.join("anterior"), "v1").expect("rellenar aparcado");
+    std::fs::write(parked.join("previous"), "v1").expect("rellenar aparcado");
     let staging = dir.join(format!("{}8888", avi_lifecycle::STAGING_DIR_PREFIX));
     std::fs::create_dir_all(&staging).expect("plantar staging");
-    std::fs::write(staging.join("descargado"), "bundle").expect("rellenar staging");
+    std::fs::write(staging.join("downloaded"), "bundle").expect("rellenar staging");
 
     let (code, _out, err) = run_text_env(&["doctor"], &envs);
     assert_eq!(code, 1, "con restos debe fallar");
@@ -3051,7 +3051,7 @@ mod tts {
             .expect("voces de fábrica inicializadas");
         let a = inst.args();
         let short_text = "Hola mundo";
-        let label = unique_label("golden_corto");
+        let label = unique_label("golden_short");
         // Testigo en directo de `synthesize` (ruta local, sin daemon): ruta local fijada con
         // `--no-daemon` para que ningún daemon en ejecución lo reenrute en
         // silencio. Es el más barato con gate WER.
@@ -3174,7 +3174,7 @@ mod tts {
                 "--text",
                 "Hola",
                 "--voice",
-                "voz_inexistente_xyz",
+                "nonexistent_voice_xyz",
                 "--label",
                 "x",
             ],
@@ -3200,7 +3200,7 @@ mod tts {
         let inst = IsolatedInstance::new("synth_collision");
         seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
         let a = inst.contract_args();
-        let label = unique_label("colision");
+        let label = unique_label("collision");
         let wav_min = {
             let spec = hound::WavSpec {
                 channels: 1,
@@ -3325,7 +3325,7 @@ mod tts {
             "speech",
             "list",
             "--voice",
-            "voz_inexistente_xyz",
+            "nonexistent_voice_xyz",
         ]);
         assert_eq!(
             code, 3,
@@ -3508,7 +3508,7 @@ mod tts {
             "speech",
             "dub",
             "--audio",
-            "no-existe.wav",
+            "missing.wav",
             "--source-language",
             "es-latam",
         ]);
@@ -3527,7 +3527,7 @@ mod tts {
         require_tts_base_model();
         require_tts_binary();
         let _guard = lock_tts();
-        let name = unique_label("clon");
+        let name = unique_label("clone");
         // Testigo en directo de `clone`: ruta local fijada con
         // `--no-daemon` para que la sesión en ejecución no lo reenrute.
         let inst = IsolatedInstance::new("clone_ok");
@@ -3583,7 +3583,7 @@ mod tts {
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let a = inst.contract_args();
-        let name = unique_label("clon");
+        let name = unique_label("clone");
         let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
         let dir = voices.voice_dir(&name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -3639,8 +3639,8 @@ mod tts {
                 dir,
                 "fake_engine",
                 "fn main() {\n\
-                 \x20   println!(\"MARCA_MOTOR_STDOUT\");\n\
-                 \x20   eprintln!(\"MARCA_MOTOR_STDERR\");\n\
+                 \x20   println!(\"ENGINE_MARK_STDOUT\");\n\
+                 \x20   eprintln!(\"ENGINE_MARK_STDERR\");\n\
                  \x20   std::process::exit(1);\n\
                  }\n",
             )
@@ -3651,7 +3651,7 @@ mod tts {
             let path = dir.join("fake_engine.sh");
             std::fs::write(
                 &path,
-                "#!/bin/sh\necho MARCA_MOTOR_STDOUT\necho MARCA_MOTOR_STDERR 1>&2\nexit 1\n",
+                "#!/bin/sh\necho ENGINE_MARK_STDOUT\necho ENGINE_MARK_STDERR 1>&2\nexit 1\n",
             )
             .expect("escribir motor falso");
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
@@ -3674,7 +3674,7 @@ mod tts {
         let engine_path = engine.to_string_lossy().to_string();
         let mut envs = inst.contract_args();
         envs.push(("QWEN3_TTS_BIN", engine_path.as_str()));
-        let name = unique_label("clon");
+        let name = unique_label("clone");
         let output = bin_command()
             .args([
                 "--json",
@@ -3694,7 +3694,7 @@ mod tts {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
         assert_eq!(output.status.code(), Some(1), "{stdout}\n{stderr}");
         assert!(
-            !stdout.contains("MARCA_MOTOR") && !stderr.contains("MARCA_MOTOR"),
+            !stdout.contains("ENGINE_MARK") && !stderr.contains("ENGINE_MARK"),
             "la salida del motor no debe llegar a la terminal:\n{stdout}\n{stderr}"
         );
         let actual: Value = serde_json::from_str(stdout.trim()).expect("stdout JSON");
@@ -3713,7 +3713,7 @@ mod tts {
         assert_eq!(logs.len(), 1, "debe existir un log del motor: {logs:?}");
         let content = std::fs::read_to_string(&logs[0]).unwrap_or_default();
         assert!(
-            content.contains("MARCA_MOTOR_STDOUT") && content.contains("MARCA_MOTOR_STDERR"),
+            content.contains("ENGINE_MARK_STDOUT") && content.contains("ENGINE_MARK_STDERR"),
             "el log debe recoger stdout y stderr del motor: {content:?}"
         );
         let error = actual["error"].as_str().unwrap_or_default();
@@ -3724,8 +3724,8 @@ mod tts {
     }
 
     /// Escribe en `dir` un motor doble que sondea su entrada estándar y anota en
-    /// el fichero de `AVI_FAKE_ENGINE_REPORT` dos líneas: `flag=con|sin` según
-    /// reciba `--watch-stdin` entre sus argumentos, y `stdin=abierto|eof|datos`
+    /// el fichero de `AVI_FAKE_ENGINE_REPORT` dos líneas: `flag=with|without` según
+    /// reciba `--watch-stdin` entre sus argumentos, y `stdin=open|eof|data`
     /// según su entrada siga abierta pasado un plazo corto, devuelva fin de
     /// fichero de inmediato o traiga datos. Sale por sí mismo con código 1: no
     /// bloquea hasta fin de fichero, porque quien lo lanza espera a que termine
@@ -3739,7 +3739,7 @@ mod tts {
                 "use std::io::Read;\n\
                  use std::time::Duration;\n\
                  fn main() {\n\
-                 \x20   let flag = if std::env::args().any(|a| a == \"--watch-stdin\") { \"con\" } else { \"sin\" };\n\
+                 \x20   let flag = if std::env::args().any(|a| a == \"--watch-stdin\") { \"with\" } else { \"without\" };\n\
                  \x20   let (tx, rx) = std::sync::mpsc::channel();\n\
                  \x20   std::thread::spawn(move || {\n\
                  \x20       let mut buf = [0u8; 1];\n\
@@ -3748,8 +3748,8 @@ mod tts {
                  \x20   });\n\
                  \x20   let stdin = match rx.recv_timeout(Duration::from_millis(500)) {\n\
                  \x20       Ok(0) => \"eof\",\n\
-                 \x20       Ok(_) => \"datos\",\n\
-                 \x20       Err(_) => \"abierto\",\n\
+                 \x20       Ok(_) => \"data\",\n\
+                 \x20       Err(_) => \"open\",\n\
                  \x20   };\n\
                  \x20   let report = std::env::var(\"AVI_FAKE_ENGINE_REPORT\").unwrap();\n\
                  \x20   std::fs::write(report, format!(\"flag={flag}\\nstdin={stdin}\\n\")).unwrap();\n\
@@ -3764,14 +3764,14 @@ mod tts {
             std::fs::write(
                 &path,
                 "#!/bin/bash\n\
-                 flag=sin\n\
-                 for a in \"$@\"; do [ \"$a\" = \"--watch-stdin\" ] && flag=con; done\n\
-                 inicio=$(date +%s)\n\
+                 flag=without\n\
+                 for a in \"$@\"; do [ \"$a\" = \"--watch-stdin\" ] && flag=with; done\n\
+                 started=$(date +%s)\n\
                  if read -t 2 -r line; then\n\
-                 \x20 stdin=datos\n\
+                 \x20 stdin=data\n\
                  else\n\
-                 \x20 fin=$(date +%s)\n\
-                 \x20 if [ $((fin - inicio)) -ge 2 ]; then stdin=abierto; else stdin=eof; fi\n\
+                 \x20 ended=$(date +%s)\n\
+                 \x20 if [ $((ended - started)) -ge 2 ]; then stdin=open; else stdin=eof; fi\n\
                  fi\n\
                  printf 'flag=%s\\nstdin=%s\\n' \"$flag\" \"$stdin\" > \"$AVI_FAKE_ENGINE_REPORT\"\n\
                  exit 1\n",
@@ -3801,7 +3801,7 @@ mod tts {
         let mut envs = inst.contract_args();
         envs.push(("QWEN3_TTS_BIN", engine_path.as_str()));
         envs.push(("AVI_FAKE_ENGINE_REPORT", report_path.as_str()));
-        let name = unique_label("clon");
+        let name = unique_label("clone");
         let output = bin_command()
             .args([
                 "--json",
@@ -3827,11 +3827,11 @@ mod tts {
             )
         });
         assert!(
-            content.lines().any(|l| l == "flag=con"),
+            content.lines().any(|l| l == "flag=with"),
             "el clonado debe lanzar el motor con argumentos con --watch-stdin: {content:?}"
         );
         assert!(
-            content.lines().any(|l| l == "stdin=abierto"),
+            content.lines().any(|l| l == "stdin=open"),
             "el clonado debe dejar el stdin del motor abierto mientras corre: {content:?}"
         );
     }
@@ -3883,9 +3883,9 @@ mod tts {
                 "voice",
                 "clone",
                 "--name",
-                "clon_ok",
+                "clone_ok",
                 "--speech-reference",
-                "no-existe.wav",
+                "missing.wav",
             ],
             &a,
         );
@@ -3907,8 +3907,8 @@ mod tts {
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let a = inst.contract_args();
-        let wav = write_truncated_wav("clon_truncado");
-        let name = unique_label("clon");
+        let wav = write_truncated_wav("clone_truncated");
+        let name = unique_label("clone");
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -4041,11 +4041,11 @@ mod tts {
         require_tts_model();
         require_tts_binary();
         let _tts = lock_tts();
-        hit_start_heavy("tts::daemon_restart_rearma");
+        hit_start_heavy("tts::daemon_restart_rewarms");
         // Reaper best-effort en todo `panic!` fuera de los polls.
-        let _reaper = arm_reaper("daemon_restart_rearma");
+        let _reaper = arm_reaper("daemon_restart_rewarms");
         // Instancia aislada propia; base observada en ejecución.
-        let inst = IsolatedInstance::new("restart_rearma");
+        let inst = IsolatedInstance::new("restart_rewarms");
         start_instance_running_only(&inst, &[]);
         let previous = inst.read_daemon_pid();
         let a = inst.args();
@@ -4077,8 +4077,8 @@ mod tts {
         // Status debe seguir running (por evento, sin sleeps fijos, sin exigir warm).
         wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
         // Apagado propio con cero huérfanos verificados a nivel SO.
-        stop_instance(&inst, "daemon_restart_rearma");
-        hit_end("tts::daemon_restart_rearma");
+        stop_instance(&inst, "daemon_restart_rewarms");
+        hit_end("tts::daemon_restart_rewarms");
     }
 
     #[test]
@@ -4239,9 +4239,9 @@ mod tts {
         require_tts_model();
         require_tts_binary();
         let _tts = lock_tts();
-        hit_start_heavy("tts::daemon_start_con_auto_restart");
+        hit_start_heavy("tts::daemon_start_with_auto_restart");
         // Reaper best-effort en todo `panic!` fuera de los polls.
-        let _reaper = arm_reaper("daemon_start_con_auto_restart");
+        let _reaper = arm_reaper("daemon_start_with_auto_restart");
         // Instancia aislada propia; el sandbox nace detenido y vacío.
         let inst = IsolatedInstance::new("start_auto_restart");
         // Start con supervisor habilitado y max 1 (no debe fallar en estado sano).
@@ -4265,7 +4265,7 @@ mod tts {
         );
         // Stop no debe reintentar (graceful): ausencia observada por evento
         // más cero huérfanos a nivel SO.
-        stop_instance(&inst, "daemon_start_con_auto_restart");
+        stop_instance(&inst, "daemon_start_with_auto_restart");
         let a = inst.args();
         let (_, actual2) = run_json_env(&["--json", "daemon", "status"], &a);
         assert_eq!(
@@ -4273,7 +4273,7 @@ mod tts {
             Value::String("stopped".to_string()),
             "tras stop no debe reintentar"
         );
-        hit_end("tts::daemon_start_con_auto_restart");
+        hit_end("tts::daemon_start_with_auto_restart");
     }
 
     /// Sustituye el puerto de la instancia por uno ocupado por un listener
@@ -4421,7 +4421,7 @@ mod tts {
         seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
         seed_decoy_daemon_pidfile(&inst.dir);
         let pidfile_before = std::fs::read(inst.dir.join("daemon.pid")).ok();
-        let voice = format!("warm_inexistente_{}", std::process::id());
+        let voice = format!("warm_nonexistent_{}", std::process::id());
         let t0 = Instant::now();
         let (code, actual) = run_json_env(
             &["--json", "daemon", "start", "--warm-voice", &voice],
@@ -4528,7 +4528,7 @@ mod tts {
             .local_addr()
             .expect("dirección del puerto reservado")
             .port();
-        let fake = serde_json::json!({ "start": "0", "image": "identidad-falsa.exe" });
+        let fake = serde_json::json!({ "start": "0", "image": "fake-identity.exe" });
         let content = serde_json::json!({
             "pid": daemon_pid,
             "addr": format!("127.0.0.1:{port}"),
@@ -4614,9 +4614,9 @@ mod tts {
         // ausente por imagen cuando el PID previo murió; en Windows local ese
         // verde se declara no probatorio (runtime Unix diferido a CI).
         // La ventana spawn→write ya no ciega al handler (PID en memoria).
-        let _reaper = arm_reaper("aborto_simulado");
+        let _reaper = arm_reaper("simulated_abort");
         // Instancia aislada propia; el sandbox nace detenido y vacío.
-        let inst = IsolatedInstance::new("aborto");
+        let inst = IsolatedInstance::new("abort");
         let a = inst.args();
         // Fase 1 — caída del padre: daemon vivo sin pidfile (el dueño anterior
         // murió sin limpiar). El próximo `start` debe reclamar, no adherirse.
@@ -4693,7 +4693,7 @@ mod tts {
         );
         wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
         // Cierre: cero huérfanos verificados a nivel SO.
-        stop_instance(&inst, "aborto_simulado");
+        stop_instance(&inst, "simulated_abort");
         hit_end("tts::simulated_abort_reclaims_and_leaves_no_orphans");
     }
 
@@ -4914,7 +4914,7 @@ mod tts {
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = arm_reaper("translate_delegates_to_daemon");
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
-        let inst = IsolatedInstance::new("translate_delega");
+        let inst = IsolatedInstance::new("translate_delegates");
         start_instance_running_only(&inst, &[]);
         let a = inst.args();
         let (code, actual) = run_json_env(
@@ -5008,10 +5008,10 @@ mod tts {
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = arm_reaper("clone_delegates_to_daemon");
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
-        let inst = IsolatedInstance::new("clone_delega");
+        let inst = IsolatedInstance::new("clone_delegates");
         start_instance(&inst, &[]);
         let a = inst.args();
-        let name = unique_label("clon_daemon");
+        let name = unique_label("clone_daemon");
         // El exit 0 ya no es «éxito inmediato» sino «secuencia completa
         // hasta el evento final» (`started` → latidos → `result` con
         // `precomputed: true` = precarga iniciada). El orden de eventos se
@@ -5059,12 +5059,12 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::clone_daemon_truncated_audio_exits_2");
-        let _reaper = arm_reaper("clone_daemon_truncado");
-        let inst = IsolatedInstance::new("clone_truncado");
+        let _reaper = arm_reaper("clone_daemon_truncated");
+        let inst = IsolatedInstance::new("clone_truncated");
         start_instance(&inst, &[]);
         let a = inst.args();
-        let wav = write_truncated_wav("clon_daemon_truncado");
-        let name = unique_label("clon_daemon");
+        let wav = write_truncated_wav("clone_daemon_truncated");
+        let name = unique_label("clone_daemon");
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -5080,7 +5080,7 @@ mod tts {
         );
         std::fs::remove_file(&wav).ok();
         let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
-        stop_instance(&inst, "clone_daemon_truncado");
+        stop_instance(&inst, "clone_daemon_truncated");
         assert_eq!(code, 2, "referencia truncada por daemon → InvalidInput");
         assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
         hit_end("tts::clone_daemon_truncated_audio_exits_2");
@@ -5154,7 +5154,7 @@ mod tts {
         // best-effort antes de fallar (vía `Drop` ante `panic!`).
         let _reaper = arm_reaper("dub_daemon_with_translation");
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
-        let inst = IsolatedInstance::new("dub_traduccion");
+        let inst = IsolatedInstance::new("dub_translation");
         start_instance(&inst, &[]);
         let a = inst.args();
         // Igual que `dub_daemon_passthrough` — el exit 0 con `dubbed` verifica la secuencia completa.
@@ -5323,10 +5323,10 @@ fn speech_invalid_temperature_exits_2() {
 fn daemon_flag_on_local_commands_exits_2() {
     for args in [
         vec!["voice", "list"],
-        vec!["voice", "remove", "--name", "voz-inexistente"],
+        vec!["voice", "remove", "--name", "nonexistent-voice"],
         vec!["speech", "list"],
-        vec!["speech", "play", "--label", "etiqueta-inexistente"],
-        vec!["speech", "remove", "--label", "etiqueta-inexistente"],
+        vec!["speech", "play", "--label", "nonexistent-label"],
+        vec!["speech", "remove", "--label", "nonexistent-label"],
     ] {
         let mut full = vec!["--json", "--daemon"];
         full.extend(args.iter().copied());
@@ -5344,7 +5344,7 @@ fn daemon_flag_on_local_commands_exits_2() {
 #[test]
 fn speech_dub_without_source_exits_2() {
     let output = bin_command()
-        .args(["speech", "dub", "--audio", "no-existe.wav"])
+        .args(["speech", "dub", "--audio", "missing.wav"])
         .output()
         .expect("el binario debe ejecutarse");
     assert_eq!(
@@ -5654,7 +5654,7 @@ fn milestone_guard_expires_with_diagnostics() {
     );
     milestone("milestone_guard_expires_with_diagnostics: hito previo al guard");
     std::thread::sleep(std::time::Duration::from_millis(120));
-    check_guard("fase-demostracion-guard");
+    check_guard("demonstration-phase-guard");
 }
 
 // ─── Tests de rendimiento dedicados (locales, sin inferencia) ─────────────────
@@ -5869,9 +5869,9 @@ fn daemon_stop_fails_with_still_running_verdict() {
         .expect("dirección del daemon falso")
         .to_string();
     std::thread::spawn(move || {
-        let limite = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(30);
         listener.set_nonblocking(true).ok();
-        while std::time::Instant::now() < limite {
+        while std::time::Instant::now() < limit {
             if let Ok((mut sock, _)) = listener.accept() {
                 let mut buf = [0u8; 1024];
                 let _ = sock.read(&mut buf);
@@ -5883,12 +5883,12 @@ fn daemon_stop_fails_with_still_running_verdict() {
             }
         }
     });
-    let (dir, envs) = sandbox_unique_state("stop-fallo");
+    let (dir, envs) = sandbox_unique_state("stop-failure");
     let dead_pid = u32::MAX - 1;
     // El esquema exige las claves de identidad: sin ellas el pidfile se
     // descarta como ilegible, la parada sería un no-op y este test perdería el
     // veredicto que afirma.
-    let fake = serde_json::json!({ "start": "0", "image": "identidad-falsa.exe" });
+    let fake = serde_json::json!({ "start": "0", "image": "fake-identity.exe" });
     let content = serde_json::json!({
         "pid": dead_pid,
         "addr": addr,
@@ -6084,11 +6084,11 @@ fn unreadable_audio_b64() -> String {
 /// `#[ignore = "requiere … un dispositivo de audio"]`, comprobado con la misma
 /// enumeración que usa `devices`.
 fn require_output_device() {
-    let hay_dispositivo = avi_audio::get_devices_json()
+    let has_output_device = avi_audio::get_devices_json()
         .map(|d| !d.is_empty())
         .unwrap_or(false);
     assert!(
-        hay_dispositivo,
+        has_output_device,
         "esta máquina no expone dispositivo de salida de audio: el envelope de éxito de \
          say/dub es inalcanzable aquí y la prueba no podría demostrar nada"
     );
@@ -6096,7 +6096,7 @@ fn require_output_device() {
 
 /// Rutas con el prefijo dado dentro del temporal del hijo del sandbox.
 fn residue_with_prefix(dir: &std::path::Path, prefix: &str) -> Vec<String> {
-    std::fs::read_dir(dir.join("tmp-hijo"))
+    std::fs::read_dir(dir.join("child-tmp"))
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .map(|e| e.file_name().to_string_lossy().to_string())
@@ -6117,9 +6117,9 @@ fn residue_with_prefix(dir: &std::path::Path, prefix: &str) -> Vec<String> {
 #[test]
 fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
     require_output_device();
-    let (dir, envs) = contract_sandbox("dub-sin-residuo");
+    let (dir, envs) = contract_sandbox("dub-no-residue");
     let body_wav = dir
-        .join("tmp-hijo")
+        .join("child-tmp")
         .join(format!("dub_body_{}.wav", std::process::id()));
     let wav_b64 = silent_wav_b64(&body_wav);
     let fake = FakeDaemon::start(
@@ -6131,7 +6131,7 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
         }),
     );
     fake.publish_in(&dir);
-    let wav = dir.join("entrada_1s.wav");
+    let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
@@ -6188,9 +6188,9 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
             "audio_b64": unreadable_audio_b64(), "voice": "default",
         }),
     );
-    let (dir, envs) = contract_sandbox("dub-repro-fallida");
+    let (dir, envs) = contract_sandbox("dub-playback-failed");
     fake.publish_in(&dir);
-    let wav = dir.join("entrada_1s.wav");
+    let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
@@ -6232,9 +6232,9 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
 #[test]
 fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
     require_output_device();
-    let (dir, envs) = contract_sandbox("say-sin-residuo");
+    let (dir, envs) = contract_sandbox("say-no-residue");
     let body_wav = dir
-        .join("tmp-hijo")
+        .join("child-tmp")
         .join(format!("say_body_{}.wav", std::process::id()));
     let wav_b64 = silent_wav_b64(&body_wav);
     let fake = FakeDaemon::start(
@@ -6278,7 +6278,7 @@ fn say_daemon_playback_failure_leaves_no_residue() {
         200,
         serde_json::json!({ "event": "result", "audio_b64": unreadable_audio_b64() }),
     );
-    let (dir, envs) = contract_sandbox("say-repro-fallida");
+    let (dir, envs) = contract_sandbox("say-playback-failed");
     fake.publish_in(&dir);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(

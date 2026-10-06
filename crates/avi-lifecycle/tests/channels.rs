@@ -54,7 +54,7 @@ fn channels_behave_per_spec() {
     // Homebrew gana porque el Cask no deja recibo —lo gestiona otra herramienta— y porque
     // una copia del Cask ejecutándose dentro de otra instalación sigue siendo de Homebrew:
     // es el prefijo el que manda, no el papel del directorio.
-    let sandbox = Sandbox::new("canales");
+    let sandbox = Sandbox::new("channels");
     sandbox.seed_env();
     let caskroom = sandbox.root.join("opt").join("homebrew").join("Caskroom");
     let cask_exe = caskroom.join("ai-voice-interconnector");
@@ -101,7 +101,7 @@ fn channels_behave_per_spec() {
     // ── `--channel dev` solo cuando el recibo se crea por primera vez ──────────
     // Es la opción oculta, y su regla es lo que hace que una instalación de
     // desarrollo siga siendo `dev` después de una reparación.
-    let dev = Sandbox::new("canal-dev");
+    let dev = Sandbox::new("channel-dev");
     dev.seed_env();
     let exe = dev.write_bundle(&dev.staging);
     let first = runtime
@@ -143,7 +143,7 @@ fn channels_behave_per_spec() {
 
     // ── 2. `homebrew` es `externally_managed` y no toca nada ────────────────────
     // Las dos operaciones que declaran el canal `homebrew` con comando propio.
-    let hb = Sandbox::new("canal-homebrew");
+    let hb = Sandbox::new("channel-homebrew");
     hb.seed_env();
     hb.seed_state();
     let hb_receipt = hb.install_registered(PathIntegration::none());
@@ -224,12 +224,12 @@ fn channels_behave_per_spec() {
     // instalación registrada. La prueba lo monta al revés de lo habitual: el recibo apunta
     // a un directorio y la operación se invoca con `program_dir` de otro sitio, que es lo
     // que pasa cuando el comando corre desde `target/` o desde el bundle extraído a mano.
-    let registered = Sandbox::new("registrado");
+    let registered = Sandbox::new("registered");
     registered.seed_env();
     registered.seed_state();
     let registered_receipt = registered.install_registered(PathIntegration::none());
 
-    let bare = Sandbox::new("al-pie");
+    let bare = Sandbox::new("bare");
     bare.seed_env();
     bare.seed_state();
     bare.install_registered(PathIntegration::none());
@@ -324,7 +324,7 @@ fn env_over_registered<'a>(
 fn update_detects_managed_channels() {
     let _guard = support::exclusively();
 
-    let sandbox = Sandbox::new("canal-update");
+    let sandbox = Sandbox::new("channel-update");
     sandbox.seed_env();
     let script = sandbox.install_registered(PathIntegration::none());
     let cask_exe = sandbox

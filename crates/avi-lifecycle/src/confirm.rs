@@ -249,7 +249,7 @@ mod tests {
     /// inyectado, y en cada celda el prompt que le corresponde.
     #[test]
     fn confirmation_matrix_covers_four_cells() {
-        let dir = scratch("confirm-matriz");
+        let dir = scratch("confirm-matrix");
         let dest = dir.join("ai-voice-interconnector");
         write_file(&dest, "contenido");
         let entries = vec![PlanEntry::of(&dest)];
@@ -370,10 +370,10 @@ mod tests {
     /// código 2, y nada borrado.
     #[test]
     fn destructive_without_tty_and_without_yes_exits_2() {
-        let dir = scratch("confirm-sin-tty");
-        let data = dir.join("datos");
-        let model = dir.join("modelos");
-        write_file(&data.join("voz.wav"), "voz sintetizada");
+        let dir = scratch("confirm-no-tty");
+        let data = dir.join("data");
+        let model = dir.join("models");
+        write_file(&data.join("voice.wav"), "voz sintetizada");
         write_file(&model.join("revision.bin"), &"pesado".repeat(1024));
         let before = snapshot(&dir);
 
@@ -406,7 +406,7 @@ mod tests {
         // preguntarle, y el criterio es exigir `--yes`.
         assert_eq!(snapshot(&dir), before, "no se borra nada sin `--yes`");
         let printed = String::from_utf8(out.clone()).unwrap();
-        assert!(printed.contains("datos"), "el plan se imprime: {printed}");
+        assert!(printed.contains("data"), "el plan se imprime: {printed}");
 
         // Con `--yes` la misma operación procede, y tampoco borra: el borrado lo
         // hace quien ejecuta, después de la decisión.

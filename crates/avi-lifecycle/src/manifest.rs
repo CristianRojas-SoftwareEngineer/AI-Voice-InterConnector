@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn manifest_validation_rejects_incomplete_bundle() {
         let triple = target::host_triple();
-        let dir = complete_bundle("manifest-incompleto", triple);
+        let dir = complete_bundle("manifest-incomplete", triple);
         let section = target_section(triple).unwrap();
         assert_eq!(
             validate_bundle(triple, &dir).unwrap(),
@@ -249,7 +249,7 @@ mod tests {
 
         // Un directorio que no existe es el caso de `target/release` sin bundle
         // alrededor: faltan todas las entradas, y el ejecutable entre ellas.
-        let empty = scratch("manifest-vacio");
+        let empty = scratch("manifest-empty");
         let err = validate_bundle(triple, &empty).unwrap_err();
         assert_eq!(err.reason, "bundle_invalid");
         for relative in &section.required {

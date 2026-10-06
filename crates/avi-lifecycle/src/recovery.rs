@@ -403,20 +403,20 @@ mod tests {
     #[test]
     fn sweep_removes_orphans_and_keeps_the_rest() {
         let dir = scratch("recovery-sweep");
-        let program = dir.join("programa");
+        let program = dir.join("program");
         std::fs::create_dir_all(&program).unwrap();
         let temp_root = dir.join("temp");
         std::fs::create_dir_all(&temp_root).unwrap();
 
         let parked = program.join(format!("{}12345", crate::PARKED_DIR_PREFIX));
-        write_file(&parked.join("viejo"), "v1");
+        write_file(&parked.join("old"), "v1");
         let staging = dir.join(format!("{}999", crate::STAGING_DIR_PREFIX));
-        write_file(&staging.join("descargado"), "bundle");
+        write_file(&staging.join("downloaded"), "bundle");
         let dead_temp = temp_root.join("avi-deferred-4294967000-1780000000000.ps1");
         write_file(&dead_temp, "borrador");
         let live_temp = temp_root.join(format!("avi-deferred-{}.ps1", std::process::id()));
         write_file(&live_temp, "en uso");
-        let our = temp_root.join("lifecycle-test-de-otra-prueba.txt");
+        let our = temp_root.join("lifecycle-test-of-another-test.txt");
         write_file(&our, "ajeno");
         let without_pid = temp_root.join("avi_clone_x_1.qvoice");
         write_file(&without_pid, "audio");
@@ -465,17 +465,17 @@ mod tests {
     #[test]
     fn preview_matches_the_sweep_and_touches_nothing() {
         let dir = scratch("recovery-preview");
-        let program = dir.join("programa");
+        let program = dir.join("program");
         let temp_root = dir.join("temp");
         std::fs::create_dir_all(&temp_root).unwrap();
         let parked = program.join(format!("{}1", crate::PARKED_DIR_PREFIX));
-        write_file(&parked.join("viejo"), "v1");
+        write_file(&parked.join("old"), "v1");
         let staging = dir.join(format!("{}2", crate::STAGING_DIR_PREFIX));
-        write_file(&staging.join("descargado"), "bundle");
+        write_file(&staging.join("downloaded"), "bundle");
         let mine = dir.join(format!("{}3", crate::STAGING_DIR_PREFIX));
-        let orphan = temp_root.join("avi-huerfano.tmp");
+        let orphan = temp_root.join("avi-orphan.tmp");
         write_file(&orphan, "x");
-        let alive = temp_root.join(format!("avi-vivo-{}.tmp", std::process::id()));
+        let alive = temp_root.join(format!("avi-alive-{}.tmp", std::process::id()));
         write_file(&alive, "x");
 
         let roots = Roots {
@@ -517,13 +517,13 @@ mod tests {
     #[test]
     fn staging_in_use_is_not_swept() {
         let dir = scratch("recovery-in-use");
-        let program = dir.join("programa");
+        let program = dir.join("program");
         let temp_root = dir.join("temp");
         std::fs::create_dir_all(&temp_root).unwrap();
-        let mine = dir.join(format!("{}yo", crate::STAGING_DIR_PREFIX));
-        let orphan = dir.join(format!("{}otro", crate::STAGING_DIR_PREFIX));
-        write_file(&mine.join("descargado"), "bundle");
-        write_file(&orphan.join("descargado"), "bundle");
+        let mine = dir.join(format!("{}me", crate::STAGING_DIR_PREFIX));
+        let orphan = dir.join(format!("{}other", crate::STAGING_DIR_PREFIX));
+        write_file(&mine.join("downloaded"), "bundle");
+        write_file(&orphan.join("downloaded"), "bundle");
 
         let outcome = recover(Roots {
             program_dir: &program,
@@ -553,12 +553,12 @@ mod tests {
     fn journal_state_decides_commit_or_rollback() {
         // Confirmado: se completa el commit.
         let dir = scratch("recovery-commit");
-        let program = dir.join("programa");
+        let program = dir.join("program");
         let temp_root = dir.join("temp");
         std::fs::create_dir_all(&temp_root).unwrap();
         let parked = program.join(format!("{}77", crate::PARKED_DIR_PREFIX));
-        write_file(&parked.join("anterior"), "v1");
-        write_file(&program.join("nuevo"), "v2");
+        write_file(&parked.join("previous"), "v1");
+        write_file(&program.join("new"), "v2");
         write_journal(
             &program,
             &Journal {
@@ -566,7 +566,7 @@ mod tests {
                 txid: "77".to_string(),
                 state: JournalState::Committed,
                 parked_dir: Some(parked.clone()),
-                placed: vec!["nuevo".to_string()],
+                placed: vec!["new".to_string()],
                 source_dir: None,
             },
         );
@@ -580,7 +580,7 @@ mod tests {
         assert!(outcome.committed, "el diario confirmado se completa");
         assert!(!outcome.rolled_back);
         assert!(!parked.exists(), "el aparcado se borra en el commit");
-        assert!(program.join("nuevo").is_file(), "lo colocado se conserva");
+        assert!(program.join("new").is_file(), "lo colocado se conserva");
         assert!(
             transaction::read_journal(&program).unwrap().is_none(),
             "el diario desaparece"
@@ -591,17 +591,17 @@ mod tests {
         // Sin confirmar: se revierte y la versión anterior vuelve a ser la
         // operativa, que es lo que promete la recuperación.
         let dir = scratch("recovery-rollback");
-        let program = dir.join("programa");
+        let program = dir.join("program");
         let temp_root = dir.join("temp");
         let staging = dir.join("staging");
         std::fs::create_dir_all(&temp_root).unwrap();
         let parked = program.join(format!("{}88", crate::PARKED_DIR_PREFIX));
-        write_file(&parked.join("anterior"), "v1");
-        write_file(&parked.join("motor"), "motor v1");
+        write_file(&parked.join("previous"), "v1");
+        write_file(&parked.join("engine"), "motor v1");
         // Mitad colocada: el ejecutable nuevo ya está en el programa, el motor
         // sigue en el origen.
-        write_file(&program.join("ejecutable"), "v2");
-        write_file(&staging.join("motor"), "motor v2");
+        write_file(&program.join("executable"), "v2");
+        write_file(&staging.join("engine"), "motor v2");
         write_journal(
             &program,
             &Journal {
@@ -609,7 +609,7 @@ mod tests {
                 txid: "88".to_string(),
                 state: JournalState::Placed,
                 parked_dir: Some(parked.clone()),
-                placed: vec!["ejecutable".to_string(), "motor".to_string()],
+                placed: vec!["executable".to_string(), "engine".to_string()],
                 source_dir: Some(staging.clone()),
             },
         );
@@ -623,21 +623,21 @@ mod tests {
         assert!(outcome.rolled_back, "el diario sin confirmar se revierte");
         assert!(!outcome.committed);
         assert_eq!(
-            std::fs::read_to_string(program.join("anterior")).unwrap(),
+            std::fs::read_to_string(program.join("previous")).unwrap(),
             "v1",
             "la versión anterior vuelve al sitio"
         );
         assert_eq!(
-            std::fs::read_to_string(program.join("motor")).unwrap(),
+            std::fs::read_to_string(program.join("engine")).unwrap(),
             "motor v1",
             "su motor también, y por fusión de árboles"
         );
         assert!(
-            !program.join("ejecutable").exists(),
+            !program.join("executable").exists(),
             "lo colocado se retira del directorio de programa"
         );
         assert_eq!(
-            std::fs::read_to_string(staging.join("ejecutable")).unwrap(),
+            std::fs::read_to_string(staging.join("executable")).unwrap(),
             "v2",
             "y vuelve al origen, que es de donde la colocación lo movió"
         );

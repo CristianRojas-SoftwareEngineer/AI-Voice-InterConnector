@@ -300,7 +300,7 @@ fn criterion_2_final_summary_reports_the_path_state_once() {
     let runtime = support::runtime();
 
     // ── Estado 1: esta pasada **reescribió** el `PATH` ────────────────────────────
-    let sandbox = Sandbox::new("c2-path-nuevo");
+    let sandbox = Sandbox::new("c2-path-new");
     sandbox.seed_env();
     let exe = sandbox.write_bundle(&sandbox.staging);
     let first = runtime
@@ -361,7 +361,7 @@ fn criterion_2_final_summary_reports_the_path_state_once() {
     );
 
     // ── Estado 3: `--no-modify-path`, donde el plan **es** el estado ──────────────
-    let s = Sandbox::new("c2-path-sin-path");
+    let s = Sandbox::new("c2-path-no-path");
     s.seed_env();
     let exe = s.write_bundle(&s.staging);
     let without_path = runtime
@@ -402,7 +402,7 @@ fn criterion_2_final_summary_reports_the_path_state_once() {
 #[test]
 fn criterion_6_no_setup_provisions_nothing() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c6-sin-setup");
+    let sandbox = Sandbox::new("c6-no-setup");
     sandbox.seed_env();
 
     // No vacuidad: hay modelos que provisionar si se pidiera.
@@ -483,7 +483,7 @@ fn criterion_6_no_setup_provisions_nothing() {
 #[test]
 fn criterion_6_setup_failure_keeps_install() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c6-fallo");
+    let sandbox = Sandbox::new("c6-failure");
     sandbox.seed_env();
     provision_selection(&sandbox);
 
@@ -1034,7 +1034,7 @@ fn criterion_19_no_tty_without_yes_refuses() {
         "criterio 19: el estado de usuario sigue"
     );
     assert!(
-        support::exists(&sandbox.models_dir.join("models--otra--herramienta")),
+        support::exists(&sandbox.models_dir.join("models--other--tool")),
         "criterio 19: los modelos siguen"
     );
 }
@@ -1345,7 +1345,7 @@ fn criterion_21_uninstall_is_idempotent() {
     // El arnés **no** crea la raíz de datos ni la de modelos: en un sistema donde nunca
     // se instaló, esas raíces no existen, y es su ausencia la que hace que el desenlace
     // sea `not_installed` y no una desinstalación vacía.
-    let clean = Sandbox::new("c21-limpio");
+    let clean = Sandbox::new("c21-clean");
     clean.seed_env();
     assert!(!support::exists(&clean.program_dir));
     let uninstalled = runtime
@@ -1414,7 +1414,7 @@ fn criterion_22_cleanup_scope_and_usage_error() {
 
     // ── Cada categoría, en su sandbox ──────────────────────────────────────────
     // `--model`: la raíz de modelos entera (D3) y nada del estado.
-    let s = Sandbox::new("c22-modelo");
+    let s = Sandbox::new("c22-model");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1444,7 +1444,7 @@ fn criterion_22_cleanup_scope_and_usage_error() {
     );
 
     // `--voices`: las voces de usuario y el arrastre de su habla.
-    let s = Sandbox::new("c22-voces");
+    let s = Sandbox::new("c22-voices");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1482,7 +1482,7 @@ fn criterion_22_cleanup_scope_and_usage_error() {
     );
 
     // `--synthetic-speech`: la raíz de habla entera, `default` incluida.
-    let s = Sandbox::new("c22-habla");
+    let s = Sandbox::new("c22-speech");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1508,7 +1508,7 @@ fn criterion_22_cleanup_scope_and_usage_error() {
     );
 
     // `--all`: la unión más configuración, logs y estado del daemon; nunca el programa.
-    let s = Sandbox::new("c22-todo");
+    let s = Sandbox::new("c22-all");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1596,11 +1596,11 @@ fn criterion_23_shared_resources_survive() {
         .models_dir
         .join(".locks")
         .join(support::repo_dir(&repo));
-    let foreign = sandbox.models_dir.join("models--otra--herramienta");
+    let foreign = sandbox.models_dir.join("models--other--tool");
     let foreign_lock = sandbox
         .models_dir
         .join(".locks")
-        .join("models--otra--herramienta");
+        .join("models--other--tool");
     let xet = sandbox.models_dir.join("xet");
     let locks = sandbox.models_dir.join(".locks");
     let cargo = sandbox.home.join(".cargo");
@@ -1703,7 +1703,7 @@ fn criterion_23_shared_resources_survive() {
         "criterio 23, caso 6: el repo de otra herramienta sobrevive"
     );
     assert_eq!(
-        std::fs::read_to_string(foreign.join("otro.safetensors")).ok(),
+        std::fs::read_to_string(foreign.join("other.safetensors")).ok(),
         Some("ajeno".to_string()),
         "criterio 23, caso 6: con su contenido intacto"
     );
@@ -1749,7 +1749,7 @@ fn criterion_23_shared_resources_survive() {
         ))
         .expect("criterio 23, caso 8: `cleanup --all` se ejecuta");
     assert!(
-        support::exists(&s.models_dir.join("models--otra--herramienta")),
+        support::exists(&s.models_dir.join("models--other--tool")),
         "criterio 23, caso 8: `--all` no borra el repo ajeno"
     );
     assert!(
@@ -1799,7 +1799,7 @@ fn criterion_23_shared_resources_survive() {
         "criterio 23, caso 9: y la raíz de datos, que es exclusiva"
     );
     for shared in [
-        s.models_dir.join("models--otra--herramienta"),
+        s.models_dir.join("models--other--tool"),
         s.models_dir.join("xet"),
         s.models_dir.join(".locks"),
         s.models_dir.clone(),
@@ -1844,12 +1844,12 @@ fn criterion_23_shared_resources_survive() {
     );
     for shared in [
         s.models_dir
-            .join("models--otra--herramienta")
-            .join("otro.safetensors"),
+            .join("models--other--tool")
+            .join("other.safetensors"),
         s.models_dir.join("xet").join("shard"),
         s.models_dir
             .join(".locks")
-            .join("models--otra--herramienta")
+            .join("models--other--tool")
             .join("lock"),
     ] {
         assert!(
@@ -1866,7 +1866,7 @@ fn criterion_23_shared_resources_survive() {
     );
 
     // ── El contraste: con raíz exclusiva, `xet` y `.locks` sí son nuestros ──────
-    let s = Sandbox::new("c23-exclusiva");
+    let s = Sandbox::new("c23-exclusive");
     s.seed_env();
     s.seed_state();
     assert!(
@@ -1907,7 +1907,7 @@ fn criterion_23_shared_resources_survive() {
 #[test]
 fn uninstall_dry_run_needs_no_confirmation() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("simulacro-sin-confirmacion");
+    let sandbox = Sandbox::new("dry-run-without-confirmation");
     sandbox.seed_env();
     sandbox.seed_state();
     let receipt = sandbox.install_registered(PathIntegration::none());
@@ -1999,7 +1999,7 @@ fn uninstall_dry_run_needs_no_confirmation() {
 #[test]
 fn uninstall_path_reverted_matches_the_real_run() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("reversion-con-bloque");
+    let sandbox = Sandbox::new("revert-with-block");
     sandbox.seed_env();
     sandbox.seed_state();
     let receipt = sandbox.install_registered(PathIntegration::none());
@@ -2020,7 +2020,7 @@ fn uninstall_path_reverted_matches_the_real_run() {
         let mut integration = with_block.path_integration.clone();
         // El recibo sigue diciendo que integró el `PATH`, pero ya no queda el bloque: es el
         // caso en que la marca dice una cosa y el disco otra.
-        integration.profile_blocks = Some(vec![sandbox.home.join("nunca-existio")]);
+        integration.profile_blocks = Some(vec![sandbox.home.join("never-existed")]);
         let mut copy = with_block.clone();
         copy.path_integration = integration;
         copy
@@ -2076,7 +2076,7 @@ fn uninstall_path_reverted_matches_the_real_run() {
     );
 
     // Y en la dirección contraria, sin nada que revertir: los dos dicen `false`.
-    let sandbox = Sandbox::new("reversion-sin-bloque");
+    let sandbox = Sandbox::new("revert-without-block");
     sandbox.seed_env();
     sandbox.seed_state();
     let bare = sandbox.install_registered(PathIntegration::none());
@@ -2134,7 +2134,7 @@ fn uninstall_path_reverted_matches_the_real_run() {
 #[test]
 fn uninstall_plan_does_not_promise_what_r2_refuses() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("programa-rechazado-por-r2");
+    let sandbox = Sandbox::new("program-rejected-by-r2");
     sandbox.seed_env();
     sandbox.seed_state();
     let program_dir = sandbox.home.clone();
@@ -2249,7 +2249,7 @@ fn uninstall_plan_does_not_promise_what_r2_refuses() {
 #[test]
 fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
     let _guard = support::exclusively();
-    let sandbox = Sandbox::new("programa-dentro-de-raiz");
+    let sandbox = Sandbox::new("program-inside-root");
     sandbox.seed_env();
     sandbox.seed_state();
     // Directorio de programa dentro de la raíz de datos: R2 lo rechaza porque

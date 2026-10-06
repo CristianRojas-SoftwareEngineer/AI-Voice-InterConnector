@@ -381,7 +381,7 @@ fn criterion_13_daemon_stops_before_replacement() {
     // Ejecutable en uso: el borrado directo falla y queda a diferido, sin que el
     // `update` falle por ello.
     let staging = update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0");
-    support::write(&staging.join("paquete.bin"), "staging en uso");
+    support::write(&staging.join("package.bin"), "staging en uso");
     assert_eq!(
         update::cleanup_staging(&staging, &Busy),
         update::StagingCleanup::Scheduled,
@@ -448,7 +448,7 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let script = sandbox.temp_root.join("hijo-c14.sh");
+        let script = sandbox.temp_root.join("child-c14.sh");
         support::write(&script, "#!/bin/sh\nexit 0\n");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
             .expect("criterio 14: el hijo se hace ejecutable");
@@ -477,7 +477,7 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
     // La siguiente operación recupera: el staging huérfano se barre y la
     // instalación de la 0.24.0 se completa sin residuo pendiente.
     let orphan = update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0");
-    support::write(&orphan.join("paquete.bin"), "staging huérfano");
+    support::write(&orphan.join("package.bin"), "staging huérfano");
     let outcome = recovery::recover(recovery::Roots {
         program_dir: &sandbox.program_dir,
         temp_root: &sandbox.temp_root,
@@ -514,7 +514,7 @@ fn criterion_14_fault_injection_is_inert_without_the_feature() {
 
     let _guard = support::exclusively();
     let runtime = support::runtime();
-    let sandbox = Sandbox::new("c14-inerte");
+    let sandbox = Sandbox::new("c14-inert");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
 
@@ -710,17 +710,17 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
         .join(support::repo_dir(pin.repo))
         .join("snapshots");
     support::write(
-        &snapshots.join(pin.revision).join("pesos.bin"),
+        &snapshots.join(pin.revision).join("weights.bin"),
         "pin vigente",
     );
     support::write(
-        &snapshots.join("obsoleta-0000").join("pesos.bin"),
+        &snapshots.join("obsolete-0000").join("weights.bin"),
         "revisión vieja",
     );
     let outcome = setup::prune_obsolete_at(&sandbox.models_dir);
     assert_eq!(
         outcome.removed,
-        vec![format!("{}/snapshots/obsoleta-0000", pin.name)],
+        vec![format!("{}/snapshots/obsolete-0000", pin.name)],
         "criterio 16: la poda elimina solo la revisión obsoleta"
     );
     assert!(
@@ -734,18 +734,18 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
 
     // En la raíz compartida la poda procede igual y R3 se respeta: `xet`, los
     // locks y el repo ajeno siguen intactos.
-    let shared = Sandbox::new_with("c16-compartida", Models::Shared);
+    let shared = Sandbox::new_with("c16-shared", Models::Shared);
     shared.seed_env();
     let snapshots = shared
         .models_dir
         .join(support::repo_dir(pin.repo))
         .join("snapshots");
     support::write(
-        &snapshots.join(pin.revision).join("pesos.bin"),
+        &snapshots.join(pin.revision).join("weights.bin"),
         "pin vigente",
     );
     support::write(
-        &snapshots.join("obsoleta-0000").join("pesos.bin"),
+        &snapshots.join("obsolete-0000").join("weights.bin"),
         "revisión vieja",
     );
     support::write(&shared.models_dir.join("xet").join("shard"), "xet");
@@ -760,22 +760,22 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
     support::write(
         &shared
             .models_dir
-            .join("models--otra--herramienta")
-            .join("otro.safetensors"),
+            .join("models--other--tool")
+            .join("other.safetensors"),
         "ajeno",
     );
     let outcome = setup::prune_obsolete_at(&shared.models_dir);
     assert_eq!(
         outcome.removed,
-        vec![format!("{}/snapshots/obsoleta-0000", pin.name)],
+        vec![format!("{}/snapshots/obsolete-0000", pin.name)],
         "criterio 16: en compartida también poda lo obsoleto propio"
     );
     for kept in [
         shared.models_dir.join("xet").join("shard"),
         shared
             .models_dir
-            .join("models--otra--herramienta")
-            .join("otro.safetensors"),
+            .join("models--other--tool")
+            .join("other.safetensors"),
     ] {
         assert!(
             kept.is_file(),
@@ -817,7 +817,7 @@ fn plant_snapshot(sandbox: &Sandbox, name: &str) {
 fn criterion_update_checksum_mismatch_cleans_staging() {
     let _guard = support::exclusively();
     let runtime = support::runtime();
-    let sandbox = Sandbox::new("cuid-suma");
+    let sandbox = Sandbox::new("cuid-sum");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
     let before = sandbox.program_content();
@@ -875,7 +875,7 @@ fn criterion_update_no_terminal_refuses_destructive() {
         return;
     }
 
-    let sandbox = Sandbox::new("cuid-sinterminal");
+    let sandbox = Sandbox::new("cuid-no-terminal");
     let output =
         support::run_without_terminal("criterion_update_no_terminal_refuses_destructive", &sandbox);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();

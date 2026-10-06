@@ -1529,7 +1529,7 @@ mod tests {
             Path::new("qwen_tts.exe"),
             Path::new("md"),
             8766,
-            Some(Path::new("voz.qvoice")),
+            Some(Path::new("voice.qvoice")),
         );
         assert_eq!(program, PathBuf::from("qwen_tts.exe"));
         assert_eq!(
@@ -1547,7 +1547,7 @@ mod tests {
                 "--stream",
                 "--watch-stdin",
                 "--load-voice",
-                "voz.qvoice",
+                "voice.qvoice",
                 "--icl-only",
             ]
         );
@@ -1860,7 +1860,7 @@ fn main() {
         assert!(!obj.contains_key("rate"));
         assert!(!obj.contains_key("emotion"));
 
-        let cloned = VoiceEngine::Cloned(PathBuf::from("voz.qvoice"));
+        let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
         let body = build_tts_body("Hola", &cloned, &GenerationOptions::default(), None, None);
         let obj = body.as_object().expect("body debe ser objeto");
         assert!(!obj.contains_key("speaker"), "voz clonada omite speaker");
@@ -1894,10 +1894,10 @@ fn main() {
             resolve_voice_engine("default", None),
             VoiceEngine::Preset("default".to_string())
         );
-        let q = std::env::temp_dir().join("avi_tts_test_referencia.qvoice");
+        let q = std::env::temp_dir().join("avi_tts_test_reference.qvoice");
         std::fs::write(&q, b"QVCE").unwrap();
         assert_eq!(
-            resolve_voice_engine("mi_voz", Some(&q)),
+            resolve_voice_engine("my_voice", Some(&q)),
             VoiceEngine::Cloned(q.clone())
         );
         // Sin referencia → preset con el nombre dado.

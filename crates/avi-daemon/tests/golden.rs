@@ -517,7 +517,7 @@ async fn voices_clone_oversized_body_reports_invalid_name_not_413() {
     let (status, bytes) = send(post_json(
         "/voices/clone",
         serde_json::json!({
-            "name": "../invalida",
+            "name": "../invalid",
             "audio_b64": base64::engine::general_purpose::STANDARD.encode(&oversized),
         }),
     ))
@@ -545,7 +545,7 @@ async fn voices_clone_reference_over_limit_is_audio_too_long() {
         post_json(
             "/voices/clone",
             serde_json::json!({
-                "name": "referencia_larga",
+                "name": "long_reference",
                 "force": true,
                 "audio_b64": base64::engine::general_purpose::STANDARD.encode(silent_wav(31)),
             }),
@@ -577,7 +577,7 @@ async fn voices_clone_daemon_precomputed_true() {
     let wav = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../avi-stt/tests/assets/parakeet_sample_16k.wav");
     let audio_bytes = std::fs::read(&wav).expect("el WAV de muestra debe leerse");
-    let name = format!("clon_warm_{}", std::process::id());
+    let name = format!("clone_warm_{}", std::process::id());
     let (status, bytes) = send_to(
         clone_state(),
         post_json(
@@ -678,7 +678,7 @@ async fn voices_clone_truncated_wav_emits_invalid_audio() {
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&3200u32.to_le_bytes());
     wav.extend_from_slice(&[0u8; 1000]);
-    let name = format!("clon_truncado_{}", std::process::id());
+    let name = format!("clone_truncated_{}", std::process::id());
     let (status, bytes) = send(post_json(
         "/voices/clone",
         serde_json::json!({
@@ -708,7 +708,7 @@ async fn voices_clone_truncated_wav_emits_invalid_audio() {
 async fn warm_voice_fail_fast_and_acceptance() {
     // Fail-fast: voz inexistente → Err antes del bind.
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
-    let nonexistent_voice = format!("warm_inexistente_{}", std::process::id());
+    let nonexistent_voice = format!("warm_nonexistent_{}", std::process::id());
     let tmp = std::env::temp_dir().join(format!("avi_golden_warm_missing_{}", std::process::id()));
     let res = avi_daemon::run_daemon_server(
         addr,
@@ -1031,7 +1031,7 @@ fn hold_tts_connection() -> HeldTts {
 fn state_with_held_tts(tts_port: u16, dir_prefix: &str) -> Arc<DaemonState> {
     prepare_shared_env();
     let mut state = contract_state(dir_prefix);
-    let missing = std::env::temp_dir().join("avi_golden_motor_inexistente");
+    let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
     state.tts_engine.binary_path = Some(missing.clone());
     state.tts_engine.model_dir = Some(missing);
     state.tts_engine.server_url = Some(format!("http://127.0.0.1:{tts_port}"));

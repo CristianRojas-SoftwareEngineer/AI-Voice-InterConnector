@@ -1031,7 +1031,7 @@ mod tests {
     /// modelos de traducción ya convertidos, sin ejecutar `setup`.
     #[test]
     fn install_provision_downloads_translation_from_empty_store() {
-        let (_guard, root) = setup::tests::cache_relocated("install-provision-vacio");
+        let (_guard, root) = setup::tests::cache_relocated("install-provision-empty");
         std::env::set_var("AVI_DATA_DIR", root.join("data"));
         let options = Options::unattended();
         let plan = setup::pending(&avi_store::ModelStore::new(), &setup_options(&options));
@@ -1209,7 +1209,7 @@ mod tests {
         );
 
         let mut without_source = env.clone();
-        without_source.source = Some("https://otro.invalid/bundle.tar.gz".to_string());
+        without_source.source = Some("https://other.invalid/bundle.tar.gz".to_string());
         assert_eq!(
             source_of(&without_source, Some(&previous)),
             previous.source,
