@@ -205,13 +205,18 @@ pub async fn verify_boot(
 ) -> Result<(), LifecycleError> {
     let section = manifest::target_section(triple)?;
     let exe = staging.join(section.executable_path());
-    // El contrato del lanzamiento restringido ata stdout y stderr a un único
-    // fichero: el `--version` se captura en ese fichero temporal (stdout y
-    // stderr juntos), que se lee y se borra al salir.
+    // El `--version` se captura en un único fichero temporal (stdout y stderr
+    // juntos, por clon del mismo fichero), que se lee y se borra al salir.
     let log_path = staging.join("verify-boot.log");
     let log_file = std::fs::File::create(&log_path).map_err(|e| {
         LifecycleError::binary_incompatible(format!(
             "no se pudo crear el registro de `--version` ({}): {e}",
+            log_path.display()
+        ))
+    })?;
+    let log_clone = log_file.try_clone().map_err(|e| {
+        LifecycleError::binary_incompatible(format!(
+            "no se pudo clonar el registro de `--version` ({}): {e}",
             log_path.display()
         ))
     })?;
@@ -221,7 +226,8 @@ pub async fn verify_boot(
             program: exe_for_spawn,
             args: vec!["--version".to_string()],
             stdin: StdinSpec::Null,
-            log_file,
+            stdout_file: log_file,
+            stderr_file: log_clone,
             creation_flags: 0,
             extra_allowed: Vec::new(),
         })

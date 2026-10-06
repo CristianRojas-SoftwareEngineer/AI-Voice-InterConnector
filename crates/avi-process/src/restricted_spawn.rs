@@ -40,8 +40,10 @@ pub struct RestrictedSpawnRequest {
     pub args: Vec<String>,
     /// Entrada estándar del hijo.
     pub stdin: StdinSpec,
-    /// Fichero de registro para stdout y stderr del hijo.
-    pub log_file: std::fs::File,
+    /// Fichero al que apunta el stdout del hijo.
+    pub stdout_file: std::fs::File,
+    /// Fichero al que apunta el stderr del hijo.
+    pub stderr_file: std::fs::File,
     /// Flags de creación de Windows (`CREATE_NO_WINDOW`, etc.). En Unix se
     /// ignoran.
     pub creation_flags: u32,
@@ -281,9 +283,8 @@ fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<Rest
             cmd.stdin(Stdio::inherit());
         }
     }
-    let stdout = request.log_file.try_clone()?;
-    cmd.stdout(Stdio::from(stdout));
-    cmd.stderr(Stdio::from(request.log_file));
+    cmd.stdout(Stdio::from(request.stdout_file));
+    cmd.stderr(Stdio::from(request.stderr_file));
     // SAFETY: `pre_exec` corre en el hijo recién bifurcado, antes del `exec`;
     // `setsid` es seguro en ese punto (llamada de sistema sin memoria
     // compartida ni asignaciones). Un fallo de `setsid` aborta el lanzamiento
@@ -327,12 +328,14 @@ fn spawn_with_allowlist_windows(request: RestrictedSpawnRequest) -> io::Result<R
     marked.push(stdin_handle);
     inherit_guards.push(InheritFlagGuard::new(stdin_handle));
 
-    let stdout_handle = raw_handle_of(&request.log_file);
+    let stdout_handle = raw_handle_of(&request.stdout_file);
     mark_inheritable(stdout_handle);
     marked.push(stdout_handle);
     inherit_guards.push(InheritFlagGuard::new(stdout_handle));
-    // stdout y stderr comparten el mismo fichero de registro.
-    let stderr_handle = stdout_handle;
+    let stderr_handle = raw_handle_of(&request.stderr_file);
+    mark_inheritable(stderr_handle);
+    marked.push(stderr_handle);
+    inherit_guards.push(InheritFlagGuard::new(stderr_handle));
 
     for extra in &request.extra_allowed {
         mark_inheritable(*extra);

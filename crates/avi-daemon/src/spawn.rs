@@ -61,7 +61,8 @@ pub fn spawn_background(
             program: exe,
             args,
             stdin: avi_process::StdinSpec::Null,
-            log_file: log,
+            stderr_file: log.try_clone()?,
+            stdout_file: log,
             creation_flags: avi_process::CREATE_NO_WINDOW | avi_process::CREATE_NEW_PROCESS_GROUP,
             extra_allowed: Vec::new(),
         };
@@ -74,7 +75,8 @@ pub fn spawn_background(
             program: exe,
             args,
             stdin: avi_process::StdinSpec::Null,
-            log_file: log,
+            stderr_file: log.try_clone()?,
+            stdout_file: log,
             creation_flags: 0,
             extra_allowed: Vec::new(),
         };
@@ -172,7 +174,8 @@ mod tests {
             program: std::path::PathBuf::from("sleep"),
             args: vec![String::from("30")],
             stdin: avi_process::StdinSpec::Null,
-            log_file,
+            stderr_file: log_file.try_clone().expect("debe clonar el registro"),
+            stdout_file: log_file,
             creation_flags: 0,
             extra_allowed: Vec::new(),
         };

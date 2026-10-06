@@ -139,7 +139,8 @@ public static class Probe {
         program: PathBuf::from("powershell"),
         args: vec![String::from("-NoProfile"), String::from("-Command"), script],
         stdin: avi_process::StdinSpec::Null,
-        log_file,
+        stderr_file: log_file.try_clone().expect("debe clonar el registro"),
+        stdout_file: log_file,
         creation_flags: 0,
         extra_allowed: Vec::new(),
     };
@@ -203,7 +204,8 @@ fn spawn(
         program: program.to_path_buf(),
         args,
         stdin: avi_process::StdinSpec::Null,
-        log_file,
+        stderr_file: log_file.try_clone().expect("debe clonar el registro"),
+        stdout_file: log_file,
         creation_flags: 0,
         extra_allowed: Vec::new(),
     };

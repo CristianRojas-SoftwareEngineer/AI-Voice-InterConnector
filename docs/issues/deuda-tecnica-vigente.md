@@ -34,7 +34,6 @@ retrocompatibilidad y fallbacks.
 - [1. Introducción y contexto](#1-introducción-y-contexto)
 - [Tabla de contenidos](#tabla-de-contenidos)
 - [2. Hallazgos con solución estructural trivial](#2-hallazgos-con-solución-estructural-trivial)
-  - [H1 — stderr fusionado en handover](#h1--stderr-fusionado-en-handover)
   - [H2 — Dos pruebas sin puerta require](#h2--dos-pruebas-sin-puerta-require)
   - [H6 — Avisos por stop](#h6--avisos-por-stop)
   - [H7 y H11 — Control positivo común](#h7-y-h11--control-positivo-común)
@@ -59,46 +58,6 @@ retrocompatibilidad y fallbacks.
   - [Allows y matices de código muerto](#allows-y-matices-de-código-muerto)
 
 ## 2. Hallazgos con solución estructural trivial
-
-### H1 — stderr fusionado en handover
-
-El plan exige "los tres extremos, por extremo" (plan:166); el código ata
-ambos al mismo fichero en Windows (`crates/avi-process/src/restricted_spawn.rs:330-335`,
-`stderr_handle = stdout_handle`) y en Unix (`:284-286`, `try_clone` del único
-`log_file` para stdout), y lo confiesa en `crates/avi-lifecycle/src/update.rs:158-166`
-("equivalente a `2>&1`"). `RestrictedSpawnRequest` (`:35-51`) no puede expresar
-salidas separadas. Cambio funcional silencioso en `self update` (antes heredaba
-los tres por separado por vía clásica, plan:162). **Categoría 1.
-VERIFICADO.** Objetivo incumplido: T6-objetivos (plan:166).
-
-**Solución.** Sustituir `log_file` por dos campos, `stdout_file` y `stderr_file`
-(sin conservar `log_file`: ni shims ni alias). El threading ya existe
-(`launch_process_with_list` recibe los tres handles por separado, `:344-351`);
-solo el *tipo* los fusiona. En Unix, `cmd.stdout`/`cmd.stderr` consumen un campo
-cada uno y el `try_clone` de `:284` desaparece de esa rama; en Windows,
-`stderr_handle` se lee de `stderr_file` y ambos handles entran en `marked`.
-Los 11 literales los guía el compilador: 6 de producción (`spawn.rs:60/:73`,
-`avi-tts/src/lib.rs:983/:1125`, `update.rs:125`, `update_fetch.rs:220`) y 5 de
-prueba (`spawn.rs:171`, `avi-tts/src/lib.rs:2243/:2272`,
-`avi-process/tests/restricted_spawn.rs:138/:202`). Barrido verificado: 11
-construcciones + 1 definición en todo `*.rs`; nada en `main.rs`, `xtask`,
-`tests/` ni benches. La fusión pasa de restricción oculta a decisión explícita
-por sitio:
-
-- Comparten destino con `try_clone()` (no el mismo handle dos veces): los dos
-  sitios de `spawn_background` (conserva su firma de un solo `log: File`,
-  `spawn.rs:31-37`; rellena el segundo campo en sus dos ramas, `:60-67` y
-  `:73-80`), los dos de producción de `avi-tts` y los 5 de prueba.
-  `verify_boot` (`update_fetch.rs:220`) captura `--version` en un único fichero
-  a propósito (se lee y se borra), así que pasa el fichero y su clon; su
-  comentario `:209-212` ("ata stdout y stderr a un único fichero") se reescribe.
-- `handover` es el único que NO comparte: restituye la herencia por extremo.
-  `inherited_stdio_file` (`update.rs:167`) pasa a recibir el extremo —`dup(1)`/
-  `dup(2)` en Unix; en Windows el handle de `stdout()`/`stderr()` duplicado
-  heredable— y se llama dos veces; se corrigen su doc (`:158-166`), el comentario
-  del lanzamiento en `handover` ("stdout y stderr del hijo apuntan a ese
-  fichero") y los mensajes "del stdout del traspaso".
-- `deferred` no usa el struct (lanza directo con `launch_cleaner`): queda fuera.
 
 ### H2 — Dos pruebas sin puerta require
 

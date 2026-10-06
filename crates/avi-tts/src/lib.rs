@@ -984,7 +984,8 @@ pub fn clone_voice(
             program: bin.clone(),
             args,
             stdin: avi_process::StdinSpec::Piped,
-            log_file,
+            stderr_file: log_file.try_clone()?,
+            stdout_file: log_file,
             creation_flags,
             extra_allowed: Vec::new(),
         };
@@ -1126,7 +1127,8 @@ pub mod resident {
                 program,
                 args,
                 stdin: avi_process::StdinSpec::Piped,
-                log_file,
+                stderr_file: log_file.try_clone()?,
+                stdout_file: log_file,
                 creation_flags,
                 extra_allowed: Vec::new(),
             };
@@ -2244,7 +2246,8 @@ fn main() {
             program,
             args,
             stdin: avi_process::StdinSpec::Null,
-            log_file,
+            stderr_file: log_file.try_clone().expect("clon del log durmiente"),
+            stdout_file: log_file,
             creation_flags: 0,
             extra_allowed: Vec::new(),
         };
@@ -2273,7 +2276,8 @@ fn main() {
             program,
             args,
             stdin: avi_process::StdinSpec::Null,
-            log_file,
+            stderr_file: log_file.try_clone().expect("clon del log saliente"),
+            stdout_file: log_file,
             creation_flags: 0,
             extra_allowed: Vec::new(),
         };

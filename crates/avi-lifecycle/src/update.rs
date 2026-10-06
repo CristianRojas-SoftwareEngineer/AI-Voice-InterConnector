@@ -118,15 +118,18 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
         // aparcado: este proceso, cuya imagen retiene los ficheros aparcados.
         std::env::set_var(HANDOVER_PARENT_PID_ENV, std::process::id().to_string());
         // stdio heredado de la consola del invocador, declarado en la
-        // allowlist: entrada por `StdinSpec::Inherit` y salida por el fichero
-        // que envuelve el extremo del padre (duplicado propio).
-        let stdio = inherited_stdio_file();
+        // allowlist: entrada por `StdinSpec::Inherit` y cada salida por el
+        // fichero que envuelve su propio extremo del padre (duplicado propio),
+        // de modo que stdout y stderr del hijo no se fusionan.
+        let stdio = inherited_stdio_file(StdioEnd::Stdout)
+            .and_then(|out| Ok((out, inherited_stdio_file(StdioEnd::Stderr)?)));
         let launched: anyhow::Result<avi_process::RestrictedChild> = match stdio {
-            Ok(log_file) => spawn_with_allowlist(RestrictedSpawnRequest {
+            Ok((stdout_file, stderr_file)) => spawn_with_allowlist(RestrictedSpawnRequest {
                 program: staging_exe.clone(),
                 args,
                 stdin: StdinSpec::Inherit,
-                log_file,
+                stdout_file,
+                stderr_file,
                 creation_flags: 0,
                 extra_allowed: Vec::new(),
             })
@@ -155,24 +158,42 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
     Ok(outcome)
 }
 
-/// Fichero que envuelve el extremo heredado de la consola del invocador:
-/// duplicado propio del stdout del padre, de modo que el `self install`
-/// del traspaso escribe en la misma consola y su handle queda en la
-/// allowlist (stdout y stderr del hijo apuntan a ese fichero).
+/// Extremo de salida del padre cuyo destino hereda el traspaso.
+#[derive(Debug, Clone, Copy)]
+enum StdioEnd {
+    Stdout,
+    Stderr,
+}
+
+impl StdioEnd {
+    fn name(self) -> &'static str {
+        match self {
+            StdioEnd::Stdout => "stdout",
+            StdioEnd::Stderr => "stderr",
+        }
+    }
+}
+
+/// Fichero que envuelve el extremo indicado de la consola del invocador:
+/// duplicado propio de ese extremo del padre, de modo que el `self install`
+/// del traspaso escribe en el mismo destino y su handle queda en la
+/// allowlist. Cada extremo del hijo hereda el suyo, sin fusionarlos.
 ///
 /// En Windows el duplicado marca el handle como heredable y se cierra solo
-/// al soltarse el `File`; en Unix es `dup(1)`. Como el contrato del
-/// lanzamiento restringido ata stdout y stderr a un único fichero, ambos
-/// terminan en el destino del stdout del padre (equivalente a `2>&1`).
-fn inherited_stdio_file() -> anyhow::Result<std::fs::File> {
+/// al soltarse el `File`; en Unix es `dup(1)` para stdout y `dup(2)` para
+/// stderr.
+fn inherited_stdio_file(end: StdioEnd) -> anyhow::Result<std::fs::File> {
     #[cfg(windows)]
     {
         use std::os::windows::io::{AsRawHandle, FromRawHandle};
         use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
-        let source = std::io::stdout().as_raw_handle() as isize;
+        let source = match end {
+            StdioEnd::Stdout => std::io::stdout().as_raw_handle(),
+            StdioEnd::Stderr => std::io::stderr().as_raw_handle(),
+        } as isize;
         let mut target: isize = 0;
-        // SAFETY: duplica el handle del stdout del padre; el duplicado es
+        // SAFETY: duplica el handle del extremo del padre; el duplicado es
         // propio y su vida queda acotada por el `File` que lo envuelve.
         unsafe {
             if DuplicateHandle(
@@ -186,7 +207,8 @@ fn inherited_stdio_file() -> anyhow::Result<std::fs::File> {
             ) == 0
             {
                 return Err(anyhow::anyhow!(
-                    "no se pudo duplicar el stdout del traspaso: {}",
+                    "no se pudo duplicar el {} del traspaso: {}",
+                    end.name(),
                     std::io::Error::last_os_error()
                 ));
             }
@@ -196,10 +218,15 @@ fn inherited_stdio_file() -> anyhow::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::io::FromRawFd;
-        let fd = unsafe { libc::dup(1) };
+        let source_fd = match end {
+            StdioEnd::Stdout => 1,
+            StdioEnd::Stderr => 2,
+        };
+        let fd = unsafe { libc::dup(source_fd) };
         if fd < 0 {
             return Err(anyhow::anyhow!(
-                "no se pudo duplicar el stdout del traspaso: {}",
+                "no se pudo duplicar el {} del traspaso: {}",
+                end.name(),
                 std::io::Error::last_os_error()
             ));
         }
