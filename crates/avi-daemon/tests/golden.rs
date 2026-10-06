@@ -191,15 +191,15 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 // JSON vía `oneshot` sin abrir socket, sin spawn de procesos, sin señales, sin
 // puertos reales ni pidfile; por tanto nunca prueban la ausencia de huérfanos
 // (árbol de procesos, PID, puertos), ni el endurecimiento del harness frente a
-// fallos envenenados o al reaper corriendo fuera de los polls, ni la
-// higiene de `TEST_LIMIT`, ni la ventana entre el spawn y la escritura del
+// fallos envenenados, ni los techos de tiempo por hilo, ni la ventana entre el
+// spawn y la escritura del
 // pidfile, ni el manejo de señales durante el spawn, ni un crash con el
 // puerto ya ocupado y un reclamo activo del árbol previo (este último solo
 // aplica en `run_supervised`): al no añadir campos nuevos a `DaemonState`, el
 // doble de pruebas queda intacto, y su límite conocido es no reproducir el
 // ciclo de vida real del proceso. La ausencia real de huérfanos a nivel de
 // sistema operativo solo la verifica la serie de tests pesada
-// (con reaper ruidoso y `verificar_cero_huerfanos`).
+// (con la cosecha por identidad de la instancia y `verificar_cero_huerfanos`).
 
 /// Exige `nemo128.onnx` del snapshot de Parakeet: la raíz de modelos vive fuera
 /// del repo y la provisiona `ai-voice-interconnector setup`. El mensaje lleva el

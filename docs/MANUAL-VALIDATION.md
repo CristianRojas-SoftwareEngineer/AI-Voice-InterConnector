@@ -383,7 +383,8 @@ a mano. En macOS, un motor podría tardar en morir como mucho lo que dura un clo
 el daemon lanzó dos procesos a la vez (riesgo teórico, sin verificar).
 
 > Nota de cobertura: algunas variantes del reclamo de puerto/PID (reclamo por
-> grupo ante líder muerto en Unix, barrido del puerto de control por el reaper)
+> grupo ante líder muerto en Unix, cierre del puerto del motor residente tras la
+> cosecha de la instancia de prueba)
 > solo se alcanzan de forma fiable en Linux/CI o en entornos rápidos, no en la
 > validación local de Windows; no las esperes en este recorrido.
 

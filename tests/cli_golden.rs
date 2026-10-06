@@ -62,9 +62,12 @@ fn bin_command() -> Command {
 }
 
 // Las pruebas operan con aislamiento total por instancia (`IsolatedInstance`)
-// usando puertos efímeros (`AVI_DAEMON_PORT=0`, `QWEN3_TTS_PORT`) y directorios
-// temporales aislados (`CURRENT_SANDBOX_DIR`). Para la inferencia pesada residente
-// (~2.7 GB de RAM), se mantiene el semáforo de capacidad de recursos `tts::lock_tts`.
+// usando puertos efímeros (`AVI_DAEMON_PORT=0`, `QWEN3_TTS_PORT`) y un directorio
+// de datos propio (`AVI_DATA_DIR`). La instancia es dueña de lo que arranca: al
+// soltarse, `Drop` cosecha por identidad los procesos registrados en su propio
+// `daemon.pid` y nunca toca el daemon ni el residente del usuario. Para la
+// inferencia pesada residente (~2.7 GB de RAM), se mantiene el semáforo de
+// capacidad de recursos `tts::lock_tts`.
 
 // ─── Observabilidad de tests (solo instrumentación, sin cambios de comportamiento) ───
 //
@@ -112,7 +115,6 @@ thread_local! {
     static TEST_NAME: RefCell<String> = const { RefCell::new(String::new()) };
     static TEST_LIMIT: RefCell<Option<Duration>> = const { RefCell::new(None) };
     static LAST_HIT: RefCell<String> = const { RefCell::new(String::new()) };
-    static CURRENT_SANDBOX_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 }
 
 /// Transcurrido desde el inicio del test (o del proceso si no hay inicio).
@@ -164,18 +166,13 @@ fn hit_start_dub(name: &str) {
     hit_start(name, Duration::from_secs(GUARD_DUB_SECS));
 }
 
-/// Fin de test pesado. Desactiva el guard para no filtrar al siguiente test
-/// del mismo hilo del harness. Limpia además el inicio y el nombre (higiene:
-/// sin techos ni hitos heredados entre tests del mismo hilo, aun ante
-/// `panic!` previo sin `hit_end` — `hit_start` siempre sobrescribe).
+/// Fin de test pesado: registra el hito de cierre. El estado de tiempo es
+/// local al hilo y libtest ejecuta cada prueba en un hilo propio, así que no
+/// hay nada que restaurar para la prueba siguiente.
 fn hit_end(name: &str) {
     let ts = format_mm_ss(elapsed_test());
     eprintln!("[milestone][{}] fin {}", ts, name);
     let _ = std::io::stderr().flush();
-    TEST_LIMIT.with(|c| *c.borrow_mut() = None);
-    TEST_T0.with(|c| *c.borrow_mut() = None);
-    TEST_NAME.with(|c| *c.borrow_mut() = String::new());
-    LAST_HIT.with(|c| *c.borrow_mut() = String::new());
 }
 
 /// Último hito registrado (para el diagnóstico del guard).
@@ -184,14 +181,12 @@ fn last_hit() -> String {
 }
 
 /// Guard genérico: falla en vez de colgarse. Se llama en los polls ya
-/// existentes (`wait_for_daemon_state`); al expirar mata el árbol best-effort
-/// (`reaper_on_failure`) y hace `panic!` con test, fase, transcurrido,
-/// techo y último hito. Inactivo sin `hit_start`.
+/// existentes (`wait_for_daemon_state`); al expirar hace `panic!` con test,
+/// fase, transcurrido, techo y último hito, y el `Drop` de la instancia
+/// cosecha lo que ella arrancó. Inactivo sin `hit_start`.
 ///
-/// Higiene: `hit_start` siempre sobrescribe `TEST_T0`/`TEST_LIMIT`, así
-/// que un `panic!` previo sin `hit_end` no hereda techos al siguiente test
-/// pesado; `hit_end` y `GuardReaper` (en `Drop` ante `panic!`) limpian el
-/// límite para que los tests ligeros sin `hit_start` tampoco lo hereden.
+/// El techo vive en estado local al hilo y libtest ejecuta cada prueba en un
+/// hilo propio: una prueba no hereda el techo de otra.
 fn check_guard(phase: &str) {
     let name = TEST_NAME.with(|n| n.borrow().clone());
     let limit = TEST_LIMIT.with(|c| *c.borrow());
@@ -200,8 +195,6 @@ fn check_guard(phase: &str) {
         let elapsed = t.elapsed();
         if elapsed > lim {
             let _ = std::io::stderr().flush();
-            TEST_LIMIT.with(|c| *c.borrow_mut() = None);
-            reaper_on_failure(&format!("guard:{}", phase), true);
             panic!(
                 "guardia de tiempo: test '{}' superó techo {:?} en fase '{}' (transcurrido {:.1} s; último hito: {})",
                 name,
@@ -214,15 +207,13 @@ fn check_guard(phase: &str) {
     }
 }
 
-// ─── Verificación a nivel de sistema y reaper ruidoso tras el apagado ──────
+// ─── Verificación a nivel de sistema tras el apagado ──────────────────────
 //
 // El producto reclama el residual al arrancar (matar-y-rearrancar con payload
-// `started`) y para con deadline global y verificación (`src/main.rs`:
-// `classify_residual`, `reclaim_degraded_residual`,
-// `lifecycle::daemon_stop::stop`; ayudantes SO `avi_daemon::{pid_alive,
-// kill_tree_by_pid, wait_for_pid_death}`). La fixture verifica esa conducta
-// a nivel de sistema en vez de suponerla por HTTP. Fuente única de
-// matar/verificar: `avi_daemon`, sin duplicar lógica SO en el harness.
+// `started`) y para con deadline global y verificación; los ayudantes SO son
+// `avi_daemon::{pid_alive, kill_tree_by_pid, wait_for_pid_death}`. La fixture
+// verifica esa conducta a nivel de sistema en vez de suponerla por HTTP. Fuente
+// única de matar/verificar: `avi_daemon`, sin duplicar lógica SO en el harness.
 
 /// Lee el PID de `daemon.pid` en el directorio indicado.
 fn read_daemon_pid_dir(dir: &std::path::Path) -> Option<u32> {
@@ -249,26 +240,9 @@ fn read_resident_pid_dir(dir: &std::path::Path) -> u32 {
         .unwrap_or(0)
 }
 
-/// Lee el PID de `daemon.pid` del sandbox del hilo actual o de `data_dir` global.
-fn read_daemon_pid() -> Option<u32> {
-    let dir = CURRENT_SANDBOX_DIR
-        .with(|c| c.borrow().clone())
-        .unwrap_or_else(avi_store::data_dir);
-    read_daemon_pid_dir(&dir)
-}
-
-/// Lee el PID del residente de `daemon.pid` del sandbox del hilo actual o de `data_dir` global.
-fn read_resident_pid() -> u32 {
-    let dir = CURRENT_SANDBOX_DIR
-        .with(|c| c.borrow().clone())
-        .unwrap_or_else(avi_store::data_dir);
-    read_resident_pid_dir(&dir)
-}
-
-/// ¿Hay algo escuchando en `127.0.0.1:port`? Sondeo TCP breve, sin HTTP.
-/// Solo para puertos del daemon: 8765 y el puerto efímero de instancia. El
-/// residente `qwen_tts` ya no se detecta por puerto, sino por su identidad
-/// estable (PID registrado + imagen) — ver `resident_present_by_image`.
+/// ¿Hay algo escuchando en `127.0.0.1:port`? Sondeo TCP breve, sin HTTP. Se
+/// usa con los puertos propios de una instancia: el efímero del daemon y el
+/// `QWEN3_TTS_PORT` del residente. Nunca con un puerto compartido de la máquina.
 fn port_open(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
@@ -297,167 +271,6 @@ fn assert_no_rebind_while_free(port: u16, window: Duration) {
         "ningún daemon debe enlazar el puerto liberado tras {:?}",
         window
     );
-}
-
-/// ¿Hay algún proceso residente vivo por imagen (`qwen_tts(.exe)`),
-/// independiente del pidfile? Faro estable de descubrimiento/verificación del
-/// residente cuando el `resident_pid` no está disponible (pidfile perdido).
-/// Seguro por imagen propia del residente. Windows: `tasklist /FI IMAGENAME`;
-/// Unix: `pgrep -x`.
-fn resident_present_by_image() -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        let output = std::process::Command::new("tasklist")
-            .args([
-                "/FI",
-                &format!("IMAGENAME eq {}", avi_tts::RESIDENT_IMAGE_NAME),
-                "/FO",
-                "CSV",
-                "/NH",
-            ])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(avi_process::CREATE_NO_WINDOW)
-            .output();
-        match output {
-            Ok(o) if o.status.success() => {
-                String::from_utf8_lossy(&o.stdout).contains(avi_tts::RESIDENT_IMAGE_NAME)
-            }
-            _ => false,
-        }
-    }
-    #[cfg(unix)]
-    {
-        std::process::Command::new("pgrep")
-            .args(["-x", avi_tts::RESIDENT_IMAGE_NAME])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-}
-
-/// Reaper best-effort ante fallo: mata el árbol preciso por PID con
-/// verificación acotada (8 s, deadline global del producto) y lo registra como
-/// hito. Nunca falla: un reaper que fallara enmascararía la causa original del
-/// `panic!` que lo invocó.
-fn reaper_on_failure(phase: &str, sweep_by_image: bool) {
-    // `sweep_by_image` indica si se permite el barrido por imagen `qwen_tts`;
-    // el comportamiento que lo respeta se implementa en otra tarea.
-    let _ = sweep_by_image;
-    match read_daemon_pid() {
-        Some(pid) if avi_daemon::pid_alive(pid) => {
-            milestone(&format!(
-                "reaper({}): árbol residual pid {} vivo, matando",
-                phase, pid
-            ));
-            avi_daemon::kill_tree_by_pid(pid);
-            let dead = avi_daemon::wait_for_pid_death(pid, std::time::Duration::from_secs(8));
-            milestone(&format!("reaper({}): pid {} muerto={}", phase, pid, dead));
-        }
-        Some(pid) => {
-            milestone(&format!(
-                "reaper({}): pid {} ya muerto, sin árbol que matar",
-                phase, pid
-            ));
-        }
-        None => {
-            milestone(&format!(
-                "reaper({}): sin pidfile, nada que matar por PID",
-                phase
-            ));
-        }
-    }
-    // Cobertura total: el residente `qwen_tts` desacopla su servidor real del
-    // árbol del daemon, de modo que el kill por árbol puede dejarlo vivo. Se
-    // detecta por su identidad estable (PID registrado o imagen propia) y se
-    // reclama por PID —o por imagen como último recurso—, sin puerto global.
-    let resident = read_resident_pid();
-    let resident_alive = resident != 0 && avi_tts::resident::resident_pid_alive(resident);
-    if resident_alive || resident_present_by_image() {
-        milestone(&format!(
-            "reaper({}): residente vivo tras el árbol (pid={}), barriendo",
-            phase, resident
-        ));
-        sweep_resident(phase);
-    }
-}
-
-/// Barrido del residente por identidad estable: mata el árbol preciso del
-/// `resident_pid` registrado si sigue vivo y, como último recurso sin PID
-/// (pidfile perdido), barre por imagen `qwen_tts` (seguro por imagen propia).
-/// Verifica la ausencia por PID muerto más ausencia por imagen. Un solo camino
-/// portable: las primitivas por PID/imagen existen en ambas plataformas, sin
-/// `netstat`, sin rama Unix solo-log y sin puerto global.
-fn sweep_resident(phase: &str) {
-    let resident = read_resident_pid();
-    if resident != 0
-        && resident != std::process::id()
-        && avi_tts::resident::resident_pid_alive(resident)
-    {
-        milestone(&format!(
-            "reaper({}): residente PID {} vivo, matando árbol",
-            phase, resident
-        ));
-        avi_tts::resident::kill_tree_resident_by_pid(resident);
-    } else if resident == 0 {
-        milestone(&format!(
-            "reaper({}): sin resident_pid registrado, barriendo por imagen",
-            phase
-        ));
-        avi_tts::resident::sweep_resident_by_image();
-    } else {
-        milestone(&format!(
-            "reaper({}): resident_pid {} ya muerto, verificando ausencia por imagen",
-            phase, resident
-        ));
-    }
-    let t0 = std::time::Instant::now();
-    let resident_alive_reg = |pid: u32| pid != 0 && avi_tts::resident::resident_pid_alive(pid);
-    while (resident_alive_reg(resident) || resident_present_by_image())
-        && t0.elapsed() < std::time::Duration::from_secs(8)
-    {
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
-    milestone(&format!(
-        "reaper({}): residente ausente={}",
-        phase,
-        !resident_alive_reg(resident) && !resident_present_by_image()
-    ));
-}
-
-/// Falla fuera de polls con reaper previo: ejecuta el reaper
-/// best-effort antes del `panic!` para no abandonar daemon ni motor vivos.
-/// Todo `panic!`/`assert!` fuera de `wait_for_daemon_state` pasa por aquí.
-fn fail_with_reaper(phase: &str, message: String) -> ! {
-    reaper_on_failure(phase, true);
-    panic!("{}", message);
-}
-
-/// Guard RAII que extiende el reaper a todo `panic!`/`assert!` fuera de polls:
-/// el test lo arma tras tomar el lock (`let _reaper =
-/// arm_reaper("...")`); en salida normal no hace nada, y si el hilo está en
-/// `panic!` al dropearse ejecuta el reaper best-effort y restaura la higiene
-/// de `TEST_LIMIT` para no heredar techos al siguiente test del mismo hilo.
-struct GuardReaper {
-    phase: &'static str,
-}
-
-fn arm_reaper(phase: &'static str) -> GuardReaper {
-    GuardReaper { phase }
-}
-
-impl Drop for GuardReaper {
-    fn drop(&mut self) {
-        if std::thread::panicking() {
-            reaper_on_failure(self.phase, true);
-            TEST_LIMIT.with(|c| *c.borrow_mut() = None);
-        }
-    }
 }
 
 // ─── Ciclo por instancia (la fixture por sesión compartida queda eliminada) ──
@@ -496,10 +309,11 @@ fn daemon_state_env(envs: &[(&str, &str)]) -> Value {
 /// ready de la instancia): el bind-ready no basta, el warmup TTS corre en
 /// segundo plano y la inferencia solo es fiable en caliente. El presupuesto
 /// en unidades se convierte en timeout diagnóstico (200 ms/ud); al vencer o
-/// ante `warm_failed` falla explícito (panic con diagnóstico, tras reaper),
-/// nunca pasa en silencio. `stopped` no tiene señal de apagado por fichero:
-/// se observa la ausencia (poll de `daemon status` hasta `stopped`).
-/// Espera de estado con envs extra para el hijo (instancia aislada).
+/// ante `warm_failed` falla explícito (panic con diagnóstico; el `Drop` de la
+/// instancia cosecha lo que quedó vivo), nunca pasa en silencio. `stopped` no
+/// tiene señal de apagado por fichero: se observa la ausencia (poll de
+/// `daemon status` hasta `stopped`). Lee el fichero ready de la carpeta de la
+/// instancia y le pasa sus envs al hijo.
 ///
 /// Camino alterno «solo running»: para los tests que solo verifican ciclo de
 /// vida (start/restart/status) y no necesitan síntesis real, existe la
@@ -510,20 +324,17 @@ fn daemon_state_env(envs: &[(&str, &str)]) -> Value {
 /// y `start_instance` quedan sin tocar por ese camino nuevo, así que los
 /// tests que sí validan contenido sintetizado (clone/dub) siguen pagando el
 /// warmup completo sin cambios de comportamiento.
-fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]) -> Value {
+fn wait_for_daemon_state_env(inst: &IsolatedInstance, expected: &str, retries: u32) -> Value {
     let timeout = Duration::from_millis(200 * retries as u64);
+    let envs = inst.args();
+    let envs = envs.as_slice();
     if expected == "running" {
-        let data_dir = envs
-            .iter()
-            .find(|(k, _)| *k == "AVI_DATA_DIR")
-            .map(|(_, v)| PathBuf::from(v))
-            .unwrap_or_else(avi_store::data_dir);
-        let path = data_dir.join("daemon.ready");
+        let path = inst.dir.join("daemon.ready");
         let start = Instant::now();
         // 1) Publicación del bind con espera acotada (vía el fichero ready
         // de la instancia): al vencer, el `panic!` con diagnóstico ya
         // incluye el último contenido.
-        let (addr, _) = wait_for_ready_file(&path, timeout);
+        let (addr, _) = wait_for_ready_file(inst, timeout);
         // 2) Warm publicado más verificación por estado observado, con el
         // restante del mismo presupuesto diagnóstico.
         let mut last = Value::Null;
@@ -531,7 +342,6 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
             check_guard(&format!("wait_for_daemon_state({})", expected));
             if let Some((_, warm)) = read_ready_file(&path) {
                 if warm == "warm_failed" {
-                    reaper_on_failure("wait_for_daemon_state(warm_failed)", true);
                     panic!(
                         "el warmup del daemon falló en {} (addr {}; último: {})",
                         path.display(),
@@ -554,10 +364,6 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
                 }
             }
             if start.elapsed() >= timeout {
-                reaper_on_failure(
-                    &format!("wait_for_daemon_state({})-exhausted", expected),
-                    true,
-                );
                 panic!(
                     "el daemon no publicó 'warm' con estado running tras {:?} (último: {}; fichero: {})",
                     timeout, last, path.display()
@@ -581,10 +387,6 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
-    reaper_on_failure(
-        &format!("wait_for_daemon_state({})-exhausted", expected),
-        true,
-    );
     panic!(
         "el daemon no alcanzó el estado '{}' tras {} reintentos (último: {})",
         expected, retries, last
@@ -598,19 +400,16 @@ fn wait_for_daemon_state_env(expected: &str, retries: u32, envs: &[(&str, &str)]
 /// verifican ciclo de vida (start/restart/status): el warmup TTS en segundo
 /// plano es una optimización, no un requisito de correctitud del ciclo de
 /// vida, y esperar `warm` les hace pagar la síntesis real sin necesitarla.
-/// Conserva el mismo presupuesto/timeout diagnóstico y el `reaper_on_failure`
-/// al agotar que `wait_for_daemon_state_env`.
-fn wait_for_running_without_warm(retries: u32, envs: &[(&str, &str)]) -> Value {
+/// Conserva el mismo presupuesto/timeout diagnóstico y el `panic!` al agotar
+/// que `wait_for_daemon_state_env`, y lee el fichero ready de la carpeta de la
+/// instancia.
+fn wait_for_running_without_warm(inst: &IsolatedInstance, retries: u32) -> Value {
     let timeout = Duration::from_millis(200 * retries as u64);
-    let data_dir = envs
-        .iter()
-        .find(|(k, _)| *k == "AVI_DATA_DIR")
-        .map(|(_, v)| PathBuf::from(v))
-        .unwrap_or_else(avi_store::data_dir);
-    let path = data_dir.join("daemon.ready");
+    let envs = inst.args();
+    let envs = envs.as_slice();
     // Bind-ready: mismo mecanismo que la rama "running" de
     // `wait_for_daemon_state_env`, pero sin exigir `warm == "warm"` después.
-    let _ = wait_for_ready_file(&path, timeout);
+    let _ = wait_for_ready_file(inst, timeout);
     // Sondeo de `daemon status` hasta `running` (patrón genérico, igual al de
     // `expected != "running"` en `wait_for_daemon_state_env`).
     let mut last = Value::Null;
@@ -627,7 +426,6 @@ fn wait_for_running_without_warm(retries: u32, envs: &[(&str, &str)]) -> Value {
         }
         std::thread::sleep(std::time::Duration::from_millis(15));
     }
-    reaper_on_failure("wait_for_running_without_warm(running)-exhausted", true);
     panic!(
         "el daemon no alcanzó el estado 'running' (sin exigir warm) tras {} reintentos (último: {})",
         retries, last
@@ -663,58 +461,42 @@ fn d03_poisoned_lock_propagates() {
         local.lock().is_err(),
         "el envenenado debe propagarse como fallo visible, no recuperarse"
     );
-    // Higiene: no heredar techo al siguiente test del mismo hilo.
-    TEST_LIMIT.with(|c| *c.borrow_mut() = None);
 }
 
-/// El reaper ante fallo fuera de polls con pidfile sin PID vivo (daemon 8765
-/// cerrado a la entrada) no falla: retorna sin borrar el pidfile de su sandbox.
-/// Hermético (sin daemon real); su reaper solo mata un PID ya muerto, nunca abre
-/// el 8765 ni arranca un residente, así que no puede dejar huérfanos propios.
-/// Llama al reaper sin barrido por imagen, de modo que un residente `qwen_tts`
-/// ajeno que esté vivo no se toca ni condiciona el resultado.
-/// El pidfile obsoleto vive en un directorio de estado propio de la instancia
-/// (`AVI_DATA_DIR`), sin tocar el `data_dir` real (reversión: volver a
-/// `avi_store::data_dir()`).
+/// Un hilo de prueba que hace `panic!` con su instancia viva no deja su carpeta
+/// de estado: el `Drop` de la instancia corre durante el desenlace del pánico,
+/// cosecha lo registrado (aquí un pidfile señuelo de un PID muerto, que no
+/// mata nada) y retira la carpeta. Hasta ese momento la carpeta conserva su
+/// contenido intacto. Hermético: no arranca ningún daemon.
 #[test]
-fn d03_reaper_without_live_pid_does_not_fail() {
-    let (sandbox, _envs) = sandbox_unique_state("d03reaper");
-    CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = Some(sandbox.clone()));
-    // Pidfile obsoleto: PID garantizado muerto, solo en el sandbox.
-    let dead_pid = 2_000_000_000u32;
-    assert!(
-        !avi_daemon::pid_alive(dead_pid),
-        "el PID de prueba debe estar muerto"
-    );
-    let path = sandbox.join("daemon.pid");
-    // Con las claves de identidad presentes: el pidfile tiene que ser legible
-    // para que lo que este test afirma sea «un PID muerto registrado», y no
-    // «un fichero que el esquema descarta».
-    let stale = serde_json::json!({
-        "pid": dead_pid,
-        "resident_pid": 0,
-        "identity": { "start": "0", "image": "fake-identity.exe" },
-        "resident_identity": serde_json::Value::Null,
+fn isolated_instance_drop_removes_state_after_panic() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let handle = std::thread::spawn(move || {
+        let inst = IsolatedInstance::new("drop_after_panic");
+        seed_decoy_daemon_pidfile(&inst.dir);
+        let intact = std::fs::read_to_string(inst.dir.join("daemon.pid"))
+            .map(|content| content.contains("fake-identity.exe"))
+            .unwrap_or(false);
+        tx.send((inst.dir.clone(), intact))
+            .expect("avisar a la prueba de la carpeta de la instancia");
+        panic!("fallo simulado con la instancia viva");
     });
-    std::fs::write(&path, stale.to_string()).expect("escribir pidfile obsoleto en el sandbox");
-    // El reaper best-effort no debe fallar con PID muerto y sin residente:
-    // llegar hasta aquí ya prueba que retornó sin hacer panic.
-    reaper_on_failure("d03-test", false);
-    // No aseveramos quiescencia global de máquina: el reaper de d03 solo mata un
-    // PID ya muerto —nunca abre el 8765 ni arranca un residente `qwen_tts`—, así
-    // que cualquier puerto/residente presente aquí proviene de un daemon test
-    // concurrente en otro hilo de libtest, no de un huérfano nuestro. Muestrear el
-    // singleton de máquina (`tasklist` por imagen) enrojecería el test por ese
-    // solapamiento legítimo (carrera, no fallo del reaper). El invariante propio
-    // de d03 —no borrar su pidfile de sandbox— se asevera abajo.
+    let (dir, intact) = rx
+        .recv()
+        .expect("el hilo debe publicar la carpeta de su instancia");
     assert!(
-        path.is_file(),
-        "el sandbox propio no debe borrar su pidfile"
+        handle.join().is_err(),
+        "el hilo debe terminar con el pánico simulado"
     );
-    CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = None);
-    let _ = std::fs::remove_dir_all(&sandbox);
-    // Higiene: no heredar techo al siguiente test del mismo hilo.
-    TEST_LIMIT.with(|c| *c.borrow_mut() = None);
+    assert!(
+        intact,
+        "antes del Drop la carpeta debe conservar el pidfile señuelo intacto"
+    );
+    assert!(
+        !dir.exists(),
+        "el Drop de la instancia debe retirar su carpeta de estado tras el pánico: {}",
+        dir.display()
+    );
 }
 
 /// Ejecuta el binario con `args` y envs extra, devolviendo (código de salida, stdout
@@ -1004,11 +786,13 @@ fn read_ready_file(path: &std::path::Path) -> Option<(String, String)> {
     Some((addr?, warm.unwrap_or_else(|| "warming".to_string())))
 }
 
-/// Espera acotada del fichero ready (poll 50 ms): retorna `(addr, warm)` al
-/// aparecer un contenido válido. Al vencer el timeout falla con `panic!`
-/// con diagnóstico del último contenido (timeout = bug a diagnosticar, no
-/// flake a reintentar), tras reaper best-effort.
-fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, String) {
+/// Espera acotada del fichero ready de la instancia (poll 15 ms): retorna
+/// `(addr, warm)` al aparecer un contenido válido. Al vencer el timeout falla
+/// con `panic!` con diagnóstico del último contenido (timeout = bug a
+/// diagnosticar, no flake a reintentar).
+fn wait_for_ready_file(inst: &IsolatedInstance, timeout: Duration) -> (String, String) {
+    let path = inst.dir.join("daemon.ready");
+    let path = path.as_path();
     let start = Instant::now();
     let mut last = String::new();
     while start.elapsed() < timeout {
@@ -1024,7 +808,6 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
         last = std::fs::read_to_string(path).unwrap_or_default();
         std::thread::sleep(Duration::from_millis(15));
     }
-    reaper_on_failure("wait_for_ready_file-exhausted", true);
     panic!(
         "el fichero ready {} no publicó addr válida tras {:?} (último contenido: {:?})",
         path.display(),
@@ -1047,14 +830,25 @@ fn wait_for_ready_file(path: &std::path::Path, timeout: Duration) -> (String, St
 // sandbox. Las pruebas de contrato usan `contract_args`, que la reubica al
 // sandbox. `AVI_INSTALL_DIR` y `AVI_DATA_DIR` sí se aíslan siempre.
 //
-// Límite físico razonado (no deuda): la detección/limpieza/verificación del
-// residente ya se re-ancló a su identidad estable (PID registrado + imagen
-// propia `qwen_tts`), cerrando la parte eliminable del acoplamiento entre el
-// dominio del recurso (la máquina) y el del candado (el proceso); lo irreducible que
-// queda es el semáforo de capacidad (una única inferencia pesada residente), que el grupo de inferencia conserva
-// vía `TTS_LOCK`. El aislamiento es de estado+daemon; la capacidad física se serializa por lock_tts.
+// Propiedad de la instancia: es dueña únicamente de lo que registra en su propio
+// `daemon.pid` y `daemon.ready`. Al soltarse cosecha por identidad (PID más
+// hora de creación e imagen registradas) ese daemon y ese residente, y nunca
+// toca el daemon ni el residente del usuario ni barre procesos por imagen.
+//
+// Límite físico razonado (no deuda): lo irreducible es el semáforo de capacidad
+// (una única inferencia pesada residente), que el grupo de inferencia conserva
+// vía `TTS_LOCK`. El aislamiento es de estado+daemon; la capacidad física se
+// serializa por lock_tts.
 
-/// Instancia aislada por test: sandbox propio + envs para el hijo.
+/// Plazo para que un proceso cosechado por `Drop` muera tras su kill.
+const REAP_DEATH_DEADLINE: Duration = Duration::from_secs(8);
+
+/// Plazo máximo para que, tras matar el daemon a la fuerza, el motor
+/// residente muera y su puerto deje de escuchar.
+const HARD_KILL_DEADLINE: Duration = Duration::from_secs(10);
+
+/// Instancia aislada por test: sandbox propio + envs para el hijo. Su `Drop`
+/// cosecha lo que ella arrancó y retira su carpeta de estado.
 struct IsolatedInstance {
     dir: PathBuf,
     envs: Vec<(String, String)>,
@@ -1082,7 +876,6 @@ impl IsolatedInstance {
         // los modelos provisionados; el sandbox solo aísla estado (pidfile/almacén).
         // Las pruebas de contrato la sustituyen por la del sandbox con `contract_args`.
         envs.retain(|(k, _)| !matches!(k.as_str(), "AVI_CACHE_DIR" | "HF_HUB_CACHE" | "HF_HOME"));
-        CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = Some(dir.clone()));
         let contract_cache = dir.join("cache").to_string_lossy().to_string();
         IsolatedInstance {
             dir,
@@ -1140,50 +933,115 @@ impl IsolatedInstance {
     }
 }
 
+impl IsolatedInstance {
+    /// Mata por identidad el daemon y el residente registrados en el
+    /// `daemon.pid` (y el daemon publicado en `daemon.ready`) de esta
+    /// instancia, y espera su muerte. Solo cae un PID cuya identidad observada
+    /// ahora es igual a la registrada y distinto del propio proceso: un PID
+    /// reasignado a otro programa no coincide y se respeta. Devuelve si mató
+    /// algún daemon.
+    fn reap_registered(&self) -> bool {
+        use avi_lifecycle::daemon_stop::{observe_pid_file, PidFileRead};
+
+        // (pid, identidad registrada, es daemon)
+        let mut registered: Vec<(u32, avi_process::ProcessIdentity, bool)> = Vec::new();
+        if let PidFileRead::Present(file) = observe_pid_file(&self.dir) {
+            if let Some(identity) = file.identity {
+                registered.push((file.pid, identity, true));
+            }
+            if let Some(identity) = file.resident_identity {
+                registered.push((file.resident_pid, identity, false));
+            }
+        }
+        if let Some(avi_daemon::ReadySignal::Ready {
+            pid: Some(pid),
+            identity: Some(identity),
+            ..
+        }) = avi_daemon::read_ready_signal(&self.dir.join("daemon.ready"))
+        {
+            registered.push((pid, identity, true));
+        }
+
+        let own = std::process::id();
+        let mut killed = Vec::new();
+        let mut killed_daemon = false;
+        for (pid, identity, is_daemon) in registered {
+            if pid == 0 || pid == own || killed.contains(&pid) {
+                continue;
+            }
+            if avi_process::process_identity(pid).as_ref() != Some(&identity) {
+                continue;
+            }
+            if is_daemon {
+                avi_daemon::kill_tree_by_pid(pid);
+                killed_daemon = true;
+            } else {
+                avi_tts::resident::kill_tree_resident_by_pid(pid);
+            }
+            killed.push(pid);
+        }
+        for pid in killed {
+            if !avi_daemon::wait_for_pid_death(pid, REAP_DEATH_DEADLINE) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[reap] el proceso {pid} de la instancia sigue vivo tras {REAP_DEATH_DEADLINE:?}"
+                );
+            }
+        }
+        killed_daemon
+    }
+}
+
 impl Drop for IsolatedInstance {
+    /// Cosecha siempre, también ante `panic!`, y nunca entra en pánico. Si mató
+    /// un daemon, espera a que cierre el puerto propio del residente; si sigue
+    /// abierto lo informa por stderr y no barre nada más.
     fn drop(&mut self) {
-        CURRENT_SANDBOX_DIR.with(|c| *c.borrow_mut() = None);
+        let killed_daemon = self.reap_registered();
+        if killed_daemon {
+            if let Some(port) = self.tts_port() {
+                let t0 = Instant::now();
+                while port_open(port) && t0.elapsed() < HARD_KILL_DEADLINE {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if port_open(port) {
+                    let _ = writeln!(
+                        std::io::stderr(),
+                        "[reap] el puerto {port} de la instancia sigue abierto tras {HARD_KILL_DEADLINE:?}"
+                    );
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
 /// Arranca la instancia aislada (`daemon start` con sus envs más `extra`) y
-/// espera `running+warm` por evento. Falla con reaper previo fuera de polls.
+/// espera `running+warm` por evento. La instancia es dueña de lo que arranca:
+/// ante un fallo hace `panic!` y su `Drop` cosecha el daemon y el residente.
 fn start_instance(inst: &IsolatedInstance, extra: &[&str]) -> Value {
     let a = inst.args();
     let mut cmd: Vec<&str> = vec!["--json", "daemon", "start"];
     cmd.extend(extra);
     let (code, actual) = run_json_env(&cmd, &a);
-    if code != 0 {
-        fail_with_reaper(
-            "start_instance(start)",
-            format!(
-                "daemon start de la instancia debe salir 0 (fue {}): {}",
-                code, actual
-            ),
-        );
-    }
-    if actual["daemon"] != Value::String("running".to_string())
-        || actual["status"] != Value::String("started".to_string())
-    {
-        fail_with_reaper(
-            "start_instance(daemon)",
-            format!(
-                "tras start la instancia debe estar running+started: {}",
-                actual
-            ),
-        );
-    }
+    assert_eq!(
+        code, 0,
+        "daemon start de la instancia debe salir 0 (fue {}): {}",
+        code, actual
+    );
+    assert!(
+        actual["daemon"] == Value::String("running".to_string())
+            && actual["status"] == Value::String("started".to_string()),
+        "tras start la instancia debe estar running+started: {}",
+        actual
+    );
     let pid = inst.read_daemon_pid();
-    if !pid.map(avi_daemon::pid_alive).unwrap_or(false) {
-        fail_with_reaper(
-            "start_instance(pid)",
-            format!(
-                "la instancia recién arrancada debe estar viva a nivel SO (pid {:?})",
-                pid
-            ),
-        );
-    }
-    wait_for_daemon_state_env("running", WARM_FAILSAFE_RETRIES, &a);
+    assert!(
+        pid.map(avi_daemon::pid_alive).unwrap_or(false),
+        "la instancia recién arrancada debe estar viva a nivel SO (pid {:?})",
+        pid
+    );
+    wait_for_daemon_state_env(inst, "running", WARM_FAILSAFE_RETRIES);
     actual
 }
 
@@ -1198,37 +1056,24 @@ fn start_instance_running_only(inst: &IsolatedInstance, extra: &[&str]) -> Value
     let mut cmd: Vec<&str> = vec!["--json", "daemon", "start"];
     cmd.extend(extra);
     let (code, actual) = run_json_env(&cmd, &a);
-    if code != 0 {
-        fail_with_reaper(
-            "start_instance_running_only(start)",
-            format!(
-                "daemon start de la instancia debe salir 0 (fue {}): {}",
-                code, actual
-            ),
-        );
-    }
-    if actual["daemon"] != Value::String("running".to_string())
-        || actual["status"] != Value::String("started".to_string())
-    {
-        fail_with_reaper(
-            "start_instance_running_only(daemon)",
-            format!(
-                "tras start la instancia debe estar running+started: {}",
-                actual
-            ),
-        );
-    }
+    assert_eq!(
+        code, 0,
+        "daemon start de la instancia debe salir 0 (fue {}): {}",
+        code, actual
+    );
+    assert!(
+        actual["daemon"] == Value::String("running".to_string())
+            && actual["status"] == Value::String("started".to_string()),
+        "tras start la instancia debe estar running+started: {}",
+        actual
+    );
     let pid = inst.read_daemon_pid();
-    if !pid.map(avi_daemon::pid_alive).unwrap_or(false) {
-        fail_with_reaper(
-            "start_instance_running_only(pid)",
-            format!(
-                "la instancia recién arrancada debe estar viva a nivel SO (pid {:?})",
-                pid
-            ),
-        );
-    }
-    wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
+    assert!(
+        pid.map(avi_daemon::pid_alive).unwrap_or(false),
+        "la instancia recién arrancada debe estar viva a nivel SO (pid {:?})",
+        pid
+    );
+    wait_for_running_without_warm(inst, WARM_FAILSAFE_RETRIES);
     actual
 }
 
@@ -1239,51 +1084,44 @@ fn stop_instance(inst: &IsolatedInstance, context: &str) {
     let previous_port = inst.port();
     let a = inst.args();
     let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &a);
-    if !(code == 0 || code == 5) {
-        fail_with_reaper(
-            &format!("stop_instance({})", context),
-            format!(
-                "el apagado de la instancia debe salir 0 o 5 (fue {}): {}",
-                code, actual
-            ),
-        );
-    }
-    wait_for_daemon_state_env("stopped", 75, &a);
+    assert!(
+        code == 0 || code == 5,
+        "el apagado de la instancia debe salir 0 o 5 (fue {}): {}",
+        code,
+        actual
+    );
+    wait_for_daemon_state_env(inst, "stopped", 75);
     verify_zero_orphans_instance(context, inst, previous_port);
 }
 
 /// Verificación ruidosa de cero huérfanos de LA INSTANCIA tras el apagado: el
-/// árbol debe estar muerto, SU puerto cerrado, el residente ausente (por su
-/// PID registrado muerto y sin proceso por imagen `qwen_tts`) y su pidfile sin
-/// PID vivo (el producto lo borra tras muerte verificada). Si queda resto,
-/// ejecuta el reaper best-effort antes de fallar: la suite nunca pasa en verde
-/// con huérfanos vivos ni los abandona en la vía de fallo.
+/// árbol debe estar muerto, SU puerto del daemon cerrado, el residente ausente
+/// (su PID registrado muerto y su `QWEN3_TTS_PORT` sin escuchar) y su pidfile
+/// borrado (el producto lo borra tras muerte verificada). Si queda resto falla
+/// con `panic!`: la suite nunca pasa en verde con huérfanos vivos, y el `Drop`
+/// de la instancia cosecha lo registrado en la vía de fallo.
 fn verify_zero_orphans_instance(context: &str, inst: &IsolatedInstance, port: u16) {
     let pid = inst.read_daemon_pid();
     let pid_alive = pid.map(avi_daemon::pid_alive).unwrap_or(false);
     let resident = inst.read_resident_pid();
     let resident_alive = resident != 0 && avi_tts::resident::resident_pid_alive(resident);
     let instance_port_open = port_open(port);
-    let resident_by_image = resident_present_by_image();
+    let resident_port_open = inst.tts_port().is_some_and(port_open);
     let pidfile = inst.dir.join("daemon.pid");
     let pidfile_exists = pidfile.exists();
-    if pid_alive || resident_alive || instance_port_open || resident_by_image || pidfile_exists {
-        fail_with_reaper(
-            &format!("verify_zero_orphans_instance({})", context),
-            format!(
-                "quedaron huérfanos tras {}: pid={:?} vivo={} residente={} residente_vivo={} puerto_instancia={} abierto={} residente_por_imagen={} pidfile={} (el apagado debe dejar cero restos a nivel SO)",
-                context,
-                pid,
-                pid_alive,
-                resident,
-                resident_alive,
-                port,
-                instance_port_open,
-                resident_by_image,
-                pidfile.display()
-            ),
-        );
-    }
+    assert!(
+        !(pid_alive || resident_alive || instance_port_open || resident_port_open || pidfile_exists),
+        "quedaron huérfanos tras {}: pid={:?} vivo={} residente={} residente_vivo={} puerto_instancia={} abierto={} puerto_residente_abierto={} pidfile={} (el apagado debe dejar cero restos a nivel SO)",
+        context,
+        pid,
+        pid_alive,
+        resident,
+        resident_alive,
+        port,
+        instance_port_open,
+        resident_port_open,
+        pidfile.display()
+    );
     milestone(&format!(
         "{}: cero huérfanos verificados a nivel SO (instancia puerto {})",
         context, port
@@ -2800,7 +2638,7 @@ mod tts {
     /// más residentes simultáneos. Paralelizar los tests pesados (quitar o
     /// debilitar `TTS_LOCK`) arriesga OOM del runner, no una mera degradación
     /// de rendimiento: un OOM mata el proceso de test a mitad de ciclo y deja
-    /// el diagnóstico (reaper, hitos) sin oportunidad de correr. Por tanto
+    /// el diagnóstico (hitos) sin oportunidad de correr. Por tanto
     /// **no se elimina `TTS_LOCK`/`lock_tts()`**, ni se reemplaza por un
     /// esquema que permita concurrencia entre residentes TTS reales; cualquier
     /// mejora de paralelismo de la suite debe respetar este techo (p. ej.
@@ -2974,9 +2812,6 @@ mod tts {
         // vía caliente; el orden STATE→TTS coincide con el resto de la suite.
         let _guard = lock_tts();
         hit_start_heavy("tts::synthesize_ok_with_label");
-        // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
-        // best-effort antes de fallar (vía `Drop` ante `panic!`).
-        let _reaper = arm_reaper("synthesize_ok_with_label");
         let label = unique_label("golden");
         // Vía daemon caliente de la instancia propia (instancia aislada): la instancia ya
         // pagó la carga del motor una sola vez; este test no recarga en frío.
@@ -3948,7 +3783,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::resident_listens_only_on_loopback");
-        let _reaper = arm_reaper("resident_listens_only_on_loopback");
         let inst = IsolatedInstance::new("loopback");
         let port = inst
             .tts_port()
@@ -4000,10 +3834,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_start_ok");
-        // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
-        // best-effort antes de fallar (vía `Drop` ante `panic!`).
-        // La ventana spawn→write ya no ciega al handler (PID en memoria).
-        let _reaper = arm_reaper("daemon_start_ok");
         // Instancia aislada propia (puerto efímero + sandbox + evento);
         // sin precondición de sesión: el sandbox nace detenido y vacío.
         let inst = IsolatedInstance::new("start_ok");
@@ -4042,8 +3872,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_restart_rewarms");
-        // Reaper best-effort en todo `panic!` fuera de los polls.
-        let _reaper = arm_reaper("daemon_restart_rewarms");
         // Instancia aislada propia; base observada en ejecución.
         let inst = IsolatedInstance::new("restart_rewarms");
         start_instance_running_only(&inst, &[]);
@@ -4075,7 +3903,7 @@ mod tts {
             }
         }
         // Status debe seguir running (por evento, sin sleeps fijos, sin exigir warm).
-        wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
+        wait_for_running_without_warm(&inst, WARM_FAILSAFE_RETRIES);
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "daemon_restart_rewarms");
         hit_end("tts::daemon_restart_rewarms");
@@ -4088,8 +3916,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_status_running");
-        // Reaper best-effort en todo `panic!` fuera de los polls.
-        let _reaper = arm_reaper("daemon_status_running");
         // Instancia aislada propia; `status` contra daemon en ejecución.
         let inst = IsolatedInstance::new("status_running");
         start_instance_running_only(&inst, &[]);
@@ -4240,8 +4066,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_start_with_auto_restart");
-        // Reaper best-effort en todo `panic!` fuera de los polls.
-        let _reaper = arm_reaper("daemon_start_with_auto_restart");
         // Instancia aislada propia; el sandbox nace detenido y vacío.
         let inst = IsolatedInstance::new("start_auto_restart");
         // Start con supervisor habilitado y max 1 (no debe fallar en estado sano).
@@ -4328,7 +4152,6 @@ mod tts {
     /// No toma `lock_tts`: ningún modelo llega a cargarse.
     #[test]
     fn daemon_start_port_in_use_fails_fast_with_state_conflict() {
-        let _reaper = arm_reaper("daemon_start_port_in_use");
         let mut inst = IsolatedInstance::new("start_port_in_use");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
@@ -4347,7 +4170,6 @@ mod tts {
     /// cita esa ruta.
     #[test]
     fn daemon_start_failure_is_written_to_daemon_log() {
-        let _reaper = arm_reaper("daemon_start_failure_log");
         let mut inst = IsolatedInstance::new("start_failure_log");
         seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
         seed_decoy_daemon_pidfile(&inst.dir);
@@ -4385,7 +4207,6 @@ mod tts {
     /// modelos, así que no necesita provisión.
     #[test]
     fn daemon_serve_port_in_use_exits_state_conflict() {
-        let _reaper = arm_reaper("daemon_serve_port_in_use");
         let mut inst = IsolatedInstance::new("serve_port_in_use");
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
@@ -4414,7 +4235,6 @@ mod tts {
     /// (exit 3) sin cargar modelos y sin tocar el `daemon.pid` previo.
     #[test]
     fn daemon_start_missing_warm_voice_exits_not_found() {
-        let _reaper = arm_reaper("daemon_start_missing_warm_voice");
         let inst = IsolatedInstance::new("start_missing_warm_voice");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
@@ -4449,7 +4269,6 @@ mod tts {
     /// contacta con 127.0.0.1:8765.
     #[test]
     fn daemon_stop_removes_stale_ready_and_pid_files() {
-        let _reaper = arm_reaper("daemon_stop_stale_files");
         let inst = IsolatedInstance::new("stop_stale_files");
         seed_decoy_daemon_pidfile(&inst.dir);
         let ready = inst.dir.join("daemon.ready");
@@ -4545,7 +4364,6 @@ mod tts {
     /// se mata: sale 0, borra el pidfile y el proceso ajeno sigue vivo.
     #[test]
     fn daemon_stop_spares_foreign_process_on_reused_daemon_pid() {
-        let _reaper = arm_reaper("daemon_stop_foreign_daemon_pid");
         let inst = IsolatedInstance::new("stop_foreign_daemon_pid");
         let mut foreign = ForeignProcess::spawn();
         seed_pidfile_with_fake_identities(&inst.dir, foreign.pid(), u32::MAX - 1);
@@ -4563,7 +4381,6 @@ mod tts {
     /// no se mata.
     #[test]
     fn daemon_stop_spares_foreign_process_on_reused_resident_pid() {
-        let _reaper = arm_reaper("daemon_stop_foreign_resident_pid");
         let inst = IsolatedInstance::new("stop_foreign_resident_pid");
         let mut foreign = ForeignProcess::spawn();
         seed_pidfile_with_fake_identities(&inst.dir, u32::MAX - 1, foreign.pid());
@@ -4577,12 +4394,27 @@ mod tts {
         assert!(foreign.alive(), "el proceso ajeno no debe morir");
     }
 
+    /// Soltar la instancia no mata a un proceso ajeno: el `Drop` solo cosecha un
+    /// PID cuya identidad actual coincide con la registrada, y el pidfile
+    /// registra para el PID ajeno una identidad falsa que ningún proceso real
+    /// tiene.
+    #[test]
+    fn isolated_instance_drop_spares_foreign_process() {
+        let mut foreign = ForeignProcess::spawn();
+        let inst = IsolatedInstance::new("drop_foreign");
+        seed_pidfile_with_fake_identities(&inst.dir, foreign.pid(), foreign.pid());
+        drop(inst);
+        assert!(
+            foreign.alive(),
+            "soltar la instancia no debe matar a un proceso ajeno con el PID registrado"
+        );
+    }
+
     /// `daemon start` ante un pidfile cuyo PID de daemon fue reasignado no mata al
     /// proceso ajeno al reclamar el residuo. Se usa el puerto ocupado para que el
     /// arranque falle al instante sin modelo, después del reclamo.
     #[test]
     fn daemon_start_spares_foreign_process_on_reused_pid() {
-        let _reaper = arm_reaper("daemon_start_foreign_pid");
         let mut inst = IsolatedInstance::new("start_foreign_pid");
         seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
         let mut foreign = ForeignProcess::spawn();
@@ -4609,12 +4441,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::simulated_abort_reclaims_and_leaves_no_orphans");
-        // Reaper best-effort en todo `panic!` fuera de los polls.
-        // (tensado CI Unix): tras cada reclamo se exige además residente
-        // ausente por imagen cuando el PID previo murió; en Windows local ese
-        // verde se declara no probatorio (runtime Unix diferido a CI).
-        // La ventana spawn→write ya no ciega al handler (PID en memoria).
-        let _reaper = arm_reaper("simulated_abort");
         // Instancia aislada propia; el sandbox nace detenido y vacío.
         let inst = IsolatedInstance::new("abort");
         let a = inst.args();
@@ -4647,7 +4473,7 @@ mod tts {
             "tras caída el start debe reclamar (started), no adherirse: {}",
             actual
         );
-        wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
+        wait_for_running_without_warm(&inst, WARM_FAILSAFE_RETRIES);
         assert!(
             !avi_daemon::pid_alive(pid_a),
             "el reclamo debe haber matado el árbol residual (pid {} sigue vivo)",
@@ -4665,16 +4491,26 @@ mod tts {
         // Fase 2 — timeout/aborto sin graceful: se mata el árbol sin POST
         // /shutdown (la pista queda obsoleta a propósito). El próximo `start`
         // parte de cero con `started`.
+        #[cfg(unix)]
+        let resident_b = inst.read_resident_pid();
         avi_daemon::kill_tree_by_pid(pid_b);
         avi_daemon::wait_for_pid_death(pid_b, std::time::Duration::from_secs(8));
         // (tensado CI Unix, sin simular Unix en local): tras matar el
-        // árbol sin graceful, el residente no debe seguir vivo por imagen antes
-        // del rearranque (el kill de grupo Unix arrastra al residente).
+        // árbol sin graceful, el residente de la instancia no debe seguir
+        // vivo ni escuchando antes del rearranque (el kill de grupo Unix
+        // arrastra al residente).
         #[cfg(unix)]
-        assert!(
-            !resident_present_by_image(),
-            "tras matar el árbol sin graceful el residente no debe seguir por imagen"
-        );
+        {
+            let resident_port = inst
+                .tts_port()
+                .expect("la instancia debe fijar QWEN3_TTS_PORT");
+            let (alive, listening) =
+                wait_resident_gone(resident_b, resident_port, HARD_KILL_DEADLINE);
+            assert!(
+                !alive && !listening,
+                "tras matar el árbol sin graceful el residente de la instancia no debe seguir vivo ni escuchando: vivo={alive}, puerto abierto={listening}"
+            );
+        }
         milestone(&format!(
             "aborto simulado (fase 2): árbol matado sin graceful (pid {})",
             pid_b
@@ -4691,63 +4527,10 @@ mod tts {
             "tras aborto el start debe partir de cero (started): {}",
             actual2
         );
-        wait_for_running_without_warm(WARM_FAILSAFE_RETRIES, &a);
+        wait_for_running_without_warm(&inst, WARM_FAILSAFE_RETRIES);
         // Cierre: cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "simulated_abort");
         hit_end("tts::simulated_abort_reclaims_and_leaves_no_orphans");
-    }
-
-    /// Plazo máximo para que, tras matar el daemon a la fuerza, el motor
-    /// residente muera por sí mismo y su puerto deje de escuchar.
-    const HARD_KILL_DEADLINE: Duration = Duration::from_secs(10);
-
-    /// PIDs de todos los procesos de la máquina con imagen `qwen_tts(.exe)`.
-    fn engine_pids() -> Vec<u32> {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            let output = Command::new("tasklist")
-                .args([
-                    "/FI",
-                    &format!("IMAGENAME eq {}", avi_tts::RESIDENT_IMAGE_NAME),
-                    "/FO",
-                    "CSV",
-                    "/NH",
-                ])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .creation_flags(avi_process::CREATE_NO_WINDOW)
-                .output();
-            match output {
-                // Cada línea es `"imagen","pid","sesión",...`; las demás (sin tareas) no cuadran.
-                Ok(o) => String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter_map(|line| {
-                        let mut fields = line.split("\",\"");
-                        fields.next()?;
-                        fields.next()?.trim_matches('"').parse().ok()
-                    })
-                    .collect(),
-                Err(_) => Vec::new(),
-            }
-        }
-        #[cfg(unix)]
-        {
-            let output = Command::new("pgrep")
-                .args(["-x", avi_tts::RESIDENT_IMAGE_NAME])
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
-                .output();
-            match output {
-                Ok(o) => String::from_utf8_lossy(&o.stdout)
-                    .lines()
-                    .filter_map(|line| line.trim().parse().ok())
-                    .collect(),
-                Err(_) => Vec::new(),
-            }
-        }
     }
 
     /// Mata un único proceso por PID, sin arrastrar a sus hijos: Windows
@@ -4777,8 +4560,8 @@ mod tts {
     /// Espera hasta `deadline` a que el residente `resident` haya muerto y su
     /// puerto deje de escuchar. Devuelve `(residente_vivo, puerto_abierto)` en
     /// el último sondeo. A diferencia de `verify_zero_orphans_instance`, tolera
-    /// que el pidfile siga existiendo tras un kill duro y no mira la imagen
-    /// global, sino el PID registrado y el puerto de la instancia.
+    /// que el pidfile siga existiendo tras un kill duro. Solo mira lo que es de
+    /// la instancia: el PID de su residente registrado y su `QWEN3_TTS_PORT`.
     fn wait_resident_gone(resident: u32, port: u16, deadline: Duration) -> (bool, bool) {
         let t0 = Instant::now();
         loop {
@@ -4788,47 +4571,6 @@ mod tts {
                 return (alive, listening);
             }
             std::thread::sleep(Duration::from_millis(100));
-        }
-    }
-
-    /// Guard que, también cuando una aserción falla, deja la máquina como
-    /// estaba: mata por PID el daemon de la instancia y todo `qwen_tts` que no
-    /// existiera al crearlo, y espera su muerte. Debe declararse después de la
-    /// `IsolatedInstance` para soltarse antes que ella.
-    struct HardKillGuard {
-        data_dir: PathBuf,
-        baseline: Vec<u32>,
-    }
-
-    impl HardKillGuard {
-        fn new(data_dir: &Path) -> Self {
-            HardKillGuard {
-                data_dir: data_dir.to_path_buf(),
-                baseline: engine_pids(),
-            }
-        }
-
-        /// Procesos `qwen_tts` vivos que no existían al crear el guard.
-        fn new_engine_pids(&self) -> Vec<u32> {
-            engine_pids()
-                .into_iter()
-                .filter(|pid| !self.baseline.contains(pid))
-                .collect()
-        }
-    }
-
-    impl Drop for HardKillGuard {
-        fn drop(&mut self) {
-            if let Some(pid) = read_daemon_pid_dir(&self.data_dir) {
-                if avi_daemon::pid_alive(pid) {
-                    avi_daemon::kill_tree_by_pid(pid);
-                    avi_daemon::wait_for_pid_death(pid, Duration::from_secs(8));
-                }
-            }
-            for pid in self.new_engine_pids() {
-                avi_tts::resident::kill_tree_resident_by_pid(pid);
-                avi_daemon::wait_for_pid_death(pid, Duration::from_secs(8));
-            }
         }
     }
 
@@ -4843,23 +4585,23 @@ mod tts {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        fail_with_reaper(
-            "wait_for_live_resident",
-            format!("el residente no llegó a estar vivo y escuchando en {port} tras 90 s"),
-        );
+        panic!("el residente no llegó a estar vivo y escuchando en {port} tras 90 s");
     }
 
     /// Cuerpo común de las pruebas de kill duro del daemon sin clonado: arranca
     /// la instancia con `extra`, mata solo el PID del daemon y exige que el
     /// residente muera y su puerto deje de escuchar dentro del plazo.
+    ///
+    /// Si el residente sobreviviera al kill duro, la cosecha por identidad del
+    /// `Drop` de la instancia lo mata igualmente porque está registrado en su
+    /// `daemon.pid`: la prueba falla por la aserción, pero no deja el motor
+    /// vivo ni necesita un guardián propio.
     fn assert_hard_kill_stops_resident(tag: &'static str, extra: &[&str]) {
         require_tts_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy(&format!("tts::{tag}"));
-        let _reaper = arm_reaper(tag);
         let inst = IsolatedInstance::new(tag);
-        let _guard = HardKillGuard::new(&inst.dir);
         start_instance_running_only(&inst, extra);
         let port = inst
             .tts_port()
@@ -4910,9 +4652,6 @@ mod tts {
         require_ct2();
         let _tts = lock_tts();
         hit_start_heavy("tts::translate_delegates_to_daemon");
-        // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
-        // best-effort antes de fallar (vía `Drop` ante `panic!`).
-        let _reaper = arm_reaper("translate_delegates_to_daemon");
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = IsolatedInstance::new("translate_delegates");
         start_instance_running_only(&inst, &[]);
@@ -5004,9 +4743,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::clone_delegates_to_daemon");
-        // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
-        // best-effort antes de fallar (vía `Drop` ante `panic!`).
-        let _reaper = arm_reaper("clone_delegates_to_daemon");
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = IsolatedInstance::new("clone_delegates");
         start_instance(&inst, &[]);
@@ -5059,7 +4795,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::clone_daemon_truncated_audio_exits_2");
-        let _reaper = arm_reaper("clone_daemon_truncated");
         let inst = IsolatedInstance::new("clone_truncated");
         start_instance(&inst, &[]);
         let a = inst.args();
@@ -5096,9 +4831,6 @@ mod tts {
         require_audio_device();
         let _tts = lock_tts();
         hit_start_dub("tts::dub_daemon_passthrough");
-        // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
-        // best-effort antes de fallar (vía `Drop` ante `panic!`).
-        let _reaper = arm_reaper("dub_daemon_passthrough");
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = IsolatedInstance::new("dub_passthrough");
         start_instance(&inst, &[]);
@@ -5150,9 +4882,6 @@ mod tts {
         require_audio_device();
         let _tts = lock_tts();
         hit_start_dub("tts::dub_daemon_with_translation");
-        // Todo `panic!`/`assert!` fuera de los polls ejecuta el reaper
-        // best-effort antes de fallar (vía `Drop` ante `panic!`).
-        let _reaper = arm_reaper("dub_daemon_with_translation");
         // Daemon caliente de la instancia propia (sin ciclo compartido ni sleeps).
         let inst = IsolatedInstance::new("dub_translation");
         start_instance(&inst, &[]);
@@ -5201,7 +4930,6 @@ mod tts {
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::perf_daemon_status_while_running");
-        let _reaper = arm_reaper("perf_daemon_status_while_running");
         // Instancia aislada propia; `status` sobre daemon en ejecución.
         let inst = IsolatedInstance::new("perf_status");
         start_instance_running_only(&inst, &[]);
@@ -5641,10 +5369,12 @@ fn invalid_value_error_is_spanish() {
     );
 }
 
-/// Demostración del guard de tiempo F4b (prueba rápida, sin daemons ni minutos):
-/// fija un techo diminuto a propósito y exige `panic!` con diagnóstico
-/// (último hito + fase exacta). `#[should_panic]` mantiene la suite en verde
-/// mientras demuestra que el mecanismo falla en vez de colgarse.
+/// Demostración del guard de tiempo (prueba rápida, sin instancia, daemons ni
+/// minutos): fija un techo diminuto a propósito y exige `panic!` con
+/// diagnóstico (último hito + fase exacta). `#[should_panic]` mantiene la suite
+/// en verde mientras demuestra que el mecanismo falla en vez de colgarse. El
+/// techo vive en estado local al hilo y libtest ejecuta cada prueba en un hilo
+/// propio, así que no afecta a ninguna otra prueba.
 #[test]
 #[should_panic(expected = "guardia de tiempo")]
 fn milestone_guard_expires_with_diagnostics() {
