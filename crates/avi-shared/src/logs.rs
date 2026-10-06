@@ -286,6 +286,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// El PID propio nunca se consulta al sondeo: aunque este lo declare vivo
+    /// (el proceso que poda siempre lo está), sus logs antiguos siguen siendo
+    /// podables y la retención se cumple.
+    #[test]
+    fn prune_ignores_the_probe_for_the_own_pid() {
+        let dir = unique_dir();
+        let all_alive = |_pid: u32| true;
+        for ms in 1..=12u128 {
+            create_log_at_with(&dir, "daemon", std::process::id(), ms, &all_alive).unwrap();
+        }
+        let present = names(&dir);
+        assert_eq!(present.len(), LOG_RETENTION, "{present:?}");
+        assert!(
+            !present.contains(&log_name(std::process::id(), 1)),
+            "{present:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// El renombrado deja el nombre con el PID del hijo; el contenido del log no
     /// cambia porque el proceso escribe por su handle, no por su nombre.
     #[test]
