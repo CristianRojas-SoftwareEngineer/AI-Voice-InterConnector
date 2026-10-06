@@ -51,6 +51,13 @@ const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 fn bin_command() -> Command {
     let mut cmd = Command::new(BIN);
     cmd.env_remove("RUST_LOG");
+    // Sin consola propia, un invocador sin consola vería abrirse y cerrarse una
+    // ventana por cada ejecución del binario.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(avi_process::CREATE_NO_WINDOW);
+    }
     cmd
 }
 
@@ -300,6 +307,7 @@ fn assert_no_rebind_while_free(port: u16, window: Duration) {
 fn resident_present_by_image() -> bool {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         let output = std::process::Command::new("tasklist")
             .args([
                 "/FI",
@@ -311,6 +319,7 @@ fn resident_present_by_image() -> bool {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            .creation_flags(avi_process::CREATE_NO_WINDOW)
             .output();
         match output {
             Ok(o) if o.status.success() => {
@@ -4446,10 +4455,14 @@ mod tts {
     impl ForeignProcess {
         fn spawn() -> Self {
             #[cfg(windows)]
-            let child = Command::new("ping")
-                .args(["-n", "300", "127.0.0.1"])
-                .stdout(std::process::Stdio::null())
-                .spawn();
+            let child = {
+                use std::os::windows::process::CommandExt;
+                Command::new("ping")
+                    .args(["-n", "300", "127.0.0.1"])
+                    .stdout(std::process::Stdio::null())
+                    .creation_flags(avi_process::CREATE_NO_WINDOW)
+                    .spawn()
+            };
             #[cfg(not(windows))]
             let child = Command::new("sleep").arg("300").spawn();
             Self(child.expect("lanzar el proceso ajeno"))
@@ -4663,6 +4676,7 @@ mod tts {
     fn engine_pids() -> Vec<u32> {
         #[cfg(windows)]
         {
+            use std::os::windows::process::CommandExt;
             let output = Command::new("tasklist")
                 .args([
                     "/FI",
@@ -4674,6 +4688,7 @@ mod tts {
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::null())
+                .creation_flags(avi_process::CREATE_NO_WINDOW)
                 .output();
             match output {
                 // Cada línea es `"imagen","pid","sesión",...`; las demás (sin tareas) no cuadran.
@@ -4711,12 +4726,16 @@ mod tts {
     /// la muerte abrupta del daemon sin que el árbol enmascare al vigía.
     fn kill_pid_only(pid: u32) {
         #[cfg(windows)]
-        let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status();
+        {
+            use std::os::windows::process::CommandExt;
+            let _ = Command::new("taskkill")
+                .args(["/F", "/PID", &pid.to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(avi_process::CREATE_NO_WINDOW)
+                .status();
+        }
         #[cfg(unix)]
         let _ = Command::new("kill")
             .args(["-9", &pid.to_string()])

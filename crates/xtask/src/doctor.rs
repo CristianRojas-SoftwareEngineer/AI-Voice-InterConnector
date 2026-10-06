@@ -93,12 +93,21 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
     None
 }
 
+/// Comando de sonda sin ventana de consola propia en Windows: un invocador sin
+/// consola vería abrirse y cerrarse una ventana por cada sonda.
+fn probe_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(avi_process::CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Salida podada de `programa args…`; `None` si no se pudo lanzar o falló.
 fn probe_output(program: &str, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()?;
+    let out = probe_command(program).args(args).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -178,10 +187,7 @@ pub(crate) fn msys2_root() -> PathBuf {
 /// Versión instalada de un paquete MSYS2 (`pacman -Q nombre` → `nombre
 /// versión`); `None` si no está instalado o no se pudo consultar.
 fn msys2_package_version(pacman: &Path, package: &str) -> Option<String> {
-    let out = std::process::Command::new(pacman)
-        .args(["-Q", package])
-        .output()
-        .ok()?;
+    let out = probe_command(pacman).args(["-Q", package]).output().ok()?;
     if !out.status.success() {
         return None;
     }

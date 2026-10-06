@@ -295,6 +295,13 @@ impl Sandbox {
             .stdin(std::process::Stdio::null())
             .stdout(file)
             .stderr(err_file);
+        // Sin consola propia, un invocador sin consola vería abrirse y cerrarse una
+        // ventana por cada ejecución del binario.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(avi_process::CREATE_NO_WINDOW);
+        }
         for (k, v) in &self.envs {
             cmd.env(k, v);
         }

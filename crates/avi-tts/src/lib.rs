@@ -1604,6 +1604,12 @@ mod tests {
         if watch_stdin {
             cmd.arg("--watch-stdin");
         }
+        // Sin consola propia, un invocador sin consola vería abrirse una ventana.
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(avi_process::CREATE_NO_WINDOW);
+        }
         let child = cmd
             .stdin(stdin)
             .stdout(Stdio::null())
