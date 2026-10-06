@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 /// registro informa del borrado y ningún `.ps1` del auxiliar antiguo aparece.
 #[test]
 fn cleaner_removes_path_after_watched_process_death() {
-    let dir = std::env::temp_dir().join(format!("avi-cleaner-it-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let target_root = tempfile::tempdir().unwrap();
+    let log_root = tempfile::tempdir().unwrap();
+    let dir = target_root.path().to_path_buf();
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("a.txt"), "a").unwrap();
 
@@ -25,9 +26,9 @@ fn cleaner_removes_path_after_watched_process_death() {
         .unwrap();
     let watched = child.id();
 
-    let log = std::env::temp_dir().join(format!("avi-cleaner-it-{}.log", std::process::id()));
-    let _ = std::fs::remove_file(&log);
-    avi_process::schedule_clean_removal(&dir, watched, &log).expect("programar el limpiador");
+    let log = log_root.path().join("cleaner.log");
+    let copy =
+        avi_process::schedule_clean_removal(&dir, watched, &log).expect("programar el limpiador");
     let _ = child.wait();
 
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -51,8 +52,7 @@ fn cleaner_removes_path_after_watched_process_death() {
 
     let dir_left = dir.exists();
     let log_text = std::fs::read_to_string(&log).unwrap_or_default();
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&log);
+    remove_cleaner_copy(&copy);
 
     assert!(!dir_left, "el directorio debe haberse borrado");
     assert!(
@@ -69,14 +69,15 @@ fn cleaner_removes_path_after_watched_process_death() {
 /// agotar los reintentos, en vez de dejarla en silencio.
 #[test]
 fn cleaner_reports_failure_when_path_stays_blocked() {
-    let dir = std::env::temp_dir().join(format!("avi-cleaner-blocked-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let target_root = tempfile::tempdir().unwrap();
+    let log_root = tempfile::tempdir().unwrap();
+    let dir = target_root.path().to_path_buf();
     std::fs::write(dir.join("held.txt"), "x").unwrap();
     // El handle abierto retiene el archivo en Windows (sin compartir el
     // borrado), así que el borrado fracasa mientras viva este guardián.
     // `File::open` comparte el borrado por defecto y no retendría nada: se
-    // abre con modo de compartición explícito sin `FILE_SHARE_DELETE`.
+    // abre con modo de compartición explícito sin `FILE_SHARE_DELETE`. Se
+    // declara después de los directorios para que se suelte antes que ellos.
     let _held = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(
@@ -87,9 +88,9 @@ fn cleaner_reports_failure_when_path_stays_blocked() {
         .unwrap();
 
     let dead_pid = 2_000_000_000u32;
-    let log = std::env::temp_dir().join(format!("avi-cleaner-blocked-{}.log", std::process::id()));
-    let _ = std::fs::remove_file(&log);
-    avi_process::schedule_clean_removal(&dir, dead_pid, &log).expect("programar el limpiador");
+    let log = log_root.path().join("cleaner.log");
+    let copy =
+        avi_process::schedule_clean_removal(&dir, dead_pid, &log).expect("programar el limpiador");
 
     let deadline = Instant::now() + Duration::from_secs(20);
     while Instant::now() < deadline && !log.exists() {
@@ -98,9 +99,7 @@ fn cleaner_reports_failure_when_path_stays_blocked() {
 
     let log_text = std::fs::read_to_string(&log).unwrap_or_default();
     let dir_left = dir.exists();
-    drop(_held);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&log);
+    remove_cleaner_copy(&copy);
 
     assert!(
         dir_left,
@@ -110,4 +109,24 @@ fn cleaner_reports_failure_when_path_stays_blocked() {
         log_text.contains("no se pudo borrar") || log_text.contains("fallo"),
         "el registro debe informar del fallo: {log_text:?}"
     );
+}
+
+/// Borra la copia `avi-cleaner-*.exe` que devuelve `schedule_clean_removal`: el
+/// trabajador no puede borrarse a sí mismo en Windows y, mientras siga vivo,
+/// el sistema la mantiene bloqueada. Se sondea con plazo acotado de 10 s.
+fn remove_cleaner_copy(copy: &std::path::Path) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::fs::remove_file(copy) {
+            Ok(()) => return,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "no se pudo borrar la copia del limpiador {copy:?}: {e}"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
 }

@@ -2,16 +2,8 @@
 //! contiene solo lo declarado, el hijo informa su salida y el registro
 //! declarado recibe la salida del hijo. Sin esperas fijas, sin modelos, sin red.
 
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// Contador global de temporales: PID + nanosegundos pueden colisionar entre
-/// hilos (o entre llamadas rápidas), así que cada nombre lleva su secuencia.
-static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-fn next_temp_id() -> usize {
-    TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-}
 
 /// La lista devuelve exactamente los handles declarados, sin añadir ni quitar
 /// ninguno: lo que entra es lo que hereda el hijo.
@@ -30,13 +22,13 @@ fn allowed_list_contains_only_declared_handles() {
 #[test]
 fn spawn_with_allowlist_reports_child_exit() {
     let (program, args) = exit_command(0);
-    let log_file = temp_log_file("exit-zero");
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
     let mut child = spawn(&program, args, log_file);
     let status = child.wait().expect("debe poder esperar al hijo");
     assert!(status.success(), "exit 0 debe dar éxito: {status:?}");
 
     let (program, args) = exit_command(3);
-    let log_file = temp_log_file("exit-three");
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
     let mut child = spawn(&program, args, log_file);
     let status = child.wait().expect("debe poder esperar al hijo");
     assert_eq!(status.code(), Some(3), "exit 3 debe dar código 3");
@@ -46,27 +38,25 @@ fn spawn_with_allowlist_reports_child_exit() {
 /// sí se hereda y funciona.
 #[test]
 fn listed_log_handle_receives_child_output() {
-    let dir = std::env::temp_dir().join(format!(
-        "avi-allowlist-output-{}-{}",
-        std::process::id(),
-        next_temp_id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("debe crear el directorio temporal");
-    let log_path = dir.join("child.log");
-    let log_file = std::fs::File::create(&log_path).expect("debe crear el registro");
+    let mut reader = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let log_file = reader.try_clone().expect("debe clonar el registro");
 
     let (program, args) = echo_command("allowlist-marker");
     let mut child = spawn(&program, args, log_file);
     let status = child.wait().expect("debe poder esperar al hijo");
     assert!(status.success(), "el eco debe salir 0: {status:?}");
 
-    let text = std::fs::read_to_string(&log_path).expect("debe leer el registro");
+    reader
+        .seek(SeekFrom::Start(0))
+        .expect("debe rebobinar el registro");
+    let mut text = String::new();
+    reader
+        .read_to_string(&mut text)
+        .expect("debe leer el registro");
     assert!(
         text.contains("allowlist-marker"),
         "el registro debe contener la salida del hijo: {text:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Un handle heredable FUERA de la allowlist no puede llegar al hijo. Si el
@@ -106,12 +96,8 @@ fn run_pipe_probe(listed: bool) -> String {
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::System::Pipes::CreatePipe;
 
-    let dir = std::env::temp_dir().join(format!(
-        "avi-allowlist-neg-{}-{}",
-        std::process::id(),
-        next_temp_id()
-    ));
-    std::fs::create_dir_all(&dir).expect("debe crear el directorio temporal");
+    let temp_dir = tempfile::tempdir().expect("debe crear el directorio temporal");
+    let dir = temp_dir.path().to_path_buf();
 
     // Tubería creada por el padre: el extremo de lectura queda heredable y a
     // propósito entra en `extra_allowed` solo si `listed`; el de escritura se
@@ -159,8 +145,7 @@ public static class Probe {
 "#
     .replace("__DIR__", &dir.display().to_string());
 
-    let log_path = dir.join("child.log");
-    let log_file = std::fs::File::create(&log_path).expect("debe crear el registro");
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
     let request = avi_process::RestrictedSpawnRequest {
         program: PathBuf::from("powershell"),
         args: vec![String::from("-NoProfile"), String::from("-Command"), script],
@@ -183,7 +168,6 @@ public static class Probe {
 
     let witness =
         std::fs::read_to_string(dir.join("stdin.txt")).expect("el doble debe escribir el testigo");
-    let _ = std::fs::remove_dir_all(&dir);
     witness.trim().to_string()
 }
 
@@ -196,7 +180,7 @@ public static class Probe {
 #[test]
 fn unix_child_is_group_leader() {
     let (program, args) = (PathBuf::from("sleep"), vec![String::from("30")]);
-    let log_file = temp_log_file("group-leader");
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
     let mut child = spawn(&program, args, log_file);
     let pid = child.id() as i32;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -232,19 +216,6 @@ fn spawn(
         extra_allowed: Vec::new(),
     };
     avi_process::spawn_with_allowlist(request).expect("debe lanzar al hijo")
-}
-
-fn temp_log_file(name: &str) -> std::fs::File {
-    let path = std::env::temp_dir().join(format!(
-        "avi-allowlist-{name}-{}-{}-{}.log",
-        std::process::id(),
-        next_temp_id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-    ));
-    std::fs::File::create(&path).expect("debe crear el registro temporal")
 }
 
 fn exit_command(code: u32) -> (PathBuf, Vec<String>) {

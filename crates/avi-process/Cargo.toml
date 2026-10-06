@@ -22,3 +22,6 @@ windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Securit
 # `main` (también antes del arnés de pruebas), sin depender del binario que
 # la lanzó. Solo se usa bajo `cfg(windows)`, en `deferred.rs`.
 ctor = "1.0"
+
+[dev-dependencies]
+tempfile = "3"

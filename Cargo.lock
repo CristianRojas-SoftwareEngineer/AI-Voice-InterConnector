@@ -273,6 +273,7 @@ dependencies = [
  "ctor",
  "libc",
  "serde",
+ "tempfile",
  "windows-sys 0.52.0",
 ]
 
