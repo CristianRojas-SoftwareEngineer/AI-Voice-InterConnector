@@ -36,16 +36,16 @@ retrocompatibilidad y fallbacks.
 - [2. Hallazgos con solución estructural trivial](#2-hallazgos-con-solución-estructural-trivial)
   - [H1 — stderr fusionado en handover](#h1--stderr-fusionado-en-handover)
   - [H2 — Dos pruebas sin puerta require](#h2--dos-pruebas-sin-puerta-require)
-  - [H3a — kill bloqueante en stop async](#h3a--kill-bloqueante-en-stop-async)
   - [H6 — Avisos por stop](#h6--avisos-por-stop)
   - [H7 y H11 — Control positivo común](#h7-y-h11--control-positivo-común)
   - [H9 — Caso rancio sin documentar](#h9--caso-rancio-sin-documentar)
-  - [H10 — Tests por substring](#h10--tests-por-substring)
   - [H12 — Arista avi-shared a avi-process](#h12--arista-avi-shared-a-avi-process)
-- [3. Hallazgos parciales o con decisiones abiertas](#3-hallazgos-parciales-o-con-decisiones-abiertas)
+- [3. Hallazgos parciales y pendientes de decisión](#3-hallazgos-parciales-y-pendientes-de-decisión)
   - [H5 — Degradación de la garantía de T7](#h5--degradación-de-la-garantía-de-t7)
   - [H8 — let _ de disco fuera de T9](#h8--let-_-de-disco-fuera-de-t9)
   - [H13 — Puerto literal frente a entorno](#h13--puerto-literal-frente-a-entorno)
+  - [H3a — kill bloqueante en stop async (diseño pendiente)](#h3a--kill-bloqueante-en-stop-async-diseño-pendiente)
+  - [H10 — Tests por substring (garantía sin reemplazo)](#h10--tests-por-substring-garantía-sin-reemplazo)
 - [4. Hallazgos no triviales: análisis y diseño](#4-hallazgos-no-triviales-análisis-y-diseño)
   - [H3b — Muerte sin binario externo](#h3b--muerte-sin-binario-externo)
   - [H4 — Código solo-Unix sin ejecutar](#h4--código-solo-unix-sin-ejecutar)
@@ -63,21 +63,42 @@ retrocompatibilidad y fallbacks.
 ### H1 — stderr fusionado en handover
 
 El plan exige "los tres extremos, por extremo" (plan:166); el código ata
-ambos al mismo fichero en Windows (`crates/avi-process/src/restricted_spawn.rs:334-335`)
-y en Unix (`:284-286`), y lo confiesa en `crates/avi-lifecycle/src/update.rs:158-166`
-("equivalente a `2>&1`"). `RestrictedSpawnRequest` (`:36-51`) no puede expresar
+ambos al mismo fichero en Windows (`crates/avi-process/src/restricted_spawn.rs:330-335`,
+`stderr_handle = stdout_handle`) y en Unix (`:284-286`, `try_clone` del único
+`log_file` para stdout), y lo confiesa en `crates/avi-lifecycle/src/update.rs:158-166`
+("equivalente a `2>&1`"). `RestrictedSpawnRequest` (`:35-51`) no puede expresar
 salidas separadas. Cambio funcional silencioso en `self update` (antes heredaba
 los tres por separado por vía clásica, plan:162). **Categoría 1.
 VERIFICADO.** Objetivo incumplido: T6-objetivos (plan:166).
 
-**Solución.** Añadir el segundo campo al request; el threading ya existe
+**Solución.** Sustituir `log_file` por dos campos, `stdout_file` y `stderr_file`
+(sin conservar `log_file`: ni shims ni alias). El threading ya existe
 (`launch_process_with_list` recibe los tres handles por separado, `:344-351`);
-solo el *tipo* los fusiona en un `log_file`. Actualizar los 11 literales
-(3 en `spawn.rs`, 4 en `avi-tts`, 2 en tests, `update.rs` y `update_fetch`;
-todos en el repo, todos guiados por el compilador). `verify_boot` pasa el
-mismo fichero dos veces a propósito y `handover` duplica también el stderr
-del padre: la fusión pasa de restricción oculta a decisión explícita por call
-site. Sin shims.
+solo el *tipo* los fusiona. En Unix, `cmd.stdout`/`cmd.stderr` consumen un campo
+cada uno y el `try_clone` de `:284` desaparece de esa rama; en Windows,
+`stderr_handle` se lee de `stderr_file` y ambos handles entran en `marked`.
+Los 11 literales los guía el compilador: 6 de producción (`spawn.rs:60/:73`,
+`avi-tts/src/lib.rs:983/:1125`, `update.rs:125`, `update_fetch.rs:220`) y 5 de
+prueba (`spawn.rs:171`, `avi-tts/src/lib.rs:2243/:2272`,
+`avi-process/tests/restricted_spawn.rs:138/:202`). Barrido verificado: 11
+construcciones + 1 definición en todo `*.rs`; nada en `main.rs`, `xtask`,
+`tests/` ni benches. La fusión pasa de restricción oculta a decisión explícita
+por sitio:
+
+- Comparten destino con `try_clone()` (no el mismo handle dos veces): los dos
+  sitios de `spawn_background` (conserva su firma de un solo `log: File`,
+  `spawn.rs:31-37`; rellena el segundo campo en sus dos ramas, `:60-67` y
+  `:73-80`), los dos de producción de `avi-tts` y los 5 de prueba.
+  `verify_boot` (`update_fetch.rs:220`) captura `--version` en un único fichero
+  a propósito (se lee y se borra), así que pasa el fichero y su clon; su
+  comentario `:209-212` ("ata stdout y stderr a un único fichero") se reescribe.
+- `handover` es el único que NO comparte: restituye la herencia por extremo.
+  `inherited_stdio_file` (`update.rs:167`) pasa a recibir el extremo —`dup(1)`/
+  `dup(2)` en Unix; en Windows el handle de `stdout()`/`stderr()` duplicado
+  heredable— y se llama dos veces; se corrigen su doc (`:158-166`), el comentario
+  del lanzamiento en `handover` ("stdout y stderr del hijo apuntan a ese
+  fichero") y los mensajes "del stdout del traspaso".
+- `deferred` no usa el struct (lanza directo con `launch_cleaner`): queda fuera.
 
 ### H2 — Dos pruebas sin puerta require
 
@@ -88,43 +109,54 @@ llegan a `with_stores().expect(...)` (`:85-89`) sin `#[ignore]` ni
 `require_parakeet()` (barrido completo de puertas: `:74/:117/:289/:416/:471/:539/:852/:1200`;
 ninguna en estos dos tests). Bajo `native-stt` sin modelo,
 `ParakeetEngine::new(...)?` (`crates/avi-daemon/src/lib.rs:120-122`) hace
-fallar el `expect` con mensaje opaco, no con el "requiere Parakeet" que la
-cabecera promete (`golden.rs:10-24`, que solo nombra a `test_state` como
-ayudante con puerta). **Categoría 1. VERIFICADO** (el texto exacto del pánico
+fallar el `expect` con el error de carga del modelo, no con el `requiere
+Parakeet: …` y la instrucción de provisionado que la cabecera promete
+(`golden.rs:10-24`, que solo nombra a `test_state` como ayudante con puerta). **Categoría 1. VERIFICADO** (el texto exacto del pánico
 en máquina sin provisionar: HIPÓTESIS). Objetivo incumplido: T13-objetivos
 (plan:303-304, "falla con `requiere`").
 
 **Solución.** Una línea `#[cfg(feature = "native-stt")] require_parakeet();`
 dentro de `contract_state` (`golden.rs:83`) cubre sus tres llamadores
-(`test_state:76`, `state_without_base_model:99`, `state_with_held_tts:1030`).
-En featureless compila a nada. Punto único: imposible olvidar la puerta.
-
-### H3a — kill bloqueante en stop async
-
-`spawn.rs:112-114` documenta la partición: lo bloqueante vive fuera del
-runtime (`wait_for_pid_death` es sync solo por diseño). `kill_tree_by_pid_exact`
-es `Command::new("taskkill")...status()` bloqueante sin plazo
-(`avi-process/src/lib.rs:198-205`) y `stop()` es async (usa `.await` en
-`daemon_stop.rs:348`; el kill va en `:370`). **Categoría 1. VERIFICADO** (que
-`taskkill` llegue a colgarse: HIPÓTESIS).
-
-**Solución.** Envolver la llamada en `spawn_blocking` con el deadline
-existente, como ya hace `handover` (`update.rs:116`). Restaura la partición
-documentada; no toca la primitiva.
+(`test_state:76`, `state_without_base_model:99`, `state_with_held_tts:1030`) y,
+con ellos, los dos tests. En featureless compila a nada. Punto único: imposible
+olvidar la puerta. `clone_state` llama a `with_stores` directo (`:120`) y conserva
+su puerta propia (`:117`), de modo que todos los caminos al constructor quedan
+cubiertos. Las puertas por test (`:74/:289/:416/:471/:539/:852/:1200`) quedan
+redundantes o inertes y no se tocan (borrarlas no es parte del cambio). La
+cabecera (`:16-23`) se reescribe para decir que la puerta vive en `contract_state`
+y la heredan sus tres derivados, no solo `test_state`.
 
 ### H6 — Avisos por stop
 
 Tres `eprintln!` en `read_pid_file`
-(`crates/avi-lifecycle/src/daemon_stop.rs:150/161/170`) × ~80 lecturas por
-`stop` (una línea por lectura en el caso realista: los tres avisos no
-coexisten) cuando el daemon está vivo y el pidfile se descarta. El lazo
-(`:390-397`) sale en la primera vuelta si nada está vivo (`:393`), así que el
-spam exige daemon vivo: el escenario de upgrade. Antes de T1 esa función no
-avisaba. **Categoría 1. VERIFICADO.**
+(`crates/avi-lifecycle/src/daemon_stop.rs:150/161/170`; los tres avisos no
+coexisten: cada uno precede a un `return None`), y cada lectura de un pidfile
+descartado emite uno. Un `stop` con el pidfile descartado lo lee 6 veces fuera
+del lazo (`resolve_addr` en `:343` vía `read_addr`, `:344`, `:366`, `:379`,
+`:400`, `:406`) y 2 por vuelta del lazo de verificación (`:390-397`:
+`daemon_registered` en `:391` y `resident_alive_by_pid` en `:392`; ≈ 80 avisos
+en ~40 vueltas de 200 ms en 8 s). El lazo sale en la primera vuelta si nada
+está vivo (`:393`), así que el spam exige daemon vivo: el escenario de upgrade
+con un `daemon.pid` anterior sin identidad. Que antes de T1 esa función no
+avisara es origen histórico no verificable por lectura (sin diff disponible; no
+afecta a la solución). **Categoría 1. VERIFICADO.**
 
-**Solución.** Separar observación silenciosa de reporte: el lazo usa la
-variante silenciosa (o recibe el motivo de descarte) y el veredicto avisa una
-sola vez. Guiado por el compilador en todos los llamadores.
+**Solución.** Separar observación de reporte. Extraer de `read_pid_file` una
+lectura sin efectos que devuelva el desenlace (ausente, descartado con su
+motivo, presente); `read_pid_file` queda como esa lectura más el `eprintln!` del
+motivo, con el mismo texto y la misma firma, de modo que `main.rs:2649/:2684`
+(decisiones de la CLI) y los 9 sitios de test que la llaman directo no cambian.
+Los 5 helpers internos (`read_pid`, `read_resident_pid`, `read_addr`,
+`daemon_registered`, `resident_registered`) pasan a la lectura sin efectos, que
+los vuelve silenciosos. `stop` avisa una sola vez, al entrar y antes de
+`resolve_addr` (`:343`): observa el desenlace y reporta si fue descartado; el
+resto de sus lecturas (`:344`, `:366`, `:379`, `:400`, `:406` y el lazo) quedan
+silenciosas. Avisar también en `:344` y `:400`, como proponía una versión
+anterior de este análisis, dejaría 3 avisos idénticos por parada. `read_pid`,
+`read_resident_pid` y `read_addr` no tienen llamadores fuera de `daemon_stop.rs`
+(barrido de `crates`, `src`, `tests`). Ningún test afirma el texto del aviso
+(barrido de `descartado`: solo los 3 `eprintln!` y usos ajenos en `main.rs`,
+`avi-daemon` y `avi-tts`).
 
 ### H7 y H11 — Control positivo común
 
@@ -135,58 +167,85 @@ bloqueado o el script tiene una errata, pasa aunque la allowlist esté rota
 bucle de `extra_allowed` (`restricted_spawn.rs:337`) no itera nunca: 11
 constructores, todos `Vec::new()` (3 en `spawn.rs`, 4 en `avi-tts`, 2 en tests,
 `update.rs` y `update_fetch`); su doc cita "el HANDLE de espera del
-limpiador" (`:48-50`) pero `deferred.rs:95-99` construye su allowlist en línea.
+limpiador" (`:48-50`) pero `crates/avi-process/src/deferred.rs:95-99` construye
+su allowlist en línea, sin pasar por el struct.
 **Categoría 1 (H7) y 2 (H11, origen C9; T11 no lo retiró). VERIFICADO.**
 
-**Solución (común).** Añadir el caso positivo: el handle testigo **listado vía
-`extra_allowed`** debe llegar al hijo (`eof`/`open`). La misma prueba demuestra
-que la sonda funciona (si se rompe, el positivo enrojece) y ejecuta la ruta
-`:337` por primera vez; más corregir el ejemplo del doc. Solo test + una línea
-de doc. (El CHANGELOG:115 bendice `extra_allowed` como vía de migración, así
-que se conserva y se estrena, no se borra.)
+**Solución (común).** Extraer el cuerpo de
+`handle_outside_the_list_does_not_reach_the_child`
+(`crates/avi-process/tests/restricted_spawn.rs:78-165`) a un ayudante que reciba
+si el extremo de lectura se lista y devuelva el testigo. El negativo afirma
+`closed` (no listado); el positivo nuevo —`#[cfg(windows)]` como el negativo—
+lista el handle en `extra_allowed` y afirma `eof`: el padre cierra el otro
+extremo, así que el hijo lee EOF sin datos. La misma prueba demuestra que la
+sonda funciona (si `Add-Type` falla o el script tiene una errata, el `catch`
+escribe `closed` y el positivo enrojece) y ejecuta por primera vez el bucle de
+`restricted_spawn.rs:337`. El rojo previo no sale de código nuevo, porque el
+mecanismo ya funciona: se obtiene por mutación, vaciando el bucle (o no listando
+el handle), que debe dar `closed` y fallar el positivo. Más corregir el doc de
+`extra_allowed` (`:48-50`): el ejemplo del limpiador es falso (ese lanzamiento no
+usa el struct) y se sustituye por el uso real que ejerce la prueba. Solo test +
+una línea de doc. (El CHANGELOG:115 bendice `extra_allowed` como vía de
+migración, así que se conserva y se estrena, no se borra.)
 
 ### H9 — Caso rancio sin documentar
 
 Sin `start=`/`image=`, `recorded = None` (`daemon_stop.rs:531-534`) y, sin la
 rama `None → Ours` que T1 retiró, el fichero se clasifica `Absent` y **se
-borra** (`:435-437`); antes se conservaba. Ni el doc (`:516-518`, enumera 4
-casos) ni la guía (`docs/CLI/commands/DAEMON.md:82`) nombran el quinto. (El
-CHANGELOG:114 sí lo documenta.) **Categoría 1. VERIFICADO.**
+borra** (`:435-437`); antes se conservaba. Ninguna enumeración nombra el quinto
+caso, PID vivo sin identidad: ni el comentario de `stop` (`:432-434`, enumera 3:
+ilegible, sin PID, PID propio), ni el doc de `ready_file_owner_alive`
+(`:516-518`, enumera 4: ausente, ilegible, sin línea `pid=`, PID propio), ni la
+guía (`docs/CLI/commands/DAEMON.md:82`), cuya frase «un fichero sin identidad
+registrada es ilegible: se descarta con aviso» describe al pidfile y, leída en
+contexto, parece aplicar también al ready, que se borra por rancio y sin aviso.
+El texto ya existe en `docs/CLI/CONTRACT.md:656` («un ready sin las dos no
+declara a su PID como propio (cuenta como muerto, no bloquea la parada y se
+borra por rancio)») y en `CHANGELOG.md:114`. Los dos comentarios del código
+omiten además el PID reasignado a otro programa (identidad que no coincide,
+ya cubierto por la guía y por una prueba, `:1452`). **Categoría 1. VERIFICADO.**
 
-**Solución.** Propagar la enumeración a los dos sitios. El comportamiento es
-correcto y principista (sin identidad no hay propiedad demostrable); terminar
-el cambio no es parchear.
-
-### H10 — Tests por substring
-
-`daemon_stop.rs:1478-1480` lee `src/main.rs` vía
-`CARGO_MANIFEST_DIR/../../src/main.rs` y afirma por substring, con `concat()`
-para no autodetectarse (`:1502-1503`, `:1530-1532`). Se rompen con un
-`use ... as` inocuo; pasan si se redeclara con otro nombre. **Categoría 1.
-VERIFICADO.**
-
-**Solución.** Borrar los dos bloques textuales (`:1501-1519` y `:1533-1550`,
-~40 líneas con el helper `:1478-1481`); los valores ya se afirman
-conductualmente (`:1489`, `:1497`: 8 s, 8765, más `:1554-1558`). Lo que queda
-protege lo mismo y desaparece el acople al layout del workspace.
+**Solución.** Propagar la enumeración a los tres sitios: copiar el texto de
+`CONTRACT.md:656`, sin redactar nada nuevo. En los dos comentarios del código,
+añadir los dos casos omitidos; en la guía, solo el de identidad ausente. El
+comportamiento es correcto y principista (sin identidad no hay propiedad
+demostrable); terminar el cambio no es parchear.
 
 ### H12 — Arista avi-shared a avi-process
 
-`avi-shared/Cargo.toml:12` consume `pid_alive_exact` (`logs.rs:154-156`),
+`avi-shared/Cargo.toml:12` consume `pid_alive_exact` (vía el wrapper privado
+`pid_alive`, `logs.rs:154-156`, que invoca el closure de `create_log_at`),
 símbolo de definición T2 (plan:96), y arrastra `avi-process` a todo
 consumidor de `avi-store` y `avi-lifecycle` (re-exportan `create_log`:
 `avi-store/src/lib.rs:8`, `avi-lifecycle/src/lib.rs:42`; consumidores en
 `avi-tts/src/lib.rs:952/1080` y `src/main.rs:3523/3564/3688`). El plan T7
 ofrecía "trait o parámetro inyectado". **Categoría 1. VERIFICADO.**
 
-**Solución.** La costura ya existe: `create_log_at_with` recibe el sondeo;
-solo `create_log_at` (`logs.rs:52-54`) lo hardcodea. Pasar la sonda desde los
-5 llamadores y borrar la arista. De paso, borrar `create_log_for_pid`
-(`logs.rs:32-36`): sin llamador en producción (solo su propio test, `:261`) y
-su propósito documentado lo sirve `rename_log_to_pid`, que sí se usa
-(`main.rs:3720`).
+**Solución.** La costura ya existe: `create_log_at_with` y `prune` reciben el
+sondeo; solo `create_log_at` (`logs.rs:46-55`, closure en `:52-54`) lo
+hardcodea. Los 5 llamadores no llaman a `create_log_at` (privada) sino a
+`create_log` (`:24`, la API pública), así que el cambio es de firma: `create_log`
+recibe el sondeo (`&dyn Fn(u32) -> bool`) y llama a `create_log_at_with`. Se
+borran `create_log_at`, el wrapper `pid_alive` y la dependencia
+(`avi-shared/Cargo.toml:9-12`). La exclusión del PID propio (hoy dentro del
+closure; `prune` documenta que «el PID propio no se consulta») es invariante de
+la poda y no puede replicarse en cada llamador: se mueve dentro de
+`create_log_at_with`/`prune`, de modo que los llamadores pasan el sondeo puro,
+`&avi_process::pid_alive_exact` (`fn(u32) -> bool`, una por plataforma,
+`avi-process/src/lib.rs:137/:166`). Llamadores (5; barrido en `crates`, `src`,
+`tests`, `xtask` y `benches`, sin más alias tras los re-exports
+`avi-store/src/lib.rs:8` y `avi-lifecycle/src/lib.rs:42`): 3 en
+`main.rs:3523/3564/3688` —los dos primeros bajo `cfg(windows)`— y 2 en
+`avi-tts:952/1080`. De paso, borrar `create_log_for_pid` (`logs.rs:32-42`): sin
+llamador en producción (solo su propio test, `:261`) y su propósito documentado
+lo sirve `rename_log_to_pid`, que sí se usa (`main.rs:3720`); al borrarla, la
+mención de `create_log_for_pid` en §5 («Allows y matices de código muerto») queda
+obsoleta y se retira. Sin altas en `Cargo.toml`: la raíz (`:25`) y `avi-tts`
+(`:14`) ya dependen de `avi-process`. Las 7 llamadas de test a `create_log_at`
+(`:194/:216/:219/:238/:239/:248/:329`) pasan a `create_log_at_with` con un
+sondeo fijo; se borra el test `:261`.
 
-## 3. Hallazgos parciales o con decisiones abiertas
+## 3. Hallazgos parciales y pendientes de decisión
 
 ### H5 — Degradación de la garantía de T7
 
@@ -230,6 +289,42 @@ del literal; `stop()` ya lo recibe como parámetro a propósito,
 `daemon_stop.rs:334-336`). Pero cambia qué puerto se sondea con env fijado:
 **decisión de producto**, diferida a G-Resultado por T10. No se toca sin
 veredicto.
+
+### H3a — kill bloqueante en stop async (diseño pendiente)
+
+`spawn.rs:112-114` documenta la partición: lo bloqueante vive fuera del
+runtime. `kill_tree_by_pid_exact` es `Command::new("taskkill")...status()`
+bloqueante sin plazo (`avi-process/src/lib.rs:198-205`) y `stop()` es async
+(usa `.await` en `daemon_stop.rs:348`; el kill va en `:370`). **Categoría 1.
+VERIFICADO** (que `taskkill` llegue a colgarse: HIPÓTESIS).
+
+**Por qué no es trivial (degradado desde §2 en verificación).** "Envolver en
+`spawn_blocking`" no compila tal cual: `stop()` recibe `control: &dyn
+ProcessControl` prestado (no-`'static`, `daemon_stop.rs:337-341`), el trait no
+exige `Send`/`Sync` (`:256-275`), `spawn_blocking` exige `'static` y
+`block_in_place` exige `Send` más runtime multi-hilo (los `#[tokio::test]` usan
+`current_thread` por defecto: pánico). Diseño pendiente: `Arc<dyn
+ProcessControl + Send + Sync>` (todos los impls ya son `Send+Sync`: solo
+Atomics/`Mutex`/`Vec`/`u32`/unitaria) + cambio de firma de `stop()` + ~10
+call sites. Redefinible con precisión, pero inejecutable como estaba enunciado.
+**Decisión abierta.**
+
+### H10 — Tests por substring (garantía sin reemplazo)
+
+`daemon_stop.rs:1478-1480` lee `src/main.rs` vía
+`CARGO_MANIFEST_DIR/../../src/main.rs` y afirma por substring, con `concat()`
+para no autodetectarse (`:1502-1503`, `:1530-1532`). Se rompen con un
+`use ... as` inocuo; pasan si se redeclara con otro nombre. **Categoría 1.
+VERIFICADO.**
+
+**Por qué no es trivial (degradado desde §2 en auditoría adversarial).**
+Borrar los dos bloques (`:1501-1519` y `:1533-1550`, más el helper
+`:1478-1481`) deja ambos tests con aserciones (valores en `:1489`, `:1497` y
+`:1554-1558`), pero esas solo afirman valores (8 s, 8765, convergencia de
+resolvers): la garantía de fuente única —el lanzador no redeclara plazos ni
+dirección y los toma de `daemon_stop`— desaparece sin reemplazo. Lo que queda
+NO protege lo mismo. Decisión abierta: aceptar la pérdida o reubicar el check
+sin leer el workspace (p. ej. vía API o en build-time).
 
 ## 4. Hallazgos no triviales: análisis y diseño
 
