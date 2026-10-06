@@ -31,16 +31,14 @@
 //! - **Pruebas pesadas de inferencia (TTS/Dub/Clone)**: `cargo test --test cli_golden -- tts:: --nocapture` (gestionadas bajo `TTS_LOCK`)
 
 use std::cell::RefCell;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use serde_json::Value;
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+use tempfile::TempDir;
 
 /// Ruta al binario bajo test, inyectada por Cargo en tests de integración.
 const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
@@ -466,10 +464,10 @@ fn d03_poisoned_lock_propagates() {
 /// Un hilo de prueba que hace `panic!` con su instancia viva no deja su carpeta
 /// de estado: el `Drop` de la instancia corre durante el desenlace del pánico,
 /// cosecha lo registrado (aquí un pidfile señuelo de un PID muerto, que no
-/// mata nada) y retira la carpeta. Hasta ese momento la carpeta conserva su
+/// mata nada) y el `TempDir` poseído retira la carpeta. Hasta ese momento la carpeta conserva su
 /// contenido intacto. Hermético: no arranca ningún daemon.
 #[test]
-fn isolated_instance_drop_removes_state_after_panic() {
+fn isolated_instance_removes_its_sandbox_on_panic() {
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         let inst = IsolatedInstance::new("drop_after_panic");
@@ -504,8 +502,10 @@ fn isolated_instance_drop_removes_state_after_panic() {
 /// que necesitan aislar el estado del sandbox (p. ej. `LOCALAPPDATA`/`HF_*` en
 /// `uninstall_force_no_se_auto_mata`) las pasan por aquí; `run_json` delega sin envs.
 ///
-/// Usa un *tempfile* (`Stdio::File`) en vez de `Command::output()` (que captura `stdout`
-/// vía un **pipe** con `bInheritHandle=TRUE`). El comando `daemon start` lanza el daemon
+/// Usa un archivo anónimo (`Stdio::from(File)`) en vez de `Command::output()` (que captura
+/// `stdout` vía un **pipe** con `bInheritHandle=TRUE`). El archivo no tiene nombre en el
+/// sistema de ficheros: el SO lo libera al cerrarse el último handle, así que no deja
+/// residuo ni siquiera si la prueba entra en pánico. El comando `daemon start` lanza el daemon
 /// hijo (y este, a su vez, `qwen_tts.exe` vendido/precompilado) que heredan el pipe del
 /// test: `output()` no retorna hasta que **todos** los holders del write-end lo cierran —
 /// es decir, hasta el graceful shutdown del daemon (~10 s) — colgando el E2E en timeout
@@ -522,23 +522,37 @@ fn isolated_instance_drop_removes_state_after_panic() {
 /// caída del hijo (un `abort` o un pánico) deja su rastro en el informe del fallo.
 fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     let t_cmd = Instant::now();
-    let (tmp, file) = open_atomic_tmp();
-    let (tmp_err, file_err) = open_atomic_tmp();
+    let mut out_file = tempfile::tempfile().expect("crear el archivo anónimo de stdout");
+    let mut err_file = tempfile::tempfile().expect("crear el archivo anónimo de stderr");
     let mut cmd = bin_command();
     cmd.args(args)
         .stdin(std::process::Stdio::null())
-        .stdout(file)
-        .stderr(file_err);
+        .stdout(
+            out_file
+                .try_clone()
+                .expect("duplicar el handle de stdout para el hijo"),
+        )
+        .stderr(
+            err_file
+                .try_clone()
+                .expect("duplicar el handle de stderr para el hijo"),
+        );
     for (k, v) in envs {
         cmd.env(k, v);
     }
     let mut child = cmd.spawn().expect("el binario debe ejecutarse");
     let status = child.wait().expect("el proceso debe terminar");
-    let stdout = std::fs::read_to_string(&tmp)
-        .unwrap_or_else(|e| panic!("no se pudo leer tempfile {}: {}", tmp.display(), e));
-    let _ = std::fs::remove_file(&tmp);
-    let stderr = std::fs::read_to_string(&tmp_err).unwrap_or_default();
-    let _ = std::fs::remove_file(&tmp_err);
+    // Los handles duplicados comparten el desplazamiento: se rebobina para leer
+    // lo que escribió el hijo.
+    let mut stdout = String::new();
+    out_file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| out_file.read_to_string(&mut stdout))
+        .unwrap_or_else(|e| panic!("no se pudo leer el stdout capturado: {e}"));
+    let mut stderr = String::new();
+    let _ = err_file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| err_file.read_to_string(&mut stderr));
     if !stderr.trim().is_empty() {
         eprintln!("stderr del hijo `{}`:\n{}", args.join(" "), stderr);
     }
@@ -559,62 +573,19 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
 /// Crea un sandbox de contrato nuevo y único: datos, caché de modelos y
 /// programa propios, sin modelos y con un `daemon.pid` señuelo para que el
 /// binario no consulte 127.0.0.1:8765 ni barra los `qwen_tts` de la máquina.
-fn contract_sandbox(tag: &str) -> (PathBuf, Vec<(String, String)>) {
-    let (dir, envs) = sandbox_unique_state(tag);
-    seed_decoy_daemon_pidfile(&dir);
-    (dir, envs)
+fn contract_sandbox(tag: &str) -> (TempDir, Vec<(String, String)>) {
+    let (sandbox, envs) = sandbox_unique_state(tag);
+    seed_decoy_daemon_pidfile(sandbox.path());
+    (sandbox, envs)
 }
 
-/// Ejecuta el binario con `args` en un sandbox de contrato nuevo que borra al
+/// Ejecuta el binario con `args` en un sandbox de contrato nuevo que se borra al
 /// terminar. Delega en [`run_json_env`]; una prueba que comparta estado entre
 /// varias llamadas debe usar un único sandbox con `run_json_env`.
 fn run_json(args: &[&str]) -> (i32, Value) {
-    let (dir, envs) = contract_sandbox("run_json");
+    let (_sandbox, envs) = contract_sandbox("run_json");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let result = run_json_env(args, &envs);
-    let _ = std::fs::remove_dir_all(&dir);
-    result
-}
-
-/// Crea un tempfile único con semántica atómica `O_CREAT|O_EXCL` (`create_new`).
-///
-/// Corrección estructural sin sobreingeniería: la causa no es el contenido del
-/// daemon sino el primitivo de FS. `File::create` trunca y no es atómico: con
-/// `SystemTime` de resolución gruesa en Windows + `cargo test` paralelo, dos
-/// hilos generan el mismo `tmp` y el `remove_file` de uno borra el de otro
-/// -> `read_to_string` falla con `NotFound (os 2)` solo en `win/server-2022`.
-/// Se reemplaza por creación atómica `O_CREAT|O_EXCL` (`create_new(true)`):
-/// el SO garantiza exclusión y el bucle reintenta solo en colisión, sin
-/// depender de `ThreadId`/`sleep`/`retry` sintomático. Es el mismo coste que
-/// `tempfile::NamedTempFile` pero sin añadir dependencia.
-fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
-    let mut attempts = 0;
-    loop {
-        let candidate = std::env::temp_dir().join(format!(
-            "cli_golden_{}_{}_{}.out",
-            std::process::id(),
-            TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
-        ));
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(f) => break (candidate, f),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                attempts += 1;
-                if attempts > 10 {
-                    panic!("no se pudo crear tempfile único tras 10 intentos: {}", e);
-                }
-                continue;
-            }
-            Err(e) => panic!("no se pudo crear tempfile {}: {}", candidate.display(), e),
-        }
-    }
+    run_json_env(args, &envs)
 }
 
 // ─── Sandbox de estado por instancia (directorio de estado por instancia) ──
@@ -624,8 +595,8 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 // `LOCALAPPDATA`, así que un doble que dependiera de ella no representaría nada del
 // mecanismo que se quiere probar. `AVI_INSTALL_DIR` y `AVI_CACHE_DIR` aíslan el
 // directorio de programa y la raíz de modelos, `AVI_DATA_DIR` los datos, y
-// `HF_HUB_CACHE`/`HF_HOME` el caso de la caché compartida. Unicidad por `TMP_COUNTER`
-// (misma fuente que el tempfile anti-cuelgue, que se preserva intacto).
+// `HF_HUB_CACHE`/`HF_HOME` el caso de la caché compartida. La unicidad y el borrado
+// los da un `TempDir` con dueño: la carpeta se retira al soltarse, también ante un pánico.
 
 /// Prefijo de los sandboxes de esta puerta, y de ningún otro directorio que cree.
 ///
@@ -649,14 +620,14 @@ fn open_atomic_tmp() -> (PathBuf, std::fs::File) {
 /// para que un renombrado de vuelta a `avi_` no pueda colarse sin que nadie se entere.
 const PREFIX_SANDBOX: &str = "golden-sandbox_";
 
-/// Crea un directorio sandbox único y devuelve (ruta, envs para el hijo).
-fn sandbox_unique_state(tag: &str) -> (PathBuf, Vec<(String, String)>) {
-    let dir = std::env::temp_dir().join(format!(
-        "{PREFIX_SANDBOX}{tag}_{}_{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::SeqCst),
-    ));
-    std::fs::create_dir_all(&dir).expect("crear sandbox de estado");
+/// Crea un directorio sandbox único y devuelve (dueño de la carpeta, envs para el
+/// hijo). La carpeta se borra cuando el `TempDir` se suelta.
+fn sandbox_unique_state(tag: &str) -> (TempDir, Vec<(String, String)>) {
+    let sandbox = tempfile::Builder::new()
+        .prefix(&format!("{PREFIX_SANDBOX}{tag}_"))
+        .tempdir()
+        .expect("crear sandbox de estado");
+    let dir = sandbox.path().to_path_buf();
     let install = dir.join("install");
     let cache = dir.join("cache");
     let hf = dir.join("hf");
@@ -695,7 +666,7 @@ fn sandbox_unique_state(tag: &str) -> (PathBuf, Vec<(String, String)>) {
     for variable in ["TEMP", "TMP", "TMPDIR"] {
         envs.push((variable.to_string(), temp.to_string_lossy().to_string()));
     }
-    (dir, envs)
+    (sandbox, envs)
 }
 
 /// El invariante que hace que el arnés de esta puerta no se pueda borrar a sí mismo: el
@@ -733,7 +704,8 @@ fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
     );
 
     // Y el temporal del hijo está dentro del sandbox, que es la otra mitad.
-    let (dir, envs) = sandbox_unique_state("invariantprefix");
+    let (sandbox, envs) = sandbox_unique_state("invariantprefix");
+    let dir = sandbox.path();
     let value = |k: &str| {
         envs.iter()
             .find(|(n, _)| n == k)
@@ -744,12 +716,11 @@ fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
             panic!("el sandbox debe reubicar {variable} para que su barrido no salga de él");
         };
         assert!(
-            value.starts_with(&dir),
+            value.starts_with(dir),
             "{variable} del hijo es {value:?}, que está fuera del sandbox {dir:?}: el barrido \
              alcanzaría el temporal de la máquina"
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // ─── Fichero ready (transporte del evento de readiness por instancia) ──
@@ -848,8 +819,11 @@ const REAP_DEATH_DEADLINE: Duration = Duration::from_secs(8);
 const HARD_KILL_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Instancia aislada por test: sandbox propio + envs para el hijo. Su `Drop`
-/// cosecha lo que ella arrancó y retira su carpeta de estado.
+/// cosecha lo que ella arrancó y su `TempDir` retira la carpeta de estado.
 struct IsolatedInstance {
+    /// Dueño de la carpeta de estado: la borra al soltarse, después de que el
+    /// `Drop` de la instancia haya cosechado los procesos.
+    _sandbox: TempDir,
     dir: PathBuf,
     envs: Vec<(String, String)>,
     /// Raíz de modelos del sandbox, usada solo por `contract_args`.
@@ -858,7 +832,8 @@ struct IsolatedInstance {
 
 impl IsolatedInstance {
     fn new(tag: &str) -> Self {
-        let (dir, mut envs) = sandbox_unique_state(tag);
+        let (sandbox, mut envs) = sandbox_unique_state(tag);
+        let dir = sandbox.path().to_path_buf();
         // Puerto efímero: el SO asigna y el hijo publica el real.
         envs.push(("AVI_DAEMON_PORT".to_string(), "0".to_string()));
         let tts_listener = std::net::TcpListener::bind("127.0.0.1:0").ok();
@@ -878,6 +853,7 @@ impl IsolatedInstance {
         envs.retain(|(k, _)| !matches!(k.as_str(), "AVI_CACHE_DIR" | "HF_HUB_CACHE" | "HF_HOME"));
         let contract_cache = dir.join("cache").to_string_lossy().to_string();
         IsolatedInstance {
+            _sandbox: sandbox,
             dir,
             envs,
             contract_cache,
@@ -1012,7 +988,6 @@ impl Drop for IsolatedInstance {
                 }
             }
         }
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -1229,7 +1204,7 @@ fn version_matches_fixture() {
 #[test]
 fn plain_version_outputs_name_and_package_version() {
     let expected = format!("ai-voice-interconnector {}", env!("CARGO_PKG_VERSION"));
-    let (dir, envs) = contract_sandbox("plain_version");
+    let (_sandbox, envs) = contract_sandbox("plain_version");
     for args in [["version"], ["--version"]] {
         let output = bin_command()
             .args(args)
@@ -1245,7 +1220,6 @@ fn plain_version_outputs_name_and_package_version() {
             args[0]
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // Requiere `native-stt`: sin el motor Parakeet el binario responde
@@ -1346,7 +1320,8 @@ fn dub_missing_audio_exits_3() {
 #[cfg(feature = "native-stt")]
 #[test]
 fn transcribe_invalid_wav_exits_2() {
-    let (dir, envs) = sandbox_unique_state("invalid_wav");
+    let (sandbox, envs) = sandbox_unique_state("invalid_wav");
+    let dir = sandbox.path();
     seed_pinned_models(&dir.join("cache"), &["parakeet-tdt-v3"]);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let path = dir.join("invalid.wav");
@@ -1364,7 +1339,6 @@ fn transcribe_invalid_wav_exits_2() {
         ],
         &envs,
     );
-    let _ = std::fs::remove_dir_all(&dir);
     assert_eq!(code, 2, "WAV inválido debe mapear a exit 2");
     assert_eq!(actual["reason"], "invalid_audio");
 }
@@ -1430,7 +1404,7 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
         "speech_transcribe_mic_duration_no_tty_no_panic",
         Duration::from_secs(30),
     );
-    let (dir, envs) = contract_sandbox("mic_transcribe");
+    let (_sandbox, envs) = contract_sandbox("mic_transcribe");
     let output = bin_command()
         .args([
             "--json",
@@ -1446,7 +1420,6 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
         .stdin(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         output.status.code().is_some(),
         "el proceso no debe abortar/panicar: {:?}",
@@ -1508,7 +1481,7 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
         "speech_dub_mic_duration_no_tty_no_panic",
         Duration::from_secs(30),
     );
-    let (dir, envs) = contract_sandbox("mic_dub");
+    let (_sandbox, envs) = contract_sandbox("mic_dub");
     let output = bin_command()
         .args([
             "--json",
@@ -1526,7 +1499,6 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
         .stdin(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
-    let _ = std::fs::remove_dir_all(&dir);
     assert!(
         output.status.code().is_some(),
         "el proceso no debe abortar/panicar: {:?}",
@@ -1572,12 +1544,10 @@ fn write_silent_wav(path: &std::path::Path, secs: u32) {
 /// Ejecuta `args` en un sandbox de contrato con los `extra_envs` añadidos y
 /// devuelve (código, JSON). El sandbox se borra al terminar.
 fn run_in_contract_sandbox(tag: &str, args: &[&str], extra_envs: &[(&str, &str)]) -> (i32, Value) {
-    let (dir, envs) = contract_sandbox(tag);
+    let (_sandbox, envs) = contract_sandbox(tag);
     let mut all: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     all.extend_from_slice(extra_envs);
-    let result = run_json_env(args, &all);
-    let _ = std::fs::remove_dir_all(&dir);
-    result
+    run_json_env(args, &all)
 }
 
 /// Afirma que el resultado de `what` es exit 2 con `reason == audio_too_long`.
@@ -1595,7 +1565,8 @@ fn assert_audio_too_long(what: &str, result: (i32, Value)) {
 #[test]
 fn transcribe_audio_over_limit_is_audio_too_long() {
     for mode in ["--no-daemon", "--daemon"] {
-        let (dir, envs) = contract_sandbox("transcribe_limit");
+        let (sandbox, envs) = contract_sandbox("transcribe_limit");
+        let dir = sandbox.path();
         let wav = dir.join("long_301s.wav");
         write_silent_wav(&wav, 301);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1612,7 +1583,6 @@ fn transcribe_audio_over_limit_is_audio_too_long() {
             ],
             &envs,
         );
-        let _ = std::fs::remove_dir_all(&dir);
         assert_audio_too_long(&format!("transcribe {mode}"), result);
     }
 }
@@ -1622,7 +1592,8 @@ fn transcribe_audio_over_limit_is_audio_too_long() {
 #[test]
 fn clone_reference_over_limit_is_audio_too_long() {
     for mode in ["--no-daemon", "--daemon"] {
-        let (dir, envs) = contract_sandbox("clone_limit");
+        let (sandbox, envs) = contract_sandbox("clone_limit");
+        let dir = sandbox.path();
         let wav = dir.join("reference_31s.wav");
         write_silent_wav(&wav, 31);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1639,7 +1610,6 @@ fn clone_reference_over_limit_is_audio_too_long() {
             ],
             &envs,
         );
-        let _ = std::fs::remove_dir_all(&dir);
         assert_audio_too_long(&format!("voice clone {mode}"), result);
     }
 }
@@ -1652,7 +1622,8 @@ fn clone_reference_over_limit_is_audio_too_long() {
 #[test]
 fn dub_audio_over_limit_is_audio_too_long() {
     for mode in ["--no-daemon", "--daemon"] {
-        let (dir, envs) = contract_sandbox("dub_limit");
+        let (sandbox, envs) = contract_sandbox("dub_limit");
+        let dir = sandbox.path();
         let wav = dir.join("dubbing_41s.wav");
         write_silent_wav(&wav, 41);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1671,7 +1642,6 @@ fn dub_audio_over_limit_is_audio_too_long() {
             ],
             &envs,
         );
-        let _ = std::fs::remove_dir_all(&dir);
         assert_audio_too_long(&format!("speech dub {mode}"), result);
     }
 }
@@ -1681,7 +1651,8 @@ fn dub_audio_over_limit_is_audio_too_long() {
 #[test]
 fn clone_reference_zero_sample_rate_is_invalid_audio() {
     for mode in ["--no-daemon", "--daemon"] {
-        let (dir, envs) = contract_sandbox("clone_zero_rate");
+        let (sandbox, envs) = contract_sandbox("clone_zero_rate");
+        let dir = sandbox.path();
         let wav = dir.join("reference_rate0.wav");
         avi_audio::write_zero_rate_wav(&wav);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1698,7 +1669,6 @@ fn clone_reference_zero_sample_rate_is_invalid_audio() {
             ],
             &envs,
         );
-        let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(code, 2, "voice clone {mode}: exit 2 expected ({actual})");
         assert_eq!(actual["reason"], "invalid_audio", "{mode}: {actual}");
     }
@@ -1870,8 +1840,9 @@ impl Drop for FakeDaemon {
 /// 404 con `body` a `/dub`, y devuelve (código, JSON, rutas recibidas).
 fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<String>) {
     let fake = FakeDaemon::start(404, body);
-    let (dir, envs) = contract_sandbox(tag);
-    fake.publish_in(&dir);
+    let (sandbox, envs) = contract_sandbox(tag);
+    let dir = sandbox.path();
+    fake.publish_in(dir);
     let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1890,7 +1861,6 @@ fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<Strin
         ],
         &envs,
     );
-    let _ = std::fs::remove_dir_all(&dir);
     (code, actual, fake.requested_paths())
 }
 
@@ -2039,7 +2009,8 @@ fn cleanup_synthetic_speech_matches_fixture() {
 /// snapshots sueltos.
 #[test]
 fn cleanup_model_matches_fixture() {
-    let (dir, envs) = sandbox_unique_state("cleanup-model");
+    let (sandbox, envs) = sandbox_unique_state("cleanup-model");
+    let dir = sandbox.path();
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "cleanup", "--model", "--dry-run"], &envs);
     assert_eq!(code, 0, "{}", actual);
@@ -2122,8 +2093,11 @@ fn cleanup_dry_run_matches_fixture() {
 ///   segundo punto heredado que este lote absorbe.
 #[test]
 fn cleanup_model_real_run_reports_paths() {
-    let n = TMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let sandbox = std::env::temp_dir().join(format!("cleanup_sandbox_{}_{n}", std::process::id()));
+    let sandbox_guard = tempfile::Builder::new()
+        .prefix("cleanup_sandbox_")
+        .tempdir()
+        .expect("crear el sandbox de la prueba");
+    let sandbox = sandbox_guard.path();
     let data = sandbox.join("data");
     std::fs::create_dir_all(&data).unwrap();
     // El temporal del sistema se desvía al sandbox: `cleanup` barre los temporales
@@ -2268,8 +2242,6 @@ fn cleanup_model_real_run_reports_paths() {
             .exists(),
         "mientras el repo propio sí desaparece"
     );
-
-    let _ = std::fs::remove_dir_all(&sandbox);
 }
 
 /// Planta el layout de modelos vigente: un repo fijado, los locks y `xet` colgando
@@ -2296,7 +2268,7 @@ fn seed_models(root: &std::path::Path) {
 /// objeto y la ausencia del canal de error, no el resultado del diagnóstico.
 #[test]
 fn doctor_json_emits_exactly_one_object_even_on_failure() {
-    let (dir, envs) = sandbox_unique_state("doctor");
+    let (_sandbox, envs) = sandbox_unique_state("doctor");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, value) = run_json_env(&["--json", "doctor"], &envs);
     // Un objeto: `run_json_env` ya no habría podido parsear dos objetos JSON seguidos,
@@ -2345,8 +2317,6 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
         if failed { 1 } else { 0 },
         "el código de salida es el del veredicto, sin objeto `error` detrás: {value}"
     );
-
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// `doctor --repair` recoge los restos y `pending_artifacts` sale de `failed`.
@@ -2356,7 +2326,8 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
 /// flag desconocido.
 #[test]
 fn doctor_repair_collects_leftovers() {
-    let (dir, envs) = sandbox_unique_state("doctorrepair");
+    let (sandbox, envs) = sandbox_unique_state("doctorrepair");
+    let dir = sandbox.path();
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let install = dir.join("install");
     let parked = install.join(format!("{}9999", avi_lifecycle::PARKED_DIR_PREFIX));
@@ -2384,14 +2355,14 @@ fn doctor_repair_collects_leftovers() {
             .any(|f| f.as_str().is_some_and(|s| s.contains("pending_artifacts"))),
         "pending_artifacts debe salir de failed tras --repair: {failed:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `doctor` sin el flag no modifica nada y orienta a `--repair`:
 /// sale 1 con restos, los deja en disco y la pista aparece en stderr.
 #[test]
 fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
-    let (dir, envs) = sandbox_unique_state("doctorhint");
+    let (sandbox, envs) = sandbox_unique_state("doctorhint");
+    let dir = sandbox.path();
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let install = dir.join("install");
     let parked = install.join(format!("{}8888", avi_lifecycle::PARKED_DIR_PREFIX));
@@ -2409,7 +2380,6 @@ fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
         err.contains("doctor --repair"),
         "la pista debe orientar a --repair: {err:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -2674,9 +2644,10 @@ mod tts {
         format!("{}{}_{}", prefix, nanos, std::process::id())
     }
 
-    /// Escribe en el directorio temporal un WAV válido al que se le recortan los
-    /// últimos bytes: la cabecera declara más datos de los que contiene el archivo.
-    fn write_truncated_wav(label: &str) -> PathBuf {
+    /// Escribe en `dir` (el sandbox de la prueba, que lo borra) un WAV válido al que se
+    /// le recortan los últimos bytes: la cabecera declara más datos de los que contiene
+    /// el archivo.
+    fn write_truncated_wav(dir: &Path, label: &str) -> PathBuf {
         let spec = hound::WavSpec {
             channels: 1,
             sample_rate: 16_000,
@@ -2693,7 +2664,7 @@ mod tts {
         }
         let mut bytes = cursor.into_inner();
         bytes.truncate(bytes.len() - 400);
-        let path = std::env::temp_dir().join(format!("avi_{}.wav", unique_label(label)));
+        let path = dir.join(format!("{}.wav", unique_label(label)));
         std::fs::write(&path, bytes).unwrap();
         path
     }
@@ -3061,7 +3032,6 @@ mod tts {
         store
             .save("default", &label, "fabricado", &src)
             .expect("el sidecar fabricado debe guardarse");
-        let _ = std::fs::remove_file(&src);
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -3105,7 +3075,6 @@ mod tts {
         avi_store::SpeechStore::at(inst.dir.join("speech"))
             .save(voice, label, "fabricado", &src)
             .expect("el sidecar fabricado debe guardarse");
-        let _ = std::fs::remove_file(&src);
     }
 
     /// `speech list --voice default` filtra por voz existente (exit 0, solo esa voz).
@@ -3742,7 +3711,7 @@ mod tts {
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let a = inst.contract_args();
-        let wav = write_truncated_wav("clone_truncated");
+        let wav = write_truncated_wav(&inst.dir, "clone_truncated");
         let name = unique_label("clone");
         let (code, actual) = run_json_env(
             &[
@@ -3757,7 +3726,6 @@ mod tts {
             ],
             &a,
         );
-        std::fs::remove_file(&wav).ok();
         assert_eq!(code, 2, "referencia truncada → ExitCode::InvalidInput");
         assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
     }
@@ -4049,7 +4017,6 @@ mod tts {
         envs.push(("HTTPS_PROXY", "http://127.0.0.1:9"));
         envs.push(("HTTP_PROXY", "http://127.0.0.1:9"));
         let (code, payload) = run_json_env(&["--json", "setup"], &envs);
-        let _ = std::fs::remove_dir_all(&inst.dir);
         assert_eq!(code, 0, "setup --json debe completar, payload: {}", payload);
         assert_eq!(payload["status"], "completed");
         assert!(
@@ -4798,7 +4765,7 @@ mod tts {
         let inst = IsolatedInstance::new("clone_truncated");
         start_instance(&inst, &[]);
         let a = inst.args();
-        let wav = write_truncated_wav("clone_daemon_truncated");
+        let wav = write_truncated_wav(&inst.dir, "clone_daemon_truncated");
         let name = unique_label("clone_daemon");
         let (code, actual) = run_json_env(
             &[
@@ -4813,7 +4780,6 @@ mod tts {
             ],
             &a,
         );
-        std::fs::remove_file(&wav).ok();
         let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
         stop_instance(&inst, "clone_daemon_truncated");
         assert_eq!(code, 2, "referencia truncada por daemon → InvalidInput");
@@ -4953,7 +4919,7 @@ mod tts {
 /// devolviendo (código de salida, stdout). Para aserciones sobre `--help`.
 /// Cada llamada usa un sandbox de contrato nuevo que se borra al terminar.
 fn run_text(args: &[&str]) -> (i32, String) {
-    let (dir, envs) = contract_sandbox("run_text");
+    let (_sandbox, envs) = contract_sandbox("run_text");
     let output = bin_command()
         .args(args)
         .envs(envs)
@@ -4961,7 +4927,6 @@ fn run_text(args: &[&str]) -> (i32, String) {
         .stderr(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
-    let _ = std::fs::remove_dir_all(&dir);
     let code = output
         .status
         .code()
@@ -5552,7 +5517,7 @@ fn test_voice_list_no_panic_on_sigpipe_closed_stdout_before_spawn() {
 /// motor, en lugar de afirmar `shutdown_sent` sin `was_running`.
 #[test]
 fn daemon_stop_without_daemon_reports_not_running() {
-    let (dir, envs) = contract_sandbox("stop-sin-daemon");
+    let (_sandbox, envs) = contract_sandbox("stop-sin-daemon");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
     assert_eq!(code, 0, "daemon stop sin daemon debe salir 0: {actual}");
@@ -5566,7 +5531,6 @@ fn daemon_stop_without_daemon_reports_not_running() {
         Value::Bool(false),
         "el envelope debe bindear el was_running del motor: {actual}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// El envelope exacto de `daemon stop` sin daemon coincide con su fixture: es el
@@ -5574,12 +5538,11 @@ fn daemon_stop_without_daemon_reports_not_running() {
 /// `daemon_fully_stopped`), aislado en su propio sandbox.
 #[test]
 fn daemon_stop_without_daemon_matches_fixture() {
-    let (dir, envs) = contract_sandbox("stop_fixture");
+    let (_sandbox, envs) = contract_sandbox("stop_fixture");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
     assert_eq!(code, 0, "daemon stop sin daemon debe salir 0: {actual}");
     assert_eq!(actual, fixture("cli_daemon_stop.json"));
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `daemon stop` con el sondeo vivo tras el plazo emite el veredicto completo
@@ -5613,7 +5576,8 @@ fn daemon_stop_fails_with_still_running_verdict() {
             }
         }
     });
-    let (dir, envs) = sandbox_unique_state("stop-failure");
+    let (sandbox, envs) = sandbox_unique_state("stop-failure");
+    let dir = sandbox.path();
     let dead_pid = u32::MAX - 1;
     // El esquema exige las claves de identidad: sin ellas el pidfile se
     // descarta como ilegible, la parada sería un no-op y este test perdería el
@@ -5654,7 +5618,6 @@ fn daemon_stop_fails_with_still_running_verdict() {
         dir.join("daemon.pid").is_file(),
         "en fallo la pista se conserva para el siguiente intento"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// El simulacro de `cleanup` es un plan (`planned` con el recibo
@@ -5707,7 +5670,7 @@ fn uninstall_dry_run_reports_planned() {
 /// plan y el recibo coinciden.
 #[test]
 fn uninstall_dry_run_matches_fixture() {
-    let (dir, envs) = contract_sandbox("uninstall-dry-fixture");
+    let (_sandbox, envs) = contract_sandbox("uninstall-dry-fixture");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "self", "uninstall", "--dry-run"], &envs);
     assert_eq!(code, 0, "self uninstall --dry-run debe salir 0: {actual}");
@@ -5728,7 +5691,6 @@ fn uninstall_dry_run_matches_fixture() {
         actual.get("dry_run").is_none(),
         "con status planned la clave dry_run es redundante: {actual}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Con `--json`, un rechazo de clap emite el envelope `usage_error` por
@@ -5789,9 +5751,8 @@ fn parse_error_with_json_emits_usage_error_envelope() {
 /// así que la reproducción lo acepta donde haya dispositivo.
 ///
 /// `path` debe vivir dentro del sandbox de la prueba: el WAV se arma en el
-/// temporal de la máquina si se le pasa una ruta de `std::env::temp_dir()`, y un
-/// pánico antes de borrar deja ese residuo fuera del alcance del `remove_dir_all`
-/// que lo barre todo.
+/// temporal de la máquina si se le pasa una ruta de `std::env::temp_dir()`, y ese
+/// residuo quedaría fuera del alcance del `TempDir` que borra el sandbox.
 fn silent_wav_b64(path: &std::path::Path) -> String {
     write_silent_wav(path, 1);
     let bytes = std::fs::read(path).expect("leer el WAV de silencio");
@@ -5847,7 +5808,8 @@ fn residue_with_prefix(dir: &std::path::Path, prefix: &str) -> Vec<String> {
 #[test]
 fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
     require_output_device();
-    let (dir, envs) = contract_sandbox("dub-no-residue");
+    let (sandbox, envs) = contract_sandbox("dub-no-residue");
+    let dir = sandbox.path();
     let body_wav = dir
         .join("child-tmp")
         .join(format!("dub_body_{}.wav", std::process::id()));
@@ -5860,7 +5822,7 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
             "audio_b64": wav_b64, "voice": "default",
         }),
     );
-    fake.publish_in(&dir);
+    fake.publish_in(dir);
     let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -5889,7 +5851,7 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
         Value::String("dubbed".to_string()),
         "el envelope debe afirmar que se dobló, no solo que no falló: {actual}"
     );
-    let residue = residue_with_prefix(&dir, "avi_dub_");
+    let residue = residue_with_prefix(dir, "avi_dub_");
     assert!(
         residue.is_empty(),
         "el temporal del dub debe borrarse en todas las salidas: {residue:?}"
@@ -5898,7 +5860,6 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
         actual.get("audio_path").is_none(),
         "el envelope del dub no debe llevar audio_path: {actual}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// El guardián del temporal de `dub` borra su WAV también cuando **la
@@ -5918,8 +5879,9 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
             "audio_b64": unreadable_audio_b64(), "voice": "default",
         }),
     );
-    let (dir, envs) = contract_sandbox("dub-playback-failed");
-    fake.publish_in(&dir);
+    let (sandbox, envs) = contract_sandbox("dub-playback-failed");
+    let dir = sandbox.path();
+    fake.publish_in(dir);
     let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -5947,13 +5909,12 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
         Value::String("playback_failed".to_string()),
         "el fallo debe nombrarse playback_failed y no io_error o daemon_error: {actual}"
     );
-    let residue = residue_with_prefix(&dir, "avi_dub_");
+    let residue = residue_with_prefix(dir, "avi_dub_");
     assert!(
         residue.is_empty(),
         "el guardián debe borrar el temporal del dub también cuando la reproducción \
          falla: {residue:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// `speech say` por daemon con respuesta válida **sale bien**, no
@@ -5962,7 +5923,8 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
 #[test]
 fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
     require_output_device();
-    let (dir, envs) = contract_sandbox("say-no-residue");
+    let (sandbox, envs) = contract_sandbox("say-no-residue");
+    let dir = sandbox.path();
     let body_wav = dir
         .join("child-tmp")
         .join(format!("say_body_{}.wav", std::process::id()));
@@ -5971,7 +5933,7 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
         200,
         serde_json::json!({ "event": "result", "audio_b64": wav_b64 }),
     );
-    fake.publish_in(&dir);
+    fake.publish_in(dir);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
         &["--json", "--daemon", "speech", "say", "--text", "Hola"],
@@ -5987,7 +5949,7 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
         Value::String("reproduced".to_string()),
         "el envelope debe afirmar que se reprodujo, no solo que no falló: {actual}"
     );
-    let residue = residue_with_prefix(&dir, "avi_say_");
+    let residue = residue_with_prefix(dir, "avi_say_");
     assert!(
         residue.is_empty(),
         "el temporal del say debe borrarse en todas las salidas: {residue:?}"
@@ -5996,7 +5958,6 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
         actual.get("audio_path").is_none(),
         "el envelope del say no debe llevar audio_path: {actual}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// El guardián del temporal de `say` borra su WAV también cuando **la
@@ -6008,8 +5969,9 @@ fn say_daemon_playback_failure_leaves_no_residue() {
         200,
         serde_json::json!({ "event": "result", "audio_b64": unreadable_audio_b64() }),
     );
-    let (dir, envs) = contract_sandbox("say-playback-failed");
-    fake.publish_in(&dir);
+    let (sandbox, envs) = contract_sandbox("say-playback-failed");
+    let dir = sandbox.path();
+    fake.publish_in(dir);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
         &["--json", "--daemon", "speech", "say", "--text", "Hola"],
@@ -6024,11 +5986,10 @@ fn say_daemon_playback_failure_leaves_no_residue() {
         Value::String("playback_failed".to_string()),
         "el fallo debe nombrarse playback_failed y no io_error o daemon_error: {actual}"
     );
-    let residue = residue_with_prefix(&dir, "avi_say_");
+    let residue = residue_with_prefix(dir, "avi_say_");
     assert!(
         residue.is_empty(),
         "el guardián debe borrar el temporal del say también cuando la reproducción \
          falla: {residue:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
