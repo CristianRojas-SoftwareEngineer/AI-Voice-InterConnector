@@ -112,7 +112,7 @@ fn run_category(sandbox: &Sandbox, runtime: &tokio::runtime::Runtime, options: c
 /// `avi-store` exige para dar cada uno por provisionado.
 ///
 /// Es lo que permite que la provisión **no toque la red**: con los snapshots ya en su
-/// sitio, la provisión no tiene repos que descargar. Cada repo de pruebas se planta con
+/// sitio, la provisión no tiene repos que descargar. Cada repo de pruebas se escribe con
 /// los nombres de archivo que el producto espera, no con un marcador, porque `is_provisioned` decide
 /// por presencia y tamaño de esos archivos.
 fn provision_selection(sandbox: &Sandbox) {
@@ -712,7 +712,7 @@ fn criterion_6_successful_provisioning_has_no_reason() {
 /// **Criterio 17.** `self uninstall --yes` elimina el programa, la integración de `PATH`
 /// y el estado, sin residuo dentro de las raíces de propiedad exclusiva.
 ///
-/// El ciclo es completo: una instalación **real** por el motor, no un recibo plantado, y
+/// El ciclo es completo: una instalación **real** por el motor, no un recibo escrito a mano, y
 /// luego la desinstalación. En Unix eso incluye el enlace y el bloque delimitado del
 /// perfil, y se afirma que el resto del perfil no se toca.
 ///
@@ -2126,7 +2126,7 @@ fn uninstall_path_reverted_matches_the_real_run() {
 /// Se afirma en las dos ramas: el simulacro no lo lista como destino y la ejecución real
 /// tampoco lo borra, y las dos lo anuncian como `preserved` con el motivo de R2.
 ///
-/// El caso elegido es `$HOME` como directorio de programa, con el recibo plantado dentro:
+/// El caso elegido es `$HOME` como directorio de programa, con el recibo escrito dentro:
 /// es la mitad negativa de R2 —la positiva sí se cumple— y además el que **no** cuelga de
 /// una raíz que el plan ya borra entera, así que el directorio sobrevive de verdad a la
 /// operación. Un directorio de programa dentro de la raíz de datos no serviría para
@@ -2151,7 +2151,7 @@ fn uninstall_plan_does_not_promise_what_r2_refuses() {
         },
         None,
     );
-    receipt::write_to(&receipt, &program_dir).expect("se planta el recibo");
+    receipt::write_to(&receipt, &program_dir).expect("se escribe el recibo");
     let roots = sandbox.roots();
     assert!(
         !uninstall::program_dir_is_removable(&roots, &program_dir),
@@ -2269,7 +2269,7 @@ fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
         },
         None,
     );
-    receipt::write_to(&receipt, &program_dir).expect("se planta el recibo");
+    receipt::write_to(&receipt, &program_dir).expect("se escribe el recibo");
     let roots = sandbox.roots();
     assert!(
         !uninstall::program_dir_is_removable(&roots, &program_dir),

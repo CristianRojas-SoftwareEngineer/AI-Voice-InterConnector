@@ -30,7 +30,7 @@
 //!
 //! ### Cómo se evita la red y el estado de la máquina
 //!
-//! - **Sin red real**: se plantan en la raíz de modelos del sandbox los repos de la selección
+//! - **Sin red real**: se escriben en la raíz de modelos del sandbox los repos de la selección
 //!   con los archivos que `is_provisioned` exige, salvo `opus-mt-es-en`, y `HF_ENDPOINT`
 //!   apunta a un puerto local cerrado. Lo único que queda por hacer es descargar ese pin, y
 //!   falla con `network_error` de forma independiente de la máquina.

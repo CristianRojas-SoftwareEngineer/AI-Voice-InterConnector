@@ -2077,7 +2077,7 @@ fn cleanup_dry_run_matches_fixture() {
 /// `cleanup --model` de punta a punta, en las **dos** formas que puede tomar la raíz de
 /// modelos de la tabla de rutas.
 ///
-/// La versión anterior plantaba el layout viejo —`<HF_HOME>/hub/models--…`, `hub/ct2`,
+/// La versión anterior creaba el layout viejo —`<HF_HOME>/hub/models--…`, `hub/ct2`,
 /// `hub/.locks` y `xet` como hermano— y exigía que los cuatro aparecieran en `removed`.
 /// Con la decisión de relocalizar `xet` y con R3 aplicada, ese layout ya no describe
 /// nada: en la raíz **exclusiva** el borrado es de directorio entero, y en la raíz
@@ -2246,7 +2246,7 @@ fn cleanup_model_real_run_reports_paths() {
     );
 }
 
-/// Planta el layout de modelos vigente: un repo fijado, los locks y `xet` colgando
+/// Crea el layout de modelos vigente: un repo fijado, los locks y `xet` colgando
 /// de la raíz, más un repo de otra herramienta.
 fn seed_models(root: &std::path::Path) {
     let repo = root.join("models--CristianRojaas--opus-mt-es-en-ct2-int8");
@@ -2333,10 +2333,10 @@ fn doctor_repair_collects_leftovers() {
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let install = dir.join("install");
     let parked = install.join(format!("{}9999", avi_lifecycle::PARKED_DIR_PREFIX));
-    std::fs::create_dir_all(&parked).expect("plantar aparcado");
+    std::fs::create_dir_all(&parked).expect("crear aparcado");
     std::fs::write(parked.join("previous"), "v1").expect("rellenar aparcado");
     let staging = dir.join(format!("{}9999", avi_lifecycle::STAGING_DIR_PREFIX));
-    std::fs::create_dir_all(&staging).expect("plantar staging");
+    std::fs::create_dir_all(&staging).expect("crear staging");
     std::fs::write(staging.join("downloaded"), "bundle").expect("rellenar staging");
 
     let (code, _out, _err) = run_text_env(&["doctor", "--repair"], &envs);
@@ -2368,10 +2368,10 @@ fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let install = dir.join("install");
     let parked = install.join(format!("{}8888", avi_lifecycle::PARKED_DIR_PREFIX));
-    std::fs::create_dir_all(&parked).expect("plantar aparcado");
+    std::fs::create_dir_all(&parked).expect("crear aparcado");
     std::fs::write(parked.join("previous"), "v1").expect("rellenar aparcado");
     let staging = dir.join(format!("{}8888", avi_lifecycle::STAGING_DIR_PREFIX));
-    std::fs::create_dir_all(&staging).expect("plantar staging");
+    std::fs::create_dir_all(&staging).expect("crear staging");
     std::fs::write(staging.join("downloaded"), "bundle").expect("rellenar staging");
 
     let (code, _out, err) = run_text_env(&["doctor"], &envs);

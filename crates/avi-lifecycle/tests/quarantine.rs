@@ -304,7 +304,7 @@ fn asks_about_derived(asked: &BTreeSet<PathBuf>) -> bool {
 //   afirma, recorriendo el árbol real del directorio de programa, que ni un archivo ni un
 //   directorio lo conserva.
 // - Fuera de macOS, la variante del mismo nombre afirma lo que sí es cierto aquí: que el
-//   atributo se planta en el árbol entero, que el recorrido lo abarca entero, y que un
+//   atributo se pone en el árbol entero, que el recorrido lo abarca entero, y que un
 //   hermano del directorio de programa conserva el suyo. No es un `skip`: es una
 //   afirmación distinta, ejecutada, y el criterio 9 en su sentido fuerte lo ejecuta la
 //   puerta de macOS con el mismo nombre.
@@ -312,14 +312,14 @@ fn asks_about_derived(asked: &BTreeSet<PathBuf>) -> bool {
 // Que las dos se llamen igual es deliberado: `--list` muestra `criterion_9_` en las tres
 // puertas, y en macOS el nombre corresponde a la prueba del criterio, no a su sombra.
 
-/// Planta el atributo en un árbol entero: archivos **y** directorios.
+/// Pone el atributo en un árbol entero: archivos **y** directorios.
 ///
 /// El Finder pone `com.apple.quarantine` en el archivo descargado y macOS lo hereda todo
 /// lo que se crea dentro, así que un bundle extraído con el Finder llega con el atributo
-/// en cada archivo y en cada directorio intermedio. Plantarlo solo en los archivos sería
+/// en cada archivo y en cada directorio intermedio. Ponerlo solo en los archivos sería
 /// una versión más fácil del criterio.
 fn seed_quarantine(root: &Path) -> Vec<PathBuf> {
-    let mut planted = Vec::new();
+    let mut quarantined_paths = Vec::new();
     let mut directories = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -334,14 +334,14 @@ fn seed_quarantine(root: &Path) -> Vec<PathBuf> {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                 stack.push(path);
             } else {
-                planted.push(path);
+                quarantined_paths.push(path);
             }
         }
     }
-    for path in planted.iter().chain(directories.iter()) {
+    for path in quarantined_paths.iter().chain(directories.iter()) {
         quarantine::put(path).expect("se pone la cuarentena de macOS");
     }
-    planted
+    quarantined_paths
 }
 
 /// Recorre el directorio de programa entero y devuelve las rutas relativas, en orden, de
@@ -381,7 +381,7 @@ fn keep_quarantine(root: &Path, attributes: &dyn quarantine::Quarantine) -> Vec<
 /// **Criterio 9 en macOS.** Instalar un bundle descargado por navegador no deja ni un
 /// archivo ni un directorio del directorio de programa con `com.apple.quarantine`.
 ///
-/// La fuerza de la prueba está en dos detalles. El primero es que el atributo se planta
+/// La fuerza de la prueba está en dos detalles. El primero es que el atributo se pone
 /// en **todo** el bundle, directorios incluidos, que es el estado en que lo deja el
 /// Finder. El segundo es que la comprobación final **no usa la lista del recibo**: recorre
 /// el árbol real del directorio de programa, de modo que un archivo que se colocara sin
@@ -392,8 +392,11 @@ fn keep_quarantine(root: &Path, attributes: &dyn quarantine::Quarantine) -> Vec<
 async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     let sandbox = Sandbox::new("c9");
     let exe = sandbox.write_bundle(&sandbox.staging);
-    let planted = seed_quarantine(&sandbox.staging);
-    assert!(!planted.is_empty(), "criterio 9: el bundle tiene archivos");
+    let quarantined_paths = seed_quarantine(&sandbox.staging);
+    assert!(
+        !quarantined_paths.is_empty(),
+        "criterio 9: el bundle tiene archivos"
+    );
 
     // Un hermano del directorio de programa, en cuarentena, que no se debe tocar.
     let sibling = sandbox.root.join("opt").join("sibling.txt");
@@ -403,7 +406,7 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     // Punto de partida: **todo** el bundle está en cuarentena, archivos y directorios.
     assert_eq!(
         keep_quarantine(&sandbox.staging, quarantine::platform()).len(),
-        planted.len() + intermediate_dirs(&sandbox.staging),
+        quarantined_paths.len() + intermediate_dirs(&sandbox.staging),
         "criterio 9: el bundle entero arranca en cuarentena"
     );
 
@@ -464,7 +467,7 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
 /// No es una prueba de que la operación no se pueda ejecutar: usa el `strip` real con la
 /// implementación real de la plataforma sobre un árbol real, y además el recorrido con una
 /// implementación de atributos que sí registra. Afirma tres cosas, y las tres importan
-/// para la puerta de macOS: que el atributo se planta en el árbol entero —archivos **y**
+/// para la puerta de macOS: que el atributo se pone en el árbol entero —archivos **y**
 /// directorios, que es como lo deja el Finder—, que el recorrido abarca las dos clases,
 /// y que un hermano del directorio de programa conserva el suyo, o sea que la limpieza no
 /// se sale. Lo único que queda sin comprobar aquí es que `xattr` lo quite, y lo dice el
@@ -474,8 +477,11 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
 fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     let tree = Tree::new("c9-others");
     let placed = tree.materialize();
-    let planted = seed_quarantine(&tree.staging);
-    assert!(!planted.is_empty(), "criterio 9: el bundle tiene archivos");
+    let quarantined_paths = seed_quarantine(&tree.staging);
+    assert!(
+        !quarantined_paths.is_empty(),
+        "criterio 9: el bundle tiene archivos"
+    );
 
     // El hermano, con su propio atributo, es el control del alcance.
     let sibling = tree.root.join("opt").join("sibling.txt");

@@ -602,7 +602,7 @@ pub(crate) mod tests {
     use crate::test_support::{scratch, write_file, ENV_LOCK};
     use std::sync::MutexGuard;
 
-    /// Provisionador simulado: la descarga planta el snapshot pinneado, sin red.
+    /// Provisionador simulado: la descarga escribe el snapshot pinneado, sin red.
     pub(crate) struct FakeProvisioner;
 
     impl Provisioner for FakeProvisioner {

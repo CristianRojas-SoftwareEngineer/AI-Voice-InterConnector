@@ -178,7 +178,7 @@ impl Sandbox {
     /// y es deliberado: `uninstall::run` decide entre `not_installed` y una
     /// desinstalación vacía mirando si el estado existe, y un sandbox que llegara con esas
     /// raíces vacías afirmaría un caso que en producción no existe. Las pruebas que las
-    /// necesitan las crean al plantar el estado o al instalar.
+    /// necesitan las crean al escribir el estado o al instalar.
     pub fn create_directories(&self) {
         for dir in [
             self.program_dir
@@ -328,11 +328,11 @@ impl Sandbox {
         }
     }
 
-    /// Planta el estado completo y, además, los recursos **compartidos** que el
+    /// Escribe el estado completo y, además, los recursos **compartidos** que el
     /// criterio 23 nombra: un repo de otra herramienta dentro de la caché de modelos,
     /// `~/.cargo` y el directorio de `sccache`.
     ///
-    /// Los locks se plantan dos veces a propósito: el del repo propio, que R3 declara
+    /// Los locks se escriben dos veces a propósito: el del repo propio, que R3 declara
     /// atribuible a la aplicación, y el de otro, que no. La distinción es el contenido
     /// del criterio, y sin los dos directorios no se puede ver.
     pub fn seed_state(&self) {
@@ -388,7 +388,7 @@ impl Sandbox {
         write(&self.data_dir.join("logs").join("daemon.log"), "log");
         write(&self.data_dir.join("daemon.pid"), "{}");
         // Recursos compartidos del entorno, que ninguna operación puede borrar
-        // (criterio 23). `sccache` se planta en dos sitios porque son los dos que
+        // (criterio 23). `sccache` se escribe en dos sitios porque son los dos que
         // existen en producción: la caché del usuario y el temporal del sistema.
         write(
             &self.home.join(".cargo").join("registry").join("index"),
@@ -401,7 +401,7 @@ impl Sandbox {
         write(&self.temp_root.join("sccache").join("object"), "sccache");
     }
 
-    /// Un temporal propio huérfano, que la regla obliga a barrer, plantado junto a los
+    /// Un temporal propio huérfano, que la regla obliga a barrer, creado junto a los
     /// compartidos del párrafo anterior: es el contraste que demuestra que el barrido es
     /// selectivo por prefijo y no por directorio.
     pub fn seed_own_temp(&self) -> PathBuf {

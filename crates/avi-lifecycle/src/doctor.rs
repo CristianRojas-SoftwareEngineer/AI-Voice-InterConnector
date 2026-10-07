@@ -609,7 +609,7 @@ mod tests {
             .collect()
     }
 
-    /// Ejecutable de la plataforma, para plantar una instalación coexistente.
+    /// Ejecutable de la plataforma, para crear una instalación coexistente.
     fn exe_name() -> String {
         crate::uninstall::executable_name_default()
     }
@@ -699,9 +699,9 @@ mod tests {
         );
     }
 
-    /// Planta en la raíz del sandbox los snapshots pinneados de todos los modelos
+    /// Escribe en la raíz del sandbox los snapshots pinneados de todos los modelos
     /// salvo el Base opt-in, con los archivos que el producto exige.
-    fn plant_required_models(env: &Env) {
+    fn set_required_models(env: &Env) {
         for pin in avi_store::MODEL_REVISIONS {
             if pin.name == crate::setup::CLONING_MODEL {
                 continue;
@@ -740,7 +740,7 @@ mod tests {
     #[test]
     fn translation_models_have_no_derived_check() {
         let (_scratch, env) = env("translation-without-derived");
-        plant_required_models(&env);
+        set_required_models(&env);
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(
             report.checks.iter().all(|c| c.name != "models_ct2"),
@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn models_provisioned_passes_without_opt_in_base() {
         let (_scratch, env) = env("models-without-base");
-        plant_required_models(&env);
+        set_required_models(&env);
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(models_check(&report).ok, "{:?}", report.models.missing);
         assert!(report.models.missing.is_empty());
@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn models_provisioned_fails_when_cloning_selected_and_base_absent() {
         let (_scratch, env) = env("models-cloning");
-        plant_required_models(&env);
+        set_required_models(&env);
         crate::setup::write_selection_to(
             &env.roots.data_dir,
             &crate::setup::SetupSelection {
@@ -846,7 +846,7 @@ mod tests {
         assert!(report.is_failure());
     }
 
-    /// El informe de pendientes con un `.old-*` y un staging huérfano plantados, y
+    /// El informe de pendientes con un `.old-*` y un staging huérfano creados, y
     /// `doctor` **no toca nada**: es un modo informe.
     #[test]
     fn doctor_reports_pending_artifacts() {

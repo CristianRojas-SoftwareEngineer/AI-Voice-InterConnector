@@ -8,7 +8,7 @@
 //! Hay dos capas, y la distinción no es de estilo sino de qué se puede comprobar en esta
 //! puerta:
 //!
-//! 1. `interrupted_transaction_is_recovered_next_run` planta, con la API pública de
+//! 1. `interrupted_transaction_is_recovered_next_run` escribe, con la API pública de
 //!    `transaction`, el estado **exacto** en que una operación deja el directorio de
 //!    programa al morir en cada uno de los cinco estados del diario, y comprueba que la
 //!    recuperación lo resuelve como la regla dice: los cuatro estados sin confirmar se
@@ -231,11 +231,11 @@ fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
 /// **La recuperación**, en cada punto del algoritmo de la transacción.
 ///
 /// Dos afirmaciones por punto. La primera es sobre la **recuperación**, a la que se le
-/// planta el estado: los cuatro estados sin confirmar se revierten y devuelven la versión
+/// escribe el estado: los cuatro estados sin confirmar se revierten y devuelven la versión
 /// anterior al directorio de programa —con su ejecutable y su recibo—, el confirmado se
 /// completa como commit y conserva lo nuevo, y en todos los casos no queda diario ni
 /// aparcado. La segunda es sobre la **operación siguiente**: en un sandbox nuevo con el
-/// mismo estado plantado, `self install` completa la recuperación por su cuenta, instala y
+/// mismo estado escrito, `self install` completa la recuperación por su cuenta, instala y
 /// no deja residuo. Sin la segunda, la primera solo probaría una función.
 #[test]
 fn interrupted_transaction_is_recovered_next_run() {
@@ -243,7 +243,7 @@ fn interrupted_transaction_is_recovered_next_run() {
     let runtime = support::runtime();
 
     for (slug, point, state, commit) in POINTS {
-        // ── Capa 1: la recuperación resuelve el estado plantado ──────────────────
+        // ── Capa 1: la recuperación resuelve el estado escrito ───────────────────
         let sandbox = Sandbox::new(&format!("recovery-{slug}"));
         sandbox.seed_env();
         let txid = interrupt_at(&sandbox, slug, state);
@@ -555,7 +555,7 @@ fn fault_injection_is_inert_without_the_feature() {
 /// La regla dice que **toda** operación de ciclo de vida empieza por la recuperación, y esta
 /// es
 /// la comprobación de que la desinstalación no es la excepción: con una transacción
-/// pendiente plantada, opera igualmente, sobre el directorio de programa registrado, y no
+/// pendiente escrita, opera igualmente, sobre el directorio de programa registrado, y no
 /// deja aparcados, stagings ni temporales.
 #[test]
 fn uninstall_recovers_before_it_plans() {

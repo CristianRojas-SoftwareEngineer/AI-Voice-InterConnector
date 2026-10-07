@@ -182,7 +182,7 @@ impl Sandbox {
         out
     }
 
-    /// Planta el estado completo: modelos, voces de fábrica y de usuario, habla
+    /// Escribe el estado completo: modelos, voces de fábrica y de usuario, habla
     /// sintetizada, configuración, logs y pidfile.
     fn seed_state(&self) {
         // Modelos: un repo fijado, los locks, `xet` y un repo ajeno.
@@ -866,7 +866,7 @@ fn uninstall_refuses_unsafe_program_dir() {
 
     // Con recibo, pero en una raíz prohibida: tampoco. La raíz del sistema se prueba
     // sin escribir nada en ella —`program_dir_is_removable` rechaza por estructura,
-    // antes de mirar el recibo— y las demás se prueban con el recibo plantado, que es
+    // antes de mirar el recibo— y las demás se prueban con el recibo escrito, que es
     // lo que un recibo manipulado intentaría.
     for protected in [
         sandbox.home.clone(),

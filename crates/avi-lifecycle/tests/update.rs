@@ -406,7 +406,7 @@ fn criterion_13_daemon_stops_before_replacement() {
 /// que sale con 0), la 0.23.1 sigue instalada, y la siguiente operación barre el
 /// staging huérfano y completa la instalación de la 0.24.0. En Windows no hay
 /// guion que lanzar como hijo, así que la mitad de durante el traspaso la cubre
-/// el barrido de recuperación sobre el staging plantado.
+/// el barrido de recuperación sobre el staging creado.
 #[cfg(feature = "faults")]
 #[test]
 fn criterion_14_interrupted_update_leaves_previous_operational() {
@@ -649,7 +649,7 @@ fn criterion_15_managed_channels_are_externally_managed() {
 ///
 /// Tres mitades a nivel de motor: la selección guardada sobrevive al reemplazo
 /// del programa (el reemplazo no toca la raíz de datos); lo pendiente contra el
-/// pin vigente se detecta y se da por provisionado al plantarlo; y la poda tras
+/// pin vigente se detecta y se da por provisionado al escribirlo; y la poda tras
 /// éxito elimina solo las revisiones fuera del pin, también en la raíz
 /// compartida donde `xet`, `.locks` y lo ajeno son intocables (R3).
 #[test]
@@ -677,8 +677,8 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
         "criterio 16: la selección sobrevive al reemplazo del programa"
     );
 
-    // Lo pendiente contra el pin vigente: todo plantado menos un repo se
-    // detecta, y plantado ese último no queda nada pendiente.
+    // Lo pendiente contra el pin vigente: todo escrito menos un repo se
+    // detecta, y escrito ese último no queda nada pendiente.
     let options = setup::Options::user(false, false, true);
     let names: Vec<&str> = setup::selection(&options);
     assert!(
@@ -687,7 +687,7 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
     );
     let store = avi_store::ModelStore::new();
     for name in &names[..names.len() - 1] {
-        plant_snapshot(&sandbox, name);
+        set_snapshot(&sandbox, name);
     }
     let pending = setup::pending(&store, &options);
     assert_eq!(
@@ -695,7 +695,7 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
         vec![names[names.len() - 1].to_string()],
         "criterio 16: el pin cambiado se detecta como pendiente"
     );
-    plant_snapshot(&sandbox, names[names.len() - 1]);
+    set_snapshot(&sandbox, names[names.len() - 1]);
     let pending = setup::pending(&store, &options);
     assert!(
         pending.models.is_empty(),
@@ -788,9 +788,9 @@ fn criterion_16_selection_survives_and_obsolete_pruned() {
     }
 }
 
-/// Planta el snapshot del pin vigente de `name` con los archivos que
+/// Escribe el snapshot del pin vigente de `name` con los archivos que
 /// `avi-store` exige para darlo por provisionado, sin tocar la red.
-fn plant_snapshot(sandbox: &Sandbox, name: &str) {
+fn set_snapshot(sandbox: &Sandbox, name: &str) {
     let pin = MODEL_REVISIONS
         .iter()
         .find(|pin| pin.name == name)
@@ -946,7 +946,7 @@ fn criterion_update_daemon_stop_failure_aborts() {
     assert_ne!(daemon_pid, std::process::id());
     set_daemon_pid_file(&sandbox.data_dir, daemon_pid).expect("se escribe el pidfile");
     // El pidfile es estado previo de la prueba, no algo que la parada cree: la
-    // foto del disco se toma después de plantarlo.
+    // foto del disco se toma después de escribirlo.
     let before = sandbox.snapshot();
     let outcome = runtime.block_on(daemon_stop::stop(
         &sandbox.data_dir,

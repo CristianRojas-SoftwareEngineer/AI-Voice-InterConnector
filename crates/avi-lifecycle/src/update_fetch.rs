@@ -842,7 +842,7 @@ mod tests {
         let program_dir = sandbox.join("opt").join("ai-voice-interconnector");
         std::fs::create_dir_all(&program_dir).expect("se crea el programa previo");
         let marker = program_dir.join("kept.txt");
-        std::fs::write(&marker, "instalación previa").expect("se planta el marcador");
+        std::fs::write(&marker, "instalación previa").expect("se escribe el marcador");
         let (base, _, handle) = serve_responses(vec![
             FakeResponse::new(200, archive),
             FakeResponse::new(200, sums),
@@ -887,7 +887,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::write(&exe, "#!/bin/sh\necho \"ai-voice-interconnector 0.0.0\"\n")
-                .expect("se planta el guion");
+                .expect("se escribe el guion");
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755))
                 .expect("se hace ejecutable");
             let err = verify_boot(&sandbox, triple, "0.24.0").await.unwrap_err();
@@ -896,7 +896,7 @@ mod tests {
         }
         #[cfg(windows)]
         {
-            std::fs::write(&exe, "esto no es un ejecutable").expect("se planta el señuelo");
+            std::fs::write(&exe, "esto no es un ejecutable").expect("se escribe el señuelo");
             let err = verify_boot(&sandbox, triple, "0.24.0").await.unwrap_err();
             assert_eq!(err.reason, "binary_incompatible");
             assert_eq!(ExitCode::from_reason(err.reason).code(), 19);
