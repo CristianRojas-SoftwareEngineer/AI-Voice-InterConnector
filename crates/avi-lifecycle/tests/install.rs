@@ -732,6 +732,43 @@ fn list(root: &Path) -> Vec<String> {
 fn state(root: &Path) -> Vec<String> {
     list(root)
         .into_iter()
-        .filter(|e| e.rsplit('/').next() != Some(avi_lifecycle::LIFECYCLE_LOCK_NAME))
+        .filter(|e| {
+            ![
+                avi_lifecycle::LIFECYCLE_LOCK_NAME,
+                avi_lifecycle::LIFECYCLE_GATE_NAME,
+            ]
+            .contains(&e.rsplit('/').next().unwrap_or_default())
+        })
         .collect()
+}
+
+/// Con un comando de uso en curso (bloqueo compartido tomado), `self install` termina
+/// con `lifecycle_locked` sin tocar el disco, y al terminar una instalación el
+/// bloqueo exclusivo queda libre.
+#[tokio::test]
+async fn install_honors_and_releases_the_lifecycle_lock() {
+    let sandbox = Sandbox::new("lock");
+    let exe = sandbox.write_bundle(&sandbox.staging);
+    let env = sandbox.env(&exe);
+
+    let usage = avi_lifecycle::lock::acquire_shared(&sandbox.program_dir)
+        .expect("el comando de uso toma el bloqueo compartido");
+    let before = state(&sandbox.root);
+    let err = install::install(&env, &Sandbox::options(), &Inert)
+        .await
+        .expect_err("la instalación no corre con un uso en curso");
+    let failure = err
+        .downcast_ref::<avi_lifecycle::LifecycleError>()
+        .unwrap_or_else(|| panic!("el fallo declara un `reason`: {err:#}"));
+    assert_eq!(failure.reason, "lifecycle_locked");
+    assert_eq!(state(&sandbox.root), before, "nada modificado");
+    drop(usage);
+
+    install::install(&env, &Sandbox::options(), &Inert)
+        .await
+        .expect("sin uso en curso la instalación se completa");
+    drop(
+        avi_lifecycle::lock::acquire_exclusive(&sandbox.program_dir)
+            .expect("al terminar, el bloqueo exclusivo queda libre"),
+    );
 }

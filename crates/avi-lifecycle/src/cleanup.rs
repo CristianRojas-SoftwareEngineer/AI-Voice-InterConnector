@@ -109,11 +109,13 @@ pub struct Roots {
 }
 
 impl Roots {
-    /// Raíces del producto resueltas ahora, que es lo que usa el binario.
+    /// Raíces del producto resueltas ahora, que es lo que usa el binario. El
+    /// directorio de programa es el registrado, el mismo que usan `self update` y
+    /// `self uninstall`, para que todas las operaciones tomen el mismo bloqueo.
     pub fn resolve() -> Self {
         let models_dir = crate::models_cache_dir();
         Self {
-            program_dir: crate::install_dir(),
+            program_dir: crate::channel::registered_program_dir(),
             data_dir: crate::data_dir(),
             models_shared: is_shared_models_root(&models_dir),
             models_dir,
@@ -147,13 +149,6 @@ impl Roots {
             temp_root: &self.temp_root,
             in_use: None,
         }
-    }
-
-    /// Archivo de bloqueo, hermano del directorio de programa. Es un dato y no
-    /// la constante de `lock::lock_path()` porque el directorio de programa puede ser
-    /// el **registrado** y no el de la convención de rutas.
-    pub fn lock_path(&self) -> PathBuf {
-        crate::lock::lock_path_for(&self.program_dir)
     }
 }
 
@@ -546,8 +541,7 @@ pub async fn run(
 
     // Recuperación y bloqueo. El barrido transversal va aquí dentro,
     // que es lo que significa "cualquier invocación barre además…".
-    let lock_path = roots.lock_path();
-    let lock = crate::lock::acquire_at(&lock_path)?;
+    let lock = crate::lock::acquire_exclusive(&roots.program_dir)?;
     let recovery = recovery::recover(roots.recovery_roots())?;
 
     let plan = plan(roots, options);

@@ -671,7 +671,7 @@ Son **dos, independientes**: el envelope de la CLI va por `"5"` y el protocolo d
 `self` es el grupo que hace que **el ciclo de vida viva en el binario que se gestiona a sí mismo**. Los tres subcomandos comparten cuatro propiedades, y las cuatro importan más que sus flags:
 
 - **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas (§7.2).
-- **Toman un bloqueo exclusivo de SO** sobre el archivo de bloqueo, y por eso un segundo proceso concurrente sale con `lifecycle_locked` (17) en vez de esperar.
+- **Toman el bloqueo de SO en modo exclusivo**, sobre el archivo de bloqueo y su compuerta de traspaso (hermanos del directorio de programa registrado, el mismo para todas las operaciones), y por eso un segundo proceso concurrente sale con `lifecycle_locked` (17) en vez de esperar. Los comandos de uso lo toman en modo compartido: coexisten entre sí y no se cruzan con ninguna operación. `self update` retiene la compuerta durante todo el traspaso al binario nuevo, y `self install` retiene el bloqueo hasta terminar su provisión de modelos.
 - **Ejecutan la recuperación antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido de aparcados, stagings huérfanos y temporales propios.
 - **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProductProcesses`, `ProgramRemoval`, esta última sobre `avi_process::schedule_clean_removal`).
 

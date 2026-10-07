@@ -700,12 +700,66 @@ fn uninstall_leaves_no_residue_in_exclusive_roots() {
     );
     assert!(outcome.program_dir_removed);
     assert!(!exists(&sandbox.program_dir), "programa: residuo cero");
+    assert!(
+        !exists(&avi_lifecycle::lock::lock_path_for(&sandbox.program_dir)),
+        "el archivo de bloqueo no queda"
+    );
+    assert!(
+        !exists(&avi_lifecycle::lock::gate_path_for(&sandbox.program_dir)),
+        "la compuerta no queda"
+    );
     assert!(!exists(&sandbox.models_dir), "modelos: residuo cero");
     assert!(
         !exists(&sandbox.data_dir),
         "datos: residuo cero, voces de fábrica incluidas: el programa ya no está para \
          re-materializarlas"
     );
+}
+
+/// Con un comando de uso en curso (bloqueo compartido tomado), `cleanup` y
+/// `self uninstall` terminan con `lifecycle_locked` sin borrar nada.
+#[test]
+fn destructive_operations_refuse_while_a_usage_command_runs() {
+    let sandbox = Sandbox::new("usage-lock");
+    let receipt = sandbox.install();
+    sandbox.seed_state();
+    let usage = avi_lifecycle::lock::acquire_shared(&sandbox.program_dir)
+        .expect("el comando de uso toma el bloqueo compartido");
+    let before = sandbox.snapshot();
+
+    let error = runtime()
+        .block_on(cleanup::run(
+            &sandbox.roots(),
+            &with_yes(CleanupOptions {
+                all: true,
+                ..Default::default()
+            }),
+            &Inert,
+        ))
+        .expect_err("cleanup no corre con un uso en curso");
+    let failure = error
+        .downcast_ref::<avi_lifecycle::LifecycleError>()
+        .expect("el fallo declara un `reason`");
+    assert_eq!(failure.reason, "lifecycle_locked");
+
+    let error = runtime()
+        .block_on(uninstall::run(
+            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &UninstallOptions {
+                assume_yes: true,
+                ..Default::default()
+            },
+            &Now,
+            &Inert,
+        ))
+        .expect_err("uninstall no corre con un uso en curso");
+    let failure = error
+        .downcast_ref::<avi_lifecycle::LifecycleError>()
+        .expect("el fallo declara un `reason`");
+    assert_eq!(failure.reason, "lifecycle_locked");
+
+    assert_eq!(sandbox.snapshot(), before, "no se borró nada");
+    drop(usage);
 }
 
 /// `--keep-data` conserva modelos, voces y habla (criterio 18).

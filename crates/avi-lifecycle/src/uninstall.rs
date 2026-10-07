@@ -269,8 +269,7 @@ pub async fn run(
     if let Some(warning) = &report.warning {
         eprintln!("{warning}");
     }
-    let lock_path = roots.lock_path();
-    let lock = crate::lock::acquire_at(&lock_path)?;
+    let lock = crate::lock::acquire_exclusive(&roots.program_dir)?;
     let recovery = crate::recovery::recover(roots.recovery_roots())?;
 
     // ── Paso 2. Plan ──────────────────────────────────────────────────────────────
@@ -355,11 +354,21 @@ pub async fn run(
         (false, "uninstalled")
     };
 
-    // ── Paso 9. Borrar el archivo de bloqueo ──────────────────────────────────────
-    // Vive en el hermano del directorio de programa, así que se borra también cuando
+    // ── Paso 9. Borrar el archivo de bloqueo y la compuerta ───────────────────────
+    // Viven en el hermano del directorio de programa, así que se borran también cuando
     // ese quedó programado: el bloqueo es del ciclo de vida, no del directorio.
-    let _ = std::fs::remove_file(&lock_path);
-    drop(lock);
+    // Es el último paso con efectos y se hace con el bloqueo aún tomado. En Unix la
+    // verificación de inodo de cada toma hace seguro el borrado: quien abrió el
+    // fichero antes de desvincularlo y lo bloquea después ve que su inodo ya no es
+    // el de la ruta y falla. En Windows los ficheros se abren sin permitir su
+    // borrado, así que `remove_files` suelta primero los descriptores propios; si otro
+    // proceso los abrió en ese instante, el borrado falla y el fichero se queda, sin
+    // consecuencias (su dueño bloquea el fichero que está en la ruta). Un fallo se
+    // informa como cualquier otro resto que no se pudo borrar.
+    for (path, error) in lock.remove_files() {
+        eprintln!("  no se pudo borrar {}: {error}", path.display());
+        failed.push(path.display().to_string());
+    }
 
     Ok(Outcome {
         status,

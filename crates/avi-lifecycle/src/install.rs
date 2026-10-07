@@ -434,7 +434,7 @@ pub async fn install(
     // operación va a instalar se declara en uso: el barrido recoge "stagings
     // huérfanos", y el bundle del paso 2 todavía no es huérfano aunque esté recién
     // extraído.
-    let lock = crate::lock::acquire_at(&lock_path_for(&env.program_dir))?;
+    let lock = crate::lock::acquire_exclusive(&env.program_dir)?;
     let bundle = bundle_dir(&env.exe);
     let recovery = crate::recovery::recover(crate::recovery::Roots {
         program_dir: &env.program_dir,
@@ -519,7 +519,7 @@ pub async fn install(
     // HKLM nunca se modifica, ni para escribir: solo se informa del comando exacto.
     let machine_warning = machine_path_warning(env);
 
-    // ── Paso 10. Recibo atómico y liberación del bloqueo ──────────────────────
+    // ── Paso 10. Recibo atómico ───────────────────────────────────────────────
     crate::faults::trip(crate::faults::FaultPoint::BeforeReceipt)?;
     let receipt = InstallReceipt::new(
         &env.version,
@@ -535,14 +535,16 @@ pub async fn install(
         source_of(env, previous.as_ref()),
     );
     receipt::write_to(&receipt, &env.program_dir)?;
-    drop(lock);
 
     // ── Paso 11. `setup` en el mismo proceso, salvo `--no-setup` ──────────────
+    // El bloqueo exclusivo se retiene hasta aquí: `setup` descarga y purga modelos, y
+    // ningún comando de uso ni otra operación puede cruzarse con esa escritura.
     let models = if options.no_setup {
         ModelsState::Skipped
     } else {
         provision(options, &setup::HubProvisioner).await
     };
+    drop(lock);
 
     // ── Paso 12. Resumen final ────────────────────────────────────────────────
     let summary = final_summary(
@@ -1011,16 +1013,6 @@ fn final_summary(
         );
     }
     out
-}
-
-/// Ruta del archivo de bloqueo: hermano del directorio de programa, que es
-/// donde la tabla de rutas lo coloca en los cuatro targets. Es la misma que
-/// [`crate::lock::lock_path`], calculada desde el directorio de programa que trae la
-/// operación en vez de del entorno.
-/// La regla vive en [`crate::lock`] porque las tres operaciones destructivas la
-/// necesitan y una sola copia no admite tres motores.
-fn lock_path_for(program_dir: &Path) -> PathBuf {
-    crate::lock::lock_path_for(program_dir)
 }
 
 #[cfg(test)]

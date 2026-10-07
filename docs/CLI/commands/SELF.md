@@ -51,8 +51,8 @@ El orden es el de §8.3 y está escrito en el propio código, con el número de 
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en **todo** el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. No es un fallo de la instalación: la cuarentena que no se quita degrada el arranque y el resumen lo informa.
 8. **Integración de `PATH`** ([`../CONTRACT.md` §11](../CONTRACT.md) y §8.3.1 de la especificación). En Unix el `PATH` se modifica **por defecto** (decisión D2) y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
 9. **Windows**: si el `PATH` de máquina parece llevar una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. **HKLM nunca se modifica**, ni para escribir ni para leer.
-10. **Escribir el recibo** de forma atómica y liberar el bloqueo.
-11. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección guardada según el estado real del almacén, sin repetir la confirmación ni escribir la selección.
+10. **Escribir el recibo** de forma atómica.
+11. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección guardada según el estado real del almacén, sin repetir la confirmación ni escribir la selección. El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
 12. **Resumen final**: versión, rutas, estado del `PATH` y estado de los modelos.
 
 **Lo que el recibo registra es el estado, no el diff de esta pasada.** El recibo dice qué integración de `PATH` está en pie, no qué cambió en esta ejecución: si registrara solo el diff, una segunda instalación desde el mismo bundle escribiría un recibo sin entrada de `PATH` y `self uninstall` no podría revertir la que puso la primera —dejando residuo, que es el criterio 17—. El diff vive aparte, en `Outcome::path_rewritten`, y es lo único que decide si el resumen pide abrir una terminal nueva.
@@ -127,7 +127,7 @@ Los nueve pasos de §8.5, en orden, sobre la **instalación registrada** y no so
 6. **Borrar el estado.**
 7. **Revertir el `PATH`** exactamente según el recibo: el enlace solo si apunta al directorio de programa, los bloques delimitados de los perfiles, y en Windows la entrada del registro con comparación canónica conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`.
 8. **Borrar el directorio de programa** aplicando R2.
-9. **Borrar el archivo de bloqueo**, que vive en el hermano del directorio de programa: se borra también cuando el directorio quedó programado para después.
+9. **Borrar el archivo de bloqueo y la compuerta**, que viven en el hermano del directorio de programa: se borran también cuando el directorio quedó programado para después, y es el último paso con efectos. En Unix se borran con el bloqueo aún tomado; en Windows se sueltan primero los descriptores propios, y si otro proceso los tiene abiertos en ese instante el fichero se queda (sin consecuencias) y se informa en `failed`.
 
 ### El paso 6: la raíz de datos entera, no el plan de `cleanup --all`
 
@@ -164,7 +164,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 
 ## Bloqueo, recuperación y el reparto con el binario
 
-- **El bloqueo es exclusivo de SO** (`flock` en Unix, `LockFileEx` en Windows) sobre el archivo de §6, y el SO lo libera aunque el proceso muera. Mientras está tomado, una segunda operación de ciclo de vida sale con `lifecycle_locked` (**17**). La propiedad de la que depende: dos instalaciones concurrentes no se pisan.
+- **El bloqueo es de SO** (`flock` en Unix, `LockFileEx` en Windows) sobre el archivo de §6 y su compuerta de traspaso, y el SO lo libera aunque el proceso muera. Las operaciones lo toman en modo exclusivo y los comandos de uso en modo compartido; con una operación en curso, otra operación o un comando de uso salen con `lifecycle_locked` (**17**). La propiedad de la que depende: dos instalaciones concurrentes no se pisan. `self update` suelta solo el bloqueo antes del traspaso y retiene la compuerta hasta que vuelve; el `self install` hijo, reconocido por `AVI_HANDOVER_PARENT_PID`, toma solo el bloqueo.
 - **La recuperación corre antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido de aparcados, stagings huérfanos y temporales propios sin proceso vivo.
 - **El motor no puede matar un árbol de procesos ni agendar un borrado en Windows**, así que ambos entran por rasgos (`ProcessControl`, `ProgramDirRemover`). La frontera es deliberada: arrastrar `avi-daemon` y `avi-tts` al crate del motor crearía un ciclo de dependencias, y §5.3 lo prohíbe.
 

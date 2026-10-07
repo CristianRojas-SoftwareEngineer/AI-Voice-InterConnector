@@ -3010,12 +3010,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             let exe = std::env::current_exe().map_err(|e| {
                 CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
             })?;
-            let registered_program_dir = lifecycle::channel::registered_install_dir(
-                lifecycle::receipt::read_from(&lifecycle::install_dir())
-                    .ok()
-                    .flatten()
-                    .as_ref(),
-            );
+            let registered_program_dir = lifecycle::channel::registered_program_dir();
             let receipt = lifecycle::receipt::read_from(&registered_program_dir)
                 .ok()
                 .flatten();
@@ -3097,10 +3092,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // ejecuta el comando, se opera sobre la registrada. Va antes del
             // bloqueo porque el directorio de programa registrado es lo que
             // dice dónde se toma.
-            let preliminary = lifecycle::receipt::read_from(&lifecycle::install_dir())
-                .ok()
-                .flatten();
-            let program_dir = lifecycle::channel::registered_install_dir(preliminary.as_ref());
+            let program_dir = lifecycle::channel::registered_program_dir();
             let receipt = lifecycle::receipt::read_from(&program_dir).ok().flatten();
             let channel = lifecycle::channel::detect(&exe, receipt.as_ref());
             if channel == lifecycle::channel::Channel::Homebrew {
@@ -3135,7 +3127,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // Sin staging en uso todavía: el que cree U2 no existe y todo
             // hermano con prefijo es huérfano por definición.
             let roots = lifecycle::cleanup::Roots::from_receipt(Some(&receipt));
-            let lock = lifecycle::lock::acquire_at(&roots.lock_path())
+            let mut lock = lifecycle::lock::acquire_exclusive(&roots.program_dir)
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
             let recovery = lifecycle::recovery::recover(roots.recovery_roots())
                 .map_err(lifecycle_error_to_cli)?;
@@ -3271,10 +3263,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             }
 
             // ── U3. Traspaso al binario nuevo ────────────────────────────────
-            // El bloqueo se suelta antes de lanzar: el `self install` interno
-            // toma el mismo bloqueo, y con él tomado el hijo vería
-            // `lifecycle_locked`.
-            drop(lock);
+            // Se suelta solo el bloqueo principal antes de lanzar: el `self install`
+            // interno lo toma, y con él tomado el hijo vería `lifecycle_locked`. La
+            // compuerta se retiene hasta que vuelve el traspaso, de modo que ningún
+            // comando de uso se cuela entre la parada del daemon y el reemplazo; el
+            // hijo, reconocido por `AVI_HANDOVER_PARENT_PID`, no la toma.
+            lock.release_main();
             let section = lifecycle::manifest::target_section(target)
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
             let handover = lifecycle::update::handover(&lifecycle::update::HandoverRequest {
@@ -3366,7 +3360,7 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     // existente —solo lo que el barrido recoge— y reevalúa el informe sobre
     // lo que quedó. Sin el flag, `doctor` solo informa.
     if repair {
-        let lock = lifecycle::lock::acquire_at(&env.roots.lock_path())
+        let lock = lifecycle::lock::acquire_exclusive(&env.roots.program_dir)
             .map_err(|e| lifecycle_error_to_cli(e.into()))?;
         lifecycle::recovery::recover(lifecycle::recovery::Roots {
             program_dir: &env.roots.program_dir,

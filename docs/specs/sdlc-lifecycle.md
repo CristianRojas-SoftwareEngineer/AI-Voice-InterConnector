@@ -251,6 +251,7 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 | Modelos (caché regenerable) | Exclusiva | `$XDG_CACHE_HOME/ai-voice-interconnector/models/` | `~/Library/Caches/ai-voice-interconnector/models/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models\` |
 | Staging y aparcados | Exclusiva | `~/.local/opt/.ai-voice-interconnector-staging-*` y `<programa>/.old-*` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector-staging-*` y `<programa>\.old-*` |
 | Bloqueo de ciclo de vida | Exclusiva | `~/.local/opt/.ai-voice-interconnector.lock` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.lock` |
+| Compuerta de traspaso (hermana del bloqueo) | Exclusiva | `~/.local/opt/.ai-voice-interconnector.gate` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.gate` |
 | Temporales de ejecución | Exclusiva por prefijo | `$TMPDIR` con prefijo `avi-`/`avi_` | Ídem | `%TEMP%` con los mismos prefijos |
 | Caché HF elegida por el usuario (`HF_HUB_CACHE` o `HF_HOME`) | **Compartida** | La indicada | Ídem | Ídem |
 
@@ -362,7 +363,13 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 | `removal_scheduled` | `self uninstall` | Windows: el directorio se borra al terminar el proceso | Éxito |
 | `program_dir_kept` | `self uninstall` | Todas: el resto se completó, pero el directorio de programa no se pudo borrar ni programar su borrado | Error con código propio (22) |
 
-**Bloqueo.** Las operaciones de ciclo de vida toman un bloqueo exclusivo de SO (`flock` o `LockFileEx`) sobre el archivo de bloqueo de [§6](#6-modelo-de-rutas-y-propiedad). El SO lo libera aunque el proceso muera. Mientras está tomado, los comandos que lanzan el daemon automáticamente no lo lanzan y terminan con `lifecycle_locked`, para que no arranque un daemon de la versión saliente en mitad de una actualización.
+**Bloqueo.** El bloqueo es de SO (`flock` o `LockFileEx`) y se toma sobre dos archivos hermanos del directorio de programa registrado, el de bloqueo y la compuerta de traspaso ([§6](#6-modelo-de-rutas-y-propiedad)). El SO lo libera aunque el proceso muera. Todos los bloqueos son sin espera: la contención o un error del sistema terminan con `lifecycle_locked`, y la ruta es la misma para todas las operaciones (`cleanup` y `doctor --repair` incluidas), porque sale siempre del directorio de programa registrado.
+
+- Las operaciones de ciclo de vida (`self install`, `self update`, `self uninstall`, `cleanup`, `doctor --repair`) toman compuerta y bloqueo en modo **exclusivo**, en ese orden.
+- Los comandos de uso (los que leen o escriben datos y modelos) toman ambos en modo **compartido**: coexisten entre sí y no se cruzan con ninguna operación. Con una operación en curso terminan con `lifecycle_locked`, y por eso no arranca un daemon de la versión saliente en mitad de una actualización.
+- `self update` suelta el bloqueo antes de lanzar el `self install` del binario nuevo, que lo necesita, pero **retiene la compuerta** hasta que el traspaso vuelve: ningún comando de uso se cuela en esa ventana. El hijo se reconoce por `AVI_HANDOVER_PARENT_PID` y toma solo el bloqueo; fijar esa variable a mano solo se salta la compuerta, porque el bloqueo exclusivo sigue excluyendo al uso y a las demás operaciones.
+- `self install` retiene el bloqueo hasta terminar su provisión de modelos, y `self uninstall` borra el bloqueo y la compuerta como último paso con efectos.
+- En Unix, tras bloquear se comprueba que el inodo bloqueado sigue siendo el de la ruta; si no, o si la ruta falta, el resultado es `lifecycle_locked`. Eso hace seguro el borrado final de `self uninstall`: quien abrió el archivo antes de que se desvinculara no cree tener un bloqueo que nadie respeta.
 
 **Recuperación.** Al empezar, toda operación de ciclo de vida (y `doctor`, en modo informe):
 
@@ -464,8 +471,8 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en todo el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. Si el archivo se descargó por navegador y se extrajo con el Finder, todos los archivos heredan la cuarentena.
 8. **Integración de PATH** ([§8.3.1](#831-integración-de-path)).
 9. **Windows**: si el PATH de máquina contiene una entrada de una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. HKLM nunca se modifica.
-10. **Escribir el recibo** (de forma atómica) y liberar el bloqueo.
-11. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`.
+10. **Escribir el recibo** (de forma atómica).
+11. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`. El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
 12. **Resumen final**: versión, rutas, estado del PATH (con "abre una terminal nueva" cuando corresponda) y estado de los modelos.
 
 #### 8.3.1 Integración de PATH
@@ -548,7 +555,7 @@ Actúa sobre la instalación registrada, sea cual sea la copia del binario que l
    - los bloques delimitados de los perfiles;
     - la entrada del registro, con comparación canónica, conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`.
 8. **Borrar el directorio de programa** (con la regla R2). En Unix, directamente. En Windows, si el ejecutable en uso está dentro, el limpiador propio desacoplado espera a que termine y borra el directorio con reintentos acotados → `removal_scheduled`, con su resultado en un registro bajo `data/logs/`. Si el directorio no se puede borrar ni programar → `program_dir_kept`, sin borrado parcial.
-9. **Borrar el archivo de bloqueo.**
+9. **Borrar el archivo de bloqueo y la compuerta**, como último paso con efectos. En Unix se borran con el bloqueo aún tomado; en Windows se sueltan primero los descriptores propios, porque los ficheros se abren sin permitir su borrado. Si otro proceso los tiene abiertos en ese instante, el borrado falla, el fichero se queda (sin consecuencias) y se informa en `failed` como cualquier otro resto no borrado.
 
 **Idempotencia:** sin instalación ni estado, termina con éxito y `not_installed`. **Residuo:** cero dentro de las raíces de propiedad exclusiva. Lo compartido que no se borra se informa explícitamente.
 

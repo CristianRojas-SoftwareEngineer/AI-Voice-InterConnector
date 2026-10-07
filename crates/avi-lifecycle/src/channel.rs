@@ -107,6 +107,18 @@ pub fn registered_install_dir(receipt: Option<&InstallReceipt>) -> PathBuf {
     }
 }
 
+/// Directorio de programa registrado ahora mismo: el del recibo que hay en el
+/// directorio de la convención de rutas, o ese mismo si no hay recibo legible.
+/// Es la única forma de resolverlo desde el entorno, y de ella salen la ruta del
+/// bloqueo de ciclo de vida y la de todas las operaciones, para que ninguna tome
+/// el bloqueo de un sitio y opere sobre otro.
+pub fn registered_program_dir() -> PathBuf {
+    let receipt = crate::receipt::read_from(&crate::install_dir())
+        .ok()
+        .flatten();
+    registered_install_dir(receipt.as_ref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

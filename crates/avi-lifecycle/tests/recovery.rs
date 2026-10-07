@@ -222,7 +222,13 @@ fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
     let mut out: Vec<(String, u64)> = sandbox
         .snapshot()
         .into_iter()
-        .filter(|(path, _)| path.rsplit('/').next() != Some(avi_lifecycle::LIFECYCLE_LOCK_NAME))
+        .filter(|(path, _)| {
+            ![
+                avi_lifecycle::LIFECYCLE_LOCK_NAME,
+                avi_lifecycle::LIFECYCLE_GATE_NAME,
+            ]
+            .contains(&path.rsplit('/').next().unwrap_or_default())
+        })
         .collect();
     out.sort();
     out

@@ -968,3 +968,35 @@ fn criterion_update_daemon_stop_failure_aborts() {
         "sin parada no se toca nada: el programa sigue intacto y no hay staging"
     );
 }
+
+/// La compuerta que `self update` retiene durante el traspaso excluye a los
+/// comandos de uso aunque el principal esté libre, y el hijo del traspaso
+/// (`AVI_HANDOVER_PARENT_PID` presente) toma el principal sin la compuerta.
+#[test]
+fn handover_gate_blocks_usage_and_lets_the_child_in() {
+    let _guard = support::exclusively();
+    let sandbox = Sandbox::new("gate");
+    sandbox.seed_env();
+
+    let mut parent = avi_lifecycle::lock::acquire_exclusive(&sandbox.program_dir)
+        .expect("el padre toma compuerta y principal");
+    parent.release_main();
+
+    let usage = avi_lifecycle::lock::acquire_shared(&sandbox.program_dir)
+        .expect_err("con la compuerta retenida el uso no entra");
+    assert_eq!(usage.reason, "lifecycle_locked");
+
+    std::env::set_var(
+        update::HANDOVER_PARENT_PID_ENV,
+        std::process::id().to_string(),
+    );
+    let child = avi_lifecycle::lock::acquire_exclusive(&sandbox.program_dir);
+    std::env::remove_var(update::HANDOVER_PARENT_PID_ENV);
+    let child = child.expect("el hijo toma el principal sin la compuerta");
+    drop(child);
+    drop(parent);
+    drop(
+        avi_lifecycle::lock::acquire_shared(&sandbox.program_dir)
+            .expect("al volver el traspaso, el uso entra"),
+    );
+}

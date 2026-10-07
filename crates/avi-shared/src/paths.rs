@@ -176,6 +176,11 @@ pub const MODEL_REVISIONS: &[ModelPin] = &[
 /// `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.lock`.
 pub const LIFECYCLE_LOCK_NAME: &str = ".ai-voice-interconnector.lock";
 
+/// Nombre de la compuerta de traspaso, hermana del bloqueo de ciclo de vida:
+/// `~/.local/opt/.ai-voice-interconnector.gate`,
+/// `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.gate`.
+pub const LIFECYCLE_GATE_NAME: &str = ".ai-voice-interconnector.gate";
+
 /// Prefijo del staging, también hermano del directorio de programa:
 /// `~/.local/opt/.ai-voice-interconnector-staging-<pid>-<ms>`.
 pub const STAGING_DIR_PREFIX: &str = ".ai-voice-interconnector-staging-";
