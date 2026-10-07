@@ -3835,6 +3835,75 @@ mod tts {
         hit_end("tts::daemon_start_ok");
     }
 
+    /// Tras `daemon start`, el pidfile lo escribió el propio daemon: contiene su
+    /// PID, su identidad observada, la dirección real y el instante de arranque,
+    /// y coincide con lo que publica `daemon.ready`.
+    #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
+    fn daemon_writes_its_own_pidfile_before_ready() {
+        require_tts_model();
+        require_tts_binary();
+        let _tts = lock_tts();
+        hit_start_heavy("tts::daemon_writes_its_own_pidfile_before_ready");
+        let inst = IsolatedInstance::new("own_pidfile");
+        let started = start_instance_running_only(&inst, &[]);
+        let pid = started["pid"].as_u64().expect("start informa el pid") as u32;
+        let avi_process::registry::PidFileObservation::Present(file) =
+            avi_process::registry::observe_pid_file(&inst.dir)
+        else {
+            panic!("el daemon debe haber escrito un pidfile legible");
+        };
+        assert_eq!(file.pid, pid, "el pidfile nombra al daemon lanzado");
+        assert_eq!(
+            file.identity,
+            avi_process::process_identity(pid),
+            "el pidfile lleva la identidad observada del daemon"
+        );
+        assert_eq!(file.addr, inst.published_addr());
+        assert!(file.started_at.is_some(), "el pidfile lleva started_at");
+        let ready = std::fs::read_to_string(inst.dir.join("daemon.ready"))
+            .expect("daemon.ready debe existir con el daemon listo");
+        let record = avi_process::registry::parse_ready_record(&ready)
+            .expect("daemon.ready lleva el registro de éxito");
+        assert_eq!(
+            record.pid,
+            Some(pid),
+            "ready y pidfile nombran al mismo PID"
+        );
+        assert_eq!(record.identity, file.identity);
+        stop_instance(&inst, "daemon_writes_its_own_pidfile_before_ready");
+        hit_end("tts::daemon_writes_its_own_pidfile_before_ready");
+    }
+
+    /// Con el pidfile borrado a mano y el daemon vivo, `daemon stop` lo encuentra
+    /// por `daemon.ready`, lo detiene y no dice «no estaba en ejecución».
+    #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
+    fn daemon_stop_finds_live_daemon_after_pidfile_is_deleted() {
+        require_tts_model();
+        require_tts_binary();
+        let _tts = lock_tts();
+        hit_start_heavy("tts::daemon_stop_finds_live_daemon_after_pidfile_is_deleted");
+        let inst = IsolatedInstance::new("stop_without_pidfile");
+        start_instance_running_only(&inst, &[]);
+        let pid = inst
+            .read_daemon_pid()
+            .expect("tras start debe haber pidfile");
+        std::fs::remove_file(inst.dir.join("daemon.pid")).expect("borrar el pidfile");
+        let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &inst.args());
+        assert_eq!(code, 0, "daemon stop debe salir 0: {actual}");
+        assert_eq!(
+            actual["status"],
+            Value::String("shutdown_sent".to_string()),
+            "el daemon vivo no se declara parado de antemano: {actual}"
+        );
+        assert!(
+            !avi_daemon::pid_alive(pid),
+            "el daemon encontrado por el ready debe quedar detenido"
+        );
+        hit_end("tts::daemon_stop_finds_live_daemon_after_pidfile_is_deleted");
+    }
+
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_restart_rewarms() {
@@ -4364,6 +4433,54 @@ mod tts {
         assert!(foreign.alive(), "el proceso ajeno no debe morir");
     }
 
+    /// Con el pidfile borrado y `daemon.ready` presente, `daemon stop` encuentra
+    /// al daemon por el ready: lo detiene, lo da por en ejecución (no dice «no
+    /// estaba en ejecución») y retira el ready. El daemon es un proceso de larga
+    /// vida con la identidad que publica el ready. Solo en Windows: en Unix el
+    /// hijo muerto de la prueba sigue siendo un zombi, visible como vivo para la
+    /// viveza exacta, hasta que la prueba lo recolecta.
+    #[cfg(windows)]
+    #[test]
+    fn daemon_stop_finds_daemon_by_ready_file_without_pidfile() {
+        let inst = IsolatedInstance::new("stop_ready_fallback");
+        let mut daemon = ForeignProcess::spawn();
+        let identity = avi_process::process_identity(daemon.pid())
+            .expect("observar la identidad del proceso que hace de daemon");
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("reservar puerto efímero")
+            .local_addr()
+            .expect("dirección del puerto reservado")
+            .port();
+        let ready = inst.dir.join("daemon.ready");
+        std::fs::create_dir_all(&inst.dir).expect("crear directorio de datos");
+        std::fs::write(
+            &ready,
+            format!(
+                "addr=127.0.0.1:{port}\nwarm=warm\npid={}\nstart={}\nimage={}\n",
+                daemon.pid(),
+                identity.start,
+                identity.image
+            ),
+        )
+        .expect("sembrar daemon.ready");
+        assert!(!inst.dir.join("daemon.pid").exists(), "no hay pidfile");
+
+        let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &inst.contract_args());
+        assert_eq!(code, 0, "daemon stop debe salir 0: {actual}");
+        assert_eq!(
+            actual["was_running"],
+            Value::Bool(true),
+            "el daemon vivo se encuentra por el ready: {actual}"
+        );
+        assert_eq!(
+            actual["status"],
+            Value::String("shutdown_sent".to_string()),
+            "no debe decir que no estaba en ejecución: {actual}"
+        );
+        assert!(!daemon.alive(), "el daemon debe quedar detenido");
+        assert!(!ready.exists(), "con el daemon muerto el ready se retira");
+    }
+
     /// Soltar la instancia no mata a un proceso ajeno: el `Drop` solo cosecha un
     /// PID cuya identidad actual coincide con la registrada, y el pidfile
     /// registra para el PID ajeno una identidad falsa que ningún proceso real
@@ -4467,8 +4584,8 @@ mod tts {
         avi_daemon::wait_for_pid_death(pid_b, std::time::Duration::from_secs(8));
         // (tensado CI Unix, sin simular Unix en local): tras matar el
         // árbol sin graceful, el residente de la instancia no debe seguir
-        // vivo ni escuchando antes del rearranque (el kill de grupo Unix
-        // arrastra al residente).
+        // vivo ni escuchando antes del rearranque (el residente tiene su
+        // propia sesión: lo termina la tubería de vida al morir el daemon).
         #[cfg(unix)]
         {
             let resident_port = inst

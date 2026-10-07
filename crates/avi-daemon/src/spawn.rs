@@ -102,11 +102,9 @@ pub fn pid_alive(pid: u32) -> bool {
 /// No toca pidfile ni verifica: el llamante combina con `pid_alive` y deadline.
 /// Nunca mata el PID 0 ni un PID que no cabe en `pid_t` (guarda en la
 /// primitiva); la guarda contra auto-muerte (`pid != proceso propio` para la
-/// imagen compartida CLI/daemon) vive en el llamante.
-///
-/// Reutilizada además para el reclamo por grupo ante líder muerto: el
-/// llamante la invoca aunque el PID ya esté muerto para alcanzar al residente
-/// reparentado del mismo grupo, con verificación por 8766.
+/// imagen compartida CLI/daemon) vive en el llamante. Solo alcanza al árbol de
+/// ese PID: el residente tiene su propia sesión y se reclama por su PID
+/// registrado.
 pub fn kill_tree_by_pid(pid: u32) -> bool {
     avi_process::kill_tree_by_pid_exact(pid)
 }

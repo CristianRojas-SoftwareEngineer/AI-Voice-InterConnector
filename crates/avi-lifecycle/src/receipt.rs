@@ -18,6 +18,7 @@
 //! desinstalación operan sobre las mismas ubicaciones.
 
 use crate::channel::Channel;
+use avi_process::registry::now_rfc3339;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -211,48 +212,10 @@ pub fn write_to(receipt: &InstallReceipt, program_dir: &Path) -> anyhow::Result<
     }
 }
 
-/// Instante actual en RFC 3339 UTC (`2026-09-25T18:00:00Z`). Sin `chrono` ni
-/// `time` en el árbol, y añadir una dependencia por una fecha no lo compensa: el
-/// cálculo es de día juliano a fecha civil.
-///
-/// Lo comparte el pidfile del daemon, que también lleva `started_at` en el mismo
-/// formato; por eso es público y no privado.
-pub fn now_rfc3339() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default();
-    let (year, month, day, hour, minute, second) = civil_from_unix(secs);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-/// Descompone un instante Unix en fecha civil UTC. Algoritmo dedays-from-civil,
-/// que es exacto para cualquier fecha del calendario gregoriano.
-fn civil_from_unix(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
-    let days = secs.div_euclid(86_400);
-    let rem = secs.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let day_of_year = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * day_of_year + 2) / 153;
-    let d = day_of_year - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = if m <= 2 { y + 1 } else { y };
-    (
-        year,
-        m as u32,
-        d as u32,
-        (rem / 3600) as u32,
-        ((rem % 3600) / 60) as u32,
-        (rem % 60) as u32,
-    )
-}
-
-/// Inversa de `civil_from_unix`, para las pruebas del formato: no hace falta
-/// ningún crate de fechas para afirmar que lo escrito se puede volver a leer.
+/// Inversa de la conversión de instante Unix a fecha civil de
+/// `avi_process::registry::now_rfc3339`, para las pruebas del formato: no hace
+/// falta ningún crate de fechas para afirmar que lo escrito se puede volver a
+/// leer.
 #[cfg(test)]
 fn unix_from_rfc3339(text: &str) -> Option<i64> {
     let (date, time) = text.split_once('T')?;

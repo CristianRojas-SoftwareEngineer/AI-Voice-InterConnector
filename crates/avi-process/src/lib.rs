@@ -215,11 +215,8 @@ pub fn kill_tree_by_pid_exact(pid: u32) -> bool {
 /// sin lanzar el ejecutable `kill` externo. No verifica: el llamante combina
 /// con `pid_alive_exact` y deadline. Nunca mata el PID 0 ni un PID que no cabe
 /// en `pid_t`; la guarda contra auto-muerte (`pid != proceso propio`) vive en
-/// el llamante.
-///
-/// Reutilizada además para el reclamo por grupo ante líder muerto: el llamante
-/// la invoca aunque el PID ya esté muerto para alcanzar al residente
-/// reparentado del mismo grupo.
+/// el llamante. Solo alcanza al grupo y al PID indicados: el residente nace con
+/// su propia sesión y no pertenece al grupo del daemon.
 #[cfg(unix)]
 pub fn kill_tree_by_pid_exact(pid: u32) -> bool {
     if pid == 0 || !fits_pid_t(pid) {

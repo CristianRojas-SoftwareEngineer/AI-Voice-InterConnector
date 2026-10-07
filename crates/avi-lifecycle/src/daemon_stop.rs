@@ -32,7 +32,8 @@
 
 use crate::LifecycleError;
 use avi_process::registry::{
-    observe_pid_file, parse_ready_record, pid_path, PidFile, PidFileObservation, READY_FILE,
+    observe_pid_file, parse_ready_record, pid_path, PidFile, PidFileObservation, Registered,
+    READY_FILE,
 };
 pub use avi_process::ProcessIdentity;
 use std::path::{Path, PathBuf};
@@ -264,7 +265,11 @@ pub async fn stop(
     if let PidFileObservation::Discarded(reason) = observe_pid_file(data_dir) {
         warn_discarded(data_dir, &reason);
     }
-    let addr = resolve_addr(data_dir, default_addr);
+    // El daemon se busca en el pidfile y, si falta, en `daemon.ready`: con el
+    // pidfile borrado a mano el daemon vivo sigue siendo encontrable.
+    let addr = recorded_daemon(data_dir)
+        .and_then(|daemon| daemon.addr)
+        .unwrap_or_else(|| default_addr.to_string());
     let (previous_pid, previous_state) = daemon_registered(data_dir, control);
     // "Estaba en ejecución" se decide antes de tocar nada: es lo que el resumen de
     // la operación necesita para decir cómo reiniciarlo, y no puede depender de si
@@ -377,51 +382,64 @@ fn resident_alive_by_pid(data_dir: &Path, control: &dyn ProcessControl) -> bool 
     resident_registered(data_dir, control) == Registered::Ours
 }
 
-/// Clasificación de un PID leído de un fichero de estado.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Registered {
-    /// No hay proceso con ese PID (o el PID no está registrado).
-    Absent,
-    /// Hay un proceso con ese PID pero no es el registrado: el número se reasignó.
-    /// Cuenta como muerto y nunca se mata.
-    Foreign,
-    /// El proceso es el registrado.
-    Ours,
-}
-
-/// Decide si un PID registrado es nuestro. `alive` es la viveza que el llamante
-/// observó con la primitiva que corresponde al proceso (daemon o residente).
-/// Sin identidad registrada no hay clasificación `Ours`: solo es nuestro si la
-/// identidad observada coincide con la que se registró. Un fichero sin
-/// identidad es ilegible y se propaga como ausencia, no como «PID solo».
+/// Decide si un PID registrado es nuestro con la identidad que observa
+/// `control`. La regla vive en `avi_process::registry::classify_registered`;
+/// aquí solo se le da la observación del control de procesos.
 pub fn classify_registered(
     control: &dyn ProcessControl,
     pid: u32,
     alive: bool,
     recorded: Option<&ProcessIdentity>,
 ) -> Registered {
-    if pid == 0 || !alive {
-        return Registered::Absent;
-    }
-    match recorded {
-        None => Registered::Absent,
-        Some(recorded) if control.identity(pid).as_ref() == Some(recorded) => Registered::Ours,
-        Some(_) => Registered::Foreign,
-    }
+    avi_process::registry::classify_registered(pid, alive, recorded, || control.identity(pid))
 }
 
-/// PID del daemon del pidfile y su clasificación.
+/// Daemon registrado: sus datos de identidad y su dirección, de donde se hayan
+/// podido leer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedDaemon {
+    pub pid: u32,
+    /// Identidad con la que se registró; sin ella no se clasifica como nuestro.
+    pub identity: Option<ProcessIdentity>,
+    /// Dirección real publicada, si la trae.
+    pub addr: Option<String>,
+}
+
+/// Daemon registrado: el del pidfile y, si falta o no es legible, el que publica
+/// `daemon.ready`. El daemon escribe ambos antes de servir, así que borrar el
+/// pidfile a mano no lo deja sin pista.
+pub fn recorded_daemon(data_dir: &Path) -> Option<RecordedDaemon> {
+    if let Some(file) = read_pid_file_silent(data_dir).filter(|f| f.pid != 0) {
+        return Some(RecordedDaemon {
+            pid: file.pid,
+            identity: file.identity,
+            addr: file
+                .addr
+                .map(|addr| addr.trim().to_string())
+                .filter(|addr| !addr.is_empty()),
+        });
+    }
+    let text = std::fs::read_to_string(data_dir.join(READY_FILE)).ok()?;
+    let record = parse_ready_record(&text)?;
+    Some(RecordedDaemon {
+        pid: record.pid?,
+        identity: record.identity,
+        addr: Some(record.addr),
+    })
+}
+
+/// PID del daemon registrado y su clasificación.
 fn daemon_registered(data_dir: &Path, control: &dyn ProcessControl) -> (Option<u32>, Registered) {
-    let Some(file) = read_pid_file_silent(data_dir).filter(|f| f.pid != 0) else {
+    let Some(daemon) = recorded_daemon(data_dir) else {
         return (None, Registered::Absent);
     };
     let state = classify_registered(
         control,
-        file.pid,
-        control.pid_alive(file.pid),
-        file.identity.as_ref(),
+        daemon.pid,
+        control.pid_alive(daemon.pid),
+        daemon.identity.as_ref(),
     );
-    (Some(file.pid), state)
+    (Some(daemon.pid), state)
 }
 
 /// Clasificación del residente del pidfile.
@@ -469,11 +487,6 @@ fn remove_ready_file(data_dir: &Path) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),
     }
-}
-
-/// Dirección efectiva: la del pidfile si lo hay, y la dada si no.
-fn resolve_addr(data_dir: &Path, default_addr: &str) -> String {
-    read_addr(data_dir).unwrap_or_else(|| default_addr.to_string())
 }
 
 /// Sondea `GET /health` con deadline corto. `false` en cualquier fallo, incluido
@@ -973,7 +986,7 @@ mod tests {
 
     /// Contenido del fichero ready de éxito tal como lo publica el daemon.
     fn ready_content(pid: u32) -> String {
-        format!("addr=127.0.0.1:8765\nwarm=ok\npid={pid}\n")
+        format!("addr={}\nwarm=ok\npid={pid}\n", dead_port())
     }
 
     /// Tras una parada verificada, el fichero ready desaparece junto al pidfile:
@@ -1006,6 +1019,16 @@ mod tests {
     async fn stop_keeps_ready_file_while_its_pid_is_alive() {
         let data = scratch("ready-alive");
         let ready_pid = 777_001;
+        // El pidfile nombra a un daemon muerto: lo vivo que publica el ready no es
+        // el daemon que se para, y su fichero es la única pista de ese proceso.
+        set_pid_file(
+            &data,
+            999_999,
+            &dead_port(),
+            0,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
         crate::test_support::write_file(
             &data.join(READY_FILE),
             &format!(
@@ -1020,12 +1043,146 @@ mod tests {
         let outcome = stop(&data, &dead_port(), &control).await;
         assert!(
             outcome.stopped,
-            "sin pidfile ni respuesta no hay nada que parar"
+            "el daemon del pidfile está muerto y no responde: no hay nada que parar"
         );
         assert!(
             data.join(READY_FILE).exists(),
             "el PID del ready sigue vivo: el fichero se conserva"
         );
+        assert_eq!(
+            control.killed.load(Ordering::Relaxed),
+            0,
+            "solo se reclama al daemon registrado en el pidfile"
+        );
+    }
+
+    /// Con el pidfile borrado y el ready presente, `stop` encuentra al daemon por
+    /// el ready: lo detiene, lo cuenta como en ejecución y borra el ready.
+    #[tokio::test]
+    async fn stop_finds_daemon_by_ready_file_when_pidfile_is_missing() {
+        let data = scratch("ready-fallback");
+        let daemon = 777_002;
+        crate::test_support::write_file(
+            &data.join(READY_FILE),
+            &format!(
+                "addr={}\nwarm=ok\npid={daemon}\nstart=111\nimage=daemon.exe\n",
+                dead_port()
+            ),
+        );
+        let control = Observed::new(&[daemon], &[(daemon, identity_of("111", "daemon.exe"))]);
+        assert!(!pid_path(&data).exists(), "el pidfile no existe");
+
+        let outcome = stop(&data, &dead_port(), &control).await;
+        assert!(
+            outcome.was_running,
+            "el daemon vivo se encuentra aunque falte el pidfile"
+        );
+        assert_eq!(outcome.pid, Some(daemon));
+        assert!(outcome.stopped, "el daemon queda detenido");
+        assert!(!control.is_alive(daemon), "se reclamó su árbol");
+        assert_eq!(control.killed.load(Ordering::Relaxed), 1);
+        assert!(
+            !data.join(READY_FILE).exists(),
+            "con el daemon muerto el ready deja de ser pista"
+        );
+    }
+
+    /// Un ready con un PID reasignado a otro programa no hace matar nada.
+    #[tokio::test]
+    async fn stop_spares_ready_file_pid_with_foreign_identity() {
+        let data = scratch("ready-foreign");
+        let pid = 777_003;
+        crate::test_support::write_file(
+            &data.join(READY_FILE),
+            &format!(
+                "addr={}\nwarm=ok\npid={pid}\nstart=111\nimage=daemon.exe\n",
+                dead_port()
+            ),
+        );
+        let control = Observed::new(&[pid], &[(pid, identity_of("999", "otro.exe"))]);
+
+        let outcome = stop(&data, &dead_port(), &control).await;
+        assert!(outcome.stopped, "un PID ajeno cuenta como muerto");
+        assert_eq!(control.killed.load(Ordering::Relaxed), 0);
+        assert!(control.is_alive(pid), "el proceso ajeno sigue vivo");
+    }
+
+    /// Control cuyo residente tarda en morir tras reclamar su árbol: sigue vivo
+    /// durante algunos sondeos y luego desaparece.
+    struct SlowDyingResident {
+        resident: u32,
+        identity: ProcessIdentity,
+        killed: AtomicU32,
+        polls_after_kill: AtomicU32,
+    }
+
+    impl ProcessControl for SlowDyingResident {
+        fn pid_alive(&self, _pid: u32) -> bool {
+            false
+        }
+        fn kill_tree_by_pid(&self, _pid: u32) -> bool {
+            false
+        }
+        fn resident_pid_alive(&self, pid: u32) -> bool {
+            if pid != self.resident {
+                return false;
+            }
+            if self.killed.load(Ordering::Relaxed) == 0 {
+                return true;
+            }
+            self.polls_after_kill.fetch_add(1, Ordering::Relaxed) < 3
+        }
+        fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
+            self.killed.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+        fn identity(&self, pid: u32) -> Option<ProcessIdentity> {
+            (pid == self.resident).then(|| self.identity.clone())
+        }
+    }
+
+    /// El veredicto con un residente registrado vivo espera a su muerte: la
+    /// parada no concluye hasta que el residente deja de vivir.
+    #[tokio::test]
+    async fn stop_waits_for_registered_resident_death() {
+        let data = scratch("resident-wait");
+        let resident = 888_889;
+        let resident_id = identity_of("222", "qwen_tts.exe");
+        set_pid_file(
+            &data,
+            999_999,
+            &dead_port(),
+            resident,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
+        let mut file = read_pid_file(&data).unwrap();
+        file.resident_identity = Some(resident_id.clone());
+        file.resident_port = Some(40_123);
+        write_pid_file(&data, &file).unwrap();
+        let control = SlowDyingResident {
+            resident,
+            identity: resident_id,
+            killed: AtomicU32::new(0),
+            polls_after_kill: AtomicU32::new(0),
+        };
+
+        let outcome = stop(&data, &dead_port(), &control).await;
+        assert_eq!(
+            control.killed.load(Ordering::Relaxed),
+            1,
+            "se reclama el árbol del residente registrado"
+        );
+        assert!(
+            control.polls_after_kill.load(Ordering::Relaxed) >= 3,
+            "el veredicto sondeó hasta ver morir al residente"
+        );
+        assert!(
+            outcome.stopped,
+            "con el residente muerto la parada concluye"
+        );
+        assert!(!outcome.resident_alive);
+        assert!(outcome.pidfile_removed);
     }
 
     /// Un fichero ready ilegible o con el PID del propio proceso es obsoleto y se

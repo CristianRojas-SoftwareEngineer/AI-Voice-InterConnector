@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+pub mod registry;
 pub mod spawn;
 /// Familia de los logs por arranque del daemon (`daemon_<pid>_<ms>.log`).
 pub const DAEMON_LOG_FAMILY: &str = "daemon";
@@ -98,6 +99,9 @@ pub struct DaemonState {
     /// Windows (causa raíz del cuelgue de los E2E). Al cerrar de forma natural se
     /// ejecutan los `Drop` (matando al `Qwen3TtsResident` y `qwen_tts.exe`).
     pub shutdown_notify: Arc<tokio::sync::Notify>,
+    /// Registro en disco del daemon y de su residente: el daemon es el único
+    /// escritor de `daemon.pid`. Se ancla en la raíz de datos vigente.
+    pub registry: Arc<registry::DaemonRegistry>,
 }
 
 impl DaemonState {
@@ -152,6 +156,7 @@ impl DaemonState {
             ct2_engine,
             warm: std::sync::RwLock::new(WarmState::Warming),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
+            registry: Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir())),
         })
     }
 
@@ -2091,6 +2096,17 @@ pub async fn run_daemon_server(
 ) -> anyhow::Result<()> {
     let (listener, bound, state) = prepare_server(addr, &warm_voice, voices, speech)
         .await
+        .map_err(anyhow::Error::new)?;
+    // El daemon se registra a sí mismo con la dirección real, antes de publicar
+    // `daemon.ready` y de cualquier warmup: desde que alguien puede verlo listo,
+    // `daemon.pid` ya lo nombra. Sin identidad observable o con otro daemon vivo
+    // registrado el arranque falla y no sirve.
+    state
+        .registry
+        .register_daemon(&bound)
+        .map_err(|e| StartupError::Failed {
+            message: e.to_string(),
+        })
         .map_err(anyhow::Error::new)?;
     let app = build_router_with_state(state.clone());
     println!("Daemon nativo escuchando en http://{}", bound);

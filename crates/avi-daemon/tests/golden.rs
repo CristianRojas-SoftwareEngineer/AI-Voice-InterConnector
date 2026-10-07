@@ -856,6 +856,82 @@ async fn supervised_startup_failure_is_terminal() {
     );
 }
 
+/// Proceso de larga vida distinto del de la prueba; muere al soltarse, también
+/// si la prueba falla.
+struct Sleeper(std::process::Child);
+
+impl Sleeper {
+    fn spawn() -> Self {
+        #[cfg(windows)]
+        let child = std::process::Command::new("ping")
+            .args(["-n", "120", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn();
+        #[cfg(not(windows))]
+        let child = std::process::Command::new("sleep").arg("120").spawn();
+        Self(child.expect("lanzar el proceso de larga vida"))
+    }
+}
+
+impl Drop for Sleeper {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Un segundo daemon no arranca mientras el pidfile registre a uno vivo con la
+/// identidad coincidente: el arranque falla con `StartupError::Failed` que nombra
+/// al otro daemon, sin servir y sin tocar el pidfile ajeno.
+#[tokio::test]
+async fn second_daemon_is_rejected_while_a_live_one_is_registered() {
+    #[cfg(feature = "native-stt")]
+    require_parakeet();
+    prepare_shared_env();
+    let data_dir = process_root().join("data");
+    std::fs::create_dir_all(&data_dir).expect("crear la raíz de datos de la prueba");
+
+    let peer = Sleeper::spawn();
+    let peer_pid = peer.0.id();
+    let peer_file = avi_process::registry::PidFile {
+        pid: peer_pid,
+        addr: Some("127.0.0.1:1".to_string()),
+        started_at: None,
+        resident_pid: 0,
+        identity: Some(
+            avi_process::process_identity(peer_pid).expect("observar la identidad del otro daemon"),
+        ),
+        resident_identity: None,
+        resident_port: None,
+    };
+    avi_process::registry::write_pid_file(&data_dir, &peer_file).expect("registrar al otro daemon");
+    let pidfile_before = std::fs::read(avi_process::registry::pid_path(&data_dir)).unwrap();
+
+    let dir = tempfile::tempdir().expect("directorio temporal");
+    let result = avi_daemon::run_daemon_server(
+        "127.0.0.1:0".parse().unwrap(),
+        "default".into(),
+        VoiceStore::at(dir.path().join("voices")),
+        SpeechStore::at(dir.path().join("speech")),
+    )
+    .await;
+    let pidfile_after = std::fs::read(avi_process::registry::pid_path(&data_dir)).unwrap();
+    let _ = std::fs::remove_file(avi_process::registry::pid_path(&data_dir));
+
+    let err = result.expect_err("con otro daemon vivo registrado el arranque debe fallar");
+    match err.downcast_ref::<avi_daemon::StartupError>() {
+        Some(avi_daemon::StartupError::Failed { message }) => assert!(
+            message.contains(&peer_pid.to_string()),
+            "el fallo debe nombrar al otro daemon: {message}"
+        ),
+        other => panic!("se esperaba StartupError::Failed, fue {other:?}"),
+    }
+    assert_eq!(
+        pidfile_before, pidfile_after,
+        "el pidfile del daemon vivo no se modifica"
+    );
+}
+
 /// Par de idiomas no soportado vía IPC → 400 con `unsupported_language_pair`.
 /// La guarda de par corre antes de tocar el modelo: sin CT2 ni TCP.
 #[cfg(feature = "native-translation")]

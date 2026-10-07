@@ -65,6 +65,83 @@ pub fn write_pid_file(data_dir: &Path, file: &PidFile) -> anyhow::Result<()> {
     }
 }
 
+/// Clasificación de un PID leído de un fichero de estado.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Registered {
+    /// No hay proceso con ese PID (o el PID no está registrado).
+    Absent,
+    /// Hay un proceso con ese PID pero no es el registrado: el número se reasignó.
+    /// Cuenta como muerto y nunca se mata.
+    Foreign,
+    /// El proceso es el registrado.
+    Ours,
+}
+
+/// Decide si un PID registrado es nuestro. `alive` es la viveza que el llamante
+/// observó con la primitiva que corresponde al proceso, y `observe` obtiene la
+/// identidad actual del PID solo cuando hace falta compararla. Sin identidad
+/// registrada no hay clasificación `Ours`: solo es nuestro si la identidad
+/// observada coincide con la que se registró. Un fichero sin identidad es
+/// ilegible y se propaga como ausencia, no como «PID solo».
+pub fn classify_registered(
+    pid: u32,
+    alive: bool,
+    recorded: Option<&ProcessIdentity>,
+    observe: impl FnOnce() -> Option<ProcessIdentity>,
+) -> Registered {
+    if pid == 0 || !alive {
+        return Registered::Absent;
+    }
+    match recorded {
+        None => Registered::Absent,
+        Some(recorded) if observe().as_ref() == Some(recorded) => Registered::Ours,
+        Some(_) => Registered::Foreign,
+    }
+}
+
+/// Instante actual en RFC 3339 UTC (`2026-09-25T18:00:00Z`). Sin `chrono` ni
+/// `time` en el árbol, y añadir una dependencia por una fecha no lo compensa: el
+/// cálculo es de día juliano a fecha civil. Lo comparten el pidfile del daemon
+/// (`started_at`) y el recibo de instalación.
+pub fn now_rfc3339() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    rfc3339_from_unix(secs)
+}
+
+/// Formatea un instante Unix como RFC 3339 UTC.
+fn rfc3339_from_unix(secs: i64) -> String {
+    let (year, month, day, hour, minute, second) = civil_from_unix(secs);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Descompone un instante Unix en fecha civil UTC. Algoritmo days-from-civil,
+/// que es exacto para cualquier fecha del calendario gregoriano.
+fn civil_from_unix(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let day_of_year = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * day_of_year + 2) / 153;
+    let d = day_of_year - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    (
+        year,
+        m as u32,
+        d as u32,
+        (rem / 3600) as u32,
+        ((rem % 3600) / 60) as u32,
+        (rem % 60) as u32,
+    )
+}
+
 /// Desenlace de observar el pidfile sin efectos.
 #[derive(Debug)]
 pub enum PidFileObservation {
@@ -275,6 +352,50 @@ mod tests {
             1,
             "solo queda el pidfile"
         );
+    }
+
+    /// La clasificación solo da `Ours` con proceso vivo e identidad coincidente;
+    /// la identidad actual no se observa si el PID no está vivo o no hay registro.
+    #[test]
+    fn classification_requires_live_matching_identity() {
+        let recorded = identity_of("111", "daemon.exe");
+        let same = || Some(identity_of("111", "daemon.exe"));
+        let other = || Some(identity_of("999", "daemon.exe"));
+        let never = || -> Option<ProcessIdentity> { panic!("no debe observarse") };
+
+        assert_eq!(
+            classify_registered(7, true, Some(&recorded), same),
+            Registered::Ours
+        );
+        assert_eq!(
+            classify_registered(7, true, Some(&recorded), other),
+            Registered::Foreign
+        );
+        assert_eq!(
+            classify_registered(7, true, Some(&recorded), || None),
+            Registered::Foreign
+        );
+        assert_eq!(
+            classify_registered(7, false, Some(&recorded), never),
+            Registered::Absent
+        );
+        assert_eq!(
+            classify_registered(0, true, Some(&recorded), never),
+            Registered::Absent
+        );
+        assert_eq!(
+            classify_registered(7, true, None, never),
+            Registered::Absent
+        );
+    }
+
+    /// El formato RFC 3339 coincide con instantes conocidos.
+    #[test]
+    fn rfc3339_formats_known_instants() {
+        assert_eq!(rfc3339_from_unix(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339_from_unix(1_000_000_000), "2001-09-09T01:46:40Z");
+        assert_eq!(rfc3339_from_unix(1_709_164_800), "2024-02-29T00:00:00Z");
+        assert_eq!(now_rfc3339().len(), 20);
     }
 
     /// El registro de éxito del ready se interpreta con y sin identidad, y el de
