@@ -2,8 +2,8 @@ use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Defaults de muestreo del motor Qwen3-TTS, tomados de su código fuente; los
@@ -13,9 +13,6 @@ pub const DEFAULT_TEMPERATURE: f32 = 0.5;
 pub const DEFAULT_TOP_K: u32 = 50;
 pub const DEFAULT_TOP_P: f32 = 1.0;
 pub const DEFAULT_REP_PENALTY: f32 = 1.05;
-
-/// Puerto por defecto del servidor residente (el daemon del host ocupa el 8765).
-pub const DEFAULT_PORT: u16 = 8766;
 
 /// Dirección de escucha del servidor residente. El residente no tiene
 /// autenticación, así que solo escucha en loopback, igual que el daemon. Esta
@@ -35,12 +32,44 @@ pub const RESIDENT_IMAGE_NAME: &str = "qwen_tts";
 /// escriben `qwen3-tts_<pid>_<ms>.log` en `logs_dir()`.
 pub(crate) const ENGINE_LOG_FAMILY: &str = "qwen3-tts";
 
-/// Resuelve el puerto del servidor residente con override por `QWEN3_TTS_PORT`.
-pub fn default_port() -> u16 {
-    std::env::var("QWEN3_TTS_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_PORT)
+/// Reserva un puerto efímero de loopback para un residente: enlaza
+/// `127.0.0.1:0`, lee el puerto que asignó el sistema y lo suelta. Cada arranque
+/// reserva el suyo, de modo que la comprobación de salud de un residente nunca
+/// puede ser respondida por otro. Entre soltar el puerto y el enlace del motor
+/// queda una ventana mínima; si otro proceso lo tomara, el motor muere en su
+/// enlace y el arranque falla de forma visible.
+pub fn reserve_loopback_port() -> Result<u16> {
+    let listener = std::net::TcpListener::bind((RESIDENT_HOST, 0))
+        .map_err(|e| anyhow!("No se pudo reservar un puerto efímero de loopback: {}", e))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| anyhow!("No se pudo leer el puerto reservado: {}", e))?
+        .port();
+    Ok(port)
+}
+
+/// Registro externo del residente. Quien lo implementa (el daemon) anota el
+/// proceso recién lanzado antes de que se compruebe su salud y lo anula cuando
+/// ya no existe; el motor no escribe ficheros por su cuenta.
+pub trait ResidentRegistry: Send + Sync {
+    /// Anota al residente con su PID, su identidad observada y su puerto. Un
+    /// error aborta el arranque del residente.
+    fn register(&self, pid: u32, identity: &avi_process::ProcessIdentity, port: u16) -> Result<()>;
+
+    /// Anula el registro del residente `pid`. No debe tocar el de otro PID.
+    fn unregister(&self, pid: u32);
+}
+
+/// Residente vivo conocido por el motor: PID e identidad observados al nacer.
+type LiveResident = Mutex<Option<(u32, avi_process::ProcessIdentity)>>;
+
+/// Toma el estado vivo tolerando un mutex envenenado: el estado es un valor
+/// simple que ningún hilo deja a medias.
+fn lock_live(
+    live: &LiveResident,
+) -> std::sync::MutexGuard<'_, Option<(u32, avi_process::ProcessIdentity)>> {
+    live.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Opciones de generación para la síntesis de voz (API agnóstica del motor)
@@ -315,11 +344,17 @@ pub struct Qwen3TtsEngine {
     pub model_dir: Option<PathBuf>,
     pub base_model_dir: Option<PathBuf>,
     resident: Mutex<Option<ResidentState>>,
-    /// PID del proceso `qwen_tts.exe` arrancado (0 si no hay). Se usa en `shutdown`
-    /// como señal binaria «hubo residente» (0 / no-0) para decidir si invocar el
-    /// kill, SIN tomar el `Mutex<resident>` que el hilo `spawn_blocking(warmup)`
-    /// retiene durante el spawn + `wait_health` + síntesis HTTP.
-    resident_pid: AtomicU32,
+    /// PID e identidad del proceso `qwen_tts` arrancado (`None` si no hay),
+    /// observados al nacer. `shutdown` los usa para matar solo al proceso que
+    /// sigue siendo el registrado, SIN tomar el `Mutex<resident>` que el hilo
+    /// `spawn_blocking(warmup)` retiene durante el spawn + `wait_health`.
+    live: LiveResident,
+    /// Registro externo del residente: el daemon pasa el suyo y la ruta directa
+    /// de la CLI ninguno, así que el motor nunca escribe `daemon.pid`.
+    registry: Option<Arc<dyn ResidentRegistry>>,
+    /// Activo tras [`close`](Self::close): ningún residente nuevo llega a quedar
+    /// registrado, aunque un hilo de warmup lo estuviera lanzando.
+    closed: AtomicBool,
 }
 
 /// Ventana de la salud observada por petición: `retries=1`,
@@ -334,6 +369,9 @@ pub struct Qwen3TtsEngine {
 const HEALTH_OBS_RETRIES: usize = 1;
 const HEALTH_OBS_INTERVAL_MS: u64 = 2000;
 
+/// Plazo con el que `shutdown` espera la muerte del residente tras matarlo.
+const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
+
 /// Estado del servidor residente: se indexa por voz — al cambiar
 /// de voz se termina el residente anterior y se arranca otro con `--load-voice`.
 struct ResidentState {
@@ -342,7 +380,10 @@ struct ResidentState {
 }
 
 impl Qwen3TtsEngine {
-    pub fn new(server_url: Option<String>) -> Self {
+    /// Motor con `registry` opcional: el daemon pasa el suyo para que el
+    /// residente quede registrado desde que nace; la ruta directa pasa `None` y
+    /// nunca toca el registro.
+    pub fn new(server_url: Option<String>, registry: Option<Arc<dyn ResidentRegistry>>) -> Self {
         let binary_path = resolve_binary();
         let model_dir = resolve_model_dir(binary_path.as_deref());
         let base_model_dir = resolve_base_model_dir(binary_path.as_deref());
@@ -352,34 +393,90 @@ impl Qwen3TtsEngine {
             model_dir,
             base_model_dir,
             resident: Mutex::new(None),
-            resident_pid: AtomicU32::new(0),
+            live: Mutex::new(None),
+            registry,
+            closed: AtomicBool::new(false),
         }
     }
 
-    /// Detén el residente HTTP gestionado, SIN bloquear. Se llama desde
-    /// `shutdown_handler` (avi-daemon) antes de notificar el graceful shutdown.
+    /// Vista del registro y del estado vivo que recibe el arranque del residente.
+    fn registration(&self) -> resident::Registration<'_> {
+        resident::Registration {
+            registry: self.registry.as_deref(),
+            live: &self.live,
+            closed: &self.closed,
+        }
+    }
+
+    /// Cierre definitivo del motor: impide que un residente lanzado desde ahora
+    /// quede registrado y detiene el vigente como [`shutdown`](Self::shutdown).
+    /// Lo llama el daemon al terminar de servir, para que ni un warmup en curso
+    /// deje un residente vivo tras el cierre o el reinicio en proceso.
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.shutdown();
+    }
+
+    /// Detén el residente HTTP gestionado y espera su muerte, con plazo. Se
+    /// llama desde `shutdown_handler` (avi-daemon) antes de notificar el
+    /// graceful shutdown y al terminar el servidor.
     ///
     /// Matar al residente hace fallar la síntesis en curso (el residente es el
     /// único camino, sin fallback), así que el hilo `spawn_blocking(warmup)`
     /// retorna y el runtime cierra el proceso limpio.
     ///
-    /// No bloqueante ni dependiente del `Mutex<resident>`: el hilo del warmup lo
-    /// retiene durante el spawn + `wait_health` + síntesis HTTP, así que
-    /// `self.resident.lock()` se colgaría. Por eso se mata el árbol preciso por
-    /// PID (señal que no requiere el lock, con verificación inmediata sin espera);
-    /// el `shutdown` mata por PID exacto, no por imagen —si el árbol preciso no lo
-    /// termina, la verificación con deadline la hace el llamante (graceful del
-    /// daemon / parada del CLI) y el fallo es ruidoso. Sin `resident_pid`
-    /// registrado no hay nada que matar. La recolección del estado se hace
-    /// best-effort con `try_lock` (si el warmup lo tiene, no esperamos: el
-    /// proceso ya está muerto y su `Drop` recolectará el estado al liberarse).
+    /// No depende del `Mutex<resident>`: el hilo del warmup lo retiene durante el
+    /// spawn + `wait_health`, así que `self.resident.lock()` se colgaría. Se mata
+    /// el árbol por PID solo si la identidad observada ahora coincide con la
+    /// registrada al nacer: un PID reasignado a otro programa no se toca. Tras
+    /// matar se espera, con sondeo acotado, a que el proceso muera; en cada
+    /// vuelta se intenta liberar el estado del residente con `try_lock`, lo que
+    /// recolecta al hijo (en Unix un hijo sin recolectar sigue pareciendo vivo).
+    /// El registro externo se anula solo cuando el proceso ya no existe; si
+    /// sigue vivo tras el plazo se conserva anotado y el aviso es ruidoso.
     pub fn shutdown(&self) {
-        let pid = self.resident_pid.load(Ordering::Relaxed);
-        if pid != 0 {
-            crate::resident::kill_tree_resident_by_pid(pid);
+        let registered = lock_live(&self.live).take();
+        if let Some((pid, identity)) = registered {
+            let state = avi_process::registry::classify_registered(
+                pid,
+                avi_process::pid_alive_exact(pid),
+                Some(&identity),
+                || avi_process::process_identity(pid),
+            );
+            if state == avi_process::registry::Registered::Ours {
+                crate::resident::kill_tree_resident_by_pid(pid);
+                if !self.wait_resident_gone(pid) {
+                    eprintln!(
+                        "Aviso: el residente (pid {pid}) sigue vivo tras el plazo de cierre; se conserva anotado"
+                    );
+                    *lock_live(&self.live) = Some((pid, identity));
+                    return;
+                }
+            }
+            if let Some(registry) = &self.registry {
+                registry.unregister(pid);
+            }
         }
         if let Ok(mut guard) = self.resident.try_lock() {
             *guard = None;
+        }
+    }
+
+    /// Espera con sondeo acotado a que `pid` muera, recolectando el estado del
+    /// residente en cada vuelta. Devuelve si el proceso ya no existe.
+    fn wait_resident_gone(&self, pid: u32) -> bool {
+        let deadline = Instant::now() + SHUTDOWN_WAIT;
+        loop {
+            if let Ok(mut guard) = self.resident.try_lock() {
+                *guard = None;
+            }
+            if !avi_process::pid_alive_exact(pid) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 
@@ -436,11 +533,12 @@ impl Qwen3TtsEngine {
         }
     }
 
-    /// Arranca un residente fresco para `voice`: construye
-    /// `load_voice`, hace `spawn` (que ya trae su propio `wait_health` de
-    /// arranque, por lo que nace sano o falla con diagnóstico), actualiza
-    /// `resident_pid` y ensambla el `ResidentState`. Compartido por el camino
-    /// de cambio de voz y por el rearranque ante degradación del residente.
+    /// Arranca un residente fresco para `voice`: construye `load_voice`, reserva
+    /// un puerto efímero propio y hace `spawn`, que lanza el proceso, observa su
+    /// identidad, lo registra y solo entonces espera su salud (nace sano o falla
+    /// con diagnóstico, sin dejar el hijo vivo ni el registro anotado). Ensambla
+    /// el `ResidentState`. Compartido por el camino de cambio de voz y por el
+    /// rearranque ante degradación del residente.
     fn start_resident(
         &self,
         model_dir: &Path,
@@ -451,13 +549,9 @@ impl Qwen3TtsEngine {
             VoiceEngine::Cloned(p) => Some(p.as_path()),
             VoiceEngine::Preset(_) => None,
         };
-        let port = default_port();
-        let spawned = resident::Qwen3TtsResident::spawn(model_dir, port, load_voice)?;
-        self.resident_pid.store(spawned.pid(), Ordering::Relaxed);
-        // Contabilidad en disco acoplada al store en memoria — actualiza
-        // `resident_pid` en `daemon.pid` sin fichero propio (best-effort: si el
-        // daemon corre en foreground sin pidfile, no hay nada que actualizar).
-        update_resident_pid_in_pidfile(spawned.pid());
+        let port = reserve_loopback_port()?;
+        let spawned =
+            resident::Qwen3TtsResident::spawn(model_dir, port, load_voice, &self.registration())?;
         Ok(ResidentState {
             resident: spawned,
             voice_key,
@@ -516,6 +610,9 @@ impl Qwen3TtsEngine {
                 poisoned.into_inner()
             });
             if guard.as_ref().map(|s| s.voice_key.as_str()) != Some(voice_key.as_str()) {
+                // El residente anterior se termina antes de lanzar el nuevo: el
+                // registro solo anota uno y ninguno puede vivir sin anotar.
+                *guard = None;
                 *guard = Some(self.start_resident(model_dir, voice, voice_key)?);
             } else if let Err(_e) = guard
                 .as_mut()
@@ -547,73 +644,6 @@ impl Qwen3TtsEngine {
         self.synthesize_via_http(
             &url, text, voice, options, None, None, out_path, budget, cancel,
         )
-    }
-}
-
-/// Actualiza `resident_pid` en `daemon.pid` preservando el resto del esquema
-/// como campo plano. Escritura atómica por tmp+rename; si no hay pidfile
-/// (p. ej. `serve` en foreground) o no parsea, no hay nada que actualizar,
-/// pero el descarte deja traza: nunca es silencioso. La lectura tolerante
-/// vive en el CLI (`read_resident_pid`: ausente = 0/desconocido).
-fn update_resident_pid_in_pidfile(pid: u32) {
-    update_resident_pid_at(&avi_store::data_dir().join("daemon.pid"), pid);
-}
-
-/// Cuerpo de [`update_resident_pid_in_pidfile`] sobre una ruta concreta.
-///
-/// Sin `resident_identity` observable no se registra `resident_pid`: la
-/// residente queda sin registrar y no se reclama por PID.
-/// Los fallos de lectura/parseo/escritura dejan traza; nunca son silenciosos.
-fn update_resident_pid_at(path: &Path, pid: u32) {
-    let content = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "Aviso: no se pudo leer {} para registrar el residente: {}",
-                path.display(),
-                e
-            );
-            return;
-        }
-    };
-    let mut v: serde_json::Value = match serde_json::from_str(&content) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!(
-                "Aviso: {} no se entiende como JSON y no se registra el residente: {}",
-                path.display(),
-                e
-            );
-            return;
-        }
-    };
-    // La identidad se observa ahora, con el residente recién creado: es la que
-    // la parada compara después para no confundir un PID reasignado con él.
-    let identity = avi_process::process_identity(pid);
-    let Some(identity) = identity else {
-        eprintln!(
-            "Aviso: no se pudo observar la identidad del residente (pid {}); no se registra resident_pid",
-            pid
-        );
-        return;
-    };
-    v["resident_pid"] = serde_json::Value::from(pid);
-    v["resident_identity"] = serde_json::to_value(identity).unwrap_or(serde_json::Value::Null);
-    let tmp = path.with_extension("pid.tmp");
-    match std::fs::write(&tmp, serde_json::to_string_pretty(&v).unwrap_or_default()) {
-        Ok(()) => {
-            if let Err(e) = std::fs::rename(&tmp, path) {
-                eprintln!(
-                    "Aviso: no se pudo renombrar {} a {}: {}",
-                    tmp.display(),
-                    path.display(),
-                    e
-                );
-            }
-        }
-        Err(e) => {
-            eprintln!("Aviso: no se pudo escribir {}: {}", tmp.display(), e);
-        }
     }
 }
 
@@ -1020,6 +1050,49 @@ pub mod resident {
     use std::thread;
     use std::time::Duration;
 
+    /// Registro del residente que se está lanzando: el registro externo, si lo
+    /// hay, y el estado vivo del motor. Se anotan juntos al nacer el proceso y
+    /// se anulan juntos si el arranque falla.
+    pub(crate) struct Registration<'a> {
+        pub(crate) registry: Option<&'a dyn crate::ResidentRegistry>,
+        pub(crate) live: &'a crate::LiveResident,
+        pub(crate) closed: &'a AtomicBool,
+    }
+
+    impl Registration<'_> {
+        /// Anota al residente en el estado vivo y, si hay registro externo, en él.
+        /// Con el motor cerrado falla: se anota primero y se comprueba después,
+        /// de modo que un cierre concurrente o ve al residente anotado y lo mata,
+        /// o lo ve cerrado aquí y el arranque lo termina.
+        fn record(
+            &self,
+            pid: u32,
+            identity: &avi_process::ProcessIdentity,
+            port: u16,
+        ) -> Result<()> {
+            *crate::lock_live(self.live) = Some((pid, identity.clone()));
+            if self.closed.load(Ordering::SeqCst) {
+                return Err(anyhow!("el motor está cerrado"));
+            }
+            if let Some(registry) = self.registry {
+                registry.register(pid, identity, port)?;
+            }
+            Ok(())
+        }
+
+        /// Anula el estado vivo (solo si es de `pid`) y el registro externo.
+        fn clear(&self, pid: u32) {
+            let mut live = crate::lock_live(self.live);
+            if live.as_ref().is_some_and(|(live_pid, _)| *live_pid == pid) {
+                *live = None;
+            }
+            drop(live);
+            if let Some(registry) = self.registry {
+                registry.unregister(pid);
+            }
+        }
+    }
+
     /// Gestor del proceso servidor del motor.
     pub struct Qwen3TtsResident {
         child: Option<avi_process::RestrictedChild>,
@@ -1060,13 +1133,15 @@ pub mod resident {
     }
 
     impl Qwen3TtsResident {
-        /// Arranca el motor con `--serve` en `port` y espera a que `/v1/health`
-        /// responda (hasta 60 × 500 ms). Con `load_voice` (voz clonada) añade
-        /// `--load-voice <qvoice> --icl-only` (el clonado solo aplica al arranque).
-        pub fn spawn(
+        /// Arranca el motor con `--serve` en `port`, lo registra desde que nace y
+        /// espera a que `/v1/health` responda (hasta 60 × 500 ms). Con
+        /// `load_voice` (voz clonada) añade `--load-voice <qvoice> --icl-only` (el
+        /// clonado solo aplica al arranque).
+        pub(crate) fn spawn(
             model_dir: impl AsRef<Path>,
             port: u16,
             load_voice: Option<&Path>,
+            registration: &Registration<'_>,
         ) -> Result<Self> {
             let bin = resolve_binary()
                 .ok_or_else(|| anyhow!("El binario Qwen3-TTS no está provisionado."))?;
@@ -1083,7 +1158,7 @@ pub mod resident {
             .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
             let child =
                 launch_resident_process(&bin, model_dir.as_ref(), port, load_voice, log_file)?;
-            Self::spawn_with_child(child, port, log_path, 60, 500)
+            Self::spawn_with_child(child, port, log_path, 60, 500, registration)
         }
     }
 
@@ -1106,7 +1181,7 @@ pub mod resident {
             // con `--watch-stdin`, lee su entrada hasta fin de fichero y
             // termina; así, si el daemon muere de forma abrupta, el sistema
             // cierra el extremo de escritura y el residente muere con él. El
-            // stdout va a null porque no se consume.
+            // stdout va al mismo fichero de registro que el stderr.
             // Windows: `qwen_tts.exe` NO debe heredar handles del padre salvo
             // los declarados. `DETACHED_PROCESS` lo deja sin consola:
             // `qwen_tts` no lanza procesos de consola, así que no necesita
@@ -1116,7 +1191,9 @@ pub mod resident {
             // no viaja al motor por construcción.
             // Sin `CREATE_NEW_PROCESS_GROUP` ni breakaway, para que
             // `taskkill /F /T /PID <daemon>` alcance al residente como descendiente.
-            // En Unix tampoco se hace `setsid` aquí: hereda el grupo del daemon.
+            // En Unix `spawn_with_allowlist` lo hace líder de su propia sesión
+            // (`setsid`): su grupo solo contiene su propio árbol y el daemon no
+            // comparte grupo con él.
             // Si el daemon muere de forma abrupta, la tubería de entrada se cierra y
             // el residente termina por sí mismo; los dobles de test nunca
             // reproducen la muerte abrupta del padre.
@@ -1144,24 +1221,33 @@ pub mod resident {
     }
 
     impl Qwen3TtsResident {
-        /// Arranca el healthcheck sobre un hijo ya lanzado (retries/intervalo
-        /// configurables para los tests de reintentos). `log_path` se guarda en el
-        /// struct para incluirse en errores de `wait_health`.
+        /// Registra a un hijo ya lanzado y arranca su healthcheck (retries/intervalo
+        /// configurables para los tests de reintentos). El orden es: observar la
+        /// identidad, anotarlo en `registration` y solo entonces esperar la salud,
+        /// de modo que está registrado durante toda la espera. Una identidad no
+        /// observable, un registro fallido o una salud fallida terminan el hijo,
+        /// lo recogen y anulan el registro. `log_path` se guarda en el struct para
+        /// incluirse en errores de `wait_health`.
         pub(crate) fn spawn_with_child(
             child: avi_process::RestrictedChild,
             port: u16,
             log_path: PathBuf,
             retries: usize,
             interval_ms: u64,
+            registration: &Registration<'_>,
         ) -> Result<Self> {
             let mut child = child;
-            if let Err(e) = wait_health(&mut child, port, retries, interval_ms, log_path.as_path())
-            {
+            let pid = child.id();
+            let started = register_launched(pid, port, registration).and_then(|()| {
+                wait_health(&mut child, port, retries, interval_ms, log_path.as_path())
+            });
+            if let Err(e) = started {
                 // Un motor que no llegó a estar sano se termina y se recoge aquí:
                 // soltar el `Child` sin `wait` dejaría un zombi en Unix, que
                 // seguiría pareciendo vivo para una comprobación por PID.
                 let _ = child.kill();
                 let _ = child.wait();
+                registration.clear(pid);
                 return Err(e);
             }
             Ok(Self {
@@ -1206,6 +1292,25 @@ pub mod resident {
                 let _ = child.wait();
             }
         }
+    }
+
+    /// Observa la identidad del hijo recién lanzado y lo anota. Sin identidad no
+    /// hay registro posible y el arranque falla: la parada no podría distinguir
+    /// al residente de un PID reasignado.
+    fn register_launched(pid: u32, port: u16, registration: &Registration<'_>) -> Result<()> {
+        let identity = avi_process::process_identity(pid).ok_or_else(|| {
+            anyhow!(
+                "No se pudo observar la identidad del residente Qwen3-TTS (pid {}): sin ella no se registra",
+                pid
+            )
+        })?;
+        registration.record(pid, &identity, port).map_err(|e| {
+            anyhow!(
+                "No se pudo registrar el residente Qwen3-TTS (pid {}): {}",
+                pid,
+                e
+            )
+        })
     }
 
     /// Viveza real de un PID a nivel de sistema (sin Mutex ni HTTP).
@@ -1382,31 +1487,287 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    /// Al registrar el residente, el pidfile trae su identidad y conserva el resto.
+    /// Registro doble: anota las llamadas y puede fallar al registrar.
+    #[derive(Default)]
+    struct RecordingRegistry {
+        fail_register: bool,
+        registered: Mutex<Vec<(u32, avi_process::ProcessIdentity, u16)>>,
+        unregistered: Mutex<Vec<u32>>,
+    }
+
+    impl RecordingRegistry {
+        fn registered_pids(&self) -> Vec<u32> {
+            self.registered
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(pid, _, _)| *pid)
+                .collect()
+        }
+    }
+
+    impl ResidentRegistry for RecordingRegistry {
+        fn register(
+            &self,
+            pid: u32,
+            identity: &avi_process::ProcessIdentity,
+            port: u16,
+        ) -> Result<()> {
+            if self.fail_register {
+                return Err(anyhow!("registro doble que falla"));
+            }
+            self.registered
+                .lock()
+                .unwrap()
+                .push((pid, identity.clone(), port));
+            Ok(())
+        }
+
+        fn unregister(&self, pid: u32) {
+            self.unregistered.lock().unwrap().push(pid);
+        }
+    }
+
+    /// Espera con sondeo acotado (hasta 20 s) a que `condition` se cumpla.
+    fn wait_until(what: &str, condition: impl Fn() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Instant::now() < deadline {
+            if condition() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        panic!("no se cumplió a tiempo: {what}");
+    }
+
+    /// Registro nulo para los arranques que no prueban el registro.
+    fn bare(live: &LiveResident) -> resident::Registration<'_> {
+        static OPEN: AtomicBool = AtomicBool::new(false);
+        resident::Registration {
+            registry: None,
+            live,
+            closed: &OPEN,
+        }
+    }
+
+    /// Tras `close`, un residente que se lanza después no llega a quedar
+    /// registrado: el arranque lo mata y devuelve error.
     #[test]
-    fn resident_update_records_resident_identity() {
-        let dir = tempfile::Builder::new()
-            .prefix("avi_tts_pidfile_")
-            .tempdir()
-            .unwrap();
-        let path = dir.path().join("daemon.pid");
-        std::fs::write(
-            &path,
-            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 0}"#,
+    fn closed_engine_rejects_a_late_resident() {
+        let registry = Arc::new(RecordingRegistry::default());
+        let engine = Qwen3TtsEngine::new(None, Some(registry.clone()));
+        engine.close();
+        let child = sleeping_process();
+        let pid = child.id();
+
+        let result = resident::Qwen3TtsResident::spawn_with_child(
+            child,
+            reserve_loopback_port().expect("puerto efímero"),
+            test_log_path(),
+            600,
+            50,
+            &engine.registration(),
+        );
+
+        assert!(result.is_err(), "un motor cerrado no acepta residentes");
+        assert!(!avi_process::pid_alive_exact(pid));
+        assert!(registry.registered_pids().is_empty());
+        assert!(lock_live(&engine.live).is_none());
+    }
+
+    /// El residente queda registrado antes de que venza la salud: con un motor
+    /// que nunca responde, el registro ya contiene su PID mientras `wait_health`
+    /// sigue esperando, y `shutdown` lo mata, espera su muerte y anula el registro.
+    #[test]
+    fn resident_is_registered_before_health_and_shutdown_kills_it() {
+        let registry = Arc::new(RecordingRegistry::default());
+        let engine = Qwen3TtsEngine::new(None, Some(registry.clone()));
+        let child = sleeping_process();
+        let pid = child.id();
+        let port = reserve_loopback_port().expect("puerto efímero");
+
+        let result = thread::scope(|scope| {
+            let spawn = scope.spawn(|| {
+                resident::Qwen3TtsResident::spawn_with_child(
+                    child,
+                    port,
+                    test_log_path(),
+                    600,
+                    50,
+                    &engine.registration(),
+                )
+            });
+            wait_until("el registro contiene el PID del residente", || {
+                registry.registered_pids().contains(&pid)
+            });
+            assert!(
+                !spawn.is_finished(),
+                "el registro debe preceder al vencimiento de la salud"
+            );
+            let (_, identity, registered_port) = registry.registered.lock().unwrap()[0].clone();
+            assert_eq!(Some(identity), avi_process::process_identity(pid));
+            assert_eq!(registered_port, port);
+            engine.shutdown();
+            spawn
+                .join()
+                .expect("el hilo de arranque no debe entrar en pánico")
+        });
+
+        assert!(result.is_err(), "un motor muerto no llega a estar sano");
+        assert!(
+            !avi_process::pid_alive_exact(pid),
+            "shutdown debe matar al residente"
+        );
+        assert!(registry.unregistered.lock().unwrap().contains(&pid));
+        assert!(lock_live(&engine.live).is_none());
+    }
+
+    /// Si el registro falla, el arranque devuelve error y deja muerto al
+    /// residente lanzado, sin estado vivo ni registro anotado.
+    #[test]
+    fn failed_registration_kills_the_launched_resident() {
+        let registry = Arc::new(RecordingRegistry {
+            fail_register: true,
+            ..Default::default()
+        });
+        let engine = Qwen3TtsEngine::new(None, Some(registry.clone()));
+        let child = sleeping_process();
+        let pid = child.id();
+
+        let result = resident::Qwen3TtsResident::spawn_with_child(
+            child,
+            reserve_loopback_port().expect("puerto efímero"),
+            test_log_path(),
+            600,
+            50,
+            &engine.registration(),
+        );
+
+        let err = result
+            .err()
+            .expect("un registro fallido debe abortar el arranque");
+        assert!(err.to_string().contains("registrar"), "{err}");
+        assert!(
+            !avi_process::pid_alive_exact(pid),
+            "el residente debe haber muerto"
+        );
+        assert!(lock_live(&engine.live).is_none());
+        assert!(registry.registered_pids().is_empty());
+        assert!(registry.unregistered.lock().unwrap().contains(&pid));
+    }
+
+    /// Un motor sin registro (ruta directa) nunca toca `daemon.pid`: con uno
+    /// previo en la raíz de datos, sus bytes y el contenido del directorio
+    /// quedan intactos tras un arranque que falla y otro que triunfa.
+    #[test]
+    fn engine_without_registry_never_touches_daemon_pid() {
+        let data = tempfile::TempDir::new().unwrap();
+        let pidfile = data.path().join("daemon.pid");
+        let previous = br#"{"pid": 4242, "contenido": "previo"}"#;
+        std::fs::write(&pidfile, previous).unwrap();
+        let original = std::env::var_os("AVI_DATA_DIR");
+        std::env::set_var("AVI_DATA_DIR", data.path());
+
+        let engine = Qwen3TtsEngine::new(None, None);
+        let live = Mutex::new(None);
+        let failed = resident::Qwen3TtsResident::spawn_with_child(
+            sleeping_process(),
+            1,
+            test_log_path(),
+            2,
+            30,
+            &engine.registration(),
+        );
+        let (port, server) = resident::simulate_server(Arc::new(Mutex::new(String::new())));
+        let healthy = resident::Qwen3TtsResident::spawn_with_child(
+            sleeping_process(),
+            port,
+            test_log_path(),
+            10,
+            50,
+            &bare(&live),
+        );
+        drop(server);
+
+        match original {
+            Some(value) => std::env::set_var("AVI_DATA_DIR", value),
+            None => std::env::remove_var("AVI_DATA_DIR"),
+        }
+        assert!(failed.is_err());
+        assert!(healthy.is_ok());
+        assert_eq!(std::fs::read(&pidfile).unwrap(), previous);
+        assert_eq!(std::fs::read_dir(data.path()).unwrap().count(), 1);
+    }
+
+    /// `shutdown` no mata a un proceso cuya identidad observada no coincide con
+    /// la registrada: es un PID reasignado a otro programa.
+    #[test]
+    fn shutdown_spares_a_process_with_a_different_identity() {
+        let engine = Qwen3TtsEngine::new(None, None);
+        let mut child = sleeping_process();
+        let pid = child.id();
+        let mut other = avi_process::process_identity(pid).expect("identidad del señuelo");
+        other.start.push_str("-otra");
+        *lock_live(&engine.live) = Some((pid, other));
+
+        engine.shutdown();
+
+        let alive = child.try_wait().expect("consulta al señuelo").is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(alive, "un proceso con otra identidad no debe morir");
+        assert!(lock_live(&engine.live).is_none());
+    }
+
+    /// Dos motores anotan cada uno su propio puerto y la reserva devuelve un
+    /// puerto de loopback utilizable. Los puertos de los residentes simulados son
+    /// distintos porque ambos servidores siguen enlazados a la vez.
+    #[test]
+    fn each_engine_registers_its_own_port() {
+        let first_registry = Arc::new(RecordingRegistry::default());
+        let second_registry = Arc::new(RecordingRegistry::default());
+        let first = Qwen3TtsEngine::new(None, Some(first_registry.clone()));
+        let second = Qwen3TtsEngine::new(None, Some(second_registry.clone()));
+        let (first_port, first_server) =
+            resident::simulate_server(Arc::new(Mutex::new(String::new())));
+        let (second_port, second_server) =
+            resident::simulate_server(Arc::new(Mutex::new(String::new())));
+        assert_ne!(first_port, second_port);
+
+        let first_resident = resident::Qwen3TtsResident::spawn_with_child(
+            sleeping_process(),
+            first_port,
+            test_log_path(),
+            10,
+            50,
+            &first.registration(),
         )
-        .unwrap();
+        .expect("el primer residente debe estar sano");
+        let second_resident = resident::Qwen3TtsResident::spawn_with_child(
+            sleeping_process(),
+            second_port,
+            test_log_path(),
+            10,
+            50,
+            &second.registration(),
+        )
+        .expect("el segundo residente debe estar sano");
 
-        let own_pid = std::process::id();
-        update_resident_pid_at(&path, own_pid);
+        let first_noted = first_registry.registered.lock().unwrap()[0].clone();
+        let second_noted = second_registry.registered.lock().unwrap()[0].clone();
+        assert_eq!(
+            (first_noted.0, first_noted.2),
+            (first_resident.pid(), first_port)
+        );
+        assert_eq!(
+            (second_noted.0, second_noted.2),
+            (second_resident.pid(), second_port)
+        );
+        drop((first_server, second_server));
 
-        let v: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let own = avi_process::process_identity(own_pid).expect("identidad propia");
-        assert_eq!(v["resident_pid"], own_pid);
-        assert_eq!(v["resident_identity"]["start"], own.start.as_str());
-        assert_eq!(v["resident_identity"]["image"], own.image.as_str());
-        assert_eq!(v["pid"], 4242);
-        assert_eq!(v["addr"], "127.0.0.1:7001");
+        let reserved = reserve_loopback_port().expect("puerto efímero");
+        assert_ne!(reserved, 0);
+        TcpListener::bind((RESIDENT_HOST, reserved)).expect("el puerto reservado debe estar libre");
     }
 
     /// Los defaults del host deben coincidir con los defaults del motor
@@ -1462,7 +1823,7 @@ mod tests {
         let (program, args) = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
             Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
-            8766,
+            45123,
             None,
         );
         assert_eq!(program, PathBuf::from("qwen_tts.exe"));
@@ -1472,7 +1833,7 @@ mod tests {
                 "-d",
                 "vendor/qwen3-tts/qwen3-tts-0.6b",
                 "--serve",
-                "8766",
+                "45123",
                 "--host",
                 "127.0.0.1",
                 "--int4",
@@ -1486,7 +1847,7 @@ mod tests {
         let (program, args) = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
             Path::new("md"),
-            8766,
+            45123,
             Some(Path::new("voice.qvoice")),
         );
         assert_eq!(program, PathBuf::from("qwen_tts.exe"));
@@ -1496,7 +1857,7 @@ mod tests {
                 "-d",
                 "md",
                 "--serve",
-                "8766",
+                "45123",
                 "--host",
                 "127.0.0.1",
                 "--int4",
@@ -1544,11 +1905,7 @@ mod tests {
         let model_dir = resolve_model_dir(Some(&bin)).expect(
             "faltan los pesos qwen3-tts-0.6b: aprovisiónalos con `ai-voice-interconnector setup`",
         );
-        let port = TcpListener::bind("127.0.0.1:0")
-            .expect("debe poder reservar un puerto efímero")
-            .local_addr()
-            .expect("el listener debe tener dirección")
-            .port();
+        let port = reserve_loopback_port().expect("debe poder reservar un puerto efímero");
         let mut cmd = Command::new(&bin);
         cmd.arg("-d")
             .arg(&model_dir)
@@ -1741,7 +2098,7 @@ fn main() {
     ) -> (avi_process::RestrictedChild, DoubleCleanup) {
         let log_file = std::fs::File::create(dir.path().join("engine.log")).expect("log del doble");
         let child =
-            resident::launch_resident_process(bin, Path::new("modelos"), 8766, None, log_file)
+            resident::launch_resident_process(bin, Path::new("modelos"), 45123, None, log_file)
                 .expect("debe poder lanzar el motor doble");
         let cleanup = DoubleCleanup {
             pid: child.id(),
@@ -1787,7 +2144,15 @@ fn main() {
         // El sondeo de entrada del doble debe haber concluido antes de provocar
         // el fallo, para que el cierre de la tubería llegue después de verla abierta.
         let _ = wait_for_marker(&cleanup.dir.path().join("stdin.txt"));
-        let result = resident::Qwen3TtsResident::spawn_with_child(child, 1, test_log_path(), 2, 30);
+        let live = Mutex::new(None);
+        let result = resident::Qwen3TtsResident::spawn_with_child(
+            child,
+            1,
+            test_log_path(),
+            2,
+            30,
+            &bare(&live),
+        );
         assert!(result.is_err(), "sin servidor el healthcheck debe fallar");
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline && process_alive(cleanup.pid) {
@@ -1878,9 +2243,16 @@ fn main() {
         let (port, handle) = resident::simulate_server(Arc::new(Mutex::new(String::new())));
         let child = sleeping_process();
         let pid = child.id();
-        let resident =
-            resident::Qwen3TtsResident::spawn_with_child(child, port, test_log_path(), 10, 50)
-                .expect("el healthcheck debe pasar contra el listener simulado");
+        let live = Mutex::new(None);
+        let resident = resident::Qwen3TtsResident::spawn_with_child(
+            child,
+            port,
+            test_log_path(),
+            10,
+            50,
+            &bare(&live),
+        )
+        .expect("el healthcheck debe pasar contra el listener simulado");
         drop(resident);
         // El servidor simulado no termina nunca: se desacopla el hilo.
         drop(handle);
@@ -1916,8 +2288,15 @@ fn main() {
             }
         });
         let child = sleeping_process();
-        let result =
-            resident::Qwen3TtsResident::spawn_with_child(child, port, test_log_path(), 5, 50);
+        let live = Mutex::new(None);
+        let result = resident::Qwen3TtsResident::spawn_with_child(
+            child,
+            port,
+            test_log_path(),
+            5,
+            50,
+            &bare(&live),
+        );
         // El servidor simulado termina solo tras su N-ésima conexión: se
         // desacopla el hilo y se da margen para que drene las conexiones en vuelo.
         drop(handle);
@@ -1941,7 +2320,15 @@ fn main() {
     #[test]
     fn resident_healthcheck_fails_without_server() {
         let child = sleeping_process();
-        let result = resident::Qwen3TtsResident::spawn_with_child(child, 1, test_log_path(), 3, 30);
+        let live = Mutex::new(None);
+        let result = resident::Qwen3TtsResident::spawn_with_child(
+            child,
+            1,
+            test_log_path(),
+            3,
+            30,
+            &bare(&live),
+        );
         assert!(result.is_err(), "sin servidor el healthcheck debe fallar");
     }
 
@@ -2033,7 +2420,7 @@ fn main() {
     fn synthesize_http_sends_engine_defaults() {
         let body = Arc::new(Mutex::new(String::new()));
         let (port, handle) = resident::simulate_server(body.clone());
-        let engine = Qwen3TtsEngine::new(Some(format!("http://127.0.0.1:{}", port)));
+        let engine = Qwen3TtsEngine::new(Some(format!("http://127.0.0.1:{}", port)), None);
         let profile = VoiceProfile {
             name: "default".to_string(),
             qvoice_path: None,
@@ -2061,7 +2448,7 @@ fn main() {
         };
         let body = Arc::new(Mutex::new(String::new()));
         let (port, handle) = resident::simulate_server(body.clone());
-        let engine = Qwen3TtsEngine::new(Some(format!("http://127.0.0.1:{}", port)));
+        let engine = Qwen3TtsEngine::new(Some(format!("http://127.0.0.1:{}", port)), None);
         let _ = engine.synthesize_with_options("Hola", &profile, &opts, Some(&out));
         drop(handle);
         let parsed: serde_json::Value = serde_json::from_str(&body.lock().unwrap()).unwrap();
@@ -2080,7 +2467,7 @@ fn main() {
             let (_stream, _) = listener.accept().expect("conexión del cliente");
             thread::sleep(Duration::from_millis(1500));
         });
-        let engine = Qwen3TtsEngine::new(None);
+        let engine = Qwen3TtsEngine::new(None, None);
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("timeout.wav");
         let budget = Duration::from_millis(200);

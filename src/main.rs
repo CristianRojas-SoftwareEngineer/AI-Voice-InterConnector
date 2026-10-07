@@ -1192,7 +1192,7 @@ async fn handle_voice(
                 ));
             }
 
-            let engine = Qwen3TtsEngine::new(None);
+            let engine = Qwen3TtsEngine::new(None, None);
             let model_dir = engine.base_model_dir.as_ref().ok_or_else(|| {
                 CliError::new(
                     ExitCode::ModelMissing,
@@ -1739,7 +1739,7 @@ async fn handle_speech(
             let tmp_guard = avi_shared::TempWav::new("avi_tts_")
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
             let tmp_wav = tmp_guard.path().clone();
-            let engine = Qwen3TtsEngine::new(None);
+            let engine = Qwen3TtsEngine::new(None, None);
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             engine
@@ -1841,7 +1841,7 @@ async fn handle_speech(
             // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
             let tmp_wav = avi_shared::TempWav::new("avi_say_")
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-            let engine = Qwen3TtsEngine::new(None);
+            let engine = Qwen3TtsEngine::new(None, None);
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             engine
@@ -2069,7 +2069,7 @@ async fn handle_speech(
                 // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
                 let tmp_wav = avi_shared::TempWav::new("avi_dub_")
                     .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-                let engine = Qwen3TtsEngine::new(None);
+                let engine = Qwen3TtsEngine::new(None, None);
                 engine
                     .synthesize_with_temperature(
                         &final_text,

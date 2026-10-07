@@ -22,7 +22,8 @@
 //!   aprovisionamiento: `ai-voice-interconnector setup`,
 //!   `ai-voice-interconnector setup --with-voice-cloning` o
 //!   `cargo xtask build-engine`. Usan la raíz de modelos real en solo lectura
-//!   y estado, puerto y `QWEN3_TTS_PORT` propios (`IsolatedInstance`).
+//!   y estado y puerto propios (`IsolatedInstance`); el residente reserva su
+//!   propio puerto efímero y lo anota en el `daemon.pid` de la instancia.
 //!
 //! ### Taxonomía de tests y filtros de ejecución rápida:
 //! - **Rendimiento y comandos rápidos (< 100 ms)**: `cargo test --test cli_golden -- perf_ --nocapture`
@@ -60,8 +61,8 @@ fn bin_command() -> Command {
 }
 
 // Las pruebas operan con aislamiento total por instancia (`IsolatedInstance`)
-// usando puertos efímeros (`AVI_DAEMON_PORT=0`, `QWEN3_TTS_PORT`) y un directorio
-// de datos propio (`AVI_DATA_DIR`). La instancia es dueña de lo que arranca: al
+// usando puertos efímeros (`AVI_DAEMON_PORT=0` y el que reserva cada residente) y
+// un directorio de datos propio (`AVI_DATA_DIR`). La instancia es dueña de lo que arranca: al
 // soltarse, `Drop` cosecha por identidad los procesos registrados en su propio
 // `daemon.pid` y nunca toca el daemon ni el residente del usuario. Para la
 // inferencia pesada residente (~2.7 GB de RAM), se mantiene el semáforo de
@@ -239,8 +240,9 @@ fn read_resident_pid_dir(dir: &std::path::Path) -> u32 {
 }
 
 /// ¿Hay algo escuchando en `127.0.0.1:port`? Sondeo TCP breve, sin HTTP. Se
-/// usa con los puertos propios de una instancia: el efímero del daemon y el
-/// `QWEN3_TTS_PORT` del residente. Nunca con un puerto compartido de la máquina.
+/// usa con los puertos propios de una instancia: el efímero del daemon y el del
+/// residente, anotado en su `daemon.pid`. Nunca con un puerto compartido de la
+/// máquina.
 fn port_open(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
@@ -836,16 +838,6 @@ impl IsolatedInstance {
         let dir = sandbox.path().to_path_buf();
         // Puerto efímero: el SO asigna y el hijo publica el real.
         envs.push(("AVI_DAEMON_PORT".to_string(), "0".to_string()));
-        let tts_listener = std::net::TcpListener::bind("127.0.0.1:0").ok();
-        let tts_port = tts_listener
-            .as_ref()
-            .and_then(|l| l.local_addr().ok())
-            .map(|a| a.port())
-            .unwrap_or(0);
-        drop(tts_listener);
-        if tts_port > 0 {
-            envs.push(("QWEN3_TTS_PORT".to_string(), tts_port.to_string()));
-        }
         // Raíz de modelos real (solo lectura): la instancia no fija ninguna
         // variable de caché, de modo que el daemon hijo hereda la del entorno y ve
         // los modelos provisionados; el sandbox solo aísla estado (pidfile/almacén).
@@ -868,12 +860,14 @@ impl IsolatedInstance {
         envs
     }
 
-    /// Puerto del motor TTS residente de la instancia (`QWEN3_TTS_PORT`).
+    /// Puerto del motor TTS residente de la instancia, tal como lo anotó el
+    /// daemon en `resident_port` del `daemon.pid` (`None` si no hay residente
+    /// registrado).
     fn tts_port(&self) -> Option<u16> {
-        self.envs
-            .iter()
-            .find(|(k, _)| k == "QWEN3_TTS_PORT")
-            .and_then(|(_, v)| v.parse().ok())
+        match avi_process::registry::observe_pid_file(&self.dir) {
+            avi_process::registry::PidFileObservation::Present(file) => file.resident_port,
+            _ => None,
+        }
     }
 
     /// Envs como `&[(&str, &str)]` para `run_json_env` y `*_env`.
@@ -973,9 +967,11 @@ impl Drop for IsolatedInstance {
     /// un daemon, espera a que cierre el puerto propio del residente; si sigue
     /// abierto lo informa por stderr y no barre nada más.
     fn drop(&mut self) {
+        // El puerto del residente se lee antes de cosechar: sale del pidfile.
+        let resident_port = self.tts_port();
         let killed_daemon = self.reap_registered();
         if killed_daemon {
-            if let Some(port) = self.tts_port() {
+            if let Some(port) = resident_port {
                 let t0 = Instant::now();
                 while port_open(port) && t0.elapsed() < HARD_KILL_DEADLINE {
                     std::thread::sleep(Duration::from_millis(100));
@@ -1057,6 +1053,8 @@ fn start_instance_running_only(inst: &IsolatedInstance, extra: &[&str]) -> Value
 /// (`shutdown_sent`) y exit 5 (ya detenido).
 fn stop_instance(inst: &IsolatedInstance, context: &str) {
     let previous_port = inst.port();
+    // El residente registrado se lee antes de parar: la parada borra el pidfile.
+    let resident = (inst.read_resident_pid(), inst.tts_port());
     let a = inst.args();
     let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &a);
     assert!(
@@ -1066,22 +1064,27 @@ fn stop_instance(inst: &IsolatedInstance, context: &str) {
         actual
     );
     wait_for_daemon_state_env(inst, "stopped", 75);
-    verify_zero_orphans_instance(context, inst, previous_port);
+    verify_zero_orphans_instance(context, inst, previous_port, resident);
 }
 
 /// Verificación ruidosa de cero huérfanos de LA INSTANCIA tras el apagado: el
 /// árbol debe estar muerto, SU puerto del daemon cerrado, el residente ausente
-/// (su PID registrado muerto y su `QWEN3_TTS_PORT` sin escuchar) y su pidfile
-/// borrado (el producto lo borra tras muerte verificada). Si queda resto falla
-/// con `panic!`: la suite nunca pasa en verde con huérfanos vivos, y el `Drop`
-/// de la instancia cosecha lo registrado en la vía de fallo.
-fn verify_zero_orphans_instance(context: &str, inst: &IsolatedInstance, port: u16) {
+/// (el PID y el puerto que tenía registrados antes de parar: PID muerto y puerto
+/// sin escuchar) y su pidfile borrado (el producto lo borra tras muerte
+/// verificada). Si queda resto falla con `panic!`: la suite nunca pasa en verde
+/// con huérfanos vivos, y el `Drop` de la instancia cosecha lo registrado en la
+/// vía de fallo.
+fn verify_zero_orphans_instance(
+    context: &str,
+    inst: &IsolatedInstance,
+    port: u16,
+    (resident, resident_port): (u32, Option<u16>),
+) {
     let pid = inst.read_daemon_pid();
     let pid_alive = pid.map(avi_daemon::pid_alive).unwrap_or(false);
-    let resident = inst.read_resident_pid();
     let resident_alive = resident != 0 && avi_tts::resident::resident_pid_alive(resident);
     let instance_port_open = port_open(port);
-    let resident_port_open = inst.tts_port().is_some_and(port_open);
+    let resident_port_open = resident_port.is_some_and(port_open);
     let pidfile = inst.dir.join("daemon.pid");
     let pidfile_exists = pidfile.exists();
     assert!(
@@ -2596,8 +2599,8 @@ mod tts {
     }
 
     /// Mutex global para serializar los tests TTS pesados (cada corrida ocupa
-    /// ~2.7 GB de RAM, y el motor residente escucha en un
-    /// `default_port()` de servicio fijo que no admite dos instancias a la vez).
+    /// ~2.7 GB de RAM, y dos residentes simultáneos no caben en la memoria de
+    /// la máquina).
     /// Este es el núcleo físico legítimo que sobrevive (semáforo de
     /// capacidad de una única inferencia pesada residente, documentado como
     /// límite real de recursos, no como
@@ -3754,10 +3757,10 @@ mod tts {
         let _tts = lock_tts();
         hit_start_heavy("tts::resident_listens_only_on_loopback");
         let inst = IsolatedInstance::new("loopback");
+        start_instance(&inst, &[]);
         let port = inst
             .tts_port()
-            .expect("la instancia debe fijar QWEN3_TTS_PORT");
-        start_instance(&inst, &[]);
+            .expect("el daemon debe haber anotado el puerto del residente en resident_port");
         let timeout = Duration::from_secs(3);
         let loopback = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         assert!(
@@ -4578,8 +4581,10 @@ mod tts {
         // Fase 2 — timeout/aborto sin graceful: se mata el árbol sin POST
         // /shutdown (la pista queda obsoleta a propósito). El próximo `start`
         // parte de cero con `started`.
+        // El residente registrado (PID y puerto) se espera antes del kill: sale
+        // del pidfile, que el kill duro deja en su sitio.
         #[cfg(unix)]
-        let resident_b = inst.read_resident_pid();
+        let (resident_b, resident_port) = wait_for_live_resident(&inst);
         avi_daemon::kill_tree_by_pid(pid_b);
         avi_daemon::wait_for_pid_death(pid_b, std::time::Duration::from_secs(8));
         // (tensado CI Unix, sin simular Unix en local): tras matar el
@@ -4588,9 +4593,6 @@ mod tts {
         // propia sesión: lo termina la tubería de vida al morir el daemon).
         #[cfg(unix)]
         {
-            let resident_port = inst
-                .tts_port()
-                .expect("la instancia debe fijar QWEN3_TTS_PORT");
             let (alive, listening) =
                 wait_resident_gone(resident_b, resident_port, HARD_KILL_DEADLINE);
             assert!(
@@ -4648,7 +4650,7 @@ mod tts {
     /// puerto deje de escuchar. Devuelve `(residente_vivo, puerto_abierto)` en
     /// el último sondeo. A diferencia de `verify_zero_orphans_instance`, tolera
     /// que el pidfile siga existiendo tras un kill duro. Solo mira lo que es de
-    /// la instancia: el PID de su residente registrado y su `QWEN3_TTS_PORT`.
+    /// la instancia: el PID de su residente registrado y el puerto que anotó.
     fn wait_resident_gone(resident: u32, port: u16, deadline: Duration) -> (bool, bool) {
         let t0 = Instant::now();
         loop {
@@ -4661,18 +4663,41 @@ mod tts {
         }
     }
 
-    /// Espera a que el residente de la instancia esté registrado, vivo y
-    /// escuchando en `port`, y devuelve su PID.
-    fn wait_for_live_resident(inst: &IsolatedInstance, port: u16) -> u32 {
+    /// Espera a que el residente de la instancia esté registrado en su
+    /// `daemon.pid` con PID y puerto, vivo y escuchando en ese puerto, y
+    /// devuelve su PID y su puerto.
+    fn wait_for_live_resident(inst: &IsolatedInstance) -> (u32, u16) {
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_secs(90) {
             let resident = inst.read_resident_pid();
-            if resident != 0 && avi_tts::resident::resident_pid_alive(resident) && port_open(port) {
-                return resident;
+            if let Some(port) = inst.tts_port() {
+                if resident != 0
+                    && avi_tts::resident::resident_pid_alive(resident)
+                    && port_open(port)
+                {
+                    return (resident, port);
+                }
             }
             std::thread::sleep(Duration::from_millis(100));
         }
-        panic!("el residente no llegó a estar vivo y escuchando en {port} tras 90 s");
+        panic!("el residente no llegó a estar registrado, vivo y escuchando tras 90 s");
+    }
+
+    /// Espera a que el daemon de la instancia registre a su residente en el
+    /// `daemon.pid` (PID y puerto), sin exigir que esté sano: el registro precede
+    /// a la comprobación de salud. Devuelve el PID y el puerto anotados.
+    fn wait_for_registered_resident(inst: &IsolatedInstance) -> (u32, u16) {
+        let t0 = Instant::now();
+        while t0.elapsed() < Duration::from_secs(90) {
+            let resident = inst.read_resident_pid();
+            if let Some(port) = inst.tts_port() {
+                if resident != 0 {
+                    return (resident, port);
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("el daemon no registró a su residente tras 90 s");
     }
 
     /// Cuerpo común de las pruebas de kill duro del daemon sin clonado: arranca
@@ -4690,13 +4715,21 @@ mod tts {
         hit_start_heavy(&format!("tts::{tag}"));
         let inst = IsolatedInstance::new(tag);
         start_instance_running_only(&inst, extra);
-        let port = inst
-            .tts_port()
-            .expect("la instancia debe fijar QWEN3_TTS_PORT");
-        let resident = wait_for_live_resident(&inst, port);
+        let (resident, port) = wait_for_live_resident(&inst);
         let daemon = inst
             .read_daemon_pid()
             .expect("tras start debe haber pidfile con el PID del daemon");
+        // El residente está registrado con su identidad: es lo que permite a la
+        // parada reclamarlo, y lo observado ahora debe coincidir con ello.
+        let registered = match avi_process::registry::observe_pid_file(&inst.dir) {
+            avi_process::registry::PidFileObservation::Present(file) => file.resident_identity,
+            _ => None,
+        };
+        assert_eq!(
+            registered,
+            avi_process::process_identity(resident),
+            "el pidfile debe registrar la identidad del residente (pid {resident})"
+        );
         milestone(&format!(
             "kill duro: daemon {daemon}, residente {resident}, puerto {port}"
         ));
@@ -4727,6 +4760,83 @@ mod tts {
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn hard_kill_of_supervised_daemon_leaves_no_resident() {
         assert_hard_kill_stops_resident("hard_kill_supervised", &["--auto-restart"]);
+    }
+
+    /// `daemon stop` justo tras `start`, con el residente ya registrado pero aún
+    /// cargando el modelo (sin haber pasado su salud): al volver, el residente
+    /// que el pidfile nombraba está muerto y su puerto no escucha.
+    #[test]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    fn stop_during_warmup_leaves_no_resident() {
+        require_tts_model();
+        require_tts_binary();
+        let _tts = lock_tts();
+        hit_start_heavy("tts::stop_during_warmup_leaves_no_resident");
+        let inst = IsolatedInstance::new("stop_warmup");
+        start_instance_running_only(&inst, &[]);
+        let (resident, port) = wait_for_registered_resident(&inst);
+        milestone(&format!(
+            "parada durante el warmup: residente {resident}, puerto {port}"
+        ));
+        let a = inst.args();
+        let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &a);
+        assert_eq!(
+            code, 0,
+            "la parada durante el warmup debe salir 0: {actual}"
+        );
+        assert!(
+            !avi_tts::resident::resident_pid_alive(resident),
+            "al volver la parada el residente registrado (pid {resident}) debe estar muerto"
+        );
+        assert!(
+            !port_open(port),
+            "al volver la parada el puerto {port} del residente no debe escuchar"
+        );
+        hit_end("tts::stop_during_warmup_leaves_no_resident");
+    }
+
+    /// `self uninstall` sobre una instancia con el residente caliente lo detiene
+    /// y no deja restos: sale con éxito y sin `reason`, y ni el pidfile ni los
+    /// logs del motor (abiertos por el residente mientras vivía) quedan en la
+    /// raíz de datos. Se usa `contract_args` para que el modelo real, que la
+    /// instancia hereda, no sea nunca el destino del borrado.
+    #[test]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    fn self_uninstall_with_hot_resident_leaves_nothing_behind() {
+        require_tts_model();
+        require_tts_binary();
+        let _tts = lock_tts();
+        hit_start_heavy("tts::self_uninstall_with_hot_resident_leaves_nothing_behind");
+        let inst = IsolatedInstance::new("uninstall_hot");
+        start_instance(&inst, &[]);
+        let (resident, port) = wait_for_live_resident(&inst);
+        let (code, actual) = run_json_env(
+            &["--json", "self", "uninstall", "--yes"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 0, "self uninstall debe salir 0: {actual}");
+        assert_eq!(actual["status"], Value::String("uninstalled".to_string()));
+        assert!(
+            actual["reason"].is_null(),
+            "una desinstalación completa no lleva reason: {actual}"
+        );
+        assert!(
+            !avi_tts::resident::resident_pid_alive(resident),
+            "el residente (pid {resident}) debe haber muerto antes del borrado"
+        );
+        assert!(
+            !port_open(port),
+            "el puerto {port} del residente no debe escuchar"
+        );
+        assert!(
+            !inst.dir.join("daemon.pid").exists(),
+            "la raíz de datos no debe conservar el pidfile"
+        );
+        assert!(
+            !inst.dir.join("logs").exists(),
+            "la raíz de datos no debe conservar los logs del motor"
+        );
+        hit_end("tts::self_uninstall_with_hot_resident_leaves_nothing_behind");
     }
 
     // La traducción solo existe con `native-translation`.

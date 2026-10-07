@@ -145,18 +145,21 @@ impl DaemonState {
                 Some(map)
             }
         };
+        // El mismo registro que escribe `daemon.pid` anota al residente del
+        // motor desde que nace.
+        let registry = Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir()));
         Ok(Self {
             synthesis_lock: Mutex::new(()),
             voice_store,
             speech_store,
-            tts_engine: Qwen3TtsEngine::new(None),
+            tts_engine: Qwen3TtsEngine::new(None, Some(registry.clone())),
             #[cfg(feature = "native-stt")]
             stt_engine,
             #[cfg(feature = "native-translation")]
             ct2_engine,
             warm: std::sync::RwLock::new(WarmState::Warming),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-            registry: Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir())),
+            registry,
         })
     }
 
@@ -2158,6 +2161,7 @@ pub async fn run_daemon_server(
     // auto-muerte del CLI (la guarda `pid != propio` del handler CLI protege al
     // `serve` en foreground; la carrera con el handler CLI se resuelve porque
     // ambos convergen en `tts_engine.shutdown()` + salida, sin pidfile).
+    let closing_state = state.clone();
     let shutdown = async move {
         #[cfg(unix)]
         let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -2187,9 +2191,16 @@ pub async fn run_daemon_server(
             }
         }
     };
-    axum::serve(listener, app)
+    let served = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown)
-        .await?;
+        .await;
+    // Cierre ordenado del motor en toda salida de `serve`, también ante un
+    // error: mata al residente y espera su muerte antes de terminar y antes de
+    // cualquier reinicio en proceso de `run_supervised`, que reescribe el
+    // registro sin residente. El warmup en segundo plano puede conservar el
+    // estado compartido, así que el cierre no depende de soltarlo.
+    closing_state.tts_engine.close();
+    served?;
     Ok(())
 }
 

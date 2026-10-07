@@ -98,17 +98,13 @@ fn sweep_removes_only_dead_pid_dirs() {
 /// Prepara una sola vez por proceso el entorno que comparten los dos estados:
 /// `AVI_DATA_DIR` apunta a la raíz temporal propia del proceso para que los
 /// logs del motor residente que lanza el clonado no caigan en el directorio de
-/// datos del usuario, y el motor residente escucha en un puerto efímero propio
-/// (`QWEN3_TTS_PORT`) para no chocar con el del daemon del usuario.
+/// datos del usuario y el registro del daemon (`daemon.pid`) no escriba en la
+/// raíz real. Cada residente que lanza el motor reserva su propio puerto
+/// efímero, así que no hay puerto que fijar.
 fn prepare_shared_env() {
     static PREPARED: Once = Once::new();
     PREPARED.call_once(|| {
         std::env::set_var("AVI_DATA_DIR", process_root().join("data"));
-        let tts_port = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|listener| listener.local_addr())
-            .expect("reservar un puerto efímero para el motor residente")
-            .port();
-        std::env::set_var("QWEN3_TTS_PORT", tts_port.to_string());
     });
 }
 

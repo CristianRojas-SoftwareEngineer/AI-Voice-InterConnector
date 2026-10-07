@@ -327,7 +327,7 @@ ai-voice-interconnector daemon status
 **Esperado**: `start` deja el daemon corriendo (`status` lo confirma), **exit 0**; `say --daemon` sintetiza con el modelo ya en memoria (más rápido que la vía directa), **exit 0**; `restart`/`stop` gestionan el ciclo de vida, **exit 0**. Un `--daemon` explícito contra un daemon inalcanzable sale con **exit 5**.
 
 **Cero huérfanos tras `stop`** (comprobación a nivel de SO): sin procesos
-`ai-voice-interconnector` ni `qwen_tts` residuales, puertos `8765`/`8766` cerrados y
+`ai-voice-interconnector` ni `qwen_tts` residuales, puerto `8765` y puerto del residente (el `resident_port` que anotaba `daemon.pid`) cerrados y
 `daemon.pid` sin PID vivo. El procedimiento usa los defaults (puerto 8765, `data_dir()` global);
 con `AVI_DAEMON_PORT=0` el puerto es efímero y con `AVI_DATA_DIR` el pidfile es por instancia
 (aislamiento de tests, no de este recorrido).

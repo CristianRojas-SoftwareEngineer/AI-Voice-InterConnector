@@ -11,6 +11,7 @@ use avi_process::registry::{
     PidFileObservation, Registered,
 };
 use avi_process::{pid_alive_exact, process_identity, ProcessIdentity};
+use avi_tts::ResidentRegistry;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -65,37 +66,6 @@ impl DaemonRegistry {
         self.write(&state)
     }
 
-    /// Registra al residente recién lanzado. Reescribe el pidfile completo con su
-    /// PID, su identidad y su puerto.
-    pub fn register_resident(
-        &self,
-        pid: u32,
-        identity: &ProcessIdentity,
-        port: u16,
-    ) -> anyhow::Result<()> {
-        let mut state = self.lock();
-        state.resident_pid = pid;
-        state.resident_identity = Some(identity.clone());
-        state.resident_port = Some(port);
-        self.write(&state)
-    }
-
-    /// Anula el registro del residente, solo si el registrado es `pid`. El fallo
-    /// de escritura no se propaga: se anula cuando el residente ya murió o se
-    /// descarta, y un registro obsoleto lo corrige el siguiente cambio.
-    pub fn unregister_resident(&self, pid: u32) {
-        let mut state = self.lock();
-        if state.resident_pid != pid {
-            return;
-        }
-        state.resident_pid = 0;
-        state.resident_identity = None;
-        state.resident_port = None;
-        if let Err(e) = self.write(&state) {
-            eprintln!("aviso: no se pudo actualizar daemon.pid al anular el residente: {e}");
-        }
-    }
-
     /// Rechaza el arranque si el pidfile registra a otro daemon vivo y nuestro.
     /// El propio PID no cuenta: un reinicio en proceso lo vería a sí mismo.
     fn ensure_no_live_peer(&self, own_pid: u32) -> anyhow::Result<()> {
@@ -129,6 +99,35 @@ impl DaemonRegistry {
     fn write(&self, state: &PidFile) -> anyhow::Result<()> {
         write_pid_file(&self.data_dir, state)
             .map_err(|e| anyhow::anyhow!("no se pudo escribir daemon.pid: {e}"))
+    }
+}
+
+/// El motor registra a su residente en el pidfile del daemon, que reescribe
+/// completo en cada cambio.
+impl ResidentRegistry for DaemonRegistry {
+    /// Anota al residente recién lanzado con su PID, su identidad y su puerto.
+    fn register(&self, pid: u32, identity: &ProcessIdentity, port: u16) -> anyhow::Result<()> {
+        let mut state = self.lock();
+        state.resident_pid = pid;
+        state.resident_identity = Some(identity.clone());
+        state.resident_port = Some(port);
+        self.write(&state)
+    }
+
+    /// Anula el registro del residente, solo si el registrado es `pid`. El fallo
+    /// de escritura no se propaga: se anula cuando el residente ya murió o se
+    /// descarta, y un registro obsoleto lo corrige el siguiente cambio.
+    fn unregister(&self, pid: u32) {
+        let mut state = self.lock();
+        if state.resident_pid != pid {
+            return;
+        }
+        state.resident_pid = 0;
+        state.resident_identity = None;
+        state.resident_port = None;
+        if let Err(e) = self.write(&state) {
+            eprintln!("aviso: no se pudo actualizar daemon.pid al anular el residente: {e}");
+        }
     }
 }
 
@@ -177,7 +176,7 @@ mod tests {
             start: "1".to_string(),
             image: "qwen_tts.exe".to_string(),
         };
-        registry.register_resident(4321, &resident, 40_000).unwrap();
+        registry.register(4321, &resident, 40_000).unwrap();
         assert_eq!(read(dir.path()).resident_pid, 4321);
 
         registry.register_daemon(&addr()).unwrap();
@@ -230,7 +229,7 @@ mod tests {
 
     /// Anular el residente solo limpia el registro si el PID coincide.
     #[test]
-    fn unregister_resident_requires_matching_pid() {
+    fn unregister_requires_matching_pid() {
         let dir = tempfile::TempDir::new().unwrap();
         let registry = DaemonRegistry::new(dir.path().to_path_buf());
         registry.register_daemon(&addr()).unwrap();
@@ -238,13 +237,13 @@ mod tests {
             start: "1".to_string(),
             image: "qwen_tts.exe".to_string(),
         };
-        registry.register_resident(4321, &resident, 40_000).unwrap();
+        registry.register(4321, &resident, 40_000).unwrap();
 
-        registry.unregister_resident(9999);
+        registry.unregister(9999);
         assert_eq!(read(dir.path()).resident_pid, 4321);
         assert_eq!(read(dir.path()).resident_port, Some(40_000));
 
-        registry.unregister_resident(4321);
+        registry.unregister(4321);
         let file = read(dir.path());
         assert_eq!(file.resident_pid, 0);
         assert_eq!(file.resident_identity, None);
@@ -263,7 +262,7 @@ mod tests {
             start: "1".to_string(),
             image: "qwen_tts.exe".to_string(),
         };
-        registry.register_resident(4321, &resident, 40_000).unwrap();
+        registry.register(4321, &resident, 40_000).unwrap();
         let file = read(dir.path());
         assert_eq!(file.pid, std::process::id());
         assert_eq!(file.identity, process_identity(std::process::id()));

@@ -42,7 +42,7 @@ leer el código ni haber estado en la sesión en que se diseñó.
   lanza el motor de síntesis.
 - **Vía daemon.** La CLI delega la operación en el daemon local (`127.0.0.1:8765`), que
   mantiene los modelos cargados y un motor de síntesis residente (`qwen_tts`, en
-  `127.0.0.1:8766`).
+  un puerto efímero de loopback).
 - **Modo automático.** La CLI decide la vía en cada invocación. Con `--daemon` se fuerza
   la vía daemon.
 - **Contrato.** Es el comportamiento documentado de la CLI:
@@ -699,7 +699,7 @@ el daemon `info`, que va a su log; si la variable está definida, manda en los d
 **Problema.** El daemon lanza el motor en dos modos: el residente, que vive
 indefinidamente, y el de clonado, que dura decenas de segundos y también se lanza desde
 la CLI. Si el daemon muere de forma abrupta, los dos siguen vivos; el residente, con el
-modelo en memoria y el puerto 8766 ocupado.
+modelo en memoria y su puerto ocupado.
 
 - **Windows.** Un Job Object debería impedirlo, pero una prueba de extremo a extremo vio
   sobrevivir al residente, y un fallo de ese mecanismo no deja rastro.

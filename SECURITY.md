@@ -65,7 +65,7 @@ limitada, pero conviene explicitar sus supuestos:
 ### Motor TTS residente
 
 - El motor de síntesis corre como proceso residente que escucha **únicamente en
-  `127.0.0.1`**, en el puerto 8766 o el de `QWEN3_TTS_PORT`. **No implementa
+  `127.0.0.1`**, en un puerto efímero que reserva cada arranque y el daemon anota en `daemon.pid`. **No implementa
   autenticación**: cualquier proceso local del mismo usuario puede sintetizar con él,
   enumerar las voces y usar las voces clonadas.
 - Lo lanzan el daemon (que lo mantiene caliente) y la CLI en modo `--no-daemon`
