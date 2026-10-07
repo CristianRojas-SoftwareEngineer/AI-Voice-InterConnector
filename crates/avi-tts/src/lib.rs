@@ -942,11 +942,100 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
     Ok(out_path)
 }
 
+/// Error al resolver la transcripción de la referencia de clonado. `E` es el
+/// error del transcriptor automático, que se propaga tal cual.
+#[derive(Debug)]
+pub enum ReferenceTextError<E> {
+    /// El texto aportado por el usuario está vacío o solo tiene espacios.
+    ProvidedEmpty,
+    /// La transcripción automática de la referencia no produjo texto.
+    TranscriptionEmpty,
+    /// El transcriptor automático falló.
+    Transcription(E),
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for ReferenceTextError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ProvidedEmpty => write!(f, "El texto de la referencia está vacío."),
+            Self::TranscriptionEmpty => write!(
+                f,
+                "La transcripción del audio de referencia está vacía; aporta el texto con --ref-text."
+            ),
+            Self::Transcription(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for ReferenceTextError<E> {}
+
+/// Resuelve la transcripción de la referencia de clonado. Un texto aportado no
+/// vacío se usa recortado sin invocar a `transcribe`; uno vacío o solo de espacios
+/// es un error (no se transcribe en su lugar). Sin texto aportado se invoca a
+/// `transcribe` y su resultado recortado debe ser no vacío. El transcriptor lo
+/// inyecta quien llama, de modo que este crate no depende del reconocimiento de voz.
+pub fn resolve_reference_text<E>(
+    provided: Option<&str>,
+    transcribe: impl FnOnce() -> std::result::Result<String, E>,
+) -> std::result::Result<String, ReferenceTextError<E>> {
+    match provided {
+        Some(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                Err(ReferenceTextError::ProvidedEmpty)
+            } else {
+                Ok(text.to_string())
+            }
+        }
+        None => {
+            let transcribed = transcribe().map_err(ReferenceTextError::Transcription)?;
+            let transcribed = transcribed.trim();
+            if transcribed.is_empty() {
+                Err(ReferenceTextError::TranscriptionEmpty)
+            } else {
+                Ok(transcribed.to_string())
+            }
+        }
+    }
+}
+
+/// Construye el argv del clonado, sin I/O real: programa más argumentos
+/// `-d <model_dir> --ref-audio <ref> --ref-text <texto> --save-voice <out>
+/// --voice-name <name> -l <language> --watch-stdin`. `--ref-text` hace que el
+/// motor produzca un `.qvoice` ICL que conserva la prosodia de la referencia.
+fn build_clone_command(
+    bin: &Path,
+    model_dir: &Path,
+    ref_wav: &Path,
+    ref_text: &str,
+    out_qvoice: &Path,
+    name: &str,
+    engine_language: &str,
+) -> (PathBuf, Vec<String>) {
+    let args = vec![
+        String::from("-d"),
+        model_dir.to_string_lossy().into_owned(),
+        String::from("--ref-audio"),
+        ref_wav.to_string_lossy().into_owned(),
+        String::from("--ref-text"),
+        ref_text.to_string(),
+        String::from("--save-voice"),
+        out_qvoice.to_string_lossy().into_owned(),
+        String::from("--voice-name"),
+        name.to_string(),
+        String::from("-l"),
+        engine_language.to_string(),
+        String::from("--watch-stdin"),
+    ];
+    (bin.to_path_buf(), args)
+}
+
 /// Clona una voz desde `ref_audio` (WAV de cualquier tasa/canales) a `out_qvoice`
-/// (`.qvoice` graft ICL) vía subprocess: `<bin> -d <model_dir> --ref-audio
-/// <ref> --save-voice <out> --voice-name <name> -l <language> --watch-stdin`, donde
-/// `language` es el token del producto (`es-latam`/`en`) y al motor se le pasa su
-/// nombre completo (`Spanish`/`English`). La referencia se
+/// (`.qvoice` ICL con la transcripción de la referencia) vía subprocess: `<bin> -d
+/// <model_dir> --ref-audio <ref> --ref-text <ref_text> --save-voice <out>
+/// --voice-name <name> -l <language> --watch-stdin`, donde `ref_text` es lo que
+/// dice la referencia, `language` es el token del producto (`es-latam`/`en`) y al
+/// motor se le pasa su nombre completo (`Spanish`/`English`). La referencia se
 /// normaliza antes a 24 kHz mono (requisito del motor). Propaga el error con el
 /// exit code del proceso. Si la referencia no se puede cargar (WAV inválido,
 /// truncado o fallo de lectura), el error conserva el `avi_audio::WavLoadError`
@@ -965,6 +1054,7 @@ pub fn clone_voice(
     out_qvoice: &Path,
     name: &str,
     language: &str,
+    ref_text: &str,
 ) -> Result<()> {
     // El idioma se valida primero: un token desconocido no debe llegar al motor.
     let engine_language = engine_language_name(language)?;
@@ -993,25 +1083,21 @@ pub fn clone_voice(
     // fichero al instante. La herencia queda restringida a la lista explícita
     // (tubería de entrada y fichero de registro).
     let status = (|| -> Result<std::process::ExitStatus> {
-        let args = vec![
-            String::from("-d"),
-            model_dir.as_ref().to_string_lossy().into_owned(),
-            String::from("--ref-audio"),
-            ref_wav.to_string_lossy().into_owned(),
-            String::from("--save-voice"),
-            out_qvoice.to_string_lossy().into_owned(),
-            String::from("--voice-name"),
-            name.to_string(),
-            String::from("-l"),
-            engine_language.to_string(),
-            String::from("--watch-stdin"),
-        ];
+        let (program, args) = build_clone_command(
+            &bin,
+            model_dir.as_ref(),
+            &ref_wav,
+            ref_text,
+            out_qvoice,
+            name,
+            engine_language,
+        );
         #[cfg(windows)]
         let creation_flags = avi_process::DETACHED_PROCESS;
         #[cfg(not(windows))]
         let creation_flags = 0u32;
         let request = avi_process::RestrictedSpawnRequest {
-            program: bin.clone(),
+            program,
             args,
             stdin: avi_process::StdinSpec::Piped,
             stderr_file: log_file.try_clone()?,
@@ -1832,6 +1918,94 @@ mod tests {
                 "el token `{}` debe rechazarse",
                 bad
             );
+        }
+    }
+
+    /// El argv de clonado lleva `--ref-text` con la transcripción tal cual (el
+    /// motor produce así un `.qvoice` ICL) junto al resto de flags, sin I/O real.
+    #[test]
+    fn build_clone_command_passes_ref_text_to_engine() {
+        let (program, args) = build_clone_command(
+            Path::new("qwen_tts.exe"),
+            Path::new("base"),
+            Path::new("ref24k.wav"),
+            "hola mundo",
+            Path::new("out.qvoice"),
+            "ana",
+            "Spanish",
+        );
+        assert_eq!(program, PathBuf::from("qwen_tts.exe"));
+        assert_eq!(
+            args,
+            vec![
+                "-d",
+                "base",
+                "--ref-audio",
+                "ref24k.wav",
+                "--ref-text",
+                "hola mundo",
+                "--save-voice",
+                "out.qvoice",
+                "--voice-name",
+                "ana",
+                "-l",
+                "Spanish",
+                "--watch-stdin",
+            ]
+        );
+    }
+
+    /// Un texto aportado no vacío se usa recortado y no invoca al transcriptor.
+    #[test]
+    fn resolve_reference_text_uses_provided_without_transcribing() {
+        let text = resolve_reference_text(Some("  hola mundo \n"), || -> Result<String, String> {
+            panic!("no debe transcribir cuando hay texto aportado")
+        })
+        .unwrap();
+        assert_eq!(text, "hola mundo");
+    }
+
+    /// Un texto aportado vacío o solo de espacios se rechaza y no cae a la
+    /// transcripción automática.
+    #[test]
+    fn resolve_reference_text_rejects_blank_provided() {
+        for blank in ["", "   ", "\t\n"] {
+            let result = resolve_reference_text(Some(blank), || -> Result<String, String> {
+                panic!("no debe transcribir cuando hay texto aportado")
+            });
+            assert!(
+                matches!(result, Err(ReferenceTextError::ProvidedEmpty)),
+                "`{blank:?}` debe ser ProvidedEmpty"
+            );
+        }
+    }
+
+    /// Sin texto aportado se usa la transcripción recortada.
+    #[test]
+    fn resolve_reference_text_transcribes_when_absent() {
+        let text =
+            resolve_reference_text(None, || Ok::<_, String>(" texto transcrito ".to_string()))
+                .unwrap();
+        assert_eq!(text, "texto transcrito");
+    }
+
+    /// Una transcripción vacía o solo de espacios es un error propio.
+    #[test]
+    fn resolve_reference_text_rejects_blank_transcription() {
+        let result = resolve_reference_text(None, || Ok::<_, String>("  ".to_string()));
+        assert!(matches!(
+            result,
+            Err(ReferenceTextError::TranscriptionEmpty)
+        ));
+    }
+
+    /// El error del transcriptor se propaga sin reinterpretarlo.
+    #[test]
+    fn resolve_reference_text_propagates_transcriber_error() {
+        let result = resolve_reference_text(None, || Err::<String, _>("fallo del STT".to_string()));
+        match result {
+            Err(ReferenceTextError::Transcription(e)) => assert_eq!(e, "fallo del STT"),
+            other => panic!("se esperaba Transcription, fue {other:?}"),
         }
     }
 

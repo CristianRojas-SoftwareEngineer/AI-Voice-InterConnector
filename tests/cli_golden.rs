@@ -1684,6 +1684,8 @@ fn clone_reference_zero_sample_rate_is_invalid_audio() {
                 "reference_rate0",
                 "--speech-reference",
                 wav.to_str().expect("ruta UTF-8"),
+                "--ref-text",
+                "texto de prueba",
             ],
             &envs,
         );
@@ -3364,6 +3366,8 @@ mod tts {
                 &name,
                 "--speech-reference",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--ref-text",
+                "texto de prueba",
             ],
             &inst.args(),
         );
@@ -3508,6 +3512,8 @@ mod tts {
                 &name,
                 "--speech-reference",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--ref-text",
+                "texto de prueba",
             ])
             .envs(envs)
             .stdin(std::process::Stdio::null())
@@ -3635,6 +3641,8 @@ mod tts {
                 &name,
                 "--speech-reference",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--ref-text",
+                "texto de prueba",
             ])
             .envs(envs)
             .stdin(std::process::Stdio::null())
@@ -3742,11 +3750,78 @@ mod tts {
                 &name,
                 "--speech-reference",
                 wav.to_str().unwrap(),
+                "--ref-text",
+                "texto de prueba",
             ],
             &a,
         );
         assert_eq!(code, 2, "referencia truncada → ExitCode::InvalidInput");
         assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
+    }
+
+    /// Un `--ref-text` vacío o solo de espacios es entrada inválida: sale con 2
+    /// y `empty_text` antes de cargar el audio o el motor.
+    #[test]
+    fn voice_clone_blank_ref_text_exits_2() {
+        let inst = IsolatedInstance::new("clone_blank_ref_text");
+        seed_pinned_models(
+            &inst.cache_dir(),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let a = inst.contract_args();
+        let name = unique_label("clone");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--ref-text",
+                "   ",
+            ],
+            &a,
+        );
+        assert_eq!(
+            code, 2,
+            "texto de referencia vacío → ExitCode::InvalidInput"
+        );
+        assert_eq!(actual["reason"], Value::String("empty_text".to_string()));
+    }
+
+    /// Sin soporte de transcripción y sin `--ref-text`, el clonado responde
+    /// `stt_unsupported` antes de lanzar el motor.
+    #[cfg(not(feature = "native-stt"))]
+    #[test]
+    fn voice_clone_without_ref_text_and_without_stt_is_unsupported() {
+        let inst = IsolatedInstance::new("clone_stt_unsupported");
+        seed_pinned_models(
+            &inst.cache_dir(),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let a = inst.contract_args();
+        let name = unique_label("clone");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &a,
+        );
+        assert_eq!(code, 1, "sin soporte STT → ExitCode::Error");
+        assert_eq!(
+            actual["reason"],
+            Value::String("stt_unsupported".to_string())
+        );
     }
 
     // ─── daemon start/status/restart ────────────────────────────────
@@ -5004,6 +5079,8 @@ mod tts {
                 &name,
                 "--speech-reference",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--ref-text",
+                "texto de prueba",
             ],
             &a,
         );
@@ -5049,6 +5126,8 @@ mod tts {
                 &name,
                 "--speech-reference",
                 wav.to_str().unwrap(),
+                "--ref-text",
+                "texto de prueba",
             ],
             &a,
         );
