@@ -75,6 +75,8 @@ fn lock_live(
 /// Opciones de generación para la síntesis de voz (API agnóstica del motor)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationOptions {
+    /// Idioma de destino en token del producto (`es-latam` o `en`); se traduce
+    /// al nombre que entiende el motor al construir la petición.
     pub language: String,
     pub temperature: f32,
     pub top_k: u32,
@@ -85,10 +87,26 @@ pub struct GenerationOptions {
     pub seed: Option<u64>,
 }
 
-impl Default for GenerationOptions {
-    fn default() -> Self {
+/// Traduce un token de idioma del producto al nombre completo que acepta el
+/// motor Qwen3-TTS. Cualquier otro token (incluido el código ISO `es`) es un
+/// error: nunca se cae a un idioma por defecto.
+pub fn engine_language_name(token: &str) -> Result<&'static str> {
+    match token {
+        "es-latam" => Ok("Spanish"),
+        "en" => Ok("English"),
+        other => Err(anyhow!(
+            "Idioma de síntesis no soportado: `{}` (se admite `es-latam` o `en`).",
+            other
+        )),
+    }
+}
+
+impl GenerationOptions {
+    /// Opciones con los defaults de muestreo del motor para el idioma de
+    /// destino indicado (token del producto).
+    pub fn new(language: &str) -> Self {
         Self {
-            language: "es".to_string(),
+            language: language.to_string(),
             temperature: DEFAULT_TEMPERATURE,
             top_k: DEFAULT_TOP_K,
             top_p: DEFAULT_TOP_P,
@@ -96,11 +114,9 @@ impl Default for GenerationOptions {
             seed: None,
         }
     }
-}
 
-impl GenerationOptions {
     /// Config de producción validada por oído: `temperature=0.35` y `seed=4`
-    /// fijo, resto de campos igual a `Default`. El `temperature=0` previo corría
+    /// fijo, resto de campos igual a `new`. El `temperature=0` previo corría
     /// el Talker en greedy argmax sobre un clon x-vector-only sin plantilla de
     /// prosodia, produciendo prosodia plana/extraña; 0.35 reactiva el muestreo
     /// estocástico (y vuelve efectivo el `seed`) preservando la naturalidad sin
@@ -113,18 +129,18 @@ impl GenerationOptions {
     /// similitud de hablante mínima 0.822 en PASS (target/seed-sweep/wer.csv,
     /// speaker_sim.csv). El seed 42 previo también pasa, pero seed 4 iguala la
     /// prosodia nativa de Windows sin depender de WSL.
-    pub fn production() -> Self {
+    pub fn production(language: &str) -> Self {
         Self {
             temperature: 0.35,
             seed: Some(4),
-            ..Self::default()
+            ..Self::new(language)
         }
     }
 
     /// Resuelve la temperatura opcional del CLI a opciones efectivas: sin flag
     /// se usa la config de producción; con flag se sobrescribe la temperatura.
-    pub fn with_temperature(temperature: Option<f32>) -> Self {
-        let mut opts = Self::production();
+    pub fn with_temperature(temperature: Option<f32>, language: &str) -> Self {
+        let mut opts = Self::production(language);
         if let Some(t) = temperature {
             opts.temperature = t;
         }
@@ -487,9 +503,10 @@ impl Qwen3TtsEngine {
         text: &str,
         voice: &str,
         temperature: Option<f32>,
+        language: &str,
         output_path: Option<&PathBuf>,
     ) -> Result<PathBuf> {
-        let options = GenerationOptions::with_temperature(temperature);
+        let options = GenerationOptions::with_temperature(temperature, language);
         let qvoice_path = avi_store::VoiceStore::new().find_reference(voice);
         let profile = VoiceProfile {
             name: voice.to_string(),
@@ -514,7 +531,7 @@ impl Qwen3TtsEngine {
         budget: Duration,
         cancel: &AtomicBool,
     ) -> Result<()> {
-        let body = build_tts_body(text, voice, options, prosody, emotion).to_string();
+        let body = build_tts_body(text, voice, options, prosody, emotion)?.to_string();
         let (status, bytes) = http_exchange(
             &format!("{}/v1/tts", server_url),
             "POST",
@@ -702,16 +719,17 @@ impl TtsEngine for Qwen3TtsEngine {
 }
 
 /// Construye el body HTTP de `POST /v1/tts`: sin `format` (el
-/// servidor lo ignora), claves solo-si-`Some`, y `speaker`/`language` omitidos
-/// cuando la voz es clonada (el servidor conserva la voz y el idioma del
-/// arranque, según el servidor).
+/// servidor lo ignora) y claves solo-si-`Some`. `language` lleva siempre el
+/// nombre del idioma que entiende el motor, tanto con preset como con voz
+/// clonada; `speaker` solo se emite con preset. Un idioma desconocido es error.
 pub(crate) fn build_tts_body(
     text: &str,
     voice: &VoiceEngine,
     options: &GenerationOptions,
     prosody: Option<&ProsodyOptions>,
     emotion: Option<&EmotionOptions>,
-) -> serde_json::Value {
+) -> Result<serde_json::Value> {
+    let language = engine_language_name(&options.language)?;
     let mut obj = serde_json::Map::new();
     obj.insert(
         "text".to_string(),
@@ -723,13 +741,13 @@ pub(crate) fn build_tts_body(
                 "speaker".to_string(),
                 serde_json::Value::String(speaker.clone()),
             );
-            obj.insert(
-                "language".to_string(),
-                serde_json::Value::String(options.language.clone()),
-            );
         }
         VoiceEngine::Cloned(_) => {}
     }
+    obj.insert(
+        "language".to_string(),
+        serde_json::Value::String(language.to_string()),
+    );
     obj.insert(
         "temperature".to_string(),
         serde_json::Value::from(options.temperature),
@@ -756,7 +774,7 @@ pub(crate) fn build_tts_body(
             obj.insert("emotion".to_string(), serde_json::Value::String(em.clone()));
         }
     }
-    serde_json::Value::Object(obj)
+    Ok(serde_json::Value::Object(obj))
 }
 
 /// La síntesis no respondió dentro de su presupuesto de tiempo (proporcional a
@@ -945,7 +963,9 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
 
 /// Clona una voz desde `ref_audio` (WAV de cualquier tasa/canales) a `out_qvoice`
 /// (`.qvoice` graft ICL) vía subprocess: `<bin> -d <model_dir> --ref-audio
-/// <ref> --save-voice <out> --voice-name <name> -l <language> --watch-stdin`. La referencia se
+/// <ref> --save-voice <out> --voice-name <name> -l <language> --watch-stdin`, donde
+/// `language` es el token del producto (`es-latam`/`en`) y al motor se le pasa su
+/// nombre completo (`Spanish`/`English`). La referencia se
 /// normaliza antes a 24 kHz mono (requisito del motor). Propaga el error con el
 /// exit code del proceso. Si la referencia no se puede cargar (WAV inválido,
 /// truncado o fallo de lectura), el error conserva el `avi_audio::WavLoadError`
@@ -965,6 +985,8 @@ pub fn clone_voice(
     name: &str,
     language: &str,
 ) -> Result<()> {
+    // El idioma se valida primero: un token desconocido no debe llegar al motor.
+    let engine_language = engine_language_name(language)?;
     // La referencia se carga antes de buscar el binario: un audio inválido se
     // rechaza sin depender de que el motor esté provisionado.
     let ref_wav = reference_24k_mono(ref_audio)?;
@@ -1000,7 +1022,7 @@ pub fn clone_voice(
             String::from("--voice-name"),
             name.to_string(),
             String::from("-l"),
-            language.to_string(),
+            engine_language.to_string(),
             String::from("--watch-stdin"),
         ];
         #[cfg(windows)]
@@ -1776,43 +1798,70 @@ mod tests {
     /// (config validada por oído) — este test queda intacto a propósito.
     #[test]
     fn default_generation_options_matches_engine() {
-        let d = GenerationOptions::default();
+        let d = GenerationOptions::new("en");
         assert_eq!(d.temperature, 0.5);
         assert_eq!(d.top_k, 50);
         assert_eq!(d.top_p, 1.0);
         assert_eq!(d.rep_penalty, 1.05);
-        assert_eq!(d.language, "es");
+        assert_eq!(d.language, "en");
         assert_eq!(d.seed, None);
     }
 
     /// `production()` fija temperatura y seed a la config validada por oído,
-    /// sin alterar el resto de campos respecto a `Default`.
+    /// sin alterar el resto de campos respecto a `new`, y conserva el idioma.
     #[test]
     fn generation_options_production_sets_temperature_and_seed() {
-        let p = GenerationOptions::production();
+        let p = GenerationOptions::production("es-latam");
         assert_eq!(p.temperature, 0.35);
         assert_eq!(p.seed, Some(4));
         assert_eq!(p.top_k, DEFAULT_TOP_K);
         assert_eq!(p.top_p, DEFAULT_TOP_P);
         assert_eq!(p.rep_penalty, DEFAULT_REP_PENALTY);
-        assert_eq!(p.language, "es");
+        assert_eq!(p.language, "es-latam");
     }
 
-    /// `with_temperature(None)` equivale a `production()`; con `Some` solo
+    /// `with_temperature(None, ..)` equivale a `production(..)`; con `Some` solo
     /// cambia la temperatura (bordes del rango válido incluidos).
     #[test]
     fn generation_options_with_temperature_resolves_override() {
-        let p = GenerationOptions::with_temperature(None);
+        let p = GenerationOptions::with_temperature(None, "en");
         assert_eq!(p.temperature, 0.35);
         assert_eq!(p.seed, Some(4));
-        let o = GenerationOptions::with_temperature(Some(0.9));
+        assert_eq!(p.language, "en");
+        let o = GenerationOptions::with_temperature(Some(0.9), "en");
         assert_eq!(o.temperature, 0.9);
         assert_eq!(o.seed, Some(4));
         assert_eq!(o.top_k, DEFAULT_TOP_K);
-        let min = GenerationOptions::with_temperature(Some(f32::MIN_POSITIVE));
+        let min = GenerationOptions::with_temperature(Some(f32::MIN_POSITIVE), "en");
         assert!(min.temperature > 0.0);
-        let max = GenerationOptions::with_temperature(Some(2.0));
+        let max = GenerationOptions::with_temperature(Some(2.0), "en");
         assert_eq!(max.temperature, 2.0);
+    }
+
+    /// El mapeo token del producto → nombre del motor solo admite `es-latam` y
+    /// `en`; cualquier otro token (incluido el código ISO `es`) es un error.
+    #[test]
+    fn engine_language_name_maps_product_tokens_and_rejects_others() {
+        assert_eq!(engine_language_name("es-latam").unwrap(), "Spanish");
+        assert_eq!(engine_language_name("en").unwrap(), "English");
+        for bad in ["es", "fr", "", "Spanish"] {
+            assert!(
+                engine_language_name(bad).is_err(),
+                "el token `{}` debe rechazarse",
+                bad
+            );
+        }
+    }
+
+    /// Un idioma desconocido hace fallar la construcción del body: nunca se
+    /// cae a un idioma por defecto.
+    #[test]
+    fn build_tts_body_rejects_unknown_language() {
+        let opts = GenerationOptions::new("fr");
+        let preset = VoiceEngine::Preset("ryan".to_string());
+        assert!(build_tts_body("Hola", &preset, &opts, None, None).is_err());
+        let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
+        assert!(build_tts_body("Hola", &cloned, &opts, None, None).is_err());
     }
 
     /// Argv exacto de arranque del residente (preset y voz clonada), sin
@@ -2165,18 +2214,29 @@ fn main() {
         );
     }
 
-    /// Body HTTP con defaults → claves exactas; voz clonada → sin speaker/language.
+    /// Body HTTP con defaults → claves exactas; voz clonada → sin speaker pero con
+    /// `language` en nombre del motor.
     /// Afirma los defaults del `struct`/motor sin cambios, no los valores de
-    /// producción de `GenerationOptions::production()` (config validada por oído) — el body HTTP
+    /// producción de `GenerationOptions::production(..)` (config validada por oído) — el body HTTP
     /// no transporta `int4`/`-j`/`--stream` (son flags de arranque de proceso).
     #[test]
     fn build_tts_body_defaults_and_cloned_voice() {
         let voice = VoiceEngine::Preset("ryan".to_string());
-        let body = build_tts_body("Hola", &voice, &GenerationOptions::default(), None, None);
+        let body = build_tts_body(
+            "Hola",
+            &voice,
+            &GenerationOptions::new("es-latam"),
+            None,
+            None,
+        )
+        .expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
         assert_eq!(obj.get("text").and_then(|v| v.as_str()), Some("Hola"));
         assert_eq!(obj.get("speaker").and_then(|v| v.as_str()), Some("ryan"));
-        assert_eq!(obj.get("language").and_then(|v| v.as_str()), Some("es"));
+        assert_eq!(
+            obj.get("language").and_then(|v| v.as_str()),
+            Some("Spanish")
+        );
         assert_eq!(obj.get("temperature").and_then(|v| v.as_f64()), Some(0.5));
         assert_eq!(obj.get("top_k").and_then(|v| v.as_u64()), Some(50));
         assert_eq!(obj.get("top_p").and_then(|v| v.as_f64()), Some(1.0));
@@ -2189,10 +2249,20 @@ fn main() {
         assert!(!obj.contains_key("emotion"));
 
         let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
-        let body = build_tts_body("Hola", &cloned, &GenerationOptions::default(), None, None);
+        let body = build_tts_body("Hola", &cloned, &GenerationOptions::new("en"), None, None)
+            .expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
         assert!(!obj.contains_key("speaker"), "voz clonada omite speaker");
-        assert!(!obj.contains_key("language"), "voz clonada omite language");
+        assert_eq!(
+            obj.get("language").and_then(|v| v.as_str()),
+            Some("English")
+        );
+        let body = build_tts_body("Hola", &voice, &GenerationOptions::new("en"), None, None)
+            .expect("el idioma es válido");
+        assert_eq!(
+            body.get("language").and_then(|v| v.as_str()),
+            Some("English")
+        );
 
         let prosody = ProsodyOptions {
             volume: Some(1.1),
@@ -2204,10 +2274,11 @@ fn main() {
         let body = build_tts_body(
             "Hola",
             &voice,
-            &GenerationOptions::default(),
+            &GenerationOptions::new("es-latam"),
             Some(&prosody),
             Some(&emotion),
-        );
+        )
+        .expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
         assert!((obj.get("volume").and_then(|v| v.as_f64()).unwrap() - 1.1).abs() < 1e-6);
         assert!((obj.get("rate").and_then(|v| v.as_f64()).unwrap() - 0.9).abs() < 1e-6);
@@ -2415,7 +2486,7 @@ fn main() {
     /// del motor (e9) y sus overrides. Afirma los defaults del `struct`/motor sin
     /// cambios, no los valores de producción de `GenerationOptions::production()`
     /// (config validada por oído) — este test invoca `synthesize_with_options` directamente con
-    /// `GenerationOptions::default()`, no `Qwen3TtsEngine::synthesize`.
+    /// `GenerationOptions::new(..)`, no `Qwen3TtsEngine::synthesize`.
     #[test]
     fn synthesize_http_sends_engine_defaults() {
         let body = Arc::new(Mutex::new(String::new()));
@@ -2428,7 +2499,12 @@ fn main() {
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("out.wav");
         let res = engine
-            .synthesize_with_options("Hola", &profile, &GenerationOptions::default(), Some(&out))
+            .synthesize_with_options(
+                "Hola",
+                &profile,
+                &GenerationOptions::new("es-latam"),
+                Some(&out),
+            )
             .expect("la síntesis HTTP simulada debe completarse");
         drop(handle);
         assert!(res.is_file());
@@ -2437,14 +2513,14 @@ fn main() {
         assert_eq!(parsed["top_p"], 1.0);
         assert_eq!(parsed["top_k"], 50);
         assert!((parsed["rep_penalty"].as_f64().unwrap() - 1.05).abs() < 1e-6);
-        assert_eq!(parsed["language"], "es");
+        assert_eq!(parsed["language"], "Spanish");
         assert_eq!(parsed["speaker"], "default");
         assert!(parsed.get("seed").is_none());
 
         let opts = GenerationOptions {
             temperature: 0.9,
             seed: Some(7),
-            ..Default::default()
+            ..GenerationOptions::new("es-latam")
         };
         let body = Arc::new(Mutex::new(String::new()));
         let (port, handle) = resident::simulate_server(body.clone());
@@ -2476,7 +2552,7 @@ fn main() {
                 &format!("http://127.0.0.1:{}", port),
                 "Hola",
                 &VoiceEngine::Preset("default".to_string()),
-                &GenerationOptions::default(),
+                &GenerationOptions::new("es-latam"),
                 None,
                 None,
                 &out,

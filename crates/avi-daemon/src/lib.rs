@@ -35,7 +35,7 @@ use base64::Engine;
 
 /// Idioma por defecto para `clone_voice` cuando la petición de clonado no
 /// transporta un idioma explícito.
-const DEFAULT_CLONE_LANGUAGE: &str = "es";
+const DEFAULT_CLONE_LANGUAGE: &str = "es-latam";
 
 /// Estado de pre-calentamiento (warmup) del motor TTS. Desacoplado del readiness:
 /// el daemon sirve en cuanto enlaza; `warm` refleja el warmup en curso o el
@@ -655,7 +655,7 @@ async fn synthesize_handler(
         };
         // Sin flag se usa la config de producción (temperature=0.35); con flag
         // se sobrescribe la temperatura ya validada.
-        let options = GenerationOptions::with_temperature(temperature);
+        let options = GenerationOptions::with_temperature(temperature, &target_owned);
         // Guardián del temporal: su dueño es el trabajo que escribe en él, no el
         // ámbito del handler. La propiedad pasa al `job` bloqueante y solo vuelve
         // al handler en el éxito, para que lea el WAV ya sintetizado y lo borre al
@@ -1646,7 +1646,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
             let budget = avi_core::synthesis_budget(final_text.chars().count());
             let text_synth = final_text.clone();
             let synth_state = state.clone();
-            let synth_options = GenerationOptions::with_temperature(temperature);
+            let synth_options = GenerationOptions::with_temperature(temperature, "es-latam");
             let job = move |cancel: Arc<std::sync::atomic::AtomicBool>| {
                 // Reloj de trabajo tomado dentro del trabajo, ya con el lock: mide
                 // solo la fase de síntesis, no transcribe/translate ni la cola.
@@ -1853,7 +1853,7 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
                 .synthesize_with_options(
                     "Calentamiento del daemon.",
                     &profile,
-                    &GenerationOptions::production(),
+                    &GenerationOptions::production("es-latam"),
                     Some(tmp.path()),
                 )
                 .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e))

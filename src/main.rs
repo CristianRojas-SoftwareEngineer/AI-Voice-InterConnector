@@ -1243,8 +1243,9 @@ async fn handle_voice(
                 .tempfile()
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
                 .into_temp_path();
-            let cloned = avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es")
-                .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
+            let cloned =
+                avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name, "es-latam")
+                    .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
             let saved_qvoice = cloned.map_err(|e| {
                 // Una referencia ilegible se clasifica igual que en transcripción.
                 match e.downcast_ref::<avi_audio::WavLoadError>() {
@@ -1777,7 +1778,13 @@ async fn handle_speech(
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             engine
-                .synthesize_with_temperature(&final_text, &voice, temperature, Some(&tmp_wav))
+                .synthesize_with_temperature(
+                    &final_text,
+                    &voice,
+                    temperature,
+                    &target_language,
+                    Some(&tmp_wav),
+                )
                 .map_err(synthesis_cli_error)?;
 
             let saved = if play {
@@ -1796,6 +1803,7 @@ async fn handle_speech(
                                 &final_text,
                                 &voice,
                                 temperature,
+                                &target_language,
                                 Some(&tmp_wav),
                             )
                             .map_err(synthesis_cli_error)?;
@@ -1879,7 +1887,13 @@ async fn handle_speech(
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             engine
-                .synthesize_with_temperature(&final_text, &voice, temperature, Some(tmp_wav.path()))
+                .synthesize_with_temperature(
+                    &final_text,
+                    &voice,
+                    temperature,
+                    &target_language,
+                    Some(tmp_wav.path()),
+                )
                 .map_err(synthesis_cli_error)?;
             // Divergencia 5 corregida: `say` reproduce de verdad.
             audio::AudioService::new()
@@ -2109,6 +2123,7 @@ async fn handle_speech(
                         &final_text,
                         &voice,
                         temperature,
+                        &target_language,
                         Some(tmp_wav.path()),
                     )
                     .map_err(synthesis_cli_error)?;
