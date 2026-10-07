@@ -496,25 +496,6 @@ impl Qwen3TtsEngine {
         }
     }
 
-    /// Síntesis con temperatura opcional del CLI: sin flag usa la config de
-    /// producción; con flag sobrescribe la temperatura (ya validada en el CLI).
-    pub fn synthesize_with_temperature(
-        &self,
-        text: &str,
-        voice: &str,
-        temperature: Option<f32>,
-        language: &str,
-        output_path: Option<&PathBuf>,
-    ) -> Result<PathBuf> {
-        let options = GenerationOptions::with_temperature(temperature, language);
-        let qvoice_path = avi_store::VoiceStore::new().find_reference(voice)?;
-        let profile = VoiceProfile {
-            name: voice.to_string(),
-            qvoice_path,
-        };
-        self.synthesize_with_options(text, &profile, &options, output_path)
-    }
-
     /// Intentar la síntesis vía HTTP local (servidor manual o residente). El
     /// `budget` es el plazo total del `POST`; si vence, el error devuelto
     /// envuelve `SynthesisTimeout`, y si se activa `cancel`, `SynthesisCancelled`.

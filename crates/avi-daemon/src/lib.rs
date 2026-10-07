@@ -540,6 +540,21 @@ async fn synthesize_handler(
             }
         }
 
+        // El idioma de destino debe ser un token del producto: se rechaza aquí,
+        // antes de llegar al motor, con el mismo error de uso que la temperatura.
+        if let Err(e) = avi_tts::engine_language_name(&target_owned) {
+            emit_ndjson(
+                &tx,
+                json!({
+                    "event": "error",
+                    "reason": "usage_error",
+                    "message": e.to_string(),
+                }),
+            )
+            .await;
+            return;
+        }
+
         // Provisionamiento del motor: si binario/modelo no se resolvieron, la rama
         // `model_missing` es el contrato aceptado en entornos sin motor
         // (en el daemon real corre desde la raíz del repo, donde sí resuelve).
@@ -859,6 +874,17 @@ fn resolve_stt_language(token: &str) -> &str {
 fn resolve_translation_language(token: &str) -> &str {
     match token {
         "es-latam" => "es",
+        other => other,
+    }
+}
+
+/// Token de idioma del producto para sintetizar a partir del destino de un
+/// doblaje: el código ISO `es` (valor por defecto del destino) equivale a
+/// `es-latam`; cualquier otro valor pasa tal cual y lo valida el motor.
+#[cfg(feature = "native-stt")]
+fn synthesis_language_token(raw: &str) -> &str {
+    match raw {
+        "es" => "es-latam",
         other => other,
     }
 }
@@ -1408,6 +1434,22 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
         )
             .into_response();
     }
+    // Idioma de la síntesis: el destino de la orden como token del producto. Un
+    // destino que el motor no admite se rechaza antes de transcribir.
+    #[cfg(feature = "native-stt")]
+    let synthesis_language = synthesis_language_token(to_raw).to_string();
+    #[cfg(feature = "native-stt")]
+    if let Err(e) = avi_tts::engine_language_name(&synthesis_language) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(with_sv(json!({
+                "status": "error",
+                "reason": "usage_error",
+                "message": e.to_string(),
+            }))),
+        )
+            .into_response();
+    }
     #[cfg(feature = "native-stt")]
     let needs_translation = source_iso != target_iso;
     #[cfg(feature = "native-stt")]
@@ -1676,7 +1718,8 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
             let budget = avi_core::synthesis_budget(final_text.chars().count());
             let text_synth = final_text.clone();
             let synth_state = state.clone();
-            let synth_options = GenerationOptions::with_temperature(temperature, "es-latam");
+            let synth_options =
+                GenerationOptions::with_temperature(temperature, &synthesis_language);
             let job = move |cancel: Arc<std::sync::atomic::AtomicBool>| {
                 // Reloj de trabajo tomado dentro del trabajo, ya con el lock: mide
                 // solo la fase de síntesis, no transcribe/translate ni la cola.
@@ -1882,6 +1925,7 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
     // en cola contra tráfico vivo.
     let work_t0 = std::time::Instant::now();
     // El WAV de calentamiento tiene dueño: se borra al salir, también si falla.
+    // El texto de calentamiento es fijo y en español: el idioma es siempre `es-latam`.
     let result = avi_shared::TempWav::new("avi_daemon_warmup_")
         .map_err(|e| anyhow::anyhow!("No se pudo reservar el WAV de calentamiento: {}", e))
         .and_then(|tmp| {
@@ -2424,6 +2468,17 @@ pub async fn run_supervised(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// El destino de un doblaje llega al motor como token del producto: el ISO
+    /// `es` por defecto equivale a `es-latam` y `en` pasa intacto.
+    #[cfg(feature = "native-stt")]
+    #[test]
+    fn dub_target_maps_to_product_synthesis_token() {
+        assert_eq!(synthesis_language_token("es"), "es-latam");
+        assert_eq!(synthesis_language_token("es-latam"), "es-latam");
+        assert_eq!(synthesis_language_token("en"), "en");
+        assert_eq!(synthesis_language_token("fr"), "fr");
+    }
 
     /// `Warming` → `Warm`: la etiqueta cambia y no hay causa de error.
     #[test]

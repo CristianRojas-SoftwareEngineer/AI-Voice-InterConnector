@@ -12,7 +12,7 @@ use avi_store as store;
 use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::EngineHolder;
-use avi_tts::Qwen3TtsEngine;
+use avi_tts::{Qwen3TtsEngine, TtsEngine};
 // El motor de traducción real solo entra en scope con `native-translation`.
 #[cfg(feature = "native-translation")]
 use avi_translation as translation;
@@ -94,6 +94,31 @@ fn synthesis_cli_error(e: anyhow::Error) -> CliError {
         "synthesis_error"
     };
     CliError::new(ExitCode::Error, reason, e.to_string())
+}
+
+/// Síntesis directa de una voz del almacén del comando: resuelve su referencia
+/// clonada y pide al motor el idioma de destino (token del producto) con la
+/// temperatura opcional ya validada.
+fn synthesize_voice_directly(
+    engine: &Qwen3TtsEngine,
+    voice_store: &VoiceStore,
+    text: &str,
+    voice: &str,
+    temperature: Option<f32>,
+    language: &str,
+    output_path: &PathBuf,
+) -> Result<PathBuf, CliError> {
+    let qvoice_path = voice_store
+        .find_reference(voice)
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    let profile = avi_tts::VoiceProfile {
+        name: voice.to_string(),
+        qvoice_path,
+    };
+    let options = avi_tts::GenerationOptions::with_temperature(temperature, language);
+    engine
+        .synthesize_with_options(text, &profile, &options, Some(output_path))
+        .map_err(synthesis_cli_error)
 }
 
 /// Valida el override de temperatura (`0 < t <= 2.0`); exit 2 si no calza.
@@ -1777,15 +1802,15 @@ async fn handle_speech(
             let engine = Qwen3TtsEngine::new(None, None);
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
-            engine
-                .synthesize_with_temperature(
-                    &final_text,
-                    &voice,
-                    temperature,
-                    &target_language,
-                    Some(&tmp_wav),
-                )
-                .map_err(synthesis_cli_error)?;
+            synthesize_voice_directly(
+                &engine,
+                &voice_store,
+                &final_text,
+                &voice,
+                temperature,
+                &target_language,
+                &tmp_wav,
+            )?;
 
             let saved = if play {
                 // RF-12.3–12.5: bucle interactivo, reemplaza la reproducción y
@@ -1798,15 +1823,15 @@ async fn handle_speech(
                     &final_text,
                     tmp_wav.clone(),
                     || async {
-                        engine
-                            .synthesize_with_temperature(
-                                &final_text,
-                                &voice,
-                                temperature,
-                                &target_language,
-                                Some(&tmp_wav),
-                            )
-                            .map_err(synthesis_cli_error)?;
+                        synthesize_voice_directly(
+                            &engine,
+                            &voice_store,
+                            &final_text,
+                            &voice,
+                            temperature,
+                            &target_language,
+                            &tmp_wav,
+                        )?;
                         Ok(tmp_wav.clone())
                     },
                 )
@@ -1886,15 +1911,15 @@ async fn handle_speech(
             let engine = Qwen3TtsEngine::new(None, None);
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
-            engine
-                .synthesize_with_temperature(
-                    &final_text,
-                    &voice,
-                    temperature,
-                    &target_language,
-                    Some(tmp_wav.path()),
-                )
-                .map_err(synthesis_cli_error)?;
+            synthesize_voice_directly(
+                &engine,
+                &voice_store,
+                &final_text,
+                &voice,
+                temperature,
+                &target_language,
+                tmp_wav.path(),
+            )?;
             // Divergencia 5 corregida: `say` reproduce de verdad.
             audio::AudioService::new()
                 .play_wav(tmp_wav.path())
@@ -2118,15 +2143,15 @@ async fn handle_speech(
                 let tmp_wav = avi_shared::TempWav::new("avi_dub_")
                     .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
                 let engine = Qwen3TtsEngine::new(None, None);
-                engine
-                    .synthesize_with_temperature(
-                        &final_text,
-                        &voice,
-                        temperature,
-                        &target_language,
-                        Some(tmp_wav.path()),
-                    )
-                    .map_err(synthesis_cli_error)?;
+                synthesize_voice_directly(
+                    &engine,
+                    &voice_store,
+                    &final_text,
+                    &voice,
+                    temperature,
+                    &target_language,
+                    tmp_wav.path(),
+                )?;
                 audio::AudioService::new()
                     .play_wav(tmp_wav.path())
                     .map_err(|e| {

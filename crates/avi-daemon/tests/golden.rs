@@ -1093,18 +1093,44 @@ fn new_temp_wav(prefix: &str, previous: &[PathBuf]) -> PathBuf {
 
 /// Motor TTS falso que responde `200` con un WAV en el `POST /v1/tts`: fija el
 /// camino feliz de la fase, donde el guardián vuelve del trabajo al handler y lo
-/// borra cuando este ya leyó el fichero. Devuelve el puerto y el hilo.
-fn serve_tts_wav(wav: Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
+/// borra cuando este ya leyó el fichero. Devuelve el puerto y el hilo, que al
+/// terminar entrega el cuerpo JSON de la petición recibida (`null` si no llegó).
+fn serve_tts_wav(wav: Vec<u8>) -> (u16, std::thread::JoinHandle<Value>) {
     let listener =
         std::net::TcpListener::bind("127.0.0.1:0").expect("puerto libre para el motor falso");
     let port = listener.local_addr().expect("puerto local").port();
     let server = std::thread::spawn(move || {
         use std::io::{Read, Write};
         let Ok((mut stream, _)) = listener.accept() else {
-            return;
+            return Value::Null;
         };
+        // Lee hasta tener la cabecera y los `Content-Length` bytes del cuerpo.
+        let mut request = Vec::new();
         let mut chunk = [0u8; 4096];
-        let _ = stream.read(&mut chunk);
+        let body = loop {
+            let Ok(n) = stream.read(&mut chunk) else {
+                break Value::Null;
+            };
+            if n == 0 {
+                break Value::Null;
+            }
+            request.extend_from_slice(&chunk[..n]);
+            let text = String::from_utf8_lossy(&request).into_owned();
+            let Some((head, body)) = text.split_once("\r\n\r\n") else {
+                continue;
+            };
+            let length = head
+                .lines()
+                .find_map(|l| {
+                    let (name, value) = l.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            if body.len() >= length {
+                break serde_json::from_str(body).unwrap_or(Value::Null);
+            }
+        };
         let head = format!(
             "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             wav.len()
@@ -1112,6 +1138,7 @@ fn serve_tts_wav(wav: Vec<u8>) -> (u16, std::thread::JoinHandle<()>) {
         let _ = stream.write_all(head.as_bytes());
         let _ = stream.write_all(&wav);
         let _ = stream.flush();
+        body
     });
     (port, server)
 }
@@ -1271,7 +1298,11 @@ async fn synthesize_result_delivers_the_file_the_engine_wrote() {
         ),
     )
     .await;
-    server.join().expect("el motor falso cierra su hilo");
+    let engine_body = server.join().expect("el motor falso cierra su hilo");
+    assert_eq!(
+        engine_body["language"], "Spanish",
+        "sin idioma explícito el motor recibe el por defecto del producto: {engine_body:?}"
+    );
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
     let events: Vec<Value> = text
@@ -1293,6 +1324,53 @@ async fn synthesize_result_delivers_the_file_the_engine_wrote() {
         residue.is_empty(),
         "la ruta feliz tampoco debe dejar temporal: {residue:?}"
     );
+}
+
+/// El idioma de destino de la orden llega al motor como su nombre completo:
+/// `es-latam` → `Spanish` y `en` → `English`.
+#[tokio::test]
+async fn synthesize_sends_the_target_language_to_the_engine() {
+    let _temporaries = lock_temporaries().await;
+    for (token, expected) in [("es-latam", "Spanish"), ("en", "English")] {
+        let (port, server) = serve_tts_wav(silent_wav(1));
+        let state = state_with_held_tts(port, "avi_golden_language");
+        let (status, _) = send_to(
+            state,
+            post_json(
+                "/synthesize",
+                serde_json::json!({
+                    "text": "hola", "voice": "ryan", "target_language": token
+                }),
+            ),
+        )
+        .await;
+        let engine_body = server.join().expect("el motor falso cierra su hilo");
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            engine_body["language"], expected,
+            "token `{token}`: cuerpo recibido por el motor {engine_body:?}"
+        );
+    }
+}
+
+/// Un idioma de destino que no es token del producto (incluido el ISO `es`) se
+/// rechaza como `usage_error` antes de llegar al motor.
+#[tokio::test]
+async fn synthesize_invalid_target_language_is_usage_error() {
+    let (status, bytes) = send(post_json(
+        "/synthesize",
+        serde_json::json!({ "text": "hola", "voice": "default", "target_language": "es" }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let final_event: Value = text
+        .lines()
+        .rfind(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .expect("debe haber al menos un evento");
+    assert_eq!(final_event["event"], "error");
+    assert_eq!(final_event["reason"], "usage_error");
 }
 
 /// Al abandonar la fase por desconexión el WAV temporal sigue siendo del
