@@ -1037,7 +1037,7 @@ pub fn clone_voice(
 }
 
 /// Servidor residente del motor Qwen3-TTS: spawn perezoso con
-/// `--serve <puerto> --host 127.0.0.1 --int4 -j 4 --stream --watch-stdin [--load-voice <qvoice> --icl-only]`,
+/// `--serve <puerto> --host 127.0.0.1 -j 4 --stream --watch-stdin [--load-voice <qvoice> --icl-only]`,
 /// healthcheck `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 /// El residente guarda abierto el extremo de escritura de la tubería de entrada
 /// del motor; si el daemon muere de forma abrupta, la tubería se cierra y el
@@ -1106,8 +1106,10 @@ pub mod resident {
 
     /// Construye el argv de arranque del residente, sin I/O real:
     /// programa más argumentos `-d <model_dir> --serve <port> --host 127.0.0.1
-    /// --int4 -j 4 --stream --watch-stdin [--load-voice <qvoice> --icl-only]`.
+    /// -j 4 --stream --watch-stdin [--load-voice <qvoice> --icl-only]`.
     /// `--watch-stdin` hace que el motor termine al cerrarse su entrada estándar.
+    /// No lleva `--int4`: en el modelo 0.6B cuantiza el code predictor y el
+    /// residente deja de ser determinista, con salidas truncadas.
     pub(crate) fn build_resident_command(
         bin: &Path,
         model_dir: &Path,
@@ -1121,7 +1123,6 @@ pub mod resident {
             port.to_string(),
             String::from("--host"),
             crate::RESIDENT_HOST.to_string(),
-            String::from("--int4"),
             String::from("-j"),
             String::from("4"),
             String::from("--stream"),
@@ -1847,9 +1848,10 @@ mod tests {
 
     /// Argv exacto de arranque del residente (preset y voz clonada), sin
     /// I/O real de proceso — cierra un hueco de cobertura que ningún test de
-    /// integración ejercitaba.
+    /// integración ejercitaba. Sin `--int4`: en el modelo 0.6B cuantiza el code
+    /// predictor y la misma petición deja de ser determinista y sale truncada.
     #[test]
-    fn build_resident_command_includes_int4_threads_stream() {
+    fn build_resident_command_has_threads_and_stream_without_int4() {
         let (program, args) = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
             Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
@@ -1866,7 +1868,6 @@ mod tests {
                 "45123",
                 "--host",
                 "127.0.0.1",
-                "--int4",
                 "-j",
                 "4",
                 "--stream",
@@ -1890,7 +1891,6 @@ mod tests {
                 "45123",
                 "--host",
                 "127.0.0.1",
-                "--int4",
                 "-j",
                 "4",
                 "--stream",
@@ -1943,7 +1943,6 @@ mod tests {
             .arg(port.to_string())
             .arg("--host")
             .arg("127.0.0.1")
-            .arg("--int4")
             .arg("-j")
             .arg("4");
         if watch_stdin {
@@ -2199,7 +2198,7 @@ fn main() {
     /// `language` en nombre del motor.
     /// Afirma los defaults del `struct`/motor sin cambios, no los valores de
     /// producción de `GenerationOptions::production(..)` (config validada por oído) — el body HTTP
-    /// no transporta `int4`/`-j`/`--stream` (son flags de arranque de proceso).
+    /// no transporta `-j`/`--stream` (son flags de arranque de proceso).
     #[test]
     fn build_tts_body_defaults_and_cloned_voice() {
         let voice = VoiceEngine::Preset("ryan".to_string());
