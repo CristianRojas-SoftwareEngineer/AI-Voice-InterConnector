@@ -87,6 +87,46 @@ fn listed_handle_reaches_the_child() {
     );
 }
 
+/// Un hijo lanzado con `StdinSpec::Piped` lee su entrada hasta el fin de
+/// fichero y termina cuando el padre suelta el `RestrictedChild`: el único
+/// extremo de escritura vivo es el que retiene el padre. El hijo deja un
+/// testigo al ver el fin de fichero y la espera es un sondeo acotado.
+#[cfg(windows)]
+#[test]
+fn piped_child_sees_eof_when_the_child_handle_is_dropped() {
+    let temp_dir = tempfile::tempdir().expect("debe crear el directorio temporal");
+    let witness = temp_dir.path().join("eof.txt");
+    let script = format!(
+        "[Console]::In.ReadToEnd() | Out-Null; Set-Content -Path '{}' -Value 'eof'",
+        witness.display()
+    );
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let request = avi_process::RestrictedSpawnRequest {
+        program: PathBuf::from("powershell"),
+        args: vec![String::from("-NoProfile"), String::from("-Command"), script],
+        stdin: avi_process::StdinSpec::Piped,
+        stderr_file: log_file.try_clone().expect("debe clonar el registro"),
+        stdout_file: log_file,
+        creation_flags: 0,
+        extra_allowed: Vec::new(),
+    };
+    let mut child = avi_process::spawn_with_allowlist(request).expect("debe lanzar al hijo");
+    assert!(
+        child.try_wait().expect("debe consultar al hijo").is_none(),
+        "con el extremo de escritura retenido el hijo no debe terminar"
+    );
+
+    drop(child);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !witness.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "el hijo no vio fin de fichero tras soltarse el RestrictedChild"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
 /// Lanza un hijo que sondea el extremo de lectura de una tubería creada por el
 /// padre y devuelve el testigo que escribe (`eof`, `open` o `closed`).
 /// `listed` indica si ese extremo entra en `extra_allowed`.

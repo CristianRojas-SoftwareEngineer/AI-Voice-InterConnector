@@ -442,24 +442,23 @@ fn open_null_handle() -> io::Result<isize> {
 
 #[cfg(windows)]
 fn create_stdin_pipe() -> io::Result<(isize, isize)> {
-    use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::System::Pipes::CreatePipe;
-    // SAFETY: los atributos piden handles heredables; tras crearla, el
-    // extremo de escritura se desmarca para que solo el de lectura viaje al
-    // hijo mediante la allowlist.
+    // SAFETY: los atributos piden handles no heredables, de modo que ningún
+    // extremo es heredable ni un instante tras crearse (otro hilo que lance un
+    // proceso con herencia no puede capturar el de escritura). La herencia del
+    // extremo de lectura la concede solo la lista de handles del lanzamiento.
     unsafe {
         let attributes = SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: std::ptr::null_mut(),
-            bInheritHandle: 1,
+            bInheritHandle: 0,
         };
         let mut read = 0isize;
         let mut write = 0isize;
         if CreatePipe(&mut read, &mut write, &attributes, 0) == 0 {
             return Err(io::Error::last_os_error());
         }
-        SetHandleInformation(write, HANDLE_FLAG_INHERIT, 0);
         Ok((read, write))
     }
 }
@@ -587,7 +586,35 @@ pub(crate) fn quote_arg(arg: &str) -> String {
 
 #[cfg(all(test, windows))]
 mod tests {
-    use super::quote_arg;
+    use super::{create_stdin_pipe, quote_arg};
+    use windows_sys::Win32::Foundation::{CloseHandle, GetHandleInformation, HANDLE_FLAG_INHERIT};
+
+    /// Ningún extremo de la tubería de vida nace heredable: así el de
+    /// escritura no puede filtrarse a un proceso lanzado por otro hilo, y el
+    /// de lectura solo viaja al hijo por la lista de handles del lanzamiento.
+    #[test]
+    fn stdin_pipe_ends_are_not_inheritable() {
+        let (read, write) = create_stdin_pipe().expect("debe crear la tubería");
+        let mut read_flags = 0u32;
+        let mut write_flags = 0u32;
+        // SAFETY: ambos handles son propios y válidos hasta el cierre.
+        unsafe {
+            assert_ne!(GetHandleInformation(read, &mut read_flags), 0);
+            assert_ne!(GetHandleInformation(write, &mut write_flags), 0);
+            CloseHandle(read);
+            CloseHandle(write);
+        }
+        assert_eq!(
+            write_flags & HANDLE_FLAG_INHERIT,
+            0,
+            "el extremo de escritura no debe ser heredable"
+        );
+        assert_eq!(
+            read_flags & HANDLE_FLAG_INHERIT,
+            0,
+            "el extremo de lectura no debe ser heredable fuera del lanzamiento"
+        );
+    }
 
     /// Todo argumento se cita siempre entre comillas, incluso sin espacios:
     /// una ruta sin cita se reinterpretaría al partir la línea de comandos.
