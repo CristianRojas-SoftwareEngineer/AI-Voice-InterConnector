@@ -31,6 +31,9 @@
 //! declara que este crate no tiene.
 
 use crate::LifecycleError;
+use avi_process::registry::{
+    observe_pid_file, parse_ready_record, pid_path, PidFile, PidFileObservation, READY_FILE,
+};
 pub use avi_process::ProcessIdentity;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -58,119 +61,9 @@ pub const DEFAULT_ADDR: &str = "127.0.0.1:8765";
 /// nombra por su cuenta.
 pub const DAEMON_PORT_ENV: &str = "AVI_DAEMON_PORT";
 
-/// Nombre del pidfile dentro de la raíz de datos.
-pub const PID_FILE: &str = "daemon.pid";
-
-/// Nombre del fichero ready dentro de la raíz de datos: el daemon publica en él
-/// su dirección real y su PID cuando está listo.
-pub const READY_FILE: &str = "daemon.ready";
-
-/// Ruta del pidfile bajo la raíz de datos.
-pub fn pid_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(PID_FILE)
-}
-
 /// Ruta del pidfile con las raíces ya resueltas.
 pub fn pid_path_default() -> PathBuf {
     pid_path(&crate::data_dir())
-}
-
-/// Contenido del pidfile tal como está en disco. El esquema es plano a propósito:
-/// un binario antiguo tiene que poder leerlo y un binario nuevo tiene que poder
-/// ignorarlo sin romper, con el mismo criterio que el recibo.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct PidFile {
-    pub pid: u32,
-    /// Dirección **real** publicada por el hijo en el fichero ready: con puerto
-    /// efímero difiere de la literal.
-    #[serde(default)]
-    pub addr: Option<String>,
-    #[serde(default)]
-    pub started_at: Option<String>,
-    /// El daemon lo actualiza en disco al arrancar el residente
-    /// (`start_resident`); al arrancar solo se conoce el PID del daemon.
-    #[serde(default)]
-    pub resident_pid: u32,
-    /// Identidad del proceso del daemon observada al registrarlo. Es
-    /// obligatoria en el esquema: un fichero sin ella es ilegible y se
-    /// descarta al leer, no se degrada a «PID solo».
-    pub identity: Option<ProcessIdentity>,
-    /// Identidad del residente observada al registrarlo, con el mismo
-    /// criterio: sin ella, la clave tiene que estar (`null`) y el
-    /// residente no se trata como nuestro.
-    pub resident_identity: Option<ProcessIdentity>,
-}
-
-/// Escribe el pidfile de forma atómica: temporal hermano y renombrado. El handler
-/// Ctrl+C no depende solo de él —también lleva el PID en memoria—, pero la escritura
-/// tardía y atómica es lo que evita que un lector vea medio JSON.
-pub fn write_pid(
-    data_dir: &Path,
-    pid: u32,
-    addr: &str,
-    resident_pid: u32,
-    identity: ProcessIdentity,
-) -> anyhow::Result<()> {
-    let path = pid_path(data_dir);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let content = serde_json::to_string_pretty(&PidFile {
-        pid,
-        addr: Some(addr.to_string()),
-        started_at: Some(crate::receipt::now_rfc3339()),
-        resident_pid,
-        identity: Some(identity),
-        resident_identity: None,
-    })?;
-    let temp = path.with_extension("pid.tmp");
-    std::fs::write(&temp, content.as_bytes())?;
-    match std::fs::rename(&temp, &path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp);
-            Err(e.into())
-        }
-    }
-}
-
-/// Desenlace de leer el pidfile sin efectos.
-#[derive(Debug)]
-pub enum PidFileRead {
-    /// No hay fichero: ausencia normal.
-    Absent,
-    /// El fichero está ilegible o su esquema no se entiende; lleva el motivo
-    /// listo para avisar.
-    Discarded(String),
-    /// Fichero válido.
-    Present(PidFile),
-}
-
-/// Lee el pidfile sin emitir nada: devuelve el desenlace y deja el aviso a quien
-/// decide cuándo darlo.
-pub fn observe_pid_file(data_dir: &Path) -> PidFileRead {
-    let Ok(text) = std::fs::read_to_string(pid_path(data_dir)) else {
-        return PidFileRead::Absent;
-    };
-    // La identidad es obligatoria del esquema: las claves tienen que estar
-    // (aunque el valor sea `null`); un fichero sin ellas es de un esquema
-    // anterior y se descarta, no se degrada a «PID solo». Como `Option<T>`
-    // se parsea igualmente ausente, la presencia de la clave se afirma aquí.
-    let value: serde_json::Value = match serde_json::from_str(&text) {
-        Ok(v) => v,
-        Err(e) => {
-            return PidFileRead::Discarded(format!("no se entiende su esquema ({e})"));
-        }
-    };
-    let has_identity_keys =
-        value.get("identity").is_some() && value.get("resident_identity").is_some();
-    if !has_identity_keys {
-        return PidFileRead::Discarded("falta la identidad obligatoria".to_string());
-    }
-    match serde_json::from_value(value) {
-        Ok(file) => PidFileRead::Present(file),
-        Err(e) => PidFileRead::Discarded(format!("no se entiende su esquema ({e})")),
-    }
 }
 
 /// Emite el aviso de un pidfile descartado.
@@ -188,9 +81,9 @@ fn warn_discarded(data_dir: &Path, reason: &str) {
 /// defecto sin que el protocolo falle.
 pub fn read_pid_file(data_dir: &Path) -> Option<PidFile> {
     match observe_pid_file(data_dir) {
-        PidFileRead::Present(file) => Some(file),
-        PidFileRead::Absent => None,
-        PidFileRead::Discarded(reason) => {
+        PidFileObservation::Present(file) => Some(file),
+        PidFileObservation::Absent => None,
+        PidFileObservation::Discarded(reason) => {
             warn_discarded(data_dir, &reason);
             None
         }
@@ -200,8 +93,8 @@ pub fn read_pid_file(data_dir: &Path) -> Option<PidFile> {
 /// Lectura silenciosa: el fichero válido, o `None` en ausencia y en descarte.
 fn read_pid_file_silent(data_dir: &Path) -> Option<PidFile> {
     match observe_pid_file(data_dir) {
-        PidFileRead::Present(file) => Some(file),
-        PidFileRead::Absent | PidFileRead::Discarded(_) => None,
+        PidFileObservation::Present(file) => Some(file),
+        PidFileObservation::Absent | PidFileObservation::Discarded(_) => None,
     }
 }
 
@@ -368,7 +261,7 @@ pub async fn stop(
     let start = std::time::Instant::now();
     // Un pidfile descartado se avisa una sola vez por parada; el resto de las
     // lecturas del protocolo son silenciosas.
-    if let PidFileRead::Discarded(reason) = observe_pid_file(data_dir) {
+    if let PidFileObservation::Discarded(reason) = observe_pid_file(data_dir) {
         warn_discarded(data_dir, &reason);
     }
     let addr = resolve_addr(data_dir, default_addr);
@@ -554,21 +447,19 @@ fn ready_file_owner_alive(data_dir: &Path, control: &dyn ProcessControl) -> bool
     let Ok(text) = std::fs::read_to_string(data_dir.join(READY_FILE)) else {
         return false;
     };
-    let field = |key: &str| {
-        text.lines()
-            .find_map(|line| line.strip_prefix(key)?.strip_prefix('='))
-            .map(|v| v.trim().to_string())
-    };
-    let Some(pid) = field("pid").and_then(|p| p.parse::<u32>().ok()) else {
+    let Some(record) = parse_ready_record(&text) else {
         return false;
     };
-    let recorded = match (field("start"), field("image")) {
-        (Some(start), Some(image)) => Some(ProcessIdentity { start, image }),
-        _ => None,
+    let Some(pid) = record.pid else {
+        return false;
     };
     pid != std::process::id()
-        && classify_registered(control, pid, control.pid_alive(pid), recorded.as_ref())
-            == Registered::Ours
+        && classify_registered(
+            control,
+            pid,
+            control.pid_alive(pid),
+            record.identity.as_ref(),
+        ) == Registered::Ours
 }
 
 /// Borra el fichero ready, tolerando que ya no exista.
@@ -648,6 +539,7 @@ mod tests {
     use super::*;
     use crate::test_support::scratch;
     use avi_core::exit_codes::ExitCode;
+    use avi_process::registry::write_pid_file;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     /// Puerto efímero que se enlaza y se suelta: garantiza que no hay nada
@@ -767,7 +659,7 @@ mod tests {
         // Con un pidfile que apunta a un proceso muerto, el desenlace es el mismo
         // salvo que ahora sí hubo un PID: es lo que permite al resumen decir que
         // no hace falta reiniciar nada.
-        write_pid(
+        set_pid_file(
             &data,
             999_999,
             "127.0.0.1:1",
@@ -817,7 +709,7 @@ mod tests {
         );
         assert_eq!(resolve_client_addr_with(&data, None), DEFAULT_ADDR);
 
-        write_pid(
+        set_pid_file(
             &data,
             4242,
             "127.0.0.1:7001",
@@ -873,7 +765,7 @@ mod tests {
         }
 
         // 4. La escritura es atómica: temporal hermano y renombrado, sin residuo.
-        write_pid(
+        set_pid_file(
             &data,
             4242,
             "127.0.0.1:8765",
@@ -901,7 +793,7 @@ mod tests {
         //    estado completo y coherente, nunca una mezcla de dos escrituras.
         for round in 0..64u32 {
             let pid = 1000 + round;
-            write_pid(
+            set_pid_file(
                 &data,
                 pid,
                 "127.0.0.1:9",
@@ -939,7 +831,7 @@ mod tests {
         let data = scratch("self-guard");
         let control = Inert::new();
         let own = std::process::id();
-        write_pid(
+        set_pid_file(
             &data,
             own,
             &dead_port(),
@@ -975,7 +867,7 @@ mod tests {
             pid,
             identity: Some(identity_of("111", "daemon.exe")),
         };
-        write_pid(
+        set_pid_file(
             &data,
             pid,
             &dead_port(),
@@ -1022,7 +914,7 @@ mod tests {
     async fn stop_without_registered_resident_kills_nothing() {
         let data = scratch("resident");
         let unregistered = 888_888;
-        write_pid(
+        set_pid_file(
             &data,
             999_999,
             &dead_port(),
@@ -1089,7 +981,7 @@ mod tests {
     #[tokio::test]
     async fn stop_removes_ready_file_after_verified_stop() {
         let data = scratch("ready-deleted");
-        write_pid(
+        set_pid_file(
             &data,
             999_999,
             &dead_port(),
@@ -1174,7 +1066,7 @@ mod tests {
         let data = scratch("resident-alive");
         let resident = 888_888;
         let resident_id = identity_of("222", "qwen_tts.exe");
-        write_pid(
+        set_pid_file(
             &data,
             999_999,
             &dead_port(),
@@ -1184,7 +1076,7 @@ mod tests {
         .unwrap();
         let mut file = read_pid_file(&data).unwrap();
         file.resident_identity = Some(resident_id.clone());
-        crate::test_support::write_file(&pid_path(&data), &serde_json::to_string(&file).unwrap());
+        write_pid_file(&data, &file).unwrap();
 
         let outcome = stop(
             &data,
@@ -1224,6 +1116,29 @@ mod tests {
             start: start.to_string(),
             image: image.to_string(),
         }
+    }
+
+    /// Escribe un pidfile completo del daemon, sin residente registrado salvo su
+    /// PID.
+    fn set_pid_file(
+        data_dir: &Path,
+        pid: u32,
+        addr: &str,
+        resident_pid: u32,
+        identity: ProcessIdentity,
+    ) -> anyhow::Result<()> {
+        write_pid_file(
+            data_dir,
+            &PidFile {
+                pid,
+                addr: Some(addr.to_string()),
+                started_at: None,
+                resident_pid,
+                identity: Some(identity),
+                resident_identity: None,
+                resident_port: None,
+            },
+        )
     }
 
     /// Control con procesos vivos e identidades configurables. Matar un PID lo
@@ -1278,78 +1193,6 @@ mod tests {
         }
     }
 
-    /// El pidfile guarda y devuelve las dos identidades.
-    #[test]
-    fn pid_file_roundtrips_identities() {
-        let data = scratch("identities-round-trip");
-        write_pid(
-            &data,
-            4242,
-            "127.0.0.1:7001",
-            77,
-            identity_of("111", "daemon.exe"),
-        )
-        .unwrap();
-        let mut file = read_pid_file(&data).unwrap();
-        assert_eq!(file.identity, Some(identity_of("111", "daemon.exe")));
-        assert_eq!(file.resident_identity, None);
-
-        file.resident_identity = Some(identity_of("222", "qwen_tts.exe"));
-        crate::test_support::write_file(&pid_path(&data), &serde_json::to_string(&file).unwrap());
-        let back = read_pid_file(&data).unwrap();
-        assert_eq!(back, file);
-    }
-
-    /// Un pidfile escrito sin identidades es ilegible: se propaga como ausencia.
-    #[test]
-    fn pid_file_without_identities_is_illegible() {
-        let data = scratch("no-identities");
-        crate::test_support::write_file(
-            &pid_path(&data),
-            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 77}"#,
-        );
-        assert!(
-            read_pid_file(&data).is_none(),
-            "sin identidad no se reconoce el esquema"
-        );
-        assert_eq!(read_pid(&data), None);
-        assert_eq!(read_resident_pid(&data), 0);
-    }
-
-    /// La lectura sin efectos distingue los tres desenlaces: sin fichero es
-    /// ausente, un JSON truncado o sin identidad se descarta con su motivo, y un
-    /// fichero válido es presente.
-    #[test]
-    fn observe_pid_file_distinguishes_three_outcomes() {
-        let data = scratch("observes-outcomes");
-        assert!(matches!(observe_pid_file(&data), PidFileRead::Absent));
-
-        crate::test_support::write_file(&pid_path(&data), "{\"pid\": 4242, \"add");
-        assert!(matches!(
-            observe_pid_file(&data),
-            PidFileRead::Discarded(reason) if !reason.is_empty()
-        ));
-
-        crate::test_support::write_file(&pid_path(&data), r#"{"pid": 4242}"#);
-        assert!(matches!(
-            observe_pid_file(&data),
-            PidFileRead::Discarded(reason) if reason.contains("identidad")
-        ));
-
-        write_pid(
-            &data,
-            4242,
-            "127.0.0.1:7001",
-            77,
-            identity_of("111", "daemon.exe"),
-        )
-        .unwrap();
-        assert!(matches!(
-            observe_pid_file(&data),
-            PidFileRead::Present(file) if file.pid == 4242
-        ));
-    }
-
     /// Un pidfile con las claves de identidad presentes pero en `null` se
     /// lee, pero no habilita clasificación `Ours`: el ausente no es nuestro.
     #[test]
@@ -1357,7 +1200,7 @@ mod tests {
         let data = scratch("null-identities");
         crate::test_support::write_file(
             &pid_path(&data),
-            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 77, "identity": null, "resident_identity": null}"#,
+            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 77, "identity": null, "resident_identity": null, "resident_port": null}"#,
         );
         let file = read_pid_file(&data).expect("las claves presentes se leen");
         assert_eq!(file.identity, None);
@@ -1373,7 +1216,7 @@ mod tests {
     async fn stop_spares_daemon_pid_with_foreign_identity() {
         let data = scratch("foreign-daemon");
         let pid = 424_243;
-        write_pid(
+        set_pid_file(
             &data,
             pid,
             &dead_port(),
@@ -1401,7 +1244,7 @@ mod tests {
     async fn stop_spares_resident_pid_with_foreign_identity() {
         let data = scratch("foreign-resident");
         let resident = 424_244;
-        write_pid(
+        set_pid_file(
             &data,
             999_999,
             &dead_port(),
@@ -1411,7 +1254,7 @@ mod tests {
         .unwrap();
         let mut file = read_pid_file(&data).unwrap();
         file.resident_identity = Some(identity_of("222", "qwen_tts.exe"));
-        crate::test_support::write_file(&pid_path(&data), &serde_json::to_string(&file).unwrap());
+        write_pid_file(&data, &file).unwrap();
         let control = Observed::new(&[resident], &[(resident, identity_of("999", "other.exe"))]);
 
         let outcome = stop(&data, &dead_port(), &control).await;
@@ -1432,7 +1275,7 @@ mod tests {
         let data = scratch("own-daemon");
         let pid = 424_245;
         let id = identity_of("111", "ai-voice-interconnector.exe");
-        write_pid(&data, pid, &dead_port(), 0, id.clone()).unwrap();
+        set_pid_file(&data, pid, &dead_port(), 0, id.clone()).unwrap();
         let control = Observed::new(&[pid], &[(pid, id)]);
 
         let outcome = stop(&data, &dead_port(), &control).await;

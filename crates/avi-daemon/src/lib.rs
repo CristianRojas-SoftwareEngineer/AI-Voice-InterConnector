@@ -1985,13 +1985,7 @@ fn write_ready_failure(path: &std::path::Path, err: &StartupError) {
 /// la clase en el mensaje, y un `pid=` ausente, ilegible o `0` da `pid: None`.
 pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
     let content = std::fs::read_to_string(path).ok()?;
-    let field = |key: &str| {
-        content.lines().find_map(|line| {
-            line.strip_prefix(key)
-                .and_then(|rest| rest.strip_prefix('='))
-                .map(|v| v.trim().to_string())
-        })
-    };
+    let field = |key: &str| avi_process::registry::ready_field(&content, key);
     if let Some(class) = field("error") {
         let err = match class.as_str() {
             "port_in_use" => match field("port").and_then(|p| p.parse().ok()) {
@@ -2013,18 +2007,11 @@ pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
         };
         return Some(ReadySignal::Failed(err));
     }
-    let addr = field("addr").filter(|a| !a.is_empty())?;
-    let pid = field("pid")
-        .and_then(|p| p.parse::<u32>().ok())
-        .filter(|&p| p != 0);
-    let identity = match (field("start"), field("image")) {
-        (Some(start), Some(image)) => Some(avi_process::ProcessIdentity { start, image }),
-        _ => None,
-    };
+    let record = avi_process::registry::parse_ready_record(&content)?;
     Some(ReadySignal::Ready {
-        addr,
-        pid,
-        identity,
+        addr: record.addr,
+        pid: record.pid,
+        identity: record.identity,
     })
 }
 

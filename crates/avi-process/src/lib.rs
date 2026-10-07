@@ -19,6 +19,7 @@ mod deferred;
 #[cfg(windows)]
 pub use deferred::schedule_clean_removal;
 
+pub mod registry;
 pub mod restricted_spawn;
 pub use restricted_spawn::{
     allowed_handle_list, spawn_with_allowlist, RestrictedChild, RestrictedSpawnRequest, StdinSpec,

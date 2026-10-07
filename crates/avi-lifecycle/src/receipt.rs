@@ -216,8 +216,8 @@ pub fn write_to(receipt: &InstallReceipt, program_dir: &Path) -> anyhow::Result<
 /// cálculo es de día juliano a fecha civil.
 ///
 /// Lo comparte el pidfile del daemon, que también lleva `started_at` en el mismo
-/// formato; por eso es `pub(crate)` y no privado.
-pub(crate) fn now_rfc3339() -> String {
+/// formato; por eso es público y no privado.
+pub fn now_rfc3339() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)

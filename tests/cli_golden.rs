@@ -917,11 +917,11 @@ impl IsolatedInstance {
     /// reasignado a otro programa no coincide y se respeta. Devuelve si mató
     /// algún daemon.
     fn reap_registered(&self) -> bool {
-        use avi_lifecycle::daemon_stop::{observe_pid_file, PidFileRead};
+        use avi_process::registry::{observe_pid_file, PidFileObservation};
 
         // (pid, identidad registrada, es daemon)
         let mut registered: Vec<(u32, avi_process::ProcessIdentity, bool)> = Vec::new();
-        if let PidFileRead::Present(file) = observe_pid_file(&self.dir) {
+        if let PidFileObservation::Present(file) = observe_pid_file(&self.dir) {
             if let Some(identity) = file.identity {
                 registered.push((file.pid, identity, true));
             }
@@ -1186,6 +1186,7 @@ fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) {
         "resident_pid": dead_pid,
         "identity": fake,
         "resident_identity": fake,
+        "resident_port": null,
     });
     std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
     std::fs::write(data_dir.join("daemon.pid"), content.to_string())
@@ -1814,6 +1815,7 @@ impl FakeDaemon {
             "resident_pid": dead_pid,
             "identity": fake,
             "resident_identity": fake,
+            "resident_port": null,
         });
         std::fs::write(data_dir.join("daemon.pid"), content.to_string())
             .expect("publicar el pidfile del daemon falso");
@@ -4321,6 +4323,7 @@ mod tts {
             "resident_pid": resident_pid,
             "identity": fake,
             "resident_identity": fake,
+            "resident_port": null,
         });
         std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
         std::fs::write(data_dir.join("daemon.pid"), content.to_string())
@@ -5589,6 +5592,7 @@ fn daemon_stop_fails_with_still_running_verdict() {
         "resident_pid": dead_pid,
         "identity": fake,
         "resident_identity": fake,
+        "resident_port": null,
     });
     std::fs::write(dir.join("daemon.pid"), content.to_string())
         .expect("sembrar pidfile del daemon falso");

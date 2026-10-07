@@ -89,7 +89,7 @@ fn previous_operational(sandbox: &Sandbox, version: &str) -> bool {
             .is_file()
 }
 
-/// Identidad del daemon plantado en el pidfile: la misma que observan
+/// Identidad del daemon escrito en el pidfile: la misma que observan
 /// `Killable` y `Stubborn`, para que el contrato de T1 (sin identidad
 /// coincidente no se mata) clasifique el PID como suyo.
 fn daemon_identity() -> ProcessIdentity {
@@ -97,6 +97,22 @@ fn daemon_identity() -> ProcessIdentity {
         start: "111".to_string(),
         image: "daemon.exe".to_string(),
     }
+}
+
+/// Escribe el pidfile del daemon con su identidad y sin residente registrado.
+fn set_daemon_pid_file(data_dir: &std::path::Path, pid: u32) -> anyhow::Result<()> {
+    avi_process::registry::write_pid_file(
+        data_dir,
+        &avi_process::registry::PidFile {
+            pid,
+            addr: Some(support::dead_port()),
+            started_at: None,
+            resident_pid: 0,
+            identity: Some(daemon_identity()),
+            resident_identity: None,
+            resident_port: None,
+        },
+    )
 }
 
 /// Control de procesos con un daemon vivo que se deja reclamar por PID: la
@@ -147,7 +163,7 @@ impl ProcessControl for Killable {
     fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
         false
     }
-    // El pidfile plantado por la prueba registra esta identidad: sin un
+    // El pidfile escrito por la prueba registra esta identidad: sin un
     // `identity` observado que coincida, el control no clasifica el PID
     // como suyo (contrato de T1).
     fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
@@ -172,7 +188,7 @@ impl ProcessControl for Stubborn {
     fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
         false
     }
-    // Misma identidad que la plantada en el pidfile: sin ella, `Stubborn`
+    // Misma identidad que la escrita en el pidfile: sin ella, `Stubborn`
     // no reconocería al daemon como suyo.
     fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
         Some(daemon_identity())
@@ -335,14 +351,7 @@ fn criterion_13_daemon_stops_before_replacement() {
     // parada nunca reclama al invocador.
     let daemon_pid = 424_242u32;
     assert_ne!(daemon_pid, std::process::id());
-    daemon_stop::write_pid(
-        &sandbox.data_dir,
-        daemon_pid,
-        &support::dead_port(),
-        0,
-        daemon_identity(),
-    )
-    .expect("criterio 13: se planta el pidfile");
+    set_daemon_pid_file(&sandbox.data_dir, daemon_pid).expect("criterio 13: se escribe el pidfile");
     let control = Killable::new();
     let outcome = runtime.block_on(daemon_stop::stop(
         &sandbox.data_dir,
@@ -935,14 +944,7 @@ fn criterion_update_daemon_stop_failure_aborts() {
 
     let daemon_pid = 424_243u32;
     assert_ne!(daemon_pid, std::process::id());
-    daemon_stop::write_pid(
-        &sandbox.data_dir,
-        daemon_pid,
-        &support::dead_port(),
-        0,
-        daemon_identity(),
-    )
-    .expect("se planta el pidfile");
+    set_daemon_pid_file(&sandbox.data_dir, daemon_pid).expect("se escribe el pidfile");
     // El pidfile es estado previo de la prueba, no algo que la parada cree: la
     // foto del disco se toma después de plantarlo.
     let before = sandbox.snapshot();

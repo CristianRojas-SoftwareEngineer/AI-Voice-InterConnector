@@ -2259,20 +2259,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
             };
             match identity {
                 Some(identity) => {
-                    lifecycle::daemon_stop::write_pid(
-                        &effective_data_dir(),
-                        pid,
-                        &addr_real,
-                        0,
-                        identity,
-                    )
-                    .map_err(|e| {
-                        CliError::new(
-                            ExitCode::Error,
-                            "daemon_error",
-                            format!("No se pudo escribir daemon.pid: {}", e),
-                        )
-                    })?;
+                    write_daemon_pid_file(pid, &addr_real, identity)?;
                 }
                 None => {
                     eprintln!(
@@ -2399,20 +2386,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
             };
             match identity {
                 Some(identity) => {
-                    lifecycle::daemon_stop::write_pid(
-                        &effective_data_dir(),
-                        pid,
-                        &addr_real,
-                        0,
-                        identity,
-                    )
-                    .map_err(|e| {
-                        CliError::new(
-                            ExitCode::Error,
-                            "daemon_error",
-                            format!("No se pudo escribir daemon.pid: {}", e),
-                        )
-                    })?;
+                    write_daemon_pid_file(pid, &addr_real, identity)?;
                 }
                 None => {
                     eprintln!(
@@ -2643,6 +2617,33 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
             ResidualState::Degraded { reason }
         }
     }
+}
+
+/// Escribe el pidfile del daemon recién lanzado, sin residente registrado.
+fn write_daemon_pid_file(
+    pid: u32,
+    addr: &str,
+    identity: avi_process::ProcessIdentity,
+) -> Result<(), CliError> {
+    avi_process::registry::write_pid_file(
+        &effective_data_dir(),
+        &avi_process::registry::PidFile {
+            pid,
+            addr: Some(addr.to_string()),
+            started_at: Some(lifecycle::receipt::now_rfc3339()),
+            resident_pid: 0,
+            identity: Some(identity),
+            resident_identity: None,
+            resident_port: None,
+        },
+    )
+    .map_err(|e| {
+        CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            format!("No se pudo escribir daemon.pid: {}", e),
+        )
+    })
 }
 
 /// PID del daemon registrado y la identidad con la que se registró: la del
@@ -3639,7 +3640,7 @@ fn home_dir() -> PathBuf {
 /// `data_dir` vigente, de modo que cada sandbox (`AVI_DATA_DIR`) posee el
 /// suyo sin depender de la unidad del proceso ni de `%TEMP%`.
 fn ready_file_path() -> PathBuf {
-    store::data_dir().join(lifecycle::daemon_stop::READY_FILE)
+    store::data_dir().join(avi_process::registry::READY_FILE)
 }
 
 /// Lanza el daemon en segundo plano y espera el resultado de su arranque. Es la

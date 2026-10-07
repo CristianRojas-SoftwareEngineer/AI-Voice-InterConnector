@@ -277,12 +277,12 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
         );
         push(
             &mut collected,
-            roots.data_dir.join(crate::daemon_stop::PID_FILE),
+            roots.data_dir.join(avi_process::registry::PID_FILE),
             Category::DaemonState,
         );
         push(
             &mut collected,
-            roots.data_dir.join(crate::daemon_stop::READY_FILE),
+            roots.data_dir.join(avi_process::registry::READY_FILE),
             Category::DaemonState,
         );
     }
