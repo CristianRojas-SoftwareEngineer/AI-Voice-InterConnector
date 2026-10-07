@@ -577,7 +577,7 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
 /// binario no consulte 127.0.0.1:8765 ni barra los `qwen_tts` de la máquina.
 fn contract_sandbox(tag: &str) -> (TempDir, Vec<(String, String)>) {
     let (sandbox, envs) = sandbox_unique_state(tag);
-    seed_decoy_daemon_pidfile(sandbox.path());
+    seed_decoy_daemon_pidfile(&sandbox.path().join("data"));
     (sandbox, envs)
 }
 
@@ -630,10 +630,15 @@ fn sandbox_unique_state(tag: &str) -> (TempDir, Vec<(String, String)>) {
         .tempdir()
         .expect("crear sandbox de estado");
     let dir = sandbox.path().to_path_buf();
+    // La raíz de datos es un hermano más de `install`, `cache`, `hf` y `child-tmp`,
+    // como en una instalación real: el bloqueo de ciclo de vida vive junto al
+    // directorio de programa y no debe caer dentro de la raíz que `self uninstall`
+    // borra mientras lo mantiene tomado.
+    let data = dir.join("data");
     let install = dir.join("install");
     let cache = dir.join("cache");
     let hf = dir.join("hf");
-    for d in [&install, &cache, &hf] {
+    for d in [&data, &install, &cache, &hf] {
         std::fs::create_dir_all(d).expect("crear raíces del sandbox");
     }
     // `AVI_CACHE_DIR` tiene precedencia sobre las variables HF, así que la raíz
@@ -643,7 +648,7 @@ fn sandbox_unique_state(tag: &str) -> (TempDir, Vec<(String, String)>) {
     let mut envs = vec![
         (
             "AVI_DATA_DIR".to_string(),
-            dir.to_string_lossy().to_string(),
+            data.to_string_lossy().to_string(),
         ),
         (
             "AVI_INSTALL_DIR".to_string(),
@@ -835,7 +840,9 @@ struct IsolatedInstance {
 impl IsolatedInstance {
     fn new(tag: &str) -> Self {
         let (sandbox, mut envs) = sandbox_unique_state(tag);
-        let dir = sandbox.path().to_path_buf();
+        // `dir` es la raíz de datos de la instancia; el resto del sandbox cuelga
+        // de su padre.
+        let dir = sandbox.path().join("data");
         // Puerto efímero: el SO asigna y el hijo publica el real.
         envs.push(("AVI_DAEMON_PORT".to_string(), "0".to_string()));
         // Raíz de modelos real (solo lectura): la instancia no fija ninguna
@@ -843,13 +850,18 @@ impl IsolatedInstance {
         // los modelos provisionados; el sandbox solo aísla estado (pidfile/almacén).
         // Las pruebas de contrato la sustituyen por la del sandbox con `contract_args`.
         envs.retain(|(k, _)| !matches!(k.as_str(), "AVI_CACHE_DIR" | "HF_HUB_CACHE" | "HF_HOME"));
-        let contract_cache = dir.join("cache").to_string_lossy().to_string();
+        let contract_cache = sandbox.path().join("cache").to_string_lossy().to_string();
         IsolatedInstance {
             _sandbox: sandbox,
             dir,
             envs,
             contract_cache,
         }
+    }
+
+    /// Raíz de modelos del sandbox de la instancia (hermana de la raíz de datos).
+    fn cache_dir(&self) -> PathBuf {
+        PathBuf::from(&self.contract_cache)
     }
 
     /// Envs de la clase contrato: los de `args` más `AVI_CACHE_DIR` apuntando a
@@ -1849,7 +1861,7 @@ fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<Strin
     let fake = FakeDaemon::start(404, body);
     let (sandbox, envs) = contract_sandbox(tag);
     let dir = sandbox.path();
-    fake.publish_in(dir);
+    fake.publish_in(&dir.join("data"));
     let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -2973,7 +2985,7 @@ mod tts {
         // Sandbox propio con el modelo CustomVoice sembrado: la ruta llega a la
         // búsqueda de la voz sin cargar el motor ni tocar la instalación real.
         let inst = IsolatedInstance::new("synth_missing_voice");
-        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         let a = inst.contract_args();
         // Ruta directa fijada (colateral del régimen con fixture): la
         // existencia de la voz solo se verifica en la rama local; la vía daemon la
@@ -3011,7 +3023,7 @@ mod tts {
         // Sandbox propio con el modelo CustomVoice sembrado; el almacén de
         // locuciones fabricado vive en el directorio de datos del sandbox.
         let inst = IsolatedInstance::new("synth_collision");
-        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         let a = inst.contract_args();
         let label = unique_label("collision");
         let wav_min = {
@@ -3390,7 +3402,7 @@ mod tts {
         // existente se fabrica en el almacén de voces del sandbox.
         let inst = IsolatedInstance::new("clone_duplicate");
         seed_pinned_models(
-            &inst.dir.join("cache"),
+            &inst.cache_dir(),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let a = inst.contract_args();
@@ -3478,7 +3490,7 @@ mod tts {
     fn voice_clone_engine_output_goes_to_engine_log() {
         let inst = IsolatedInstance::new("clone_engine_log");
         seed_pinned_models(
-            &inst.dir.join("cache"),
+            &inst.cache_dir(),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let engine = write_fake_engine(&inst.dir);
@@ -3602,7 +3614,7 @@ mod tts {
     fn voice_clone_passes_watch_stdin_and_keeps_open_pipe() {
         let inst = IsolatedInstance::new("clone_watch_stdin");
         seed_pinned_models(
-            &inst.dir.join("cache"),
+            &inst.cache_dir(),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let engine = write_stdin_probe_engine(&inst.dir);
@@ -3653,7 +3665,7 @@ mod tts {
         // se rechaza antes de cargar el motor.
         let inst = IsolatedInstance::new("clone_invalid_name");
         seed_pinned_models(
-            &inst.dir.join("cache"),
+            &inst.cache_dir(),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let a = inst.contract_args();
@@ -3683,7 +3695,7 @@ mod tts {
         // directa falla por el audio inexistente antes de cargar el motor.
         let inst = IsolatedInstance::new("clone_missing_audio");
         seed_pinned_models(
-            &inst.dir.join("cache"),
+            &inst.cache_dir(),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let a = inst.contract_args();
@@ -3714,7 +3726,7 @@ mod tts {
         // truncado se escribe en el temporal del sandbox.
         let inst = IsolatedInstance::new("clone_truncated");
         seed_pinned_models(
-            &inst.dir.join("cache"),
+            &inst.cache_dir(),
             &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
         );
         let a = inst.contract_args();
@@ -4110,7 +4122,7 @@ mod tts {
         // no descarga nada. Un proxy inalcanzable garantiza que, si el
         // sembrado no bastara, la descarga fallaría en lugar de bajar gigabytes.
         let inst = IsolatedInstance::new("setup_json");
-        let models_root = inst.dir.join("cache");
+        let models_root = inst.cache_dir();
         let names: Vec<&str> = avi_store::MODEL_REVISIONS
             .iter()
             .map(|pin| pin.name)
@@ -4226,7 +4238,7 @@ mod tts {
         let mut inst = IsolatedInstance::new("start_port_in_use");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
-        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
@@ -4242,7 +4254,7 @@ mod tts {
     #[test]
     fn daemon_start_failure_is_written_to_daemon_log() {
         let mut inst = IsolatedInstance::new("start_failure_log");
-        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
@@ -4309,7 +4321,7 @@ mod tts {
         let inst = IsolatedInstance::new("start_missing_warm_voice");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
-        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         seed_decoy_daemon_pidfile(&inst.dir);
         let pidfile_before = std::fs::read(inst.dir.join("daemon.pid")).ok();
         let voice = format!("warm_nonexistent_{}", std::process::id());
@@ -4536,7 +4548,7 @@ mod tts {
     #[test]
     fn daemon_start_spares_foreign_process_on_reused_pid() {
         let mut inst = IsolatedInstance::new("start_foreign_pid");
-        seed_pinned_models(&inst.dir.join("cache"), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         let mut foreign = ForeignProcess::spawn();
         seed_pidfile_with_fake_identities(&inst.dir, foreign.pid(), u32::MAX - 1);
         let _holder = occupy_instance_port(&mut inst);
@@ -5336,7 +5348,7 @@ fn usage_commands_fail_with_lifecycle_locked_while_exclusive_lock_is_held() {
         );
     }
     assert!(
-        !sandbox.path().join("daemon.ready").exists(),
+        !sandbox.path().join("data").join("daemon.ready").exists(),
         "un comando bloqueado no debe lanzar el daemon"
     );
     drop(held);
@@ -5926,7 +5938,7 @@ fn daemon_stop_fails_with_still_running_verdict() {
         "resident_identity": fake,
         "resident_port": null,
     });
-    std::fs::write(dir.join("daemon.pid"), content.to_string())
+    std::fs::write(dir.join("data").join("daemon.pid"), content.to_string())
         .expect("sembrar pidfile del daemon falso");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
@@ -5951,7 +5963,7 @@ fn daemon_stop_fails_with_still_running_verdict() {
         "la salida por veredicto no lleva objeto error: {actual}"
     );
     assert!(
-        dir.join("daemon.pid").is_file(),
+        dir.join("data").join("daemon.pid").is_file(),
         "en fallo la pista se conserva para el siguiente intento"
     );
 }
@@ -6158,7 +6170,7 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
             "audio_b64": wav_b64, "voice": "default",
         }),
     );
-    fake.publish_in(dir);
+    fake.publish_in(&dir.join("data"));
     let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -6217,7 +6229,7 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
     );
     let (sandbox, envs) = contract_sandbox("dub-playback-failed");
     let dir = sandbox.path();
-    fake.publish_in(dir);
+    fake.publish_in(&dir.join("data"));
     let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -6269,7 +6281,7 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
         200,
         serde_json::json!({ "event": "result", "audio_b64": wav_b64 }),
     );
-    fake.publish_in(dir);
+    fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
         &["--json", "--daemon", "speech", "say", "--text", "Hola"],
@@ -6307,7 +6319,7 @@ fn say_daemon_playback_failure_leaves_no_residue() {
     );
     let (sandbox, envs) = contract_sandbox("say-playback-failed");
     let dir = sandbox.path();
-    fake.publish_in(dir);
+    fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
         &["--json", "--daemon", "speech", "say", "--text", "Hola"],

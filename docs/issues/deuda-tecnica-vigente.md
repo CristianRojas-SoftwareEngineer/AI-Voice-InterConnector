@@ -40,7 +40,6 @@ el ledger (`docs/issues/iterative-workflow-design.progreso.json`).
   - [H15 — Locks en avi-stt](#h15--locks-en-avi-stt)
   - [H17 — Doble probe](#h17--doble-probe)
 - [4. Hipótesis refutadas](#4-hipótesis-refutadas)
-  - [Hueco en stop paso 2b](#hueco-en-stop-paso-2b)
   - [Sleeps restantes en cli_golden](#sleeps-restantes-en-cli_golden)
   - [Allows y matices de código muerto](#allows-y-matices-de-código-muerto)
 
@@ -129,12 +128,13 @@ sin leer el workspace (p. ej. vía API o en build-time).
 
 ### H3b — Muerte sin binario externo
 
-`kill_tree_by_pid_exact` (Windows) y las primitivas de muerte por PID
-(`taskkill`/`pkill`) dependen de binarios externos en la ruta central de
-parada, tras centralizar en ellos T2 y T11.
-Eliminarlos exige enumeración nativa del árbol (Toolhelp en Windows):
+`kill_tree_by_pid_exact` en Windows lanza `taskkill /F /T /PID` y depende de
+ese binario externo en la ruta central de parada, tras centralizar en él T2 y
+T11. En Unix la misma primitiva usa `libc::kill` (al grupo y luego al PID) y
+no lanza ningún binario; la identidad de proceso en Unix sí lee `ps`.
+Eliminar `taskkill` exige enumeración nativa del árbol (Toolhelp en Windows):
 esfuerzo medio, con sus propios riesgos de `unsafe`. **Categoría 1
-(centralización) sobre base 2/3 (los binarios ya se usaban). VERIFICADO.**
+(centralización) sobre base 2/3 (el binario ya se usaba). VERIFICADO.**
 
 ### H4 — Código solo-Unix sin ejecutar
 
@@ -175,12 +175,6 @@ inferido, sin diff disponible). **Categoría 2. VERIFICADO.**
 ## 4. Hipótesis refutadas
 
 No son deuda; se registran para no reabrirlas.
-
-### Hueco en stop paso 2b
-
-Refutado: `read_resident_pid` (`daemon_stop.rs:191`) colapsa a `0` al
-descartarse el fichero y el caso cae en el barrido por imagen (`:385` →
-`avi-tts/src/lib.rs:1243`, implementación real con `taskkill`/`pkill`).
 
 ### Sleeps restantes en cli_golden
 
