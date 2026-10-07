@@ -1,0 +1,2 @@
+/* Incrusta el manifiesto de aplicación (RT_MANIFEST = 24, id 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID) */
+1 24 "qwen_tts.exe.manifest"

@@ -879,7 +879,7 @@ fn newest_engine_source(root: &Path) -> Option<std::time::SystemTime> {
             let interesting = path
                 .extension()
                 .and_then(|e| e.to_str())
-                .is_some_and(|e| matches!(e, "c" | "h" | "cpp" | "hpp"))
+                .is_some_and(|e| matches!(e, "c" | "h" | "cpp" | "hpp" | "rc" | "manifest"))
                 || entry.file_name().to_string_lossy() == "Makefile";
             if !interesting {
                 continue;

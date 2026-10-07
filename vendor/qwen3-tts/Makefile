@@ -91,6 +91,9 @@ else
     # (libgfortran) y libquadmath → deben ir DESPUES de -lopenblas (ld resuelve left-to-right)
     # para cubrir las referencias pendientes. -lm cubre referencias matemáticas.
     LDLIBS += -static -L$(UCRT64_LIB) -lopenblas -lgomp -lws2_32 -lwinpthread -lm
+    # Recurso con el manifiesto de aplicación (activeCodePage UTF-8): sin él, argv y
+    # las APIs ANSI llegan en cp1252 y corrompen --ref-text y las rutas no ASCII.
+    WIN_RES_OBJ := qwen_tts_manifest.o
 endif
 
 CFLAGS = $(CFLAGS_BASE) -I$(INGOT_DIR)/include $(EXTRA_CFLAGS)
@@ -116,8 +119,12 @@ SRCS = main.c \
        qwen_tts_speech_encoder.c \
        vendor/lz4.c
 
-OBJS = $(SRCS:.c=.o)
+OBJS = $(SRCS:.c=.o) $(WIN_RES_OBJ)
 TARGET = qwen_tts
+
+# Solo MinGW: compila el recurso de manifiesto a COFF para enlazarlo en el ejecutable.
+qwen_tts_manifest.o: qwen_tts_manifest.rc qwen_tts.exe.manifest
+	windres -O coff -i $< -o $@
 
 # ── ingot: the GGUF/safetensors library, vendored as a git subtree. Built by
 # its own Makefile so this one never learns how it is compiled.
