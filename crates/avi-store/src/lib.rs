@@ -218,7 +218,7 @@ impl VoiceStore {
         if !default_qvoice.is_file() && !FACTORY_DEFAULT_QVOICE.is_empty() {
             // Validar que el asset sea un .qvoice graft válido (magic QVCE/QV3)
             if FACTORY_DEFAULT_QVOICE.len() > 4 {
-                let _ = std::fs::write(&default_qvoice, FACTORY_DEFAULT_QVOICE);
+                std::fs::write(&default_qvoice, FACTORY_DEFAULT_QVOICE)?;
             }
         }
         Ok(())
@@ -237,7 +237,7 @@ impl VoiceStore {
                     .to_string()
                     .to_lowercase();
                 let is_factory = is_factory_name(&name);
-                let ref_path = self.find_reference(&name);
+                let ref_path = self.find_reference(&name)?;
                 voices.push(VoiceEntry {
                     name,
                     is_factory,
@@ -300,13 +300,16 @@ impl VoiceStore {
     /// Buscar el archivo de referencia de una voz: `reference.qvoice`.
     /// Solo `reference.qvoice` determina la rama clonada; los presets no
     /// tienen referencia y resuelven como `Preset` en `resolve_voice_engine`.
-    pub fn find_reference(&self, name: &str) -> Option<PathBuf> {
+    /// Inicializa antes el almacén para que `default` exista en una raíz nueva;
+    /// si la inicialización falla, devuelve el error.
+    pub fn find_reference(&self, name: &str) -> Result<Option<PathBuf>> {
+        self.ensure_initialized()?;
         let dir = self.base_dir.join(name.to_lowercase());
         let path = dir.join("reference.qvoice");
         if path.is_file() {
-            return Some(path);
+            return Ok(Some(path));
         }
-        None
+        Ok(None)
     }
 
     /// Directorio de una voz (nombre normalizado a minúsculas)
@@ -1422,6 +1425,7 @@ mod tests {
             voices
                 .find_reference("MYVOICE")
                 .unwrap()
+                .unwrap()
                 .file_name()
                 .unwrap()
                 .to_string_lossy(),
@@ -1520,14 +1524,14 @@ mod tests {
             "reference.qvoice"
         );
         assert!(saved.is_file());
-        assert_eq!(voices.find_reference("myvoice").unwrap(), saved);
+        assert_eq!(voices.find_reference("myvoice").unwrap().unwrap(), saved);
 
         // Sin fallback wav: solo qvoice es canónico.
         let vdir = voices.voice_dir("other");
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert!(
-            voices.find_reference("OTHER").is_none(),
+            voices.find_reference("OTHER").unwrap().is_none(),
             "sin reference.qvoice no resuelve como clonada"
         );
     }
@@ -1599,12 +1603,13 @@ mod tests {
         }
         // `default` clonada de fábrica debe tener `reference.qvoice` materializado
         assert!(
-            voices.find_reference("default").is_some(),
+            voices.find_reference("default").unwrap().is_some(),
             "fábrica 'default' debe tener reference.qvoice"
         );
         assert_eq!(
             voices
                 .find_reference("default")
+                .unwrap()
                 .unwrap()
                 .file_name()
                 .unwrap()
@@ -1614,7 +1619,7 @@ mod tests {
         // `ryan`/`vivian` siguen presets puros sin referencia
         for name in ["ryan", "vivian"] {
             assert!(
-                voices.find_reference(name).is_none(),
+                voices.find_reference(name).unwrap().is_none(),
                 "fábrica '{}' sin qvoice no debe tener referencia (preset puro)",
                 name
             );
@@ -1659,9 +1664,34 @@ mod tests {
         std::fs::create_dir_all(&clone_dir).unwrap();
         std::fs::write(clone_dir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert!(
-            voices.find_reference("OTHER").is_none(),
+            voices.find_reference("OTHER").unwrap().is_none(),
             "sin qvoice no resuelve como clonada"
         );
+    }
+
+    /// Sobre una raíz nueva, `find_reference("default")` inicializa el almacén
+    /// y devuelve el `.qvoice` de fábrica materializado.
+    #[test]
+    fn find_reference_default_initializes_fresh_root() {
+        let dir = temp_dir("find_ref_fresh");
+        let voices = VoiceStore::at(dir.join("voices"));
+        let path = voices
+            .find_reference("default")
+            .unwrap()
+            .expect("default debe resolver en una raíz nueva");
+        assert!(path.is_file(), "el reference.qvoice debe existir en disco");
+    }
+
+    /// Si la base del almacén es un fichero, inicializar es imposible y tanto
+    /// `ensure_initialized` como `find_reference` devuelven error.
+    #[test]
+    fn base_dir_being_a_file_fails_initialization() {
+        let dir = temp_dir("base_is_file");
+        let base = dir.join("voices");
+        std::fs::write(&base, b"no soy un directorio").unwrap();
+        let voices = VoiceStore::at(base);
+        assert!(voices.ensure_initialized().is_err());
+        assert!(voices.find_reference("default").is_err());
     }
 
     /// `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash

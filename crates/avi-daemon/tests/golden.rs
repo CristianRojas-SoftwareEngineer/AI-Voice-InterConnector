@@ -789,7 +789,10 @@ async fn warm_voice_fail_fast_and_acceptance() {
         .save_reference(&name, &qvoice)
         .expect("registrar voz de prueba");
     assert!(
-        store.find_reference(&name).is_some(),
+        store
+            .find_reference(&name)
+            .expect("resolver la voz de prueba")
+            .is_some(),
         "la voz registrada debe pasar la validación de --warm-voice"
     );
 }
@@ -1264,7 +1267,7 @@ async fn synthesize_result_delivers_the_file_the_engine_wrote() {
         state,
         post_json(
             "/synthesize",
-            serde_json::json!({ "text": "hola", "voice": "default" }),
+            serde_json::json!({ "text": "hola", "voice": "ryan" }),
         ),
     )
     .await;
@@ -1311,7 +1314,7 @@ async fn synthesize_disconnect_removes_temporary_when_blocking_work_ends() {
     let response = build_router_with_state(state)
         .oneshot(post_json(
             "/synthesize",
-            serde_json::json!({ "text": "hola", "voice": "default" }),
+            serde_json::json!({ "text": "hola", "voice": "ryan" }),
         ))
         .await
         .expect("el router debe responder");
@@ -1333,7 +1336,7 @@ async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
     let state = state_with_held_tts(tts.port, "avi_golden_dubdisconnect");
     // `/dub` exige que la voz exista en el almacén; un preset sin referencia
     // clonada mantiene la síntesis en el motor falso.
-    std::fs::create_dir_all(state.voice_store.root().join("default")).expect("registrar la voz");
+    std::fs::create_dir_all(state.voice_store.root().join("ryan")).expect("registrar la voz");
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
     let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_responses_16k.wav"))
         .expect("el WAV corpus debe cargarse");
@@ -1345,7 +1348,7 @@ async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
                 "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio),
                 "from": "es",
                 "to": "es",
-                "voice": "default",
+                "voice": "ryan",
             }),
         ))
         .await

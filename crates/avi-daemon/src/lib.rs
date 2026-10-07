@@ -649,9 +649,24 @@ async fn synthesize_handler(
 
         // Perfil de voz: .qvoice si la voz está clonada; el motor resuelve el
         // preset vía `resolve_voice_engine` a partir del nombre.
+        let qvoice_path = match state.voice_store.find_reference(&voice_owned) {
+            Ok(path) => path,
+            Err(e) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "io_error",
+                        "message": format!("Error resolviendo la voz '{}': {}", voice_owned, e),
+                    }),
+                )
+                .await;
+                return;
+            }
+        };
         let profile = VoiceProfile {
             name: voice_owned.clone(),
-            qvoice_path: state.voice_store.find_reference(&voice_owned),
+            qvoice_path,
         };
         // Sin flag se usa la config de producción (temperature=0.35); con flag
         // se sobrescribe la temperatura ya validada.
@@ -1617,9 +1632,24 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
             // `queued`), acota el trabajo al presupuesto del texto, lo cancela
             // en el motor ante desconexión del cliente o vencimiento y, al
             // vencer, emite `synthesis_timeout` (nunca cierre silencioso).
+            let qvoice_path = match state.voice_store.find_reference(&voice) {
+                Ok(path) => path,
+                Err(e) => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "reason": "io_error",
+                            "message": format!("Error resolviendo la voz '{}': {}", voice, e),
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            };
             let profile = VoiceProfile {
                 name: voice.clone(),
-                qvoice_path: state.voice_store.find_reference(&voice),
+                qvoice_path,
             };
             // Guardián del temporal: su dueño es el trabajo que escribe en él,
             // no el ámbito del handler. La propiedad pasa al `job` bloqueante y
@@ -1835,9 +1865,16 @@ pub fn build_router() -> Router {
 /// warmup sintético; la primera traducción paga frío si el residente no estaba
 /// provisionado, sin impacto en `warm` (`Warming`→`Warm` solo refleja TTS).
 pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()> {
+    let qvoice_path = match state.voice_store.find_reference(voice) {
+        Ok(path) => path,
+        Err(e) => {
+            state.set_warm_failed(e.to_string());
+            return Err(e);
+        }
+    };
     let profile = VoiceProfile {
         name: voice.to_string(),
-        qvoice_path: state.voice_store.find_reference(voice),
+        qvoice_path,
     };
     let _lock = state.synthesis_lock.blocking_lock();
     state.set_warming();
@@ -2046,7 +2083,12 @@ async fn prepare_server(
 
     // Fail-fast: una `--warm-voice` inexistente aborta el arranque antes de
     // enlazar y de cargar modelos, sin degradar en silencio ni caer a `default`.
-    if voices.find_reference(warm_voice).is_none() {
+    let warm_reference = voices
+        .find_reference(warm_voice)
+        .map_err(|e| StartupError::Failed {
+            message: format!("No se pudo inicializar el almacén de voces: {}", e),
+        })?;
+    if warm_reference.is_none() {
         return Err(StartupError::WarmVoiceMissing {
             voice: warm_voice.to_string(),
         });

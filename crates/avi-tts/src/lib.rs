@@ -507,7 +507,7 @@ impl Qwen3TtsEngine {
         output_path: Option<&PathBuf>,
     ) -> Result<PathBuf> {
         let options = GenerationOptions::with_temperature(temperature, language);
-        let qvoice_path = avi_store::VoiceStore::new().find_reference(voice);
+        let qvoice_path = avi_store::VoiceStore::new().find_reference(voice)?;
         let profile = VoiceProfile {
             name: voice.to_string(),
             qvoice_path,
