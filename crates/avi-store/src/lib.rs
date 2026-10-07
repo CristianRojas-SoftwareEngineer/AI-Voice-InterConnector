@@ -278,9 +278,12 @@ impl VoiceStore {
     }
 
     /// Verificar si una voz existe, con el nombre normalizado a minúsculas, según
-    /// el contrato del registro
-    pub fn exists(&self, name: &str) -> bool {
-        self.base_dir.join(name.to_lowercase()).is_dir()
+    /// el contrato del registro. Inicializa antes el almacén para que las voces
+    /// de fábrica existan en una raíz nueva; si la inicialización falla,
+    /// devuelve el error.
+    pub fn exists(&self, name: &str) -> Result<bool> {
+        self.ensure_initialized()?;
+        Ok(self.base_dir.join(name.to_lowercase()).is_dir())
     }
 
     /// Eliminar una voz (no permite eliminar voces de fábrica: default, ryan, vivian)
@@ -1418,7 +1421,7 @@ mod tests {
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("reference.qvoice"), b"QVCE").unwrap();
         assert!(
-            voices.exists("MYVOICE"),
+            voices.exists("MYVOICE").unwrap(),
             "exists debe normalizar a minúsculas"
         );
         assert_eq!(
@@ -1572,6 +1575,18 @@ mod tests {
         assert_eq!(std::fs::read(&saved).unwrap(), b"QVCE");
     }
 
+    /// La consulta de existencia garantiza las voces de fábrica en una raíz
+    /// recién creada, sin necesidad de listar antes; una voz ajena no existe.
+    #[test]
+    fn exists_guarantees_factory_voices_on_fresh_root() {
+        let dir = temp_dir("exists-fresh");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        for name in ["default", "ryan", "vivian"] {
+            assert!(voices.exists(name).unwrap(), "'{}' debe existir", name);
+        }
+        assert!(!voices.exists("nadie").unwrap());
+    }
+
     /// `ensure_initialized` registra voces de fábrica (`default` clonada
     /// de fábrica con `.qvoice`, `ryan`/`vivian` presets) y `list`/`remove`/
     /// `find_reference` reflejan el registro unificado (--voice ryan alcanzable).
@@ -1585,7 +1600,7 @@ mod tests {
             let d = voices.voice_dir(name);
             assert!(d.is_dir(), "directorio de fábrica '{}' debe existir", name);
             assert!(
-                voices.exists(name),
+                voices.exists(name).unwrap(),
                 "exists('{}') debe ser true (hoy sería exit 3 para ryan)",
                 name
             );

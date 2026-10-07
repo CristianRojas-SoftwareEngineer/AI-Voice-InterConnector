@@ -1139,7 +1139,21 @@ async fn voices_clone_handler(
         .get("force")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    if !force && state.voice_store.exists(&name) {
+    let voice_exists = match state.voice_store.exists(&name) {
+        Ok(found) => found,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(with_sv(json!({
+                    "error": "io_error",
+                    "reason": "io_error",
+                    "message": format!("Error resolviendo la voz '{}': {}", name, e),
+                }))),
+            )
+                .into_response();
+        }
+    };
+    if !force && voice_exists {
         return (
             StatusCode::CONFLICT,
             Json(with_sv(json!({
@@ -1602,7 +1616,22 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
             .into_response();
     }
     #[cfg(feature = "native-stt")]
-    if !state.voice_store.exists(&voice) {
+    let voice_found = match state.voice_store.exists(&voice) {
+        Ok(found) => found,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": "io_error",
+                    "message": format!("Error resolviendo la voz '{}': {}", voice, e),
+                }))),
+            )
+                .into_response();
+        }
+    };
+    #[cfg(feature = "native-stt")]
+    if !voice_found {
         return (
             StatusCode::NOT_FOUND,
             Json(with_sv(json!({
@@ -2216,12 +2245,14 @@ async fn prepare_server(
 
     // Fail-fast: una `--warm-voice` inexistente aborta el arranque antes de
     // enlazar y de cargar modelos, sin degradar en silencio ni caer a `default`.
-    let warm_reference = voices
-        .find_reference(warm_voice)
+    // Existe tanto una voz clonada como un preset del motor (`ryan`, `vivian`),
+    // que no tiene referencia `.qvoice`.
+    let warm_exists = voices
+        .exists(warm_voice)
         .map_err(|e| StartupError::Failed {
             message: format!("No se pudo inicializar el almacén de voces: {}", e),
         })?;
-    if warm_reference.is_none() {
+    if !warm_exists {
         return Err(StartupError::WarmVoiceMissing {
             voice: warm_voice.to_string(),
         });

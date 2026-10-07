@@ -1324,7 +1324,11 @@ async fn handle_voice(
                     ));
                 }
             }
-            if !force && voice_store.exists(&name) {
+            if !force
+                && voice_store
+                    .exists(&name)
+                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+            {
                 return Err(CliError::new(
                     ExitCode::StateConflict,
                     "voice_exists",
@@ -1641,7 +1645,10 @@ async fn handle_speech(
             let items = match &voice {
                 Some(v) => {
                     is_valid_identifier(Some(v), None)?;
-                    if !VoiceStore::new().exists(v) {
+                    if !VoiceStore::new()
+                        .exists(v)
+                        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+                    {
                         return Err(CliError::new(
                             ExitCode::NotFound,
                             "voice_not_found",
@@ -1868,7 +1875,10 @@ async fn handle_speech(
 
             require_model_provisioned()?;
             let voice_store = VoiceStore::new();
-            if !voice_store.exists(&voice) {
+            if !voice_store
+                .exists(&voice)
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+            {
                 return Err(CliError::new(
                     ExitCode::NotFound,
                     "voice_not_found",
@@ -1992,7 +2002,10 @@ async fn handle_speech(
 
             require_model_provisioned()?;
             let voice_store = VoiceStore::new();
-            if !voice_store.exists(&voice) {
+            if !voice_store
+                .exists(&voice)
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+            {
                 return Err(CliError::new(
                     ExitCode::NotFound,
                     "voice_not_found",
@@ -2226,7 +2239,10 @@ async fn handle_speech(
                 // El texto traducido puede exceder el tope aunque el transcrito no.
                 avi_core::validate_synthesis_text(&final_text)?;
                 let voice_store = VoiceStore::new();
-                if !voice_store.exists(&voice) {
+                if !voice_store
+                    .exists(&voice)
+                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+                {
                     return Err(CliError::new(
                         ExitCode::NotFound,
                         "voice_not_found",

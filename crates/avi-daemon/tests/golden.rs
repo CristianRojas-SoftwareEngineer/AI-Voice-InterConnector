@@ -789,11 +789,13 @@ async fn warm_voice_fail_fast_and_acceptance() {
         .save_reference(&name, &qvoice)
         .expect("registrar voz de prueba");
     assert!(
-        store
-            .find_reference(&name)
-            .expect("resolver la voz de prueba")
-            .is_some(),
+        store.exists(&name).expect("resolver la voz de prueba"),
         "la voz registrada debe pasar la validación de --warm-voice"
+    );
+    // Un preset del motor no tiene referencia `.qvoice`, pero existe igual.
+    assert!(
+        store.exists("ryan").expect("resolver el preset"),
+        "un preset debe pasar la validación de --warm-voice"
     );
 }
 
