@@ -243,6 +243,7 @@ copia).
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
 | Voz de fábrica (`default`/`ryan`/`vivian`) | remove | 2 | `cannot_remove_default` |
 | Voz no encontrada | remove | 3 | `voice_not_found` |
+| Hay una operación de ciclo de vida en curso (el comando no llega a ejecutarse) | list, clone, remove | 17 | `lifecycle_locked` |
 | `--daemon` explícito en `list`/`remove` | list, remove | 2 | `daemon_not_supported` |
 
 ---

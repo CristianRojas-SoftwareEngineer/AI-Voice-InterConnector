@@ -764,6 +764,7 @@ async fn warm_voice_fail_fast_and_acceptance() {
         nonexistent_voice.clone(),
         VoiceStore::at(tmp.join("voices")),
         SpeechStore::at(tmp.join("speech")),
+        None,
     )
     .await;
     let err = res.expect_err("una --warm-voice inexistente debe abortar el arranque");
@@ -807,6 +808,7 @@ async fn port_in_use_fails_before_loading_models() {
         "default".into(),
         VoiceStore::at(dir.path().join("voices")),
         SpeechStore::at(dir.path().join("speech")),
+        None,
     )
     .await
     .expect_err("un puerto ocupado debe abortar el arranque");
@@ -838,6 +840,7 @@ async fn supervised_startup_failure_is_terminal() {
         "default".into(),
         VoiceStore::at(dir.path().join("voices")),
         SpeechStore::at(dir.path().join("speech")),
+        None,
     )
     .await
     .expect_err("un puerto ocupado debe abortar la supervisión");
@@ -909,6 +912,7 @@ async fn second_daemon_is_rejected_while_a_live_one_is_registered() {
         "default".into(),
         VoiceStore::at(dir.path().join("voices")),
         SpeechStore::at(dir.path().join("speech")),
+        None,
     )
     .await;
     let pidfile_after = std::fs::read(avi_process::registry::pid_path(&data_dir)).unwrap();

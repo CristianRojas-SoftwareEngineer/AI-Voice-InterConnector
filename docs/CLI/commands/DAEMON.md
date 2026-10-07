@@ -123,6 +123,7 @@ Los fallos del arranque se traducen a código en un único punto, compartido por
 | `voice_not_found` | 3 | La voz de `--warm-voice` no existe | `start`, `serve` |
 | `daemon_error` | 1 | Fallo al lanzar el hijo, muerte del hijo durante el arranque (el mensaje incluye su estado de salida), fallo no clasificado previo a estar listo o fallo del servidor ya en marcha | `start`, `restart`, `serve` |
 | `daemon_unreachable` | 5 | El hijo sigue vivo sin publicar su dirección al vencer el deadline, `/health` no responde tras publicarla | `start`, `restart` |
+| `lifecycle_locked` | 17 | Hay una operación de ciclo de vida en curso: el comando no llega a ejecutarse ni lanza nada. `serve` toma el bloqueo compartido y lo suelta al quedar registrado en `daemon.pid`; `start` y `restart` lo retienen mientras esperan el `daemon.ready` del hijo | `start`, `restart`, `serve` |
 
 Tras un fallo de `start` o `restart` no quedan proceso hijo, `daemon.pid` ni `daemon.ready`.
 

@@ -846,6 +846,18 @@ async fn main() {
         restore_sigpipe_default();
     }
 
+    // Los comandos de uso toman el bloqueo de ciclo de vida compartido antes de
+    // tocar datos o modelos y lo retienen toda su vida. Si hay una operación de
+    // ciclo de vida en curso, terminan aquí con `lifecycle_locked` sin lanzar nada.
+    let mut usage_lock = if takes_usage_lock(&cli.command) {
+        match lifecycle::lock::acquire_shared(&lifecycle::channel::registered_program_dir()) {
+            Ok(lock) => Some(lock),
+            Err(e) => exit_with_error(json_mode, lifecycle_error_to_cli(e.into())),
+        }
+    } else {
+        None
+    };
+
     let result = match cli.command {
         Some(Commands::Version) => ok(handle_version(json_mode)),
         Some(Commands::Devices) => ok(handle_devices(json_mode)),
@@ -856,7 +868,9 @@ async fn main() {
         Some(Commands::Speech { action }) => {
             ok(handle_speech(json_mode, daemon_mode, action).await)
         }
-        Some(Commands::Daemon { action }) => handle_daemon(json_mode, action).await,
+        Some(Commands::Daemon { action }) => {
+            handle_daemon(json_mode, action, usage_lock.take()).await
+        }
         Some(Commands::Setup {
             with_voice_cloning,
             force_update,
@@ -895,18 +909,38 @@ async fn main() {
             std::io::stdout().flush().ok();
             exit(code);
         }
-        Err(err) => {
-            if json_mode {
-                emit_raw_json(json!({
-                    "error": err.message,
-                    "reason": err.reason,
-                }));
-            } else {
-                eprintln!("Error: {}", err.message);
-            }
-            std::io::stdout().flush().ok();
-            exit(err.code.code());
-        }
+        Err(err) => exit_with_error(json_mode, err),
+    }
+}
+
+/// Emite el error con su `reason` (JSON o texto) y sale con su código.
+fn exit_with_error(json_mode: bool, err: CliError) -> ! {
+    if json_mode {
+        emit_raw_json(json!({
+            "error": err.message,
+            "reason": err.reason,
+        }));
+    } else {
+        eprintln!("Error: {}", err.message);
+    }
+    std::io::stdout().flush().ok();
+    exit(err.code.code());
+}
+
+/// Indica si el comando es de uso: lee o escribe datos o modelos, o lanza el
+/// daemon que los usa, y por eso toma el bloqueo de ciclo de vida compartido.
+/// No lo toman los de solo diagnóstico (`daemon status`, `daemon stop`,
+/// `doctor` sin `--repair`), las simulaciones ni las operaciones de ciclo de
+/// vida, que toman el exclusivo por su cuenta.
+fn takes_usage_lock(command: &Option<Commands>) -> bool {
+    match command {
+        Some(Commands::Translate { .. } | Commands::Voice { .. } | Commands::Speech { .. }) => true,
+        Some(Commands::Setup { .. }) => true,
+        Some(Commands::Daemon { action }) => matches!(
+            action,
+            DaemonCommands::Start { .. } | DaemonCommands::Restart | DaemonCommands::Serve { .. }
+        ),
+        _ => false,
     }
 }
 
@@ -2151,7 +2185,15 @@ async fn handle_speech(
 
 // ─── Daemon ──────────────────────────────────────────────────────────
 
-async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcome, CliError> {
+/// `usage_lock` es el bloqueo compartido que `main` tomó para los subcomandos de
+/// uso. `serve` lo entrega al servidor, que lo suelta al quedar registrado; `start`
+/// y `restart` lo retienen hasta volver, también mientras esperan el `daemon.ready`
+/// del hijo, que toma su propio compartido y coexiste con este.
+async fn handle_daemon(
+    json_mode: bool,
+    action: DaemonCommands,
+    usage_lock: Option<lifecycle::lock::LifecycleLock>,
+) -> Result<Outcome, CliError> {
     match action {
         DaemonCommands::Serve {
             auto_restart,
@@ -2194,6 +2236,7 @@ async fn handle_daemon(json_mode: bool, action: DaemonCommands) -> Result<Outcom
                 warm_voice,
                 VoiceStore::new(),
                 SpeechStore::new(),
+                usage_lock.map(|lock| Box::new(lock) as Box<dyn Send>),
             )
             .await
             .map_err(|e| match e.downcast_ref::<daemon::StartupError>() {

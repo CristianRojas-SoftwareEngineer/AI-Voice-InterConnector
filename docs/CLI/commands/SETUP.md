@@ -120,6 +120,7 @@ No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a s
 | No se pudo inicializar el registro de voces | `voice_store_init_failed` | 1 |
 | Fallo de descarga de un snapshot (invocación directa) | `network_error` | 20 |
 | Fallo de descarga, invocado desde `self install` | `setup_failed` (11) con la causa en `models_cause` | 11 |
+| Hay una operación de ciclo de vida en curso (invocación directa; no llega a ejecutarse) | `lifecycle_locked` | 17 |
 
 ---
 

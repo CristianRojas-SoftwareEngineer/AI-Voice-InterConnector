@@ -194,6 +194,7 @@ daemon, que lo normaliza internamente a `es` para el enrutado y la validación
 | `translation_unsupported` | 1 (`Error`) | Binario compilado sin el feature `native-translation` (solo rama local) |
 | `daemon_unreachable` | 5 (`DaemonUnreachable`) | `--daemon` sin daemon activo, o timeout/fallo de conexión en la ruta `Auto`/`ForceDaemon` |
 | `daemon_error` | 1 (`Error`) | El daemon respondió con un cuerpo no JSON o un `reason` no reconocido |
+| `lifecycle_locked` | 17 (`LifecycleLocked`) | Hay una operación de ciclo de vida en curso; el comando no llega a ejecutarse |
 
 ---
 

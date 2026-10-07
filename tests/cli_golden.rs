@@ -1261,6 +1261,7 @@ fn speech_transcribe_with_audio_matches_contract() {
 
 #[test]
 fn speech_transcribe_without_audio_nor_mic_exits_2() {
+    let (_sandbox, envs) = contract_sandbox("transcribe_no_input");
     let output = bin_command()
         .args([
             "--json",
@@ -1269,6 +1270,7 @@ fn speech_transcribe_without_audio_nor_mic_exits_2() {
             "--source-language",
             "es-latam",
         ])
+        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .output()
         .expect("el binario debe ejecutarse");
     let code = output
@@ -3907,6 +3909,34 @@ mod tts {
         hit_end("tts::daemon_stop_finds_live_daemon_after_pidfile_is_deleted");
     }
 
+    /// Con un daemon vivo y registrado, `cleanup --all --yes` toma el bloqueo
+    /// exclusivo (el daemon ya soltó el compartido al registrarse), lo detiene y
+    /// completa. La raíz de modelos de la limpieza es la del sandbox: el daemon
+    /// usa los modelos reales, que la limpieza no debe tocar.
+    #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
+    fn cleanup_all_stops_registered_live_daemon() {
+        require_tts_model();
+        require_tts_binary();
+        let _tts = lock_tts();
+        hit_start_heavy("tts::cleanup_all_stops_registered_live_daemon");
+        let inst = IsolatedInstance::new("cleanup_live_daemon");
+        start_instance_running_only(&inst, &[]);
+        let pid = inst
+            .read_daemon_pid()
+            .expect("tras start debe haber pidfile");
+        let (code, actual) = run_json_env(
+            &["--json", "cleanup", "--all", "--yes"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 0, "cleanup --all --yes debe salir 0: {actual}");
+        assert!(
+            !avi_daemon::pid_alive(pid),
+            "cleanup debe haber detenido al daemon registrado"
+        );
+        hit_end("tts::cleanup_all_stops_registered_live_daemon");
+    }
+
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_restart_rewarms() {
@@ -5200,6 +5230,7 @@ fn speech_help_exposes_languages_and_temperature() {
 /// `usage_error`, antes de cualquier trabajo.
 #[test]
 fn speech_invalid_temperature_exits_2() {
+    let (_sandbox, envs) = contract_sandbox("invalid_temperature");
     for args in [
         vec!["speech", "say", "--text", "Hola", "--temperature", "0"],
         vec!["speech", "say", "--text", "Hola", "--temperature", "2.5"],
@@ -5218,6 +5249,7 @@ fn speech_invalid_temperature_exits_2() {
         let output = bin_command()
             .args(&args)
             .arg("--json")
+            .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .stdin(std::process::Stdio::null())
             .output()
             .expect("el binario debe ejecutarse");
@@ -5227,6 +5259,7 @@ fn speech_invalid_temperature_exits_2() {
     // Sin `--json`, el mensaje humano va a stderr y `main` le pone el único prefijo.
     let output = bin_command()
         .args(["speech", "say", "--text", "Hola", "--temperature", "0"])
+        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");
@@ -5260,6 +5293,76 @@ fn daemon_flag_on_local_commands_exits_2() {
             "--daemon en {:?} debe dar daemon_not_supported",
             args
         );
+    }
+}
+
+/// Directorio de programa del sandbox: el que `AVI_INSTALL_DIR` le fija al hijo y
+/// sobre el que el binario toma el bloqueo de ciclo de vida.
+fn sandbox_program_dir(envs: &[(String, String)]) -> PathBuf {
+    envs.iter()
+        .find(|(k, _)| k == "AVI_INSTALL_DIR")
+        .map(|(_, v)| PathBuf::from(v))
+        .expect("el sandbox fija AVI_INSTALL_DIR")
+}
+
+/// Con una operación de ciclo de vida en curso (bloqueo exclusivo tomado), los
+/// comandos de uso terminan con `lifecycle_locked` (17) antes de hacer nada: ni
+/// lanzan el daemon ni publican `daemon.ready`.
+#[test]
+fn usage_commands_fail_with_lifecycle_locked_while_exclusive_lock_is_held() {
+    let (sandbox, envs) = contract_sandbox("usage_locked");
+    let held = avi_lifecycle::lock::acquire_exclusive(&sandbox_program_dir(&envs))
+        .expect("tomar el bloqueo exclusivo del sandbox");
+    let env_refs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    for args in [
+        vec!["--json", "voice", "list"],
+        vec![
+            "--json",
+            "--no-daemon",
+            "speech",
+            "synthesize",
+            "--text",
+            "Hola",
+            "--label",
+            "x",
+        ],
+        vec!["--json", "daemon", "start"],
+    ] {
+        let (code, actual) = run_json_env(&args, &env_refs);
+        assert_eq!(code, 17, "{args:?} debe salir 17: {actual}");
+        assert_eq!(
+            actual["reason"], "lifecycle_locked",
+            "{args:?} debe dar lifecycle_locked: {actual}"
+        );
+    }
+    assert!(
+        !sandbox.path().join("daemon.ready").exists(),
+        "un comando bloqueado no debe lanzar el daemon"
+    );
+    drop(held);
+    let (code, actual) = run_json_env(&["--json", "voice", "list"], &env_refs);
+    assert_eq!(code, 0, "liberado el bloqueo `voice list` corre: {actual}");
+}
+
+/// Los comandos de uso comparten el bloqueo: dos a la vez, y con un tercer
+/// poseedor compartido, no se bloquean entre sí.
+#[test]
+fn concurrent_usage_commands_do_not_block_each_other() {
+    let (_sandbox, envs) = contract_sandbox("usage_shared");
+    let _held = avi_lifecycle::lock::acquire_shared(&sandbox_program_dir(&envs))
+        .expect("tomar el bloqueo compartido del sandbox");
+    let env_refs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let results: Vec<(i32, Value)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..2)
+            .map(|_| scope.spawn(|| run_json_env(&["--json", "voice", "list"], &env_refs)))
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("el hilo no debe entrar en pánico"))
+            .collect()
+    });
+    for (code, actual) in results {
+        assert_eq!(code, 0, "`voice list` concurrente debe salir 0: {actual}");
     }
 }
 
@@ -5315,6 +5418,7 @@ fn speech_synthesize_play_with_json_exits_2() {
 /// guarda RF-12.2 se ejercita con solo `--play`.
 #[test]
 fn speech_synthesize_play_without_tty_exits_2() {
+    let (_sandbox, envs) = contract_sandbox("synthesize_play_no_tty");
     let output = bin_command()
         .args([
             "speech",
@@ -5325,6 +5429,7 @@ fn speech_synthesize_play_without_tty_exits_2() {
             "x",
             "--play",
         ])
+        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .output()
         .expect("el binario debe ejecutarse");

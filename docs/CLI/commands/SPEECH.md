@@ -421,6 +421,7 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 | `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`) |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
+| `lifecycle_locked` | 17 | Todos los subcomandos: hay una operación de ciclo de vida en curso (`self install`, `self update`, `self uninstall`, `cleanup`, `doctor --repair`) y el comando no llega a ejecutarse |
 | `stt_unsupported` | 1 | Binario compilado sin el feature `native-stt` (transcribe/dub) |
 | `translation_unsupported` | 1 | Binario compilado sin el feature `native-translation`, con par no-passthrough |
 | `transcription_error` / `transcription_failed` | 10 | Fallo de captura del micrófono o del motor Parakeet (la lectura de un `--audio` ausente, corrupto o con error de E/S sale con 3, 2 y 1) |

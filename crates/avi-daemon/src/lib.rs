@@ -2091,11 +2091,17 @@ async fn prepare_server(
 /// residente más el presupuesto del testigo. Readiness (enlazado + motor
 /// construido) queda así desacoplado del pre-calentamiento: un warmup fallido
 /// o vencido degrada —pero no derriba— el daemon.
+///
+/// `guard` es la guardia opaca del bloqueo de ciclo de vida que el lanzador
+/// tomó para este proceso: se suelta justo después de registrar el daemon,
+/// porque desde ese momento lo alcanza la parada de las operaciones. Si el
+/// arranque falla antes, se suelta al devolver el error.
 pub async fn run_daemon_server(
     addr: SocketAddr,
     warm_voice: String,
     voices: VoiceStore,
     speech: SpeechStore,
+    guard: Option<Box<dyn Send>>,
 ) -> anyhow::Result<()> {
     let (listener, bound, state) = prepare_server(addr, &warm_voice, voices, speech)
         .await
@@ -2111,6 +2117,7 @@ pub async fn run_daemon_server(
             message: e.to_string(),
         })
         .map_err(anyhow::Error::new)?;
+    drop(guard);
     let app = build_router_with_state(state.clone());
     println!("Daemon nativo escuchando en http://{}", bound);
 
@@ -2242,6 +2249,9 @@ fn publish_startup_failure(err: &anyhow::Error) {
 /// Un apagado graceful vía `shutdown_notify` (`daemon stop`) no reintenta y retorna `Ok`.
 /// El reclamo activo matar-y-rearrancar ante otra instancia vive en el CLI
 /// (`daemon start`): `serve` nunca mata a otra instancia sana.
+///
+/// `guard` solo acompaña a la primera iteración, que la suelta al registrarse:
+/// en los reinicios en proceso el daemon ya está registrado y no queda guardia.
 pub async fn run_supervised(
     addr: SocketAddr,
     auto_restart: bool,
@@ -2249,9 +2259,11 @@ pub async fn run_supervised(
     warm_voice: String,
     voices: VoiceStore,
     speech: SpeechStore,
+    guard: Option<Box<dyn Send>>,
 ) -> anyhow::Result<()> {
+    let mut guard = guard;
     if !auto_restart {
-        let result = run_daemon_server(addr, warm_voice, voices, speech).await;
+        let result = run_daemon_server(addr, warm_voice, voices, speech, guard).await;
         if let Err(ref e) = result {
             publish_startup_failure(e);
         }
@@ -2273,7 +2285,15 @@ pub async fn run_supervised(
     let mut ready_once = false;
     loop {
         let iteration_start = std::time::Instant::now();
-        match run_daemon_server(addr, warm_voice.clone(), voices.clone(), speech.clone()).await {
+        match run_daemon_server(
+            addr,
+            warm_voice.clone(),
+            voices.clone(),
+            speech.clone(),
+            guard.take(),
+        )
+        .await
+        {
             Ok(()) => {
                 // Apagado graceful (stop) — no reintentar
                 return Ok(());
