@@ -2708,6 +2708,13 @@ mod tts {
     /// fuente, vía Parakeet TDT v3 (ort/ONNX Runtime).
     #[cfg(feature = "native-stt")]
     fn wer_vs_text(path: &Path, text: &str) -> f64 {
+        wer_and_transcript(path, text, "es").0
+    }
+
+    /// WER del WAV frente al texto fuente, transcribiendo en `language`
+    /// (`es` o `en`), junto con la transcripción obtenida.
+    #[cfg(feature = "native-stt")]
+    fn wer_and_transcript(path: &Path, text: &str, language: &str) -> (f64, String) {
         let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
         let snapshot = avi_store::ModelStore::new()
@@ -2717,15 +2724,15 @@ mod tts {
             .get_or_try_init(&snapshot)
             .expect("el modelo Parakeet TDT v3 debe existir");
         let transcribed = engine
-            .transcribe(&pcm, Some("es"))
+            .transcribe(&pcm, Some(language))
             .expect("la transcripción no debe fallar");
         let a = normalize(&transcribed);
         let b = normalize(text);
         if b.is_empty() {
-            return 1.0;
+            return (1.0, transcribed);
         }
         let d = levenshtein(&a, &b);
-        d as f64 / b.len() as f64
+        (d as f64 / b.len() as f64, transcribed)
     }
 
     /// Palabras minúsculas sin diacríticos ni puntuación (señal de habla
@@ -2918,6 +2925,161 @@ mod tts {
             wer
         );
         let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
+    }
+
+    /// Medición de una síntesis: duración del WAV, WER frente al texto y la
+    /// transcripción obtenida.
+    #[cfg(feature = "native-stt")]
+    struct Measured {
+        secs: f64,
+        wer: f64,
+        transcript: String,
+    }
+
+    /// Sintetiza `text` con `voice` por la vía directa de la instancia, en
+    /// `language` (`es-latam` o `en`) tanto de origen como de destino para no
+    /// traducir, y mide duración y WER transcribiendo en el mismo idioma.
+    #[cfg(feature = "native-stt")]
+    fn synthesize_measured(
+        inst: &IsolatedInstance,
+        voice: &str,
+        language: &str,
+        text: &str,
+    ) -> Measured {
+        let label = unique_label("matrix");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "synthesize",
+                "--text",
+                text,
+                "--voice",
+                voice,
+                "--label",
+                &label,
+                "--source-language",
+                language,
+                "--target-language",
+                language,
+            ],
+            &inst.args(),
+        );
+        assert_eq!(code, 0, "síntesis de '{voice}' en {language}: {actual}");
+        let audio = actual["audio_path"]
+            .as_str()
+            .expect("audio_path debe existir");
+        let audio_path = Path::new(audio);
+        assert!(
+            audio_path.is_file(),
+            "el WAV debe estar persistido en el almacén"
+        );
+        valid_wav_24k(audio_path);
+        let reader = hound::WavReader::open(audio_path).expect("WAV legible");
+        let secs = f64::from(reader.duration()) / f64::from(reader.spec().sample_rate);
+        let stt_language = if language == "es-latam" {
+            "es"
+        } else {
+            language
+        };
+        let (wer, transcript) = wer_and_transcript(audio_path, text, stt_language);
+        eprintln!(
+            "[matriz] voz={voice} idioma={language} duración={secs:.2}s WER={wer:.3} \
+             transcripción={transcript:?}"
+        );
+        Measured {
+            secs,
+            wer,
+            transcript,
+        }
+    }
+
+    /// Texto de unas 15 palabras en español para la matriz de voces.
+    #[cfg(feature = "native-stt")]
+    const MATRIX_TEXT_ES: &str =
+        "Mañana por la tarde iremos al mercado para comprar frutas frescas y verduras para la cena.";
+
+    /// Texto de unas 15 palabras en inglés para la matriz de voces.
+    #[cfg(feature = "native-stt")]
+    const MATRIX_TEXT_EN: &str =
+        "Tomorrow afternoon we will walk to the market to buy fresh fruit and vegetables for dinner.";
+
+    /// Celda de la matriz voz × idioma: la síntesis debe ser inteligible
+    /// (WER ≤ 0.25) y su duración debe caer entre `min_secs` (un truncado la
+    /// bajaba a ~0.6 s) y 12 s (una salida desbocada la excede).
+    #[cfg(feature = "native-stt")]
+    fn assert_matrix_cell(voice: &str, language: &str) {
+        require_tts_model();
+        require_tts_base_model();
+        require_tts_binary();
+        require_parakeet();
+        let (text, min_secs) = if language == "en" {
+            (MATRIX_TEXT_EN, 4.0)
+        } else {
+            (MATRIX_TEXT_ES, 5.0)
+        };
+        let _guard = lock_tts();
+        let inst = IsolatedInstance::new("voice_matrix");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let m = synthesize_measured(&inst, voice, language, text);
+        assert!(
+            m.wer <= 0.25,
+            "WER de '{voice}' en {language} = {} debe ser ≤ 0.25 (transcripción: {:?})",
+            m.wer,
+            m.transcript
+        );
+        assert!(
+            m.secs >= min_secs && m.secs <= 12.0,
+            "duración de '{voice}' en {language} = {:.2} s fuera de [{min_secs}, 12] \
+             (transcripción: {:?})",
+            m.secs,
+            m.transcript
+        );
+    }
+
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    fn voice_matrix_default_es_latam() {
+        assert_matrix_cell("default", "es-latam");
+    }
+
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    fn voice_matrix_default_en() {
+        assert_matrix_cell("default", "en");
+    }
+
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    fn voice_matrix_ryan_es_latam() {
+        assert_matrix_cell("ryan", "es-latam");
+    }
+
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    fn voice_matrix_ryan_en() {
+        assert_matrix_cell("ryan", "en");
+    }
+
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    fn voice_matrix_vivian_es_latam() {
+        assert_matrix_cell("vivian", "es-latam");
+    }
+
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    fn voice_matrix_vivian_en() {
+        assert_matrix_cell("vivian", "en");
     }
 
     #[test]
@@ -3421,6 +3583,115 @@ mod tts {
             size > 1_000_000,
             "el .qvoice debe pesar > 1 MB (era {})",
             size
+        );
+        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
+    }
+
+    /// Campos de la cabecera de un `.qvoice` v3 que verifica la prueba de
+    /// clonación.
+    #[cfg(feature = "native-stt")]
+    struct QvoiceHeader {
+        version: u32,
+        enc_dim: u32,
+        ref_text_len: u32,
+        n_ref_frames: u32,
+        voice_name: String,
+        /// Bit 0: solo huella de timbre; bit 1: lleva códigos de referencia.
+        flags: u32,
+    }
+
+    /// Lee la cabecera de un `.qvoice` v3: `QVCE`, versión, `enc_dim`, huella
+    /// (`enc_dim` f32), longitud y texto de la transcripción, número de
+    /// fotogramas de referencia (16 enteros de 32 bits cada uno) y la sección
+    /// `META` (id de idioma, nombre de idioma de 16 bytes, tamaño de modelo,
+    /// `enc_dim`, duración de referencia, nombre de voz de 64 bytes y flags).
+    #[cfg(feature = "native-stt")]
+    fn read_qvoice_header(bytes: &[u8]) -> QvoiceHeader {
+        fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+            u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"))
+        }
+        assert_eq!(&bytes[..4], b"QVCE", "magic del .qvoice");
+        let version = u32_at(bytes, 4);
+        let enc_dim = u32_at(bytes, 8);
+        let mut o = 12 + enc_dim as usize * 4;
+        let ref_text_len = u32_at(bytes, o);
+        o += 4 + ref_text_len as usize;
+        let n_ref_frames = u32_at(bytes, o);
+        o += 4 + n_ref_frames as usize * 16 * 4;
+        assert_eq!(&bytes[o..o + 4], b"META", "sección META del .qvoice v3");
+        o += 4 + 4 + 16 + 4 + 4 + 4;
+        let name_field = &bytes[o..o + 64];
+        let name_len = name_field.iter().position(|b| *b == 0).unwrap_or(64);
+        let voice_name = String::from_utf8_lossy(&name_field[..name_len]).into_owned();
+        let flags = u32_at(bytes, o + 64);
+        QvoiceHeader {
+            version,
+            enc_dim,
+            ref_text_len,
+            n_ref_frames,
+            voice_name,
+            flags,
+        }
+    }
+
+    /// Clonar desde `Speech Sampler.wav` guarda solo la huella de timbre: un
+    /// QVCE v3 con `enc_dim` 1024, el nombre pedido, sin transcripción ni
+    /// códigos de referencia. La voz resultante sintetiza de forma inteligible.
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    fn voice_clone_stores_only_timbre_fingerprint() {
+        require_tts_model();
+        require_tts_base_model();
+        require_tts_binary();
+        require_parakeet();
+        let _guard = lock_tts();
+        let name = unique_label("clone");
+        let inst = IsolatedInstance::new("clone_timbre");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "voice",
+                "clone",
+                "--name",
+                &name,
+                "--speech-reference",
+                "assets/audios/Speech Sampler.wav",
+            ],
+            &inst.args(),
+        );
+        assert_eq!(code, 0, "clonación: {actual}");
+        let speech = actual["speech"].as_str().expect("speech debe existir");
+        let bytes = std::fs::read(speech).expect("el .qvoice debe poder leerse");
+        let h = read_qvoice_header(&bytes);
+        eprintln!(
+            "[clonación] version={} enc_dim={} ref_text_len={} n_ref_frames={} \
+             voice_name={:?} flags={} tamaño={}",
+            h.version,
+            h.enc_dim,
+            h.ref_text_len,
+            h.n_ref_frames,
+            h.voice_name,
+            h.flags,
+            bytes.len()
+        );
+        assert_eq!(h.version, 3, "versión del formato QVCE");
+        assert_eq!(h.enc_dim, 1024, "dimensión de la huella de timbre");
+        assert_eq!(h.voice_name, name, "nombre de voz guardado");
+        assert_eq!(h.ref_text_len, 0, "sin transcripción de referencia");
+        assert_eq!(h.n_ref_frames, 0, "sin códigos de referencia");
+        assert_eq!(h.flags & 1, 1, "flag xvector_only");
+        assert_eq!(h.flags & 2, 0, "sin ICL");
+        let m = synthesize_measured(&inst, &name, "es-latam", MATRIX_TEXT_ES);
+        assert!(
+            m.wer <= 0.25,
+            "WER de la voz clonada = {} debe ser ≤ 0.25 (transcripción: {:?})",
+            m.wer,
+            m.transcript
         );
         let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
     }
