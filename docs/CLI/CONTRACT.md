@@ -184,7 +184,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | CLI | Entrada de referencia de habla de `voice clone` (obligatoria, ≥10s) | `--speech-reference` (`-s`) |
 | CLI | Borrado masivo de la salida | `cleanup --synthetic-speech` |
 | Filesystem | Almacén de la salida generada | `<data_dir>/speech/<voz>/<etiqueta>.wav` (`crates/avi-store/src/lib.rs` `SpeechStore`) |
-| Filesystem | Graft persistido de una voz clonada | `reference.qvoice` (`crates/avi-store/src/lib.rs` `VoiceStore`); los WAV de entrada (`--timbre-reference`/`--speech-reference`) se consumen y no se copian al almacén |
+| Filesystem | Huella de timbre persistida de una voz clonada | `reference.qvoice` (`crates/avi-store/src/lib.rs` `VoiceStore`); los WAV de entrada (`--timbre-reference`/`--speech-reference`) se consumen y no se copian al almacén |
 | Payload | Clave del listado | `synthetic_speech` |
 | Interno | Parámetro del timbre en el motor y el protocolo | `timbre` |
 
@@ -194,7 +194,7 @@ En disco los dos sentidos quedan separados por nombre y no por posición:
 
 ```
 <data_dir>/
-  voices/<voz>/reference.qvoice         ← graft persistido, derivado de las entradas aportadas (`VoiceStore`)
+  voices/<voz>/reference.qvoice         ← huella de timbre persistida (embedding de locutor), derivada de las entradas aportadas (`VoiceStore`)
   speech/<voz>/<etiqueta>.wav           ← salida generada (`SpeechStore`)
 ```
 
@@ -242,7 +242,9 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 | `speech list` | `--voice/-v` · `--json` |
 | `speech remove` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
 
-**`--voice/-v` es opcional en las cinco que lo aceptan** (`synthesize`, `say`, `play`, `list`, `remove`) y, si falta, usa la voz de fábrica `default` (voz clonada de fábrica con `.qvoice` graft, `crates/avi-store/assets/default/reference.qvoice`, `crates/avi-store/src/lib.rs` `FACTORY_VOICES`). El catálogo de voces de fábrica es `default` (clonada), `ryan` y `vivian` (presets del motor `qwen_tts.c:spk_table`): todas entradas del registro `VoiceStore`. La distinción interna preset/clonada (`avi-tts/src/lib.rs` `resolve_voice_engine`, presencia de `reference.qvoice`) es detalle no-normativo; para el contrato toda voz es una entrada del registro. Las tres voces de fábrica sintetizan texto corto (2-4 palabras, p. ej. `Hola mundo`) con `WER ≤0.25`.
+**`--voice/-v` es opcional en las cinco que lo aceptan** (`synthesize`, `say`, `play`, `list`, `remove`) y, si falta, usa la voz de fábrica `default` (voz clonada de fábrica con solo la huella de timbre, `crates/avi-store/assets/default/reference.qvoice`, `crates/avi-store/src/lib.rs` `FACTORY_VOICES`). El catálogo de voces de fábrica es `default` (clonada), `ryan` y `vivian` (presets del motor `qwen_tts.c:spk_table`): todas entradas del registro `VoiceStore`, y el almacén garantiza las tres en cada consulta, incluida una raíz de datos recién creada. La distinción interna preset/clonada (`avi-tts/src/lib.rs` `resolve_voice_engine`, presencia de `reference.qvoice`) es detalle no-normativo; para el contrato toda voz es una entrada del registro. Las tres voces de fábrica sintetizan texto corto (2-4 palabras, p. ej. `Hola mundo`) con `WER ≤0.25`.
+
+**Matriz voces × idioma.** Las tres voces de fábrica hablan `es-latam` y `en`: el motor traduce el token del producto a su nombre de idioma (`es-latam` → `Spanish`, `en` → `English`) en la síntesis y en la clonación, y los nueve locutores del motor son multilingües. El idioma nativo de un preset es solo informativo (`ryan`: inglés; `vivian`: chino) y no restringe el idioma de destino. `default` es una clonación generada con la ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav` (~10 s): guarda solo la huella de timbre. Toda voz clonada (`default` incluida) se sintetiza con el modelo Base y los presets con CustomVoice; sin el modelo Base provisionado, sintetizar con una voz clonada sale con `model_missing` (exit 4), sin caer a CustomVoice.
 
 **El namespace es obligatorio en la gestión.** Las etiquetas viven bajo una voz, así que `play`, `remove` y `list` toman `--voice` con el mismo default que `synthesize` y `say`. `speech list` filtra por voz cuando se pasa `--voice/-v` (`SpeechCommands::List { voice: Option<String> }`, del binario principal; brazo `List` en el binario principal, lectura acotada vía `SpeechStore::list_by_voice` en el almacén de voces); sin `--voice` recorre todas las voces. Es un segmento más que en `voice remove --name X`, inevitable dado el layout del almacén.
 
@@ -729,10 +731,11 @@ conjunto provisionado es fijo (es+en offline completo desde el primer uso).
 
 ### `voice`
 
-- **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime); ambos WAV se consumen para producir el graft `reference.qvoice` y no se copian al almacén. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
+- **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime); ambos WAV se consumen para producir `reference.qvoice` y no se copian al almacén. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
+- **`voice clone` guarda solo la huella de timbre (x-vector) de la referencia**: no recibe transcripción ni idioma, no depende del STT y funciona igual con o sin la feature `native-stt`. Las voces clonadas se sintetizan con el modelo Base (`qwen3-tts-0.6b-base`, opt-in con `setup --with-voice-cloning`); su ausencia sale con `model_missing` (exit 4) tanto al clonar como al sintetizar.
 - **`voice clone` recibe el despacho al daemon en sus tres modos**, porque el clonado ejecuta el modelo Base (y, con el daemon, precalienta la voz nueva) y necesita un modelo cargado igual que las dos sub-acciones que sintetizan.
 - **`voice clone` sobre un nombre tomado sin `--force` sale con 6**, y sobre un nombre libre `--force` es un no-op declarado.
-- `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz clonada únicamente por la presencia de `reference.qvoice`, sin fallback a WAV. Las voces de fábrica son `default` (clonada, con `reference.qvoice` graft) y `ryan`/`vivian` (presets puros sin referencia); `voice remove` las protege a las tres (exit 2; `FACTORY_VOICES` del almacén de voces, `avi_store::is_factory_name` definida en el almacén de voces, invocada en el binario principal).
+- `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz clonada únicamente por la presencia de `reference.qvoice`, sin fallback a WAV. Las voces de fábrica son `default` (clonada, con `reference.qvoice`) y `ryan`/`vivian` (presets puros sin referencia); `voice remove` las protege a las tres (exit 2; `FACTORY_VOICES` del almacén de voces, `avi_store::is_factory_name` definida en el almacén de voces, invocada en el binario principal).
 - `voice list` muestra las tres de fábrica (`is_factory=true`) más las clonadas del usuario; `voice remove` rechaza las de fábrica con exit 2.
 - En `voice list` y `voice remove`, `-n` es `--name`.
 
@@ -762,7 +765,7 @@ El integrador que quiera además conservar el audio usa `speech synthesize --tex
 
 ### Traducción opt-in en `speech say`/`speech synthesize`
 
-`--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. Ambos son opcionales en `say`/`synthesize`: `--target-language` vale `es-latam` por defecto y `--source-language` vale lo mismo que `--target-language` cuando se omite, por lo que sin flags no se traduce. Solo se admite `es-latam` o `en`; cualquier otro valor sale con **2**. El modelo de traducción ausente reutiliza el exit **4** (`ExitCode::ModelMissing`), remitiendo a `setup`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`ExitCode::TranslationFailed`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
+`--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. Ambos son opcionales en `say`/`synthesize`: `--target-language` vale `es-latam` por defecto y `--source-language` vale lo mismo que `--target-language` cuando se omite, por lo que sin flags no se traduce. Solo se admite `es-latam` o `en`; cualquier otro valor sale con **2**. Ese mismo token es el idioma de la síntesis: el motor lo recibe traducido a su nombre (`Spanish`/`English`), y `POST /synthesize` del daemon rechaza un `target_language` que no sea `es-latam` o `en` con `usage_error` (`/dub` normaliza antes `es` a `es-latam`). El modelo de traducción ausente reutiliza el exit **4** (`ExitCode::ModelMissing`), remitiendo a `setup`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`ExitCode::TranslationFailed`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
 
 `--temperature` es un override opcional del muestreo en `say`/`synthesize`/`dub`: sin el flag se usa la temperatura de producción (`0.35`); con el flag debe cumplirse `0 < t <= 2.0`, y fuera de ese rango sale con **2**.
 

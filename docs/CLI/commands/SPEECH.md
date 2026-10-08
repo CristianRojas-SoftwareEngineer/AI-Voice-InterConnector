@@ -181,7 +181,7 @@ Validaciones y flujo local:
  `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) → comprobación fast-fail
  de colisión de etiqueta (exit 6 sin `--force`) → `traducir_si_difiere`
  (passthrough si `source == target`; si no, exige el modelo de traducción
- provisionado, exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_temperature` → sin
+ provisionado, exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_options` → sin
  `--play`, persiste directamente; con `--play`, entra al bucle de 4
  opciones y persiste solo al aceptar (con recomprobación de colisión) →
  si `--output`, copia el WAV persistido a esa ruta.
@@ -221,7 +221,7 @@ incondicional.
 
 Despacho: `say_via_daemon` si aplica, o rama directa con
 `require_model_provisioned` + `VoiceStore::exists` + `traducir_si_difiere` +
-`Qwen3TtsEngine::synthesize_with_temperature` + `AudioService::play_wav`.
+`Qwen3TtsEngine::synthesize_with_options` + `AudioService::play_wav`.
 
 ### Contrato `--json`
 
@@ -299,7 +299,7 @@ vacío, exit 2 `empty_text` → si `source != target`, exige el par
 `{es-en, en-es}` (si no, exit 2 `unsupported_language_pair`) y el modelo de
 traducción provisionado (exit 4 `model_missing` si no); sin el feature
 `native-translation`, exit 1 `translation_unsupported` → la voz debe existir
-(exit 3 `voice_not_found`) → `Qwen3TtsEngine::synthesize_with_temperature` →
+(exit 3 `voice_not_found`) → `Qwen3TtsEngine::synthesize_with_options` →
 `AudioService::play_wav`.
 
 ### `POST /dub` (daemon)
@@ -394,6 +394,13 @@ de `clap`); internamente se normalizan a `{es, en}` vía `resolve_stt_language`
 traducción provisionados por `setup` son `es-en` y `en-es`
 (`crates/avi-shared/src/paths.rs`, `MODEL_REVISIONS`); cualquier otro par
 resulta en exit 2 `unsupported_language_pair`.
+
+**Idioma de síntesis.** El idioma de destino (`--target-language`) es también el
+idioma que recibe el motor de síntesis, tanto en la CLI como en el daemon: el
+token del producto se traduce al nombre del motor (`es-latam` → `Spanish`,
+`en` → `English`) y las tres voces de fábrica hablan ambos. `POST /synthesize`
+rechaza un `target_language` distinto de `es-latam` y `en` con `usage_error`;
+`POST /dub` normaliza antes `es` a `es-latam`.
 
 **Divergencia deliberada con `translate`.** El conjunto `{es-latam, en}` es
 la taxonomía del grupo `speech`; el comando `translate` usa un alfabeto

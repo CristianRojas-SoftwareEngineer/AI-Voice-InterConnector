@@ -74,7 +74,9 @@ route_to_daemon(daemon_mode, client)?
               Qwen3TtsEngine::new(None).base_model_dir     ← exit 4 "model_missing" si el Base de clonado no está provisionado
                 │
                 ▼
-              avi_tts::clone_voice(model_dir, speech_path, tmp_qvoice, name, "es")
+              avi_tts::clone_voice(model_dir, speech_path, tmp_qvoice, name)
+                ← el motor se lanza con --xvector-only: guarda solo la huella de timbre;
+                  sin transcripción ni idioma, y sin depender del STT (funciona igual con o sin native-stt)
                 │
                 ▼
               voice_store.save_reference(name, tmp_qvoice) → <voces>/<name>/reference.qvoice
@@ -207,19 +209,30 @@ una voz clonada al listar o al intentar eliminarlas.
 
 ```
 <nombre>/
-└── reference.qvoice        ← graft binario (speaker embedding + pesos Base); único archivo persistido
+└── reference.qvoice        ← perfil binario con solo la huella de timbre (speaker embedding, x-vector); único archivo persistido
 ```
 
 Los WAV de entrada (`--speech-reference`/`--timbre-reference`) se consumen
-para producir el graft y no se copian al almacén: `reference.qvoice` es lo
+para producir el perfil y no se copian al almacén: `reference.qvoice` es lo
 único que el motor de síntesis consulta
 (`VoiceStore::find_reference`, `crates/avi-store/src/lib.rs`): su presencia
 determina la rama «clonada» en `avi_tts::resolve_voice_engine`; sin él, la voz
-resuelve como preset del motor. `default` es una voz de fábrica *clonada*
+resuelve como preset del motor. Toda voz clonada se sintetiza con el modelo
+Base (`qwen3-tts-0.6b-base`) y `--graft`, que aplica solo la huella de timbre y
+deja la prosodia al modelo; los presets se sintetizan con el modelo CustomVoice
+(`qwen3-tts-0.6b`). Sin el modelo Base provisionado, sintetizar con una voz
+clonada (`default` incluida) sale con `model_missing` (exit 4; en el daemon, como evento `error` del stream de
+`/synthesize` y `/dub`), sin caer a CustomVoice. `default` es una voz de fábrica *clonada*
 (trae su propio `reference.qvoice` embebido en el binario,
-`FACTORY_DEFAULT_QVOICE`) para garantizar una tasa de error de palabra baja en
-textos cortos; `ryan`/`vivian` son presets puros del motor Qwen3-TTS, sin
-`reference.qvoice`.
+`FACTORY_DEFAULT_QVOICE`, también con solo la huella de timbre). Se generó con la
+ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav`
+(~10 s), copiando al asset el `reference.qvoice` que deja en el almacén
+`ai-voice-interconnector --no-daemon voice clone --name default --force --speech-reference "assets/audios/Speech Sampler.wav"`
+(`--force` porque `default` ya existe como voz de fábrica).
+`ryan`/`vivian` son presets puros del motor Qwen3-TTS, sin
+`reference.qvoice`. Las tres hablan `es-latam` y `en`: el idioma nativo de un
+preset (`ryan`: inglés; `vivian`: chino) es informativo, porque los nueve
+locutores del motor son multilingües.
 
 `voice_store.save_reference` (`crates/avi-store/src/lib.rs`) escribe con
 temporal + `rename` (sin dejar un `.qvoice` parcial ante fallo a mitad de

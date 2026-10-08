@@ -90,7 +90,7 @@ El toolchain de Rust basta para compilar y empaquetar; no se requiere ningún ot
 
 | SO | Probado en (CI) | Mínimo declarado | Origen del mínimo |
 |----|-----------------|------------------|-------------------|
-| Windows | Executor `circleci/windows@5.0` (Windows Server 2022) | Windows 10+ x64 | Binario Rust autocontenido, sin APIs posteriores |
+| Windows | Executor `circleci/windows@5.0` (Windows Server 2022) | Windows 10 1903+ x64 | Binario Rust autocontenido, sin APIs posteriores; el motor TTS incrusta un manifiesto `activeCodePage` UTF-8, que las versiones anteriores ignoran (el motor recibiría el texto y las rutas no ASCII en la página de códigos ANSI) |
 | Linux | `cimg/rust:1.96.0` (base Ubuntu 22.04, glibc 2.35) | glibc ≥ 2.35 | Binario `gnu` (crt-static no cubre glibc); el bootstrap lo diagnostica con la comprobación de arranque (`binary_incompatible`) |
 | macOS | Runner Apple Silicon Xcode 26.4 | macOS 13+ (Ventura) | Binario Rust arm64 |
 
@@ -705,7 +705,7 @@ si no, se compila. El bundle ONNX Runtime (`ort-bundle/`) se cachea con
 `ort-v1-win-x64-<< pipeline.parameters.ort_pin >>` y guarda tras el bundling.
 
 Ver `vendor/qwen3-tts/CLAUDE.md` y `crates/avi-tts/src/lib.rs` para el contrato
-de invocación (`--int4 -j 4 --stream`, `GenerationOptions::production()` temp
+de invocación (`-j 4 --stream`, sin `--int4`; `GenerationOptions::production()` temp
 0.35 seed 4).
 
 ---
@@ -727,7 +727,7 @@ recursos de red), se copia el blob y el disco se duplica. La descarga la hace el
 | `opus-mt-es-en` | `CristianRojaas/opus-mt-es-en-ct2-int8` | Traducción es→en (CTranslate2 int8, 82.536.565 bytes) |
 | `opus-mt-en-es` | `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción en→es (CTranslate2 int8, 82.536.565 bytes) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (671,1 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
-| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz (opt-in `--with-voice-cloning`) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base: clonado de voz y síntesis de las voces clonadas (opt-in `--with-voice-cloning`) |
 
 Los pines viven en `MODEL_REVISIONS` (`crates/avi-shared/src/paths.rs`): un `&[ModelPin]`
 con `name`, `repo`, `revision` y `approx_bytes` (tamaño medido de la descarga, del que sale la

@@ -67,7 +67,7 @@ AI-Voice-InterConnector/
 │   ├── avi-shared/                     # Fuente única de rutas y canonicalización (reexportada por avi-store)
 │   ├── avi-process/                    # Flags de creación de procesos y borrado diferido (Windows)
 │   ├── avi-store/                      # VoiceStore, SpeechStore, ModelStore (hf-hub + indicatif; cache_dir propio; los pines `MODEL_REVISIONS` viven en avi-shared)
-│   │   └── assets/default/             # speech-reference.wav + timbre-reference.wav embebidos
+│   │   └── assets/default/             # reference.qvoice de la voz de fábrica `default` (huella de timbre), embebido
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
 │   ├── avi-stt/                        # ParakeetEngine (ort, load-dynamic)
 │   ├── avi-translation/                # Ct2TranslationEngine (CTranslate2/ct2rs)
@@ -111,11 +111,13 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Modelos** | `qwen3-tts-0.6b` (síntesis) y `qwen3-tts-0.6b-base` (clonado) |
 | **Licencia** | MIT / Apache-2.0 |
 | **Parámetros** | 0.6B |
-| **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional |
+| **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional; se guarda solo la huella de timbre (sin transcripción) |
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 |
 
-Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato de invocación: el residente se lanza como `--serve <puerto> --host 127.0.0.1 --int4 -j 4 --stream --watch-stdin` (más `--load-voice <qvoice> --icl-only` cuando se le carga una voz), y el clonado por proceso local como `-d <modelo> … --save-voice <out> --voice-name <nombre> -l <idioma> --watch-stdin`. El `--watch-stdin` es una divergencia propia del motor respecto al upstream y es lo que ata su vida a la de quien lo lanzó: el lanzador mantiene abierta la tubería de su entrada estándar y el motor termina solo al cerrarse.
+Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato de invocación: el residente se lanza como `--serve <puerto> --host 127.0.0.1 -j 4 --stream --watch-stdin` (más `--load-voice <qvoice> --graft` cuando se le carga una voz clonada), y el clonado por proceso local como `-d <modelo> --ref-audio <wav> --xvector-only --save-voice <out> --voice-name <nombre> --watch-stdin`. El residente no lleva `--int4`: en el modelo 0.6B cuantizaría el code predictor y la salida dejaría de ser determinista y saldría truncada (p. ej. con la voz `ryan`). El idioma del producto (`es-latam`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error.
+
+**Clonación solo con la huella de timbre.** `clone_voice` lanza el motor con `--xvector-only`, de modo que toda voz clonada (la de fábrica y las del usuario) guarda en su `reference.qvoice` únicamente el x-vector de la referencia, sin transcripción, códigos ni idioma: la clonación no depende del STT y es igual con o sin `native-stt`. La síntesis de una voz clonada arranca el residente sobre el modelo Base con `--graft` (aplica solo la huella de timbre y deja la prosodia al modelo), mientras que los presets usan CustomVoice; la única regla de elección es `select_model_dir`, y la falta del modelo que exige la voz es `model_missing` (exit 4), sin caer al otro modelo. El idioma lo fija cada petición de síntesis. La voz de fábrica `default` se generó con la ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav` (~10 s). El `--watch-stdin` es una divergencia propia del motor respecto al upstream y es lo que ata su vida a la de quien lo lanzó: el lanzador mantiene abierta la tubería de su entrada estándar y el motor termina solo al cerrarse.
 
 ## Traducción cross-lingual (opus-mt / CTranslate2)
 
@@ -134,7 +136,7 @@ Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio�
 2. CLI parsea args y resuelve VoiceStore (default embebida o clonada)
                      │
                      ▼
-3. Qwen3TtsEngine::synthesize_with_temperature(...) → resolve_voice_engine
+3. Qwen3TtsEngine::synthesize_with_options(texto, VoiceProfile, GenerationOptions con idioma) → resolve_voice_engine
    - default → Clonada (reference.qvoice embebido en el binario)
    - ryan/vivian → Preset (voces puras del motor, sin qvoice)
    - clonada → Clonada(PathBuf) con reference.qvoice
