@@ -196,8 +196,9 @@ pub trait TtsEngine: Send + Sync {
     }
 }
 
-/// Voz resuelta hacia la semántica del motor: preset del servidor o voz clonada
-/// cargada al arranque con `--load-voice <qvoice> --icl-only`.
+/// Voz resuelta hacia la semántica del motor: preset del servidor (modelo
+/// CustomVoice) o voz clonada cargada al arranque con
+/// `--load-voice <qvoice> --graft` sobre el modelo Base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoiceEngine {
     Preset(String),
@@ -304,9 +305,9 @@ fn resolve_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Resolución del directorio del modelo Base por capas, deliberadamente
-/// separada de `resolve_model_dir`: solo la usa el clonado (`--ref-audio`),
-/// que exige el modelo Base, distinto del
-/// CustomVoice usado por la síntesis general.
+/// separada de `resolve_model_dir`: la usan el clonado (`--ref-audio`) y la
+/// síntesis de voces clonadas, que exigen el modelo Base, distinto del
+/// CustomVoice usado por los presets.
 /// Orden: 1. `QWEN3_TTS_BASE_MODEL_DIR`; 2. directorio hermano del binario
 /// (`<dir del bin>/qwen3-tts-0.6b-base`); 3. `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b-base`;
 /// 4. snapshot en la raíz de modelos `ModelStore::model_snapshot_path("qwen3-tts-0.6b-base")`;
@@ -349,6 +350,42 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
         return Some(vendored);
     }
     None
+}
+
+/// Falta el modelo de pesos que exige el tipo de voz a sintetizar (CustomVoice
+/// para un preset, Base para una voz clonada). Los llamadores lo distinguen de
+/// otros fallos de síntesis para reportarlo como `model_missing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelMissing {
+    /// Mensaje en español que indica qué modelo falta.
+    pub message: &'static str,
+}
+
+impl std::fmt::Display for ModelMissing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message)
+    }
+}
+
+impl std::error::Error for ModelMissing {}
+
+/// Directorio de pesos con el que se arranca el residente de `voice`: el
+/// modelo Base para una voz clonada y CustomVoice para un preset. Si falta el
+/// modelo que exige el tipo de voz es un error explícito, sin caer al otro.
+/// Es la única fuente de la regla «clonada exige Base, preset exige CustomVoice».
+fn select_model_dir<'a>(
+    voice: &VoiceEngine,
+    model_dir: Option<&'a Path>,
+    base_model_dir: Option<&'a Path>,
+) -> std::result::Result<&'a Path, ModelMissing> {
+    match voice {
+        VoiceEngine::Preset(_) => model_dir.ok_or(ModelMissing {
+            message: "El modelo de síntesis Qwen3-TTS no está provisionado.",
+        }),
+        VoiceEngine::Cloned(_) => base_model_dir.ok_or(ModelMissing {
+            message: "El modelo Base de Qwen3-TTS, necesario para sintetizar voces clonadas, no está provisionado. Ejecuta 'setup' primero.",
+        }),
+    }
 }
 
 /// Motor Qwen3-TTS con servidor HTTP residente gestionado por el host como
@@ -587,10 +624,11 @@ impl Qwen3TtsEngine {
         out_path: &Path,
         cancel: &AtomicBool,
     ) -> Result<()> {
-        let model_dir = self
-            .model_dir
-            .as_ref()
-            .ok_or_else(|| anyhow!("El modelo de síntesis Qwen3-TTS no está provisionado."))?;
+        let model_dir = select_model_dir(
+            voice,
+            self.model_dir.as_deref(),
+            self.base_model_dir.as_deref(),
+        )?;
         let voice_key = match voice {
             VoiceEngine::Preset(n) => format!("preset:{}", n),
             VoiceEngine::Cloned(p) => format!("clone:{}", p.display()),
@@ -1123,7 +1161,7 @@ pub fn clone_voice(
 }
 
 /// Servidor residente del motor Qwen3-TTS: spawn perezoso con
-/// `--serve <puerto> --host 127.0.0.1 -j 4 --stream --watch-stdin [--load-voice <qvoice> --icl-only]`,
+/// `--serve <puerto> --host 127.0.0.1 -j 4 --stream --watch-stdin [--load-voice <qvoice> --graft]`,
 /// healthcheck `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 /// El residente guarda abierto el extremo de escritura de la tubería de entrada
 /// del motor; si el daemon muere de forma abrupta, la tubería se cierra y el
@@ -1192,7 +1230,11 @@ pub mod resident {
 
     /// Construye el argv de arranque del residente, sin I/O real:
     /// programa más argumentos `-d <model_dir> --serve <port> --host 127.0.0.1
-    /// -j 4 --stream --watch-stdin [--load-voice <qvoice> --icl-only]`.
+    /// -j 4 --stream --watch-stdin [--load-voice <qvoice> --graft]`. El llamador
+    /// pasa en `model_dir` el modelo Base si hay `load_voice` y CustomVoice si no.
+    /// `--graft` clona por el camino solo x-vector (el motor ignora la
+    /// transcripción y los códigos de referencia del `.qvoice`) y no aplica
+    /// los pesos diferenciales de la voz.
     /// `--watch-stdin` hace que el motor termine al cerrarse su entrada estándar.
     /// No lleva `--int4`: en el modelo 0.6B cuantiza el code predictor y el
     /// residente deja de ser determinista, con salidas truncadas.
@@ -1217,7 +1259,7 @@ pub mod resident {
         if let Some(lv) = load_voice {
             args.push(String::from("--load-voice"));
             args.push(lv.to_string_lossy().into_owned());
-            args.push(String::from("--icl-only"));
+            args.push(String::from("--graft"));
         }
         (bin.to_path_buf(), args)
     }
@@ -1225,8 +1267,9 @@ pub mod resident {
     impl Qwen3TtsResident {
         /// Arranca el motor con `--serve` en `port`, lo registra desde que nace y
         /// espera a que `/v1/health` responda (hasta 60 × 500 ms). Con
-        /// `load_voice` (voz clonada) añade `--load-voice <qvoice> --icl-only` (el
-        /// clonado solo aplica al arranque).
+        /// `load_voice` (voz clonada) añade `--load-voice <qvoice> --graft` (el
+        /// clonado solo aplica al arranque); `model_dir` debe ser entonces el
+        /// modelo Base.
         pub(crate) fn spawn(
             model_dir: impl AsRef<Path>,
             port: u16,
@@ -2020,9 +2063,9 @@ mod tests {
         assert!(build_tts_body("Hola", &cloned, &opts, None, None).is_err());
     }
 
-    /// Argv exacto de arranque del residente (preset y voz clonada), sin
-    /// I/O real de proceso — cierra un hueco de cobertura que ningún test de
-    /// integración ejercitaba. Sin `--int4`: en el modelo 0.6B cuantiza el code
+    /// Argv exacto de arranque del residente (preset y voz clonada con
+    /// `--graft`), sin I/O real de proceso — cierra un hueco de cobertura que
+    /// ningún test de integración ejercitaba. Sin `--int4`: en el modelo 0.6B cuantiza el code
     /// predictor y la misma petición deja de ser determinista y sale truncada.
     #[test]
     fn build_resident_command_has_threads_and_stream_without_int4() {
@@ -2071,8 +2114,69 @@ mod tests {
                 "--watch-stdin",
                 "--load-voice",
                 "voice.qvoice",
-                "--icl-only",
+                "--graft",
             ]
+        );
+    }
+
+    /// La voz clonada se sintetiza con el modelo Base y el preset con
+    /// CustomVoice: cada tipo de voz elige su directorio de pesos.
+    #[test]
+    fn select_model_dir_picks_base_for_cloned_and_custom_voice_for_preset() {
+        let custom = PathBuf::from("modelos/qwen3-tts-0.6b");
+        let base = PathBuf::from("modelos/qwen3-tts-0.6b-base");
+        let preset = VoiceEngine::Preset("ryan".to_string());
+        let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
+        assert_eq!(
+            select_model_dir(&preset, Some(&custom), Some(&base)).unwrap(),
+            custom.as_path()
+        );
+        assert_eq!(
+            select_model_dir(&cloned, Some(&custom), Some(&base)).unwrap(),
+            base.as_path()
+        );
+    }
+
+    /// Una voz clonada sin el modelo Base provisionado es un error explícito,
+    /// aunque CustomVoice exista; un preset sin CustomVoice también falla.
+    #[test]
+    fn select_model_dir_fails_when_the_required_model_is_missing() {
+        let custom = PathBuf::from("modelos/qwen3-tts-0.6b");
+        let base = PathBuf::from("modelos/qwen3-tts-0.6b-base");
+        let preset = VoiceEngine::Preset("ryan".to_string());
+        let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
+        let err = select_model_dir(&cloned, Some(&custom), None).unwrap_err();
+        assert!(err.to_string().contains("Base"), "mensaje: {err}");
+        assert!(select_model_dir(&preset, None, Some(&base)).is_err());
+    }
+
+    /// La síntesis de una voz clonada sin modelo Base falla con el error
+    /// tipado `ModelMissing` antes de lanzar ningún motor, aunque CustomVoice
+    /// esté provisionado; así las capas superiores lo reportan como
+    /// `model_missing` y no como un fallo genérico de síntesis.
+    #[test]
+    fn synthesize_cloned_voice_without_base_model_fails_with_model_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let qvoice = dir.path().join("reference.qvoice");
+        std::fs::write(&qvoice, b"qvoice").unwrap();
+        let mut engine = Qwen3TtsEngine::new(None, None);
+        engine.model_dir = Some(dir.path().to_path_buf());
+        engine.base_model_dir = None;
+        let profile = VoiceProfile {
+            name: "clonada".to_string(),
+            qvoice_path: Some(qvoice),
+        };
+        let err = engine
+            .synthesize_with_options(
+                "Hola",
+                &profile,
+                &GenerationOptions::new("es-latam"),
+                Some(&dir.path().join("salida.wav")),
+            )
+            .unwrap_err();
+        assert!(
+            err.downcast_ref::<ModelMissing>().is_some(),
+            "se esperaba ModelMissing, fue: {err}"
         );
     }
 

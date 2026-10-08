@@ -85,9 +85,13 @@ fn resolve_stt_language(token: &str) -> &str {
     }
 }
 
-/// Traduce un fallo de la síntesis directa al contrato: el vencimiento del
-/// presupuesto sale como `synthesis_timeout` y cualquier otro como `synthesis_error`.
+/// Traduce un fallo de la síntesis directa al contrato: la falta del modelo que
+/// exige la voz sale como `model_missing` (exit 4), el vencimiento del
+/// presupuesto como `synthesis_timeout` y cualquier otro como `synthesis_error`.
 fn synthesis_cli_error(e: anyhow::Error) -> CliError {
+    if e.downcast_ref::<avi_tts::ModelMissing>().is_some() {
+        return CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string());
+    }
     let reason = if e.downcast_ref::<avi_tts::SynthesisTimeout>().is_some() {
         "synthesis_timeout"
     } else {
@@ -4795,6 +4799,21 @@ mod tests {
             "no debe exceder holgadamente el deadline: elapsed={:?}",
             elapsed
         );
+    }
+
+    /// La falta del modelo que exige la voz sale como `model_missing` (exit 4),
+    /// igual que la ausencia de CustomVoice, y no como `synthesis_error`.
+    #[test]
+    fn synthesis_cli_error_maps_missing_model_to_model_missing() {
+        let any: anyhow::Error = avi_tts::ModelMissing {
+            message: "falta el modelo",
+        }
+        .into();
+        let err = synthesis_cli_error(any);
+        assert_eq!(err.code, ExitCode::ModelMissing);
+        assert_eq!(err.reason, "model_missing");
+        let other = synthesis_cli_error(anyhow::anyhow!("otro fallo"));
+        assert_eq!(other.reason, "synthesis_error");
     }
 
     /// Cada clase de fallo de arranque sale con su código y `reason`, y el

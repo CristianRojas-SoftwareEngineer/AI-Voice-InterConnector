@@ -1196,6 +1196,38 @@ fn state_with_held_tts(tts_port: u16, dir_prefix: &str) -> Arc<DaemonState> {
     Arc::new(state)
 }
 
+/// Una voz clonada sin el modelo Base provisionado responde `model_missing`
+/// aunque el binario y CustomVoice estén (simulados): el motor falla antes de
+/// lanzar nada porque la regla por tipo de voz corta en la selección del modelo.
+#[tokio::test]
+async fn synthesize_cloned_voice_without_base_model_is_model_missing() {
+    prepare_shared_env();
+    let mut state = contract_state(&process_root().join("avi_golden_no_base"));
+    let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
+    state.tts_engine.binary_path = Some(missing.clone());
+    state.tts_engine.model_dir = Some(missing);
+    state.tts_engine.base_model_dir = None;
+    state.tts_engine.server_url = None;
+    let (status, bytes) = send_to(
+        Arc::new(state),
+        post_json(
+            "/synthesize",
+            serde_json::json!({ "text": "hola", "voice": "default" }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let events: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect();
+    let last = events.last().expect("debe haber un evento final");
+    assert_eq!(last["event"], "error", "evento final: {last:?}");
+    assert_eq!(last["reason"], "model_missing", "evento final: {last:?}");
+}
+
 // El motor que estas pruebas necesitan no existe, y el estado lo dice sin tocar
 // el entorno: `state_with_held_tts` fija `binary_path` y `model_dir` en una ruta
 // inexistente del temporal, así que el repliegue que el motor recorre tras la

@@ -3018,6 +3018,33 @@ mod tts {
         );
     }
 
+    /// Una voz clonada (`default` lleva `reference.qvoice` de fábrica) sin el
+    /// modelo Base provisionado sale con 4 y `model_missing`, igual que la falta
+    /// de CustomVoice, aunque este sí esté sembrado.
+    #[test]
+    fn synthesize_cloned_voice_without_base_model_exits_4() {
+        let inst = IsolatedInstance::new("synth_no_base");
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        let a = inst.contract_args();
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "synthesize",
+                "--text",
+                "Hola",
+                "--voice",
+                "default",
+                "--label",
+                "x",
+            ],
+            &a,
+        );
+        assert_eq!(code, 4, "sin Base → ModelMissing (actual={actual})");
+        assert_eq!(actual["reason"], Value::String("model_missing".to_string()));
+    }
+
     /// Colisión de `--label` sin `--force` → 6. El almacén se fabrica con un
     /// sidecar + WAV mínimo (sin síntesis real).
     #[test]

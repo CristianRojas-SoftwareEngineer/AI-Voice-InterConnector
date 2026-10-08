@@ -398,6 +398,18 @@ where
     Some(result)
 }
 
+/// `reason` de un fallo de la fase de síntesis: la falta del modelo que exige la
+/// voz (Base para una clonada, CustomVoice para un preset) es `model_missing`,
+/// igual que cuando el motor no está provisionado; cualquier otro fallo es
+/// `synthesis_failed`.
+fn synthesis_failure_reason(e: &anyhow::Error) -> &'static str {
+    if e.downcast_ref::<avi_tts::ModelMissing>().is_some() {
+        "model_missing"
+    } else {
+        "synthesis_failed"
+    }
+}
+
 // ─── Handlers ────────────────────────────────────────────────────────────
 
 /// Construye el cuerpo de `/health` a partir del estado de warmup (el warmup en
@@ -778,7 +790,7 @@ async fn synthesize_handler(
                     &tx,
                     json!({
                         "event": "error",
-                        "reason": "synthesis_failed",
+                        "reason": synthesis_failure_reason(&e),
                         "message": e.to_string(),
                     }),
                 )
@@ -1901,7 +1913,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                         &tx,
                         json!({
                             "event": "error",
-                            "reason": "synthesis_failed",
+                            "reason": synthesis_failure_reason(&e),
                             "message": e.to_string(),
                         }),
                     )
