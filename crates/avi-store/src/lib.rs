@@ -14,13 +14,15 @@ pub use avi_shared::paths::{
 };
 
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (`qwen_tts.c:spk_table`)
-/// sin audio; `default` es voz clonada de fábrica (`.qvoice` graft vía Base) para
+/// sin audio; `default` es voz clonada de fábrica (`.qvoice` con solo la huella
+/// de timbre, x-vector, que se sintetiza con el modelo Base y `--graft`) para
 /// garantizar `WER ≤0.25` en texto corto. La distinción preset/clonada vive
 /// en `avi-tts::resolve_voice_engine` (presencia de `reference.qvoice`).
 pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 
-/// Asset embebido: `.qvoice` de fábrica para `default` (16 MB graft, speaker
-/// embedding + pesos Base). Se materializa en `ensure_initialized` si falta.
+/// Asset embebido: `.qvoice` de fábrica para `default`, una voz clonada con solo
+/// la huella de timbre (x-vector) que se sintetiza con el modelo Base y
+/// `--graft`. Se materializa en `ensure_initialized` si falta.
 const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
 
 pub fn is_factory_name(name: &str) -> bool {
@@ -216,7 +218,7 @@ impl VoiceStore {
         // por el usuario; aun así, idempotente).
         let default_qvoice = self.base_dir.join("default").join("reference.qvoice");
         if !default_qvoice.is_file() && !FACTORY_DEFAULT_QVOICE.is_empty() {
-            // Validar que el asset sea un .qvoice graft válido (magic QVCE/QV3)
+            // Validar que el asset sea un .qvoice válido (magic QVCE/QV3)
             if FACTORY_DEFAULT_QVOICE.len() > 4 {
                 std::fs::write(&default_qvoice, FACTORY_DEFAULT_QVOICE)?;
             }

@@ -544,10 +544,6 @@ enum VoiceCommands {
         /// Audio de referencia de timbre (opcional)
         #[arg(short = 't', long)]
         timbre_reference: Option<String>,
-        /// Texto que dice el audio de referencia (opcional; sin él se transcribe
-        /// automáticamente, lo que exige un binario con soporte de transcripción)
-        #[arg(long)]
-        ref_text: Option<String>,
         /// Sobrescribir una voz existente con el mismo nombre
         #[arg(short, long)]
         force: bool,
@@ -1176,75 +1172,6 @@ fn translate_if_different(
 
 // ─── Voice ───────────────────────────────────────────────────────────
 
-/// Resuelve la transcripción de la referencia de clonado en la vía directa: el
-/// texto aportado con `--ref-text` o, sin él, la transcripción automática del
-/// audio. Sin soporte de transcripción (`native-stt` off) y sin texto aportado
-/// responde `stt_unsupported`; con texto aportado no necesita el motor STT.
-fn resolve_clone_reference_text(
-    provided: Option<&str>,
-    speech_path: &std::path::Path,
-) -> Result<String, CliError> {
-    #[cfg(not(feature = "native-stt"))]
-    let transcribe = || -> Result<String, CliError> {
-        let _ = speech_path;
-        Err(CliError::new(
-            ExitCode::Error,
-            "stt_unsupported",
-            "Este binario se compiló sin soporte de transcripción (feature 'native-stt'); aporta el texto de la referencia con --ref-text.",
-        ))
-    };
-    #[cfg(feature = "native-stt")]
-    let transcribe = || -> Result<String, CliError> {
-        if !ModelStore::new()
-            .model_dir("parakeet-tdt-v3")
-            .join("nemo128.onnx")
-            .exists()
-        {
-            return Err(CliError::new(
-                ExitCode::ModelMissing,
-                "model_missing",
-                "El modelo de transcripción no está provisionado (parakeet-tdt-v3, se descarga con 'setup').",
-            ));
-        }
-        let pcm = audio::load_wav_16k_mono_pcm(speech_path).map_err(|e| match e {
-            avi_audio::WavLoadError::NotFound => {
-                CliError::new(ExitCode::NotFound, "audio_not_found", e.to_string())
-            }
-            avi_audio::WavLoadError::Invalid(_) => {
-                CliError::new(ExitCode::InvalidInput, "invalid_audio", e.to_string())
-            }
-            avi_audio::WavLoadError::Io(_) => {
-                CliError::new(ExitCode::Error, "io_error", e.to_string())
-            }
-        })?;
-        let stt_error = |e: &dyn std::fmt::Display| {
-            CliError::new(
-                ExitCode::TranscriptionFailed,
-                "transcription_error",
-                e.to_string(),
-            )
-        };
-        let engine = STT_HOLDER
-            .get_or_try_init(ModelStore::new().model_dir("parakeet-tdt-v3"))
-            .map_err(|e| stt_error(&e))?;
-        engine
-            .transcribe(&pcm, Some(resolve_stt_language("es-latam")))
-            .map_err(|e| stt_error(&e))
-    };
-    avi_tts::resolve_reference_text(provided, transcribe).map_err(|e| {
-        let message = e.to_string();
-        match e {
-            avi_tts::ReferenceTextError::ProvidedEmpty => {
-                CliError::new(ExitCode::InvalidInput, "empty_text", message)
-            }
-            avi_tts::ReferenceTextError::TranscriptionEmpty => {
-                CliError::new(ExitCode::InvalidInput, "invalid_audio", message)
-            }
-            avi_tts::ReferenceTextError::Transcription(err) => err,
-        }
-    })
-}
-
 async fn handle_voice(
     json_mode: bool,
     daemon_mode: DaemonMode,
@@ -1275,7 +1202,6 @@ async fn handle_voice(
             name,
             speech_reference,
             timbre_reference,
-            ref_text,
             force,
         } => {
             // Orden de validaciones del contrato: el nombre se valida antes que el modelo.
@@ -1285,15 +1211,6 @@ async fn handle_voice(
             // El tope de la referencia se comprueba antes de contactar con el daemon
             // o de cargar el modelo, igual en las dos vías.
             ensure_clone_reference_within_limit(std::path::Path::new(&speech_reference))?;
-            // Un texto de referencia vacío es entrada inválida: se rechaza antes de
-            // contactar con el daemon, igual en las dos vías.
-            if ref_text.as_deref().is_some_and(|t| t.trim().is_empty()) {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "empty_text",
-                    "El texto de la referencia (--ref-text) está vacío.",
-                ));
-            }
             // Despacho 3 modos para Clone vía POST /voices/clone
             {
                 let client = daemon_client();
@@ -1304,7 +1221,6 @@ async fn handle_voice(
                         &name,
                         &speech_reference,
                         timbre_reference.as_deref(),
-                        ref_text.as_deref(),
                         force,
                     )
                     .await;
@@ -1343,10 +1259,6 @@ async fn handle_voice(
                 ));
             }
 
-            // La transcripción de la referencia se resuelve antes de lanzar el motor:
-            // sin soporte de transcripción y sin `--ref-text` falla aquí.
-            let reference_text = resolve_clone_reference_text(ref_text.as_deref(), speech_path)?;
-
             let engine = Qwen3TtsEngine::new(None, None);
             let model_dir = engine.base_model_dir.as_ref().ok_or_else(|| {
                 CliError::new(
@@ -1364,15 +1276,8 @@ async fn handle_voice(
                 .tempfile()
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
                 .into_temp_path();
-            let cloned = avi_tts::clone_voice(
-                model_dir,
-                speech_path,
-                &tmp_qvoice,
-                &name,
-                "es-latam",
-                &reference_text,
-            )
-            .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
+            let cloned = avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name)
+                .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
             let saved_qvoice = cloned.map_err(|e| {
                 // Una referencia ilegible se clasifica igual que en transcripción.
                 match e.downcast_ref::<avi_audio::WavLoadError>() {
@@ -4516,7 +4421,6 @@ async fn clone_via_daemon(
     name: &str,
     speech_reference: &str,
     timbre_reference: Option<&str>,
-    ref_text: Option<&str>,
     force: bool,
 ) -> Result<(), CliError> {
     let speech_bytes = std::fs::read(speech_reference).map_err(|e| {
@@ -4543,7 +4447,6 @@ async fn clone_via_daemon(
     let payload = serde_json::json!({
         "name": name,
         "audio_b64": audio_b64,
-        "ref_text": ref_text,
         "force": force,
     });
     // El envío solo espera las cabeceras (el daemon valida barato y

@@ -33,10 +33,6 @@ use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
 // libres, por compatibilidad con el cliente raíz del CLI).
 use base64::Engine;
 
-/// Idioma por defecto para `clone_voice` cuando la petición de clonado no
-/// transporta un idioma explícito.
-const DEFAULT_CLONE_LANGUAGE: &str = "es-latam";
-
 /// Estado de pre-calentamiento (warmup) del motor TTS. Desacoplado del readiness:
 /// el daemon sirve en cuanto enlaza; `warm` refleja el warmup en curso o el
 /// resultado de la última síntesis completada (testigo o petición). Transiciones:
@@ -1091,36 +1087,6 @@ async fn translate_handler(
     }
 }
 
-/// Transcribe la referencia de clonado con el motor STT del estado cuando el
-/// cliente no aportó `ref_text`. El error es `(reason, message)` del contrato.
-#[cfg(feature = "native-stt")]
-fn transcribe_clone_reference(
-    state: &DaemonState,
-    wav: &std::path::Path,
-) -> Result<String, (&'static str, String)> {
-    let pcm = avi_audio::load_wav_16k_mono_pcm(wav).map_err(|e| match e {
-        avi_audio::WavLoadError::Invalid(_) => ("invalid_audio", e.to_string()),
-        _ => ("io_error", e.to_string()),
-    })?;
-    state
-        .stt_engine
-        .transcribe(&pcm, Some(resolve_stt_language(DEFAULT_CLONE_LANGUAGE)))
-        .map_err(|e| ("transcription_failed", e.to_string()))
-}
-
-/// Sin `native-stt` no hay transcripción automática: el handler ya rechazó la
-/// petición sin `ref_text`, así que esta rama solo cierra el tipo.
-#[cfg(not(feature = "native-stt"))]
-fn transcribe_clone_reference(
-    _state: &DaemonState,
-    _wav: &std::path::Path,
-) -> Result<String, (&'static str, String)> {
-    Err((
-        "stt_unsupported",
-        "Este binario se compiló sin soporte de transcripción (feature 'native-stt').".to_string(),
-    ))
-}
-
 /// POST /voices/clone — clonado de voz con audio base64, servido como stream
 /// NDJSON con latidos: `started` tras las validaciones baratas (nombre,
 /// force/colisión, audio, modelo base, en JSON plano con los códigos de siempre),
@@ -1222,40 +1188,6 @@ async fn voices_clone_handler(
         )
             .into_response();
     }
-    // Texto de la referencia aportado por el cliente (`null` equivale a ausente).
-    // Un texto vacío o solo de espacios es entrada inválida; sin texto y sin
-    // soporte de transcripción el clonado no puede arrancar. Ambos se rechazan
-    // en JSON plano, antes del modelo y del stream.
-    let provided_ref_text = payload
-        .get("ref_text")
-        .and_then(|v| v.as_str())
-        .map(str::to_string);
-    if provided_ref_text
-        .as_deref()
-        .is_some_and(|t| t.trim().is_empty())
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "error": "empty_text",
-                "reason": "empty_text",
-                "message": "El texto de la referencia (ref_text) está vacío.",
-            }))),
-        )
-            .into_response();
-    }
-    #[cfg(not(feature = "native-stt"))]
-    if provided_ref_text.is_none() {
-        return (
-            StatusCode::NOT_IMPLEMENTED,
-            Json(with_sv(json!({
-                "error": "stt_unsupported",
-                "reason": "stt_unsupported",
-                "message": "Este binario se compiló sin soporte de transcripción (feature 'native-stt'); aporta el texto de la referencia con ref_text.",
-            }))),
-        )
-            .into_response();
-    }
     let base_model_dir = match state.tts_engine.base_model_dir.as_ref() {
         Some(d) => d.clone(),
         None => {
@@ -1312,47 +1244,10 @@ async fn voices_clone_handler(
         emit_ndjson(&tx, json!({ "event": "started", "name": name })).await;
         let event_name = name.clone();
         let clone_qvoice = tmp_qvoice.clone();
-        let clone_state = state.clone();
-        let clone_work = tokio::task::spawn_blocking(
-            move || -> Result<(tempfile::TempDir, String), (&'static str, String)> {
-                // Texto de la referencia: el aportado o, sin él, la transcripción
-                // automática del audio. Con ambos clonan en modo ICL.
-                let ref_text =
-                    avi_tts::resolve_reference_text(provided_ref_text.as_deref(), || {
-                        transcribe_clone_reference(&clone_state, &tmp_wav)
-                    })
-                    .map_err(|e| match e {
-                        avi_tts::ReferenceTextError::ProvidedEmpty => (
-                            "empty_text",
-                            "El texto de la referencia (ref_text) está vacío.".to_string(),
-                        ),
-                        avi_tts::ReferenceTextError::TranscriptionEmpty => (
-                            "invalid_audio",
-                            "La transcripción del audio de referencia está vacía; aporta ref_text."
-                                .to_string(),
-                        ),
-                        avi_tts::ReferenceTextError::Transcription(failure) => failure,
-                    })?;
-                avi_tts::clone_voice(
-                    &base_model_dir,
-                    &tmp_wav,
-                    &clone_qvoice,
-                    &name,
-                    DEFAULT_CLONE_LANGUAGE,
-                    &ref_text,
-                )
-                .map_err(|e| {
-                    // Una referencia ilegible se clasifica igual que en transcripción.
-                    let reason = match e.downcast_ref::<avi_audio::WavLoadError>() {
-                        Some(avi_audio::WavLoadError::Invalid(_)) => "invalid_audio",
-                        Some(avi_audio::WavLoadError::Io(_)) => "io_error",
-                        _ => "voice_clone_failed",
-                    };
-                    (reason, e.to_string())
-                })?;
-                Ok((work_dir, name))
-            },
-        );
+        let clone_work = tokio::task::spawn_blocking(move || {
+            avi_tts::clone_voice(&base_model_dir, &tmp_wav, &clone_qvoice, &name)
+                .map(|()| (work_dir, name))
+        });
         // `_work_dir` mantiene vivo el directorio hasta el final de la tarea.
         let (_work_dir, name) = match with_heartbeats(&tx, "clone", clone_work).await {
             None => {
@@ -1361,14 +1256,20 @@ async fn voices_clone_handler(
                 return;
             }
             Some(Ok(Ok(v))) => v,
-            Some(Ok(Err((reason, message)))) => {
+            Some(Ok(Err(e))) => {
+                // Una referencia ilegible se clasifica igual que en transcripción.
+                let reason = match e.downcast_ref::<avi_audio::WavLoadError>() {
+                    Some(avi_audio::WavLoadError::Invalid(_)) => "invalid_audio",
+                    Some(avi_audio::WavLoadError::Io(_)) => "io_error",
+                    _ => "voice_clone_failed",
+                };
                 emit_ndjson(
                     &tx,
                     json!({
                         "event": "error",
                         "name": event_name,
                         "reason": reason,
-                        "message": message,
+                        "message": e.to_string(),
                     }),
                 )
                 .await;
