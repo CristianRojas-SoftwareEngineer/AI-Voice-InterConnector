@@ -3578,18 +3578,12 @@ mod tts {
         let speech = actual["speech"].as_str().expect("speech debe existir");
         let qvoice = Path::new(speech);
         assert!(qvoice.is_file(), "reference.qvoice debe existir");
-        let size = std::fs::metadata(qvoice).expect("metadata").len();
-        assert!(
-            size > 1_000_000,
-            "el .qvoice debe pesar > 1 MB (era {})",
-            size
-        );
+        assert_timbre_only_qvoice(qvoice, &name);
         let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
     }
 
-    /// Campos de la cabecera de un `.qvoice` v3 que verifica la prueba de
+    /// Campos de la cabecera de un `.qvoice` v3 que verifican las pruebas de
     /// clonación.
-    #[cfg(feature = "native-stt")]
     struct QvoiceHeader {
         version: u32,
         enc_dim: u32,
@@ -3605,7 +3599,6 @@ mod tts {
     /// fotogramas de referencia (16 enteros de 32 bits cada uno) y la sección
     /// `META` (id de idioma, nombre de idioma de 16 bytes, tamaño de modelo,
     /// `enc_dim`, duración de referencia, nombre de voz de 64 bytes y flags).
-    #[cfg(feature = "native-stt")]
     fn read_qvoice_header(bytes: &[u8]) -> QvoiceHeader {
         fn u32_at(bytes: &[u8], offset: usize) -> u32 {
             u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("4 bytes"))
@@ -3632,6 +3625,32 @@ mod tts {
             voice_name,
             flags,
         }
+    }
+
+    /// Un `.qvoice` clonado guarda solo la huella de timbre: QVCE v3 con
+    /// `enc_dim` 1024, el nombre pedido, sin transcripción ni códigos de
+    /// referencia y con el flag de solo huella activo.
+    fn assert_timbre_only_qvoice(qvoice: &Path, name: &str) {
+        let bytes = std::fs::read(qvoice).expect("el .qvoice debe poder leerse");
+        let h = read_qvoice_header(&bytes);
+        eprintln!(
+            "[clonación] version={} enc_dim={} ref_text_len={} n_ref_frames={} \
+             voice_name={:?} flags={} tamaño={}",
+            h.version,
+            h.enc_dim,
+            h.ref_text_len,
+            h.n_ref_frames,
+            h.voice_name,
+            h.flags,
+            bytes.len()
+        );
+        assert_eq!(h.version, 3, "versión del formato QVCE");
+        assert_eq!(h.enc_dim, 1024, "dimensión de la huella de timbre");
+        assert_eq!(h.voice_name, name, "nombre de voz guardado");
+        assert_eq!(h.ref_text_len, 0, "sin transcripción de referencia");
+        assert_eq!(h.n_ref_frames, 0, "sin códigos de referencia");
+        assert_eq!(h.flags & 1, 1, "flag xvector_only");
+        assert_eq!(h.flags & 2, 0, "sin ICL");
     }
 
     /// Clonar desde `Speech Sampler.wav` guarda solo la huella de timbre: un
@@ -3666,26 +3685,7 @@ mod tts {
         );
         assert_eq!(code, 0, "clonación: {actual}");
         let speech = actual["speech"].as_str().expect("speech debe existir");
-        let bytes = std::fs::read(speech).expect("el .qvoice debe poder leerse");
-        let h = read_qvoice_header(&bytes);
-        eprintln!(
-            "[clonación] version={} enc_dim={} ref_text_len={} n_ref_frames={} \
-             voice_name={:?} flags={} tamaño={}",
-            h.version,
-            h.enc_dim,
-            h.ref_text_len,
-            h.n_ref_frames,
-            h.voice_name,
-            h.flags,
-            bytes.len()
-        );
-        assert_eq!(h.version, 3, "versión del formato QVCE");
-        assert_eq!(h.enc_dim, 1024, "dimensión de la huella de timbre");
-        assert_eq!(h.voice_name, name, "nombre de voz guardado");
-        assert_eq!(h.ref_text_len, 0, "sin transcripción de referencia");
-        assert_eq!(h.n_ref_frames, 0, "sin códigos de referencia");
-        assert_eq!(h.flags & 1, 1, "flag xvector_only");
-        assert_eq!(h.flags & 2, 0, "sin ICL");
+        assert_timbre_only_qvoice(Path::new(speech), &name);
         let m = synthesize_measured(&inst, &name, "es-latam", MATRIX_TEXT_ES);
         assert!(
             m.wer <= 0.25,

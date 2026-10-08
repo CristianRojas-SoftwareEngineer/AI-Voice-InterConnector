@@ -750,7 +750,7 @@ async fn voices_clone_truncated_wav_emits_invalid_audio() {
 /// valida antes de enlazar y de cargar modelos (por eso esta prueba no
 /// necesita modelos provisionados), y una voz existente pasa la validación de
 /// arranque. La rama de aceptación se verifica sobre el mismo predicado que
-/// usa la guarda (`find_reference(...).is_some()`): arrancar el servidor real
+/// usa la guarda (`exists(...)`): arrancar el servidor real
 /// con voz válida bloquearía sirviendo, así que no se invoca.
 #[tokio::test]
 async fn warm_voice_fail_fast_and_acceptance() {
@@ -884,11 +884,25 @@ impl Drop for Sleeper {
     }
 }
 
+/// Las pruebas del binario comparten la raíz de datos (`AVI_DATA_DIR`) y con
+/// ella `daemon.pid`, que reescribe el registro de cualquier estado cuyo motor
+/// lance un residente real al anotarlo y al anularlo. La prueba que afirma que
+/// el pidfile no cambia y las que lanzan un residente real se serializan con
+/// este cerrojo; si no, una escritura del residente entre sus dos lecturas la
+/// haría fallar.
+static REGISTRY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Toma el cerrojo de `daemon.pid` del binario de pruebas.
+async fn lock_registry() -> tokio::sync::MutexGuard<'static, ()> {
+    REGISTRY_LOCK.lock().await
+}
+
 /// Un segundo daemon no arranca mientras el pidfile registre a uno vivo con la
 /// identidad coincidente: el arranque falla con `StartupError::Failed` que nombra
 /// al otro daemon, sin servir y sin tocar el pidfile ajeno.
 #[tokio::test]
 async fn second_daemon_is_rejected_while_a_live_one_is_registered() {
+    let _registry = lock_registry().await;
     #[cfg(feature = "native-stt")]
     require_parakeet();
     prepare_shared_env();
@@ -982,6 +996,7 @@ async fn translate_es_latam_passthrough_ipc_returns_intact_text() {
 #[ignore = "requiere Parakeet y el binario del motor Qwen3-TTS"]
 async fn dub_leaves_no_temporary_on_any_outcome() {
     let _temporaries = lock_temporaries().await;
+    let _registry = lock_registry().await;
     #[cfg(feature = "native-stt")]
     require_parakeet();
     require_clone_binary();
