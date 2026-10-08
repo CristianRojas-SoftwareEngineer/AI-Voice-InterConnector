@@ -22,7 +22,10 @@ pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 
 /// Asset embebido: `.qvoice` de fábrica para `default`, una voz clonada con solo
 /// la huella de timbre (x-vector) que se sintetiza con el modelo Base y
-/// `--graft`. Se materializa en `ensure_initialized` si falta.
+/// `--graft`. Se materializa en `ensure_initialized` si falta. Se regenera
+/// copiando aquí el `reference.qvoice` que deja en el almacén de voces la orden
+/// `ai-voice-interconnector --no-daemon voice clone --name default --force
+/// --speech-reference "assets/audios/Speech Sampler.wav"`.
 const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
 
 pub fn is_factory_name(name: &str) -> bool {
