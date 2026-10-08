@@ -1466,8 +1466,19 @@ fn check_code_quality_gate() -> Result<()> {
 /// Gate de pruebas con recursos: ejecuta toda la suite del workspace, incluidas
 /// las pruebas marcadas como `#[ignore]` (modelos, daemon, instalación real),
 /// con el entorno y la salida heredados. No tiene modo de omisión.
+///
+/// Las pruebas cargan ONNX Runtime por nombre, y en Windows la búsqueda del
+/// sistema encuentra antes una `onnxruntime.dll` de System32 que la del PATH;
+/// por eso la gate asegura `ort-bundle/` en la versión fijada y la impone con
+/// `ORT_DYLIB_PATH`, de modo que valida el mismo runtime que se distribuye.
 fn check_resource_tests_gate() -> Result<()> {
+    let root = std::env::current_dir()?;
+    let pins = doctor::load_pins(&root)?;
+    let triple = package::host_triple()?;
+    let bundle = package::ensure_ort_bundle(&root, triple, &pins.ort)?;
+    let ort_dylib = package::ort_dylib_path(&bundle, triple)?;
     let status = std::process::Command::new("cargo")
+        .env("ORT_DYLIB_PATH", &ort_dylib)
         .args([
             "test",
             "--workspace",
@@ -1479,7 +1490,8 @@ fn check_resource_tests_gate() -> Result<()> {
         .status()?;
     if !status.success() {
         anyhow::bail!(
-            "las pruebas con recursos fallaron y no se ha modificado nada: corrígelas antes de release (reprodúcelo con `cargo test --workspace --features full -- --include-ignored`)"
+            "las pruebas con recursos fallaron y no se ha modificado nada: corrígelas antes de release (reprodúcelo con `ORT_DYLIB_PATH={} cargo test --workspace --features full -- --include-ignored`)",
+            ort_dylib.display()
         );
     }
     Ok(())

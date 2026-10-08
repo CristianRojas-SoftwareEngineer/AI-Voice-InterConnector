@@ -145,6 +145,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Corregido
 
+- La gate de pruebas con recursos de `cargo xtask release` validaba el STT con la `onnxruntime.dll` que encontrara la búsqueda del sistema (en Windows, la de System32 antes que la del `PATH`, de otra versión) en lugar de con la versión fijada que se distribuye. Ahora asegura `ort-bundle/` en la versión fijada y lo impone con `ORT_DYLIB_PATH`; `docs/BUILD.md` documenta la misma variable para las ejecuciones manuales.
 - Los presets (`ryan`, `vivian`) se sintetizaban en inglés: el motor recibía `es`, que no reconoce. Ahora el token del producto (`es-latam`, `en`) se traduce al nombre del motor (`Spanish`, `English`) en la síntesis, y un token desconocido es un error.
 - El idioma de destino (`--target-language`) no llegaba al motor: la CLI y el daemon lo envían ahora en cada síntesis.
 - Las voces de fábrica (`default`, `ryan`, `vivian`) quedan garantizadas por el almacén en cada consulta, incluso sobre una raíz de datos recién creada: `speech synthesize --voice default` ya no responde que la voz no existe si antes no se ejecutó otra orden. Los errores de E/S al buscar una voz ya no se ocultan.

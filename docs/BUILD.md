@@ -139,10 +139,22 @@ no necesita compilar ni tener presente ONNX Runtime**. Por eso las cuatro
 arquitecturas compilan `--features full` sin ningún paso previo de ONNX Runtime.
 
 En runtime, `ort` carga la librería dinámica del SO. Si `ORT_DYLIB_PATH` no está
-definido, usa el nombre por defecto (`onnxruntime.dll` / `libonnxruntime.so` /
-`libonnxruntime.dylib`) y lo resuelve **contra el directorio del ejecutable**
-(`current_exe().parent()`). Colocar la librería junto al binario basta: no hay
-`rpath` ni variables de entorno que fijar.
+definido, carga el nombre por defecto (`onnxruntime.dll` / `libonnxruntime.so` /
+`libonnxruntime.dylib`) con la búsqueda de librerías del sistema. En Windows esa
+búsqueda mira primero el directorio del ejecutable, así que en el producto
+instalado basta con colocar la librería junto al binario: no hay `rpath` ni
+variables de entorno que fijar.
+
+Desde el repositorio no hay librería junto a los ejecutables de `target/`, y en
+Windows la búsqueda mira System32 antes que el `PATH`: si el sistema trae su
+propia `onnxruntime.dll` (Windows incluye una en algunas versiones), las pruebas
+y `cargo run` la cargan aunque sea de otra versión. Para validar con la versión
+fijada, las pruebas con recursos se ejecutan con `ORT_DYLIB_PATH` apuntando a la
+librería de `ort-bundle/` (que asegura `cargo xtask bootstrap`), por ejemplo en
+Windows `ORT_DYLIB_PATH=<repo>/ort-bundle/onnxruntime.dll cargo test --workspace
+--features full -- --include-ignored`. `cargo xtask release` lo hace por sí
+mismo: asegura `ort-bundle/` y fija la variable para su gate de pruebas con
+recursos.
 
 #### Empaquetado en los artefactos de release
 

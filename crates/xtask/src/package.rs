@@ -144,6 +144,13 @@ fn ort_expected_libs(triple: &str) -> Result<Vec<&'static str>> {
     Ok(libs)
 }
 
+/// Ruta de la librería de ONNX Runtime dentro de `bundle` para el triple, la
+/// que `ort` carga en `load-dynamic` cuando se la indica `ORT_DYLIB_PATH`.
+pub(crate) fn ort_dylib_path(bundle: &Path, triple: &str) -> Result<PathBuf> {
+    let libs = ort_expected_libs(triple)?;
+    Ok(bundle.join(libs[0]))
+}
+
 /// `true` si `ort-bundle/` ya sirve para este triple: todas las librerías
 /// presentes y marcador ausente (caché de CI) o coincidente con la versión de
 /// los pines.
@@ -690,6 +697,21 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), section.required.len(), "sin duplicados");
+    }
+
+    /// La librería que la gate de release impone con `ORT_DYLIB_PATH` es la de
+    /// ONNX Runtime del triple dentro del bundle, no el runtime de VC++.
+    #[test]
+    fn ort_dylib_path_points_to_the_onnx_runtime_library() {
+        let bundle = Path::new("ort-bundle");
+        for (triple, lib) in [
+            ("x86_64-pc-windows-msvc", "onnxruntime.dll"),
+            ("x86_64-unknown-linux-gnu", "libonnxruntime.so"),
+            ("aarch64-apple-darwin", "libonnxruntime.dylib"),
+        ] {
+            assert_eq!(ort_dylib_path(bundle, triple).unwrap(), bundle.join(lib));
+        }
+        assert!(ort_dylib_path(bundle, "riscv64gc-unknown-none-elf").is_err());
     }
 
     /// El árbol montado desde orígenes falsos coincide con `required`.

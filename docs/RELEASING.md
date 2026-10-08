@@ -91,8 +91,11 @@ git push origin main --tags           # sin --tags el tag no dispara build-all
      contrato y las que requieren recursos locales (modelos, motor, instalación
      real), así que exige tenerlos aprovisionados en la máquina
      (`ai-voice-interconnector setup` y
-     `cargo xtask build-engine`). Si falla, aborta antes del bump sin modificar
-     nada.
+     `cargo xtask build-engine`). Antes de lanzarla, la gate asegura
+     `ort-bundle/` en la versión fijada de ONNX Runtime y la impone con
+     `ORT_DYLIB_PATH`, de modo que las pruebas de STT usan el mismo runtime que
+     se distribuye y no otra `onnxruntime.dll` del sistema. Si falla, aborta
+     antes del bump sin modificar nada.
 2. **Bump.** Escribe `X.Y.Z` en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
    `tests/golden/cli_version.json` y `SOURCE-OFFER.md`. `SOURCE-OFFER.md` es la
    oferta de código fuente GPLv3 §6 que viaja dentro de los 4 artefactos.
