@@ -40,8 +40,8 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
   ]
 
   caveats <<~EOS
-    Los modelos de voz (traduccion, sintesis y transcripcion; unos 3.3 GB, o 5.85 GB con
-    clonado de voz) no vienen incluidos:
+    Los modelos de voz (traduccion, sintesis, clonado de voz y transcripcion; unos 5.85 GB)
+    no vienen incluidos:
     descargalos una sola vez con:
       ai-voice-interconnector setup
 

@@ -430,9 +430,6 @@ enum Commands {
     },
     /// Provisiona el runtime: chequeos + descarga de modelos
     Setup {
-        /// Incluye el modelo Base de clonado Qwen3-TTS (unos 2.5 GB)
-        #[arg(long)]
-        with_voice_cloning: bool,
         /// Purga los snapshots pinneados y la cache xet, luego re-descarga desde cero
         #[arg(long)]
         force_update: bool,
@@ -900,11 +897,9 @@ async fn main() {
         Some(Commands::Daemon { action }) => {
             handle_daemon(json_mode, action, usage_lock.take()).await
         }
-        Some(Commands::Setup {
-            with_voice_cloning,
-            force_update,
-            yes,
-        }) => ok(handle_setup(json_mode, with_voice_cloning, force_update, yes).await),
+        Some(Commands::Setup { force_update, yes }) => {
+            ok(handle_setup(json_mode, force_update, yes).await)
+        }
         Some(Commands::Cleanup {
             voices,
             synthetic_speech,
@@ -2517,12 +2512,7 @@ async fn handle_daemon(
 /// Todo el cuerpo —la purga por plan y la idempotencia por presencia del snapshot—
 /// vive en `lifecycle::setup`. Aquí solo queda la prosa y el envelope, porque el parseo
 /// de la CLI y el emisor no están en ese crate.
-async fn handle_setup(
-    json_mode: bool,
-    with_voice_cloning: bool,
-    force_update: bool,
-    yes: bool,
-) -> Result<(), CliError> {
+async fn handle_setup(json_mode: bool, force_update: bool, yes: bool) -> Result<(), CliError> {
     let model_store = ModelStore::new();
     let voice_store = VoiceStore::new();
 
@@ -2531,7 +2521,7 @@ async fn handle_setup(
         .ensure_initialized()
         .map_err(|e| CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string()))?;
 
-    let options = lifecycle::setup::Options::user(with_voice_cloning, force_update, yes);
+    let options = lifecycle::setup::Options::user(force_update, yes);
     let outcome = lifecycle::setup::run(&model_store, &options)
         .await
         .map_err(lifecycle_error_to_cli)?;
@@ -2905,7 +2895,6 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 channel: channel
                     .as_deref()
                     .and_then(lifecycle::channel::Channel::from_name),
-                with_voice_cloning: false,
             };
             let outcome = lifecycle::install::install(&env, &options, &ProductProcesses)
                 .await

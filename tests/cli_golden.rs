@@ -19,8 +19,7 @@
 //!   reales y se ejecutan con
 //!   `cargo test --workspace --features full -- --include-ignored`. Si falta
 //!   un recurso fallan con un mensaje que nombra el comando de
-//!   aprovisionamiento: `ai-voice-interconnector setup`,
-//!   `ai-voice-interconnector setup --with-voice-cloning` o
+//!   aprovisionamiento: `ai-voice-interconnector setup` o
 //!   `cargo xtask build-engine`. Usan la raíz de modelos real en solo lectura
 //!   y estado y puerto propios (`IsolatedInstance`); el residente reserva su
 //!   propio puerto efímero y lo anota en el `daemon.pid` de la instancia.
@@ -2321,8 +2320,12 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
         "la raíz de datos vive dentro de `install`"
     );
     assert!(
-        value["models"]["base"].is_string(),
-        "el estado del modelo opt-in de clonado vive dentro de `models`"
+        value["models"]["provisioned"].is_array() && value["models"]["missing"].is_array(),
+        "el estado de los modelos, el de clonado incluido, vive dentro de `models`"
+    );
+    assert!(
+        value["models"].get("base").is_none(),
+        "`models.base` se retiró: el modelo de clonado es una entrada más de `provisioned`/`missing`"
     );
     assert_eq!(
         value["schema_version"],
@@ -2591,7 +2594,7 @@ mod tts {
         assert!(
             snapshot.is_file() || vendored_is_base,
             "falta {} (ni {} con tts_model_type base): aprovisiona el modelo Base con \
-             `ai-voice-interconnector setup --with-voice-cloning`",
+             `ai-voice-interconnector setup`",
             snapshot.display(),
             vendored.display()
         );
@@ -4106,7 +4109,7 @@ mod tts {
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
-        for flag in ["--force-update", "--yes", "--with-voice-cloning"] {
+        for flag in ["--force-update", "--yes"] {
             assert!(
                 combined.contains(flag),
                 "setup --help debe listar {}, fue: {}",
@@ -4120,6 +4123,7 @@ mod tts {
             "--with-clone",
             "--clone",
             "--with-stt",
+            "--with-voice-cloning",
         ] {
             assert!(
                 !combined.contains(flag),
@@ -4141,6 +4145,18 @@ mod tts {
         );
     }
 
+    /// `--with-voice-cloning` se retiró: el modelo Base forma parte siempre de la
+    /// instalación y clap lo rechaza como argumento desconocido.
+    #[test]
+    fn setup_with_voice_cloning_is_rejected_as_unknown_argument() {
+        let (code, _stdout, stderr) = run_text_with_stderr(&["setup", "--with-voice-cloning"]);
+        assert_eq!(code, 2, "{stderr}");
+        assert!(
+            stderr.contains("argumento inesperado '--with-voice-cloning'"),
+            "{stderr}"
+        );
+    }
+
     #[test]
     fn setup_json_without_language_key() {
         // Contrato del payload --json: la clave `language` desaparece de la respuesta.
@@ -4153,7 +4169,6 @@ mod tts {
         let names: Vec<&str> = avi_store::MODEL_REVISIONS
             .iter()
             .map(|pin| pin.name)
-            .filter(|name| *name != "qwen3-tts-0.6b-base")
             .collect();
         seed_pinned_models(&models_root, &names);
         let mut envs = inst.contract_args();

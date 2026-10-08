@@ -199,7 +199,7 @@ impl Sandbox {
         // La selección de modelos ya provisionada, para que la provisión no toque la red.
         for pin in avi_store::MODEL_REVISIONS {
             // El pin sin sembrar es el que dispara el fallo de descarga.
-            if pin.name == avi_lifecycle::setup::CLONING_MODEL || pin.name == UNSEEDED_PIN {
+            if pin.name == UNSEEDED_PIN {
                 continue;
             }
             let snapshot = models

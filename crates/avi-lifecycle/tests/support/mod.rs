@@ -292,7 +292,6 @@ impl Sandbox {
             no_modify_path: false,
             force: false,
             channel: None,
-            with_voice_cloning: false,
         }
     }
 
@@ -338,9 +337,6 @@ impl Sandbox {
     pub fn seed_state(&self) {
         let hub = &self.models_dir;
         for pin in avi_store::MODEL_REVISIONS {
-            if pin.name == avi_lifecycle::setup::CLONING_MODEL {
-                continue;
-            }
             // Snapshot propio, con el layout que `avi-store` resuelve.
             write(
                 &hub.join(repo_dir(pin.repo))

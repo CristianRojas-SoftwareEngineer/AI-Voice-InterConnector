@@ -269,7 +269,7 @@ fn require_parakeet() {
 }
 
 /// Exige `model.safetensors` del snapshot del modelo Base de clonado: lo
-/// provisiona `ai-voice-interconnector setup --with-voice-cloning`.
+/// provisiona `ai-voice-interconnector setup`.
 fn require_base_model() {
     let model_dir = avi_store::ModelStore::new()
         .model_snapshot_path("qwen3-tts-0.6b-base")
@@ -277,7 +277,7 @@ fn require_base_model() {
     let weights = model_dir.join("model.safetensors");
     std::fs::metadata(&weights).unwrap_or_else(|e| {
         panic!(
-            "falta {} ({e}): provisiona el modelo Base con `ai-voice-interconnector setup --with-voice-cloning`",
+            "falta {} ({e}): provisiona el modelo Base con `ai-voice-interconnector setup`",
             weights.display()
         )
     });

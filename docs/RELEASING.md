@@ -90,7 +90,7 @@ git push origin main --tags           # sin --tags el tag no dispara build-all
      última puerta de solo lectura y la más lenta: ejecuta las pruebas de
      contrato y las que requieren recursos locales (modelos, motor, instalación
      real), así que exige tenerlos aprovisionados en la máquina
-     (`ai-voice-interconnector setup`, `setup --with-voice-cloning` y
+     (`ai-voice-interconnector setup` y
      `cargo xtask build-engine`). Si falla, aborta antes del bump sin modificar
      nada.
 2. **Bump.** Escribe `X.Y.Z` en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,

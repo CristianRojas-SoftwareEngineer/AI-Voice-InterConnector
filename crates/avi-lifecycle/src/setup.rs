@@ -2,14 +2,15 @@
 //! instalación.
 //!
 //! Es una **traducción fiel, no un rediseño**. Se traslada tal cual la semántica
-//! que ya existe: la selección por banderas, la idempotencia por presencia del
+//! que ya existe: la selección de modelos, la idempotencia por presencia del
 //! snapshot y la purga de `--force-update`.
 //!
-//! **Lo que `self update` necesita, y dónde.** La **selección persistida en
-//! configuración** (`setup-selection.json`), la **poda de revisiones obsoletas**
-//! y las **migraciones** del `setup` nuevo viven en este módulo, tras `Options`: las
-//! necesita una actualización, y el `setup` invocado por el traspaso lee la
-//! selección guardada en vez de los flags.
+//! **La selección es siempre la tabla de pines completa**: todos los modelos,
+//! incluido el Base de clonado, forman parte de la instalación. No hay modelos
+//! opcionales, así que no existe una selección persistida que recordar.
+//!
+//! **Lo que `self update` necesita, y dónde.** La **poda de revisiones
+//! obsoletas** vive en este módulo: la necesita una actualización.
 //!
 //! **Dónde queda `HF_XET_CACHE`.** Toda la provisión pasa por
 //! `ModelStore::new()`, que ya la fija al subdirectorio `xet` de la raíz de modelos
@@ -23,20 +24,16 @@
 //! misma confirmación destructiva.
 
 use crate::LifecycleError;
-use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Modelo cuya provisión depende de `--with-voice-cloning`. Es el único caso de
-/// selección opcional que el producto tiene hoy, y por eso el filtro es una
-/// comparación con su nombre y no una tabla.
+/// Modelo Base de clonado de voz: sintetiza las voces clonadas, incluida la de
+/// fábrica `default`, y forma parte siempre de la selección.
 pub use avi_shared::paths::CLONING_MODEL;
 
 /// Opciones de `setup` que el motor necesita conocer. El resto de la superficie
 /// (`--json`) se queda en el binario, que es quien parsea la CLI.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Options {
-    /// `--with-voice-cloning`: añade el modelo base de clonado a la selección.
-    pub with_voice_cloning: bool,
     /// `--force-update`: purga los modelos seleccionados y los vuelve a
     /// provisionar. Es una operación destructiva y por eso pide su propia
     /// confirmación.
@@ -50,142 +47,13 @@ pub struct Options {
 
 impl Options {
     /// Opciones de una invocación directa de `setup` por el usuario.
-    pub fn user(with_voice_cloning: bool, force_update: bool, assume_yes: bool) -> Self {
+    pub fn user(force_update: bool, assume_yes: bool) -> Self {
         Self {
-            with_voice_cloning,
             force_update,
             assume_yes,
             called_from_lifecycle: false,
         }
     }
-}
-
-/// Nombre del fichero de selección persistida en la raíz de datos.
-pub const SELECTION_FILE_NAME: &str = "setup-selection.json";
-
-/// Versión del esquema de la selección que esta versión del motor sabe leer.
-pub const SELECTION_SCHEMA_VERSION: u32 = 1;
-
-/// Selección de `setup` persistida: hoy solo
-/// `with_voice_cloning`, extensible a futuros opcionales.
-///
-/// Sobrevive a los updates porque el reemplazo no toca la raíz de datos; se
-/// pierde al desinstalar, lo cual es correcto. Lectura tolerante (fichero
-/// ausente o ilegible → conjunto base) y escritura atómica (temporal +
-/// renombrado, como el recibo).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetupSelection {
-    pub schema_version: u32,
-    pub with_voice_cloning: bool,
-}
-
-impl SetupSelection {
-    /// Conjunto base: sin clonado de voz.
-    pub fn base() -> Self {
-        Self {
-            schema_version: SELECTION_SCHEMA_VERSION,
-            with_voice_cloning: false,
-        }
-    }
-}
-
-/// Ruta de la selección bajo la raíz de datos vigente (honra `AVI_DATA_DIR`).
-pub fn selection_path(data_dir: &Path) -> PathBuf {
-    data_dir.join(SELECTION_FILE_NAME)
-}
-
-/// Lee la selección guardada, con tolerancia: fichero ausente, ilegible o con
-/// esquema desconocido → conjunto base.
-pub fn read_selection() -> SetupSelection {
-    read_selection_from(&crate::data_dir())
-}
-
-/// Núcleo comprobable de [`read_selection`], con la raíz de datos como dato
-/// para que las pruebas no toquen la del usuario.
-pub fn read_selection_from(data_dir: &Path) -> SetupSelection {
-    let text = std::fs::read_to_string(selection_path(data_dir)).unwrap_or_default();
-    parse_selection(&text)
-}
-
-/// Parsea una selección, devolviendo el conjunto base ante cualquier defecto:
-/// JSON inválido, esquema desconocido o forma inesperada.
-fn parse_selection(text: &str) -> SetupSelection {
-    serde_json::from_str::<SetupSelection>(text)
-        .ok()
-        .filter(|selection| selection.schema_version == SELECTION_SCHEMA_VERSION)
-        .unwrap_or_else(SetupSelection::base)
-}
-
-/// Escribe la selección de forma atómica: temporal hermano, escritura,
-/// renombrado sobre el destino. Un corte a mitad deja la selección anterior
-/// intacta.
-pub fn write_selection(selection: &SetupSelection) -> anyhow::Result<()> {
-    write_selection_to(&crate::data_dir(), selection)
-}
-
-/// Núcleo comprobable de [`write_selection`], con la raíz de datos como dato.
-pub fn write_selection_to(data_dir: &Path, selection: &SetupSelection) -> anyhow::Result<()> {
-    std::fs::create_dir_all(data_dir)?;
-    let dest = selection_path(data_dir);
-    let temp = data_dir.join(format!("{SELECTION_FILE_NAME}.tmp-{}", std::process::id()));
-    let text = serde_json::to_string_pretty(selection)?;
-    std::fs::write(&temp, text.as_bytes())?;
-    match std::fs::rename(&temp, &dest) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&temp);
-            Err(e.into())
-        }
-    }
-}
-
-/// Opciones efectivas del `setup`: el invocado por el ciclo de vida (el
-/// traspaso de `self update`, que corre `self install` con
-/// `called_from_lifecycle`) lee la selección guardada, no los flags; el
-/// invocado directo por el usuario usa sus flags.
-pub fn effective_options(options: &Options) -> Options {
-    if options.called_from_lifecycle {
-        Options {
-            with_voice_cloning: read_selection().with_voice_cloning,
-            ..*options
-        }
-    } else {
-        *options
-    }
-}
-
-/// Desenlace de las migraciones del `setup` nuevo.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct MigrationOutcome {
-    /// Se creó la selección base porque faltaba o era ilegible.
-    pub selection_created: bool,
-}
-
-/// Migraciones idempotentes hacia delante del `setup` nuevo,
-/// antes de provisionar: hoy, asegurar la selección en esquema 1.
-///
-/// Idempotente: una segunda ejecución no escribe nada. No borra una selección
-/// válida: solo normaliza la ausente o ilegible al conjunto base, que es lo
-/// mismo que la lectura tolerante devolvería.
-pub fn migrate() -> anyhow::Result<MigrationOutcome> {
-    migrate_at(&crate::data_dir())
-}
-
-/// Núcleo comprobable de [`migrate`], con la raíz de datos como dato.
-pub fn migrate_at(data_dir: &Path) -> anyhow::Result<MigrationOutcome> {
-    let valid = std::fs::read_to_string(selection_path(data_dir))
-        .ok()
-        .and_then(|text| serde_json::from_str::<SetupSelection>(&text).ok())
-        .is_some_and(|selection| selection.schema_version == SELECTION_SCHEMA_VERSION);
-    if valid {
-        return Ok(MigrationOutcome {
-            selection_created: false,
-        });
-    }
-    write_selection_to(data_dir, &SetupSelection::base())?;
-    Ok(MigrationOutcome {
-        selection_created: true,
-    })
 }
 
 /// Plan de lo que falta provisionar. Alimenta el resumen previo y la
@@ -220,41 +88,21 @@ impl Pending {
     }
 }
 
-/// Repos de la selección, con el mismo filtro de clonado que usa el binario hoy.
-/// La función es pura para que el filtro se pueda afirmar sin almacén ni disco.
-///
-/// Cuando la invoca el ciclo de vida (traspaso de `self update`), la selección
-/// sale del fichero guardado y no de los flags ([`effective_options`]).
-pub fn selection(options: &Options) -> Vec<&'static str> {
-    selection_for(effective_options(options).with_voice_cloning)
-}
-
-/// Repos de la selección para una elección de clonado ya resuelta. Es el filtro
-/// puro que comparten `setup`, la provisión de `self install` y `doctor`.
-pub fn selection_for(with_voice_cloning: bool) -> Vec<&'static str> {
+/// Repos de la selección: todos los pines de la tabla, sin excepción. Es la lista
+/// que comparten `setup`, la provisión de `self install` y `doctor`.
+pub fn selection() -> Vec<&'static str> {
     avi_store::MODEL_REVISIONS
         .iter()
         .map(|pin| pin.name)
-        .filter(|name| *name != CLONING_MODEL || with_voice_cloning)
         .collect()
-}
-
-/// Qué se purga con `--force-update`: **la misma selección**, no el conjunto
-/// entero. Purgar el modelo de clonado cuando el usuario no lo pidió dejaría la
-/// instalación sin lo que sí quiere.
-///
-/// Como [`selection`], sale del fichero guardado cuando la invoca el ciclo de
-/// vida.
-pub fn purge_targets(options: &Options) -> Vec<&'static str> {
-    selection(options)
 }
 
 /// Calcula lo pendiente contra un almacén ya construido. El almacén se pasa
 /// inyectado para que la función sea comprobable con un directorio de pruebas y no
 /// necesite red.
-pub fn pending(store: &avi_store::ModelStore, options: &Options) -> Pending {
+pub fn pending(store: &avi_store::ModelStore) -> Pending {
     let mut out = Pending::default();
-    for name in selection(options) {
+    for name in selection() {
         if !store.is_provisioned(name) {
             out.models.push(name.to_string());
         }
@@ -269,9 +117,9 @@ pub fn pending(store: &avi_store::ModelStore, options: &Options) -> Pending {
 /// Devuelve lo que se borró de verdad. Un repo ausente no se reporta: `cleanup`
 /// tampoco lo hace, y distinguirlos convertiría un `--force-update` normal en una
 /// lista de errores.
-pub fn purge(store: &avi_store::ModelStore, options: &Options) -> PurgeOutcome {
+pub fn purge(store: &avi_store::ModelStore) -> PurgeOutcome {
     let mut outcome = PurgeOutcome::default();
-    for name in purge_targets(options) {
+    for name in selection() {
         match store.remove_hf_snapshot(name) {
             Ok(true) => outcome.snapshots.push(name.to_string()),
             Ok(false) => {}
@@ -441,13 +289,12 @@ pub enum ProvisionError {
 /// provisionada. No confirma nada ni escribe la selección.
 pub async fn provision(
     store: &avi_store::ModelStore,
-    options: &Options,
     provisioner: &impl Provisioner,
 ) -> Result<Provisioned, ProvisionError> {
     let mut out = Provisioned::default();
 
     // 1. Descarga idempotente de la selección.
-    for name in selection(options) {
+    for name in selection() {
         if !store.is_provisioned(name) {
             provisioner
                 .download(name)
@@ -480,8 +327,8 @@ pub struct Outcome {
 /// Ejecuta `setup`: purga si toca y provisiona la selección.
 ///
 /// Es el punto de entrada que el binario cablea. La descarga vive en
-/// [`provision`], compartida con `self install`; `run` añade la migración, la
-/// persistencia de la selección, la purga, la confirmación y la poda. Lo único que se
+/// [`provision`], compartida con `self install`; `run` añade la purga, la
+/// confirmación y la poda. Lo único que se
 /// queda en el binario es el envelope `--json` y la prosa, porque el parseo de la CLI y
 /// el emisor no viven en este crate.
 ///
@@ -492,24 +339,12 @@ pub struct Outcome {
 pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Result<Outcome> {
     let mut outcome = Outcome::default();
 
-    // 0. Migraciones del `setup` nuevo y persistencia de la
-    //    selección del usuario, antes de provisionar. El `setup` invocado por
-    //    el traspaso lee la guardada, no los flags (`called_from_lifecycle`):
-    //    por eso aquí solo se escribe en la invocación directa.
-    migrate()?;
-    if !options.called_from_lifecycle {
-        write_selection(&SetupSelection {
-            schema_version: SELECTION_SCHEMA_VERSION,
-            with_voice_cloning: options.with_voice_cloning,
-        })?;
-    }
-
-    // 1. `--force-update`: purga de la **selección**, no del conjunto entero.
+    // 1. `--force-update`: purga de la selección.
     if options.force_update {
         if !confirm_destructive(options)? {
             return Ok(outcome);
         }
-        outcome.purge = purge(store, options);
+        outcome.purge = purge(store);
         for (name, reason) in &outcome.purge.failures {
             eprintln!("  no se pudo purgar {name}: {reason}");
         }
@@ -517,11 +352,11 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
 
     // 2. Resumen previo y confirmación con el plan de lo pendiente; después,
     //    la provisión compartida (descarga según el estado real).
-    let pending = pending(store, options);
+    let pending = pending(store);
     if (options.force_update || !pending.is_empty()) && !confirm_size(&pending, options)? {
         return Ok(outcome);
     }
-    let provisioned = provision(store, options, &HubProvisioner)
+    let provisioned = provision(store, &HubProvisioner)
         .await
         .map_err(|e| match e {
             ProvisionError::Download { name, cause } => {
@@ -600,6 +435,7 @@ fn confirm_size(pending: &Pending, options: &Options) -> anyhow::Result<bool> {
 pub(crate) mod tests {
     use super::*;
     use crate::test_support::{scratch, write_file, ENV_LOCK};
+    use std::path::PathBuf;
     use std::sync::MutexGuard;
 
     /// Provisionador simulado: la descarga escribe el snapshot pinneado, sin red.
@@ -651,28 +487,27 @@ pub(crate) mod tests {
     }
 
     /// La confirmación anuncia la suma de los tamaños fijados en la tabla de
-    /// pines, en escala decimal: 3 334 081 228 bytes la selección base (4 modelos)
-    /// y 5 850 187 279 con el modelo de clonado (5 modelos).
+    /// pines, en escala decimal: 5 850 187 279 bytes los 5 modelos de la selección,
+    /// el Base de clonado incluido.
     #[test]
     fn confirmation_announces_the_pinned_sizes() {
-        let pending_of = |with_voice_cloning| Pending {
-            models: selection_for(with_voice_cloning)
-                .into_iter()
-                .map(String::from)
-                .collect(),
+        let all = Pending {
+            models: selection().into_iter().map(String::from).collect(),
         };
-        let base = pending_of(false);
-        assert_eq!(base.estimated_bytes(), 3_334_081_228);
+        assert_eq!(all.estimated_bytes(), 5_850_187_279);
         assert_eq!(
-            download_summary(&base),
-            "Se descargarán 4 modelo(s), unos 3.3 GB."
-        );
-        let cloning = pending_of(true);
-        assert_eq!(cloning.estimated_bytes(), 5_850_187_279);
-        assert_eq!(
-            download_summary(&cloning),
+            download_summary(&all),
             "Se descargarán 5 modelo(s), unos 5.9 GB."
         );
+    }
+
+    /// La selección es la tabla de pines completa: el modelo Base de clonado
+    /// siempre forma parte de ella.
+    #[test]
+    fn selection_is_every_pin_including_the_cloning_model() {
+        let names = selection();
+        assert_eq!(names.len(), avi_store::MODEL_REVISIONS.len());
+        assert!(names.contains(&CLONING_MODEL));
     }
 
     /// La provisión no hace trabajo cuando todo está ya provisionado:
@@ -682,21 +517,20 @@ pub(crate) mod tests {
     fn provisioning_is_idempotent() {
         let (_guard, _root) = cache_relocated("setup-idempotent");
         let store = avi_store::ModelStore::new();
-        let with_clone = Options::user(true, false, true);
 
         // 1. Sin nada provisionado, todo está pendiente.
-        let initial = pending(&store, &with_clone);
-        assert_eq!(initial.models.len(), selection(&with_clone).len());
+        let initial = pending(&store);
+        assert_eq!(initial.models.len(), selection().len());
         assert!(!initial.is_empty(), "nada provisionado, todo pendiente");
         assert!(initial.estimated_bytes() > 0, "hay tamaño que anunciar");
 
         // 2. Se provisiona todo lo de la selección: `pending` queda vacío.
-        for name in selection(&with_clone) {
+        for name in selection() {
             let (repo, revision) = avi_store::ModelStore::revision_of(name)
                 .expect("todo repo pinneado tiene revisión");
             fake_snapshot(&repo.replace('/', "--"), revision);
         }
-        let after = pending(&store, &with_clone);
+        let after = pending(&store);
         assert!(
             after.is_empty(),
             "con todo provisionado no queda nada pendiente: {after:?}"
@@ -704,17 +538,20 @@ pub(crate) mod tests {
         assert_eq!(after.estimated_bytes(), 0, "y no hay tamaño que anunciar");
 
         // 3. Volver a calcular no cambia nada: la función es un inspeccionador.
-        assert_eq!(pending(&store, &with_clone), after);
+        assert_eq!(pending(&store), after);
+    }
 
-        // 4. La selección manda: sin `--with-voice-cloning` el modelo base no se
-        //    provisiona y por tanto tampoco se exige.
-        let without_clone = Options::user(false, false, true);
-        assert!(!selection(&without_clone).contains(&CLONING_MODEL));
-        assert!(selection(&with_clone).contains(&CLONING_MODEL));
-        assert!(
-            pending(&store, &without_clone).is_empty(),
-            "lo que no se pidió tampoco se exige"
-        );
+    /// Sin el modelo Base provisionado, `pending` lo reporta: ya no es opcional.
+    #[test]
+    fn missing_cloning_model_is_pending() {
+        let (_guard, _root) = cache_relocated("setup-cloning-pending");
+        for pin in avi_store::MODEL_REVISIONS {
+            if pin.name != CLONING_MODEL {
+                fake_snapshot(&pin.repo.replace('/', "--"), pin.revision);
+            }
+        }
+        let store = avi_store::ModelStore::new();
+        assert_eq!(pending(&store).models, vec![CLONING_MODEL.to_string()]);
     }
 
     /// Con todos los pines de la tabla provisionados no queda nada pendiente: los
@@ -727,21 +564,20 @@ pub(crate) mod tests {
             fake_snapshot(&pin.repo.replace('/', "--"), pin.revision);
         }
         let store = avi_store::ModelStore::new();
-        let plan = pending(&store, &Options::user(true, false, true));
+        let plan = pending(&store);
         assert!(
             plan.is_empty(),
             "con todos los pines sembrados no queda nada: {plan:?}"
         );
     }
 
-    /// La purga de `--force-update` respeta el filtro de la selección: borra lo
-    /// seleccionado y **no** lo que el usuario no pidió.
+    /// La purga de `--force-update` borra la selección entera, el modelo Base de
+    /// clonado incluido.
     #[test]
-    fn force_update_respects_selection() {
+    fn force_update_purges_the_whole_selection() {
         let (_guard, _root) = cache_relocated("setup-purge");
         let store = avi_store::ModelStore::new();
 
-        // Snapshot del modelo de clonado, que solo se purga si se pidió.
         fake_snapshot(
             "Qwen--Qwen3-TTS-12Hz-0.6B-Base",
             "5d83992436eae1d760afd27aff78a71d676296fc",
@@ -750,85 +586,34 @@ pub(crate) mod tests {
             avi_store::models_cache_dir().join("models--Qwen--Qwen3-TTS-12Hz-0.6B-Base");
         assert!(clone_dir.exists(), "el snapshot del modelo de clonado está");
 
-        // Sin `--with-voice-cloning`, la purga no lo toca.
-        let without_clone = Options::user(false, true, true);
-        assert_eq!(
-            purge_targets(&without_clone).len(),
-            selection(&without_clone).len(),
-            "los objetivos de purga son la selección, no el conjunto entero"
-        );
-        assert!(!purge_targets(&without_clone).contains(&CLONING_MODEL));
-        let outcome = purge(&store, &without_clone);
-        assert!(
-            clone_dir.exists(),
-            "un modelo no seleccionado no se purga: {:?}",
-            outcome.snapshots
-        );
-        assert!(!outcome.snapshots.iter().any(|s| s == CLONING_MODEL));
-        assert!(outcome.is_clean(), "no hubo fallos: {:?}", outcome.failures);
-
-        // Con `--with-voice-cloning`, sí.
-        let with_clone = Options::user(true, true, true);
-        assert!(purge_targets(&with_clone).contains(&CLONING_MODEL));
-        let outcome = purge(&store, &with_clone);
+        let outcome = purge(&store);
         assert!(
             outcome.snapshots.contains(&CLONING_MODEL.to_string()),
-            "el modelo seleccionado sí se purga: {:?}",
+            "el modelo de clonado se purga: {:?}",
             outcome.snapshots
         );
         assert!(!clone_dir.exists(), "y su snapshot desaparece de verdad");
+        assert!(outcome.is_clean(), "no hubo fallos: {:?}", outcome.failures);
     }
 
-    /// La selección sobrevive a un update: `setup
-    /// --with-voice-cloning` la guarda, y el `setup` invocado por el traspaso
-    /// (`called_from_lifecycle`) lee la guardada en vez de los flags.
+    /// Con toda la selección provisionada, `run` se completa sin red y sin
+    /// descargar nada.
     #[test]
-    fn selection_survives_update_via_saved_file() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let root = scratch("setup-selection");
-        std::env::set_var("AVI_CACHE_DIR", root.join("models"));
-        std::env::set_var("AVI_DATA_DIR", root.join("data"));
+    fn run_with_everything_provisioned_needs_no_network() {
+        let (_guard, _root) = cache_relocated("setup-run-offline");
         let store = avi_store::ModelStore::new();
-
-        // Todo provisionado con la selección completa: `run` no necesita red.
-        let with_clone = Options::user(true, false, true);
-        for name in selection(&with_clone) {
+        for name in selection() {
             let (repo, revision) = avi_store::ModelStore::revision_of(name)
                 .expect("todo repo pinneado tiene revisión");
             fake_snapshot(&repo.replace('/', "--"), revision);
         }
 
-        // 1. El `setup` directo con `--with-voice-cloning` guarda la selección.
-        tokio::runtime::Builder::new_current_thread()
+        let outcome = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("runtime de la prueba")
-            .block_on(run(&store, &with_clone))
+            .block_on(run(&store, &Options::user(false, true)))
             .expect("el setup sin red se completa");
-        assert!(
-            read_selection().with_voice_cloning,
-            "la invocación directa persiste su selección"
-        );
-
-        // 2. El traspaso lee la guardada, no los flags: aunque venga con el
-        //    flag apagado, el conjunto conserva el modelo de clonado.
-        let handover = Options {
-            with_voice_cloning: false,
-            assume_yes: true,
-            called_from_lifecycle: true,
-            ..Options::default()
-        };
-        assert!(
-            selection(&handover).contains(&CLONING_MODEL),
-            "el traspaso conserva el conjunto guardado: {:?}",
-            selection(&handover)
-        );
-
-        // 3. Y al revés: la invocación directa usa sus flags aunque haya
-        //    fichero guardado.
-        assert!(
-            !selection(&Options::user(false, false, true)).contains(&CLONING_MODEL),
-            "el `setup` directo manda con sus flags"
-        );
+        assert_eq!(outcome.provisioned.len(), selection().len());
     }
 
     /// La poda elimina justo las revisiones fuera del pin: la pinneada se
@@ -930,76 +715,6 @@ pub(crate) mod tests {
         assert!(
             root.join(".locks").join("sentinel").is_file(),
             "ni `.locks`"
-        );
-    }
-
-    /// Las migraciones son idempotentes y no pisan una selección válida: la
-    /// primera crea la base, la segunda no escribe, y con doble ejecución el
-    /// resultado es el mismo.
-    #[test]
-    fn migration_is_idempotent_and_preserves_choice() {
-        let root = scratch("setup-migration");
-        let data = root.join("data");
-
-        // 1. Sin fichero: la lectura da la base y la migración la crea.
-        assert_eq!(
-            read_selection_from(&root.join("absent")),
-            SetupSelection::base(),
-            "leer lo ausente da la base"
-        );
-        let first = migrate_at(&data).expect("la migración crea");
-        assert!(first.selection_created);
-
-        // 2. Otra vez: no toca nada (doble ejecución, mismo resultado).
-        let second = migrate_at(&data).expect("la migración reitera");
-        assert!(!second.selection_created);
-        assert_eq!(read_selection_from(&data), SetupSelection::base());
-
-        // 3. Con elección guardada: la conserva.
-        write_selection_to(
-            &data,
-            &SetupSelection {
-                schema_version: SELECTION_SCHEMA_VERSION,
-                with_voice_cloning: true,
-            },
-        )
-        .expect("se guarda la elección");
-        let third = migrate_at(&data).expect("la migración respeta");
-        assert!(!third.selection_created);
-        assert!(
-            read_selection_from(&data).with_voice_cloning,
-            "la elección sobrevive a la migración"
-        );
-
-        // 4. Ilegible: la lectura da la base y la migración la normaliza.
-        std::fs::write(selection_path(&data), "{ no es json").expect("se corrompe");
-        assert_eq!(
-            read_selection_from(&data),
-            SetupSelection::base(),
-            "leer lo ilegible da la base"
-        );
-        let fourth = migrate_at(&data).expect("la migración normaliza");
-        assert!(fourth.selection_created);
-        assert_eq!(read_selection_from(&data), SetupSelection::base());
-
-        // 5. Esquema futuro: también base, sin abortar.
-        std::fs::write(
-            selection_path(&data),
-            r#"{"schema_version": 99, "with_voice_cloning": true}"#,
-        )
-        .expect("se adelanta el esquema");
-        assert_eq!(read_selection_from(&data), SetupSelection::base());
-
-        // 6. Atómica: tras migrar solo queda la selección, ningún temporal.
-        migrate_at(&data).expect("la migración normaliza el esquema futuro");
-        let contents: Vec<String> = std::fs::read_dir(&data)
-            .expect("se lista la raíz de datos")
-            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
-            .collect();
-        assert_eq!(
-            contents,
-            vec![SELECTION_FILE_NAME.to_string()],
-            "solo queda la selección, ningún temporal hermano"
         );
     }
 }

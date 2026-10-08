@@ -205,8 +205,6 @@ pub struct Options {
     /// `--channel dev`, la opción oculta. Solo surte efecto cuando el recibo se crea
     /// por primera vez.
     pub channel: Option<Channel>,
-    /// `--with-voice-cloning`, que se pasa a `setup`.
-    pub with_voice_cloning: bool,
 }
 
 impl Options {
@@ -466,7 +464,7 @@ pub async fn install(
         .is_some_and(|r| compare_versions(&env.version, &r.version) == std::cmp::Ordering::Less);
 
     // ── Paso 4. Resumen previo y confirmación ─────────────────────────────────
-    let pending = pending_models(options);
+    let pending = pending_models();
     let path_plan = plan_path(env, options);
     let previous_summary = compose_summary(env, options, mode, &replaces, &path_plan, &pending);
     // Una degradación se confirma como operación destructiva (paso 4), aunque
@@ -542,7 +540,7 @@ pub async fn install(
     let models = if options.no_setup {
         ModelsState::Skipped
     } else {
-        provision(options, &setup::HubProvisioner).await
+        provision(&setup::HubProvisioner).await
     };
     drop(lock);
 
@@ -769,29 +767,14 @@ fn source_of(env: &Env, previous: Option<&InstallReceipt>) -> Option<String> {
 /// `AVI_CACHE_DIR`; `Env::models_dir` tiene que coincidir con ella, y en producción
 /// ambas salen de `crate::models_cache_dir()`. En una prueba reubicada, las dos
 /// salen de la variable, que es justo el mecanismo que declara el aislamiento.
-fn pending_models(options: &Options) -> setup::Pending {
+fn pending_models() -> setup::Pending {
     let store = avi_store::ModelStore::new();
-    setup::pending(&store, &setup_options(options))
-}
-
-/// Opciones de `setup` que se derivan de las de `self install`.
-///
-/// `called_from_lifecycle` hace que la selección salga del fichero guardado y
-/// no de los flags (`setup::effective_options`): es lo que permite que el
-/// `setup` invocado por el traspaso de `self update` conserve el conjunto del
-/// usuario.
-fn setup_options(options: &Options) -> setup::Options {
-    setup::Options {
-        with_voice_cloning: options.with_voice_cloning,
-        force_update: false,
-        assume_yes: options.assume_yes,
-        called_from_lifecycle: true,
-    }
+    setup::pending(&store)
 }
 
 /// Paso 11: la misma provisión que `setup` (descarga de la selección según el
 /// estado real del almacén), sin la confirmación, que ya mostró el resumen del
-/// paso 4, y sin la escritura de la selección.
+/// paso 4.
 ///
 /// Un fallo **no** es un `Err`: `setup_failed` es éxito parcial con el
 /// programa instalado y reintentable con `setup`, así que es un estado del desenlace y
@@ -799,9 +782,9 @@ fn setup_options(options: &Options) -> setup::Options {
 /// [`Outcome::lifecycle_error`]; lo que viaja aquí es el **fallo de la provisión**, con su
 /// propio `reason`, que es lo que la tabla de reasons reserva a cada caso:
 /// `network_error` para un fallo de descarga.
-async fn provision(options: &Options, provisioner: &impl setup::Provisioner) -> ModelsState {
+async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
     let store = avi_store::ModelStore::new();
-    match setup::provision(&store, &setup_options(options), provisioner).await {
+    match setup::provision(&store, provisioner).await {
         Ok(done) if done.downloaded.is_empty() => ModelsState::AlreadyProvisioned,
         Ok(done) => ModelsState::Provisioned {
             count: done.downloaded.len(),
@@ -1025,15 +1008,14 @@ mod tests {
     fn install_provision_downloads_translation_from_empty_store() {
         let (_guard, root) = setup::tests::cache_relocated("install-provision-empty");
         std::env::set_var("AVI_DATA_DIR", root.join("data"));
-        let options = Options::unattended();
-        let plan = setup::pending(&avi_store::ModelStore::new(), &setup_options(&options));
+        let plan = setup::pending(&avi_store::ModelStore::new());
         for pair in ["opus-mt-es-en", "opus-mt-en-es"] {
             assert!(plan.models.contains(&pair.to_string()));
         }
         let models = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("runtime de la prueba")
-            .block_on(provision(&options, &setup::tests::FakeProvisioner));
+            .block_on(provision(&setup::tests::FakeProvisioner));
         assert!(
             matches!(models, ModelsState::Provisioned { .. }),
             "{models:?}"
@@ -1269,16 +1251,13 @@ mod tests {
     }
 
     /// El resumen previo anuncia la descarga con el tamaño de la tabla de pines en
-    /// escala decimal: la selección base (Qwen3-TTS, los dos opus-mt y Parakeet)
-    /// suma 3 334 081 228 bytes, que son 3.3 GB.
+    /// escala decimal: la selección (Qwen3-TTS, los dos opus-mt, Parakeet y el
+    /// Base de clonado) suma 5 850 187 279 bytes, que son 5.9 GB.
     #[test]
     fn summary_announces_the_pinned_download_size() {
         let env = test_env();
         let pending = setup::Pending {
-            models: setup::selection_for(false)
-                .into_iter()
-                .map(String::from)
-                .collect(),
+            models: setup::selection().into_iter().map(String::from).collect(),
         };
         let summary = compose_summary(
             &env,
@@ -1290,7 +1269,7 @@ mod tests {
         );
         assert!(
             summary.contains(&format!(
-                "  Modelos:   se descargarán unos 3.3 GB en {}",
+                "  Modelos:   se descargarán unos 5.9 GB en {}",
                 env.models_dir.display()
             )),
             "{summary:?}"

@@ -30,7 +30,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `install` | `dir` (directorio de programa), `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` (la del recibo, si lo hay) |
 | `path` | `resolves_to_this_install`, `duplicate_entries`, `integration` (`present`/`absent`/`not_modified`) y `coexisting` (instalaciones ajenas, con su canal y cuál tiene precedencia) |
 | `pending` | `transaction_journal`, `parked`, `stagings`, `temporaries` y `temporaries_kept` |
-| `models` | `root`, `shared_root`, `provisioned`, `missing` (solo repos de la selección guardada sin provisionar), `base` y `size_bytes` |
+| `models` | `root`, `shared_root`, `provisioned`, `missing` (repos de la selección sin provisionar) y `size_bytes` |
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
@@ -46,7 +46,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 |---|---|
 | `data_dir` | `install.data_dir` — y es la raíz de datos **efectiva**, la del recibo si lo hay |
 | `hf_cache` | `models.root`, con `models.shared_root` diciendo si esa raíz es la caché HF compartida que eligió el usuario |
-| `base_status` | `models.base`, con los mismos dos valores (`ready` / `missing_opt_in`) |
+| `base_status` | `models.provisioned` o `models.missing`, donde `qwen3-tts-0.6b-base` figura como cualquier otro modelo |
 | `issues` | `checks` (el detalle por comprobación) y `failed` (los nombres de las que fallan) |
 
 **Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §8.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el envelope de la CLI subió a `"4"` en lugar de quedarse como adición.
@@ -63,8 +63,9 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `path_resolves` | La **primera** entrada del `PATH` que apunta a una instalación no es la registrada | Orden de precedencia |
 | `path_duplicates` | Más de una entrada del `PATH` apunta a una instalación | Coexistencia (Cask + `script`) |
 | `pending_artifacts` | Quedan aparcados, stagings o temporales por recoger | Transacción interrumpida |
-| `models_provisioned` | Falta algún repo de la selección efectiva (los obligatorios más Base si el usuario activó el clonado) | Solo presencia de snapshot, con los ficheros críticos |
-**El modelo Base de clonado no es un chequeo.** `qwen3-tts-0.6b-base` es opt-in: su ausencia es un dato (`models.base = "missing_opt_in"`), nunca un fallo, porque no es obligatorio para que el producto funcione.
+| `models_provisioned` | Falta algún repo de la selección, el modelo Base de clonado incluido | Solo presencia de snapshot, con los ficheros críticos |
+
+**El modelo Base de clonado no tiene un chequeo propio.** `qwen3-tts-0.6b-base` es un modelo obligatorio como los demás: su ausencia aparece en `models.missing` y hace fallar `models_provisioned`.
 
 **Nada de esto escribe en disco, salvo `--repair`.** La recuperación de §8.1 se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca. La excepción es `--repair`, que toma el bloqueo, ejecuta ese mismo barrido y reevalúa: su alcance es exactamente lo que el barrido recoge, ni más ni menos.
 
@@ -112,9 +113,8 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
   "models": {
     "root": "C:\\Users\\…\\AppData\\Local\\ai-voice-interconnector\\cache\\models",
     "shared_root": false,
-    "provisioned": ["qwen3-tts-0.6b", "opus-mt-es-en", "opus-mt-en-es", "parakeet-tdt-v3"],
+    "provisioned": ["qwen3-tts-0.6b", "opus-mt-es-en", "opus-mt-en-es", "parakeet-tdt-v3", "qwen3-tts-0.6b-base"],
     "missing": [],
-    "base": "missing_opt_in",
     "size_bytes": 9876543210
   },
   "checks": [

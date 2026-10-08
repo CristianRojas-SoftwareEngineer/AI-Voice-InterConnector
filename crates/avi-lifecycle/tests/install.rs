@@ -181,7 +181,6 @@ impl Sandbox {
             no_modify_path: false,
             force: false,
             channel: None,
-            with_voice_cloning: false,
         }
     }
 }

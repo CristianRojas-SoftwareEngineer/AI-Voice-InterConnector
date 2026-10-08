@@ -335,7 +335,7 @@ pub fn resolve_base_model_dir(bin: Option<&Path>) -> Option<PathBuf> {
             }
         }
     }
-    // Capa modelos: snapshot provisionado en la raíz de modelos por setup --with-voice-cloning
+    // Capa modelos: snapshot provisionado en la raíz de modelos por `setup`
     if let Some(p) = avi_store::ModelStore::new().model_snapshot_path("qwen3-tts-0.6b-base") {
         if p.is_dir()
             && p.read_dir()

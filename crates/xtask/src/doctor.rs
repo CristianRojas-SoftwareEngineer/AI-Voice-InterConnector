@@ -954,11 +954,6 @@ fn probe_models_drift() -> Vec<String> {
     let mut out = Vec::new();
     let models = avi_shared::paths::models_cache_dir();
     for pin in avi_shared::paths::MODEL_REVISIONS {
-        // El clonado de voz es opt-in y el `setup` que lanza `bootstrap` no lo
-        // solicita, así que su ausencia no es deriva.
-        if pin.name == avi_shared::paths::CLONING_MODEL {
-            continue;
-        }
         let snapshot = models
             .join(format!("models--{}", pin.repo.replace('/', "--")))
             .join("snapshots")

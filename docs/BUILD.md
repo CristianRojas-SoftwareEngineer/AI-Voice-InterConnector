@@ -559,9 +559,9 @@ quedan documentados aquí de forma autocontenida:
   llevan `#[ignore = "requiere …"]`: `cargo test --all` las muestra como
   *ignored* y, con `--include-ignored`, fallan con un mensaje que nombra el
   archivo que falta y el comando que lo aprovisiona
-  (`ai-voice-interconnector setup`, `setup --with-voice-cloning` o
+  (`ai-voice-interconnector setup` o
   `cargo xtask build-engine`). Ninguna descarga nada por su cuenta: hacerlo
-  costaría 3,3 GB en cada corrida de CI sin obtener cobertura, porque el runner
+  costaría 5,85 GB en cada corrida de CI sin obtener cobertura, porque el runner
   de tests no tiene el binario del motor ni los pesos locales. `cargo xtask
   release` las ejecuta antes del bump.
 
@@ -727,7 +727,7 @@ recursos de red), se copia el blob y el disco se duplica. La descarga la hace el
 | `opus-mt-es-en` | `CristianRojaas/opus-mt-es-en-ct2-int8` | Traducción es→en (CTranslate2 int8, 82.536.565 bytes) |
 | `opus-mt-en-es` | `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción en→es (CTranslate2 int8, 82.536.565 bytes) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT Parakeet TDT v3 int8 (671,1 MB, 4 artefactos: encoder-model.int8.onnx, decoder_joint-model.int8.onnx, nemo128.onnx, vocab.txt) |
-| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base: clonado de voz y síntesis de las voces clonadas (opt-in `--with-voice-cloning`) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base: clonado de voz y síntesis de las voces clonadas |
 
 Los pines viven en `MODEL_REVISIONS` (`crates/avi-shared/src/paths.rs`): un `&[ModelPin]`
 con `name`, `repo`, `revision` y `approx_bytes` (tamaño medido de la descarga, del que sale la

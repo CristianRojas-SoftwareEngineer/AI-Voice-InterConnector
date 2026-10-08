@@ -72,8 +72,8 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
 - **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
   funciona pero puede paginar (ralentizarse) en textos largos. `doctor` no mide
   ni la CPU ni la RAM.
-- **Disco**: 3,3 GB para los modelos descargados (Qwen3-TTS 2,5 GB + opus-mt
-  es↔en 0,17 GB + Parakeet TDT v3 0,7 GB), y 5,85 GB con `--with-voice-cloning`. El disco
+- **Disco**: 5,85 GB para los modelos descargados (Qwen3-TTS 2,5 GB + modelo Base
+  de clonado 2,5 GB + opus-mt es↔en 0,17 GB + Parakeet TDT v3 0,7 GB). El disco
   ocupa lo mismo que la descarga, salvo en sistemas de archivos sin enlaces duros (FAT32,
   exFAT o algunos recursos de red), donde `hf-hub` copia cada archivo y el espacio se
   duplica. El binario instalado ocupa ~40 MB.
@@ -141,14 +141,13 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
 | `opus-mt-es-en` / `opus-mt-en-es` | `CristianRojaas/opus-mt-es-en-ct2-int8` / `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción es↔en (0,08 GB cada uno; derivados int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertidos a CTranslate2) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (0,7 GB, ONNX int8) |
-| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (2,5 GB, opt-in) | Clonado de voz (Base) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (2,5 GB) | Clonado de voz y síntesis de las voces clonadas (Base) |
 
 Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
-(`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. El Base es opt-in por peso (5,85 GB en total con él). Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
+(`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. Los cinco modelos suman 5,85 GB. Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
 
 ```bash
-ai-voice-interconnector setup                        # descarga los 4 base (idempotente)
-ai-voice-interconnector setup --with-voice-cloning   # incluye Base para voice clone (2,5 GB)
+ai-voice-interconnector setup                        # descarga los 5 modelos (idempotente)
 ai-voice-interconnector setup --force-update         # purga los snapshots pinneados + xet y re-descarga
 ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva
 ```
@@ -266,7 +265,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `install` | objeto | `dir`, `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` |
 | `path` | objeto | Resolución y duplicados en el `PATH`, integración y coexistencia |
 | `pending` | objeto | Restos de operaciones anteriores (transacción, aparcados, stagings, temporales) |
-| `models` | objeto | `root`, `shared_root`, `provisioned`, `missing` (solo la selección guardada), `base` (`ready`/`missing_opt_in`), `size_bytes` |
+| `models` | objeto | `root`, `shared_root`, `provisioned`, `missing` (modelos sin provisionar), `size_bytes` |
 | `checks` | array de objetos | `{name, ok, detail}` por chequeo |
 | `failed` | array de strings | Nombres de los chequeos fallidos (vacío si todo correcto); exit 1 si no está vacío |
 
@@ -294,7 +293,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `status` | string | `"completed"` |
-| `models_provisioned` | array de strings | Los 4 modelos base + 1 opt-in si `--with-voice-cloning` (`qwen3-tts-0.6b`, `opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
+| `models_provisioned` | array de strings | Los 5 modelos (`qwen3-tts-0.6b`, `opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
 
 **`cleanup --json` / `self uninstall --json`**
 
@@ -393,15 +392,12 @@ Cache HF: C:\Users\<tu-usuario>\.cache\huggingface\hub
 
 `doctor` ejecuta cinco chequeos: recibo de instalación, resolución y duplicados en
 el `PATH`, artefactos pendientes y `models_provisioned` (los modelos de la
-selección guardada: TTS Qwen3-TTS, traducción opus-mt es→en y en→es y STT
-Parakeet TDT v3, más el Base si activaste el clonado). Si alguno falla, lo lista y remite a
+selección: TTS Qwen3-TTS, traducción opus-mt es→en y en→es, STT
+Parakeet TDT v3 y el modelo Base de clonado). Si alguno falla, lo lista y remite a
 `ai-voice-interconnector setup`.
 
-El modelo Base de clonado es opcional: si no lo pediste, su ausencia no es un
-fallo y `--json` la informa en `models.base` (`ready` o `missing_opt_in`).
-
 El veredicto es el código de salida: 0 si todos los chequeos pasan (tras una
-instalación correcta sin clonado, `doctor` sale con 0) y 1 si alguno falla.
+instalación correcta, `doctor` sale con 0) y 1 si alguno falla.
 Referencia canónica: `docs/CLI/commands/DOCTOR.md`.
 
 ---
@@ -784,11 +780,11 @@ Clona una voz a partir de un audio de referencia (requiere modelo Base).
 
 ```bash
 ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
-# Si falta Base: ai-voice-interconnector setup --with-voice-cloning
+# Si falta Base: ai-voice-interconnector setup
 ```
 
 **Qué esperar:** el comando valida que el audio sea cargable, genera `reference.qvoice` vía
-`avi_tts::clone_voice` con el modelo Base, y confirma (error `model_missing` → `setup --with-voice-cloning`):
+`avi_tts::clone_voice` con el modelo Base, y confirma (error `model_missing` → `setup`):
 
 ```
 Voz 'mi_voz' clonada.
@@ -804,7 +800,7 @@ A partir de ese momento la voz aparece en `voice list` y puede usarse con
 El clonado **extrae la representación de la voz** con el modelo Base y la guarda
 como `reference.qvoice`; toda síntesis posterior con `--voice mi_voz` la carga
 desde disco, sin volver a procesar los audios de referencia. Por eso `voice clone`
-requiere el modelo Base provisionado (`ai-voice-interconnector setup --with-voice-cloning`).
+requiere el modelo Base provisionado (`ai-voice-interconnector setup`).
 Si hay un [daemon](#modo-daemon) activo, el clonado corre en él y además precalienta
 la voz nueva en segundo plano (`"precomputed": true` con `--json`); en modo directo
 `precomputed` es siempre `false`.
@@ -1017,7 +1013,7 @@ ai-voice-interconnector self update --no-setup --yes      # sin provisión y sin
 Los modelos descargados (en la caché de la aplicación, `~/.cache/ai-voice-interconnector/models` en Linux) se reutilizan tal cual.
 Cada versión del binario fija las revisiones exactas de los modelos que usa
 (`MODEL_REVISIONS`): si tu caché contiene otra revisión, `setup` la detecta como
-no provisionada y descarga la requerida (los archivos que no cambian entre revisiones no se duplican: `snapshots/` los enlaza al mismo blob, con symlinks en Unix y enlaces duros en Windows, salvo en FAT32/exFAT, donde se copian). Tras el reemplazo, el `setup` de la versión nueva lee la selección guardada (`setup-selection.json`) y poda las revisiones propias obsoletas.
+no provisionada y descarga la requerida (los archivos que no cambian entre revisiones no se duplican: `snapshots/` los enlaza al mismo blob, con symlinks en Unix y enlaces duros en Windows, salvo en FAT32/exFAT, donde se copian). Tras el reemplazo, el `setup` de la versión nueva poda las revisiones propias obsoletas.
 
 ---
 
@@ -1248,11 +1244,11 @@ ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav 
 
 ### "El modelo Base de clonado TTS no está provisionado"
 
-`voice clone` requiere el modelo Base (`--with-voice-cloning` en `setup`). Sin
-él, el comando falla con `model_missing` antes de tocar el store:
+`voice clone` requiere el modelo Base, que `setup` provisiona siempre. Sin
+él (instalación incompleta), el comando falla con `model_missing` antes de tocar el store:
 
 ```bash
-ai-voice-interconnector setup --with-voice-cloning
+ai-voice-interconnector setup
 ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav --force
 ```
 

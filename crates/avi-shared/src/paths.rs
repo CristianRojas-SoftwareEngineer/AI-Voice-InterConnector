@@ -104,9 +104,9 @@ pub fn bin_dir() -> PathBuf {
     }
 }
 
-/// Nombre lógico del único modelo opt-in de la tabla de pines: el Base de clonado
-/// de voz. Solo se provisiona si la selección del usuario lo pide
-/// (`setup --with-voice-cloning`); los demás modelos de la tabla son obligatorios.
+/// Nombre lógico del modelo Base de clonado de voz, que sintetiza las voces
+/// clonadas (la de fábrica `default` incluida). Como los demás modelos de la
+/// tabla de pines, `setup` lo provisiona siempre.
 pub const CLONING_MODEL: &str = "qwen3-tts-0.6b-base";
 
 /// Pin de un modelo: nombre lógico, repo de HuggingFace, revisión y tamaño.

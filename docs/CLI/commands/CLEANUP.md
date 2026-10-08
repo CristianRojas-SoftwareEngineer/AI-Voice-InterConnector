@@ -100,7 +100,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 | Borrar muchas locuciones | `cleanup --synthetic-speech` |
 | Borrar una voz clonada | `voice remove --name X` |
 | Borrar las voces del usuario | `cleanup --voices` |
-| Liberar los 3,3 GB de los modelos base (5,85 GB con el de clonado) y volver a descargarlos con `setup` | `cleanup --model` |
+| Liberar los 5,85 GB de los modelos y volver a descargarlos con `setup` | `cleanup --model` |
 | Desinstalar el programa y su `PATH` | `self uninstall` |
 | Desinstalar conservando modelos, voces y habla | `self uninstall --keep-data` |
 

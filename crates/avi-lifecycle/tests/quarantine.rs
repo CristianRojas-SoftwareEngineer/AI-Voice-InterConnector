@@ -420,7 +420,6 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
             no_modify_path: true,
             force: false,
             channel: None,
-            with_voice_cloning: false,
         },
         &Inert,
     )
@@ -1001,7 +1000,6 @@ async fn install_strips_quarantine_from_whole_program_dir() {
             no_modify_path: true,
             force: false,
             channel: None,
-            with_voice_cloning: false,
         },
         &Inert,
     )

@@ -7,7 +7,7 @@ ejecuta en Windows sobre cada release, y que sirve de guion para el feedback de
 usuarios reales en Linux y macOS. El pipeline de CI solo corre un **smoke test
 automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0); la matriz de
 comandos de abajo es la parte que **no** cabe en un runner de CI porque exige
-cargar Qwen3-TTS + Parakeet, descargar 3,3 GB base (5,85 GB con `--with-voice-cloning`),
+cargar Qwen3-TTS + Parakeet, descargar 5,85 GB de modelos,
 sintetizar audio real y —en las rutas interactivas— un micrófono y una terminal
 con una persona pulsando teclas.
 

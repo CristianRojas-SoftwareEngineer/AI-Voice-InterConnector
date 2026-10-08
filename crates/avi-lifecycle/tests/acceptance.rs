@@ -123,9 +123,6 @@ fn run_category(sandbox: &Sandbox, runtime: &tokio::runtime::Runtime, options: c
 /// por presencia y tamaño de esos archivos.
 fn provision_selection(sandbox: &Sandbox) {
     for pin in MODEL_REVISIONS {
-        if pin.name == setup::CLONING_MODEL {
-            continue;
-        }
         let snapshot = sandbox
             .models_dir
             .join(support::repo_dir(pin.repo))
@@ -412,9 +409,8 @@ fn criterion_6_no_setup_provisions_nothing() {
     sandbox.seed_env();
 
     // No vacuidad: hay modelos que provisionar si se pidiera.
-    let setup_options = setup::Options::user(false, false, true);
-    let pending = setup::pending(&ModelStore::new(), &setup_options);
-    let selection = setup::selection(&setup_options);
+    let pending = setup::pending(&ModelStore::new());
+    let selection = setup::selection();
     assert!(
         !pending.models.is_empty(),
         "criterio 6: hay repos que descargar, así que `--no-setup` omite trabajo real: {:?}",
@@ -508,8 +504,7 @@ fn criterion_6_setup_failure_keeps_install() {
     std::env::set_var("HF_ENDPOINT", format!("http://127.0.0.1:{closed_port}"));
 
     // No vacuidad del camino de fallo: solo queda por descargar ese pin.
-    let setup_options = setup::Options::user(false, false, true);
-    let pending = setup::pending(&ModelStore::new(), &setup_options);
+    let pending = setup::pending(&ModelStore::new());
     assert_eq!(
         pending.models,
         vec![UNSEEDED_PIN.to_string()],
@@ -644,7 +639,7 @@ fn criterion_6_setup_failure_keeps_install() {
     // Y es reintentable con `setup`: el modelo sigue sin existir, así que un `setup`
     // posterior lo vuelve a pedir.
     assert_eq!(
-        setup::pending(&ModelStore::new(), &setup_options).models,
+        setup::pending(&ModelStore::new()).models,
         vec![UNSEEDED_PIN.to_string()],
         "criterio 6: y `setup` lo ve pendiente otra vez"
     );
@@ -668,10 +663,7 @@ fn criterion_6_successful_provisioning_has_no_reason() {
     provision_selection(&sandbox);
 
     // No vacuidad: `setup` no tiene nada que hacer, y eso es lo que la prueba comprueba.
-    let pending = setup::pending(
-        &ModelStore::new(),
-        &setup::Options::user(false, false, true),
-    );
+    let pending = setup::pending(&ModelStore::new());
     assert!(
         pending.is_empty(),
         "criterio 6: con los repos ya provisionados no queda nada pendiente: {:?}",

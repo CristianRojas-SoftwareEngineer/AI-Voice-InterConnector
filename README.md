@@ -131,12 +131,12 @@ La firma Authenticode/Apple notarization es goal a largo plazo (`docs/GOAL.md`).
 
 ### Provisión del/los modelo(s) (`setup`)
 
-Cinco modelos pinneados (4 + 1 opt-in) no vienen en el binario: `qwen3-tts-0.6b` (2,5 GB),
-`opus-mt-es-en`/`opus-mt-en-es` (0,08 GB cada uno), `parakeet-tdt-v3` (0,7 GB, int8) y `qwen3-tts-0.6b-base` (2,5 GB, opt-in con `setup --with-voice-cloning`). Se descargan a la
+Cinco modelos pinneados no vienen en el binario: `qwen3-tts-0.6b` (2,5 GB),
+`opus-mt-es-en`/`opus-mt-en-es` (0,08 GB cada uno), `parakeet-tdt-v3` (0,7 GB, int8) y `qwen3-tts-0.6b-base` (2,5 GB, modelo Base de las voces clonadas). Se descargan a la
 **caché exclusiva de la aplicación** (`~/.cache/ai-voice-interconnector/models` en Linux,
 `~/Library/Caches/ai-voice-interconnector/models` en macOS,
 `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows; si defines `HF_HUB_CACHE` o
-`HF_HOME`, esa raíz se respeta y pasa a ser compartida) vía `setup` (3,3 GB base, 5,85 GB con `--with-voice-cloning`; el disco ocupa lo mismo que la descarga):
+`HF_HOME`, esa raíz se respeta y pasa a ser compartida) vía `setup` (5,85 GB; el disco ocupa lo mismo que la descarga):
 
 ```bash
 ai-voice-interconnector setup
@@ -197,7 +197,7 @@ ai-voice-interconnector voice list / remove --name X
 ai-voice-interconnector translate --text "Hola" --from es --to en
 ai-voice-interconnector devices / doctor / version
 ai-voice-interconnector daemon start / status / stop / restart / serve
-ai-voice-interconnector setup [--with-voice-cloning] [--force-update] [-y|--yes]
+ai-voice-interconnector setup [--force-update] [-y|--yes]
 ai-voice-interconnector cleanup [--voices|--synthetic-speech|--model|--all] [--dry-run] [-y|--yes]
 ai-voice-interconnector self install [--no-setup] [--no-modify-path] [-f|--force] [-y|--yes]
 ai-voice-interconnector self update [--check] [--version X.Y.Z] [-f|--force] [--no-setup] [-y|--yes]

@@ -647,56 +647,33 @@ fn criterion_15_managed_channels_are_externally_managed() {
 /// **Criterio 16.** Después de actualizar, los modelos cuyo pin cambió quedan
 /// provisionados y las revisiones propias obsoletas quedan podadas.
 ///
-/// Tres mitades a nivel de motor: la selección guardada sobrevive al reemplazo
-/// del programa (el reemplazo no toca la raíz de datos); lo pendiente contra el
-/// pin vigente se detecta y se da por provisionado al escribirlo; y la poda tras
-/// éxito elimina solo las revisiones fuera del pin, también en la raíz
-/// compartida donde `xet`, `.locks` y lo ajeno son intocables (R3).
+/// Dos mitades a nivel de motor: lo pendiente contra el pin vigente se detecta
+/// y se da por provisionado al escribirlo; y la poda tras éxito elimina solo las
+/// revisiones fuera del pin, también en la raíz compartida donde `xet`,
+/// `.locks` y lo ajeno son intocables (R3).
 #[test]
-fn criterion_16_selection_survives_and_obsolete_pruned() {
+fn criterion_16_pending_pin_detected_and_obsolete_pruned() {
     let _guard = support::exclusively();
     let sandbox = Sandbox::new("c16");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
 
-    // La selección sobrevive al reemplazo: se guarda con clonado, se sustituye
-    // el programa entero y se relee intacta.
-    let mut selection = setup::SetupSelection::base();
-    selection.with_voice_cloning = true;
-    setup::write_selection_to(&sandbox.data_dir, &selection)
-        .expect("criterio 16: la selección se guarda");
-    support::write(
-        &sandbox
-            .program_dir
-            .join(uninstall::executable_name_default()),
-        "binario 0.24.0",
-    );
-    let back = setup::read_selection_from(&sandbox.data_dir);
-    assert!(
-        back.with_voice_cloning,
-        "criterio 16: la selección sobrevive al reemplazo del programa"
-    );
-
     // Lo pendiente contra el pin vigente: todo escrito menos un repo se
     // detecta, y escrito ese último no queda nada pendiente.
-    let options = setup::Options::user(false, false, true);
-    let names: Vec<&str> = setup::selection(&options);
-    assert!(
-        !names.is_empty(),
-        "criterio 16: la selección base no es vacía"
-    );
+    let names: Vec<&str> = setup::selection();
+    assert!(!names.is_empty(), "criterio 16: la selección no es vacía");
     let store = avi_store::ModelStore::new();
     for name in &names[..names.len() - 1] {
         set_snapshot(&sandbox, name);
     }
-    let pending = setup::pending(&store, &options);
+    let pending = setup::pending(&store);
     assert_eq!(
         pending.models,
         vec![names[names.len() - 1].to_string()],
         "criterio 16: el pin cambiado se detecta como pendiente"
     );
     set_snapshot(&sandbox, names[names.len() - 1]);
-    let pending = setup::pending(&store, &options);
+    let pending = setup::pending(&store);
     assert!(
         pending.models.is_empty(),
         "criterio 16: provisionado el pin, no queda nada que descargar: {:?}",

@@ -165,7 +165,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | `self install` | `--no-setup` · `--no-modify-path` · `--force`/`-f` · `--yes` · `--json` | Vigente |
 | `self update` | `--check` · `--version X.Y.Z` · `--force`/`-f` · `--no-setup` · `--yes` · `--json` | Vigente |
 | `self uninstall` | `--keep-data` · `--dry-run` · `--yes` · `--json` | Vigente |
-| `setup` | `--with-voice-cloning` · `--force-update` · `--yes`/`-y` · `--json` | Vigente |
+| `setup` | `--force-update` · `--yes`/`-y` · `--json` | Vigente |
 | `cleanup` | `--model` · `--voices` · `--synthetic-speech` · `--all` · `--dry-run` · `--yes`/`-y` · `--json` | Vigente |
 | `doctor` | `--repair` · `--json` | Vigente |
 
@@ -722,9 +722,9 @@ conjunto provisionado es fijo (es+en offline completo desde el primer uso).
 `setup --with-stt` ya no existe: falla como argumento desconocido con exit 2
 (error de uso de `clap`, mensaje de texto por stderr).
 
-**Su flujo es el de siempre, ahora en el motor**: selección por banderas, idempotencia por presencia del snapshot, purga de `--force-update` **sobre la misma selección** (purgar el modelo de clonado que el usuario no pidió dejaría la instalación sin lo que sí quiere) y validación de cada modelo por presencia de sus ficheros.
+**Su flujo es el de siempre, ahora en el motor**: selección de modelos, idempotencia por presencia del snapshot, purga de `--force-update` **sobre la misma selección** y validación de cada modelo por presencia de sus ficheros.
 
-**Selección persistida y poda, vigentes**: la selección vive en `setup-selection.json` bajo la raíz de datos (esquema 1, lectura tolerante y escritura atómica) y el `setup` invocado por el traspaso lee la guardada, no los flags; tras el reemplazo provisiona el pin nuevo y poda las revisiones propias obsoletas, con R3 en raíz compartida (`crates/avi-lifecycle/src/setup.rs`).
+**Poda vigente**: la selección es siempre la tabla de pines completa (el modelo Base de clonado incluido) y no se persiste; tras el reemplazo el `setup` provisiona el pin nuevo y poda las revisiones propias obsoletas, con R3 en raíz compartida (`crates/avi-lifecycle/src/setup.rs`).
 
 **`setup` invocado al final de una instalación no es un error de la instalación.** `self install` aplica en el mismo proceso la misma provisión que `setup` (descarga de la selección, y `doctor` exige después los modelos de la selección); si falla, el programa **queda instalado** y el desenlace es `setup_failed` (11), con el motivo del fallo de provisión anidado en `models_cause`. Ver `self install` en [`commands/SELF.md`](commands/SELF.md) y §10.
 
@@ -732,7 +732,7 @@ conjunto provisionado es fijo (es+en offline completo desde el primer uso).
 ### `voice`
 
 - **`voice clone` toma `--timbre-reference/-t` (opcional) y `--speech-reference/-s`** (obligatorio, ≥10s, validado en runtime); ambos WAV se consumen para producir `reference.qvoice` y no se copian al almacén. Sin `--timbre-reference`, el habla cubre también el Voice Encoder. Internamente el timbre es un solo nombre: `timbre`.
-- **`voice clone` guarda solo la huella de timbre (x-vector) de la referencia**: no recibe transcripción ni idioma, no depende del STT y funciona igual con o sin la feature `native-stt`. Las voces clonadas se sintetizan con el modelo Base (`qwen3-tts-0.6b-base`, opt-in con `setup --with-voice-cloning`); su ausencia sale con `model_missing` (exit 4) tanto al clonar como al sintetizar.
+- **`voice clone` guarda solo la huella de timbre (x-vector) de la referencia**: no recibe transcripción ni idioma, no depende del STT y funciona igual con o sin la feature `native-stt`. Las voces clonadas se sintetizan con el modelo Base (`qwen3-tts-0.6b-base`, que `setup` provisiona siempre); en una instalación incompleta, su ausencia sale con `model_missing` (exit 4) tanto al clonar como al sintetizar.
 - **`voice clone` recibe el despacho al daemon en sus tres modos**, porque el clonado ejecuta el modelo Base (y, con el daemon, precalienta la voz nueva) y necesita un modelo cargado igual que las dos sub-acciones que sintetizan.
 - **`voice clone` sobre un nombre tomado sin `--force` sale con 6**, y sobre un nombre libre `--force` es un no-op declarado.
 - `VoiceStore` (`crates/avi-store/src/lib.rs`) reconoce una voz clonada únicamente por la presencia de `reference.qvoice`, sin fallback a WAV. Las voces de fábrica son `default` (clonada, con `reference.qvoice`) y `ryan`/`vivian` (presets puros sin referencia); `voice remove` las protege a las tres (exit 2; `FACTORY_VOICES` del almacén de voces, `avi_store::is_factory_name` definida en el almacén de voces, invocada en el binario principal).

@@ -207,7 +207,7 @@ AI-Voice-InterConnector/
 | `self install` | Instala el bundle del que forma parte el ejecutable, o repara la instalación si se ejecuta desde ella | `--no-setup`, `--no-modify-path`, `--force`, `--yes`, `--json` |
 | `self update` | Actualiza a la última versión estable o a una concreta | `--check`, `--version X.Y.Z`, `--force`/`-f`, `--no-setup`, `--yes`, `--json` |
 | `self uninstall` | Elimina el programa, la integración de PATH y (por defecto) el estado | `--keep-data`, `--dry-run`, `--yes`, `--json` |
-| `setup` | Provisiona los modelos fijados por la versión | `--with-voice-cloning`, `--force-update`, `--yes`, `--json` |
+| `setup` | Provisiona los modelos fijados por la versión | `--force-update`, `--yes`, `--json` |
 | `cleanup` | Borra el estado por categorías, sin tocar el programa | `--model`, `--voices`, `--synthetic-speech`, `--all`, `--dry-run`, `--yes`, `--json` |
 | `doctor` | Diagnóstico, incluido el estado del ciclo de vida | `--json` |
 
@@ -448,7 +448,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
      Programa:  ~/.local/opt/ai-voice-interconnector   (reemplaza 0.23.1)
      Comando:   ~/.local/bin/ai-voice-interconnector
      PATH:      se añadirá ~/.local/bin en ~/.bashrc y ~/.profile
-     Modelos:   se descargarán unos 3.3 GB en ~/.cache/ai-voice-interconnector/models
+     Modelos:   se descargarán unos 5.9 GB en ~/.cache/ai-voice-interconnector/models
    ¿Continuar? [S/n]
    ```
 
@@ -581,7 +581,7 @@ ai-voice-interconnector cleanup (--model | --voices | --synthetic-speech | --all
 
 Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 
-- Provisiona el conjunto de modelos fijado por la versión (pines), según la **selección persistida**: el conjunto base más los opcionales, como `--with-voice-cloning`. La selección se guarda en la configuración, para que las actualizaciones provisionen el mismo conjunto.
+- Provisiona el conjunto de modelos fijado por la versión (pines), todos sin excepción: no hay modelos opcionales ni selección persistida, así que las actualizaciones provisionan siempre el conjunto completo.
 - Antes de descargar, calcula el tamaño pendiente. Con terminal pide confirmación `[S/n]`; la omite con `--yes` o cuando la invoca `self install`/`self update` después de su propio resumen. Sin terminal, procede.
 - Tras provisionar con éxito, **poda las revisiones obsoletas** de los repos propios, es decir, las que ya no corresponden al pin vigente.
 - Es idempotente: si todo está provisionado, no descarga nada.
@@ -598,7 +598,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 | Instalación (`install`) | Directorio de programa y estado del recibo: válido o ausente |
 | PATH (`path`) | Si el comando resuelve a esta instalación, si hay duplicados en el PATH (Cask + `script`) y el estado del enlace o de la entrada de registro |
 | Pendientes (`pending`) | Diario de transacción, aparcados y stagings huérfanos |
-| Modelos (`models`) | Provisionados, faltantes (evaluados contra la selección persistida: el modelo Base opt-in no seleccionado no cuenta) y revisiones obsoletas, con tamaños |
+| Modelos (`models`) | Provisionados, faltantes (evaluados contra el conjunto completo de pines) y revisiones obsoletas, con tamaños |
 
 ## 9. Entorno del desarrollador
 
@@ -745,7 +745,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/CLI/CONTRACT.md` | Contrato de `self *`, `setup`, `cleanup` y `doctor`: flags, `reason` y códigos de salida, envelope `--json` y las dos versiones de esquema |
 | `docs/CLI/commands/SELF.md` | Documento del grupo `self`, con 201 líneas: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
 | `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1–R3, el gate de categoría y la confirmación destructiva |
-| `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y la selección persistida, la poda y las migraciones que usa `self update` |
+| `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y la poda que usa `self update` |
 | `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del envelope, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
