@@ -1,33 +1,26 @@
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::io::Write;
 
-/// Versión del envelope `--json` de la **CLI**.
+/// Versión del envelope `--json` de la **CLI**; el valor vigente es `"5"`.
 ///
-/// Sube a `"5"` por sus cambios incompatibles: los simulacros informan
-/// `planned` con su recibo y retiran `dry_run`, la parada bindea `was_running` y
-/// `daemon_fully_stopped`, los fallos de parseo con `--json` salen como envelope
-/// `usage_error`, y `say`/`dub` retiran `audio_path`. Retirar una clave obliga
-/// a subir la versión; añadirla no.
+/// Retirar o renombrar una clave del envelope, o cambiar su significado, obliga a
+/// subir la versión; añadir una clave nueva no.
 pub const CLI_SCHEMA_VERSION: &str = "5";
 
-/// Versión del **protocolo del daemon** (NDJSON y cabecera `x-schema-version`).
+/// Versión del **protocolo del daemon** (NDJSON y cabecera `x-schema-version`); el
+/// valor vigente es `"4"`.
 ///
-/// Es un contrato independiente del envelope de la CLI y sube por sus propios cambios
-/// incompatibles. Pasó a `"4"` cuando `/transcribe` empezó a señalar sus errores con el
-/// estado HTTP (400 y 500 en lugar de 200) y los `reason` de audio del daemon se
-/// alinearon con el contrato (`usage_error` e `invalid_audio`).
+/// Es un contrato independiente del envelope de la CLI y sube por sus propios
+/// cambios incompatibles, con la misma regla: retirar o renombrar una clave, o
+/// cambiar su significado, obliga a subirla; añadir una clave nueva no.
 pub const DAEMON_SCHEMA_VERSION: &str = "4";
 
-/// Inserta `schema_version` en un `Value` sin imprimirlo.
+/// Inserta `schema_version` en un objeto JSON sin imprimirlo.
 ///
 /// La versión la recibe **el llamante** y no se lee de una constante única: el envelope de
 /// la CLI y el del protocolo del daemon son dos contratos con dos versiones, y quien
 /// llama es quien sabe cuál de los dos está estampando.
-pub fn with_schema_version(val: Value, version: &str) -> Value {
-    let mut map = match val {
-        Value::Object(m) => m,
-        _ => serde_json::Map::new(),
-    };
+pub fn with_schema_version(mut map: Map<String, Value>, version: &str) -> Value {
     map.insert(
         "schema_version".to_string(),
         Value::String(version.to_string()),
@@ -35,11 +28,31 @@ pub fn with_schema_version(val: Value, version: &str) -> Value {
     Value::Object(map)
 }
 
-/// Imprime el envelope `--json` de la CLI por stdout, con la versión de la CLI.
-pub fn emit_raw_json(val: Value) {
-    let val = with_schema_version(val, CLI_SCHEMA_VERSION);
-    if let Ok(json_str) = serde_json::to_string_pretty(&val) {
-        println!("{}", json_str);
-        let _ = std::io::stdout().flush();
+/// Extrae el objeto de un envelope. Un envelope que no es un objeto JSON es un
+/// error de programación del emisor, no un dato que recuperar.
+pub fn envelope_object(val: Value) -> Map<String, Value> {
+    match val {
+        Value::Object(map) => map,
+        other => panic!("un envelope JSON debe ser un objeto, no: {other}"),
     }
+}
+
+/// Serializa el envelope con su `schema_version`. Un `Value` siempre se
+/// serializa (sus claves son cadenas), de modo que la serialización no puede
+/// fallar.
+pub(crate) fn render_envelope(val: Value, version: &str) -> String {
+    serde_json::to_string_pretty(&with_schema_version(envelope_object(val), version))
+        .expect("un `Value` siempre se serializa: sus claves son cadenas")
+}
+
+/// Imprime el envelope `--json` de la CLI por stdout, con la versión de la CLI.
+///
+/// Un fallo al escribir o vaciar stdout no tiene recuperación posible y aborta
+/// con un mensaje explícito, igual que `println!`.
+pub fn emit_raw_json(val: Value) {
+    let rendered = render_envelope(val, CLI_SCHEMA_VERSION);
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{rendered}")
+        .and_then(|()| out.flush())
+        .expect("no se pudo escribir el envelope JSON en stdout");
 }

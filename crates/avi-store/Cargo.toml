@@ -19,7 +19,6 @@ hound = "3"
 # La versión es exacta porque es la que parchea la copia vendorizada del raíz.
 hf-hub = { version = "=1.0.0", default-features = false, features = ["rustls-tls"] }
 indicatif = "0.17"
-tokio = { version = "1.35", features = ["rt", "macros"] }
 tracing = "0.1"
 
 [dev-dependencies]

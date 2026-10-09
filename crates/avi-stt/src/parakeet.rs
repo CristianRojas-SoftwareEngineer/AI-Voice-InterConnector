@@ -1,12 +1,11 @@
 //! Motor STT real sobre Parakeet TDT 0.6B v3 int8 vía `ort`/ONNX Runtime.
 //!
-//! Pipeline portado de un prototipo previo ya validado:
-//! `nemo128.onnx` (extracción de features) → `encoder-model.int8.onnx`
+//! Pipeline: `nemo128.onnx` (extracción de features) → `encoder-model.int8.onnx`
 //! → `decoder_joint-model.int8.onnx` + decodificador **TDT greedy**.
 //!
 //! El motor implementa `avi_core::engine::SttEngine` y transcribe PCM `i16`
-//! mono a 16 kHz. Whisper solo transcribe, nunca traduce; Parakeet tampoco
-//! traduce (la traducción vía Marian/ct2rs vive en `avi-translation`, aislada).
+//! mono a 16 kHz. Solo transcribe, nunca traduce (la traducción vía
+//! Marian/ct2rs vive en `avi-translation`, aislada).
 //!
 //! ## Peculiaridades del export int8 de `istupakov/parakeet-tdt-0.6b-v3-onnx`
 //!
@@ -41,9 +40,8 @@ pub struct ParakeetEngine {
     // `ort::Session::run` requiere `&mut self` (rc.13). Como el trait
     // `SttEngine::transcribe(&self)` es inmutable, los 3 `Session` se envuelven
     // en `Mutex` (interior mutability). La síntesis es por-request, por lo que
-    // no hay paralelismo real dentro de un motor — el lock es efetivamente
-    // instantáneo en el uso del daemon (el prototipo previo usaba ownership por request,
-    // equivalente semántico).
+    // no hay paralelismo real dentro de un motor — el lock es efectivamente
+    // instantáneo en el uso del daemon.
     pre: std::sync::Mutex<Session>,
     enc: std::sync::Mutex<Session>,
     dj: std::sync::Mutex<Session>,
@@ -71,28 +69,9 @@ impl ParakeetEngine {
         let enc_in = names(enc.inputs());
         let dj_in = names(dj.inputs());
 
-        // Vocabulario: líneas "token índice". Los tokens usan el marcador de
-        // sub-palabra `▁` (espacio) de SentencePiece; se pliega a espacio.
-        let mut tokens = Vec::new();
         let vocab =
             std::fs::read_to_string(base.join("vocab.txt")).context("fallo al leer vocab.txt")?;
-        for line in vocab.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let (tok, idx) = line.rsplit_once(' ').with_context(|| {
-                format!("vocab.txt mal formado (sin espacio separador): {line}")
-            })?;
-            let idx: usize = idx.parse().context("índice de vocabulario no numérico")?;
-            if idx >= tokens.len() {
-                tokens.resize(idx + 1, String::new());
-            }
-            tokens[idx] = tok.replace('▁', " ");
-        }
-        let blank = tokens
-            .iter()
-            .position(|t| t == "<blk>")
-            .context("vocab.txt no contiene el token <blk> (blank)")?;
+        let (tokens, blank) = parse_vocab(&vocab)?;
 
         Ok(Self {
             pre: std::sync::Mutex::new(pre),
@@ -170,12 +149,11 @@ impl SttEngine for ParakeetEngine {
                 self.pre_in[0].as_str() => t_wave,
                 self.pre_in[1].as_str() => t_lens,
             ])?;
-            let (shape_feat, feats_data) = flat_f32(&pre_out[0]);
+            let (_, feats_data) = flat_f32(&pre_out[0]);
             let lens_feat = flat_i64(&pre_out[1]);
-            let _ = shape_feat;
+            // `feat_len` (3º elemento) es `i64` por contrato de `flat_i64` y se
+            // usa directamente en `Tensor::from_array([1i64], ...)` sin cast.
             (lens_feat[0] as usize, feats_data, lens_feat[0])
-            // `feat_len` (3º elem) es `i64` por contrato de `flat_i64`;
-            // usarse directamente en `Tensor::from_array([1i64], ...)` sin cast.
         };
 
         // 2) Encoder: audio_signal [1,128,T] + length -> outputs [1,DIM,T'],
@@ -201,9 +179,7 @@ impl SttEngine for ParakeetEngine {
         };
 
         // 3) TDT greedy sobre decoder_joint.
-        //    Nota: el prototipo previo indexaba outputs por nombre ("outputs",
-        //    "output_states_1", "output_states_2"); aquí usamos posición para
-        //    no depender del orden exacto de `outputs()` almacenado en `dj_in`.
+        //    Las entradas del decoder_joint se pasan por posición (`dj_in`).
         let states_shape = vec![PRED_LAYERS, 1, PRED_HIDDEN];
         let mut s1 = vec![0f32; (PRED_LAYERS * PRED_HIDDEN) as usize];
         let mut s2 = s1.clone();
@@ -219,8 +195,8 @@ impl SttEngine for ParakeetEngine {
             let (logits_out, state1, state2) =
                 self.run_dj(&frame, dim_enc, token_in, &s1, &s2, &states_shape)?;
             let (token_logits_out, duration_logits) = logits_out.split_at(self.vocab_size);
-            let token = argmax(token_logits_out);
-            let step = argmax(duration_logits);
+            let token = argmax(token_logits_out).context("logits de token vacíos")?;
+            let step = argmax(duration_logits).context("logits de duración vacíos")?;
             if token != self.blank {
                 hypothesis.push(token);
                 s1.copy_from_slice(&state1);
@@ -298,12 +274,43 @@ fn flat_i64(v: &ort::value::DynValue) -> Vec<i64> {
     data.to_vec()
 }
 
-fn argmax(v: &[f32]) -> usize {
+/// Vocabulario: líneas "token índice". Los tokens usan el marcador de
+/// sub-palabra `▁` (espacio) de SentencePiece; se pliega a espacio. Todos los
+/// índices de 0 a N-1 deben estar definidos: un hueco sería un token inventado
+/// en la transcripción. Devuelve los tokens y el índice del blank `<blk>`.
+fn parse_vocab(vocab: &str) -> anyhow::Result<(Vec<String>, usize)> {
+    let mut slots: Vec<Option<String>> = Vec::new();
+    for line in vocab.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (tok, idx) = line
+            .rsplit_once(' ')
+            .with_context(|| format!("vocab.txt mal formado (sin espacio separador): {line}"))?;
+        let idx: usize = idx.parse().context("índice de vocabulario no numérico")?;
+        if idx >= slots.len() {
+            slots.resize(idx + 1, None);
+        }
+        slots[idx] = Some(tok.replace('▁', " "));
+    }
+    let tokens: Vec<String> = slots
+        .into_iter()
+        .enumerate()
+        .map(|(idx, tok)| tok.with_context(|| format!("vocab.txt no define el índice {idx}")))
+        .collect::<anyhow::Result<_>>()?;
+    let blank = tokens
+        .iter()
+        .position(|t| t == "<blk>")
+        .context("vocab.txt no contiene el token <blk> (blank)")?;
+    Ok((tokens, blank))
+}
+
+/// Índice del máximo; `None` si el vector está vacío.
+fn argmax(v: &[f32]) -> Option<usize> {
     v.iter()
         .enumerate()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i)
-        .unwrap_or(0)
 }
 
 fn session(path: impl AsRef<Path>) -> anyhow::Result<Session> {
@@ -376,4 +383,34 @@ pub fn normalize_text(text: &str) -> String {
             _ => ' ',
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_vocab_folds_subword_marker_and_finds_blank() {
+        let (tokens, blank) = parse_vocab("<unk> 0\n▁hola 1\n<blk> 2\n").unwrap();
+        assert_eq!(tokens, vec!["<unk>", " hola", "<blk>"]);
+        assert_eq!(blank, 2);
+    }
+
+    #[test]
+    fn parse_vocab_fails_on_missing_index() {
+        let err = parse_vocab("<unk> 0\n<blk> 2\n").unwrap_err();
+        assert!(err.to_string().contains("índice 1"), "{err}");
+    }
+
+    #[test]
+    fn parse_vocab_fails_without_blank() {
+        let err = parse_vocab("<unk> 0\nhola 1\n").unwrap_err();
+        assert!(err.to_string().contains("<blk>"), "{err}");
+    }
+
+    #[test]
+    fn argmax_returns_index_of_max_and_none_when_empty() {
+        assert_eq!(argmax(&[0.1, 0.9, 0.3]), Some(1));
+        assert_eq!(argmax(&[]), None);
+    }
 }

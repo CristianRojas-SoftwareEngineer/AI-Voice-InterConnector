@@ -74,9 +74,15 @@ con `is_valid_identifier` (exit 2 `invalid_identifier`) y la existencia
 de la voz con `VoiceStore::exists` (exit 3 `voice_not_found`) antes de leer;
 sin `--voice` no valida nada y devuelve todo.
 
-Salida humana: una línea por locución con voz, etiqueta, duración y texto.
+Salida humana: una línea por locución con voz, etiqueta, duración y texto; una
+locución sin sidecar de metadatos se muestra como `(sin metadatos)`.
 Salida `--json`: `{"speech": [{"label", "voice", "text", "created_at",
-"duration_secs"}, ...]}`.
+"duration_secs"}, ...]}`; `text`, `created_at` y `duration_secs` son `null`
+cuando la locución no tiene sidecar.
+
+El WAV es el registro: `list` enumera los WAV, y el sidecar `.json` aporta los
+metadatos opcionales. Un sidecar ilegible o corrupto hace fallar el comando con
+exit 1 `io_error`; el mensaje nombra el fichero y remite a `speech remove`.
 
 ---
 
@@ -357,7 +363,8 @@ ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
 Local-only (`require_local`). Busca la locución en `SpeechStore` por
 `(voice, label)` y reproduce el WAV persistido. Si no existe, exit 3
 `speech_not_found`. Valida los identificadores con `is_valid_identifier`
-antes de buscar.
+antes de buscar. La existencia la decide el WAV; un sidecar corrupto sale con
+exit 1 `io_error` (el mensaje nombra el fichero y remite a `speech remove`).
 
 ### Contrato `--json`
 
@@ -373,8 +380,9 @@ antes de buscar.
 ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>]
 ```
 
-Local-only. Elimina la locución de `SpeechStore`; si no existe, exit 3
-`speech_not_found`.
+Local-only. Elimina el WAV y el sidecar de la locución de `SpeechStore` sin
+interpretar el sidecar (también elimina una locución con sidecar corrupto); si
+no existe ninguno de los dos, exit 3 `speech_not_found`.
 
 ### Contrato `--json`
 

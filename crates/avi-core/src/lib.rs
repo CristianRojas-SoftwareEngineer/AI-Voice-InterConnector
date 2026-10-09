@@ -13,7 +13,8 @@ mod tests {
     use crate::engine::{HierarchicalSegmenter, Segmenter};
     use crate::exit_codes::ExitCode;
     use crate::json_emitter::{
-        emit_raw_json, with_schema_version, CLI_SCHEMA_VERSION, DAEMON_SCHEMA_VERSION,
+        envelope_object, render_envelope, with_schema_version, CLI_SCHEMA_VERSION,
+        DAEMON_SCHEMA_VERSION,
     };
     use serde_json::{json, Value};
 
@@ -154,64 +155,44 @@ mod tests {
 
     #[test]
     fn test_emit_raw_json_includes_schema_version() {
-        // Las dos versiones se afirman por separado y con su valor. Si una sube sin la
-        // otra, esta prueba falla, que es lo que evita que el cambio de la CLI arrastre
-        // al protocolo del daemon o al revés.
+        // Las dos versiones se afirman por separado y con su valor: la de la CLI y
+        // la del protocolo del daemon son contratos independientes.
+        assert_eq!(CLI_SCHEMA_VERSION, "5");
+        assert_eq!(DAEMON_SCHEMA_VERSION, "4");
+        let rendered = render_envelope(json!({ "status": "ok" }), CLI_SCHEMA_VERSION);
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(
-            CLI_SCHEMA_VERSION, "5",
-            "el envelope --json de la CLI subió a \"5\": planned en los simulacros, veredicto bindeado en la parada, usage_error en el parseo y sin audio_path en say/dub"
-        );
-        assert_eq!(
-            DAEMON_SCHEMA_VERSION, "4",
-            "el protocolo NDJSON del daemon subió a \"4\": `/transcribe` señala sus errores \
-             con el estado HTTP, los `reason` de audio cambian y `text_length` cuenta caracteres"
-        );
-        let val = with_schema_version(json!({ "status": "ok" }), CLI_SCHEMA_VERSION);
-        assert_eq!(
-            val.get("schema_version").and_then(|v| v.as_str()),
-            Some(CLI_SCHEMA_VERSION),
-            "el envelope debe llevar schema_version=\"{CLI_SCHEMA_VERSION}\""
-        );
-    }
-
-    /// El envelope de la CLI sube a `"5"` por sus cambios incompatibles: los
-    /// simulacros añaden `planned` y retiran `dry_run`, la parada bindea
-    /// `was_running` y `daemon_fully_stopped`, los fallos de parseo con `--json`
-    /// salen como envelope `usage_error`, y `say`/`dub` retiran `audio_path`. El
-    /// protocolo del daemon queda en `"4"` porque ninguno de esos cambios lo toca.
-    #[test]
-    fn cli_schema_version_is_5_and_daemon_stays_4() {
-        assert_eq!(
-            CLI_SCHEMA_VERSION, "5",
-            "el envelope --json de la CLI sube a \"5\": retirar una clave del contrato obliga a subir la versión"
-        );
-        assert_eq!(
-            DAEMON_SCHEMA_VERSION, "4",
-            "el protocolo del daemon queda en \"4\": es un contrato independiente del envelope de la CLI y ninguno de sus cambios lo toca"
+            parsed,
+            json!({ "status": "ok", "schema_version": CLI_SCHEMA_VERSION })
         );
     }
 
     #[test]
     fn test_emit_raw_json_preserves_data() {
         let input = json!({ "status": "ok", "count": 42, "label": "test" });
-        let val = with_schema_version(input.clone(), CLI_SCHEMA_VERSION);
-        // los campos originales deben sobrevivir en el envelope
-        assert_eq!(val.get("status"), Some(&json!("ok")));
-        assert_eq!(val.get("count"), Some(&json!(42)));
-        assert_eq!(val.get("label"), Some(&json!("test")));
-        // emit_raw_json se ejecuta sin panicar y produce un Value válido
-        // (no se redirige stdout en el test; sólo se verifica la construcción
-        // del envelope, que es la lógica de dominio testeable)
-        emit_raw_json(input);
+        let rendered = render_envelope(input, CLI_SCHEMA_VERSION);
+        // La salida serializada conserva los campos originales y añade la versión.
+        let parsed: Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            parsed,
+            json!({
+                "status": "ok",
+                "count": 42,
+                "label": "test",
+                "schema_version": CLI_SCHEMA_VERSION,
+            })
+        );
     }
 
     #[test]
     fn test_emit_raw_json_flatten_schema_version() {
-        // `schema_version` debe ser campo raíz, no anidado dentro de `data`
-        let val = with_schema_version(json!({ "data": { "nested": true } }), DAEMON_SCHEMA_VERSION);
-        assert!(
-            val.get("schema_version").is_some(),
-            "schema_version debe ser campo raíz, no anidado"
+        // `schema_version` es campo raíz con la versión del daemon, no anidado en `data`.
+        let map = envelope_object(json!({ "data": { "nested": true } }));
+        let val = with_schema_version(map, DAEMON_SCHEMA_VERSION);
+        assert_eq!(
+            val.get("schema_version").and_then(|v| v.as_str()),
+            Some(DAEMON_SCHEMA_VERSION),
+            "schema_version debe ser campo raíz con la versión del daemon"
         );
         let nested = val.get("data").and_then(|d| d.get("nested"));
         assert_eq!(
@@ -219,5 +200,11 @@ mod tests {
             Some(&Value::Bool(true)),
             "los campos anidados en `data` deben preservarse"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "un envelope JSON debe ser un objeto")]
+    fn test_envelope_rejects_non_object() {
+        envelope_object(json!(["no", "objeto"]));
     }
 }

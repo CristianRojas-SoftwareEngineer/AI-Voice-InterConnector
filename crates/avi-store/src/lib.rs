@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -33,34 +33,17 @@ pub fn is_factory_name(name: &str) -> bool {
 }
 
 /// Normalización canónica de una entrada de `PATH` para comparación
-/// determinista: prefijo verbatim de Windows fuera, `/` → `\`, `lowercase`, `trim`
-/// de `\` y espacios. Hace que `C:\...\Programs/ai-voice-interconnector` y
-/// `C:\...\Programs\ai-voice-interconnector\` sean idénticas, y que
-/// `\\?\C:\...\ai-voice-interconnector` lo sea también.
-///
-/// **El prefijo verbatim se quita aquí y no en cada consumidor.** La capa de Windows
-/// devuelve `\\?\…` en los modos de apertura extendidos, así que la ruta del ejecutable
-/// en ejecución y la del directorio de programa —que viene de una variable de
-/// reubicación— llegan con y sin él. Un consumidor que se lo quite en su módulo y otro
-/// que no divergen, y el siguiente que escriba una comparación de rutas hereda el
-/// defecto. Esta función es la fuente única de la semántica de comparación, y
-/// la fuente única del arreglo.
-///
-/// El prefijo solo se quita en Windows: en Unix no existe, y una ruta que empiece por
-/// `\\` es ahí un nombre de archivo legítimo.
-/// Normalización canónica de una entrada de `PATH` para comparación
 /// determinista: prefijo verbatim de Windows fuera, `/` → `\`, `lowercase` y separadores
 /// **finales** fuera. Hace que `C:\...\Programs/ai-voice-interconnector` y
 /// `C:\...\Programs\ai-voice-interconnector\` sean idénticas, y que
 /// `\\?\C:\...\ai-voice-interconnector` lo sea también.
 ///
-/// **El separador inicial no se quita nunca, y eso es lo que hace la función correcta
-/// en las dos plataformas.** `trim_matches` —que los quitaba de los dos extremos— tenía
-/// dos consecuencias falsas:
+/// **El separador inicial no se quita nunca**, en ninguna plataforma. Quitarlo
+/// tendría dos consecuencias falsas:
 ///
-/// - En Unix convertía `/home/ana` en `home\ana`, de modo que una ruta absoluta
-///   comparaba igual a una relativa con el mismo nombre.
-/// - En la UNC de Windows `\\servidor\recurso` perdía las dos barras iniciales, que son
+/// - En Unix convertiría `/home/ana` en `home\ana`, de modo que una ruta absoluta
+///   compararía igual a una relativa con el mismo nombre.
+/// - En la UNC de Windows `\\servidor\recurso` perdería las dos barras iniciales, que son
 ///   justo lo que la distingue de una ruta local.
 ///
 /// En Unix los `\` son **caracteres de nombre de archivo legítimos**, así que una ruta
@@ -71,10 +54,8 @@ pub fn is_factory_name(name: &str) -> bool {
 /// **El prefijo verbatim se quita aquí y no en cada consumidor.** La capa de Windows
 /// devuelve `\\?\.` en los modos de apertura extendidos, así que la ruta del ejecutable
 /// en ejecución y la del directorio de programa —que viene de una variable de
-/// reubicación— llegan con y sin él. Un consumidor que se lo quite en su módulo y otro
-/// que no divergen, y el siguiente que escriba una comparación de rutas hereda el
-/// defecto. Esta función es la fuente única de la semántica de comparación, y
-/// la fuente única del arreglo.
+/// reubicación— llegan con y sin él. Esta función es la fuente única de la semántica de
+/// comparación de rutas.
 ///
 /// El prefijo solo se quita en Windows: en Unix no existe, y una ruta que empiece por
 /// `\\` es ahí un nombre de archivo legítimo.
@@ -136,11 +117,8 @@ fn expand_path_vars(p: &Path) -> PathBuf {
         out.push_str(&rest[..start]);
         let tail = &rest[start..];
         // El desplazamiento se cuenta desde `tail` **con** el prefijo puesto, y el
-        // nombre se lee de la cola **sin** él. Confundir las dos cosas dejaba el `}` de
-        // cierre dentro del valor expandido: `%VAR%` salía bien por casualidad —quitar
-        // el `%` inicial no desplaza el cierre— y `${VAR}` salía mal, que es la forma que
-        // se usa en Unix. El defecto era invisible porque la prueba solo usaba la forma
-        // de Windows.
+        // nombre se lee de la cola **sin** él; mezclarlos dejaría el `}` de cierre
+        // dentro del valor expandido en la forma `${VAR}`.
         let (name, consumed) = match tail.strip_prefix('%') {
             Some(after) => match after.find('%') {
                 Some(end) => (&after[..end], start + end + 2),
@@ -215,16 +193,11 @@ impl VoiceStore {
             let dir = self.base_dir.join(name);
             std::fs::create_dir_all(&dir)?;
         }
-        // Materializar `default` clonada de fábrica desde el asset embebido.
-        // Solo si no existe ya un `reference.qvoice` (preserva clonación del usuario
-        // si re-inicializa, aunque `default` es fábrica y no debería ser sobreescrita
-        // por el usuario; aun así, idempotente).
+        // Materializa `default` desde el asset embebido solo si no existe ya un
+        // `reference.qvoice`, de modo que la inicialización es idempotente.
         let default_qvoice = self.base_dir.join("default").join("reference.qvoice");
-        if !default_qvoice.is_file() && !FACTORY_DEFAULT_QVOICE.is_empty() {
-            // Validar que el asset sea un .qvoice válido (magic QVCE/QV3)
-            if FACTORY_DEFAULT_QVOICE.len() > 4 {
-                std::fs::write(&default_qvoice, FACTORY_DEFAULT_QVOICE)?;
-            }
+        if !default_qvoice.is_file() {
+            std::fs::write(&default_qvoice, FACTORY_DEFAULT_QVOICE)?;
         }
         Ok(())
     }
@@ -385,13 +358,41 @@ pub struct SpeechMetadata {
     pub duration_secs: f64,
 }
 
-/// Entrada de una locución (WAV + sidecar de metadatos)
+/// Entrada de una locución. El WAV es el registro: voz y etiqueta salen de su
+/// ruta; los metadatos del sidecar son opcionales y faltan cuando no hay `.json`.
 #[derive(Debug, Clone)]
 pub struct SpeechEntry {
-    pub metadata: SpeechMetadata,
+    pub voice: String,
+    pub label: String,
+    pub metadata: Option<SpeechMetadata>,
     pub audio_path: PathBuf,
     pub metadata_path: PathBuf,
 }
+
+/// El sidecar de una locución existe pero no se puede leer o interpretar.
+/// Nombra el fichero para que el llamador pueda indicar cómo resolverlo.
+#[derive(Debug)]
+pub struct SidecarError {
+    pub voice: String,
+    pub label: String,
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+impl std::fmt::Display for SidecarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Los metadatos '{}' de la locución '{}' de la voz '{}' son ilegibles o están corruptos: {}",
+            self.path.display(),
+            self.label,
+            self.voice,
+            self.reason
+        )
+    }
+}
+
+impl std::error::Error for SidecarError {}
 
 /// Almacén de habla sintética persistida.
 /// Layout en disco: `<data_dir>/speech/<voz>/<etiqueta>.wav` + `<etiqueta>.json`
@@ -439,9 +440,10 @@ impl SpeechStore {
         self.list_with_filter(Some(voice))
     }
 
-    /// Recorrido compartido del almacén con filtro opcional por voz: el mismo
-    /// bucle con `ensure_initialized` y descarte de corrupto/sin WAV que tenía
-    /// `list`; con filtro solo se lee el directorio de la voz pedida.
+    /// Recorrido compartido del almacén con filtro opcional por voz: enumera los
+    /// WAV, que son el registro; con filtro solo se lee el directorio de la voz
+    /// pedida. Una locución sin sidecar aparece sin metadatos; un sidecar
+    /// ilegible o corrupto hace fallar el recorrido con un `SidecarError`.
     fn list_with_filter(&self, voice: Option<&str>) -> Result<Vec<SpeechEntry>> {
         self.ensure_initialized()?;
         let mut entries = Vec::new();
@@ -466,25 +468,49 @@ impl SpeechStore {
             for file in std::fs::read_dir(voice_dir.path())? {
                 let file = file?;
                 let path = file.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("json") {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(mut meta) = serde_json::from_str::<SpeechMetadata>(&content) {
-                            let wav_path = path.with_extension("wav");
-                            if wav_path.is_file() {
-                                meta.voice = meta.voice.to_lowercase();
-                                meta.label = meta.label.to_lowercase();
-                                entries.push(SpeechEntry {
-                                    metadata: meta,
-                                    audio_path: wav_path,
-                                    metadata_path: path,
-                                });
-                            }
-                        }
-                    }
+                if path.extension().and_then(|e| e.to_str()) != Some("wav") || !path.is_file() {
+                    continue;
                 }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let voice = voice_dir.file_name().to_string_lossy().to_lowercase();
+                entries.push(Self::entry_for(voice, stem.to_lowercase(), path)?);
             }
         }
         Ok(entries)
+    }
+
+    /// Entrada de un WAV existente: lee su sidecar, si lo hay.
+    fn entry_for(voice: String, label: String, audio_path: PathBuf) -> Result<SpeechEntry> {
+        let metadata_path = audio_path.with_extension("json");
+        let metadata = match std::fs::read_to_string(&metadata_path) {
+            Ok(content) => Some(
+                serde_json::from_str::<SpeechMetadata>(&content).map_err(|e| SidecarError {
+                    voice: voice.clone(),
+                    label: label.clone(),
+                    path: metadata_path.clone(),
+                    reason: e.to_string(),
+                })?,
+            ),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                return Err(SidecarError {
+                    voice,
+                    label,
+                    path: metadata_path,
+                    reason: e.to_string(),
+                }
+                .into())
+            }
+        };
+        Ok(SpeechEntry {
+            voice,
+            label,
+            metadata,
+            audio_path,
+            metadata_path,
+        })
     }
 
     /// Directorio para una voz específica (nombre normalizado a minúsculas)
@@ -498,25 +524,20 @@ impl SpeechStore {
             .join(format!("{}.wav", label.to_lowercase()))
     }
 
-    /// Buscar una locución por (voz, etiqueta)
-    pub fn find(&self, voice: &str, label: &str) -> Option<SpeechEntry> {
+    /// Buscar una locución por (voz, etiqueta). La decide el WAV: sin él es
+    /// `None`; sin sidecar la entrada no lleva metadatos; con sidecar ilegible o
+    /// corrupto devuelve un `SidecarError`.
+    pub fn find(&self, voice: &str, label: &str) -> Result<Option<SpeechEntry>> {
         let label = label.to_lowercase();
-        let meta_path = self.voice_dir(voice).join(format!("{}.json", label));
         let wav_path = self.audio_path(voice, &label);
-        if meta_path.is_file() && wav_path.is_file() {
-            let content = std::fs::read_to_string(&meta_path).ok()?;
-            let meta: SpeechMetadata = serde_json::from_str(&content).ok()?;
-            Some(SpeechEntry {
-                metadata: meta,
-                audio_path: wav_path,
-                metadata_path: meta_path,
-            })
-        } else {
-            None
+        if !wav_path.is_file() {
+            return Ok(None);
         }
+        Self::entry_for(voice.to_lowercase(), label, wav_path).map(Some)
     }
 
-    /// Eliminar una locución
+    /// Eliminar una locución: borra el WAV y el sidecar si existen, sin
+    /// interpretar el contenido del sidecar.
     pub fn remove(&self, voice: &str, label: &str) -> Result<(), String> {
         let label = label.to_lowercase();
         let wav = self.audio_path(voice, &label);
@@ -614,7 +635,7 @@ impl ModelStore {
     /// entorno; y es la variable que resuelve `xet-runtime` (`HF_XET_CACHE` →
     /// `HF_HOME/xet` → `XDG_CACHE_HOME/huggingface/xet` →
     /// `~/.cache/huggingface/xet`). Con una raíz compartida la variable es del
-    /// usuario y no se toca, porque R3 prohíbe que su contenido se relocalice.
+    /// usuario y no se toca: su contenido no se relocaliza.
     ///
     /// La llamada a `set_var` es segura en la toolchain del proyecto
     /// (edition 2021); pasa a `unsafe` en edition 2024.
@@ -734,7 +755,7 @@ impl ModelStore {
     /// Borra el snapshot pinneado de un modelo: el directorio
     /// `models--<org>--<nombre>` bajo la raíz de modelos vigente. El repo es
     /// atribuible a la aplicación, así que el borrado procede tanto en la raíz
-    /// exclusiva como en la compartida (R3).
+    /// exclusiva como en la compartida.
     pub fn remove_hf_snapshot(&self, model_name: &str) -> Result<bool> {
         if let Some((repo, _)) = ModelStore::revision_of(model_name) {
             let dir = self
@@ -750,8 +771,8 @@ impl ModelStore {
 
     /// Borra la caché `xet` **solo** en la raíz de modelos exclusiva, donde
     /// cuelga de ella. En una raíz compartida devuelve `Ok(false)` sin tocar
-    /// nada: `xet` es un subdirectorio global de la caché HF y R3 prohíbe
-    /// borrarlo, porque aloja los shards de todos los proyectos que la usan.
+    /// nada: `xet` es un subdirectorio global de la caché HF y no se borra,
+    /// porque aloja los shards de todos los proyectos que la usan.
     pub fn remove_xet_cache() -> Result<bool> {
         if models_root_is_shared() {
             return Ok(false);
@@ -765,8 +786,8 @@ impl ModelStore {
     }
 
     /// Borra los locks de descarga (`.locks`) **solo** en la raíz de modelos
-    /// exclusiva. En una raíz compartida devuelve `Ok(false)`: R3 prohíbe
-    /// borrar el `.locks` completo, y los locks de los repos propios se van con
+    /// exclusiva. En una raíz compartida devuelve `Ok(false)`: el `.locks`
+    /// completo no se borra, y los locks de los repos propios se van con
     /// `remove_hf_snapshot`, que sí los alcanza.
     pub fn remove_hf_locks() -> Result<bool> {
         if models_root_is_shared() {
@@ -823,7 +844,7 @@ impl ModelStore {
         let (owner, name) = hf_hub::split_id(repo_id);
         let repo = client.model(owner, name);
         // allow_patterns acota la descarga a los ficheros que el motor usa
-        // (crítico en repos multi-formato como ggerganov/whisper.cpp).
+        // (crítico en repos multi-formato).
         let patterns: Option<Vec<String>> = MODEL_FILE_PATTERNS
             .iter()
             .find(|(n, _)| *n == model_name)
@@ -836,47 +857,64 @@ impl ModelStore {
             .progress(progress)
             .send()
             .await?;
-        // Validación atómica: el snapshot debe contener los ficheros críticos con tamaño>0
-        // Si la descarga dejó un snapshot vacío (hub/xet incoherente), borrar y fallar para retry
+        // Validación: el snapshot debe contener los ficheros críticos con tamaño > 0.
+        // Si la descarga dejó un snapshot vacío (hub/xet incoherente), se borra y se
+        // falla para que el siguiente intento descargue de nuevo. Los errores de E/S
+        // al inspeccionar o limpiar se propagan con su ruta.
+        let is_non_empty_file = |p: &Path| -> Result<bool> {
+            if !p.is_file() {
+                return Ok(false);
+            }
+            let meta = std::fs::metadata(p).with_context(|| {
+                format!("No se pudieron leer los metadatos de '{}'", p.display())
+            })?;
+            Ok(meta.len() > 0)
+        };
         let valid = if let Some(pats) = patterns {
-            pats.iter().all(|pat| {
-                let p = snapshot.join(pat);
-                p.is_file() && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
-            })
+            let mut all = true;
+            for pat in &pats {
+                if !is_non_empty_file(&snapshot.join(pat))? {
+                    all = false;
+                    break;
+                }
+            }
+            all
         } else {
-            std::fs::read_dir(&snapshot)
-                .map(|mut d| {
-                    d.any(|e| {
-                        e.ok()
-                            .map(|entry| {
-                                let p = entry.path();
-                                p.is_file()
-                                    && std::fs::metadata(&p).map(|m| m.len() > 0).unwrap_or(false)
-                            })
-                            .unwrap_or(false)
-                    })
-                })
-                .unwrap_or(false)
+            let mut any = false;
+            for entry in std::fs::read_dir(&snapshot)
+                .with_context(|| format!("No se pudo listar '{}'", snapshot.display()))?
+            {
+                let entry =
+                    entry.with_context(|| format!("No se pudo listar '{}'", snapshot.display()))?;
+                if is_non_empty_file(&entry.path())? {
+                    any = true;
+                    break;
+                }
+            }
+            any
         };
         if !valid {
-            let _ = std::fs::remove_dir_all(&snapshot);
+            std::fs::remove_dir_all(&snapshot).with_context(|| {
+                format!(
+                    "No se pudo borrar el snapshot incompleto '{}'",
+                    snapshot.display()
+                )
+            })?;
             // Limpiar blobs incompletos del repo si existen
             let repo_dir =
                 models_cache_dir().join(format!("models--{}", repo_id.replace('/', "--")));
             let blobs = repo_dir.join("blobs");
             if blobs.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&blobs) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if path.extension().and_then(|e| e.to_str()) == Some("incomplete")
-                            || path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .map(|n| n.ends_with(".incomplete"))
-                                .unwrap_or(false)
-                        {
-                            let _ = std::fs::remove_file(&path);
-                        }
+                for entry in std::fs::read_dir(&blobs)
+                    .with_context(|| format!("No se pudo listar '{}'", blobs.display()))?
+                {
+                    let path = entry
+                        .with_context(|| format!("No se pudo listar '{}'", blobs.display()))?
+                        .path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("incomplete") {
+                        std::fs::remove_file(&path).with_context(|| {
+                            format!("No se pudo borrar el blob incompleto '{}'", path.display())
+                        })?;
                     }
                 }
             }
@@ -1007,7 +1045,7 @@ mod tests {
     }
 
     /// Sin `HF_HUB_CACHE` ni `HF_HOME` la raíz de modelos es la **exclusiva de
-    /// la aplicación** (D3): nunca la caché compartida de HuggingFace, y con
+    /// la aplicación**: nunca la caché compartida de HuggingFace, y con
     /// `xet` colgando de ella.
     #[test]
     fn models_root_is_exclusive_by_default() {
@@ -1162,7 +1200,7 @@ mod tests {
     /// `xet` cuelga de la raíz de modelos exclusiva y `ModelStore::new()` la
     /// fija en `HF_XET_CACHE` porque es la única palanca disponible. Con raíz
     /// compartida la variable es del usuario y no se toca: `xet` sigue la
-    /// cadena real de `xet-runtime` y queda fuera de cualquier borrado (R3).
+    /// cadena real de `xet-runtime` y queda fuera de cualquier borrado.
     #[test]
     fn xet_resolves_inside_exclusive_models_root() {
         let _guard = ENV_LOCK.lock().unwrap();
@@ -1317,7 +1355,7 @@ mod tests {
             canonical_path_key(Path::new(r"C:\ai-voice-interconnector"))
         );
 
-        // Una ruta sin prefijo no cambia: la normalización anterior sigue igual.
+        // Una ruta sin prefijo no cambia por quitar el prefijo verbatim.
         assert_eq!(
             canonical_path_key(Path::new(r"C:\Users\ana\AppData\Local\Programs")),
             r"c:\users\ana\appdata\local\programs",
@@ -1410,15 +1448,15 @@ mod tests {
             .to_string();
         assert_eq!(rel.replace('\\', "/"), "vivian/testgreeting.wav");
 
-        assert!(speech.find("vivian", "testgreeting").is_some());
-        assert!(speech.find("VIVIAN", "TESTGREETING").is_some());
+        assert!(speech.find("vivian", "testgreeting").unwrap().is_some());
+        assert!(speech.find("VIVIAN", "TESTGREETING").unwrap().is_some());
         let entries = speech.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].metadata.voice, "vivian");
-        assert_eq!(entries[0].metadata.label, "testgreeting");
+        assert_eq!(entries[0].voice, "vivian");
+        assert_eq!(entries[0].label, "testgreeting");
 
         speech.remove("VIVIAN", "TESTGREETING").unwrap();
-        assert!(speech.find("vivian", "testgreeting").is_none());
+        assert!(speech.find("vivian", "testgreeting").unwrap().is_none());
 
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         voices.ensure_initialized().unwrap();
@@ -1457,12 +1495,12 @@ mod tests {
 
         let ryan = speech.list_by_voice("RYAN").unwrap();
         assert_eq!(ryan.len(), 1);
-        assert_eq!(ryan[0].metadata.voice, "ryan");
-        assert_eq!(ryan[0].metadata.label, "greeting");
+        assert_eq!(ryan[0].voice, "ryan");
+        assert_eq!(ryan[0].label, "greeting");
 
-        let were_alive = speech.list_by_voice("vivian").unwrap();
-        assert_eq!(were_alive.len(), 1);
-        assert_eq!(were_alive[0].metadata.label, "farewell");
+        let vivian = speech.list_by_voice("vivian").unwrap();
+        assert_eq!(vivian.len(), 1);
+        assert_eq!(vivian[0].label, "farewell");
 
         assert!(speech.list_by_voice("nonexistent").unwrap().is_empty());
         assert_eq!(speech.list().unwrap().len(), 2);
@@ -1480,28 +1518,78 @@ mod tests {
         assert!(path.is_file());
         let entry = speech
             .find("ryan", "greeting")
+            .unwrap()
             .expect("la locución debe existir");
-        assert_eq!(entry.metadata.text, "Hola");
+        let metadata = entry.metadata.expect("la locución guardada lleva sidecar");
+        assert_eq!(metadata.text, "Hola");
         // 1 muestra a 24 kHz → 1/24000 s
-        assert!((entry.metadata.duration_secs - 1.0 / 24_000.0).abs() < 1e-9);
+        assert!((metadata.duration_secs - 1.0 / 24_000.0).abs() < 1e-9);
     }
 
-    /// sidecar ausente/corrupto es tolerable en `list` (contrato
-    /// del registro).
+    /// Sin sidecar la locución sigue en el registro (la decide el WAV): `list` y
+    /// `find` la devuelven sin metadatos.
     #[test]
-    fn sidecar_missing_tolerable() {
-        let dir = temp_dir("sidecar");
+    fn sidecar_missing_lists_speech_without_metadata() {
+        let dir = temp_dir("sidecar_missing");
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
         speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
-        // Sidecar corrupto → la locución se omite, pero no se cae el listado.
-        std::fs::write(speech.voice_dir("ryan").join("greeting.json"), b"{roto").unwrap();
-        let entries = speech.list().unwrap();
-        assert!(entries.is_empty());
-        // Sin sidecar no hay entrada.
         std::fs::remove_file(speech.voice_dir("ryan").join("greeting.json")).unwrap();
+
+        let entries = speech.list().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].voice, "ryan");
+        assert_eq!(entries[0].label, "greeting");
+        assert!(entries[0].metadata.is_none());
+
+        let found = speech.find("ryan", "greeting").unwrap().unwrap();
+        assert!(found.metadata.is_none());
+    }
+
+    /// Un sidecar huérfano (sin WAV) no es una locución: ni `list` ni `find` lo ven.
+    #[test]
+    fn orphan_sidecar_is_not_an_entry() {
+        let dir = temp_dir("sidecar_orphan");
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let wav_src = dir.join("src.wav");
+        std::fs::write(&wav_src, min_wav()).unwrap();
+        speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
+        std::fs::remove_file(speech.audio_path("ryan", "greeting")).unwrap();
+
         assert!(speech.list().unwrap().is_empty());
+        assert!(speech.find("ryan", "greeting").unwrap().is_none());
+    }
+
+    /// Un sidecar corrupto hace fallar `list` y `find` con un `SidecarError` que
+    /// nombra el fichero; `remove` borra ambos ficheros sin interpretarlo.
+    #[test]
+    fn sidecar_corrupt_fails_list_and_find_but_remove_succeeds() {
+        let dir = temp_dir("sidecar_corrupt");
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let wav_src = dir.join("src.wav");
+        std::fs::write(&wav_src, min_wav()).unwrap();
+        speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
+        let sidecar = speech.voice_dir("ryan").join("greeting.json");
+        std::fs::write(&sidecar, b"{roto").unwrap();
+
+        for err in [
+            speech.list().unwrap_err(),
+            speech.list_by_voice("ryan").unwrap_err(),
+            speech.find("ryan", "greeting").unwrap_err(),
+        ] {
+            let sidecar_err = err
+                .downcast_ref::<SidecarError>()
+                .expect("el error debe ser un SidecarError");
+            assert_eq!(sidecar_err.path, sidecar);
+            assert_eq!(sidecar_err.label, "greeting");
+            assert_eq!(sidecar_err.voice, "ryan");
+            assert!(err.to_string().contains("greeting.json"), "{err}");
+        }
+
+        speech.remove("ryan", "greeting").unwrap();
+        assert!(!sidecar.exists());
+        assert!(!speech.audio_path("ryan", "greeting").exists());
     }
 
     /// `validate_name` acepta el regex del contrato y rechaza lo demás.
@@ -1606,10 +1694,10 @@ mod tests {
             assert!(d.is_dir(), "directorio de fábrica '{}' debe existir", name);
             assert!(
                 voices.exists(name).unwrap(),
-                "exists('{}') debe ser true (hoy sería exit 3 para ryan)",
+                "exists('{}') debe ser true",
                 name
             );
-            // No debe haber WAV legado materializado
+            // No debe haber WAV de referencia materializado
             assert!(
                 !d.join("speech-reference.wav").is_file(),
                 "no debe materializar speech-reference.wav para '{}'",
@@ -1679,7 +1767,7 @@ mod tests {
                 name
             );
         }
-        // Voz sin qvoice no resuelve como clonada aunque tenga wav legado inerte
+        // Voz sin qvoice no resuelve como clonada aunque tenga un wav inerte
         let clone_dir = voices.voice_dir("other");
         std::fs::create_dir_all(&clone_dir).unwrap();
         std::fs::write(clone_dir.join("speech-reference.wav"), b"RIFF").unwrap();

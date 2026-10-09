@@ -3339,8 +3339,105 @@ mod tts {
             .expect("el sidecar fabricado debe guardarse");
     }
 
+    /// Sin sidecar la locución sigue en el registro (la decide el WAV): `speech list`
+    /// la muestra con los metadatos a `null`, sin inventar texto ni duración.
+    #[test]
+    fn speech_list_without_sidecar_shows_null_metadata() {
+        let inst = IsolatedInstance::new("list_no_sidecar");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("nosidecar");
+        create_utterance(&inst, "default", &label);
+        std::fs::remove_file(
+            inst.dir
+                .join("speech")
+                .join("default")
+                .join(format!("{label}.json")),
+        )
+        .expect("borrar el sidecar fabricado");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "list",
+                "--voice",
+                "default",
+            ],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 0, "{actual}");
+        let entries = actual["speech"].as_array().expect("`speech` es un array");
+        let entry = entries
+            .iter()
+            .find(|e| e["label"] == Value::String(label.clone()))
+            .expect("la locución sin sidecar debe aparecer");
+        assert_eq!(entry["voice"], "default");
+        assert_eq!(entry["text"], Value::Null);
+        assert_eq!(entry["created_at"], Value::Null);
+        assert_eq!(entry["duration_secs"], Value::Null);
+    }
+
+    /// Un sidecar corrupto hace fallar `speech list` y `speech play` con `io_error`
+    /// (exit 1), nombrando el fichero y remitiendo a `speech remove`, que borra la
+    /// locución sin leer el sidecar.
+    #[test]
+    fn speech_corrupt_sidecar_fails_list_and_play_but_remove_succeeds() {
+        let inst = IsolatedInstance::new("list_corrupt_sidecar");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("corrupt");
+        create_utterance(&inst, "default", &label);
+        let sidecar = inst
+            .dir
+            .join("speech")
+            .join("default")
+            .join(format!("{label}.json"));
+        std::fs::write(&sidecar, b"{roto").expect("corromper el sidecar");
+        let a = inst.contract_args();
+        for args in [
+            vec![
+                "--json",
+                "--no-daemon",
+                "speech",
+                "list",
+                "--voice",
+                "default",
+            ],
+            vec![
+                "--json",
+                "--no-daemon",
+                "speech",
+                "play",
+                "--label",
+                label.as_str(),
+            ],
+        ] {
+            let (code, actual) = run_json_env(&args, &a);
+            assert_eq!(code, 1, "{actual}");
+            assert_eq!(actual["reason"], "io_error");
+            let message = actual["error"].as_str().expect("`error` es texto");
+            assert!(message.contains(&format!("{label}.json")), "{message}");
+            assert!(message.contains("speech remove"), "{message}");
+        }
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "--no-daemon",
+                "speech",
+                "remove",
+                "--label",
+                &label,
+            ],
+            &a,
+        );
+        assert_eq!(code, 0, "{actual}");
+        assert!(!sidecar.exists());
+    }
+
     /// `speech list --voice default` filtra por voz existente (exit 0, solo esa voz).
-    /// solo esa voz).
     #[test]
     fn speech_list_filters_by_existing_voice() {
         let inst = IsolatedInstance::new("list_filters");

@@ -86,22 +86,6 @@ fn benchmark_latency_quality() {
     }
 }
 
-fn normalize_text(text: &str) -> String {
-    text.to_lowercase()
-        .chars()
-        .map(|c| match c {
-            'á' | 'ä' => 'a',
-            'é' | 'ë' => 'e',
-            'í' | 'ï' => 'i',
-            'ó' | 'ö' => 'o',
-            'ú' | 'ü' => 'u',
-            'ñ' => 'n',
-            c if c.is_ascii_alphanumeric() => c,
-            _ => ' ',
-        })
-        .collect()
-}
-
 fn levenshtein_words(reference: &[&str], hypothesis: &[&str]) -> usize {
     let n = reference.len();
     let m = hypothesis.len();
@@ -125,8 +109,8 @@ fn levenshtein_words(reference: &[&str], hypothesis: &[&str]) -> usize {
 }
 
 fn wer_text(reference: &str, hypothesis: &str) -> f64 {
-    let ref_normalized = normalize_text(reference);
-    let hyp_normalized = normalize_text(hypothesis);
+    let ref_normalized = avi_stt::normalize_text(reference);
+    let hyp_normalized = avi_stt::normalize_text(hypothesis);
     let r: Vec<&str> = ref_normalized.split_whitespace().collect();
     let h: Vec<&str> = hyp_normalized.split_whitespace().collect();
     if r == h {

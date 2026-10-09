@@ -232,7 +232,7 @@ temporal autogestionado que se borra al terminar.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `speech` | array de objetos | Un objeto por locución guardada: `voice` (string), `label` (string), `text` (string, texto completo sin truncar), `created_at` (string, ISO 8601 UTC), `duration_secs` (number) |
+| `speech` | array de objetos | Un objeto por locución guardada: `voice` (string), `label` (string), `text` (string, texto completo sin truncar), `created_at` (string, ISO 8601 UTC), `duration_secs` (number); los tres son `null` si la locución no tiene sidecar de metadatos |
 
 **`daemon start` / `stop` / `restart --json`** — payload de resultado de la
 acción (no de estado; para eso está `daemon status --json`). Los mensajes
@@ -613,7 +613,10 @@ ai-voice-interconnector --json speech list --voice mi_voz
 
 El texto se muestra truncado a 60 caracteres en la salida humana; el payload
 `--json` (`{"speech": [...]}`) lleva el texto completo. Una locución
-sin sidecar de metadatos se muestra como `(sin metadatos)`.
+sin sidecar de metadatos se muestra como `(sin metadatos)`. Un sidecar ilegible
+o corrupto hace fallar `speech list` y `speech play` con exit **1** (`io_error`);
+el mensaje nombra el fichero y remite a `speech remove`, que borra la locución
+sin leer el sidecar.
 
 Con `--voice`, el identificador se valida antes de leer: una voz con
 caracteres ilegales sale con exit **2** (`invalid_identifier`) y una voz

@@ -463,7 +463,8 @@ Junto a cada `<etiqueta>.wav` se escribe `<etiqueta>.json` con tres campos: `tex
 - **`created_at` en ISO 8601 UTC.**
 - **El sidecar es formato interno y no lleva versión de esquema propia.** Su única superficie estable es el payload `--json`, gobernado por `schema_version` (hoy `"5"`) (`src/main.rs` / `crates/avi-core/src/json_emitter.rs`). Darle versión propia daría al proyecto tres versiones de esquema donde hay dos.
 - **Un lector que encuentre un campo desconocido lo ignora**, igual que hacen los modelos del protocolo IPC con `extra="ignore"`.
-- **`speech list` tolera un sidecar ausente** mostrando la locución sin metadatos, en vez de fallar. Muestra el texto **truncado** en la salida humana y **completo** en el payload `--json`.
+- **`speech list` tolera un sidecar ausente** mostrando la locución sin metadatos (`text`, `created_at` y `duration_secs` a `null` en `--json`), en vez de fallar. Muestra el texto **truncado** en la salida humana y **completo** en el payload `--json`.
+- **Un sidecar ilegible o corrupto no se tolera**: `speech list` y `speech play` fallan con exit 1 `io_error`, nombrando el fichero y remitiendo a `speech remove`, que borra el WAV y el sidecar sin interpretarlo.
 
 ### Atomicidad de la escritura
 

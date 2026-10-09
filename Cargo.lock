@@ -211,7 +211,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "num_cpus",
- "serde",
  "serde_json",
  "thiserror 1.0.69",
 ]
@@ -313,7 +312,6 @@ dependencies = [
  "avi-audio",
  "avi-core",
  "avi-store",
- "hound",
  "ort",
 ]
 

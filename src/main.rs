@@ -1492,7 +1492,12 @@ where
             "2" => {
                 // RF-12.4: recomprobar colisión en el instante de guardar, no
                 // solo en el fast-fail previo a sintetizar.
-                if !force && speech_store.find(voice, label).is_some() {
+                if !force
+                    && speech_store
+                        .find(voice, label)
+                        .map_err(speech_find_error)?
+                        .is_some()
+                {
                     return Err(CliError::new(
                         ExitCode::StateConflict,
                         "label_exists",
@@ -1517,6 +1522,33 @@ where
             _ => eprintln!("Opción inválida."),
         }
     }
+}
+
+/// Error de sidecar corrupto del almacén de locuciones como `io_error`: nombra el
+/// fichero y remite a `speech remove`, que borra la locución sin leer el sidecar.
+fn sidecar_cli_error(e: &anyhow::Error) -> Option<CliError> {
+    e.downcast_ref::<store::SidecarError>().map(|s| {
+        CliError::new(
+            ExitCode::Error,
+            "io_error",
+            format!(
+                "{s}. Elimina la locución con `speech remove --label {} --voice {}`.",
+                s.label, s.voice
+            ),
+        )
+    })
+}
+
+/// Error del almacén de locuciones al buscar una etiqueta.
+fn speech_find_error(e: anyhow::Error) -> CliError {
+    sidecar_cli_error(&e)
+        .unwrap_or_else(|| CliError::new(ExitCode::Error, "io_error", e.to_string()))
+}
+
+/// Error del almacén de locuciones al listar.
+fn speech_list_error(e: anyhow::Error) -> CliError {
+    sidecar_cli_error(&e)
+        .unwrap_or_else(|| CliError::new(ExitCode::Error, "speech_list_failed", e.to_string()))
 }
 
 async fn handle_speech(
@@ -1545,24 +1577,21 @@ async fn handle_speech(
                             format!("La voz '{}' no existe.", v),
                         ));
                     }
-                    speech_store.list_by_voice(v).map_err(|e| {
-                        CliError::new(ExitCode::Error, "speech_list_failed", e.to_string())
-                    })?
+                    speech_store.list_by_voice(v).map_err(speech_list_error)?
                 }
-                None => speech_store.list().map_err(|e| {
-                    CliError::new(ExitCode::Error, "speech_list_failed", e.to_string())
-                })?,
+                None => speech_store.list().map_err(speech_list_error)?,
             };
             if json_mode {
+                // Sin sidecar, los campos que solo él aporta salen `null`.
                 let entries: Vec<serde_json::Value> = items
                     .iter()
                     .map(|e| {
                         json!({
-                            "label": e.metadata.label,
-                            "voice": e.metadata.voice,
-                            "text": e.metadata.text,
-                            "created_at": e.metadata.created_at,
-                            "duration_secs": e.metadata.duration_secs,
+                            "label": e.label,
+                            "voice": e.voice,
+                            "text": e.metadata.as_ref().map(|m| &m.text),
+                            "created_at": e.metadata.as_ref().map(|m| &m.created_at),
+                            "duration_secs": e.metadata.as_ref().map(|m| m.duration_secs),
                         })
                     })
                     .collect();
@@ -1573,13 +1602,13 @@ async fn handle_speech(
                     println!("  (ninguna locución guardada)");
                 } else {
                     for e in &items {
-                        println!(
-                            "  - [{}] {} ({:.1}s) — «{}»",
-                            e.metadata.voice,
-                            e.metadata.label,
-                            e.metadata.duration_secs,
-                            e.metadata.text
-                        );
+                        match &e.metadata {
+                            Some(m) => println!(
+                                "  - [{}] {} ({:.1}s) — «{}»",
+                                e.voice, e.label, m.duration_secs, m.text
+                            ),
+                            None => println!("  - [{}] {} (sin metadatos)", e.voice, e.label),
+                        }
                     }
                 }
             }
@@ -1777,7 +1806,12 @@ async fn handle_speech(
             let label = label.to_lowercase();
             is_valid_identifier(Some(&label), None)?;
             let speech_store = SpeechStore::new();
-            if !force && speech_store.find(&voice, &label).is_some() {
+            if !force
+                && speech_store
+                    .find(&voice, &label)
+                    .map_err(speech_find_error)?
+                    .is_some()
+            {
                 return Err(CliError::new(
                     ExitCode::StateConflict,
                     "label_exists",
@@ -2158,7 +2192,10 @@ async fn handle_speech(
             // Reproducción de locución persistida: local-only.
             require_local(daemon_mode)?;
             is_valid_identifier(Some(&voice), Some(&label))?;
-            match speech_store.find(&voice, &label) {
+            match speech_store
+                .find(&voice, &label)
+                .map_err(speech_find_error)?
+            {
                 Some(entry) => {
                     audio::AudioService::new()
                         .play_wav(&entry.audio_path)
@@ -4325,7 +4362,12 @@ async fn synthesize_via_daemon(
     let speech_store = SpeechStore::new();
     let label_lower = label.to_lowercase();
     is_valid_identifier(Some(&label_lower), None)?;
-    if !force && speech_store.find(voice, &label_lower).is_some() {
+    if !force
+        && speech_store
+            .find(voice, &label_lower)
+            .map_err(speech_find_error)?
+            .is_some()
+    {
         return Err(CliError::new(
             ExitCode::StateConflict,
             "label_exists",

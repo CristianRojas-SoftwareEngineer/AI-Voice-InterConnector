@@ -186,16 +186,20 @@ type SharedState = Arc<DaemonState>;
 
 // ─── Helpers internos ───────────────────────────────────────────────────
 
-/// Inserta `schema_version` en un `Value`, reutilizado por handlers que devuelven
-/// JSON directamente.
+/// Inserta `schema_version` en un envelope objeto, reutilizado por handlers que
+/// devuelven JSON directamente.
 ///
-/// **El protocolo del daemon tiene su propia versión**, `DAEMON_SCHEMA_VERSION`, que
-/// este ciclo no cambia: el emisor compartido de `avi-core` lo comparte con el envelope `--json`
-/// de la CLI, pero los dos son contratos independientes y sus versiones se gobiernan por
+/// **El protocolo del daemon tiene su propia versión**, `DAEMON_SCHEMA_VERSION`: el
+/// emisor compartido de `avi-core` lo comparte con el envelope `--json` de la CLI,
+/// pero los dos son contratos independientes y sus versiones se gobiernan por
 /// separado. Por eso la versión se pasa explícitamente en vez de leerse de una
-/// constante única: subir la de la CLI no puede arrastrar a esta.
+/// constante única: subir la de la CLI no puede arrastrar a esta. Un valor que no
+/// es objeto JSON es un error de programación y aborta.
 fn with_sv(val: Value) -> Value {
-    json_emitter::with_schema_version(val, json_emitter::DAEMON_SCHEMA_VERSION)
+    json_emitter::with_schema_version(
+        json_emitter::envelope_object(val),
+        json_emitter::DAEMON_SCHEMA_VERSION,
+    )
 }
 
 /// Serializa un evento NDJSON con envelope de schema_version al canal de salida.
