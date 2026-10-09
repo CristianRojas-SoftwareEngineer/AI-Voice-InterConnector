@@ -78,7 +78,7 @@ static STT_HOLDER: EngineHolder = EngineHolder::new();
 /// Traduce un fallo de la síntesis directa al contrato: la falta del modelo que
 /// exige la voz sale como `model_missing` (exit 4), el vencimiento del
 /// presupuesto como `synthesis_timeout`, una voz sin referencia que no es preset
-/// como `voice_not_found` (exit 3) y cualquier otro como `synthesis_error`.
+/// como `voice_not_found` (exit 3) y cualquier otro como `synthesis_failed`.
 fn synthesis_cli_error(e: anyhow::Error) -> CliError {
     if e.downcast_ref::<avi_tts::ModelMissing>().is_some() {
         return CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string());
@@ -89,7 +89,7 @@ fn synthesis_cli_error(e: anyhow::Error) -> CliError {
     let reason = if e.downcast_ref::<avi_tts::SynthesisTimeout>().is_some() {
         "synthesis_timeout"
     } else {
-        "synthesis_error"
+        "synthesis_failed"
     };
     CliError::new(ExitCode::Error, reason, e.to_string())
 }
@@ -740,7 +740,7 @@ fn install_sigint_handler() {
         }
         // Exit code 130 = interrumpido por usuario (Ctrl+C)
         eprintln!("\nInterrumpido por el usuario.");
-        exit(130);
+        exit(ExitCode::Interrupted.code());
     })
     .expect("Error al instalar el handler de Ctrl+C");
 }
@@ -1334,14 +1334,14 @@ async fn capture_mic_pcm(duration: Option<u64>, max_secs: u64) -> Result<Vec<i16
     .map_err(|e| {
         CliError::new(
             ExitCode::TranscriptionFailed,
-            "transcription_error",
+            "transcription_failed",
             e.to_string(),
         )
     })?
     .map_err(|e| {
         CliError::new(
             ExitCode::TranscriptionFailed,
-            "transcription_error",
+            "transcription_failed",
             e.to_string(),
         )
     })
@@ -1414,7 +1414,7 @@ fn ensure_clone_reference_within_limit(path: &std::path::Path) -> Result<(), Cli
 
 /// Obtiene el PCM 16 kHz mono desde el micrófono o desde un WAV, y traduce los
 /// fallos al contrato: archivo ausente exit 3, WAV inválido exit 2, error de
-/// E/S exit 1 y fallo de micrófono exit 10 (`transcription_error`). `max_secs` es el techo de la
+/// E/S exit 1 y fallo de micrófono exit 10 (`transcription_failed`). `max_secs` es el techo de la
 /// captura push-to-talk. Con `mic == false`, `audio` debe ser `Some`.
 async fn acquire_pcm(
     audio: Option<&str>,
@@ -1506,7 +1506,7 @@ where
                 let saved = speech_store
                     .save(voice, label, final_text, &tmp_wav)
                     .map_err(|e| {
-                        CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+                        CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
                     })?;
                 return Ok(Some(saved));
             }
@@ -1691,14 +1691,14 @@ async fn handle_speech(
                     .map_err(|e| {
                         CliError::new(
                             ExitCode::TranscriptionFailed,
-                            "transcription_error",
+                            "transcription_failed",
                             e.to_string(),
                         )
                     })?;
                 let text = engine.transcribe(&pcm).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
-                        "transcription_error",
+                        "transcription_failed",
                         e.to_string(),
                     )
                 })?;
@@ -1845,11 +1845,13 @@ async fn handle_speech(
             } else {
                 speech_store
                     .save(&voice, &label, &final_text, &tmp_wav)
-                    .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?
+                    .map_err(|e| {
+                        CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
+                    })?
             };
             if let Some(out) = &output {
                 std::fs::copy(&saved, out).map_err(|e| {
-                    CliError::new(ExitCode::Error, "synthesis_error", e.to_string())
+                    CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
                 })?;
             }
             if json_mode {
@@ -2048,14 +2050,14 @@ async fn handle_speech(
                     .map_err(|e| {
                         CliError::new(
                             ExitCode::TranscriptionFailed,
-                            "transcription_error",
+                            "transcription_failed",
                             e.to_string(),
                         )
                     })?;
                 let transcribed = stt.transcribe(&pcm).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
-                        "transcription_error",
+                        "transcription_failed",
                         e.to_string(),
                     )
                 })?;
@@ -3524,12 +3526,12 @@ fn require_model_provisioned() -> Result<(), CliError> {
 /// que la misma causa dé el mismo código en los tres: conflicto de puerto (6),
 /// recurso inexistente (3) o error no clasificado (1).
 fn startup_error_to_cli(err: &daemon::StartupError) -> CliError {
-    let (code, reason) = match err {
-        daemon::StartupError::PortInUse { .. } => (ExitCode::StateConflict, "port_in_use"),
-        daemon::StartupError::WarmVoiceMissing { .. } => (ExitCode::NotFound, "voice_not_found"),
-        daemon::StartupError::Failed { .. } => (ExitCode::Error, "daemon_error"),
+    let reason = match err {
+        daemon::StartupError::PortInUse { .. } => "port_in_use",
+        daemon::StartupError::WarmVoiceMissing { .. } => "voice_not_found",
+        daemon::StartupError::Failed { .. } => "daemon_error",
     };
-    CliError::new(code, reason, err.to_string())
+    CliError::new(ExitCode::from_reason(reason), reason, err.to_string())
 }
 
 /// Valida identificadores de voz/etiqueta contra el regex del contrato
@@ -4051,7 +4053,7 @@ async fn daemon_synthesize_wav(
                 let b64 = ev["audio_b64"].as_str().ok_or_else(|| {
                     CliError::new(
                         ExitCode::Error,
-                        "synthesis_error",
+                        "synthesis_failed",
                         "El daemon devolvió result sin audio_b64.",
                     )
                 })?;
@@ -4061,7 +4063,7 @@ async fn daemon_synthesize_wav(
                         .map_err(|e| {
                             CliError::new(
                                 ExitCode::Error,
-                                "synthesis_error",
+                                "synthesis_failed",
                                 format!("audio_b64 del daemon no decodable: {}", e),
                             )
                         })?,
@@ -4074,7 +4076,7 @@ async fn daemon_synthesize_wav(
     wav.ok_or_else(|| {
         CliError::new(
             ExitCode::Error,
-            "synthesis_error",
+            "synthesis_failed",
             "El daemon no devolvió audio_b64.".to_string(),
         )
     })
@@ -4328,11 +4330,11 @@ async fn synthesize_via_daemon(
     } else {
         speech_store
             .save(voice, &label_lower, text, &tmp)
-            .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?
+            .map_err(|e| CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()))?
     };
     if let Some(out) = output {
         std::fs::copy(&saved, out)
-            .map_err(|e| CliError::new(ExitCode::Error, "synthesis_error", e.to_string()))?;
+            .map_err(|e| CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()))?;
     }
     if json_mode {
         emit_raw_json(json!({
@@ -4692,7 +4694,7 @@ mod tests {
     }
 
     /// La falta del modelo que exige la voz sale como `model_missing` (exit 4),
-    /// igual que la ausencia de CustomVoice, y no como `synthesis_error`.
+    /// igual que la ausencia de CustomVoice, y no como `synthesis_failed`.
     #[test]
     fn synthesis_cli_error_maps_missing_model_to_model_missing() {
         let any: anyhow::Error = avi_tts::ModelMissing {
@@ -4703,7 +4705,7 @@ mod tests {
         assert_eq!(err.code, ExitCode::ModelMissing);
         assert_eq!(err.reason, "model_missing");
         let other = synthesis_cli_error(anyhow::anyhow!("otro fallo"));
-        assert_eq!(other.reason, "synthesis_error");
+        assert_eq!(other.reason, "synthesis_failed");
     }
 
     /// Una voz sin referencia que no es preset sale como `voice_not_found`

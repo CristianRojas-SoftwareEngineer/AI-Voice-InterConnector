@@ -99,7 +99,7 @@ Corolario de legibilidad: **el nombre de cada sub-acción declara su costo.** Si
 
 Son **dos preguntas encadenadas, no una**. La primera forma las clases; la segunda decide cuáles merecen un entero propio. Separarlas es lo que vuelve la tabla derivable: un eje único mezcla dos trabajos distintos —clasificar y repartir— y toda formulación que los funde acierta en una mitad y falla en la otra.
 
-1. **Clasificación: ¿qué tipo de hecho impidió la operación?** Da seis clases: invocación mal formada, recurso ausente, recurso ocupado, precondición de entorno incumplida, imposibilidad permanente e imprevisto.
+1. **Clasificación: ¿qué tipo de hecho impidió la operación?** Da cinco clases: invocación mal formada, recurso ausente, recurso ocupado, precondición de entorno incumplida e imprevisto.
 2. **Admisión: ¿un consumidor programado cambiaría su siguiente llamada al distinguir esta clase de las demás?** Si sí, la clase gana entero propio; si no, comparte entero y la distinción baja al `reason` del payload de error. Se responde diciendo qué se invocaría a continuación, sin apelar a la intuición de quien redacta.
 
 **El dominio del eje son los códigos de fallo.** Quedan fuera, y es deliberado: el `0`, que no es un fallo y por tanto no tiene remedio del que hablar; el `130`, que es convención de señales (`128 + SIGINT`) y es correcto por otra razón —ante Ctrl+C el CLI ejecuta limpieza acotada del árbol del pidfile (o del PID que conserva en memoria desde el spawn, si todavía no existe pidfile) (2 s) y sale igualmente con 130, sin colgarse—; y el `1` de `doctor`, que usa el entero como canal de **veredicto** y no de fallo, porque el trabajo de ese comando *es* diagnosticar.
@@ -493,8 +493,6 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `4` | `ExitCode::ModelMissing` | Modelo no provisionado |
 | `5` | `ExitCode::DaemonUnreachable` | Daemon inalcanzable |
 | `6` | `ExitCode::StateConflict` | El recurso existe o está ocupado; la operación no procede sin liberarlo o forzarla |
-| `7` | `ExitCode::NotApplicable` | La operación no aplica a este objetivo o entorno, y no aplicará reintentando |
-| `8` | `ExitCode::PreconditionFailed` | Una precondición del entorno no se cumple; el remedio está fuera del programa y la operación es reintentable una vez corregida |
 | `9` | `ExitCode::TranslationFailed` | El pipeline de traducción falló con el modelo ya cargado |
 | `10` | `ExitCode::TranscriptionFailed` | El pipeline de transcripción o la captura del micrófono falló; un audio ausente (3), ilegible (2) o con error de E/S (1) no es de esta clase |
 | `11` | `ExitCode::SetupFailed` | La provisión de modelos falló y el programa **queda instalado**: éxito parcial, reintentable con `setup` |
@@ -530,13 +528,25 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 | **4** | Precondición de entorno: el modelo | `ai-voice-interconnector setup`, luego el mismo comando |
 | **5** | Precondición de entorno: el daemon | `ai-voice-interconnector daemon start`, luego el mismo comando |
 | **6** | Recurso ocupado | `--force`, otro nombre, `daemon stop`, o esperar a que se libere |
-| **7** | Imposibilidad permanente | **Ninguna** — no reintentar nunca |
-| **8** | Precondición de entorno: el resto | Ninguna propia: delegar y reintentar el mismo comando |
 | **9** | Imprevisto, pero en la etapa de traducción | Distinguirlo del fallo de síntesis (**1**) es lo que cambia la siguiente llamada: el modelo TTS puede seguir intentándose sin traducir |
 
-**Los dos casos límite son inversos, y esa simetría es lo que valida el criterio.** El 4, el 5 y el 8 son **una** clase por causa —modelo ausente, daemon caído, disco lleno y token vencido son el mismo tipo de hecho— repartida en **tres** enteros, porque lo único que un consumidor puede convertir en una llamada distinta es un comando de esta CLI: `setup` y `daemon start` se separan y el resto colapsa en el 8. El 6 es lo contrario: **tres** remedios de naturaleza distinta (`--force`, `daemon stop`, cerrar un proceso externo) plegados en **un** entero, porque ninguno cambia lo que el consumidor distingue —«ocupado» frente a «ausente» y «mal escrito»—. La resolución del entero es la de lo que este programa puede nombrar como paso ejecutable.
+**Los dos casos límite son inversos, y esa simetría es lo que valida el criterio.** El 4 y el 5 son **una** clase por causa —modelo ausente y daemon caído son el mismo tipo de hecho: una precondición de entorno— repartida en **dos** enteros, porque lo único que un consumidor puede convertir en una llamada distinta es un comando de esta CLI: `setup` y `daemon start` se separan. Una precondición de entorno cuyo remedio no es un comando de esta CLI no gana entero: sale con el 1 y su `reason` la distingue. El 6 es lo contrario: **tres** remedios de naturaleza distinta (`--force`, `daemon stop`, cerrar un proceso externo) plegados en **un** entero, porque ninguno cambia lo que el consumidor distingue —«ocupado» frente a «ausente» y «mal escrito»—. La resolución del entero es la de lo que este programa puede nombrar como paso ejecutable.
 
-**El 1 y el 7 no son vecinos**: en el 1 no se conoce remedio; en el 7 se sabe que no lo hay. Fundirlos borraría la única señal que importa, que es *no reintentar*.
+**Los `reason` declarados.** Todo `reason` que emite la CLI, el daemon o el ciclo de vida está en una tabla única (`REASON_CODES` en `crates/avi-core/src/exit_codes.rs`) con su código, y una prueba falla ante un `reason` emitido sin declarar o declarado sin emitir:
+
+| Código | `reason` |
+|---|---|
+| `1` | `io_error`, `voice_clone_failed`, `synthesis_failed`, `synthesis_timeout`, `stt_unsupported`, `translation_unsupported`, `playback_failed`, `audio_enumeration_failed`, `speech_list_failed`, `voice_list_failed`, `voice_store_init_failed`, `daemon_error`, `startup_failed`, `sudo_not_supported`, `lifecycle_failed`, `doctor_failed`, `self_install_failed`, `self_uninstall_failed`, `self_update_failed` |
+| `2` | `confirmation_required`, `usage_error`, `daemon_not_supported`, `empty_text`, `text_too_long`, `invalid_voice_name`, `invalid_identifier`, `cannot_remove_default`, `invalid_audio`, `audio_too_long` |
+| `3` | `voice_not_found`, `warm_voice_missing`, `audio_not_found`, `speech_not_found`, `not_installed` |
+| `4` | `model_missing` |
+| `5` | `daemon_unreachable` |
+| `6` | `voice_exists`, `label_exists`, `port_in_use` |
+| `9` | `translation_failed` |
+| `10` | `transcription_failed` |
+| `11` a `22` | `setup_failed`, `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`, `daemon_stop_failed`, `lifecycle_locked`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `program_dir_kept`, en ese orden |
+
+`warm_voice_missing` y `startup_failed` viajan en la línea `error=<reason>` del fichero ready del daemon; la CLI traduce el primero a `voice_not_found` (3) y el segundo a `daemon_error` (1).
 
 **El 6 tiene un solo dueño.** «Puerto ya en uso» y «la voz ya existe» son el mismo hecho y llevan el mismo código; no hay una constante aparte para el conflicto del daemon.
 

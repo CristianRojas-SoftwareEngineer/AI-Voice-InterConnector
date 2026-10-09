@@ -74,8 +74,6 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | 4 | `ExitCode::ModelMissing` | Modelo no provisionado |
 | 5 | `ExitCode::DaemonUnreachable` | Daemon inalcanzable |
 | 6 | `ExitCode::StateConflict` | Conflicto de estado |
-| 7 | `ExitCode::NotApplicable` | Operación no aplicable |
-| 8 | `ExitCode::PreconditionFailed` | Precondición incumplida |
 | 9 | `ExitCode::TranslationFailed` | Fallo de traducción |
 | 10 | `ExitCode::TranscriptionFailed` | Fallo de transcripción |
 | 11 | `ExitCode::SetupFailed` | Provisión de modelos fallida; el programa **queda instalado** (éxito parcial, reintentable con `setup`) |
@@ -92,6 +90,6 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | 22 | `ExitCode::ProgramDirKept` | El resto se desinstaló pero el directorio de programa no se pudo borrar |
 | 130 | `ExitCode::Interrupted` | Interrupción por usuario (Ctrl+C, con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria) |
 
-Los códigos 0–10 y el 130 son los del contrato de la CLI y no cambian. Los siete del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de §8.1** (`crates/avi-core/src/exit_codes.rs`). Los cinco del 18 al 22 son la tabla cerrada de `self update` (18–21: plataforma, compatibilidad del binario, red e integridad) más `program_dir_kept` (22) de `self uninstall`; los doce del 11 al 22 salen por `ExitCode::from_reason`, que es la traducción única de `reason` a código.
+Los códigos 0–6, el 9, el 10 y el 130 son los del contrato de la CLI y no cambian; el 7 y el 8 no existen. Los siete del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de §8.1** (`crates/avi-core/src/exit_codes.rs`). Los cinco del 18 al 22 son la tabla cerrada de `self update` (18–21: plataforma, compatibilidad del binario, red e integridad) más `program_dir_kept` (22) de `self uninstall`; los doce del 11 al 22 salen por `ExitCode::from_reason`, que es la traducción única de `reason` a código.
 
 Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). El envelope de la CLI lleva `schema_version` `"5"`; el **protocolo del daemon va por `"4"`**, porque son contratos independientes. `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`).

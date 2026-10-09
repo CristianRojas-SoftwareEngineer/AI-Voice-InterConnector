@@ -568,3 +568,175 @@ fn contract_declares_every_global_flag() {
          (`Cli::json`) y el comando lo honra en las dos vías"
     );
 }
+
+/// Añade a `out` los `.rs` de `dir` y sus subdirectorios, en orden estable.
+fn collect_rust(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    children.sort();
+    for child in children {
+        if child.is_dir() {
+            collect_rust(&child, out);
+        } else if child.extension().is_some_and(|e| e == "rs") {
+            out.push(child);
+        }
+    }
+}
+
+/// Código de producción del binario y de cada crate (sin módulos `tests` ni la tabla
+/// misma), con la ruta de cada fichero.
+fn production_sources() -> Vec<(PathBuf, String)> {
+    let root = repo_root();
+    let mut dirs = vec![root.join("src")];
+    let mut crates: Vec<PathBuf> = std::fs::read_dir(root.join("crates"))
+        .expect("el directorio crates existe")
+        .map(|e| e.expect("entrada legible de crates").path())
+        .collect();
+    crates.sort();
+    dirs.extend(crates.into_iter().map(|c| c.join("src")));
+
+    let mut files = Vec::new();
+    for dir in &dirs {
+        collect_rust(dir, &mut files);
+    }
+    files
+        .into_iter()
+        .filter(|f| !f.ends_with("avi-core/src/exit_codes.rs"))
+        .map(|f| {
+            let text = std::fs::read_to_string(&f)
+                .unwrap_or_else(|e| panic!("no se pudo leer {}: {e}", f.display()));
+            let production = text
+                .split("\nmod tests {")
+                .next()
+                .expect("el código de producción precede al módulo de pruebas")
+                .to_string();
+            (f, production)
+        })
+        .collect()
+}
+
+/// Nombre `reason` (minúsculas y `_`) al inicio de `text`, si lo cierra una comilla
+/// cuando `quoted` es verdadero.
+fn reason_prefix(text: &str, quoted: bool) -> Option<String> {
+    let name: String = text
+        .chars()
+        .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+        .collect();
+    if name.is_empty() || (quoted && !text[name.len()..].starts_with('"')) {
+        return None;
+    }
+    Some(name)
+}
+
+/// Literal de `reason` que sigue a `text` si este empieza (tras espacios) por una
+/// comilla.
+fn leading_literal(text: &str) -> Option<String> {
+    reason_prefix(text.trim_start().strip_prefix('"')?, true)
+}
+
+/// Todo `reason` que el código de producción declara de forma literal: el segundo
+/// argumento de `CliError::new`, el primero de `LifecycleError::new` (y de su
+/// constructor `Self::new` en el crate de ciclo de vida), las claves `"reason"` y
+/// `"error"` de los envelopes, el campo `reason:` de los errores tipados y la línea
+/// `error=<reason>` del fichero ready.
+fn emitted_reasons() -> Vec<(String, String)> {
+    let mut emitted = Vec::new();
+    for (path, text) in production_sources() {
+        let file = path.display().to_string();
+        for key in ["\"reason\": \"", "\"error\": \"", "reason: \""] {
+            for (i, _) in text.match_indices(key) {
+                if let Some(r) = reason_prefix(&text[i + key.len()..], true) {
+                    emitted.push((r, file.clone()));
+                }
+            }
+        }
+        for (i, _) in text.match_indices("error=") {
+            if let Some(r) = reason_prefix(&text[i + "error=".len()..], false) {
+                emitted.push((r, file.clone()));
+            }
+        }
+        for (i, _) in text.match_indices("CliError::new(") {
+            let rest = &text[i + "CliError::new(".len()..];
+            if let Some(comma) = rest.find(',') {
+                if let Some(r) = leading_literal(&rest[comma + 1..]) {
+                    emitted.push((r, file.clone()));
+                }
+            }
+        }
+        let mut constructors = vec!["LifecycleError::new("];
+        if file.contains("avi-lifecycle") {
+            constructors.push("Self::new(");
+        }
+        for constructor in constructors {
+            for (i, _) in text.match_indices(constructor) {
+                if let Some(r) = leading_literal(&text[i + constructor.len()..]) {
+                    emitted.push((r, file.clone()));
+                }
+            }
+        }
+    }
+    emitted
+}
+
+/// Todo `reason` que emite el código de producción de la CLI, el daemon y el ciclo de
+/// vida está declarado en la tabla única de códigos de salida.
+#[test]
+fn every_emitted_reason_is_in_exit_code_table() {
+    let emitted = emitted_reasons();
+    assert!(
+        !emitted.is_empty(),
+        "la búsqueda de literales no encontró ningún reason"
+    );
+    let undeclared: Vec<String> = emitted
+        .iter()
+        .filter(|(reason, _)| !avi_core::exit_codes::ExitCode::is_declared_reason(reason))
+        .map(|(reason, file)| format!("{reason} ({file})"))
+        .collect();
+    assert!(
+        undeclared.is_empty(),
+        "reason emitidos que `REASON_CODES` ({EXIT_CODES_SOURCE}) no declara:\n  {}",
+        undeclared.join("\n  ")
+    );
+}
+
+/// Todo `reason` de la tabla única de códigos de salida aparece como literal en algún
+/// punto del código de producción: un `reason` que nadie emite se retira de la tabla.
+#[test]
+fn every_table_reason_is_emitted_somewhere() {
+    let sources = production_sources();
+    let missing: Vec<&str> = avi_core::exit_codes::REASON_CODES
+        .iter()
+        .map(|(reason, _)| *reason)
+        .filter(|reason| {
+            let quoted = format!("\"{reason}\"");
+            let ready_line = format!("error={reason}");
+            !sources
+                .iter()
+                .any(|(_, text)| text.contains(&quoted) || text.contains(&ready_line))
+        })
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "reason de `REASON_CODES` ({EXIT_CODES_SOURCE}) que ningún código de producción emite: \
+         {missing:?}"
+    );
+}
+
+/// El contrato nombra, en la sección de códigos de salida, cada `reason` de la tabla.
+#[test]
+fn contract_names_every_table_reason() {
+    let path = repo_root().join(CONTRACT_DOC);
+    let contract = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no se pudo leer {CONTRACT_DOC}: {e}"));
+    let missing: Vec<&str> = avi_core::exit_codes::REASON_CODES
+        .iter()
+        .map(|(reason, _)| *reason)
+        .filter(|reason| !contract.contains(&format!("`{reason}`")))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{CONTRACT_DOC} no nombra estos reason de la tabla: {missing:?}"
+    );
+}

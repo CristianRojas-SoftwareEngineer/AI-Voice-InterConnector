@@ -400,13 +400,10 @@ con `--json` lo que sale es el envelope por **stdout** (`schema_version` `"5"`),
 salidas 11–22 las emite el motor `avi-lifecycle` y la traducción a código es siempre
 esa misma función.
 
-Los códigos **7** (`NotApplicable`) y **8** (`PreconditionFailed`) están declarados en el
-enum pero **ninguna ruta los produce**, así que no tienen sonda y por eso no tienen fila.
-
 | Exit | Significado (`reason`) | Canal | Sonda |
 |---|---|---|---|
 | **1** | Error genérico (`io_error`) | stderr, stdout limpio | `speech transcribe --audio <wav.tomlado en exclusiva por otro proceso>`: existe como fichero (`validate_audio_arg` pasa) pero leerlo falla por E/S |
-| **2** | Entrada inválida (`usage_error`, `invalid_audio`, `invalid_identifier`, `audio_too_long`, `daemon_not_supported`, `unsupported_language_pair`) | stderr; envelope por stdout con `--json` | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es-latam < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (local-only con `--daemon`) |
+| **2** | Entrada inválida (`usage_error`, `invalid_audio`, `invalid_identifier`, `audio_too_long`, `daemon_not_supported`) | stderr; envelope por stdout con `--json` | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es-latam < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (local-only con `--daemon`) |
 | **3** | Recurso no encontrado (`audio_not_found`, `voice_not_found`, `speech_not_found`) | stderr, stdout limpio | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es-latam` |
 | **4** | Modelo no provisionado (`model_missing`) | stderr, stdout limpio | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el modelo de traducción del par sin provisionar |
 | **5** | Daemon inalcanzable (`daemon_unreachable`) | stderr; envelope por stdout con `--json` | `speech say --text x --daemon` con el daemon detenido |
@@ -425,7 +422,7 @@ enum pero **ninguna ruta los produce**, así que no tienen sonda y por eso no ti
 | **20** | Fallo de red (`network_error`) | stderr; envelope `error` por stdout con `--json` | `self update` sin red al resolver la última versión o al descargar el artefacto |
 | **21** | El archivo descargado no coincide con su hash (`checksum_mismatch`) | stderr; envelope `error` por stdout con `--json` | `self update` contra un `SHA256SUMS.txt` manipulado (o el artefacto alterado en tránsito); el staging se borra sin tocar la instalación |
 | **22** | El directorio de programa no se pudo borrar (`program_dir_kept`): **éxito parcial**, el resto sí se desinstaló | envelope por stdout **también sin `--json`** (`status` + `reason` + `removed`/`planned`/`path_reverted`) y el motivo por stderr | `self uninstall` con el directorio de programa tomado (un proceso vivo lo tiene abierto o faltan permisos): borra el estado de usuario y deja el directorio |
-| **130** | Interrupción por el usuario. **Sin `reason` ni envelope**: el handler de Ctrl+C de `src/main.rs` llama a `exit(130)` tras la limpieza acotada de 2 s, y el código se preserva en todos los modos | stderr (limpieza acotada de 2 s) | **Ctrl+C** durante `daemon start`/`restart`/`serve` o durante una síntesis: sale 130 con el estado preservado y el árbol del daemon reclamado |
+| **130** | Interrupción por el usuario. **Sin `reason` ni envelope**: el handler de Ctrl+C de `src/main.rs` sale con `ExitCode::Interrupted` (130) tras la limpieza acotada de 2 s, y el código se preserva en todos los modos | stderr (limpieza acotada de 2 s) | **Ctrl+C** durante `daemon start`/`restart`/`serve` o durante una síntesis: sale 130 con el estado preservado y el árbol del daemon reclamado |
 
 ```bash
 # Ejemplos directos:

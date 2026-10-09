@@ -3216,37 +3216,37 @@ mod tests {
         }
     }
 
-    /// Cada `reason` literal que emite el daemon (en `reason` o en su espejo `error`)
-    /// está en la tabla única de códigos de salida: o la tabla le asigna un código
-    /// propio, o es uno de los que el contrato deja en el 1 genérico.
+    /// Cada `reason` literal que emite el código de producción del daemon está
+    /// declarado en la tabla única de códigos de salida. Se leen cuatro formas: la
+    /// clave `"reason"` y su espejo `"error"` de los envelopes, el campo `reason:` de
+    /// los errores tipados y la línea `error=<reason>` del fichero ready. Un `reason`
+    /// con código 1 también debe estar declarado: la tabla no se infiere por defecto.
     #[test]
     fn every_daemon_reason_is_in_exit_code_table() {
-        const GENERIC: &[&str] = &[
-            "io_error",
-            "synthesis_failed",
-            "synthesis_timeout",
-            "stt_unsupported",
-            "translation_unsupported",
-            "voice_clone_failed",
-            "daemon_error",
-        ];
         let source = include_str!("lib.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("el código de producción precede al módulo de pruebas");
         let mut found = 0;
-        for key in ["\"reason\": \"", "\"error\": \""] {
-            for (i, _) in source.match_indices(key) {
-                let rest = &source[i + key.len()..];
+        for key in ["\"reason\": \"", "\"error\": \"", "reason: \"", "error="] {
+            for (i, _) in production.match_indices(key) {
+                let rest = &production[i + key.len()..];
                 let reason: String = rest
                     .chars()
                     .take_while(|c| c.is_ascii_lowercase() || *c == '_')
                     .collect();
-                if reason.is_empty() || !rest[reason.len()..].starts_with('"') {
+                if reason.is_empty() {
+                    continue;
+                }
+                // Los literales entre comillas deben cerrar justo tras el nombre; en
+                // `error=` el nombre lo cierra cualquier carácter que no sea del reason.
+                if key.ends_with('"') && !rest[reason.len()..].starts_with('"') {
                     continue;
                 }
                 found += 1;
                 assert!(
-                    avi_core::exit_codes::ExitCode::from_reason(&reason)
-                        != avi_core::exit_codes::ExitCode::Error
-                        || GENERIC.contains(&reason.as_str()),
+                    avi_core::exit_codes::ExitCode::is_declared_reason(&reason),
                     "el reason {reason} que emite el daemon no está en la tabla"
                 );
             }

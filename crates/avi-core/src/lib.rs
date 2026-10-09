@@ -26,8 +26,6 @@ mod tests {
         assert_eq!(ExitCode::ModelMissing.code(), 4);
         assert_eq!(ExitCode::DaemonUnreachable.code(), 5);
         assert_eq!(ExitCode::StateConflict.code(), 6);
-        assert_eq!(ExitCode::NotApplicable.code(), 7);
-        assert_eq!(ExitCode::PreconditionFailed.code(), 8);
         assert_eq!(ExitCode::TranslationFailed.code(), 9);
         assert_eq!(ExitCode::TranscriptionFailed.code(), 10);
         // Variantes del ciclo de vida, con el entero que fija la tabla cerrada.
