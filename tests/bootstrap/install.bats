@@ -2,10 +2,9 @@
 #
 # Corre contra el servidor falso local (`openssl s_server -WWW`, HTTPS con CA
 # de prueba) con assets por target, SHA256SUMS.txt coherente o corrupto y raíces
-# reubicadas a temporales. Cubre los criterios 3 (checksum con staging
-# borrado), 4 (plataforma no soportada antes de descargar), 5 (binario
-# incompatible con diagnóstico) y 10 (paso de opciones y confirmación con
-# terminal). Sin casos --check y sin red real.
+# reubicadas a temporales. Cubre el checksum con staging borrado, la plataforma
+# no soportada antes de descargar, el binario incompatible con diagnóstico y el
+# paso de opciones y confirmación con terminal. Sin casos --check y sin red real.
 #
 # Ejecutar: bats tests/bootstrap/install.bats (necesita openssl y curl; con
 # `sh`, que es dash en WSL). La suite es para Linux y macOS: no corre en Git
@@ -184,7 +183,7 @@ assert_no_staging_left() {
     [ ! -s "$AVI_FAKE_LOG" ]
 }
 
-@test "checksum corrupto falla con staging borrado y nada instalado (criterio 3)" {
+@test "checksum corrupto falla con staging borrado y nada instalado" {
     mock_uname x86_64
     harness_write_sums "$SERVE_DIR" corrupt "ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz"
 
@@ -209,7 +208,7 @@ assert_no_staging_left() {
     [ ! -s "$AVI_FAKE_LOG" ]
 }
 
-@test "binario incompatible diagnostica glibc y deja lo instalado intacto (criterio 5)" {
+@test "binario incompatible diagnostica glibc y deja lo instalado intacto" {
     mock_uname x86_64
     export AVI_FAKE_MODE="noexec"
     printf 'instalación previa' > "$AVI_INSTALL_DIR/sentinel"
@@ -224,7 +223,7 @@ assert_no_staging_left() {
     assert_no_staging_left
 }
 
-@test "las opciones se pasan tal cual a self install (criterio 10)" {
+@test "las opciones se pasan tal cual a self install" {
     mock_uname x86_64
 
     run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
@@ -263,7 +262,7 @@ assert_no_staging_left() {
     [[ "$output" == *"se necesita confirmación interactiva o --yes"* ]]
 }
 
-@test "con terminal la confirmación procede sin --yes (criterio 10)" {
+@test "con terminal la confirmación procede sin --yes" {
     if [ "$(uname -s)" != "Linux" ] || ! command -v script >/dev/null 2>&1; then
         skip "requiere script(1) de util-linux"
     fi

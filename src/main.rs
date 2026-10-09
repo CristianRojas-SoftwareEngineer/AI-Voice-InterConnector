@@ -1482,16 +1482,14 @@ async fn acquire_pcm(
     })
 }
 
-/// Bucle interactivo `--play` (RF-12.3–12.5): reproduce la toma en memoria y
-/// ofrece 4 opciones a stderr — 1) mantener (reproducir de nuevo, sin
-/// re-síntesis), 2) guardar (recomprobando colisión de label al guardar,
-/// RF-12.4), 3) repetir con una síntesis nueva (misma vía, vía `resynthesize`)
-/// y reproducir, 4) descartar. EOF o error de lectura de stdin también
+/// Bucle interactivo `--play`: reproduce la toma en memoria y ofrece 4 opciones
+/// a stderr — 1) mantener (reproducir de nuevo, sin re-síntesis), 2) guardar
+/// (recomprobando colisión de label al guardar), 3) repetir con una síntesis
+/// nueva y reproducir, 4) descartar. EOF o error de lectura de stdin también
 /// descartan; una opción inválida avisa y repite el menú. Devuelve la ruta
-/// guardada si el usuario eligió la 2, o `None` si descartó (RF-12.3, exit 0 en
-/// ambos casos). Reusado por la ruta directa y la daemon (P6, client-side); el
-/// menú y los prompts van a stderr, nunca a stdout (P3). No introduce exit
-/// codes nuevos.
+/// guardada si el usuario eligió la 2, o `None` si descartó (exit 0 en ambos
+/// casos). Lo usan la ruta directa y la del daemon; el menú y los prompts van
+/// a stderr, nunca a stdout. No introduce exit codes nuevos.
 async fn synthesize_play_loop<F, Fut>(
     voice: &str,
     label: &str,
@@ -1515,7 +1513,7 @@ where
         })
     };
 
-    // RF-12.5: reproducir al entrar al bucle.
+    // Reproducir al entrar al bucle.
     play_back(&tmp_wav)?;
 
     loop {
@@ -1536,7 +1534,7 @@ where
                 play_back(&tmp_wav)?;
             }
             "2" => {
-                // RF-12.4: recomprobar colisión en el instante de guardar, no
+                // La colisión se recomprueba en el instante de guardar, no
                 // solo en el fast-fail previo a sintetizar.
                 if !force
                     && speech_store
@@ -1793,8 +1791,8 @@ async fn handle_speech(
             target_language,
             temperature,
         } => {
-            // RF-12.1 / RF-12.2: precondiciones puras de --play, antes de
-            // cualquier síntesis (P1). No introducen exit codes nuevos.
+            // Precondiciones puras de --play, antes de cualquier síntesis.
+            // No introducen exit codes nuevos.
             if play && json_mode {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
@@ -1883,8 +1881,8 @@ async fn handle_speech(
             )?;
 
             let saved = if play {
-                // RF-12.3–12.5: bucle interactivo, reemplaza la reproducción y
-                // el guardado incondicionales. Solo alcanzable en TTY (RF-12.2).
+                // Bucle interactivo, reemplaza la reproducción y el guardado
+                // incondicionales. Solo alcanzable en TTY.
                 let outcome = synthesize_play_loop(
                     &voice,
                     &label,
@@ -1909,7 +1907,7 @@ async fn handle_speech(
                 match outcome {
                     Some(saved) => saved,
                     None => {
-                        // Opción 4 / EOF: descartado, exit 0 (RF-12.3).
+                        // Opción 4 / EOF: descartado, exit 0.
                         if json_mode {
                             emit_raw_json(json!({ "status": "discarded", "voice": voice }));
                         } else {
@@ -4465,8 +4463,8 @@ async fn synthesize_via_daemon(
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
 
     let saved = if play {
-        // RF-12.3–12.5: bucle interactivo client-side (P6); la opción 3
-        // re-despacha la síntesis por la misma vía daemon.
+        // Bucle interactivo en el cliente; la opción 3 re-despacha la síntesis
+        // por la misma vía daemon.
         let outcome = synthesize_play_loop(
             voice,
             &label_lower,
@@ -4493,7 +4491,7 @@ async fn synthesize_via_daemon(
         match outcome {
             Some(saved) => saved,
             None => {
-                // Opción 4 / EOF: descartado, exit 0 (RF-12.3).
+                // Opción 4 / EOF: descartado, exit 0.
                 if json_mode {
                     emit_raw_json(json!({ "status": "discarded", "voice": voice }));
                 } else {

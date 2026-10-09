@@ -2,11 +2,11 @@
 #
 # Corre contra el servidor falso local (support/Serve.ps1, HTTP en 127.0.0.1)
 # con el asset de Windows, SHA256SUMS.txt coherente o corrupto y raices
-# reubicadas a temporales. Cubre los criterios 3 (checksum con staging
-# borrado), 4 (plataforma no soportada antes de descargar), 5 (binario
-# incompatible con diagnostico), 8 (sin efectos en la sesion salvo el PATH de
-# esa sesion; la consola sobrevive al error bajo tuberia) y 10 (paso de
-# parametros y variables). Cubre ademas el canal real `irm <url> | iex` en
+# reubicadas a temporales. Cubre el checksum con staging borrado, la
+# plataforma no soportada antes de descargar, el binario incompatible con
+# diagnostico, la ausencia de efectos en la sesion salvo el PATH de esa sesion
+# (la consola sobrevive al error bajo tuberia) y el paso de parametros y
+# variables. Cubre ademas el canal real `irm <url> | iex` en
 # PowerShell 5.1 y 7 (las pruebas de tuberia necesitan `pwsh` en el PATH para
 # no omitirse), el entorno con PSModulePath heredado de PowerShell 7 (se
 # construye a proposito, sin depender del anfitrion) y la guarda de
@@ -48,7 +48,7 @@ BeforeAll {
 
     function Assert-NoStagingLeft {
         param($TestDir)
-        $left = Get-ChildItem -Path $TestDir -Filter ".ai-voice-interconnector-staging-*" -ErrorAction SilentlyContinue
+        $left = Get-ChildItem -Path $TestDir -Filter ".ai-voice-interconnector-staging-*"
         $left | Should -BeNullOrEmpty
     }
 }
@@ -97,7 +97,7 @@ Describe "bootstrap de Windows" {
         Assert-NoStagingLeft $script:TestDir
     }
 
-    It "las variables AVI_* equivalen a los parametros (criterio 10)" {
+    It "las variables AVI_* equivalen a los parametros" {
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_VERSION = "9.9.9"
         $envBase.AVI_NO_SETUP = "1"
@@ -131,7 +131,7 @@ Describe "bootstrap de Windows" {
         Get-Content -Raw $script:Server.RequestLog | Should -Match "GET /v9\.9\.9/"
     }
 
-    It "checksum corrupto aborta sin extraer y con staging borrado (criterio 3)" {
+    It "checksum corrupto aborta sin extraer y con staging borrado" {
         Write-HarnessChecksum -Dir (Join-Path $script:TestDir "serve") -Mode "corrupt"
         $envBase = Get-TestEnvBase $script:TestDir
         $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
@@ -158,7 +158,7 @@ Describe "bootstrap de Windows" {
         Test-Path $envBase.AVI_FAKE_LOG | Should -BeFalse
     }
 
-    It "binario incompatible diagnostica y deja lo instalado intacto (criterio 5)" {
+    It "binario incompatible diagnostica y deja lo instalado intacto" {
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_FAKE_MODE = "noexec"
         $sentinel = Join-Path $envBase.AVI_INSTALL_DIR "sentinel.txt"
@@ -174,7 +174,7 @@ Describe "bootstrap de Windows" {
         Assert-NoStagingLeft $script:TestDir
     }
 
-    It "arquitectura no soportada falla antes de descargar (criterio 4)" {
+    It "arquitectura no soportada falla antes de descargar" {
         $envBase = Get-TestEnvBase $script:TestDir
         # Puerto cerrado: si intentara descargar, el error seria de red.
         $envBase.AVI_DOWNLOAD_BASE_URL = "http://127.0.0.1:1"
@@ -209,7 +209,7 @@ Describe "bootstrap de Windows" {
         $output | Should -Not -Match ("Instalando ai-voice-interconnector " + [regex]::Escape($Bad))
     }
 
-    It "no deja variables ni funciones en la sesion tras dot-source (criterio 8)" {
+    It "no deja variables ni funciones en la sesion tras dot-source" {
         $varsBefore = Get-Variable -Scope Global | Select-Object -ExpandProperty Name
         $funcsBefore = Get-ChildItem function: | Select-Object -ExpandProperty Name
         $eapBefore = $ErrorActionPreference
@@ -225,7 +225,7 @@ Describe "bootstrap de Windows" {
         $ProgressPreference | Should -Be $ppBefore
     }
 
-    It "bajo tuberia (irm | iex) con <Engine> instala sin cerrar la consola y anade el programa al PATH de la sesion (criterio 8)" -ForEach @(@{ Engine = "powershell.exe" }, @{ Engine = "pwsh" }) {
+    It "bajo tuberia (irm | iex) con <Engine> instala sin cerrar la consola y anade el programa al PATH de la sesion" -ForEach @(@{ Engine = "powershell.exe" }, @{ Engine = "pwsh" }) {
         $cmd = Get-Command $Engine -ErrorAction SilentlyContinue
         if ($null -eq $cmd) {
             Set-ItResult -Skipped -Because "$Engine no disponible"

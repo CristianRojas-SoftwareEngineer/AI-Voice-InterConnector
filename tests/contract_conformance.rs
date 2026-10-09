@@ -269,11 +269,8 @@ fn states_for(command: &str) -> &'static [&'static str] {
 
 /// Ninguna guía declara una versión del envelope de la CLI distinta de la vigente.
 ///
-/// Cierra el hueco de la comprobación anterior (`contract.contains(key)`): aquella solo
-/// verificaba que el contrato mencionara cuatro claves, y no detectaba que una guía
-/// hubiera quedado atrás tras una subida de versión. Ahora la afirmación es de
-/// sincronía, no de presencia: recorre `docs/**` y las dos guías de la raíz, y falla
-/// nombrando el fichero, la línea y el valor responsable.
+/// Recorre `docs/**` y las dos guías de la raíz, y falla nombrando el fichero,
+/// la línea y el valor responsable.
 #[test]
 fn guides_do_not_declare_retired_envelope_version() {
     let root = repo_root();
@@ -394,9 +391,12 @@ fn declared_exit_codes() -> Vec<(i32, String)> {
         let Some((name, code)) = line.split_once(" = ") else {
             continue;
         };
-        let Some(code) = code.trim_end_matches(',').parse::<i32>().ok() else {
-            continue;
-        };
+        let code = code
+            .trim_end_matches(',')
+            .parse::<i32>()
+            .unwrap_or_else(|_| {
+                panic!("{EXIT_CODES_SOURCE}: línea no parseable en el enum `ExitCode`: {line:?}")
+            });
         let name = name.trim();
         if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
             declared.push((code, name.to_string()));
@@ -548,9 +548,10 @@ fn contract_declares_every_global_flag() {
         .iter()
         .map(String::as_str)
         .filter(|flag| {
+            let backticked = format!("`{flag}`");
             !contract
                 .lines()
-                .any(|line| line.contains(flag) && line.contains("global"))
+                .any(|line| line.contains(&backticked) && line.contains("global"))
         })
         .collect();
     assert!(

@@ -48,6 +48,7 @@ try {
                 $ctx.Response.StatusCode = 404
             }
         } catch {
+            [Console]::Error.WriteLine($_.Exception.Message)
             $ctx.Response.StatusCode = 500
         } finally {
             $ctx.Response.Close()

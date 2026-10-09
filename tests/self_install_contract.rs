@@ -1,9 +1,10 @@
 //! Contrato de `self install` cuando la provisión de modelos falla: `setup_failed` como
-//! **éxito parcial**, que es el paso 11 de la instalación y el criterio 6 del plan.
+//! **éxito parcial**, que es el paso 11 de la instalación: el programa queda
+//! instalado y el envelope informa el fallo de provisión con salida 11.
 //!
 //! ### Por qué este archivo existe y no está en `cli_golden.rs`
 //!
-//! La mitad del criterio que se puede comprobar desde el motor ya la cubre
+//! La comprobación desde el motor ya la cubre
 //! `crates/avi-lifecycle/tests/acceptance.rs::criterion_6_setup_failure_keeps_install`: el
 //! programa queda instalado, el estado del desenlace es un fallo de provisión y
 //! `Outcome::lifecycle_error()` da `setup_failed` con el 11 de la tabla cerrada. Lo que **no**
@@ -72,7 +73,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 /// que barren, de modo que un prefijo colisionante exponía el sandbox de este archivo al
 /// barrido de sus propios hijos y al de cualquier otro comando de ciclo de vida en paralelo.
 /// La segunda mitad del invariante —que el temporal del hijo esté dentro del sandbox— está
-/// en `Sandbox::nuevo`, y `sweep_never_touches_a_foreign_test_sandbox`, en
+/// en `Sandbox::new`, y `sweep_never_touches_a_foreign_test_sandbox`, en
 /// `crates/avi-lifecycle/tests/recovery.rs`, la comprueba contra el barrido real.
 const PREFIX_SANDBOX: &str = "contract-sandbox_";
 /// Captura anónima para la salida del hijo: un fichero sin nombre en el directorio, que
@@ -348,7 +349,7 @@ impl Sandbox {
 /// Son dos porque este archivo es el peor de los dos casos: **ejecuta `self install`**, que
 /// es una de las operaciones que barren, así que un prefijo colisionante exponía su sandbox
 /// al barrido de sus propios hijos. El prefijo protege de eso, y la reubicación de `TEMP`,
-/// `TMP` y `TMPDIR` en `Sandbox::nuevo` protege de que el barrido del hijo salga al
+/// `TMP` y `TMPDIR` en `Sandbox::new` protege de que el barrido del hijo salga al
 /// temporal de la máquina.
 ///
 /// El criterio es `!nombre.starts_with(prefijo_del_producto)`, y no "no lleva `avi`": las
@@ -483,7 +484,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
 }
 
 /// El camino de éxito no cambia: con `--no-setup` se sale con 0, sin `reason` y sin
-/// `models_cause`. Es la mitad del criterio 6 que el paso 11 no toca, y la que demuestra
+/// `models_cause`. Es el camino que el paso 11 no toca, y el que demuestra
 /// que el `reason` nuevo no se ha colado en las operaciones limpias.
 #[test]
 fn self_install_no_setup_exits_0_without_reason() {

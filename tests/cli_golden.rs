@@ -446,7 +446,7 @@ fn fixture(name: &str) -> Value {
 /// envenenado (hermético, sin daemon): un hilo hace panic con un lock local tomado
 /// y el siguiente `lock()` retorna `Err` en vez de recuperar el guard envenenado.
 #[test]
-fn d03_poisoned_lock_propagates() {
+fn poisoned_lock_propagates_as_visible_failure() {
     let local: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let r = std::thread::scope(|s| {
         s.spawn(|| {
@@ -793,13 +793,11 @@ fn wait_for_ready_file(inst: &IsolatedInstance, timeout: Duration) -> (String, S
     );
 }
 
-// ─── Instancia aislada por test (migración del ciclo a instancia propia) ──
+// ─── Instancia aislada por test ──
 //
 // Cada test del ciclo posee su instancia: `AVI_DAEMON_PORT=0` (puerto efímero
-// descubierto por pidfile con fallback, veredicto de puerta 2026-09-21) más
-// sandbox `AVI_DATA_DIR` propio (pidfile + fichero ready propios, ruta
-// absoluta) más espera del evento. La fixture por sesión queda eliminada:
-// ningún test la usa (reversión: devolver a cada test su forma con sesión).
+// descubierto por pidfile con fallback) más sandbox `AVI_DATA_DIR` propio
+// (pidfile + fichero ready propios, ruta absoluta) más espera del evento.
 //
 // La raíz de modelos (`AVI_CACHE_DIR`, `HF_HUB_CACHE`, `HF_HOME`) NO se fija en
 // la instancia: se hereda del proceso (solo lectura en las pruebas de recursos),
@@ -812,10 +810,9 @@ fn wait_for_ready_file(inst: &IsolatedInstance, timeout: Duration) -> (String, S
 // hora de creación e imagen registradas) ese daemon y ese residente, y nunca
 // toca el daemon ni el residente del usuario ni barre procesos por imagen.
 //
-// Límite físico razonado (no deuda): lo irreducible es el semáforo de capacidad
-// (una única inferencia pesada residente), que el grupo de inferencia conserva
-// vía `TTS_LOCK`. El aislamiento es de estado+daemon; la capacidad física se
-// serializa por lock_tts.
+// Límite físico: una única inferencia pesada residente, que el grupo de
+// inferencia conserva vía `TTS_LOCK`. El aislamiento es de estado+daemon; la
+// capacidad física se serializa por lock_tts.
 
 /// Plazo para que un proceso cosechado por `Drop` muera tras su kill.
 const REAP_DEATH_DEADLINE: Duration = Duration::from_secs(8);
@@ -1330,20 +1327,12 @@ fn speech_transcribe_with_audio_matches_contract() {
 
 #[test]
 fn speech_transcribe_without_audio_nor_mic_exits_2() {
-    let (_sandbox, envs) = contract_sandbox("transcribe_no_input");
-    let output = bin_command()
-        .args(["--json", "speech", "transcribe", "--source-language", "es"])
-        .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
-        .output()
-        .expect("el binario debe ejecutarse");
-    let code = output
-        .status
-        .code()
-        .expect("el proceso debe terminar con un código");
+    let (code, actual) = run_json(&["--json", "speech", "transcribe", "--source-language", "es"]);
     assert_eq!(
         code, 2,
         "omitir --audio y --mic debe mapear a ExitCode::InvalidInput"
     );
+    assert_eq!(actual["reason"], "usage_error");
 }
 
 /// Un `--audio` inexistente sale con exit 3 y `audio_not_found`, sin llegar
@@ -1415,14 +1404,10 @@ fn transcribe_invalid_wav_exits_2() {
 // ─── push-to-talk (guardas de validación, no-TTY) ──────────────────────
 //
 // Solo se blindan las guardas de validación: la ruta interactiva real
-// (push-to-talk activo, al vencer) corre en TTY y no es ejercitable por esta suite.
-// ejercitable por esta suite (todas las invocaciones fijan stdin a
-// `Stdio::null()`, garantía de no-TTY). CA-08.5 (al vencer, TTY) queda como validación manual.
-// queda como validación manual.
+// corre en TTY y no es ejercitable por esta suite (todas las invocaciones
+// fijan stdin a `Stdio::null()`, garantía de no-TTY).
 
-/// CA-08.1: `transcribe --mic` sin `--duration` sin TTY sale con
-/// `ExitCode::InvalidInput` (2) sin iniciar ninguna captura — la guarda corta
-/// antes de tocar el micrófono.
+/// `transcribe --mic` sin `--duration` sin TTY sale con `ExitCode::InvalidInput` (2) sin iniciar ninguna captura.
 #[test]
 fn speech_transcribe_mic_without_duration_no_tty_exits_2() {
     let (code, actual) = run_json(&[
@@ -1440,9 +1425,7 @@ fn speech_transcribe_mic_without_duration_no_tty_exits_2() {
     );
 }
 
-/// CA-08.2: `--duration` sin `--mic` (ni `--audio`) sale con
-/// `ExitCode::InvalidInput` (2) — la guarda de origen obligatorio corta antes
-/// de llegar a interpretar `--duration`.
+/// `--duration` sin `--mic` (ni `--audio`) sale con `ExitCode::InvalidInput` (2).
 #[test]
 fn speech_transcribe_duration_without_mic_exits_2() {
     let (code, actual) = run_json(&[
@@ -1461,12 +1444,7 @@ fn speech_transcribe_duration_without_mic_exits_2() {
     );
 }
 
-/// CA-08.3: `--mic --duration N` sin TTY toma el selector de captura fija sin
-/// panicar, sea cual sea el desenlace real (falta de dispositivo, modelo no
-/// provisionado o feature STT ausente). El panic que cerraba era `duration.expect(...)` cuando `duration` era `None`.
-/// `duration.expect(...)` cuando `duration` era `None`; aquí es `Some`, así
-/// que nunca debía dispararse — esta prueba blinda que el `expect` no se
-/// reintrodujo en la rama fija del selector.
+/// `--mic --duration N` sin TTY toma el selector de captura fija sin panicar, sea cual sea el desenlace real.
 #[test]
 fn speech_transcribe_mic_duration_no_tty_no_panic() {
     hit_start(
@@ -1503,8 +1481,7 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
     hit_end("speech_transcribe_mic_duration_no_tty_no_panic");
 }
 
-/// CA-08.4: equivalente a CA-08.1–08.3 para `speech dub`, que comparte la
-/// misma guarda de argumentos y el mismo selector de captura.
+/// Lo mismo para `speech dub`, que comparte la guarda de argumentos y el selector de captura.
 #[test]
 fn speech_dub_mic_no_duration_no_tty_exits_2() {
     let (code, actual) = run_json(&[
@@ -1988,41 +1965,24 @@ fn dub_daemon_bare_404_exits_1_with_restart_hint_without_transcribe() {
     );
 }
 
+/// `daemon status` sin daemon informa `stopped` con el envelope de la fixture.
 #[test]
-fn daemon_status_matches_fixture() {
-    // Desdoble por régimen de sesión (con o sin sesión compartida en ejecución):
-    // con fixture de sesión en ejecución el
-    // estado efectivo es `running`; sin daemon, `stopped` intacto. Se elimina
-    // la comparación incondicional contra la fixture detenida (falso rojo
-    // bajo sesión).
-    // El `stopped` por probe incluye en el producto la búsqueda del residente
-    // por su PID registrado antes de declarar vía libre — el display sigue
-    // `stopped` (contrato), pero `start` ante residente-solo reclama con
-    // `started`, nunca declara fresco sin reclaim.
-    let (code, actual) = run_json(&["--json", "daemon", "status"]);
-    assert_eq!(code, 0);
-    if actual["daemon"] == Value::String("running".to_string()) {
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
-        let expected = fixture("cli_daemon_status_running.json");
-        assert_eq!(actual["daemon"], expected["daemon"]);
-    } else {
-        assert_eq!(actual, fixture("cli_daemon_status.json"));
-    }
+fn daemon_status_without_daemon_reports_stopped() {
+    let (_sandbox, envs) = contract_sandbox("status-sin-daemon");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "daemon", "status"], &envs);
+    assert_eq!(code, 0, "daemon status sin daemon debe salir 0: {actual}");
+    assert_eq!(actual, fixture("cli_daemon_status.json"));
 }
 
 // ─── `cleanup` ────────────────────────────────────────────────────────────
 //
-// **Ninguna de las pruebas de este bloque carga una fixture, y antes de este ciclo
-// todas se llamaban `*_matches_fixture`.** De las siete, solo
-// `cleanup_dry_run_matches_fixture` leía una fixture real; las otras seis afirmaban en
-// línea, de modo que el nombre mentía sobre lo que cubrían y la cobertura nominal de
-// `cleanup` era aparente. Los nombres se conservan para no romper la referencias
-// externas, y cada bloque dice en su comentario qué afirma de verdad.
+// Solo `cleanup_dry_run_matches_fixture` carga una fixture;
+// las demás afirman el envelope y el alcance de su categoría en línea.
 
-/// Sin categoría: `usage_error` con salida 2 y sin borrar nada (criterio 22). Es la
-/// puerta de uso de la tabla de reasons y no una aserción de fixture.
+/// Sin categoría, `cleanup` responde `usage_error` con salida 2 y sin borrar nada.
 #[test]
-fn cleanup_matches_fixture() {
+fn cleanup_without_category_exits_2_with_usage_error() {
     let (code, actual) = run_json(&["--json", "cleanup"]);
     assert_eq!(code, 2, "cleanup sin flags debe ser InvalidInput");
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
@@ -2038,10 +1998,9 @@ fn cleanup_without_flags_exits_2() {
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
 }
 
-/// `--voices` en simulación: el envelope estándar, con `status` y `reason`, y el alcance
-/// de la categoría. No carga fixture: afirma el contrato en línea.
+/// `--voices` en simulación emite el envelope estándar con `status` `planned` y el alcance de la categoría.
 #[test]
-fn cleanup_voices_matches_fixture() {
+fn cleanup_voices_dry_run_reports_planned() {
     let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
@@ -2056,9 +2015,9 @@ fn cleanup_voices_matches_fixture() {
     assert_eq!(actual["schema_version"], Value::String("5".to_string()));
 }
 
-/// `--synthetic-speech` en simulación: el mismo envelope y el alcance de la categoría.
+/// `--synthetic-speech` en simulación emite el mismo envelope y el alcance de la categoría.
 #[test]
-fn cleanup_synthetic_speech_matches_fixture() {
+fn cleanup_synthetic_speech_dry_run_reports_planned() {
     let (code, actual) = run_json(&["--json", "cleanup", "--synthetic-speech", "--dry-run"]);
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
@@ -2073,12 +2032,9 @@ fn cleanup_synthetic_speech_matches_fixture() {
     assert_eq!(actual["schema_version"], Value::String("5".to_string()));
 }
 
-/// `--model` en simulación: con la raíz **exclusiva** de la aplicación, el alcance de
-/// `--model` es el directorio entero, así que `removed` lo nombra una vez. Es el
-/// alcance nuevo de `--model` con la decisión de relocalizar `xet`, y no el layout viejo de
-/// snapshots sueltos.
+/// `--model` en simulación nombra una vez la raíz exclusiva de la aplicación en `removed`.
 #[test]
-fn cleanup_model_matches_fixture() {
+fn cleanup_model_dry_run_reports_planned() {
     let (sandbox, envs) = sandbox_unique_state("cleanup-model");
     let dir = sandbox.path();
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -2105,10 +2061,9 @@ fn cleanup_model_matches_fixture() {
     );
 }
 
-/// `--all` en simulación: la unión de las tres categorías más configuración, logs y el
-/// estado del daemon.
+/// `--all` en simulación une las tres categorías más configuración, logs y el estado del daemon.
 #[test]
-fn cleanup_all_matches_fixture() {
+fn cleanup_all_dry_run_reports_planned() {
     let (code, actual) = run_json(&["--json", "cleanup", "--all", "--dry-run"]);
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
@@ -2123,9 +2078,7 @@ fn cleanup_all_matches_fixture() {
     assert_eq!(actual["schema_version"], Value::String("5".to_string()));
 }
 
-/// La **única** prueba de `cleanup` que carga una fixture real, y sigue siendo una
-/// prueba de fixture: compara contra `tests/golden/cli_cleanup_dry_run.json`, que este
-/// ciclo regenera con el plan nuevo de `--dry-run` y con la versión `"5"` del envelope.
+/// La **única** prueba de `cleanup` que carga una fixture real: compara contra `tests/golden/cli_cleanup_dry_run.json`.
 #[test]
 fn cleanup_dry_run_matches_fixture() {
     // --voices + --dry-run es el caso canónico del simulacro; valida fixture dedicada
@@ -2146,22 +2099,13 @@ fn cleanup_dry_run_matches_fixture() {
 /// `cleanup --model` de punta a punta, en las **dos** formas que puede tomar la raíz de
 /// modelos de la tabla de rutas.
 ///
-/// La versión anterior creaba el layout viejo —`<HF_HOME>/hub/models--…`, `hub/ct2`,
-/// `hub/.locks` y `xet` como hermano— y exigía que los cuatro aparecieran en `removed`.
-/// Con la decisión de relocalizar `xet` y con R3 aplicada, ese layout ya no describe
-/// nada: en la raíz **exclusiva** el borrado es de directorio entero, y en la raíz
-/// **compartida** que el usuario elige con `HF_HUB_CACHE` solo se borran los repos
-/// fijados, sus derivados y sus locks.
-///
-/// Lo que la prueba afirma, y es lo que el plan fija como su destino:
-///
 /// - `--dry-run` y la ejecución real listan **lo mismo**, porque salen de la misma
 ///   función de cálculo.
 /// - En la raíz exclusiva, `--model` borra el directorio entero, `xet` incluido.
-/// - En la raíz compartida, borra el repo propio y el derivado CT2, y **no** borra
-///   `xet`, ni el `.locks` completo, ni el repos de otra herramienta (criterio 23).
-/// - El barrido transversal recoge un temporal propio huérfano **sin PID**, que es el
-///   segundo punto heredado que este lote absorbe.
+/// - En la raíz compartida que el usuario elige con `HF_HUB_CACHE`, borra el repo
+///   propio y el derivado CT2, y conserva `xet`, el `.locks` completo y el repo de
+///   otra herramienta.
+/// - El barrido transversal recoge un temporal propio huérfano **sin PID**.
 #[test]
 fn cleanup_model_real_run_reports_paths() {
     let sandbox_guard = tempfile::Builder::new()
@@ -2222,12 +2166,10 @@ fn cleanup_model_real_run_reports_paths() {
     };
     let dry_removed = as_set(&dry);
     let real_removed = as_set(&real);
-    for path in &dry_removed {
-        assert!(
-            real_removed.contains(path),
-            "real y dry-run deben listar lo mismo: {path} está en el dry-run y no en el real"
-        );
-    }
+    assert_eq!(
+        dry_removed, real_removed,
+        "real y dry-run listan el mismo conjunto: salen de la misma función de cálculo"
+    );
     assert!(
         real_removed.contains(&exclusive.display().to_string()),
         "en la raíz exclusiva `--model` borra el directorio entero: {real_removed:?}"
@@ -2242,7 +2184,7 @@ fn cleanup_model_real_run_reports_paths() {
         "el barrido transversal recoge el temporal propio huérfano sin PID"
     );
 
-    // ── Caso compartido: `HF_HUB_CACHE` elige la raíz, y R3 manda ────────────────
+    // ── Caso compartido: `HF_HUB_CACHE` elige la raíz y solo se borran los repos propios ──
     let shared = sandbox.join("hub-shared");
     seed_models(&shared);
     std::fs::create_dir_all(shared.join("models--Qwen--Qwen3-TTS-0.6B")).unwrap();
@@ -2281,30 +2223,30 @@ fn cleanup_model_real_run_reports_paths() {
         ),
         "el repo propio sí se borra: {removed:?}"
     );
-    // R3: nada de esto se toca.
+    // Nada de esto se toca.
     assert!(
         !removed.contains(&shared.join("xet").display().to_string()),
-        "R3: `xet` no se puede listar como borrado: {removed:?}"
+        "`xet` no se lista como borrado: {removed:?}"
     );
     assert!(
         !removed.contains(&shared.join(".locks").display().to_string()),
-        "R3: el `.locks` completo no se puede listar como borrado: {removed:?}"
+        "el `.locks` completo no se lista como borrado: {removed:?}"
     );
     assert!(
         !removed.contains(&foreign.display().to_string()),
-        "R3: el repo de otra herramienta no se puede listar como borrado: {removed:?}"
+        "el repo de otra herramienta no se lista como borrado: {removed:?}"
     );
     assert!(
         shared.join("xet").exists(),
-        "R3: `xet` sobrevive a `--model` en una raíz compartida"
+        "`xet` sobrevive a `--model` en una raíz compartida"
     );
     assert!(
         shared.join(".locks").exists(),
-        "R3: el `.locks` completo sobrevive"
+        "el `.locks` completo sobrevive"
     );
     assert!(
         foreign.exists(),
-        "criterio 23: los modelos de otra herramienta sobreviven"
+        "los modelos de otra herramienta sobreviven"
     );
     assert!(shared.exists(), "y la raíz compartida no se borra entera");
     assert!(
@@ -2342,9 +2284,8 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
     let (_sandbox, envs) = sandbox_unique_state("doctor");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, value) = run_json_env(&["--json", "doctor"], &envs);
-    // Un objeto: `run_json_env` ya no habría podido parsear dos objetos JSON seguidos,
+    // Un objeto: `run_json_env` no habría podido parsear dos objetos JSON seguidos,
     // así que llegar aquí con un solo objeto parseado es parte de la prueba.
-    // objetos JSON seguidos, así que llegar aquí con un solo objeto parseado ya es parte de la prueba.
     assert!(
         value.get("error").is_none(),
         "el veredicto de `doctor` no lleva objeto `error`: {}",
@@ -2359,15 +2300,12 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
             value
         );
     }
-    // Las claves que el contrato retira. El envelope afirma su conjunto exacto en la
-    // prueba de doctor del motor; aquí se afirma, de este lado del cable, que la raíz
-    // de datos dejó de ser clave de primer nivel.
+    // La raíz de datos vive dentro de `install`, no como clave de primer nivel.
     assert!(
         value.get("data_dir").is_none(),
         "la raíz de datos no puede ser clave de primer nivel: {}",
         value
     );
-    // La información que las claves retiradas tenían no se pierde: cambia de sitio.
     assert!(
         value["install"]["data_dir"].is_string(),
         "la raíz de datos vive dentro de `install`"
@@ -2378,7 +2316,7 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
     );
     assert!(
         value["models"].get("base").is_none(),
-        "`models.base` se retiró: el modelo de clonado es una entrada más de `provisioned`/`missing`"
+        "el modelo de clonado es una entrada más de `provisioned`/`missing`, sin clave `base`"
     );
     assert_eq!(
         value["schema_version"],
@@ -3656,7 +3594,7 @@ mod tts {
         );
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("reproduced".to_string()));
-        // el envelope ya no lleva `audio_path` y el temporal se borra al
+        // el envelope no lleva `audio_path` y el temporal se borra al
         // reproducir, así que la verificación sobre archivo (WAV válido + WER)
         // es imposible; el testigo queda en humo de punta a punta.
         assert!(
@@ -4516,8 +4454,7 @@ mod tts {
         let a = inst.args();
         let (code, actual) = run_json_env(&["--json", "daemon", "status"], &a);
         assert_eq!(code, 0);
-        // Endurecida: antes condicional (pasaba sin verificar si no estaba
-        // running); ahora el `running` se exige porque la instancia lo garantiza.
+        // El `running` se exige porque la instancia lo garantiza.
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
         // Presencia a nivel de sistema además del probe: el PID de la pista
         // está vivo (revalidación matar-y-rearrancar).
@@ -4535,6 +4472,25 @@ mod tts {
         // Apagado propio (sin huérfanos al cerrar).
         stop_instance(&inst, "daemon_status_running");
         hit_end("tts::daemon_status_running");
+    }
+
+    /// `daemon status` con el daemon de la instancia en ejecución informa `running`.
+    #[test]
+    #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
+    fn daemon_status_with_isolated_daemon_reports_running() {
+        require_tts_model();
+        require_tts_binary();
+        let _tts = lock_tts();
+        hit_start_heavy("tts::daemon_status_with_isolated_daemon_reports_running");
+        let inst = IsolatedInstance::new("status_isolated_running");
+        start_instance_running_only(&inst, &[]);
+        let a = inst.args();
+        let (code, actual) = run_json_env(&["--json", "daemon", "status"], &a);
+        assert_eq!(code, 0, "daemon status con daemon debe salir 0: {actual}");
+        assert_eq!(actual["daemon"], Value::String("running".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        stop_instance(&inst, "daemon_status_with_isolated_daemon_reports_running");
+        hit_end("tts::daemon_status_with_isolated_daemon_reports_running");
     }
 
     #[test]
@@ -4614,7 +4570,7 @@ mod tts {
         }
     }
 
-    /// `--with-stt` se retiró; clap lo rechaza como argumento desconocido.
+    /// `--with-stt` no existe: clap lo rechaza como argumento desconocido.
     #[test]
     fn setup_with_stt_is_rejected_as_unknown_argument() {
         let (code, _stdout, stderr) = run_text_with_stderr(&["setup", "--with-stt"]);
@@ -4625,7 +4581,7 @@ mod tts {
         );
     }
 
-    /// `--with-voice-cloning` se retiró: el modelo Base forma parte siempre de la
+    /// `--with-voice-cloning` no existe: el modelo Base forma parte siempre de la
     /// instalación y clap lo rechaza como argumento desconocido.
     #[test]
     fn setup_with_voice_cloning_is_rejected_as_unknown_argument() {
@@ -4869,7 +4825,7 @@ mod tts {
 
     /// `daemon stop` con un daemon ya muerto deja el directorio de datos sin
     /// rastro de él: se borran `daemon.pid` y también `daemon.ready`, cuyo PID
-    /// (fuera de rango) ya no corresponde a ningún proceso vivo. Ambos ficheros
+    /// (fuera de rango) no corresponde a ningún proceso vivo. Ambos ficheros
     /// se siembran con la dirección de un puerto cerrado, de modo que la orden no
     /// contacta con 127.0.0.1:8765.
     #[test]
@@ -5065,8 +5021,8 @@ mod tts {
     }
 
     /// `daemon start` ante un pidfile cuyo PID de daemon fue reasignado no mata al
-    /// proceso ajeno al reclamar el residuo. Se usa el puerto ocupado para que el
-    /// arranque falle al instante sin modelo, después del reclamo.
+    /// proceso ajeno al reclamar el residuo. El puerto ocupado hace fallar el
+    /// arranque con `port_in_use` (exit 6) tras el reclamo.
     #[test]
     fn daemon_start_spares_foreign_process_on_reused_pid() {
         let mut inst = IsolatedInstance::new("start_foreign_pid");
@@ -5075,7 +5031,9 @@ mod tts {
         seed_pidfile_with_fake_identities(&inst.dir, foreign.pid(), u32::MAX - 1);
         let _holder = occupy_instance_port(&mut inst);
 
-        let _ = run_json_env(&["--json", "daemon", "start"], &inst.contract_args());
+        let (code, actual) = run_json_env(&["--json", "daemon", "start"], &inst.contract_args());
+        assert_eq!(code, 6, "el puerto ocupado debe salir con exit 6: {actual}");
+        assert_eq!(actual["reason"], "port_in_use", "{actual}");
         assert!(
             foreign.alive(),
             "el reclamo no debe matar a un proceso ajeno que reutiliza el PID"
@@ -5448,13 +5406,9 @@ mod tts {
         // usuarios del daemon (serie de inferencia).
         let _tts = lock_tts();
         hit_start_heavy("tts::translate_force_daemon_sin_daemon_exit5");
-        // Partición orden-sensible eliminada por aislamiento por instancia: antes este
-        // test apagaba la SESIÓN global (orden-sensible con la serie: si otro
-        // test necesitaba la sesión, el orden importaba y el próximo `ensure`
-        // la reparaba bajo demanda). Ahora observa un sandbox sin arrancar
-        // nada: el pidfile señuelo dirige al cliente a un puerto cerrado y el
-        // exit 5 es observable sin tocar estado compartido — el orden de
-        // ejecución ya no importa por construcción.
+        // Observa un sandbox sin arrancar nada: el pidfile señuelo dirige al
+        // cliente a un puerto cerrado y el exit 5 es observable sin tocar
+        // estado compartido.
         let inst = IsolatedInstance::new("force_sin_daemon");
         // El pidfile señuelo apunta a un puerto cerrado: el cliente no cae al
         // 8765 del usuario, que puede tener un daemon real.
@@ -5510,9 +5464,8 @@ mod tts {
         start_instance(&inst, &[]);
         let a = inst.args();
         let name = unique_label("clone_daemon");
-        // El exit 0 ya no es «éxito inmediato» sino «secuencia completa
-        // hasta el evento final» (`started` → latidos → `result` con
-        // `precomputed: true` = precarga iniciada). El orden de eventos se
+        // El exit 0 es «secuencia completa hasta el evento final» (`started` →
+        // latidos → `result` con `precomputed: true` = precarga iniciada). El orden de eventos se
         // afirma en `crates/avi-daemon/tests/golden.rs`
         // (`voices_clone_daemon_precomputed_true`); aquí se verifica el
         // contrato final a través del stream, sin cota de 1500 ms.
@@ -5681,9 +5634,7 @@ mod tts {
         hit_end("tts::dub_daemon_with_translation");
     }
 
-    /// Test de rendimiento dedicado: verifica que `daemon status` sobre un daemon en ejecución responde holgadamente dentro del presupuesto de 1500 ms.
-    /// sobre un daemon ya en ejecución responda holgadamente dentro del presupuesto
-    /// de 1500 ms (típico < 100 ms).
+    /// `daemon status` sobre un daemon en ejecución responde dentro del presupuesto de 1500 ms (típico < 100 ms).
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn perf_daemon_status_while_running() {
@@ -5731,7 +5682,7 @@ fn run_text(args: &[&str]) -> (i32, String) {
 }
 
 /// Ayuda de `synthesize`/`say`/`dub`: expone los flags de idioma y
-/// temperatura y ya no ofrece los parámetros sin efecto.
+/// temperatura, sin parámetros sin efecto.
 #[test]
 fn speech_help_exposes_languages_and_temperature() {
     for sub in ["synthesize", "say", "dub"] {
@@ -5913,6 +5864,11 @@ fn speech_dub_without_source_exits_2() {
         2,
         "dub sin --source-language debe salir 2"
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--source-language"),
+        "stderr debe nombrar el argumento faltante: {stderr}"
+    );
 }
 
 /// `dub` solo admite `--audio`: `--file` no existe y el parser lo rechaza → exit 2.
@@ -5936,17 +5892,13 @@ fn speech_dub_rejects_file_flag_exits_2() {
     );
 }
 
-// ─── precondiciones de `synthesize --play` (RF-12.1/RF-12.2) ────────
+// ─── precondiciones de `synthesize --play` ────────
 //
 // Solo se blindan las precondiciones puras: el bucle interactivo de 4
 // opciones corre en TTY y no es ejercitable por esta suite (todas las
-// invocaciones fijan stdin a `Stdio::null()`, garantía de no-TTY). CA-12.3
-// (opción 1, mantener sin re-síntesis), CA-12.4 (opción 2, recomprobación de
-// colisión al guardar) y CA-12.5 (opción 3, re-síntesis; opción 4/EOF,
-// descarte) quedan como validación manual TTY.
+// invocaciones fijan stdin a `Stdio::null()`, garantía de no-TTY).
 
-/// CA-12.1: `synthesize --play --json` es incompatible (RF-12.1) → sale con
-/// `ExitCode::InvalidInput` (2), validado antes de cualquier síntesis.
+/// `synthesize --play --json` es incompatible y sale con `ExitCode::InvalidInput` (2).
 #[test]
 fn speech_synthesize_play_with_json_exits_2() {
     let (code, actual) = run_json(&[
@@ -5966,12 +5918,7 @@ fn speech_synthesize_play_with_json_exits_2() {
     );
 }
 
-/// CA-12.2: `synthesize --play` sin TTY sale con `ExitCode::InvalidInput` (2)
-/// antes de sintetizar (RF-12.2). Se invoca sin `--json` (no vía `run_json`)
-/// porque añadir `--json` dispararía en su lugar la precondición RF-12.1
-/// (CA-12.1), enmascarando la guarda de TTY que este test aísla; en este
-/// arnés todas las invocaciones son no-TTY (`Stdio::null()`), así que la
-/// guarda RF-12.2 se ejercita con solo `--play`.
+/// `synthesize --play` sin TTY sale con `ExitCode::InvalidInput` (2) antes de sintetizar.
 #[test]
 fn speech_synthesize_play_without_tty_exits_2() {
     let (_sandbox, envs) = contract_sandbox("synthesize_play_no_tty");
@@ -5996,6 +5943,11 @@ fn speech_synthesize_play_without_tty_exits_2() {
             .expect("el proceso debe terminar con un código"),
         2,
         "--play sin TTY debe mapear a ExitCode::InvalidInput"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--play requiere una terminal interactiva"),
+        "stderr debe describir la precondición de TTY: {stderr}"
     );
 }
 
@@ -6307,7 +6259,7 @@ fn perf_invalid_input_rejection_fail_fast() {
     );
 }
 
-// ─── Regresión SIGPIPE (v0.20.10): stdout cerrado no debe causar panic ──
+// ─── Regresión SIGPIPE: stdout cerrado no debe causar panic ──
 //
 // Rust ignora `SIGPIPE` por defecto (`SIG_IGN`): sin la restauración a
 // `SIG_DFL` hecha en `main()` (Unix, modos CLI en primer plano), una
@@ -6366,7 +6318,9 @@ fn test_voice_list_no_panic_on_sigpipe_closed_stdout_before_spawn() {
     let mut stderr_buf = Vec::new();
     if let Some(mut stderr) = child.stderr.take() {
         use std::io::Read;
-        let _ = stderr.read_to_end(&mut stderr_buf);
+        stderr
+            .read_to_end(&mut stderr_buf)
+            .expect("leer el stderr del hijo");
     }
     let status = child.wait().expect("esperar al hijo falló");
     let stderr_txt = String::from_utf8_lossy(&stderr_buf);
@@ -6513,7 +6467,9 @@ fn seed_unstoppable_daemon(dir: &std::path::Path) {
         .to_string();
     std::thread::spawn(move || {
         let limit = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        listener.set_nonblocking(true).ok();
+        listener
+            .set_nonblocking(true)
+            .expect("el socket falso no debe bloquear");
         while std::time::Instant::now() < limit {
             if let Ok((mut sock, _)) = listener.accept() {
                 let mut buf = [0u8; 1024];
@@ -6718,13 +6674,11 @@ fn require_output_device() {
 /// Rutas con el prefijo dado dentro del temporal del hijo del sandbox.
 fn residue_with_prefix(dir: &std::path::Path, prefix: &str) -> Vec<String> {
     std::fs::read_dir(dir.join("child-tmp"))
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.starts_with(prefix))
-                .collect()
-        })
-        .unwrap_or_default()
+        .expect("listar el temporal del hijo")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(prefix))
+        .collect()
 }
 
 /// `speech dub` por daemon con respuesta válida **sale bien**, no
@@ -6793,8 +6747,7 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
 }
 
 /// El guardián del temporal de `dub` borra su WAV también cuando **la
-/// reproducción falla**, que es el caso en que antes el WAV quedaba como
-/// residuo sobreviviente en el temporal.
+/// reproducción falla**.
 ///
 /// El fallo se fuerza con un `audio_b64` que no es un WAV, de modo que la puerta
 /// dice algo en cualquier máquina y no solo donde la reproducción falla por falta
