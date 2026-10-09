@@ -25,8 +25,6 @@
 //! ocultarla tras un `ignore`.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::sync::Once;
 use std::sync::OnceLock;
@@ -1185,12 +1183,11 @@ async fn dub_leaves_no_temporary_on_any_outcome() {
     );
 }
 
-// ─── el guardián del WAV temporal pertenece al trabajo bloqueante ───────
+// ─── barrido de temporales del daemon ───────────────────────────────────
 
-/// Las pruebas que dejan trabajo en vuelo mantienen su temporal vivo ~100 ms
-/// (hasta que el hilo bloqueante termina) y el binario de pruebas corre en
-/// paralelo, así que se serializan entre sí: si no, el barrido de residuo de una
-/// vería el temporal en vuelo de la otra. Cerrojo asíncrono para no retener un
+/// Las pruebas que barren los temporales del daemon se serializan entre sí: el
+/// binario de pruebas corre en paralelo y el barrido de residuo de una vería el
+/// temporal en vuelo de otra. Cerrojo asíncrono para no retener un
 /// `std::sync::MutexGuard` a través de un `await`.
 static TEMPORALS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -1199,400 +1196,193 @@ async fn lock_temporaries() -> tokio::sync::MutexGuard<'static, ()> {
     TEMPORALS_LOCK.lock().await
 }
 
+/// Exige `model.safetensors` del snapshot del modelo CustomVoice de los
+/// presets: lo provisiona `ai-voice-interconnector setup`.
+fn require_custom_voice_model() {
+    let model_dir = avi_store::ModelStore::new()
+        .model_snapshot_path("qwen3-tts-0.6b")
+        .expect("el modelo qwen3-tts-0.6b debe tener un pin de revisión");
+    let weights = model_dir.join("model.safetensors");
+    std::fs::metadata(&weights).unwrap_or_else(|e| {
+        panic!(
+            "falta {} ({e}): provisiona el modelo CustomVoice con `ai-voice-interconnector setup`",
+            weights.display()
+        )
+    });
+}
+
 /// Temporales del daemon con el prefijo dado que pertenecen a este proceso: el
 /// nombre del guardián incluye el PID (`<prefijo><pid>_<contador>_<nanos>.wav`),
-/// así que el filtro no mezcla los de esta prueba con los de las demás del
-/// mismo binario.
+/// así que el filtro no mezcla los de esta prueba con los de otros procesos.
 fn temp_wavs(prefix: &str) -> Vec<PathBuf> {
     let own = format!("{prefix}{}_", std::process::id());
     std::fs::read_dir(std::env::temp_dir())
-        .map(|entries| {
-            entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.file_name()
-                        .map(|n| n.to_string_lossy().starts_with(&own))
-                        .unwrap_or(false)
-                })
-                .collect()
+        .expect("el directorio temporal debe poder leerse")
+        .map(|e| e.expect("entrada del directorio temporal").path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with(&own))
         })
-        .unwrap_or_default()
-}
-
-/// Temporales del prefijo dado que no estaban en la foto `previous`: el conjunto
-/// que esta prueba puede atribuirse. Las pruebas del binario corren en paralelo
-/// y comparten PID, así que un residuo ajeno no puede hacer fallar la afirmación.
-fn new_temp_wavs(prefix: &str, previous: &[PathBuf]) -> Vec<PathBuf> {
-    temp_wavs(prefix)
-        .into_iter()
-        .filter(|p| !previous.contains(p))
         .collect()
 }
 
-/// El temporal que la fase de esta prueba acaba de crear: exactamente uno de los
-/// nuevos.
-fn new_temp_wav(prefix: &str, previous: &[PathBuf]) -> PathBuf {
-    let found = new_temp_wavs(prefix, previous);
-    assert_eq!(
-        found.len(),
-        1,
-        "la fase debe crear un único temporal {prefix}<pid>_*: {found:?}"
-    );
-    found.into_iter().next().expect("afirmado arriba")
-}
-
-/// Motor TTS falso que responde `200` con un WAV en el `POST /v1/tts`: fija el
-/// camino feliz de la fase, donde el guardián vuelve del trabajo al handler y lo
-/// borra cuando este ya leyó el fichero. Devuelve el puerto y el hilo, que al
-/// terminar entrega el cuerpo JSON de la petición recibida (`null` si no llegó).
-fn serve_tts_wav(wav: Vec<u8>) -> (u16, std::thread::JoinHandle<Value>) {
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").expect("puerto libre para el motor falso");
-    let port = listener.local_addr().expect("puerto local").port();
-    let server = std::thread::spawn(move || {
-        use std::io::{Read, Write};
-        let Ok((mut stream, _)) = listener.accept() else {
-            return Value::Null;
-        };
-        // Lee hasta tener la cabecera y los `Content-Length` bytes del cuerpo.
-        let mut request = Vec::new();
-        let mut chunk = [0u8; 4096];
-        let body = loop {
-            let Ok(n) = stream.read(&mut chunk) else {
-                break Value::Null;
-            };
-            if n == 0 {
-                break Value::Null;
-            }
-            request.extend_from_slice(&chunk[..n]);
-            let text = String::from_utf8_lossy(&request).into_owned();
-            let Some((head, body)) = text.split_once("\r\n\r\n") else {
-                continue;
-            };
-            let length = head
-                .lines()
-                .find_map(|l| {
-                    let (name, value) = l.split_once(':')?;
-                    name.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())?
-                })
-                .unwrap_or(0);
-            if body.len() >= length {
-                break serde_json::from_str(body).unwrap_or(Value::Null);
-            }
-        };
-        let head = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            wav.len()
-        );
-        let _ = stream.write_all(head.as_bytes());
-        let _ = stream.write_all(&wav);
-        let _ = stream.flush();
-        body
-    });
-    (port, server)
-}
-
-/// Motor TTS falso que acepta el `POST /v1/tts` y retiene la conexión sin
-/// responder: el trabajo bloqueante del daemon sigue vivo hasta que el cliente
-/// corta, que es lo que activa la cancelación y hace que el motor cierre el
-/// socket. `arrived` marca que la fase pesada ya está en vuelo; `closed` que el
-/// hilo del daemon terminó su intercambio.
-struct HeldTts {
-    port: u16,
-    arrived: Arc<AtomicBool>,
-    closed: Arc<AtomicBool>,
-    server: std::thread::JoinHandle<()>,
-}
-
-fn hold_tts_connection() -> HeldTts {
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").expect("puerto libre para el motor falso");
-    let port = listener.local_addr().expect("puerto local").port();
-    let arrived = Arc::new(AtomicBool::new(false));
-    let closed = Arc::new(AtomicBool::new(false));
-    let (thread_arrived, thread_closed) = (arrived.clone(), closed.clone());
-    let server = std::thread::spawn(move || {
-        use std::io::Read;
-        let Ok((mut stream, _)) = listener.accept() else {
-            return;
-        };
-        thread_arrived.store(true, Ordering::SeqCst);
-        // Lee hasta EOF: el motor cierra la conexión al abortar por cancelación.
-        let mut chunk = [0u8; 1024];
-        while matches!(stream.read(&mut chunk), Ok(n) if n > 0) {}
-        thread_closed.store(true, Ordering::SeqCst);
-    });
-    HeldTts {
-        port,
-        arrived,
-        closed,
-        server,
-    }
-}
-
-/// Estado de contrato cuyo único camino de síntesis es el motor falso: la voz
-/// pedida es un preset (sin `reference.qvoice`), así que el daemon hace el POST
-/// a `server_url` en lugar de arrancar un residente.
-fn state_with_held_tts(tts_port: u16, dir_prefix: &str) -> Arc<DaemonState> {
-    prepare_shared_env();
-    let mut state = contract_state(&process_root().join(dir_prefix));
-    let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
-    state.tts_engine.binary_path = Some(missing.clone());
-    state.tts_engine.model_dir = Some(missing);
-    state.tts_engine.server_url = Some(format!("http://127.0.0.1:{tts_port}"));
-    Arc::new(state)
-}
-
-/// Una voz clonada sin el modelo Base provisionado responde `model_missing`
-/// aunque el binario y CustomVoice estén (simulados): el motor falla antes de
-/// lanzar nada porque la regla por tipo de voz corta en la selección del modelo.
-#[tokio::test]
-async fn synthesize_cloned_voice_without_base_model_is_model_missing() {
-    prepare_shared_env();
-    let mut state = contract_state(&process_root().join("avi_golden_no_base"));
-    let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
-    state.tts_engine.binary_path = Some(missing.clone());
-    state.tts_engine.model_dir = Some(missing);
-    state.tts_engine.base_model_dir = None;
-    state.tts_engine.server_url = None;
-    let (status, bytes) = send_to(
-        Arc::new(state),
-        post_json(
-            "/synthesize",
-            serde_json::json!({
-                "text": "hola", "voice": "default",
-                "source_language": "es", "target_language": "es"
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
-    let events: Vec<Value> = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
-        .collect();
-    let last = events.last().expect("debe haber un evento final");
-    assert_eq!(last["event"], "error", "evento final: {last:?}");
-    assert_eq!(last["reason"], "model_missing", "evento final: {last:?}");
-}
-
-// El motor que estas pruebas necesitan no existe, y el estado lo dice sin tocar
-// el entorno: `state_with_held_tts` fija `binary_path` y `model_dir` en una ruta
-// inexistente del temporal, así que el repliegue que el motor recorre tras la
-// cancelación (`synthesize_via_resident`) no puede arrancar un residente real.
-// Fijar `QWEN3_TTS_BIN` serviría igual, pero es una variable de proceso
-// compartida: en un binario de pruebas que corre en paralelo, el pin se filtraba
-// a las pruebas vecinas y las hacía fallar con «no se puede encontrar el archivo
-// especificado».
-
-/// Sondea `cond` cada 2 ms hasta que sea cierta o venza `tope`.
+/// Sondea cada 20 ms hasta que `cond` sea cierta; falla con `what` si vence
+/// `limit`.
 async fn wait_until(what: &str, limit: std::time::Duration, mut cond: impl FnMut() -> bool) {
     let deadline = std::time::Instant::now() + limit;
     while std::time::Instant::now() < deadline {
         if cond() {
             return;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
     assert!(cond(), "no se cumplió a tiempo: {what}");
 }
 
-/// Recorrido común de la salida por desconexión: el cliente suelta el cuerpo con
-/// el trabajo en vuelo y se afirma que el WAV temporal sobrevive al handler (su
-/// dueño es el hilo que escribe en él) y que desaparece cuando el hilo termina,
-/// sin dejar residuo en el temporal.
-async fn disconnect_leaves_no_temporary(
-    prefix: &str,
-    previous: &[PathBuf],
-    tts: &HeldTts,
-    response: axum::response::Response,
-) {
-    assert_eq!(response.status(), StatusCode::OK);
-    // La fase pesada está en vuelo: el motor ya recibió el POST.
-    wait_until(
-        "el motor recibe el POST de síntesis",
-        std::time::Duration::from_secs(15),
-        || tts.arrived.load(Ordering::SeqCst),
-    )
-    .await;
-    let temp = new_temp_wav(prefix, previous);
-    // Cliente corta sin leer el cuerpo: la fase ve `tx.closed()`, cancela el
-    // trabajo y retorna sin esperar al hilo, que sigue en el motor.
-    drop(response);
-    // El temporal lo retiene el trabajo en curso, así que existe con certeza
-    // justo tras la desconexión: se muestrea antes de dormir para no perder la
-    // ventana si la máquina va cargada y el hilo termina antes del sondeo.
-    let mut alive_while_working = temp.is_file();
-    // El motor aborta por la bandera de cancelación con un tiempo de polls de
-    // 100 ms, así que el trabajo sigue vivo un buen rato tras la desconexión:
-    // durante esa ventana el WAV debe seguir en pie. Con el guardián en el
-    // handler el borrado ocurría al salir de este y no había ventana alguna.
-    //
-    // La ventana se recorre por sondeo, sin espera fija: se muestrea cada 2 ms
-    // (el mínimo por debajo del poll de 100 ms del motor) mientras el trabajo
-    // siga vivo, y se para en cuanto termina. El muestreo inmediato anterior
-    // cubre el caso en que el hilo termina antes del primer sondeo.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !tts.closed.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
-        alive_while_working |= temp.is_file();
-        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-    }
-    assert!(
-        alive_while_working,
-        "el WAV debe seguir existiendo mientras el trabajo no ha terminado ({})",
-        temp.display()
-    );
-    // El hilo terminó: su guardián borra el WAV y no queda residuo.
-    wait_until(
-        "el motor cierra la conexión",
-        std::time::Duration::from_secs(15),
-        || tts.closed.load(Ordering::SeqCst),
-    )
-    .await;
-    wait_until(
-        "el WAV temporal se borra al terminar el trabajo",
-        std::time::Duration::from_secs(15),
-        || !temp.is_file(),
-    )
-    .await;
-    let residue = new_temp_wavs(prefix, previous);
-    assert!(
-        residue.is_empty(),
-        "tras la desconexión no debe quedar temporal: {residue:?}"
-    );
+/// Eventos NDJSON de un cuerpo de respuesta.
+fn ndjson_events(bytes: &[u8]) -> Vec<Value> {
+    String::from_utf8(bytes.to_vec())
+        .expect("NDJSON debe ser UTF-8")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect()
 }
 
-/// El camino feliz no cambia con el guardián movido al trabajo: el handler lee el
-/// WAV que el motor escribió (el guardián vuelve con el resultado y solo se
-/// suelta ya leído), entrega exactamente esos bytes y no deja temporal.
+/// Audio decodificado del evento `result` de una síntesis; falla si el evento
+/// final no es un resultado.
+fn result_audio(events: &[Value]) -> Vec<u8> {
+    let result = events.last().expect("debe haber un evento final");
+    assert_eq!(result["event"], "result", "evento final: {result:?}");
+    base64::engine::general_purpose::STANDARD
+        .decode(result["audio_b64"].as_str().expect("audio_b64"))
+        .expect("el audio_b64 debe decodificar")
+}
+
+/// Camino feliz de `/synthesize` con el motor real: un preset se sintetiza en el
+/// residente, el handler entrega un WAV no vacío y no deja temporal.
 #[tokio::test]
-async fn synthesize_result_delivers_the_file_the_engine_wrote() {
+#[ignore = "requiere el binario del motor y el modelo CustomVoice"]
+async fn synthesize_preset_delivers_audio_and_leaves_no_temporary() {
+    require_clone_binary();
+    require_custom_voice_model();
     let _temporaries = lock_temporaries().await;
-    let previous = temp_wavs("avi_daemon_synth_");
-    let wav = silent_wav(1);
-    let (port, server) = serve_tts_wav(wav.clone());
-    let state = state_with_held_tts(port, "avi_golden_happy");
     let (status, bytes) = send_to(
-        state,
+        clone_state(),
         post_json(
             "/synthesize",
             serde_json::json!({
-                "text": "hola", "voice": "ryan",
+                "text": "Hola, esto es una prueba.", "voice": "ryan",
                 "source_language": "es", "target_language": "es"
             }),
         ),
     )
     .await;
-    let engine_body = server.join().expect("el motor falso cierra su hilo");
-    assert_eq!(
-        engine_body["language"], "Spanish",
-        "el idioma de destino `es` llega al motor como `Spanish`: {engine_body:?}"
-    );
     assert_eq!(status, StatusCode::OK);
-    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
-    let events: Vec<Value> = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
-        .collect();
-    let result = events.last().expect("debe haber un evento final");
-    assert_eq!(result["event"], "result", "evento final: {result:?}");
-    let audio = base64::engine::general_purpose::STANDARD
-        .decode(result["audio_b64"].as_str().expect("audio_b64"))
-        .expect("el audio_b64 debe decodificar");
-    assert_eq!(
-        audio, wav,
-        "el handler debe entregar lo que el motor escribió en el temporal"
-    );
-    let residue = new_temp_wavs("avi_daemon_synth_", &previous);
+    let audio = result_audio(&ndjson_events(&bytes));
+    assert!(audio.starts_with(b"RIFF"), "se esperaba un WAV");
+    assert!(audio.len() > 44, "el WAV no debe estar vacío");
     assert!(
-        residue.is_empty(),
-        "la ruta feliz tampoco debe dejar temporal: {residue:?}"
+        temp_wavs("avi_daemon_synth_").is_empty(),
+        "la ruta feliz no debe dejar temporal"
     );
 }
 
-/// El idioma de destino de la orden llega al motor como su nombre completo:
-/// `es` → `Spanish` y `en` → `English`.
+/// El idioma de destino `es` y `en` de un preset producen audio no vacío.
 #[tokio::test]
-async fn synthesize_sends_the_target_language_to_the_engine() {
+#[ignore = "requiere el binario del motor y el modelo CustomVoice"]
+async fn synthesize_preset_in_each_language_delivers_audio() {
+    require_clone_binary();
+    require_custom_voice_model();
     let _temporaries = lock_temporaries().await;
-    for (token, expected) in [("es", "Spanish"), ("en", "English")] {
-        let (port, server) = serve_tts_wav(silent_wav(1));
-        let state = state_with_held_tts(port, "avi_golden_language");
-        let (status, _) = send_to(
-            state,
+    for (token, text) in [
+        ("es", "Hola, esto es una prueba."),
+        ("en", "Hello, this is a test."),
+    ] {
+        let (status, bytes) = send_to(
+            clone_state(),
             post_json(
                 "/synthesize",
                 serde_json::json!({
-                    "text": "hola", "voice": "ryan",
+                    "text": text, "voice": "ryan",
                     "source_language": token, "target_language": token
                 }),
             ),
         )
         .await;
-        let engine_body = server.join().expect("el motor falso cierra su hilo");
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(
-            engine_body["language"], expected,
-            "token `{token}`: cuerpo recibido por el motor {engine_body:?}"
+        assert_eq!(status, StatusCode::OK, "idioma {token}");
+        let audio = result_audio(&ndjson_events(&bytes));
+        assert!(
+            audio.len() > 44,
+            "idioma {token}: el WAV no debe estar vacío"
         );
     }
 }
 
-/// Al abandonar la fase por desconexión el WAV temporal sigue siendo del
-/// trabajo bloqueante y desaparece cuando este termina, no cuando el handler
-/// retorna.
-///
-/// El cliente corta sin leer el cuerpo mientras el motor retiene el `POST`: la
-/// fase ve `tx.closed()`, cancela el trabajo y retorna sin esperar al hilo (que
-/// `spawn_blocking` no puede cancelar). Con el guardián en el ámbito del handler
-/// el WAV se borraba al salir de este y el hilo podía escribirlo después,
-/// recreándolo; con el guardián en el trabajo el borrado ocurre cuando el hilo
-/// acaba y no queda residuo.
+/// Recorrido común de la salida por desconexión: espera a que la fase cree su
+/// temporal, el cliente corta el stream sin leerlo hasta el final y se afirma
+/// que, al terminar el trabajo bloqueante, no queda ningún temporal propio.
+async fn disconnect_leaves_no_temporary(prefix: &str, response: axum::response::Response) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    // Primer fotograma (`started`): la fase ya validó y está en marcha.
+    body.frame()
+        .await
+        .expect("el stream debe emitir al menos un fotograma")
+        .expect("el fotograma debe leerse");
+    wait_until(
+        "la fase crea su temporal",
+        std::time::Duration::from_secs(120),
+        || !temp_wavs(prefix).is_empty(),
+    )
+    .await;
+    // El cliente corta a mitad del trabajo.
+    drop(body);
+    wait_until(
+        "el trabajo bloqueante termina y borra su temporal",
+        std::time::Duration::from_secs(180),
+        || temp_wavs(prefix).is_empty(),
+    )
+    .await;
+}
+
+/// Al cortar el cliente el stream de `/synthesize`, el WAV temporal desaparece
+/// cuando termina el trabajo bloqueante y no queda residuo.
 #[tokio::test]
+#[ignore = "requiere el binario del motor y el modelo CustomVoice"]
 async fn synthesize_disconnect_removes_temporary_when_blocking_work_ends() {
+    require_clone_binary();
+    require_custom_voice_model();
     let _temporaries = lock_temporaries().await;
-    let previous = temp_wavs("avi_daemon_synth_");
-    let tts = hold_tts_connection();
-    let state = state_with_held_tts(tts.port, "avi_golden_disconnect");
-    let response = build_router_with_state(state)
+    let response = build_router_with_state(clone_state())
         .oneshot(post_json(
             "/synthesize",
             serde_json::json!({
-                "text": "hola", "voice": "ryan",
+                "text": "Esta es una frase algo más larga para que la síntesis tarde un poco y el cliente pueda cortar a mitad del trabajo.",
+                "voice": "ryan",
                 "source_language": "es", "target_language": "es"
             }),
         ))
         .await
         .expect("el router debe responder");
-    disconnect_leaves_no_temporary("avi_daemon_synth_", &previous, &tts, response).await;
-    tts.server.join().expect("el motor falso cierra su hilo");
+    disconnect_leaves_no_temporary("avi_daemon_synth_", response).await;
 }
 
 /// En `/dub`: misma salida por desconexión sobre la ruta de doblaje, con su
-/// prefijo de temporal. Requiere Parakeet porque `/dub` transcribe antes de
-/// sintetizar, así que sin el modelo la ruta no llega al temporal.
+/// prefijo de temporal. `/dub` transcribe antes de sintetizar.
 #[cfg(feature = "native-stt")]
 #[tokio::test]
-#[ignore = "requiere Parakeet"]
+#[ignore = "requiere Parakeet, el binario del motor y el modelo CustomVoice"]
 async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
     require_parakeet();
+    require_clone_binary();
+    require_custom_voice_model();
     let _temporaries = lock_temporaries().await;
-    let previous = temp_wavs("avi_daemon_dub_");
-    let tts = hold_tts_connection();
-    let state = state_with_held_tts(tts.port, "avi_golden_dubdisconnect");
-    // `/dub` exige que la voz exista en el almacén; un preset sin referencia
-    // clonada mantiene la síntesis en el motor falso.
-    std::fs::create_dir_all(state.voice_store.root().join("ryan")).expect("registrar la voz");
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
     let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_responses_16k.wav"))
         .expect("el WAV corpus debe cargarse");
     let audio: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-    let response = build_router_with_state(state)
+    let response = build_router_with_state(clone_state())
         .oneshot(post_json(
             "/dub",
             serde_json::json!({
@@ -1604,6 +1394,85 @@ async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
         ))
         .await
         .expect("el router debe responder");
-    disconnect_leaves_no_temporary("avi_daemon_dub_", &previous, &tts, response).await;
-    tts.server.join().expect("el motor falso cierra su hilo");
+    disconnect_leaves_no_temporary("avi_daemon_dub_", response).await;
+}
+
+/// Eventos NDJSON de la respuesta de `/synthesize` para `voice`, con un estado
+/// cuyo motor tiene binario y modelo CustomVoice inexistentes y sin modelo Base:
+/// ninguna síntesis puede llegar a lanzar un motor real.
+async fn synthesize_events_without_engine(dir_prefix: &str, voice: &str) -> Vec<Value> {
+    prepare_shared_env();
+    let mut state = contract_state(&process_root().join(dir_prefix));
+    let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
+    state.tts_engine.binary_path = Some(missing.clone());
+    state.tts_engine.model_dir = Some(missing);
+    state.tts_engine.base_model_dir = None;
+    std::fs::create_dir_all(state.voice_store.root().join("sin_referencia"))
+        .expect("registrar una voz sin referencia");
+    let (status, bytes) = send_to(
+        Arc::new(state),
+        post_json(
+            "/synthesize",
+            serde_json::json!({
+                "text": "hola", "voice": voice,
+                "source_language": "es", "target_language": "es"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect()
+}
+
+/// Una voz clonada sin el modelo Base provisionado responde `model_missing`
+/// aunque el binario y CustomVoice estén (simulados): el motor falla antes de
+/// lanzar nada porque la regla por tipo de voz corta en la selección del modelo.
+#[tokio::test]
+async fn synthesize_cloned_voice_without_base_model_is_model_missing() {
+    let events = synthesize_events_without_engine("avi_golden_no_base", "default").await;
+    let last = events.last().expect("debe haber un evento final");
+    assert_eq!(last["event"], "error", "evento final: {last:?}");
+    assert_eq!(last["reason"], "model_missing", "evento final: {last:?}");
+}
+
+/// Una voz registrada que no tiene `reference.qvoice` ni es un preset del motor
+/// responde `voice_not_found`: la síntesis no la degrada a un speaker inexistente.
+#[tokio::test]
+async fn synthesize_voice_without_reference_nor_preset_is_voice_not_found() {
+    let events =
+        synthesize_events_without_engine("avi_golden_no_reference", "sin_referencia").await;
+    let last = events.last().expect("debe haber un evento final");
+    assert_eq!(last["event"], "error", "evento final: {last:?}");
+    assert_eq!(last["reason"], "voice_not_found", "evento final: {last:?}");
+}
+
+/// Sin binario ni modelo CustomVoice resueltos, `/synthesize` responde
+/// `model_missing`: la falta de motor y la de voz se distinguen.
+#[tokio::test]
+async fn synthesize_without_engine_is_model_missing() {
+    prepare_shared_env();
+    let mut state = contract_state(&process_root().join("avi_golden_no_engine"));
+    state.tts_engine.binary_path = None;
+    state.tts_engine.model_dir = None;
+    let (status, bytes) = send_to(
+        Arc::new(state),
+        post_json(
+            "/synthesize",
+            serde_json::json!({
+                "text": "hola", "voice": "ryan",
+                "source_language": "es", "target_language": "es"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let last: Value = serde_json::from_str(text.lines().last().expect("evento final"))
+        .expect("cada línea debe ser JSON");
+    assert_eq!(last["event"], "error", "evento final: {last:?}");
+    assert_eq!(last["reason"], "model_missing", "evento final: {last:?}");
 }

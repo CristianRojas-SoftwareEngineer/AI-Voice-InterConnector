@@ -77,10 +77,14 @@ static STT_HOLDER: EngineHolder = EngineHolder::new();
 
 /// Traduce un fallo de la síntesis directa al contrato: la falta del modelo que
 /// exige la voz sale como `model_missing` (exit 4), el vencimiento del
-/// presupuesto como `synthesis_timeout` y cualquier otro como `synthesis_error`.
+/// presupuesto como `synthesis_timeout`, una voz sin referencia que no es preset
+/// como `voice_not_found` (exit 3) y cualquier otro como `synthesis_error`.
 fn synthesis_cli_error(e: anyhow::Error) -> CliError {
     if e.downcast_ref::<avi_tts::ModelMissing>().is_some() {
         return CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string());
+    }
+    if e.downcast_ref::<avi_tts::VoiceNotFound>().is_some() {
+        return CliError::new(ExitCode::NotFound, "voice_not_found", e.to_string());
     }
     let reason = if e.downcast_ref::<avi_tts::SynthesisTimeout>().is_some() {
         "synthesis_timeout"
@@ -88,6 +92,14 @@ fn synthesis_cli_error(e: anyhow::Error) -> CliError {
         "synthesis_error"
     };
     CliError::new(ExitCode::Error, reason, e.to_string())
+}
+
+/// Motor TTS de la vía directa. Una variable de entorno del motor
+/// (`QWEN3_TTS_BIN`, `QWEN3_TTS_MODEL_DIR`, `QWEN3_TTS_BASE_MODEL_DIR`) que no
+/// apunta a una ruta existente, o un modelo ilegible, es `model_missing`.
+fn direct_tts_engine() -> Result<Qwen3TtsEngine, CliError> {
+    Qwen3TtsEngine::new(None)
+        .map_err(|e| CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string()))
 }
 
 /// Síntesis directa de una voz del almacén del comando: resuelve su referencia
@@ -1229,7 +1241,7 @@ async fn handle_voice(
                 ));
             }
 
-            let engine = Qwen3TtsEngine::new(None, None);
+            let engine = direct_tts_engine()?;
             let model_dir = engine.base_model_dir.as_ref().ok_or_else(|| {
                 CliError::new(
                     ExitCode::ModelMissing,
@@ -1781,7 +1793,7 @@ async fn handle_speech(
             let tmp_guard = avi_shared::TempWav::new("avi_tts_")
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
             let tmp_wav = tmp_guard.path().clone();
-            let engine = Qwen3TtsEngine::new(None, None);
+            let engine = direct_tts_engine()?;
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             synthesize_voice_directly(
@@ -1893,7 +1905,7 @@ async fn handle_speech(
             // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
             let tmp_wav = avi_shared::TempWav::new("avi_say_")
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-            let engine = Qwen3TtsEngine::new(None, None);
+            let engine = direct_tts_engine()?;
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
             synthesize_voice_directly(
@@ -2112,7 +2124,7 @@ async fn handle_speech(
                 // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
                 let tmp_wav = avi_shared::TempWav::new("avi_dub_")
                     .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-                let engine = Qwen3TtsEngine::new(None, None);
+                let engine = direct_tts_engine()?;
                 synthesize_voice_directly(
                     &engine,
                     &voice_store,
@@ -4692,6 +4704,20 @@ mod tests {
         assert_eq!(err.reason, "model_missing");
         let other = synthesis_cli_error(anyhow::anyhow!("otro fallo"));
         assert_eq!(other.reason, "synthesis_error");
+    }
+
+    /// Una voz sin referencia que no es preset sale como `voice_not_found`
+    /// (exit 3), sin necesitar el motor real.
+    #[test]
+    fn synthesis_cli_error_maps_voice_not_found() {
+        let any: anyhow::Error = avi_tts::VoiceNotFound {
+            voice: "nadie".to_string(),
+        }
+        .into();
+        let err = synthesis_cli_error(any);
+        assert_eq!(err.code, ExitCode::NotFound);
+        assert_eq!(err.reason, "voice_not_found");
+        assert!(err.message.contains("nadie"), "{}", err.message);
     }
 
     /// Cada clase de fallo de arranque sale con su código y `reason`, y el

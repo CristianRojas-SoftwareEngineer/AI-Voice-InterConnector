@@ -148,7 +148,7 @@ impl DaemonState {
             synthesis_lock: Mutex::new(()),
             voice_store,
             speech_store,
-            tts_engine: Qwen3TtsEngine::new(None, Some(registry.clone())),
+            tts_engine: Qwen3TtsEngine::new(Some(registry.clone()))?,
             #[cfg(feature = "native-stt")]
             stt_engine,
             #[cfg(feature = "native-translation")]
@@ -396,11 +396,13 @@ where
 
 /// `reason` de un fallo de la fase de síntesis: la falta del modelo que exige la
 /// voz (Base para una clonada, CustomVoice para un preset) es `model_missing`,
-/// igual que cuando el motor no está provisionado; cualquier otro fallo es
-/// `synthesis_failed`.
+/// igual que cuando el motor no está provisionado; una voz sin referencia que no
+/// es preset es `voice_not_found`; cualquier otro fallo es `synthesis_failed`.
 fn synthesis_failure_reason(e: &anyhow::Error) -> &'static str {
     if e.downcast_ref::<avi_tts::ModelMissing>().is_some() {
         "model_missing"
+    } else if e.downcast_ref::<avi_tts::VoiceNotFound>().is_some() {
+        "voice_not_found"
     } else {
         "synthesis_failed"
     }
