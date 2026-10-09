@@ -20,8 +20,7 @@ categorías excluyentes:
 `ruta:línea` y lleva marca **VERIFICADO** (hecho de código) o **HIPÓTESIS**
 (requiere ejecución para confirmar). Sin diff contra `main` disponible, el
 origen de los hallazgos 2/3 se apoya en el alcance declarado de cada tarea
-del plan (`C:\Users\Cristian\.claude\plans\cosmic-gathering-reddy.md`) y en
-el ledger (`docs/issues/iterative-workflow-design.progreso.json`).
+del plan (`C:\Users\Cristian\.claude\plans\cosmic-gathering-reddy.md`).
 
 ## Tabla de contenidos
 
@@ -142,9 +141,8 @@ esfuerzo medio, con sus propios riesgos de `unsafe`. **Categoría 1
 `cfg(unix)` con `fits_pid_t` (`avi-process/src/lib.rs:88-111/165-184`), el
 parser de ancho fijo de 24 caracteres sobre un campo `ps` dependiente del
 locale (`:113-127`) y 2 tests `cfg(unix)`: verificados solo por compilación
-cruzada. Ningún cambio de código lo cierra; solo D-11
-(pase manual en Linux x64 y macOS arm64, abierto:
-`iterative-workflow-design.md:1556`, `:1581`). **Categoría 3. VERIFICADO.**
+cruzada. Ningún cambio de código lo cierra; solo el pase manual en Linux x64
+y macOS arm64, abierto (recorrido en `docs/MANUAL-VALIDATION.md`). **Categoría 3. VERIFICADO.**
 
 ### H14 — Pata full solo en máquina provisionada
 

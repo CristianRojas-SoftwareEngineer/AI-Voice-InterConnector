@@ -1,6 +1,6 @@
 # AI Voice InterConnector
 
-Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **español latinoamericano**.
+Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **español**.
 
 - **Motor**: Qwen3-TTS 0.6B CustomVoice (12 Hz, multilingüe; [QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS))
 - **Clonación de voz**: Usa tu propia voz como referencia (~10 s)
@@ -190,11 +190,11 @@ Dos niveles, precedencia usuario→fábrica (`avi-store/src/lib.rs`):
 ```bash
 ai-voice-interconnector speech say --text "..."                    # reproducir sin persistir
 ai-voice-interconnector speech synthesize --text "..." --label L   # persistir
-ai-voice-interconnector speech transcribe --audio file.wav --source-language es-latam
-ai-voice-interconnector speech dub --mic --source-language es-latam --target-language en -v mi_voz
+ai-voice-interconnector speech transcribe --audio file.wav --source-language es
+ai-voice-interconnector speech dub --mic --source-language es --target-language en -v mi_voz
 ai-voice-interconnector voice clone --name X --timbre-reference ref.wav --speech-reference speech.wav
 ai-voice-interconnector voice list / remove --name X
-ai-voice-interconnector translate --text "Hola" --from es --to en
+ai-voice-interconnector translate --text "Hola" --source-language es --target-language en
 ai-voice-interconnector devices / doctor / version
 ai-voice-interconnector daemon start / status / stop / restart / serve
 ai-voice-interconnector setup [--force-update] [-y|--yes]

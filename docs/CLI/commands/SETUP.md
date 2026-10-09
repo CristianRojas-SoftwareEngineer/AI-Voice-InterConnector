@@ -2,7 +2,7 @@
 
 Provisiona el runtime: descarga los modelos pinneados desde HuggingFace Hub, incluidos los modelos de traducción, que ya vienen convertidos. Es **idempotente**: una segunda ejecución con todo presente no descarga nada.
 
-**Implementación:** el motor es el módulo `setup` de `avi-lifecycle` (`crates/avi-lifecycle/src/setup.rs`), que es una **traducción fiel, no un rediseño**: conserva la semántica que ya existía —selección de modelos, idempotencia por presencia del snapshot, purga de `--force-update` sobre la selección y validación de cada modelo por presencia de sus ficheros—. En `src/main.rs` quedan solo `handle_setup` y el envelope `--json`, porque el parseo de la CLI y el emisor no viven en ese crate.
+**Implementación:** el motor es el módulo `setup` de `avi-lifecycle` (`crates/avi-lifecycle/src/setup.rs`), que aplica la semántica de provisión —selección de modelos, idempotencia por presencia del snapshot, purga de `--force-update` sobre la selección y validación de cada modelo por presencia de sus ficheros—. En `src/main.rs` quedan solo `handle_setup` y el envelope `--json`, porque el parseo de la CLI y el emisor no viven en ese crate.
 
 ---
 
@@ -87,7 +87,7 @@ El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `
 
 Es un **éxito parcial**, y por eso el envelope de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en §11 de [`../CONTRACT.md`](../CONTRACT.md).
 
-Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de descarga sale con `network_error` y **20**, y un fallo de conversión con `setup_failed` y **11**.
+Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de descarga sale con `network_error` y **20**.
 
 ---
 

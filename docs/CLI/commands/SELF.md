@@ -1,6 +1,6 @@
 # Grupo `self` — ciclo de vida de la instalación del usuario
 
-`self` es el grupo con el que **el binario gestiona su propia instalación**. Reemplaza al comando de nivel superior `uninstall` —que ya no existe, sin alias ni flag deprecado— y cubre los dos lados del ciclo de vida: `self install` instala o repara, `self update` actualiza a la última estable o a una concreta, y `self uninstall` desinstala.
+`self` es el grupo con el que **el binario gestiona su propia instalación** y cubre los dos lados del ciclo de vida: `self install` instala o repara, `self update` actualiza a la última estable o a una concreta, y `self uninstall` desinstala.
 
 La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie, §8.1 reglas transversales, §8.3 `self install`, §8.5 `self uninstall`); el contrato de la CLI —flags, `reason`, códigos de salida, envelope `--json`— está en [`../CONTRACT.md`](../CONTRACT.md). Este documento describe **dónde vive cada cosa y por qué**.
 
@@ -10,7 +10,7 @@ La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie
 
 ## Definición CLI (parser)
 
-`SelfSub` (`src/main.rs`), el enum de subcomandos. Se llama `SelfSub` y no `SelfComandos` por dos razones que el propio código declara: `Self` es palabra reservada de Rust, y el nombre no debe colisionar por subcadena con el enum de comandos de nivel superior, cuya variante de desinstalación el producto ya no expone —una comprobación de que esa variante ya no aparece en el árbol tiene que dar cero, y un enum cuyo nombre la contenga daría una coincidencia sin que el comando existiera—.
+`SelfSub` (`src/main.rs`), el enum de subcomandos. Se llama `SelfSub` y no `SelfComandos` por dos razones: `Self` es palabra reservada de Rust, y el nombre no debe colisionar por subcadena con el enum de comandos de nivel superior.
 
 | Subcomando | Flags | Efecto |
 |---|---|---|
@@ -44,20 +44,20 @@ La comparación es por **clave canónica** (`avi_store::canonical_path_entry_mat
 
 El orden es el de §8.3 y está escrito en el propio código, con el número de paso en cada bloque:
 
-1. **Recuperación y bloqueo** (`install.rs`). La recuperación va **con el bloqueo tomado**, no antes: si fuera al revés, el barrido de stagings huérfanos se llevaría por delante el staging que esta misma operación va a instalar. Por eso el bundle de donde se invoca se declara **en uso** (`recovery::Roots.in_use`). Este campo existe por un defecto real: sin él, `self install` borraba su propio bundle entre los pasos 1 y 2.
+1. **Recuperación y bloqueo** (`install.rs`). La recuperación va **con el bloqueo tomado**, no antes: si fuera al revés, el barrido de stagings huérfanos se llevaría por delante el staging que esta misma operación va a instalar. Por eso el bundle de donde se invoca se declara **en uso** (`recovery::Roots.in_use`): el barrido nunca retira el staging que la operación en curso va a instalar.
 2. **Validar el bundle** contra la lista de archivos del target, fijada en compilación (`BUNDLE_MANIFEST`, embebido desde `packaging/bundle-manifest.json`). Es la misma lista que usa `cargo xtask package`, de modo que empaquetado e instalación no pueden divergir. Si falta un archivo → `bundle_invalid` (15), sin haber modificado nada.
 3. **Detectar la instalación previa**: registrada (recibo) o ajena. Una ajena (un Cask en el `PATH`) **solo genera aviso** de coexistencia y precedencia: no bloquea.
 4. **Resumen previo y confirmación.** Instalar una versión **menor** que la instalada es una degradación y se confirma como operación **destructiva** (`confirm::Kind::Destructive`), aunque instalar no borre nada por sí mismo. Cancelar aquí es salida 0 y ningún `reason`: §8.1 no cuenta la cancelación entre los `reason`. El resumen anuncia solo los cambios pendientes: el plan del `PATH` se calcula con el estado real (el valor `Path` del registro de usuario en Windows, el enlace del comando en Unix), y si no hay nada que cambiar la línea dice `<dir> ya está en el PATH; no se modifica` (`… en el PATH del usuario` en Windows). Un registro ilegible al planificar sale con `path_conflict` (14), igual que al aplicar.
 5. **Parar el daemon**, incluido el proceso residente del motor. Si no se detiene → `daemon_stop_failed` (16), **sin modificar nada**.
 6. **Reemplazo transaccional** (`transaction::replace`): aparcar, colocar, ajustar permisos, confirmar y borrar lo aparcado; revertir restaurando lo aparcado si falla → `rolled_back` (13). **En reparación no se copia nada.**
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en **todo** el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. No es un fallo de la instalación: la cuarentena que no se quita degrada el arranque y el resumen lo informa.
-8. **Integración de `PATH`** ([`../CONTRACT.md` §11](../CONTRACT.md) y §8.3.1 de la especificación). En Unix el `PATH` se modifica **por defecto** (decisión D2) y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
+8. **Integración de `PATH`** ([`../CONTRACT.md` §11](../CONTRACT.md) y §8.3.1 de la especificación). En Unix el `PATH` se modifica **por defecto** y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
 9. **Windows**: si el `PATH` de máquina parece llevar una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. **HKLM nunca se modifica**, ni para escribir ni para leer.
 10. **Escribir el recibo** de forma atómica.
 11. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección (todos los modelos, el Base de clonado incluido) según el estado real del almacén, sin repetir la confirmación. El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
 12. **Resumen final**: versión, rutas, estado del `PATH` y estado de los modelos.
 
-**Lo que el recibo registra es el estado, no el diff de esta pasada.** El recibo dice qué integración de `PATH` está en pie, no qué cambió en esta ejecución: si registrara solo el diff, una segunda instalación desde el mismo bundle escribiría un recibo sin entrada de `PATH` y `self uninstall` no podría revertir la que puso la primera —dejando residuo, que es el criterio 17—. El diff vive aparte, en `Outcome::path_rewritten`, y es lo único que decide si el resumen pide abrir una terminal nueva.
+**Lo que el recibo registra es el estado, no el diff de esta pasada.** El recibo dice qué integración de `PATH` está en pie, no qué cambió en esta ejecución: si registrara solo el diff, una segunda instalación desde el mismo bundle escribiría un recibo sin entrada de `PATH` y `self uninstall` no podría revertir la que puso la primera, dejando residuo dentro de una raíz de propiedad exclusiva. El diff vive aparte, en `Outcome::path_rewritten`, y es lo único que decide si el resumen pide abrir una terminal nueva.
 
 **El resumen final lleva una sola línea del `PATH`, y es la del estado.** Copiar debajo la línea del plan imprimía «se añadirá X» y «se añadió X» en el mismo bloque, que parece una contradicción y no es más que el mismo hecho contado dos veces.
 
@@ -121,8 +121,8 @@ Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el t
 
 Los nueve pasos de §8.5, en orden, sobre la **instalación registrada** y no sobre la posición del ejecutable.
 
-1. **El canal decide si se puede actuar**: `homebrew` → `externally_managed` (12) con el comando de Homebrew en el mensaje. Sin instalación, sin estado y sin directorio de programa → **`not_installed` y salida 0** (criterio 21).
-2. **`--dry-run`**: imprime el plan y termina **sin tomar el bloqueo**, porque tomar el bloqueo crea el archivo y una simulación que deja un archivo detrás no es una simulación (criterio 20).
+1. **El canal decide si se puede actuar**: `homebrew` → `externally_managed` (12) con el comando de Homebrew en el mensaje. Sin instalación, sin estado y sin directorio de programa → **`not_installed` y salida 0**.
+2. **`--dry-run`**: imprime el plan y termina **sin tomar el bloqueo**: tomar el bloqueo crea el archivo, y una simulación que deja un archivo detrás no es una simulación.
 3. **Plan** con rutas y tamaños, más la lista de lo que **no** se tocará y por qué.
 4. **Confirmación destructiva** `[s/N]`. Sin terminal y sin `--yes` → `confirmation_required` (2) y nada borrado.
 5. **Parar el daemon**: va **después** de la confirmación, para que un `daemon_stop_failed` no deje nada a medias.
@@ -136,7 +136,7 @@ Los nueve pasos de §8.5, en orden, sobre la **instalación registrada** y no so
 **Sin `--keep-data`, el destino del estado es la raíz de datos completa.** No es el plan de `cleanup --all`, y la diferencia es deliberada:
 
 - `cleanup --all` **protege las voces de fábrica** (`default`, `ryan`, `vivian`) porque van embebidas en el binario y el programa sigue instalado: borrarlas sería tirar un trabajo que `setup` vuelve a materializar.
-- Al desinstalar **el programa desaparece**, y con él las voces de fábrica. Dejarlas sería **residuo dentro de una raíz de propiedad exclusiva**, que es exactamente lo que prohíbe el criterio 17.
+- Al desinstalar **el programa desaparece**, y con él las voces de fábrica. Dejarlas sería **residuo dentro de una raíz de propiedad exclusiva**.
 
 Por eso la composición del plan vive en `uninstall::compose_plan` y tiene dos ramas, no dos implementaciones del mismo alcance:
 
@@ -154,7 +154,7 @@ Con `--keep-data` el directorio de programa **se borra igual**: la bandera conse
 - **Ningún destino del plan lo contiene** → se conserva de verdad, y pasa a la lista `preserved` con el motivo de la regla del directorio de programa. Es el caso de un directorio de programa que es `$HOME` o un ancestro suyo.
 - **Un destino del plan lo contiene** —típico con `AVI_INSTALL_DIR` dentro de la raíz de datos— → **no se conserva**: el paso 6 borra la raíz entera y se lo lleva. El plan no lo anuncia ni como destino propio ni como conservado, porque la raíz que lo borra ya está en la lista.
 
-R2 dice «no lo borro yo», no «no se borra». Sin esa distinción, el comando anunciaba «no se tocará» sobre un directorio que un paso antes borraba entero.
+R2 dice «no lo borro yo», no «no se borra»: el plan distingue los dos casos porque dicen cosas distintas.
 
 En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se **programa** para cuando termine el proceso (`removal_scheduled`, que es éxito) en vez de hacerse de forma síncrona. El limpiador es una copia del propio ejecutable en `%TEMP%`, relanzada desacoplada y oculta: abre el HANDLE del proceso esperado al programar (sin carrera de PID), aguarda su muerte por el sistema, borra con reintentos acotados con retroceso y escribe su resultado en un registro bajo `data/logs/`. Si el borrado no se puede programar (o, fuera de Windows, el directorio no se puede borrar), el resto de la desinstalación se completa y el comando termina con `status` `uninstalled`, `reason` `program_dir_kept` y salida 22, sin borrado parcial del directorio.
 
@@ -182,7 +182,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 
 `status` toma los valores `installed` / `repaired` en `self install`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` / `planned` en `self uninstall`. `schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**; el protocolo del daemon va por `"4"` porque es otro contrato.
 
-`planned` es el recibo de `compose_plan`, el mismo que usa la ejecución real, así que `--dry-run` anuncia exactamente lo que ocurriría. Con `--dry-run` el `status` es `planned`, `removed` copia `planned` y `path_reverted` es el valor previsto; la clave `dry_run` se retiró del envelope porque un `planned` ya dice que nada se modificó.
+`planned` es el recibo de `compose_plan`, el mismo que usa la ejecución real, así que `--dry-run` anuncia exactamente lo que ocurriría. Con `--dry-run` el `status` es `planned`, `removed` copia `planned` y `path_reverted` es el valor previsto; el envelope no lleva clave `dry_run`: `planned` ya dice que nada se modificó.
 
 **`path_reverted` previsto y real salen del mismo predicado.** No basta con leer la marca `modify_path` del recibo: puede decir que se integró el `PATH` y que hoy no queda nada que revertir —el enlace se borró a mano, el bloque ya no está en el perfil—. El valor publicado lo decide `path_would_be_reverted`, que además de la marca comprueba la existencia real de cada artefacto (el enlace solo si apunta al directorio de programa, el bloque delimitado del perfil, la entrada de registro en Windows), y lo usan tanto el simulacro como la ejecución. Por eso `--dry-run` no puede afirmar una reversión que la operación real no haría.
 

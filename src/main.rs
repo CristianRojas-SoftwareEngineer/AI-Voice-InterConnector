@@ -489,11 +489,8 @@ enum Commands {
 
 /// Subcomandos de self. Se llama SelfSub y no SelfComandos por dos razones:
 /// Self es palabra reservada de Rust, y el nombre no debe colisionar por subcadena
-/// con el enum de comandos de nivel superior, cuya variante de desinstalación este
-/// ciclo retira: la comprobación de que esa variante ya no aparece en el árbol tiene que
-/// dar cero, y un enum cuyo nombre la contenga daría una coincidencia sin que el
-/// comando existiera. Lo que el usuario ve en --help es self, que es lo único que
-/// la tabla de la CLI declara.
+/// con el enum de comandos de nivel superior. Lo que el usuario ve en --help es self,
+/// que es lo único que la tabla de la CLI declara.
 #[derive(Subcommand)]
 enum SelfSub {
     /// Instala el bundle del que forma parte este ejecutable, o repara la instalación

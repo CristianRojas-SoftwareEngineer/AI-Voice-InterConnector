@@ -393,7 +393,7 @@ enum Commands {
         #[arg(long)]
         yes: bool,
     },
-    /// Instala el build local por el camino del release (canal dev)
+    /// Instala el build local por el camino del release (instalación script)
     Install {
         /// No provisionar modelos
         #[arg(long)]

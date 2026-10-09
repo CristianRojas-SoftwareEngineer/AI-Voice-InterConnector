@@ -230,7 +230,7 @@ ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav`
 `ai-voice-interconnector --no-daemon voice clone --name default --force --speech-reference "assets/audios/Speech Sampler.wav"`
 (`--force` porque `default` ya existe como voz de fábrica).
 `ryan`/`vivian` son presets puros del motor Qwen3-TTS, sin
-`reference.qvoice`. Las tres hablan `es-latam` y `en`: el idioma nativo de un
+`reference.qvoice`. Las tres hablan `es` y `en`: el idioma nativo de un
 preset (`ryan`: inglés; `vivian`: chino) es informativo, porque los nueve
 locutores del motor son multilingües.
 

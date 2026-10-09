@@ -61,8 +61,6 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | `version` | Muestra la versión |
 | `translate` | Traduce texto es↔en sin síntesis de audio |
 
-**`uninstall` ya no es un comando de nivel superior.** Desaparece sin alias, sin flag deprecado y sin periodo de transición: su papel lo cumplen `self uninstall` —que además borra la raíz de datos entera salvo `--keep-data`— y `cleanup` para la limpieza granular. El proyecto es pre-1.0 y no está distribuido, así que no hay instalaciones previas que migrar.
-
 ### Códigos de salida
 
 | Código | Constante | Significado |

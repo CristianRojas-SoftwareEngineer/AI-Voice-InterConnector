@@ -563,7 +563,7 @@ quedan documentados aquí de forma autocontenida:
   debilitar ese lock para paralelizar los tests pesados arriesga un OOM del
   runner de CI, no solo una degradación de tiempo: el lock no se elimina.
 - **El warning de libtest ">60 seconds" no es un cuelgue.** Con la
-  serialización anterior, es esperable que `cargo test` reporte que un test
+  serialización vigente (`TTS_LOCK`), es esperable que `cargo test` reporte que un test
   de la serie pesada "has been running for over 60 seconds" mientras espera
   turno para adquirir `TTS_LOCK`. Es espera de mutex esperada, no trabajo
   atascado: no se le añaden reintentos ni timeouts para silenciarlo.
@@ -690,7 +690,7 @@ clave de versión (determinismo de release). El log del bootstrap captura
 --version` como evidencia de la **GCC Runtime Library Exception** (libgfortran/
 libquadmath/libgcc estáticos en el `.exe`). Si la versión instalada difiere del
 pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidencia
-(`log on drift` desde `v0.17.1`, no `fail-fast`). WSL oráculo: Ubuntu gcc
+(`log on drift`, no `fail-fast`). WSL oráculo: Ubuntu gcc
 **15.2.0-16ubuntu1**, `libopenblas-dev 0.3.32+ds-5`.
 
 | Plataforma | `ARCH_FLAGS` | `CFLAGS_BASE` | `LDLIBS` / BLAS | Shims |

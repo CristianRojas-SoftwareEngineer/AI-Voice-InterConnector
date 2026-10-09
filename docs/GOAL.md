@@ -129,10 +129,10 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 
 # 6b. Síntesis cross-lingual opcional: el usuario escribe en su idioma y obtiene
 # audio en el idioma destino con su propia voz clonada, en un solo comando
-./ai-voice-interconnector speech say --text "Hola mundo" -v mi_voz --source-language es-latam --target-language en
+./ai-voice-interconnector speech say --text "Hola mundo" -v mi_voz --source-language es --target-language en
 
 # 6c. O solo el texto traducido, sin síntesis
-./ai-voice-interconnector translate --text "Hola mundo" --from es --to en
+./ai-voice-interconnector translate --text "Hola mundo" --source-language es --target-language en
 
 # 7. Eliminar voz clonada (limpieza)
 ./ai-voice-interconnector voice remove --name mi_voz
@@ -168,7 +168,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 7. [x] El español latinoamericano suena natural y con buena prosodia
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
-10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del [registro de brechas](specs/sdlc-lifecycle.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner macOS sin `sudo` y limpieza de artefactos —cerradas en v0.5.0, cuando cada SO tenía su propio script y hoy comparten el bootstrap `install.sh` (POSIX) más `install.ps1` para Windows—, `zap` del Cask completo y README con las tres plataformas — y desinstalación en un comando, cerrada a nivel de código/scripts/tests en v0.6.0; la invocación citada era la de entonces y hoy el comando es `self uninstall`—). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
+10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del [registro de brechas](specs/sdlc-lifecycle.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner con el bootstrap `install.sh` POSIX compartido más `install.ps1` para Windows, `zap` del Cask completo, README con las tres plataformas y desinstalación en un comando con `self uninstall`). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
 
 #### Validación E2E
 

@@ -53,7 +53,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 | **Bootstrap** | Script mínimo de primer contacto (`install.sh`, `install.ps1`) que obtiene y verifica el bundle y delega la instalación en el propio binario. |
 | **Directorio de programa** | Directorio donde vive el bundle instalado. Propiedad exclusiva de la aplicación; nunca contiene datos del usuario. |
 | **Recibo de instalación** | Archivo JSON dentro del directorio de programa que registra qué se instaló, dónde, por qué canal y qué integración de PATH se aplicó. |
-| **Canal** | Vía por la que se instaló la copia: `script`, `dev`, `homebrew` o `unmanaged` ([§7.2](#72-canales)). |
+| **Canal** | Vía por la que se instaló la copia: `script`, `homebrew` o `unmanaged` ([§7.2](#72-canales)). |
 | **Estado de la aplicación** | Todo lo que la aplicación crea en el perfil del usuario fuera del directorio de programa: modelos, voces de usuario, habla sintetizada, configuración, `daemon.pid`, logs y temporales. |
 | **Staging** | Directorio de trabajo, hermano del directorio de programa, donde se descarga, verifica y extrae un bundle antes de instalarlo. |
 | **Aparcar** | Renombrar un archivo instalado a un subdirectorio `.old-<txid>` en lugar de borrarlo, para poder revertir o para sortear un archivo en uso. |
@@ -194,8 +194,6 @@ AI-Voice-InterConnector/
 └── .cargo/config.toml            # alias `cargo xtask` = `run -p xtask --`
 ```
 
-**Desaparecido tras la implementación:** los cinco scripts de la raíz (`install-linux.sh`, `install-macos.sh`, `install-windows.ps1`, `upgrade-ai-voice-interconnector.sh` y `.ps1`), los pasos de staging repetidos por job en la CI (sustituidos por `cargo xtask package`) y las réplicas de rutas en `xtask clean` y en el instalador de Windows. `docs/SELF-HOSTED-INSTALL.md` queda retirado, con su contenido vigente absorbido según [§13](#13-papel-de-la-documentación).
-
 **Único archivo nuevo en la raíz:** `rust-toolchain.toml`. Es la convención estándar de Rust y rustup solo la reconoce en la raíz; a cambio, instala y actualiza automáticamente la versión de Rust fijada para cualquier desarrollador.
 
 ### 5.4 Superficie de comandos
@@ -233,7 +231,7 @@ irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/re
 | `bootstrap` | Instala o actualiza (convergente) el entorno de desarrollo | `--system`, `--models`, `--yes` |
 | `build-engine` | Compila el motor TTS (existente) | `--self-test`, `--simd`, `-j` |
 | `package` | Produce el bundle y el archivo idénticos a los de release | `--out <dir>`, `--no-compress`, `--expect-version X.Y.Z` |
-| `install` | Instala el build local por el mismo camino que un release (canal `dev`) | `--no-setup` |
+| `install` | Instala el build local por el mismo camino que un release | `--no-setup` |
 | `clean` | Limpia por capas | `--repo` (por defecto), `--app`, `--all`, `--dry-run`, `--yes` |
 
 `release`, `cask`, `licenses`, `source-offer` y `changelog` se mantienen sin cambios (fuera de alcance).
@@ -319,11 +317,10 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 | Canal | Cómo se origina | `self install` | `self update` | `self uninstall` | `cleanup` |
 |---|---|---|---|---|---|
 | `script` | Bootstrap, o `self install` desde un archivo extraído a mano | Instala o repara | ✅ | ✅ | ✅ |
-| `dev` | `cargo xtask install` | Repara | `externally_managed` → `cargo xtask install` (`--force` pasa al canal `script` con el release publicado) | ✅ | ✅ |
 | `homebrew` | Cask de Homebrew (detectado, sin recibo) | `externally_managed` | `externally_managed` → `brew upgrade --cask ai-voice-interconnector` | `externally_managed` → `brew uninstall --cask --zap ai-voice-interconnector` | ✅ |
 | `unmanaged` | Binario ejecutado fuera de una instalación (bundle sin instalar, `target/`) | Instala si el bundle es válido; si no, `bundle_invalid` | Actúa sobre la instalación registrada, si existe; si no, `not_installed` | Actúa sobre la instalación registrada, si existe | ✅ |
 
-**Detección del canal:** `homebrew` si el ejecutable resuelto está bajo el prefijo de Homebrew (`Caskroom`); `script` o `dev` según el recibo; `unmanaged` en cualquier otro caso. `self update` y `self uninstall` siempre actúan sobre la **instalación registrada** (el recibo en su ubicación), independientemente de qué copia del binario ejecute el comando. Si conviven dos instalaciones (Cask y `script`), `doctor` lo informa junto con cuál tiene precedencia en el PATH.
+**Detección del canal:** `homebrew` si el ejecutable resuelto está bajo el prefijo de Homebrew (`Caskroom`); `script` según el recibo; `unmanaged` en cualquier otro caso. `self update` y `self uninstall` siempre actúan sobre la **instalación registrada** (el recibo en su ubicación), independientemente de qué copia del binario ejecute el comando. Si conviven dos instalaciones (Cask y `script`), `doctor` lo informa junto con cuál tiene precedencia en el PATH.
 
 ## 8. Entorno del usuario
 
@@ -517,7 +514,7 @@ ai-voice-interconnector self update [--check] [--version X.Y.Z] [--force] [--no-
 **Flujo:**
 
 1. **Recuperación y bloqueo.**
-2. **Leer el recibo y el canal** ([§7.2](#72-canales)). Si el canal es `homebrew` o `dev` → `externally_managed` con el comando correcto; si no hay instalación → `not_installed` con el one-liner.
+2. **Leer el recibo y el canal** ([§7.2](#72-canales)). Si el canal es `homebrew` → `externally_managed` con el comando correcto; si no hay instalación → `not_installed` con el one-liner.
 3. **Resolver la versión objetivo**: `--version`, o la última estable obtenida por la redirección de `releases/latest`, sin API. La API REST solo se usa como respaldo. Se respeta `AVI_DOWNLOAD_BASE_URL`.
 4. **Comparar las versiones** semánticamente:
    - iguales → `already_up_to_date`, sin descargar nada (`--force` reinstala la misma versión);
@@ -548,7 +545,7 @@ Actúa sobre la instalación registrada, sea cual sea la copia del binario que l
 4. **Confirmación destructiva.**
 5. **Parar el daemon.** Si falla → `daemon_stop_failed`, sin borrar nada.
 6. **Borrar el estado** (salvo con `--keep-data`):
-   - **Sin `--keep-data`: la raíz de datos entera**, y no el plan de `cleanup --all`. El motivo es que al desinstalar **desaparece el programa, y con él las voces de fábrica** (`cleanup --all` las protege porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar). Dejarlas sería residuo dentro de una raíz de propiedad exclusiva, que es lo que prohíbe el criterio 17, de modo que el destino del estado es la raíz completa —que R1 permite porque es exclusiva— en vez de la lista de categorías. Los modelos siguen el plan de `--model`, con sus reglas de propiedad.
+    - **Sin `--keep-data`: la raíz de datos entera**, y no el plan de `cleanup --all`. El motivo es que al desinstalar **desaparece el programa, y con él las voces de fábrica** (`cleanup --all` las protege porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar). Dejarlas sería residuo dentro de una raíz de propiedad exclusiva, de modo que el destino del estado es la raíz completa —que R1 permite porque es exclusiva— en vez de la lista de categorías. Los modelos siguen el plan de `--model`, con sus reglas de propiedad.
    - **Con `--keep-data`: el plan de `cleanup --all` filtrado** —fuera modelos, voces y habla, dentro configuración, logs y estado del daemon—, que es lo coherente con lo que el usuario ha pedido. El directorio de programa se borra igual en los dos casos: la bandera conserva el estado, no el programa.
 7. **Revertir el PATH** según el recibo:
    - el enlace, solo si apunta al directorio de programa;
@@ -594,7 +591,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 | Dato | Contenido |
 |---|---|
 | Versión y target (`version`, `target`) | Los del binario en ejecución |
-| Canal (`channel`) | `script`, `dev`, `homebrew` o `unmanaged` |
+| Canal (`channel`) | `script`, `homebrew` o `unmanaged` |
 | Instalación (`install`) | Directorio de programa y estado del recibo: válido o ausente |
 | PATH (`path`) | Si el comando resuelve a esta instalación, si hay duplicados en el PATH (Cask + `script`) y el estado del enlace o de la entrada de registro |
 | Pendientes (`pending`) | Diario de transacción, aparcados y stagings huérfanos |
@@ -646,7 +643,7 @@ Los cuatro jobs de build de CI invocan este comando en lugar de repetir cada uno
 
 ### 9.5 `cargo xtask install`
 
-Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-interconnector self install --channel dev` (`--channel` es una opción oculta). El build local queda instalado **por el mismo camino que un release**, de modo que cada instalación de desarrollo ejercita el instalador real.
+Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-interconnector self install` (sin canal: deja una instalación `script`). El build local queda instalado **por el mismo camino que un release**, de modo que cada instalación de desarrollo ejercita el instalador real.
 
 - **Volver al release publicado**: `ai-voice-interconnector self update --force`.
 - **Desinstalar**: `ai-voice-interconnector self uninstall`, o `cargo run -- self uninstall` si la copia instalada está rota.
@@ -727,7 +724,7 @@ Al abrir o cerrar una brecha se actualiza esta tabla. El historial de las ya cer
 | Nivel | Qué cubre | Dónde corre |
 |---|---|---|
 | Unitarias (Rust) | Detección de target, comparación de versiones, lectura y escritura del recibo, edición de PATH (bloques de perfil; lista de PATH de Windows con conservación del tipo), planificador de transacciones y rollback, plan de limpieza (reglas de propiedad) | Las 3 puertas de test |
-| Integración (Rust, aislada) | Ciclos completos install → update → update sin cambios → uninstall; checksum inválido; interrupción y recuperación; daemon activo durante la actualización; canales `homebrew` y `dev`; confirmación sin terminal | Las 3 puertas, con las raíces reubicadas a temporales y un servidor HTTP local que sirve releases falsos (`AVI_DOWNLOAD_BASE_URL`). En Windows, la integración de PATH se prueba sobre una clave de registro de prueba |
+| Integración (Rust, aislada) | Ciclos completos install → update → update sin cambios → uninstall; checksum inválido; interrupción y recuperación; daemon activo durante la actualización; canal `homebrew`; confirmación sin terminal | Las 3 puertas, con las raíces reubicadas a temporales y un servidor HTTP local que sirve releases falsos (`AVI_DOWNLOAD_BASE_URL`). En Windows, la integración de PATH se prueba sobre una clave de registro de prueba |
 | Bootstrap | Detección de target, resolución de versión, checksum inválido, binario incompatible, paso de opciones y ausencia de efectos en la sesión de PowerShell; validación `X.Y.Z` de la versión; ejecución real de `irm | iex` contra el servidor local con PowerShell 5.1 y 7; guarda de codificación ASCII de los `.ps1` | bats (Linux, macOS), contra `openssl s_server` por HTTPS, y Pester (Windows), contra `Serve.ps1` por HTTP |
 | Humo del empaquetado | `cargo xtask package`, luego `self install --no-setup --no-modify-path` en un sandbox, luego `--version` | Los 4 jobs de build (cubre Linux arm64, que no tiene puerta de test propia) |
 | E2E real | One-liner contra el release publicado, en máquinas reales | Manual, fuera del pipeline, según la política actual de validación E2E |
@@ -746,12 +743,12 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/CLI/commands/SELF.md` | Documento del grupo `self`, con 201 líneas: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
 | `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1–R3, el gate de categoría y la confirmación destructiva |
 | `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y la poda que usa `self update` |
-| `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del envelope, las cuatro retiradas, los seis chequeos y el veredicto de un solo objeto |
+| `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del envelope, los cinco chequeos y el veredicto de un solo objeto |
 | `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
 | `docs/SELF-HOSTED-INSTALL.md` | Retirado: no existe en el arbol. Su contenido vigente esta en `docs/DISTRIBUTION.md` |
 | `docs/DESIGN.md` | Arquitectura, motor TTS, estructura del proyecto y comandos; su árbol describe las piezas vigentes, de modo que la ausencia de los cinco scripts de la raíz es un hecho comprobable y no un olvido |
-| `docs/GOAL.md` | Especificación ideal del producto y clasificación de specs, con la firma de código en el goal a largo plazo; el criterio de equivalencia entre SO nombra la invocación vigente y conserva la de entonces como constancia |
+| `docs/GOAL.md` | Especificación ideal del producto y clasificación de specs, con la firma de código en el goal a largo plazo |
 | `docs/MANUAL-VALIDATION.md` | Procedimiento operativo de la validación end-to-end manual: la matriz de la CLI que CI no puede ejercitar, con la caché de modelos y la integración de `PATH` vigentes |
 | `docs/RELEASING.md` | El corte de release: bump de las cinco versiones, promoción de `[No publicado]` por `cargo xtask release` y aborted list del gate de publicación |
 | `docs/CLI/commands/VERSION.md` | Documento de `version`, el único comando de nivel superior sin motor en `avi-lifecycle`: lo resuelve `handle_version` en `src/main.rs`, y por eso el envelope `--json` es toda su superficie |
@@ -783,7 +780,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 12. `self update --check` informa la transición y no modifica el disco.
 13. Con el daemon activo, la actualización lo detiene antes del reemplazo y termina con éxito en los cuatro targets, incluido Windows con el ejecutable en uso.
 14. Interrumpir la actualización en cualquier punto deja operativa la versión anterior, y la siguiente operación de ciclo de vida completa la recuperación.
-15. En los canales `homebrew` y `dev`, `self update` termina con `externally_managed` e indica el comando correcto.
+15. En el canal `homebrew`, `self update` termina con `externally_managed` e indica el comando correcto.
 16. Después de actualizar, los modelos cuyo pin cambió quedan provisionados y las revisiones propias obsoletas quedan podadas.
 
 **Desinstalación y limpieza**
@@ -800,7 +797,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 
 24. En una máquina con los requisitos del sistema, `cargo xtask bootstrap` deja el entorno listo para `cargo test` y para `cargo run --features full` con STT. Repetirlo sin cambios en el repositorio no hace trabajo.
 25. `cargo xtask package` produce en el host un archivo con el mismo layout que el del release de ese target.
-26. `cargo xtask install` instala el build local por el mismo camino que el one-liner (canal `dev`).
+26. `cargo xtask install` instala el build local por el mismo camino que el one-liner, como instalación `script`.
 27. `cargo xtask clean` sin flags solo borra la capa del repositorio.
 
 **Organización**

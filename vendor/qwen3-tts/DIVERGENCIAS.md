@@ -49,10 +49,10 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 
 - **Archivos**: `qwen_tts.exe.manifest`, `qwen_tts_manifest.rc` y la rama MinGW del `Makefile` (variable `WIN_RES_OBJ`, regla `qwen_tts_manifest.o` con `windres -O coff`). `main.c` no cambia.
 - **Qué cambia**: el ejecutable lleva incrustado un manifiesto de aplicación con `<activeCodePage>UTF-8</activeCodePage>`. Con él, el CRT entrega `argv` en UTF-8 y las APIs ANSI (`fopen` y similares) interpretan las rutas como UTF-8.
-- **Por qué**: sin manifiesto, `main(argc, argv)` recibe los argumentos en la página ANSI del sistema (cp1252). `--ref-text "… técnico … evolución …"` se grababa en el `.qvoice` en cp1252 (199 bytes en lugar de 201 en UTF-8) y las rutas con caracteres no ASCII no llegaban íntegras.
+- **Por qué**: sin manifiesto, `main(argc, argv)` recibe los argumentos en la página ANSI del sistema (cp1252). Una ruta con caracteres no ASCII en `--ref-audio` o en `--save-voice` (p. ej. `cañón/x.qvoice`) no llegaba íntegra: el archivo se creaba con el nombre corrupto o la apertura fallaba.
 - **Requisito**: Windows 10 versión 1903 o posterior; en versiones anteriores el manifiesto se ignora y vuelve el comportamiento cp1252.
-- **Verificación**: la cadena `activeCodePage` aparece en `qwen_tts.exe`; clonar con `--ref-audio` (24 kHz mono) y el `--ref-text` anterior hacia `cañón/x.qvoice` crea el archivo en esa ruta y la cabecera `QVCE` registra `ref_text_len = 201` con texto UTF-8 válido.
-- **Si se pierde**: `--ref-text` y las rutas no ASCII se corrompen en Windows sin ningún error.
+- **Verificación**: la cadena `activeCodePage` aparece en `qwen_tts.exe`; clonar con `--ref-audio` (24 kHz mono) y `--save-voice cañón/x.qvoice` crea el archivo en esa ruta y la cabecera `QVCE` queda válida.
+- **Si se pierde**: `--ref-audio`, `--save-voice` y las rutas no ASCII se corrompen en Windows sin ningún error.
 
 ### Cancelación de la generación al desconectarse el cliente
 

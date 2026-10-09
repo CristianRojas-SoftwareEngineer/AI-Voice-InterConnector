@@ -58,7 +58,7 @@ limitada, pero conviene explicitar sus supuestos:
   ese riesgo residual en lugar de introducir un secreto que el propio cliente IPC
   tendría que generar y persistir, sin ganancia real bajo un binding exclusivo a
   loopback y modelo single-user.
-- El endpoint de síntesis valida la entrada (`text` acotado a 5000 caracteres)
+- El endpoint de síntesis valida la entrada (`text` acotado a 500 caracteres Unicode, `reason` `text_too_long`)
   antes de procesarla.
 - No reenvíes ni expongas el puerto 8765 a interfaces de red externas.
 

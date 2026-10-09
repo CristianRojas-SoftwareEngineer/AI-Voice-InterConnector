@@ -98,7 +98,7 @@ ai-voice-interconnector doctor --json
 si terminó en `setup_failed`, que deja el programa instalado pero sin modelos.
 
 ```bash
-# Descarga los 4 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
+  # Descarga los 5 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
 ai-voice-interconnector setup
 ```
 
@@ -210,14 +210,14 @@ scriptable. La captura por micrófono se valida en §9.
 
 ```bash
 # Transcribir un WAV a texto (--source-language es obligatorio)
-ai-voice-interconnector speech transcribe --audio clip.wav --source-language es-latam
+ai-voice-interconnector speech transcribe --audio clip.wav --source-language es
 
-# En JSON ({"text","source"})
-ai-voice-interconnector speech transcribe --audio clip.wav --source-language es-latam --json
+# En JSON ({"text","source_language"})
+ai-voice-interconnector speech transcribe --audio clip.wav --source-language es --json
 
 # Doblaje voz→voz desde archivo: transcribe → traduce → sintetiza → reproduce
-# (--file es alias de --audio; --target-language por defecto es-latam)
-ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --target-language es-latam --voice mi_voz
+# (--target-language por defecto es)
+ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --target-language es --voice mi_voz
 ```
 
 **Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`), **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce, **exit 0**. Un `--audio` inexistente sale con **exit 3**; un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
@@ -234,21 +234,21 @@ especificación completa está en [docs/UX-AUDIO-INTERACTIVA.md](UX-AUDIO-INTERA
 rechazar). Redirige stdin para que **no** sea terminal:
 
 ```bash
-ai-voice-interconnector speech transcribe --mic --source-language es-latam < /dev/null ; echo "exit=$?"
+ai-voice-interconnector speech transcribe --mic --source-language es < /dev/null ; echo "exit=$?"
 ```
 **Esperado**: **exit 2** (`usage_error`), aviso en **stderr** pidiendo `--duration N` al no haber terminal. **Sin panic ni backtrace** (regresión histórica ya corregida).
 
 **Duración fija sigue intacta** (no interactiva, no push-to-talk):
 
 ```bash
-ai-voice-interconnector speech transcribe --mic --duration 3 --source-language es-latam ; echo "exit=$?"
+ai-voice-interconnector speech transcribe --mic --duration 3 --source-language es ; echo "exit=$?"
 ```
 **Esperado**: graba 3 s fijos y transcribe a **stdout**, **exit 0**; sin panic.
 
 **Ruta feliz push-to-talk** — en una terminal interactiva real:
 
 ```bash
-ai-voice-interconnector speech transcribe --mic --source-language es-latam
+ai-voice-interconnector speech transcribe --mic --source-language es
 ```
 **Esperado**:
 1. En **stderr** aparece: `Grabando… pulsa Enter para detener.`
@@ -258,7 +258,7 @@ ai-voice-interconnector speech transcribe --mic --source-language es-latam
 **Techo de seguridad** (Enter olvidado) — baja el tope con la variable de entorno y **no** pulses Enter:
 
 ```bash
-AVI_PUSH_TO_TALK_MAX_SECS=5 ai-voice-interconnector speech transcribe --mic --source-language es-latam
+AVI_PUSH_TO_TALK_MAX_SECS=5 ai-voice-interconnector speech transcribe --mic --source-language es
 ```
 **Esperado**: a los 5 s la captura se corta sola, en **stderr** aparece `Límite de grabación alcanzado (5 s); deteniendo.`, transcribe lo grabado y sale con **exit 0** (el techo **no** es error).
 
@@ -403,8 +403,8 @@ esa misma función.
 | Exit | Significado (`reason`) | Canal | Sonda |
 |---|---|---|---|
 | **1** | Error genérico (`io_error`) | stderr, stdout limpio | `speech transcribe --audio <wav.tomlado en exclusiva por otro proceso>`: existe como fichero (`validate_audio_arg` pasa) pero leerlo falla por E/S |
-| **2** | Entrada inválida (`usage_error`, `invalid_audio`, `invalid_identifier`, `audio_too_long`, `daemon_not_supported`) | stderr; envelope por stdout con `--json` | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es-latam < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (local-only con `--daemon`) |
-| **3** | Recurso no encontrado (`audio_not_found`, `voice_not_found`, `speech_not_found`) | stderr, stdout limpio | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es-latam` |
+| **2** | Entrada inválida (`usage_error`, `invalid_audio`, `invalid_identifier`, `audio_too_long`, `daemon_not_supported`) | stderr; envelope por stdout con `--json` | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (local-only con `--daemon`) |
+| **3** | Recurso no encontrado (`audio_not_found`, `voice_not_found`, `speech_not_found`) | stderr, stdout limpio | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es` |
 | **4** | Modelo no provisionado (`model_missing`) | stderr, stdout limpio | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el modelo de traducción del par sin provisionar |
 | **5** | Daemon inalcanzable (`daemon_unreachable`) | stderr; envelope por stdout con `--json` | `speech say --text x --daemon` con el daemon detenido |
 | **6** | Conflicto de estado (`label_exists`, `voice_exists`) | stderr, stdout limpio | `speech synthesize --text x --label ya_existe` sin `--force` (colisión de etiqueta); `voice clone --name mi_voz --speech-reference habla.wav` dos veces sin `--force` |

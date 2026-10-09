@@ -89,7 +89,7 @@ exit 1 `io_error`; el mensaje nombra el fichero y remite a `speech remove`.
 ## `speech transcribe`
 
 ```
-ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es-latam|en>
+ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en>
 ```
 
 | Flag | Tipo | Default | Descripción |
@@ -97,7 +97,7 @@ ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--dur
 | `--audio` | string | — | Ruta del WAV a transcribir. Mutuamente excluyente con `--mic` (`conflicts_with`) |
 | `--mic` | flag | `false` | Captura desde el micrófono en vez de leer un archivo |
 | `--duration` | u64 | — | Duración fija de grabación en segundos. Solo tiene efecto con `--mic` |
-| `--source-language` | `es-latam`\|`en` | — | Obligatorio. Idioma hablado en el audio |
+| `--source-language` | `es`\|`en` | — | Obligatorio. Idioma hablado en el audio |
 
 Validaciones puras antes de despachar:
 - Ni `--audio` ni `--mic`: exit 2 `usage_error`.
@@ -134,25 +134,26 @@ Despacho:
  exit 4 `model_missing` antes de instanciar nada); si el binario se compiló
  sin el feature `native-stt`, exit 1 `stt_unsupported`; si el feature está
  activo, instancia `ParakeetEngine` (`crates/avi-stt/src/lib.rs`) y llama
- `engine.transcribe(&pcm, Some(language))`.
+ `engine.transcribe(&pcm)`.
 
-`resolve_stt_language` mapea `es-latam` → `es`; `en`
-pasa verbatim. `ParakeetEngine` solo transcribe, nunca traduce.
+`ParakeetEngine` solo transcribe, nunca traduce: el idioma declarado selecciona el modelo y la respuesta, pero la transcripción es directa sin traducción intermedia.
 
 ### Contrato `--json`
 
 ```json
-{ "text": "<texto transcrito>", "source": "<source_language tal cual se pasó>" }
+{ "text": "<texto transcrito>", "source_language": "<valor de --source-language>" }
 ```
 
 (Mismo envelope en la rama local y vía daemon.)
+
+**Aviso de idioma del daemon (`language_warning`).** La respuesta de `POST /transcribe` lleva `{text}` y, solo cuando el origen declarado es `es` y el detector heurístico marca el texto como inglés, el campo aditivo `language_warning: true`. Es un campo solo del protocolo del daemon: la CLI no lo propaga.
 
 ---
 
 ## `speech synthesize`
 
 ```
-ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--voice <nombre>] [--output <ruta>] [--force] [--play] [--source-language <es-latam|en>] [--target-language <es-latam|en>] [--temperature <0<t<=2.0>]
+ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--voice <nombre>] [--output <ruta>] [--force] [--play] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>]
 ```
 
 | Flag | Tipo | Default | Descripción |
@@ -163,8 +164,8 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 | `--label`, `-l` | string | — | Obligatorio. Etiqueta bajo la que se persiste la locución (se normaliza a minúsculas) |
 | `--force`, `-f` | flag | `false` | Sobrescribe una locución existente con la misma etiqueta |
 | `--play` | flag | `false` | Reproduce el WAV tras sintetizar |
-| `--source-language` | `es-latam`\|`en` | = `target-language` | Idioma del texto de entrada |
-| `--target-language` | `es-latam`\|`en` | `es-latam` | Idioma/modelo de síntesis; si difiere del origen, el texto se traduce antes de sintetizar |
+| `--source-language` | `es`\|`en` | = `target-language` | Idioma del texto de entrada |
+| `--target-language` | `es`\|`en` | `es` | Idioma/modelo de síntesis; si difiere del origen, el texto se traduce antes de sintetizar |
 | `--temperature` | f32 | producción (`0.35`) | Override de muestreo; rango `0 < t <= 2.0` |
 
 **`--play` ofrece el bucle interactivo de 4 opciones** (reproducir de nuevo /
@@ -215,7 +216,7 @@ local.
 ## `speech say`
 
 ```
-ai-voice-interconnector speech say --text <texto> [--voice <nombre>] [--source-language <es-latam|en>] [--target-language <es-latam|en>] [--temperature <0<t<=2.0>]
+ai-voice-interconnector speech say --text <texto> [--voice <nombre>] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>]
 ```
 
 Sintetiza y reproduce sin persistir en `SpeechStore` (no tiene `--label`).
@@ -254,18 +255,18 @@ paridad de inteligibilidad la cubre `synthesize`.
 ## `speech dub`
 
 ```
-ai-voice-interconnector speech dub (--audio <archivo.wav>|--file <archivo.wav> | --mic) [--duration <segs>] --source-language <es-latam|en> [--target-language <es-latam|en>] [--voice <nombre>] [--temperature <0<t<=2.0>]
+ai-voice-interconnector speech dub (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en> [--target-language <es|en>] [--voice <nombre>] [--temperature <0<t<=2.0>]
 ```
 
 Pipeline voz→voz: transcribe → traduce (si `source != target`) → sintetiza →
-reproduce. `--file` es alias de `--audio` (`alias = "file"`, contrato del comando).
+reproduce.
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--audio`, `-a` (alias `--file`) | string | — | Archivo de audio a doblar. Mutuamente excluyente con `--mic` |
+| `--audio`, `-a` | string | — | Archivo de audio a doblar. Mutuamente excluyente con `--mic` |
 | `--voice`, `-v` | string | `default` | Voz destino de la síntesis |
-| `--source-language` | `es-latam`\|`en` | — | Obligatorio. Idioma hablado en el audio de entrada |
-| `--target-language` | `es-latam`\|`en` | `es-latam` | Idioma/modelo de síntesis; dispara traducción si difiere del origen |
+| `--source-language` | `es`\|`en` | — | Obligatorio. Idioma hablado en el audio de entrada |
+| `--target-language` | `es`\|`en` | `es` | Idioma/modelo de síntesis; dispara traducción si difiere del origen |
 | `--temperature` | f32 | producción (`0.35`) | Override de muestreo |
 | `--mic` | flag | `false` | Captura desde micrófono. Mutuamente excluyente con `--audio` |
 | `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` |
@@ -304,8 +305,7 @@ Rama directa (requiere feature `native-stt`; sin
 ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
 4) y el modelo de síntesis provisionado (`require_model_provisioned`) →
 captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
-vacío, exit 2 `empty_text` → si `source != target`, exige el par
-`{es-en, en-es}` (si no, exit 2 `unsupported_language_pair`) y el modelo de
+vacío, exit 2 `empty_text` → si `source != target`, exige el modelo de
 traducción provisionado (exit 4 `model_missing` si no); sin el feature
 `native-translation`, exit 1 `translation_unsupported` → la voz debe existir
 (exit 3 `voice_not_found`) → `Qwen3TtsEngine::synthesize_with_options` →
@@ -314,9 +314,9 @@ traducción provisionado (exit 4 `model_missing` si no); sin el feature
 ### `POST /dub` (daemon)
 
 Handler `dub_handler`. Acepta
-`{audio_b64, voice?, from|source_language?, to|target_language?, temperature?}`
-(`from`/`source_language` son alias del mismo campo, igual `to`/`target_language`;
-default `voice="default"`, default idiomas `"es"`). Tras validar barato en JSON
+`{audio_b64, voice, source_language, target_language, temperature?}`
+(todos obligatorios salvo `temperature`, todos `es`/`en` en idiomas).
+Tras validar barato en JSON
 plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
 (`application/x-ndjson`) emitiendo `{"event":"started", "voice":"..."}`.
 
@@ -335,7 +335,7 @@ Al finalizar, emite el evento `result`:
 { "event": "result", "status": "dubbed", "text": "<transcrito>", "translated": "<texto final tras traducir/passthrough>", "audio_b64": "<WAV base64>", "voice": "<voz>", "work_ms": 1234 }
 ```
 
-En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo>", "message": "..."}` con el mapeo contractual correspondiente (`usage_error`/`invalid_audio`/`audio_too_long`/`empty_text`/`text_too_long`/`unsupported_language_pair` → exit 2, `model_missing` → exit 4, `voice_not_found` → exit 3, `transcription_failed` → exit 10, `translation_failed` → exit 9, `synthesis_failed`/`synthesis_timeout`/`stt_unsupported`/`translation_unsupported` → exit 1).
+En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo>", "message": "..."}` con el mapeo contractual correspondiente (`usage_error`/`invalid_audio`/`audio_too_long`/`empty_text`/`text_too_long` → exit 2, `model_missing` → exit 4, `voice_not_found` → exit 3, `transcription_failed` → exit 10, `translation_failed` → exit 9, `synthesis_failed`/`synthesis_timeout`/`stt_unsupported`/`translation_unsupported` → exit 1).
 
 ### Contrato `--json` (CLI)
 
@@ -397,27 +397,16 @@ no existe ninguno de los dos, exit 3 `speech_not_found`.
 
 ## Idiomas soportados
 
-Conjunto cerrado `{es-latam, en}` en todos los flags de idioma (`value_parser`
-de `clap`); internamente se normalizan a `{es, en}` vía `resolve_stt_language`
-(CLI) / `resolve_translation_language`
-(daemon) — ambas funciones mapean
-`es-latam` → `es` y pasan cualquier otro valor verbatim. Los únicos pares de
+Conjunto cerrado `{es, en}` en todos los flags de idioma (`value_parser`
+de `clap`). Los únicos pares de
 traducción provisionados por `setup` son `es-en` y `en-es`
-(`crates/avi-shared/src/paths.rs`, `MODEL_REVISIONS`); cualquier otro par
-resulta en exit 2 `unsupported_language_pair`.
+(`crates/avi-shared/src/paths.rs`, `MODEL_REVISIONS`).
 
 **Idioma de síntesis.** El idioma de destino (`--target-language`) es también el
 idioma que recibe el motor de síntesis, tanto en la CLI como en el daemon: el
-token del producto se traduce al nombre del motor (`es-latam` → `Spanish`,
+token del producto se traduce al nombre del motor (`es` → `Spanish`,
 `en` → `English`) y las tres voces de fábrica hablan ambos. `POST /synthesize`
-rechaza un `target_language` distinto de `es-latam` y `en` con `usage_error`;
-`POST /dub` normaliza antes `es` a `es-latam`.
-
-**Divergencia deliberada con `translate`.** El conjunto `{es-latam, en}` es
-la taxonomía del grupo `speech`; el comando `translate` usa un alfabeto
-estricto `{es, en}` en `--from`/`--to` (`value_parser = ["es", "en"]`) y rechaza `es-latam` por parser con exit 2. `es-latam`
-solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
-`es`.
+rechaza un `source_language`/`target_language` distinto de `es` y `en` con `usage_error`.
 
 ---
 
@@ -432,7 +421,6 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
 | `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `speech list --voice` ilegal) |
 | `daemon_not_supported` | 2 | `--daemon` en un subcomando local-only (`list`/`play`/`remove`) |
-| `unsupported_language_pair` | 2 | Traducción fuera de `{es-en, en-es}` |
 | `audio_not_found` | 3 | `--audio` en `transcribe` o `dub` apunta a un archivo inexistente |
 | `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `speech list --voice` sobre voz inexistente) |
 | `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente |
@@ -455,14 +443,14 @@ solo sigue vivo fuera del CLI en la vía IPC del daemon, que lo normaliza a
 ```bash
 ai-voice-interconnector speech list
 ai-voice-interconnector speech list --voice mi_voz
-ai-voice-interconnector speech transcribe --audio entrada.wav --source-language es-latam
+ai-voice-interconnector speech transcribe --audio entrada.wav --source-language es
 ai-voice-interconnector speech transcribe --mic --duration 5 --source-language en
 ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo --voice default
-ai-voice-interconnector speech synthesize --text "Hello" --label greeting --source-language en --target-language es-latam --play
+ai-voice-interconnector speech synthesize --text "Hello" --label greeting --source-language en --target-language es --play
 ai-voice-interconnector speech say --text "Probando" --voice default
-ai-voice-interconnector speech dub --audio entrevista.wav --source-language en --target-language es-latam --voice default
+ai-voice-interconnector speech dub --audio entrevista.wav --source-language en --target-language es --voice default
 ai-voice-interconnector --daemon speech synthesize --text "Vía daemon" --label demo
-ai-voice-interconnector --no-daemon speech transcribe --audio entrada.wav --source-language es-latam
+ai-voice-interconnector --no-daemon speech transcribe --audio entrada.wav --source-language es
 ai-voice-interconnector speech play --label saludo
 ai-voice-interconnector speech remove --label saludo
 ai-voice-interconnector --json speech list

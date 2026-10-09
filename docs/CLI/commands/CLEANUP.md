@@ -20,21 +20,19 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 | `--yes`, `-y` | `bool` | — | Omite la confirmación interactiva |
 | `--json` | `bool` | — | Global (`Cli::json`); con `cleanup` emite `status` + `reason` + `removed` + `planned` + `unreadable` (el plan como recibo, en ejecución y en `--dry-run`) |
 
-**Gate `sin categoría → 2`.** Sin ninguna de las cuatro categorías, `cleanup` sale con `usage_error` (**2**) y **no borra nada**: la comprobación es la primera de `cleanup::run`, antes incluso de mirar privilegios o el bloqueo, de modo que una invocación mal formada no deja ni el archivo de bloqueo detrás (criterio 22).
+**Gate `sin categoría → 2`.** Sin ninguna de las cuatro categorías, `cleanup` sale con `usage_error` (**2**) y **no borra nada**: la comprobación es la primera de `cleanup::run`, antes incluso de mirar privilegios o el bloqueo, de modo que una invocación mal formada no deja ni el archivo de bloqueo detrás.
 
 ---
 
 ## El planificador: una sola fuente de la lista
 
-`cleanup::plan(roots, options)` construye la lista de destinos con sus tamaños aplicando **R1 a R3**, y la usan **las tres cosas que la necesitan**: el resumen de la confirmación, la salida de `--dry-run` y la ejecución. No puede haber divergencia entre lo que se anuncia y lo que ocurre porque no hay dos implementaciones.
-
-**Lo que sustituye.** Antes de que el planificador único existiera, `handle_cleanup` en `src/main.rs` calculaba la lista de candidatas y la lista de borrado **por separado**: el plan de `--dry-run` anunciaba `xet` y `.locks` sin mirar si la raíz de modelos era compartida, mientras el ejecutor devolvía `Ok(false)` bajo R3. El resultado era que `cleanup --model --dry-run` anunciaba un borrado que no ocurría, y que ninguna prueba lo detectaba porque nadie comparaba las dos listas. Hoy la hay (`plan_and_execution_agree_under_shared_root`).
+`cleanup::plan(roots, options)` construye la lista de destinos con sus tamaños aplicando **R1 a R3**, y la usan **las tres cosas que la necesitan**: el resumen de la confirmación, la salida de `--dry-run` y la ejecución. No puede haber divergencia entre lo que se anuncia y lo que ocurre porque no hay dos implementaciones: el plan de `--dry-run` y la lista de borrado salen de la misma llamada, como comprueba `plan_and_execution_agree_under_shared_root`.
 
 ### R1 a R3, en una frase cada una
 
 - **R1**: solo se borra dentro de raíces de propiedad exclusiva. Una ruta fuera de ellas es un error interno y nunca se borra.
 - **El directorio de programa no lo toca `cleanup`** —eso es `self uninstall`— y aparece en el plan como recurso **conservado**, con su motivo, porque un plan que no dice qué se queda no permite saber que los modelos de otra herramienta siguen ahí.
-- **R3**: en la raíz de modelos **exclusiva** el borrado es de **directorio entero** (snapshots, locks y `xet` cuelgan de ella). En la raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME` solo se borran los repos fijados (`MODEL_REVISIONS`), y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de otra herramienta (criterio 23).
+- **R3**: en la raíz de modelos **exclusiva** el borrado es de **directorio entero** (snapshots, locks y `xet` cuelgan de ella). En la raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME` solo se borran los repos fijados (`MODEL_REVISIONS`), y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de otra herramienta.
 
 **La exclusividad se decide por identidad de ruta, no por el valor de la variable**: la raíz registrada en el recibo era exclusiva en el momento de instalar, y que el usuario después apunte `HF_HUB_CACHE` a otro sitio no convierte la raíz registrada en compartida. Es lo que evita que un recibo viejo autorice borrar lo ajeno o, al revés, que una variable obsoleta impida borrar lo propio.
 
@@ -46,7 +44,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 1. **Gate de categoría**: sin categoría → `usage_error` (2), sin borrar nada.
 2. **Privilegios**: ninguna operación pide elevación. En Unix, si se detecta ejecución vía `sudo` (uid 0 con `SUDO_USER`), se aborta con `sudo_not_supported` (1); root sin `sudo` (contenedores) sí se permite. En Windows, si el proceso está elevado, se avisa por stderr.
-3. **`--dry-run`**: imprime el plan, incluido el barrido que *se haría*, y termina con exit 0 **sin tomar el bloqueo, sin barrer y sin borrar**. El barrido no se ejecuta en la simulación porque lo que no puede coexistir con una simulación es modificar el disco (criterio 20); lo que sí hace es **anunciarlo con la misma decisión** del barrido real, de modo que lo que dice el `--dry-run` es lo que ocurriría.
+3. **`--dry-run`**: imprime el plan, incluido el barrido que *se haría*, y termina con exit 0 **sin tomar el bloqueo, sin barrer y sin borrar**. El barrido no se ejecuta en la simulación porque lo que no puede coexistir con una simulación es modificar el disco; lo que sí hace es **anunciarlo con la misma decisión** del barrido real, de modo que lo que dice el `--dry-run` es lo que ocurriría.
 4. **Bloqueo y recuperación**: bloqueo exclusivo de SO (el mismo, sobre el directorio de programa registrado, que toman `self update` y `self uninstall`; excluye a los comandos de uso, que lo toman compartido) y barrido transversal (aparcados `.old-*`, stagings huérfanos, temporales propios sin proceso vivo). El barrido va **antes** del plan, para que el plan que el usuario ve sea el que queda después y no una lista que el barrido va a invalidar.
 5. **Plan** y **confirmación destructiva** `[s/N]`.
 6. **Parar el daemon** antes de borrar nada que use. Si no se detiene → `daemon_stop_failed` (**16**) y **nada del plan se borra**.
@@ -91,7 +89,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 
 `status` toma `cleanup_complete`, `planned` o `cancelled`. `planned` es el recibo de `plan()`: lo que la operación iba a borrar, y en `--dry-run` lo único que dice, porque no borra nada. `removed` son las rutas del plan con lo que la operación borró de verdad, y con `--dry-run` copia `planned`, que es lo que permite comparar el simulacro con la ejecución real. **Los dos salen de la misma llamada al planificador**, así que no pueden divergir. Exactamente un objeto JSON por invocación, incluso cuando falla: sin categoría con `--json` sale el objeto de error de §10 del contrato (`error` + `reason`), y nada más.
 
-`schema_version` vale **`"5"`** (el envelope de la CLI); el protocolo del daemon va por `"4"` porque es otro contrato. La subida es incompatible: el simulacro cambia de `status` y pierde la clave `dry_run`, que con `planned` sobraba.
+`schema_version` vale **`"5"`** (el envelope de la CLI); el protocolo del daemon va por `"4"` porque es otro contrato. El simulacro informa `status` `planned` sin clave `dry_run`: con `planned` la clave sobra.
 
 ---
 

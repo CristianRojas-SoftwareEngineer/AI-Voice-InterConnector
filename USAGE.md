@@ -48,7 +48,7 @@
 - [Licencia](#licencia)
 
 AI Voice InterConnector es un sintetizador de voz (TTS) 100 % local con clonación de voz en
-español latinoamericano. Esta guía recorre cada caso de uso desde la perspectiva
+español. Esta guía recorre cada caso de uso desde la perspectiva
 del usuario: qué comando ejecutar, qué ocurre y qué salida esperar.
 
 Todos los comandos funcionan **de forma idéntica en Windows, Linux y macOS**: la
@@ -129,7 +129,7 @@ desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el bin
 
 ## Primer uso: provisionar el/los modelo(s) (`setup`)
 
-`setup` descarga **los 4 modelos base + 1 opt-in** desde HuggingFace Hub de forma nativa
+`setup` descarga **los 5 modelos** desde HuggingFace Hub de forma nativa
 (crate `hf-hub`, TLS rustls) a la **caché exclusiva de la aplicación**
 (`~/.cache/ai-voice-interconnector/models` en Linux,
 `~/Library/Caches/ai-voice-interconnector/models` en macOS,
@@ -273,7 +273,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `devices` | array de objetos | Un objeto por dispositivo de salida: `id` (number), `name` (string), `latency` (number, segundos) |
+| `devices` | array de objetos | Un objeto por dispositivo de salida: `id` (number), `name` (string o `null` si el backend no lo expone), `latency` (number o `null`, segundos; `null` si el backend no la expone) |
 
 **`voice list --json`**
 
@@ -306,7 +306,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | `path_reverted` | boolean | Solo `self uninstall`: `true` si se revirtió la integración de `PATH` registrada en el recibo |
 
 El simulacro **no lleva `dry_run`**: con `status` `"planned"` y su recibo `planned`, la
-clave sería redundante, y se retiró del contrato.
+clave sería redundante.
 
 **`self install --json`**
 
@@ -350,9 +350,9 @@ clave sería redundante, y se retiró del contrato.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `translated` | string | Texto traducido (igual al de entrada si `--from == --to`, passthrough) |
-| `source` | string | El `--from` pedido |
-| `target` | string | El `--to` pedido |
+| `translated` | string | Texto traducido (igual al de entrada si origen y destino coinciden, passthrough) |
+| `source_language` | string | El `--source-language` pedido |
+| `target_language` | string | El `--target-language` pedido |
 
 ---
 
@@ -482,8 +482,8 @@ Locución 'saludo' guardada (voz 'default').
 - `--output, -o`: Copia adicional del WAV a la ruta indicada
 - `--play`: Reproduce el WAV tras guardar
 - `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
-- `--source-language`: Idioma del texto de entrada (`es-latam` o `en`; por defecto igual a `--target-language`, sin traducir)
-- `--target-language`: Idioma/modelo de síntesis (`es-latam` o `en`; default `es-latam`; si difiere del origen, el texto se traduce antes de sintetizar)
+- `--source-language`: Idioma del texto de entrada (`es` o `en`; por defecto igual a `--target-language`, sin traducir)
+- `--target-language`: Idioma/modelo de síntesis (`es` o `en`; default `es`; si difiere del origen, el texto se traduce antes de sintetizar)
 - `--temperature`: Override del muestreo (`0 < t <= 2.0`; sin el flag se usa la temperatura de producción)
 - `--json`: Emite `{status, audio_path, voice}`
 
@@ -555,8 +555,8 @@ puerta de calidad sobre lo que sonó.
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
 - `--voice, -v`: Nombre de la voz a usar (default: `default`)
-- `--source-language`: Idioma del texto de entrada (`es-latam` o `en`; por defecto igual a `--target-language`, sin traducir)
-- `--target-language`: Idioma/modelo de síntesis (`es-latam` o `en`; default `es-latam`; si difiere del origen, el texto se traduce antes de sintetizar)
+- `--source-language`: Idioma del texto de entrada (`es` o `en`; por defecto igual a `--target-language`, sin traducir)
+- `--target-language`: Idioma/modelo de síntesis (`es` o `en`; default `es`; si difiere del origen, el texto se traduce antes de sintetizar)
 - `--temperature`: Override del muestreo (`0 < t <= 2.0`; sin el flag se usa la temperatura de producción)
 - `--daemon`: Usar el daemon sin sondeo previo; si falla, el error se reporta (sin fallback a directo)
 - `--no-daemon`: Forzar modo directo, sin sondear el daemon
@@ -624,7 +624,7 @@ inexistente con exit **3** (`voice_not_found`).
 
 **Opciones:**
 - `--voice, -v`: Filtra por voz (default: todas las voces)
-- `--json`: Emite `{"speech": [{"voice", "label", "text", "created_at"}]}`
+- `--json`: Emite `{"speech": [{"voice", "label", "text", "created_at", "duration_secs"}]}`
 
 #### `speech remove`
 
@@ -666,10 +666,10 @@ detiene, se avisa por stderr y se devuelve lo grabado hasta ese punto con
 exit **0** (no es un error).
 
 ```bash
-ai-voice-interconnector speech transcribe --audio grabacion.wav --source-language es-latam
+ai-voice-interconnector speech transcribe --audio grabacion.wav --source-language es
 ai-voice-interconnector speech transcribe --audio recording.wav --source-language en --json
 ai-voice-interconnector speech transcribe --audio recording.wav --source-language en --daemon
-ai-voice-interconnector speech transcribe --mic --source-language es-latam
+ai-voice-interconnector speech transcribe --mic --source-language es
 ai-voice-interconnector speech transcribe --mic --duration 5 --source-language en
 ```
 
@@ -683,23 +683,16 @@ Con `--mic` y sin `--duration`, el comando avisa por stderr al iniciar la
 grabación y captura en modo push-to-talk hasta que el usuario presiona Enter
 (o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS`) antes de transcribir.
 
-Con `--json`, emite `{"text", "source"}` y nada por stdout salvo ese objeto.
-`source` es el **token CLI verbatim** de `--source-language` (p. ej.
-`es-latam`, sin normalizar a ISO) — a diferencia de `translate --json`, que
-emite `source`/`target` como códigos ISO. La divergencia es deliberada: esta
-sub-acción pertenece al grupo `speech`, cuyo resto de comandos (`say`,
-`synthesize`) también expone `es-latam` en su propia taxonomía de idioma sin
-colapsarla a ISO; internamente el idioma sí se resuelve a ISO
-(`resolve_language`) antes de invocar el modelo, solo la salida `--json`
-preserva el token de entrada.
+Con `--json`, emite `{"text", "source_language"}` y nada por stdout salvo ese objeto.
+`source_language` es el valor de `--source-language` (`es` o `en`).
 
 **Opciones:**
 - `--audio`: Ruta del archivo WAV a transcribir (mutuamente excluyente con `--mic`; uno de los dos es requerido)
 - `--mic`: Transcribe desde el micrófono en vez de un archivo (mutuamente excluyente con `--audio`; uno de los dos es requerido)
 - `--duration N`: Duración fija de grabación en segundos; solo válido junto a `--mic`
-- `--source-language` (requerido): Idioma hablado en el audio (`es-latam` o `en`)
+- `--source-language` (requerido): Idioma hablado en el audio (`es` o `en`)
 - `--daemon` / `--no-daemon`: igual que en `speech say` (despacho de tres modos; la captura del audio siempre ocurre en el cliente)
-- `--json`: Emite `{"text", "source"}`
+- `--json`: Emite `{"text", "source_language"}`
 
 La captura de micrófono usa el backend multiplataforma `cpal` (único, sin
 ramas por sistema operativo): graba a la tasa y formato nativos del
@@ -740,8 +733,8 @@ fija en segundos y solo es válido junto a `--mic`. El mismo techo
 grabación, avisa por stderr y continúa con lo grabado (exit **0**).
 
 ```bash
-ai-voice-interconnector speech dub --mic --source-language es-latam --target-language en -v mi_voz
-ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --target-language es-latam
+ai-voice-interconnector speech dub --mic --source-language es --target-language en -v mi_voz
+ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --target-language es
 ```
 
 **Qué esperar:** transcribe tu habla al texto, lo traduce si procede y
@@ -751,11 +744,11 @@ captura en modo push-to-talk hasta que presiones Enter (o hasta el techo
 `AVI_PUSH_TO_TALK_MAX_SECS`) antes de transcribir.
 
 **Opciones:**
-- `--audio, -a`: Ruta del archivo WAV hablado (mutuamente excluyente con `--mic`; exactamente una de las dos es requerida; alias: `--file`)
+- `--audio, -a`: Ruta del archivo WAV hablado (mutuamente excluyente con `--mic`; exactamente una de las dos es requerida)
 - `--mic`: Graba desde el micrófono (mutuamente excluyente con `--audio`; exactamente una de las dos es requerida)
 - `--duration N`: Duración fija de grabación en segundos; solo válido con `--mic`
-- `--source-language` (requerido): Idioma hablado en el audio (`es-latam` o `en`)
-- `--target-language`: Idioma/modelo de síntesis (`es-latam` o `en`; default `es-latam`; si difiere del origen, se traduce antes de sintetizar)
+- `--source-language` (requerido): Idioma hablado en el audio (`es` o `en`)
+- `--target-language`: Idioma/modelo de síntesis (`es` o `en`; default `es`; si difiere del origen, se traduce antes de sintetizar)
 - `--temperature`: Override del muestreo (`0 < t <= 2.0`; sin el flag se usa la temperatura de producción)
 - `--voice, -v`: Nombre de la voz (default: `default`)
 - `--daemon` / `--no-daemon`: aplican a la transcripción y a la síntesis
@@ -832,7 +825,7 @@ mejores resultados.
 
 **Requisitos del audio:**
 - Duración: 10+ segundos recomendados para `--speech-reference`; `--timbre-reference` puede ser de cualquier largo
-- Idioma: Español latinoamericano
+- Idioma: Español
 - Calidad: Sin ruido de fondo, habla clara
 - Formato: WAV 16-bit
 
@@ -881,16 +874,13 @@ eliminarse; el comando lo indica y termina con error si lo intentas.
 ### `translate`
 
 Traduce texto `es↔en`, aislado de la síntesis: sin voz ni modelo TTS de por
-medio. A diferencia de `--source-language`/`--target-language` en `speech
-say`/`speech synthesize` (taxonomía `es-latam`/`en`), aquí `--from` y `--to`
-son **opcionales con defaults** (`es` y `en`) y **estrictos**: solo aceptan
-`es` o `en` — no `es-latam` (el parser rechaza cualquier otro valor con
-exit 2 antes del handler; `es-latam` solo sigue vivo en la vía IPC del
-daemon).
+medio. `--source-language` y `--target-language` son **opcionales con
+defaults** (`es` y `en`) y **estrictos**: solo aceptan `es` o `en` (el parser
+rechaza cualquier otro valor con exit 2 antes del handler).
 
 ```bash
-ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --from es --to en
-ai-voice-interconnector translate --text "Hello there" --from en --to es --json
+ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --source-language es --target-language en
+ai-voice-interconnector translate --text "Hello there" --source-language en --target-language es --json
 ```
 
 **Qué esperar:**
@@ -899,16 +889,16 @@ ai-voice-interconnector translate --text "Hello there" --from en --to es --json
 Good morning.
 ```
 
-Con `--json`, emite `{"translated", "source", "target"}` (ver la referencia
+Con `--json`, emite `{"translated", "source_language", "target_language"}` (ver la referencia
 de esquemas) y nada por stdout salvo ese objeto.
 
 **Opciones:**
-- `--text` (requerido, sin alias `-t`): Texto a traducir (mismo límite de 5000 caracteres que `speech say`/`synthesize`)
-- `--from` (opcional, default `es`): Idioma de origen del texto (`es` o `en`; `es-latam` lo rechaza el parser)
-- `--to` (opcional, default `en`): Idioma destino de la traducción (`es` o `en`)
-- `--json`: Emite `{"translated", "source", "target"}`
+- `--text`/`-t` (requerido): Texto a traducir, sin límite de longitud
+- `--source-language` (opcional, default `es`): Idioma de origen del texto (`es` o `en`)
+- `--target-language` (opcional, default `en`): Idioma destino de la traducción (`es` o `en`)
+- `--json`: Emite `{"translated", "source_language", "target_language"}`
 
-**Passthrough:** si `--from` y `--to` coinciden, devuelve el texto intacto sin
+**Passthrough:** si origen y destino coinciden, devuelve el texto intacto sin
 cargar ningún modelo. El modelo de traducción exigido es `opus-mt-<par>`, con sus
 cinco ficheros presentes y de más de 0 bytes. Si no está provisionado, falla
 remitiendo a `ai-voice-interconnector setup` (exit **4**); si la traducción falla con el
@@ -951,7 +941,7 @@ ai-voice-interconnector self uninstall --keep-data   # conserva modelos, voces y
 —la integración de `PATH` se *retira*, no se borra el archivo, y una caché HF compartida se
 conserva—. Sin terminal, `--yes` es obligatorio: sin él sale con `confirmation_required`
 (exit 2) y no borra nada. Cancelar la confirmación no es un error: `status` `cancelled` y
-exit 0. Con `--json` emite `{"schema_version":"5","status":…,"reason":null,"removed":[…],"planned":[…],"path_reverted":bool}`, y con `--dry-run` el `status` es `planned` y `removed` copia `planned` (sin `dry_run`: con `planned` la clave sobraba).
+exit 0. Con `--json` emite `{"schema_version":"5","status":…,"reason":null,"removed":[…],"planned":[…],"path_reverted":bool}`, y con `--dry-run` el `status` es `planned` y `removed` copia `planned` (sin clave `dry_run`).
 
 **Sin `--keep-data` se borra la raíz de datos entera**, no el plan de `cleanup --all`, y la
 diferencia es deliberada: `cleanup --all` protege las voces de fábrica porque van embebidas
@@ -1055,7 +1045,7 @@ Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (defau
 
 Puerto ocupado: si otro proceso usa o reserva el puerto del daemon, `daemon start`, `daemon restart` y `daemon serve` salen al instante con exit 6 (`port_in_use`) y un mensaje que nombra el puerto. Libera el puerto o arranca el daemon en otro con `AVI_DAEMON_PORT=<puerto>` (`0` = puerto efímero).
 
-Trazas y logs: `RUST_LOG` (sintaxis de `tracing`) fija el nivel de traza de la CLI y de `daemon serve` y manda sobre los valores por defecto; sin ella, la CLI muestra `warn` y superiores (trazas `info`, como la descarga de `setup`, se piden con `RUST_LOG=info`) y el daemon registra `info` de los crates propios. Cada `daemon start`/`restart` escribe `data/logs/daemon_<pid>_<ms>.log` (con el PID del daemon hijo) y, si el arranque falla, el error termina con `Log del daemon: <ruta>`. El motor de síntesis escribe en `data/logs/qwen3-tts_<pid>_<ms>.log`, y la salida de `voice clone` ya no se vuelca en la terminal. Se conservan los 10 logs más recientes de cada familia, y un log cuyo PID corresponde a un proceso vivo se conserva siempre.
+Trazas y logs: `RUST_LOG` (sintaxis de `tracing`) fija el nivel de traza de la CLI y de `daemon serve` y manda sobre los valores por defecto; sin ella, la CLI muestra `warn` y superiores (trazas `info`, como la descarga de `setup`, se piden con `RUST_LOG=info`) y el daemon registra `info` de los crates propios. Cada `daemon start`/`restart` escribe `data/logs/daemon_<pid>_<ms>.log` (con el PID del daemon hijo) y, si el arranque falla, el error termina con `Log del daemon: <ruta>`. El motor de síntesis escribe en `data/logs/qwen3-tts_<pid>_<ms>.log`, y la salida de `voice clone` no se vuelca en la terminal. Se conservan los 10 logs más recientes de cada familia, y un log cuyo PID corresponde a un proceso vivo se conserva siempre.
 
 Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
 
@@ -1161,8 +1151,6 @@ desde el binario como desde el código fuente. En concreto:
   | `4` | Modelo no provisionado | `speech say`/`daemon start` sin ejecutar `setup` |
   | `5` | Daemon inalcanzable | `speech say --daemon` sin daemon; `daemon start/stop/restart` fallido |
   | `6` | Conflicto de estado | Colisión en `voice clone` sin `--force`; voz ocupada; puerto del daemon en uso |
-  | `7` | Operación no aplicable | Voz de fábrica de solo lectura; plataforma no soportada |
-  | `8` | Precondición de entorno incumplida | Credenciales, red, permisos o disco insuficientes al provisionar |
   | `9` | Fallo del pipeline de traducción | `translate` con el modelo cargado pero la inferencia falla |
   | `10` | Fallo del pipeline de transcripción | `speech transcribe`/`speech dub` con el modelo cargado pero la inferencia falla (directo o vía daemon) |
   | `11` | Provisión de modelos fallida, **programa instalado** | `self install` o `self update` terminan con la provisión sin completar: éxito parcial, reintentable con `setup` |
@@ -1179,7 +1167,7 @@ desde el binario como desde el código fuente. En concreto:
   | `22` | Directorio de programa no borrado | `self uninstall` completó el resto; bórralo a mano (`program_dir_kept`) |
   | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
 
-  Los códigos 0–10 y el 130 son los del contrato de la CLI y no cambian. Los del 11 al 22 son
+  Los códigos 0–6, el 9, el 10 y el 130 son los del contrato de la CLI y no cambian. Los del 11 al 22 son
   la tabla cerrada del ciclo de vida, **uno por `reason`**, y hay que leer el 11 con cuidado:
   **no es un error**, es un éxito parcial con el programa ya instalado (o actualizado).
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el

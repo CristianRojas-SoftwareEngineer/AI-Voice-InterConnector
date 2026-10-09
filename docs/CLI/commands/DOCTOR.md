@@ -36,21 +36,6 @@ ai-voice-interconnector doctor [--repair] [--json]
 
 `schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**. El protocolo del daemon va por `"4"`: son contratos independientes y este no lo toca.
 
-### Las cuatro claves que se retiran
-
-`data_dir`, `hf_cache`, `base_status` e `issues` **ya no son claves de primer nivel**. No se emiten **ni siquiera como nombre**: la prueba del módulo afirma el **conjunto exacto** de claves del envelope, que es una afirmación más fuerte que una lista de prohibidas.
-
-**La información no se pierde, cambia de sitio:**
-
-| Clave retirada | Dónde vive ahora |
-|---|---|
-| `data_dir` | `install.data_dir` — y es la raíz de datos **efectiva**, la del recibo si lo hay |
-| `hf_cache` | `models.root`, con `models.shared_root` diciendo si esa raíz es la caché HF compartida que eligió el usuario |
-| `base_status` | `models.provisioned` o `models.missing`, donde `qwen3-tts-0.6b-base` figura como cualquier otro modelo |
-| `issues` | `checks` (el detalle por comprobación) y `failed` (los nombres de las que fallan) |
-
-**Por qué se retiran en vez de quedarse**: el contrato niega las claves de primer nivel que duplican lo que una sección ya dice mejor, y §8.8 de la especificación coloca la raíz de datos dentro de `install`, el estado de los modelos dentro de `models` y el `PATH` dentro de `path`. Retirar claves es un cambio **incompatible**, y por eso el envelope de la CLI subió a `"4"` en lugar de quedarse como adición.
-
 ---
 
 ## Los cinco chequeos
