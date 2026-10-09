@@ -1,8 +1,7 @@
 //! Integración de `PATH` en Unix: enlace simbólico y bloque delimitado de
-//! perfiles, por decisión cerrada D2.
+//! perfiles.
 //!
-//! D2 es lo que hace este módulo necesario donde el instalador heredado no
-//! tocaba nada: **en Unix el `PATH` persistente se modifica por defecto**, se
+//! **En Unix el `PATH` persistente se modifica por defecto**, se
 //! anuncia en el resumen y se revierte exactamente al desinstalar.
 //! `--no-modify-path` lo desactiva, y entonces el comando se invoca por su ruta
 //! completa.
@@ -351,8 +350,8 @@ mod tests {
         scratch(&format!("path-unix-{tag}"))
     }
 
-    /// El bloque se escribe una vez y no se duplica por reintentarlo: es el
-    /// criterio 2 aplicado al lado de Unix.
+    /// El bloque se escribe una vez y no se duplica por reintentarlo: la
+    /// integración es idempotente.
     ///
     /// Se afirma además que lo que se escribe es exactamente el bloque publicado
     /// cuando el directorio del enlace es el convencional, porque un bloque

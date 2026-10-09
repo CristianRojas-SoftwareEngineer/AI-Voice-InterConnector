@@ -1,8 +1,8 @@
 //! Limpieza de la cuarentena de macOS, que es el paso 7 de la instalación.
 //!
 //! Un bundle descargado con el navegador y extraído con el Finder llega a
-//! `com.apple.quarantine` puesto en **todos** sus archivos. El instalador heredado lo
-//! quita solo del ejecutable, y eso no basta: el motor (`vendor/qwen3-tts/qwen_tts`)
+//! `com.apple.quarantine` puesto en **todos** sus archivos. Quitarlo solo del
+//! ejecutable no basta: el motor (`vendor/qwen3-tts/qwen_tts`)
 //! se **ejecuta** y la librería de ONNX Runtime se **carga**, así que ambos siguen
 //! heredando la cuarentena y macOS los bloquea igual. Por eso hay que quitarlo de
 //! forma recursiva en todo el directorio de programa, no solo del ejecutable.
@@ -45,7 +45,7 @@ pub struct Outcome {
 
 impl Outcome {
     /// `true` si no queda ningún archivo con cuarentena, incluidos los que fallaron:
-    /// es la condición que afirma el criterio 9.
+    /// es la condición de que la instalación no deja cuarentena.
     pub fn is_clear(&self) -> bool {
         self.failed.is_empty()
     }
@@ -74,8 +74,7 @@ pub trait Quarantine {
 
     /// Pone el atributo.
     ///
-    /// **Solo lo usan las pruebas** del criterio 9, y es la condición de que signifiquen
-    /// algo: sin poder poner la cuarentena, se ejecutarían sobre un bundle que no la
+    /// **Solo lo usan las pruebas**, y es la condición de que signifiquen algo: sin poder poner la cuarentena, se ejecutarían sobre un bundle que no la
     /// tiene y pasarían sin comprobar nada.
     fn put(&self, path: &Path) -> std::io::Result<()>;
 }
@@ -118,26 +117,41 @@ fn walk(
     if depth > max_depth {
         return;
     }
+    // El recorrido no sigue enlaces: `DirEntry::metadata` describe el enlace mismo, así
+    // que solo se desciende a directorios reales y un enlace a un ancestro no forma
+    // lazo ni produce errores de demasiados niveles de enlaces al listar. Por eso
+    // cualquier fallo de listado o de metadatos es un fallo real y queda en `failed`:
+    // la limpieza no puede afirmar que lo que hay dentro está limpio.
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
-        // Un directorio que no se puede listar no es un fallo de la limpieza: se
-        // devuelve en silencio, y el resumen informará de lo que sí se pudo limpiar.
-        Err(_) => return,
+        Err(e) => {
+            outcome.failed.push((dir.to_path_buf(), e.to_string()));
+            return;
+        }
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                outcome.failed.push((dir.to_path_buf(), e.to_string()));
+                continue;
+            }
+        };
         let path = entry.path();
-        // El tipo se resuelve con `metadata`, que sigue los enlaces: un `qwen_tts`
-        // enlazado a un bundle real hay que limpiarlo igual que el resto.
         let meta = match entry.metadata() {
             Ok(meta) => meta,
-            Err(_) => continue,
+            Err(e) => {
+                outcome.failed.push((path, e.to_string()));
+                continue;
+            }
         };
+        // Al archivo o enlace sí se le pide el atributo por su ruta: un `qwen_tts`
+        // enlazado a un bundle real hay que limpiarlo igual que el resto.
         match attributes.clear(&path) {
             Ok(true) => outcome.cleared.push(path.clone()),
             Ok(false) => {}
             // Un fallo **no** corta el recorrido: los otros archivos también necesitan
-            // quedarse limpios, y el criterio 9 exige que ninguno se quede con
-            // cuarentena.
+            // quedarse limpios, y ninguno puede quedarse con cuarentena sin constar.
             Err(e) => outcome.failed.push((path.clone(), e.to_string())),
         }
         if meta.is_dir() {
@@ -244,12 +258,12 @@ impl Quarantine for NoAttributes {
 
 /// ¿Tiene el archivo el atributo de cuarentena? Lo usan las pruebas para afirmar tanto
 /// el punto de partida como el punto de llegada, y para ponerlo, [`Quarantine::put`].
-pub fn has(path: &Path) -> bool {
-    platform().has(path).unwrap_or(false)
+pub fn has(path: &Path) -> std::io::Result<bool> {
+    platform().has(path)
 }
 
-/// Pone el atributo de cuarentena en un archivo. **Solo para las pruebas del criterio
-/// 9**; ver [`Quarantine::put`].
+/// Pone el atributo de cuarentena en un archivo. **Solo para las pruebas**; ver
+/// [`Quarantine::put`].
 pub fn put(path: &Path) -> std::io::Result<()> {
     platform().put(path)
 }

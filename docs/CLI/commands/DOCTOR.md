@@ -29,7 +29,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `channel` | `script`, `homebrew` o `unmanaged` |
 | `install` | `dir` (directorio de programa), `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`/`invalid`) y `version` (la del recibo, si lo hay) |
 | `path` | `resolves_to_this_install`, `duplicate_entries`, `integration` (`present`/`absent`/`not_modified`) y `coexisting` (instalaciones ajenas, con su canal y cuál tiene precedencia) |
-| `pending` | `transaction_journal`, `parked`, `stagings`, `temporaries` y `temporaries_kept` |
+| `pending` | `transaction_journal`, `parked`, `stagings`, `temporaries`, `temporaries_kept` y `unreadable` (directorios del barrido que existen y no se pueden listar; hacen fallar `pending_artifacts` y en texto salen una línea por ruta) |
 | `models` | `root`, `shared_root`, `provisioned`, `missing` (repos de la selección sin provisionar) y `size_bytes` |
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
@@ -108,7 +108,8 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
     "parked": [],
     "stagings": [],
     "temporaries": [],
-    "temporaries_kept": []
+    "temporaries_kept": [],
+    "unreadable": []
   },
   "models": {
     "root": "C:\\Users\\…\\AppData\\Local\\ai-voice-interconnector\\cache\\models",

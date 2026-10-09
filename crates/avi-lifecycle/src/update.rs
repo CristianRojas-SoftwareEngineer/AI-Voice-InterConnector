@@ -1,7 +1,7 @@
 //! Traspaso de `self update` al binario nuevo y limpieza posterior: los pasos 9 y 10
 //! de la actualización.
 //!
-//! El reemplazo lo ejecuta el binario nuevo (P3): este módulo lanza
+//! El reemplazo lo ejecuta el binario nuevo: este módulo lanza
 //! `<staging>/ai-voice-interconnector self install --yes` heredando la consola,
 //! espera y propaga el resultado. Las preferencias del recibo mandan: si la
 //! instalación registrada no tocaba el `PATH` (`modify_path: false`), el
@@ -33,11 +33,11 @@ use std::path::{Path, PathBuf};
 pub const HANDOVER_PARENT_PID_ENV: &str = "AVI_HANDOVER_PARENT_PID";
 
 /// Código que el `self install` del traspaso devuelve cuando la provisión
-/// falló: éxito parcial (`setup_failed`, el 11 de la tabla cerrada).
+/// falló: éxito parcial (`setup_failed`, código de salida 11).
 const SETUP_FAILED_CODE: i32 = 11;
 
 /// Código que el `self install` del traspaso devuelve cuando el reemplazo
-/// falló con la versión anterior restaurada (`rolled_back`, el 13).
+/// falló con la versión instalada restaurada (`rolled_back`, código de salida 13).
 const ROLLED_BACK_CODE: i32 = 13;
 
 /// Entrada del traspaso: el ejecutable nuevo ya verificado en staging y las
@@ -377,7 +377,7 @@ mod tests {
     }
 
     /// El mapeo de estados de salida: 0 éxito, 11 parcial, 13 `rolled_back`
-    /// con el 13 de la tabla, y el resto fallo del traspaso.
+    /// (código 13 de la tabla), y el resto fallo del traspaso.
     #[test]
     fn update_handover_status_mapping() {
         assert_eq!(

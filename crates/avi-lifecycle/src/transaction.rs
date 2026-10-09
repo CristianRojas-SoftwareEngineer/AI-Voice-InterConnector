@@ -1,9 +1,9 @@
 //! Reemplazo transaccional del directorio de programa y su diario.
 //!
-//! El instalador heredado borra el directorio de programa antes de extraer, así
-//! que un fallo de extracción deja al usuario sin programa y sin vuelta atrás,
-//! y en Windows un ejecutable en uso aborta la operación con el directorio a
-//! medio borrar. El algoritmo es el mismo en los cuatro targets:
+//! Borrar el directorio de programa antes de extraer dejaría al usuario sin
+//! programa y sin vuelta atrás ante un fallo de extracción, y en Windows un
+//! ejecutable en uso abortaría la operación con el directorio a medio borrar. Por
+//! eso se reemplaza por transacción. El algoritmo es el mismo en los cuatro targets:
 //!
 //! 1. **Aparcar** el contenido actual en `<programa>/.old-<txid>/` por renombrado,
 //!    registrándolo en el diario. Aparcar en vez de borrar es lo que hace el
@@ -15,8 +15,7 @@
 //! 3. **Ajustar permisos**: en Unix, 0755 para ejecutables y 0644 para el resto.
 //! 4. **Confirmar**: marcar el diario como confirmado y borrar `.old-<txid>/`.
 //!    Lo que no se pueda borrar por estar en uso queda para el borrado diferido
-//!    (borrado diferido), que es lo que impide que el commit falle por un archivo
-//!    abierto.
+//!    (borrado diferido), que impide que el commit falle por un archivo abierto.
 //! 5. **Revertir** si falla el paso 2 o el 3: retirar lo colocado, restaurar lo
 //!    aparcado, borrar el diario → `rolled_back`.
 //!
@@ -115,9 +114,8 @@ pub fn read_journal(program_dir: &Path) -> anyhow::Result<Option<Journal>> {
 /// Falla con `rolled_back` y la versión anterior restaurada si algo falla tras
 /// abrir el diario.
 ///
-/// `source_dir` debe estar en el mismo volumen que `program_dir`, que es lo que
-/// que el staging cumple por ser hermano del
-/// directorio de programa. Si no fuera así, el renombrado de la colocación
+/// `source_dir` debe estar en el mismo volumen que `program_dir`, que el staging
+/// cumple por ser hermano del directorio de programa. Si no fuera así, el renombrado de la colocación
 /// fallaría, la transacción revertiría y no se tocaría la versión anterior.
 pub fn replace(program_dir: &Path, source_dir: &Path) -> anyhow::Result<ReplaceOutcome> {
     let txid = new_txid();
@@ -183,7 +181,7 @@ fn run(
     faults::trip(FaultPoint::BeforeFixPermissions)?;
 
     // 3. Ajustar permisos.
-    fix_permissions(program_dir, &placed);
+    fix_permissions(program_dir, &placed)?;
     journal.state = JournalState::Permissions;
     write_journal(program_dir, journal)?;
 
@@ -206,7 +204,14 @@ fn run(
             }
         }
     }
-    let _ = std::fs::remove_file(journal_path(program_dir));
+    // La transacción ya está confirmada: un diario que no se pueda borrar no la
+    // revierte. Se avisa, y la recuperación lo completa como commit.
+    if let Err(e) = remove_journal(program_dir) {
+        eprintln!(
+            "Aviso: no se pudo borrar {}: {e}.",
+            journal_path(program_dir).display()
+        );
+    }
 
     Ok(ReplaceOutcome {
         txid: journal.txid.clone(),
@@ -301,29 +306,38 @@ fn is_running_executable(path: &Path) -> bool {
 
 /// 0755 para lo ejecutable y 0644 para el resto, en Unix. En Windows
 /// no hay permisos que ajustar.
+///
+/// Un fallo del manifiesto o de `set_permissions` se propaga: la transacción lo
+/// revierte, porque un ejecutable sin permiso de ejecución no es una instalación.
 #[cfg(unix)]
-fn fix_permissions(program_dir: &Path, placed: &[String]) {
+fn fix_permissions(program_dir: &Path, placed: &[String]) -> anyhow::Result<()> {
     use crate::{manifest, target};
+    use anyhow::Context;
     use std::os::unix::fs::PermissionsExt;
     let executable = manifest::target_section(target::host_triple())
-        .map(|section| section.executable)
-        .unwrap_or_else(|_| crate::APP_NAME.to_string());
+        .context("no se pudo leer la sección del manifiesto para ajustar permisos")?
+        .executable;
     for relative in placed {
         let path = program_dir.join(to_platform_path(relative));
-        // `relative` es `&String` y `ejecutable` es `String`: sin el desreferenciado
-        // `PartialEq` no se resuelve y el crate no compila en Unix. El defecto era
-        // invisible en Windows, donde esta función no existe.
+        // `relative` es `&String` y `executable` es `String`: hay que desreferenciar
+        // para que `PartialEq` se resuelva.
         let permissions = if *relative == executable || relative.starts_with("vendor/") {
             0o755
         } else {
             0o644
         };
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(permissions))
+            .with_context(|| {
+                format!("no se pudieron ajustar los permisos de {}", path.display())
+            })?;
     }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-fn fix_permissions(_program_dir: &Path, _placed: &[String]) {}
+fn fix_permissions(_program_dir: &Path, _placed: &[String]) -> anyhow::Result<()> {
+    Ok(())
+}
 
 /// Devuelve lo que queda dentro de un directorio que no se pudo borrar, para
 /// informarlo como borrado diferido.
@@ -377,8 +391,16 @@ pub(crate) fn rollback(program_dir: &Path, journal: &Journal) -> anyhow::Result<
             std::fs::remove_dir_all(parked)?;
         }
     }
-    let _ = std::fs::remove_file(journal_path(program_dir));
+    remove_journal(program_dir)?;
     Ok(())
+}
+
+/// Borra el diario; que ya no exista es éxito.
+fn remove_journal(program_dir: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(journal_path(program_dir)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
 }
 
 /// Devuelve una entrada aparcada a su sitio, fusionando si el destino ya existe.

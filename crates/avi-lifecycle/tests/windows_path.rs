@@ -1,30 +1,41 @@
-//! Criterio 7: el tipo del valor `Path` de `HKCU\Environment` y las entradas
-//! `%VAR%` quedan intactos después de instalar y de desinstalar.
+//! El tipo del valor `Path` de `HKCU\Environment` y las entradas `%VAR%` quedan
+//! intactos después de instalar y de desinstalar.
 //!
-//! La prueba opera sobre **una clave propia del test**, no sobre la del usuario:
-//! El aislamiento lo exige y es la única forma de que una puerta de CI pueda demostrarla
-//! sin
-//! tocar el entorno de quien la ejecuta. La ruta de la clave es un parámetro de
+//! Las pruebas operan sobre **una clave propia del test**, no sobre la del usuario:
+//! es la única forma de que una puerta de CI pueda demostrarlo sin tocar el entorno de
+//! quien la ejecuta. La ruta de la clave es un parámetro de
 //! `avi-lifecycle::path_windows` precisamente para esto.
 //!
 //! Corre en Windows; en Unix el archivo no compila nada porque todo lo que
-//! afirma depende de `advapi32`. No hay ninguna marca de omitida: el criterio 7 no
-//! **se salta** en Unix, sencillamente no tiene código que compilar allí, porque su
+//! afirma depende de `advapi32`. No hay ninguna marca de omitida: las pruebas no
+//! **se saltan** en Unix, sencillamente no tienen código que compilar allí, porque su
 //! sujeto —el valor `Path` de `HKCU\Environment` y sus entradas `%VAR%`— no existe
-//! fuera de Windows. La puerta de Unix sigue en verde sin que ninguna prueba se haya
-//! declarado aplicable por el mismo motivo.
+//! fuera de Windows.
 
 #![cfg(windows)]
 
+#[path = "support/bundle.rs"]
+mod bundle;
+#[path = "support/inert.rs"]
+mod inert;
+#[path = "support/install_env.rs"]
+mod install_env;
+#[path = "support/net.rs"]
+mod net;
+#[path = "support/process_env.rs"]
+mod process_env;
+#[path = "support/runtime.rs"]
+mod runtime;
 mod support;
 
-use avi_lifecycle::install::{self, Options as InstallOptions};
+use avi_lifecycle::install;
 use avi_lifecycle::path_windows::{
     create_key_for_test, delete_key, integrate, plan_integrate, plan_revert, read_path, revert,
     RawPath,
 };
+use inert::Inert;
 use std::path::PathBuf;
-use support::{Inert, Sandbox};
+use support::Sandbox;
 use windows_sys::Win32::System::Registry::{REG_EXPAND_SZ, REG_SZ};
 
 /// Subclave propia de esta ejecución. El PID y un contador evitan que dos
@@ -36,9 +47,9 @@ fn test_key(tag: &str) -> String {
     )
 }
 
-/// Valor de partida: un `Path` real de Windows, con las dos formas que el
-/// criterio 7 nombra —una entrada con `%SystemRoot%` y otra con `%USERPROFILE%`— y
-/// una ruta absoluta sin variable.
+/// Valor de partida: un `Path` real de Windows, con las dos formas con variable
+/// —una entrada con `%SystemRoot%` y otra con `%USERPROFILE%`— y una ruta absoluta
+/// sin variable.
 const INITIAL_VALUE: &str =
     r"%SystemRoot%\system32;%USERPROFILE%\AppData\Local\Programs;C:\tools\bin";
 
@@ -51,14 +62,14 @@ fn entry() -> PathBuf {
     base.join("Programs").join("ai-voice-interconnector")
 }
 
-/// **Criterio 7, de punta a punta por el motor.** Instalar y desinstalar deja el tipo
-/// del valor `Path` y sus entradas `%VAR%` exactamente como estaban.
+/// De punta a punta por el motor: instalar y desinstalar deja el tipo del valor `Path`
+/// y sus entradas `%VAR%` exactamente como estaban.
 ///
 /// La diferencia con `windows_user_path_type_and_vars_survive`, que está justo debajo, es
 /// quién hace el trabajo: allí la integración y la reversión se llaman directamente, y
 /// aquí la integración la hace `self install` leyendo la subclave que su `Env` declara y
 /// escribiendo el recibo que dice qué revertir. Es la diferencia entre comprobar la
-/// primitiva y comprobar el criterio.
+/// primitiva y comprobar el comportamiento completo.
 ///
 /// La reversión se aplica con `path_windows::revert` sobre la **misma clave de prueba**,
 /// y no llamando a `self uninstall`, por un motivo que conviene tener presente:
@@ -74,8 +85,8 @@ fn entry() -> PathBuf {
 /// de programa, así que el sandbox lo dice con `bin_dir = program_dir` en vez de la ruta
 /// de Unix.
 #[test]
-fn criterion_7_windows_user_path_type_and_vars_survive() {
-    let _guard = support::exclusively();
+fn windows_install_uninstall_preserves_path_type_and_vars() {
+    let _guard = process_env::exclusively();
     let mut sandbox = Sandbox::new("revert-path-windows");
     sandbox.bin_dir = sandbox.program_dir.clone();
     sandbox.seed_env();
@@ -83,8 +94,7 @@ fn criterion_7_windows_user_path_type_and_vars_survive() {
 
     // El `Path` del usuario real, para poder afirmar que la prueba no lo tocó.
     let real_before = read_path(avi_lifecycle::path_windows::ENV_SUBKEY)
-        .ok()
-        .flatten()
+        .expect("se lee el `Path` real del usuario")
         .map(|raw| (raw.value, raw.kind));
 
     // Punto de partida: un `Path` de usuario con las dos formas con variable y una
@@ -93,65 +103,52 @@ fn criterion_7_windows_user_path_type_and_vars_survive() {
     assert_eq!(
         read_path(&key).unwrap().unwrap().kind,
         REG_EXPAND_SZ,
-        "criterio 7: el valor de partida es `REG_EXPAND_SZ`"
+        "el valor de partida es `REG_EXPAND_SZ`"
     );
 
     // ── Instalar ────────────────────────────────────────────────────────────────
-    let exe = sandbox.write_bundle(&sandbox.staging);
-    let runtime = support::runtime();
+    let exe = sandbox.write_bundle(&sandbox.staging());
+    let runtime = runtime::runtime();
     let outcome = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
-            &InstallOptions {
-                assume_yes: true,
-                no_setup: true,
-                no_modify_path: false,
-                force: false,
-            },
+            &Sandbox::install_options(),
             &Inert,
         ))
-        .expect("criterio 7: la instalación se completa");
-    assert!(
-        outcome.path_integrated(),
-        "criterio 7: el `PATH` quedó integrado"
-    );
-    assert!(
-        outcome.path_changed(),
-        "criterio 7: y esta pasada lo escribió"
-    );
+        .expect("la instalación se completa");
+    assert!(outcome.path_integrated(), "el `PATH` quedó integrado");
+    assert!(outcome.path_changed(), "y esta pasada lo escribió");
     let entry = outcome
         .path_integration
         .registry_entry
         .clone()
-        .expect("criterio 7: el recibo registra la entrada del registro");
+        .expect("el recibo registra la entrada del registro");
     assert_eq!(
         entry, sandbox.program_dir,
-        "criterio 7: en Windows la entrada es el directorio de programa"
+        "en Windows la entrada es el directorio de programa"
     );
     assert!(
         outcome.path_integration.symlink.is_none(),
-        "criterio 7: y no hay enlace simbólico, que es un mecanismo de Unix"
+        "y no hay enlace simbólico, que es un mecanismo de Unix"
     );
 
-    let after_install = read_path(&key)
-        .unwrap()
-        .expect("criterio 7: el valor sigue ahí");
+    let after_install = read_path(&key).unwrap().expect("el valor sigue ahí");
     assert_eq!(
         after_install.kind, REG_EXPAND_SZ,
-        "criterio 7: el tipo se conserva después de instalar: se lee sin expandir y se \
+        "el tipo se conserva después de instalar: se lee sin expandir y se \
          escribe con el mismo tipo"
     );
     assert_eq!(
         after_install.value,
         format!("{INITIAL_VALUE};{}", entry.display()),
-        "criterio 7: la entrada se añade al final sin tocar lo anterior"
+        "la entrada se añade al final sin tocar lo anterior"
     );
     assert!(
         after_install.value.contains("%SystemRoot%\\system32")
             && after_install
                 .value
                 .contains("%USERPROFILE%\\AppData\\Local\\Programs"),
-        "criterio 7: las dos entradas `%VAR%` siguen sin expandir: {}",
+        "las dos entradas `%VAR%` siguen sin expandir: {}",
         after_install.value
     );
     assert_eq!(
@@ -160,51 +157,48 @@ fn criterion_7_windows_user_path_type_and_vars_survive() {
             .matches(&entry.display().to_string())
             .count(),
         1,
-        "criterio 7: y la entrada del programa aparece una sola vez"
+        "y la entrada del programa aparece una sola vez"
     );
 
     // ── Desinstalar: la misma entrada, la misma clave ──────────────────────────
-    let uninstall = revert(&key, &entry).expect("criterio 7: la reversión se aplica");
-    assert!(uninstall.changed, "criterio 7: había entrada que quitar");
+    let uninstall = revert(&key, &entry).expect("la reversión se aplica");
+    assert!(uninstall.changed, "había entrada que quitar");
     assert!(
         uninstall.broadcast,
-        "criterio 7: se vuelve a difundir `WM_SETTINGCHANGE`"
+        "se vuelve a difundir `WM_SETTINGCHANGE`"
     );
 
-    let after_uninstall = read_path(&key)
-        .unwrap()
-        .expect("criterio 7: el valor sigue ahí");
+    let after_uninstall = read_path(&key).unwrap().expect("el valor sigue ahí");
     assert_eq!(
         after_uninstall.kind, REG_EXPAND_SZ,
-        "criterio 7: el tipo se conserva también al revertir"
+        "el tipo se conserva también al revertir"
     );
     assert_eq!(
         after_uninstall.value, INITIAL_VALUE,
-        "criterio 7: el valor vuelve a ser byte a byte el de partida"
+        "el valor vuelve a ser byte a byte el de partida"
     );
     assert!(
         after_uninstall.value.contains("%SystemRoot%\\system32")
             && after_uninstall
                 .value
                 .contains("%USERPROFILE%\\AppData\\Local\\Programs"),
-        "criterio 7: y las entradas `%VAR%` siguen intactas: {}",
+        "y las entradas `%VAR%` siguen intactas: {}",
         after_uninstall.value
     );
 
     // Y nada tocó el `Path` real del usuario, que es el control que hace que esta
     // prueba sea admisible en una puerta.
     let real_after = read_path(avi_lifecycle::path_windows::ENV_SUBKEY)
-        .ok()
-        .flatten()
+        .expect("se vuelve a leer el `Path` real del usuario")
         .map(|raw: RawPath| (raw.value, raw.kind));
     assert_eq!(
         real_after, real_before,
-        "criterio 7: el `Path` real de `HKCU\\Environment` no se ha tocado"
+        "el `Path` real de `HKCU\\Environment` no se ha tocado"
     );
 }
 
-/// El criterio 7, de punta a punta: instalar y desinstalar sobre una clave de
-/// prueba deja el tipo y las entradas `%VAR%` exactamente como estaban.
+/// Instalar y desinstalar con las primitivas sobre una clave de prueba deja el tipo y
+/// las entradas `%VAR%` exactamente como estaban.
 #[test]
 fn windows_user_path_type_and_vars_survive() {
     let key = test_key("type");
@@ -254,7 +248,7 @@ fn windows_user_path_type_and_vars_survive() {
         "la entrada `%USERPROFILE%` sigue sin expandir"
     );
 
-    // Instalar otra vez es un no-op: es el criterio 2 sobre el registro.
+    // Instalar otra vez es un no-op: la integración es idempotente también en el registro.
     let repeated = integrate(&key, &entry).expect("la segunda integración se aplica");
     assert!(
         !repeated.changed,
@@ -292,7 +286,10 @@ fn windows_user_path_type_and_vars_survive() {
 
     // Desinstalar otra vez tampoco hace nada.
     let repeated = revert(&key, &entry).expect("la segunda reversión se aplica");
-    assert!(!repeated.changed, "ya no había nada que quitar");
+    assert!(
+        !repeated.changed,
+        "la entrada ya estaba quitada: no hay nada que revertir"
+    );
 
     delete_key(&key).expect("se borra la clave de prueba");
 }

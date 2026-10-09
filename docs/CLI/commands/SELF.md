@@ -127,8 +127,8 @@ Los nueve pasos de §8.5, en orden, sobre la **instalación registrada** y no so
 4. **Confirmación destructiva** `[s/N]`. Sin terminal y sin `--yes` → `confirmation_required` (2) y nada borrado.
 5. **Parar el daemon**: va **después** de la confirmación, para que un `daemon_stop_failed` no deje nada a medias.
 6. **Borrar el estado.**
-7. **Revertir el `PATH`** exactamente según el recibo: el enlace solo si apunta al directorio de programa, los bloques delimitados de los perfiles, y en Windows la entrada del registro con comparación canónica conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`.
-8. **Borrar el directorio de programa** aplicando R2.
+7. **Revertir el `PATH`** exactamente según el recibo: el enlace solo si apunta al directorio de programa, los bloques delimitados de los perfiles, y en Windows la entrada del registro con comparación canónica conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`. Un resto que no se pueda revertir se informa en `failed`.
+8. **Borrar el directorio de programa** aplicando la regla del directorio de programa.
 9. **Borrar el archivo de bloqueo y la compuerta**, que viven en el hermano del directorio de programa: se borran también cuando el directorio quedó programado para después, y es el último paso con efectos. En Unix se borran con el bloqueo aún tomado; en Windows se sueltan primero los descriptores propios, y si otro proceso los tiene abiertos en ese instante el fichero se queda (sin consecuencias) y se informa en `failed`.
 
 ### El paso 6: la raíz de datos entera, no el plan de `cleanup --all`
@@ -147,11 +147,11 @@ Por eso la composición del plan vive en `uninstall::compose_plan` y tiene dos r
 
 Con `--keep-data` el directorio de programa **se borra igual**: la bandera conserva el estado, no el programa.
 
-**R2 gobierna el paso 8 y por eso tiene su propia función pública** (`program_dir_is_removable`). Exige las dos mitades de la regla: la positiva —el directorio contiene el recibo o el ejecutable, que es lo que lo convierte *en* el directorio de programa— y la negativa —nunca es la raíz de una unidad, `$HOME`, un ancestro de `$HOME` ni coincide con otra raíz del producto—. Ni una variable de reubicación ni un recibo manipulado pueden ampliar el alcance.
+**La regla del directorio de programa gobierna el paso 8 y por eso tiene su propia función pública** (`program_dir_is_removable`). Exige las dos mitades de la regla: la positiva —el directorio contiene el recibo o el ejecutable, que es lo que lo convierte *en* el directorio de programa— y la negativa —nunca es la raíz de una unidad, `$HOME`, un ancestro de `$HOME` ni coincide con otra raíz del producto—. Ni una variable de reubicación ni un recibo manipulado pueden ampliar el alcance.
 
-**La consulta ocurre en el planificador, no en el paso 8.** `compose_plan` es la fuente única que usan el simulacro y la ejecución, así que es él quien decide si el directorio de programa entra como destino. Cuando R2 lo prohíbe no entra, y ahí hay dos casos que el plan distingue porque dicen cosas distintas:
+**La consulta ocurre en el planificador, no en el paso 8.** `compose_plan` es la fuente única que usan el simulacro y la ejecución, así que es él quien decide si el directorio de programa entra como destino. Cuando esa regla lo prohíbe no entra, y ahí hay dos casos que el plan distingue porque dicen cosas distintas:
 
-- **Ningún destino del plan lo contiene** → se conserva de verdad, y pasa a la lista `preserved` con el motivo de R2. Es el caso de un directorio de programa que es `$HOME` o un ancestro suyo.
+- **Ningún destino del plan lo contiene** → se conserva de verdad, y pasa a la lista `preserved` con el motivo de la regla del directorio de programa. Es el caso de un directorio de programa que es `$HOME` o un ancestro suyo.
 - **Un destino del plan lo contiene** —típico con `AVI_INSTALL_DIR` dentro de la raíz de datos— → **no se conserva**: el paso 6 borra la raíz entera y se lo lleva. El plan no lo anuncia ni como destino propio ni como conservado, porque la raíz que lo borra ya está en la lista.
 
 R2 dice «no lo borro yo», no «no se borra». Sin esa distinción, el comando anunciaba «no se tocará» sobre un directorio que un paso antes borraba entero.

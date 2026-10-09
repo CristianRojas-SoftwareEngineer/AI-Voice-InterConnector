@@ -165,9 +165,9 @@ mod tests {
 
     /// El punto armado es invisible para los demás hilos.
     ///
-    /// Esta es la evidencia de que el defecto está cerrado. La comprobación
-    /// contraria no valdría —que el fallo ya no se reproduzca—, porque antes de
-    /// arreglarlo tampoco se reproducía en tres de cada cuatro corridas.
+    /// La comprobación es positiva (otro hilo no ve el punto) y no la contraria
+    /// —que un fallo no se reproduzca—, porque un estado compartido solo
+    /// fallaría en parte de las corridas.
     ///
     /// Usa `OnJournalWrite` porque ninguna otra prueba de este binario lo arma:
     /// así lo que lee el observador es exactamente la guardia de esta prueba y
@@ -175,8 +175,7 @@ mod tests {
     /// propio hilo, porque con un estado compartido otra prueba concurrent podría
     /// haber borrado el punto —`Drop` borra todas las apariciones de él— y entonces
     /// la lectura del observador no probaría nada: la prueba pasaría sin que el
-    /// estado fuera por hilo. Ese era el fallo de la versión anterior de esta
-    /// prueba, y por eso la comprobación se queda.
+    /// estado fuera por hilo.
     #[test]
     fn armed_point_is_invisible_to_other_threads() {
         let guard = armed(FaultPoint::OnJournalWrite);

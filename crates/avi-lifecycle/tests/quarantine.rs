@@ -1,4 +1,4 @@
-//! Limpieza de la cuarentena: el criterio 9 en macOS y el recorrido en todas partes.
+//! Limpieza de la cuarentena: la instalación sin cuarentena en macOS y el recorrido en todas partes.
 //!
 //! **Este archivo se compila y se ejecuta en las cuatro plataformas**, y a propósito:
 //! la puerta de macOS solo corre en el pipeline del release, así que un error de
@@ -11,7 +11,7 @@
 //!
 //! - el recorrido visita **todos** los archivos del directorio de programa, incluidos
 //!   los del derivado del motor tres niveles más abajo —que es el motivo de que el
-//!   criterio 9 sea sobre todo el directorio y no solo el ejecutable—;
+//!   limpieza deba cubrir todo el directorio y no solo el ejecutable—;
 //! - **no pregunta por nada fuera** del directorio que se le pasó;
 //! - un fallo en un archivo **no corta** el recorrido;
 //! - el límite de profundidad **se respeta**, que es lo que evita que un directorio con
@@ -20,14 +20,31 @@
 //!
 //! Lo que solo se afirma en macOS, y sigue sin poder verificarse en local: que
 //! `xattr` quita el atributo de verdad, y que `install` se lo quita al bundle entero
-//! (el criterio 9).
+//! (instalar no deja nada en cuarentena).
 
+#[path = "support/bundle.rs"]
+mod bundle;
 #[cfg(target_os = "macos")]
-use avi_lifecycle::daemon_stop::ProcessControl;
+#[path = "support/inert.rs"]
+mod inert;
+#[cfg(target_os = "macos")]
+#[path = "support/install_env.rs"]
+mod install_env;
+#[path = "support/listing.rs"]
+mod listing;
+#[cfg(target_os = "macos")]
+#[path = "support/net.rs"]
+mod net;
+mod support;
+
 use avi_lifecycle::quarantine::{self, Outcome, Quarantine, MAX_DEPTH};
+use bundle::place;
+#[cfg(target_os = "macos")]
+use inert::Inert;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use support::Sandbox;
 
 /// Registro de todo lo que se le pregunta, para poder afirmar el alcance.
 #[derive(Debug, Default)]
@@ -151,53 +168,15 @@ impl Quarantine for Fake {
     }
 }
 
-/// Directorio único por etiqueta, para que dos pruebas simultáneas —o dos ejecuciones del
-/// mismo binario— no se pisen. Quien lo recibe es su dueño: se borra al soltarlo,
-/// también si la prueba falla.
-fn unique(tag: &str) -> tempfile::TempDir {
-    tempfile::Builder::new()
-        .prefix(&format!("quarantine-e2e-{tag}-"))
-        .tempdir()
-        .expect("se crea la raíz del sandbox")
-}
-
-/// Une un fragmento del manifiesto con la raíz del bundle.
-fn place(dest: &Path, relative: &str) -> PathBuf {
-    let mut path = dest.to_path_buf();
-    for part in relative.split('/') {
-        path.push(part);
-    }
-    path
-}
-
-/// Escribe un bundle completo con la lista de `packaging/bundle-manifest.json`, que es
-/// la misma que valida `self install`. Los nombres no se escriben a mano: si el
-/// manifiesto cambiara, la seguiría exercising lo que el manifiesto dice.
-fn write_bundle(dest: &Path) -> Vec<PathBuf> {
-    let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
-        .expect("el target del host tiene sección en el manifiesto");
-    let mut files = Vec::new();
-    for relative in &section.required {
-        let complete = place(dest, relative);
-        if let Some(parent) = complete.parent() {
-            std::fs::create_dir_all(parent).expect("se crea el directorio del archivo");
-        }
-        std::fs::write(&complete, format!("contenido de {relative}\n"))
-            .expect("se escribe el archivo del bundle");
-        files.push(complete);
-    }
-    files
-}
-
-/// Sandbox con un árbol con la forma de un bundle: ejecutable y documentos en la raíz,
-/// librería de runtime junto a ellos y el derivado del motor tres niveles más abajo.
+/// Árbol con la forma de un bundle sobre un [`Sandbox`]: ejecutable y documentos en la
+/// raíz, librería de runtime junto a ellos y el derivado del motor tres niveles más abajo.
 ///
 /// El bundle se escribe primero en el **staging** —que es donde lo deja el bootstrap— y
-/// [`Arbol::colocados`] lo traslada al directorio de programa, que es donde la
+/// [`Tree::materialize`] lo traslada al directorio de programa, que es donde la
 /// instalación lo coloca y donde la limpieza se ejecuta.
 struct Tree {
     /// Dueño del directorio: lo borra al soltarse, también si la prueba falla.
-    _guard: tempfile::TempDir,
+    _sandbox: Sandbox,
     /// Raíz del sandbox.
     root: PathBuf,
     /// Staging hermano del directorio de programa, con el prefijo de la tabla de rutas.
@@ -210,18 +189,22 @@ struct Tree {
 
 impl Tree {
     fn new(tag: &str) -> Self {
-        let guard = unique(tag);
-        let root = guard.path().to_path_buf();
-        let opt = root.join("opt");
-        let staging = opt.join(format!("{}test", avi_lifecycle::STAGING_DIR_PREFIX));
-        let program = opt.join("ai-voice-interconnector");
-        let files = write_bundle(&staging);
+        let sandbox = Sandbox::new(tag);
+        let staging = sandbox.staging();
+        sandbox.write_bundle(&staging);
+        let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
+            .expect("el target del host tiene sección en el manifiesto");
+        let files = section
+            .required
+            .iter()
+            .map(|relative| place(&staging, relative))
+            .collect();
         Self {
-            _guard: guard,
-            root,
+            root: sandbox.root.clone(),
+            program: sandbox.program_dir.clone(),
             staging,
-            program,
             files,
+            _sandbox: sandbox,
         }
     }
 
@@ -254,33 +237,6 @@ impl Tree {
     }
 }
 
-/// Contenido de un directorio, para afirmar que nada se ha tocado.
-fn content(root: &Path) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let relative = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                out.push(format!("{relative}/"));
-                stack.push(path);
-            } else {
-                out.push(relative);
-            }
-        }
-    }
-    out.sort();
-    out
-}
-
 /// `true` si entre lo preguntado está el derivado del motor (`vendor/…`), que es el caso
 /// que motiva que la limpieza sea sobre todo el directorio y no solo el ejecutable.
 fn asks_about_derived(asked: &BTreeSet<PathBuf>) -> bool {
@@ -291,14 +247,14 @@ fn asks_about_derived(asked: &BTreeSet<PathBuf>) -> bool {
         .any(|path| path.to_string_lossy().contains(&marker))
 }
 
-// ─── El criterio 9: instalar no deja nada en cuarentena ───────────────────────────
+// ─── Instalar no deja nada en cuarentena ───────────────────────────────────────────
 //
-// El criterio 9 tiene una mitad que solo macOS puede comprobar —que `xattr` quita el
+// La regla tiene una mitad que solo macOS puede comprobar —que `xattr` quita el
 // atributo de verdad— y otra que se puede comprobar en todas partes: **el alcance** de la
-// limpieza. Por eso las dos variantes del criterio 9 se llaman igual y solo una existe en
+// limpieza. Por eso las dos variantes se llaman igual y solo una existe en
 // cada plataforma:
 //
-// - En macOS, `criterion_9_install_strips_quarantine_from_whole_program_dir` instala un
+// - En macOS, `install_strips_quarantine_from_whole_program_dir` instala un
 //   bundle cuyos archivos **y directorios** llevan el atributo —así los deja el Finder
 //   cuando el archivo se descargó por navegador, que es la otra mitad del enunciado— y
 //   afirma, recorriendo el árbol real del directorio de programa, que ni un archivo ni un
@@ -306,18 +262,18 @@ fn asks_about_derived(asked: &BTreeSet<PathBuf>) -> bool {
 // - Fuera de macOS, la variante del mismo nombre afirma lo que sí es cierto aquí: que el
 //   atributo se pone en el árbol entero, que el recorrido lo abarca entero, y que un
 //   hermano del directorio de programa conserva el suyo. No es un `skip`: es una
-//   afirmación distinta, ejecutada, y el criterio 9 en su sentido fuerte lo ejecuta la
+//   afirmación distinta, ejecutada, y la regla en su sentido fuerte la ejecuta la
 //   puerta de macOS con el mismo nombre.
 //
-// Que las dos se llamen igual es deliberado: `--list` muestra `criterion_9_` en las tres
-// puertas, y en macOS el nombre corresponde a la prueba del criterio, no a su sombra.
+// Que las dos se llamen igual es deliberado: `--list` muestra el mismo nombre en las tres
+// puertas, y en macOS corresponde a la prueba completa, no a su sombra.
 
 /// Pone el atributo en un árbol entero: archivos **y** directorios.
 ///
 /// El Finder pone `com.apple.quarantine` en el archivo descargado y macOS lo hereda todo
 /// lo que se crea dentro, así que un bundle extraído con el Finder llega con el atributo
 /// en cada archivo y en cada directorio intermedio. Ponerlo solo en los archivos sería
-/// una versión más fácil del criterio.
+/// una versión más fácil de lo que exige la regla.
 fn seed_quarantine(root: &Path) -> Vec<PathBuf> {
     let mut quarantined_paths = Vec::new();
     let mut directories = Vec::new();
@@ -350,7 +306,7 @@ fn seed_quarantine(root: &Path) -> Vec<PathBuf> {
 /// El oráculo entra por parámetro, y esa es la decisión que hace que la función sea
 /// comprobable en todas las plataformas: en macOS se le pasa `quarantine::plataforma()`,
 /// que es la implementación de `xattr`, y fuera se le puede pasar una implementación que
-/// registre. El recorrido —el código que el criterio 9 evalúa— es el mismo en los dos
+/// registre. El recorrido —el código que la limpieza evalúa— es el mismo en los dos
 /// casos, así que un error de recorrido no puede esconderse hasta la puerta de macOS.
 fn keep_quarantine(root: &Path, attributes: &dyn quarantine::Quarantine) -> Vec<String> {
     let mut out = Vec::new();
@@ -366,7 +322,10 @@ fn keep_quarantine(root: &Path, attributes: &dyn quarantine::Quarantine) -> Vec<
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            if attributes.has(&path).unwrap_or(false) {
+            if attributes
+                .has(&path)
+                .unwrap_or_else(|e| panic!("se consulta {}: {e}", path.display()))
+            {
                 out.push(relative);
             }
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
@@ -378,7 +337,7 @@ fn keep_quarantine(root: &Path, attributes: &dyn quarantine::Quarantine) -> Vec<
     out
 }
 
-/// **Criterio 9 en macOS.** Instalar un bundle descargado por navegador no deja ni un
+/// **En macOS.** Instalar un bundle descargado por navegador no deja ni un
 /// archivo ni un directorio del directorio de programa con `com.apple.quarantine`.
 ///
 /// La fuerza de la prueba está en dos detalles. El primero es que el atributo se pone
@@ -389,14 +348,11 @@ fn keep_quarantine(root: &Path, attributes: &dyn quarantine::Quarantine) -> Vec<
 /// propio atributo, es el control: si la limpieza se saliera, saldría por él.
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
-    let sandbox = Sandbox::new("c9");
-    let exe = sandbox.write_bundle(&sandbox.staging);
-    let quarantined_paths = seed_quarantine(&sandbox.staging);
-    assert!(
-        !quarantined_paths.is_empty(),
-        "criterio 9: el bundle tiene archivos"
-    );
+async fn install_strips_quarantine_from_whole_program_dir() {
+    let sandbox = Sandbox::new("strip-macos");
+    let exe = sandbox.write_bundle(&sandbox.staging());
+    let quarantined_paths = seed_quarantine(&sandbox.staging());
+    assert!(!quarantined_paths.is_empty(), "el bundle tiene archivos");
 
     // Un hermano del directorio de programa, en cuarentena, que no se debe tocar.
     let sibling = sandbox.root.join("opt").join("sibling.txt");
@@ -405,25 +361,23 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
 
     // Punto de partida: **todo** el bundle está en cuarentena, archivos y directorios.
     assert_eq!(
-        keep_quarantine(&sandbox.staging, quarantine::platform()).len(),
-        quarantined_paths.len() + intermediate_dirs(&sandbox.staging),
-        "criterio 9: el bundle entero arranca en cuarentena"
+        keep_quarantine(&sandbox.staging(), quarantine::platform()).len(),
+        quarantined_paths.len() + intermediate_dirs(&sandbox.staging()),
+        "el bundle entero arranca en cuarentena"
     );
 
     let outcome = avi_lifecycle::install::install(
-        &sandbox.env(&exe),
+        &sandbox.install_env(&exe),
         &avi_lifecycle::install::Options {
-            assume_yes: true,
-            no_setup: true,
             // Sin `PATH`: la prueba es de la cuarentena, y escribir en el perfil del
             // usuario que ejecuta la puerta de macOS no es un efecto aceptable.
             no_modify_path: true,
-            force: false,
+            ..Sandbox::install_options()
         },
         &Inert,
     )
     .await
-    .expect("criterio 9: la instalación se completa");
+    .expect("la instalación se completa");
 
     // El derivado del motor y la librería de ONNX Runtime están entre lo colocado, y son
     // los dos que la operación nombra como los que se ejecutan o se cargan.
@@ -433,33 +387,33 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
             .files
             .iter()
             .any(|f| f.starts_with("vendor/")),
-        "criterio 9: el derivado del motor está entre los archivos colocados"
+        "el derivado del motor está entre los archivos colocados"
     );
     assert!(
         outcome.receipt.files.iter().any(|f| f.ends_with(".dylib")),
-        "criterio 9: la librería de ONNX Runtime está entre los archivos colocados"
+        "la librería de ONNX Runtime está entre los archivos colocados"
     );
 
     // Y el árbol entero, sin excepciones y sin apoyarse en el recibo.
     let with_attribute = keep_quarantine(&sandbox.program_dir, quarantine::platform());
     assert!(
         with_attribute.is_empty(),
-        "criterio 9: ningún archivo ni directorio del directorio de programa conserva la \
+        "ningún archivo ni directorio del directorio de programa conserva la \
          cuarentena; conservan: {with_attribute:?}"
     );
     assert!(
-        quarantine::has(&sibling),
-        "criterio 9: y el hermano, que está fuera, sigue con la suya"
+        quarantine::has(&sibling).expect("se consulta el hermano"),
+        "y el hermano, que está fuera, sigue con la suya"
     );
     assert!(
         avi_lifecycle::receipt::read_from(&sandbox.program_dir)
-            .expect("criterio 9: se lee el recibo")
+            .expect("se lee el recibo")
             .is_some(),
-        "criterio 9: la instalación dejó recibo, que es lo que la distingue de un copiado"
+        "la instalación dejó recibo, que es lo que la distingue de un copiado"
     );
 }
 
-/// **Criterio 9 fuera de macOS.** La mitad del criterio que se puede comprobar donde el
+/// **Fuera de macOS.** La mitad de la regla que se puede comprobar donde el
 /// atributo no existe.
 ///
 /// No es una prueba de que la operación no se pueda ejecutar: usa el `strip` real con la
@@ -472,22 +426,19 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
 /// propio mensaje de la prueba.
 #[cfg(not(target_os = "macos"))]
 #[test]
-fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
-    let tree = Tree::new("c9-others");
+fn install_strips_quarantine_from_whole_program_dir() {
+    let tree = Tree::new("strip-others");
     let placed = tree.materialize();
     let quarantined_paths = seed_quarantine(&tree.staging);
-    assert!(
-        !quarantined_paths.is_empty(),
-        "criterio 9: el bundle tiene archivos"
-    );
+    assert!(!quarantined_paths.is_empty(), "el bundle tiene archivos");
 
     // El hermano, con su propio atributo, es el control del alcance.
     let sibling = tree.root.join("opt").join("sibling.txt");
     std::fs::write(&sibling, "fuera del programa\n").expect("se escribe el hermano");
     quarantine::put(&sibling).expect("`put` fuera de macOS no falla");
     assert!(
-        !quarantine::has(&sibling),
-        "criterio 9: fuera de macOS `has` no encuentra nada, que es lo honesto: el punto de \
+        !quarantine::has(&sibling).expect("se consulta el hermano"),
+        "fuera de macOS `has` no encuentra nada, que es lo honesto: el punto de \
          partida del hermano es indistinguible del de cualquier otro"
     );
 
@@ -501,37 +452,37 @@ fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     let asked = fake.asked();
     assert!(
         outcome.is_clear(),
-        "criterio 9: el recorrido no falla: {:?}",
+        "el recorrido no falla: {:?}",
         outcome.failed
     );
     assert_eq!(
         outcome.cleared.len(),
         placed.len(),
-        "criterio 9: el recorrido limpia cada archivo del directorio de programa"
+        "el recorrido limpia cada archivo del directorio de programa"
     );
     for placed in &placed {
         assert!(
             asked.contains(placed),
-            "criterio 9: se pregunta por {}",
+            "se pregunta por {}",
             placed.display()
         );
     }
     let directories = asked_dirs(&asked);
     assert!(
         !directories.is_empty(),
-        "criterio 9: y por los directorios intermedios, que también heredan el atributo: \
+        "y por los directorios intermedios, que también heredan el atributo: \
          {directories:?}"
     );
     for path in &asked {
         assert!(
             path.starts_with(&tree.program),
-            "criterio 9: nada fuera del directorio de programa: {}",
+            "nada fuera del directorio de programa: {}",
             path.display()
         );
     }
     assert!(
         !asked.contains(&sibling),
-        "criterio 9: el hermano, que tiene su propio atributo, no se pregunta"
+        "el hermano, que tiene su propio atributo, no se pregunta"
     );
 
     // Y ahora el mismo recorrido de la prueba de macOS, con un oráculo que registra y
@@ -546,44 +497,46 @@ fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
     assert_eq!(
         with_attribute.len(),
         placed.len(),
-        "criterio 9: el recorrido del criterio 9 abarca cada archivo colocado: {with_attribute:?}"
+        "el recorrido abarca cada archivo colocado: {with_attribute:?}"
     );
     assert!(
         !with_attribute
             .iter()
             .any(|r| r.contains("..") || r.contains("sibling")),
-        "criterio 9: y no incluye nada de fuera del directorio de programa"
+        "y no incluye nada de fuera del directorio de programa"
     );
     let clean = keep_quarantine(&tree.program, &fake);
     assert!(
         clean.is_empty(),
-        "criterio 9: después de limpiar, el árbol colocado queda sin cuarentena: {clean:?}"
+        "después de limpiar, el árbol colocado queda sin cuarentena: {clean:?}"
     );
     assert!(
         keeps_at(&oracle, &sibling),
-        "criterio 9: y el hermano conserva el suyo, porque el recorrido nunca se sale"
+        "y el hermano conserva el suyo, porque el recorrido nunca se sale"
     );
 
     // Y el `strip` real de la plataforma: en esta plataforma el atributo no existe, así que
     // informa de que no hay nada que quitar sin escribir nada. Ni dentro del directorio de
     // programa ni fuera.
-    let before = content(&tree.root);
+    let before = listing::list(&tree.root);
     let real = quarantine::strip(&tree.program);
     assert!(
         real.is_nothing_to_do(),
-        "criterio 9: fuera de macOS no hay nada que quitar: {real:?}"
+        "fuera de macOS no hay nada que quitar: {real:?}"
     );
     assert_eq!(
-        content(&tree.root),
+        listing::list(&tree.root),
         before,
-        "criterio 9: y el disco no cambia, ni dentro ni fuera"
+        "y el disco no cambia, ni dentro ni fuera"
     );
 }
 
 /// `true` si el oráculo dice que la ruta conserva el atributo, para el control del hermano
 /// sin reconstruir el conjunto.
 fn keeps_at(attributes: &dyn quarantine::Quarantine, path: &Path) -> bool {
-    attributes.has(path).unwrap_or(false)
+    attributes
+        .has(path)
+        .unwrap_or_else(|e| panic!("se consulta {}: {e}", path.display()))
 }
 
 /// Directorios intermedios de entre lo preguntado, que es el caso que motiva que la
@@ -616,7 +569,7 @@ fn intermediate_dirs(root: &Path) -> usize {
 // ─── El recorrido, en todas las plataformas ───────────────────────────────────────
 
 /// El recorrido pregunta por **todos** los archivos del directorio de programa, y por
-/// nada fuera de él. Es la forma verificable del criterio 9 sin `xattr`: la razón de que
+/// nada fuera de él. Es la forma verificable sin `xattr` de la regla de instalar sin cuarentena: la razón de que
 /// la limpieza sea sobre todo el directorio y no solo el ejecutable es precisamente que
 /// el motor y la librería de ONNX Runtime también lo heredan, y eso solo se demuestra
 /// preguntando por ellos.
@@ -704,7 +657,7 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
 }
 
 /// Un fallo en un archivo **no corta** el recorrido: los demás también necesitan
-/// quedarse limpios, y el criterio 9 exige que ninguno conserve la cuarentena.
+/// quedarse limpios, y la regla exige que ninguno conserve la cuarentena.
 ///
 /// Y el resultado lo dice: `is_clear()` es `false` porque hay un archivo que no se pudo
 /// limpiar, que es exactamente la información que el resumen final muestra.
@@ -805,6 +758,18 @@ fn quarantine_strip_respects_the_depth_limit() {
     assert!(outcome.is_clear(), "sin fallos: {:?}", outcome.failed);
 }
 
+/// Un directorio que no se puede listar no se da por limpio: queda en `failed` con su
+/// causa. El recorrido no sigue enlaces, así que un fallo de listado es siempre real.
+#[test]
+fn quarantine_strip_reports_unlistable_directories() {
+    let tree = Tree::new("unlistable");
+    let missing = tree.program.join("missing");
+    let outcome = quarantine::strip_bounded(&missing, MAX_DEPTH, &Fake::new());
+    assert!(!outcome.is_clear(), "un directorio ilegible no está limpio");
+    let failed: Vec<&PathBuf> = outcome.failed.iter().map(|(path, _)| path).collect();
+    assert_eq!(failed, vec![&missing]);
+}
+
 /// Limpiar dos veces no cambia nada, y la segunda pasada informa de que no hay nada que
 /// quitar. Es la idempotencia del mismo paso que la instalación repetida.
 #[test]
@@ -883,10 +848,12 @@ fn quarantine_outside_macos_has_nothing_to_do_and_touches_nothing() {
 
     // Punto de partida: en esta plataforma ningún archivo tiene el atributo.
     assert!(
-        placed.iter().all(|a| !quarantine::has(a)),
+        placed
+            .iter()
+            .all(|a| !quarantine::has(a).expect("se consulta el archivo")),
         "punto de partida: ningún archivo del bundle tiene cuarentena"
     );
-    let before = content(&tree.root);
+    let before = listing::list(&tree.root);
 
     let outcome = quarantine::strip(&tree.program);
 
@@ -898,7 +865,7 @@ fn quarantine_outside_macos_has_nothing_to_do_and_touches_nothing() {
     assert!(outcome.cleared.is_empty(), "no se limpió nada");
     assert!(outcome.failed.is_empty(), "y nada falló");
     assert_eq!(
-        content(&tree.root),
+        listing::list(&tree.root),
         before,
         "el disco no ha cambiado: ni dentro del directorio de programa ni fuera"
     );
@@ -920,126 +887,13 @@ fn quarantine_outside_macos_attributes_are_inert() {
     for file in &scheduled {
         quarantine::put(file).expect("`put` fuera de macOS no falla");
         assert!(
-            !quarantine::has(file),
+            !quarantine::has(file).expect("se consulta el archivo"),
             "y `has` sigue diciendo que no: no hay atributo que poner"
         );
     }
 }
 
-// ─── Solo en macOS: el criterio 9 y `xattr` de verdad ─────────────────────────────
-
-/// Control de procesos inerte: no hay daemon en el sandbox.
-#[cfg(target_os = "macos")]
-struct Inert;
-
-#[cfg(target_os = "macos")]
-impl ProcessControl for Inert {
-    fn pid_alive(&self, _pid: u32) -> bool {
-        false
-    }
-    fn kill_tree_by_pid(&self, _pid: u32) -> bool {
-        false
-    }
-    fn resident_pid_alive(&self, _pid: u32) -> bool {
-        false
-    }
-    fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
-        false
-    }
-}
-
-/// El criterio 9: instalar quita la cuarentena de **todo** el directorio de programa, no
-/// solo del ejecutable.
-///
-/// Sigue sin poder verificarse en local: es la prueba de la puerta de macOS, y la
-/// primera vez que se ejecutará es en el pipeline del release. Lo que sí queda verificado
-/// antes de llegar allí es todo lo de arriba.
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn install_strips_quarantine_from_whole_program_dir() {
-    let tree = Tree::new("criterion-9");
-    let exe = tree
-        .files
-        .iter()
-        .find(|a| {
-            a.file_name()
-                .is_some_and(|n| n == "ai-voice-interconnector")
-        })
-        .expect("el bundle tiene ejecutable")
-        .clone();
-    for file in &tree.files {
-        quarantine::put(file).expect("se pone la cuarentena de macOS");
-    }
-    // Punto de partida: **todos** los archivos del bundle están en cuarentena. Sin esta
-    // comprobación, la prueba no afirmaría nada.
-    for file in &tree.files {
-        assert!(
-            quarantine::has(file),
-            "{} arranca con cuarentena",
-            file.display()
-        );
-    }
-
-    let sandbox = Sandbox {
-        root: tree.root.clone(),
-        program_dir: tree.program.clone(),
-        staging: tree.staging.clone(),
-        home: tree.root.join("home/ana"),
-        data_dir: tree.root.join("data"),
-        models_dir: tree.root.join("models"),
-        temp_root: tree.root.join("tmp"),
-    };
-    let outcome = avi_lifecycle::install::install(
-        &sandbox.env(&exe),
-        &avi_lifecycle::install::Options {
-            assume_yes: true,
-            no_setup: true,
-            // Sin `PATH`: la prueba es de la cuarentena, y escribir en el perfil del
-            // usuario que ejecuta la puerta de macOS no es un efecto aceptable.
-            no_modify_path: true,
-            force: false,
-        },
-        &Inert,
-    )
-    .await
-    .expect("la instalación se completa");
-
-    // El derivado del motor y la librería de ONNX Runtime están entre lo colocado, y son
-    // los dos que la operación nombra como los que se ejecutan o se cargan.
-    assert!(
-        outcome
-            .receipt
-            .files
-            .iter()
-            .any(|f| f.starts_with("vendor/")),
-        "el derivado del motor está entre los archivos colocados"
-    );
-    assert!(
-        outcome.receipt.files.iter().any(|f| f.ends_with(".dylib")),
-        "la librería de ONNX Runtime está entre los archivos colocados"
-    );
-
-    // Y ninguno conserva el atributo.
-    let mut in_quarantine = Vec::new();
-    for relative in &outcome.receipt.files {
-        let path = place(&sandbox.program_dir, relative);
-        assert!(path.exists(), "{relative} se colocó");
-        if quarantine::has(&path) {
-            in_quarantine.push(relative.clone());
-        }
-    }
-    assert!(
-        in_quarantine.is_empty(),
-        "la instalación limpió la cuarentena de todo el bundle, no solo del ejecutable; \
-         siguen con ella: {in_quarantine:?}"
-    );
-    assert!(
-        avi_lifecycle::receipt::read_from(&sandbox.program_dir)
-            .expect("se lee el recibo")
-            .is_some(),
-        "y dejó recibo, que es lo que distingue una instalación de un copiado"
-    );
-}
+// ─── Solo en macOS: la instalación sin cuarentena y `xattr` de verdad ──────────────
 
 /// El límite de profundidad contra un **lazo real** de directorios, que es el caso que lo
 /// justifica: un enlace simbólico a un ancestro. La implementación falsa demuestra que
@@ -1048,9 +902,9 @@ async fn install_strips_quarantine_from_whole_program_dir() {
 #[cfg(target_os = "macos")]
 #[test]
 fn quarantine_strip_survives_a_real_directory_loop() {
-    let guard = unique("loop");
-    let root = guard.path().to_path_buf();
-    let program = root.join("opt/ai-voice-interconnector");
+    let sandbox = Sandbox::new("loop");
+    let root = sandbox.root.clone();
+    let program = sandbox.program_dir.clone();
     let dir = program.join("vendor/qwen3-tts");
     std::fs::create_dir_all(&dir).expect("se crea el árbol");
     let engine = dir.join("qwen_tts");
@@ -1065,111 +919,24 @@ fn quarantine_strip_survives_a_real_directory_loop() {
         outcome.failed
     );
     assert!(
-        !quarantine::has(&engine),
+        !quarantine::has(&engine).expect("se consulta el derivado"),
         "y la limpieza alcanzó al derivado antes de encontrarse con el lazo"
     );
 }
 
-/// La premisa de la puerta de macOS: `xattr` existe y responde. Si no, el criterio 9 no
-/// se puede demostrar, y hay que saberlo en la puerta y no en el release.
+/// La premisa de la puerta de macOS: `xattr` existe y responde. Si no, la
+/// instalación sin cuarentena no se puede demostrar, y hay que saberlo en la puerta y no
+/// en el release.
 #[cfg(target_os = "macos")]
 #[test]
 fn quarantine_gate_needs_xattr() {
+    let output = std::process::Command::new("xattr")
+        .arg("-h")
+        .output()
+        .unwrap_or_else(|error| panic!("la puerta de macOS necesita `xattr` en el PATH: {error}"));
     assert!(
-        std::process::Command::new("xattr")
-            .arg("-h")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false),
-        "la puerta de macOS necesita `xattr` en el PATH"
+        output.status.success(),
+        "`xattr -h` debe responder con éxito; salió con {:?}",
+        output.status
     );
-}
-
-// ─── Entorno de la instalación, solo para macOS ──────────────────────────────────
-
-/// Rutas de la tabla del producto en la prueba del criterio 9.
-#[cfg(target_os = "macos")]
-struct Sandbox {
-    /// Dueño del directorio: lo borra al soltarse, también si la prueba falla.
-    _guard: tempfile::TempDir,
-    root: PathBuf,
-    program_dir: PathBuf,
-    staging: PathBuf,
-    home: PathBuf,
-    data_dir: PathBuf,
-    models_dir: PathBuf,
-    temp_root: PathBuf,
-}
-
-#[cfg(target_os = "macos")]
-impl Sandbox {
-    /// Árbol con la forma de la instalación: el bundle se escribe primero en
-    /// el staging hermano, que es donde lo deja el bootstrap.
-    fn new(tag: &str) -> Self {
-        let guard = unique(tag);
-        let root = guard.path().to_path_buf();
-        let staging = root
-            .join("opt")
-            .join(format!("{}test", avi_lifecycle::STAGING_DIR_PREFIX));
-        Self {
-            _guard: guard,
-            program_dir: root.join("opt").join("ai-voice-interconnector"),
-            home: root.join("home"),
-            data_dir: root.join("data"),
-            models_dir: root.join("models"),
-            temp_root: root.join("tmp"),
-            staging,
-            root,
-        }
-    }
-
-    /// Escribe el bundle en el staging y devuelve la ruta del ejecutable, que
-    /// es la que la instalación recibe.
-    fn write_bundle(&self, staging: &Path) -> PathBuf {
-        write_bundle(staging)
-            .into_iter()
-            .find(|p| {
-                p.file_name()
-                    .is_some_and(|n| n == "ai-voice-interconnector")
-            })
-            .expect("el bundle tiene ejecutable")
-    }
-    /// `SHELL` de la máquina, con el nombre corto que usa la tabla de shells.
-    fn shell() -> &'static str {
-        match std::env::var("SHELL")
-            .unwrap_or_default()
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-        {
-            "zsh" => "zsh",
-            "fish" => "fish",
-            "bash" => "bash",
-            _ => "sh",
-        }
-    }
-
-    fn env(&self, exe: &Path) -> avi_lifecycle::install::Env {
-        avi_lifecycle::install::Env {
-            exe: exe.to_path_buf(),
-            version: "0.24.0".to_string(),
-            target: avi_lifecycle::target::host_triple().to_string(),
-            program_dir: self.program_dir.clone(),
-            bin_dir: self.home.join(".local/bin"),
-            data_dir: self.data_dir.clone(),
-            models_dir: self.models_dir.clone(),
-            temp_root: self.temp_root.clone(),
-            home: self.home.clone(),
-            path_env: "/usr/bin:/bin".to_string(),
-            shell: avi_lifecycle::path_unix::Shell::from_env(Some(Self::shell())),
-            zdotdir: None,
-            registry_subkey: String::new(),
-            #[cfg(windows)]
-            registry_path: None,
-            #[cfg(unix)]
-            link_state: avi_lifecycle::path_unix::Existing::Absent,
-            daemon_addr: "127.0.0.1:1".to_string(),
-            source: None,
-        }
-    }
 }

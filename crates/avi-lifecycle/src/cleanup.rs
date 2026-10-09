@@ -1,21 +1,13 @@
 //! `cleanup`: borrado del estado por categorías, con el planificador que
 //! solo actúa dentro de raíces de propiedad exclusiva.
 //!
-//! Lo que este módulo sustituye es la aritmética ad hoc que vivía en el binario,
-//! donde el plan de `--dry-run` y la ejecución
-//! eran **dos** listas: el planificaba `xet` y `.locks` sin mirar si la raíz de
-//! modelos era compartida, mientras el ejecutor devolvía `Ok(false)` bajo R3. El
-//! resultado era que `cleanup --model --dry-run` anunciaba un borrado que no
-//! ocurría, y que ninguna prueba lo detectaba porque nadie comparaba las dos
-//! listas.
-//!
 //! **Una sola función de cálculo.** [`plan`] construye la lista de destinos con sus
-//! tamaños aplicando R1 a R3, y la usan las tres cosas que la necesitan: el resumen
-//! de la confirmación, la salida de `--dry-run` y la ejecución. No puede
-//! haber divergencia porque no hay dos implementaciones; `plan_and_execution_agree_under_shared_root`
-//! lo afirma sobre el caso que fallaba.
+//! tamaños y la usan las tres cosas que la necesitan: el resumen de la
+//! confirmación, la salida de `--dry-run` y la ejecución. El plan y la ejecución no
+//! pueden divergir porque no hay dos implementaciones;
+//! `plan_and_execution_agree_under_shared_root` lo afirma con una raíz compartida.
 //!
-//! **R1 a R3, en una frase cada una.** Solo se borra dentro de raíces de propiedad
+//! **Reglas de propiedad.** Solo se borra dentro de raíces de propiedad
 //! exclusiva. El directorio de programa no lo toca `cleanup` en absoluto —eso es
 //! `self uninstall`— y aparece en el plan solo como recurso compartido que se
 //! conserva. En la raíz de modelos **exclusiva** el borrado es de directorio
@@ -23,7 +15,7 @@
 //! `xet` cuelga de ella. En la raíz **compartida** que el
 //! usuario eligió con `HF_HUB_CACHE` o `HF_HOME` solo se borran los repos fijados
 //! y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de
-//! otra herramienta (criterio 23).
+//! otra herramienta.
 //!
 //! **Nada de lo que el daemon usa se borra sin pararlo antes**, y el fallo
 //! de la parada es `daemon_stop_failed` con nada del plan borrado.
@@ -91,11 +83,10 @@ pub struct Roots {
     pub models_dir: PathBuf,
     /// Directorio de temporales del sistema, para el barrido transversal.
     pub temp_root: PathBuf,
-    /// `$HOME`, que R2 usa como una de las rutas que el directorio de programa nunca
-    /// puede ser. Vacío donde el producto no lo necesita.
+    /// `$HOME`, una de las rutas que el directorio de programa nunca puede ser. Vacío donde el producto no lo necesita.
     pub home: PathBuf,
     /// `true` si la raíz de modelos es la caché HF compartida que eligió el usuario, lo
-    /// que hace que R3 limite el alcance de `--model` a lo atribuible a la aplicación.
+    /// que limita el alcance de `--model` a lo atribuible a la aplicación.
     ///
     /// Va como **dato** y no se vuelve a leer del entorno dentro del planificador por
     /// dos razones. La primera es el aislamiento de las pruebas: leer
@@ -208,13 +199,13 @@ pub struct Target {
 
 /// Un recurso compartido que la operación deja intacto a propósito.
 ///
-/// El resumen lo llama "no se tocará" y R3 lo exige: el plan tiene que **decir** que no se
+/// El resumen lo llama "no se tocará": el plan tiene que **decir** que no se
 /// borra, porque un usuario que ve `cleanup --all` sin lista de lo que se conserva
 /// no puede saber que sus modelos de otra herramienta siguen ahí.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preserved {
     pub path: PathBuf,
-    /// Motivo legible: por qué R1 o R3 lo excluyen.
+    /// Motivo legible: por qué las reglas de propiedad lo excluyen.
     pub reason: &'static str,
 }
 
@@ -265,7 +256,7 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
     }
     if options.all {
         // `--all` añade configuración, logs y `daemon.pid` al resto. El
-        // fichero `daemon.ready` va con él porque es el otro mitad del mismo estado
+        // fichero `daemon.ready` va con él porque es la otra mitad del mismo estado
         // de ejecución y dejarlo sería un residuo que `doctor` seguiría reportando.
         push(
             &mut collected,
@@ -323,10 +314,10 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
 ///
 /// **Raíz exclusiva**: un único destino, la raíz entera. Los snapshots, los locks y
 /// `xet` cuelgan de ella, así que el borrado es de directorio y no hay aritmética
-/// que acertar. Es el residuo cero del criterio 17.
+/// que acertar y no queda residuo.
 ///
 /// **Raíz compartida**: solo los repos fijados y sus locks. `xet` y
-/// el `.locks` completo se conservan y se anuncian como compartidos (R3).
+/// el `.locks` completo se conservan y se anuncian como compartidos.
 fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec<Preserved>) {
     let models = &roots.models_dir;
     if !models.is_dir() {
@@ -339,8 +330,7 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
     for pin in avi_store::MODEL_REVISIONS {
         let repo_dir = models.join(format!("models--{}", pin.repo.replace('/', "--")));
         push(collected, repo_dir.clone(), Category::Model);
-        // Los locks de cada repo propio son atribuibles a la aplicación (R3 los
-        // nombra explícitamente), así que caen con su repo. El `.locks` completo no.
+        // Los locks de cada repo propio son atribuibles a la aplicación, así que caen con su repo. El `.locks` completo no.
         push(
             collected,
             models
@@ -352,19 +342,19 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
     // Lo que se conserva se anuncia por **regla**, no entrada por entrada: una caché
     // HF compartida puede tener cientos de repos de otras herramientas, y listarlos uno
     // a uno convertiría el resumen en ruido sin decir más que la regla. Se nombra la
-    // raíz, `xet` y el `.locks` completo, que es exactamente lo que R3 excluye.
+    // raíz, `xet` y el `.locks` completo, que es exactamente lo que no se borra.
     preserved.push(Preserved {
         path: models.clone(),
-        reason: "R3: la raíz es una caché compartida; solo se borran los repos \
+        reason: "la raíz es una caché compartida; solo se borran los repos \
                  fijados y sus locks",
     });
     preserved.push(Preserved {
         path: models.join("xet"),
-        reason: "R3: `xet` es un subdirectorio global de la caché compartida",
+        reason: "`xet` es un subdirectorio global de la caché compartida",
     });
     preserved.push(Preserved {
         path: models.join(".locks"),
-        reason: "R3: el `.locks` completo nunca se borra de una raíz compartida",
+        reason: "el `.locks` completo nunca se borra de una raíz compartida",
     });
 }
 
@@ -497,6 +487,9 @@ pub struct Outcome {
     /// Lo que quedó sin poder borrar, con el motivo. No es un fallo: se considera
     /// un archivo en uso que recoge el borrado diferido.
     pub kept: Vec<String>,
+    /// Directorios del barrido que existen y no se pudieron listar: lo que contienen
+    /// queda sin recoger. En la ejecución real también están en `kept`.
+    pub unreadable: Vec<String>,
     /// Recursos compartidos que se conservan, con el motivo.
     pub preserved: Vec<Preserved>,
     pub dry_run: bool,
@@ -623,6 +616,11 @@ pub async fn run(
             .iter()
             .map(|p| p.display().to_string())
             .collect(),
+        unreadable: recovery
+            .unreadable
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
         preserved: plan.preserved,
         dry_run: false,
         daemon_was_running: daemon.was_running,
@@ -655,6 +653,9 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     for path in preview.all() {
         eprintln!("  barrido {}", path.display());
     }
+    for (path, cause) in &preview.unreadable {
+        eprintln!("  no se puede listar {}: {cause}", path.display());
+    }
     for item in &plan.preserved {
         eprintln!("  no se tocará {}: {}", item.path.display(), item.reason);
     }
@@ -683,6 +684,11 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
             .temporaries_kept
             .iter()
             .map(|p| p.display().to_string())
+            .collect(),
+        unreadable: preview
+            .unreadable
+            .iter()
+            .map(|(path, _)| path.display().to_string())
             .collect(),
         preserved: plan.preserved,
         dry_run: true,

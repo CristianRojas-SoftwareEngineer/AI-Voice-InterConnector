@@ -1,15 +1,15 @@
 //! Integración de `PATH` en Windows: la entrada del directorio de programa en el
 //! valor `Path` de `HKCU\Environment`.
 //!
-//! Aquí se elimina el defecto que el código anterior tenía, y el enunciado lo nombra
-//! uno por uno:
+//! Reglas de lectura y escritura del valor, que evitan destruir información del
+//! usuario:
 //!
 //! - **Se lee sin expandir.** `RegGetValueW` con `RRF_NOEXPAND` devuelve el valor
 //!   tal como el usuario lo escribió. Leer expandido y volver a escribir es lo que
 //!   aplana las entradas `%VAR%` y destruye información suya.
 //! - **Se conserva el tipo.** Un `Path` que era `REG_EXPAND_SZ` sigue siéndolo, y
 //!   uno que no existía se crea como `REG_EXPAND_SZ`. Escribir siempre `REG_SZ`
-//!   era lo que hacía el código anterior.
+//!   aplanaría las entradas `%VAR%`.
 //! - **La comparación es canónica**: sin distinguir mayúsculas, ignorando
 //!   separadores finales y considerando también la forma expandida de cada
 //!   entrada, de modo que una entrada escrita con `%USERPROFILE%\...` se reconoce
@@ -19,8 +19,8 @@
 //!   nuevo.
 //!
 //! **La ruta de la clave es un parámetro**: la prueba de integración
-//! opera sobre una clave propia del test en lugar de la del usuario, y así el
-//! criterio 7 se demuestra sin tocar el entorno de quien ejecuta.
+//! opera sobre una clave propia del test en lugar de la del usuario, y así la
+//! conservación del tipo se demuestra sin tocar el entorno de quien ejecuta.
 //!
 //! **La decisión está separada del acceso al registro.** `plan_integrate` y
 //! `plan_revert` son funciones puras sobre el valor leído, de modo que la regla de
@@ -61,7 +61,7 @@ pub struct Plan {
     /// Tipo con el que se escribe: el leído, o `REG_EXPAND_SZ` si no existía.
     pub kind: u32,
     /// `false` cuando el valor ya era el que se iba a escribir y tocarlo sería
-    /// reescribir el registro sin necesidad. Es la idempotencia del criterio 2.
+    /// reescribir el registro sin necesidad: la integración es idempotente.
     pub changed: bool,
 }
 
@@ -301,7 +301,7 @@ pub fn create_key(subkey: &str) -> anyhow::Result<()> {
 }
 
 /// Crea una clave propia del llamante con un `Path` de partida, para probar la
-/// conservación del tipo y de las entradas `%VAR%` (el criterio 7).
+/// conservación del tipo y de las entradas `%VAR%`.
 pub fn create_key_for_test(subkey: &str, value: &str, kind: u32) -> anyhow::Result<()> {
     create_key(subkey)?;
     write_path(subkey, value, kind)
@@ -374,7 +374,7 @@ mod tests {
     use std::path::PathBuf;
     use windows_sys::Win32::System::Registry::{REG_EXPAND_SZ, REG_SZ};
 
-    /// La regla de idempotencia del criterio 2 sobre el lado de Windows, sin
+    /// La regla de idempotencia sobre el lado de Windows, sin
     /// escribir en el registro: con la entrada ya presente, nada cambia.
     #[test]
     fn path_windows_plan_is_idempotent() {
@@ -428,7 +428,7 @@ mod tests {
     }
 
     /// La entrada escrita con `%VAR%` y la misma ruta expandida se reconocen como
-    /// la misma, que es el punto del criterio 7: comparar solo la forma literal
+    /// la misma: comparar solo la forma literal
     /// dejaría duplicado el directorio de programa.
     ///
     /// El perfil sale del entorno en vez de estar escrito a mano: si el literal

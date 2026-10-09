@@ -18,7 +18,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 | `--all` | `bool` | datos | Las tres categorías **más** configuración, logs (`data/logs/`, con las familias `daemon_*`, `qwen3-tts_*` y `cleaner_*`) y estado del daemon. La retención de 10 logs por familia no es una opción de `cleanup`: se aplica sola al crear cada log |
 | `--dry-run` | `bool` | — | Lista el plan sin borrar nada y **sin tomar el bloqueo** |
 | `--yes`, `-y` | `bool` | — | Omite la confirmación interactiva |
-| `--json` | `bool` | — | Global (`Cli::json`); con `cleanup` emite `status` + `reason` + `removed` + `planned` (el plan como recibo, en ejecución y en `--dry-run`) |
+| `--json` | `bool` | — | Global (`Cli::json`); con `cleanup` emite `status` + `reason` + `removed` + `planned` + `unreadable` (el plan como recibo, en ejecución y en `--dry-run`) |
 
 **Gate `sin categoría → 2`.** Sin ninguna de las cuatro categorías, `cleanup` sale con `usage_error` (**2**) y **no borra nada**: la comprobación es la primera de `cleanup::run`, antes incluso de mirar privilegios o el bloqueo, de modo que una invocación mal formada no deja ni el archivo de bloqueo detrás (criterio 22).
 
@@ -82,9 +82,12 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
   "status": "cleanup_complete",
   "reason": null,
   "removed": ["…/data/voices/mi_voz", "…/speech/mi_voz"],
-  "planned": ["…/data/voices/mi_voz", "…/speech/mi_voz"]
+  "planned": ["…/data/voices/mi_voz", "…/speech/mi_voz"],
+  "unreadable": []
 }
 ```
+
+`unreadable` lista los directorios del barrido transversal que existen y no se pudieron listar (lo que contienen queda sin recoger); en texto, la ejecución real y `--dry-run` los avisan por stderr, una línea por ruta.
 
 `status` toma `cleanup_complete`, `planned` o `cancelled`. `planned` es el recibo de `plan()`: lo que la operación iba a borrar, y en `--dry-run` lo único que dice, porque no borra nada. `removed` son las rutas del plan con lo que la operación borró de verdad, y con `--dry-run` copia `planned`, que es lo que permite comparar el simulacro con la ejecución real. **Los dos salen de la misma llamada al planificador**, así que no pueden divergir. Exactamente un objeto JSON por invocación, incluso cuando falla: sin categoría con `--json` sale el objeto de error de §10 del contrato (`error` + `reason`), y nada más.
 

@@ -150,6 +150,9 @@ pub struct Pending {
     pub temporaries: Vec<String>,
     /// Temporales de un proceso vivo: no se pueden decidir y no son un residuo.
     pub temporaries_kept: Vec<String>,
+    /// Directorios del barrido que existen y no se pueden listar: no se puede afirmar
+    /// que no haya restos en ellos.
+    pub unreadable: Vec<String>,
 }
 
 impl Pending {
@@ -159,6 +162,7 @@ impl Pending {
             && self.parked.is_empty()
             && self.stagings.is_empty()
             && self.temporaries.is_empty()
+            && self.unreadable.is_empty()
     }
 }
 
@@ -170,7 +174,7 @@ impl Pending {
 pub struct Models {
     pub root: PathBuf,
     /// `true` si la raíz es la caché HF compartida que eligió el usuario, lo que hace
-    /// que R3 limite el alcance de cualquier borrado.
+    /// que el alcance de cualquier borrado se limite a lo atribuible a la aplicación.
     pub shared_root: bool,
     pub provisioned: Vec<String>,
     /// Repos de la selección sin provisionar, el modelo Base de clonado incluido.
@@ -301,10 +305,12 @@ pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
             "sin residuos de operaciones anteriores".to_string()
         } else {
             format!(
-                "{} aparcado(s), {} staging(s) y {} temporal(es) por recoger",
+                "{} aparcado(s), {} staging(s) y {} temporal(es) por recoger; {} directorio(s) \
+                 sin poder listar",
                 pending.parked.len(),
                 pending.stagings.len(),
-                pending.temporaries.len()
+                pending.temporaries.len(),
+                pending.unreadable.len()
             )
         },
     );
@@ -342,6 +348,11 @@ fn pending(env: &Env) -> Pending {
         stagings: display_all(&preview.stagings),
         temporaries: display_all(&preview.temporaries),
         temporaries_kept: display_all(&preview.temporaries_kept),
+        unreadable: preview
+            .unreadable
+            .iter()
+            .map(|(path, _)| path.display().to_string())
+            .collect(),
     }
 }
 
@@ -595,6 +606,28 @@ mod tests {
             registry_subkey: String::new(),
         };
         (root, env)
+    }
+
+    /// Un directorio de temporales que existe y no se puede listar (aquí, un fichero) se
+    /// publica en `pending.unreadable` y hace fallar `pending_artifacts`.
+    #[test]
+    fn unlistable_directory_is_reported_in_pending() {
+        let (root, mut env) = env("unlistable");
+        let temp_file = root.join("temp-is-a-file");
+        write_file(&temp_file, "no es un directorio");
+        env.roots.temp_root = temp_file.clone();
+
+        let report = report(&env, Path::new("ai-voice-interconnector"), "0.0.0");
+        assert_eq!(
+            report.pending.unreadable,
+            vec![temp_file.display().to_string()]
+        );
+        assert!(report.failed.iter().any(|name| name == "pending_artifacts"));
+        let value = serde_json::to_value(&report).expect("el reporte es JSON");
+        assert_eq!(
+            value["pending"]["unreadable"],
+            serde_json::json!([temp_file.display().to_string()])
+        );
     }
 
     fn keys(report: &Report) -> Vec<String> {

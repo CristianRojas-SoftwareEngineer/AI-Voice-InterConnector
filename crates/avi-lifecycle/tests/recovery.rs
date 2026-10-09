@@ -1,7 +1,6 @@
-//! Interrupción de la transacción y recuperación en la siguiente operación; plan T18,
-//! acción 5.
+//! Interrupción de la transacción y recuperación en la siguiente operación.
 //!
-//! La garantía que se demuestra es la del criterio 14: una
+//! La garantía que se demuestra es que una
 //! interrupción en cualquier punto **deja la versión anterior operativa** y la siguiente
 //! operación de ciclo de vida **completa la recuperación**, sin residuo.
 //!
@@ -27,6 +26,26 @@
 
 #![allow(clippy::disallowed_methods)]
 
+#[path = "support/bundle.rs"]
+mod bundle;
+#[path = "support/inert.rs"]
+mod inert;
+#[path = "support/inspect.rs"]
+mod inspect;
+#[path = "support/install_env.rs"]
+mod install_env;
+#[path = "support/listing.rs"]
+mod listing;
+#[path = "support/net.rs"]
+mod net;
+#[path = "support/process_env.rs"]
+mod process_env;
+#[path = "support/registered.rs"]
+mod registered;
+#[path = "support/repo.rs"]
+mod repo;
+#[path = "support/runtime.rs"]
+mod runtime;
 mod support;
 
 use avi_lifecycle::channel::Channel;
@@ -35,8 +54,10 @@ use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
 use avi_lifecycle::recovery::{self, RecoveryOutcome};
 use avi_lifecycle::transaction::{Journal, JournalState, JOURNAL_SCHEMA_VERSION};
 use avi_lifecycle::uninstall;
+use inert::Inert;
+use registered::Now;
 use std::path::Path;
-use support::{Inert, Now, Sandbox};
+use support::Sandbox;
 
 /// Los cinco estados del diario de la transacción: el punto del flujo en el que la
 /// operación
@@ -112,12 +133,12 @@ fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
         state: JournalState::Started,
         parked_dir: None,
         placed: Vec::new(),
-        source_dir: Some(sandbox.staging.clone()),
+        source_dir: Some(sandbox.staging().clone()),
     };
 
     // El bundle nuevo está en el staging, que es donde lo deja el bootstrap, y la
     // versión anterior está en el directorio de programa, que es lo que hay.
-    sandbox.write_bundle(&sandbox.staging);
+    sandbox.write_bundle(&sandbox.staging());
     seed_previous_version(sandbox);
 
     // El diario se escribe **antes** de tocar nada, y el aparcado se salta el
@@ -129,7 +150,7 @@ fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
 
     // 1. Aparcar por renombrado.
     std::fs::create_dir_all(&parked).expect("se crea el aparcado");
-    for name in support::list(&sandbox.program_dir) {
+    for name in listing::list(&sandbox.program_dir) {
         if name.ends_with('/') || name.starts_with(avi_lifecycle::PARKED_DIR_PREFIX) {
             continue;
         }
@@ -145,13 +166,13 @@ fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
 
     // 2. Colocar. El diario declara qué se va a colocar **antes** de colocar nada, que es
     //    lo que permite a una interrupción a mitad del paso saber qué retirar.
-    let mut placed = support::list(&sandbox.staging);
+    let mut placed = listing::list(&sandbox.staging());
     placed.retain(|n| !n.ends_with('/'));
     journal.placed = placed.clone();
     journal.state = state;
     write_journal(&sandbox.program_dir, &journal);
     for relative in &placed {
-        let from = sandbox.staging.join(relative);
+        let from = sandbox.staging().join(relative);
         let dest = sandbox.program_dir.join(relative);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).expect("se crea el directorio del archivo colocado");
@@ -176,11 +197,11 @@ fn write_journal(program_dir: &Path, journal: &Journal) {
 /// esté recién
 /// extraído, y barrerse a sí mismo entre el paso 1 y el paso 2 dejaría a `self install`
 /// instalando un bundle vacío.
-fn roots(sandbox: &Sandbox) -> recovery::Roots<'_> {
+fn roots<'a>(sandbox: &'a Sandbox, staging: &'a Path) -> recovery::Roots<'a> {
     recovery::Roots {
         program_dir: &sandbox.program_dir,
         temp_root: &sandbox.temp_root,
-        in_use: Some(&sandbox.staging),
+        in_use: Some(staging),
     }
 }
 
@@ -188,11 +209,11 @@ fn roots(sandbox: &Sandbox) -> recovery::Roots<'_> {
 /// no se cuenta, porque durante una operación es suyo y no huérfano, y porque borrarlo es
 /// el paso 10 del bootstrap, que corresponde al bootstrap y no al motor.
 fn residue(sandbox: &Sandbox) -> Vec<String> {
-    let mut out: Vec<String> = support::list(&sandbox.program_dir)
+    let mut out: Vec<String> = listing::list(&sandbox.program_dir)
         .into_iter()
         .filter(|n| n.starts_with(avi_lifecycle::PARKED_DIR_PREFIX))
         .collect();
-    out.extend(support::list(&sandbox.temp_root).into_iter().filter(|n| {
+    out.extend(listing::list(&sandbox.temp_root).into_iter().filter(|n| {
         avi_lifecycle::TEMP_PREFIXES
             .iter()
             .any(|p| n.starts_with(p))
@@ -245,8 +266,8 @@ fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
 /// no deja residuo. Sin la segunda, la primera solo probaría una función.
 #[test]
 fn interrupted_transaction_is_recovered_next_run() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
 
     for (slug, point, state, commit) in POINTS {
         // ── Capa 1: la recuperación resuelve el estado escrito ───────────────────
@@ -258,55 +279,55 @@ fn interrupted_transaction_is_recovered_next_run() {
             .join(format!("{}{txid}", avi_lifecycle::PARKED_DIR_PREFIX));
         assert!(
             avi_lifecycle::transaction::read_journal(&sandbox.program_dir)
-                .expect("criterio 14: se lee el diario")
+                .expect("se lee el diario")
                 .is_some(),
-            "criterio 14, punto «{point}»: hay transacción pendiente"
+            "punto «{point}»: hay transacción pendiente"
         );
         if commit {
             assert!(
                 parked.is_dir(),
-                "criterio 14, punto «{point}»: el aparcado sigue, porque el commit aún no se \
+                "punto «{point}»: el aparcado sigue, porque el commit aún no se \
                  ha completado"
             );
         } else if state == JournalState::Started {
             assert!(
                 operational_previous_version(&sandbox),
-                "criterio 14, punto «{point}»: la versión anterior nunca llegó a moverse"
+                "punto «{point}»: la versión anterior nunca llegó a moverse"
             );
         } else {
             assert!(
                 !operational_previous_version(&sandbox),
-                "criterio 14, punto «{point}»: antes de recuperar, la versión anterior no está \
+                "punto «{point}»: antes de recuperar, la versión anterior no está \
                  en su sitio: eso es lo que la reversión tiene que arreglar"
             );
         }
 
-        let outcome: RecoveryOutcome =
-            recovery::recover(roots(&sandbox)).expect("criterio 14: la recuperación se ejecuta");
+        let outcome: RecoveryOutcome = recovery::recover(roots(&sandbox, &sandbox.staging()))
+            .expect("la recuperación se ejecuta");
 
         assert_eq!(
             outcome.rolled_back, !commit,
-            "criterio 14, punto «{point}»: el estado del diario decide, y solo el confirmado se \
+            "punto «{point}»: el estado del diario decide, y solo el confirmado se \
              completa como commit"
         );
         assert_eq!(
             outcome.committed, commit,
-            "criterio 14, punto «{point}»: y no se hacen las dos cosas"
+            "punto «{point}»: y no se hacen las dos cosas"
         );
         assert!(
             outcome.is_clean(),
-            "criterio 14, punto «{point}»: no queda nada pendiente: {:?}",
+            "punto «{point}»: no queda nada pendiente: {:?}",
             outcome.kept
         );
         assert!(
             avi_lifecycle::transaction::read_journal(&sandbox.program_dir)
-                .expect("criterio 14: se relee el diario")
+                .expect("se relee el diario")
                 .is_none(),
-            "criterio 14, punto «{point}»: el diario desaparece"
+            "punto «{point}»: el diario desaparece"
         );
         assert!(
             !parked.exists(),
-            "criterio 14, punto «{point}»: el aparcado desaparece, restaurado o borrado"
+            "punto «{point}»: el aparcado desaparece, restaurado o borrado"
         );
         if commit {
             // El commit **conserva** lo colocado y borra el aparcado. No hay recibo todavía:
@@ -314,35 +335,35 @@ fn interrupted_transaction_is_recovered_next_run() {
             // punto la instalación está colocada pero sin registrar. Lo que se afirma es que
             // el bundle entero está en su sitio, que es lo que distingue un commit de un
             // rollback a medias.
-            let placed = support::list(&sandbox.program_dir);
+            let placed = listing::list(&sandbox.program_dir);
             let section =
                 avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
-                    .expect("criterio 14: el target del host tiene sección en el manifiesto");
+                    .expect("el target del host tiene sección en el manifiesto");
             for relative in &section.required {
                 assert!(
                     placed.contains(relative),
-                    "criterio 14, punto «{point}»: el commit conserva lo colocado y {relative} \
+                    "punto «{point}»: el commit conserva lo colocado y {relative} \
                      está en su sitio: {placed:?}"
                 );
             }
             assert!(
                 receipt::read_from(&sandbox.program_dir)
-                    .expect("criterio 14: se lee el recibo")
+                    .expect("se lee el recibo")
                     .is_none(),
-                "criterio 14, punto «{point}»: y el recibo todavía no, porque se escribe en el \
+                "punto «{point}»: y el recibo todavía no, porque se escribe en el \
                  paso 10, después de la transacción"
             );
         } else {
             assert!(
                 operational_previous_version(&sandbox),
-                "criterio 14, punto «{point}»: la versión anterior vuelve a estar operativa"
+                "punto «{point}»: la versión anterior vuelve a estar operativa"
             );
             // Lo que puede quedar son los **directorios** que la colocación creó para
             // alojar archivos anidados y que la reversión vacía sin borrar, porque el
             // diario solo declara archivos. No es residuo que estorbe —la siguiente
             // colocación los reutiliza— y la versión anterior está operativa, que es lo
-            // que el criterio 14 pide. Se deja escrito para que no se lea como un olvido.
-            let placed = support::list(&sandbox.program_dir);
+            // que la garantía exige. Se deja escrito para que no se lea como un olvido.
+            let placed = listing::list(&sandbox.program_dir);
             let previous_version = [
                 "LICENSE".to_string(),
                 receipt::RECEIPT_NAME.to_string(),
@@ -351,25 +372,25 @@ fn interrupted_transaction_is_recovered_next_run() {
             for entry in &placed {
                 assert!(
                     entry.ends_with('/') || previous_version.contains(entry),
-                    "criterio 14, punto «{point}»: el directorio de programa queda con la \
+                    "punto «{point}»: el directorio de programa queda con la \
                      versión anterior y, como mucho, con directorios vacíos, pero aparece \
                      {entry}: {placed:?}"
                 );
             }
-            let in_source: Vec<String> = support::list(&sandbox.staging)
+            let in_source: Vec<String> = listing::list(&sandbox.staging())
                 .into_iter()
                 .filter(|n| !n.ends_with('/'))
                 .collect();
             assert!(
                 !in_source.is_empty(),
-                "criterio 14, punto «{point}»: lo colocado vuelve al origen, que es de donde \
+                "punto «{point}»: lo colocado vuelve al origen, que es de donde \
                  la colocación lo movió: {in_source:?}"
             );
         }
         assert_eq!(
             residue(&sandbox),
             Vec::<String>::new(),
-            "criterio 14, punto «{point}»: no queda residuo en las raíces exclusivas"
+            "punto «{point}»: no queda residuo en las raíces exclusivas"
         );
 
         // ── Capa 2: la operación siguiente completa la recuperación ───────────────
@@ -380,22 +401,22 @@ fn interrupted_transaction_is_recovered_next_run() {
         // antes de la operación. Es también lo que hace que la reversión encuentre el
         // origen ya completo y borre la copia en el programa en vez de devolver el
         // archivo: el ejecutable en ejecución es el caso en que se copió y no se movió.
-        let exe = s2.write_bundle(&s2.staging);
+        let exe = s2.write_bundle(&s2.staging());
         let installed = runtime
             .block_on(install::install(
                 &s2.install_env(&exe),
                 &Sandbox::install_options(),
                 &Inert,
             ))
-            .expect("criterio 14: la operación siguiente se completa");
+            .expect("la operación siguiente se completa");
         assert_eq!(
             installed.status, "installed",
-            "criterio 14, punto «{point}»: la operación siguiente no tropieza con la \
+            "punto «{point}»: la operación siguiente no tropieza con la \
              interrupción anterior"
         );
         assert_eq!(
             installed.receipt.version, "0.24.0",
-            "criterio 14, punto «{point}»: e instala la versión que iba a instalar"
+            "punto «{point}»: e instala la versión que iba a instalar"
         );
         assert_eq!(
             installed.receipt.files.len(),
@@ -403,19 +424,19 @@ fn interrupted_transaction_is_recovered_next_run() {
                 .expect("el target del host tiene sección")
                 .required
                 .len(),
-            "criterio 14, punto «{point}»: con el bundle entero, que es lo que distingue una \
+            "punto «{point}»: con el bundle entero, que es lo que distingue una \
              instalación de un bundle a medias"
         );
         assert!(
             avi_lifecycle::transaction::read_journal(&s2.program_dir)
-                .expect("criterio 14: se relee el diario")
+                .expect("se relee el diario")
                 .is_none(),
-            "criterio 14, punto «{point}»: la operación se llevó el diario"
+            "punto «{point}»: la operación se llevó el diario"
         );
         assert_eq!(
             residue(&s2),
             Vec::<String>::new(),
-            "criterio 14, punto «{point}»: y no deja aparcados ni temporales propios"
+            "punto «{point}»: y no deja aparcados ni temporales propios"
         );
     }
 }
@@ -429,7 +450,7 @@ fn interrupted_transaction_is_recovered_next_run() {
 /// confirmar la transacción, así que no hay reversión que hacer: la operación falla con el
 /// fallo inyectado y el directorio de programa se queda con el bundle nuevo colocado. En
 /// los seis casos la siguiente operación completa y no deja residuo, que es lo que el
-/// criterio 14 promete.
+/// garantía de recuperación promete.
 ///
 /// El runtime es de un solo hilo y se conduce con `block_on` en vez de `#[tokio::test]`, y
 /// el motivo es el candado: la prueba tiene que sostener `ENV_LOCK` mientras el motor lee
@@ -443,8 +464,8 @@ fn interrupted_install_recovers_next_run() {
     use avi_core::exit_codes::ExitCode;
     use avi_lifecycle::faults::{self, FaultPoint};
 
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
     let points = [
         (FaultPoint::BeforePark, true),
         (FaultPoint::BeforePlace, true),
@@ -460,7 +481,7 @@ fn interrupted_install_recovers_next_run() {
         seed_previous_version(&sandbox);
 
         // ── Interrumpir ─────────────────────────────────────────────────────────
-        let exe = sandbox.write_bundle(&sandbox.staging);
+        let exe = sandbox.write_bundle(&sandbox.staging());
         let window = faults::armed(point);
         let error = runtime
             .block_on(install::install(
@@ -468,18 +489,18 @@ fn interrupted_install_recovers_next_run() {
                 &Sandbox::install_options(),
                 &Inert,
             ))
-            .expect_err("criterio 14: el punto inyectado hace fallar la operación");
+            .expect_err("el punto inyectado hace fallar la operación");
         drop(window);
 
         assert!(
             error.to_string().contains(point.as_str()),
-            "criterio 14, punto {}: el fallo es el inyectado y no otro: {error:#}",
+            "punto {}: el fallo es el inyectado y no otro: {error:#}",
             point.as_str()
         );
         if inside_transaction {
             let failure = error
                 .downcast_ref::<avi_lifecycle::LifecycleError>()
-                .expect("criterio 14: dentro de la transacción el fallo lleva `reason`");
+                .expect("dentro de la transacción el fallo lleva `reason`");
             assert_eq!(failure.reason, "rolled_back");
             assert_eq!(
                 ExitCode::from_reason(failure.reason).code(),
@@ -488,33 +509,33 @@ fn interrupted_install_recovers_next_run() {
             );
             assert!(
                 operational_previous_version(&sandbox),
-                "criterio 14, punto {}: la versión anterior sigue operativa",
+                "punto {}: la versión anterior sigue operativa",
                 point.as_str()
             );
         }
 
         // ── La siguiente operación completa ─────────────────────────────────────
-        let exe = sandbox.write_bundle(&sandbox.staging);
+        let exe = sandbox.write_bundle(&sandbox.staging());
         let installed = runtime
             .block_on(install::install(
                 &sandbox.install_env(&exe),
                 &Sandbox::install_options(),
                 &Inert,
             ))
-            .expect("criterio 14: la operación siguiente se completa");
+            .expect("la operación siguiente se completa");
         assert_eq!(installed.status, "installed");
         assert_eq!(installed.receipt.version, "0.24.0");
         assert_eq!(
             residue(&sandbox),
             Vec::<String>::new(),
-            "criterio 14, punto {}: y no queda residuo en las raíces exclusivas",
+            "punto {}: y no queda residuo en las raíces exclusivas",
             point.as_str()
         );
         assert!(
             avi_lifecycle::transaction::read_journal(&sandbox.program_dir)
-                .expect("criterio 14: se relee el diario")
+                .expect("se relee el diario")
                 .is_none(),
-            "criterio 14, punto {}: el diario no sobrevive a la siguiente operación",
+            "punto {}: el diario no sobrevive a la siguiente operación",
             point.as_str()
         );
     }
@@ -531,13 +552,13 @@ fn interrupted_install_recovers_next_run() {
 fn fault_injection_is_inert_without_the_feature() {
     use avi_lifecycle::faults::{self, FaultPoint};
 
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("inert-injection");
     sandbox.seed_env();
-    let exe = sandbox.write_bundle(&sandbox.staging);
+    let exe = sandbox.write_bundle(&sandbox.staging());
 
     let window = faults::armed(FaultPoint::BeforeCommit);
-    let runtime = support::runtime();
+    let runtime = runtime::runtime();
     let outcome = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
@@ -549,7 +570,7 @@ fn fault_injection_is_inert_without_the_feature() {
 
     assert_eq!(
         outcome.status, "installed",
-        "criterio 14: sin `faults` la inyección es inerte, que es lo que el producto exige \
+        "sin `faults` la inyección es inerte, que es lo que el producto exige \
          del binario distribuido"
     );
     assert!(
@@ -565,13 +586,13 @@ fn fault_injection_is_inert_without_the_feature() {
 /// deja aparcados, stagings ni temporales.
 #[test]
 fn uninstall_recovers_before_it_plans() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("recover-uninstall");
     sandbox.seed_env();
     let _txid = interrupt_at(&sandbox, "placed", JournalState::Placed);
     sandbox.seed_state();
 
-    let runtime = support::runtime();
+    let runtime = runtime::runtime();
     let outcome = runtime
         .block_on(uninstall::run(
             &sandbox.env_uninstall(None, Channel::Unmanaged),
@@ -582,25 +603,25 @@ fn uninstall_recovers_before_it_plans() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 14: la desinstalación se ejecuta");
+        .expect("la desinstalación se ejecuta");
 
     assert_eq!(outcome.status, "uninstalled");
     assert!(
-        !support::exists(&sandbox.program_dir),
-        "criterio 14: la desinstalación opera sobre el directorio de programa registrado"
+        !inspect::exists(&sandbox.program_dir),
+        "la desinstalación opera sobre el directorio de programa registrado"
     );
     assert_eq!(
         residue(&sandbox),
         Vec::<String>::new(),
-        "criterio 14: y no deja aparcados ni temporales propios"
+        "y no deja aparcados ni temporales propios"
     );
     assert!(
-        !support::exists(&sandbox.staging),
-        "criterio 14: el staging, que aquí no lo usa ninguna operación en curso, también se barre"
+        !inspect::exists(&sandbox.staging()),
+        "el staging, que aquí no lo usa ninguna operación en curso, también se barre"
     );
     assert!(
-        !support::exists(&sandbox.data_dir) && !support::exists(&sandbox.models_dir),
-        "criterio 14: el estado se borró con el alcance de `cleanup --all`"
+        !inspect::exists(&sandbox.data_dir) && !inspect::exists(&sandbox.models_dir),
+        "el estado se borró con el alcance de `cleanup --all`"
     );
 }
 
@@ -620,11 +641,11 @@ fn uninstall_recovers_before_it_plans() {
 ///
 /// Y el caso del que más se ha abusado como nombre "neutro": un directorio con el prefijo del
 /// producto pero **sin** racha de tres dígitos. `owner_pid` no la encuentra, así que lo
-/// declara huérfano y se borra aunque el proceso que lo creó siga vivo. Es lo que pasaba con
-/// los sandboxes dorados antes del arreglo.
+/// declara huérfano y se borra aunque el proceso que lo creó siga vivo; por eso los
+/// sandboxes de prueba no deben llevar ese prefijo sin racha de dígitos.
 #[test]
 fn sweep_never_touches_a_foreign_test_sandbox() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("sandbox-sweep");
     sandbox.seed_env();
 
@@ -659,14 +680,14 @@ fn sweep_never_touches_a_foreign_test_sandbox() {
 
     // Los temporales propios se van, con PID muerto y sin PID: es lo que la regla obliga.
     assert!(
-        !support::exists(&own_with_dead_pid) && !support::exists(&own_without_pid),
+        !inspect::exists(&own_with_dead_pid) && !inspect::exists(&own_without_pid),
         "los temporales propios se barren, que es lo que la regla pide: {:?}",
         outcome.removed_temporaries
     );
     // Y los sandboxes de pruebas sobreviven, con todo su contenido.
     for foreign_sandbox in [&golden, &contract] {
         assert!(
-            support::exists(foreign_sandbox),
+            inspect::exists(foreign_sandbox),
             "el sandbox de pruebas {} sobrevive al barrido: su prefijo no es del producto, \
              y {:?}",
             foreign_sandbox.display(),
@@ -674,19 +695,19 @@ fn sweep_never_touches_a_foreign_test_sandbox() {
         );
     }
     assert!(
-        support::exists(&golden.join("install").join("state"))
-            && support::exists(&contract.join("opt").join("program")),
+        inspect::exists(&golden.join("install").join("state"))
+            && inspect::exists(&contract.join("opt").join("program")),
         "y con su contenido dentro, que es lo que se pierde cuando el barrido acierta"
     );
     // Los dos controles, y la asimetría es el punto: manda el prefijo, no la autoría.
     assert!(
-        !support::exists(&third_party_our_prefix),
+        !inspect::exists(&third_party_our_prefix),
         "un archivo de otro programa llamado `avi-…` **se borra**: el prefijo es lo que el \
          producto reserva, no la autoría, y por eso un sandbox con prefijo del producto no está a salvo \
          por ser de un test"
     );
     assert!(
-        support::exists(&third_party_without_prefix),
+        inspect::exists(&third_party_without_prefix),
         "y uno que no lleva el prefijo sobrevive, aunque esté en el mismo directorio: el \
          barrido decide por prefijo, no por directorio"
     );
@@ -703,7 +724,7 @@ fn sweep_never_touches_a_foreign_test_sandbox() {
 /// lo arregle "arreglando" el nombre sin entender por qué importa.
 #[test]
 fn own_prefix_without_pid_is_swept_even_though_the_test_is_alive() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("sweep-without-pid");
     sandbox.seed_env();
     let with_prefix_and_without_pid = sandbox.temp_root.join("avi_test_sandbox_x_1");
@@ -724,12 +745,12 @@ fn own_prefix_without_pid_is_swept_even_though_the_test_is_alive() {
     .expect("el barrido se ejecuta");
 
     assert!(
-        !support::exists(&with_prefix_and_without_pid),
+        !inspect::exists(&with_prefix_and_without_pid),
         "sin racha de tres dígitos no hay PID, luego es huérfano por definición y se barre: \
          por eso el prefijo de las pruebas no puede ser el del producto"
     );
     assert!(
-        support::exists(&with_previous),
+        inspect::exists(&with_previous),
         "y el que sí lleva un PID, el de este proceso, se conserva: {:?}",
         outcome.kept
     );
@@ -750,7 +771,7 @@ fn own_prefix_without_pid_is_swept_even_though_the_test_is_alive() {
 /// propiedad de seguridad.
 #[test]
 fn unreadable_journal_stops_the_operation_without_deleting() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("unreadable-journal");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -761,7 +782,7 @@ fn unreadable_journal_stops_the_operation_without_deleting() {
     let receipt = sandbox.install_registered(PathIntegration::none());
     let before = state_without_lock(&sandbox);
 
-    let runtime = support::runtime();
+    let runtime = runtime::runtime();
     runtime
         .block_on(uninstall::run(
             &sandbox.env_uninstall(Some(&receipt), Channel::Script),
@@ -772,17 +793,17 @@ fn unreadable_journal_stops_the_operation_without_deleting() {
             &Now,
             &Inert,
         ))
-        .expect_err("criterio 14: un diario ilegible detiene la operación");
+        .expect_err("un diario ilegible detiene la operación");
 
     assert_eq!(
         state_without_lock(&sandbox),
         before,
-        "criterio 14: y no borra nada, ni programa, ni estado, ni modelo"
+        "y no borra nada, ni programa, ni estado, ni modelo"
     );
     assert!(
-        support::exists(&sandbox.program_dir)
-            && support::exists(&sandbox.data_dir.join("voices").join("mine"))
-            && support::exists(&sandbox.models_dir),
-        "criterio 14: las tres raíces siguen donde estaban"
+        inspect::exists(&sandbox.program_dir)
+            && inspect::exists(&sandbox.data_dir.join("voices").join("mine"))
+            && inspect::exists(&sandbox.models_dir),
+        "las tres raíces siguen donde estaban"
     );
 }

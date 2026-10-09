@@ -1,5 +1,5 @@
 //! `cleanup` y `self uninstall` de punta a punta sobre raíces reubicadas a
-//! temporales, criterios 17, 18, 20, 21, 22 y 23.
+//! temporales.
 //!
 //! Todas las raíces llegan como dato, no por variable de entorno: en Windows las
 //! Known Folders ignoran `LOCALAPPDATA`, así que un sandbox que dependiera de ellas no
@@ -10,49 +10,31 @@
 
 #![allow(clippy::disallowed_methods)]
 
+#[path = "support/inert.rs"]
+mod inert;
+#[path = "support/inspect.rs"]
+mod inspect;
+#[path = "support/registered.rs"]
+mod registered;
+#[path = "support/repo.rs"]
+mod repo;
+#[path = "support/runtime.rs"]
+mod runtime;
+#[path = "support/shared.rs"]
+mod shared;
+mod support;
+
 use avi_core::exit_codes::ExitCode;
 use avi_lifecycle::channel::Channel;
-use avi_lifecycle::cleanup::{self, Options as CleanupOptions, Roots};
-use avi_lifecycle::daemon_stop::ProcessControl;
-use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
-use avi_lifecycle::uninstall::{self, Env as UninstallEnv, Options as UninstallOptions};
+use avi_lifecycle::cleanup::{self, Options as CleanupOptions};
+use avi_lifecycle::receipt::PathIntegration;
+use avi_lifecycle::uninstall::{self, Options as UninstallOptions};
+use inert::Inert;
+use inspect::exists;
+use registered::Now;
+use runtime::runtime;
 use std::path::{Path, PathBuf};
-
-/// Control de procesos inerte: no hay daemon en el sandbox, así que la parada es un
-/// no-op. Es el mismo `ProcessControl` que `daemon_stop` espera.
-struct Inert;
-
-impl ProcessControl for Inert {
-    fn pid_alive(&self, _pid: u32) -> bool {
-        false
-    }
-    fn kill_tree_by_pid(&self, _pid: u32) -> bool {
-        false
-    }
-    fn resident_pid_alive(&self, _pid: u32) -> bool {
-        false
-    }
-    fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
-        false
-    }
-}
-
-/// Removedor que borra ya. El caso diferido de Windows se ejercita con [`Diferido`],
-/// que es el mismo mecanismo que implementa el binario.
-struct Now;
-
-impl uninstall::ProgramDirRemover for Now {
-    fn exe_lives_inside(&self, _program_dir: &Path) -> bool {
-        false
-    }
-    fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()> {
-        std::fs::remove_dir_all(program_dir)?;
-        Ok(())
-    }
-    fn schedule(&self, _program_dir: &Path, _pid: u32) -> anyhow::Result<()> {
-        Ok(())
-    }
-}
+use support::{write, Sandbox};
 
 /// Removedor diferido: no borra nada y dice que lo programa. Es el caso del paso 8 de la
 /// desinstalación,
@@ -90,187 +72,6 @@ impl uninstall::ProgramDirRemover for Unschedulable {
     }
 }
 
-/// Sandbox con las cinco raíces.
-struct Sandbox {
-    /// Dueño del directorio: lo borra al soltarse, también si la prueba falla.
-    _guard: tempfile::TempDir,
-    root: PathBuf,
-    program_dir: PathBuf,
-    data_dir: PathBuf,
-    models_dir: PathBuf,
-    temp_root: PathBuf,
-    home: PathBuf,
-    /// La raíz de modelos es la caché HF compartida que eligió el usuario.
-    models_shared: bool,
-}
-
-impl Sandbox {
-    fn new(tag: &str) -> Self {
-        // `cleanup::run` detiene el daemon en el puerto de `AVI_DAEMON_PORT`; el
-        // puerto `0` no apunta a ningún daemon real y nunca conecta con el del
-        // usuario. El valor es constante, así que escribirlo desde pruebas
-        // concurrentes no altera el resultado.
-        std::env::set_var("AVI_DAEMON_PORT", "0");
-        let guard = tempfile::Builder::new()
-            .prefix(&format!("cleanup-e2e-{tag}-"))
-            .tempdir()
-            .expect("se crea el sandbox");
-        let root = guard.path().to_path_buf();
-        let sandbox = Self {
-            _guard: guard,
-            program_dir: root.join("opt").join("ai-voice-interconnector"),
-            data_dir: root.join("data"),
-            models_dir: root.join("models"),
-            temp_root: root.join("tmp"),
-            home: root.join("home").join("ana"),
-            models_shared: false,
-            root,
-        };
-        for dir in [
-            &sandbox.program_dir,
-            &sandbox.data_dir,
-            &sandbox.models_dir,
-            &sandbox.temp_root,
-            &sandbox.home,
-        ] {
-            std::fs::create_dir_all(dir).expect("se crea el sandbox");
-        }
-        sandbox
-    }
-
-    fn roots(&self) -> Roots {
-        Roots {
-            program_dir: self.program_dir.clone(),
-            data_dir: self.data_dir.clone(),
-            models_dir: self.models_dir.clone(),
-            temp_root: self.temp_root.clone(),
-            home: self.home.clone(),
-            models_shared: self.models_shared,
-        }
-    }
-
-    /// Snapshot del contenido del sandbox, para afirmar que una simulación no modificó
-    /// nada.
-    fn snapshot(&self) -> Vec<(String, u64)> {
-        let mut out = Vec::new();
-        let mut stack = vec![self.root.clone()];
-        while let Some(dir) = stack.pop() {
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(entries) => entries,
-                Err(_) => continue,
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let meta = match entry.metadata() {
-                    Ok(meta) => meta,
-                    Err(_) => continue,
-                };
-                let rel = path
-                    .strip_prefix(&self.root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if meta.is_dir() {
-                    out.push((rel, 0));
-                    stack.push(path);
-                } else {
-                    out.push((rel, meta.len()));
-                }
-            }
-        }
-        out.sort();
-        out
-    }
-
-    /// Escribe el estado completo: modelos, voces de fábrica y de usuario, habla
-    /// sintetizada, configuración, logs y pidfile.
-    fn seed_state(&self) {
-        // Modelos: un repo fijado, los locks, `xet` y un repo ajeno.
-        write(
-            &self
-                .models_dir
-                .join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
-                .join("model.bin"),
-            "pesos",
-        );
-        write(
-            &self
-                .models_dir
-                .join(".locks")
-                .join("models--x--y")
-                .join("lock"),
-            "",
-        );
-        write(&self.models_dir.join("xet").join("shard"), "xet");
-        write(
-            &self
-                .models_dir
-                .join("models--other--tool")
-                .join("other.safetensors"),
-            "ajeno",
-        );
-        // Voces: dos de fábrica y una de usuario, con su namespace de habla.
-        for voice in ["default", "ryan", "mine"] {
-            write(
-                &self
-                    .data_dir
-                    .join("voices")
-                    .join(voice)
-                    .join("reference.qvoice"),
-                "voice",
-            );
-        }
-        for voice in ["default", "mine"] {
-            write(
-                &self.data_dir.join("speech").join(voice).join("hello.wav"),
-                "wav",
-            );
-        }
-        // Configuración, logs y estado del daemon.
-        write(&self.data_dir.join("config.json"), "{}");
-        write(&self.data_dir.join("logs").join("daemon.log"), "log");
-        write(&self.data_dir.join("daemon.pid"), "{}");
-    }
-
-    /// Recibo de una instalación registrada, con las raíces del sandbox.
-    fn receipt(&self) -> InstallReceipt {
-        InstallReceipt::new(
-            "0.24.0",
-            avi_lifecycle::target::host_triple(),
-            Channel::Script,
-            &self.program_dir,
-            vec![uninstall::executable_name_default()],
-            PathIntegration::none(),
-            receipt::Roots {
-                data_dir: self.data_dir.clone(),
-                cache_dir: self.models_dir.clone(),
-            },
-            None,
-        )
-    }
-
-    /// Instala: escribe el ejecutable y el recibo. Las raíces llegan como dato y el
-    /// directorio de programa lo da el recibo si lo hay: la operación actúa sobre la
-    /// instalación registrada, no sobre la posición del ejecutable.
-    fn install(&self) -> InstallReceipt {
-        let receipt = self.receipt();
-        write(
-            &self.program_dir.join(uninstall::executable_name_default()),
-            "binario",
-        );
-        receipt::write_to(&receipt, &self.program_dir).expect("se escribe el recibo");
-        receipt
-    }
-}
-
-/// Escribe un fichero, creando los directorios intermedios.
-fn write(path: &Path, content: &str) {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).expect("se crea el directorio padre");
-    }
-    std::fs::write(path, content).expect("se escribe el fichero");
-}
-
 /// Raíz de la unidad o del sistema de la plataforma, sin escribir nada en ella.
 fn system_root() -> PathBuf {
     if cfg!(windows) {
@@ -282,48 +83,12 @@ fn system_root() -> PathBuf {
     }
 }
 
-/// `true` si la ruta existe, includedo como enlace roto.
-fn exists(path: &Path) -> bool {
-    path.exists() || path.symlink_metadata().is_ok()
-}
-
-/// `--yes` para que la ejecución real no espere terminal: las pruebas affirmed el
+/// `--yes` para que la ejecución real no espere terminal: las pruebas afirman el
 /// resultado, no el prompt.
 fn with_yes(options: CleanupOptions) -> CleanupOptions {
     CleanupOptions {
         assume_yes: true,
         ..options
-    }
-}
-
-/// Runtime de un solo hilo: las operaciones del motor son asíncronas pero no
-/// necesitan concurrencia, y un runtime por prueba evita el coste y el
-/// `block_on` anidado de un runtime global.
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime")
-}
-
-/// `Env` de desinstalación con las raíces del sandbox y el directorio de programa
-/// registrado que corresponde. Las raíces llegan como dato y el directorio de
-/// programa lo da el recibo si lo hay: la operación actúa sobre la
-/// instalación registrada, no sobre la posición del ejecutable.
-fn env_uninstall<'a>(
-    sandbox: &Sandbox,
-    receipt: Option<&'a InstallReceipt>,
-    channel: Channel,
-) -> UninstallEnv<'a> {
-    UninstallEnv {
-        roots: sandbox.roots(),
-        program_dir: receipt
-            .map(|r| r.install_dir.clone())
-            .unwrap_or_else(|| sandbox.program_dir.clone()),
-        receipt,
-        channel,
-        daemon_addr: "127.0.0.1:0".to_string(),
-        home: sandbox.home.clone(),
     }
 }
 
@@ -335,12 +100,43 @@ fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
         .collect()
 }
 
+/// Un directorio del barrido que existe y no se puede listar (aquí, un fichero en lugar
+/// del directorio de temporales) sale en `unreadable`, tanto en la simulación como en la
+/// ejecución real.
+#[test]
+fn cleanup_reports_unlistable_sweep_directories() {
+    let sandbox = Sandbox::new("unlistable");
+    let temp_file = sandbox.root.join("temp-is-a-file");
+    write(&temp_file, "no es un directorio");
+    let mut roots = sandbox.roots();
+    roots.temp_root = temp_file.clone();
+    let options = with_yes(CleanupOptions {
+        voices: true,
+        ..Default::default()
+    });
+
+    let planned = cleanup::simulate(&roots, &options);
+    assert_eq!(planned.unreadable, vec![temp_file.display().to_string()]);
+
+    let executed = runtime()
+        .block_on(cleanup::run(&roots, &options, &Inert))
+        .expect("la limpieza se ejecuta");
+    assert_eq!(executed.unreadable, vec![temp_file.display().to_string()]);
+    assert!(
+        executed.kept.contains(&temp_file.display().to_string()),
+        "y queda pendiente: {:?}",
+        executed.kept
+    );
+}
+
 /// Cada categoría borra **exactamente** su alcance, y `--model` en la raíz
 /// exclusiva borra el directorio entero con `xet` dentro.
 #[test]
 fn cleanup_categories_are_scoped() {
     let sandbox = Sandbox::new("scoped");
     sandbox.seed_state();
+    // El programa instalado existe: `cleanup` lo conserva y lo dice.
+    sandbox.install_registered(PathIntegration::none());
     let roots = sandbox.roots();
     let voices = sandbox.data_dir.join("voices");
     let speech = sandbox.data_dir.join("speech");
@@ -454,7 +250,7 @@ fn cleanup_categories_are_scoped() {
     assert!(exists(&voices.join("default")));
 }
 
-/// El gate sin categoría: `usage_error`, sin borrar nada (criterio 22).
+/// El gate sin categoría: `usage_error`, sin borrar nada.
 #[test]
 fn cleanup_without_category_is_usage_error() {
     let sandbox = Sandbox::new("gate");
@@ -488,7 +284,7 @@ fn cleanup_without_category_is_usage_error() {
     );
 }
 
-/// `--dry-run` lista rutas con tamaños y no modifica el disco (criterio 20), y la lista
+/// `--dry-run` lista rutas con tamaños y no modifica el disco, y la lista
 /// que anuncia es la misma que ejecutaría.
 #[test]
 fn dry_run_lists_paths_without_touching_disk() {
@@ -542,17 +338,16 @@ fn dry_run_lists_paths_without_touching_disk() {
     );
 }
 
-/// Con la raíz de modelos compartida, R3 manda: se borran los repos propios y sus
-/// locks, y **no** `xet`, ni el `.locks` completo, ni el repos de otra
-/// herramienta (criterio 23).
+/// Con la raíz de modelos compartida manda la regla de recursos compartidos: se borran
+/// los repos propios y sus locks, y **no** `xet`, ni el `.locks` completo, ni el repo de
+/// otra herramienta.
 ///
 /// Y la misma lista es la que anuncian el plan, la simulación y la ejecución: el
 /// defecto que este lote absorbe era precisamente que el plan y el ejecutor no
 /// coincidieran bajo raíz compartida.
 #[test]
 fn shared_hf_cache_keeps_foreign_entries() {
-    let mut sandbox = Sandbox::new("shared");
-    sandbox.models_shared = true;
+    let sandbox = Sandbox::new_shared("shared");
     sandbox.seed_state();
     let hub = sandbox.models_dir.clone();
     let foreign = hub.join("models--other--tool");
@@ -577,7 +372,7 @@ fn shared_hf_cache_keeps_foreign_entries() {
     for not_removable in [hub.join("xet"), hub.join(".locks"), foreign.clone()] {
         assert!(
             !planned_removed.contains(&not_removable.display().to_string()),
-            "R3: {} no puede estar en el plan: {planned_removed:?}",
+            "{} no puede estar en el plan: {planned_removed:?}",
             not_removable.display()
         );
     }
@@ -625,10 +420,10 @@ fn shared_hf_cache_keeps_foreign_entries() {
     assert!(!exists(
         &hub.join("models--CristianRojaas--opus-mt-es-en-ct2-int8")
     ));
-    assert!(exists(&hub.join("xet")), "R3: `xet` sobrevive");
+    assert!(exists(&hub.join("xet")), "`xet` sobrevive");
     assert!(
         exists(&hub.join(".locks")),
-        "R3: el `.locks` completo sobrevive"
+        "el `.locks` completo sobrevive"
     );
     assert!(exists(&foreign), "el repo de otra herramienta sobrevive");
     assert!(exists(&hub), "la raíz compartida no se borra entera");
@@ -637,9 +432,8 @@ fn shared_hf_cache_keeps_foreign_entries() {
 /// Un temporal propio sin PID se barre: la regla exige que cualquier invocación barra los
 /// temporales propios huérfanos, y uno sin PID no pertenece a ningún proceso vivo.
 ///
-/// Este es el segundo punto heredado que este lote absorbe: el barrido solo borraba los
-/// que llevaban PID muerto, así que un temporal huérfano sin PID —justo el que deja una
-/// clonación o una síntesis— no se recogía nunca.
+/// Un temporal huérfano sin PID es justo el que deja una clonación o una síntesis
+/// interrumpida, así que el barrido no puede limitarse a los que llevan un PID muerto.
 #[test]
 fn orphan_temporary_without_pid_is_swept() {
     let sandbox = Sandbox::new("temp");
@@ -673,16 +467,16 @@ fn orphan_temporary_without_pid_is_swept() {
 }
 
 /// `self uninstall` deja residuo cero en las raíces de propiedad exclusiva y termina
-/// con éxito (criterio 17).
+/// con éxito.
 #[test]
 fn uninstall_leaves_no_residue_in_exclusive_roots() {
     let sandbox = Sandbox::new("uninstall");
-    let receipt = sandbox.install();
+    let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
 
     let outcome = runtime()
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
@@ -721,7 +515,7 @@ fn uninstall_leaves_no_residue_in_exclusive_roots() {
 #[test]
 fn destructive_operations_refuse_while_a_usage_command_runs() {
     let sandbox = Sandbox::new("usage-lock");
-    let receipt = sandbox.install();
+    let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
     let usage = avi_lifecycle::lock::acquire_shared(&sandbox.program_dir)
         .expect("el comando de uso toma el bloqueo compartido");
@@ -744,7 +538,7 @@ fn destructive_operations_refuse_while_a_usage_command_runs() {
 
     let error = runtime()
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
@@ -762,17 +556,17 @@ fn destructive_operations_refuse_while_a_usage_command_runs() {
     drop(usage);
 }
 
-/// `--keep-data` conserva modelos, voces y habla (criterio 18).
+/// `--keep-data` conserva modelos, voces y habla.
 #[test]
 fn uninstall_keep_data_preserves_models_voices_and_speech() {
     let sandbox = Sandbox::new("keep-data");
-    let receipt = sandbox.install();
+    let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
     let voices = sandbox.data_dir.join("voices");
 
     let outcome = runtime()
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &UninstallOptions {
                 keep_data: true,
                 assume_yes: true,
@@ -808,17 +602,17 @@ fn uninstall_keep_data_preserves_models_voices_and_speech() {
     }
 }
 
-/// Repetido sobre un sistema limpio termina con éxito y `not_installed` (criterio 21).
+/// Repetido sobre un sistema limpio termina con éxito y `not_installed`.
 #[test]
 fn uninstall_is_idempotent() {
     let sandbox = Sandbox::new("idempotent");
-    let receipt = sandbox.install();
+    let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
     let runtime = runtime();
 
     let first = runtime
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
@@ -835,7 +629,7 @@ fn uninstall_is_idempotent() {
     // error.
     let second = runtime
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, None, Channel::Unmanaged),
+            &sandbox.env_uninstall(None, Channel::Unmanaged),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
@@ -855,13 +649,13 @@ fn uninstall_is_idempotent() {
 #[test]
 fn uninstall_homebrew_is_externally_managed() {
     let sandbox = Sandbox::new("homebrew");
-    let receipt = sandbox.install();
+    let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
     let before = sandbox.snapshot();
 
     let error = runtime()
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Homebrew),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Homebrew),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
@@ -888,12 +682,12 @@ fn uninstall_homebrew_is_externally_managed() {
     assert_eq!(sandbox.snapshot(), before, "nada se toca");
 }
 
-/// R2: el directorio de programa no se borra si no contiene recibo ni ejecutable, ni si
-/// es una raíz del sistema, `$HOME` o un ancestro de `$HOME`. Ni una variable de
+/// El directorio de programa no se borra si no contiene recibo ni ejecutable, ni si es
+/// una raíz del sistema, `$HOME` o un ancestro de `$HOME`. Ni una variable de
 /// reubicación ni un recibo manipulado pueden ampliar el alcance.
 #[test]
 fn uninstall_refuses_unsafe_program_dir() {
-    let sandbox = Sandbox::new("r2");
+    let sandbox = Sandbox::new("program-dir-rule");
     let roots = sandbox.roots();
     let exe = uninstall::executable_name_default();
     let receipt = sandbox.program_dir.join("install-receipt.json");
@@ -904,7 +698,7 @@ fn uninstall_refuses_unsafe_program_dir() {
         uninstall::program_dir_is_removable(&roots, &sandbox.program_dir),
         "con recibo, sí"
     );
-    std::fs::remove_file(&receipt).ok();
+    std::fs::remove_file(&receipt).expect("se retira el recibo de la premisa");
     // Con ejecutable: se puede borrar.
     write(&sandbox.program_dir.join(&exe), "binario");
     assert!(
@@ -912,7 +706,8 @@ fn uninstall_refuses_unsafe_program_dir() {
         "con ejecutable, también"
     );
     // Sin ninguno de los dos: no.
-    std::fs::remove_file(sandbox.program_dir.join(&exe)).ok();
+    std::fs::remove_file(sandbox.program_dir.join(&exe))
+        .expect("se retira el ejecutable de la premisa");
     assert!(
         !uninstall::program_dir_is_removable(&roots, &sandbox.program_dir),
         "sin recibo ni ejecutable, no: no es el directorio de programa"
@@ -932,7 +727,7 @@ fn uninstall_refuses_unsafe_program_dir() {
         write(&protected.join("install-receipt.json"), "{}");
         assert!(
             !uninstall::program_dir_is_removable(&roots, &protected),
-            "R2 impide borrar {}, aunque tenga recibo",
+            "no se puede borrar {} como directorio de programa, aunque tenga recibo",
             protected.display()
         );
     }
@@ -951,12 +746,12 @@ fn uninstall_refuses_unsafe_program_dir() {
 #[test]
 fn uninstall_schedules_removal_when_the_executable_is_inside() {
     let sandbox = Sandbox::new("deferred");
-    let receipt = sandbox.install();
+    let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
 
     let outcome = runtime()
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
@@ -989,7 +784,7 @@ fn uninstall_schedules_removal_when_the_executable_is_inside() {
 #[test]
 fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
     let sandbox = Sandbox::new("unschedulable");
-    let receipt = sandbox.install();
+    let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
     let names_of = |dir: &Path| {
         let mut names: Vec<_> = std::fs::read_dir(dir)
@@ -1007,7 +802,7 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
 
     let outcome = runtime()
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
@@ -1033,17 +828,17 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
     assert!(!exists(&sandbox.data_dir));
 }
 
-/// `--dry-run` de `self uninstall` imprime el plan y no modifica el disco (criterio 20).
+/// `--dry-run` de `self uninstall` imprime el plan y no modifica el disco.
 #[test]
 fn uninstall_dry_run_touches_nothing() {
     let sandbox = Sandbox::new("uninstall-dry");
-    let receipt = sandbox.install();
+    let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
     let before = sandbox.snapshot();
 
     let outcome = runtime()
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &UninstallOptions {
                 dry_run: true,
                 assume_yes: true,
@@ -1082,7 +877,7 @@ fn uninstall_reverts_path_from_the_receipt() {
     let program_exe = sandbox
         .program_dir
         .join(uninstall::executable_name_default());
-    sandbox.install();
+    sandbox.install_registered(PathIntegration::none());
     write(&program_exe, "binario");
     symlink(&program_exe, &link).unwrap();
 
@@ -1107,7 +902,7 @@ fn uninstall_reverts_path_from_the_receipt() {
 
     let outcome = runtime()
         .block_on(uninstall::run(
-            &env_uninstall(&sandbox, Some(&receipt), Channel::Script),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &UninstallOptions {
                 assume_yes: true,
                 ..Default::default()
@@ -1147,9 +942,23 @@ fn uninstall_reverts_path_from_the_receipt() {
         },
         None,
     );
+    let revert_report = uninstall::revert_path(Some(&foreign_receipt), &sandbox.home);
     assert!(
-        !uninstall::revert_path(Some(&foreign_receipt), &sandbox.home),
+        !revert_report.touched,
         "un enlace que no apunta al programa no se toca"
     );
-    assert!(foreign_link.symlink_metadata().is_ok());
+    assert!(
+        revert_report.failures.is_empty(),
+        "{:?}",
+        revert_report.failures
+    );
+    assert!(
+        foreign_link.is_symlink(),
+        "el enlace ajeno sigue siendo un enlace"
+    );
+    assert_eq!(
+        std::fs::read_link(&foreign_link).expect("se lee el destino del enlace ajeno"),
+        other.join(uninstall::executable_name_default()),
+        "y sigue apuntando a su destino"
+    );
 }

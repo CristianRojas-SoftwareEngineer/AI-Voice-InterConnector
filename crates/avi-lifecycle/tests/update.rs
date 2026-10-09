@@ -1,19 +1,19 @@
-//! Criterios de aceptación del plan para `self update`: del **11** al **16**.
+//! Comportamiento de `self update`: resolución, `--check`, parada del daemon,
+//! interrupción, canales gestionados externamente, poda de modelos, checksum inválido,
+//! negativa sin terminal y daemon que no se deja parar.
 //!
-//! Los seis criterios de este ciclo se prueban contra el servidor falso del arnés
-//! (`support::FakeReleaseServer`), que suplanta al GitHub real con
+//! Las pruebas se ejecutan contra el servidor falso del arnés
+//! (`release_server::FakeReleaseServer`), que suplanta al GitHub real con
 //! `AVI_DOWNLOAD_BASE_URL`: resolución de `releases/latest`, `already_up_to_date`
 //! sin descargas y, para la 0.24.0, descarga, verificación, extracción y arranque
-//! deteniéndose antes del traspaso. La parte contra el GitHub real la ejecuta F5.
-//! Además hay tres pruebas con el mismo prefijo fuera de los seis: checksum
-//! inválido, negativa sin terminal y daemon que no se deja parar.
+//! deteniéndose antes del traspaso. Nada de este archivo habla con el GitHub real.
 //!
 //! Todas las pruebas usan el mismo sandbox (las cuatro raíces
 //! reubicadas a temporales, declaradas en el entorno y pasadas como dato) más el
 //! servidor falso apuntado por variable. Ninguna sale a internet ni toca la
 //! instalación real: el bundle servido es sintético y sale del manifiesto.
 //!
-//! Lo dependiente de macOS del criterio 13 corre aquí mismo, porque nada de este
+//! Lo dependiente de macOS corre aquí mismo, porque nada de este
 //! archivo depende de la plataforma: el guion del bundle ejecuta en Unix y en
 //! Windows la comprobación de arranque la cubre el señuelo de
 //! `binary_incompatible`, como en las pruebas de `update_fetch`. La puerta
@@ -22,6 +22,33 @@
 
 #![allow(clippy::disallowed_methods)]
 
+#[cfg(feature = "faults")]
+#[path = "support/bundle.rs"]
+mod bundle;
+#[cfg(feature = "faults")]
+#[path = "support/inert.rs"]
+mod inert;
+#[path = "support/inspect.rs"]
+mod inspect;
+#[cfg(feature = "faults")]
+#[path = "support/install_env.rs"]
+mod install_env;
+#[path = "support/listing.rs"]
+mod listing;
+#[path = "support/net.rs"]
+mod net;
+#[path = "support/no_terminal.rs"]
+mod no_terminal;
+#[path = "support/process_env.rs"]
+mod process_env;
+#[path = "support/release_server.rs"]
+mod release_server;
+#[path = "support/repo.rs"]
+mod repo;
+#[path = "support/runtime.rs"]
+mod runtime;
+#[path = "support/shared.rs"]
+mod shared;
 mod support;
 
 use avi_core::exit_codes::ExitCode;
@@ -41,12 +68,13 @@ use avi_lifecycle::update_fetch;
 use avi_lifecycle::update_resolve::{self, ResolveRequest, Verdict};
 use avi_lifecycle::LifecycleError;
 use avi_store::{MODEL_FILE_PATTERNS, MODEL_REVISIONS};
+#[cfg(feature = "faults")]
+use inert::Inert;
+use release_server::FakeReleaseServer;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::Mutex;
-#[cfg(feature = "faults")]
-use support::Inert;
-use support::{FakeReleaseServer, Models, Sandbox};
+use support::Sandbox;
 
 /// Instalación registrada de `version` en el sandbox, sin pasar por
 /// `self install`: escribe el ejecutable y el recibo. Es lo que necesitan
@@ -76,12 +104,11 @@ fn install_version(sandbox: &Sandbox, version: &str) -> InstallReceipt {
     receipt
 }
 
-/// `true` si la versión anterior sigue instalada y registrada: recibo con su
+/// `true` si `version` sigue instalada y registrada: recibo con su
 /// versión y ejecutable en su sitio.
 fn previous_operational(sandbox: &Sandbox, version: &str) -> bool {
     receipt::read_from(&sandbox.program_dir)
-        .ok()
-        .flatten()
+        .expect("se lee el recibo")
         .is_some_and(|receipt| receipt.version == version)
         && sandbox
             .program_dir
@@ -90,8 +117,8 @@ fn previous_operational(sandbox: &Sandbox, version: &str) -> bool {
 }
 
 /// Identidad del daemon escrito en el pidfile: la misma que observan
-/// `Killable` y `Stubborn`, para que el contrato de T1 (sin identidad
-/// coincidente no se mata) clasifique el PID como suyo.
+/// `Killable` y `Stubborn`, para que la regla «sin identidad coincidente no se
+/// mata» clasifique el PID como suyo.
 fn daemon_identity() -> ProcessIdentity {
     ProcessIdentity {
         start: "111".to_string(),
@@ -105,7 +132,7 @@ fn set_daemon_pid_file(data_dir: &std::path::Path, pid: u32) -> anyhow::Result<(
         data_dir,
         &avi_process::registry::PidFile {
             pid,
-            addr: Some(support::dead_port()),
+            addr: Some(net::dead_port()),
             started_at: None,
             resident_pid: 0,
             identity: Some(daemon_identity()),
@@ -116,8 +143,8 @@ fn set_daemon_pid_file(data_dir: &std::path::Path, pid: u32) -> anyhow::Result<(
 }
 
 /// Control de procesos con un daemon vivo que se deja reclamar por PID: la
-/// primera pregunta dice que vive y el reclamo lo apaga. Es el daemon activo del
-/// criterio 13 sin proceso real.
+/// primera pregunta dice que vive y el reclamo lo apaga. Es un daemon activo sin
+/// proceso real.
 struct Killable {
     alive: Mutex<bool>,
     kills: Mutex<u32>,
@@ -165,7 +192,7 @@ impl ProcessControl for Killable {
     }
     // El pidfile escrito por la prueba registra esta identidad: sin un
     // `identity` observado que coincida, el control no clasifica el PID
-    // como suyo (contrato de T1).
+    // como suyo.
     fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
         Some(daemon_identity())
     }
@@ -208,28 +235,28 @@ impl update::PathRemover for Busy {
     }
 }
 
-// ─── Criterio 11 ────────────────────────────────────────────────────────────────
+// ─── Ya en la última versión ────────────────────────────────────────────────────
 
-/// **Criterio 11.** `self update` estando en la última versión termina con
-/// `already_up_to_date` sin descargar nada.
+/// `self update` estando en la última versión termina con `already_up_to_date`
+/// sin descargar nada.
 ///
 /// Se resuelve la última estable contra el servidor falso y se compara con la
 /// instalada: el veredicto es `UpToDate` y el contador de descargas del archivo
 /// queda en cero, con las sumas sin pedir. El staging ni se crea.
 #[test]
-fn criterion_11_already_up_to_date_downloads_nothing() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
-    let sandbox = Sandbox::new("c11");
+fn already_up_to_date_downloads_nothing() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
+    let sandbox = Sandbox::new("up-to-date");
     sandbox.seed_env();
     install_version(&sandbox, "0.24.0");
 
     let server = FakeReleaseServer::serve("0.24.0");
     server.seed_download_base();
-    let client = update_fetch::http_client().expect("criterio 11: hay cliente HTTPS");
+    let client = update_fetch::http_client().expect("hay cliente HTTPS");
     let latest = runtime
         .block_on(update_resolve::latest_stable(&client))
-        .expect("criterio 11: el servidor falso dice la última estable");
+        .expect("el servidor falso dice la última estable");
     assert_eq!(latest, "0.24.0");
     let resolution = update_resolve::resolve(
         &ResolveRequest {
@@ -239,38 +266,33 @@ fn criterion_11_already_up_to_date_downloads_nothing() {
         },
         &latest,
     )
-    .expect("criterio 11: la igualdad resuelve");
+    .expect("la igualdad resuelve");
     FakeReleaseServer::clear_download_base();
 
     assert_eq!(
         resolution.verdict,
         Verdict::UpToDate,
-        "criterio 11: instalada igual a la última, al día"
+        "instalada igual a la última, al día"
     );
     assert_eq!(
         server.asset_downloads(),
         0,
-        "criterio 11: al día no se descarga el archivo"
+        "al día no se descarga el archivo"
     );
-    assert_eq!(
-        server.sums_downloads(),
-        0,
-        "criterio 11: y tampoco se piden las sumas"
-    );
+    assert_eq!(server.sums_downloads(), 0, "y tampoco se piden las sumas");
     assert!(
         !update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0").exists(),
-        "criterio 11: y no se crea staging"
+        "y no se crea staging"
     );
     assert!(
         previous_operational(&sandbox, "0.24.0"),
-        "criterio 11: la instalación sigue operativa"
+        "la instalación sigue operativa"
     );
 }
 
-// ─── Criterio 12 ────────────────────────────────────────────────────────────────
+// ─── `--check` ──────────────────────────────────────────────────────────────────
 
-/// **Criterio 12.** `self update --check` informa la transición y no modifica el
-/// disco.
+/// `self update --check` informa la transición y no modifica el disco.
 ///
 /// En un sandbox limpio con la 0.23.1 instalada se ejecuta el camino de `--check`
 /// (resolución sin staging ni traspaso): el objetivo es la 0.24.0 con veredicto de
@@ -278,20 +300,20 @@ fn criterion_11_already_up_to_date_downloads_nothing() {
 /// sin cambios de actualización: el barrido de recuperación del paso 1 vive en el
 /// binario, no en este camino.
 #[test]
-fn criterion_12_check_leaves_disk_untouched() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
-    let sandbox = Sandbox::new("c12");
+fn check_leaves_disk_untouched() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
+    let sandbox = Sandbox::new("check");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
     let before = sandbox.snapshot();
 
     let server = FakeReleaseServer::serve("0.24.0");
     server.seed_download_base();
-    let client = update_fetch::http_client().expect("criterio 12: hay cliente HTTPS");
+    let client = update_fetch::http_client().expect("hay cliente HTTPS");
     let latest = runtime
         .block_on(update_resolve::latest_stable(&client))
-        .expect("criterio 12: el servidor falso dice la última estable");
+        .expect("el servidor falso dice la última estable");
     let resolution = update_resolve::resolve(
         &ResolveRequest {
             installed: "0.23.1".to_string(),
@@ -300,49 +322,39 @@ fn criterion_12_check_leaves_disk_untouched() {
         },
         &latest,
     )
-    .expect("criterio 12: la transición resuelve");
+    .expect("la transición resuelve");
     FakeReleaseServer::clear_download_base();
 
-    assert_eq!(
-        resolution.target, "0.24.0",
-        "criterio 12: informa la objetivo"
-    );
+    assert_eq!(resolution.target, "0.24.0", "informa la versión objetivo");
     assert_eq!(
         resolution.verdict,
         Verdict::Upgrade,
-        "criterio 12: e informa que hay actualización"
+        "e informa que hay actualización"
     );
-    assert!(
-        !resolution.destructive,
-        "criterio 12: subir no es destructivo"
-    );
-    assert_eq!(
-        sandbox.snapshot(),
-        before,
-        "criterio 12: `--check` no modifica el disco"
-    );
+    assert!(!resolution.destructive, "subir no es destructivo");
+    assert_eq!(sandbox.snapshot(), before, "`--check` no modifica el disco");
     assert!(
         !update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0").exists(),
-        "criterio 12: y no crea staging"
+        "y no crea staging"
     );
 }
 
-// ─── Criterio 13 ────────────────────────────────────────────────────────────────
+// ─── Parada del daemon ──────────────────────────────────────────────────────────
 
-/// **Criterio 13.** Con el daemon activo, la actualización lo detiene antes del
+/// Con el daemon activo, la actualización lo detiene antes del
 /// reemplazo y termina con éxito, incluido Windows con el ejecutable en uso.
 ///
 /// Dos mitades a nivel de motor: la parada con un daemon vivo lo detiene por PID
 /// (árbol exacto, nunca por imagen), deja el programa intacto y no crea staging
 /// —es lo que "antes del reemplazo" significa aquí—; y la limpieza con el
-/// ejecutable en uso no borra ya sino que programa el diferido. La comprobación
+/// ejecutable en uso no borra en el acto sino que programa el diferido. La comprobación
 /// de arranque del bundle servido la cubre `fetch` en Unix y el señuelo de
 /// `binary_incompatible` en Windows, como en `update_fetch`.
 #[test]
-fn criterion_13_daemon_stops_before_replacement() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
-    let sandbox = Sandbox::new("c13");
+fn daemon_stops_before_replacement() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
+    let sandbox = Sandbox::new("daemon-stop");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
 
@@ -351,34 +363,31 @@ fn criterion_13_daemon_stops_before_replacement() {
     // parada nunca reclama al invocador.
     let daemon_pid = 424_242u32;
     assert_ne!(daemon_pid, std::process::id());
-    set_daemon_pid_file(&sandbox.data_dir, daemon_pid).expect("criterio 13: se escribe el pidfile");
+    set_daemon_pid_file(&sandbox.data_dir, daemon_pid).expect("se escribe el pidfile");
     let control = Killable::new();
     let outcome = runtime.block_on(daemon_stop::stop(
         &sandbox.data_dir,
-        &support::dead_port(),
+        &net::dead_port(),
         &control,
     ));
-    assert!(
-        outcome.was_running,
-        "criterio 13: el daemon estaba en ejecución"
-    );
-    daemon_stop::require_stopped(&outcome).expect("criterio 13: la parada lo detiene");
+    assert!(outcome.was_running, "el daemon estaba en ejecución");
+    daemon_stop::require_stopped(&outcome).expect("la parada lo detiene");
     assert!(
         outcome.stopped && outcome.pidfile_removed,
-        "criterio 13: parada completa con pidfile borrado"
+        "parada completa con pidfile borrado"
     );
     assert_eq!(
         control.kill_count(),
         1,
-        "criterio 13: se reclamó el árbol por PID, no por imagen"
+        "se reclamó el árbol por PID, no por imagen"
     );
     assert!(
         previous_operational(&sandbox, "0.23.1"),
-        "criterio 13: la parada es antes del reemplazo y el programa sigue intacto"
+        "la parada es antes del reemplazo y el programa sigue intacto"
     );
     assert!(
         !update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0").exists(),
-        "criterio 13: y todavía no hay staging"
+        "y todavía no hay staging"
     );
 
     // Ejecutable en uso: el borrado directo falla y queda a diferido, sin que el
@@ -388,18 +397,18 @@ fn criterion_13_daemon_stops_before_replacement() {
     assert_eq!(
         update::cleanup_staging(&staging, &Busy),
         update::StagingCleanup::Scheduled,
-        "criterio 13: lo en uso se programa, no se borra ya"
+        "lo que está en uso se programa, no se borra en el acto"
     );
     assert!(
-        support::exists(&staging),
-        "criterio 13: y el staging sigue hasta que el diferido lo recoja"
+        inspect::exists(&staging),
+        "y el staging sigue hasta que el diferido lo recoja"
     );
 }
 
-// ─── Criterio 14 ────────────────────────────────────────────────────────────────
+// ─── Interrupción ───────────────────────────────────────────────────────────────
 
-/// **Criterio 14.** Interrumpir la actualización deja operativa la versión
-/// anterior, y la siguiente operación completa la recuperación.
+/// Interrumpir la actualización deja operativa la versión instalada, y la siguiente
+/// operación completa la recuperación.
 ///
 /// Con el feature `faults`: la interrupción antes del traspaso falla con el fallo
 /// inyectado sin lanzar nada (y en Unix la de durante el traspaso tras un hijo
@@ -409,15 +418,15 @@ fn criterion_13_daemon_stops_before_replacement() {
 /// el barrido de recuperación sobre el staging creado.
 #[cfg(feature = "faults")]
 #[test]
-fn criterion_14_interrupted_update_leaves_previous_operational() {
+fn interrupted_update_leaves_installed_version_operational() {
     use avi_lifecycle::faults::{self, FaultPoint};
 
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
-    let sandbox = Sandbox::new("c14");
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
+    let sandbox = Sandbox::new("interrupted");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
-    let before = sandbox.program_content();
+    let before = listing::list(&sandbox.program_dir);
 
     // Interrupción antes del traspaso: ni siquiera se lanza el binario nuevo.
     let window = faults::armed(FaultPoint::BeforeHandover);
@@ -428,22 +437,22 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
             no_modify_path: false,
             force: false,
         }))
-        .expect_err("criterio 14: el punto inyectado interrumpe el traspaso");
+        .expect_err("el punto inyectado interrumpe el traspaso");
     drop(window);
     assert!(
         error
             .to_string()
             .contains(FaultPoint::BeforeHandover.as_str()),
-        "criterio 14: el fallo es el inyectado y no otro: {error:#}"
+        "el fallo es el inyectado y no otro: {error:#}"
     );
     assert!(
         previous_operational(&sandbox, "0.23.1"),
-        "criterio 14: la versión anterior sigue operativa"
+        "la versión instalada sigue operativa"
     );
     assert_eq!(
-        sandbox.program_content(),
+        listing::list(&sandbox.program_dir),
         before,
-        "criterio 14: y el programa no se tocó"
+        "y el programa no se tocó"
     );
 
     // Interrupción con el traspaso ya ejecutado: el hijo sale con 0 y el fallo
@@ -451,10 +460,10 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let script = sandbox.temp_root.join("child-c14.sh");
+        let script = sandbox.temp_root.join("child.sh");
         support::write(&script, "#!/bin/sh\nexit 0\n");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("criterio 14: el hijo se hace ejecutable");
+            .expect("el hijo se hace ejecutable");
         let window = faults::armed(FaultPoint::DuringHandover);
         let error = runtime
             .block_on(update::handover(&update::HandoverRequest {
@@ -463,17 +472,17 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
                 no_modify_path: false,
                 force: false,
             }))
-            .expect_err("criterio 14: el punto inyectado interrumpe tras el hijo");
+            .expect_err("el punto inyectado interrumpe tras el hijo");
         drop(window);
         assert!(
             error
                 .to_string()
                 .contains(FaultPoint::DuringHandover.as_str()),
-            "criterio 14: el fallo es el inyectado y no otro: {error:#}"
+            "el fallo es el inyectado y no otro: {error:#}"
         );
         assert!(
             previous_operational(&sandbox, "0.23.1"),
-            "criterio 14: la versión anterior sigue operativa"
+            "la versión instalada sigue operativa"
         );
     }
 
@@ -486,23 +495,20 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
         temp_root: &sandbox.temp_root,
         in_use: None,
     })
-    .expect("criterio 14: la recuperación se ejecuta");
+    .expect("la recuperación se ejecuta");
     assert!(
-        !support::exists(&orphan),
-        "criterio 14: la recuperación barre el staging huérfano"
+        !inspect::exists(&orphan),
+        "la recuperación barre el staging huérfano"
     );
-    assert!(
-        outcome.is_clean(),
-        "criterio 14: y no queda nada pendiente: {outcome:?}"
-    );
-    let exe = sandbox.write_bundle(&sandbox.staging);
+    assert!(outcome.is_clean(), "y no queda nada pendiente: {outcome:?}");
+    let exe = sandbox.write_bundle(&sandbox.staging());
     let installed = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
         ))
-        .expect("criterio 14: la operación siguiente se completa");
+        .expect("la operación siguiente se completa");
     assert_eq!(installed.receipt.version, "0.24.0");
 }
 
@@ -512,12 +518,12 @@ fn criterion_14_interrupted_update_leaves_previous_operational() {
 /// fallo inyectado, y la 0.23.1 sigue operativa.
 #[cfg(not(feature = "faults"))]
 #[test]
-fn criterion_14_fault_injection_is_inert_without_the_feature() {
+fn fault_injection_is_inert_without_the_feature() {
     use avi_lifecycle::faults::{self, FaultPoint};
 
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
-    let sandbox = Sandbox::new("c14-inert");
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
+    let sandbox = Sandbox::new("fault-inert");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
 
@@ -529,27 +535,27 @@ fn criterion_14_fault_injection_is_inert_without_the_feature() {
             no_modify_path: false,
             force: false,
         }))
-        .expect_err("criterio 14: sin hijo que lanzar el traspaso falla");
+        .expect_err("sin hijo que lanzar el traspaso falla");
     drop(window);
 
     assert!(
         !error.to_string().contains("fallo inyectado"),
-        "criterio 14: el fallo no es inyectado: {error:#}"
+        "el fallo no es inyectado: {error:#}"
     );
     assert!(
         !faults::is_armed(FaultPoint::BeforeHandover),
-        "criterio 14: sin `faults` armar es inerte"
+        "sin `faults` armar es inerte"
     );
     assert!(
         previous_operational(&sandbox, "0.23.1"),
-        "criterio 14: la versión anterior sigue operativa"
+        "la versión instalada sigue operativa"
     );
 }
 
-// ─── Criterio 15 ────────────────────────────────────────────────────────────────
+// ─── Canales gestionados externamente ───────────────────────────────────────────
 
-/// **Criterio 15.** En los canales `homebrew` y `dev`, `self update` termina con
-/// `externally_managed` e indica el comando correcto.
+/// En el canal `homebrew`, `self update` termina con `externally_managed` e indica
+/// el comando correcto.
 ///
 /// La detección es la de la tabla de canales (el prefijo manda sobre el recibo, el recibo
 /// sobre
@@ -557,11 +563,11 @@ fn criterion_14_fault_injection_is_inert_without_the_feature() {
 /// lo emite antes de tocar la red o el disco, así que aquí se afirma que nada se
 /// toca. El comando exacto de cada canal es el que el brazo `Update` anuncia.
 #[test]
-fn criterion_15_managed_channels_are_externally_managed() {
-    let _guard = support::exclusively();
+fn managed_channels_are_externally_managed() {
+    let _guard = process_env::exclusively();
 
     // `homebrew`: el prefijo de Homebrew gana sobre el recibo de `script`.
-    let brew = Sandbox::new("c15-brew");
+    let brew = Sandbox::new("managed-brew");
     brew.seed_env();
     let receipt = install_version(&brew, "0.23.1");
     let cask_exe = brew
@@ -574,7 +580,7 @@ fn criterion_15_managed_channels_are_externally_managed() {
     assert_eq!(
         channel::detect(&cask_exe, Some(&receipt)),
         Channel::Homebrew,
-        "criterio 15: el prefijo de Homebrew manda sobre el recibo"
+        "el prefijo de Homebrew manda sobre el recibo"
     );
     let failure = LifecycleError::externally_managed(
         "esta copia la gestiona Homebrew: actualiza con `brew upgrade --cask \
@@ -588,35 +594,35 @@ fn criterion_15_managed_channels_are_externally_managed() {
     );
     assert!(
         failure.message.contains("brew upgrade --cask"),
-        "criterio 15: el mensaje indica el comando correcto"
+        "el mensaje indica el comando correcto"
     );
     assert_eq!(
         brew.snapshot(),
         before,
-        "criterio 15: y nada se toca, ni programa ni estado"
+        "y nada se toca, ni programa ni estado"
     );
 }
 
-// ─── Criterio 16 ────────────────────────────────────────────────────────────────
+// ─── Modelos tras actualizar ────────────────────────────────────────────────────
 
-/// **Criterio 16.** Después de actualizar, los modelos cuyo pin cambió quedan
-/// provisionados y las revisiones propias obsoletas quedan podadas.
+/// Después de actualizar, los modelos cuyo pin cambió quedan provisionados y las
+/// revisiones propias obsoletas quedan podadas.
 ///
 /// Dos mitades a nivel de motor: lo pendiente contra el pin vigente se detecta
 /// y se da por provisionado al escribirlo; y la poda tras éxito elimina solo las
 /// revisiones fuera del pin, también en la raíz compartida donde `xet`,
-/// `.locks` y lo ajeno son intocables (R3).
+/// `.locks` y lo ajeno son intocables.
 #[test]
-fn criterion_16_pending_pin_detected_and_obsolete_pruned() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c16");
+fn pending_pin_detected_and_obsolete_pruned() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("prune");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
 
     // Lo pendiente contra el pin vigente: todo escrito menos un repo se
     // detecta, y escrito ese último no queda nada pendiente.
     let names: Vec<&str> = setup::selection();
-    assert!(!names.is_empty(), "criterio 16: la selección no es vacía");
+    assert!(!names.is_empty(), "la selección no es vacía");
     let store = avi_store::ModelStore::new();
     for name in &names[..names.len() - 1] {
         set_snapshot(&sandbox, name);
@@ -625,13 +631,13 @@ fn criterion_16_pending_pin_detected_and_obsolete_pruned() {
     assert_eq!(
         pending.models,
         vec![names[names.len() - 1].to_string()],
-        "criterio 16: el pin cambiado se detecta como pendiente"
+        "el pin cambiado se detecta como pendiente"
     );
     set_snapshot(&sandbox, names[names.len() - 1]);
     let pending = setup::pending(&store);
     assert!(
         pending.models.is_empty(),
-        "criterio 16: provisionado el pin, no queda nada que descargar: {:?}",
+        "provisionado el pin, no queda nada que descargar: {:?}",
         pending.models
     );
 
@@ -639,10 +645,10 @@ fn criterion_16_pending_pin_detected_and_obsolete_pruned() {
     let pin = MODEL_REVISIONS
         .iter()
         .find(|pin| pin.name == names[0])
-        .expect("criterio 16: el primer seleccionado tiene pin");
+        .expect("el primer seleccionado tiene pin");
     let snapshots = sandbox
         .models_dir
-        .join(support::repo_dir(pin.repo))
+        .join(repo::repo_dir(pin.repo))
         .join("snapshots");
     support::write(
         &snapshots.join(pin.revision).join("weights.bin"),
@@ -656,24 +662,21 @@ fn criterion_16_pending_pin_detected_and_obsolete_pruned() {
     assert_eq!(
         outcome.removed,
         vec![format!("{}/snapshots/obsolete-0000", pin.name)],
-        "criterio 16: la poda elimina solo la revisión obsoleta"
+        "la poda elimina solo la revisión obsoleta"
     );
     assert!(
         snapshots.join(pin.revision).is_dir(),
-        "criterio 16: y conserva la del pin vigente"
+        "y conserva la del pin vigente"
     );
-    assert!(
-        outcome.is_clean(),
-        "criterio 16: y no informa fallos: {outcome:?}"
-    );
+    assert!(outcome.is_clean(), "y no informa fallos: {outcome:?}");
 
-    // En la raíz compartida la poda procede igual y R3 se respeta: `xet`, los
+    // En la raíz compartida la poda procede igual y lo ajeno se respeta: `xet`, los
     // locks y el repo ajeno siguen intactos.
-    let shared = Sandbox::new_with("c16-shared", Models::Shared);
+    let shared = Sandbox::new_shared("prune-shared");
     shared.seed_env();
     let snapshots = shared
         .models_dir
-        .join(support::repo_dir(pin.repo))
+        .join(repo::repo_dir(pin.repo))
         .join("snapshots");
     support::write(
         &snapshots.join(pin.revision).join("weights.bin"),
@@ -688,7 +691,7 @@ fn criterion_16_pending_pin_detected_and_obsolete_pruned() {
         &shared
             .models_dir
             .join(".locks")
-            .join(support::repo_dir(pin.repo))
+            .join(repo::repo_dir(pin.repo))
             .join("lock"),
         "",
     );
@@ -703,7 +706,7 @@ fn criterion_16_pending_pin_detected_and_obsolete_pruned() {
     assert_eq!(
         outcome.removed,
         vec![format!("{}/snapshots/obsolete-0000", pin.name)],
-        "criterio 16: en compartida también poda lo obsoleto propio"
+        "en compartida también poda lo obsoleto propio"
     );
     for kept in [
         shared.models_dir.join("xet").join("shard"),
@@ -714,7 +717,7 @@ fn criterion_16_pending_pin_detected_and_obsolete_pruned() {
     ] {
         assert!(
             kept.is_file(),
-            "criterio 16: R3 deja lo compartido intacto: {}",
+            "lo compartido ajeno queda intacto: {}",
             kept.display()
         );
     }
@@ -729,7 +732,7 @@ fn set_snapshot(sandbox: &Sandbox, name: &str) {
         .expect("el seleccionado tiene pin");
     let snapshot = sandbox
         .models_dir
-        .join(support::repo_dir(pin.repo))
+        .join(repo::repo_dir(pin.repo))
         .join("snapshots")
         .join(pin.revision);
     match MODEL_FILE_PATTERNS.iter().find(|(n, _)| *n == name) {
@@ -744,18 +747,18 @@ fn set_snapshot(sandbox: &Sandbox, name: &str) {
     }
 }
 
-// ─── Fuera de los seis: checksum, sin terminal y daemon que no para ─────────────
+// ─── Checksum, sin terminal y daemon que no para ────────────────────────────────
 
 /// Checksum inválido: el archivo manipulado en tránsito falla con
 /// `checksum_mismatch`, el staging se borra y la instalación queda intacta.
 #[test]
-fn criterion_update_checksum_mismatch_cleans_staging() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
-    let sandbox = Sandbox::new("cuid-sum");
+fn update_checksum_mismatch_cleans_staging() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
+    let sandbox = Sandbox::new("checksum");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
-    let before = sandbox.program_content();
+    let before = listing::list(&sandbox.program_dir);
 
     let server = FakeReleaseServer::serve("0.24.0");
     server.seed_download_base();
@@ -792,27 +795,34 @@ fn criterion_update_checksum_mismatch_cleans_staging() {
         previous_operational(&sandbox, "0.23.1"),
         "la instalación queda intacta"
     );
-    assert_eq!(sandbox.program_content(), before, "el programa no se tocó");
+    assert_eq!(
+        listing::list(&sandbox.program_dir),
+        before,
+        "el programa no se tocó"
+    );
 }
 
 /// Sin terminal y sin `--yes`, lo destructivo se niega con
 /// `confirmation_required`.
 ///
 /// El `stdin` real no se puede fingir en el proceso, así que la prueba se
-/// reejecuta a sí misma con la entrada redirigida a la null, como el criterio
-/// 19: el hijo afirma la negativa y el padre exige su informe.
+/// reejecuta a sí misma con la entrada redirigida a la null: el hijo afirma la
+/// negativa y el padre exige su informe.
 #[test]
-fn criterion_update_no_terminal_refuses_destructive() {
-    let _guard = support::exclusively();
+fn update_no_terminal_refuses_destructive() {
+    let _guard = process_env::exclusively();
 
-    if support::is_child_without_terminal() {
+    if no_terminal::is_child_without_terminal() {
         child_destructive_without_terminal();
         return;
     }
 
-    let sandbox = Sandbox::new("cuid-no-terminal");
-    let output =
-        support::run_without_terminal("criterion_update_no_terminal_refuses_destructive", &sandbox);
+    let sandbox = Sandbox::new("no-terminal");
+    let output = no_terminal::run_without_terminal(
+        "update_no_terminal_refuses_destructive",
+        "no-terminal",
+        &sandbox,
+    );
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
@@ -820,7 +830,7 @@ fn criterion_update_no_terminal_refuses_destructive() {
         "el proceso sin terminal terminó con {:?}.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
         output.status.code()
     );
-    let lines = support::read_report_lines(&output.stdout);
+    let lines = no_terminal::read_report_lines(&output.stdout);
     assert_eq!(
         lines,
         vec!["destructive=confirmation_required/2"],
@@ -855,7 +865,7 @@ fn child_destructive_without_terminal() {
         2,
         "error de uso"
     );
-    support::report_line(&format!(
+    no_terminal::report_line(&format!(
         "destructive={}/{}",
         failure.reason,
         ExitCode::from_reason(failure.reason).code()
@@ -867,10 +877,10 @@ fn child_destructive_without_terminal() {
 /// Con el daemon vivo y el reclamo inerte, la parada no se completa y quien
 /// llama aborta antes de descargar: el programa sigue intacto y no hay staging.
 #[test]
-fn criterion_update_daemon_stop_failure_aborts() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
-    let sandbox = Sandbox::new("cuid-daemon");
+fn update_daemon_stop_failure_aborts() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
+    let sandbox = Sandbox::new("daemon-stubborn");
     sandbox.seed_env();
     install_version(&sandbox, "0.23.1");
 
@@ -882,7 +892,7 @@ fn criterion_update_daemon_stop_failure_aborts() {
     let before = sandbox.snapshot();
     let outcome = runtime.block_on(daemon_stop::stop(
         &sandbox.data_dir,
-        &support::dead_port(),
+        &net::dead_port(),
         &Stubborn,
     ));
     assert!(outcome.was_running, "el daemon estaba en ejecución");
@@ -906,7 +916,7 @@ fn criterion_update_daemon_stop_failure_aborts() {
 /// (`AVI_HANDOVER_PARENT_PID` presente) toma el principal sin la compuerta.
 #[test]
 fn handover_gate_blocks_usage_and_lets_the_child_in() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("gate");
     sandbox.seed_env();
 

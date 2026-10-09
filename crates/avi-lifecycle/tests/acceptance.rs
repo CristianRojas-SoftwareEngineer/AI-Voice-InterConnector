@@ -1,14 +1,12 @@
-//! Criterios de aceptación del plan que cubre este archivo, una prueba por criterio.
-//!
-//! Los once criterios de este ciclo son el **2**, el **6**, el **7**, el **9** —que solo
-//! se puede ejecutar en macOS y por eso vive en `tests/quarantine.rs`—, y del **17** al
-//! **23**. Los nombres llevan el número del criterio, que aparece además en el mensaje de
-//! cada aserción, para que el informe de ground truth mapee sin ambigüedad.
+//! Pruebas de aceptación del ciclo de vida: instalación idempotente, `--no-setup`,
+//! desinstalación (completa, con `--keep-data`, repetida), confirmación sin terminal,
+//! `--dry-run`, categorías de `cleanup` y protección de los recursos compartidos. La
+//! prueba de cuarentena de macOS vive en `tests/quarantine.rs`, porque solo se puede
+//! ejecutar allí.
 //!
 //! Todas las pruebas usan el mismo arnés (`tests/support/mod.rs`), que hace las dos
 //! cosas que el aislamiento exige y que no son la misma: **declarar las cuatro
-//! variables de
-//! reubicación** apuntando al sandbox, para que lo que el motor resuelve por el
+//! variables de reubicación** apuntando al sandbox, para que lo que el motor resuelve por el
 //! entorno caiga dentro del sandbox, y **pasar las mismas rutas como dato** en `Env` y
 //! `Roots`, que es como las recibe en producción. En Windows las Known Folders ignoran
 //! `LOCALAPPDATA`, así que un sandbox que se apoyara en ellas no estaría probando nada
@@ -16,16 +14,38 @@
 //!
 //! Ninguna prueba depende de red, de ONNX Runtime ni del motor TTS: el bundle es
 //! sintético y sale de `packaging/bundle-manifest.json`. El único proceso externo que
-//! aparece en todo el archivo es la descarga del criterio 6, que apunta a un puerto local
+//! aparece en todo el archivo es la descarga de `setup`, que apunta a un puerto local
 //! cerrado y por eso falla sin tocar la red real.
 //!
-//! El criterio 6 tiene dos mitades y por eso dos pruebas: `--no-setup` no provisiona
-//! nada, y un fallo de `setup` deja el programa instalado. La segunda tiene una mitad del
-//! enunciado que el motor **no** cumple hoy; el doc-comment lo dice con nombre y con el
-//! `reason` que falta, y el arreglo es del motor, no de la prueba.
+//! `setup` tiene dos pruebas: `--no-setup` no provisiona nada, y un fallo de `setup`
+//! deja el programa instalado.
 
 #![allow(clippy::disallowed_methods)]
 
+#[path = "support/bundle.rs"]
+mod bundle;
+#[path = "support/inert.rs"]
+mod inert;
+#[path = "support/inspect.rs"]
+mod inspect;
+#[path = "support/install_env.rs"]
+mod install_env;
+#[path = "support/listing.rs"]
+mod listing;
+#[path = "support/net.rs"]
+mod net;
+#[path = "support/no_terminal.rs"]
+mod no_terminal;
+#[path = "support/process_env.rs"]
+mod process_env;
+#[path = "support/registered.rs"]
+mod registered;
+#[path = "support/repo.rs"]
+mod repo;
+#[path = "support/runtime.rs"]
+mod runtime;
+#[path = "support/shared.rs"]
+mod shared;
 mod support;
 
 use avi_core::exit_codes::ExitCode;
@@ -36,10 +56,12 @@ use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
 use avi_lifecycle::setup;
 use avi_lifecycle::uninstall;
 use avi_store::{ModelStore, MODEL_FILE_PATTERNS, MODEL_REVISIONS};
+use inert::Inert;
+use registered::Now;
 use std::path::{Path, PathBuf};
-use support::{Inert, Models, Now, Sandbox};
+use support::Sandbox;
 
-/// Pin que el criterio 6 deja sin sembrar para que la descarga falle.
+/// Pin que la prueba de fallo de `setup` deja sin sembrar para que la descarga falle.
 const UNSEEDED_PIN: &str = "opus-mt-es-en";
 
 /// Recibo con el instante de instalación neutralizado, para comparar dos pasadas por
@@ -52,8 +74,7 @@ fn normalized_receipt(receipt: &InstallReceipt) -> InstallReceipt {
 }
 
 /// Estado del sandbox sin el archivo de bloqueo, que la recuperación crea al tomar el
-/// bloqueo y que
-/// no es «nada modificado» sino el mecanismo que serializa las operaciones.
+/// bloqueo y que no es «nada modificado» sino el mecanismo que serializa las operaciones.
 fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
     let mut out: Vec<(String, u64)> = sandbox
         .snapshot()
@@ -71,14 +92,37 @@ fn state_without_lock(sandbox: &Sandbox) -> Vec<(String, u64)> {
 }
 
 /// Entradas del directorio padre del programa, que es donde viven el staging hermano, el
-/// archivo de bloqueo y los aparcados. El residuo cero del criterio 17 se afirma sobre
+/// archivo de bloqueo y los aparcados. El residuo cero de la desinstalación se afirma sobre
 /// esto y no solo sobre el directorio de programa.
 fn opt_entries(sandbox: &Sandbox) -> Vec<String> {
     let parent = sandbox
         .program_dir
         .parent()
         .expect("el directorio de programa tiene padre");
-    support::list(parent)
+    listing::list(parent)
+}
+
+/// Rutas del plan de borrado, como cadenas, que es la forma en que el envelope las
+/// publica.
+fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
+    plan.targets
+        .iter()
+        .map(|t| t.path.display().to_string())
+        .collect()
+}
+
+/// Rutas de las entradas de un plan de desinstalación, como cadenas.
+fn entry_paths(plan: &[avi_lifecycle::confirm::PlanEntry]) -> Vec<String> {
+    plan.iter().map(|e| e.path.display().to_string()).collect()
+}
+
+/// Un temporal propio huérfano, que la regla obliga a barrer, creado junto a los
+/// recursos compartidos de `seed_state`: es el contraste que demuestra que el barrido es
+/// selectivo por prefijo y no por directorio.
+fn seed_own_temp(sandbox: &Sandbox) -> PathBuf {
+    let temp = sandbox.temp_root.join("avi-orphan.tmp");
+    support::write(&temp, "temporal propio");
+    temp
 }
 
 /// `cleanup` con `--yes` y la categoría que le pase quien llama.
@@ -90,27 +134,27 @@ fn with_yes() -> cleanup::Options {
 }
 
 /// Ejecuta una categoría y comprueba que no falló nada y que borró exactamente lo que el
-/// plan berkata, que es la comprobación que un plan correcto con un ejecutor laxo no
+/// plan anuncia, que es la comprobación que un plan correcto con un ejecutor laxo no
 /// superaría.
 fn run_category(sandbox: &Sandbox, runtime: &tokio::runtime::Runtime, options: cleanup::Options) {
-    let announced = support::paths(&cleanup::plan(&sandbox.roots(), &options));
+    let announced = paths(&cleanup::plan(&sandbox.roots(), &options));
     let outcome = runtime
         .block_on(cleanup::run(&sandbox.roots(), &options, &Inert))
-        .expect("criterio 22: la categoría se ejecuta");
+        .expect("la categoría se ejecuta");
     assert!(
         outcome.failed.is_empty(),
-        "criterio 22: nada falló: {:?}",
+        "nada falló: {:?}",
         outcome.failed
     );
     for path in &announced {
         assert!(
-            !support::exists(Path::new(path)),
-            "criterio 22: lo anunciado se borró: {path}"
+            !inspect::exists(Path::new(path)),
+            "lo anunciado se borró: {path}"
         );
     }
     assert_eq!(
         outcome.removed, announced,
-        "criterio 22: el plan y la ejecución coinciden"
+        "el plan y la ejecución coinciden"
     );
 }
 
@@ -125,7 +169,7 @@ fn provision_selection(sandbox: &Sandbox) {
     for pin in MODEL_REVISIONS {
         let snapshot = sandbox
             .models_dir
-            .join(support::repo_dir(pin.repo))
+            .join(repo::repo_dir(pin.repo))
             .join("snapshots")
             .join(pin.revision);
         match MODEL_FILE_PATTERNS.iter().find(|(n, _)| *n == pin.name) {
@@ -143,9 +187,9 @@ fn provision_selection(sandbox: &Sandbox) {
     }
 }
 
-// ─── Criterio 2 ───────────────────────────────────────────────────────────────────
+// ─── Instalación idempotente ──────────────────────────────────────────────────────
 
-/// **Criterio 2.** Repetir la instalación con la misma versión termina con éxito y deja
+/// Repetir la instalación con la misma versión termina con éxito y deja
 /// el mismo estado, sin entradas de `PATH` ni bloques de perfil duplicados.
 ///
 /// Lo que se afirma va más allá de «las dos llamadas devuelven lo mismo»: se compara el
@@ -153,122 +197,119 @@ fn provision_selection(sandbox: &Sandbox) {
 /// programa antes y después de la segunda pasada, y **el número de apariciones** de la
 /// entrada en el destino de la integración —el valor `Path` de la clave de prueba en
 /// Windows, el bloque delimitado y el enlace en Unix—. Un duplicado es exactamente el
-/// defecto que el criterio nombra, y comparar solo los desenlaces no lo vería.
+/// defecto que la idempotencia prohíbe, y comparar solo los desenlaces no lo vería.
 #[test]
-fn criterion_2_install_twice_is_idempotent() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c2");
+fn install_twice_is_idempotent() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("install-twice");
     sandbox.seed_env();
     let options = Sandbox::install_options();
-    let runtime = support::runtime();
+    let runtime = runtime::runtime();
 
     // ── Primera instalación ─────────────────────────────────────────────────────
-    let exe = sandbox.write_bundle(&sandbox.staging);
+    let exe = sandbox.write_bundle(&sandbox.staging());
     let first = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
             &options,
             &Inert,
         ))
-        .expect("criterio 2: la primera instalación se completa");
-    assert_eq!(
-        first.status, "installed",
-        "criterio 2: la primera pasada instala"
-    );
+        .expect("la primera instalación se completa");
+    assert_eq!(first.status, "installed", "la primera pasada instala");
     assert!(
         first.path_changed(),
-        "criterio 2: la primera pasada reescribe el `PATH`"
+        "la primera pasada reescribe el `PATH`"
     );
     let first_receipt = normalized_receipt(&first.receipt);
-    let first_content = support::list(&sandbox.program_dir);
+    let first_content = listing::list(&sandbox.program_dir);
     assert!(
         first_content.contains(&receipt::RECEIPT_NAME.to_string()),
-        "criterio 2: el recibo está entre lo colocado: {first_content:?}"
+        "el recibo está entre lo colocado: {first_content:?}"
     );
 
     // ── Segunda instalación, desde el mismo bundle ──────────────────────────────
     // El bundle se repone porque la colocación **mueve** los archivos desde el origen.
     // Es también lo que hace el bootstrap, que extrae en un staging nuevo cada vez.
-    let exe = sandbox.write_bundle(&sandbox.staging);
+    let exe = sandbox.write_bundle(&sandbox.staging());
     let second = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
             &options,
             &Inert,
         ))
-        .expect("criterio 2: la segunda instalación se completa");
+        .expect("la segunda instalación se completa");
 
     assert_eq!(
         second.status, "installed",
-        "criterio 2: la segunda pasada también termina en éxito"
+        "la segunda pasada también termina en éxito"
     );
     assert_eq!(
         second.mode,
         install::Mode::Install,
-        "criterio 2: sigue siendo instalación, porque el ejecutable viene del staging"
+        "sigue siendo instalación, porque el ejecutable viene del staging"
     );
     assert_eq!(
         normalized_receipt(&second.receipt),
         first_receipt,
-        "criterio 2: el mismo estado final, con el mismo recibo"
+        "el mismo estado final, con el mismo recibo"
     );
     assert_eq!(
         second.path_integration, first.path_integration,
-        "criterio 2: la integración registrada es la misma, no el diff de esta pasada"
+        "la integración registrada es la misma, no el diff de esta pasada"
     );
     assert!(
         !second.path_changed(),
-        "criterio 2: la segunda pasada no reescribe el `PATH`: la entrada ya estaba"
+        "la segunda pasada no reescribe el `PATH`: la entrada ya estaba"
     );
     assert!(
         second.path_integrated(),
-        "criterio 2: pero sigue registrada en el recibo, que es lo que permite revertirla"
+        "pero sigue registrada en el recibo, que es lo que permite revertirla"
     );
     assert_eq!(
-        support::list(&sandbox.program_dir),
+        listing::list(&sandbox.program_dir),
         first_content,
-        "criterio 2: el directorio de programa no cambia de contenido"
+        "el directorio de programa no cambia de contenido"
     );
 
     // El recibo de disco coincide con el que devolvió la operación.
     let on_disk = receipt::read_from(&sandbox.program_dir)
-        .expect("criterio 2: se lee el recibo")
-        .expect("criterio 2: el recibo existe");
+        .expect("se lee el recibo")
+        .expect("el recibo existe");
     assert_eq!(
         normalized_receipt(&on_disk),
         first_receipt,
-        "criterio 2: el recibo de disco es el mismo"
+        "el recibo de disco es el mismo"
     );
 
-    // Y ahora el punto del criterio: la integración no está duplicada.
+    // Y ahora el punto central: la integración no está duplicada.
     #[cfg(unix)]
     {
         let profile = sandbox.home.join(".profile");
-        let text = std::fs::read_to_string(&profile).expect("criterio 2: el perfil se escribió");
+        let text = std::fs::read_to_string(&profile).expect("el perfil se escribió");
         assert_eq!(
             text.matches(avi_lifecycle::path_unix::BLOCK_BEGIN).count(),
             1,
-            "criterio 2: un solo bloque delimitado tras dos instalaciones: {text}"
+            "un solo bloque delimitado tras dos instalaciones: {text}"
         );
         let link = sandbox.bin_dir.join(avi_lifecycle::APP_NAME);
-        let dest = std::fs::read_link(&link).expect("criterio 2: el enlace existe");
+        let dest = std::fs::read_link(&link).expect("el enlace existe");
         assert_eq!(
             dest.parent(),
             Some(sandbox.program_dir.as_path()),
-            "criterio 2: el enlace apunta al directorio de programa"
+            "el enlace apunta al directorio de programa"
         );
     }
     #[cfg(windows)]
     {
         let value = avi_lifecycle::path_windows::read_path(&sandbox.registry_subkey)
-            .expect("criterio 2: se lee el valor de la clave de prueba")
-            .expect("criterio 2: la integración escribió el valor")
+            .expect("se lee el valor de la clave de prueba")
+            .expect("la integración escribió el valor")
             .value;
         let entry = sandbox.bin_dir.display().to_string();
         assert_eq!(
             value.matches(&entry).count(),
             1,
-            "criterio 2: la entrada aparece una sola vez tras dos instalaciones: {value}"
+            "la entrada aparece una sola vez tras dos instalaciones: {value}"
         );
     }
 }
@@ -284,89 +325,89 @@ fn summary_lines(summary: &[String]) -> Vec<&str> {
 
 /// **El resumen final dice el estado del `PATH` una vez, y lo dice en el estado.**
 ///
-/// El defecto que fija esta prueba era que `final_summary` copiaba la línea del `PATH` del
-/// **resumen previo** —que dice lo que se va a hacer— y añadía debajo la del **estado**. En
-/// una instalación correcta el usuario leía, en el mismo bloque y en este orden:
+/// `final_summary` no copia la línea del `PATH` del **resumen previo** —que dice lo que se
+/// va a hacer— junto a la del **estado**. Si lo hiciera, en una instalación correcta el
+/// usuario leería, en el mismo bloque y en este orden:
 ///
 /// ```text
 ///   PATH:      se añadirá <dir> en el PATH del usuario
 ///   PATH:      se añadió <dir>; abre una terminal nueva para que el comando se encuentre.
 /// ```
 ///
-/// Dos líneas para un hecho, y la primera en futuro_y la segunda en pasado: leído de un
-/// tirón parece una contradicción. Afirma los **tres** estados posibles, porque el arreglo no
-/// es «quitar la primera línea» sino «dejar una sola, la del estado», y cada rama del
+/// Dos líneas para un hecho, y la primera en futuro y la segunda en pasado: leído de un
+/// tirón parece una contradicción. Afirma los **tres** estados posibles, porque la regla no
+/// es «omitir la primera línea» sino «dejar una sola, la del estado», y cada rama del
 /// `if` del resumen produce una prosa distinta que también hay que fijar.
 #[test]
-fn criterion_2_final_summary_reports_the_path_state_once() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
+fn final_summary_reports_the_path_state_once() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
 
     // ── Estado 1: esta pasada **reescribió** el `PATH` ────────────────────────────
-    let sandbox = Sandbox::new("c2-path-new");
+    let sandbox = Sandbox::new("path-new");
     sandbox.seed_env();
-    let exe = sandbox.write_bundle(&sandbox.staging);
+    let exe = sandbox.write_bundle(&sandbox.staging());
     let first = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
         ))
-        .expect("criterio 2: la primera instalación se completa");
+        .expect("la primera instalación se completa");
     assert!(
         first.path_changed(),
-        "criterio 2: la primera pasada reescribe el `PATH`, que es el estado que hay que probar"
+        "la primera pasada reescribe el `PATH`, que es el estado que hay que probar"
     );
     let lines = summary_lines(&first.summary);
     assert_eq!(
         lines.len(),
         1,
-        "criterio 2: el resumen final dice el `PATH` una sola vez, y no dos: {:?}",
+        "el resumen final dice el `PATH` una sola vez, y no dos: {:?}",
         first.summary
     );
     assert!(
         lines[0].contains("se añadió"),
-        "criterio 2: y en pasado, porque esta pasada lo escribió: {}",
+        "y en pasado, porque esta pasada lo escribió: {}",
         lines[0]
     );
     assert!(
         !lines[0].contains("se añadirá"),
-        "criterio 2: y no en futuro: el resumen final no anuncia, informa: {}",
+        "y no en futuro: el resumen final no anuncia, informa: {}",
         lines[0]
     );
     assert!(
         lines[0].contains("abre una terminal nueva"),
-        "criterio 2: con la indicación de terminal nueva, que solo aparece si se acaba de escribir: {}",
+        "con la indicación de terminal nueva, que solo aparece si se acaba de escribir: {}",
         lines[0]
     );
 
     // ── Estado 2: la integración está en pie y esta pasada no la tocó ────────────
-    let exe = sandbox.write_bundle(&sandbox.staging);
+    let exe = sandbox.write_bundle(&sandbox.staging());
     let second = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
         ))
-        .expect("criterio 2: la segunda instalación se completa");
+        .expect("la segunda instalación se completa");
     assert!(!second.path_changed());
     let lines = summary_lines(&second.summary);
     assert_eq!(
         lines.len(),
         1,
-        "criterio 2: tampoco en la repetición, que es donde se vería un segundo duplicado: {:?}",
+        "tampoco en la repetición, que es donde se vería un segundo duplicado: {:?}",
         second.summary
     );
     assert!(
         lines[0].contains("ya estaba integrado"),
-        "criterio 2: y lo dice como estado, no como plan: {}",
+        "y lo dice como estado, no como plan: {}",
         lines[0]
     );
 
     // ── Estado 3: `--no-modify-path`, donde el plan **es** el estado ──────────────
-    let s = Sandbox::new("c2-path-no-path");
+    let s = Sandbox::new("path-not-needed");
     s.seed_env();
-    let exe = s.write_bundle(&s.staging);
+    let exe = s.write_bundle(&s.staging());
     let without_path = runtime
         .block_on(install::install(
             &s.install_env(&exe),
@@ -376,36 +417,36 @@ fn criterion_2_final_summary_reports_the_path_state_once() {
             },
             &Inert,
         ))
-        .expect("criterio 2: la instalación con `--no-modify-path` se completa");
+        .expect("la instalación con `--no-modify-path` se completa");
     let lines = summary_lines(&without_path.summary);
     assert_eq!(
         lines.len(),
         1,
-        "criterio 2: con `--no-modify-path` también una sola línea: {:?}",
+        "con `--no-modify-path` también una sola línea: {:?}",
         without_path.summary
     );
     assert!(
         lines[0].contains("no se modifica"),
-        "criterio 2: y aquí el texto del plan es el del estado, porque no hubo escritura: {}",
+        "y aquí el texto del plan es el del estado, porque no hubo escritura: {}",
         lines[0]
     );
 }
 
-// ─── Criterio 6 ───────────────────────────────────────────────────────────────────
+// ─── `setup` ──────────────────────────────────────────────────────────────────────
 
-/// **Criterio 6, primera mitad.** Con `--no-setup` no se descarga ningún modelo.
+/// Con `--no-setup` no se descarga ningún modelo.
 ///
 /// La primera aserción es la que impide que la prueba sea vacía: se calcula lo que
 /// `setup` **habría** hecho contra el mismo almacén, y tiene que haber algo. Sin esa
 /// comprobación la prueba pasaría igual con un `--no-setup` que no hiciera nada, que es
-/// justo el defecto que el criterio prohíbe.
+/// justo el defecto que la regla prohíbe.
 ///
-/// Y la segunda mitad es que la raíz de modelos **sigue vacía**: no basta con que el
-/// resumen diga `skipped`, tiene que no haber quedado ni un repo ni `xet`.
+/// Además, la raíz de modelos **sigue vacía**: no basta con que el resumen diga
+/// `skipped`, tiene que no haber quedado ni un repo ni `xet`.
 #[test]
-fn criterion_6_no_setup_provisions_nothing() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c6-no-setup");
+fn no_setup_provisions_nothing() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("no-setup");
     sandbox.seed_env();
 
     // No vacuidad: hay modelos que provisionar si se pidiera.
@@ -413,79 +454,78 @@ fn criterion_6_no_setup_provisions_nothing() {
     let selection = setup::selection();
     assert!(
         !pending.models.is_empty(),
-        "criterio 6: hay repos que descargar, así que `--no-setup` omite trabajo real: {:?}",
+        "hay repos que descargar, así que `--no-setup` omite trabajo real: {:?}",
         pending.models
     );
     assert_eq!(
         pending.models.len(),
         selection.len(),
-        "criterio 6: la selección completa está pendiente"
+        "la selección completa está pendiente"
     );
 
-    let exe = sandbox.write_bundle(&sandbox.staging);
-    let runtime = support::runtime();
+    let exe = sandbox.write_bundle(&sandbox.staging());
+    let runtime = runtime::runtime();
     let outcome = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
         ))
-        .expect("criterio 6: la instalación se completa");
+        .expect("la instalación se completa");
 
     assert_eq!(outcome.status, "installed");
     assert_eq!(
         outcome.models,
         ModelsState::Skipped,
-        "criterio 6: el desenlace dice que no se provisionó nada"
+        "el desenlace dice que no se provisionó nada"
     );
     assert_eq!(outcome.models.as_str(), "skipped");
     assert_eq!(
         outcome.lifecycle_error(),
         None,
-        "criterio 6: `--no-setup` no produce `reason` de contrato, así que sigue saliendo por \
+        "`--no-setup` no produce `reason` de contrato, así que sigue saliendo por \
          `Done` con código 0"
     );
     assert_eq!(
-        support::list(&sandbox.models_dir),
+        listing::list(&sandbox.models_dir),
         Vec::<String>::new(),
-        "criterio 6: la raíz de modelos sigue vacía: no hay repo ni `xet`"
+        "la raíz de modelos sigue vacía: no hay repo ni `xet`"
     );
     assert!(
         !ModelStore::new().is_provisioned("opus-mt-es-en"),
-        "criterio 6: y nada quedó provisionado en el almacén"
+        "y nada quedó provisionado en el almacén"
     );
     assert!(
         receipt::read_from(&sandbox.program_dir)
-            .expect("criterio 6: se lee el recibo")
+            .expect("se lee el recibo")
             .is_some(),
-        "criterio 6: el programa queda instalado, que es lo que promete el paso 11"
+        "el programa queda instalado, que es lo que `--no-setup` promete"
     );
 }
 
-/// **Criterio 6, segunda mitad.** Sin `--no-setup`, un fallo de `setup` deja el programa
+/// Sin `--no-setup`, un fallo de `setup` deja el programa
 /// instalado y termina con `setup_failed`.
 ///
 /// El fallo se provoca **sin red real**: se provisionan en el sandbox los repos de la
 /// selección salvo uno, y `HF_ENDPOINT` apunta a un puerto local cerrado. Lo único que
 /// queda por hacer es descargar ese modelo, y falla de forma independiente de la máquina.
 ///
-/// Se afirman las **dos** mitades del criterio. La del programa instalado es la que se
-/// comprueba contra el disco. La del `reason` se comprueba sobre
-/// [`install::Outcome::lifecycle_error`], que es el punto único donde el motor decide el
-/// `reason` de la operación: `setup_failed` con el código `11` de la tabla cerrada, que es
-/// lo que la tabla de reasons declara como **éxito parcial** y lo que el cableado convierte
-/// en código de
-/// salida. Y se afirma también la separación de los dos `reason`, que es lo que mantiene
-/// intacta la separación que `self update` necesita: el de la **operación** es `setup_failed` y el del
-/// **fallo de provisión** viaja anidado, y en este caso es `network_error`.
+/// Se afirman **dos** cosas. El programa instalado se comprueba contra el disco. El
+/// `reason` se comprueba sobre [`install::Outcome::lifecycle_error`], que es el punto único
+/// donde el motor decide el `reason` de la operación: `setup_failed` con el código `11` de
+/// la tabla cerrada, que es lo que la tabla de reasons declara como **éxito parcial** y lo
+/// que el cableado convierte en código de salida. Y se afirma también la separación de los
+/// dos `reason`, que es lo que `self update` necesita: el de la **operación** es
+/// `setup_failed` y el del **fallo de provisión** viaja anidado, y en este caso es
+/// `network_error`.
 ///
 /// El resumen en texto se afirma por las dos mitades —el estado de los modelos y el aviso
 /// con el motivo de la causa y la instrucción de reintentar—, porque es la otra salida de
 /// la misma operación y no puede decir una cosa mientras el envelope dice otra.
 #[test]
-fn criterion_6_setup_failure_keeps_install() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c6-failure");
+fn setup_failure_keeps_install() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("setup-failure");
     sandbox.seed_env();
     provision_selection(&sandbox);
 
@@ -494,12 +534,12 @@ fn criterion_6_setup_failure_keeps_install() {
     let unseeded = MODEL_REVISIONS
         .iter()
         .find(|pin| pin.name == UNSEEDED_PIN)
-        .expect("criterio 6: el pin sin sembrar existe");
-    std::fs::remove_dir_all(sandbox.models_dir.join(support::repo_dir(unseeded.repo)))
-        .expect("criterio 6: se quita el snapshot del pin");
+        .expect("el pin sin sembrar existe");
+    std::fs::remove_dir_all(sandbox.models_dir.join(repo::repo_dir(unseeded.repo)))
+        .expect("se quita el snapshot del pin");
     let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
-        .expect("criterio 6: se reserva un puerto local")
+        .expect("se reserva un puerto local")
         .port();
     std::env::set_var("HF_ENDPOINT", format!("http://127.0.0.1:{closed_port}"));
 
@@ -508,11 +548,11 @@ fn criterion_6_setup_failure_keeps_install() {
     assert_eq!(
         pending.models,
         vec![UNSEEDED_PIN.to_string()],
-        "criterio 6: solo ese modelo queda por descargar"
+        "solo ese modelo queda por descargar"
     );
 
-    let exe = sandbox.write_bundle(&sandbox.staging);
-    let runtime = support::runtime();
+    let exe = sandbox.write_bundle(&sandbox.staging());
+    let runtime = runtime::runtime();
     let options = install::Options {
         no_setup: false,
         ..Sandbox::install_options()
@@ -523,21 +563,21 @@ fn criterion_6_setup_failure_keeps_install() {
             &options,
             &Inert,
         ))
-        .expect("criterio 6: un fallo de `setup` no es un fallo de la instalación");
+        .expect("un fallo de `setup` no es un fallo de la instalación");
 
     // ── Mitad 1: el programa queda instalado ──────────────────────────────────
     assert_eq!(
         outcome.status, "installed",
-        "criterio 6: la instalación termina con éxito"
+        "la instalación termina con éxito"
     );
     let on_disk = receipt::read_from(&sandbox.program_dir)
-        .expect("criterio 6: se lee el recibo")
-        .expect("criterio 6: el recibo existe: el programa quedó instalado");
+        .expect("se lee el recibo")
+        .expect("el recibo existe: el programa quedó instalado");
     assert_eq!(on_disk.version, "0.24.0");
     for relative in &outcome.receipt.files {
         assert!(
-            support::place(&sandbox.program_dir, relative).is_file(),
-            "criterio 6: {relative} sigue en el directorio de programa"
+            bundle::place(&sandbox.program_dir, relative).is_file(),
+            "{relative} sigue en el directorio de programa"
         );
     }
 
@@ -545,56 +585,56 @@ fn criterion_6_setup_failure_keeps_install() {
     // de la operación.
     let ModelsState::Failed { cause } = &outcome.models else {
         panic!(
-            "criterio 6: se esperaba un fallo de provisión y el estado es {:?}",
+            "se esperaba un fallo de provisión y el estado es {:?}",
             outcome.models
         );
     };
     assert_eq!(outcome.models.as_str(), "failed");
     assert_eq!(
         cause.reason, "network_error",
-        "criterio 6: el fallo de provisión conserva su `reason`, que es el que \
+        "el fallo de provisión conserva su `reason`, que es el que \
          `docs/CLI/commands/SETUP.md` publica para una descarga fallida"
     );
     assert_eq!(
         ExitCode::from_reason(cause.reason).code(),
         20,
-        "criterio 6: y el código de la tabla; el código de salida del proceso es el de la \
+        "y el código de la tabla; el código de salida del proceso es el de la \
          operación, no este"
     );
 
     // ── Mitad 2: termina con `setup_failed` y el código 11 ────────────────────
     let failure = outcome
         .lifecycle_error()
-        .expect("criterio 6: `setup_failed` es el reason de este desenlace");
+        .expect("`setup_failed` es el reason de este desenlace");
     assert_eq!(
         failure.reason, "setup_failed",
-        "criterio 6: el `reason` de la operación es `setup_failed`"
+        "el `reason` de la operación es `setup_failed`"
     );
     assert_eq!(
         ExitCode::from_reason(failure.reason).code(),
         11,
-        "criterio 6: y el código es `SetupFailed = 11` de la tabla única"
+        "y el código es `SetupFailed = 11` de la tabla única"
     );
     assert_eq!(
         ExitCode::from_reason("setup_failed").code(),
         11,
-        "criterio 6: el código de `setup_failed` sale de la tabla única, sin copia propia"
+        "el código de `setup_failed` sale de la tabla única, sin copia propia"
     );
-    // El mensaje dice las dos cosas que promete el paso 11: qué no se completó y que
+    // El mensaje dice las dos cosas que promete el resumen: qué no se completó y que
     // basta reintentar con `setup`.
     assert!(
         failure.message.contains("no se completó"),
-        "criterio 6: el mensaje dice qué no se completó: {}",
+        "el mensaje dice qué no se completó: {}",
         failure.message
     );
     assert!(
         failure.message.contains("reintentar con setup"),
-        "criterio 6: y que basta reintentar con `setup`, que es la otra mitad del criterio: {}",
+        "y que basta reintentar con `setup`, que es la otra mitad del aviso: {}",
         failure.message
     );
     assert!(
         failure.message.contains(cause.message.as_str()),
-        "criterio 6: y el motivo de la causa viaja dentro, para que el `reason` anidado no se \
+        "y el motivo de la causa viaja dentro, para que el `reason` anidado no se \
          pierda: {}",
         failure.message
     );
@@ -602,7 +642,7 @@ fn criterion_6_setup_failure_keeps_install() {
         failure
             .message
             .contains(&sandbox.program_dir.display().to_string()),
-        "criterio 6: y dónde quedó instalado, que es lo que el usuario necesita saber: {}",
+        "y dónde quedó instalado, que es lo que el usuario necesita saber: {}",
         failure.message
     );
 
@@ -616,7 +656,7 @@ fn criterion_6_setup_failure_keeps_install() {
             .summary
             .iter()
             .any(|l| l.contains("Modelos:") && l.contains("failed")),
-        "criterio 6: el resumen final dice que los modelos fallaron: {:?}",
+        "el resumen final dice que los modelos fallaron: {:?}",
         outcome.summary
     );
     assert!(
@@ -624,7 +664,7 @@ fn criterion_6_setup_failure_keeps_install() {
             .summary
             .iter()
             .any(|l| l.contains("reintentar con setup")),
-        "criterio 6: y que basta reintentar con `setup`: {:?}",
+        "y que basta reintentar con `setup`: {:?}",
         outcome.summary
     );
     assert!(
@@ -632,7 +672,7 @@ fn criterion_6_setup_failure_keeps_install() {
             .summary
             .iter()
             .any(|l| l.contains("Causa:") && l.contains("network_error")),
-        "criterio 6: y nombra la causa, con el `reason` anidado: {:?}",
+        "y nombra la causa, con el `reason` anidado: {:?}",
         outcome.summary
     );
 
@@ -641,24 +681,24 @@ fn criterion_6_setup_failure_keeps_install() {
     assert_eq!(
         setup::pending(&ModelStore::new()).models,
         vec![UNSEEDED_PIN.to_string()],
-        "criterio 6: y `setup` lo ve pendiente otra vez"
+        "y `setup` lo ve pendiente otra vez"
     );
     std::env::remove_var("HF_ENDPOINT");
 }
 
-/// **La otra mitad del criterio 6: con `setup` correcto, la operación sale limpia.**
+/// **Con `setup` correcto, la operación sale limpia.**
 ///
-/// Es el requisito de que el arreglo del `reason` no haya cambiado el camino de éxito, y se
-/// demuestra con el estado que el motor devuelve cuando no hay nada que provisionar:
+/// El camino de éxito no lleva `reason`, y se demuestra con el estado que el motor
+/// devuelve cuando no hay nada que provisionar:
 /// `AlreadyProvisioned`, sin `reason` de contrato, que es lo que hace que el cableado salga
 /// por `Hecho` con código 0 en vez de por veredicto.
 ///
 /// El sandbox tiene los repos de la selección ya provisionados, así que no queda nada que
 /// descargar.
 #[test]
-fn criterion_6_successful_provisioning_has_no_reason() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c6-ok");
+fn successful_provisioning_has_no_reason() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("setup-ok");
     sandbox.seed_env();
     provision_selection(&sandbox);
 
@@ -666,12 +706,12 @@ fn criterion_6_successful_provisioning_has_no_reason() {
     let pending = setup::pending(&ModelStore::new());
     assert!(
         pending.is_empty(),
-        "criterio 6: con los repos ya provisionados no queda nada pendiente: {:?}",
+        "con los repos ya provisionados no queda nada pendiente: {:?}",
         pending
     );
 
-    let exe = sandbox.write_bundle(&sandbox.staging);
-    let runtime = support::runtime();
+    let exe = sandbox.write_bundle(&sandbox.staging());
+    let runtime = runtime::runtime();
     let outcome = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
@@ -681,18 +721,18 @@ fn criterion_6_successful_provisioning_has_no_reason() {
             },
             &Inert,
         ))
-        .expect("criterio 6: la instalación se completa");
+        .expect("la instalación se completa");
 
     assert_eq!(outcome.status, "installed");
     assert_eq!(
         outcome.models,
         ModelsState::AlreadyProvisioned,
-        "criterio 6: con `setup` correcto el estado es que no había nada que hacer"
+        "con `setup` correcto el estado es que no había nada que hacer"
     );
     assert_eq!(
         outcome.lifecycle_error(),
         None,
-        "criterio 6: y no hay `reason` de contrato, así que el cableado sale por `Done` con \
+        "y no hay `reason` de contrato, así que el cableado sale por `Done` con \
          código 0 y no por veredicto"
     );
     assert!(
@@ -700,14 +740,14 @@ fn criterion_6_successful_provisioning_has_no_reason() {
             .summary
             .iter()
             .any(|l| l.contains("Causa:") || l.contains("no se completó")),
-        "criterio 6: y el resumen no dice nada de un fallo que no ha habido: {:?}",
+        "y el resumen no dice nada de un fallo que no ha habido: {:?}",
         outcome.summary
     );
 }
 
-// ─── Criterio 17 ──────────────────────────────────────────────────────────────────
+// ─── Desinstalación completa ──────────────────────────────────────────────────────
 
-/// **Criterio 17.** `self uninstall --yes` elimina el programa, la integración de `PATH`
+/// `self uninstall --yes` elimina el programa, la integración de `PATH`
 /// y el estado, sin residuo dentro de las raíces de propiedad exclusiva.
 ///
 /// El ciclo es completo: una instalación **real** por el motor, no un recibo escrito a mano, y
@@ -722,11 +762,11 @@ fn criterion_6_successful_provisioning_has_no_reason() {
 /// `--no-modify-path` y se afirma que el recibo lo dice, que es lo que hace que la
 /// reversión sea un no-op en vez de una escritura.
 #[test]
-fn criterion_17_uninstall_leaves_no_residue() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c17");
+fn uninstall_leaves_no_residue() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("uninstall-residue");
     sandbox.seed_env();
-    let runtime = support::runtime();
+    let runtime = runtime::runtime();
     let options = install::Options {
         // En Unix la integración se integra de verdad; en Windows se apaga, y el motivo
         // está en el doc-comment.
@@ -744,40 +784,40 @@ fn criterion_17_uninstall_leaves_no_residue() {
     if cfg!(unix) {
         support::write(&profile, "# adjusting del usuario\n");
     }
-    let exe = sandbox.write_bundle(&sandbox.staging);
+    let exe = sandbox.write_bundle(&sandbox.staging());
     let installed = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
             &options,
             &Inert,
         ))
-        .expect("criterio 17: la instalación se completa");
+        .expect("la instalación se completa");
     assert_eq!(installed.status, "installed");
     sandbox.seed_state();
     let receipt = receipt::read_from(&sandbox.program_dir)
-        .expect("criterio 17: se lee el recibo")
-        .expect("criterio 17: el recibo existe");
+        .expect("se lee el recibo")
+        .expect("el recibo existe");
 
     if cfg!(unix) {
-        let text = std::fs::read_to_string(&profile).expect("criterio 17: el perfil se lee");
+        let text = std::fs::read_to_string(&profile).expect("el perfil se lee");
         assert!(
             text.starts_with("# adjusting del usuario\n"),
-            "criterio 17: el contenido propio está al principio y no se tocó: {text}"
+            "el contenido propio está al principio y no se tocó: {text}"
         );
         assert_eq!(
             text.matches(avi_lifecycle::path_unix::BLOCK_BEGIN).count(),
             1,
-            "criterio 17: y el bloque delimitado está al final: {text}"
+            "y el bloque delimitado está al final: {text}"
         );
         assert!(
             text.ends_with(avi_lifecycle::path_unix::BLOCK_END),
-            "criterio 17: con su marcador de cierre al final del archivo: {text}"
+            "con su marcador de cierre al final del archivo: {text}"
         );
     }
     if cfg!(windows) {
         assert!(
             !receipt.path_integration.modify_path,
-            "criterio 17: con `--no-modify-path` el recibo lo dice, y por eso no hay nada \
+            "con `--no-modify-path` el recibo lo dice, y por eso no hay nada \
              que revertir contra `HKCU\\Environment`"
         );
         assert!(receipt.path_integration.registry_entry.is_none());
@@ -794,42 +834,39 @@ fn criterion_17_uninstall_leaves_no_residue() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 17: la desinstalación se ejecuta");
+        .expect("la desinstalación se ejecuta");
 
-    assert_eq!(
-        outcome.status, "uninstalled",
-        "criterio 17: termina en éxito"
-    );
+    assert_eq!(outcome.status, "uninstalled", "termina en éxito");
     assert!(
         outcome.failed.is_empty(),
-        "criterio 17: nada falló: {:?}",
+        "nada falló: {:?}",
         outcome.failed
     );
     assert!(
         outcome.program_dir_removed,
-        "criterio 17: el directorio de programa se borró"
+        "el directorio de programa se borró"
     );
 
     // Residuo cero en las raíces de propiedad exclusiva.
     assert!(
-        !support::exists(&sandbox.program_dir),
-        "criterio 17: el directorio de programa no queda"
+        !inspect::exists(&sandbox.program_dir),
+        "el directorio de programa no queda"
     );
     assert!(
-        !support::exists(&sandbox.data_dir),
-        "criterio 17: la raíz de datos no queda, voces de fábrica incluidas: el programa \
-         ya no está para re-materializarlas"
+        !inspect::exists(&sandbox.data_dir),
+        "la raíz de datos no queda, voces de fábrica incluidas: el programa \
+         sin el programa nadie las re-materializa"
     );
     assert!(
-        !support::exists(&sandbox.models_dir),
-        "criterio 17: la raíz de modelos no queda"
+        !inspect::exists(&sandbox.models_dir),
+        "la raíz de modelos no queda"
     );
     assert_eq!(
         opt_entries(&sandbox),
         Vec::<String>::new(),
-        "criterio 17: el padre del programa queda vacío: ni staging, ni aparcados, ni bloqueo"
+        "el padre del programa queda vacío: ni staging, ni aparcados, ni bloqueo"
     );
-    let own_temps: Vec<String> = support::list(&sandbox.temp_root)
+    let own_temps: Vec<String> = listing::list(&sandbox.temp_root)
         .into_iter()
         .filter(|n| {
             avi_lifecycle::TEMP_PREFIXES
@@ -840,50 +877,47 @@ fn criterion_17_uninstall_leaves_no_residue() {
     assert_eq!(
         own_temps,
         Vec::<String>::new(),
-        "criterio 17: ningún temporal propio sobrevive"
+        "ningún temporal propio sobrevive"
     );
 
     if cfg!(unix) {
         let link = sandbox.bin_dir.join(avi_lifecycle::APP_NAME);
-        assert!(
-            !support::exists(&link),
-            "criterio 17: el enlace del `PATH` se retira"
-        );
-        assert!(outcome.path_reverted, "criterio 17: y el motor lo dice");
-        let text = std::fs::read_to_string(&profile).expect("criterio 17: el perfil se lee");
+        assert!(!inspect::exists(&link), "el enlace del `PATH` se retira");
+        assert!(outcome.path_reverted, "y el motor lo dice");
+        let text = std::fs::read_to_string(&profile).expect("el perfil se lee");
         assert_eq!(
             text, "# adjusting del usuario\n",
-            "criterio 17: el bloque delimitado se quita y el resto del perfil no se toca"
+            "el bloque delimitado se quita y el resto del perfil no se toca"
         );
     }
 }
 
-// ─── Criterio 18 ──────────────────────────────────────────────────────────────────
+// ─── Desinstalación con `--keep-data` ─────────────────────────────────────────────
 
-/// **Criterio 18.** `self uninstall --keep-data` conserva modelos, voces y habla
+/// `self uninstall --keep-data` conserva modelos, voces y habla
 /// sintetizada.
 ///
 /// Se afirma también el reverso, que es la mitad que suele olvidarse: la configuración,
 /// los logs y el pidfile **sí** caen, porque son estado de ejecución y no datos de
 /// usuario. Un `--keep-data` que conservara todo no sería una operación de desinstalación.
 #[test]
-fn criterion_18_keep_data_preserves_state() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c18");
+fn keep_data_preserves_state() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("keep-data");
     sandbox.seed_env();
     sandbox.seed_state();
     let receipt = sandbox.install_registered(PathIntegration::none());
 
     // Punto de partida: los tres conjuntos están.
-    assert!(support::exists(&sandbox.models_dir.join("xet")));
-    assert!(support::exists(
+    assert!(inspect::exists(&sandbox.models_dir.join("xet")));
+    assert!(inspect::exists(
         &sandbox.data_dir.join("voices").join("mine")
     ));
-    assert!(support::exists(
+    assert!(inspect::exists(
         &sandbox.data_dir.join("speech").join("default")
     ));
 
-    let outcome = support::runtime()
+    let outcome = runtime::runtime()
         .block_on(uninstall::run(
             &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &uninstall::Options {
@@ -894,45 +928,45 @@ fn criterion_18_keep_data_preserves_state() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 18: la desinstalación se ejecuta");
+        .expect("la desinstalación se ejecuta");
 
     assert_eq!(outcome.status, "uninstalled");
     assert!(
-        !support::exists(&sandbox.program_dir),
-        "criterio 18: el programa sí se va"
+        !inspect::exists(&sandbox.program_dir),
+        "el programa sí se va"
     );
 
     // Lo que se conserva.
     assert!(
-        support::exists(&sandbox.models_dir.join("xet"))
-            && support::exists(
-                &sandbox.models_dir.join(support::repo_dir(
+        inspect::exists(&sandbox.models_dir.join("xet"))
+            && inspect::exists(
+                &sandbox.models_dir.join(repo::repo_dir(
                     MODEL_REVISIONS
                         .iter()
                         .find(|pin| pin.name == "opus-mt-es-en")
-                        .expect("criterio 18: el modelo de traducción está fijado")
+                        .expect("el modelo de traducción está fijado")
                         .repo
                 ))
             ),
-        "criterio 18: los modelos se quedan: {:?}",
+        "los modelos se quedan: {:?}",
         outcome.preserved
     );
     for voice in ["default", "ryan", "mine"] {
         assert!(
-            support::exists(&sandbox.data_dir.join("voices").join(voice)),
-            "criterio 18: la voz {voice} se queda"
+            inspect::exists(&sandbox.data_dir.join("voices").join(voice)),
+            "la voz {voice} se queda"
         );
     }
     for voice in ["default", "mine"] {
         assert!(
-            support::exists(&sandbox.data_dir.join("speech").join(voice)),
-            "criterio 18: la locución de {voice} se queda"
+            inspect::exists(&sandbox.data_dir.join("speech").join(voice)),
+            "la locución de {voice} se queda"
         );
     }
     for reason in ["modelos", "voces", "habla"] {
         assert!(
             outcome.preserved.iter().any(|p| p.reason.contains(reason)),
-            "criterio 18: `{reason}` se anuncia como conservado, con su motivo: {:?}",
+            "`{reason}` se anuncia como conservado, con su motivo: {:?}",
             outcome.preserved
         );
     }
@@ -940,19 +974,19 @@ fn criterion_18_keep_data_preserves_state() {
     // Y lo que no.
     for state in ["config.json", "logs", "daemon.pid"] {
         assert!(
-            !support::exists(&sandbox.data_dir.join(state)),
-            "criterio 18: `{state}` sí se borra: es estado de ejecución, no datos"
+            !inspect::exists(&sandbox.data_dir.join(state)),
+            "`{state}` sí se borra: es estado de ejecución, no datos"
         );
     }
     assert!(
-        support::exists(&sandbox.home.join(".cargo")),
-        "criterio 18: y lo que no es del producto, por supuesto"
+        inspect::exists(&sandbox.home.join(".cargo")),
+        "y lo que no es del producto, por supuesto"
     );
 }
 
-// ─── Criterio 19 ──────────────────────────────────────────────────────────────────
+// ─── Confirmación sin terminal ────────────────────────────────────────────────────
 
-/// **Criterio 19.** Sin terminal y sin `--yes`, toda operación destructiva termina con
+/// Sin terminal y sin `--yes`, toda operación destructiva termina con
 /// `confirmation_required` y no borra nada.
 ///
 /// La ausencia de terminal **no se puede fingir en el proceso**: `uninstall::run` y
@@ -960,45 +994,45 @@ fn criterion_18_keep_data_preserves_state() {
 /// es un parámetro. Bajo una consola interactiva el stdin **es** una terminal, así que la
 /// prueba se ejecuta en un proceso hijo del mismo binario con la entrada redirigida a la
 /// null. El padre es el que exige que el hijo termine en éxito, así que el trabajo no se
-/// omite nunca, y las dos operaciones destructivas del alcance del ciclo se ejecutan en el
-/// hijo: `self uninstall` y `cleanup --all`.
+/// omite nunca, y las dos operaciones destructivas se ejecutan en el hijo:
+/// `self uninstall` y `cleanup --all`.
 ///
 /// La comparación de disco ignora el archivo de bloqueo a propósito: la recuperación lo
-/// crea en el
-/// paso 1, antes del plan y de la confirmación, y «no borra nada» no es «no escribe el
+/// crea antes del plan y de la confirmación, y «no borra nada» no es «no escribe el
 /// mecanismo que serializa las operaciones».
 #[test]
-fn criterion_19_no_tty_without_yes_refuses() {
-    let _guard = support::exclusively();
+fn no_tty_without_yes_refuses() {
+    let _guard = process_env::exclusively();
 
-    if support::is_child_without_terminal() {
+    if no_terminal::is_child_without_terminal() {
         child_without_terminal();
         return;
     }
 
-    let sandbox = Sandbox::new("c19");
+    let sandbox = Sandbox::new("no-terminal");
     sandbox.seed_env();
     sandbox.seed_state();
     sandbox.install_registered(PathIntegration::none());
     let before = state_without_lock(&sandbox);
 
-    let output = support::run_without_terminal("criterion_19_no_tty_without_yes_refuses", &sandbox);
+    let output =
+        no_terminal::run_without_terminal("no_tty_without_yes_refuses", "no-terminal", &sandbox);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     assert!(
         output.status.success(),
-        "criterio 19: el proceso sin terminal terminó con {:?}.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+        "el proceso sin terminal terminó con {:?}.\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
         output.status.code()
     );
 
-    let report_lines = support::read_report_lines(&output.stdout);
+    let report_lines = no_terminal::read_report_lines(&output.stdout);
     for operation in ["uninstall", "cleanup"] {
         let line = report_lines
             .iter()
             .find(|l| l.starts_with(operation))
             .unwrap_or_else(|| {
                 panic!(
-                    "criterio 19: `{operation}` no informó de su desenlace: {report_lines:?}\n\
+                    "`{operation}` no informó de su desenlace: {report_lines:?}\n\
                      --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
                 )
             });
@@ -1006,55 +1040,47 @@ fn criterion_19_no_tty_without_yes_refuses() {
             .trim_start_matches(operation)
             .trim_start_matches('=')
             .split_once('/')
-            .unwrap_or_else(|| panic!("criterio 19: informe mal formado: {line}"));
+            .unwrap_or_else(|| panic!("informe mal formado: {line}"));
         assert_eq!(
             reason, "confirmation_required",
-            "criterio 19: `{operation}` sin terminal y sin `--yes` se niega"
+            "`{operation}` sin terminal y sin `--yes` se niega"
         );
-        assert_eq!(
-            code, "2",
-            "criterio 19: `{operation}` devuelve el error de uso"
-        );
+        assert_eq!(code, "2", "`{operation}` devuelve el error de uso");
     }
 
     // Y nada se borró. El hijo lo afirma también; aquí se comprueba contra el disco.
-    assert_eq!(
-        state_without_lock(&sandbox),
-        before,
-        "criterio 19: no se borró nada"
+    assert_eq!(state_without_lock(&sandbox), before, "no se borró nada");
+    assert!(
+        inspect::exists(&sandbox.program_dir),
+        "el directorio de programa sigue"
     );
     assert!(
-        support::exists(&sandbox.program_dir),
-        "criterio 19: el directorio de programa sigue"
+        inspect::exists(&sandbox.data_dir.join("voices").join("mine")),
+        "el estado de usuario sigue"
     );
     assert!(
-        support::exists(&sandbox.data_dir.join("voices").join("mine")),
-        "criterio 19: el estado de usuario sigue"
-    );
-    assert!(
-        support::exists(&sandbox.models_dir.join("models--other--tool")),
-        "criterio 19: los modelos siguen"
+        inspect::exists(&sandbox.models_dir.join("models--other--tool")),
+        "los modelos siguen"
     );
 }
 
-/// Rollo del proceso hijo: ejecuta las dos operaciones destructivas del alcance sin
+/// Cuerpo del proceso hijo: ejecuta las dos operaciones destructivas sin
 /// terminal y sin `--yes`, y afirma que se niegan y que no borran nada.
 ///
 /// El sandbox se reconstruye desde la raíz y la etiqueta que le pasó el padre, y **no se
 /// borra al salir**: el padre tiene que encontrar ese mismo disco para comprobarlo.
 fn child_without_terminal() {
-    let root = PathBuf::from(
-        std::env::var(support::VAR_ROOT).expect("criterio 19: el hijo recibe la raíz"),
-    );
-    let tag = std::env::var(support::VAR_TAG).expect("criterio 19: el hijo recibe la etiqueta");
-    let sandbox = Sandbox::from_root(&tag, root, Models::Exclusive).borrowed();
+    let root = PathBuf::from(std::env::var(no_terminal::VAR_ROOT).expect("el hijo recibe la raíz"));
+    let tag = std::env::var(no_terminal::VAR_TAG).expect("el hijo recibe la etiqueta");
+    let mut sandbox = Sandbox::at(&tag, root, false);
+    sandbox.remove_on_drop = false;
     sandbox.seed_env();
     let before = state_without_lock(&sandbox);
 
     let receipt = receipt::read_from(&sandbox.program_dir)
-        .expect("criterio 19: el hijo lee el recibo")
-        .expect("criterio 19: el recibo existe");
-    let runtime = support::runtime();
+        .expect("el hijo lee el recibo")
+        .expect("el recibo existe");
+    let runtime = runtime::runtime();
 
     // 1. `self uninstall` sin `--yes`.
     let error = runtime
@@ -1064,17 +1090,17 @@ fn child_without_terminal() {
             &Now,
             &Inert,
         ))
-        .expect_err("criterio 19: `self uninstall` sin terminal y sin `--yes` se niega");
+        .expect_err("`self uninstall` sin terminal y sin `--yes` se niega");
     let failure = error
         .downcast_ref::<avi_lifecycle::LifecycleError>()
-        .expect("criterio 19: el fallo es un `LifecycleError`");
+        .expect("el fallo es un `LifecycleError`");
     assert_eq!(failure.reason, "confirmation_required");
     assert_eq!(
         ExitCode::from_reason(failure.reason).code(),
         2,
-        "criterio 19: error de uso"
+        "error de uso"
     );
-    support::report_line(&format!(
+    no_terminal::report_line(&format!(
         "uninstall={}/{}",
         failure.reason,
         ExitCode::from_reason(failure.reason).code()
@@ -1090,17 +1116,17 @@ fn child_without_terminal() {
             },
             &Inert,
         ))
-        .expect_err("criterio 19: `cleanup` sin terminal y sin `--yes` se niega");
+        .expect_err("`cleanup` sin terminal y sin `--yes` se niega");
     let failure = error
         .downcast_ref::<avi_lifecycle::LifecycleError>()
-        .expect("criterio 19: el fallo es un `LifecycleError`");
+        .expect("el fallo es un `LifecycleError`");
     assert_eq!(failure.reason, "confirmation_required");
     assert_eq!(
         ExitCode::from_reason(failure.reason).code(),
         2,
-        "criterio 19: error de uso"
+        "error de uso"
     );
-    support::report_line(&format!(
+    no_terminal::report_line(&format!(
         "cleanup={}/{}",
         failure.reason,
         ExitCode::from_reason(failure.reason).code()
@@ -1111,29 +1137,29 @@ fn child_without_terminal() {
     assert_eq!(
         state_without_lock(&sandbox),
         before,
-        "criterio 19: ninguna de las dos operaciones borró nada"
+        "ninguna de las dos operaciones borró nada"
     );
 }
 
-// ─── Criterio 20 ──────────────────────────────────────────────────────────────────
+// ─── `--dry-run` ──────────────────────────────────────────────────────────────────
 
-/// **Criterio 20.** `--dry-run` en cualquier operación destructiva lista rutas y tamaños
-/// sin modificar el disco.
+/// `--dry-run` en cualquier operación destructiva lista rutas y tamaños sin modificar el
+/// disco.
 ///
-/// Se afirma en las dos operaciones del alcance, y en cada una lo mismo: la lista tiene
+/// Se afirma en las dos operaciones destructivas, y en cada una lo mismo: la lista tiene
 /// **tamaños medidos** y no cero, el disco queda idéntico —comparado con `snapshot`,
 /// tamaños incluidos— y no aparece ni el archivo de bloqueo. Y se añade la comprobación
 /// que convierte la simulación en una promesa: la ejecución real borra exactamente lo que
 /// la simulación anunció. Un `--dry-run` que anunciara una lista y la ejecución borrara
-/// otra habría cumplido la letra del criterio y no su intención.
+/// otra habría cumplido la letra de la regla y no su intención.
 #[test]
-fn criterion_20_dry_run_does_not_touch_disk() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("c20");
+fn dry_run_does_not_touch_disk() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("dry-run");
     sandbox.seed_env();
     sandbox.seed_state();
     let receipt = sandbox.install_registered(PathIntegration::none());
-    let runtime = support::runtime();
+    let runtime = runtime::runtime();
 
     // ── `self uninstall --dry-run` ──────────────────────────────────────────────
     let before = sandbox.snapshot();
@@ -1151,7 +1177,7 @@ fn criterion_20_dry_run_does_not_touch_disk() {
     let entries = plan.entries();
     assert!(
         !entries.is_empty(),
-        "criterio 20: el plan de desinstalación no está vacío"
+        "el plan de desinstalación no está vacío"
     );
     // Los destinos de estado llevan el tamaño recursivo de la ruta, que es la cifra que
     // la tabla pide listar. Se afirma que **coincide con la medida** y no solo que es
@@ -1160,12 +1186,12 @@ fn criterion_20_dry_run_does_not_touch_disk() {
         assert_eq!(
             dest.size,
             cleanup::path_size(&dest.path),
-            "criterio 20: el tamaño de {} es el medido",
+            "el tamaño de {} es el medido",
             dest.path.display()
         );
         assert!(
             dest.size > 0,
-            "criterio 20: {} tiene contenido y así se anuncia",
+            "{} tiene contenido y así se anuncia",
             dest.path.display()
         );
     }
@@ -1175,20 +1201,20 @@ fn criterion_20_dry_run_does_not_touch_disk() {
     // plataforma decide.
     assert!(
         entries.iter().any(|e| e.path == sandbox.program_dir),
-        "criterio 20: el directorio de programa aparece en el plan: {:?}",
-        support::entries(&entries)
+        "el directorio de programa aparece en el plan: {:?}",
+        entry_paths(&entries)
     );
     assert!(
         plan.program_dir.as_ref().is_some_and(|e| e.size.is_some()),
-        "criterio 20: y con su tamaño medido"
+        "y con su tamaño medido"
     );
     assert!(
         cleanup::path_size(&sandbox.program_dir) > 0,
-        "criterio 20: el directorio de programa tiene contenido de verdad"
+        "el directorio de programa tiene contenido de verdad"
     );
     assert!(
         entries.iter().any(|e| e.path == sandbox.models_dir),
-        "criterio 20: y la raíz de modelos, que es el otro destino propio"
+        "y la raíz de modelos, que es el otro destino propio"
     );
 
     let simulation = runtime
@@ -1198,19 +1224,19 @@ fn criterion_20_dry_run_does_not_touch_disk() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 20: la simulación de desinstalación se ejecuta");
-    assert!(simulation.dry_run, "criterio 20: el desenlace lo dice");
-    let planned_removed: Vec<String> = support::entries(&entries);
+        .expect("la simulación de desinstalación se ejecuta");
+    assert!(simulation.dry_run, "el desenlace lo dice");
+    let planned_removed: Vec<String> = entry_paths(&entries);
     for path in &planned_removed {
         assert!(
             simulation.removed.contains(path),
-            "criterio 20: la simulación anuncia {path}"
+            "la simulación anuncia {path}"
         );
     }
     assert_eq!(
         sandbox.snapshot(),
         before,
-        "criterio 20: `self uninstall --dry-run` no modifica el disco, ni siquiera \
+        "`self uninstall --dry-run` no modifica el disco, ni siquiera \
          con el archivo de bloqueo"
     );
 
@@ -1221,32 +1247,29 @@ fn criterion_20_dry_run_does_not_touch_disk() {
         ..with_yes()
     };
     let plan = cleanup::plan(&sandbox.roots(), &options);
-    assert!(
-        !plan.is_empty(),
-        "criterio 20: el plan de limpieza no está vacío"
-    );
+    assert!(!plan.is_empty(), "el plan de limpieza no está vacío");
     for dest in &plan.targets {
         assert!(
             dest.size > 0,
-            "criterio 20: {} se lista con su tamaño medido",
+            "{} se lista con su tamaño medido",
             dest.path.display()
         );
     }
-    let announced = support::paths(&plan);
+    let announced = paths(&plan);
     let simulated = runtime
         .block_on(cleanup::run(&sandbox.roots(), &options, &Inert))
-        .expect("criterio 20: la simulación de limpieza se ejecuta");
+        .expect("la simulación de limpieza se ejecuta");
     assert!(simulated.dry_run);
     for path in &announced {
         assert!(
             simulated.removed.contains(path),
-            "criterio 20: la simulación de `cleanup` anuncia {path}"
+            "la simulación de `cleanup` anuncia {path}"
         );
     }
     assert_eq!(
         sandbox.snapshot(),
         before,
-        "criterio 20: `cleanup --dry-run` no modifica el disco"
+        "`cleanup --dry-run` no modifica el disco"
     );
 
     // ── Y ahora sí, la ejecución real borra lo mismo que se anunció ─────────────
@@ -1259,7 +1282,7 @@ fn criterion_20_dry_run_does_not_touch_disk() {
             },
             &Inert,
         ))
-        .expect("criterio 20: la limpieza real se ejecuta");
+        .expect("la limpieza real se ejecuta");
     let removed: Vec<String> = real
         .removed
         .iter()
@@ -1268,17 +1291,17 @@ fn criterion_20_dry_run_does_not_touch_disk() {
         .collect();
     assert_eq!(
         removed, announced,
-        "criterio 20: la ejecución borra exactamente lo que la simulación anunció"
+        "la ejecución borra exactamente lo que la simulación anunció"
     );
     assert!(
-        !support::exists(&sandbox.models_dir),
-        "criterio 20: y lo que se anunció borrado, está borrado"
+        !inspect::exists(&sandbox.models_dir),
+        "y lo que se anunció borrado, está borrado"
     );
 }
 
-// ─── Criterio 21 ──────────────────────────────────────────────────────────────────
+// ─── Desinstalación idempotente ───────────────────────────────────────────────────
 
-/// **Criterio 21.** Repetir `self uninstall` en un sistema ya limpio termina con éxito
+/// Repetir `self uninstall` en un sistema ya limpio termina con éxito
 /// (`not_installed`).
 ///
 /// Se cubren las dos formas de «ya limpio»: la repetición sobre el mismo sandbox, que es
@@ -1287,12 +1310,12 @@ fn criterion_20_dry_run_does_not_touch_disk() {
 /// no un error: `not_installed` es un desenlace y la tabla lo clasifica así para
 /// `self uninstall`.
 #[test]
-fn criterion_21_uninstall_is_idempotent() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
+fn uninstall_is_idempotent() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
 
     // ── Instalar, desinstalar, desinstalar ──────────────────────────────────────
-    let sandbox = Sandbox::new("c21");
+    let sandbox = Sandbox::new("idempotent");
     sandbox.seed_env();
     sandbox.seed_state();
     let receipt = sandbox.install_registered(PathIntegration::none());
@@ -1307,10 +1330,10 @@ fn criterion_21_uninstall_is_idempotent() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 21: la primera desinstalación se ejecuta");
+        .expect("la primera desinstalación se ejecuta");
     assert_eq!(first.status, "uninstalled");
     assert!(first.program_dir_removed);
-    assert!(first.failed.is_empty(), "criterio 21: {:?}", first.failed);
+    assert!(first.failed.is_empty(), "{:?}", first.failed);
 
     let after = sandbox.snapshot();
     let second = runtime
@@ -1323,29 +1346,29 @@ fn criterion_21_uninstall_is_idempotent() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 21: la segunda no es un error");
+        .expect("la segunda no es un error");
     assert_eq!(
         second.status, "not_installed",
-        "criterio 21: repetir sobre un sistema limpio termina en éxito con `not_installed`"
+        "repetir sobre un sistema limpio termina en éxito con `not_installed`"
     );
     assert!(
         second.removed.is_empty(),
-        "criterio 21: y no borra nada: {:?}",
+        "y no borra nada: {:?}",
         second.removed
     );
     assert_eq!(
         sandbox.snapshot(),
         after,
-        "criterio 21: el disco no cambia en la repetición"
+        "el disco no cambia en la repetición"
     );
 
     // ── Y el sistema en el que nunca se instaló ────────────────────────────────
     // El arnés **no** crea la raíz de datos ni la de modelos: en un sistema donde nunca
     // se instaló, esas raíces no existen, y es su ausencia la que hace que el desenlace
     // sea `not_installed` y no una desinstalación vacía.
-    let clean = Sandbox::new("c21-clean");
+    let clean = Sandbox::new("idempotent-clean");
     clean.seed_env();
-    assert!(!support::exists(&clean.program_dir));
+    assert!(!inspect::exists(&clean.program_dir));
     let uninstalled = runtime
         .block_on(uninstall::run(
             &clean.env_uninstall(None, Channel::Unmanaged),
@@ -1356,32 +1379,32 @@ fn criterion_21_uninstall_is_idempotent() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 21: en un sistema sin instalación tampoco es un error");
+        .expect("en un sistema sin instalación tampoco es un error");
     assert_eq!(
         uninstalled.status, "not_installed",
-        "criterio 21: sin recibo, sin estado y sin directorio de programa"
+        "sin recibo, sin estado y sin directorio de programa"
     );
     assert!(uninstalled.removed.is_empty());
     assert!(!uninstalled.program_dir_removed);
 }
 
-// ─── Criterio 22 ──────────────────────────────────────────────────────────────────
+// ─── Categorías de `cleanup` ──────────────────────────────────────────────────────
 
-/// **Criterio 22.** Cada categoría de `cleanup` borra solo su alcance, y `cleanup` sin
+/// Cada categoría de `cleanup` borra solo su alcance, y `cleanup` sin
 /// categoría termina con `usage_error`.
 ///
 /// Cada categoría se **ejecuta** en su propio sandbox, no solo se planifica: el defecto
-/// que el criterio vigila es que el plan y el ejecutor no coincidan, y un plan correcto
+/// que se vigila es que el plan y el ejecutor no coincidan, y un plan correcto
 /// con un ejecutor que borra de más solo se ve ejecutando. Y lo que sobrevive se afirma
 /// contra el disco, para que «borró solo su alcance» sea una afirmación sobre el resultado
 /// y no sobre una lista de control.
 #[test]
-fn criterion_22_cleanup_scope_and_usage_error() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
+fn cleanup_scope_and_usage_error() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
 
     // ── El gate: sin categoría, `usage_error` y nada borrado ────────────────────
-    let sandbox = Sandbox::new("c22-gate");
+    let sandbox = Sandbox::new("cleanup-gate");
     sandbox.seed_env();
     sandbox.seed_state();
     let before = sandbox.snapshot();
@@ -1394,25 +1417,25 @@ fn criterion_22_cleanup_scope_and_usage_error() {
             },
             &Inert,
         ))
-        .expect_err("criterio 22: sin categoría es un error");
+        .expect_err("sin categoría es un error");
     let failure = error
         .downcast_ref::<avi_lifecycle::LifecycleError>()
-        .expect("criterio 22: el fallo declara un `reason`");
+        .expect("el fallo declara un `reason`");
     assert_eq!(failure.reason, "usage_error");
     assert_eq!(
         ExitCode::from_reason(failure.reason).code(),
         2,
-        "criterio 22: error de uso"
+        "error de uso"
     );
     assert_eq!(
         sandbox.snapshot(),
         before,
-        "criterio 22: y no borra nada, ni siquiera el barrido transversal"
+        "y no borra nada, ni siquiera el barrido transversal"
     );
 
     // ── Cada categoría, en su sandbox ──────────────────────────────────────────
-    // `--model`: la raíz de modelos entera (D3) y nada del estado.
-    let s = Sandbox::new("c22-model");
+    // `--model`: la raíz de modelos entera y nada del estado.
+    let s = Sandbox::new("cleanup-model");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1424,25 +1447,22 @@ fn criterion_22_cleanup_scope_and_usage_error() {
             ..with_yes()
         },
     );
+    assert!(!inspect::exists(&s.models_dir), "--model borra los modelos");
     assert!(
-        !support::exists(&s.models_dir),
-        "criterio 22: --model borra los modelos"
+        inspect::exists(&s.data_dir.join("voices").join("mine")),
+        "--model no toca las voces"
     );
     assert!(
-        support::exists(&s.data_dir.join("voices").join("mine")),
-        "criterio 22: --model no toca las voces"
+        inspect::exists(&s.data_dir.join("config.json")),
+        "--model no toca la configuración"
     );
     assert!(
-        support::exists(&s.data_dir.join("config.json")),
-        "criterio 22: --model no toca la configuración"
-    );
-    assert!(
-        support::exists(&s.program_dir),
-        "criterio 22: --model nunca toca el programa: eso es `self uninstall`"
+        inspect::exists(&s.program_dir),
+        "--model nunca toca el programa: eso es `self uninstall`"
     );
 
     // `--voices`: las voces de usuario y el arrastre de su habla.
-    let s = Sandbox::new("c22-voices");
+    let s = Sandbox::new("cleanup-voices");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1455,32 +1475,32 @@ fn criterion_22_cleanup_scope_and_usage_error() {
         },
     );
     assert!(
-        !support::exists(&s.data_dir.join("voices").join("mine")),
-        "criterio 22: --voices borra la voz de usuario"
+        !inspect::exists(&s.data_dir.join("voices").join("mine")),
+        "--voices borra la voz de usuario"
     );
     assert!(
-        !support::exists(&s.data_dir.join("speech").join("mine")),
-        "criterio 22: y la locución que arrastra"
+        !inspect::exists(&s.data_dir.join("speech").join("mine")),
+        "y la locución que arrastra"
     );
     assert!(
-        support::exists(&s.data_dir.join("voices").join("default")),
-        "criterio 22: las voces de fábrica no se borran: van embebidas"
+        inspect::exists(&s.data_dir.join("voices").join("default")),
+        "las voces de fábrica no se borran: van embebidas"
     );
     assert!(
-        support::exists(&s.data_dir.join("speech").join("default")),
-        "criterio 22: ni sus locuciones"
+        inspect::exists(&s.data_dir.join("speech").join("default")),
+        "ni sus locuciones"
     );
     assert!(
-        support::exists(&s.models_dir),
-        "criterio 22: --voices no toca los modelos"
+        inspect::exists(&s.models_dir),
+        "--voices no toca los modelos"
     );
     assert!(
-        support::exists(&s.data_dir.join("config.json")),
-        "criterio 22: ni la configuración, que es de --all"
+        inspect::exists(&s.data_dir.join("config.json")),
+        "ni la configuración, que es de --all"
     );
 
     // `--synthetic-speech`: la raíz de habla entera, `default` incluida.
-    let s = Sandbox::new("c22-speech");
+    let s = Sandbox::new("cleanup-speech");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1493,20 +1513,17 @@ fn criterion_22_cleanup_scope_and_usage_error() {
         },
     );
     assert!(
-        !support::exists(&s.data_dir.join("speech")),
-        "criterio 22: --synthetic-speech borra la raíz de habla entera"
+        !inspect::exists(&s.data_dir.join("speech")),
+        "--synthetic-speech borra la raíz de habla entera"
     );
     assert!(
-        support::exists(&s.data_dir.join("voices").join("default")),
-        "criterio 22: no toca las voces"
+        inspect::exists(&s.data_dir.join("voices").join("default")),
+        "no toca las voces"
     );
-    assert!(
-        support::exists(&s.models_dir),
-        "criterio 22: no toca los modelos"
-    );
+    assert!(inspect::exists(&s.models_dir), "no toca los modelos");
 
     // `--all`: la unión más configuración, logs y estado del daemon; nunca el programa.
-    let s = Sandbox::new("c22-all");
+    let s = Sandbox::new("cleanup-all");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1518,30 +1535,27 @@ fn criterion_22_cleanup_scope_and_usage_error() {
             ..with_yes()
         },
     );
+    assert!(!inspect::exists(&s.models_dir), "--all borra los modelos");
     assert!(
-        !support::exists(&s.models_dir),
-        "criterio 22: --all borra los modelos"
+        !inspect::exists(&s.data_dir.join("voices").join("mine")),
+        "y las voces de usuario"
     );
-    assert!(
-        !support::exists(&s.data_dir.join("voices").join("mine")),
-        "criterio 22: y las voces de usuario"
-    );
-    assert!(!support::exists(&s.data_dir.join("speech")));
+    assert!(!inspect::exists(&s.data_dir.join("speech")));
     for state in ["config.json", "logs", "daemon.pid"] {
         assert!(
-            !support::exists(&s.data_dir.join(state)),
-            "criterio 22: --all borra {state}"
+            !inspect::exists(&s.data_dir.join(state)),
+            "--all borra {state}"
         );
     }
     assert!(
-        support::exists(&s.program_dir),
-        "criterio 22: --all nunca borra el programa"
+        inspect::exists(&s.program_dir),
+        "--all nunca borra el programa"
     );
 }
 
-// ─── Criterio 23 ──────────────────────────────────────────────────────────────────
+// ─── Recursos compartidos ─────────────────────────────────────────────────────────
 
-/// **Criterio 23.** Ninguna operación borra recursos compartidos: una caché HF
+/// Ninguna operación borra recursos compartidos: una caché HF
 /// configurada por el usuario —salvo los repos propios—, `~/.cargo` o sccache.
 ///
 /// La caché compartida se monta de verdad, con `HF_HUB_CACHE` y **sin** `AVI_CACHE_DIR`,
@@ -1549,51 +1563,49 @@ fn criterion_22_cleanup_scope_and_usage_error() {
 /// reubicación de la aplicación tiene precedencia y su presencia volvería exclusiva una
 /// raíz que el test declara compartida. Los casos se afirman contra el disco después de
 /// la operación, no contra el plan.
-///
-/// Rutas que se declaran aquí porque las usan todas las afirmaciones del caso 1 a 7.
 #[test]
-fn criterion_23_shared_resources_survive() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
+fn shared_resources_survive() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
 
     // ── La raíz compartida se reconoce como tal ────────────────────────────────
-    let sandbox = Sandbox::new_with("c23", Models::Shared);
+    let sandbox = Sandbox::new_shared("shared-cleanup");
     sandbox.seed_env();
     assert!(
         avi_store::models_root_is_shared(),
-        "criterio 23: `HF_HUB_CACHE` convierte la raíz en compartida"
+        "`HF_HUB_CACHE` convierte la raíz en compartida"
     );
     assert_eq!(
         avi_store::models_cache_dir(),
         sandbox.models_dir,
-        "criterio 23: y `avi-store` resuelve la misma ruta que el sandbox"
+        "y `avi-store` resuelve la misma ruta que el sandbox"
     );
     assert!(
         cleanup::is_shared_models_root(&sandbox.models_dir),
-        "criterio 23: el planificador la reconoce como compartida"
+        "el planificador la reconoce como compartida"
     );
     assert!(sandbox.roots().models_shared);
     assert_eq!(
         sandbox.models_dir.file_name(),
         Some(std::ffi::OsStr::new("hub")),
-        "criterio 23: y es el directorio `hub` del sandbox, no una ruta de la máquina"
+        "y es el directorio `hub` del sandbox, no una ruta de la máquina"
     );
 
     sandbox.seed_state();
-    let own_temp = sandbox.seed_own_temp();
+    let own_temp = seed_own_temp(&sandbox);
 
-    // Lo que R3 declara atribuible a la aplicación, y lo que nunca lo es.
+    // Lo que es atribuible a la aplicación, y lo que nunca lo es.
     let (repo, rev) = MODEL_REVISIONS
         .iter()
         .find(|pin| pin.name == "opus-mt-es-en")
         .map(|pin| (pin.repo.to_string(), pin.revision.to_string()))
-        .expect("criterio 23: el repo de traducción está fijado");
-    let our_repo = sandbox.models_dir.join(support::repo_dir(&repo));
+        .expect("el repo de traducción está fijado");
+    let our_repo = sandbox.models_dir.join(repo::repo_dir(&repo));
     let our_snapshot = our_repo.join("snapshots").join(&rev);
     let our_lock = sandbox
         .models_dir
         .join(".locks")
-        .join(support::repo_dir(&repo));
+        .join(repo::repo_dir(&repo));
     let foreign = sandbox.models_dir.join("models--other--tool");
     let foreign_lock = sandbox
         .models_dir
@@ -1616,123 +1628,112 @@ fn criterion_23_shared_resources_survive() {
         &sccache_temp,
     ] {
         assert!(
-            support::exists(required),
-            "criterio 23: el punto de partida existe: {}",
+            inspect::exists(required),
+            "el punto de partida existe: {}",
             required.display()
         );
     }
 
-    // ── Casos 1 a 7: `cleanup --model` ──────────────────────────────────────────
+    // ── `cleanup --model` ───────────────────────────────────────────────────────
     let options = cleanup::Options {
         model: true,
         ..with_yes()
     };
     let plan = cleanup::plan(&sandbox.roots(), &options);
-    let planned_removed = support::paths(&plan);
+    let planned_removed = paths(&plan);
 
-    for (case, our) in [("1", &our_repo), ("2", &our_lock)] {
+    for our in [&our_repo, &our_lock] {
         assert!(
             planned_removed.contains(&our.display().to_string()),
-            "criterio 23, caso {case}: lo atribuible a la aplicación está en el plan: {planned_removed:?}"
+            "lo atribuible a la aplicación está en el plan: {planned_removed:?}"
         );
     }
-    for (case, forbidden) in [
-        ("4", &xet),
-        ("5", &locks),
-        ("6", &foreign),
-        ("6", &sandbox.models_dir),
-    ] {
+    for forbidden in [&xet, &locks, &foreign, &sandbox.models_dir] {
         assert!(
             !planned_removed.contains(&forbidden.display().to_string()),
-            "criterio 23, caso {case}: {} no puede estar en el plan: {planned_removed:?}",
+            "{} no puede estar en el plan: {planned_removed:?}",
             forbidden.display()
         );
     }
-    // Caso 7: R3 no solo protege, el plan tiene que decirlo.
+    // La protección de lo compartido no es solo no borrarlo: el plan tiene que decirlo.
     for shared in [&sandbox.models_dir, &xet, &locks] {
         assert!(
             plan.preserved
                 .iter()
                 .any(|p| p.path.as_path() == shared.as_path()),
-            "criterio 23, caso 7: {} se anuncia como compartido: {:?}",
+            "{} se anuncia como compartido: {:?}",
             shared.display(),
             plan.preserved
         );
     }
-    // R1: ninguna ruta del plan sale de las raíces declaradas.
+    // Ninguna ruta del plan sale de las raíces declaradas.
     for dest in &plan.targets {
         assert!(
             dest.path.starts_with(&sandbox.models_dir),
-            "criterio 23: R1, el destino {} sale de la raíz de modelos",
+            "el destino {} sale de la raíz de modelos",
             dest.path.display()
         );
     }
 
     let real = runtime
         .block_on(cleanup::run(&sandbox.roots(), &options, &Inert))
-        .expect("criterio 23: `cleanup --model` se ejecuta");
-    assert!(real.failed.is_empty(), "criterio 23: {:?}", real.failed);
+        .expect("`cleanup --model` se ejecuta");
+    assert!(real.failed.is_empty(), "{:?}", real.failed);
     assert_eq!(
         real.removed, planned_removed,
-        "criterio 23: el plan y la ejecución coinciden bajo raíz compartida"
+        "el plan y la ejecución coinciden bajo raíz compartida"
     );
     assert!(
-        !support::exists(&our_snapshot) && !support::exists(&our_repo),
-        "criterio 23, caso 1: el repo propio sí se borró"
+        !inspect::exists(&our_snapshot) && !inspect::exists(&our_repo),
+        "el repo propio sí se borró"
     );
     assert!(
-        !support::exists(&our_lock),
-        "criterio 23, caso 2: el lock del repo propio sí se borró"
+        !inspect::exists(&our_lock),
+        "el lock del repo propio sí se borró"
+    );
+    assert!(inspect::exists(&xet), "`xet` sobrevive");
+    assert!(inspect::exists(&locks), "el `.locks` completo sobrevive");
+    assert!(
+        inspect::exists(&foreign_lock),
+        "el lock de otra herramienta sobrevive"
     );
     assert!(
-        support::exists(&xet),
-        "criterio 23, caso 4: `xet` sobrevive"
-    );
-    assert!(
-        support::exists(&locks),
-        "criterio 23, caso 5: el `.locks` completo sobrevive"
-    );
-    assert!(
-        support::exists(&foreign_lock),
-        "criterio 23, caso 5: el lock de otra herramienta sobrevive"
-    );
-    assert!(
-        support::exists(&foreign),
-        "criterio 23, caso 6: el repo de otra herramienta sobrevive"
+        inspect::exists(&foreign),
+        "el repo de otra herramienta sobrevive"
     );
     assert_eq!(
         std::fs::read_to_string(foreign.join("other.safetensors")).ok(),
         Some("ajeno".to_string()),
-        "criterio 23, caso 6: con su contenido intacto"
+        "con su contenido intacto"
     );
     assert!(
-        support::exists(&sandbox.models_dir),
-        "criterio 23, caso 6: la raíz compartida no se borra entera"
+        inspect::exists(&sandbox.models_dir),
+        "la raíz compartida no se borra entera"
     );
     assert!(
-        support::exists(&sandbox.data_dir.join("voices").join("mine")),
-        "criterio 23: `--model` no toca el estado de usuario"
+        inspect::exists(&sandbox.data_dir.join("voices").join("mine")),
+        "`--model` no toca el estado de usuario"
     );
-    // Caso 11: el barrido es selectivo por prefijo, no por directorio.
+    // El barrido es selectivo por prefijo, no por directorio.
     assert!(
-        !support::exists(&own_temp),
-        "criterio 23, caso 11: el temporal propio sí se barre, y se anuncia: {:?}",
+        !inspect::exists(&own_temp),
+        "el temporal propio sí se barre, y se anuncia: {:?}",
         real.swept
     );
     assert!(
         real.swept.contains(&own_temp.display().to_string()),
-        "criterio 23, caso 11: y aparece en la lista de barrido"
+        "y aparece en la lista de barrido"
     );
     for shared in [&cargo, &sccache_home, &sccache_temp] {
         assert!(
-            support::exists(shared),
-            "criterio 23, caso 11: {} sobrevive al barrido",
+            inspect::exists(shared),
+            "{} sobrevive al barrido",
             shared.display()
         );
     }
 
-    // ── Caso 8: `cleanup --all` ────────────────────────────────────────────────
-    let s = Sandbox::new_with("c23-all", Models::Shared);
+    // ── `cleanup --all` ─────────────────────────────────────────────────────────
+    let s = Sandbox::new_shared("shared-all");
     s.seed_env();
     s.seed_state();
     s.install_registered(PathIntegration::none());
@@ -1745,34 +1746,34 @@ fn criterion_23_shared_resources_survive() {
             },
             &Inert,
         ))
-        .expect("criterio 23, caso 8: `cleanup --all` se ejecuta");
+        .expect("`cleanup --all` se ejecuta");
     assert!(
-        support::exists(&s.models_dir.join("models--other--tool")),
-        "criterio 23, caso 8: `--all` no borra el repo ajeno"
+        inspect::exists(&s.models_dir.join("models--other--tool")),
+        "`--all` no borra el repo ajeno"
     );
     assert!(
-        support::exists(&s.models_dir.join("xet")) && support::exists(&s.models_dir.join(".locks")),
-        "criterio 23, caso 8: ni `xet` ni el `.locks` completo"
+        inspect::exists(&s.models_dir.join("xet")) && inspect::exists(&s.models_dir.join(".locks")),
+        "ni `xet` ni el `.locks` completo"
     );
     assert!(
-        support::exists(&s.models_dir),
-        "criterio 23, caso 8: la raíz compartida sigue ahí"
+        inspect::exists(&s.models_dir),
+        "la raíz compartida sigue ahí"
     );
     assert!(
-        !support::exists(&s.data_dir.join("voices").join("mine")),
-        "criterio 23, caso 8: y el estado de usuario, que sí es nuestro, sí cae"
+        !inspect::exists(&s.data_dir.join("voices").join("mine")),
+        "y el estado de usuario, que sí es nuestro, sí cae"
     );
     assert!(
-        support::exists(&s.program_dir),
-        "criterio 23, caso 8: el programa sobrevive a `cleanup`"
+        inspect::exists(&s.program_dir),
+        "el programa sobrevive a `cleanup`"
     );
     assert!(
-        support::exists(&s.home.join(".cargo")) && support::exists(&s.temp_root.join("sccache")),
-        "criterio 23, caso 11: y los compartidos del entorno"
+        inspect::exists(&s.home.join(".cargo")) && inspect::exists(&s.temp_root.join("sccache")),
+        "y los compartidos del entorno"
     );
 
-    // ── Casos 9 y 10: `self uninstall` ──────────────────────────────────────────
-    let s = Sandbox::new_with("c23-uninstall", Models::Shared);
+    // ── `self uninstall` ────────────────────────────────────────────────────────
+    let s = Sandbox::new_shared("shared-uninstall");
     s.seed_env();
     s.seed_state();
     let receipt = s.install_registered(PathIntegration::none());
@@ -1786,15 +1787,12 @@ fn criterion_23_shared_resources_survive() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 23, caso 9: la desinstalación se ejecuta");
+        .expect("la desinstalación se ejecuta");
     assert_eq!(outcome.status, "uninstalled");
+    assert!(!inspect::exists(&s.program_dir), "el programa sí se borra");
     assert!(
-        !support::exists(&s.program_dir),
-        "criterio 23, caso 9: el programa sí se borra"
-    );
-    assert!(
-        !support::exists(&s.data_dir),
-        "criterio 23, caso 9: y la raíz de datos, que es exclusiva"
+        !inspect::exists(&s.data_dir),
+        "y la raíz de datos, que es exclusiva"
     );
     for shared in [
         s.models_dir.join("models--other--tool"),
@@ -1805,8 +1803,8 @@ fn criterion_23_shared_resources_survive() {
         s.temp_root.join("sccache"),
     ] {
         assert!(
-            support::exists(&shared),
-            "criterio 23, caso 9: {} sobrevive a la desinstalación",
+            inspect::exists(&shared),
+            "{} sobrevive a la desinstalación",
             shared.display()
         );
     }
@@ -1815,12 +1813,12 @@ fn criterion_23_shared_resources_survive() {
             .preserved
             .iter()
             .any(|p| p.path == s.models_dir && p.reason.contains("compartid")),
-        "criterio 23, caso 9: y la caché compartida se anuncia como conservada: {:?}",
+        "y la caché compartida se anuncia como conservada: {:?}",
         outcome.preserved
     );
 
-    // Caso 10: `--keep-data` no toca la caché compartida en absoluto.
-    let s = Sandbox::new_with("c23-keep", Models::Shared);
+    // `--keep-data` no toca la caché compartida en absoluto.
+    let s = Sandbox::new_shared("shared-keep");
     s.seed_env();
     s.seed_state();
     let receipt = s.install_registered(PathIntegration::none());
@@ -1835,11 +1833,8 @@ fn criterion_23_shared_resources_survive() {
             &Now,
             &Inert,
         ))
-        .expect("criterio 23, caso 10: la desinstalación con `--keep-data` se ejecuta");
-    assert!(
-        !support::exists(&s.program_dir),
-        "criterio 23, caso 10: el programa sí se va"
-    );
+        .expect("la desinstalación con `--keep-data` se ejecuta");
+    assert!(!inspect::exists(&s.program_dir), "el programa sí se va");
     for shared in [
         s.models_dir
             .join("models--other--tool")
@@ -1851,8 +1846,8 @@ fn criterion_23_shared_resources_survive() {
             .join("lock"),
     ] {
         assert!(
-            support::exists(&shared),
-            "criterio 23, caso 10: `--keep-data` no toca la caché compartida: {}",
+            inspect::exists(&shared),
+            "`--keep-data` no toca la caché compartida: {}",
             shared.display()
         );
     }
@@ -1860,20 +1855,20 @@ fn criterion_23_shared_resources_survive() {
         s.snapshot()
             .iter()
             .any(|(path, _)| path.starts_with("hub/")),
-        "criterio 23, caso 10: y sigue con el contenido que tenía"
+        "y sigue con el contenido que tenía"
     );
 
     // ── El contraste: con raíz exclusiva, `xet` y `.locks` sí son nuestros ──────
-    let s = Sandbox::new("c23-exclusive");
+    let s = Sandbox::new("exclusive-models");
     s.seed_env();
     s.seed_state();
     assert!(
         !avi_store::models_root_is_shared(),
-        "criterio 23: sin `HF_HUB_CACHE` la raíz es exclusiva"
+        "sin `HF_HUB_CACHE` la raíz es exclusiva"
     );
     assert!(
         !cleanup::is_shared_models_root(&s.models_dir),
-        "criterio 23: y el planificador lo sabe"
+        "y el planificador lo sabe"
     );
     runtime
         .block_on(cleanup::run(
@@ -1884,10 +1879,10 @@ fn criterion_23_shared_resources_survive() {
             },
             &Inert,
         ))
-        .expect("criterio 23: `--model` sobre la raíz exclusiva se ejecuta");
+        .expect("`--model` sobre la raíz exclusiva se ejecuta");
     assert!(
-        !support::exists(&s.models_dir),
-        "criterio 23: en la raíz exclusiva `--model` borra el directorio entero, `xet` y \
+        !inspect::exists(&s.models_dir),
+        "en la raíz exclusiva `--model` borra el directorio entero, `xet` y \
          `.locks` incluidos, porque son de la aplicación"
     );
 }
@@ -1898,13 +1893,13 @@ fn criterion_23_shared_resources_survive() {
 /// `--dry-run` y sin `--yes` termina en éxito con `planned`, con el recibo del
 /// plan y sin modificar el disco.
 ///
-/// Sin la salida temprana del paso 3, `run` llegaría a la confirmación y, sin
-/// terminal y sin `--yes`, fallaría con `confirmation_required` (criterio 19);
-/// que esta llamada se ejecute ya demuestra que el simulacro no pregunta. El
-/// patrón de sandbox es el de las pruebas de simulacro del crate (criterio 20).
+/// Sin la salida temprana del simulacro, `run` llegaría a la confirmación y, sin
+/// terminal y sin `--yes`, fallaría con `confirmation_required`; que esta llamada se
+/// ejecute ya demuestra que el simulacro no pregunta. El patrón de sandbox es el de las
+/// pruebas de `--dry-run` de este archivo.
 #[test]
 fn uninstall_dry_run_needs_no_confirmation() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("dry-run-without-confirmation");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -1912,7 +1907,7 @@ fn uninstall_dry_run_needs_no_confirmation() {
     let before = sandbox.snapshot();
 
     // Sin `--yes` a propósito: si el simulacro preguntara, esto fallaría.
-    let outcome = support::runtime()
+    let outcome = runtime::runtime()
         .block_on(uninstall::run(
             &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &uninstall::Options {
@@ -1996,7 +1991,7 @@ fn uninstall_dry_run_needs_no_confirmation() {
 /// equivalencia se afirma en todas.
 #[test]
 fn uninstall_path_reverted_matches_the_real_run() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("revert-with-block");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -2016,7 +2011,7 @@ fn uninstall_path_reverted_matches_the_real_run() {
     };
     let without_block = {
         let mut integration = with_block.path_integration.clone();
-        // El recibo sigue diciendo que integró el `PATH`, pero ya no queda el bloque: es el
+        // El recibo dice que integró el `PATH`, pero el bloque no está en el disco: es el
         // caso en que la marca dice una cosa y el disco otra.
         integration.profile_blocks = Some(vec![sandbox.home.join("never-existed")]);
         let mut copy = with_block.clone();
@@ -2048,7 +2043,7 @@ fn uninstall_path_reverted_matches_the_real_run() {
 
     // Y ahora la ejecución real, con el bloque presente: el mismo `true`.
     let preview = preview_of(&with_block);
-    let real = support::runtime()
+    let real = runtime::runtime()
         .block_on(uninstall::run(
             &sandbox.env_uninstall(Some(&with_block), Channel::Script),
             &uninstall::Options {
@@ -2095,7 +2090,7 @@ fn uninstall_path_reverted_matches_the_real_run() {
             ..Default::default()
         },
     );
-    let real = support::runtime()
+    let real = runtime::runtime()
         .block_on(uninstall::run(
             &sandbox.env_uninstall(Some(&bare), Channel::Script),
             &uninstall::Options {
@@ -2113,26 +2108,27 @@ fn uninstall_path_reverted_matches_the_real_run() {
     );
 }
 
-/// El plan no promete un directorio de programa que R2 no permite borrar.
+/// El plan no promete un directorio de programa que la desinstalación no permite borrar.
 ///
-/// Con un directorio de programa que R2 rechaza —porque es `$HOME`, un ancestro suyo, una
-/// raíz de unidad o una raíz del producto—, la ejecución real lo conserva. El plan tenía
-/// su propia decisión —`program_dir.is_dir()`— y por eso lo listaba como destino:
-/// `self uninstall --dry-run` anunciaba un borrado que la operación no hace, que es la
-/// propiedad que un plan veraz no puede tener.
+/// Un directorio de programa no es borrable si es `$HOME`, un ancestro suyo, una raíz de
+/// unidad o una raíz del producto; en ese caso la ejecución real lo conserva. El plan debe
+/// tomar la misma decisión que la ejecución: si decidiera por su cuenta (por ejemplo con
+/// `program_dir.is_dir()`) listaría el directorio como destino, y `self uninstall
+/// --dry-run` anunciaría un borrado que la operación no hace, que es la propiedad que un
+/// plan veraz no puede tener.
 ///
 /// Se afirma en las dos ramas: el simulacro no lo lista como destino y la ejecución real
-/// tampoco lo borra, y las dos lo anuncian como `preserved` con el motivo de R2.
+/// tampoco lo borra, y las dos lo anuncian como `preserved` con el motivo del rechazo.
 ///
 /// El caso elegido es `$HOME` como directorio de programa, con el recibo escrito dentro:
-/// es la mitad negativa de R2 —la positiva sí se cumple— y además el que **no** cuelga de
-/// una raíz que el plan ya borra entera, así que el directorio sobrevive de verdad a la
-/// operación. Un directorio de programa dentro de la raíz de datos no serviría para
-/// afirmar la conservación: R1 borra esa raíz completa, con él dentro.
+/// es un caso de rechazo que además **no** cuelga de una raíz que el plan ya borra entera,
+/// así que el directorio sobrevive de verdad a la operación. Un directorio de programa
+/// dentro de la raíz de datos no serviría para afirmar la conservación: la desinstalación
+/// borra esa raíz completa, con él dentro.
 #[test]
-fn uninstall_plan_does_not_promise_what_r2_refuses() {
-    let _guard = support::exclusively();
-    let sandbox = Sandbox::new("program-rejected-by-r2");
+fn uninstall_plan_does_not_promise_a_program_dir_it_refuses_to_delete() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("program-rejected");
     sandbox.seed_env();
     sandbox.seed_state();
     let program_dir = sandbox.home.clone();
@@ -2153,7 +2149,7 @@ fn uninstall_plan_does_not_promise_what_r2_refuses() {
     let roots = sandbox.roots();
     assert!(
         !uninstall::program_dir_is_removable(&roots, &program_dir),
-        "R2 rechaza este directorio de programa, que es la premisa de la prueba"
+        "este directorio de programa no es borrable, que es la premisa de la prueba"
     );
 
     let options = uninstall::Options {
@@ -2172,8 +2168,8 @@ fn uninstall_plan_does_not_promise_what_r2_refuses() {
     assert!(
         plan.preserved
             .iter()
-            .any(|p| p.path == program_dir && p.reason == uninstall::R2_PROGRAM_DIR_REASON),
-        "el plan lo conserva con el motivo de R2, que es lo que hace la ejecución real: \
+            .any(|p| p.path == program_dir && p.reason == uninstall::PROGRAM_DIR_PRESERVED_REASON),
+        "el plan lo conserva con el motivo del rechazo, que es lo que hace la ejecución real: \
          {:?}",
         plan.preserved
     );
@@ -2195,8 +2191,8 @@ fn uninstall_plan_does_not_promise_what_r2_refuses() {
         "y no anuncia el borrado que no ocurriría"
     );
 
-    // Y la ejecución real lo conserva, con el mismo `status` de siempre.
-    let real = support::runtime()
+    // Y la ejecución real lo conserva, con el `status` habitual.
+    let real = runtime::runtime()
         .block_on(uninstall::run(
             &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &options,
@@ -2206,20 +2202,20 @@ fn uninstall_plan_does_not_promise_what_r2_refuses() {
         .expect("la desinstalación se ejecuta");
     assert_eq!(
         real.status, "uninstalled",
-        "la exclusión por R2 es preservación deliberada, no un fallo"
+        "la exclusión del directorio de programa es preservación deliberada, no un fallo"
     );
     assert!(
         !real.program_dir_removed && real.program_dir_kept.is_none(),
-        "y no cambia el significado de los dos desenlaces del paso 8"
+        "y ni `program_dir_removed` ni `program_dir_kept` describen esta conservación"
     );
     assert!(
-        support::exists(&program_dir),
-        "el directorio de programa sigue en su sitio, como antes"
+        inspect::exists(&program_dir),
+        "el directorio de programa sigue en su sitio"
     );
     assert!(
         real.preserved
             .iter()
-            .any(|p| p.path == program_dir && p.reason == uninstall::R2_PROGRAM_DIR_REASON),
+            .any(|p| p.path == program_dir && p.reason == uninstall::PROGRAM_DIR_PRESERVED_REASON),
         "la ejecución real también lo anuncia como conservado"
     );
     assert!(
@@ -2235,23 +2231,23 @@ fn uninstall_plan_does_not_promise_what_r2_refuses() {
     );
 }
 
-/// Un directorio de programa que R2 rechaza por vivir dentro de una raíz del
+/// Un directorio de programa que no es borrable por vivir dentro de una raíz del
 /// producto **no** se anuncia como conservado cuando esa raíz es un destino del
 /// plan, porque la operación sí se lo lleva.
 ///
-/// R2 dice «no lo borro yo», no «no se borra». Sin esta distinción, con
+/// «No lo borro yo» no es «no se borra». Sin esta distinción, con
 /// `AVI_INSTALL_DIR` dentro de la raíz de datos —una disposición posible— el
-/// comando anunciaba «no se tocará» sobre un directorio que el paso 6 borraba con
-/// la raíz entera: la misma afirmación falsa que el envelope del plan y el
+/// comando anunciaría «no se tocará» sobre un directorio que el borrado de la
+/// raíz entera se lleva: la misma afirmación falsa que el envelope del plan y el
 /// resumen en texto tienen que evitar.
 #[test]
 fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("program-inside-root");
     sandbox.seed_env();
     sandbox.seed_state();
-    // Directorio de programa dentro de la raíz de datos: R2 lo rechaza porque
-    // cuelga de una raíz del producto, y R1 borra esa raíz completa.
+    // Directorio de programa dentro de la raíz de datos: no es borrable por sí mismo
+    // porque cuelga de una raíz del producto, y la desinstalación borra esa raíz completa.
     let program_dir = sandbox.data_dir.join("bin").join("ai-voice-interconnector");
     std::fs::create_dir_all(&program_dir).expect("se crea el directorio anidado");
     let receipt = InstallReceipt::new(
@@ -2271,7 +2267,7 @@ fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
     let roots = sandbox.roots();
     assert!(
         !uninstall::program_dir_is_removable(&roots, &program_dir),
-        "R2 rechaza este directorio de programa, que es la premisa de la prueba"
+        "este directorio de programa no es borrable, que es la premisa de la prueba"
     );
 
     let options = uninstall::Options {
@@ -2298,7 +2294,7 @@ fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
         &sandbox.home,
         &options,
     );
-    let real = support::runtime()
+    let real = runtime::runtime()
         .block_on(uninstall::run(
             &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &options,
@@ -2315,7 +2311,7 @@ fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
         "la ejecución real tampoco lo anuncia como conservado"
     );
     assert!(
-        !support::exists(&program_dir),
+        !inspect::exists(&program_dir),
         "y el directorio desaparece con la raíz, como dice el plan"
     );
 }

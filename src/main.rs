@@ -2545,7 +2545,8 @@ async fn handle_cleanup(
             "status": outcome.status,
             "reason": Value::Null,
             "removed": outcome.removed,
-            "planned": outcome.planned
+            "planned": outcome.planned,
+            "unreadable": outcome.unreadable
         }));
     } else if outcome.status == "cancelled" {
         println!("Cancelado.");
@@ -3320,6 +3321,9 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     } else if failed {
         for check in report.checks.iter().filter(|c| !c.ok) {
             eprintln!("  ✗ {}: {}", check.name, check.detail);
+        }
+        for path in &report.pending.unreadable {
+            eprintln!("  no se puede listar {path}");
         }
         eprintln!(
             "Diagnóstico: {} comprobación(es) fallan.",

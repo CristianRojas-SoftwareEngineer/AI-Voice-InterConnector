@@ -1,10 +1,9 @@
 //! `self install`: instalar, reparar y rechazar por bundle incompleto.
 //!
 //! Son los tres modos de la operación, distinguidos por la posición del ejecutable que
-//! se invoca, y los doce pasos de su flujo en orden. Ninguna de las dos cosas es nueva
-//! en el producto: el instalador heredado no sabe qué debe haber alrededor del
-//! binario, no sabe qué se integró en el `PATH`, no deja recibo, no repara una
-//! instalación existente y no distingue ejecutar desde un bundle extraído a mano de
+//! se invoca, y los doce pasos de su flujo en orden. La operación sabe qué debe haber
+//! alrededor del binario, registra qué se integró en el `PATH`, deja recibo, repara una
+//! instalación existente y distingue ejecutar desde un bundle extraído a mano de
 //! ejecutar desde la propia instalación.
 //!
 //! **El canal del recibo** es `script` cuando el recibo se crea por primera vez, y el
@@ -12,15 +11,15 @@
 //! reparar no reescriba el canal. `cargo xtask install` empaqueta un staging hermano
 //! y delega aquí, igual que cualquier otra instalación.
 //!
-//! **El `PATH` se modifica en Unix por decisión cerrada D2**, se anuncia en el
+//! **El `PATH` se modifica en Unix**, se anuncia en el
 //! resumen y se revierte exactamente al desinstalar; `--no-modify-path` lo
 //! desactiva. Lo que se registra en el recibo es lo que se hizo de verdad, no lo que
 //! se pensaba hacer: si el directorio del enlace ya estaba en el `PATH`, el recibo
 //! dice que no se integró nada y `self uninstall` no toca el perfil.
 //!
 //! **El control de procesos entra por parámetro**, como en `daemon_stop`: el motor no
-//! puede matar un árbol sin arrastrar `avi-daemon` y `avi-tts`. En T16 el binario
-//! pasa el suyo, que son las funciones que ya endurecieron el protocolo.
+//! puede matar un árbol sin arrastrar `avi-daemon` y `avi-tts`. El binario pasa el
+//! suyo, que son las funciones que implementan el protocolo.
 
 use crate::channel::Channel;
 use crate::daemon_stop::{self, ProcessControl, StopOutcome};
@@ -108,7 +107,7 @@ pub struct Env {
     /// Parámetro por lo mismo que en `daemon_stop::stop`.
     pub daemon_addr: String,
     /// Origen del bundle para el recibo. El bootstrap lo estampa en la variable que
-    /// se lee aquí; vacío para una reparación o el canal `dev`.
+    /// se lee aquí; vacío para una reparación.
     pub source: Option<String>,
 }
 
@@ -151,7 +150,7 @@ impl Env {
             data_dir: crate::data_dir(),
             models_dir: crate::models_cache_dir(),
             temp_root: std::env::temp_dir(),
-            home: home_dir(),
+            home: home_dir()?,
             path_env: std::env::var("PATH").unwrap_or_default(),
             shell: path_unix::Shell::from_env(std::env::var("SHELL").ok().as_deref()),
             zdotdir: std::env::var("ZDOTDIR").ok().map(PathBuf::from),
@@ -178,12 +177,20 @@ fn registry_subkey_default() -> String {
     String::new()
 }
 
-/// `$HOME` del usuario.
-fn home_dir() -> PathBuf {
+/// `$HOME` del usuario. Sin `HOME` ni `USERPROFILE` es un error: no hay directorio
+/// de usuario sobre el que decidir perfiles ni rutas protegidas.
+fn home_dir() -> Result<PathBuf, LifecycleError> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+        .map_err(|_| {
+            LifecycleError::new(
+                "self_install_failed",
+                "no se pudo determinar el directorio del usuario: ni HOME ni USERPROFILE \
+                 están definidas"
+                    .to_string(),
+            )
+        })
 }
 
 /// Opciones de `self install`. El parseo se queda en el binario, que es quien ve
@@ -198,7 +205,7 @@ pub struct Options {
     /// `--no-modify-path`: no toca ningún perfil ni el registro.
     pub no_modify_path: bool,
     /// `--force`: resuelve un `path_conflict` del enlace simbólico. No es el
-    /// `--force` de `uninstall`, que desaparece en T16.
+    /// `--force` de `uninstall`.
     pub force: bool,
 }
 
@@ -258,7 +265,7 @@ pub struct Outcome {
     /// Resumen final, paso 12.
     pub summary: Vec<String>,
     /// Resumen previo, paso 4, el que se mostró **antes** de confirmar. Se
-    /// conserva porque es el que anuncia los cambios y el que el motor de T16 compone
+    /// conserva porque es el que anuncia los cambios y con el que el binario compone
     /// el envelope; el final es el estado.
     pub summary_before: Vec<String>,
     /// Estado de la integración del `PATH`, tal como queda en el recibo y como lo
@@ -379,16 +386,25 @@ pub fn detect_mode(exe: &Path, program_dir: &Path) -> Mode {
 /// Devuelve `Ordering` y no un booleano porque el plan necesita distinguir los tres
 /// casos: instalar una versión menor es una degradación y se confirma como operación
 /// destructiva (paso 4).
-pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
-    let numbers = |v: &str| -> Vec<u64> {
+///
+/// Una componente que no es un número (o una versión vacía) es `usage_error`: no se
+/// sustituye por cero, porque eso compararía como iguales dos versiones distintas.
+pub fn compare_versions(a: &str, b: &str) -> Result<std::cmp::Ordering, LifecycleError> {
+    let numbers = |v: &str| -> Result<Vec<u64>, LifecycleError> {
         v.split(['-', '+'])
             .next()
             .unwrap_or_default()
             .split('.')
-            .map(|p| p.parse().unwrap_or(0))
+            .map(|p| {
+                p.parse().map_err(|_| {
+                    LifecycleError::usage_error(format!(
+                        "la versión '{v}' tiene la componente '{p}', que no es un número"
+                    ))
+                })
+            })
             .collect()
     };
-    let (left, right) = (numbers(a), numbers(b));
+    let (left, right) = (numbers(a)?, numbers(b)?);
     for i in 0..left.len().max(right.len()) {
         let ord = left
             .get(i)
@@ -396,10 +412,10 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
             .unwrap_or(0)
             .cmp(&right.get(i).copied().unwrap_or(0));
         if ord != std::cmp::Ordering::Equal {
-            return ord;
+            return Ok(ord);
         }
     }
-    std::cmp::Ordering::Equal
+    Ok(std::cmp::Ordering::Equal)
 }
 
 /// Directorio donde vive el bundle alrededor del ejecutable, que es el que valida
@@ -449,14 +465,15 @@ pub async fn install(
         .map_err(|e| LifecycleError::new("self_install_failed", e.to_string()))?;
     let replaces = previous.as_ref().map(|r| r.version.clone());
     // Una instalación ajena solo genera aviso de coexistencia y precedencia: no
-    // bloquea, y es T14 quien produce `externally_managed` para Homebrew.
+    // bloquea; `externally_managed` para Homebrew lo produce el canal.
     let foreign_in_path = previous
         .as_ref()
         .filter(|r| r.install_dir != env.program_dir)
         .map(|r| r.install_dir.clone());
-    let degradation = previous
-        .as_ref()
-        .is_some_and(|r| compare_versions(&env.version, &r.version) == std::cmp::Ordering::Less);
+    let degradation = match &previous {
+        Some(r) => compare_versions(&env.version, &r.version)? == std::cmp::Ordering::Less,
+        None => false,
+    };
 
     // ── Paso 4. Resumen previo y confirmación ─────────────────────────────────
     let pending = pending_models();
@@ -623,26 +640,23 @@ pub fn plan_path(env: &Env, options: &Options) -> PathPlan {
     if options.no_modify_path {
         return PathPlan::default();
     }
-    #[allow(unused_mut)]
-    let mut plan = PathPlan::default();
-    #[cfg(windows)]
+    let block_file = if cfg!(unix) && path_unix::needs_block(&env.path_env, &env.bin_dir, &env.home)
     {
-        plan.registry =
-            crate::path_windows::plan_integrate(env.registry_path.as_ref(), &env.bin_dir).changed;
-    }
-    #[cfg(unix)]
-    {
-        plan.symlink = !matches!(env.link_state, path_unix::Existing::Ours(_));
-    }
-    if cfg!(unix) && path_unix::needs_block(&env.path_env, &env.bin_dir, &env.home) {
-        plan.block_file =
-            path_unix::profile_targets(&env.home, env.zdotdir.as_deref(), env.shell, |p| {
-                p.exists()
-            })
+        path_unix::profile_targets(&env.home, env.zdotdir.as_deref(), env.shell, |p| p.exists())
             .into_iter()
-            .next();
+            .next()
+    } else {
+        None
+    };
+    PathPlan {
+        #[cfg(windows)]
+        registry: crate::path_windows::plan_integrate(env.registry_path.as_ref(), &env.bin_dir)
+            .changed,
+        #[cfg(unix)]
+        symlink: !matches!(env.link_state, path_unix::Existing::Ours(_)),
+        block_file,
+        ..PathPlan::default()
     }
-    plan
 }
 
 /// Aplica la integración de `PATH` y devuelve **qué queda registrado en el recibo** y
@@ -707,7 +721,7 @@ pub fn apply_path(
 }
 
 /// Detecta una instalación de Homebrew por la ruta del ejecutable. Lo usa el
-/// resumen previo para el aviso de coexistencia; `externally_managed` es de T14.
+/// resumen previo para el aviso de coexistencia; `externally_managed` lo produce el canal.
 pub fn foreign_installation(exe: &Path) -> Option<PathBuf> {
     crate::channel::is_homebrew_path(exe).then(|| bundle_dir(exe))
 }
@@ -880,6 +894,9 @@ fn compose_summary(
 /// Resumen final, paso 12: versión, rutas, estado del `PATH` —con la
 /// indicación de abrir una terminal nueva cuando corresponda— y estado de los
 /// modelos.
+// Cada parámetro es un hecho distinto observado en un paso anterior y una línea del
+// resumen depende de él; agruparlos en una estructura de un solo uso solo movería los
+// mismos campos de sitio.
 #[allow(clippy::too_many_arguments)]
 fn final_summary(
     env: &Env,
@@ -912,8 +929,8 @@ fn final_summary(
     ];
     // El resumen final lleva **una** línea del `PATH`, y es la del **estado**, no la del
     // plan. Copiar aquí la línea del resumen previo —que dice lo que se va a hacer— y
-    // añadir debajo la del estado imprimía las dos, y en una installation correcta el
-    // usuario leía "se añadirá X" y "se añadió X" en el mismo bloque, que parece una
+    // añadir debajo la del estado imprimiría las dos, y en una instalación correcta el
+    // usuario leería "se añadirá X" y "se añadió X" en el mismo bloque, que parece una
     // contradicción y no es más que el mismo hecho contado dos veces.
     //
     // El estado tiene tres casos y un cuarto que no ocurre: "se añadió" solo cuando esta
@@ -1041,7 +1058,7 @@ mod tests {
              mayúsculas, `trim`— y no por componentes de `Path`, así que no resuelve \
              `.` ni `..`. No lo resuelve nadie: la ruta del ejecutable la da el \
              sistema, ya normalizada, y la del directorio de programa viene de una \
-             variable de reubicación. Cambiarlo sería tocar `avi-store`, que es de T1."
+             variable de reubicación. Cambiarlo sería tocar `avi-store`."
         );
         // El prefijo verbatim de Windows lo quita `canonical_path_key`, que es la
         // fuente única de la semántica de comparación de rutas. Antes lo hacía este
@@ -1101,26 +1118,32 @@ mod tests {
     #[test]
     fn version_ordering_separates_downgrade() {
         use std::cmp::Ordering;
-        assert_eq!(compare_versions("0.24.0", "0.23.1"), Ordering::Greater);
+        let cmp = |a: &str, b: &str| compare_versions(a, b).expect("versiones numéricas");
+        assert_eq!(cmp("0.24.0", "0.23.1"), Ordering::Greater);
+        assert_eq!(cmp("0.23.1", "0.24.0"), Ordering::Less, "degradación");
+        assert_eq!(cmp("0.24.0", "0.24.0"), Ordering::Equal);
         assert_eq!(
-            compare_versions("0.23.1", "0.24.0"),
-            Ordering::Less,
-            "degradación"
-        );
-        assert_eq!(compare_versions("0.24.0", "0.24.0"), Ordering::Equal);
-        assert_eq!(
-            compare_versions("0.24.0", "0.24.0-rc.1"),
+            cmp("0.24.0", "0.24.0-rc.1"),
             Ordering::Equal,
             "el sufijo de precompilado no cuenta"
         );
-        assert_eq!(compare_versions("1.0.0", "0.99.99"), Ordering::Greater);
+        assert_eq!(cmp("1.0.0", "0.99.99"), Ordering::Greater);
         assert_eq!(
-            compare_versions("0.24", "0.24.0"),
+            cmp("0.24", "0.24.0"),
             Ordering::Equal,
             "un componente falta es 0"
         );
-        assert_eq!(compare_versions("0.24.1", "0.24"), Ordering::Greater);
-        assert_eq!(compare_versions("", "0.0.0"), Ordering::Equal);
+        assert_eq!(cmp("0.24.1", "0.24"), Ordering::Greater);
+    }
+
+    /// Una componente que no es un número, o una versión vacía, es `usage_error` y
+    /// no se compara como cero.
+    #[test]
+    fn version_comparison_rejects_non_numeric_components() {
+        for (a, b) in [("0.x.0", "0.0.0"), ("0.0.0", "0.24.beta"), ("", "0.0.0")] {
+            let error = compare_versions(a, b).expect_err("componente no numérica");
+            assert_eq!(error.reason, "usage_error", "{a} contra {b}");
+        }
     }
 
     /// El recibo registra el origen de la instalación anterior, no el de la

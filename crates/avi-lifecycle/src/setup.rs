@@ -19,9 +19,10 @@
 //! el motor, habría dos sitios decidiendo lo mismo.
 //!
 //! **La purga de `--force-update` pasa por el plan de borrado de modelos**, no por
-//! las purgas ad hoc del binario. Es el cambio de fondo de T13: `setup` y
-//! `cleanup --model` obedecen las mismas reglas de propiedad —R3 entre ellas— y la
-//! misma confirmación destructiva.
+//! las purgas ad hoc del binario. `setup` y
+//! `cleanup --model` obedecen las mismas reglas de propiedad —nunca se borra en una
+//! raíz compartida más que lo atribuible a la aplicación— y la misma confirmación
+//! destructiva.
 
 use crate::LifecycleError;
 use std::path::Path;
@@ -127,7 +128,7 @@ pub fn purge(store: &avi_store::ModelStore) -> PurgeOutcome {
         }
     }
     // `xet` y los locks solo se tocan en la raíz exclusiva, que es exactamente lo
-    // que `remove_xet_cache` y `remove_hf_locks` ya garantizan bajo R3. La purga
+    // que `remove_xet_cache` y `remove_hf_locks` ya garantizan. La purga
     // no reimplementa esa regla: la usa.
     match avi_store::ModelStore::remove_xet_cache() {
         Ok(true) => outcome.xet = true,
@@ -145,7 +146,7 @@ pub fn purge(store: &avi_store::ModelStore) -> PurgeOutcome {
 pub struct PurgeOutcome {
     /// Repos cuyos snapshots se borraron de verdad.
     pub snapshots: Vec<String>,
-    /// La caché `xet` se borró. `false` en raíz compartida, donde R3 lo prohíbe.
+    /// La caché `xet` se borró. `false` en raíz compartida, donde está prohibido.
     pub xet: bool,
     /// Lo que no se pudo borrar, con su motivo.
     pub failures: Vec<(String, String)>,
@@ -181,7 +182,7 @@ impl PruneOutcome {
 ///
 /// Solo toca directorios de snapshots de repos propios, que son atribuibles a
 /// la aplicación: procede tanto en la raíz exclusiva como en la compartida
-/// (R3), y nunca toca `xet` ni `.locks`. Idempotente: una
+/// y nunca toca `xet` ni `.locks`. Idempotente: una
 /// segunda pasada no encuentra nada que borrar.
 ///
 /// La confirmación de tamaño y `called_from_lifecycle` siguen vigentes: la
@@ -475,13 +476,12 @@ pub(crate) mod tests {
             .join(revision);
         write_file(&dir.join("config.json"), "{}");
         write_file(&dir.join("model.txt"), "pesos");
-        for (model, patterns) in avi_store::MODEL_FILE_PATTERNS {
+        // Se crean los patrones de todos los modelos aunque cada uno solo aplique a su
+        // repo: las pruebas crean snapshots de un repo cada vez.
+        for (_, patterns) in avi_store::MODEL_FILE_PATTERNS {
             for pattern in *patterns {
                 write_file(&dir.join(pattern), "artefacto");
             }
-            // El patrón de un modelo solo aplica a su repo; se acepta el sobredibujado
-            // porque las pruebas crean snapshots de un repo cada vez.
-            let _ = model;
         }
         dir
     }
@@ -541,7 +541,7 @@ pub(crate) mod tests {
         assert_eq!(pending(&store), after);
     }
 
-    /// Sin el modelo Base provisionado, `pending` lo reporta: ya no es opcional.
+    /// Sin el modelo Base provisionado, `pending` lo reporta: no es opcional.
     #[test]
     fn missing_cloning_model_is_pending() {
         let (_guard, _root) = cache_relocated("setup-cloning-pending");
@@ -683,7 +683,7 @@ pub(crate) mod tests {
     }
 
     /// En raíz compartida la poda solo toca los snapshots propios: `xet` y
-    /// `.locks` son de todos y R3 prohíbe borrarlos —la poda ni los contempla.
+    /// `.locks` son de todos y no se borran —la poda ni los contempla.
     #[test]
     fn prune_shared_root_keeps_unattributable() {
         let root = scratch("setup-prune-shared");

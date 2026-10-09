@@ -1,19 +1,17 @@
 //! `self uninstall`: los nueve pasos, en orden, sobre la instalación
 //! registrada y no sobre la posición del ejecutable.
 //!
-//! Una desinstalación anterior, implementada en el binario, tenía tres
-//! defectos que R1, R2 y la operación de desinstalación condemnan:
+//! Tres reglas la gobiernan:
 //!
-//! - En Unix borraba el **directorio padre del ejecutable** cuando este no era el
-//!   canónico. Lanzado desde el árbol de desarrollo eso alcanzaba `target/debug`, que
-//!   es un directorio del repositorio: R2 lo prohíbe y el bug era alcanzable desde el
-//!   propio árbol.
-//! - La integración de `PATH` se revertía con una función propia que **aplanaba
-//!   `%VAR%`** al escribir, de modo que una entrada que el usuario había escrito como
-//!   `%LOCALAPPDATA%\...` salía como la ruta expandida. La integración del `PATH` en
-//!   Windows conserva el tipo y la forma, y la reversión exacta se deriva del recibo.
-//! - La parada del daemon, la lectura del pidfile y el borrado diferido de Windows no
-//!   compartían una regla común: cuatro sitios para una regla.
+//! - Nunca borra el **directorio padre del ejecutable** por ser el padre: el directorio
+//!   de programa se decide por la regla de [`program_dir_is_removable`]. Lanzado desde
+//!   el árbol de desarrollo, el padre sería `target/debug`, un directorio del
+//!   repositorio.
+//! - La integración de `PATH` en Windows conserva el tipo y la forma del valor
+//!   (`%VAR%` no se aplana a la ruta expandida), y la reversión exacta se deriva del
+//!   recibo.
+//! - La parada del daemon, la lectura del pidfile y el borrado diferido de Windows
+//!   comparten una sola regla, la del módulo [`crate::daemon_stop`].
 //!
 //! **Sobre qué actúa.** Sobre la instalación registrada, sea cual sea la
 //! copia del binario que invoque el comando. Las raíces efectivas salen del recibo
@@ -21,13 +19,14 @@
 //! desinstalar funciona aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén
 //! definidas.
 //!
-//! **R2** es lo que gobierna el paso 8 y por eso tiene su propia función pública
-//! ([`program_dir_is_removable`]): el directorio de programa solo se borra si contiene
-//! el recibo o el ejecutable, y nunca si es la raíz de una unidad, `$HOME`, un
-//! ancestro de `$HOME` o una de las otras raíces del producto. Ni una variable de
-//! reubicación ni un recibo manipulado pueden ampliar el alcance. Se aplica en
-//! [`compose_plan`] y no solo en el paso 8: el plan no puede prometer un directorio que
-//! la ejecución real conservaría, así que cuando R2 lo rechaza entra como `preserved`.
+//! **La regla del directorio de programa** gobierna el paso 8 y por eso tiene su propia
+//! función pública ([`program_dir_is_removable`]): el directorio de programa solo se
+//! borra si contiene el recibo o el ejecutable, y nunca si es la raíz de una unidad,
+//! `$HOME`, un ancestro de `$HOME` o una de las otras raíces del producto. Ni una
+//! variable de reubicación ni un recibo manipulado pueden ampliar el alcance. Se aplica
+//! en [`compose_plan`] y no solo en el paso 8: el plan no puede prometer un directorio
+//! que la ejecución real conservaría, así que cuando la regla lo rechaza entra como
+//! `preserved`.
 //!
 //! **Idempotencia**: sin instalación ni estado, éxito con `not_installed`.
 //! **Residuo**: cero dentro de las raíces de propiedad exclusiva, y
@@ -93,15 +92,16 @@ pub struct Plan {
     /// Directorio de programa con su tamaño, que es un destino propio de la
     /// desinstalación.
     pub program_dir: Option<PlanEntry>,
-    /// Lo que se conserva a propósito, con el motivo: recursos compartidos (R3) y la
+    /// Lo que se conserva a propósito, con el motivo: recursos compartidos y la
     /// integración de `PATH`, que se revierte en vez de borrarse.
     pub preserved: Vec<Preserved>,
-    /// Destino del plan que se lleva el directorio de programa cuando R2 le impide
-    /// borrarlo por su cuenta. Va en el plan porque cambia lo que el comando afirma:
-    /// si el directorio de programa vive dentro de una raíz que el propio plan borra
-    /// —típico, con `AVI_INSTALL_DIR` dentro de la raíz de datos— entonces **sí** se
-    /// borra, y anunciarlo como conservado afirmaría una preservación que la operación
-    /// no cumple. Con `None` y `program_dir` a `None`, R2 lo preserva de verdad.
+    /// Destino del plan que se lleva el directorio de programa cuando la regla de
+    /// [`program_dir_is_removable`] le impide borrarlo por su cuenta. Va en el plan porque
+    /// cambia lo que el comando afirma: si el directorio de programa vive dentro de una
+    /// raíz que el propio plan borra —típico, con `AVI_INSTALL_DIR` dentro de la raíz de
+    /// datos— entonces **sí** se borra, y anunciarlo como conservado afirmaría una
+    /// preservación que la operación no cumple. Con `None` y `program_dir` a `None`, la
+    /// regla lo preserva de verdad.
     pub program_dir_swallowed_by: Option<PathBuf>,
 }
 
@@ -192,10 +192,12 @@ pub struct Outcome {
     /// miente.
     pub path_reverted: bool,
     /// `true` si el directorio de programa se borró de verdad; `false` si quedó
-    /// programado para después de salir, o si R2 lo impidió.
+    /// programado para después de salir, o si la regla del directorio de programa lo
+    /// impidió.
     pub program_dir_removed: bool,
     /// Mensaje (ruta y causa) si el paso 8 no pudo borrar ni programar el directorio de
-    /// programa. La exclusión por R2 no cuenta: es preservación deliberada.
+    /// programa. La exclusión por la regla del directorio de programa no cuenta: es
+    /// preservación deliberada.
     pub program_dir_kept: Option<String>,
     pub dry_run: bool,
     pub daemon_was_running: bool,
@@ -207,8 +209,8 @@ impl Outcome {
     /// el directorio de programa, y `None` en cualquier otro desenlace.
     ///
     /// Es éxito parcial con código propio: el resto de la desinstalación se completó y lo
-    /// único que falta es ese directorio. La exclusión por R2 no es un fallo sino
-    /// preservación deliberada, así que no llega aquí. Quien cablea emite el envelope con este
+    /// único que falta es ese directorio. La exclusión por la regla del directorio de
+    /// programa no es un fallo sino preservación deliberada, así que no llega aquí. Quien cablea emite el envelope con este
     /// `reason` y sale por veredicto con su código, como hace `self install`.
     pub fn lifecycle_error(&self) -> Option<LifecycleError> {
         self.program_dir_kept.as_ref().map(|detail| {
@@ -259,7 +261,7 @@ pub async fn run(
 
     // ── Paso 3. `--dry-run`: plan impreso, disco intacto ──────────────────────────
     // Antes del bloqueo a propósito: tomar el bloqueo crea el archivo, y una
-    // simulación que deja un archivo detrás no es una simulación (criterio 20).
+    // simulación que deja un archivo detrás no es una simulación.
     if options.dry_run {
         return Ok(simulate(roots, receipt, &program_dir, &env.home, options));
     }
@@ -314,16 +316,21 @@ pub async fn run(
 
     // ── Paso 7. Revertir el `PATH` exactamente según el recibo ───────────────────
     // El valor que se publica sale del mismo predicado que usa el simulacro, y se
-    // consulta **antes** de revertir: después ya no quedaría nada que prever, y la
+    // consulta **antes** de revertir: después no quedaría nada que prever, y la
     // reversión —que sí se hace, y siempre— es la que decide qué se tocó.
     let path_pending = path_would_be_reverted(receipt, &env.home);
-    let path_reverted = revert_path(receipt, &env.home) && path_pending;
+    let revert_report = revert_path(receipt, &env.home);
+    for failure in &revert_report.failures {
+        eprintln!("  no se pudo revertir el PATH: {failure}");
+        failed.push(failure.clone());
+    }
+    let path_reverted = revert_report.touched && path_pending;
 
-    // ── Paso 8. Borrar el directorio de programa aplicando R2 ────────────────────
+    // ── Paso 8. Borrar el directorio de programa según la regla de borrado ───────
     // La decisión no se vuelve a tomar aquí: sale del plan, que ya la aplicó al
-    // componerse. `program_dir` solo es destino si R2 lo permite, y R2 exige recibo
-    // o ejecutable **dentro** del directorio, así que ser destino implica que el
-    // directorio existe.
+    // componerse. `program_dir` solo es destino si la regla del directorio de
+    // programa lo permite, y esa regla exige recibo o ejecutable **dentro** del
+    // directorio, así que ser destino implica que el directorio existe.
     let mut program_dir_kept = None;
     let (program_dir_removed, status) = if plan.program_dir.is_some() {
         match remove_program_dir(remover, &program_dir) {
@@ -340,7 +347,7 @@ pub async fn run(
             }
         }
     } else if plan.program_dir_swallowed_by.is_some() {
-        // R2 le impidió borrarlo por su cuenta, pero un destino del plan se lo lleva:
+        // La regla le impide borrarlo por su cuenta, pero un destino del plan se lo lleva:
         // no hay nada que anunciar aquí porque **sí** se borra, y el destino que lo
         // hace ya está en `removed` si lo consiguió. Anunciarlo como conservado
         // sería falso.
@@ -349,7 +356,7 @@ pub async fn run(
         eprintln!(
             "  no se borra {}: {}",
             program_dir.display(),
-            R2_PROGRAM_DIR_REASON
+            PROGRAM_DIR_PRESERVED_REASON
         );
         (false, "uninstalled")
     };
@@ -405,16 +412,16 @@ pub async fn run(
 /// `cleanup --all` no borra `voices/default` ni `voices/ryan` porque van embebidas en
 /// el binario y el programa sigue instalado: si se borran, `setup` las vuelve a
 /// materializar. En una desinstalación el programa **desaparece**, así que dejarlas
-/// sería residuo dentro de una raíz de propiedad exclusiva, que es exactamente lo que
-/// el criterio 17 prohíbe. Por eso, sin `--keep-data`, el destino del estado es la raíz
-/// de datos **entera** —que R1 permite porque es exclusiva— en vez de la lista de
-/// categorías. Con `--keep-data` sí se aplica el plan de `cleanup --all` filtrado, que es
-/// lo coherente: el usuario ha pedido conservar el estado.
+/// sería residuo dentro de una raíz de propiedad exclusiva, y la desinstalación no deja
+/// residuo ahí. Por eso, sin `--keep-data`, el destino del estado es la raíz de datos
+/// **entera** —que se puede borrar entera porque es exclusiva del producto— en vez de la
+/// lista de categorías. Con `--keep-data` sí se aplica el plan de `cleanup --all`
+/// filtrado, que es lo coherente: el usuario ha pedido conservar el estado.
 ///
-/// El directorio de programa es el otro destino, y lo decide **R2** —y lo decide aquí, no
-/// en el paso 8— porque es la misma regla la que gobierna las dos ramas: si R2 no lo
-/// permite, el plan lo anuncia como `preserved` en vez de listarlo como destino, que es lo
-/// que la ejecución real hace al conservarlo.
+/// El directorio de programa es el otro destino, y lo decide [`program_dir_is_removable`]
+/// —y lo decide aquí, no en el paso 8— porque es la misma regla la que gobierna las dos
+/// ramas: si no lo permite, el plan lo anuncia como `preserved` en vez de listarlo como
+/// destino, que es lo que la ejecución real hace al conservarlo.
 pub fn compose_plan(
     roots: &Roots,
     receipt: Option<&InstallReceipt>,
@@ -429,7 +436,7 @@ pub fn compose_plan(
         },
     );
     // Lo que la raíz de modelos **no** puede perder se conserva en los dos casos: con
-    // `--keep-data` no es un destino, y sin él lo decide R3.
+    // `--keep-data` no es un destino, y sin él lo decide la regla de recursos compartidos.
     let mut state = DeletionPlan {
         targets: Vec::new(),
         preserved: models.preserved,
@@ -442,7 +449,7 @@ pub fn compose_plan(
                 ..Default::default()
             },
         );
-        // Criterio 18: `--keep-data` conserva **modelos, voces y habla**, así que las
+        // `--keep-data` conserva **modelos, voces y habla**, así que las
         // tres categorías de datos quedan fuera. Del plan de `cleanup --all` solo se
         // queda lo que es estado de ejecución: configuración, logs y pidfile.
         state.targets = data
@@ -487,10 +494,10 @@ pub fn compose_plan(
             .cmp(&b.category)
             .then_with(|| a.path.cmp(&b.path))
     });
-    // R2 gobierna el paso 8, y el plan no puede prometer lo que R2 impide: un
-    // directorio de programa dentro de una raíz del producto, de `$HOME` o de una
-    // unidad no se borraría por su cuenta, así que no entra como destino. Pero R2 dice
-    // «no lo borro yo», no «no se borra»: si el directorio vive dentro de una raíz que
+    // La regla del directorio de programa gobierna el paso 8, y el plan no puede
+    // prometer lo que ella impide: un directorio de programa dentro de una raíz del
+    // producto, de `$HOME` o de una unidad no se borraría por su cuenta, así que no
+    // entra como destino. Pero la regla dice «no lo borro yo», no «no se borra»: si el directorio vive dentro de una raíz que
     // este mismo plan borra, la operación se lo lleva igual, y anunciarlo como
     // conservado afirmaría una preservación que la operación no cumple. La pregunta
     // que decide es de cobertura —¿lo recorre ya algún destino?— y se responde sobre
@@ -508,7 +515,7 @@ pub fn compose_plan(
         } else {
             preserved.push(Preserved {
                 path: program_dir.to_path_buf(),
-                reason: R2_PROGRAM_DIR_REASON,
+                reason: PROGRAM_DIR_PRESERVED_REASON,
             });
             (None, None)
         };
@@ -523,8 +530,8 @@ pub fn compose_plan(
 /// Destino del plan que contiene —o es— el directorio de programa, si alguno lo
 /// contiene.
 ///
-/// Es la pregunta de cobertura que decide si R2 preserva o no: R2 impide borrar el
-/// directorio de programa cuando vive dentro de una raíz del producto, y casi
+/// Es la pregunta de cobertura que decide si se preserva o no: la regla impide borrar
+/// el directorio de programa cuando vive dentro de una raíz del producto, y casi
 /// siempre esa raíz es un destino del propio plan.
 fn target_covering(targets: &[cleanup::Target], program_dir: &Path) -> Option<PathBuf> {
     let key = crate::canonical_path_key(program_dir);
@@ -760,20 +767,22 @@ fn block_would_be_removed(path: &Path, bin_dir: &Path, home: &Path) -> bool {
 ///
 /// Devuelve si **tocó** algo, que no es lo mismo que la marca del recibo:
 /// [`path_would_be_reverted`] es lo que responde a la pregunta de qué se va a revertir, y
-/// el paso 7 lo consulta antes de revertir. Lo que esta función revierte no cambia por
-/// eso: sigue revirtiendo exactamente lo mismo.
+/// el paso 7 lo consulta antes de revertir. Los fallos de cada reversión no se tragan:
+/// quedan en [`PathRevertReport::failures`], uno por resto que no se pudo revertir.
 ///
 /// `--no-modify-path` dejó `modify_path: false` en el recibo: no hay nada que
-/// revertir, y por eso el desenlace es `false` y no un error.
-pub fn revert_path(receipt: Option<&InstallReceipt>, home: &Path) -> bool {
+/// revertir, y por eso el desenlace es «no tocó nada» y no un error.
+pub fn revert_path(receipt: Option<&InstallReceipt>, home: &Path) -> PathRevertReport {
+    let mut revert_report = PathRevertReport::default();
     let Some(receipt) = receipt else {
-        return false;
+        return revert_report;
     };
     if !receipt.path_integration.modify_path {
-        return false;
+        return revert_report;
     }
     let integration: &PathIntegration = &receipt.path_integration;
-    let mut touched = false;
+    let touched = &mut revert_report.touched;
+    let failures = &mut revert_report.failures;
 
     // El enlace simbólico es un mecanismo de Unix: en Windows el recibo lo registra
     // como `null` y la integración es la entrada del registro de abajo.
@@ -782,24 +791,38 @@ pub fn revert_path(receipt: Option<&InstallReceipt>, home: &Path) -> bool {
     #[cfg(unix)]
     if let Some(symlink) = &integration.symlink {
         if path_unix::revert_symlink(symlink, &program_exe) {
-            touched = true;
+            *touched = true;
         }
     }
     if let Some(blocks) = &integration.profile_blocks {
         let bin_dir = receipt_bin_dir(receipt);
         for block in blocks {
-            if path_unix::remove_block(block, &bin_dir, home).unwrap_or(false) {
-                touched = true;
+            match path_unix::remove_block(block, &bin_dir, home) {
+                Ok(changed) => *touched |= changed,
+                Err(e) => failures.push(format!("{}: {e}", block.display())),
             }
         }
     }
     #[cfg(windows)]
     if let Some(entry) = &integration.registry_entry {
-        if let Ok(outcome) = crate::path_windows::revert(crate::path_windows::ENV_SUBKEY, entry) {
-            touched |= outcome.changed;
+        match crate::path_windows::revert(crate::path_windows::ENV_SUBKEY, entry) {
+            Ok(outcome) => *touched |= outcome.changed,
+            Err(e) => failures.push(format!(
+                "entrada del PATH en el registro de {}: {e}",
+                crate::path_windows::ENV_SUBKEY
+            )),
         }
     }
-    touched
+    revert_report
+}
+
+/// Resultado de [`revert_path`].
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct PathRevertReport {
+    /// Se invirtió algo de la integración de `PATH`.
+    pub touched: bool,
+    /// Restos de la integración que no se pudieron revertir, con su causa.
+    pub failures: Vec<String>,
 }
 
 /// Nombre del ejecutable registrado, deducido del recibo.
@@ -850,16 +873,17 @@ fn receipt_bin_dir(receipt: &InstallReceipt) -> PathBuf {
         .unwrap_or_else(crate::bin_dir)
 }
 
-/// Motivo con el que R2 conserva el directorio de programa.
+/// Motivo con el que se conserva el directorio de programa cuando
+/// [`program_dir_is_removable`] lo rechaza.
 ///
 /// Lo comparten las dos ramas: el plan lo anuncia como `preserved` y el paso 8 lo avisa
 /// por stderr, así que el motivo que ve el usuario es el mismo en el simulacro y en la
 /// ejecución real.
-pub const R2_PROGRAM_DIR_REASON: &str = "R2 no permite borrar un directorio de programa sin \
+pub const PROGRAM_DIR_PRESERVED_REASON: &str = "no se borra un directorio de programa sin \
                                         recibo ni ejecutable, ni uno que sea raíz del sistema \
                                         o del perfil";
 
-/// R2: ¿se puede borrar este directorio de programa?
+/// ¿Se puede borrar este directorio de programa?
 ///
 /// Exige las dos mitades de la regla. La positiva: el directorio contiene el recibo o
 /// el ejecutable, que es lo que lo convierte *en* el directorio de programa y no en un
@@ -969,10 +993,9 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod r2_tests {
-    //! Regresión: el directorio de programa cuelga de `$HOME` en todas las
-    //! plataformas, así que esa pertenencia no puede rechazarlo; lo que R2
-    //! impide es que sea el propio `$HOME`, un ancestro suyo u otra raíz.
+mod program_dir_rule_tests {
+    //! El directorio de programa cuelga de `$HOME` en todas las plataformas, así que
+    //! esa pertenencia no puede rechazarlo; lo que la regla impide es que sea el propio `$HOME`, un ancestro suyo u otra raíz.
 
     use super::*;
     use crate::test_support::{scratch, Scratch};

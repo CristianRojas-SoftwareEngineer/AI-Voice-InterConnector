@@ -1,34 +1,27 @@
 //! Protocolo de parada del daemon y del proceso residente. Es el paso 5 de la
 //! instalación y de la desinstalación, y un paso propio de la limpieza.
 //!
-//! Este bloque **no se reescribe: se traslada**. El protocolo tiene historia real
-//! detrás —`daemon.pid` con esquema plano, `POST /shutdown` acotado, árbol
-//! preciso por PID con guarda anti-auto-muerte, verificación a nivel de sistema y
-//! plazo global— y ese historial es justo lo que T11 quiere preservar. Los plazos
-//! se mantienen tal cual: **8 s** de plazo global y **1500 ms** para el
-//! `POST /shutdown`.
+//! El protocolo es: `daemon.pid` con esquema plano, `POST /shutdown` acotado,
+//! árbol preciso por PID con guarda anti-auto-muerte, verificación a nivel de
+//! sistema y plazo global. Los plazos son **8 s** de plazo global y **1500 ms**
+//! para el `POST /shutdown`.
 //!
-//! **Lo que no se traslada aquí es el control de procesos.** Matar un árbol en
-//! Windows es `taskkill /T` y en Unix es matar el grupo de sesión, y esa lógica
-//! vive endurecida en `avi-daemon` (`kill_tree_by_pid`, `pid_alive`) y en
-//! `avi-tts` (`resident::*`). Este crate no depende de ninguno de los dos: el
-//! primero arrastra el árbol de `avi-stt` y el segundo el motor TTS, y el plan
-//! declara que `avi-lifecycle` se construye sin cliente HTTP ni árbol de runtime
-//! pesado. Por eso el control de procesos entra por [`ProcessControl`], que
-//! el binario implementa en T16 con las funciones que ya existen. El **protocolo**,
-//! que es lo que este módulo es, sí vive aquí y se afirma entero.
+//! **El control de procesos no vive aquí.** Matar un árbol en Windows es
+//! `taskkill /T` y en Unix es matar el grupo de sesión, y esa lógica está en
+//! `avi-daemon` (`kill_tree_by_pid`, `pid_alive`) y en `avi-tts` (`resident::*`).
+//! Este crate no depende de ninguno de los dos: el primero arrastra el árbol de
+//! `avi-stt` y el segundo el motor TTS, y `avi-lifecycle` se construye sin cliente
+//! HTTP ni árbol de runtime pesado. Por eso el control de procesos entra por
+//! [`ProcessControl`], que implementa el binario con esas funciones. El
+//! **protocolo** sí vive aquí.
 //!
-//! **El `pidfile` cambia de sitio con D4.** La resolución usa la raíz de datos
-//! vigente, de modo que un daemon vivo de una versión anterior —cuyo pidfile vivía
-//! en `%APPDATA%`— **no se encuentra**. Es un supuesto asumido, sin audiencia previa
-//! que lo apoye, y está escrito en el módulo para que no se lea como un
-//! olvido.
+//! **El `pidfile` está en la raíz de datos vigente.** Un daemon vivo cuyo pidfile
+//! esté en otra raíz no se encuentra.
 //!
-//! **No hay cliente HTTP.** El plan declara que este crate se construye sin él, así
-//! que los dos puntos del protocolo —`POST /shutdown` y `GET /health`— viajan por
-//! `tokio::net::TcpStream` con HTTP/1.1 a pelo. Son cuatro líneas de petición y
-//! una de lectura de la línea de estado, contra las dos dependencias que el plan
-//! declara que este crate no tiene.
+//! **No hay cliente HTTP.** Este crate se construye sin él, así que los dos puntos
+//! del protocolo —`POST /shutdown` y `GET /health`— viajan por
+//! `tokio::net::TcpStream` con HTTP/1.1 a pelo: cuatro líneas de petición y una de
+//! lectura de la línea de estado bastan, sin las dependencias de un cliente.
 
 use crate::LifecycleError;
 use avi_process::registry::{
@@ -41,7 +34,7 @@ use std::time::Duration;
 
 /// Plazo global de la parada. Es el presupuesto de todo el protocolo y **fuente
 /// única**: el lanzador lo toma de aquí en lugar de declararlo por su cuenta, de
-/// modo que los 8 s del protocolo se affirmen en un solo sitio.
+/// modo que los 8 s del protocolo se afirmen en un solo sitio.
 pub const STOP_DEADLINE_GLOBAL: Duration = Duration::from_secs(8);
 
 /// Presupuesto del `POST /shutdown` acotado. El daemon puede tardar en cerrar; el
@@ -58,7 +51,7 @@ pub const PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 pub const DEFAULT_ADDR: &str = "127.0.0.1:8765";
 
 /// Variable de entorno que desvía el puerto del daemon por instancia. Vive aquí
-/// con la resolución que la lee, que es su única usuaria: el binario ya no la
+/// con la resolución que la lee, que es su única usuaria: el binario no la
 /// nombra por su cuenta.
 pub const DAEMON_PORT_ENV: &str = "AVI_DAEMON_PORT";
 
@@ -107,18 +100,24 @@ pub fn read_pid(data_dir: &Path) -> Option<u32> {
         .filter(|pid| *pid != 0)
 }
 
-/// PID del residente registrado. Lectura tolerante: esquema viejo sin el campo,
-/// fichero ausente o valor inválido es `0`, que significa desconocido.
+/// PID del residente registrado: `0`, que significa desconocido, si el pidfile
+/// falta o no trae el campo. Un pidfile descartado se avisa.
 pub fn read_resident_pid(data_dir: &Path) -> u32 {
+    read_pid_file(data_dir).map(|f| f.resident_pid).unwrap_or(0)
+}
+
+/// Igual que [`read_resident_pid`] sin avisar del descarte, para los pasos del
+/// protocolo que ya lo avisaron al empezar.
+fn read_resident_pid_silent(data_dir: &Path) -> u32 {
     read_pid_file_silent(data_dir)
         .map(|f| f.resident_pid)
         .unwrap_or(0)
 }
 
-/// Dirección publicada en el pidfile. Fichero ausente, ilegible o esquema viejo
-/// sin el campo dan `None`, y el llamante cae al valor por defecto.
+/// Dirección publicada en el pidfile. Un pidfile ausente, descartado (con aviso) o
+/// sin el campo da `None`, y el llamante cae al valor por defecto.
 pub fn read_addr(data_dir: &Path) -> Option<String> {
-    read_pid_file_silent(data_dir)
+    read_pid_file(data_dir)
         .and_then(|f| f.addr)
         .map(|addr| addr.trim().to_string())
         .filter(|addr| !addr.is_empty())
@@ -127,9 +126,8 @@ pub fn read_addr(data_dir: &Path) -> Option<String> {
 /// Dirección del cliente: la del pidfile cuando existe, y cuando no la derivada de
 /// [`DAEMON_PORT_ENV`] (`DEFAULT_ADDR` si la variable falta o no es un puerto).
 ///
-/// Este es el **supuesto asumido de D4**: la raíz de datos es la vigente, así que un
-/// daemon de la versión anterior, con su pidfile en la raíz antigua, no se
-/// encuentra y la conexión va a la dirección de respaldo.
+/// La raíz de datos es la vigente: un daemon con su pidfile en otra raíz no se
+/// encuentra y la conexión va a la dirección derivada del entorno.
 ///
 /// Es el **único** resolver con esta semántica: el lanzador no declara otro.
 pub fn resolve_client_addr(data_dir: &Path) -> String {
@@ -160,7 +158,7 @@ pub fn default_addr() -> String {
     addr_for_port_env(std::env::var(DAEMON_PORT_ENV).ok().as_deref())
 }
 
-/// Borra el pidfile. Solo lo hace quien ha comprobado antes que el daemon está
+/// Borra el pidfile. Solo lo hace quien ha comprobado que el daemon está
 /// muerto: borrarlo con el daemon vivo dejaría sin pista al siguiente `start`.
 pub fn remove_pid_file(data_dir: &Path) -> std::io::Result<()> {
     match std::fs::remove_file(pid_path(data_dir)) {
@@ -180,8 +178,7 @@ pub trait ProcessControl {
     /// ¿Vive el proceso de ese PID?
     fn pid_alive(&self, pid: u32) -> bool;
     /// Reclama el árbol exacto de ese PID. Nunca por imagen: el daemon comparte
-    /// imagen con el CLI, y matar por imagen mataría al propio invocador —el bug
-    /// de v0.18.10 a v0.18.25.
+    /// imagen con el CLI, y matar por imagen mataría al propio invocador.
     fn kill_tree_by_pid(&self, pid: u32) -> bool;
     /// ¿Vive el proceso residente con ese PID?
     fn resident_pid_alive(&self, pid: u32) -> bool;
@@ -220,6 +217,9 @@ pub struct StopOutcome {
     pub pid: Option<u32>,
     /// El pidfile se borró, lo que solo ocurre tras muerte verificada.
     pub pidfile_removed: bool,
+    /// El fichero ready ya no existe tras una parada verificada. Es `false` si el
+    /// borrado falló o si se conservó porque el PID que publica sigue vivo.
+    pub ready_removed: bool,
     /// Lo que quedó vivo cuando `stopped` es `false`. `None` si la parada fue
     /// completa.
     pub remaining: Option<String>,
@@ -275,7 +275,16 @@ pub async fn stop(
     // la operación necesita para decir cómo reiniciarlo, y no puede depender de si
     // la parada tuvo éxito.
     let was_running = previous_state == Registered::Ours || probe(&addr).await;
-    crate::faults::trip(crate::faults::FaultPoint::OnDaemonStop).ok();
+    // Un punto de fallo armado aborta la parada antes de tocar nada: el desenlace
+    // dice que no concluyó y la operación que llama falla con `daemon_stop_failed`.
+    if let Err(fault) = crate::faults::trip(crate::faults::FaultPoint::OnDaemonStop) {
+        return StopOutcome {
+            was_running,
+            pid: previous_pid,
+            remaining: Some(format!("{fault:#}")),
+            ..StopOutcome::default()
+        };
+    }
 
     // 1) Graceful acotado si responde (no hereda el timeout largo del cliente).
     if probe(&addr).await {
@@ -289,7 +298,7 @@ pub async fn stop(
 
     // 2) Árbol preciso por PID si sigue vivo, en las dos plataformas, con la
     // guarda `pid != process::id()`. Sin ella, un pidfile obsoleto con el PID del
-    // propio invocador lo mataría — de ahí el bug de v0.18.10 a v0.18.25.
+    // propio invocador lo mataría.
     // Solo se mata un proceso nuestro: un PID reasignado a otro programa cuenta
     // como muerto y se respeta.
     let (pid, state) = daemon_registered(data_dir, control);
@@ -304,7 +313,7 @@ pub async fn stop(
     // 2b) Residente por identidad estable. Con PID registrado se mata su árbol
     // preciso; sin PID registrado no hay residente que reclamar y nada se mata
     // por imagen. La verificación por `resident_pid` muerto vive en el paso 3.
-    let resident = read_resident_pid(data_dir);
+    let resident = read_resident_pid_silent(data_dir);
     if resident != 0
         && resident != std::process::id()
         && resident_registered(data_dir, control) == Registered::Ours
@@ -350,20 +359,42 @@ pub async fn stop(
             parts.push(format!("el daemon en {addr} responde"));
         }
         if resident_alive {
-            parts.push(format!("residente pid {}", read_resident_pid(data_dir)));
+            parts.push(format!(
+                "residente pid {}",
+                read_resident_pid_silent(data_dir)
+            ));
         }
         Some(parts.join("; "))
     };
-    let pidfile_removed = stopped && remove_pid_file(data_dir).is_ok();
+    let pidfile_removed = stopped
+        && match remove_pid_file(data_dir) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!(
+                    "Aviso: no se pudo borrar {}: {error}.",
+                    pid_path(data_dir).display()
+                );
+                false
+            }
+        };
     // El fichero ready se borra con la parada verificada, salvo que el PID que
     // publica el propio fichero siga vivo: entonces es la única pista de ese
     // proceso. Es obsoleto un ready ilegible, sin PID, con el PID del propio proceso,
     // con un PID vivo pero sin las líneas `start=` e `image=` (no declara a su PID
     // como propio: cuenta como muerto) o con un PID que el sistema reasignó a otro
     // programa (la identidad observada no coincide con la registrada).
-    if stopped && !ready_file_owner_alive(data_dir, control) {
-        let _ = remove_ready_file(data_dir);
-    }
+    let ready_removed = stopped
+        && !ready_file_owner_alive(data_dir, control)
+        && match remove_ready_file(data_dir) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!(
+                    "Aviso: no se pudo borrar {}: {error}.",
+                    data_dir.join(READY_FILE).display()
+                );
+                false
+            }
+        };
 
     StopOutcome {
         was_running,
@@ -372,6 +403,7 @@ pub async fn stop(
         resident_alive,
         pid: previous_pid,
         pidfile_removed,
+        ready_removed,
         remaining,
     }
 }
@@ -836,9 +868,9 @@ mod tests {
         assert_eq!(outcome.pid, None);
     }
 
-    /// La guarda anti-auto-muerte sobrevive al traslado: un pidfile obsoleto que
-    /// lleva el PID del propio proceso **no** lo mata. Es el bug de v0.18.10 a
-    /// v0.18.25, y por eso la comprobación no es "si el PID existe, mátalo".
+    /// La guarda anti-auto-muerte: un pidfile obsoleto que lleva el PID del propio
+    /// proceso **no** lo mata, porque la comprobación no es "si el PID existe,
+    /// mátalo".
     #[tokio::test]
     async fn stop_never_kills_its_own_process() {
         let data = scratch("self-guard");
@@ -1366,6 +1398,56 @@ mod tests {
             classify_registered(&control, file.pid, true, file.identity.as_ref()),
             Registered::Absent
         );
+    }
+
+    /// Si el fichero ready no se puede borrar tras una parada verificada, el
+    /// desenlace lo refleja en `ready_removed` en lugar de darlo por borrado.
+    #[tokio::test]
+    async fn stop_reports_ready_file_removal_failure() {
+        let data = scratch("ready-undeletable");
+        // Un directorio con el nombre del fichero ready: existe y no se puede
+        // borrar con `remove_file`.
+        std::fs::create_dir_all(data.join(READY_FILE)).expect("se crea el obstáculo");
+
+        let outcome = stop(&data, &dead_port(), &Inert::new()).await;
+        assert!(outcome.stopped, "la parada concluye sin daemon registrado");
+        assert!(
+            !outcome.ready_removed,
+            "el borrado fallido del ready no se da por hecho"
+        );
+    }
+
+    /// Con la parada verificada y sin fichero ready, el desenlace lo da por
+    /// retirado.
+    #[tokio::test]
+    async fn stop_reports_ready_file_removed() {
+        let data = scratch("ready-absent");
+
+        let outcome = stop(&data, &dead_port(), &Inert::new()).await;
+        assert!(outcome.stopped);
+        assert!(outcome.ready_removed, "no queda fichero ready");
+    }
+
+    /// Un punto de fallo armado en la parada la aborta antes de tocar nada y el
+    /// desenlace dice que no concluyó y por qué.
+    #[cfg(feature = "faults")]
+    #[tokio::test]
+    async fn stop_injected_fault_aborts_without_stopping() {
+        let data = scratch("fault-stop");
+        let _guard = crate::faults::armed(crate::faults::FaultPoint::OnDaemonStop);
+
+        let control = Inert::new();
+        let outcome = stop(&data, &dead_port(), &control).await;
+        assert!(!outcome.stopped, "el fallo inyectado impide concluir");
+        assert!(
+            outcome
+                .remaining
+                .as_deref()
+                .is_some_and(|text| text.contains("on_daemon_stop")),
+            "la causa queda en el desenlace: {:?}",
+            outcome.remaining
+        );
+        assert_eq!(control.killed.load(Ordering::Relaxed), 0);
     }
 
     /// Un PID de daemon reasignado a otro programa no bloquea la parada y no se mata.

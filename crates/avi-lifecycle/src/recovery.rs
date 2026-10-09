@@ -53,10 +53,8 @@ pub struct Roots<'a> {
 ///
 /// Es la forma de informe: `doctor` en modo informe y el plan de
 /// `cleanup --dry-run` muestran esta lista, y el barrido real usa la misma
-/// decisión. Derivar las dos de funciones distintas es lo que produjo el defecto
-/// que T14 absorbe en el planificador de borrado: el plan anunciaba `xet` y
-/// `.locks` sin mirar si la raíz era compartida mientras el ejecutor devolvía
-/// `Ok(false)`, de modo que la simulación mentía.
+/// decisión. Derivar las dos de funciones distintas permitiría que la
+/// simulación anunciara un borrado que la ejecución no hace.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SweepPreview {
     /// Aparcados `.old-*` del directorio de programa.
@@ -68,6 +66,10 @@ pub struct SweepPreview {
     /// Temporales propios que **no** se pueden decidir: los de un proceso vivo.
     /// No es un fallo ni un residuo que se pueda forzar.
     pub temporaries_kept: Vec<PathBuf>,
+    /// Directorios que existen y no se pudieron listar, con su causa. El barrido no
+    /// puede afirmar que no hay nada que recoger en ellos; un directorio inexistente
+    /// no entra aquí, porque no hay nada que barrer.
+    pub unreadable: Vec<(PathBuf, String)>,
 }
 
 impl SweepPreview {
@@ -97,6 +99,9 @@ pub struct RecoveryOutcome {
     /// Lo que no se pudo borrar: en uso, o sin PID con el que decidir. No es un
     /// fallo.
     pub kept: Vec<PathBuf>,
+    /// Directorios que existen y no se pudieron listar para el barrido. También están
+    /// en `kept`: lo que contienen queda sin recoger.
+    pub unreadable: Vec<PathBuf>,
 }
 
 impl RecoveryOutcome {
@@ -152,27 +157,66 @@ pub fn recover(roots: Roots<'_>) -> Result<RecoveryOutcome> {
     sweep_parked(&preview, &mut outcome);
     sweep_stagings(&preview, &mut outcome);
     sweep_temporaries(&preview, &mut outcome);
+    // Lo que no se pudo listar queda pendiente y a la vista: ni se da por limpio ni se
+    // calla.
+    for (dir, cause) in &preview.unreadable {
+        eprintln!(
+            "Aviso: no se pudo listar {} para el barrido: {cause}",
+            dir.display()
+        );
+        if !outcome.kept.contains(dir) {
+            outcome.kept.push(dir.clone());
+        }
+        if !outcome.unreadable.contains(dir) {
+            outcome.unreadable.push(dir.clone());
+        }
+    }
 
     Ok(outcome)
 }
 
 /// Qué haría el barrido sin tocar nada. `doctor` lo usa como informe
 /// en modo informe y `cleanup --dry-run` lo anuncia; el barrido real usa
-/// la misma decisión. Derivar el plan y la ejecución de funciones distintas es lo
-/// que produjo el defecto que T14 absorbe en el planificador de borrado: el plan
-/// anunciaba `xet` y `.locks` sin mirar si la raíz era compartida mientras el
-/// ejecutor devolvía `Ok(false)`, de modo que la simulación mentía.
+/// la misma decisión. Derivar el plan y la ejecución de funciones distintas permitiría
+/// que la simulación anunciara un borrado que la ejecución no hace.
 pub fn preview(roots: Roots<'_>) -> SweepPreview {
     let parent = roots.program_dir.parent().unwrap_or(Path::new(""));
+    let mut unreadable = Vec::new();
+    let parked = entries_with_prefix(roots.program_dir, crate::PARKED_DIR_PREFIX, &mut unreadable);
+    let stagings = entries_with_prefix(parent, crate::STAGING_DIR_PREFIX, &mut unreadable)
+        .into_iter()
+        .filter(|path| roots.in_use.is_none_or(|using| using != path))
+        .collect();
+    let (temporaries, temporaries_kept) = temporaries_decision(roots.temp_root, &mut unreadable);
     SweepPreview {
-        parked: entries_with_prefix(roots.program_dir, crate::PARKED_DIR_PREFIX),
-        stagings: entries_with_prefix(parent, crate::STAGING_DIR_PREFIX)
-            .into_iter()
-            .filter(|path| roots.in_use.is_none_or(|using| using != path))
-            .collect(),
-        temporaries: temporaries_decision(roots.temp_root).0,
-        temporaries_kept: temporaries_decision(roots.temp_root).1,
+        parked,
+        stagings,
+        temporaries,
+        temporaries_kept,
+        unreadable,
     }
+}
+
+/// Entradas de `dir`. Un directorio inexistente no tiene nada que barrer y da una lista
+/// vacía; cualquier otro fallo de listado, del directorio o de una entrada, queda en
+/// `unreadable` con su causa.
+fn list_entries(dir: &Path, unreadable: &mut Vec<(PathBuf, String)>) -> Vec<std::fs::DirEntry> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(e) => {
+            unreadable.push((dir.to_path_buf(), e.to_string()));
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        match entry {
+            Ok(entry) => out.push(entry),
+            Err(e) => unreadable.push((dir.to_path_buf(), e.to_string())),
+        }
+    }
+    out
 }
 
 /// Aparcados `.old-*` del directorio de programa que ya no estén en uso. Los que
@@ -189,7 +233,7 @@ fn sweep_parked(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
 /// Stagings huérfanos: hermanos del directorio de programa con el prefijo de la
 // tabla de rutas,
 /// que es donde los deja `self install` y `self update`. Solo hermanos, nunca
-/// otras rutas del padre (R1).
+/// otras rutas del padre.
 ///
 /// `in_use` queda fuera del informe: es el staging del que la operación en curso va
 /// a instalar, que no es huérfano por definición aunque esté vacío.
@@ -208,7 +252,7 @@ fn sweep_stagings(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
 /// Uno **sin** PID reconocible también se barre: cualquier invocación
 /// barre los temporales propios huérfanos, y un temporal sin PID no pertenece a
 /// ningún proceso vivo, luego está huérfano por definición. Conservarlos para
-/// siempre era lo que hacía que el barrido no recogiera nunca lo que el producto
+/// siempre impediría que el barrido recogiera lo que el producto
 /// deja al caer una clonación o una síntesis.
 ///
 /// Lo que protege al producto de borrarse a sí mismo no es la ausencia de PID sino el
@@ -236,14 +280,13 @@ fn sweep_temporaries(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
 
 /// Clasificación de los temporales propios: `(los que se barren, los que se
 /// conservan)`. Es la decisión única de la que salen el informe y el barrido.
-fn temporaries_decision(temp_root: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
+fn temporaries_decision(
+    temp_root: &Path,
+    unreadable: &mut Vec<(PathBuf, String)>,
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut remove_path = Vec::new();
     let mut kept = Vec::new();
-    let entries = match std::fs::read_dir(temp_root) {
-        Ok(entries) => entries,
-        Err(_) => return (remove_path, kept),
-    };
-    for entry in entries.flatten() {
+    for entry in list_entries(temp_root, unreadable) {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         if !crate::TEMP_PREFIXES
@@ -265,18 +308,19 @@ fn temporaries_decision(temp_root: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
 }
 
 /// Entradas de `dir` cuyo nombre empieza por `prefix`, ordenadas.
-fn entries_with_prefix(dir: &Path, prefix: &str) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = match std::fs::read_dir(dir) {
-        Ok(entries) => entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name()
-                    .is_some_and(|name| name.to_string_lossy().starts_with(prefix))
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
+fn entries_with_prefix(
+    dir: &Path,
+    prefix: &str,
+    unreadable: &mut Vec<(PathBuf, String)>,
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = list_entries(dir, unreadable)
+        .into_iter()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(prefix))
+        })
+        .collect();
     out.sort();
     out
 }
@@ -285,9 +329,7 @@ fn entries_with_prefix(dir: &Path, prefix: &str) -> Vec<PathBuf> {
 ///
 /// Se busca la primera racha de dígitos de tres o más porque la convención de
 /// los temporales con dueño es `<algo>-<pid>-<ms>`: las copias del limpiador
-/// propio (`avi-cleaner-<pid>-<ms>.exe`) y, de versiones anteriores, los
-/// auxiliares retirados (`avi-deferred-<pid>-<ms>` con extensión `.ps1` o
-/// `.ready`). Un número de una cifra es más probablemente un contador que un
+/// propio (`avi-cleaner-<pid>-<ms>.exe`). Un número de una cifra es más probablemente un contador que un
 /// PID: con eso, un temporal como `avi_clone_x_1.qvoice` no se confunde con un
 /// proceso.
 fn owner_pid(name: &str) -> Option<u32> {
@@ -373,11 +415,7 @@ mod tests {
     #[test]
     fn temp_owner_pid_is_read_from_the_name() {
         assert_eq!(
-            owner_pid("avi-deferred-12345-1780000000000.ps1"),
-            Some(12345)
-        );
-        assert_eq!(
-            owner_pid("avi-deferred-12345-1780000000000.ready"),
+            owner_pid("avi-cleaner-12345-1780000000000.exe"),
             Some(12345)
         );
         assert_eq!(owner_pid("avi_12345.tmp"), Some(12345));
@@ -398,8 +436,8 @@ mod tests {
     ///
     /// El temporal **sin** PID se barre: la regla exige que cualquier invocación barra
     /// los temporales propios huérfanos, y uno sin PID no pertenece a ningún proceso
-    /// vivo. Conservarlo era lo que hacía que `avi_clone_x_1.qvoice` se acumulara sin
-    /// que nada lo recogiera.
+    /// vivo. Conservarlo dejaría acumular `avi_clone_x_1.qvoice` sin que nada lo
+    /// recogiera.
     #[test]
     fn sweep_removes_orphans_and_keeps_the_rest() {
         let dir = scratch("recovery-sweep");
@@ -412,9 +450,12 @@ mod tests {
         write_file(&parked.join("old"), "v1");
         let staging = dir.join(format!("{}999", crate::STAGING_DIR_PREFIX));
         write_file(&staging.join("downloaded"), "bundle");
-        let dead_temp = temp_root.join("avi-deferred-4294967000-1780000000000.ps1");
+        let dead_temp = temp_root.join("avi-cleaner-4294967000-1780000000000.exe");
         write_file(&dead_temp, "borrador");
-        let live_temp = temp_root.join(format!("avi-deferred-{}.ps1", std::process::id()));
+        let live_temp = temp_root.join(format!(
+            "avi-cleaner-{}-1780000000000.exe",
+            std::process::id()
+        ));
         write_file(&live_temp, "en uso");
         let our = temp_root.join("lifecycle-test-of-another-test.txt");
         write_file(&our, "ajeno");
@@ -454,6 +495,30 @@ mod tests {
             vec![live_temp],
             "solo se queda el que pertenece a un proceso vivo, y no es un fallo"
         );
+        assert!(!outcome.is_clean());
+    }
+
+    /// Un directorio a barrer que existe pero no se puede listar (aquí, un fichero)
+    /// queda en el informe y en `kept`; que no exista es «nada que barrer».
+    #[test]
+    fn unlistable_directories_are_reported_and_missing_ones_are_not() {
+        let dir = scratch("recovery-unlistable");
+        let temp_file = dir.join("temp-is-a-file");
+        write_file(&temp_file, "no es un directorio");
+        let program = dir.join("missing").join("program");
+        let roots = Roots {
+            program_dir: &program,
+            temp_root: &temp_file,
+            in_use: None,
+        };
+
+        let findings = preview(roots);
+        let unreadable: Vec<&PathBuf> = findings.unreadable.iter().map(|(p, _)| p).collect();
+        assert_eq!(unreadable, vec![&temp_file], "solo el que existe y falla");
+
+        let outcome = recover(roots).unwrap();
+        assert_eq!(outcome.kept, vec![temp_file.clone()]);
+        assert_eq!(outcome.unreadable, vec![temp_file]);
         assert!(!outcome.is_clean());
     }
 

@@ -67,7 +67,7 @@ pub fn resolve(request: &ResolveRequest, latest: &str) -> Result<Resolution, Lif
             request.installed
         ))
     })?;
-    match compare_versions(&target, &installed) {
+    match compare_versions(&target, &installed)? {
         std::cmp::Ordering::Equal => {
             if request.force {
                 Ok(Resolution {

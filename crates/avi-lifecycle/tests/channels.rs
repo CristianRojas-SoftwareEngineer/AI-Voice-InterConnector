@@ -11,7 +11,7 @@
 //! 2. **Qué puede hacer cada canal.** `homebrew` es `externally_managed` con el comando
 //!    correcto y sin tocar nada; `script` y `unmanaged` pueden desinstalar. Para
 //!    `self update`, `homebrew` es `externally_managed`: la detección es la misma
-//!    de la tabla de canales y la afirma `update_detects_managed_channels`.
+//!    de la tabla de canales, y la ejercitan los puntos 1 y 4 de este archivo.
 //! 3. **Sobre qué opera la desinstalación.** `self uninstall` actúa siempre
 //!    sobre la **instalación registrada**, sea cual sea la copia del binario que ejecute el
 //!    comando. Es la propiedad que hace que `self uninstall` funcione desde `target/`, y es
@@ -23,6 +23,24 @@
 
 #![allow(clippy::disallowed_methods)]
 
+#[path = "support/bundle.rs"]
+mod bundle;
+#[path = "support/inert.rs"]
+mod inert;
+#[path = "support/inspect.rs"]
+mod inspect;
+#[path = "support/install_env.rs"]
+mod install_env;
+#[path = "support/net.rs"]
+mod net;
+#[path = "support/process_env.rs"]
+mod process_env;
+#[path = "support/registered.rs"]
+mod registered;
+#[path = "support/repo.rs"]
+mod repo;
+#[path = "support/runtime.rs"]
+mod runtime;
 mod support;
 
 use avi_core::exit_codes::ExitCode;
@@ -31,14 +49,16 @@ use avi_lifecycle::cleanup;
 use avi_lifecycle::install;
 use avi_lifecycle::receipt::{self, PathIntegration};
 use avi_lifecycle::uninstall;
-use support::{Inert, Now, Sandbox};
+use inert::Inert;
+use registered::Now;
+use support::Sandbox;
 
 /// Los tres canales se comportan como la tabla dice, en las operaciones de este
 /// ciclo.
 #[test]
 fn channels_behave_per_spec() {
-    let _guard = support::exclusively();
-    let runtime = support::runtime();
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
 
     // ── 1. Cómo se origina cada canal ──────────────────────────────────────────
     // La precedencia: Homebrew sobre el recibo, el recibo sobre `unmanaged`.
@@ -66,13 +86,13 @@ fn channels_behave_per_spec() {
         "y el prefijo de Homebrew gana sobre el recibo"
     );
     assert_eq!(
-        channel::detect(&sandbox.staging.join("ai-voice-interconnector"), None),
+        channel::detect(&sandbox.staging().join("ai-voice-interconnector"), None),
         Channel::Unmanaged,
         "sin recibo y sin Cask, `unmanaged`"
     );
     // `unmanaged` es el canal de un binario ejecutado fuera de una instalación, y por eso
     // `self install` funciona desde `target/`: instala si el bundle es válido.
-    let from_staging = sandbox.write_bundle(&sandbox.staging);
+    let from_staging = sandbox.write_bundle(&sandbox.staging());
     let installed = runtime
         .block_on(install::install(
             &sandbox.install_env(&from_staging),
@@ -87,7 +107,7 @@ fn channels_behave_per_spec() {
     );
 
     // ── Una reinstalación conserva el canal del recibo anterior ────────────────
-    let exe = sandbox.write_bundle(&sandbox.staging);
+    let exe = sandbox.write_bundle(&sandbox.staging());
     let second = runtime
         .block_on(install::install(
             &sandbox.install_env(&exe),
@@ -169,11 +189,11 @@ fn channels_behave_per_spec() {
             .expect("`cleanup` se ejecuta en cualquier canal");
         assert_eq!(outcome.status, "cleanup_complete", "{channel}");
         assert!(
-            !support::exists(&s.models_dir),
+            !inspect::exists(&s.models_dir),
             "{channel}: borra los modelos"
         );
         assert!(
-            support::exists(&s.program_dir),
+            inspect::exists(&s.program_dir),
             "{channel}: y nunca borra el programa"
         );
     }
@@ -207,16 +227,16 @@ fn channels_behave_per_spec() {
         .expect("la desinstalación se ejecuta");
     assert_eq!(outcome.status, "uninstalled");
     assert!(
-        !support::exists(&registered.program_dir),
+        !inspect::exists(&registered.program_dir),
         "se borra la instalación **registrada**, que es la del recibo"
     );
     assert!(
-        support::exists(&bare.program_dir),
+        inspect::exists(&bare.program_dir),
         "y la copia de la que se invoca el comando no se toca, porque no es la \
          instalación registrada"
     );
     assert!(
-        support::exists(&bare.data_dir) && support::exists(&bare.models_dir),
+        inspect::exists(&bare.data_dir) && inspect::exists(&bare.models_dir),
         "tampoco sus raíces, porque el recibo manda sobre dónde se resuelven ahora: es \
          lo que permite que la actualización y la desinstalación operen sobre las mismas \
          ubicaciones aunque la variable ya no esté definida"
@@ -281,7 +301,7 @@ fn env_over_registered<'a>(
 /// `tests/update.rs`.
 #[test]
 fn update_detects_managed_channels() {
-    let _guard = support::exclusively();
+    let _guard = process_env::exclusively();
 
     let sandbox = Sandbox::new("channel-update");
     sandbox.seed_env();
@@ -307,7 +327,7 @@ fn update_detects_managed_channels() {
         "y `script` sigue adelante"
     );
     assert_eq!(
-        channel::detect(&sandbox.staging.join("ai-voice-interconnector"), None),
+        channel::detect(&sandbox.staging().join("ai-voice-interconnector"), None),
         Channel::Unmanaged,
         "como `unmanaged` sin recibo"
     );

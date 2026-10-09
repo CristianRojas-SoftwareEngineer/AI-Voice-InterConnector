@@ -2081,6 +2081,7 @@ fn cleanup_dry_run_matches_fixture() {
     assert_eq!(actual["status"], expected["status"]);
     assert_eq!(actual["planned"], expected["planned"]);
     assert_eq!(actual["removed"], expected["removed"]);
+    assert_eq!(actual["unreadable"], expected["unreadable"]);
     assert_eq!(actual["schema_version"], expected["schema_version"]);
     assert!(expected.get("dry_run").is_none());
 }

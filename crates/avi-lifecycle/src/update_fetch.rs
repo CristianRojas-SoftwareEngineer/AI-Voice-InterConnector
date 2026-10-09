@@ -2,7 +2,7 @@
 //! actualización.
 //!
 //! Convierte una versión objetivo en un bundle nuevo arrancable en staging, con
-//! integridad garantizada por `SHA256SUMS.txt` (sin firma, por D7). El staging es
+//! integridad garantizada por `SHA256SUMS.txt` (sin firma). El staging es
 //! hermano del directorio de programa (mismo volumen) con permisos solo del
 //! usuario, y se borra ante cualquier fallo posterior a su creación: un fallo
 //! antes del traspaso deja la instalación intacta.
@@ -246,7 +246,12 @@ pub async fn verify_boot(
             exe.display(),
         ))
     })?;
-    let reported = std::fs::read_to_string(&log_path).unwrap_or_default();
+    let reported = std::fs::read_to_string(&log_path).map_err(|e| {
+        LifecycleError::binary_incompatible(format!(
+            "no se pudo leer la salida de `--version` del binario descargado ({triple}) en {}: {e}",
+            log_path.display()
+        ))
+    });
     if let Err(e) = std::fs::remove_file(&log_path) {
         eprintln!(
             "Aviso: el log de `verify_boot` {} quedó sin borrar: {e}",
@@ -260,6 +265,7 @@ pub async fn verify_boot(
             status.code().unwrap_or(-1),
         )));
     }
+    let reported = reported?;
     if reported.contains(version) {
         return Ok(());
     }
