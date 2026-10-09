@@ -29,12 +29,14 @@ pub(crate) const ROW_IDS: &[&str] = &[
     "target-hygiene",
 ];
 
-/// Estado de un requisito: correcto, ausente o con versión distinta.
+/// Estado de un requisito: correcto, ausente, con versión distinta o con una
+/// sonda que no se pudo ejecutar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Status {
     Ok,
     Missing,
     Mismatch,
+    Error,
 }
 
 /// Una fila ya sondada: estado, versión encontrada y esperada, y comando
@@ -53,17 +55,22 @@ pub(crate) struct Row {
 pub(crate) struct Report {
     pub rows: Vec<Row>,
     pub engine_drift: Option<String>,
+    /// Chequeos de deriva que no se pudieron ejecutar; hacen fallar el informe.
+    pub probe_errors: Vec<String>,
     pub onnx_drift: Option<String>,
     pub models_drift: Vec<String>,
 }
 
 impl Report {
-    /// `true` si todos los requisitos obligatorios están correctos.
+    /// `true` si todos los requisitos obligatorios están correctos y ningún
+    /// chequeo de deriva falló al ejecutarse.
     pub(crate) fn ok(&self) -> bool {
-        self.rows
-            .iter()
-            .filter(|r| r.mandatory)
-            .all(|r| r.status == Status::Ok)
+        self.probe_errors.is_empty()
+            && self
+                .rows
+                .iter()
+                .filter(|r| r.mandatory)
+                .all(|r| r.status == Status::Ok)
     }
 }
 
@@ -105,7 +112,12 @@ pub(crate) fn probe_command(program: impl AsRef<std::ffi::OsStr>) -> std::proces
     cmd
 }
 
-/// Salida podada de `programa args…`; `None` si no se pudo lanzar o falló.
+/// Salida podada de `programa args…` para una sonda de la que solo importa si
+/// responde: `None` si no se pudo lanzar, falló o no imprimió nada. Es válida
+/// solo cuando la ausencia del programa y su fallo son la misma respuesta
+/// (`xcode-select -p`, `ldconfig -p`, `pkg-config --exists`); las sondas de
+/// versión usan `probe_version`, que distingue «no instalado» de «no se pudo
+/// ejecutar».
 fn probe_output(program: &str, args: &[&str]) -> Option<String> {
     let out = probe_command(program).args(args).output().ok()?;
     if !out.status.success() {
@@ -121,6 +133,52 @@ fn probe_output(program: &str, args: &[&str]) -> Option<String> {
         None
     } else {
         Some(trimmed)
+    }
+}
+
+/// Sonda de versión de `programa args…`. `Ok(None)` si el programa no está
+/// instalado (`NotFound` al lanzarlo) o salió con error o sin salida;
+/// `Err(motivo)` si no se pudo ejecutar por otra causa (permisos, ejecutable
+/// dañado…), que el chequeo informa como tal y no como «falta».
+fn probe_version(program: &str, args: &[&str]) -> Result<Option<String>, String> {
+    let out = match probe_command(program).args(args).output() {
+        Ok(out) => out,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("no se pudo ejecutar `{program}`: {e}")),
+    };
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let trimmed = text.trim();
+    Ok((!trimmed.is_empty()).then(|| trimmed.to_string()))
+}
+
+/// Como `probe_version`, reducida al token de versión de la salida.
+fn probe_version_token(program: &str, args: &[&str]) -> Result<Option<String>, String> {
+    Ok(probe_version(program, args)?.and_then(|o| version_token(&o)))
+}
+
+/// Fila de un requisito cuya sonda no se pudo ejecutar: ni correcto ni ausente.
+fn probe_error_row(
+    id: &'static str,
+    label: &'static str,
+    mandatory: bool,
+    want: Option<String>,
+    reason: String,
+) -> Row {
+    Row {
+        id,
+        label,
+        mandatory,
+        status: Status::Error,
+        found: Some(reason),
+        want,
+        hint: None,
     }
 }
 
@@ -185,19 +243,30 @@ pub(crate) fn msys2_root() -> PathBuf {
 }
 
 /// Versión instalada de un paquete MSYS2 (`pacman -Q nombre` → `nombre
-/// versión`); `None` si no está instalado o no se pudo consultar.
-fn msys2_package_version(pacman: &Path, package: &str) -> Option<String> {
-    let out = probe_command(pacman).args(["-Q", package]).output().ok()?;
+/// versión`). `Ok(None)` si el paquete no está instalado (`pacman` sale con
+/// error); `Err(motivo)` si `pacman` no se pudo ejecutar o su salida no tiene
+/// la forma `nombre versión`.
+fn msys2_package_version(pacman: &Path, package: &str) -> Result<Option<String>, String> {
+    let out = probe_command(pacman)
+        .args(["-Q", package])
+        .output()
+        .map_err(|e| format!("no se pudo ejecutar `{}`: {e}", pacman.display()))?;
     if !out.status.success() {
-        return None;
+        return Ok(None);
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let version = text.strip_prefix(package)?.trim().to_string();
-    if version.is_empty() {
-        None
-    } else {
-        Some(version)
-    }
+    let text = String::from_utf8(out.stdout)
+        .map_err(|_| format!("la salida de `pacman -Q {package}` no es UTF-8 válido"))?;
+    let version = text
+        .strip_prefix(package)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "salida inesperada de `pacman -Q {package}`: {}",
+                text.trim()
+            )
+        })?;
+    Ok(Some(version.to_string()))
 }
 
 /// `true` si la versión instalada cubre el pin: igualdad tras recortar el
@@ -220,10 +289,9 @@ pub(crate) fn pin_covers(installed: &str, pinned: &str) -> bool {
 
 /// Compara `major.minor` de `found` contra el mínimo exigido.
 pub(crate) fn version_at_least(found: &str, min_major: u64, min_minor: u64) -> bool {
-    let mut parts = found
-        .split(['.', '-'])
-        .filter_map(|p| p.parse::<u64>().ok());
-    match (parts.next(), parts.next()) {
+    let mut parts = found.split(['.', '-']);
+    let mut next_number = || parts.next()?.parse::<u64>().ok();
+    match (next_number(), next_number()) {
         (Some(major), Some(minor)) => (major, minor) >= (min_major, min_minor),
         _ => false,
     }
@@ -233,7 +301,11 @@ pub(crate) fn version_at_least(found: &str, min_major: u64, min_minor: u64) -> b
 fn check_rust(pins: &Pins) -> Row {
     let label = "Rust (versión fijada)";
     let want = Some(pins.rust.clone());
-    let Some(out) = probe_output("rustc", &["--version"]) else {
+    let out = match probe_version("rustc", &["--version"]) {
+        Err(reason) => return probe_error_row("rust", label, true, want, reason),
+        Ok(out) => out,
+    };
+    let Some(out) = out else {
         return Row {
             id: "rust",
             label,
@@ -268,7 +340,18 @@ fn check_c_compiler() -> Row {
     let label = "Compilador C/C++ del workspace (CTranslate2)";
     if cfg!(windows) {
         if command_exists("cl") {
-            let found = probe_output("cl", &[]).and_then(|o| version_token(&o));
+            let found = match probe_version_token("cl", &[]) {
+                Ok(found) => found,
+                Err(reason) => {
+                    return probe_error_row(
+                        "c-compiler",
+                        label,
+                        true,
+                        Some("Visual Studio Build Tools (C++)".to_string()),
+                        reason,
+                    )
+                }
+            };
             return Row {
                 id: "c-compiler",
                 label,
@@ -330,7 +413,18 @@ fn check_c_compiler() -> Row {
         };
     }
     // Linux: gcc/g++.
-    let found = probe_output("gcc", &["--version"]).and_then(|o| version_token(&o));
+    let found = match probe_version_token("gcc", &["--version"]) {
+        Ok(found) => found,
+        Err(reason) => {
+            return probe_error_row(
+                "c-compiler",
+                label,
+                true,
+                Some("gcc/g++".to_string()),
+                reason,
+            )
+        }
+    };
     if found.is_some() {
         return Row {
             id: "c-compiler",
@@ -359,7 +453,12 @@ fn check_c_compiler() -> Row {
 /// Sonda CMake ≥ 3.20.
 fn check_cmake() -> Row {
     let label = "CMake ≥ 3.20";
-    let found = probe_output("cmake", &["--version"]).and_then(|o| version_token(&o));
+    let found = match probe_version_token("cmake", &["--version"]) {
+        Ok(found) => found,
+        Err(reason) => {
+            return probe_error_row("cmake", label, true, Some("≥ 3.20".to_string()), reason)
+        }
+    };
     match found {
         Some(v) if version_at_least(&v, 3, 20) => Row {
             id: "cmake",
@@ -402,7 +501,18 @@ fn check_libclang() -> Row {
     let label = "libclang (bindgen de ct2rs)";
     if cfg!(windows) {
         if command_exists("clang") {
-            let found = probe_output("clang", &["--version"]).and_then(|o| version_token(&o));
+            let found = match probe_version_token("clang", &["--version"]) {
+                Ok(found) => found,
+                Err(reason) => {
+                    return probe_error_row(
+                        "libclang",
+                        label,
+                        true,
+                        Some("LLVM".to_string()),
+                        reason,
+                    )
+                }
+            };
             return Row {
                 id: "libclang",
                 label,
@@ -440,7 +550,18 @@ fn check_libclang() -> Row {
         };
     }
     // Linux: `clang --version` o la librería visible en `ldconfig -p`.
-    let clang = probe_output("clang", &["--version"]).and_then(|o| version_token(&o));
+    let clang = match probe_version_token("clang", &["--version"]) {
+        Ok(found) => found,
+        Err(reason) => {
+            return probe_error_row(
+                "libclang",
+                label,
+                true,
+                Some("libclang-dev o equivalente".to_string()),
+                reason,
+            )
+        }
+    };
     let in_ldconfig = probe_output("ldconfig", &["-p"])
         .is_some_and(|o| o.lines().any(|l| l.contains("libclang")));
     if clang.is_some() || in_ldconfig {
@@ -579,12 +700,23 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
         ];
         let mut stale = Vec::new();
         let mut details = Vec::new();
+        let mut failures = Vec::new();
         for (package, pinned) in wants {
             match msys2_package_version(&pacman, package) {
-                Some(v) if pin_covers(&v, pinned) => details.push(format!("{package} {v}")),
-                Some(v) => stale.push(format!("{package}: instalado {v}, fijado {pinned}")),
-                None => stale.push(format!("{package}: no instalado (fijado {pinned})")),
+                Ok(Some(v)) if pin_covers(&v, pinned) => details.push(format!("{package} {v}")),
+                Ok(Some(v)) => stale.push(format!("{package}: instalado {v}, fijado {pinned}")),
+                Ok(None) => stale.push(format!("{package}: no instalado (fijado {pinned})")),
+                Err(reason) => failures.push(reason),
             }
+        }
+        if !failures.is_empty() {
+            return probe_error_row(
+                "engine-toolchain",
+                label,
+                true,
+                Some("MSYS2 UCRT64 con los pines de pins.json".to_string()),
+                failures.join("; "),
+            );
         }
         if stale.is_empty() {
             return Row {
@@ -613,19 +745,29 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
         };
     }
     if cfg!(target_os = "macos") {
-        let make = probe_output("make", &["--version"]).and_then(|o| version_token(&o));
-        let clang = probe_output("clang", &["--version"]).and_then(|o| version_token(&o));
-        if make.is_some() && clang.is_some() {
+        let want = "make, clang y Accelerate (Xcode CLT)";
+        let (make, clang) = match (
+            probe_version_token("make", &["--version"]),
+            probe_version_token("clang", &["--version"]),
+        ) {
+            (Ok(make), Ok(clang)) => (make, clang),
+            (Err(reason), _) | (_, Err(reason)) => {
+                return probe_error_row(
+                    "engine-toolchain",
+                    label,
+                    true,
+                    Some(want.to_string()),
+                    reason,
+                )
+            }
+        };
+        if let (Some(make), Some(clang)) = (make, clang) {
             return Row {
                 id: "engine-toolchain",
                 label,
                 mandatory: true,
                 status: Status::Ok,
-                found: Some(format!(
-                    "make {}, clang {} + Accelerate",
-                    make.unwrap_or_default(),
-                    clang.unwrap_or_default()
-                )),
+                found: Some(format!("make {make}, clang {clang} + Accelerate")),
                 want: Some("make, clang y Accelerate (Xcode CLT)".to_string()),
                 hint: None,
             };
@@ -641,8 +783,21 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
         };
     }
     // Linux: make, gcc y OpenBLAS.
-    let make = probe_output("make", &["--version"]).and_then(|o| version_token(&o));
-    let gcc = probe_output("gcc", &["--version"]).and_then(|o| version_token(&o));
+    let (make, gcc) = match (
+        probe_version_token("make", &["--version"]),
+        probe_version_token("gcc", &["--version"]),
+    ) {
+        (Ok(make), Ok(gcc)) => (make, gcc),
+        (Err(reason), _) | (_, Err(reason)) => {
+            return probe_error_row(
+                "engine-toolchain",
+                label,
+                true,
+                Some("make, gcc y OpenBLAS".to_string()),
+                reason,
+            )
+        }
+    };
     let openblas = probe_first(
         &["ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"],
         &["-p"],
@@ -705,33 +860,62 @@ fn check_onnx(root: &Path, pins: &Pins) -> Row {
             hint: Some("cargo xtask bootstrap".to_string()),
         };
     }
-    let marker = bundle.join(".ort-version");
-    if marker.is_file() {
-        let pinned = std::fs::read_to_string(&marker).unwrap_or_default();
-        if pinned.trim() != pins.ort {
-            return Row {
-                id: "onnx",
-                label,
-                mandatory: true,
-                status: Status::Mismatch,
-                found: Some(format!(
-                    "ort-bundle {} (fijado {})",
-                    pinned.trim(),
-                    pins.ort
-                )),
-                want,
-                hint: Some("cargo xtask bootstrap".to_string()),
-            };
+    match read_ort_marker(&bundle) {
+        OrtMarker::Version(version) if version == pins.ort => Row {
+            id: "onnx",
+            label,
+            mandatory: true,
+            status: Status::Ok,
+            found: Some(format!("ort-bundle {}", pins.ort)),
+            want,
+            hint: None,
+        },
+        other => Row {
+            id: "onnx",
+            label,
+            mandatory: true,
+            status: Status::Mismatch,
+            found: Some(other.describe(&pins.ort)),
+            want,
+            hint: Some("cargo xtask bootstrap".to_string()),
+        },
+    }
+}
+
+/// Contenido del marcador `.ort-version` de un `ort-bundle/`.
+enum OrtMarker {
+    /// El marcador no existe: la versión del bundle es desconocida.
+    Absent,
+    /// El marcador existe pero no se pudo leer (motivo del error).
+    Unreadable(String),
+    /// Versión escrita en el marcador, sin espacios sobrantes.
+    Version(String),
+}
+
+impl OrtMarker {
+    /// Texto de lo hallado en el bundle, contrastado con el pin.
+    fn describe(&self, pinned: &str) -> String {
+        match self {
+            Self::Absent => {
+                format!(
+                    "ort-bundle sin marcador .ort-version (versión desconocida; fijado {pinned})"
+                )
+            }
+            Self::Unreadable(reason) => {
+                format!("marcador .ort-version ilegible: {reason} (fijado {pinned})")
+            }
+            Self::Version(version) => format!("ort-bundle {version} (fijado {pinned})"),
         }
     }
-    Row {
-        id: "onnx",
-        label,
-        mandatory: true,
-        status: Status::Ok,
-        found: Some(format!("ort-bundle {}", pins.ort)),
-        want,
-        hint: None,
+}
+
+/// Lee el marcador de versión de `bundle`; un marcador ausente no se confunde
+/// con uno ilegible.
+fn read_ort_marker(bundle: &Path) -> OrtMarker {
+    match std::fs::read_to_string(bundle.join(".ort-version")) {
+        Ok(text) => OrtMarker::Version(text.trim().to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OrtMarker::Absent,
+        Err(e) => OrtMarker::Unreadable(e.to_string()),
     }
 }
 
@@ -740,7 +924,10 @@ fn check_onnx(root: &Path, pins: &Pins) -> Row {
 fn check_sccache(pins: &Pins) -> Row {
     let label = "sccache";
     let want = Some(pins.sccache.clone());
-    let found = probe_output("sccache", &["--version"]).and_then(|o| version_token(&o));
+    let found = match probe_version_token("sccache", &["--version"]) {
+        Ok(found) => found,
+        Err(reason) => return probe_error_row("sccache", label, false, want, reason),
+    };
     match &found {
         Some(version) if pin_covers(version, &pins.sccache) => Row {
             id: "sccache",
@@ -823,7 +1010,8 @@ fn hooks_path_is_githooks(root: &Path, configured: &str) -> bool {
 /// Sonda de higiene de `target/` (opcional): tamaño frente al umbral y
 /// estado del hook de poda. Solo lectura; nunca bloquea `ok()`.
 fn check_target_hygiene(root: &Path) -> Row {
-    let size = super::clean::size_of(&root.join("target"));
+    let measured = super::clean::size_of(&root.join("target"));
+    let size = measured.bytes;
     let hook = probe_hooks_path(root);
     let warn = target_hygiene_warn(size, hook);
     let hook_text = match hook {
@@ -845,7 +1033,7 @@ fn check_target_hygiene(root: &Path) -> Row {
         label: "higiene de target",
         mandatory: false,
         status: if warn { Status::Mismatch } else { Status::Ok },
-        found: Some(format!("{} ({hook_text})", avi_shared::human_bytes(size))),
+        found: Some(format!("{} ({hook_text})", measured.text())),
         want: Some(format!("máx. {TARGET_HYGIENE_MAX_GB} GB")),
         hint: if hints.is_empty() {
             None
@@ -881,19 +1069,32 @@ pub(crate) fn engine_drift_status(
     }
 }
 
+/// Error de lectura con la ruta que lo causó.
+fn read_error(path: &Path, e: std::io::Error) -> anyhow::Error {
+    anyhow::anyhow!("no se pudo leer {}: {e}", path.display())
+}
+
 /// mtime más reciente entre las fuentes del motor (`.c`, `.h`, `Makefile`);
-/// `None` si no hay fuentes.
-fn newest_engine_source(root: &Path) -> Option<std::time::SystemTime> {
+/// `None` si no hay fuentes. Un directorio inexistente no aporta fuentes; el
+/// resto de errores de lectura se propagan.
+fn newest_engine_source(root: &Path) -> Result<Option<std::time::SystemTime>> {
     let dir = root.join("vendor").join("qwen3-tts");
     let mut newest: Option<std::time::SystemTime> = None;
     let mut stack = vec![dir];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(read_error(&dir, e)),
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|e| read_error(&dir, e))?;
             let path = entry.path();
-            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            if entry
+                .file_type()
+                .map_err(|e| read_error(&path, e))?
+                .is_dir()
+            {
                 stack.push(path);
                 continue;
             }
@@ -905,63 +1106,62 @@ fn newest_engine_source(root: &Path) -> Option<std::time::SystemTime> {
             if !interesting {
                 continue;
             }
-            if let Ok(meta) = path.metadata() {
-                if let Ok(mtime) = meta.modified() {
-                    newest = Some(newest.map_or(mtime, |n: std::time::SystemTime| n.max(mtime)));
-                }
-            }
+            let mtime = path
+                .metadata()
+                .and_then(|m| m.modified())
+                .map_err(|e| read_error(&path, e))?;
+            newest = Some(newest.map_or(mtime, |n: std::time::SystemTime| n.max(mtime)));
         }
     }
-    newest
+    Ok(newest)
 }
 
 /// `true` si el motor está compilado y al día (convergencia de `bootstrap`).
-pub(crate) fn engine_is_fresh(root: &Path) -> bool {
-    probe_engine_drift(root).is_none()
+/// Un error al comprobarlo se propaga: no se decide «fresco» a ciegas.
+pub(crate) fn engine_is_fresh(root: &Path) -> Result<bool> {
+    Ok(probe_engine_drift(root)?.is_none())
 }
 
-/// Deriva del motor: binario ausente o más viejo que sus fuentes.
-fn probe_engine_drift(root: &Path) -> Option<String> {
+/// Deriva del motor: binario ausente o más viejo que sus fuentes. Un error de
+/// lectura se propaga.
+fn probe_engine_drift(root: &Path) -> Result<Option<String>> {
     let bin = root
         .join("vendor")
         .join("qwen3-tts")
         .join(engine_bin_name());
-    let bin_mtime = bin
-        .metadata()
-        .ok()
-        .filter(|m| m.is_file())
-        .and_then(|m| m.modified().ok());
+    let bin_mtime = match bin.metadata() {
+        Ok(meta) if meta.is_file() => Some(meta.modified().map_err(|e| read_error(&bin, e))?),
+        Ok(_) => None,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(read_error(&bin, e)),
+    };
     if bin_mtime.is_none() {
-        return Some(
+        return Ok(Some(
             "motor sin compilar (ejecuta `cargo xtask bootstrap` o `build-engine`)".to_string(),
-        );
+        ));
     }
-    engine_drift_status(bin_mtime, newest_engine_source(root)).map(|_| {
+    Ok(engine_drift_status(bin_mtime, newest_engine_source(root)?).map(|_| {
         "motor desactualizado respecto de sus fuentes (ejecuta `cargo xtask bootstrap` o `build-engine`)".to_string()
-    })
+    }))
 }
 
-/// Deriva de ONNX: marcador de `ort-bundle/` distinto del pin.
+/// Deriva de ONNX: `ort-bundle/` ausente o con marcador ausente, ilegible o
+/// distinto del pin.
 fn probe_onnx_drift(root: &Path, pins: &Pins) -> Option<String> {
-    let marker = root.join("ort-bundle").join(".ort-version");
-    if !root.join("ort-bundle").is_dir() {
+    let bundle = root.join("ort-bundle");
+    if !bundle.is_dir() {
         return Some(format!(
             "ONNX Runtime sin descargar (fijado {}; lo provee `cargo xtask bootstrap`)",
             pins.ort
         ));
     }
-    if marker.is_file() {
-        let pinned = std::fs::read_to_string(&marker).unwrap_or_default();
-        if pinned.trim() != pins.ort {
-            return Some(format!(
-                "ONNX Runtime {} distinto del fijado {} (ejecuta `cargo xtask bootstrap`)",
-                pinned.trim(),
-                pins.ort
-            ));
-        }
-        return None;
+    match read_ort_marker(&bundle) {
+        OrtMarker::Version(version) if version == pins.ort => None,
+        other => Some(format!(
+            "ONNX Runtime: {} (ejecuta `cargo xtask bootstrap`)",
+            other.describe(&pins.ort)
+        )),
     }
-    None
 }
 
 /// `true` si los modelos ya están provisionados (convergencia de
@@ -1013,9 +1213,18 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         ROW_IDS,
         "la tabla cubre cada fila de requisitos en orden"
     );
+    let mut probe_errors = Vec::new();
+    let engine_drift = match probe_engine_drift(root) {
+        Ok(drift) => drift,
+        Err(e) => {
+            probe_errors.push(format!("no se pudo comprobar el motor TTS: {e}"));
+            None
+        }
+    };
     Report {
         rows,
-        engine_drift: probe_engine_drift(root),
+        engine_drift,
+        probe_errors,
         onnx_drift: probe_onnx_drift(root, pins),
         models_drift: probe_models_drift(),
     }
@@ -1031,6 +1240,7 @@ fn status_text(status: &Status) -> &'static str {
         Status::Ok => "correcto",
         Status::Missing => "falta",
         Status::Mismatch => "versión distinta",
+        Status::Error => "no se pudo comprobar",
     }
 }
 
@@ -1040,7 +1250,7 @@ pub fn run(json: bool) -> Result<()> {
     let pins = load_pins(&root)?;
     let report = check(&root, &pins);
     if json {
-        print_json(&report, &pins);
+        print_json(&report, &pins)?;
     } else {
         print_human(&report);
     }
@@ -1087,12 +1297,15 @@ fn print_human(report: &Report) {
             println!("  - {drift}");
         }
     }
+    for error in &report.probe_errors {
+        println!("  [no se pudo comprobar] {error}");
+    }
     if report.ok() {
         println!("Entorno listo.");
     }
 }
 
-fn print_json(report: &Report, pins: &Pins) {
+fn print_json(report: &Report, pins: &Pins) -> Result<()> {
     let rows: Vec<serde_json::Value> = report
         .rows
         .iter()
@@ -1121,13 +1334,15 @@ fn print_json(report: &Report, pins: &Pins) {
             "ninja": pins.ninja,
         },
         "requirements": rows,
+        "probe_errors": report.probe_errors,
         "drift": {
             "engine": report.engine_drift,
             "onnx": report.onnx_drift,
             "models": report.models_drift,
         },
     });
-    println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1152,7 +1367,7 @@ mod tests {
 
     /// La tabla cubre cada fila de requisitos sin duplicados ni filas de más.
     #[test]
-    fn table_covers_spec_rows_once() {
+    fn table_covers_requirement_rows_once() {
         let mut ids = ROW_IDS.to_vec();
         ids.sort();
         ids.dedup();
@@ -1173,15 +1388,15 @@ mod tests {
         );
     }
 
-    /// Los pines que consume la tabla son los de `pins.json`, sin réplica:
-    /// el JSON de juguete coincide con el canónico en estructura.
+    /// Los pines que consume la tabla se cargan de `packaging/pins.json` con el
+    /// mismo cargador que usa `doctor`, y ninguno viene vacío.
     #[test]
     fn pins_match_json_source() {
-        let text = include_str!("../../../packaging/pins.json");
-        let pins = avi_shared::pins::parse_text(text).expect("pins.json válido");
-        assert_eq!(pins.rust, "1.96.0");
-        assert_eq!(pins.ort, "1.28.0");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let pins = avi_shared::pins::load_from_root(&root).expect("pins.json válido");
         for field in [
+            &pins.rust,
+            &pins.ort,
             &pins.sccache,
             &pins.msys2_base,
             &pins.msys2_gcc,
@@ -1270,6 +1485,63 @@ mod tests {
         assert!(version_at_least("3.20", 3, 20));
         assert!(!version_at_least("3.19.9", 3, 20));
         assert!(!version_at_least("desconocida", 3, 20));
+        // Un componente no numérico no se salta: `3.x.25` no es `3.25`.
+        assert!(!version_at_least("3.x.25", 3, 20));
+    }
+
+    /// Crea un `ort-bundle/` con la librería del SO y, si se indica, el marcador.
+    fn onnx_fixture(marker: Option<&str>) -> tempfile::TempDir {
+        let root = tempfile::Builder::new()
+            .prefix("xtask_doctor_onnx_")
+            .tempdir()
+            .unwrap();
+        let bundle = root.path().join("ort-bundle");
+        std::fs::create_dir(&bundle).unwrap();
+        let lib = if cfg!(windows) {
+            "onnxruntime.dll"
+        } else if cfg!(target_os = "macos") {
+            "libonnxruntime.dylib"
+        } else {
+            "libonnxruntime.so"
+        };
+        std::fs::write(bundle.join(lib), b"").unwrap();
+        if let Some(text) = marker {
+            std::fs::write(bundle.join(".ort-version"), text).unwrap();
+        }
+        root
+    }
+
+    /// Sin marcador la versión del bundle es desconocida: fila `Mismatch` con la
+    /// pista de `bootstrap` y deriva informada.
+    #[test]
+    fn onnx_without_marker_is_a_mismatch() {
+        let root = onnx_fixture(None);
+        let row = check_onnx(root.path(), &toy_pins());
+        assert_eq!(row.status, Status::Mismatch);
+        assert!(row.hint.unwrap().contains("cargo xtask bootstrap"));
+        assert!(probe_onnx_drift(root.path(), &toy_pins()).is_some());
+    }
+
+    #[test]
+    fn onnx_with_matching_marker_is_ok_and_other_version_drifts() {
+        let pins = toy_pins();
+        let good = onnx_fixture(Some("1.28.0\n"));
+        assert_eq!(check_onnx(good.path(), &pins).status, Status::Ok);
+        assert!(probe_onnx_drift(good.path(), &pins).is_none());
+        let stale = onnx_fixture(Some("1.20.0"));
+        assert_eq!(check_onnx(stale.path(), &pins).status, Status::Mismatch);
+        assert!(probe_onnx_drift(stale.path(), &pins).is_some());
+    }
+
+    /// Un marcador que existe pero no se puede leer (aquí, un directorio) se
+    /// informa como ilegible y no como versión vacía.
+    #[test]
+    fn onnx_unreadable_marker_is_reported() {
+        let root = onnx_fixture(None);
+        std::fs::create_dir(root.path().join("ort-bundle").join(".ort-version")).unwrap();
+        let row = check_onnx(root.path(), &toy_pins());
+        assert_eq!(row.status, Status::Mismatch);
+        assert!(row.found.unwrap().contains("ilegible"));
     }
 
     #[test]
@@ -1318,6 +1590,32 @@ mod tests {
         assert_eq!(row.status, Status::Missing);
         assert_eq!(row.want, Some("1.28.0".to_string()));
         assert!(row.hint.unwrap().contains("bootstrap"));
+    }
+
+    /// Un programa inexistente es «no instalado»; uno que no se puede ejecutar
+    /// por otra causa (aquí, un directorio) es un error, no una ausencia.
+    #[test]
+    fn probe_version_distinguishes_missing_from_unrunnable() {
+        let missing = "program-that-does-not-exist-xtask-doctor";
+        assert_eq!(probe_version(missing, &["--version"]), Ok(None));
+        let dir = tempfile::tempdir().unwrap();
+        assert!(probe_version(&dir.path().to_string_lossy(), &["--version"]).is_err());
+        let exe = std::env::current_exe().expect("ejecutable de pruebas");
+        assert!(probe_version(&exe.to_string_lossy(), &["--list"])
+            .unwrap()
+            .is_some());
+    }
+
+    /// Un fallo de lectura en las fuentes del motor se propaga y no se decide
+    /// «al día»: aquí `vendor/qwen3-tts` es un fichero y no un directorio.
+    #[test]
+    fn engine_source_read_error_is_propagated() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("vendor")).unwrap();
+        std::fs::write(root.path().join("vendor").join("qwen3-tts"), b"x").unwrap();
+        assert!(newest_engine_source(root.path()).is_err());
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(newest_engine_source(empty.path()).unwrap(), None);
     }
 
     #[test]

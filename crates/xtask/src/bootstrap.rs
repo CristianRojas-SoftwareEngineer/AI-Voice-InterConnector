@@ -1,12 +1,12 @@
 //! `xtask bootstrap`: prepara o pone al día el entorno de desarrollo.
 //!
 //! Convergente: la misma orden prepara el entorno la primera vez y lo pone al
-//! día tras un `git pull`; si nada cambió, no hace trabajo (criterio 24). Los
+//! día tras un `git pull`; si nada cambió, no hace trabajo. Los
 //! 6 pasos se ejecutan en orden y cada uno es no-op cuando su estado ya
 //! converge. `--system` es la única vía que ejecuta gestores con `sudo`/UAC,
 //! y solo por petición explícita (flag más confirmación). La versión de ONNX
 //! sale de los pines y su aseguramiento reutiliza `ensure_ort_bundle` de
-//! `package.rs` (decisión (d)): `bootstrap` no implementa su propia descarga.
+//! `package.rs`: `bootstrap` no implementa su propia descarga.
 //! `--models` provisiona con `setup` del build local. Sin `rustup` (caso WSL),
 //! el paso 2 indica la instalación antes de fallar. Sin red en los tests:
 //! las decisiones son funciones puras sobre fixtures.
@@ -185,7 +185,7 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
     );
 
     // Paso 4. Motor TTS si falta o está desactualizado.
-    if super::doctor::engine_is_fresh(&root) {
+    if super::doctor::engine_is_fresh(&root)? {
         println!("Paso 4/6 (motor TTS): al día, se omite la compilación.");
     } else {
         println!("Paso 4/6 (motor TTS): compilando (build-engine --self-test) …");
@@ -289,6 +289,7 @@ mod tests {
                 },
             ],
             engine_drift: None,
+            probe_errors: Vec::new(),
             onnx_drift: None,
             models_drift: Vec::new(),
         }

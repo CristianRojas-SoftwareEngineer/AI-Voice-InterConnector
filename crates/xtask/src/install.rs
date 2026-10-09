@@ -35,29 +35,39 @@ pub(crate) fn delegate_args(no_setup: bool) -> Vec<String> {
 
 /// Localiza el binario del producto dentro del árbol sin comprimir que dejó
 /// `package --no-compress` en `dir` (el ejecutable del manifiesto, en la
-/// raíz del árbol). `None` si no está: el staging no sirve.
-pub(crate) fn find_staged_binary(dir: &Path) -> Option<PathBuf> {
+/// raíz del árbol). `Ok(None)` si no está: el staging no sirve. Un directorio
+/// ilegible es un error.
+pub(crate) fn find_staged_binary(dir: &Path) -> Result<Option<PathBuf>> {
     let candidate = dir.join(product_bin_name());
     if candidate.is_file() {
-        return Some(candidate);
+        return Ok(Some(candidate));
     }
     // Búsqueda acotada a un nivel (el árbol del bundle es plano con
     // `vendor/` como único subdirectorio con binarios ajenos al producto).
-    std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
-        let path = entry.path();
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| anyhow::anyhow!("no se pudo leer {}: {e}", dir.display()))?
+    {
+        let path = entry
+            .map_err(|e| anyhow::anyhow!("no se pudo leer una entrada de {}: {e}", dir.display()))?
+            .path();
         if path.is_dir() {
             let nested = path.join(product_bin_name());
-            nested.is_file().then_some(nested)
-        } else {
-            None
+            if nested.is_file() {
+                return Ok(Some(nested));
+            }
         }
-    })
+    }
+    Ok(None)
 }
 
-/// Borra el staging sin fallar (lo mejor posible): se invoca en todos los
-/// caminos de salida.
+/// Borra el staging en todos los caminos de salida. Un fallo no puede
+/// propagarse desde el `Drop` que lo invoca, así que se avisa por stderr.
 fn remove_staging(dir: &Path) {
-    std::fs::remove_dir_all(dir).ok();
+    if let Err(e) = std::fs::remove_dir_all(dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!("aviso: no se pudo borrar el staging {}: {e}", dir.display());
+        }
+    }
 }
 
 /// Ejecuta `package --no-compress --flat` por proceso contra `out`: el
@@ -82,10 +92,12 @@ fn run_package_no_compress(xtask: &Path, out: &Path) -> Result<()> {
 /// `/home` en WSL). Puro salvo la resolución de rutas, fijado por test.
 pub(crate) fn staging_dir() -> Result<PathBuf> {
     let install = avi_shared::paths::install_dir()?;
-    let sibling_base = install
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(std::env::temp_dir);
+    let sibling_base = install.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "el directorio de programa {} no tiene directorio padre donde crear el staging",
+            install.display()
+        )
+    })?;
     Ok(sibling_base.join(format!(
         "{}{}",
         avi_shared::paths::STAGING_DIR_PREFIX,
@@ -119,7 +131,7 @@ pub fn run(no_setup: bool) -> Result<()> {
     let _guard = Guard { dir: &staging };
 
     run_package_no_compress(&xtask, &staging)?;
-    let binary = find_staged_binary(&staging).ok_or_else(|| {
+    let binary = find_staged_binary(&staging)?.ok_or_else(|| {
         anyhow::anyhow!(
             "el staging no trae el binario del producto: {}",
             staging.display()
@@ -172,14 +184,15 @@ mod tests {
         std::fs::write(nested.join(product_bin_name()), b"bin").unwrap();
 
         assert_eq!(
-            find_staged_binary(&flat).unwrap(),
+            find_staged_binary(&flat).unwrap().unwrap(),
             flat.join(product_bin_name())
         );
         assert_eq!(
-            find_staged_binary(&base.join("nested")).unwrap(),
+            find_staged_binary(&base.join("nested")).unwrap().unwrap(),
             nested.join(product_bin_name())
         );
-        assert!(find_staged_binary(&empty).is_none());
+        assert!(find_staged_binary(&empty).unwrap().is_none());
+        assert!(find_staged_binary(&base.join("missing")).is_err());
     }
 
     /// El staging se borra ante el fallo (aquí simulado: borrar dos veces

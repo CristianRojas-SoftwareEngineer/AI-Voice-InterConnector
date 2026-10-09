@@ -286,7 +286,7 @@ enum Commands {
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
     },
-    /// Genera SOURCE-OFFER.md
+    /// Genera o verifica SOURCE-OFFER.md
     SourceOffer {
         #[arg(long)]
         check: bool,
@@ -649,10 +649,14 @@ fn augment_windows_env(cmd: &mut std::process::Command) -> Result<()> {
 fn build_engine(self_test: bool, simd: Option<String>, jobs: Option<usize>) -> Result<()> {
     let dir = engine_dir();
     let simd = simd.unwrap_or_else(|| "auto".to_string());
-    let jobs = jobs.unwrap_or_else(|| {
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1)
+    let jobs = jobs.unwrap_or_else(|| match std::thread::available_parallelism() {
+        Ok(n) => n.get(),
+        Err(e) => {
+            eprintln!(
+                "aviso: no se pudo determinar el paralelismo disponible ({e}); se compila con -j1"
+            );
+            1
+        }
     });
 
     let mut cmd = std::process::Command::new(make_program());
@@ -718,29 +722,14 @@ fn build_engine(self_test: bool, simd: Option<String>, jobs: Option<usize>) -> R
 }
 
 pub(crate) fn get_version() -> Result<String> {
-    // Rust: Cargo.toml
-    let cargo = Path::new("Cargo.toml");
-    if cargo.is_file() {
-        let text = std::fs::read_to_string(cargo)?;
-        if let Some(m) = Regex::new(r#"\[package\][^\[]*?version\s*=\s*"([^"]+)""#)
-            .unwrap()
-            .captures(&text)
-        {
-            return Ok(m[1].to_string());
-        }
-    }
-    // Rust: src/main.rs
-    let main_rs = Path::new("src/main.rs");
-    if main_rs.is_file() {
-        let text = std::fs::read_to_string(main_rs)?;
-        if let Some(m) = Regex::new(r#"const VERSION:\s*&str\s*=\s*"([^"]+)""#)
-            .unwrap()
-            .captures(&text)
-        {
-            return Ok(m[1].to_string());
-        }
-    }
-    Err(anyhow!("No se pudo determinar la versión del proyecto"))
+    // La versión vive en el `[package]` de Cargo.toml.
+    let text = std::fs::read_to_string("Cargo.toml")
+        .map_err(|e| anyhow!("no se pudo leer Cargo.toml: {}", e))?;
+    Regex::new(r#"\[package\][^\[]*?version\s*=\s*"([^"]+)""#)
+        .unwrap()
+        .captures(&text)
+        .map(|m| m[1].to_string())
+        .ok_or_else(|| anyhow!("Cargo.toml no declara la versión en [package]"))
 }
 
 fn render_source_offer(version: &str) -> String {
@@ -825,7 +814,7 @@ fn bump_version(version: &str) -> Result<()> {
         version,
     )?;
 
-    // SOURCE-OFFER.md: oferta GPLv3 §6 versionada (antes paso manual separado)
+    // SOURCE-OFFER.md: oferta GPLv3 §6 versionada
     let offer = render_source_offer(version);
     std::fs::write(Path::new("SOURCE-OFFER.md"), offer)?;
 
@@ -851,7 +840,7 @@ fn promote_changelog(version: &str) -> Result<()> {
     let changelog_path = Path::new("CHANGELOG.md");
     let text = std::fs::read_to_string(changelog_path)?;
     let last = last_tag()?;
-    let date = today_iso();
+    let date = today_iso()?;
     let promoted = promote_changelog_text(&text, version, &last, &date)?;
     std::fs::write(changelog_path, promoted)?;
     Ok(())
@@ -923,28 +912,30 @@ fn promote_changelog_text(text: &str, version: &str, last: &str, date: &str) -> 
     Ok(result)
 }
 
-/// Formatea la fecha actual como YYYY-MM-DD usando el comando `date`.
-fn today_iso() -> String {
-    let output = std::process::Command::new("date").arg("+%Y-%m-%d").output();
-    if let Ok(out) = output {
-        if out.status.success() {
-            if let Ok(s) = String::from_utf8(out.stdout) {
-                return s.trim().to_string();
-            }
-        }
-    }
-    // Fallback: obtener de git (último commit)
-    if let Ok(out) = doctor::probe_command("git")
-        .args(["log", "-1", "--format=%ad", "--date=format:%Y-%m-%d"])
+/// Fecha actual como YYYY-MM-DD, obtenida con el comando `date`. Falla si el
+/// comando no existe, sale con error o no devuelve una fecha con ese formato.
+fn today_iso() -> Result<String> {
+    let out = std::process::Command::new("date")
+        .arg("+%Y-%m-%d")
         .output()
-    {
-        if out.status.success() {
-            if let Ok(s) = String::from_utf8(out.stdout) {
-                return s.trim().to_string();
-            }
-        }
+        .map_err(|e| anyhow!("no se pudo ejecutar `date` para obtener la fecha: {}", e))?;
+    if !out.status.success() {
+        anyhow::bail!("`date +%Y-%m-%d` falló (exit {:?})", out.status.code());
     }
-    "0000-00-00".to_string()
+    parse_iso_date(&String::from_utf8(out.stdout)?)
+}
+
+/// Valida que `text` (salida de `date`) sea una fecha YYYY-MM-DD y la devuelve
+/// sin espacios sobrantes.
+fn parse_iso_date(text: &str) -> Result<String> {
+    let date = text.trim();
+    if !Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap().is_match(date) {
+        anyhow::bail!(
+            "la fecha obtenida no tiene el formato YYYY-MM-DD: '{}'",
+            date
+        );
+    }
+    Ok(date.to_string())
 }
 
 /// Genera el ancla de GitHub para la cabecera `## [version] — date`: el slugger
@@ -1111,17 +1102,17 @@ fn parse_macos_sha256(sums_text: &str, version: &str) -> Result<String> {
     }
 }
 
-/// Entradas `zap trash:` del Cask derivadas de las canónicas de `avi-shared`
-/// (decisión (b), vía (f)): la raíz de modelos **exclusiva** de la
+/// Entradas `zap trash:` del Cask derivadas de las canónicas de `avi-shared`:
+/// la raíz de modelos **exclusiva** de la
 /// aplicación, el directorio de soporte de la aplicación, un snapshot por
 /// modelo pineado en `MODEL_REVISIONS`. Sin `xet` ni
-/// `.locks` globales: en caché compartida rige R3 y esos directorios no son
+/// `.locks` globales: en una caché compartida esos directorios no son
 /// atribuibles a la aplicación.
 fn cask_zap_entries() -> Vec<String> {
     // La raíz de modelos encabeza la lista porque el canal Cask responde
     // `externally_managed` a `self uninstall`: este `zap` es su única vía de
-    // borrado, y desde D3 los modelos ya no viven en la caché HF compartida
-    // sino en la raíz exclusiva de `models_cache_dir()`. Va en forma `~`
+    // borrado, y los modelos viven en la raíz exclusiva de
+    // `models_cache_dir()`. Va en forma `~`
     // porque el Cask se genera en la máquina que construye y se ejecuta en la
     // del usuario; los segmentos son los de la columna de modelos de
     // `models_cache_dir()` para macOS (`Library`, `Caches`, `APP_NAME`,
@@ -2477,6 +2468,14 @@ mod tests {
     fn test_get_version_from_cargo() {
         let v = get_version().unwrap();
         assert!(!v.is_empty());
+    }
+
+    #[test]
+    fn test_parse_iso_date_accepts_only_iso_dates() {
+        assert_eq!(parse_iso_date("2026-10-09\n").unwrap(), "2026-10-09");
+        assert!(parse_iso_date("").is_err());
+        assert!(parse_iso_date("0000-00-0").is_err());
+        assert!(parse_iso_date("09/10/2026").is_err());
     }
 
     #[test]

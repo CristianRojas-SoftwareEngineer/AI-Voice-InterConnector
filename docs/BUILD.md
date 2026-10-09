@@ -714,7 +714,10 @@ clave `tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipelin
 `.engine-cachekey` es el agregado determinista de `Makefile` + `*.c/*.h` (incluye `vendor/lz4.*`) + `third_party/ingot/**/*.{c,h}`.
 Si existe tras `restore_cache` (clave exacta sin fallback) solo se verifica con `--self-test`;
 si no, se compila. El bundle ONNX Runtime (`ort-bundle/`) se cachea con
-`ort-v1-win-x64-<< pipeline.parameters.ort_pin >>` y guarda tras el bundling.
+`ort-v2-win-x64-<< pipeline.parameters.ort_pin >>` y guarda tras el bundling.
+El bundle incluye el marcador `ort-bundle/.ort-version`: sin él la versión es
+desconocida, `cargo xtask doctor` marca `Mismatch` y `cargo xtask package`
+vuelve a descargar.
 
 Ver `vendor/qwen3-tts/CLAUDE.md` y `crates/avi-tts/src/lib.rs` para el contrato
 de invocación (`-j 4 --stream`, sin `--int4`; `GenerationOptions::production()` temp
@@ -792,7 +795,7 @@ Cada capa tiene su comando:
 
 | Capa | Qué contiene | Comando |
 |------|--------------|---------|
-| Proyecto (repo) | `target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario/objetos/`output.wav` del motor y pesos locales obsoletos en `vendor/qwen3-tts` | `cargo xtask clean --repo` (capa por defecto) |
+| Proyecto (repo) | `target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario/objetos/`output.wav` del motor en `vendor/qwen3-tts` | `cargo xtask clean --repo` (capa por defecto) |
 | App (perfil de usuario) | Instalación, `data_dir()`, raíz de modelos y temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo xtask clean --app` (delega en `ai-voice-interconnector self uninstall --yes`, o `cleanup --all --yes` en canal `homebrew`) |
 | Ambas | Aplicación y después repositorio | `cargo xtask clean --all` |
 | Global compartida | `~/.cargo/registry`, `~/.cargo/git`, caché de `sccache` | Manual: la comparten otros proyectos |

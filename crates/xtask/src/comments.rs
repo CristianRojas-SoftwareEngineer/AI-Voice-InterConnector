@@ -2,25 +2,23 @@
 //! desalinean con el tiempo en cuanto el código se mueve.
 //!
 //! La primera es la **cita de sección**: un comentario que remite a una sección
-//! numerada de la especificación en vez de explicar la regla. El enunciado que la
-//! prohíbe es la fila de la tabla por capa de `AGENTS.md` y el principio `P12` de la
-//! especificación, y ninguno de los dos se vigila por sí solo: un principio escrito que
-//! ninguna puerta mira se degrada en silencio, que es el punto ciego por el que la
-//! norma de idioma ya pasó una vez.
+//! numerada de un documento en vez de explicar la regla. Un comentario debe ser
+//! autocontenido, y una regla escrita que ninguna puerta vigila se degrada en silencio.
 //!
 //! La segunda es el **localizador de línea**: citar `fichero.ext:NNN` dentro de un
 //! comentario. Apunta a una coordenada que se desplaza con la primera edición que toque
-//! esas líneas, así que envejece peor que la cita de sección: se han medido nueve que ya
-//! apuntaban a ficheros borrados.
+//! esas líneas, así que envejece peor que la cita de sección.
 //!
 //! **Lo que este control NO intenta**, por decisión y no por descuido: no rechaza que
 //! un comentario nombre otro fichero. El nombre del fichero que una función escribe o
 //! lee es parte legítima de la operación —el manifiesto del bundle, el fichero de
 //! sumas, el directorio de una fixture—, y la frontera entre ese nombre y una remisión
-//! del tipo "véase X" es un juicio que ninguna herramienta puede hacer. Medido en el
-//! árbol: 76 menciones de nombre de fichero, unas 50 de ellas legítimas. Un control que
-//! las rechazara necesitaría una lista blanca de unas 25 entradas que habría que podar
-//! cada vez que se toca un comentario, y una lista blanca que se poda es un agujero.
+//! del tipo "véase X" es un juicio que ninguna herramienta puede hacer. Un control que
+//! las rechazara necesitaría una lista blanca que habría que podar cada vez que se toca
+//! un comentario, y una lista blanca que se poda es un agujero.
+//!
+//! El control falla si algún fichero es ilegible o si el escaneo no encuentra ningún
+//! fichero: un barrido vacío no demuestra nada.
 //!
 //! Sin dependencias nuevas: el inventario congelado de `THIRD-PARTY-LICENSES.md` obliga
 //! a no añadir crates, y el lexer que hace falta es una expresión regular.
@@ -125,7 +123,13 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
     }
     let base = root.map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let files = collect_files(&base)?;
-    let hits = scan(&base, &files);
+    if files.is_empty() {
+        return Err(anyhow!(
+            "no se encontró ningún fichero de primera parte bajo {}",
+            base.display()
+        ));
+    }
+    let hits = scan(&base, &files)?;
 
     if hits.is_empty() {
         println!(
@@ -146,13 +150,12 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
 }
 
 /// Recorre los ficheros de las cuatro familias y devuelve las líneas rechazadas, en
-/// orden de fichero y de línea.
-fn scan(base: &Path, files: &[PathBuf]) -> Vec<Hit> {
+/// orden de fichero y de línea. Un fichero ilegible es un error, no un fichero limpio.
+fn scan(base: &Path, files: &[PathBuf]) -> Result<Vec<Hit>> {
     let mut hits = Vec::new();
     for file in files {
-        let Ok(text) = std::fs::read_to_string(file) else {
-            continue;
-        };
+        let text = std::fs::read_to_string(file)
+            .map_err(|e| anyhow!("no se pudo leer {}: {}", file.display(), e))?;
         let relative = relative_to(base, file);
         if is_allowed(&relative) {
             continue;
@@ -173,7 +176,7 @@ fn scan(base: &Path, files: &[PathBuf]) -> Vec<Hit> {
             });
         }
     }
-    hits
+    Ok(hits)
 }
 
 /// Si el fichero tiene una supervivencia declarada. La lista es por fichero y no por
@@ -238,7 +241,7 @@ fn matches_extension(path: &Path) -> bool {
 /// que la lista blanca se escriba igual en todos los sistemas operativos.
 fn relative_to(base: &Path, file: &Path) -> String {
     file.strip_prefix(base)
-        .unwrap_or(file)
+        .expect("todo fichero recorrido cuelga de la raíz")
         .display()
         .to_string()
         .replace('\\', "/")
@@ -335,7 +338,31 @@ mod tests {
             std::fs::write(&path, body).unwrap();
         }
         let collected = collect_files(&dir).unwrap();
-        scan(&dir, &collected)
+        scan(&dir, &collected).unwrap()
+    }
+
+    #[test]
+    fn an_unreadable_file_is_an_error() {
+        // Un fichero que no es UTF-8 no se puede leer como texto: el escaneo debe
+        // fallar y no darlo por limpio.
+        let guard = tempfile::Builder::new()
+            .prefix("xtask-comments-bin-")
+            .tempdir()
+            .unwrap();
+        let dir = guard.path().to_path_buf();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/bad.rs"), [0xff, 0xfe, 0xfd]).unwrap();
+        let collected = collect_files(&dir).unwrap();
+        assert!(scan(&dir, &collected).is_err());
+    }
+
+    #[test]
+    fn an_empty_scan_is_an_error() {
+        let guard = tempfile::Builder::new()
+            .prefix("xtask-comments-empty-")
+            .tempdir()
+            .unwrap();
+        assert!(run(true, Some(guard.path())).is_err());
     }
 
     #[test]
@@ -429,7 +456,7 @@ mod tests {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, &body).unwrap();
         let collected = collect_files(&dir).unwrap();
-        let hits = scan(&dir, &collected);
+        let hits = scan(&dir, &collected).unwrap();
         assert!(
             hits.is_empty(),
             "un fichero de la lista blanca no se reporta: {hits:?}"
@@ -477,7 +504,7 @@ mod tests {
         // dependa de que alguien se acuerde de lanzar la puerta.
         let base = repo_root();
         let files = collect_files(&base).unwrap();
-        let hits = scan(&base, &files);
+        let hits = scan(&base, &files).unwrap();
         assert!(
             hits.is_empty(),
             "el árbol de primera parte tiene {} líneas rechazadas: {hits:?}",

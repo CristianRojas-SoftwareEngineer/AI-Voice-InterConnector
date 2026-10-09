@@ -115,7 +115,8 @@ parameters:
 #   - toolchain (v1): cambia con rust_pin.
 #   - msys2 (v1): cambia con los pines de versión MSYS2 (solo build-windows-x64).
 #   - sccache (v1): rolling con epoch, por variant.
-#   - ort-bundle (v1): cambia con ort_pin (solo build-windows-x64).
+#   - ort-bundle (v2): cambia con ort_pin (solo build-windows-x64). Incluye el
+#     marcador `.ort-version`, que `xtask package` exige para reutilizar el bundle.
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2
 #     gcc/openblas (solo build-windows-x64).
 commands:
@@ -1364,7 +1365,7 @@ jobs:
           steps:
             - restore_cache:
                 keys:
-                  - ort-v1-win-x64-<< pipeline.parameters.ort_pin >>
+                  - ort-v2-win-x64-<< pipeline.parameters.ort_pin >>
             - run:
                 # Autocontención (requisito duro): el crate `ort` en `load-dynamic`
                 # busca onnxruntime.dll junto al ejecutable. Se empaqueta la librería
@@ -1399,6 +1400,8 @@ jobs:
                       if (-not $Found) { throw "No se encontró $Name en System32" }
                       Copy-Item $Found.FullName "$Bundle\$Name"
                     }
+                    # 3. Marcador de versión: sin él `xtask package` descarta el bundle.
+                    Set-Content -Path "$Bundle\.ort-version" -Value $OrtVersion -NoNewline
                   } else {
                     Write-Host "Bundle ONNX Runtime restaurado de caché; se omite descarga"
                   }
@@ -1406,7 +1409,7 @@ jobs:
                   Get-ChildItem $Bundle | ForEach-Object { Write-Host "  $($_.Name)" }
                   Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - FIN"
             - save_cache:
-                key: ort-v1-win-x64-<< pipeline.parameters.ort_pin >>
+                key: ort-v2-win-x64-<< pipeline.parameters.ort_pin >>
                 paths:
                   - ort-bundle
             - run:

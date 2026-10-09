@@ -144,7 +144,9 @@ fn check_text(pins: &Pins, cfg: &str, toolchain: &str) -> Vec<String> {
     let mut errors = Vec::new();
     let params = pin_params(cfg);
     for (param, expected) in &params {
-        let key = param.strip_suffix(PIN_SUFFIX).unwrap_or(param);
+        let key = param
+            .strip_suffix(PIN_SUFFIX)
+            .expect("`pin_params` solo devuelve parámetros con el sufijo de pin");
         let found = all_pins(pins)
             .into_iter()
             .find(|(k, _)| *k == key)

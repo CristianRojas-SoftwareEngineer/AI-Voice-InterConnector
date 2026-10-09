@@ -1,9 +1,11 @@
 //! `xtask language --check`: escáner de identificadores en español del código de
-//! primera parte. Sustituye a `scripts/detector-idioma.ps1` (borrado), que nadie
-//! lanzaba: era condición de las puertas F5 y F7 sin estar en ningún pipeline.
+//! primera parte.
 //!
-//! Replica su comportamiento sin cambiarlo, y sin dependencias nuevas: el
-//! inventario congelado de `THIRD-PARTY-LICENSES.md` obliga a no añadir crates.
+//! Sin dependencias nuevas: el inventario congelado de `THIRD-PARTY-LICENSES.md`
+//! obliga a no añadir crates.
+//!
+//! El escáner falla si algún fichero es ilegible o si no encuentra ningún fichero
+//! que escanear: un barrido vacío no demuestra nada.
 //!
 //! El recorrido es el inverso del problema: **antes** de tokenizar se apagan
 //! comentarios y literales, porque un `//` en español o una cadena con
@@ -16,10 +18,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 /// Raíces de código de primera parte que se recorren, en orden. Una raíz que no
-/// exista se ignora en silencio: `scripts/` entra por si algún día aloja Rust
-/// (el lexificador es el de Rust, así que un `.ps1` nunca cuenta), y tras el
-/// borrado del script la carpeta directamente no está.
-const ROOTS: &[&str] = &["src", "crates", "tests", "scripts"];
+/// exista se ignora: el fallo ante un escaneo sin ficheros lo da `run`.
+const ROOTS: &[&str] = &["src", "crates", "tests"];
 
 /// Componente de ruta que marca código de terceros vendorizado: se excluye.
 const VENDOR: &str = "vendor";
@@ -29,30 +29,23 @@ const VENDOR: &str = "vendor";
 /// como `linea`, y con 5 se escapaban.
 const MIN_SEGMENT: usize = 4;
 
-/// Palabras castellanas que delatan un identificador en español: el lote
-/// heredado del escáner en PowerShell más un segundo y un tercer lote. Cualquier palabra que
-/// también sea inglés válido queda fuera a propósito.
+/// Palabras castellanas que delatan un identificador en español. Cualquier palabra
+/// que también sea inglés válido queda fuera a propósito.
 ///
 /// `todo` se deja fuera **a propósito**, aunque sea castellana: en este código es
 /// el marcador **inglés** del CHANGELOG (`## [No publicado]` se cura con
 /// `<!-- TODO: curar -->`), y `with_todo` y
 /// `test_promote_changelog_fails_with_leftover_todo` en `main.rs` lo demuestran.
-/// Medido: meterlo da 6 falsos positivos en `main.rs` (`with_todo` ×4 y los dos
-/// `test_..._with_leftover_todo`). No lo "arregles": tradúcelo si algún día el
-/// marcador se va a español, y entonces sí entra en la lista.
+/// Meterlo daría falsos positivos en `main.rs` (`with_todo` y los
+/// `test_..._with_leftover_todo`). Si el marcador pasa a español, entra en la lista.
 ///
-/// `total` tampoco entra, por la misma regla de la cabecera: es inglés válido y
-/// el árbol lo usa como tal (`total_bytes` en `avi-store` y `avi-lifecycle`,
-/// `wer_total` en `avi-translation`, `total_samples`, `total_steps`, `total_cmp`,
-/// `STREAM_TOTAL_DEADLINE`, `t_total` y un `total` acumulador en cuatro ficheros).
-/// Meterlo daba 34 falsos positivos en el árbol ya limpio. Es el mismo caso que
-/// `variable`, documentado en F8: palabra que en este código es inglés bien
-/// puesto y por eso no es deuda.
+/// `total` tampoco entra, por la misma regla: es inglés válido y el árbol lo usa
+/// como tal (`total_bytes`, `wer_total`, `total_samples`, `total_steps`,
+/// `total_cmp`, `STREAM_TOTAL_DEADLINE`, `t_total` y un `total` acumulador).
+/// Igual que `variable`, es inglés bien puesto y por eso no es deuda.
 ///
-/// El script original traía `siguiente` dos veces (164 entradas, 163 distintas);
-/// aquí la lista no tiene duplicados, lo que un test fija.
+/// La lista no tiene duplicados, lo que una prueba fija.
 const ES_WORDS: &[&str] = &[
-    // Lote heredado del escáner en PowerShell.
     "ancestro",
     "anunciado",
     "archivo",
@@ -216,16 +209,9 @@ const ES_WORDS: &[&str] = &[
     "madre",
     "anadir",
     "solo",
-    // Segundo lote: verificado ausente del árbol vigente, que es el único que
-    // tiene que dar cero. Sobre el árbol previo a la corrección, 68 de estas 69
-    // palabras suman 187 hallazgos más (1861 → 2048) en 17 ficheros que ya tenían
-    // otros, así que el recuento de ficheros con hallazgos no se mueve: los
-    // identificadores que disparan son deuda real —`arbol` (62), `antes` (53),
-    // `bloque` (29), `pila` (21), `otro` (18), `aviso` (2) y `esta` (2)—. Seis
-    // palabras —`fin`, `uno`, `dos`, `eso`, `si` y `no`— están por debajo del gate
-    // de 4 caracteres, así que no pueden disparar nada: quedan por completitud de
-    // vocabulario. La sexagésima novena es `total`, que se queda fuera por lo que
-    // explica la cabecera.
+    // Seis palabras —`fin`, `uno`, `dos`, `eso`, `si` y `no`— están por debajo del
+    // umbral de 4 caracteres, así que no pueden disparar nada: quedan por
+    // completitud de vocabulario.
     "ventana",
     "arbol",
     "casilla",
@@ -295,9 +281,6 @@ const ES_WORDS: &[&str] = &[
     "antes",
     "entre",
     "bajo",
-    // Tercer lote: palabras que el escáner no cubría y que se corrigieron a
-    // inglés en los renombrados de identificadores, funciones de prueba y
-    // fixtures. Ninguna es inglés válido.
     "abierto",
     "aborto",
     "agotado",
@@ -514,8 +497,7 @@ fn identifier_re() -> &'static Regex {
 }
 
 /// Entrada del subcomando `language`. `root` sobrescribe la raíz a escanear
-/// (por defecto, el directorio actual), como el `-Root` del script en
-/// PowerShell: sin eso no se pueden escanear fixtures.
+/// (por defecto, el directorio actual): sin eso no se pueden escanear fixtures.
 pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
     if !check {
         println!("Usa --check para escanear los identificadores del código de primera parte");
@@ -523,13 +505,19 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
     }
     let base = root.map_or_else(|| PathBuf::from("."), Path::to_path_buf);
     let files = collect_rust_files(&base)?;
+    if files.is_empty() {
+        return Err(anyhow!(
+            "no se encontró ningún fichero .rs de primera parte bajo {}",
+            base.display()
+        ));
+    }
     let mut rows: Vec<(String, Hit)> = Vec::new();
     for file in &files {
         let text = std::fs::read_to_string(file)
             .map_err(|e| anyhow!("no se pudo leer {}: {}", file.display(), e))?;
         let relative = file
             .strip_prefix(&base)
-            .unwrap_or(file)
+            .expect("todo fichero recorrido cuelga de la raíz")
             .display()
             .to_string();
         for hit in spanish_identifiers(&strip_code(&text)) {
@@ -556,8 +544,8 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
 }
 
 /// Ficheros `.rs` bajo las raíces de primera parte, ordenados. Las raíces que no
-/// existen se ignoran en silencio y cualquier ruta con un componente `vendor`
-/// queda fuera: es código de terceros.
+/// existen se ignoran y cualquier ruta con un componente `vendor` relativo a la
+/// base queda fuera: es código de terceros.
 fn collect_rust_files(base: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     for root in ROOTS {
@@ -565,22 +553,25 @@ fn collect_rust_files(base: &Path) -> Result<Vec<PathBuf>> {
         if !dir.is_dir() {
             continue;
         }
-        walk(&dir, &mut files)?;
+        walk(base, &dir, &mut files)?;
     }
     files.sort();
     Ok(files)
 }
 
 /// Recorrido en profundidad de un directorio, en orden de entrada.
-fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    if is_vendor_path(dir) {
+fn walk(base: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    let relative = dir
+        .strip_prefix(base)
+        .expect("todo directorio recorrido cuelga de la raíz");
+    if is_vendor_path(relative) {
         return Ok(());
     }
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         if entry.file_type()?.is_dir() {
-            walk(&path, files)?;
+            walk(base, &path, files)?;
         } else if path.extension().is_some_and(|ext| ext == "rs") {
             files.push(path);
         }
@@ -588,11 +579,12 @@ fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-/// ¿La ruta tiene un componente `vendor`? Se mira la ruta completa, no solo la
-/// parte recorrida, para que escanear un repo que cuelgue de un `vendor` no
-/// arrastre código de terceros.
-fn is_vendor_path(path: &Path) -> bool {
-    path.components()
+/// ¿La ruta, relativa a la base escaneada, tiene un componente `vendor`? Solo se
+/// mira la parte relativa: escanear un repo que cuelgue de un directorio `vendor`
+/// no debe dejar el escaneo vacío.
+fn is_vendor_path(relative: &Path) -> bool {
+    relative
+        .components()
         .any(|component| component.as_os_str() == VENDOR)
 }
 
@@ -973,8 +965,7 @@ mod tests {
         assert!(detected(source).is_empty());
     }
 
-    /// La lista no tiene duplicados (el script en PowerShell traía `siguiente`
-    /// dos veces).
+    /// La lista no tiene duplicados.
     #[test]
     fn test_word_list_has_no_duplicates() {
         let mut unique: HashSet<&str> = HashSet::new();
@@ -987,7 +978,7 @@ mod tests {
     /// alcance: lo que no es código de primera parte no se escanea.
     #[test]
     fn test_scan_roots_and_vendor_exclusion() {
-        assert_eq!(ROOTS, ["src", "crates", "tests", "scripts"]);
+        assert_eq!(ROOTS, ["src", "crates", "tests"]);
         assert!(is_vendor_path(Path::new(
             "repo/vendor/qwen3-tts/src/lib.rs"
         )));
@@ -995,5 +986,30 @@ mod tests {
         assert!(!is_vendor_path(Path::new(
             "repo/crates/avi-core/src/lib.rs"
         )));
+    }
+
+    /// Una base que cuelga de un directorio `vendor` se escanea igual: la
+    /// exclusión mira solo la parte relativa a la base.
+    #[test]
+    fn test_base_under_vendor_directory_is_scanned() {
+        let guard = tempfile::Builder::new()
+            .prefix("xtask-language-")
+            .tempdir()
+            .unwrap();
+        let base = guard.path().join("vendor").join("repo");
+        std::fs::create_dir_all(base.join("src")).unwrap();
+        std::fs::write(base.join("src/lib.rs"), "fn english() {}\n").unwrap();
+        let files = collect_rust_files(&base).unwrap();
+        assert_eq!(files.len(), 1);
+    }
+
+    /// Un escaneo sin ficheros es un error, no un pase.
+    #[test]
+    fn test_empty_scan_is_an_error() {
+        let guard = tempfile::Builder::new()
+            .prefix("xtask-language-empty-")
+            .tempdir()
+            .unwrap();
+        assert!(run(true, Some(guard.path())).is_err());
     }
 }

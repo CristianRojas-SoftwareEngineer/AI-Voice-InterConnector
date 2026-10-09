@@ -3,7 +3,7 @@
 //!
 //! | Capa | Flag | Contenido | Mecanismo |
 //! |---|---|---|---|
-//! | Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, salidas de `package`, binario y objetos del motor, cobertura y pesos locales heredados bajo `vendor/qwen3-tts` | `xtask` |
+//! | Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, salidas de `package`, binario y objetos del motor y cobertura | `xtask` |
 //! | Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew`), ejecutado con el binario del repositorio |
 //! | Ambas | `--all` | Aplicación y después repositorio | Ídem |
 //!
@@ -13,7 +13,7 @@
 //! incremental en vez de frío.
 //!
 //! La capa global compartida (`~/.cargo`, caché de sccache, paquetes del
-//! sistema, MSYS2) nunca se toca (criterio 23); solo se informa. Detiene
+//! sistema, MSYS2) nunca se toca; solo se informa. Detiene
 //! primero los daemons lanzados desde `target/`, nunca borra código fuente
 //! versionado y aplica las reglas de confirmación (`--dry-run`, `--yes`
 //! obligatorio sin terminal). En Windows, el `xtask.exe` en ejecución se
@@ -66,10 +66,6 @@ const REPO_ENTRIES: &[&str] = &[
     "vendor/qwen3-tts/qwen_tts.exe",
     "vendor/qwen3-tts/output.wav",
     "vendor/qwen3-tts/.engine-cachekey",
-    // Pesos legados: el motor los prefiere (dir hermano del binario) sobre el
-    // snapshot HF de `setup`, enmascarando el modelo pinneado.
-    "vendor/qwen3-tts/qwen3-tts-0.6b",
-    "vendor/qwen3-tts/qwen3-tts-0.6b-base",
 ];
 
 /// Antigüedad a partir de la cual un `.pdb` de `deps/` cuenta como obsoleto
@@ -191,22 +187,79 @@ fn collect_c_artifacts(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Tamaño en bytes de una ruta (recursivo, sin seguir symlinks).
-pub(crate) fn size_of(path: &Path) -> u64 {
-    let Ok(meta) = path.symlink_metadata() else {
-        return 0;
+/// Tamaño de una ruta. Si alguna parte no se pudo leer, `bytes` es solo una
+/// cota inferior y `incomplete` lo señala.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Size {
+    pub bytes: u64,
+    pub incomplete: bool,
+}
+
+impl Size {
+    const ZERO: Self = Self {
+        bytes: 0,
+        incomplete: false,
+    };
+
+    fn plus(self, other: Self) -> Self {
+        Self {
+            bytes: self.bytes + other.bytes,
+            incomplete: self.incomplete || other.incomplete,
+        }
+    }
+
+    /// Texto legible; una cota inferior se marca como incompleta.
+    pub(crate) fn text(self) -> String {
+        if self.incomplete {
+            format!("≥ {} (incompleto)", avi_shared::human_bytes(self.bytes))
+        } else {
+            avi_shared::human_bytes(self.bytes)
+        }
+    }
+}
+
+/// Tamaño en bytes de una ruta (recursivo, sin seguir symlinks). Una ruta
+/// inexistente pesa cero; cualquier otro fallo de lectura marca el resultado
+/// como incompleto en vez de contarlo como cero.
+pub(crate) fn size_of(path: &Path) -> Size {
+    let meta = match path.symlink_metadata() {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Size::ZERO,
+        Err(_) => {
+            return Size {
+                bytes: 0,
+                incomplete: true,
+            }
+        }
     };
     if !meta.is_dir() {
-        return meta.len();
+        return Size {
+            bytes: meta.len(),
+            incomplete: false,
+        };
     }
-    std::fs::read_dir(path)
-        .map(|rd| rd.flatten().map(|e| size_of(&e.path())).sum())
-        .unwrap_or(0)
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Size {
+            bytes: 0,
+            incomplete: true,
+        };
+    };
+    let mut total = Size::ZERO;
+    for entry in entries {
+        total = match entry {
+            Ok(e) => total.plus(size_of(&e.path())),
+            Err(_) => total.plus(Size {
+                bytes: 0,
+                incomplete: true,
+            }),
+        };
+    }
+    total
 }
 
 /// Líneas del listado con su tamaño: directorios uno por línea; ficheros
 /// sueltos agrupados por (directorio, extensión) cuando hay 3 o más.
-fn summarize(paths: &[PathBuf]) -> Vec<(String, u64)> {
+fn summarize(paths: &[PathBuf]) -> Vec<(String, Size)> {
     let mut groups: Vec<((PathBuf, String), Vec<&PathBuf>)> = Vec::new();
     for p in paths {
         let key = if p.is_dir() {
@@ -229,7 +282,9 @@ fn summarize(paths: &[PathBuf]) -> Vec<(String, u64)> {
     let mut out = Vec::new();
     for ((dir, ext), members) in groups {
         if members.len() >= 3 {
-            let size = members.iter().map(|p| size_of(p)).sum();
+            let size = members
+                .iter()
+                .fold(Size::ZERO, |acc, p| acc.plus(size_of(p)));
             out.push((
                 format!("{} × *.{} en {}", members.len(), ext, dir.display()),
                 size,
@@ -269,13 +324,29 @@ pub(crate) fn repo_product_bin(root: &Path) -> Option<PathBuf> {
     repo_product_bins(root).into_iter().next()
 }
 
+/// Ejecuta `bin args…` sin salida propia. El borrado posterior no depende del
+/// resultado, pero un fallo (no se pudo lanzar o salió con error) se avisa
+/// porque deja ficheros bloqueados.
 fn run_quiet(bin: &Path, args: &[&str]) {
-    let _ = std::process::Command::new(bin)
+    let result = std::process::Command::new(bin)
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
+    match result {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "aviso: `{} {}` terminó con {status}",
+            bin.display(),
+            args.join(" ")
+        ),
+        Err(e) => eprintln!(
+            "aviso: no se pudo ejecutar `{} {}`: {e}",
+            bin.display(),
+            args.join(" ")
+        ),
+    }
 }
 
 /// `true` si la ruta contiene el componente `Caskroom`: la copia la
@@ -377,12 +448,12 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
         if repo_paths.is_empty() {
             println!("  (nada en el repo)");
         }
-        let mut total = 0u64;
+        let mut total = Size::ZERO;
         for (label, size) in summarize(&repo_paths) {
-            total += size;
-            println!("  {:>10}  {}", avi_shared::human_bytes(size), label);
+            total = total.plus(size);
+            println!("  {:>10}  {}", size.text(), label);
         }
-        println!("Total repo: {}", avi_shared::human_bytes(total));
+        println!("Total repo: {}", total.text());
     }
     if layer.wants_app() {
         println!(
@@ -454,7 +525,8 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
         delegate_app_layer(&repo_bin, homebrew, false)?;
     }
 
-    let self_exe = std::env::current_exe().ok();
+    let self_exe = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("no se pudo resolver el ejecutable de xtask: {e}"))?;
     let target_dir = root.join("target");
     let mut failed: Vec<(PathBuf, String)> = Vec::new();
     let mut deferred_target = false;
@@ -466,11 +538,7 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
             Ok(()) => println!("  ✓ {}", p.display()),
             Err(e) => {
                 // Windows no borra el ejecutable en uso (`target/.../xtask.exe`).
-                let own = cfg!(windows)
-                    && *p == target_dir
-                    && self_exe
-                        .as_ref()
-                        .is_some_and(|x| x.starts_with(&target_dir));
+                let own = cfg!(windows) && *p == target_dir && self_exe.starts_with(&target_dir);
                 if own {
                     deferred_target = true;
                 } else {
@@ -483,13 +551,14 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
     if deferred_target {
         #[cfg(windows)]
         {
+            let stamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| anyhow::anyhow!("el reloj del sistema es anterior a 1970: {e}"))?
+                .as_millis();
             let log = std::env::temp_dir().join(format!(
                 "avi-xtask-clean-{}-{}.log",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis()
+                stamp
             ));
             avi_process::schedule_clean_removal(&target_dir, std::process::id(), &log)?;
         }
@@ -570,7 +639,6 @@ mod tests {
         let ingot = engine.join("third_party/ingot/src");
         std::fs::create_dir_all(&ingot).unwrap();
         std::fs::create_dir_all(root.join("target/debug")).unwrap();
-        std::fs::create_dir_all(engine.join("qwen3-tts-0.6b")).unwrap();
         std::fs::create_dir_all(engine.join("presets")).unwrap();
         for f in ["main.c", "main.o", "main.d", "Makefile"] {
             std::fs::write(engine.join(f), b"x").unwrap();
@@ -585,7 +653,6 @@ mod tests {
         }
         for gone in [
             root.join("target"),
-            engine.join("qwen3-tts-0.6b"),
             engine.join("main.o"),
             engine.join("main.d"),
             ingot.join("q.o"),
@@ -660,6 +727,33 @@ mod tests {
         ] {
             assert!(!got.contains(&keep), "no debe borrar {}", keep.display());
         }
+    }
+
+    /// Una ruta inexistente pesa cero y una ilegible marca el tamaño como
+    /// incompleto en vez de contarse como cero.
+    #[test]
+    fn size_of_marks_unreadable_paths() {
+        let guard = tempfile::Builder::new()
+            .prefix("xtask_clean_size_")
+            .tempdir()
+            .unwrap();
+        let file = guard.path().join("f");
+        std::fs::write(&file, b"abcd").unwrap();
+        assert_eq!(
+            size_of(&file),
+            Size {
+                bytes: 4,
+                incomplete: false
+            }
+        );
+        assert_eq!(size_of(&guard.path().join("missing")), Size::ZERO);
+        assert!(Size {
+            bytes: 1,
+            incomplete: true
+        }
+        .text()
+        .contains("incompleto"));
+        assert_eq!(size_of(guard.path()).bytes, 4);
     }
 
     /// Sin réplicas: la capa app la ejecuta el binario del repositorio, así

@@ -4,7 +4,7 @@
 //! `self install`): empaquetado e instalación no pueden divergir. Resuelve ONNX
 //! Runtime reutilizando `ort-bundle/` si está fresco para la versión fijada
 //! en `packaging/pins.json` (fuente única, espejo del parámetro `ort_version` de
-//! la CI), o con descarga verificada si no. Valida `--expect-version` (decisión c: la
+//! la CI), o con descarga verificada si no. Valida `--expect-version` (la
 //! puerta tag-versión vive aquí, ningún paso YAML la duplica), pasa el humo
 //! (`version` y `voice list`) y comprime de forma determinista con el nombre de
 //! `release_asset_name`.
@@ -36,8 +36,8 @@ const MANIFEST_REL: &str = "packaging/bundle-manifest.json";
 const ORT_BUNDLE_REL: &str = "ort-bundle";
 
 /// Marcador de versión dentro de `ort-bundle/`: lo escribe una descarga de este
-/// comando. Un bundle sin marcador pero con las librerías (el que restaura la
-/// caché de CI, que no lo escribe) se considera fresco.
+/// comando y el job de CI que arma el bundle. Un bundle sin marcador tiene una
+/// versión desconocida y no se reutiliza.
 const ORT_MARKER: &str = ".ort-version";
 
 /// Marca temporal fija de los archivos comprimidos (2020-01-01 UTC): con
@@ -102,7 +102,7 @@ fn release_asset_name(triple: &str, version: &str) -> Result<String> {
     ))
 }
 
-/// Puerta tag-versión (decisión c): fail-fast si la versión del CLI no es la
+/// Puerta tag-versión: fail-fast si la versión del CLI no es la
 /// esperada por quien invoca (en CI, `${CIRCLE_TAG#v}`).
 fn check_expect_version(actual: &str, expect: Option<&str>) -> Result<()> {
     if let Some(want) = expect {
@@ -152,35 +152,43 @@ pub(crate) fn ort_dylib_path(bundle: &Path, triple: &str) -> Result<PathBuf> {
 }
 
 /// `true` si `ort-bundle/` ya sirve para este triple: todas las librerías
-/// presentes y marcador ausente (caché de CI) o coincidente con la versión de
-/// los pines.
+/// presentes y marcador existente cuya versión coincide con la de los pines.
+/// Un marcador o una librería ausentes dejan el bundle sin servir; un fichero
+/// que existe pero no se puede leer es un error.
 fn ort_bundle_is_fresh(bundle: &Path, triple: &str, ort_version: &str) -> Result<bool> {
     for lib in ort_expected_libs(triple)? {
-        // Existencia y tamaño: un archivo vacío (descarga truncada) no es
-        // fresco y fuerza la reconstrucción en vez de aceptarse en silencio.
-        let fresh = bundle
-            .join(lib)
-            .metadata()
-            .map(|m| m.len() > 0)
-            .unwrap_or(false);
-        if !fresh {
-            return Ok(false);
+        // Existencia y tamaño: un archivo ausente o vacío (descarga truncada)
+        // no es fresco y fuerza la reconstrucción; cualquier otro error de
+        // lectura se propaga.
+        let path = bundle.join(lib);
+        match path.metadata() {
+            Ok(meta) if meta.len() > 0 => {}
+            Ok(_) => return Ok(false),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(anyhow::anyhow!("no se pudo leer {}: {e}", path.display())),
         }
     }
     let marker = bundle.join(ORT_MARKER);
-    if marker.is_file() {
-        let pinned = std::fs::read_to_string(&marker).unwrap_or_default();
-        if pinned.trim() != ort_version {
-            return Ok(false);
-        }
+    match std::fs::read_to_string(&marker) {
+        Ok(pinned) => Ok(pinned.trim() == ort_version),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(anyhow::anyhow!(
+            "no se pudo leer el marcador {}: {e}",
+            marker.display()
+        )),
     }
-    Ok(true)
 }
 
-/// Descarga un archivo por HTTPS con `curl` (o `Invoke-WebRequest` en Windows
-/// si `curl` falta), como los bootstrap: TLS ≥ 1.2 y fallo ante HTTP erróneo.
+/// Escapa una cadena para un literal PowerShell entre comillas simples.
+fn powershell_single_quoted(text: &str) -> String {
+    text.replace('\'', "''")
+}
+
+/// Descarga un archivo por HTTPS con `curl`, como los bootstrap: TLS ≥ 1.2 y
+/// fallo ante HTTP erróneo. Solo en Windows y solo si `curl` no existe se usa
+/// `Invoke-WebRequest`; cualquier otro fallo de `curl` se propaga.
 fn download_https(url: &str, dest: &Path) -> Result<()> {
-    if std::process::Command::new("curl")
+    let curl = std::process::Command::new("curl")
         .args([
             "--proto",
             "=https",
@@ -190,31 +198,32 @@ fn download_https(url: &str, dest: &Path) -> Result<()> {
             &dest.to_string_lossy(),
             url,
         ])
+        .status();
+    match curl {
+        Ok(status) if status.success() => return Ok(()),
+        Ok(status) => bail!("curl falló al descargar {url}: {status}"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && cfg!(windows) => {}
+        Err(e) => bail!("no se pudo ejecutar curl para descargar {url}: {e}"),
+    }
+    let dest_arg = dest.to_string_lossy().to_string();
+    let status = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            &format!(
+                "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
+                 Invoke-WebRequest -Uri '{}' -OutFile '{}' -UseBasicParsing",
+                powershell_single_quoted(url),
+                powershell_single_quoted(&dest_arg)
+            ),
+        ])
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-    {
+        .map_err(|e| anyhow::anyhow!("no se pudo descargar {url}: {e}"))?;
+    if status.success() {
         return Ok(());
     }
-    if cfg!(windows) {
-        let dest_arg = dest.to_string_lossy().to_string();
-        let status = std::process::Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                &format!(
-                    "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
-                     Invoke-WebRequest -Uri '{url}' -OutFile '{dest_arg}' -UseBasicParsing"
-                ),
-            ])
-            .status()
-            .map_err(|e| anyhow::anyhow!("no se pudo descargar {url}: {e}"))?;
-        if status.success() {
-            return Ok(());
-        }
-    }
-    bail!("no se pudo descargar {url} (¿curl instalado y red disponible?)")
+    bail!("Invoke-WebRequest falló al descargar {url}: {status}")
 }
 
 /// Prioridad de una entrada del archivo como candidata a librería: el nombre
@@ -336,7 +345,7 @@ fn copy_vc_runtime(bundle: &Path) -> Result<()> {
 
 /// Asegura `ort-bundle/` para el triple: lo reutiliza si está fresco o lo
 /// reconstruye con descarga verificada en caso contrario. Lo reutiliza
-/// `bootstrap` (decisión (d)): un solo descargador verificado en el crate.
+/// `bootstrap`: un solo descargador verificado en el crate.
 pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, ort_version: &str) -> Result<PathBuf> {
     let bundle = root.join(ORT_BUNDLE_REL);
     if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple, ort_version)? {
@@ -800,6 +809,13 @@ mod tests {
             .ort
     }
 
+    /// Las comillas simples se duplican para no cerrar el literal de PowerShell.
+    #[test]
+    fn powershell_literal_escapes_single_quotes() {
+        assert_eq!(powershell_single_quoted("a'b"), "a''b");
+        assert_eq!(powershell_single_quoted("sin comillas"), "sin comillas");
+    }
+
     /// La descarga de ONNX Runtime apunta a los archivos oficiales por triple.
     #[test]
     fn ort_download_per_target() {
@@ -818,7 +834,7 @@ mod tests {
     }
 
     /// Un `ort-bundle/` con las librerías y marcador coincidente se reutiliza;
-    /// con marcador divergente o librerías ausentes, no.
+    /// sin marcador, con marcador divergente o con librerías ausentes, no.
     #[test]
     fn ort_bundle_freshness() {
         let ort_version = test_ort_version();
@@ -835,7 +851,8 @@ mod tests {
         for lib in ort_expected_libs(triple).unwrap() {
             std::fs::write(base.join(lib), b"x").unwrap();
         }
-        assert!(ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
+        // Sin marcador la versión es desconocida: no es fresco.
+        assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
         std::fs::write(base.join(ORT_MARKER), "0.0.0").unwrap();
         assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
         std::fs::write(base.join(ORT_MARKER), &ort_version).unwrap();
@@ -890,7 +907,8 @@ mod tests {
         );
     }
 
-    /// Compresión determinista: dos pasadas sobre el mismo árbol dan el mismo    /// archivo con exactamente las entradas del manifiesto.
+    /// Compresión determinista: dos pasadas sobre el mismo árbol dan el mismo
+    /// archivo con exactamente las entradas del manifiesto.
     #[test]
     fn compression_is_deterministic() {
         let base_guard = tempfile::Builder::new()

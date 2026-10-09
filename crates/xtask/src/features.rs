@@ -192,10 +192,13 @@ fn verify_reachable_are_declared(base: &Path, reachable: &BTreeSet<String>) -> R
 fn verify_used_features_reachable(base: &Path, reachable: &BTreeSet<String>) -> Result<()> {
     let mut errors = Vec::new();
     let crates = base.join(CRATES_DIR);
-    let Ok(entries) = crates.read_dir() else {
-        return Ok(());
-    };
-    for entry in entries.flatten() {
+    let entries = crates
+        .read_dir()
+        .map_err(|e| anyhow::anyhow!("no se pudo leer {}: {e}", crates.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| {
+            anyhow::anyhow!("no se pudo leer una entrada de {}: {e}", crates.display())
+        })?;
         if !entry.path().is_dir() {
             continue;
         }
@@ -208,7 +211,7 @@ fn verify_used_features_reachable(base: &Path, reachable: &BTreeSet<String>) -> 
         if declared.is_empty() {
             continue;
         }
-        for feature in gated_features(&entry.path().join(SRC_DIR)) {
+        for feature in gated_features(&entry.path().join(SRC_DIR))? {
             if !declared.contains_key(&feature) {
                 continue;
             }
@@ -228,25 +231,26 @@ fn verify_used_features_reachable(base: &Path, reachable: &BTreeSet<String>) -> 
 /// una combinación como `all(test, feature = ...)` no cuenta: ahí el feature
 /// solo se exige dentro de una rama de test y no gobierna la superficie del
 /// producto.
-fn gated_features(src: &Path) -> BTreeSet<String> {
+fn gated_features(src: &Path) -> Result<BTreeSet<String>> {
     let mut found = BTreeSet::new();
     let pattern = Regex::new(r#"cfg\s*\(\s*feature\s*=\s*"([^"]+)""#).expect("el patrón es válido");
-    let Ok(entries) = src.read_dir() else {
-        return found;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
+    let entries = src
+        .read_dir()
+        .map_err(|e| anyhow::anyhow!("no se pudo leer {}: {e}", src.display()))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| anyhow::anyhow!("no se pudo leer una entrada de {}: {e}", src.display()))?
+            .path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| anyhow::anyhow!("no se pudo leer {}: {e}", path.display()))?;
         for capture in pattern.captures_iter(&text) {
             found.insert(capture[1].to_string());
         }
     }
-    found
+    Ok(found)
 }
 
 /// Convierte la lista de diagnósticos en el resultado del subcomando.
