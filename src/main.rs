@@ -1019,15 +1019,28 @@ fn handle_devices(json_mode: bool) -> Result<(), CliError> {
     } else {
         println!("Dispositivos de salida de audio:");
         for dev in &devices {
-            println!(
-                "  [{}] {} (latencia: {:.1}ms)",
-                dev["id"],
-                dev["name"].as_str().unwrap_or(""),
-                dev["latency"].as_f64().unwrap_or(0.0) * 1000.0
-            );
+            println!("{}", device_line(dev));
         }
     }
     Ok(())
+}
+
+/// Línea de texto de un dispositivo del JSON de `avi_audio::get_devices_json`:
+/// el nombre y la latencia `null` se muestran como «desconocido».
+fn device_line(dev: &Value) -> String {
+    let name = dev["name"].as_str().unwrap_or("desconocido");
+    let latency = match dev["latency"].as_f64() {
+        Some(secs) => format!("{:.1}ms", secs * 1000.0),
+        None => "desconocido".to_string(),
+    };
+    format!("  [{}] {} (latencia: {})", dev["id"], name, latency)
+}
+
+/// Techo de la grabación push-to-talk (`AVI_PUSH_TO_TALK_MAX_SECS`): una
+/// variable definida pero inválida es un error de uso.
+fn push_to_talk_max_secs() -> Result<u64, CliError> {
+    avi_audio::push_to_talk_max_secs()
+        .map_err(|e| CliError::new(ExitCode::InvalidInput, "usage_error", e.to_string()))
 }
 
 /// Par de modelos de traducción para dos idiomas distintos del alfabeto `es|en`
@@ -1322,6 +1335,11 @@ async fn handle_voice(
 /// `max_secs` es el techo de duración del push-to-talk (se combina con el
 /// techo de entorno). Solo lo usa `acquire_pcm`.
 async fn capture_mic_pcm(duration: Option<u64>, max_secs: u64) -> Result<Vec<i16>, CliError> {
+    if duration.is_none() {
+        // Valida la variable antes de abrir el micrófono, para que una variable
+        // inválida salga como `usage_error` y no como fallo de captura.
+        push_to_talk_max_secs()?;
+    }
     tokio::task::spawn_blocking(move || {
         let svc = audio::AudioService::new();
         match duration {
@@ -1631,14 +1649,17 @@ async fn handle_speech(
             }
             // Tope de duración antes de grabar: la captura pedida es `--duration` o,
             // sin ella, el techo de push-to-talk.
-            if mic
-                && duration.unwrap_or_else(avi_audio::push_to_talk_max_secs)
-                    > avi_core::MAX_TRANSCRIBE_AUDIO_SECS
-            {
-                return Err(audio_too_long(
-                    "El audio de la transcripción",
-                    avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
-                ));
+            if mic {
+                let requested = match duration {
+                    Some(secs) => secs,
+                    None => push_to_talk_max_secs()?,
+                };
+                if requested > avi_core::MAX_TRANSCRIBE_AUDIO_SECS {
+                    return Err(audio_too_long(
+                        "El audio de la transcripción",
+                        avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
+                    ));
+                }
             }
             // push-to-talk sin --duration se permite en TTY; sin TTY se exige --duration
             if mic && duration.is_none() && !std::io::stdin().is_terminal() {
@@ -4741,6 +4762,20 @@ mod tests {
         });
         let bytes = writer.0.lock().unwrap().clone();
         String::from_utf8(bytes).unwrap()
+    }
+
+    /// Un nombre o una latencia `null` se muestran como «desconocido»; los
+    /// conocidos, tal cual.
+    #[test]
+    fn device_line_shows_unknown_for_null_fields() {
+        assert_eq!(
+            device_line(&json!({ "id": 1, "name": null, "latency": null })),
+            "  [1] desconocido (latencia: desconocido)"
+        );
+        assert_eq!(
+            device_line(&json!({ "id": 0, "name": "Altavoces", "latency": 0.0105 })),
+            "  [0] Altavoces (latencia: 10.5ms)"
+        );
     }
 
     /// Sin `RUST_LOG`, la CLI solo muestra `warn` y superiores, también

@@ -1214,6 +1214,62 @@ fn version_matches_fixture() {
     assert_eq!(actual, fixture("cli_version.json"));
 }
 
+/// `devices --json` solo tiene dos salidas válidas, según el host: la lista de
+/// dispositivos (cada `name` y `latency` es texto/número o `null` si el backend no
+/// lo expone) o el fallo `audio_enumeration_failed` con exit 1. La forma se afirma
+/// en ambos casos sin exigir que la máquina tenga dispositivos.
+#[test]
+fn devices_json_is_list_with_nullable_fields_or_enumeration_failure() {
+    let (code, actual) = run_json(&["--json", "devices"]);
+    match code {
+        0 => {
+            let devices = actual["devices"].as_array().expect("`devices` es un array");
+            for dev in devices {
+                assert!(dev["id"].is_u64(), "id entero: {dev}");
+                assert!(
+                    dev["name"].is_string() || dev["name"].is_null(),
+                    "name texto o null: {dev}"
+                );
+                assert!(
+                    dev["latency"].is_f64() || dev["latency"].is_null(),
+                    "latency número o null: {dev}"
+                );
+            }
+        }
+        1 => assert_eq!(actual["reason"], "audio_enumeration_failed"),
+        other => panic!("exit inesperado {other}: {actual}"),
+    }
+}
+
+/// `AVI_PUSH_TO_TALK_MAX_SECS` definida pero inválida es un error de uso que
+/// nombra la variable, no un techo por defecto silencioso.
+#[test]
+fn transcribe_mic_with_invalid_push_to_talk_max_secs_is_usage_error() {
+    let (_sandbox, envs) = contract_sandbox("ptt_invalid");
+    let mut envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    envs.push(("AVI_PUSH_TO_TALK_MAX_SECS", "abc"));
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "speech",
+            "transcribe",
+            "--mic",
+            "--source-language",
+            "es",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 2);
+    assert_eq!(actual["reason"], "usage_error");
+    assert!(
+        actual["error"]
+            .as_str()
+            .expect("`error` es texto")
+            .contains("AVI_PUSH_TO_TALK_MAX_SECS"),
+        "el mensaje debe nombrar la variable: {actual}"
+    );
+}
+
 /// La CI compara la salida plana de `version` y de `--version` con el tag del
 /// release: ambas deben imprimir el nombre y la versión del paquete.
 #[test]

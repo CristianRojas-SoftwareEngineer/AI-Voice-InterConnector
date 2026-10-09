@@ -109,8 +109,11 @@ Validaciones puras antes de despachar:
  grabación emite un aviso mínimo por stderr (nunca espera en silencio) y
  captura hasta que el usuario presiona Enter. Hay un techo de seguridad
  configurable con la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS`
- (default 300 s): al alcanzarlo, detiene la grabación, avisa por stderr y
- devuelve lo grabado hasta ese punto con exit **0** (no es un error). No hay
+ (default 300 s si no está definida): al alcanzarlo, detiene la grabación,
+ avisa por stderr y devuelve lo grabado hasta ese punto con exit **0** (no es
+ un error). Una variable definida que no sea un entero de segundos sin signo
+ sale con exit 2 `usage_error` y un mensaje que la nombra. Si falla la lectura
+ de stdin o el stream de audio, la grabación termina con error. No hay
  panic por `duration` ausente: el modo push-to-talk cubre ese caso.
 - Duración del audio: el audio de entrada dura como máximo 300 s, igual en la
  vía local y en la del daemon. Un WAV que lo supera sale con exit 2

@@ -34,21 +34,18 @@ ramificación por sistema operativo).
 
 1. Obtiene el host por defecto de `cpal` (`cpal::default_host()`,
    `crates/avi-audio/src/lib.rs`).
-2. Itera `host.output_devices()`; si la llamada falla, el `if let Ok(...)`
-   la ignora silenciosamente y `list_output_devices` devuelve `Ok(vec![])`
-   (lista vacía, no hay fallback a un dispositivo "Default" sintético).
-3. Para cada dispositivo, `name()` cae a `"Dispositivo {idx}"` si el
-   backend no puede leer el nombre.
+2. Itera `host.output_devices()`; si la llamada falla, `list_output_devices`
+   devuelve `Err` (no hay dispositivo "Default" sintético ni lista vacía en su
+   lugar). Un host sin dispositivos devuelve una lista vacía, que no es un error.
+3. Para cada dispositivo, el nombre es `None` si el backend no puede leerlo.
 4. La latencia se **estima**, no se lee de un campo nativo del sistema: se
-   toma `buffer_size().min` de `default_output_config()` (o `512.0` si el
-   backend reporta `SupportedBufferSize::Unknown`) y se calcula
-   `(buffer_size / sample_rate) * 1000.0` para obtener milisegundos. Si
-   `default_output_config()` falla, la latencia por defecto es `10.0` ms.
+   toma `buffer_size().min` de `default_output_config()` y se calcula
+   `(buffer_size / sample_rate) * 1000.0` para obtener milisegundos. Es `None`
+   si `default_output_config()` falla, si el backend reporta
+   `SupportedBufferSize::Unknown` o si la frecuencia es 0.
 
-No existe distinción `degraded`/no-degraded: no hay
-segundo valor de retorno ni dispositivo sintético `"Default"` — una
-enumeración vacía o fallida simplemente produce una lista vacía o un error,
-según dónde falle.
+Ningún valor se inventa: lo que el backend no expone queda como `null` en
+`--json` y se muestra como «desconocido» en texto.
 
 ---
 
@@ -60,7 +57,8 @@ handle_devices(json_mode)
     ▼
 avi_audio::get_devices_json()          ← crates/avi-audio/src/lib.rs
     │  AudioService::new() → list_output_devices()
-    │  mapea cada AudioDevice a {"id", "name", "latency": latency_ms / 1000.0}
+    │  mapea cada AudioDevice a {"id", "name", "latency": latency_ms / 1000.0},
+    │  con "name" y "latency" a null cuando el backend no los expone
     ▼
 Err → CliError(ExitCode::Error, "audio_enumeration_failed", e.to_string())
 Ok  → --json: emit_raw_json({"devices": devices})
@@ -92,8 +90,8 @@ inyecta `schema_version` sobre el objeto antes de serializar
 |---|---|---|
 | `devices` | array de objetos | Lista de dispositivos de salida enumerados por `cpal` |
 | `devices[].id` | integer | Índice secuencial 0-based asignado durante la iteración de `host.output_devices()` (`crates/avi-audio/src/lib.rs`) |
-| `devices[].name` | string | Nombre del dispositivo reportado por `cpal`, o `"Dispositivo {idx}"` si el backend no expone el nombre |
-| `devices[].latency` | number | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs`); en salida texto se reconvierte a milisegundos para mostrarse |
+| `devices[].name` | string o `null` | Nombre del dispositivo reportado por `cpal`; `null` si el backend no lo expone |
+| `devices[].latency` | number o `null` | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs`); `null` si no se puede estimar. En salida texto se reconvierte a milisegundos para mostrarse |
 | `schema_version` | string | `"5"`, inyectado por `emit_raw_json`/`with_schema_version` — no forma parte del payload que construye el handler |
 
 Nota de orden de claves: `with_schema_version` inserta `schema_version` en el
@@ -114,7 +112,12 @@ Dispositivos de salida de audio:
 ```
 
 Cada línea sigue el patrón `[id] name (latencia: X.Xms)`, con la latencia
-reconvertida de segundos a milisegundos (`* 1000.0`) solo para esta vista.
+reconvertida de segundos a milisegundos (`* 1000.0`) solo para esta vista. Un
+nombre o una latencia `null` se muestran como `desconocido`:
+
+```
+  [2] desconocido (latencia: desconocido)
+```
 
 ---
 
@@ -122,7 +125,7 @@ reconvertida de segundos a milisegundos (`* 1000.0`) solo para esta vista.
 
 | Reason | Código | Causa |
 |---|---|---|
-| `audio_enumeration_failed` | 1 (`ExitCode::Error`) | `AudioService::list_output_devices` devolvió `Err` (fallo del host `cpal` al construir el stream/config; la ausencia de dispositivos por sí sola NO es un error, produce lista vacía) |
+| `audio_enumeration_failed` | 1 (`ExitCode::Error`) | `AudioService::list_output_devices` devolvió `Err` (el host `cpal` no pudo enumerar los dispositivos de salida; la ausencia de dispositivos por sí sola NO es un error, produce lista vacía) |
 
 El error se envuelve en `main` (`src/main.rs`): con `--json` emite
 `{"error": <mensaje>, "reason": "audio_enumeration_failed", "schema_version": "5"}`
