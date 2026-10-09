@@ -1,10 +1,9 @@
 pub trait SttEngine: Send + Sync {
-    fn transcribe(&self, audio_pcm: &[i16], language: Option<&str>) -> anyhow::Result<String>;
+    fn transcribe(&self, audio_pcm: &[i16]) -> anyhow::Result<String>;
 }
 
 pub trait TranslationEngine: Send + Sync {
-    fn translate(&self, text: &str, source_lang: &str, target_lang: &str)
-        -> anyhow::Result<String>;
+    fn translate(&self, text: &str) -> anyhow::Result<String>;
 }
 
 pub trait Segmenter: Send + Sync {
@@ -69,8 +68,7 @@ impl HierarchicalSegmenter {
 
 /// Nivel 2 (oración, regla determinista propia): escaneo manual de caracteres
 /// que corta tras una racha de `.`/`!`/`?` seguida de espacio en blanco o fin
-/// de texto, conservando la puntuación terminal en el segmento (a diferencia
-/// del `DeterministicSegmenter` naive anterior, que la descartaba).
+/// de texto, conservando la puntuación terminal en el segmento.
 fn split_sentences(text: &str) -> Vec<String> {
     let mut sentences = Vec::new();
     let mut current = String::new();
@@ -154,10 +152,11 @@ fn split_tokens(text: &str, max_length: usize) -> Vec<String> {
 }
 
 /// Núcleos físicos del equipo, para dimensionar el paralelismo de los motores
-/// (whisper.cpp/ggml y ct2rs). Se usan físicos y no lógicos a propósito: los
-/// hilos de ggml hacen busy-wait en las barreras de sincronización, y lanzar
-/// más hilos que núcleos físicos (SMT/Hyper-Threading) sobre-suscribe las
-/// unidades SIMD y degrada el throughput manteniendo el 100% de CPU. Los
+/// (ONNX Runtime para el STT y CTranslate2 vía ct2rs para la traducción). Se
+/// usan físicos y no lógicos a propósito: los hilos de estos motores hacen
+/// busy-wait en las barreras de sincronización, y lanzar más hilos que núcleos
+/// físicos (SMT/Hyper-Threading) sobre-suscribe las unidades SIMD y degrada el
+/// throughput manteniendo el 100% de CPU. Los
 /// motores usan los recursos del equipo del usuario, no una máquina de
 /// desarrollo fija.
 pub fn available_threads() -> usize {

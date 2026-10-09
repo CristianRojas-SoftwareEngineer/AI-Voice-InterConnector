@@ -1082,7 +1082,7 @@ async fn handle_translate(
     }
     #[cfg(feature = "native-translation")]
     {
-        let translated = translation::translate(text, source, target, &ct2_dir).map_err(|e| {
+        let translated = translation::translate(text, &ct2_dir).map_err(|e| {
             CliError::new(
                 ExitCode::TranslationFailed,
                 "translation_failed",
@@ -1130,7 +1130,7 @@ fn translate_if_different(text: &str, source: &str, target: &str) -> Result<Stri
     }
     #[cfg(feature = "native-translation")]
     {
-        translation::translate(text, source, target, &ct2_dir).map_err(|e| {
+        translation::translate(text, &ct2_dir).map_err(|e| {
             CliError::new(
                 ExitCode::TranslationFailed,
                 "translation_failed",
@@ -1683,15 +1683,13 @@ async fn handle_speech(
                             e.to_string(),
                         )
                     })?;
-                let text = engine
-                    .transcribe(&pcm, Some(&source_language))
-                    .map_err(|e| {
-                        CliError::new(
-                            ExitCode::TranscriptionFailed,
-                            "transcription_error",
-                            e.to_string(),
-                        )
-                    })?;
+                let text = engine.transcribe(&pcm).map_err(|e| {
+                    CliError::new(
+                        ExitCode::TranscriptionFailed,
+                        "transcription_error",
+                        e.to_string(),
+                    )
+                })?;
 
                 if json_mode {
                     emit_raw_json(json!({ "text": text, "source_language": source_language }));
@@ -2042,7 +2040,7 @@ async fn handle_speech(
                             e.to_string(),
                         )
                     })?;
-                let transcribed = stt.transcribe(&pcm, Some(&source_language)).map_err(|e| {
+                let transcribed = stt.transcribe(&pcm).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
                         "transcription_error",
@@ -2088,15 +2086,13 @@ async fn handle_speech(
                     }
                     #[cfg(feature = "native-translation")]
                     {
-                        translation::translate(&transcribed, source, target, &ct2_dir).map_err(
-                            |e| {
-                                CliError::new(
-                                    ExitCode::TranslationFailed,
-                                    "translation_failed",
-                                    e.to_string(),
-                                )
-                            },
-                        )?
+                        translation::translate(&transcribed, &ct2_dir).map_err(|e| {
+                            CliError::new(
+                                ExitCode::TranslationFailed,
+                                "translation_failed",
+                                e.to_string(),
+                            )
+                        })?
                     }
                 };
 

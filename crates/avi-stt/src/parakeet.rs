@@ -150,7 +150,7 @@ impl Default for EngineHolder {
 }
 
 impl SttEngine for ParakeetEngine {
-    fn transcribe(&self, audio_pcm: &[i16], _language: Option<&str>) -> anyhow::Result<String> {
+    fn transcribe(&self, audio_pcm: &[i16]) -> anyhow::Result<String> {
         // i16 mono 16 kHz → f32 normalizado a [-1, 1] (el preprocesador NeMo
         // espera float con amplitud normalizada a i16::MAX).
         let samples: Vec<f32> = audio_pcm

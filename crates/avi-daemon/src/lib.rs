@@ -589,7 +589,7 @@ async fn synthesize_handler(
             text_owned.clone()
         } else {
             // Ambos idiomas son `es` o `en` y distintos: el par queda determinado.
-            let pair = if source_iso == "es" { "es-en" } else { "en-es" };
+            let pair = translation_pair_for(&source_iso);
             let model_name = format!("opus-mt-{pair}");
             let ct2_dir = ModelStore::new().model_dir(&model_name);
             if !ModelStore::new().is_provisioned(&model_name) {
@@ -622,12 +622,12 @@ async fn synthesize_handler(
                 let translated = if let Some(map) = state.ct2_engine.as_ref() {
                     if let Some(engine) = map.get(pair) {
                         use avi_core::engine::TranslationEngine;
-                        engine.translate(&text_owned, &source_iso, &target_iso)
+                        engine.translate(&text_owned)
                     } else {
-                        avi_translation::translate(&text_owned, &source_iso, &target_iso, &ct2_dir)
+                        avi_translation::translate(&text_owned, &ct2_dir)
                     }
                 } else {
-                    avi_translation::translate(&text_owned, &source_iso, &target_iso, &ct2_dir)
+                    avi_translation::translate(&text_owned, &ct2_dir)
                 };
                 match translated {
                     Ok(t) => t,
@@ -810,32 +810,31 @@ async fn transcribe_handler(
         }
     };
 
-    let source_language = match required_language(&payload, "source_language") {
-        Ok(language) => language,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": e.reason,
-                    "message": e.message,
-                }))),
-            )
-                .into_response();
-        }
-    };
+    // El idioma de origen es obligatorio y válido aunque el motor no lo use:
+    // Parakeet autodetecta el idioma del audio.
+    if let Err(e) = required_language(&payload, "source_language") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(with_sv(json!({
+                "status": "error",
+                "reason": e.reason,
+                "message": e.message,
+            }))),
+        )
+            .into_response();
+    }
 
     // Parakeet no necesita chunking VAD (no degrada con la duración de audio);
     // se transcribe de una sola pasada.
-    let result = state.stt_engine.transcribe(&pcm, Some(source_language));
+    let result = state.stt_engine.transcribe(&pcm);
     match result {
         Ok(text) => {
-            // Guardia de idioma: si el detector heurístico marca inglés
-            // sospechoso en una sesión en español, se anexa el campo aditivo
-            // `language_warning` al JSON de respuesta. El campo es opcional y
-            // aditivo: clientes que lo ignoren no se ven afectados.
-            let (detected_language, _ratio) = detect_language(&text);
-            let body = if detected_language == "EN-SOSPECHOSO" {
+            // Guardia de idioma: solo cuando el origen declarado es `es` y el
+            // detector heurístico marca inglés sospechoso se anexa el campo
+            // aditivo `language_warning` al JSON de respuesta. El campo es
+            // opcional: clientes que lo ignoren no se ven afectados.
+            let source_language = payload["source_language"].as_str().unwrap_or_default();
+            let body = if language_warning(source_language, &text) {
                 with_sv(json!({ "text": text, "language_warning": true }))
             } else {
                 with_sv(json!({ "text": text }))
@@ -851,6 +850,14 @@ async fn transcribe_handler(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
         }
     }
+}
+
+/// Decide si la transcripción lleva `language_warning`: solo cuando el idioma
+/// de origen declarado es `es` y el detector heurístico marca el texto como
+/// inglés sospechoso. Con origen `en` el inglés es lo esperado y no se avisa.
+#[cfg(feature = "native-stt")]
+fn language_warning(source_language: &str, text: &str) -> bool {
+    source_language == "es" && detect_language(text).0 == "EN-SOSPECHOSO"
 }
 
 /// Error de validación de una petición: `reason` es el código del contrato y
@@ -946,6 +953,17 @@ pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
         .collect())
 }
 
+/// Par de traducción CT2 (`es-en` o `en-es`) que corresponde a un idioma de
+/// origen ya validado (`es` o `en`) cuando origen y destino difieren. Es el
+/// único punto del daemon que elige el modelo `opus-mt-<par>`.
+fn translation_pair_for(source: &str) -> &'static str {
+    if source == "es" {
+        "es-en"
+    } else {
+        "en-es"
+    }
+}
+
 /// Valida el cuerpo de `/translate`: texto no vacío e idiomas de origen y
 /// destino (`source_language`/`target_language`, obligatorios, `es` o `en`).
 pub fn validate_translate_input(body: &Value) -> Result<TranslateInput, InputError> {
@@ -997,7 +1015,7 @@ async fn translate_handler(
         Ok(TranslateInput::Pair { source, target }) => (source, target),
     };
     let text = payload["text"].as_str().unwrap_or_default().to_string();
-    let pair = if source == "es" { "es-en" } else { "en-es" };
+    let pair = translation_pair_for(&source);
     let model_name = format!("opus-mt-{pair}");
     let ct2_dir = ModelStore::new().model_dir(&model_name);
     if !ModelStore::new().is_provisioned(&model_name) {
@@ -1015,7 +1033,7 @@ async fn translate_handler(
     if let Some(map) = state.ct2_engine.as_ref() {
         if let Some(engine) = map.get(pair) {
             use avi_core::engine::TranslationEngine;
-            match engine.translate(&text, &source, &target) {
+            match engine.translate(&text) {
                 Ok(translated) => {
                     return Json(with_sv(json!({
                         "translated": translated,
@@ -1039,7 +1057,7 @@ async fn translate_handler(
         }
     }
     // Fallback a carga bajo demanda si residente no tenía el par
-    match avi_translation::translate(&text, &source, &target, &ct2_dir) {
+    match avi_translation::translate(&text, &ct2_dir) {
         Ok(translated) => Json(with_sv(json!({
             "translated": translated,
             "source_language": source,
@@ -1441,13 +1459,8 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
     #[cfg(feature = "native-stt")]
     let needs_translation = source_iso != target_iso;
     #[cfg(feature = "native-stt")]
-    let translation_pair: Option<String> = needs_translation.then(|| {
-        if source_iso == "es" {
-            "es-en".to_string()
-        } else {
-            "en-es".to_string()
-        }
-    });
+    let translation_pair: Option<String> =
+        needs_translation.then(|| translation_pair_for(&source_iso).to_string());
     #[cfg(feature = "native-stt")]
     if let Some(pair) = translation_pair.as_deref() {
         let model_name = format!("opus-mt-{pair}");
@@ -1521,15 +1534,13 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
         // baratas, latidos durante la inferencia, evento final con la forma
         // contractual actual (`status: "dubbed"`). Sin almacén de trabajos.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
-        let from_owned = source_iso.clone();
         tokio::spawn(async move {
             emit_ndjson(&tx, json!({ "event": "started", "voice": voice })).await;
             // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
             // sobre el audio completo).
             let stt_state = state.clone();
-            let stt_work = tokio::task::spawn_blocking(move || {
-                stt_state.stt_engine.transcribe(&pcm, Some(&from_owned))
-            });
+            let stt_work =
+                tokio::task::spawn_blocking(move || stt_state.stt_engine.transcribe(&pcm));
             let transcribed = match with_heartbeats(&tx, "transcribe", stt_work).await {
                 None => return,
                 Some(Ok(Ok(t))) => t,
@@ -1598,18 +1609,16 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
                     let dir = ModelStore::new().model_dir(&format!("opus-mt-{pair}"));
                     let ct2_state = state.clone();
                     let text = transcribed.clone();
-                    let source = source_iso.clone();
-                    let target = target_iso.clone();
                     let translation_work = tokio::task::spawn_blocking(move || {
                         if let Some(map) = ct2_state.ct2_engine.as_ref() {
                             if let Some(engine) = map.get(&pair) {
                                 use avi_core::engine::TranslationEngine;
-                                engine.translate(&text, &source, &target)
+                                engine.translate(&text)
                             } else {
-                                avi_translation::translate(&text, &source, &target, &dir)
+                                avi_translation::translate(&text, &dir)
                             }
                         } else {
-                            avi_translation::translate(&text, &source, &target, &dir)
+                            avi_translation::translate(&text, &dir)
                         }
                     });
                     match with_heartbeats(&tx, "translate", translation_work).await {
@@ -2992,6 +3001,20 @@ mod tests {
     fn validate_transcribe_missing_audio_is_usage_error() {
         let result = validate_transcribe_input(&json!({ "source_language": "es" }));
         assert_eq!(result.err().map(|e| e.reason), Some("usage_error"));
+    }
+
+    /// La guardia de idioma avisa solo con origen `es` y texto inglés; con
+    /// origen `en` el inglés es lo esperado, y un texto español nunca avisa.
+    #[cfg(feature = "native-stt")]
+    #[test]
+    fn language_warning_applies_only_to_spanish_source() {
+        let english = "hello how are you what is that with the thanks";
+        assert!(language_warning("es", english));
+        assert!(!language_warning("en", english));
+        assert!(!language_warning(
+            "es",
+            "hola cómo estás gracias por el regalo"
+        ));
     }
 
     /// Un `audio_b64` que no es base64 válido es audio ilegible.

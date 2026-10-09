@@ -52,7 +52,7 @@ mod tests {
             .expect("el WAV fixture debe cargarse");
 
         let text = engine
-            .transcribe(&pcm, Some("es"))
+            .transcribe(&pcm)
             .expect("transcribe debe ejecutar sobre el modelo cargado");
         assert!(
             !text.trim().is_empty(),
@@ -181,7 +181,7 @@ mod tests {
             let pcm = avi_audio::load_wav_16k_mono_pcm(&wav_path)
                 .unwrap_or_else(|_| panic!("el WAV fixture {wav} debe cargarse"));
             let actual = engine
-                .transcribe(&pcm, Some("es"))
+                .transcribe(&pcm)
                 .expect("la transcripción debe completarse")
                 .trim()
                 .to_string();

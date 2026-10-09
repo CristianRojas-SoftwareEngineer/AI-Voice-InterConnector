@@ -61,14 +61,14 @@ fn benchmark_latency_quality() {
         let duration_s = pcm.len() as f64 / 16000.0;
 
         for _ in 0..2 {
-            let _ = engine.transcribe(&pcm, Some("es")).expect("warmup");
+            let _ = engine.transcribe(&pcm).expect("warmup");
         }
 
         let mut samples_ms = Vec::new();
         let mut text = String::new();
         for _ in 0..5 {
             let t = Instant::now();
-            text = engine.transcribe(&pcm, Some("es")).expect("transcripcion");
+            text = engine.transcribe(&pcm).expect("transcripcion");
             samples_ms.push(t.elapsed().as_secs_f64() * 1000.0);
         }
 

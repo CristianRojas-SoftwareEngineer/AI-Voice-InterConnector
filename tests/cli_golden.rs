@@ -2763,13 +2763,13 @@ mod tts {
     /// fuente, vía Parakeet TDT v3 (ort/ONNX Runtime).
     #[cfg(feature = "native-stt")]
     fn wer_vs_text(path: &Path, text: &str) -> f64 {
-        wer_and_transcript(path, text, "es").0
+        wer_and_transcript(path, text).0
     }
 
-    /// WER del WAV frente al texto fuente, transcribiendo en `language`
-    /// (`es` o `en`), junto con la transcripción obtenida.
+    /// WER del WAV frente al texto fuente junto con la transcripción obtenida;
+    /// Parakeet autodetecta el idioma del audio.
     #[cfg(feature = "native-stt")]
-    fn wer_and_transcript(path: &Path, text: &str, language: &str) -> (f64, String) {
+    fn wer_and_transcript(path: &Path, text: &str) -> (f64, String) {
         let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
         let snapshot = avi_store::ModelStore::new()
@@ -2779,7 +2779,7 @@ mod tts {
             .get_or_try_init(&snapshot)
             .expect("el modelo Parakeet TDT v3 debe existir");
         let transcribed = engine
-            .transcribe(&pcm, Some(language))
+            .transcribe(&pcm)
             .expect("la transcripción no debe fallar");
         let a = normalize(&transcribed);
         let b = normalize(text);
@@ -3033,7 +3033,7 @@ mod tts {
         valid_wav_24k(audio_path);
         let reader = hound::WavReader::open(audio_path).expect("WAV legible");
         let secs = f64::from(reader.duration()) / f64::from(reader.spec().sample_rate);
-        let (wer, transcript) = wer_and_transcript(audio_path, text, language);
+        let (wer, transcript) = wer_and_transcript(audio_path, text);
         eprintln!(
             "[matriz] voz={voice} idioma={language} duración={secs:.2}s WER={wer:.3} \
              transcripción={transcript:?}"
