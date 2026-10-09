@@ -75,16 +75,6 @@ static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 #[cfg(feature = "native-stt")]
 static STT_HOLDER: EngineHolder = EngineHolder::new();
 
-/// Resuelve un token de idioma de la CLI (`es-latam`/`en`) al código ISO que
-/// exige el motor STT: `es-latam` -> `es`; cualquier otro valor pasa verbatim
-/// (contrato de la CLI para `resolve_language`).
-fn resolve_stt_language(token: &str) -> &str {
-    match token {
-        "es-latam" => "es",
-        other => other,
-    }
-}
-
 /// Traduce un fallo de la síntesis directa al contrato: la falta del modelo que
 /// exige la voz sale como `model_missing` (exit 4), el vencimiento del
 /// presupuesto como `synthesis_timeout` y cualquier otro como `synthesis_error`.
@@ -408,10 +398,12 @@ enum Commands {
     Translate {
         #[arg(short, long)]
         text: String,
+        /// Idioma del texto de entrada
         #[arg(long, default_value = "es", value_parser = ["es", "en"])]
-        from: String,
+        source_language: String,
+        /// Idioma de destino de la traducción
         #[arg(long, default_value = "en", value_parser = ["es", "en"])]
-        to: String,
+        target_language: String,
     },
     /// Gestión de voces clonadas
     Voice {
@@ -572,7 +564,7 @@ enum SpeechCommands {
         #[arg(long)]
         duration: Option<u64>,
         /// Idioma hablado en el audio
-        #[arg(long, value_parser = ["es-latam", "en"])]
+        #[arg(long, value_parser = ["es", "en"])]
         source_language: String,
     },
     /// Sintetizar texto a habla y persistir la locución
@@ -592,10 +584,10 @@ enum SpeechCommands {
         #[arg(long)]
         play: bool,
         /// Idioma del texto de entrada (por defecto igual a --target-language, sin traducir)
-        #[arg(long, value_parser = ["es-latam", "en"])]
+        #[arg(long, value_parser = ["es", "en"])]
         source_language: Option<String>,
         /// Idioma/modelo de síntesis (si difiere del origen, el texto se traduce antes de sintetizar)
-        #[arg(long, default_value = "es-latam", value_parser = ["es-latam", "en"])]
+        #[arg(long, default_value = "es", value_parser = ["es", "en"])]
         target_language: String,
         /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
         #[arg(long)]
@@ -608,10 +600,10 @@ enum SpeechCommands {
         #[arg(short, long, default_value = "default")]
         voice: String,
         /// Idioma del texto de entrada (por defecto igual a --target-language, sin traducir)
-        #[arg(long, value_parser = ["es-latam", "en"])]
+        #[arg(long, value_parser = ["es", "en"])]
         source_language: Option<String>,
         /// Idioma/modelo de síntesis (si difiere del origen, el texto se traduce antes de sintetizar)
-        #[arg(long, default_value = "es-latam", value_parser = ["es-latam", "en"])]
+        #[arg(long, default_value = "es", value_parser = ["es", "en"])]
         target_language: String,
         /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
         #[arg(long)]
@@ -625,10 +617,10 @@ enum SpeechCommands {
         #[arg(short, long, default_value = "default")]
         voice: String,
         /// Idioma hablado en el audio de entrada
-        #[arg(long, value_parser = ["es-latam", "en"])]
+        #[arg(long, value_parser = ["es", "en"])]
         source_language: String,
         /// Idioma/modelo de síntesis (si difiere del origen, el texto transcrito se traduce antes de sintetizar)
-        #[arg(long, default_value = "es-latam", value_parser = ["es-latam", "en"])]
+        #[arg(long, default_value = "es", value_parser = ["es", "en"])]
         target_language: String,
         /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
         #[arg(long)]
@@ -887,9 +879,18 @@ async fn main() {
     let result = match cli.command {
         Some(Commands::Version) => ok(handle_version(json_mode)),
         Some(Commands::Devices) => ok(handle_devices(json_mode)),
-        Some(Commands::Translate { text, from, to }) => {
-            ok(handle_translate(json_mode, daemon_mode, &text, &from, &to).await)
-        }
+        Some(Commands::Translate {
+            text,
+            source_language,
+            target_language,
+        }) => ok(handle_translate(
+            json_mode,
+            daemon_mode,
+            &text,
+            &source_language,
+            &target_language,
+        )
+        .await),
         Some(Commands::Voice { action }) => ok(handle_voice(json_mode, daemon_mode, action).await),
         Some(Commands::Speech { action }) => {
             ok(handle_speech(json_mode, daemon_mode, action).await)
@@ -1016,12 +1017,22 @@ fn handle_devices(json_mode: bool) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Par de modelos de traducción para dos idiomas distintos del alfabeto `es|en`
+/// que `clap` ya validó: el origen determina el par.
+fn translation_pair(source: &str) -> &'static str {
+    if source == "es" {
+        "es-en"
+    } else {
+        "en-es"
+    }
+}
+
 async fn handle_translate(
     json_mode: bool,
     daemon_mode: DaemonMode,
     text: &str,
-    from: &str,
-    to: &str,
+    source: &str,
+    target: &str,
 ) -> Result<(), CliError> {
     if text.trim().is_empty() {
         return Err(CliError::new(
@@ -1030,41 +1041,24 @@ async fn handle_translate(
             "El texto a traducir está vacío",
         ));
     }
-    let source = resolve_stt_language(from);
-    let target = resolve_stt_language(to);
-    // Passthrough: origen == destino tras normalizar → texto intacto, sin motor
+    // Passthrough: origen == destino → texto intacto, sin motor
     if source == target {
         if json_mode {
-            emit_raw_json(json!({ "translated": text, "source": from, "target": to }));
+            emit_raw_json(
+                json!({ "translated": text, "source_language": source, "target_language": target }),
+            );
         } else {
             println!("{}", text);
         }
         return Ok(());
     }
-    // Par no soportado → exit 2 (validación pura, sin tocar el modelo).
-    let pair_valid = matches!((source, target), ("es", "en") | ("en", "es"));
-    if !pair_valid {
-        return Err(CliError::new(
-            ExitCode::InvalidInput,
-            "unsupported_language_pair",
-            format!(
-                "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
-                source, target
-            ),
-        ));
-    }
     // Despacho 3 modos vía daemon_client + route_to_daemon
     let client = daemon_client();
     if route_to_daemon(daemon_mode, &client).await {
-        return translate_via_daemon(json_mode, &client, text, from, to).await;
+        return translate_via_daemon(json_mode, &client, text, source, target).await;
     }
     // Rama local: verifica modelo y traduce
-    let pair = match (source, target) {
-        ("es", "en") => "es-en",
-        ("en", "es") => "en-es",
-        _ => unreachable!(),
-    };
-    let model_name = format!("opus-mt-{pair}");
+    let model_name = format!("opus-mt-{}", translation_pair(source));
     let ct2_dir = ModelStore::new().model_dir(&model_name);
     if !ModelStore::new().is_provisioned(&model_name) {
         return Err(CliError::new(
@@ -1096,7 +1090,9 @@ async fn handle_translate(
             )
         })?;
         if json_mode {
-            emit_raw_json(json!({ "translated": translated, "source": from, "target": to }));
+            emit_raw_json(
+                json!({ "translated": translated, "source_language": source, "target_language": target }),
+            );
         } else {
             println!("{}", translated);
         }
@@ -1105,33 +1101,12 @@ async fn handle_translate(
 }
 
 /// Traducción opt-in previa a la síntesis: passthrough si origen y destino
-/// coinciden tras normalizar; exit 2 si el par no es soportado, exit 4 si
-/// falta el modelo, exit 9 si falla la traducción.
-fn translate_if_different(
-    text: &str,
-    source_token: &str,
-    target_token: &str,
-) -> Result<String, CliError> {
-    let source = resolve_stt_language(source_token);
-    let target = resolve_stt_language(target_token);
+/// coinciden; exit 4 si falta el modelo, exit 9 si falla la traducción.
+fn translate_if_different(text: &str, source: &str, target: &str) -> Result<String, CliError> {
     if source == target {
         return Ok(text.to_string());
     }
-    let pair = match (source, target) {
-        ("es", "en") => "es-en",
-        ("en", "es") => "en-es",
-        _ => {
-            return Err(CliError::new(
-                ExitCode::InvalidInput,
-                "unsupported_language_pair",
-                format!(
-                    "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
-                    source, target
-                ),
-            ));
-        }
-    };
-    let model_name = format!("opus-mt-{pair}");
+    let model_name = format!("opus-mt-{}", translation_pair(source));
     let ct2_dir = ModelStore::new().model_dir(&model_name);
     if !ModelStore::new().is_provisioned(&model_name) {
         return Err(CliError::new(
@@ -1708,17 +1683,18 @@ async fn handle_speech(
                             e.to_string(),
                         )
                     })?;
-                let language = resolve_stt_language(&source_language);
-                let text = engine.transcribe(&pcm, Some(language)).map_err(|e| {
-                    CliError::new(
-                        ExitCode::TranscriptionFailed,
-                        "transcription_error",
-                        e.to_string(),
-                    )
-                })?;
+                let text = engine
+                    .transcribe(&pcm, Some(&source_language))
+                    .map_err(|e| {
+                        CliError::new(
+                            ExitCode::TranscriptionFailed,
+                            "transcription_error",
+                            e.to_string(),
+                        )
+                    })?;
 
                 if json_mode {
-                    emit_raw_json(json!({ "text": text, "source": source_language }));
+                    emit_raw_json(json!({ "text": text, "source_language": source_language }));
                 } else {
                     println!("{}", text);
                 }
@@ -2066,15 +2042,13 @@ async fn handle_speech(
                             e.to_string(),
                         )
                     })?;
-                let transcribed = stt
-                    .transcribe(&pcm, Some(resolve_stt_language(&source_language)))
-                    .map_err(|e| {
-                        CliError::new(
-                            ExitCode::TranscriptionFailed,
-                            "transcription_error",
-                            e.to_string(),
-                        )
-                    })?;
+                let transcribed = stt.transcribe(&pcm, Some(&source_language)).map_err(|e| {
+                    CliError::new(
+                        ExitCode::TranscriptionFailed,
+                        "transcription_error",
+                        e.to_string(),
+                    )
+                })?;
                 if transcribed.trim().is_empty() {
                     return Err(CliError::new(
                         ExitCode::InvalidInput,
@@ -2083,27 +2057,13 @@ async fn handle_speech(
                     ));
                 }
 
-                // Traducción solo si source != target tras normalizar (passthrough si coinciden).
-                let source = resolve_stt_language(&source_language);
-                let target = resolve_stt_language(&target_language);
+                // Traducción solo si source != target (passthrough si coinciden).
+                let source = source_language.as_str();
+                let target = target_language.as_str();
                 let final_text = if source == target {
                     transcribed.clone()
                 } else {
-                    let pair = match (source, target) {
-                        ("es", "en") => "es-en",
-                        ("en", "es") => "en-es",
-                        _ => {
-                            return Err(CliError::new(
-                                ExitCode::InvalidInput,
-                                "unsupported_language_pair",
-                                format!(
-                                    "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
-                                    source, target
-                                ),
-                            ));
-                        }
-                    };
-                    let model_name = format!("opus-mt-{pair}");
+                    let model_name = format!("opus-mt-{}", translation_pair(source));
                     let ct2_dir = ModelStore::new().model_dir(&model_name);
                     if !ModelStore::new().is_provisioned(&model_name) {
                         return Err(CliError::new(
@@ -3935,7 +3895,7 @@ async fn transcribe_via_daemon(
         )
     })?;
     if json_mode {
-        emit_raw_json(json!({ "text": text, "source": source_language }));
+        emit_raw_json(json!({ "text": text, "source_language": source_language }));
     } else {
         println!("{}", text);
     }
@@ -3946,10 +3906,14 @@ async fn translate_via_daemon(
     json_mode: bool,
     client: &reqwest::Client,
     text: &str,
-    from: &str,
-    to: &str,
+    source_language: &str,
+    target_language: &str,
 ) -> Result<(), CliError> {
-    let payload = serde_json::json!({ "text": text, "from": from, "to": to });
+    let payload = serde_json::json!({
+        "text": text,
+        "source_language": source_language,
+        "target_language": target_language,
+    });
     // El POST apunta a la dirección descubierta.
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
     let fut = client
@@ -3998,10 +3962,24 @@ async fn translate_via_daemon(
             "El daemon no devolvió 'translated'.",
         )
     })?;
-    let source = val["source"].as_str().unwrap_or(from);
-    let target = val["target"].as_str().unwrap_or(to);
+    let source = val["source_language"].as_str().ok_or_else(|| {
+        CliError::new(
+            ExitCode::TranslationFailed,
+            "translation_failed",
+            "El daemon no devolvió 'source_language'.",
+        )
+    })?;
+    let target = val["target_language"].as_str().ok_or_else(|| {
+        CliError::new(
+            ExitCode::TranslationFailed,
+            "translation_failed",
+            "El daemon no devolvió 'target_language'.",
+        )
+    })?;
     if json_mode {
-        emit_raw_json(json!({ "translated": translated, "source": source, "target": target }));
+        emit_raw_json(
+            json!({ "translated": translated, "source_language": source, "target_language": target }),
+        );
     } else {
         println!("{}", translated);
     }
@@ -4467,10 +4445,24 @@ async fn clone_via_daemon(
         return Err(daemon_error_from_response(resp).await);
     }
     let val: Value = consume_ndjson_stream(resp, "clone").await?;
+    let cloned_name = val["name"].as_str().ok_or_else(|| {
+        CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            "El daemon no devolvió 'name' en la clonación.",
+        )
+    })?;
+    let cloned_speech = val["speech"].as_str().ok_or_else(|| {
+        CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            "El daemon no devolvió 'speech' en la clonación.",
+        )
+    })?;
     if json_mode {
         emit_raw_json(json!({
-            "name": val["name"].as_str().unwrap_or(name),
-            "speech": val["speech"].as_str().unwrap_or(""),
+            "name": cloned_name,
+            "speech": cloned_speech,
             "timbre": val.get("timbre").cloned().unwrap_or(Value::Null),
             "precomputed": val.get("precomputed").and_then(|v| v.as_bool()).unwrap_or(false),
         }));
@@ -4500,8 +4492,6 @@ async fn dub_via_daemon(
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let mut payload = serde_json::json!({
         "audio_b64": audio_b64,
-        "from": source_language,
-        "to": target_language,
         "source_language": source_language,
         "target_language": target_language,
         "voice": voice,

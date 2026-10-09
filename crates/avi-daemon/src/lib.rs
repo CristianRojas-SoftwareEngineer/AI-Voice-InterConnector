@@ -473,26 +473,6 @@ async fn synthesize_handler(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let voice = payload
-        .get("voice")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default")
-        .to_string();
-    // Traducción opt-in: sin flags no se traduce (origen = destino).
-    let target_raw = payload
-        .get("target_language")
-        .and_then(|v| v.as_str())
-        .unwrap_or("es-latam")
-        .to_string();
-    let source_raw = payload
-        .get("source_language")
-        .and_then(|v| v.as_str())
-        .unwrap_or(target_raw.as_str())
-        .to_string();
-    let temperature = payload
-        .get("temperature")
-        .and_then(|v| v.as_f64())
-        .map(|t| t as f32);
 
     // Validación de texto (vacío o demasiado largo): se evalúa antes del motor y
     // devuelve un 400 con cuerpo JSON plano (no stream).
@@ -507,6 +487,32 @@ async fn synthesize_handler(
         )
             .into_response();
     }
+
+    // Voz e idiomas son obligatorios (la traducción ocurre solo si difieren) y
+    // la temperatura, si viene, debe ser numérica: el incumplimiento es un
+    // error de uso con 400 plano, antes de abrir el stream.
+    let fields = (|| {
+        Ok::<_, InputError>((
+            required_str(&payload, "voice")?.to_string(),
+            required_language(&payload, "source_language")?.to_string(),
+            required_language(&payload, "target_language")?.to_string(),
+            optional_temperature(&payload)?,
+        ))
+    })();
+    let (voice, source_raw, target_raw, temperature) = match fields {
+        Ok(fields) => fields,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "error": e.reason,
+                    "reason": e.reason,
+                    "message": e.message,
+                }))),
+            )
+                .into_response();
+        }
+    };
 
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
     let state = state.clone();
@@ -548,21 +554,6 @@ async fn synthesize_handler(
             }
         }
 
-        // El idioma de destino debe ser un token del producto: se rechaza aquí,
-        // antes de llegar al motor, con el mismo error de uso que la temperatura.
-        if let Err(e) = avi_tts::engine_language_name(&target_owned) {
-            emit_ndjson(
-                &tx,
-                json!({
-                    "event": "error",
-                    "reason": "usage_error",
-                    "message": e.to_string(),
-                }),
-            )
-            .await;
-            return;
-        }
-
         // Provisionamiento del motor: si binario/modelo no se resolvieron, la rama
         // `model_missing` es el contrato aceptado en entornos sin motor
         // (en el daemon real corre desde la raíz del repo, donde sí resuelve).
@@ -592,27 +583,13 @@ async fn synthesize_handler(
         .await;
 
         // Traducción opt-in con el motor residente: passthrough si coinciden.
-        let source_iso = resolve_translation_language(&source_owned).to_string();
-        let target_iso = resolve_translation_language(&target_owned).to_string();
+        let source_iso = source_owned.clone();
+        let target_iso = target_owned.clone();
         let text_final = if source_iso == target_iso {
             text_owned.clone()
         } else {
-            let pair = match (source_iso.as_str(), target_iso.as_str()) {
-                ("es", "en") => "es-en",
-                ("en", "es") => "en-es",
-                _ => {
-                    emit_ndjson(
-                        &tx,
-                        json!({
-                            "event": "error",
-                            "reason": "unsupported_language_pair",
-                            "message": format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source_iso, target_iso),
-                        }),
-                    )
-                    .await;
-                    return;
-                }
-            };
+            // Ambos idiomas son `es` o `en` y distintos: el par queda determinado.
+            let pair = if source_iso == "es" { "es-en" } else { "en-es" };
             let model_name = format!("opus-mt-{pair}");
             let ct2_dir = ModelStore::new().model_dir(&model_name);
             if !ModelStore::new().is_provisioned(&model_name) {
@@ -833,15 +810,24 @@ async fn transcribe_handler(
         }
     };
 
-    let source_language = payload
-        .get("source_language")
-        .and_then(|v| v.as_str())
-        .unwrap_or("es-latam");
-    let language = resolve_stt_language(source_language);
+    let source_language = match required_language(&payload, "source_language") {
+        Ok(language) => language,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": e.reason,
+                    "message": e.message,
+                }))),
+            )
+                .into_response();
+        }
+    };
 
     // Parakeet no necesita chunking VAD (no degrada con la duración de audio);
     // se transcribe de una sola pasada.
-    let result = state.stt_engine.transcribe(&pcm, Some(language));
+    let result = state.stt_engine.transcribe(&pcm, Some(source_language));
     match result {
         Ok(text) => {
             // Guardia de idioma: si el detector heurístico marca inglés
@@ -867,36 +853,6 @@ async fn transcribe_handler(
     }
 }
 
-/// Mapea el token de idioma del cliente (`es-latam`/`en`) al código ISO que
-/// exige Parakeet, con la misma paridad que aplica el binario.
-#[cfg(feature = "native-stt")]
-fn resolve_stt_language(token: &str) -> &str {
-    match token {
-        "es-latam" => "es",
-        other => other,
-    }
-}
-
-/// Normaliza token de idioma para traducción (`es-latam`→`es`), paridad con
-/// `resolve_stt_language` de este crate y `avi_translation`.
-fn resolve_translation_language(token: &str) -> &str {
-    match token {
-        "es-latam" => "es",
-        other => other,
-    }
-}
-
-/// Token de idioma del producto para sintetizar a partir del destino de un
-/// doblaje: el código ISO `es` (valor por defecto del destino) equivale a
-/// `es-latam`; cualquier otro valor pasa tal cual y lo valida el motor.
-#[cfg(feature = "native-stt")]
-fn synthesis_language_token(raw: &str) -> &str {
-    match raw {
-        "es" => "es-latam",
-        other => other,
-    }
-}
-
 /// Error de validación de una petición: `reason` es el código del contrato y
 /// `message` el texto para el usuario.
 #[derive(Debug, PartialEq)]
@@ -905,12 +861,52 @@ pub struct InputError {
     pub message: String,
 }
 
+impl InputError {
+    /// Error de uso: campo ausente, de tipo inválido o con valor fuera de rango.
+    fn usage(message: String) -> Self {
+        Self {
+            reason: "usage_error",
+            message,
+        }
+    }
+}
+
+/// Campo de texto obligatorio de la petición; ausente o de otro tipo es error de uso.
+fn required_str<'a>(body: &'a Value, key: &str) -> Result<&'a str, InputError> {
+    body.get(key).and_then(|v| v.as_str()).ok_or_else(|| {
+        InputError::usage(format!("La petición requiere el campo de texto '{key}'."))
+    })
+}
+
+/// Campo de idioma obligatorio: solo `es` o `en`.
+fn required_language<'a>(body: &'a Value, key: &str) -> Result<&'a str, InputError> {
+    let value = required_str(body, key)?;
+    if matches!(value, "es" | "en") {
+        Ok(value)
+    } else {
+        Err(InputError::usage(format!(
+            "El campo '{key}' debe ser 'es' o 'en' (recibido '{value}')."
+        )))
+    }
+}
+
+/// Temperatura opcional: si está presente debe ser numérica.
+fn optional_temperature(body: &Value) -> Result<Option<f32>, InputError> {
+    match body.get("temperature") {
+        None => Ok(None),
+        Some(v) => v
+            .as_f64()
+            .map(|t| Some(t as f32))
+            .ok_or_else(|| InputError::usage("El campo 'temperature' debe ser numérico.".into())),
+    }
+}
+
 /// Resultado de validar una petición de traducción.
 #[derive(Debug, PartialEq)]
 pub enum TranslateInput {
     /// Idioma de origen y destino coinciden: se devuelve el texto sin traducir.
     Same,
-    /// Par distinto y soportado, con los idiomas ya resueltos a ISO.
+    /// Par distinto y soportado (`es`→`en` o `en`→`es`).
     Pair { source: String, target: String },
 }
 
@@ -950,50 +946,25 @@ pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
         .collect())
 }
 
-/// Extrae de la petición de traducción el texto y los idiomas sin resolver
-/// (`from`/`source` por defecto `es`; `to`/`target` por defecto `en`).
-fn translate_request_fields(body: &Value) -> (String, &str, &str) {
-    let text = body
-        .get("text")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let from_raw = body
-        .get("from")
-        .or_else(|| body.get("source"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("es");
-    let to_raw = body
-        .get("to")
-        .or_else(|| body.get("target"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("en");
-    (text, from_raw, to_raw)
-}
-
-/// Valida el cuerpo de `/translate`: texto no vacío y par de idiomas soportado.
+/// Valida el cuerpo de `/translate`: texto no vacío e idiomas de origen y
+/// destino (`source_language`/`target_language`, obligatorios, `es` o `en`).
 pub fn validate_translate_input(body: &Value) -> Result<TranslateInput, InputError> {
-    let (text, from_raw, to_raw) = translate_request_fields(body);
+    let text = body.get("text").and_then(|v| v.as_str()).unwrap_or("");
     if text.trim().is_empty() {
         return Err(InputError {
             reason: "empty_text",
             message: "El texto a traducir está vacío".to_string(),
         });
     }
-    let source = resolve_translation_language(from_raw).to_string();
-    let target = resolve_translation_language(to_raw).to_string();
+    let source = required_language(body, "source_language")?;
+    let target = required_language(body, "target_language")?;
     if source == target {
-        return Ok(TranslateInput::Same);
-    }
-    match (source.as_str(), target.as_str()) {
-        ("es", "en") | ("en", "es") => Ok(TranslateInput::Pair { source, target }),
-        _ => Err(InputError {
-            reason: "unsupported_language_pair",
-            message: format!(
-                "Par de idiomas no soportado: {} -> {} (soportados: es, en)",
-                source, target
-            ),
-        }),
+        Ok(TranslateInput::Same)
+    } else {
+        Ok(TranslateInput::Pair {
+            source: source.to_string(),
+            target: target.to_string(),
+        })
     }
 }
 
@@ -1003,7 +974,6 @@ async fn translate_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let (text, from_raw, to_raw) = translate_request_fields(&payload);
     let (source, target) = match validate_translate_input(&payload) {
         Err(e) => {
             return (
@@ -1018,14 +988,15 @@ async fn translate_handler(
         }
         Ok(TranslateInput::Same) => {
             return Json(with_sv(json!({
-                "translated": text,
-                "source": from_raw,
-                "target": to_raw,
+                "translated": payload["text"],
+                "source_language": payload["source_language"],
+                "target_language": payload["target_language"],
             })))
             .into_response();
         }
         Ok(TranslateInput::Pair { source, target }) => (source, target),
     };
+    let text = payload["text"].as_str().unwrap_or_default().to_string();
     let pair = if source == "es" { "es-en" } else { "en-es" };
     let model_name = format!("opus-mt-{pair}");
     let ct2_dir = ModelStore::new().model_dir(&model_name);
@@ -1048,8 +1019,8 @@ async fn translate_handler(
                 Ok(translated) => {
                     return Json(with_sv(json!({
                         "translated": translated,
-                        "source": from_raw,
-                        "target": to_raw,
+                        "source_language": source,
+                        "target_language": target,
                     })))
                     .into_response();
                 }
@@ -1071,8 +1042,8 @@ async fn translate_handler(
     match avi_translation::translate(&text, &source, &target, &ct2_dir) {
         Ok(translated) => Json(with_sv(json!({
             "translated": translated,
-            "source": from_raw,
-            "target": to_raw,
+            "source_language": source,
+            "target_language": target,
         })))
         .into_response(),
         Err(e) => (
@@ -1113,10 +1084,24 @@ async fn voices_clone_handler(
         )
             .into_response();
     }
-    let force = payload
-        .get("force")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    // `force` es opcional (ausente = no sobrescribir); si viene, debe ser booleano.
+    let force = match payload.get("force") {
+        None => false,
+        Some(v) => match v.as_bool() {
+            Some(force) => force,
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(with_sv(json!({
+                        "error": "usage_error",
+                        "reason": "usage_error",
+                        "message": "El campo 'force' debe ser booleano.",
+                    }))),
+                )
+                    .into_response();
+            }
+        },
+    };
     let voice_exists = match state.voice_store.exists(&name) {
         Ok(found) => found,
         Err(e) => {
@@ -1393,27 +1378,28 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
         .collect();
-    let voice = payload
-        .get("voice")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default")
-        .to_string();
-    let from_raw = payload
-        .get("from")
-        .or_else(|| payload.get("source_language"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("es");
-    let to_raw = payload
-        .get("to")
-        .or_else(|| payload.get("target_language"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("es");
-    let temperature = payload
-        .get("temperature")
-        .and_then(|v| v.as_f64())
-        .map(|t| t as f32);
-    let source_iso = resolve_translation_language(from_raw).to_string();
-    let target_iso = resolve_translation_language(to_raw).to_string();
+    let fields = (|| {
+        Ok::<_, InputError>((
+            required_str(&payload, "voice")?.to_string(),
+            required_language(&payload, "source_language")?.to_string(),
+            required_language(&payload, "target_language")?.to_string(),
+            optional_temperature(&payload)?,
+        ))
+    })();
+    let (voice, source_iso, target_iso, temperature) = match fields {
+        Ok(fields) => fields,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": e.reason,
+                    "message": e.message,
+                }))),
+            )
+                .into_response();
+        }
+    };
     // Transcripción — requiere `native-stt`; sin el feature el pipeline no puede arrancar.
     #[cfg(not(feature = "native-stt"))]
     {
@@ -1450,44 +1436,18 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
         )
             .into_response();
     }
-    // Idioma de la síntesis: el destino de la orden como token del producto. Un
-    // destino que el motor no admite se rechaza antes de transcribir.
-    #[cfg(feature = "native-stt")]
-    let synthesis_language = synthesis_language_token(to_raw).to_string();
-    #[cfg(feature = "native-stt")]
-    if let Err(e) = avi_tts::engine_language_name(&synthesis_language) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "status": "error",
-                "reason": "usage_error",
-                "message": e.to_string(),
-            }))),
-        )
-            .into_response();
-    }
+    // Ambos idiomas son `es` o `en`: si difieren, el par de traducción queda
+    // determinado por el origen.
     #[cfg(feature = "native-stt")]
     let needs_translation = source_iso != target_iso;
     #[cfg(feature = "native-stt")]
-    let translation_pair: Option<String> = if !needs_translation {
-        None
-    } else {
-        match (source_iso.as_str(), target_iso.as_str()) {
-            ("es", "en") => Some("es-en".to_string()),
-            ("en", "es") => Some("en-es".to_string()),
-            _ => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(with_sv(json!({
-                        "status": "error",
-                        "reason": "unsupported_language_pair",
-                        "message": format!("Par de idiomas no soportado: {} -> {} (soportados: es, en)", source_iso, target_iso),
-                    }))),
-                )
-                    .into_response();
-            }
+    let translation_pair: Option<String> = needs_translation.then(|| {
+        if source_iso == "es" {
+            "es-en".to_string()
+        } else {
+            "en-es".to_string()
         }
-    };
+    });
     #[cfg(feature = "native-stt")]
     if let Some(pair) = translation_pair.as_deref() {
         let model_name = format!("opus-mt-{pair}");
@@ -1561,15 +1521,14 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
         // baratas, latidos durante la inferencia, evento final con la forma
         // contractual actual (`status: "dubbed"`). Sin almacén de trabajos.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
-        let from_owned = from_raw.to_string();
+        let from_owned = source_iso.clone();
         tokio::spawn(async move {
             emit_ndjson(&tx, json!({ "event": "started", "voice": voice })).await;
             // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
             // sobre el audio completo).
             let stt_state = state.clone();
             let stt_work = tokio::task::spawn_blocking(move || {
-                let lang = resolve_stt_language(&from_owned);
-                stt_state.stt_engine.transcribe(&pcm, Some(lang))
+                stt_state.stt_engine.transcribe(&pcm, Some(&from_owned))
             });
             let transcribed = match with_heartbeats(&tx, "transcribe", stt_work).await {
                 None => return,
@@ -1749,8 +1708,7 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
             let budget = avi_core::synthesis_budget(final_text.chars().count());
             let text_synth = final_text.clone();
             let synth_state = state.clone();
-            let synth_options =
-                GenerationOptions::with_temperature(temperature, &synthesis_language);
+            let synth_options = GenerationOptions::with_temperature(temperature, &target_iso);
             let job = move |cancel: Arc<std::sync::atomic::AtomicBool>| {
                 // Reloj de trabajo tomado dentro del trabajo, ya con el lock: mide
                 // solo la fase de síntesis, no transcribe/translate ni la cola.
@@ -1956,7 +1914,7 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
     // en cola contra tráfico vivo.
     let work_t0 = std::time::Instant::now();
     // El WAV de calentamiento tiene dueño: se borra al salir, también si falla.
-    // El texto de calentamiento es fijo y en español: el idioma es siempre `es-latam`.
+    // El texto de calentamiento es fijo y en español: el idioma es siempre `es`.
     let result = avi_shared::TempWav::new("avi_daemon_warmup_")
         .map_err(|e| anyhow::anyhow!("No se pudo reservar el WAV de calentamiento: {}", e))
         .and_then(|tmp| {
@@ -1965,7 +1923,7 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
                 .synthesize_with_options(
                     "Calentamiento del daemon.",
                     &profile,
-                    &GenerationOptions::production("es-latam"),
+                    &GenerationOptions::production("es"),
                     Some(tmp.path()),
                 )
                 .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e))
@@ -2502,17 +2460,6 @@ pub async fn run_supervised(
 mod tests {
     use super::*;
 
-    /// El destino de un doblaje llega al motor como token del producto: el ISO
-    /// `es` por defecto equivale a `es-latam` y `en` pasa intacto.
-    #[cfg(feature = "native-stt")]
-    #[test]
-    fn dub_target_maps_to_product_synthesis_token() {
-        assert_eq!(synthesis_language_token("es"), "es-latam");
-        assert_eq!(synthesis_language_token("es-latam"), "es-latam");
-        assert_eq!(synthesis_language_token("en"), "en");
-        assert_eq!(synthesis_language_token("fr"), "fr");
-    }
-
     /// `Warming` → `Warm`: la etiqueta cambia y no hay causa de error.
     #[test]
     fn warm_state_transitions_to_warm() {
@@ -3023,6 +2970,9 @@ mod tests {
         let silence = vec![0u8; 41 * 16_000 * 2];
         let body = json!({
             "audio_b64": base64::engine::general_purpose::STANDARD.encode(silence),
+            "voice": "default",
+            "source_language": "es",
+            "target_language": "es",
         });
         let req = axum::http::Request::builder()
             .uri("/dub")
@@ -3076,29 +3026,79 @@ mod tests {
     /// Un texto vacío o solo de espacios no se traduce.
     #[test]
     fn validate_translate_empty_text_is_empty_text() {
-        let result = validate_translate_input(&json!({ "text": "   ", "from": "es", "to": "en" }));
+        let result = validate_translate_input(
+            &json!({ "text": "   ", "source_language": "es", "target_language": "en" }),
+        );
         assert_eq!(result.err().map(|e| e.reason), Some("empty_text"));
     }
 
     /// Con el mismo idioma de origen y destino no hay nada que traducir.
     #[test]
     fn validate_translate_same_language_is_same() {
-        let result =
-            validate_translate_input(&json!({ "text": "hola", "from": "es-latam", "to": "es" }));
+        let result = validate_translate_input(
+            &json!({ "text": "hola", "source_language": "es", "target_language": "es" }),
+        );
         assert!(
             matches!(result, Ok(TranslateInput::Same)),
             "resultado: {result:?}"
         );
     }
 
-    /// Un par distinto de es↔en no está soportado.
+    /// Idiomas distintos (`es`→`en` o `en`→`es`) se devuelven como par.
     #[test]
-    fn validate_translate_unsupported_pair_is_rejected() {
-        let result = validate_translate_input(&json!({ "text": "hola", "from": "es", "to": "fr" }));
-        assert_eq!(
-            result.err().map(|e| e.reason),
-            Some("unsupported_language_pair")
+    fn validate_translate_distinct_languages_is_pair() {
+        let result = validate_translate_input(
+            &json!({ "text": "hola", "source_language": "es", "target_language": "en" }),
         );
+        assert_eq!(
+            result,
+            Ok(TranslateInput::Pair {
+                source: "es".to_string(),
+                target: "en".to_string()
+            })
+        );
+    }
+
+    /// Un idioma fuera de `es`/`en` (incluido `es-latam`) es error de uso.
+    #[test]
+    fn validate_translate_unknown_language_is_usage_error() {
+        for bad in ["fr", "es-latam"] {
+            let result = validate_translate_input(
+                &json!({ "text": "hola", "source_language": "es", "target_language": bad }),
+            );
+            assert_eq!(result.err().map(|e| e.reason), Some("usage_error"), "{bad}");
+        }
+    }
+
+    /// Un idioma ausente, o enviado con una clave alias, es error de uso.
+    #[test]
+    fn validate_translate_missing_or_aliased_language_is_usage_error() {
+        let bodies = [
+            json!({ "text": "hola", "target_language": "en" }),
+            json!({ "text": "hola", "source_language": "es" }),
+            json!({ "text": "hola", "from": "es", "to": "en" }),
+            json!({ "text": "hola", "source": "es", "target": "en" }),
+        ];
+        for body in bodies {
+            let result = validate_translate_input(&body);
+            assert_eq!(
+                result.err().map(|e| e.reason),
+                Some("usage_error"),
+                "{body}"
+            );
+        }
+    }
+
+    /// `temperature` presente pero no numérica es error de uso; ausente es `None`.
+    #[test]
+    fn optional_temperature_rejects_non_numeric() {
+        assert_eq!(optional_temperature(&json!({})), Ok(None));
+        assert_eq!(
+            optional_temperature(&json!({ "temperature": 0.5 })),
+            Ok(Some(0.5))
+        );
+        let bad = optional_temperature(&json!({ "temperature": "alta" }));
+        assert_eq!(bad.err().map(|e| e.reason), Some("usage_error"));
     }
 
     /// `with_stores` ancla los almacenes bajo el directorio recibido: la raíz se
@@ -3158,7 +3158,10 @@ mod tests {
     async fn synthesize_start_event_counts_chars() {
         let (_, bytes) = post_json(
             "/synthesize",
-            json!({ "text": "canción", "voice": "default", "temperature": 5.0 }),
+            json!({
+                "text": "canción", "voice": "default", "temperature": 5.0,
+                "source_language": "es", "target_language": "es"
+            }),
         )
         .await;
         let body = String::from_utf8_lossy(&bytes);

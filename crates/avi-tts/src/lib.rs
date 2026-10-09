@@ -75,8 +75,8 @@ fn lock_live(
 /// Opciones de generación para la síntesis de voz (API agnóstica del motor)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationOptions {
-    /// Idioma de destino en token del producto (`es-latam` o `en`); se traduce
-    /// al nombre que entiende el motor al construir la petición.
+    /// Idioma de destino en token del producto (`es` o `en`); se traduce al
+    /// nombre que entiende el motor al construir la petición.
     pub language: String,
     pub temperature: f32,
     pub top_k: u32,
@@ -88,14 +88,14 @@ pub struct GenerationOptions {
 }
 
 /// Traduce un token de idioma del producto al nombre completo que acepta el
-/// motor Qwen3-TTS. Cualquier otro token (incluido el código ISO `es`) es un
-/// error: nunca se cae a un idioma por defecto.
+/// motor Qwen3-TTS. Cualquier otro token es un error: nunca se cae a un idioma
+/// por defecto.
 pub fn engine_language_name(token: &str) -> Result<&'static str> {
     match token {
-        "es-latam" => Ok("Spanish"),
+        "es" => Ok("Spanish"),
         "en" => Ok("English"),
         other => Err(anyhow!(
-            "Idioma de síntesis no soportado: `{}` (se admite `es-latam` o `en`).",
+            "Idioma de síntesis no soportado: `{}` (se admite `es` o `en`).",
             other
         )),
     }
@@ -1848,13 +1848,13 @@ mod tests {
     /// sin alterar el resto de campos respecto a `new`, y conserva el idioma.
     #[test]
     fn generation_options_production_sets_temperature_and_seed() {
-        let p = GenerationOptions::production("es-latam");
+        let p = GenerationOptions::production("es");
         assert_eq!(p.temperature, 0.35);
         assert_eq!(p.seed, Some(4));
         assert_eq!(p.top_k, DEFAULT_TOP_K);
         assert_eq!(p.top_p, DEFAULT_TOP_P);
         assert_eq!(p.rep_penalty, DEFAULT_REP_PENALTY);
-        assert_eq!(p.language, "es-latam");
+        assert_eq!(p.language, "es");
     }
 
     /// `with_temperature(None, ..)` equivale a `production(..)`; con `Some` solo
@@ -1875,13 +1875,13 @@ mod tests {
         assert_eq!(max.temperature, 2.0);
     }
 
-    /// El mapeo token del producto → nombre del motor solo admite `es-latam` y
-    /// `en`; cualquier otro token (incluido el código ISO `es`) es un error.
+    /// El mapeo token del producto → nombre del motor solo admite `es` y `en`;
+    /// cualquier otro token es un error.
     #[test]
     fn engine_language_name_maps_product_tokens_and_rejects_others() {
-        assert_eq!(engine_language_name("es-latam").unwrap(), "Spanish");
+        assert_eq!(engine_language_name("es").unwrap(), "Spanish");
         assert_eq!(engine_language_name("en").unwrap(), "English");
-        for bad in ["es", "fr", "", "Spanish"] {
+        for bad in ["es-latam", "fr", "", "Spanish"] {
             assert!(
                 engine_language_name(bad).is_err(),
                 "el token `{}` debe rechazarse",
@@ -2038,7 +2038,7 @@ mod tests {
             .synthesize_with_options(
                 "Hola",
                 &profile,
-                &GenerationOptions::new("es-latam"),
+                &GenerationOptions::new("es"),
                 Some(&dir.path().join("salida.wav")),
             )
             .unwrap_err();
@@ -2348,14 +2348,8 @@ fn main() {
     #[test]
     fn build_tts_body_defaults_and_cloned_voice() {
         let voice = VoiceEngine::Preset("ryan".to_string());
-        let body = build_tts_body(
-            "Hola",
-            &voice,
-            &GenerationOptions::new("es-latam"),
-            None,
-            None,
-        )
-        .expect("el idioma es válido");
+        let body = build_tts_body("Hola", &voice, &GenerationOptions::new("es"), None, None)
+            .expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
         assert_eq!(obj.get("text").and_then(|v| v.as_str()), Some("Hola"));
         assert_eq!(obj.get("speaker").and_then(|v| v.as_str()), Some("ryan"));
@@ -2400,7 +2394,7 @@ fn main() {
         let body = build_tts_body(
             "Hola",
             &voice,
-            &GenerationOptions::new("es-latam"),
+            &GenerationOptions::new("es"),
             Some(&prosody),
             Some(&emotion),
         )
@@ -2625,12 +2619,7 @@ fn main() {
         let tmp = tempfile::tempdir().unwrap();
         let out = tmp.path().join("out.wav");
         let res = engine
-            .synthesize_with_options(
-                "Hola",
-                &profile,
-                &GenerationOptions::new("es-latam"),
-                Some(&out),
-            )
+            .synthesize_with_options("Hola", &profile, &GenerationOptions::new("es"), Some(&out))
             .expect("la síntesis HTTP simulada debe completarse");
         drop(handle);
         assert!(res.is_file());
@@ -2646,7 +2635,7 @@ fn main() {
         let opts = GenerationOptions {
             temperature: 0.9,
             seed: Some(7),
-            ..GenerationOptions::new("es-latam")
+            ..GenerationOptions::new("es")
         };
         let body = Arc::new(Mutex::new(String::new()));
         let (port, handle) = resident::simulate_server(body.clone());
@@ -2678,7 +2667,7 @@ fn main() {
                 &format!("http://127.0.0.1:{}", port),
                 "Hola",
                 &VoiceEngine::Preset("default".to_string()),
-                &GenerationOptions::new("es-latam"),
+                &GenerationOptions::new("es"),
                 None,
                 None,
                 &out,

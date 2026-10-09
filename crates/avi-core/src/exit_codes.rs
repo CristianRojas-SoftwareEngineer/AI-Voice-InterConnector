@@ -83,7 +83,6 @@ impl ExitCode {
             | "daemon_not_supported"
             | "empty_text"
             | "text_too_long"
-            | "unsupported_language_pair"
             | "invalid_voice_name"
             | "invalid_audio"
             | "audio_too_long" => ExitCode::InvalidInput,
@@ -140,7 +139,6 @@ mod tests {
         ("daemon_not_supported", 2),
         ("empty_text", 2),
         ("text_too_long", 2),
-        ("unsupported_language_pair", 2),
         ("invalid_voice_name", 2),
         ("invalid_audio", 2),
         ("audio_too_long", 2),

@@ -1259,13 +1259,13 @@ fn speech_transcribe_with_audio_matches_contract() {
             "--audio",
             "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
             "--source-language",
-            "es-latam",
+            "es",
         ],
         &inst.args(),
     );
     assert_eq!(code, 0);
     assert_eq!(actual["schema_version"], Value::String("5".to_string()));
-    assert_eq!(actual["source"], Value::String("es-latam".to_string()));
+    assert_eq!(actual["source_language"], Value::String("es".to_string()));
     let text = actual["text"].as_str().expect("`text` debe ser un string");
     assert!(!text.is_empty(), "`text` no debe estar vacío");
 }
@@ -1274,13 +1274,7 @@ fn speech_transcribe_with_audio_matches_contract() {
 fn speech_transcribe_without_audio_nor_mic_exits_2() {
     let (_sandbox, envs) = contract_sandbox("transcribe_no_input");
     let output = bin_command()
-        .args([
-            "--json",
-            "speech",
-            "transcribe",
-            "--source-language",
-            "es-latam",
-        ])
+        .args(["--json", "speech", "transcribe", "--source-language", "es"])
         .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .output()
         .expect("el binario debe ejecutarse");
@@ -1305,7 +1299,7 @@ fn transcribe_missing_audio_exits_3() {
         "--audio",
         "avi_test_missing.wav",
         "--source-language",
-        "es-latam",
+        "es",
     ]);
     assert_eq!(code, 3, "audio inexistente debe mapear a exit 3");
     assert_eq!(actual["reason"], "audio_not_found");
@@ -1321,9 +1315,9 @@ fn dub_missing_audio_exits_3() {
         "--audio",
         "avi_test_missing.wav",
         "--source-language",
-        "es-latam",
+        "es",
         "--target-language",
-        "es-latam",
+        "es",
     ]);
     assert_eq!(code, 3, "audio inexistente debe mapear a exit 3");
     assert_eq!(actual["reason"], "audio_not_found");
@@ -1352,7 +1346,7 @@ fn transcribe_invalid_wav_exits_2() {
             "--audio",
             path.to_str().expect("ruta UTF-8"),
             "--source-language",
-            "es-latam",
+            "es",
         ],
         &envs,
     );
@@ -1379,7 +1373,7 @@ fn speech_transcribe_mic_without_duration_no_tty_exits_2() {
         "transcribe",
         "--mic",
         "--source-language",
-        "es-latam",
+        "es",
     ]);
     assert_eq!(
         code, 2,
@@ -1400,7 +1394,7 @@ fn speech_transcribe_duration_without_mic_exits_2() {
         "--duration",
         "3",
         "--source-language",
-        "es-latam",
+        "es",
     ]);
     assert_eq!(
         code, 2,
@@ -1431,7 +1425,7 @@ fn speech_transcribe_mic_duration_no_tty_no_panic() {
             "--duration",
             "1",
             "--source-language",
-            "es-latam",
+            "es",
         ])
         .envs(envs)
         .stdin(std::process::Stdio::null())
@@ -1461,9 +1455,9 @@ fn speech_dub_mic_no_duration_no_tty_exits_2() {
         "dub",
         "--mic",
         "--source-language",
-        "es-latam",
+        "es",
         "--target-language",
-        "es-latam",
+        "es",
     ]);
     assert_eq!(
         code, 2,
@@ -1481,9 +1475,9 @@ fn speech_dub_duration_without_mic_exits_2() {
         "--duration",
         "3",
         "--source-language",
-        "es-latam",
+        "es",
         "--target-language",
-        "es-latam",
+        "es",
     ]);
     assert_eq!(
         code, 2,
@@ -1508,9 +1502,9 @@ fn speech_dub_mic_duration_no_tty_no_panic() {
             "--duration",
             "1",
             "--source-language",
-            "es-latam",
+            "es",
             "--target-language",
-            "es-latam",
+            "es",
         ])
         .envs(envs)
         .stdin(std::process::Stdio::null())
@@ -1596,7 +1590,7 @@ fn transcribe_audio_over_limit_is_audio_too_long() {
                 "--audio",
                 wav.to_str().expect("ruta UTF-8"),
                 "--source-language",
-                "es-latam",
+                "es",
             ],
             &envs,
         );
@@ -1653,9 +1647,9 @@ fn dub_audio_over_limit_is_audio_too_long() {
                 "--audio",
                 wav.to_str().expect("ruta UTF-8"),
                 "--source-language",
-                "es-latam",
+                "es",
                 "--target-language",
-                "es-latam",
+                "es",
             ],
             &envs,
         );
@@ -1707,7 +1701,7 @@ fn transcribe_mic_duration_over_limit_is_audio_too_long() {
             "--duration",
             "301",
             "--source-language",
-            "es-latam",
+            "es",
         ],
         &[],
     );
@@ -1728,7 +1722,7 @@ fn transcribe_mic_env_over_limit_is_audio_too_long() {
             "transcribe",
             "--mic",
             "--source-language",
-            "es-latam",
+            "es",
         ],
         &[("AVI_PUSH_TO_TALK_MAX_SECS", "301")],
     );
@@ -1873,9 +1867,9 @@ fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<Strin
             "--audio",
             wav.to_str().expect("ruta UTF-8"),
             "--source-language",
-            "es-latam",
+            "es",
             "--target-language",
-            "es-latam",
+            "es",
         ],
         &envs,
     );
@@ -2451,17 +2445,17 @@ fn translate_es_to_en_produces_translation() {
             "translate",
             "--text",
             "Hola, ¿cómo estás?",
-            "--from",
+            "--source-language",
             "es",
-            "--to",
+            "--target-language",
             "en",
         ],
         &inst.args(),
     );
     assert_eq!(code, 0);
     assert_eq!(actual["schema_version"], Value::String("5".to_string()));
-    assert_eq!(actual["source"], Value::String("es".to_string()));
-    assert_eq!(actual["target"], Value::String("en".to_string()));
+    assert_eq!(actual["source_language"], Value::String("es".to_string()));
+    assert_eq!(actual["target_language"], Value::String("en".to_string()));
     let translated = actual["translated"]
         .as_str()
         .expect("`translated` debe ser un string");
@@ -2470,15 +2464,15 @@ fn translate_es_to_en_produces_translation() {
 
 #[test]
 fn translate_passthrough_same_lang_returns_intact() {
-    // Passthrough: origen == destino tras normalizar → texto intacto.
+    // Passthrough: origen == destino → texto intacto.
     let (code, actual) = run_json(&[
         "--json",
         "translate",
         "--text",
         "Hola",
-        "--from",
+        "--source-language",
         "es",
-        "--to",
+        "--target-language",
         "es",
     ]);
     assert_eq!(code, 0);
@@ -2487,17 +2481,17 @@ fn translate_passthrough_same_lang_returns_intact() {
 
 #[test]
 fn translate_unsupported_pair_exits_2() {
-    // El alfabeto estricto del parser (`es`/`en`) rechaza el par antes del handler → exit 2 de `clap`.
-    // del handler → exit 2 de `clap`, sin envelope JSON que afirmar.
+    // El alfabeto estricto del parser (`es`/`en`) rechaza el par antes del
+    // handler → exit 2 de `clap`, sin envelope JSON que afirmar.
     let output = bin_command()
         .args([
             "--json",
             "translate",
             "--text",
             "Bonjour",
-            "--from",
+            "--source-language",
             "fr",
-            "--to",
+            "--target-language",
             "de",
         ])
         .output()
@@ -2514,17 +2508,16 @@ fn translate_unsupported_pair_exits_2() {
 
 #[test]
 fn translate_es_latam_rejected_by_parser_exits_2() {
-    // Cambio deliberado: `es-latam` no pertenece al alfabeto del parser (`es`/`en`).
-    // parser (`es`/`en`) aunque la vía IPC lo siga normalizando → exit 2.
+    // `es-latam` no pertenece al alfabeto del parser (`es`/`en`) → exit 2.
     let output = bin_command()
         .args([
             "--json",
             "translate",
             "--text",
             "Hola",
-            "--from",
+            "--source-language",
             "es-latam",
-            "--to",
+            "--target-language",
             "en",
         ])
         .output()
@@ -2537,6 +2530,68 @@ fn translate_es_latam_rejected_by_parser_exits_2() {
         code, 2,
         "`es-latam` vía CLI debe rechazarlo el parser con exit 2"
     );
+}
+
+/// `--from` y `--to` no existen: el parser los rechaza con exit 2.
+#[test]
+fn translate_from_to_flags_rejected_by_parser_exits_2() {
+    let output = bin_command()
+        .args([
+            "--json",
+            "translate",
+            "--text",
+            "Hola",
+            "--from",
+            "es",
+            "--to",
+            "en",
+        ])
+        .output()
+        .expect("el binario debe ejecutarse");
+    let code = output
+        .status
+        .code()
+        .expect("el proceso debe terminar con un código");
+    assert_eq!(code, 2, "`--from`/`--to` deben rechazarse con exit 2");
+}
+
+/// `es-latam` en `speech synthesize`, `speech say`, `speech dub` y `speech
+/// transcribe` lo rechaza el parser con exit 2.
+#[test]
+fn speech_es_latam_rejected_by_parser_exits_2() {
+    let cases: [&[&str]; 4] = [
+        &[
+            "synthesize",
+            "--text",
+            "Hola",
+            "--label",
+            "x",
+            "--target-language",
+            "es-latam",
+        ],
+        &["say", "--text", "Hola", "--target-language", "es-latam"],
+        &["dub", "--audio", "a.wav", "--source-language", "es-latam"],
+        &[
+            "transcribe",
+            "--audio",
+            "a.wav",
+            "--source-language",
+            "es-latam",
+        ],
+    ];
+    for case in cases {
+        let output = bin_command()
+            .arg("--json")
+            .arg("speech")
+            .args(case)
+            .output()
+            .expect("el binario debe ejecutarse");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "`es-latam` en {case:?} debe rechazarlo el parser con exit 2"
+        );
+    }
 }
 
 // ─── Golden TTS (contrato dorado de síntesis, doblaje y clonado de voz) ───
@@ -2937,7 +2992,7 @@ mod tts {
     }
 
     /// Sintetiza `text` con `voice` por la vía directa de la instancia, en
-    /// `language` (`es-latam` o `en`) tanto de origen como de destino para no
+    /// `language` (`es` o `en`) tanto de origen como de destino para no
     /// traducir, y mide duración y WER transcribiendo en el mismo idioma.
     #[cfg(feature = "native-stt")]
     fn synthesize_measured(
@@ -2978,12 +3033,7 @@ mod tts {
         valid_wav_24k(audio_path);
         let reader = hound::WavReader::open(audio_path).expect("WAV legible");
         let secs = f64::from(reader.duration()) / f64::from(reader.spec().sample_rate);
-        let stt_language = if language == "es-latam" {
-            "es"
-        } else {
-            language
-        };
-        let (wer, transcript) = wer_and_transcript(audio_path, text, stt_language);
+        let (wer, transcript) = wer_and_transcript(audio_path, text, language);
         eprintln!(
             "[matriz] voz={voice} idioma={language} duración={secs:.2}s WER={wer:.3} \
              transcripción={transcript:?}"
@@ -3044,7 +3094,7 @@ mod tts {
     #[test]
     #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
     fn voice_matrix_default_es_latam() {
-        assert_matrix_cell("default", "es-latam");
+        assert_matrix_cell("default", "es");
     }
 
     #[cfg(feature = "native-stt")]
@@ -3058,7 +3108,7 @@ mod tts {
     #[test]
     #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
     fn voice_matrix_ryan_es_latam() {
-        assert_matrix_cell("ryan", "es-latam");
+        assert_matrix_cell("ryan", "es");
     }
 
     #[cfg(feature = "native-stt")]
@@ -3072,7 +3122,7 @@ mod tts {
     #[test]
     #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
     fn voice_matrix_vivian_es_latam() {
-        assert_matrix_cell("vivian", "es-latam");
+        assert_matrix_cell("vivian", "es");
     }
 
     #[cfg(feature = "native-stt")]
@@ -3498,9 +3548,9 @@ mod tts {
                 "--audio",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
                 "--source-language",
-                "es-latam",
+                "es",
                 "--target-language",
-                "es-latam",
+                "es",
             ],
             &inst.args(),
         );
@@ -3525,7 +3575,7 @@ mod tts {
             "--audio",
             "missing.wav",
             "--source-language",
-            "es-latam",
+            "es",
         ]);
         assert_eq!(code, 3, "archivo inexistente → ExitCode::NotFound");
         assert_eq!(
@@ -3686,7 +3736,7 @@ mod tts {
         assert_eq!(code, 0, "clonación: {actual}");
         let speech = actual["speech"].as_str().expect("speech debe existir");
         assert_timbre_only_qvoice(Path::new(speech), &name);
-        let m = synthesize_measured(&inst, &name, "es-latam", MATRIX_TEXT_ES);
+        let m = synthesize_measured(&inst, &name, "es", MATRIX_TEXT_ES);
         assert!(
             m.wer <= 0.25,
             "WER de la voz clonada = {} debe ser ≤ 0.25 (transcripción: {:?})",
@@ -5215,9 +5265,9 @@ mod tts {
                 "translate",
                 "--text",
                 "Hola",
-                "--from",
+                "--source-language",
                 "es",
-                "--to",
+                "--target-language",
                 "en",
             ],
             &a,
@@ -5226,7 +5276,8 @@ mod tts {
         assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         assert!(actual.get("translated").is_some());
         let expected = fixture("cli_translate_daemon.json");
-        assert_eq!(actual["source"], expected["source"]);
+        assert_eq!(actual["source_language"], expected["source_language"]);
+        assert_eq!(actual["target_language"], expected["target_language"]);
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "translate_delegates_to_daemon");
         hit_end("tts::translate_delegates_to_daemon");
@@ -5272,9 +5323,9 @@ mod tts {
                 "translate",
                 "--text",
                 "Hola",
-                "--from",
+                "--source-language",
                 "es",
-                "--to",
+                "--target-language",
                 "en",
             ],
             &a,
@@ -5400,9 +5451,9 @@ mod tts {
                 "--audio",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
                 "--source-language",
-                "es-latam",
+                "es",
                 "--target-language",
-                "es-latam",
+                "es",
             ],
             &a,
         );
@@ -5449,7 +5500,7 @@ mod tts {
                 "--audio",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
                 "--source-language",
-                "es-latam",
+                "es",
                 "--target-language",
                 "en",
             ],
@@ -5970,7 +6021,8 @@ fn unknown_argument_error_is_spanish() {
 /// Valor inválido: exit 2 con error en español en stderr.
 #[test]
 fn invalid_value_error_is_spanish() {
-    let (code, _, stderr) = run_text_with_stderr(&["translate", "--text", "Hola", "--from", "fr"]);
+    let (code, _, stderr) =
+        run_text_with_stderr(&["translate", "--text", "Hola", "--source-language", "fr"]);
     assert_eq!(code, 2, "valor inválido debe salir 2");
     assert!(
         stderr.starts_with("Error:"),
@@ -6373,7 +6425,14 @@ fn parse_error_with_json_emits_usage_error_envelope() {
             "Hola",
             "--flag-inexistente",
         ],
-        vec!["--json", "translate", "--text", "Hola", "--from", "fr"],
+        vec![
+            "--json",
+            "translate",
+            "--text",
+            "Hola",
+            "--source-language",
+            "fr",
+        ],
     ] {
         let (code, stdout, stderr) = run_text_with_stderr(&args);
         assert_eq!(
@@ -6496,9 +6555,9 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
             "--audio",
             wav.to_str().expect("ruta UTF-8"),
             "--source-language",
-            "es-latam",
+            "es",
             "--target-language",
-            "es-latam",
+            "es",
         ],
         &envs,
     );
@@ -6555,9 +6614,9 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
             "--audio",
             wav.to_str().expect("ruta UTF-8"),
             "--source-language",
-            "es-latam",
+            "es",
             "--target-language",
-            "es-latam",
+            "es",
         ],
         &envs,
     );

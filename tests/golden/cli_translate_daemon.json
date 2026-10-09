@@ -1,6 +1,6 @@
 {
   "schema_version": "5",
   "translated": "Hello",
-  "source": "es",
-  "target": "en"
+  "source_language": "es",
+  "target_language": "en"
 }

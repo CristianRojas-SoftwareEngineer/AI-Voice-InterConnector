@@ -367,10 +367,10 @@ async fn synthesize_text_too_long_is_contract_error() {
     assert_eq!(actual, fixture("daemon_synthesize_too_long.json"));
 }
 
-/// Los campos de idioma y temperatura son opcionales: un payload que solo trae
-/// `text` y `voice` se valida igual (mismo error de contrato ante texto vacío).
+/// El texto se valida antes que los demás campos: un payload mínimo con texto
+/// vacío recibe el error de contrato de texto vacío.
 #[tokio::test]
-async fn synthesize_old_payload_without_new_fields() {
+async fn synthesize_minimal_payload_rejects_empty_text() {
     let (status, bytes) = send(post_json(
         "/synthesize",
         serde_json::json!({ "text": "", "voice": "default" }),
@@ -387,7 +387,11 @@ async fn synthesize_old_payload_without_new_fields() {
 async fn synthesize_invalid_temperature_is_usage_error() {
     let (status, bytes) = send(post_json(
         "/synthesize",
-        serde_json::json!({ "text": "hola", "voice": "default", "temperature": 0.0 }),
+        serde_json::json!({
+            "text": "hola", "voice": "default",
+            "source_language": "es", "target_language": "es",
+            "temperature": 0.0
+        }),
     ))
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -409,7 +413,10 @@ async fn synthesize_invalid_temperature_is_usage_error() {
 async fn synthesize_emits_contract_ndjson_stream() {
     let (status, bytes) = send(post_json(
         "/synthesize",
-        serde_json::json!({ "text": "hola", "voice": "default" }),
+        serde_json::json!({
+            "text": "hola", "voice": "default",
+            "source_language": "es", "target_language": "es"
+        }),
     ))
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -488,7 +495,7 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
         "/transcribe",
         serde_json::json!({
             "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
-            "source_language": "es-latam",
+            "source_language": "es",
         }),
     ))
     .await;
@@ -525,7 +532,7 @@ async fn transcribe_audio_over_default_body_limit_is_accepted() {
         "/transcribe",
         serde_json::json!({
             "audio_b64": base64::engine::general_purpose::STANDARD.encode(&silence),
-            "source_language": "es-latam",
+            "source_language": "es",
         }),
     ))
     .await;
@@ -951,37 +958,164 @@ async fn second_daemon_is_rejected_while_a_live_one_is_registered() {
     );
 }
 
-/// Par de idiomas no soportado vía IPC → 400 con `unsupported_language_pair`.
-/// La guarda de par corre antes de tocar el modelo: sin CT2 ni TCP.
+/// Envía `body` a `/translate` y afirma 400 con `usage_error`: la validación de
+/// los campos corre antes de tocar el modelo, sin CT2 ni TCP.
 #[cfg(feature = "native-translation")]
-#[tokio::test]
-async fn translate_unsupported_pair_returns_400() {
-    let (status, bytes) = send(post_json(
-        "/translate",
-        serde_json::json!({ "text": "Bonjour", "from": "fr", "to": "de" }),
-    ))
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
+async fn assert_translate_usage_error(body: Value) {
+    let (status, bytes) = send(post_json("/translate", body.clone())).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "cuerpo: {body}");
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
-    assert_eq!(
-        actual["reason"],
-        Value::String("unsupported_language_pair".to_string())
-    );
+    assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
 }
 
-/// La vía daemon conserva la normalización `es-latam`→`es`:
-/// passthrough con texto intacto aunque el CLI ya rechace ese token.
+/// Un idioma fuera de `es`/`en` vía IPC → 400 con `usage_error`.
 #[cfg(feature = "native-translation")]
 #[tokio::test]
-async fn translate_es_latam_passthrough_ipc_returns_intact_text() {
+async fn translate_unknown_language_returns_usage_error() {
+    assert_translate_usage_error(serde_json::json!({
+        "text": "Bonjour", "source_language": "fr", "target_language": "de"
+    }))
+    .await;
+}
+
+/// `es-latam` no pertenece al vocabulario del daemon → 400 con `usage_error`.
+#[cfg(feature = "native-translation")]
+#[tokio::test]
+async fn translate_es_latam_returns_usage_error() {
+    assert_translate_usage_error(serde_json::json!({
+        "text": "Hola", "source_language": "es-latam", "target_language": "es"
+    }))
+    .await;
+}
+
+/// Un idioma ausente o enviado con una clave alias (`from`/`to`, `source`/`target`)
+/// → 400 con `usage_error`.
+#[cfg(feature = "native-translation")]
+#[tokio::test]
+async fn translate_missing_or_aliased_language_returns_usage_error() {
+    for body in [
+        serde_json::json!({ "text": "Hola", "target_language": "en" }),
+        serde_json::json!({ "text": "Hola", "source_language": "es" }),
+        serde_json::json!({ "text": "Hola", "from": "es", "to": "en" }),
+        serde_json::json!({ "text": "Hola", "source": "es", "target": "en" }),
+    ] {
+        assert_translate_usage_error(body).await;
+    }
+}
+
+/// Con el mismo idioma de origen y destino la vía daemon devuelve el texto
+/// intacto y los idiomas bajo las claves `source_language`/`target_language`.
+#[cfg(feature = "native-translation")]
+#[tokio::test]
+async fn translate_same_language_passthrough_returns_intact_text() {
     let (status, bytes) = send(post_json(
         "/translate",
-        serde_json::json!({ "text": "Hola", "from": "es-latam", "to": "es" }),
+        serde_json::json!({ "text": "Hola", "source_language": "es", "target_language": "es" }),
     ))
     .await;
     assert_eq!(status, StatusCode::OK);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
     assert_eq!(actual["translated"], Value::String("Hola".to_string()));
+    assert_eq!(actual["source_language"], Value::String("es".to_string()));
+    assert_eq!(actual["target_language"], Value::String("es".to_string()));
+}
+
+/// `/synthesize` rechaza con `usage_error` (400 plano) un campo ausente, un
+/// idioma `es-latam`, una clave alias (`from`/`to`) y un tipo inválido en
+/// `voice` o `temperature`.
+#[tokio::test]
+async fn synthesize_invalid_fields_return_usage_error() {
+    let valid = serde_json::json!({
+        "text": "hola", "voice": "default",
+        "source_language": "es", "target_language": "es"
+    });
+    let mut cases: Vec<Value> = Vec::new();
+    for missing in ["voice", "source_language", "target_language"] {
+        let mut body = valid.clone();
+        body.as_object_mut().unwrap().remove(missing);
+        cases.push(body);
+    }
+    for (key, value) in [
+        ("source_language", serde_json::json!("es-latam")),
+        ("target_language", serde_json::json!("es-latam")),
+        ("voice", serde_json::json!(7)),
+        ("temperature", serde_json::json!("alta")),
+    ] {
+        let mut body = valid.clone();
+        body[key] = value;
+        cases.push(body);
+    }
+    cases.push(serde_json::json!({
+        "text": "hola", "voice": "default", "from": "es", "to": "es"
+    }));
+    for body in cases {
+        let (status, bytes) = send(post_json("/synthesize", body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "cuerpo: {body}");
+        let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+        assert_eq!(
+            actual["reason"],
+            Value::String("usage_error".to_string()),
+            "cuerpo: {body}"
+        );
+    }
+}
+
+/// `/dub` rechaza con `usage_error` (400 plano) un campo ausente, un idioma
+/// `es-latam`, una clave alias (`from`/`to`) y un tipo inválido en `voice` o
+/// `temperature`. Los campos se validan antes de medir o procesar el audio.
+#[tokio::test]
+async fn dub_invalid_fields_return_usage_error() {
+    let valid = serde_json::json!({
+        "audio_b64": base64::engine::general_purpose::STANDARD.encode([0u8; 4]),
+        "voice": "default",
+        "source_language": "es", "target_language": "es"
+    });
+    let mut cases: Vec<Value> = Vec::new();
+    for missing in ["voice", "source_language", "target_language"] {
+        let mut body = valid.clone();
+        body.as_object_mut().unwrap().remove(missing);
+        cases.push(body);
+    }
+    for (key, value) in [
+        ("source_language", serde_json::json!("es-latam")),
+        ("target_language", serde_json::json!("es-latam")),
+        ("voice", serde_json::json!(7)),
+        ("temperature", serde_json::json!("alta")),
+    ] {
+        let mut body = valid.clone();
+        body[key] = value;
+        cases.push(body);
+    }
+    let mut aliased = valid.clone();
+    let object = aliased.as_object_mut().unwrap();
+    object.remove("source_language");
+    object.remove("target_language");
+    object.insert("from".into(), serde_json::json!("es"));
+    object.insert("to".into(), serde_json::json!("es"));
+    cases.push(aliased);
+    for body in cases {
+        let (status, bytes) = send(post_json("/dub", body.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "cuerpo: {body}");
+        let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+        assert_eq!(
+            actual["reason"],
+            Value::String("usage_error".to_string()),
+            "cuerpo: {body}"
+        );
+    }
+}
+
+/// `/voices/clone` rechaza con `usage_error` un `force` que no es booleano.
+#[tokio::test]
+async fn voices_clone_non_boolean_force_returns_usage_error() {
+    let (status, bytes) = send(post_json(
+        "/voices/clone",
+        serde_json::json!({ "name": "voz-prueba", "audio_b64": "AAAA", "force": "si" }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
 }
 
 /// `/dub` no deja su WAV temporal en ninguna salida, tampoco si la
@@ -1010,8 +1144,8 @@ async fn dub_leaves_no_temporary_on_any_outcome() {
             "/dub",
             serde_json::json!({
                 "audio_b64": base64::engine::general_purpose::STANDARD.encode(&pcm),
-                "from": "es",
-                "to": "es",
+                "source_language": "es",
+                "target_language": "es",
                 "voice": "default",
             }),
         ),
@@ -1227,7 +1361,10 @@ async fn synthesize_cloned_voice_without_base_model_is_model_missing() {
         Arc::new(state),
         post_json(
             "/synthesize",
-            serde_json::json!({ "text": "hola", "voice": "default" }),
+            serde_json::json!({
+                "text": "hola", "voice": "default",
+                "source_language": "es", "target_language": "es"
+            }),
         ),
     )
     .await;
@@ -1343,14 +1480,17 @@ async fn synthesize_result_delivers_the_file_the_engine_wrote() {
         state,
         post_json(
             "/synthesize",
-            serde_json::json!({ "text": "hola", "voice": "ryan" }),
+            serde_json::json!({
+                "text": "hola", "voice": "ryan",
+                "source_language": "es", "target_language": "es"
+            }),
         ),
     )
     .await;
     let engine_body = server.join().expect("el motor falso cierra su hilo");
     assert_eq!(
         engine_body["language"], "Spanish",
-        "sin idioma explícito el motor recibe el por defecto del producto: {engine_body:?}"
+        "el idioma de destino `es` llega al motor como `Spanish`: {engine_body:?}"
     );
     assert_eq!(status, StatusCode::OK);
     let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
@@ -1376,11 +1516,11 @@ async fn synthesize_result_delivers_the_file_the_engine_wrote() {
 }
 
 /// El idioma de destino de la orden llega al motor como su nombre completo:
-/// `es-latam` → `Spanish` y `en` → `English`.
+/// `es` → `Spanish` y `en` → `English`.
 #[tokio::test]
 async fn synthesize_sends_the_target_language_to_the_engine() {
     let _temporaries = lock_temporaries().await;
-    for (token, expected) in [("es-latam", "Spanish"), ("en", "English")] {
+    for (token, expected) in [("es", "Spanish"), ("en", "English")] {
         let (port, server) = serve_tts_wav(silent_wav(1));
         let state = state_with_held_tts(port, "avi_golden_language");
         let (status, _) = send_to(
@@ -1388,7 +1528,8 @@ async fn synthesize_sends_the_target_language_to_the_engine() {
             post_json(
                 "/synthesize",
                 serde_json::json!({
-                    "text": "hola", "voice": "ryan", "target_language": token
+                    "text": "hola", "voice": "ryan",
+                    "source_language": token, "target_language": token
                 }),
             ),
         )
@@ -1400,26 +1541,6 @@ async fn synthesize_sends_the_target_language_to_the_engine() {
             "token `{token}`: cuerpo recibido por el motor {engine_body:?}"
         );
     }
-}
-
-/// Un idioma de destino que no es token del producto (incluido el ISO `es`) se
-/// rechaza como `usage_error` antes de llegar al motor.
-#[tokio::test]
-async fn synthesize_invalid_target_language_is_usage_error() {
-    let (status, bytes) = send(post_json(
-        "/synthesize",
-        serde_json::json!({ "text": "hola", "voice": "default", "target_language": "es" }),
-    ))
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
-    let final_event: Value = text
-        .lines()
-        .rfind(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
-        .expect("debe haber al menos un evento");
-    assert_eq!(final_event["event"], "error");
-    assert_eq!(final_event["reason"], "usage_error");
 }
 
 /// Al abandonar la fase por desconexión el WAV temporal sigue siendo del
@@ -1441,7 +1562,10 @@ async fn synthesize_disconnect_removes_temporary_when_blocking_work_ends() {
     let response = build_router_with_state(state)
         .oneshot(post_json(
             "/synthesize",
-            serde_json::json!({ "text": "hola", "voice": "ryan" }),
+            serde_json::json!({
+                "text": "hola", "voice": "ryan",
+                "source_language": "es", "target_language": "es"
+            }),
         ))
         .await
         .expect("el router debe responder");
@@ -1473,8 +1597,8 @@ async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
             "/dub",
             serde_json::json!({
                 "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio),
-                "from": "es",
-                "to": "es",
+                "source_language": "es",
+                "target_language": "es",
                 "voice": "ryan",
             }),
         ))
