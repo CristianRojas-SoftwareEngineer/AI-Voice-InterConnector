@@ -67,7 +67,7 @@ use avi_lifecycle::update;
 use avi_lifecycle::update_fetch;
 use avi_lifecycle::update_resolve::{self, ResolveRequest, Verdict};
 use avi_lifecycle::LifecycleError;
-use avi_store::{MODEL_FILE_PATTERNS, MODEL_REVISIONS};
+use avi_shared::paths::{MODEL_FILE_PATTERNS, MODEL_REVISIONS};
 #[cfg(feature = "faults")]
 use inert::Inert;
 use release_server::FakeReleaseServer;
@@ -623,7 +623,7 @@ fn pending_pin_detected_and_obsolete_pruned() {
     // detecta, y escrito ese último no queda nada pendiente.
     let names: Vec<&str> = setup::selection();
     assert!(!names.is_empty(), "la selección no es vacía");
-    let store = avi_store::ModelStore::new();
+    let store = avi_store::ModelStore::new().unwrap();
     for name in &names[..names.len() - 1] {
         set_snapshot(&sandbox, name);
     }

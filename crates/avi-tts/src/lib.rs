@@ -356,7 +356,7 @@ fn resolve_named_model_dir(
             }
         }
     }
-    if let Some(p) = avi_store::ModelStore::new().model_snapshot_path(dir_name) {
+    if let Some(p) = avi_store::ModelStore::new()?.model_snapshot_path(dir_name) {
         if p.is_dir() {
             let has_entries = p
                 .read_dir()
@@ -1042,16 +1042,13 @@ pub fn clone_voice(
             "El binario de clonado Qwen3-TTS no está provisionado."
         ));
     };
-    let (log_path, log_file) = match avi_store::create_log(
-        &avi_store::logs_dir(),
+    let (log_path, log_file) = avi_shared::logs::create_log(
+        &avi_shared::paths::logs_dir()
+            .map_err(|e| anyhow!("No se pudo resolver el directorio de logs: {}", e))?,
         ENGINE_LOG_FAMILY,
         &avi_process::pid_alive_exact,
-    ) {
-        Ok(log) => log,
-        Err(e) => {
-            return Err(anyhow!("No se pudo crear el log del motor: {}", e));
-        }
-    };
+    )
+    .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
     // La entrada del motor es una tubería con `--watch-stdin`: el motor termina
     // si su entrada se cierra, así que el proceso que clona muere con él aunque
     // sea abatido. El extremo de escritura queda retenido en el hijo
@@ -1214,8 +1211,9 @@ pub mod resident {
             // `fprintf(stderr, *)` del motor C (cuyos mensajes se perdían a null,
             // dejando ciego el diagnóstico del warmup, la síntesis por petición y
             // la terminación del residente).
-            let (log_path, log_file) = avi_store::create_log(
-                &avi_store::logs_dir(),
+            let (log_path, log_file) = avi_shared::logs::create_log(
+                &avi_shared::paths::logs_dir()
+                    .map_err(|e| anyhow!("No se pudo resolver el directorio de logs: {}", e))?,
                 crate::ENGINE_LOG_FAMILY,
                 &avi_process::pid_alive_exact,
             )

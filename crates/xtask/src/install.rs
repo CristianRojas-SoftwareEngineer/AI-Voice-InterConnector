@@ -80,16 +80,17 @@ fn run_package_no_compress(xtask: &Path, out: &Path) -> Result<()> {
 /// filesystem. `temp_dir()` vale en Windows (%TEMP% y %LOCALAPPDATA% suelen
 /// compartir volumen) pero rompe donde no (p. ej. `/tmp` tmpfs frente a
 /// `/home` en WSL). Puro salvo la resolución de rutas, fijado por test.
-pub(crate) fn staging_dir() -> PathBuf {
-    let sibling_base = avi_shared::paths::install_dir()
+pub(crate) fn staging_dir() -> Result<PathBuf> {
+    let install = avi_shared::paths::install_dir()?;
+    let sibling_base = install
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(std::env::temp_dir);
-    sibling_base.join(format!(
+    Ok(sibling_base.join(format!(
         "{}{}",
         avi_shared::paths::STAGING_DIR_PREFIX,
         std::process::id()
-    ))
+    )))
 }
 
 /// Punto de entrada de `xtask install`.
@@ -99,7 +100,7 @@ pub fn run(no_setup: bool) -> Result<()> {
         bail!("ejecuta `cargo xtask install` desde la raíz del repositorio");
     }
     let xtask = std::env::current_exe()?;
-    let staging = staging_dir();
+    let staging = staging_dir()?;
     if staging.is_dir() {
         remove_staging(&staging);
     }
@@ -202,8 +203,8 @@ mod tests {
     /// canónico, sin tocar el entorno.
     #[test]
     fn staging_is_sibling_of_program_dir() {
-        let staging = staging_dir();
-        let install = avi_shared::paths::install_dir();
+        let staging = staging_dir().unwrap();
+        let install = avi_shared::paths::install_dir().unwrap();
         assert_eq!(staging.parent(), install.parent());
         let name = staging
             .file_name()

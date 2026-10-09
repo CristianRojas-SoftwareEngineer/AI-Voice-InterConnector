@@ -19,6 +19,7 @@ use avi_core::engine::SttEngine;
 #[ignore = "requiere Parakeet"]
 fn benchmark_latency_quality() {
     let model_dir = avi_store::ModelStore::new()
+        .expect("la raíz de modelos debe resolverse")
         .model_snapshot_path("parakeet-tdt-v3")
         .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
     let preprocessor = model_dir.join("nemo128.onnx");

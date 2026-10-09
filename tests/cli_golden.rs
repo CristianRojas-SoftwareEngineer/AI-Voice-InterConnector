@@ -690,7 +690,7 @@ fn sandbox_unique_state(tag: &str) -> (TempDir, Vec<(String, String)>) {
 /// correcto porque lleva guion— sigue colisionando, y viceversa.
 #[test]
 fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
-    for product in avi_store::TEMP_PREFIXES {
+    for product in avi_shared::paths::TEMP_PREFIXES {
         assert!(
             !PREFIX_SANDBOX.starts_with(product),
             "el prefijo de los sandboxes de prueba `{PREFIX_SANDBOX}` empieza por `{product}`, \
@@ -1125,6 +1125,7 @@ fn verify_zero_orphans_instance(
 #[cfg(feature = "native-stt")]
 fn require_parakeet() {
     let file = avi_store::ModelStore::new()
+        .expect("la raíz de modelos debe resolverse")
         .model_snapshot_path("parakeet-tdt-v3")
         .expect("el pin de parakeet-tdt-v3 debe existir en MODEL_REVISIONS")
         .join("nemo128.onnx");
@@ -1142,6 +1143,7 @@ fn require_parakeet() {
 fn require_ct2() {
     for pair in ["es-en", "en-es"] {
         let file = avi_store::ModelStore::new()
+            .expect("la raíz de modelos debe resolverse")
             .model_dir(&format!("opus-mt-{pair}"))
             .join("model.bin");
         assert!(
@@ -1157,7 +1159,7 @@ fn require_ct2() {
 /// `MODEL_FILE_PATTERNS` del modelo, o un `config.json` si no declara patrones,
 /// de modo que `is_provisioned` los da por provisionados sin descargar nada.
 fn seed_pinned_models(models_root: &std::path::Path, names: &[&str]) {
-    for pin in avi_store::MODEL_REVISIONS
+    for pin in avi_shared::paths::MODEL_REVISIONS
         .iter()
         .filter(|pin| names.contains(&pin.name))
     {
@@ -1166,7 +1168,7 @@ fn seed_pinned_models(models_root: &std::path::Path, names: &[&str]) {
             .join("snapshots")
             .join(pin.revision);
         std::fs::create_dir_all(&snapshot).expect("crear snapshot sembrado");
-        let files: Vec<&str> = avi_store::MODEL_FILE_PATTERNS
+        let files: Vec<&str> = avi_shared::paths::MODEL_FILE_PATTERNS
             .iter()
             .find(|(name, _)| *name == pin.name)
             .map(|(_, patterns)| patterns.to_vec())
@@ -2681,6 +2683,7 @@ mod tts {
     /// `config.json`) en la raíz de modelos vigente.
     fn require_tts_model() {
         let file = avi_store::ModelStore::new()
+            .expect("la raíz de modelos debe resolverse")
             .model_snapshot_path("qwen3-tts-0.6b")
             .expect("el pin de qwen3-tts-0.6b debe existir en MODEL_REVISIONS")
             .join("config.json");
@@ -2696,6 +2699,7 @@ mod tts {
     /// `"tts_model_type": "base"`.
     fn require_tts_base_model() {
         let snapshot = avi_store::ModelStore::new()
+            .expect("la raíz de modelos debe resolverse")
             .model_snapshot_path("qwen3-tts-0.6b-base")
             .expect("el pin de qwen3-tts-0.6b-base debe existir en MODEL_REVISIONS")
             .join("config.json");
@@ -2830,6 +2834,7 @@ mod tts {
         let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
         let snapshot = avi_store::ModelStore::new()
+            .expect("la raíz de modelos debe resolverse")
             .model_snapshot_path("parakeet-tdt-v3")
             .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
         let engine = STT_HOLDER
@@ -4641,7 +4646,7 @@ mod tts {
         // sembrado no bastara, la descarga fallaría en lugar de bajar gigabytes.
         let inst = IsolatedInstance::new("setup_json");
         let models_root = inst.cache_dir();
-        let names: Vec<&str> = avi_store::MODEL_REVISIONS
+        let names: Vec<&str> = avi_shared::paths::MODEL_REVISIONS
             .iter()
             .map(|pin| pin.name)
             .collect();

@@ -172,7 +172,7 @@ packaging/bootstrap/install.{sh,ps1}                  doctor · bootstrap · bui
 ```
 
 - **`crates/avi-lifecycle`** concentra el motor: detección de target, resolución y descarga de releases, verificación SHA-256, extracción, reemplazo transaccional, integración de PATH por SO, recibo, bloqueo, recuperación, plan de desinstalación y de limpieza. La lógica de `uninstall` y `cleanup` que hoy vive en el binario principal se traslada aquí.
-- **`crates/avi-shared`** es la fuente única de rutas; **`crates/avi-store`** la reexporta para conservar la API de sus llamadores, y `avi-lifecycle` la consume a través de `avi-store`.
+- **`crates/avi-shared`** es la fuente única de rutas; `avi-store`, `avi-lifecycle`, `avi-daemon`, `avi-tts` y la CLI la consumen directamente, sin reexportaciones intermedias.
 - **`crates/xtask`** delega en el binario del producto por invocación de proceso. Así no arrastra dependencias de red ni TLS (el tiempo de compilación de `xtask` precede a toda tarea de desarrollo) y no replica rutas.
 
 ### 5.3 Organización del repositorio
@@ -186,8 +186,8 @@ AI-Voice-InterConnector/
 ├── crates/
 │   ├── avi-lifecycle/            # motor de ciclo de vida del usuario
 │   ├── avi-process/              # flags de creación de procesos y borrado diferido (Windows)
-│   ├── avi-shared/                # rutas canonicas (fuente unica; reexportada por avi-store)
-│   └── avi-store/                # VoiceStore, SpeechStore, ModelStore (reexporta las rutas de avi-shared)
+│   ├── avi-shared/                # rutas canonicas (fuente unica)
+│   └── avi-store/                # VoiceStore, SpeechStore, ModelStore
 ├── src/main.rs                   # cablea `self …`, `cleanup`, `setup`, `doctor`
 ├── tests/bootstrap/              # pruebas de los dos bootstrap (bats + Pester)
 ├── rust-toolchain.toml           # versión de Rust fijada para desarrollo y CI
@@ -240,7 +240,7 @@ irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/re
 
 ## 6. Modelo de rutas y propiedad
 
-Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library` en macOS, Known Folders en Windows) y se definen unicamente en `avi-shared`, que `avi-store` reexporta.
+Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library` en macOS, Known Folders en Windows) y se definen unicamente en `avi-shared`. Si no se pueden resolver (sin `HOME`, `USERPROFILE` ni variable de reubicación), el comando falla en vez de usar el directorio de trabajo.
 
 | Recurso | Propiedad | Linux (x86_64, arm64) | macOS arm64 | Windows x86_64 |
 |---|---|---|---|---|

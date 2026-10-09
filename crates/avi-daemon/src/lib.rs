@@ -70,6 +70,9 @@ pub struct DaemonState {
     pub synthesis_lock: Mutex<()>,
     pub voice_store: VoiceStore,
     pub speech_store: SpeechStore,
+    /// Almacén de modelos, anclado una sola vez al arrancar: los handlers lo
+    /// consultan sin volver a resolver la raíz de modelos.
+    pub model_store: ModelStore,
     /// Motor TTS nativo (Qwen3-TTS), con ciclo de vida persistente entre peticiones.
     pub tts_engine: Qwen3TtsEngine,
     /// Motor STT nativo (Parakeet TDT v3 int8 vía ort). Parakeet no necesita
@@ -105,14 +108,15 @@ impl DaemonState {
     /// workspace, correcto cuando `daemon serve` se lanza desde la raíz del repo.
     /// Devuelve error si el motor STT no puede inicializarse (modelo inexistente).
     pub fn new() -> anyhow::Result<Self> {
-        Self::with_stores(VoiceStore::new(), SpeechStore::new())
+        Self::with_stores(VoiceStore::new()?, SpeechStore::new()?)
     }
 
     /// Constructor con los almacenes de voces y de habla ya anclados, para que
     /// pruebas y sandboxes no dependan del directorio de datos del usuario.
     pub fn with_stores(voice_store: VoiceStore, speech_store: SpeechStore) -> anyhow::Result<Self> {
+        let model_store = ModelStore::new()?;
         #[cfg(feature = "native-stt")]
-        let stt_dir = ModelStore::new().model_dir("parakeet-tdt-v3");
+        let stt_dir = model_store.model_dir("parakeet-tdt-v3");
         #[cfg(feature = "native-stt")]
         // El daemon es de vida larga y su parada es por kill del árbol, así que
         // conserva construcción directa: el titular de vida-de-proceso es para
@@ -126,11 +130,10 @@ impl DaemonState {
         #[cfg(feature = "native-translation")]
         let ct2_engine = {
             let mut map = std::collections::HashMap::new();
-            let store = ModelStore::new();
             for pair in &["es-en", "en-es"] {
                 let name = format!("opus-mt-{pair}");
-                if store.is_provisioned(&name) {
-                    if let Ok(engine) = Ct2TranslationEngine::new(store.model_dir(&name)) {
+                if model_store.is_provisioned(&name) {
+                    if let Ok(engine) = Ct2TranslationEngine::new(model_store.model_dir(&name)) {
                         map.insert(pair.to_string(), engine);
                     }
                 }
@@ -143,11 +146,12 @@ impl DaemonState {
         };
         // El mismo registro que escribe `daemon.pid` anota al residente del
         // motor desde que nace.
-        let registry = Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir()));
+        let registry = Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir()?));
         Ok(Self {
             synthesis_lock: Mutex::new(()),
             voice_store,
             speech_store,
+            model_store,
             tts_engine: Qwen3TtsEngine::new(Some(registry.clone()))?,
             #[cfg(feature = "native-stt")]
             stt_engine,
@@ -596,8 +600,8 @@ async fn synthesize_handler(
             // Ambos idiomas son `es` o `en` y distintos: el par queda determinado.
             let pair = translation_pair_for(&source_iso);
             let model_name = format!("opus-mt-{pair}");
-            let ct2_dir = ModelStore::new().model_dir(&model_name);
-            if !ModelStore::new().is_provisioned(&model_name) {
+            let ct2_dir = state.model_store.model_dir(&model_name);
+            if !state.model_store.is_provisioned(&model_name) {
                 emit_ndjson(
                     &tx,
                     json!({
@@ -1021,8 +1025,8 @@ async fn translate_handler(
     let text = payload["text"].as_str().unwrap_or_default().to_string();
     let pair = translation_pair_for(&source);
     let model_name = format!("opus-mt-{pair}");
-    let ct2_dir = ModelStore::new().model_dir(&model_name);
-    if !ModelStore::new().is_provisioned(&model_name) {
+    let ct2_dir = state.model_store.model_dir(&model_name);
+    if !state.model_store.is_provisioned(&model_name) {
         return (
             StatusCode::NOT_FOUND,
             Json(with_sv(json!({
@@ -1472,8 +1476,8 @@ async fn dub_handler(
     #[cfg(feature = "native-stt")]
     if let Some(pair) = translation_pair.as_deref() {
         let model_name = format!("opus-mt-{pair}");
-        let ct2_dir = ModelStore::new().model_dir(&model_name);
-        if !ModelStore::new().is_provisioned(&model_name) {
+        let ct2_dir = state.model_store.model_dir(&model_name);
+        if !state.model_store.is_provisioned(&model_name) {
             return (
                 StatusCode::NOT_FOUND,
                 Json(with_sv(json!({
@@ -1614,7 +1618,7 @@ async fn dub_handler(
                     let pair = translation_pair
                         .clone()
                         .expect("la validación barata garantizó el par");
-                    let dir = ModelStore::new().model_dir(&format!("opus-mt-{pair}"));
+                    let dir = state.model_store.model_dir(&format!("opus-mt-{pair}"));
                     let ct2_state = state.clone();
                     let text = transcribed.clone();
                     let translation_work = tokio::task::spawn_blocking(move || {
@@ -2664,6 +2668,7 @@ mod tests {
     #[cfg(feature = "native-stt")]
     fn require_parakeet() {
         let preprocessor = avi_store::ModelStore::new()
+            .expect("la raíz de modelos debe resolverse")
             .model_snapshot_path("parakeet-tdt-v3")
             .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión")
             .join("nemo128.onnx");

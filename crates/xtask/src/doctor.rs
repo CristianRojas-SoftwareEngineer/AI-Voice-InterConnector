@@ -973,7 +973,13 @@ pub(crate) fn models_are_provisioned() -> bool {
 /// Deriva de modelos obligatorios: snapshots ausentes. Solo lectura sobre la caché.
 fn probe_models_drift() -> Vec<String> {
     let mut out = Vec::new();
-    let models = avi_shared::paths::models_cache_dir();
+    let models = match avi_shared::paths::models_cache_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            out.push(format!("no se pudo resolver la caché de modelos: {e}"));
+            return out;
+        }
+    };
     for pin in avi_shared::paths::MODEL_REVISIONS {
         let snapshot = models
             .join(format!("models--{}", pin.repo.replace('/', "--")))

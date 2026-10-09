@@ -19,6 +19,7 @@ mod tests {
     /// modelos vive fuera del repo y la provisiona `ai-voice-interconnector setup`.
     fn require_parakeet() -> std::path::PathBuf {
         let model_dir = avi_store::ModelStore::new()
+            .expect("la raíz de modelos debe resolverse")
             .model_snapshot_path("parakeet-tdt-v3")
             .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
         let preprocessor = model_dir.join("nemo128.onnx");
@@ -31,7 +32,7 @@ mod tests {
         model_dir
     }
 
-    /// Carga el modelo Parakeet (raíz de modelos `models_cache_dir()` vía
+    /// Carga el modelo Parakeet (raíz de modelos `avi_shared::paths::models_cache_dir()` vía
     /// `ModelStore`) vía `ParakeetEngine` y transcribe una muestra corta de voz
     /// real, verificando que la salida no esté vacía.
     #[cfg(feature = "native-stt")]

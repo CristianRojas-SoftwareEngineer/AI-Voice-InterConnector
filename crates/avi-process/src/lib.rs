@@ -22,7 +22,7 @@ pub use deferred::schedule_clean_removal;
 pub mod registry;
 pub mod restricted_spawn;
 pub use restricted_spawn::{
-    allowed_handle_list, spawn_with_allowlist, RestrictedChild, RestrictedSpawnRequest, StdinSpec,
+    spawn_with_allowlist, RestrictedChild, RestrictedSpawnRequest, StdinSpec,
 };
 
 /// Identidad observable de un proceso: la hora de creación y el nombre de la
@@ -93,11 +93,10 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     if pid == 0 || i32::try_from(pid).is_err() {
         return None;
     }
-    // Una sola invocación de `ps` con `LC_ALL=C`: dos llamadas separadas
-    // observaban dos vidas distintas del PID (TOCTOU) y, sin locale fijo,
-    // `lstart` cambia de forma y la identidad deja de coincidir con la
-    // registrada (se degradaría a solo-PID). `lstart=` y `comm=` viajan juntos
-    // para leer ambas en el mismo resultado.
+    // Una sola invocación de `ps` con `LC_ALL=C`: dos llamadas separadas podrían
+    // observar dos vidas distintas del PID, y sin locale fijo `lstart` cambia de
+    // forma y la identidad no coincidiría con la registrada. `lstart=` y
+    // `comm=` viajan juntos para leer ambas en el mismo resultado.
     let out = std::process::Command::new("ps")
         .env("LC_ALL", "C")
         .args(["-o", "lstart=,comm=", "-p", &pid.to_string()])
@@ -130,9 +129,11 @@ fn split_ps_identity(stdout: &[u8]) -> Option<(String, String)> {
 /// Viveza exacta de un PID a nivel de sistema.
 ///
 /// Windows: `OpenProcess` + `GetExitCodeProcess` (vivo solo si el código de
-/// salida es `STILL_ACTIVE`); no se consulta `tasklist`, cuya comparación por
-/// texto hace que el PID 12 matchee dentro del 112. Unix: `libc::kill(pid, 0)`
-/// (éxito = vivo), sin lanzar el ejecutable `kill` externo.
+/// salida es `STILL_ACTIVE`); la consulta es por PID exacto y nunca por
+/// comparación de texto, que confundiría un PID con otro que lo contiene (el 12
+/// dentro del 112). Un proceso que el sistema no deja abrir para consulta cuenta
+/// como no vivo. Unix: `libc::kill(pid, 0)` (éxito = vivo), sin lanzar el
+/// ejecutable `kill` externo.
 /// `0` nunca está vivo. Bloqueante y breve.
 #[cfg(windows)]
 pub fn pid_alive_exact(pid: u32) -> bool {
@@ -277,8 +278,8 @@ mod tests {
     }
 
     /// Un hijo muerto y recolectado deja de estar vivo: la viveza es del PID
-    /// exacto, no de una coincidencia de texto sobre la tabla de procesos
-    /// (causa del fallo 112/12: `text.contains("12")` matcheaba el PID 112).
+    /// exacto, no de una coincidencia de texto sobre la tabla de procesos (el
+    /// PID 12 no se da por vivo porque exista el 112).
     #[test]
     fn dead_child_is_not_alive() {
         #[cfg(windows)]

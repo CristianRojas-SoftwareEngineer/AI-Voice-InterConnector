@@ -197,7 +197,7 @@ impl Sandbox {
         }
 
         // La selección de modelos ya provisionada, para que la provisión no toque la red.
-        for pin in avi_store::MODEL_REVISIONS {
+        for pin in avi_shared::paths::MODEL_REVISIONS {
             // El pin sin sembrar es el que dispara el fallo de descarga.
             if pin.name == UNSEEDED_PIN {
                 continue;
@@ -206,7 +206,7 @@ impl Sandbox {
                 .join(format!("models--{}", pin.repo.replace('/', "--")))
                 .join("snapshots")
                 .join(pin.revision);
-            match avi_store::MODEL_FILE_PATTERNS
+            match avi_shared::paths::MODEL_FILE_PATTERNS
                 .iter()
                 .find(|(n, _)| *n == pin.name)
             {
@@ -356,7 +356,7 @@ impl Sandbox {
 #[test]
 fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
     for (name, prefix) in [("el sandbox", PREFIX_SANDBOX)] {
-        for product in avi_store::TEMP_PREFIXES {
+        for product in avi_shared::paths::TEMP_PREFIXES {
             assert!(
                 !prefix.starts_with(product),
                 "el prefijo de {name} (`{prefix}`) empieza por `{product}`, que el producto \

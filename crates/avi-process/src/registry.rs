@@ -23,7 +23,7 @@ pub fn pid_path(data_dir: &Path) -> PathBuf {
 
 /// Contenido del pidfile tal como está en disco. Las claves de identidad y de
 /// puerto del residente son obligatorias en la observación: un fichero sin
-/// ellas es de un esquema anterior y se descarta.
+/// ellas no cumple el esquema y se descarta.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PidFile {
     pub pid: u32,

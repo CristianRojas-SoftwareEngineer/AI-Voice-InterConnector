@@ -1,9 +1,8 @@
-//! `setup` trasladado al motor: provisión de modelos, que es el paso 11 de la
+//! `setup` en el motor: provisión de modelos, que es el paso 11 de la
 //! instalación.
 //!
-//! Es una **traducción fiel, no un rediseño**. Se traslada tal cual la semántica
-//! que ya existe: la selección de modelos, la idempotencia por presencia del
-//! snapshot y la purga de `--force-update`.
+//! Reúne la selección de modelos, la idempotencia por presencia del snapshot y
+//! la purga de `--force-update`.
 //!
 //! **La selección es siempre la tabla de pines completa**: todos los modelos,
 //! incluido el Base de clonado, forman parte de la instalación. No hay modelos
@@ -26,10 +25,6 @@
 
 use crate::LifecycleError;
 use std::path::Path;
-
-/// Modelo Base de clonado de voz: sintetiza las voces clonadas, incluida la de
-/// fábrica `default`, y forma parte siempre de la selección.
-pub use avi_shared::paths::CLONING_MODEL;
 
 /// Opciones de `setup` que el motor necesita conocer. El resto de la superficie
 /// (`--json`) se queda en el binario, que es quien parsea la CLI.
@@ -80,7 +75,7 @@ impl Pending {
         self.models
             .iter()
             .filter_map(|name| {
-                avi_store::MODEL_REVISIONS
+                avi_shared::paths::MODEL_REVISIONS
                     .iter()
                     .find(|pin| pin.name == name)
             })
@@ -92,7 +87,7 @@ impl Pending {
 /// Repos de la selección: todos los pines de la tabla, sin excepción. Es la lista
 /// que comparten `setup`, la provisión de `self install` y `doctor`.
 pub fn selection() -> Vec<&'static str> {
-    avi_store::MODEL_REVISIONS
+    avi_shared::paths::MODEL_REVISIONS
         .iter()
         .map(|pin| pin.name)
         .collect()
@@ -187,14 +182,16 @@ impl PruneOutcome {
 ///
 /// La confirmación de tamaño y `called_from_lifecycle` siguen vigentes: la
 /// poda no pregunta por su cuenta, corre tras un éxito ya confirmado.
-pub fn prune_obsolete() -> PruneOutcome {
-    prune_obsolete_at(&avi_store::models_cache_dir())
+///
+/// Falla si la raíz de modelos no se puede resolver.
+pub fn prune_obsolete() -> std::io::Result<PruneOutcome> {
+    Ok(prune_obsolete_at(&crate::models_cache_dir()?))
 }
 
 /// Núcleo comprobable de [`prune_obsolete`], con la raíz de modelos como dato.
 pub fn prune_obsolete_at(models_root: &Path) -> PruneOutcome {
     let mut outcome = PruneOutcome::default();
-    for pin in avi_store::MODEL_REVISIONS {
+    for pin in avi_shared::paths::MODEL_REVISIONS {
         let snapshots = models_root
             .join(format!("models--{}", pin.repo.replace('/', "--")))
             .join("snapshots");
@@ -368,7 +365,7 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
 
     // 4. Poda tras éxito: las revisiones fuera del pin vigente.
     //    Un fallo aquí no invalida lo provisionado: se informa y se sigue.
-    outcome.pruned = prune_obsolete();
+    outcome.pruned = prune_obsolete()?;
     for (name, reason) in &outcome.pruned.failures {
         eprintln!("  no se pudo podar {name}: {reason}");
     }
@@ -436,6 +433,7 @@ fn confirm_size(pending: &Pending, options: &Options) -> anyhow::Result<bool> {
 pub(crate) mod tests {
     use super::*;
     use crate::test_support::{scratch, write_file, ENV_LOCK};
+    use avi_shared::paths::{CLONING_MODEL, MODEL_FILE_PATTERNS, MODEL_REVISIONS};
     use std::path::PathBuf;
     use std::sync::MutexGuard;
 
@@ -470,7 +468,8 @@ pub(crate) mod tests {
     /// gate de parakeet exige. Deliberadamente **no** se crea
     /// `model.safetensors` ni `pytorch_model.bin`.
     pub(crate) fn fake_snapshot(repo: &str, revision: &str) -> PathBuf {
-        let dir = avi_store::models_cache_dir()
+        let dir = crate::models_cache_dir()
+            .unwrap()
             .join(format!("models--{repo}"))
             .join("snapshots")
             .join(revision);
@@ -478,7 +477,7 @@ pub(crate) mod tests {
         write_file(&dir.join("model.txt"), "pesos");
         // Se crean los patrones de todos los modelos aunque cada uno solo aplique a su
         // repo: las pruebas crean snapshots de un repo cada vez.
-        for (_, patterns) in avi_store::MODEL_FILE_PATTERNS {
+        for (_, patterns) in MODEL_FILE_PATTERNS {
             for pattern in *patterns {
                 write_file(&dir.join(pattern), "artefacto");
             }
@@ -506,7 +505,7 @@ pub(crate) mod tests {
     #[test]
     fn selection_is_every_pin_including_the_cloning_model() {
         let names = selection();
-        assert_eq!(names.len(), avi_store::MODEL_REVISIONS.len());
+        assert_eq!(names.len(), MODEL_REVISIONS.len());
         assert!(names.contains(&CLONING_MODEL));
     }
 
@@ -516,7 +515,7 @@ pub(crate) mod tests {
     #[test]
     fn provisioning_is_idempotent() {
         let (_guard, _root) = cache_relocated("setup-idempotent");
-        let store = avi_store::ModelStore::new();
+        let store = avi_store::ModelStore::new().unwrap();
 
         // 1. Sin nada provisionado, todo está pendiente.
         let initial = pending(&store);
@@ -545,12 +544,12 @@ pub(crate) mod tests {
     #[test]
     fn missing_cloning_model_is_pending() {
         let (_guard, _root) = cache_relocated("setup-cloning-pending");
-        for pin in avi_store::MODEL_REVISIONS {
+        for pin in MODEL_REVISIONS {
             if pin.name != CLONING_MODEL {
                 fake_snapshot(&pin.repo.replace('/', "--"), pin.revision);
             }
         }
-        let store = avi_store::ModelStore::new();
+        let store = avi_store::ModelStore::new().unwrap();
         assert_eq!(pending(&store).models, vec![CLONING_MODEL.to_string()]);
     }
 
@@ -560,10 +559,10 @@ pub(crate) mod tests {
     #[test]
     fn nothing_is_pending_when_every_pin_is_provisioned() {
         let (_guard, _root) = cache_relocated("setup-all-pinned");
-        for pin in avi_store::MODEL_REVISIONS {
+        for pin in MODEL_REVISIONS {
             fake_snapshot(&pin.repo.replace('/', "--"), pin.revision);
         }
-        let store = avi_store::ModelStore::new();
+        let store = avi_store::ModelStore::new().unwrap();
         let plan = pending(&store);
         assert!(
             plan.is_empty(),
@@ -576,14 +575,15 @@ pub(crate) mod tests {
     #[test]
     fn force_update_purges_the_whole_selection() {
         let (_guard, _root) = cache_relocated("setup-purge");
-        let store = avi_store::ModelStore::new();
+        let store = avi_store::ModelStore::new().unwrap();
 
         fake_snapshot(
             "Qwen--Qwen3-TTS-12Hz-0.6B-Base",
             "5d83992436eae1d760afd27aff78a71d676296fc",
         );
-        let clone_dir =
-            avi_store::models_cache_dir().join("models--Qwen--Qwen3-TTS-12Hz-0.6B-Base");
+        let clone_dir = crate::models_cache_dir()
+            .unwrap()
+            .join("models--Qwen--Qwen3-TTS-12Hz-0.6B-Base");
         assert!(clone_dir.exists(), "el snapshot del modelo de clonado está");
 
         let outcome = purge(&store);
@@ -601,7 +601,7 @@ pub(crate) mod tests {
     #[test]
     fn run_with_everything_provisioned_needs_no_network() {
         let (_guard, _root) = cache_relocated("setup-run-offline");
-        let store = avi_store::ModelStore::new();
+        let store = avi_store::ModelStore::new().unwrap();
         for name in selection() {
             let (repo, revision) = avi_store::ModelStore::revision_of(name)
                 .expect("todo repo pinneado tiene revisión");

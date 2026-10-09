@@ -65,22 +65,27 @@ fn create_log_at_with(
 ///
 /// Lo usa el lanzador tras el arranque: el log se creó con el PID del lanzador y
 /// se renombra con el del hijo, de modo que el nombre identifica al proceso que
-/// escribe. Devuelve la ruta nueva, o la original si el renombrado falla (por
-/// ejemplo, si el sistema no admite renombrar un fichero abierto), sin fallar:
-/// el nombre con el PID del lanzador sigue siendo válido para la poda.
-pub fn rename_log_to_pid(path: &Path, family: &str, pid: u32) -> PathBuf {
-    let Some(ms) = path
+/// escribe. Devuelve la ruta nueva. Un nombre que no sigue el patrón de la
+/// familia o un renombrado fallido son errores: devolver la ruta original haría
+/// pasar el log por el del hijo, y la poda lo trataría como el de un proceso
+/// distinto del que lo escribe.
+pub fn rename_log_to_pid(path: &Path, family: &str, pid: u32) -> std::io::Result<PathBuf> {
+    let ms = path
         .file_name()
         .and_then(|n| log_millis(&n.to_string_lossy(), family))
-    else {
-        return path.to_path_buf();
-    };
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "El nombre del log '{}' no sigue el patrón '{family}_<pid>_<ms>.log'",
+                    path.display()
+                ),
+            )
+        })?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let target = dir.join(format!("{family}_{pid}_{ms}.log"));
-    match std::fs::rename(path, &target) {
-        Ok(()) => target,
-        Err(_) => path.to_path_buf(),
-    }
+    std::fs::rename(path, &target)?;
+    Ok(target)
 }
 
 /// Extrae `<pid>` y `<ms>` de `<family>_<u32>_<u128>.log`; `None` si el nombre
@@ -301,7 +306,7 @@ mod tests {
         let dir = tmp.path().to_path_buf();
         let (path, _file) =
             create_log_at_with(&dir, "daemon", std::process::id(), 77, &none_alive).unwrap();
-        let renamed = rename_log_to_pid(&path, "daemon", 555);
+        let renamed = rename_log_to_pid(&path, "daemon", 555).unwrap();
         assert_eq!(
             renamed.file_name().unwrap().to_string_lossy(),
             "daemon_555_77.log"
@@ -310,16 +315,27 @@ mod tests {
         assert!(!path.exists());
     }
 
-    /// Un nombre que no sigue el patrón se devuelve tal cual, sin fallar: el
-    /// renombrado es una mejora del nombre, nunca un requisito del arranque.
+    /// Un nombre que no sigue el patrón es un error y el fichero no se toca.
     #[test]
-    fn rename_log_to_pid_leaves_unparsable_names_untouched() {
+    fn rename_log_to_pid_rejects_unparsable_names() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
         std::fs::create_dir_all(&dir).unwrap();
         let odd = dir.join("daemon.log");
         std::fs::write(&odd, "x").unwrap();
-        assert_eq!(rename_log_to_pid(&odd, "daemon", 555), odd);
+        let err = rename_log_to_pid(&odd, "daemon", 555).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(odd.exists());
+    }
+
+    /// Un renombrado que el sistema rechaza (el origen no existe) es un error,
+    /// no la ruta original.
+    #[test]
+    fn rename_log_to_pid_propagates_rename_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("daemon_1_77.log");
+        let err = rename_log_to_pid(&missing, "daemon", 555).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
 
     fn log_name(pid: u32, ms: u128) -> String {

@@ -252,6 +252,7 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 #[cfg(feature = "native-stt")]
 fn require_parakeet() {
     let model_dir = avi_store::ModelStore::new()
+        .expect("la raíz de modelos debe resolverse")
         .model_snapshot_path("parakeet-tdt-v3")
         .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión");
     let preprocessor = model_dir.join("nemo128.onnx");
@@ -267,6 +268,7 @@ fn require_parakeet() {
 /// provisiona `ai-voice-interconnector setup`.
 fn require_base_model() {
     let model_dir = avi_store::ModelStore::new()
+        .expect("la raíz de modelos debe resolverse")
         .model_snapshot_path("qwen3-tts-0.6b-base")
         .expect("el modelo qwen3-tts-0.6b-base debe tener un pin de revisión");
     let weights = model_dir.join("model.safetensors");
@@ -1200,6 +1202,7 @@ async fn lock_temporaries() -> tokio::sync::MutexGuard<'static, ()> {
 /// presets: lo provisiona `ai-voice-interconnector setup`.
 fn require_custom_voice_model() {
     let model_dir = avi_store::ModelStore::new()
+        .expect("la raíz de modelos debe resolverse")
         .model_snapshot_path("qwen3-tts-0.6b")
         .expect("el modelo qwen3-tts-0.6b debe tener un pin de revisión");
     let weights = model_dir.join("model.safetensors");

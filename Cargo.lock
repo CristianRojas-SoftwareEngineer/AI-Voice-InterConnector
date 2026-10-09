@@ -336,6 +336,7 @@ dependencies = [
  "avi-audio",
  "avi-core",
  "avi-process",
+ "avi-shared",
  "avi-store",
  "hound",
  "serde",

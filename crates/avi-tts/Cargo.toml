@@ -11,6 +11,7 @@ serde_json = "1.0"
 hound = "3"
 avi-core = { path = "../avi-core" }
 avi-store = { path = "../avi-store" }
+avi-shared = { path = "../avi-shared" }
 avi-process = { path = "../avi-process" }
 avi-audio = { path = "../avi-audio" }
 tempfile = "3"

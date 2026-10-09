@@ -5,9 +5,19 @@ use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+/// Lee el registro del limpiador; un registro todavía ausente cuenta como vacío
+/// y cualquier otro fallo de lectura aborta la prueba.
+fn read_log(log: &std::path::Path) -> String {
+    match std::fs::read_to_string(log) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => panic!("no se pudo leer el registro {log:?}: {e}"),
+    }
+}
+
 /// El limpiador propio borra la ruta cuando muere el proceso esperado, sin
-/// PowerShell: tras morir el hijo no queda el directorio, el
-/// registro informa del borrado y ningún `.ps1` del auxiliar antiguo aparece.
+/// PowerShell ni scripts: tras morir el hijo no queda el directorio y el
+/// registro informa del borrado.
 #[test]
 fn cleaner_removes_path_after_watched_process_death() {
     let target_root = tempfile::tempdir().unwrap();
@@ -32,36 +42,22 @@ fn cleaner_removes_path_after_watched_process_death() {
     let _ = child.wait();
 
     let deadline = Instant::now() + Duration::from_secs(30);
-    let mut ps1_left = true;
+    let mut log_text = String::new();
     while Instant::now() < deadline {
-        ps1_left = std::fs::read_dir(std::env::temp_dir())
-            .map(|entries| {
-                entries.filter_map(|e| e.ok()).any(|e| {
-                    e.file_name()
-                        .to_string_lossy()
-                        .starts_with(&format!("avi-deferred-{watched}-"))
-                        && e.path().extension().is_some_and(|x| x == "ps1")
-                })
-            })
-            .unwrap_or(false);
-        if !dir.exists() && log.exists() && !ps1_left {
+        log_text = read_log(&log);
+        if !dir.exists() && log_text.contains("borrado") {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
 
     let dir_left = dir.exists();
-    let log_text = std::fs::read_to_string(&log).unwrap_or_default();
     remove_cleaner_copy(&copy);
 
     assert!(!dir_left, "el directorio debe haberse borrado");
     assert!(
         log_text.contains("borrado"),
         "el registro debe informar del borrado: {log_text:?}"
-    );
-    assert!(
-        !ps1_left,
-        "el limpiador no usa PowerShell: no debe aparecer ningún avi-deferred-*.ps1"
     );
 }
 
@@ -92,12 +88,15 @@ fn cleaner_reports_failure_when_path_stays_blocked() {
     let copy =
         avi_process::schedule_clean_removal(&dir, dead_pid, &log).expect("programar el limpiador");
 
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline && !log.exists() {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut log_text = String::new();
+    while Instant::now() < deadline {
+        log_text = read_log(&log);
+        if log_text.contains("fallo: no se pudo retirar") {
+            break;
+        }
         std::thread::sleep(Duration::from_millis(200));
     }
-
-    let log_text = std::fs::read_to_string(&log).unwrap_or_default();
     let dir_left = dir.exists();
     remove_cleaner_copy(&copy);
 
@@ -106,9 +105,47 @@ fn cleaner_reports_failure_when_path_stays_blocked() {
         "la ruta bloqueada debe seguir en disco para el barrido"
     );
     assert!(
-        log_text.contains("no se pudo borrar") || log_text.contains("fallo"),
+        log_text.contains("fallo: no se pudo retirar"),
         "el registro debe informar del fallo: {log_text:?}"
     );
+}
+
+/// Un trabajador con argumentos inválidos termina con código distinto de cero
+/// y deja el motivo en el registro cuando este es utilizable.
+#[test]
+fn worker_with_invalid_arguments_fails_and_reports() {
+    let log_root = tempfile::tempdir().unwrap();
+    let log = log_root.path().join("cleaner.log");
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .arg("--avi-cleaner-worker")
+        .args(["C:\\ruta-cualquiera", "no-es-un-pid"])
+        .arg(&log)
+        .arg("0")
+        .output()
+        .expect("lanzar el trabajador");
+
+    assert_ne!(output.status.code(), Some(0), "{output:?}");
+    let log_text = read_log(&log);
+    assert!(
+        log_text.contains("argumentos inválidos"),
+        "el registro debe nombrar el fallo: {log_text:?}"
+    );
+}
+
+/// Sin ruta de registro utilizable el motivo sale por stderr y el código es
+/// distinto de cero.
+#[test]
+fn worker_without_log_argument_fails_on_stderr() {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .arg("--avi-cleaner-worker")
+        .arg("C:\\ruta-cualquiera")
+        .output()
+        .expect("lanzar el trabajador");
+
+    assert_ne!(output.status.code(), Some(0), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("argumentos inválidos"), "{stderr}");
 }
 
 /// Borra la copia `avi-cleaner-*.exe` que devuelve `schedule_clean_removal`: el

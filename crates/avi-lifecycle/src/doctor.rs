@@ -53,27 +53,32 @@ pub struct Env {
     pub path_env: String,
     /// Subclave de registro donde se integra el `PATH` en Windows. Vacía en Unix.
     pub registry_subkey: String,
+    /// Directorio del comando en el `PATH` según la convención de rutas, para
+    /// cuando el recibo no declara el del enlace.
+    pub bin_dir: PathBuf,
 }
 
 impl Env {
     /// Entorno con las raíces ya resueltas, que es lo que usa el binario. Falla si el
-    /// recibo existe pero es ilegible.
+    /// recibo existe pero es ilegible o si alguna ruta del producto no se puede
+    /// resolver.
     pub fn resolve() -> anyhow::Result<Self> {
-        Ok(Self::with_roots(cleanup::Roots::resolve()?))
+        Self::with_roots(cleanup::Roots::resolve()?)
     }
 
     /// Entorno de la instalación registrada, con el recibo como fuente de verdad de
     /// las raíces, del recibo si lo hay.
-    pub fn from_receipt(receipt: Option<&InstallReceipt>) -> Self {
-        Self::with_roots(cleanup::Roots::from_receipt(receipt))
+    pub fn from_receipt(receipt: Option<&InstallReceipt>) -> anyhow::Result<Self> {
+        Self::with_roots(cleanup::Roots::from_receipt(receipt)?)
     }
 
-    fn with_roots(roots: cleanup::Roots) -> Self {
-        Self {
+    fn with_roots(roots: cleanup::Roots) -> anyhow::Result<Self> {
+        Ok(Self {
             roots,
             path_env: std::env::var("PATH").unwrap_or_default(),
             registry_subkey: registry_subkey_default(),
-        }
+            bin_dir: crate::bin_dir()?,
+        })
     }
 
     fn recovery_roots(&self) -> RecoveryRoots<'_> {
@@ -496,7 +501,7 @@ fn installs_in_path(
     let link_directory = integration
         .and_then(|i| i.symlink.clone())
         .and_then(|s| s.parent().map(Path::to_path_buf))
-        .unwrap_or_else(crate::bin_dir);
+        .unwrap_or_else(|| env.bin_dir.clone());
 
     let mut views: Vec<(PathBuf, Channel, bool)> = Vec::new();
     for entry in env
@@ -556,7 +561,7 @@ fn models(roots: &cleanup::Roots) -> Models {
     // es un faltante.
     let mut provisioned = Vec::new();
     let mut missing = Vec::new();
-    for pin in avi_store::MODEL_REVISIONS {
+    for pin in avi_shared::paths::MODEL_REVISIONS {
         if store.is_provisioned(pin.name) {
             provisioned.push(pin.name.to_string());
         } else {
@@ -604,6 +609,7 @@ mod tests {
             roots,
             path_env: String::new(),
             registry_subkey: String::new(),
+            bin_dir: root.join("bin"),
         };
         (root, env)
     }
@@ -723,9 +729,9 @@ mod tests {
         // El layout es el de la caché HF: `models--<org>--<repo>/snapshots/<rev>`.
         // La revisión pinneada se toma de `MODEL_REVISIONS` en vez de fijarla a
         // mano, para que un bump de pin no pueda volver obsoleta la prueba.
-        let (repo, revision) = avi_store::MODEL_REVISIONS
+        let (repo, revision) = avi_shared::paths::MODEL_REVISIONS
             .iter()
-            .find(|pin| pin.name == crate::setup::CLONING_MODEL)
+            .find(|pin| pin.name == avi_shared::paths::CLONING_MODEL)
             .map(|pin| (pin.repo, pin.revision))
             .expect("el modelo de clonación está pinneado");
         let snapshot = env
@@ -744,7 +750,7 @@ mod tests {
             report
                 .models
                 .provisioned
-                .contains(&crate::setup::CLONING_MODEL.to_string()),
+                .contains(&avi_shared::paths::CLONING_MODEL.to_string()),
             "el modelo de clonación figura provisionado en la raíz que describe el reporte"
         );
     }
@@ -752,8 +758,8 @@ mod tests {
     /// Escribe en la raíz del sandbox los snapshots pinneados de todos los modelos
     /// salvo el Base de clonado, con los archivos que el producto exige.
     fn set_required_models(env: &Env) {
-        for pin in avi_store::MODEL_REVISIONS {
-            if pin.name == crate::setup::CLONING_MODEL {
+        for pin in avi_shared::paths::MODEL_REVISIONS {
+            if pin.name == avi_shared::paths::CLONING_MODEL {
                 continue;
             }
             let snapshot = env
@@ -762,7 +768,7 @@ mod tests {
                 .join(format!("models--{}", pin.repo.replace('/', "--")))
                 .join("snapshots")
                 .join(pin.revision);
-            match avi_store::MODEL_FILE_PATTERNS
+            match avi_shared::paths::MODEL_FILE_PATTERNS
                 .iter()
                 .find(|(n, _)| *n == pin.name)
             {
@@ -816,7 +822,7 @@ mod tests {
         assert!(report
             .models
             .missing
-            .contains(&crate::setup::CLONING_MODEL.to_string()));
+            .contains(&avi_shared::paths::CLONING_MODEL.to_string()));
     }
 
     /// Sin nada en la raíz que describe el reporte, la fila de modelos dice que
@@ -834,7 +840,7 @@ mod tests {
         );
         assert_eq!(
             report.models.missing.len(),
-            avi_store::MODEL_REVISIONS.len()
+            avi_shared::paths::MODEL_REVISIONS.len()
         );
     }
 

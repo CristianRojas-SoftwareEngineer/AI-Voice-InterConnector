@@ -71,7 +71,7 @@ impl Sandbox {
     /// los dos directorios no se puede ver.
     pub fn seed_state(&self) {
         let hub = &self.models_dir;
-        for pin in avi_store::MODEL_REVISIONS {
+        for pin in avi_shared::paths::MODEL_REVISIONS {
             // Snapshot propio, con el layout que `avi-store` resuelve.
             write(
                 &hub.join(repo_dir(pin.repo))

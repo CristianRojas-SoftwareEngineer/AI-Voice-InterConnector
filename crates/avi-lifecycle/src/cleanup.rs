@@ -103,40 +103,43 @@ impl Roots {
     /// Raíces del producto resueltas ahora, que es lo que usa el binario. El
     /// directorio de programa es el registrado, el mismo que usan `self update` y
     /// `self uninstall`, para que todas las operaciones tomen el mismo bloqueo.
-    /// Falla si el recibo existe pero es ilegible.
+    /// Falla si el recibo existe pero es ilegible o si alguna ruta del producto
+    /// no se puede resolver.
     pub fn resolve() -> anyhow::Result<Self> {
-        Ok(Self::with_program_dir(
-            crate::channel::registered_program_dir()?,
-        ))
+        Self::with_program_dir(crate::channel::registered_program_dir()?)
     }
 
     /// Raíces del entorno con el directorio de programa ya decidido.
-    fn with_program_dir(program_dir: PathBuf) -> Self {
-        let models_dir = crate::models_cache_dir();
-        Self {
+    fn with_program_dir(program_dir: PathBuf) -> anyhow::Result<Self> {
+        let models_dir = crate::models_cache_dir()?;
+        Ok(Self {
             program_dir,
-            data_dir: crate::data_dir(),
+            data_dir: crate::data_dir()?,
             models_shared: is_shared_models_root(&models_dir),
             models_dir,
             temp_root: std::env::temp_dir(),
             home: std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .map(PathBuf::from)
-                .unwrap_or_default(),
-        }
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "no se pudo determinar el directorio del usuario: ni HOME ni USERPROFILE están definidas"
+                    )
+                })?,
+        })
     }
 
     /// Raíces efectivas de la instalación registrada, con el recibo como fuente de
     /// verdad de los datos y de los modelos: los valores efectivos se registran en el
     /// recibo, así que la actualización y la desinstalación operan sobre las mismas
     /// ubicaciones aunque la variable ya no esté definida.
-    pub fn from_receipt(receipt: Option<&InstallReceipt>) -> Self {
-        let mut roots = Self::with_program_dir(crate::channel::registered_install_dir(receipt));
+    pub fn from_receipt(receipt: Option<&InstallReceipt>) -> anyhow::Result<Self> {
+        let mut roots = Self::with_program_dir(crate::channel::registered_install_dir(receipt)?)?;
         if let Some(receipt) = receipt {
             roots.data_dir = receipt.roots.data_dir.clone();
             roots.models_dir = receipt.roots.cache_dir.clone();
         }
-        roots
+        Ok(roots)
     }
 
     /// `RecoveryRoots` con el staging en uso a `None`: `cleanup` no instala nada, así
@@ -327,7 +330,7 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
         push(collected, models.clone(), Category::Model);
         return;
     }
-    for pin in avi_store::MODEL_REVISIONS {
+    for pin in avi_shared::paths::MODEL_REVISIONS {
         let repo_dir = models.join(format!("models--{}", pin.repo.replace('/', "--")));
         push(collected, repo_dir.clone(), Category::Model);
         // Los locks de cada repo propio son atribuibles a la aplicación, así que caen con su repo. El `.locks` completo no.
@@ -463,7 +466,7 @@ pub fn path_size(path: &Path) -> u64 {
 /// leer el entorno dentro del planificador haría que el plan dependiera de algo que
 /// puede cambiar entre la simulación y la ejecución.
 pub fn is_shared_models_root(models_dir: &Path) -> bool {
-    match avi_store::shared_hf_root() {
+    match crate::shared_hf_root() {
         Some(shared) => crate::canonical_path_key(models_dir) == crate::canonical_path_key(&shared),
         None => false,
     }

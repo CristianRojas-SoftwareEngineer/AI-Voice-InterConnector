@@ -29,7 +29,7 @@ use avi_process::registry::{
     READY_FILE,
 };
 pub use avi_process::ProcessIdentity;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 /// Plazo global de la parada. Es el presupuesto de todo el protocolo y **fuente
@@ -54,11 +54,6 @@ pub const DEFAULT_ADDR: &str = "127.0.0.1:8765";
 /// con la resolución que la lee, que es su única usuaria: el binario no la
 /// nombra por su cuenta.
 pub const DAEMON_PORT_ENV: &str = "AVI_DAEMON_PORT";
-
-/// Ruta del pidfile con las raíces ya resueltas.
-pub fn pid_path_default() -> PathBuf {
-    pid_path(&crate::data_dir())
-}
 
 /// Emite el aviso de un pidfile descartado.
 fn warn_discarded(data_dir: &Path, reason: &str) {

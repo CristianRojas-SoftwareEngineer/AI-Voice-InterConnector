@@ -102,6 +102,22 @@ fn direct_tts_engine() -> Result<Qwen3TtsEngine, CliError> {
         .map_err(|e| CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string()))
 }
 
+/// Almacén de voces del usuario. Una raíz de datos que no se puede resolver
+/// (sin `HOME`/`USERPROFILE`/`LOCALAPPDATA`) es `io_error`.
+fn open_voice_store() -> Result<VoiceStore, CliError> {
+    VoiceStore::new().map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
+}
+
+/// Almacén de habla del usuario; misma regla que [`open_voice_store`].
+fn open_speech_store() -> Result<SpeechStore, CliError> {
+    SpeechStore::new().map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
+}
+
+/// Almacén de modelos; una raíz de modelos que no se puede resolver es `io_error`.
+fn open_model_store() -> Result<ModelStore, CliError> {
+    ModelStore::new().map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
+}
+
 /// Síntesis directa de una voz del almacén del comando: resuelve su referencia
 /// clonada y pide al motor el idioma de destino (token del producto) con la
 /// temperatura opcional ya validada.
@@ -716,16 +732,26 @@ fn install_sigint_handler() {
         // El PID del pidfile solo se mata si su identidad coincide con la
         // registrada; el PID en memoria es de un hijo recién lanzado por este
         // proceso y no necesita comprobación.
+        let in_memory_pid = || {
+            let m = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
+            if m != 0 {
+                Some(m)
+            } else {
+                None
+            }
+        };
         let pid = match registered_daemon() {
-            (Some(pid), avi_process::registry::Registered::Ours) => Some(pid),
-            (Some(_), _) => None,
-            (None, _) => {
-                let m = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
-                if m != 0 {
-                    Some(m)
-                } else {
-                    None
-                }
+            Ok((Some(pid), avi_process::registry::Registered::Ours)) => Some(pid),
+            Ok((Some(_), _)) => None,
+            Ok((None, _)) => in_memory_pid(),
+            // Sin raíz de datos no hay pidfile que leer: se avisa y solo queda el
+            // PID en memoria.
+            Err(e) => {
+                eprintln!(
+                    "Aviso: no se pudo leer el registro del daemon: {}",
+                    e.message
+                );
+                in_memory_pid()
             }
         };
         if let Some(pid) = pid {
@@ -1080,13 +1106,14 @@ async fn handle_translate(
     }
     // Despacho 3 modos vía daemon_client + route_to_daemon
     let client = daemon_client();
-    if route_to_daemon(daemon_mode, &client).await {
+    if route_to_daemon(daemon_mode, &client).await? {
         return translate_via_daemon(json_mode, &client, text, source, target).await;
     }
     // Rama local: verifica modelo y traduce
     let model_name = format!("opus-mt-{}", translation_pair(source));
-    let ct2_dir = ModelStore::new().model_dir(&model_name);
-    if !ModelStore::new().is_provisioned(&model_name) {
+    let model_store = open_model_store()?;
+    let ct2_dir = model_store.model_dir(&model_name);
+    if !model_store.is_provisioned(&model_name) {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
@@ -1132,8 +1159,9 @@ fn translate_if_different(text: &str, source: &str, target: &str) -> Result<Stri
         return Ok(text.to_string());
     }
     let model_name = format!("opus-mt-{}", translation_pair(source));
-    let ct2_dir = ModelStore::new().model_dir(&model_name);
-    if !ModelStore::new().is_provisioned(&model_name) {
+    let model_store = open_model_store()?;
+    let ct2_dir = model_store.model_dir(&model_name);
+    if !model_store.is_provisioned(&model_name) {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
@@ -1171,7 +1199,7 @@ async fn handle_voice(
     daemon_mode: DaemonMode,
     action: VoiceCommands,
 ) -> Result<(), CliError> {
-    let voice_store = VoiceStore::new();
+    let voice_store = open_voice_store()?;
 
     match action {
         VoiceCommands::List => {
@@ -1208,7 +1236,7 @@ async fn handle_voice(
             // Despacho 3 modos para Clone vía POST /voices/clone
             {
                 let client = daemon_client();
-                if route_to_daemon(daemon_mode, &client).await {
+                if route_to_daemon(daemon_mode, &client).await? {
                     return clone_via_daemon(
                         json_mode,
                         &client,
@@ -1574,18 +1602,17 @@ async fn handle_speech(
     daemon_mode: DaemonMode,
     action: SpeechCommands,
 ) -> Result<(), CliError> {
-    let speech_store = SpeechStore::new();
-
     match action {
         SpeechCommands::List { voice } => {
             // Listado de locuciones: local-only; el daemon no expone GET /speech.
             require_local(daemon_mode)?;
+            let speech_store = open_speech_store()?;
             // Con --voice se valida el identificador (exit 2) y la existencia
             // de la voz (exit 3) antes de acotar la lectura al almacén.
             let items = match &voice {
                 Some(v) => {
                     is_valid_identifier(Some(v), None)?;
-                    if !VoiceStore::new()
+                    if !open_voice_store()?
                         .exists(v)
                         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
                     {
@@ -1684,7 +1711,7 @@ async fn handle_speech(
             // vida usa un deadline corto para que el fallback Auto→directo sea
             // prácticamente instantáneo cuando el daemon no está en ejecución.
             let client = daemon_client();
-            if route_to_daemon(daemon_mode, &client).await {
+            if route_to_daemon(daemon_mode, &client).await? {
                 return transcribe_via_daemon(
                     json_mode,
                     &client,
@@ -1697,11 +1724,8 @@ async fn handle_speech(
             }
 
             // Modelo ausente -> exit 4, previo a construir el motor.
-            if !ModelStore::new()
-                .model_dir("parakeet-tdt-v3")
-                .join("nemo128.onnx")
-                .exists()
-            {
+            let stt_dir = open_model_store()?.model_dir("parakeet-tdt-v3");
+            if !stt_dir.join("nemo128.onnx").exists() {
                 return Err(CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
@@ -1735,15 +1759,13 @@ async fn handle_speech(
                     avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
                 )?;
 
-                let engine = STT_HOLDER
-                    .get_or_try_init(ModelStore::new().model_dir("parakeet-tdt-v3"))
-                    .map_err(|e| {
-                        CliError::new(
-                            ExitCode::TranscriptionFailed,
-                            "transcription_failed",
-                            e.to_string(),
-                        )
-                    })?;
+                let engine = STT_HOLDER.get_or_try_init(stt_dir).map_err(|e| {
+                    CliError::new(
+                        ExitCode::TranscriptionFailed,
+                        "transcription_failed",
+                        e.to_string(),
+                    )
+                })?;
                 let text = engine.transcribe(&pcm).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
@@ -1795,7 +1817,7 @@ async fn handle_speech(
 
             // Dispatch 3 modos (Synthesize es delegable al daemon).
             let client = daemon_client();
-            if route_to_daemon(daemon_mode, &client).await {
+            if route_to_daemon(daemon_mode, &client).await? {
                 return synthesize_via_daemon(
                     json_mode,
                     &client,
@@ -1813,7 +1835,7 @@ async fn handle_speech(
             }
 
             require_model_provisioned()?;
-            let voice_store = VoiceStore::new();
+            let voice_store = open_voice_store()?;
             if !voice_store
                 .exists(&voice)
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
@@ -1826,7 +1848,7 @@ async fn handle_speech(
             }
             let label = label.to_lowercase();
             is_valid_identifier(Some(&label), None)?;
-            let speech_store = SpeechStore::new();
+            let speech_store = open_speech_store()?;
             if !force
                 && speech_store
                     .find(&voice, &label)
@@ -1933,7 +1955,7 @@ async fn handle_speech(
 
             // Dispatch 3 modos (Say es delegable al daemon).
             let client = daemon_client();
-            if route_to_daemon(daemon_mode, &client).await {
+            if route_to_daemon(daemon_mode, &client).await? {
                 return say_via_daemon(
                     json_mode,
                     &client,
@@ -1947,7 +1969,7 @@ async fn handle_speech(
             }
 
             require_model_provisioned()?;
-            let voice_store = VoiceStore::new();
+            let voice_store = open_voice_store()?;
             if !voice_store
                 .exists(&voice)
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
@@ -2044,7 +2066,7 @@ async fn handle_speech(
             // Despacho 3 modos: delega a POST /dub si daemon activo
             {
                 let client = daemon_client();
-                if route_to_daemon(daemon_mode, &client).await {
+                if route_to_daemon(daemon_mode, &client).await? {
                     return dub_via_daemon(
                         json_mode,
                         &client,
@@ -2060,11 +2082,8 @@ async fn handle_speech(
                 }
             }
             // Rama local: modelos ausentes → exit 4
-            if !ModelStore::new()
-                .model_dir("parakeet-tdt-v3")
-                .join("nemo128.onnx")
-                .exists()
-            {
+            let stt_dir = open_model_store()?.model_dir("parakeet-tdt-v3");
+            if !stt_dir.join("nemo128.onnx").exists() {
                 return Err(CliError::new(
                     ExitCode::ModelMissing,
                     "model_missing",
@@ -2098,15 +2117,13 @@ async fn handle_speech(
                     "El audio del doblaje",
                     avi_core::MAX_DUB_AUDIO_SECS,
                 )?;
-                let stt = STT_HOLDER
-                    .get_or_try_init(ModelStore::new().model_dir("parakeet-tdt-v3"))
-                    .map_err(|e| {
-                        CliError::new(
-                            ExitCode::TranscriptionFailed,
-                            "transcription_failed",
-                            e.to_string(),
-                        )
-                    })?;
+                let stt = STT_HOLDER.get_or_try_init(stt_dir).map_err(|e| {
+                    CliError::new(
+                        ExitCode::TranscriptionFailed,
+                        "transcription_failed",
+                        e.to_string(),
+                    )
+                })?;
                 let transcribed = stt.transcribe(&pcm).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
@@ -2129,8 +2146,9 @@ async fn handle_speech(
                     transcribed.clone()
                 } else {
                     let model_name = format!("opus-mt-{}", translation_pair(source));
-                    let ct2_dir = ModelStore::new().model_dir(&model_name);
-                    if !ModelStore::new().is_provisioned(&model_name) {
+                    let model_store = open_model_store()?;
+                    let ct2_dir = model_store.model_dir(&model_name);
+                    if !model_store.is_provisioned(&model_name) {
                         return Err(CliError::new(
                             ExitCode::ModelMissing,
                             "model_missing",
@@ -2165,7 +2183,7 @@ async fn handle_speech(
 
                 // El texto traducido puede exceder el tope aunque el transcrito no.
                 avi_core::validate_synthesis_text(&final_text)?;
-                let voice_store = VoiceStore::new();
+                let voice_store = open_voice_store()?;
                 if !voice_store
                     .exists(&voice)
                     .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
@@ -2213,6 +2231,7 @@ async fn handle_speech(
             // Reproducción de locución persistida: local-only.
             require_local(daemon_mode)?;
             is_valid_identifier(Some(&voice), Some(&label))?;
+            let speech_store = open_speech_store()?;
             match speech_store
                 .find(&voice, &label)
                 .map_err(speech_find_error)?
@@ -2250,7 +2269,7 @@ async fn handle_speech(
             // Borrado de locución: local-only.
             require_local(daemon_mode)?;
             is_valid_identifier(Some(&voice), Some(&label))?;
-            speech_store
+            open_speech_store()?
                 .remove(&voice, &label)
                 .map_err(|e| CliError::new(ExitCode::NotFound, "speech_not_found", e))?;
             if json_mode {
@@ -2317,13 +2336,19 @@ async fn handle_daemon(
             // Un fallo previo a estar listo sale con el código de su causa; el
             // de un servidor que ya servía sale con exit 1 `daemon_error`, como
             // cualquier otro `daemon_error`.
+            // La raíz de datos que no se puede resolver impide arrancar el daemon:
+            // `startup_failed`, no `io_error` de la CLI.
+            let startup_stores =
+                |e: anyhow::Error| CliError::new(ExitCode::Error, "startup_failed", e.to_string());
+            let voices = VoiceStore::new().map_err(startup_stores)?;
+            let speech = SpeechStore::new().map_err(startup_stores)?;
             daemon::run_supervised(
                 addr,
                 auto_restart,
                 max_retries,
                 warm_voice,
-                VoiceStore::new(),
-                SpeechStore::new(),
+                voices,
+                speech,
                 usage_lock.map(|lock| Box::new(lock) as Box<dyn Send>),
             )
             .await
@@ -2344,7 +2369,7 @@ async fn handle_daemon(
             // residual se comprueba por PID vivo más probe, no por probe solo ni
             // pidfile solo. Sano → `already_running`; degradado → se reclama el
             // árbol y se rearranca con salida 0 y payload `started`.
-            match classify_residual(&client).await {
+            match classify_residual(&client).await? {
                 ResidualState::Healthy(pid) => {
                     if json_mode {
                         emit_raw_json(
@@ -2360,7 +2385,7 @@ async fn handle_daemon(
                         "Daemon residual degradado ({}): se reclama el árbol y se rearranca.",
                         reason
                     );
-                    reclaim_degraded_residual(&client).await;
+                    reclaim_degraded_residual(&client).await?;
                 }
                 ResidualState::Stopped => {}
             }
@@ -2386,7 +2411,7 @@ async fn handle_daemon(
             // pidfile es la dirección por defecto del protocolo, que es donde
             // escucha el daemon de la instancia cuando nadie ha desviado el puerto.
             let outcome = lifecycle::daemon_stop::stop(
-                &effective_data_dir(),
+                &effective_data_dir()?,
                 lifecycle::daemon_stop::DEFAULT_ADDR,
                 &ProductProcesses,
             )
@@ -2405,7 +2430,7 @@ async fn handle_daemon(
                     // pidfile efímero difiere de la por defecto; sin pidfile es
                     // idéntica).
                     let client_addr =
-                        lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+                        lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
                     println!("Señal de apagado enviada al daemon en {}.", client_addr);
                 } else {
                     println!("El daemon no estaba en ejecución.");
@@ -2413,7 +2438,7 @@ async fn handle_daemon(
                 Ok(Outcome::Done)
             } else {
                 let client_addr =
-                    lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+                    lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
                 // El matiz del residente lo dice el predicado del motor
                 // (`StopOutcome::resident_alive`), no el texto de `remaining`: atarlo
                 // al vocabulario de la frase degradaba el error en silencio ante
@@ -2453,7 +2478,7 @@ async fn handle_daemon(
             let budget = std::time::Duration::from_secs(12);
             let client = daemon_client();
             let outcome = lifecycle::daemon_stop::stop(
-                &effective_data_dir(),
+                &effective_data_dir()?,
                 lifecycle::daemon_stop::DEFAULT_ADDR,
                 &ProductProcesses,
             )
@@ -2485,7 +2510,7 @@ async fn handle_daemon(
             // El probe apunta a la dirección descubierta (fallback idéntico
             // sin pidfile).
             let client = daemon_client();
-            let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+            let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
             match tokio::time::timeout(
                 std::time::Duration::from_millis(500),
                 client.get(format!("http://{}/health", client_addr)).send(),
@@ -2550,8 +2575,8 @@ async fn handle_daemon(
 /// vive en `lifecycle::setup`. Aquí solo queda la prosa y el envelope, porque el parseo
 /// de la CLI y el emisor no están en ese crate.
 async fn handle_setup(json_mode: bool, force_update: bool, yes: bool) -> Result<(), CliError> {
-    let model_store = ModelStore::new();
-    let voice_store = VoiceStore::new();
+    let model_store = open_model_store()?;
+    let voice_store = open_voice_store()?;
 
     // 1. Inicializar VoiceStore y directorio por defecto
     voice_store
@@ -2654,25 +2679,25 @@ fn stopped_with_resident_is_degraded(
 /// Clasifica el residual del daemon: sano, degradado o parado.
 /// Ante `Stopped` se busca al residente por su PID registrado antes de declarar
 /// vía libre; con residente vivo es degradado residente-solo para reclamo.
-async fn classify_residual(client: &reqwest::Client) -> ResidualState {
+async fn classify_residual(client: &reqwest::Client) -> Result<ResidualState, CliError> {
     // Recuperación de reclamo: con pidfile perdido, el `daemon.ready` sobrevive
     // y conserva el PID del árbol efímero. El respaldo solo aplica sin pidfile;
     // `pid_alive` gatea después, así que un ready obsoleto con PID muerto sigue
     // cayendo a `Stopped`. Un PID cuya identidad no coincide con la registrada
     // es de otro programa: cuenta como muerto.
-    let (pid, state) = registered_daemon();
+    let (pid, state) = registered_daemon()?;
     let daemon_ours = state == avi_process::registry::Registered::Ours;
     // El probe apunta a la dirección descubierta (fallback idéntico sin
     // pidfile; vía nueva solo con pidfile vivo de addr efímera).
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     let probe = probe_health(client, &client_addr).await;
     // `Stopped` con residente vivo no es vía libre.
-    if !probe && !daemon_ours && resident_alive_by_pid() {
-        return ResidualState::Degraded {
+    if !probe && !daemon_ours && resident_alive_by_pid()? {
+        return Ok(ResidualState::Degraded {
             reason: "residente vivo sin daemon (Stopped con resident_pid vivo)",
-        };
+        });
     }
-    match pid {
+    Ok(match pid {
         Some(p) if probe && daemon_ours => ResidualState::Healthy(p),
         _ if !probe && !daemon_ours => ResidualState::Stopped,
         _ => {
@@ -2685,29 +2710,31 @@ async fn classify_residual(client: &reqwest::Client) -> ResidualState {
             };
             ResidualState::Degraded { reason }
         }
-    }
+    })
 }
 
 /// Clasifica el PID del daemon registrado (el del pidfile o, si falta, el que
 /// publica `daemon.ready`): ausente, ajeno (PID reasignado) o nuestro.
-fn registered_daemon() -> (Option<u32>, avi_process::registry::Registered) {
-    match lifecycle::daemon_stop::recorded_daemon(&effective_data_dir()) {
-        Some(recorded) => (
-            Some(recorded.pid),
-            lifecycle::daemon_stop::classify_registered(
-                &ProductProcesses,
-                recorded.pid,
-                daemon::pid_alive(recorded.pid),
-                recorded.identity.as_ref(),
+fn registered_daemon() -> Result<(Option<u32>, avi_process::registry::Registered), CliError> {
+    Ok(
+        match lifecycle::daemon_stop::recorded_daemon(&effective_data_dir()?) {
+            Some(recorded) => (
+                Some(recorded.pid),
+                lifecycle::daemon_stop::classify_registered(
+                    &ProductProcesses,
+                    recorded.pid,
+                    daemon::pid_alive(recorded.pid),
+                    recorded.identity.as_ref(),
+                ),
             ),
-        ),
-        None => (None, avi_process::registry::Registered::Absent),
-    }
+            None => (None, avi_process::registry::Registered::Absent),
+        },
+    )
 }
 
 /// Clasifica el PID del residente registrado en `daemon.pid`.
-fn registered_resident() -> (u32, avi_process::registry::Registered) {
-    let (pid, identity) = lifecycle::daemon_stop::read_pid_file(&effective_data_dir())
+fn registered_resident() -> Result<(u32, avi_process::registry::Registered), CliError> {
+    let (pid, identity) = lifecycle::daemon_stop::read_pid_file(&effective_data_dir()?)
         .map(|f| (f.resident_pid, f.resident_identity))
         .unwrap_or((0, None));
     let state = lifecycle::daemon_stop::classify_registered(
@@ -2716,7 +2743,7 @@ fn registered_resident() -> (u32, avi_process::registry::Registered) {
         pid != 0 && avi_tts::resident::resident_pid_alive(pid),
         identity.as_ref(),
     );
-    (pid, state)
+    Ok((pid, state))
 }
 
 /// ¿Sigue vivo el residente registrado en `daemon.pid`? Identidad estable del
@@ -2725,8 +2752,8 @@ fn registered_resident() -> (u32, avi_process::registry::Registered) {
 /// registrar no lo ve este predicado ni se barre por imagen. Un PID
 /// reasignado a otro programa (identidad distinta de la registrada) no cuenta
 /// como vivo.
-fn resident_alive_by_pid() -> bool {
-    registered_resident().1 == avi_process::registry::Registered::Ours
+fn resident_alive_by_pid() -> Result<bool, CliError> {
+    Ok(registered_resident()?.1 == avi_process::registry::Registered::Ours)
 }
 
 /// Estado JSON de la parada a partir del veredicto del motor: sin ejecución
@@ -2774,12 +2801,12 @@ fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, resident_alive: bool
 /// y unitarios no-plataformeros (prohibido simular Unix).
 /// Ante `Stopped` con residente registrado vivo se reclama su árbol por PID
 /// registrado antes de declarar fresco.
-async fn reclaim_degraded_residual(client: &reqwest::Client) {
+async fn reclaim_degraded_residual(client: &reqwest::Client) -> Result<(), CliError> {
     let start = std::time::Instant::now();
     // La identidad se clasifica antes del graceful, que puede borrar los
     // ficheros de los que se lee. Un PID ajeno no se mata.
     let (pid, recorded_identity) =
-        match lifecycle::daemon_stop::recorded_daemon(&effective_data_dir()) {
+        match lifecycle::daemon_stop::recorded_daemon(&effective_data_dir()?) {
             Some(recorded) => (Some(recorded.pid), recorded.identity),
             None => (None, None),
         };
@@ -2792,7 +2819,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
         )
     });
     // Graceful y verificación contra la dirección descubierta.
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     // 1) Graceful breve si el probe responde (no hereda el techo `REQUEST_FAILSAFE` del cliente HTTP).
     if probe_health(client, &client_addr).await {
         let _ = tokio::time::timeout(
@@ -2818,7 +2845,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
     // su árbol preciso; sin PID registrado no hay residente que reclamar y
     // nada se mata por imagen. La verificación por `resident_pid` muerto vive
     // en el paso 3.
-    let (resident, resident_state) = registered_resident();
+    let (resident, resident_state) = registered_resident()?;
     if resident != 0
         && resident != std::process::id()
         && resident_state == avi_process::registry::Registered::Ours
@@ -2839,7 +2866,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
         let probe = probe_health(client, &client_addr).await;
         #[cfg(unix)]
         {
-            if unix_claim_verified(probe, alive, resident_alive_by_pid()) {
+            if unix_claim_verified(probe, alive, resident_alive_by_pid()?) {
                 break;
             }
         }
@@ -2851,6 +2878,7 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
+    Ok(())
 }
 
 /// Resumen previo de `self update`: qué versión se instala sobre cuál,
@@ -3024,7 +3052,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             let receipt = lifecycle::receipt::read_from(&registered_program_dir).map_err(|e| {
                 CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
             })?;
-            let roots = lifecycle::cleanup::Roots::from_receipt(receipt.as_ref());
+            let roots = lifecycle::cleanup::Roots::from_receipt(receipt.as_ref()).map_err(|e| {
+                CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
+            })?;
             let cleaner_logs = lifecycle::logs_dir_in(&roots.data_dir);
             let env = lifecycle::uninstall::Env {
                 roots,
@@ -3131,7 +3161,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // ── Paso 1. Recuperación y bloqueo ────────────────────────────────
             // Sin staging en uso todavía: el que cree U2 no existe y todo
             // hermano con prefijo es huérfano por definición.
-            let roots = lifecycle::cleanup::Roots::from_receipt(Some(&receipt));
+            let roots = lifecycle::cleanup::Roots::from_receipt(Some(&receipt))
+                .map_err(|e| CliError::new(ExitCode::Error, "self_update_failed", e.to_string()))?;
             let mut lock = lifecycle::lock::acquire_exclusive(&roots.program_dir)
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
             let recovery = lifecycle::recovery::recover(roots.recovery_roots())
@@ -3582,7 +3613,7 @@ impl lifecycle::update::PathRemover for LifecyclePaths {
 // ─── Helpers ─────────────────────────────────────────────────────────
 
 fn require_model_provisioned() -> Result<(), CliError> {
-    let model_store = ModelStore::new();
+    let model_store = open_model_store()?;
     if !model_store.is_provisioned("qwen3-tts-0.6b") {
         return Err(CliError::new(
             ExitCode::ModelMissing,
@@ -3629,8 +3660,8 @@ fn is_valid_identifier(ids: Option<&str>, more: Option<&str>) -> Result<(), CliE
 /// Va por el motor porque el pidfile es **su** esquema: `daemon_stop` lo escribe, lo
 /// lee y lo borra, y las lecturas tolerantes que este binario usaba eran una segunda
 /// implementación del mismo formato.
-fn effective_data_dir() -> PathBuf {
-    lifecycle::data_dir()
+fn effective_data_dir() -> Result<PathBuf, CliError> {
+    lifecycle::data_dir().map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
 }
 
 /// `$HOME` del usuario, la misma clave que usa `lifecycle::path_unix` al escribir los
@@ -3652,8 +3683,8 @@ fn home_dir() -> Result<PathBuf, CliError> {
 /// Ruta del fichero ready de esta instancia: absoluta bajo el
 /// `data_dir` vigente, de modo que cada sandbox (`AVI_DATA_DIR`) posee el
 /// suyo sin depender de la unidad del proceso ni de `%TEMP%`.
-fn ready_file_path() -> PathBuf {
-    store::data_dir().join(avi_process::registry::READY_FILE)
+fn ready_file_path() -> Result<PathBuf, CliError> {
+    Ok(effective_data_dir()?.join(avi_process::registry::READY_FILE))
 }
 
 /// Lanza el daemon en segundo plano y espera el resultado de su arranque. Es la
@@ -3685,7 +3716,7 @@ async fn launch_daemon(
     let start = std::time::Instant::now();
     // El hijo publica su registro en el fichero ready de la instancia (ruta
     // absoluta bajo el `data_dir` vigente).
-    let ready_path = ready_file_path();
+    let ready_path = ready_file_path()?;
     if let Some(parent) = ready_path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| {
             CliError::new(
@@ -3712,8 +3743,10 @@ async fn launch_daemon(
             ))
         }
     }
-    let (log_path, log_file) = store::create_log(
-        &store::logs_dir(),
+    let logs_dir = avi_shared::paths::logs_dir()
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    let (log_path, log_file) = avi_shared::logs::create_log(
+        &logs_dir,
         daemon::DAEMON_LOG_FAMILY,
         &avi_process::pid_alive_exact,
     )
@@ -3748,7 +3781,24 @@ async fn launch_daemon(
     // El log nació con el PID del lanzador porque su handle se entrega al
     // spawn; ya conocido el del hijo, el nombre pasa a identificar al proceso
     // que escribe, y la poda puede reconocer por PID el log de un daemon vivo.
-    let log_path = avi_shared::logs::rename_log_to_pid(&log_path, daemon::DAEMON_LOG_FAMILY, pid);
+    let log_path =
+        match avi_shared::logs::rename_log_to_pid(&log_path, daemon::DAEMON_LOG_FAMILY, pid) {
+            Ok(renamed) => renamed,
+            Err(e) => {
+                let err = CliError::new(
+                    ExitCode::Error,
+                    "io_error",
+                    format!(
+                        "No se pudo renombrar el log del daemon '{}' con el PID {}: {}",
+                        log_path.display(),
+                        pid,
+                        e
+                    ),
+                );
+                abort_launch(&mut child, &ready_path).await;
+                return Err(err);
+            }
+        };
     let with_log = |mut e: CliError| {
         e.message = format!("{}\nLog del daemon: {}", e.message, log_path.display());
         e
@@ -3886,7 +3936,7 @@ async fn wait_health_down(
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     while start.elapsed() < timeout {
-        if !daemon_active(client).await {
+        if !daemon_active(client).await? {
             return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -3924,18 +3974,18 @@ async fn probe_health(client: &reqwest::Client, addr: &str) -> bool {
 
 /// Probe de vida sobre la dirección descubierta (pidfile o, sin él, la dirección
 /// por defecto del protocolo); `false` habilita el fallback Auto→local.
-async fn daemon_active(client: &reqwest::Client) -> bool {
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
-    probe_health(client, &client_addr).await
+async fn daemon_active(client: &reqwest::Client) -> Result<bool, CliError> {
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
+    Ok(probe_health(client, &client_addr).await)
 }
 
 /// Decide si una acción delegable se despacha al daemon:
 /// ForceDaemon → siempre (el POST fallará con DaemonUnreachable si no corre);
 /// Auto → solo si el daemon responde; ForceDirect → nunca.
-async fn route_to_daemon(mode: DaemonMode, client: &reqwest::Client) -> bool {
+async fn route_to_daemon(mode: DaemonMode, client: &reqwest::Client) -> Result<bool, CliError> {
     match mode {
-        DaemonMode::ForceDaemon => true,
-        DaemonMode::ForceDirect => false,
+        DaemonMode::ForceDaemon => Ok(true),
+        DaemonMode::ForceDirect => Ok(false),
         DaemonMode::Auto => daemon_active(client).await,
     }
 }
@@ -3966,7 +4016,7 @@ async fn transcribe_via_daemon(
 ) -> Result<(), CliError> {
     // El POST apunta a la dirección descubierta (fallback idéntico sin
     // pidfile).
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     let pcm = acquire_pcm(audio, mic, duration, avi_core::MAX_TRANSCRIBE_AUDIO_SECS).await?;
     ensure_pcm_within_limit(
         &pcm,
@@ -4025,7 +4075,7 @@ async fn translate_via_daemon(
         "target_language": target_language,
     });
     // El POST apunta a la dirección descubierta.
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     let fut = client
         .post(format!("http://{}/translate", client_addr))
         .json(&payload)
@@ -4111,7 +4161,7 @@ async fn daemon_synthesize_wav(
         payload["temperature"] = serde_json::json!(t);
     }
     // El POST apunta a la dirección descubierta.
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     let resp = client
         .post(format!("http://{}/synthesize", client_addr))
         .json(&payload)
@@ -4203,7 +4253,7 @@ async fn consume_ndjson_stream(
     let start = std::time::Instant::now();
     let mut rest = String::new();
     // Los diagnósticos nombran la dirección descubierta.
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     loop {
         if start.elapsed() >= STREAM_TOTAL_DEADLINE {
             return Err(CliError::new(
@@ -4380,7 +4430,7 @@ async fn synthesize_via_daemon(
     target_language: &str,
     temperature: Option<f32>,
 ) -> Result<(), CliError> {
-    let speech_store = SpeechStore::new();
+    let speech_store = open_speech_store()?;
     let label_lower = label.to_lowercase();
     is_valid_identifier(Some(&label_lower), None)?;
     if !force
@@ -4555,7 +4605,7 @@ async fn clone_via_daemon(
     // responde 200 de inmediato); el trabajo pesado se consume como stream con
     // inactividad 1500 ms + failsafe `REQUEST_FAILSAFE` hasta el evento final.
     // El POST apunta a la dirección descubierta.
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     let fut = client
         .post(format!("http://{}/voices/clone", client_addr))
         .json(&payload)
@@ -4645,7 +4695,7 @@ async fn dub_via_daemon(
     // validar barato); el pipeline se consume como stream con inactividad
     // 1500 ms + failsafe `REQUEST_FAILSAFE` hasta el evento final.
     // El POST apunta a la dirección descubierta.
-    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir());
+    let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     let fut = client
         .post(format!("http://{}/dub", client_addr))
         .json(&payload)

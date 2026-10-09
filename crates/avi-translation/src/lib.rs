@@ -165,7 +165,9 @@ mod tests {
     /// `ai-voice-interconnector setup`.
     #[cfg(feature = "native-translation")]
     fn require_ct2(pair: &str) -> std::path::PathBuf {
-        let model_dir = avi_store::ModelStore::new().model_dir(&format!("opus-mt-{pair}"));
+        let model_dir = avi_store::ModelStore::new()
+            .expect("la raíz de modelos debe resolverse")
+            .model_dir(&format!("opus-mt-{pair}"));
         let weights = model_dir.join("model.bin");
         std::fs::metadata(&weights).unwrap_or_else(|e| {
             panic!(
@@ -315,7 +317,9 @@ mod tests {
         let mut n_items = 0usize;
 
         for (model, fixture) in corpus {
-            let model_dir = avi_store::ModelStore::new().model_dir(model);
+            let model_dir = avi_store::ModelStore::new()
+                .expect("la raíz de modelos debe resolverse")
+                .model_dir(model);
             let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("tests/assets")
                 .join(fixture);

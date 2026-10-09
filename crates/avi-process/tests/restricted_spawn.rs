@@ -1,21 +1,9 @@
-//! Pruebas deterministas del lanzamiento con herencia restringida: la lista
-//! contiene solo lo declarado, el hijo informa su salida y el registro
-//! declarado recibe la salida del hijo. Sin esperas fijas, sin modelos, sin red.
+//! Pruebas deterministas del lanzamiento con herencia restringida: el hijo
+//! informa su salida y el registro declarado recibe la salida del hijo. Sin
+//! esperas fijas, sin modelos, sin red.
 
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-
-/// La lista devuelve exactamente los handles declarados, sin añadir ni quitar
-/// ninguno: lo que entra es lo que hereda el hijo.
-#[test]
-fn allowed_list_contains_only_declared_handles() {
-    assert_eq!(avi_process::allowed_handle_list(&[]), Vec::<isize>::new());
-    assert_eq!(avi_process::allowed_handle_list(&[7]), vec![7isize]);
-    assert_eq!(
-        avi_process::allowed_handle_list(&[3, 1, 2]),
-        vec![3isize, 1, 2]
-    );
-}
 
 /// Un hijo lanzado con la lista vacía informa su salida: el lanzamiento no
 /// depende de ninguna herencia ambiental.

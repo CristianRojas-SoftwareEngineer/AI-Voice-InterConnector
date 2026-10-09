@@ -97,9 +97,9 @@ pub fn detect(exe: &Path, receipt: Option<&InstallReceipt>) -> Channel {
 /// hay. Que sea independiente de la copia que ejecuta el comando es lo
 /// que permite que `self uninstall` quite la instalación aunque se invoque desde
 /// `target/`.
-pub fn registered_install_dir(receipt: Option<&InstallReceipt>) -> PathBuf {
+pub fn registered_install_dir(receipt: Option<&InstallReceipt>) -> std::io::Result<PathBuf> {
     match receipt {
-        Some(receipt) => receipt.install_dir.clone(),
+        Some(receipt) => Ok(receipt.install_dir.clone()),
         None => crate::install_dir(),
     }
 }
@@ -113,8 +113,8 @@ pub fn registered_install_dir(receipt: Option<&InstallReceipt>) -> PathBuf {
 /// Un recibo presente pero ilegible es un error que nombra el fichero: no se
 /// confunde con la ausencia de recibo.
 pub fn registered_program_dir() -> anyhow::Result<PathBuf> {
-    let receipt = crate::receipt::read_from(&crate::install_dir())?;
-    Ok(registered_install_dir(receipt.as_ref()))
+    let receipt = crate::receipt::read_from(&crate::install_dir()?)?;
+    Ok(registered_install_dir(receipt.as_ref())?)
 }
 
 #[cfg(test)]
@@ -215,9 +215,12 @@ mod tests {
         // Precedencia entre canal e instalación registrada: un binario `unmanaged`
         // sigue operando sobre la instalación que declara el recibo.
         assert_eq!(
-            registered_install_dir(Some(&script)),
+            registered_install_dir(Some(&script)).unwrap(),
             PathBuf::from("/home/ana/.local/opt/ai-voice-interconnector")
         );
-        assert_eq!(registered_install_dir(None), crate::install_dir());
+        assert_eq!(
+            registered_install_dir(None).unwrap(),
+            crate::install_dir().unwrap()
+        );
     }
 }

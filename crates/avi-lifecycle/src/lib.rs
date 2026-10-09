@@ -10,7 +10,7 @@
 //! cableado se quedan en el binario, que es quien conoce `clap` y el envelope
 //! `--json`.
 //!
-//! Las rutas y los recursos del producto no se definen aquí: `avi-store` es la
+//! Las rutas y los recursos del producto no se definen aquí: `avi-shared` es la
 //! fuente única y este crate las reexporta para que el motor tenga una
 //! sola forma de nombrarlas.
 
@@ -38,12 +38,13 @@ pub mod update;
 pub mod update_fetch;
 pub mod update_resolve;
 
-pub use avi_store::{
-    bin_dir, canonical_path_entry_matches, canonical_path_key, create_log, data_dir, install_dir,
-    logs_dir_in, models_cache_dir, models_root_is_shared, shared_hf_root, APP_NAME,
-    LIFECYCLE_GATE_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR, PARKED_DIR_PREFIX,
-    STAGING_DIR_PREFIX, TEMP_PREFIXES,
+pub use avi_shared::logs::create_log;
+pub use avi_shared::paths::{
+    bin_dir, data_dir, install_dir, logs_dir_in, models_cache_dir, models_root_is_shared,
+    shared_hf_root, APP_NAME, LIFECYCLE_GATE_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR,
+    PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
 };
+pub use avi_store::{canonical_path_entry_matches, canonical_path_key};
 
 /// Superficie pública que el binario necesita para cablear el grupo `self` y para
 /// delegar `cleanup` y `doctor`. Los módulos internos siguen siendo públicos

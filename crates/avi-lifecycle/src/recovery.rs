@@ -114,7 +114,7 @@ impl RecoveryOutcome {
 /// Recuperación con las raíces del producto: directorio de programa según la
 /// reubicación y directorio de temporales del sistema.
 pub fn recover_default() -> Result<RecoveryOutcome> {
-    let program_dir = crate::install_dir();
+    let program_dir = crate::install_dir()?;
     let temp_root = std::env::temp_dir();
     recover(Roots {
         program_dir: &program_dir,

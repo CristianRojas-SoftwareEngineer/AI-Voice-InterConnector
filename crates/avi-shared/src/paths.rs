@@ -1,9 +1,11 @@
 //! Directorios canónicos del producto, temporales y revisiones de modelos.
 //!
-//! Fuente única de las rutas que antes vivían replicadas en `avi-store`,
-//! `avi-lifecycle` y `xtask clean`: `avi-store` las reexporta para conservar su
-//! API, y los llamadores no cambian.
+//! Fuente única de las rutas que comparten `avi-store`, `avi-lifecycle`, el
+//! daemon y `xtask`. Las funciones que parten del directorio del usuario
+//! devuelven `io::Result`: si no se puede resolver (`HOME` o `USERPROFILE` sin
+//! definir) es un error, nunca una ruta inventada en el directorio de trabajo.
 
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Nombre canónico del producto: directorio de programa, directorio del
@@ -21,43 +23,75 @@ fn relocated_dir(var: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn home_dir() -> PathBuf {
+/// Error de una ruta que no se puede resolver: nombra qué falta y qué
+/// variable lo remedia.
+fn unresolved(what: &str, remedy: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotFound,
+        format!("No se pudo resolver {what}: {remedy}"),
+    )
+}
+
+/// Directorio del usuario (`HOME` en Unix, Known Folder del perfil en Windows).
+fn home_dir() -> io::Result<PathBuf> {
     directories::UserDirs::new()
         .map(|d| d.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."))
+        .ok_or_else(|| {
+            unresolved(
+                "el directorio del usuario",
+                "defina HOME (USERPROFILE en Windows)",
+            )
+        })
 }
 
 /// `%LOCALAPPDATA%` de la Known Folder del usuario. Si la variable no está
 /// definida se deriva de `HOME`: inventar una ruta en el directorio de trabajo
 /// pondría el estado del producto dentro de `target/`. Las ramas que la usan
 /// son `cfg!(windows)`, así que la función se compila también en Unix.
-fn local_app_data() -> PathBuf {
-    relocated_dir("LOCALAPPDATA").unwrap_or_else(|| home_dir().join("AppData").join("Local"))
+fn local_app_data() -> io::Result<PathBuf> {
+    match relocated_dir("LOCALAPPDATA") {
+        Some(dir) => Ok(dir),
+        None => Ok(home_dir()
+            .map_err(|_| unresolved("%LOCALAPPDATA%", "defina LOCALAPPDATA o USERPROFILE"))?
+            .join("AppData")
+            .join("Local")),
+    }
 }
 
 /// `$XDG_CACHE_HOME` con el fallback de `~/.cache`.
-fn cache_home() -> PathBuf {
-    relocated_dir("XDG_CACHE_HOME").unwrap_or_else(|| home_dir().join(".cache"))
+fn cache_home() -> io::Result<PathBuf> {
+    match relocated_dir("XDG_CACHE_HOME") {
+        Some(dir) => Ok(dir),
+        None => Ok(home_dir()
+            .map_err(|_| unresolved("la caché del usuario", "defina XDG_CACHE_HOME o HOME"))?
+            .join(".cache")),
+    }
 }
 
 /// Raíz de datos de usuario y estado: voces, habla sintetizada, configuración,
 /// `daemon.pid`; los logs viven en `logs_dir()`.
 ///
 /// `AVI_DATA_DIR` la desvía. Sin la variable, en Windows es
-/// `%LOCALAPPDATA%\ai-voice-interconnector\data` (D4), en Linux
+/// `%LOCALAPPDATA%\ai-voice-interconnector\data`, en Linux
 /// `$XDG_DATA_HOME/ai-voice-interconnector` y en macOS
 /// `~/Library/Application Support/ai-voice-interconnector`, que es justo lo que
-/// resuelve `directories` en los tres sistemas Unix.
-pub fn data_dir() -> PathBuf {
+/// resuelve `directories` en los tres sistemas Unix. Si no se puede resolver
+/// ninguna es un error que nombra las variables que lo remedian.
+pub fn data_dir() -> io::Result<PathBuf> {
     if let Some(dir) = relocated_dir("AVI_DATA_DIR") {
-        return dir;
+        return Ok(dir);
     }
     if cfg!(windows) {
-        local_app_data().join(APP_NAME).join("data")
+        Ok(local_app_data()?.join(APP_NAME).join("data"))
     } else {
         directories::ProjectDirs::from("", "", APP_NAME)
             .map(|d| d.data_dir().to_path_buf())
-            .unwrap_or_else(|| PathBuf::from(".").join(APP_NAME))
+            .ok_or_else(|| {
+                unresolved(
+                    "el directorio de datos",
+                    "defina AVI_DATA_DIR, XDG_DATA_HOME o HOME",
+                )
+            })
     }
 }
 
@@ -70,22 +104,22 @@ pub fn logs_dir_in(data_dir: &Path) -> PathBuf {
 /// Directorio de logs vigente: los del daemon (`daemon_*`), los del motor
 /// (`qwen3-tts_*`) y los del limpiador (`cleaner_*`), con retención por familia
 /// (ver `logs`).
-pub fn logs_dir() -> PathBuf {
-    logs_dir_in(&data_dir())
+pub fn logs_dir() -> io::Result<PathBuf> {
+    Ok(logs_dir_in(&data_dir()?))
 }
 
 /// Directorio de programa: el bundle completo y el recibo. Existe en los
 /// cuatro targets de distribución, no solo en Windows, y `AVI_INSTALL_DIR` lo
 /// desvía. Dos `join` y no uno con separador embebido: una ruta con `/` mixto
 /// rompe la comparación con el registro de Windows y con el resto del motor.
-pub fn install_dir() -> PathBuf {
+pub fn install_dir() -> io::Result<PathBuf> {
     if let Some(dir) = relocated_dir("AVI_INSTALL_DIR") {
-        return dir;
+        return Ok(dir);
     }
     if cfg!(windows) {
-        local_app_data().join("Programs").join(APP_NAME)
+        Ok(local_app_data()?.join("Programs").join(APP_NAME))
     } else {
-        home_dir().join(".local").join("opt").join(APP_NAME)
+        Ok(home_dir()?.join(".local").join("opt").join(APP_NAME))
     }
 }
 
@@ -93,14 +127,14 @@ pub fn install_dir() -> PathBuf {
 /// simbólico; en Windows no hay enlace y la entrada que se escribe en
 /// `HKCU\Environment\Path` es el propio directorio de programa, así que ambos
 /// coinciden. `AVI_BIN_DIR` lo desvía.
-pub fn bin_dir() -> PathBuf {
+pub fn bin_dir() -> io::Result<PathBuf> {
     if let Some(dir) = relocated_dir("AVI_BIN_DIR") {
-        return dir;
+        return Ok(dir);
     }
     if cfg!(windows) {
         install_dir()
     } else {
-        home_dir().join(".local").join("bin")
+        Ok(home_dir()?.join(".local").join("bin"))
     }
 }
 
@@ -200,9 +234,9 @@ pub const MODELS_XET_SUBDIR: &str = "xet";
 /// que ningún otro prefijo puede sustituir a este conjunto.
 pub const TEMP_PREFIXES: &[&str] = &["avi-", "avi_"];
 
-// **R4.** Las cinco constantes anteriores son la fuente única de los recursos que la
+// Las constantes de nombres y prefijos de arriba son la fuente única de los recursos que la
 // aplicación crea: todo recurso nuevo se declara aquí, en la tabla de rutas y en
-// los planes de limpieza y desinstalación **en el mismo cambio**. Un recurso
+// los planes de limpieza y desinstalación en el mismo cambio. Un recurso
 // que solo aparece en un plan de limpieza es un recurso que sobrevive a la
 // desinstalación.
 
@@ -258,15 +292,15 @@ pub fn shared_hf_root() -> Option<PathBuf> {
 }
 
 /// ¿La raíz de modelos es la caché HF compartida que eligió el usuario? En ese
-/// caso su contenido es compartido y rige R3: solo se borran entradas
-/// atribuibles a la aplicación.
+/// caso su contenido es compartido y solo se borran entradas atribuibles a la
+/// aplicación.
 pub fn models_root_is_shared() -> bool {
     shared_hf_root().is_some()
 }
 
 /// Raíz de modelos: caché regenerable y **exclusiva de la aplicación** por
-/// defecto (D3). Snapshots, locks y `xet` cuelgan todos de
-/// ella, y es la única ubicación de modelos que existe.
+/// defecto. Snapshots, locks y `xet` cuelgan todos de ella, y
+/// es la única ubicación de modelos que existe.
 ///
 /// `AVI_CACHE_DIR` tiene precedencia sobre las variables de HuggingFace: es la
 /// variable de reubicación de la aplicación y es lo que permite aislar una
@@ -278,23 +312,26 @@ pub fn models_root_is_shared() -> bool {
 /// `$XDG_CACHE_HOME/ai-voice-interconnector/models`,
 /// `~/Library/Caches/ai-voice-interconnector/models` o
 /// `%LOCALAPPDATA%\ai-voice-interconnector\cache\models`.
-pub fn models_cache_dir() -> PathBuf {
+pub fn models_cache_dir() -> io::Result<PathBuf> {
     if let Some(dir) = relocated_dir("AVI_CACHE_DIR") {
-        return dir;
+        return Ok(dir);
     }
     if let Some(shared) = shared_hf_root() {
-        return shared;
+        return Ok(shared);
     }
     if cfg!(windows) {
-        local_app_data().join(APP_NAME).join("cache").join("models")
+        Ok(local_app_data()?
+            .join(APP_NAME)
+            .join("cache")
+            .join("models"))
     } else if cfg!(target_os = "macos") {
-        home_dir()
+        Ok(home_dir()?
             .join("Library")
             .join("Caches")
             .join(APP_NAME)
-            .join("models")
+            .join("models"))
     } else {
-        cache_home().join(APP_NAME).join("models")
+        Ok(cache_home()?.join(APP_NAME).join("models"))
     }
 }
 
@@ -307,17 +344,17 @@ pub fn models_cache_dir() -> PathBuf {
 /// que se devuelve la cadena real que resuelve `xet-runtime`: `HF_XET_CACHE` →
 /// `HF_HOME/xet` → `XDG_CACHE_HOME/huggingface/xet` →
 /// `~/.cache/huggingface/xet`.
-pub fn xet_cache_dir() -> PathBuf {
+pub fn xet_cache_dir() -> io::Result<PathBuf> {
     if models_root_is_shared() {
         if let Some(dir) = relocated_dir("HF_XET_CACHE") {
-            return dir;
+            return Ok(dir);
         }
         if let Some(home) = relocated_dir("HF_HOME") {
-            return home.join("xet");
+            return Ok(home.join("xet"));
         }
-        return cache_home().join("huggingface").join("xet");
+        return Ok(cache_home()?.join("huggingface").join("xet"));
     }
-    models_cache_dir().join(MODELS_XET_SUBDIR)
+    Ok(models_cache_dir()?.join(MODELS_XET_SUBDIR))
 }
 
 #[cfg(test)]

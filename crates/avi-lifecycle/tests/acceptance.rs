@@ -55,7 +55,8 @@ use avi_lifecycle::install::{self, ModelsState};
 use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
 use avi_lifecycle::setup;
 use avi_lifecycle::uninstall;
-use avi_store::{ModelStore, MODEL_FILE_PATTERNS, MODEL_REVISIONS};
+use avi_shared::paths::{MODEL_FILE_PATTERNS, MODEL_REVISIONS};
+use avi_store::ModelStore;
 use inert::Inert;
 use registered::Now;
 use std::path::{Path, PathBuf};
@@ -450,7 +451,7 @@ fn no_setup_provisions_nothing() {
     sandbox.seed_env();
 
     // No vacuidad: hay modelos que provisionar si se pidiera.
-    let pending = setup::pending(&ModelStore::new());
+    let pending = setup::pending(&ModelStore::new().unwrap());
     let selection = setup::selection();
     assert!(
         !pending.models.is_empty(),
@@ -492,7 +493,7 @@ fn no_setup_provisions_nothing() {
         "la raíz de modelos sigue vacía: no hay repo ni `xet`"
     );
     assert!(
-        !ModelStore::new().is_provisioned("opus-mt-es-en"),
+        !ModelStore::new().unwrap().is_provisioned("opus-mt-es-en"),
         "y nada quedó provisionado en el almacén"
     );
     assert!(
@@ -544,7 +545,7 @@ fn setup_failure_keeps_install() {
     std::env::set_var("HF_ENDPOINT", format!("http://127.0.0.1:{closed_port}"));
 
     // No vacuidad del camino de fallo: solo queda por descargar ese pin.
-    let pending = setup::pending(&ModelStore::new());
+    let pending = setup::pending(&ModelStore::new().unwrap());
     assert_eq!(
         pending.models,
         vec![UNSEEDED_PIN.to_string()],
@@ -679,7 +680,7 @@ fn setup_failure_keeps_install() {
     // Y es reintentable con `setup`: el modelo sigue sin existir, así que un `setup`
     // posterior lo vuelve a pedir.
     assert_eq!(
-        setup::pending(&ModelStore::new()).models,
+        setup::pending(&ModelStore::new().unwrap()).models,
         vec![UNSEEDED_PIN.to_string()],
         "y `setup` lo ve pendiente otra vez"
     );
@@ -703,7 +704,7 @@ fn successful_provisioning_has_no_reason() {
     provision_selection(&sandbox);
 
     // No vacuidad: `setup` no tiene nada que hacer, y eso es lo que la prueba comprueba.
-    let pending = setup::pending(&ModelStore::new());
+    let pending = setup::pending(&ModelStore::new().unwrap());
     assert!(
         pending.is_empty(),
         "con los repos ya provisionados no queda nada pendiente: {:?}",
@@ -1572,13 +1573,13 @@ fn shared_resources_survive() {
     let sandbox = Sandbox::new_shared("shared-cleanup");
     sandbox.seed_env();
     assert!(
-        avi_store::models_root_is_shared(),
+        avi_shared::paths::models_root_is_shared(),
         "`HF_HUB_CACHE` convierte la raíz en compartida"
     );
     assert_eq!(
-        avi_store::models_cache_dir(),
+        avi_shared::paths::models_cache_dir().unwrap(),
         sandbox.models_dir,
-        "y `avi-store` resuelve la misma ruta que el sandbox"
+        "y `avi-shared` resuelve la misma ruta que el sandbox"
     );
     assert!(
         cleanup::is_shared_models_root(&sandbox.models_dir),
@@ -1863,7 +1864,7 @@ fn shared_resources_survive() {
     s.seed_env();
     s.seed_state();
     assert!(
-        !avi_store::models_root_is_shared(),
+        !avi_shared::paths::models_root_is_shared(),
         "sin `HF_HUB_CACHE` la raíz es exclusiva"
     );
     assert!(

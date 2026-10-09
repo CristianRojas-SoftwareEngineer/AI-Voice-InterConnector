@@ -2,15 +2,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-// Rutas canónicas, temporales y revisiones de modelos: viven en `avi-shared`
-// (fuente única) y aquí se reexportan para conservar la API; los
-// llamadores no cambian.
-pub use avi_shared::logs::{create_log, LOG_RETENTION};
-pub use avi_shared::paths::{
-    bin_dir, data_dir, install_dir, logs_dir, logs_dir_in, models_cache_dir, models_root_is_shared,
-    shared_hf_root, xet_cache_dir, ModelPin, APP_NAME, LIFECYCLE_GATE_NAME, LIFECYCLE_LOCK_NAME,
-    MODELS_XET_SUBDIR, MODEL_FILE_PATTERNS, MODEL_REVISIONS, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX,
-    TEMP_PREFIXES,
+use avi_shared::paths::{
+    data_dir, models_cache_dir, models_root_is_shared, xet_cache_dir, MODELS_XET_SUBDIR,
+    MODEL_FILE_PATTERNS, MODEL_REVISIONS,
 };
 
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (modelo CustomVoice)
@@ -162,15 +156,11 @@ pub struct VoiceStore {
     base_dir: PathBuf,
 }
 
-impl Default for VoiceStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl VoiceStore {
-    pub fn new() -> Self {
-        Self::at(data_dir().join("voices"))
+    /// Ancla el almacén en `<data_dir>/voices`; falla si la raíz de datos no se
+    /// puede resolver.
+    pub fn new() -> Result<Self> {
+        Ok(Self::at(data_dir()?.join("voices")))
     }
 
     /// Ancla el almacén de voces en el directorio indicado (el del propio
@@ -401,15 +391,11 @@ pub struct SpeechStore {
     base_dir: PathBuf,
 }
 
-impl Default for SpeechStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl SpeechStore {
-    pub fn new() -> Self {
-        Self::at(data_dir().join("speech"))
+    /// Ancla el almacén en `<data_dir>/speech`; falla si la raíz de datos no se
+    /// puede resolver.
+    pub fn new() -> Result<Self> {
+        Ok(Self::at(data_dir()?.join("speech")))
     }
 
     /// Ancla el almacén de habla en el directorio indicado (el del propio
@@ -618,12 +604,6 @@ pub struct ModelStore {
     base_dir: PathBuf,
 }
 
-impl Default for ModelStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ModelStore {
     /// Ancla el almacén en `models_cache_dir()`, nunca en `data_dir()/models`:
     /// los modelos son caché regenerable de propiedad exclusiva y no estado de
@@ -639,12 +619,14 @@ impl ModelStore {
     ///
     /// La llamada a `set_var` es segura en la toolchain del proyecto
     /// (edition 2021); pasa a `unsafe` en edition 2024.
-    pub fn new() -> Self {
-        let store = Self::at(models_cache_dir());
+    ///
+    /// Falla si la raíz de modelos no se puede resolver.
+    pub fn new() -> Result<Self> {
+        let store = Self::at(models_cache_dir()?);
         if !models_root_is_shared() {
             std::env::set_var("HF_XET_CACHE", store.base_dir.join(MODELS_XET_SUBDIR));
         }
-        store
+        Ok(store)
     }
 
     /// Ancla el almacén en una raíz de modelos explícita. La diferencia con
@@ -777,7 +759,7 @@ impl ModelStore {
         if models_root_is_shared() {
             return Ok(false);
         }
-        let xet = xet_cache_dir();
+        let xet = xet_cache_dir()?;
         if xet.is_dir() {
             std::fs::remove_dir_all(&xet)?;
             return Ok(true);
@@ -793,7 +775,7 @@ impl ModelStore {
         if models_root_is_shared() {
             return Ok(false);
         }
-        let locks = models_cache_dir().join(".locks");
+        let locks = models_cache_dir()?.join(".locks");
         if locks.is_dir() {
             std::fs::remove_dir_all(&locks)?;
             return Ok(true);
@@ -810,7 +792,7 @@ impl ModelStore {
         if models_root_is_shared() {
             return Ok(false);
         }
-        let root = models_cache_dir();
+        let root = models_cache_dir()?;
         if root.is_dir() {
             std::fs::remove_dir_all(&root)?;
             return Ok(true);
@@ -839,7 +821,7 @@ impl ModelStore {
         // Cache explícita: la resolución de la app (models_cache_dir) manda sobre el
         // fallback roto de hf-hub (HOME→/tmp); lectura y escritura convergen.
         let client = hf_hub::HFClient::builder()
-            .cache_dir(models_cache_dir())
+            .cache_dir(models_cache_dir()?)
             .build()?;
         let (owner, name) = hf_hub::split_id(repo_id);
         let repo = client.model(owner, name);
@@ -902,7 +884,7 @@ impl ModelStore {
             })?;
             // Limpiar blobs incompletos del repo si existen
             let repo_dir =
-                models_cache_dir().join(format!("models--{}", repo_id.replace('/', "--")));
+                models_cache_dir()?.join(format!("models--{}", repo_id.replace('/', "--")));
             let blobs = repo_dir.join("blobs");
             if blobs.is_dir() {
                 for entry in std::fs::read_dir(&blobs)
@@ -1020,6 +1002,7 @@ fn indicatif_progress() -> hf_hub::progress::Progress {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use avi_shared::paths::{bin_dir, install_dir, shared_hf_root, APP_NAME};
     use std::sync::Mutex;
 
     /// Serializa los tests que manipulan variables de entorno (estado global
@@ -1061,7 +1044,7 @@ mod tests {
             "sin variables de HuggingFace no hay raíz compartida"
         );
         assert!(!models_root_is_shared());
-        let root = models_cache_dir();
+        let root = models_cache_dir().unwrap();
         let rendered = root.to_string_lossy().to_string();
         if cfg!(windows) {
             assert_eq!(root.file_name().unwrap(), "models");
@@ -1090,7 +1073,7 @@ mod tests {
             !rendered.contains("huggingface"),
             "la raíz por defecto no puede ser la caché HF: {rendered}"
         );
-        assert_eq!(xet_cache_dir(), root.join(MODELS_XET_SUBDIR));
+        assert_eq!(xet_cache_dir().unwrap(), root.join(MODELS_XET_SUBDIR));
 
         env_restore(saved);
     }
@@ -1111,7 +1094,10 @@ mod tests {
             shared_hf_root(),
             Some(PathBuf::from(r"C:\cache_custom\hub"))
         );
-        assert_eq!(models_cache_dir(), PathBuf::from(r"C:\cache_custom\hub"));
+        assert_eq!(
+            models_cache_dir().unwrap(),
+            PathBuf::from(r"C:\cache_custom\hub")
+        );
         assert!(models_root_is_shared());
 
         std::env::remove_var("HF_HUB_CACHE");
@@ -1120,12 +1106,12 @@ mod tests {
             Some(PathBuf::from("/hf_home_custom").join("hub"))
         );
         assert_eq!(
-            models_cache_dir(),
+            models_cache_dir().unwrap(),
             PathBuf::from("/hf_home_custom").join("hub")
         );
 
         std::env::set_var("AVI_CACHE_DIR", "/isolated_root");
-        assert_eq!(models_cache_dir(), PathBuf::from("/isolated_root"));
+        assert_eq!(models_cache_dir().unwrap(), PathBuf::from("/isolated_root"));
         assert!(
             models_root_is_shared(),
             "reubicar no cambia la propiedad: el contenido sigue siendo compartido"
@@ -1148,7 +1134,7 @@ mod tests {
             std::env::temp_dir().join("AppData").join("Local"),
         );
 
-        let (install, bin) = (install_dir(), bin_dir());
+        let (install, bin) = (install_dir().unwrap(), bin_dir().unwrap());
         let rendered = install.to_string_lossy().to_string();
         // La aserción es de Windows: allí una ruta con `/` mezclado sale de una variable
         // de reubicación escrita con la barra equivocada. En Unix `/` **es** el
@@ -1186,12 +1172,12 @@ mod tests {
 
         std::env::set_var("AVI_INSTALL_DIR", "/opt/avi_relocated");
         std::env::set_var("AVI_BIN_DIR", "/usr/local/bin");
-        assert_eq!(install_dir(), PathBuf::from("/opt/avi_relocated"));
-        assert_eq!(bin_dir(), PathBuf::from("/usr/local/bin"));
+        assert_eq!(install_dir().unwrap(), PathBuf::from("/opt/avi_relocated"));
+        assert_eq!(bin_dir().unwrap(), PathBuf::from("/usr/local/bin"));
         if cfg!(windows) {
             // Sin reubicar el enlace, la entrada del PATH cae en el programa.
             std::env::remove_var("AVI_BIN_DIR");
-            assert_eq!(bin_dir(), PathBuf::from("/opt/avi_relocated"));
+            assert_eq!(bin_dir().unwrap(), PathBuf::from("/opt/avi_relocated"));
         }
 
         env_restore(saved);
@@ -1221,11 +1207,11 @@ mod tests {
             std::env::remove_var(var);
         }
 
-        let root = models_cache_dir();
-        assert_eq!(xet_cache_dir(), root.join(MODELS_XET_SUBDIR));
-        assert!(xet_cache_dir().starts_with(&root));
+        let root = models_cache_dir().unwrap();
+        assert_eq!(xet_cache_dir().unwrap(), root.join(MODELS_XET_SUBDIR));
+        assert!(xet_cache_dir().unwrap().starts_with(&root));
 
-        let _store = ModelStore::new();
+        let _store = ModelStore::new().unwrap();
         assert_eq!(
             std::env::var("HF_XET_CACHE").ok(),
             Some(root.join(MODELS_XET_SUBDIR).to_string_lossy().to_string()),
@@ -1235,11 +1221,11 @@ mod tests {
         std::env::set_var("HF_HOME", "/hf_home_custom");
         std::env::set_var("HF_XET_CACHE", "/user_xet");
         assert_eq!(
-            models_cache_dir(),
+            models_cache_dir().unwrap(),
             PathBuf::from("/hf_home_custom").join("hub")
         );
-        assert_eq!(xet_cache_dir(), PathBuf::from("/user_xet"));
-        let _store = ModelStore::new();
+        assert_eq!(xet_cache_dir().unwrap(), PathBuf::from("/user_xet"));
+        let _store = ModelStore::new().unwrap();
         assert_eq!(
             std::env::var("HF_XET_CACHE").ok(),
             Some("/user_xet".to_string()),
@@ -1248,7 +1234,7 @@ mod tests {
 
         std::env::remove_var("HF_XET_CACHE");
         assert_eq!(
-            xet_cache_dir(),
+            xet_cache_dir().unwrap(),
             PathBuf::from("/hf_home_custom").join("xet"),
             "sin HF_XET_CACHE, `xet-runtime` cae a HF_HOME/xet"
         );
@@ -1819,11 +1805,13 @@ mod tests {
         std::env::set_var("AVI_CACHE_DIR", tmp.as_os_str());
         std::env::remove_var("HF_HUB_CACHE");
         std::env::remove_var("HF_HOME");
-        let store = ModelStore::new();
-        assert_eq!(models_cache_dir(), &*tmp);
+        let store = ModelStore::new().unwrap();
+        assert_eq!(models_cache_dir().unwrap(), &*tmp);
         // Crear snapshot vacío con al menos un fichero para que is_provisioned sea true
         let (repo2, rev2) = ModelStore::revision_of("qwen3-tts-0.6b-base").unwrap();
-        let repo_dir = models_cache_dir().join(format!("models--{}", repo2.replace('/', "--")));
+        let repo_dir = models_cache_dir()
+            .unwrap()
+            .join(format!("models--{}", repo2.replace('/', "--")));
         let snap = repo_dir.join("snapshots").join(rev2);
         std::fs::create_dir_all(&snap).unwrap();
         std::fs::write(snap.join("config.json"), br#"{"tts_model_type":"base"}"#).unwrap();

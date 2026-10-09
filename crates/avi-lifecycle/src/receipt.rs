@@ -156,22 +156,6 @@ impl InstallReceipt {
     }
 }
 
-/// Raíces efectivas de una instalación registrada: las del recibo si existe, y
-/// las que se resuelven ahora si no hay recibo.
-///
-/// Es lo que permite que `self update` y `self uninstall` operen sobre la
-/// instalación registrada sea cual sea la copia del binario que ejecuta el
-/// comando, aunque la variable de reubicación ya no esté definida.
-pub fn effective_roots(receipt: Option<&InstallReceipt>) -> Roots {
-    match receipt {
-        Some(receipt) => receipt.roots.clone(),
-        None => Roots {
-            data_dir: crate::data_dir(),
-            cache_dir: crate::models_cache_dir(),
-        },
-    }
-}
-
 /// Ruta del recibo dentro del directorio de programa.
 pub fn receipt_path(program_dir: &Path) -> PathBuf {
     program_dir.join(RECEIPT_NAME)
@@ -436,8 +420,8 @@ mod tests {
         std::env::set_var("AVI_DATA_DIR", relocated.join("data"));
         std::env::set_var("AVI_CACHE_DIR", relocated.join("cache"));
         let roots = Roots {
-            data_dir: crate::data_dir(),
-            cache_dir: crate::models_cache_dir(),
+            data_dir: crate::data_dir().unwrap(),
+            cache_dir: crate::models_cache_dir().unwrap(),
         };
         assert_eq!(roots.data_dir, relocated.join("data"), "la raíz se reubicó");
 
@@ -458,7 +442,7 @@ mod tests {
         std::env::remove_var("AVI_DATA_DIR");
         std::env::remove_var("AVI_CACHE_DIR");
         assert_ne!(
-            crate::data_dir(),
+            crate::data_dir().unwrap(),
             roots.data_dir,
             "sin la variable, la raíz se resuelve en otro sitio"
         );
@@ -467,13 +451,6 @@ mod tests {
         assert_eq!(
             loaded.roots, roots,
             "el recibo conserva los valores efectivos"
-        );
-        let effective = effective_roots(Some(&loaded));
-        assert_eq!(effective, roots, "y son los que se usan para operar");
-        assert_ne!(
-            effective_roots(None),
-            roots,
-            "sin recibo se resuelven las de ahora, que no son las de la instalación"
         );
     }
 }

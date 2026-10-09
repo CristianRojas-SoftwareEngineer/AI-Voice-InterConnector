@@ -127,8 +127,8 @@ impl Env {
     pub fn from_current_exe(exe: PathBuf, product_version: &str) -> anyhow::Result<Self> {
         let target = target::host_triple();
         target::ensure_supported(target)?;
-        let program_dir = crate::install_dir();
-        let bin_dir = crate::bin_dir();
+        let program_dir = crate::install_dir().map_err(path_error)?;
+        let bin_dir = crate::bin_dir().map_err(path_error)?;
         let registry_subkey = registry_subkey_default();
         // Un registro ilegible se trata igual que al aplicar: `path_conflict`.
         #[cfg(windows)]
@@ -147,8 +147,8 @@ impl Env {
             target: target.to_string(),
             program_dir,
             bin_dir,
-            data_dir: crate::data_dir(),
-            models_dir: crate::models_cache_dir(),
+            data_dir: crate::data_dir().map_err(path_error)?,
+            models_dir: crate::models_cache_dir().map_err(path_error)?,
             temp_root: std::env::temp_dir(),
             home: home_dir()?,
             path_env: std::env::var("PATH").unwrap_or_default(),
@@ -175,6 +175,11 @@ fn registry_subkey_default() -> String {
 #[cfg(not(windows))]
 fn registry_subkey_default() -> String {
     String::new()
+}
+
+/// Error de instalación por una ruta del producto que no se puede resolver.
+fn path_error(e: std::io::Error) -> LifecycleError {
+    LifecycleError::new("self_install_failed", e.to_string())
 }
 
 /// `$HOME` del usuario. Sin `HOME` ni `USERPROFILE` es un error: no hay directorio
@@ -476,7 +481,7 @@ pub async fn install(
     };
 
     // ── Paso 4. Resumen previo y confirmación ─────────────────────────────────
-    let pending = pending_models();
+    let pending = pending_models()?;
     let path_plan = plan_path(env, options);
     let previous_summary = compose_summary(env, options, mode, &replaces, &path_plan, &pending);
     // Una degradación se confirma como operación destructiva (paso 4), aunque
@@ -769,9 +774,14 @@ fn source_of(env: &Env, previous: Option<&InstallReceipt>) -> Option<String> {
 /// `AVI_CACHE_DIR`; `Env::models_dir` tiene que coincidir con ella, y en producción
 /// ambas salen de `crate::models_cache_dir()`. En una prueba reubicada, las dos
 /// salen de la variable, que es justo el mecanismo que declara el aislamiento.
-fn pending_models() -> setup::Pending {
-    let store = avi_store::ModelStore::new();
-    setup::pending(&store)
+fn pending_models() -> Result<setup::Pending, LifecycleError> {
+    let store = avi_store::ModelStore::new().map_err(|e| {
+        LifecycleError::new(
+            "self_install_failed",
+            format!("no se pudo resolver la raíz de modelos: {e}"),
+        )
+    })?;
+    Ok(setup::pending(&store))
 }
 
 /// Paso 11: la misma provisión que `setup` (descarga de la selección según el
@@ -785,7 +795,16 @@ fn pending_models() -> setup::Pending {
 /// propio `reason`, que es lo que la tabla de reasons reserva a cada caso:
 /// `network_error` para un fallo de descarga.
 async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
-    let store = avi_store::ModelStore::new();
+    let store = match avi_store::ModelStore::new() {
+        Ok(store) => store,
+        Err(e) => {
+            return ModelsState::Failed {
+                cause: LifecycleError::setup_failed(format!(
+                    "no se pudo resolver la raíz de modelos: {e}"
+                )),
+            }
+        }
+    };
     match setup::provision(&store, provisioner).await {
         Ok(done) if done.downloaded.is_empty() => ModelsState::AlreadyProvisioned,
         Ok(done) => ModelsState::Provisioned {
@@ -1013,7 +1032,7 @@ mod tests {
     fn install_provision_downloads_translation_from_empty_store() {
         let (_guard, root) = setup::tests::cache_relocated("install-provision-empty");
         std::env::set_var("AVI_DATA_DIR", root.join("data"));
-        let plan = setup::pending(&avi_store::ModelStore::new());
+        let plan = setup::pending(&avi_store::ModelStore::new().unwrap());
         for pair in ["opus-mt-es-en", "opus-mt-en-es"] {
             assert!(plan.models.contains(&pair.to_string()));
         }
@@ -1026,7 +1045,10 @@ mod tests {
             "{models:?}"
         );
         for pair in ["opus-mt-es-en", "opus-mt-en-es"] {
-            assert!(avi_store::ModelStore::new().is_provisioned(pair), "{pair}");
+            assert!(
+                avi_store::ModelStore::new().unwrap().is_provisioned(pair),
+                "{pair}"
+            );
         }
         std::fs::remove_dir_all(&root).ok();
     }

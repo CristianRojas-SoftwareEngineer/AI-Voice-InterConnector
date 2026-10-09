@@ -249,7 +249,8 @@ fn channels_behave_per_spec() {
     // Y el directorio de programa sobre el que se opera sale del recibo, no de la
     // resolución por convención: con `AVI_INSTALL_DIR` apuntando al otro sitio, la
     // operación sigue intentando el registrado.
-    let resolved = channel::registered_install_dir(Some(&registered_receipt));
+    let resolved = channel::registered_install_dir(Some(&registered_receipt))
+        .expect("el recibo declara el directorio de programa");
     assert_eq!(
         resolved, registered.program_dir,
         "`registered_install_dir` devuelve el del recibo, no el de `AVI_INSTALL_DIR`"
@@ -286,7 +287,8 @@ fn env_over_registered<'a>(
             home: registered.home.clone(),
             models_shared: registered.shared_hub.is_some(),
         },
-        program_dir: channel::registered_install_dir(Some(receipt)),
+        program_dir: channel::registered_install_dir(Some(receipt))
+            .expect("el recibo declara el directorio de programa"),
         receipt: Some(receipt),
         channel: Channel::Unmanaged,
         daemon_addr: "127.0.0.1:0".to_string(),

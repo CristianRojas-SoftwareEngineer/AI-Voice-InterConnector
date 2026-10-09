@@ -721,16 +721,31 @@ pub fn path_would_be_reverted(receipt: Option<&InstallReceipt>, home: &Path) -> 
 
     #[cfg(unix)]
     if let Some(symlink) = &integration.symlink {
-        let program_exe = receipt.install_dir.join(executable_name(receipt));
-        would |= matches!(
-            path_unix::classify_existing(symlink, &program_exe),
-            path_unix::Existing::Ours(_)
-        );
+        match executable_name(receipt) {
+            Ok(name) => {
+                let program_exe = receipt.install_dir.join(name);
+                would |= matches!(
+                    path_unix::classify_existing(symlink, &program_exe),
+                    path_unix::Existing::Ours(_)
+                );
+            }
+            // Un recibo sin el ejecutable no permite evaluar el enlace: la
+            // ejecución real publicará el fallo, así que el plan no afirma que no
+            // haya nada que revertir.
+            Err(_) => would = true,
+        }
     }
     if let Some(blocks) = &integration.profile_blocks {
-        let bin_dir = receipt_bin_dir(receipt);
-        for block in blocks {
-            would |= block_would_be_removed(block, &bin_dir, home);
+        match receipt_bin_dir(receipt) {
+            Ok(bin_dir) => {
+                for block in blocks {
+                    would |= block_would_be_removed(block, &bin_dir, home);
+                }
+            }
+            // Sin el directorio del enlace no se puede evaluar: la ejecución real
+            // lo intentará y publicará el fallo, así que el plan no afirma que no
+            // haya nada que revertir.
+            Err(_) => would |= !blocks.is_empty(),
         }
     }
     #[cfg(windows)]
@@ -789,19 +804,34 @@ pub fn revert_path(receipt: Option<&InstallReceipt>, home: &Path) -> PathRevertR
     // El enlace simbólico es un mecanismo de Unix: en Windows el recibo lo registra
     // como `null` y la integración es la entrada del registro de abajo.
     #[cfg(unix)]
-    let program_exe = receipt.install_dir.join(executable_name(receipt));
-    #[cfg(unix)]
     if let Some(symlink) = &integration.symlink {
-        if path_unix::revert_symlink(symlink, &program_exe) {
-            *touched = true;
+        match executable_name(receipt) {
+            Ok(name) => {
+                let program_exe = receipt.install_dir.join(name);
+                if path_unix::revert_symlink(symlink, &program_exe) {
+                    *touched = true;
+                }
+            }
+            Err(e) => failures.push(format!("{}: {e}", symlink.display())),
         }
     }
     if let Some(blocks) = &integration.profile_blocks {
-        let bin_dir = receipt_bin_dir(receipt);
-        for block in blocks {
-            match path_unix::remove_block(block, &bin_dir, home) {
-                Ok(changed) => *touched |= changed,
-                Err(e) => failures.push(format!("{}: {e}", block.display())),
+        match receipt_bin_dir(receipt) {
+            Ok(bin_dir) => {
+                for block in blocks {
+                    match path_unix::remove_block(block, &bin_dir, home) {
+                        Ok(changed) => *touched |= changed,
+                        Err(e) => failures.push(format!("{}: {e}", block.display())),
+                    }
+                }
+            }
+            Err(e) => {
+                for block in blocks {
+                    failures.push(format!(
+                        "{}: no se pudo resolver el directorio del enlace: {e}",
+                        block.display()
+                    ));
+                }
             }
         }
     }
@@ -831,14 +861,15 @@ pub struct PathRevertReport {
 ///
 /// Solo lo usa la reversión del enlace, que es un mecanismo de Unix; en Windows el
 /// ejecutable no hace falta porque la reversión es la entrada del registro.
-#[cfg(unix)]
 ///
 /// El recibo guarda las rutas de los archivos colocados y el ejecutable es el
-/// único cuyo nombre lleva el de la aplicación; se busca entre ellos y se cae al
-/// nombre de la plataforma si el recibo es antiguo y no lo lista. Deducirlo del recibo
-/// y no de `std::env::current_exe` es lo que permite que la reversión apunte a la
-/// instalación registrada y no a la copia que invoca el comando.
-fn executable_name(receipt: &InstallReceipt) -> String {
+/// único cuyo nombre lleva el de la aplicación; se busca entre ellos. Un recibo que
+/// no lo lista no es válido para esta operación y es un error, no un nombre
+/// supuesto. Deducirlo del recibo y no de `std::env::current_exe` es lo que permite
+/// que la reversión apunte a la instalación registrada y no a la copia que invoca el
+/// comando.
+#[cfg(unix)]
+fn executable_name(receipt: &InstallReceipt) -> Result<String, String> {
     receipt
         .files
         .iter()
@@ -846,7 +877,12 @@ fn executable_name(receipt: &InstallReceipt) -> String {
             let name = f.rsplit('/').next().unwrap_or(f);
             name.starts_with(crate::APP_NAME).then(|| name.to_string())
         })
-        .unwrap_or_else(executable_name_default)
+        .ok_or_else(|| {
+            format!(
+                "el recibo no lista el ejecutable '{}' entre sus archivos",
+                crate::APP_NAME
+            )
+        })
 }
 
 /// Nombre del ejecutable en la plataforma actual.
@@ -865,14 +901,19 @@ pub fn executable_name_default() -> String {
 /// `bin_dir` de hoy, un bloque escrito por una instalación anterior no se quitaría. El
 /// recibo no lo guarda como campo propio —registra el enlace, no su
 /// directorio—, así que se deduce de la ruta del enlace, que sí está.
-fn receipt_bin_dir(receipt: &InstallReceipt) -> PathBuf {
-    receipt
+///
+/// Si el recibo no registra enlace se usa el de la convención de rutas, y que no
+/// se pueda resolver es un error.
+fn receipt_bin_dir(receipt: &InstallReceipt) -> std::io::Result<PathBuf> {
+    match receipt
         .path_integration
         .symlink
         .as_ref()
         .and_then(|s| s.parent())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(crate::bin_dir)
+    {
+        Some(parent) => Ok(parent.to_path_buf()),
+        None => crate::bin_dir(),
+    }
 }
 
 /// Motivo con el que se conserva el directorio de programa cuando

@@ -1,7 +1,8 @@
 //! Guardián del WAV temporal de `say`/`dub` y de los handlers del daemon.
 //!
 //! Quien crea el fichero lo borra al salir de ámbito, también en salidas de
-//! error: el `Drop` ignora el fallo cuando el fichero ya no existe.
+//! error: el `Drop` ignora solo que el fichero ya no exista y avisa por stderr
+//! de cualquier otro fallo de borrado.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,8 +48,8 @@ impl TempWav {
     /// Ruta del temporal, para sintetizar, escribir o reproducir.
     ///
     /// Es `&PathBuf` y no `&Path` porque el motor de síntesis la recibe como
-    /// `Option<&PathBuf>`; devolver `&Path` obligaría a convertir en cada uno de
-    /// los seis puntos de uso.
+    /// `Option<&PathBuf>`; devolver `&Path` obligaría a convertir en cada punto
+    /// de uso.
     pub fn path(&self) -> &PathBuf {
         &self.path
     }
@@ -56,7 +57,16 @@ impl TempWav {
 
 impl Drop for TempWav {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            // `Drop` no puede propagar ni hacer pánico: el fallo queda visible
+            // por stderr con la ruta que se queda en disco.
+            Err(e) => eprintln!(
+                "aviso: no se pudo borrar el temporal '{}': {e}",
+                self.path.display()
+            ),
+        }
     }
 }
 
@@ -86,6 +96,18 @@ mod tests {
         assert!(path.is_file(), "el constructor crea el fichero");
         drop(guard);
         assert!(!path.exists(), "el descarte explícito debe borrarlo");
+    }
+
+    /// Un fallo de borrado distinto de «no existe» (aquí, una carpeta en la
+    /// ruta) no entra en pánico al soltarse el guardián.
+    #[test]
+    fn drop_with_unremovable_path_does_not_panic() {
+        let guard = TempWav::new("avi_shared_test_").expect("reservar el temporal");
+        let path = guard.path().clone();
+        std::fs::remove_file(&path).expect("borrado externo");
+        std::fs::create_dir(&path).expect("carpeta en la ruta del temporal");
+        drop(guard);
+        std::fs::remove_dir(&path).expect("limpieza de la carpeta");
     }
 
     /// Borrado externo previo: soltarse después no falla y no recrea nada.

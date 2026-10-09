@@ -23,11 +23,10 @@ pub enum StdinSpec {
     Inherit,
 }
 
-/// Devuelve exactamente los handles declarados, sin añadir ni quitar ninguno.
-///
-/// Existe para que la propiedad allowlist sea comprobable sin lanzar
-/// procesos: lo que entra es lo que hereda el hijo.
-pub fn allowed_handle_list(handles: &[isize]) -> Vec<isize> {
+/// Devuelve exactamente los handles declarados, sin añadir ni quitar ninguno:
+/// lo que entra es lo que hereda el hijo.
+#[cfg(windows)]
+pub(crate) fn allowed_handle_list(handles: &[isize]) -> Vec<isize> {
     handles.to_vec()
 }
 
@@ -325,21 +324,21 @@ fn spawn_with_allowlist_windows(request: RestrictedSpawnRequest) -> io::Result<R
     // (nulo de un solo uso o extremo de lectura de la tubería: el hijo
     // tiene su propia copia y el extremo de escritura vive en el holder).
     close_guards.push(OwnedHandleWrap::new(stdin_handle));
-    mark_inheritable(stdin_handle);
+    mark_inheritable(stdin_handle)?;
     marked.push(stdin_handle);
     inherit_guards.push(InheritFlagGuard::new(stdin_handle));
 
     let stdout_handle = raw_handle_of(&request.stdout_file);
-    mark_inheritable(stdout_handle);
+    mark_inheritable(stdout_handle)?;
     marked.push(stdout_handle);
     inherit_guards.push(InheritFlagGuard::new(stdout_handle));
     let stderr_handle = raw_handle_of(&request.stderr_file);
-    mark_inheritable(stderr_handle);
+    mark_inheritable(stderr_handle)?;
     marked.push(stderr_handle);
     inherit_guards.push(InheritFlagGuard::new(stderr_handle));
 
     for extra in &request.extra_allowed {
-        mark_inheritable(*extra);
+        mark_inheritable(*extra)?;
         marked.push(*extra);
         inherit_guards.push(InheritFlagGuard::new(*extra));
     }
@@ -405,13 +404,18 @@ fn duplicate_parent_stdin() -> io::Result<isize> {
     Ok(target)
 }
 
+/// Marca el handle como heredable; si el sistema lo rechaza, el lanzamiento
+/// falla en vez de entregar al hijo un handle que no puede usar.
 #[cfg(windows)]
-fn mark_inheritable(handle: isize) {
+pub(crate) fn mark_inheritable(handle: isize) -> io::Result<()> {
     use windows_sys::Win32::Foundation::{SetHandleInformation, HANDLE_FLAG_INHERIT};
     // SAFETY: el handle es propio y válido.
     unsafe {
-        SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+        if SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) == 0 {
+            return Err(io::Error::last_os_error());
+        }
     }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -560,8 +564,7 @@ fn build_command_line(program: &Path, args: &[String]) -> String {
 /// ante cada comilla y al final.
 ///
 /// Definición única del crate: la comparten `build_command_line` (lanzamiento
-/// con allowlist) y el limpiador de borrado diferido, que componía su línea de
-/// comandos con una copia idéntica de estas reglas.
+/// con allowlist) y el limpiador de borrado diferido.
 #[cfg(windows)]
 pub(crate) fn quote_arg(arg: &str) -> String {
     let mut out = String::from("\"");
