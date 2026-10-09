@@ -146,8 +146,6 @@ Despacho:
 
 (Mismo envelope en la rama local y vía daemon.)
 
-**Aviso de idioma del daemon (`language_warning`).** La respuesta de `POST /transcribe` lleva `{text}` y, solo cuando el origen declarado es `es` y el detector heurístico marca el texto como inglés, el campo aditivo `language_warning: true`. Es un campo solo del protocolo del daemon: la CLI no lo propaga.
-
 ---
 
 ## `speech synthesize`

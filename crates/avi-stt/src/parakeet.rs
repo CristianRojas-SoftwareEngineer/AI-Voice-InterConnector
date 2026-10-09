@@ -329,44 +329,6 @@ fn session(path: impl AsRef<Path>) -> anyhow::Result<Session> {
     Ok(s)
 }
 
-/// Detector heurístico de idioma: ratio de palabras funcionales inglesas sobre
-/// el total. Si supera el umbral, la transcripción probablemente salió en inglés
-/// aunque la sesión sea en español (riesgo conocido de la auto-detección del
-/// decoder Parakeet). Se expone públicamente para reutilizarlo en el daemon.
-pub fn detect_language(text: &str) -> (&'static str, f64) {
-    const ENGLISH: &[&str] = &[
-        "the", "and", "you", "how", "are", "is", "what", "of", "to", "in", "that", "it", "with",
-        "for", "on", "this", "be", "have", "from", "not", "my", "your", "we", "can", "will", "do",
-        "was", "hello", "thanks", "please", "i'm", "hey",
-    ];
-    const SPANISH: &[&str] = &[
-        "el", "la", "los", "las", "de", "que", "y", "en", "un", "una", "es", "por", "con", "no",
-        "se", "del", "su", "al", "lo", "como", "más", "pero", "sus", "me", "ya", "o", "si", "muy",
-        "sin", "sobre", "este", "también", "hola", "gracias", "mi", "son", "año", "años",
-    ];
-    let words: Vec<String> = normalize_text(text)
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect();
-    if words.is_empty() {
-        return ("vacio", 0.0);
-    }
-    let hits_in = words
-        .iter()
-        .filter(|p| ENGLISH.contains(&p.as_str()))
-        .count();
-    let hits_es = words
-        .iter()
-        .filter(|p| SPANISH.contains(&p.as_str()))
-        .count();
-    let ratio = hits_in as f64 / words.len() as f64;
-    if ratio >= 0.30 && hits_in > hits_es {
-        ("EN-SOSPECHOSO", ratio)
-    } else {
-        ("es", ratio)
-    }
-}
-
 /// Normaliza texto: minúsculas, plegado de diacríticos (á→a, …) y `ñ`→`n`,
 /// eliminando puntuación. Compartida con el módulo de tests.
 pub fn normalize_text(text: &str) -> String {

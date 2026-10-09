@@ -24,7 +24,7 @@ use avi_core::engine::SttEngine;
 use avi_core::json_emitter;
 use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
-use avi_stt::{detect_language, ParakeetEngine};
+use avi_stt::ParakeetEngine;
 #[cfg(feature = "native-translation")]
 use avi_translation::Ct2TranslationEngine;
 use avi_tts::{GenerationOptions, Qwen3TtsEngine, TtsEngine, VoiceProfile};
@@ -837,16 +837,7 @@ async fn transcribe_handler(
     let result = state.stt_engine.transcribe(&pcm);
     match result {
         Ok(text) => {
-            // Guardia de idioma: solo cuando el origen declarado es `es` y el
-            // detector heurístico marca inglés sospechoso se anexa el campo
-            // aditivo `language_warning` al JSON de respuesta. El campo es
-            // opcional: clientes que lo ignoren no se ven afectados.
-            let source_language = payload["source_language"].as_str().unwrap_or_default();
-            let body = if language_warning(source_language, &text) {
-                with_sv(json!({ "text": text, "language_warning": true }))
-            } else {
-                with_sv(json!({ "text": text }))
-            };
+            let body = with_sv(json!({ "text": text }));
             Json(body).into_response()
         }
         Err(e) => {
@@ -858,14 +849,6 @@ async fn transcribe_handler(
             (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
         }
     }
-}
-
-/// Decide si la transcripción lleva `language_warning`: solo cuando el idioma
-/// de origen declarado es `es` y el detector heurístico marca el texto como
-/// inglés sospechoso. Con origen `en` el inglés es lo esperado y no se avisa.
-#[cfg(feature = "native-stt")]
-fn language_warning(source_language: &str, text: &str) -> bool {
-    source_language == "es" && detect_language(text).0 == "EN-SOSPECHOSO"
 }
 
 /// Error de validación de una petición: `reason` es el código del contrato y
@@ -3148,20 +3131,6 @@ mod tests {
     fn validate_transcribe_missing_audio_is_usage_error() {
         let result = validate_transcribe_input(&json!({ "source_language": "es" }));
         assert_eq!(result.err().map(|e| e.reason), Some("usage_error"));
-    }
-
-    /// La guardia de idioma avisa solo con origen `es` y texto inglés; con
-    /// origen `en` el inglés es lo esperado, y un texto español nunca avisa.
-    #[cfg(feature = "native-stt")]
-    #[test]
-    fn language_warning_applies_only_to_spanish_source() {
-        let english = "hello how are you what is that with the thanks";
-        assert!(language_warning("es", english));
-        assert!(!language_warning("en", english));
-        assert!(!language_warning(
-            "es",
-            "hola cómo estás gracias por el regalo"
-        ));
     }
 
     /// Un `audio_b64` que no es base64 válido es audio ilegible.
