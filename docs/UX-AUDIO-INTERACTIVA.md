@@ -77,7 +77,7 @@ Aplica **por igual** a `speech transcribe` y `speech dub`, en sus rutas directa 
 ### 3.4 Contrato de push-to-talk
 
 - La captura arranca al entrar en la rama `--mic` sin `--duration` (solo alcanzable en TTY por las reglas de §3.3).
-- **Aviso al arrancar**: se emite a **stderr** un aviso mínimo (p. ej. «Grabando… pulsa Enter para detener.»); nunca a stdout (P3).
+- **Aviso al arrancar**: se emite a **stderr** un aviso mínimo (p. ej. «Grabando… pulsa Enter para detener.»); nunca a stdout.
 - **Termina cuando la persona pulsa Enter** (lectura de una línea completa de stdin).
 - **Techo de seguridad**: la grabación tiene un tope máximo configurable por la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS` (predeterminado **300 s**). Al alcanzarlo, la captura se detiene sola, emite a **stderr** un aviso («Límite de grabación alcanzado (300 s); deteniendo.») y el pipeline continúa con lo grabado. **No es error: exit 0.** Es una salvaguarda interna contra un Enter olvidado, no un flag de la CLI.
 - Formato de captura idéntico al de duración fija: 16 kHz, mono, int16.
@@ -85,7 +85,7 @@ Aplica **por igual** a `speech transcribe` y `speech dub`, en sus rutas directa 
 
 ### 3.5 Canales y exit codes
 
-- El resultado de `transcribe` va a **stdout** (texto plano, o JSON `{"text","source"}` con `--json`); sin diferencia de canal entre mic-fijo y mic-push-to-talk. Los avisos de captura van a **stderr** (P3).
+- El resultado de `transcribe` va a **stdout** (texto plano, o JSON `{"text","source_language"}` con `--json`); sin diferencia de canal entre mic-fijo y mic-push-to-talk. Los avisos de captura van a **stderr**, nunca a stdout.
 
 | Código | Causa |
 |---|---|
