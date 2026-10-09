@@ -42,8 +42,8 @@ use support::{write, Sandbox};
 struct Deferred;
 
 impl uninstall::ProgramDirRemover for Deferred {
-    fn exe_lives_inside(&self, _program_dir: &Path) -> bool {
-        true
+    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+        Ok(true)
     }
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
@@ -61,8 +61,8 @@ impl uninstall::ProgramDirRemover for Deferred {
 struct Unschedulable;
 
 impl uninstall::ProgramDirRemover for Unschedulable {
-    fn exe_lives_inside(&self, _program_dir: &Path) -> bool {
-        true
+    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+        Ok(true)
     }
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
@@ -826,6 +826,54 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
     );
     // El estado de usuario sí se borró: solo el programa quedó en disco.
     assert!(!exists(&sandbox.data_dir));
+}
+
+/// Si no puede determinarse si el ejecutable está dentro del directorio de programa,
+/// el error no se convierte en «fuera»: el directorio se conserva como `program_dir_kept`
+/// con la causa en el mensaje y sin borrado parcial.
+#[test]
+fn uninstall_reports_program_dir_kept_when_exe_location_is_undeterminable() {
+    struct Undeterminable;
+    impl uninstall::ProgramDirRemover for Undeterminable {
+        fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+            anyhow::bail!("no se resolvió la ruta del ejecutable")
+        }
+        fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
+            anyhow::bail!("remove_now no debe llamarse sin saber dónde está el ejecutable")
+        }
+        fn schedule(&self, _program_dir: &Path, _pid: u32) -> anyhow::Result<()> {
+            anyhow::bail!("schedule no debe llamarse sin saber dónde está el ejecutable")
+        }
+    }
+    let sandbox = Sandbox::new("exe-undeterminable");
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    sandbox.seed_state();
+
+    let outcome = runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
+            &UninstallOptions {
+                assume_yes: true,
+                ..Default::default()
+            },
+            &Undeterminable,
+            &Inert,
+        ))
+        .expect("uninstall se ejecuta");
+
+    assert!(!outcome.program_dir_removed);
+    let error = outcome
+        .lifecycle_error()
+        .expect("hay un reason de contrato");
+    assert_eq!(error.reason, "program_dir_kept");
+    assert!(
+        error
+            .message
+            .contains("no se resolvió la ruta del ejecutable"),
+        "el mensaje conserva la causa: {}",
+        error.message
+    );
+    assert!(sandbox.program_dir.exists(), "el directorio sigue ahí");
 }
 
 /// `--dry-run` de `self uninstall` imprime el plan y no modifica el disco.

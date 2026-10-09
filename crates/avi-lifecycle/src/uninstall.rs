@@ -67,8 +67,10 @@ pub struct Options {
 /// que [`crate::daemon_stop::ProcessControl`].
 pub trait ProgramDirRemover {
     /// `true` si el ejecutable en uso está dentro de `program_dir`, que es el caso en
-    /// que el borrado directo es imposible en Windows.
-    fn exe_lives_inside(&self, program_dir: &Path) -> bool;
+    /// que el borrado directo es imposible en Windows. `Err` si no puede determinarse
+    /// (por ejemplo, no se resuelve la ruta del ejecutable o del directorio): no se
+    /// supone ninguna de las dos respuestas.
+    fn exe_lives_inside(&self, program_dir: &Path) -> anyhow::Result<bool>;
     /// Borra el directorio ya. En Unix es lo que hace siempre.
     fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()>;
     /// Programa el borrado para cuando termine el proceso en curso. `Ok` significa que
@@ -943,7 +945,7 @@ fn remove_program_dir(
     if !program_dir.is_dir() {
         return Ok(Removal::Now);
     }
-    if remover.exe_lives_inside(program_dir) {
+    if remover.exe_lives_inside(program_dir)? {
         // Windows: el ejecutable en uso impide el borrado directo. Se pide el
         // limpiador propio desacoplado con reintentos acotados; si no puede
         // programarse, el error sube y el directorio queda intacto: borrar aquí

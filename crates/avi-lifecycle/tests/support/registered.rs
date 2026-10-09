@@ -17,8 +17,8 @@ use std::path::Path;
 pub struct Now;
 
 impl uninstall::ProgramDirRemover for Now {
-    fn exe_lives_inside(&self, _program_dir: &Path) -> bool {
-        false
+    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+        Ok(false)
     }
     fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()> {
         std::fs::remove_dir_all(program_dir)?;

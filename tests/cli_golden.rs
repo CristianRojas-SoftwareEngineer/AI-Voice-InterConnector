@@ -5757,6 +5757,27 @@ fn speech_dub_without_source_exits_2() {
     );
 }
 
+/// `dub` solo admite `--audio`: `--file` no existe y el parser lo rechaza → exit 2.
+#[test]
+fn speech_dub_rejects_file_flag_exits_2() {
+    let output = bin_command()
+        .args([
+            "speech",
+            "dub",
+            "--file",
+            "missing.wav",
+            "--source-language",
+            "es",
+        ])
+        .output()
+        .expect("el binario debe ejecutarse");
+    assert_eq!(
+        output.status.code().expect("el proceso debe terminar"),
+        2,
+        "dub con --file debe salir 2"
+    );
+}
+
 // ─── precondiciones de `synthesize --play` (RF-12.1/RF-12.2) ────────
 //
 // Solo se blindan las precondiciones puras: el bucle interactivo de 4
@@ -6267,45 +6288,9 @@ fn daemon_stop_without_daemon_matches_fixture() {
 /// que nada real se mata ni se barre por imagen.
 #[test]
 fn daemon_stop_fails_with_still_running_verdict() {
-    use std::io::{Read, Write};
-    let listener =
-        std::net::TcpListener::bind("127.0.0.1:0").expect("reservar puerto para el daemon falso");
-    let addr = listener
-        .local_addr()
-        .expect("dirección del daemon falso")
-        .to_string();
-    std::thread::spawn(move || {
-        let limit = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        listener.set_nonblocking(true).ok();
-        while std::time::Instant::now() < limit {
-            if let Ok((mut sock, _)) = listener.accept() {
-                let mut buf = [0u8; 1024];
-                let _ = sock.read(&mut buf);
-                let _ = sock.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
-            } else {
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-        }
-    });
     let (sandbox, envs) = sandbox_unique_state("stop-failure");
     let dir = sandbox.path();
-    let dead_pid = u32::MAX - 1;
-    // El esquema exige las claves de identidad: sin ellas el pidfile se
-    // descarta como ilegible, la parada sería un no-op y este test perdería el
-    // veredicto que afirma.
-    let fake = serde_json::json!({ "start": "0", "image": "fake-identity.exe" });
-    let content = serde_json::json!({
-        "pid": dead_pid,
-        "addr": addr,
-        "resident_pid": dead_pid,
-        "identity": fake,
-        "resident_identity": fake,
-        "resident_port": null,
-    });
-    std::fs::write(dir.join("data").join("daemon.pid"), content.to_string())
-        .expect("sembrar pidfile del daemon falso");
+    seed_unstoppable_daemon(dir);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
     assert_eq!(code, 5, "daemon stop sin concluir debe salir 5: {actual}");
@@ -6332,6 +6317,72 @@ fn daemon_stop_fails_with_still_running_verdict() {
         dir.join("data").join("daemon.pid").is_file(),
         "en fallo la pista se conserva para el siguiente intento"
     );
+}
+
+/// `daemon restart` con una parada que no concluye falla con `daemon_stop_failed`
+/// (exit 16) y no arranca otro daemon: el pidfile sembrado sigue intacto.
+#[test]
+fn daemon_restart_fails_with_daemon_stop_failed_when_stop_does_not_complete() {
+    let (sandbox, envs) = sandbox_unique_state("restart-stop-failure");
+    let dir = sandbox.path();
+    seed_unstoppable_daemon(dir);
+    let pidfile = dir.join("data").join("daemon.pid");
+    let seeded = std::fs::read_to_string(&pidfile).expect("leer pidfile sembrado");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "daemon", "restart"], &envs);
+    assert_eq!(
+        code, 16,
+        "restart sin parada completa debe salir 16: {actual}"
+    );
+    assert_eq!(actual["reason"], "daemon_stop_failed", "{actual}");
+    assert_eq!(
+        std::fs::read_to_string(&pidfile).expect("leer pidfile tras restart"),
+        seeded,
+        "no debe arrancarse otro daemon ni alterarse la pista"
+    );
+}
+
+/// Siembra en `dir` un daemon falso que responde 200 a todo y nunca se apaga,
+/// y el pidfile que lo registra con PIDs señuelo muertos: la parada no puede
+/// concluir y nada real se mata ni se barre por imagen.
+fn seed_unstoppable_daemon(dir: &std::path::Path) {
+    use std::io::{Read, Write};
+    let listener =
+        std::net::TcpListener::bind("127.0.0.1:0").expect("reservar puerto para el daemon falso");
+    let addr = listener
+        .local_addr()
+        .expect("dirección del daemon falso")
+        .to_string();
+    std::thread::spawn(move || {
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        listener.set_nonblocking(true).ok();
+        while std::time::Instant::now() < limit {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf);
+                let _ = sock.write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            } else {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    });
+    let dead_pid = u32::MAX - 1;
+    // El esquema exige las claves de identidad: sin ellas el pidfile se
+    // descarta como ilegible, la parada sería un no-op y este test perdería el
+    // veredicto que afirma.
+    let fake = serde_json::json!({ "start": "0", "image": "fake-identity.exe" });
+    let content = serde_json::json!({
+        "pid": dead_pid,
+        "addr": addr,
+        "resident_pid": dead_pid,
+        "identity": fake,
+        "resident_identity": fake,
+        "resident_port": null,
+    });
+    std::fs::write(dir.join("data").join("daemon.pid"), content.to_string())
+        .expect("sembrar pidfile del daemon falso");
 }
 
 /// El simulacro de `cleanup` es un plan (`planned` con el recibo

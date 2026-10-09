@@ -536,7 +536,7 @@ enum VoiceCommands {
     Clone {
         #[arg(short, long)]
         name: String,
-        /// Audio de referencia de habla (obligatorio; contrato de la CLI)
+        /// Audio de referencia de habla (obligatorio)
         #[arg(short = 's', long)]
         speech_reference: String,
         /// Audio de referencia de timbre (opcional)
@@ -584,7 +584,7 @@ enum SpeechCommands {
         voice: String,
         #[arg(short, long)]
         output: Option<String>,
-        /// Etiqueta de la locución persistida (obligatorio; contrato de la CLI)
+        /// Etiqueta de la locución persistida (obligatorio)
         #[arg(short, long)]
         label: String,
         /// Sobrescribir una locución existente con la misma etiqueta
@@ -620,8 +620,8 @@ enum SpeechCommands {
     },
     /// Doblaje voz→voz: transcribe, traduce, sintetiza y reproduce
     Dub {
-        /// Archivo de audio a doblar (alias del contrato: --file)
-        #[arg(short = 'a', long, alias = "file")]
+        /// Archivo de audio a doblar
+        #[arg(short = 'a', long)]
         audio: Option<String>,
         #[arg(short, long, default_value = "default")]
         voice: String,
@@ -1086,7 +1086,6 @@ async fn handle_translate(
     }
     #[cfg(not(feature = "native-translation"))]
     {
-        let _ = ct2_dir.as_os_str();
         Err(CliError::new(
             ExitCode::Error,
             "translation_unsupported",
@@ -1134,7 +1133,6 @@ fn translate_if_different(text: &str, source: &str, target: &str) -> Result<Stri
     }
     #[cfg(not(feature = "native-translation"))]
     {
-        let _ = ct2_dir.as_os_str();
         Err(CliError::new(
             ExitCode::Error,
             "translation_unsupported",
@@ -2025,7 +2023,6 @@ async fn handle_speech(
             // validaciones puras (usage, audio existente, modelos ausentes → exit 4).
             #[cfg(not(feature = "native-stt"))]
             {
-                let _ = (&voice, &source_language, &target_language);
                 Err(CliError::new(
                     ExitCode::Error,
                     "stt_unsupported",
@@ -2240,9 +2237,17 @@ async fn handle_daemon(
                 let absolute_path = if path.is_absolute() {
                     path.clone()
                 } else {
-                    std::env::current_dir()
-                        .map(|c| c.join(path))
-                        .unwrap_or_else(|_| path.clone())
+                    std::env::current_dir().map(|c| c.join(path)).map_err(|e| {
+                        CliError::new(
+                            ExitCode::Error,
+                            "daemon_error",
+                            format!(
+                                "No se pudo resolver la ruta absoluta del fichero ready '{}': {}",
+                                path.display(),
+                                e
+                            ),
+                        )
+                    })?
                 };
                 std::env::set_var(daemon::READY_FILE_ENV, &absolute_path);
             }
@@ -2389,12 +2394,15 @@ async fn handle_daemon(
             let t_total = std::time::Instant::now();
             let budget = std::time::Duration::from_secs(12);
             let client = daemon_client();
-            lifecycle::daemon_stop::stop(
+            let outcome = lifecycle::daemon_stop::stop(
                 &effective_data_dir(),
                 lifecycle::daemon_stop::DEFAULT_ADDR,
                 &ProductProcesses,
             )
             .await;
+            // Si la parada no concluye queda un daemon vivo: no se arranca otro.
+            lifecycle::daemon_stop::require_stopped(&outcome)
+                .map_err(|failure| lifecycle_error_to_cli(failure.into()))?;
             require_model_provisioned()?;
             let elapsed = t_total.elapsed();
             let remaining = budget
@@ -2684,15 +2692,17 @@ fn stop_failed_status() -> &'static str {
 /// plataforma): el reclamo queda verificado cuando el probe del daemon está
 /// caído, el PID del líder está muerto y el residente ya no está vivo (por su
 /// PID registrado).
-#[allow(dead_code)]
+#[cfg(any(unix, test))]
 fn unix_claim_verified(probe_daemon: bool, pid_alive: bool, resident_alive: bool) -> bool {
     !probe_daemon && !pid_alive && !resident_alive
 }
 
 /// Reclamo matar-y-rearrancar ante residual degradado: mata el árbol
 /// preciso por PID con verificación y deja vía libre para rearrancar desde cero.
-/// Sin kill por imagen para el daemon (comparte imagen con el CLI: se auto-mataría);
-/// el residente `qwen_tts` se reclama por su PID registrado en `daemon.pid`
+/// Nunca se mata por imagen: el daemon y el CLI comparten ejecutable (el daemon
+/// es el mismo binario lanzado con `daemon serve`), así que un kill por imagen
+/// mataría al propio invocador. La guarda `pid != process::id()` evita la
+/// auto-muerte incluso si el PID leído fuera el del propio proceso. El residente `qwen_tts` se reclama por su PID registrado en `daemon.pid`
 /// (árbol preciso + verificación por `resident_pid` muerto); sin PID
 /// registrado no hay residente que reclamar.
 /// No emite payload.
@@ -2785,28 +2795,6 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) {
     }
 }
 
-/// Fuente única de verdad para detener el daemon residente y `qwen_tts` huérfano,
-/// al servicio de `start` (reclamo), `restart`, `cleanup` y `uninstall`.
-///
-/// Parada unificada con el deadline global del protocolo
-/// (`lifecycle::daemon_stop::STOP_DEADLINE_GLOBAL`, 8 s): graceful
-/// (`POST /shutdown` acotado + espera de `/health` down) si el daemon responde;
-/// árbol preciso por PID (`taskkill /F /T /PID` en Windows, `kill -9` al grupo
-/// en Unix) con guarda anti-auto-muerte cuando sigue vivo; sin PID del
-/// daemon pero con residente registrado vivo se reclama su árbol por PID
-/// registrado; verificación posterior a nivel de sistema (probe +
-/// `pid_alive` + `resident_pid` muerto).
-///
-/// El pidfile solo se borra tras muerte verificada o pista obsoleta reconciliada
-/// (PID muerto + probe down); si el árbol sigue vivo se conserva la pista.
-/// Nada se mata por imagen: el residente sin PID registrado no se reclama.
-///
-/// Por qué el fallback es por PID y nunca por imagen: daemon y CLI comparten la misma
-/// imagen `ai-voice-interconnector.exe` (el daemon es el mismo binario lanzado con
-/// `daemon serve`), así que `taskkill /IM` no puede distinguirlos y mataba al propio
-/// invocador (bug de auto-mate por imagen compartida en `v0.18.10`–`v0.18.25`). La
-/// guarda `pid != process::id()` previene la auto-muerte incluso si el PID leído fuera
-/// el del propio proceso.
 /// Resumen previo de `self update`: qué versión se instala sobre cuál,
 /// dónde, por qué canal y de dónde se descarga. Es lo que se muestra **antes**
 /// de confirmar, en paralelo al resumen previo de `self install`.
@@ -2839,6 +2827,29 @@ fn compose_update_summary(
     out
 }
 
+/// PID por cuyo término espera el limpiador de los restos del aparcado. Lo
+/// fija `self update` al lanzar el traspaso; sin traspaso (variable ausente)
+/// es el propio proceso, que termina enseguida. Una variable presente con un
+/// valor que no es un PID es un error: no se sustituye por el proceso propio.
+fn handover_wait_pid() -> Result<u32, CliError> {
+    let name = lifecycle::update::HANDOVER_PARENT_PID_ENV;
+    match std::env::var(name) {
+        Ok(value) => value.trim().parse::<u32>().map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "self_install_failed",
+                format!("La variable {name} debe contener un PID numérico (valor '{value}'): {e}"),
+            )
+        }),
+        Err(std::env::VarError::NotPresent) => Ok(std::process::id()),
+        Err(std::env::VarError::NotUnicode(_)) => Err(CliError::new(
+            ExitCode::Error,
+            "self_install_failed",
+            format!("La variable {name} no contiene texto válido."),
+        )),
+    }
+}
+
 /// `self install` y `self uninstall`: el grupo de la CLI, delegando en el motor.
 ///
 /// El binario aporta lo que el motor no puede tener: el **control de procesos** —que
@@ -2853,6 +2864,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             force,
             yes,
         } => {
+            // Se valida antes de instalar nada: un valor inválido no deja una
+            // instalación a medias.
+            let wait_pid = handover_wait_pid()?;
             let exe = std::env::current_exe().map_err(|e| {
                 CliError::new(ExitCode::Error, "self_install_failed", e.to_string())
             })?;
@@ -2873,10 +2887,6 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // Sin traspaso no hay retenedor conocido: se espera al propio
             // proceso, que termina enseguida, y lo no programado cae al barrido.
             if !outcome.parked_leftovers.is_empty() {
-                let wait_pid = std::env::var(lifecycle::update::HANDOVER_PARENT_PID_ENV)
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or_else(std::process::id);
                 let scheduled = lifecycle::update::schedule_leftovers(
                     &outcome.parked_leftovers,
                     &LifecyclePaths {
@@ -2964,7 +2974,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 channel: lifecycle::channel::detect(&exe, receipt.as_ref()),
                 program_dir: registered_program_dir,
                 daemon_addr: lifecycle::daemon_stop::default_addr(),
-                home: home_dir(),
+                home: home_dir()?,
             };
             let outcome = lifecycle::uninstall::run(
                 &env,
@@ -3408,29 +3418,33 @@ struct ProgramRemoval {
 }
 
 impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
-    fn exe_lives_inside(&self, program_dir: &std::path::Path) -> bool {
+    fn exe_lives_inside(&self, program_dir: &std::path::Path) -> anyhow::Result<bool> {
         // La impedancia que justifica el borrado diferido es **de Windows**: allí el
         // ejecutable en uso impide borrar su directorio. En Unix no la hay —el proceso
         // sigue vivo desde el inodo desenlazado—, así que responder `true` llevaría al
         // motor a `schedule`, que en Unix no tiene implementación, y `self uninstall`
-        // invocado desde la propia instalación (la vía del canal `dev`) nunca
-        // borraría el directorio de programa.
+        // invocado desde la propia instalación nunca borraría el directorio de
+        // programa.
         #[cfg(not(windows))]
         {
             let _ = program_dir;
-            false
+            Ok(false)
         }
         #[cfg(windows)]
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.canonicalize().ok())
-            .and_then(|exe| {
-                program_dir
-                    .canonicalize()
-                    .ok()
-                    .map(|dir| exe.starts_with(dir))
-            })
-            .unwrap_or(false)
+        {
+            let exe = std::env::current_exe()
+                .and_then(|exe| exe.canonicalize())
+                .map_err(|e| {
+                    anyhow::anyhow!("no se pudo resolver la ruta del ejecutable en uso: {e}")
+                })?;
+            let dir = program_dir.canonicalize().map_err(|e| {
+                anyhow::anyhow!(
+                    "no se pudo resolver la ruta del directorio de programa '{}': {e}",
+                    program_dir.display()
+                )
+            })?;
+            Ok(exe.starts_with(dir))
+        }
     }
 
     fn remove_now(&self, program_dir: &std::path::Path) -> anyhow::Result<()> {
@@ -3564,11 +3578,17 @@ fn effective_data_dir() -> PathBuf {
 /// `$HOME` del usuario, la misma clave que usa `lifecycle::path_unix` al escribir los
 /// bloques delimitados del `PATH`. Se pasa al motor como dato porque la reversión
 /// necesita **el mismo** `$HOME` con el que se escribió el bloque.
-fn home_dir() -> PathBuf {
+fn home_dir() -> Result<PathBuf, CliError> {
     std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+        .map_err(|_| {
+            CliError::new(
+                ExitCode::Error,
+                "self_uninstall_failed",
+                "No se pudo determinar el directorio del usuario: ni HOME ni USERPROFILE están definidas.",
+            )
+        })
 }
 
 /// Ruta del fichero ready de esta instancia: absoluta bajo el
@@ -3619,7 +3639,21 @@ async fn launch_daemon(
     }
     // Invalidar la señal previa: el fichero es determinista por instancia y
     // un contenido obsoleto se leería como resultado de este arranque.
-    let _ = std::fs::remove_file(&ready_path);
+    match std::fs::remove_file(&ready_path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                format!(
+                    "No se pudo retirar el fichero ready previo '{}': {}",
+                    ready_path.display(),
+                    e
+                ),
+            ))
+        }
+    }
     let (log_path, log_file) = store::create_log(
         &store::logs_dir(),
         daemon::DAEMON_LOG_FAMILY,
@@ -3730,7 +3764,15 @@ async fn abort_launch(child: &mut avi_process::RestrictedChild, ready_path: &std
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
-    let _ = std::fs::remove_file(ready_path);
+    if let Err(e) = std::fs::remove_file(ready_path) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            eprintln!(
+                "Aviso: no se pudo retirar el fichero ready '{}': {}",
+                ready_path.display(),
+                e
+            );
+        }
+    }
     IN_MEMORY_PID.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -4177,7 +4219,18 @@ async fn consume_ndjson_stream(
 /// anterior al binario, o el build no incluye la función; el mensaje nombra ambas causas.
 async fn daemon_error_from_response(resp: reqwest::Response) -> CliError {
     let status = resp.status();
-    let body: Value = resp.json().await.unwrap_or(json!({}));
+    let raw = match resp.text().await {
+        Ok(text) => text,
+        Err(e) => {
+            return CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                format!("No se pudo leer la respuesta del daemon (HTTP {status}): {e}"),
+            )
+        }
+    };
+    let parsed = serde_json::from_str::<Value>(&raw);
+    let body = parsed.as_ref().cloned().unwrap_or(Value::Null);
     let reason = body
         .get("reason")
         .and_then(|v| v.as_str())
@@ -4187,6 +4240,15 @@ async fn daemon_error_from_response(resp: reqwest::Response) -> CliError {
             "El daemon no expone esta ruta (HTTP 404): reinícialo con el binario actual \
              ejecutando `avi daemon restart`, o usa un build que incluya la función."
                 .to_string()
+        } else if parsed.is_err() {
+            // Cuerpo que no es JSON: se muestra su inicio para diagnosticarlo.
+            let start: String = raw.trim().chars().take(200).collect();
+            let start = if start.is_empty() {
+                "cuerpo vacío".to_string()
+            } else {
+                start
+            };
+            format!("Respuesta del daemon que no es JSON (HTTP {status}): {start}")
         } else {
             let msg = body
                 .get("message")
@@ -4469,12 +4531,19 @@ async fn clone_via_daemon(
             "El daemon no devolvió 'speech' en la clonación.",
         )
     })?;
+    let precomputed = val["precomputed"].as_bool().ok_or_else(|| {
+        CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            "El daemon no devolvió 'precomputed' en la clonación.",
+        )
+    })?;
     if json_mode {
         emit_raw_json(json!({
             "name": cloned_name,
             "speech": cloned_speech,
             "timbre": val.get("timbre").cloned().unwrap_or(Value::Null),
-            "precomputed": val.get("precomputed").and_then(|v| v.as_bool()).unwrap_or(false),
+            "precomputed": precomputed,
         }));
     } else {
         println!("Voz '{}' clonada.", name);
@@ -4889,6 +4958,12 @@ mod tests {
     /// Sirve una única respuesta HTTP con el estado y el cuerpo JSON elegidos, para
     /// obtener un `reqwest::Response` de error sin daemon (doble determinista).
     async fn serve_status_json(status: u16, body: Value) -> reqwest::Response {
+        serve_status_raw(status, body.to_string()).await
+    }
+
+    /// Igual que `serve_status_json` pero con el cuerpo textual indicado, que
+    /// puede no ser JSON.
+    async fn serve_status_raw(status: u16, body: String) -> reqwest::Response {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind efímero");
@@ -4910,7 +4985,6 @@ mod tests {
                     break;
                 }
             }
-            let body = body.to_string();
             let response = format!(
                 "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                 body.len()
@@ -4962,6 +5036,20 @@ mod tests {
         assert!(
             err.message.contains("daemon restart"),
             "mensaje sin la indicación de reinicio: {}",
+            err.message
+        );
+    }
+
+    /// Un cuerpo de error que no es JSON se reporta con su inicio en el mensaje.
+    #[tokio::test]
+    async fn daemon_error_from_response_includes_start_of_non_json_body() {
+        let resp = serve_status_raw(502, "<html>bad gateway</html>".to_string()).await;
+        let err = daemon_error_from_response(resp).await;
+        assert_eq!(err.code.code(), 1);
+        assert_eq!(err.reason, "daemon_error");
+        assert!(
+            err.message.contains("<html>bad gateway</html>") && err.message.contains("502"),
+            "mensaje sin el inicio del cuerpo: {}",
             err.message
         );
     }

@@ -14,7 +14,6 @@ default-members = [".", "crates/*"]
 clap = { version = "4.4", features = ["derive", "env"] }
 serde_json = "1.0"
 tokio = { version = "1.35", features = ["full"] }
-tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ctrlc = "3.4"
 avi-core = { path = "crates/avi-core" }
@@ -38,14 +37,6 @@ tempfile = "3"
 # para localhost); el daemon expone solo rutas HTTP en 127.0.0.1:8765.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 base64 = "0.22"
-# Descargador nativo de modelos desde HuggingFace Hub: maneja el layout de caché
-# (la ubicación la fija `models_cache_dir()`) y la validación ETag; no reanuda
-# descargas parciales. `rustls` evita OpenSSL nativo: compila igual en Windows
-# x64, Linux x64/arm64 y macOS arm64 (4 targets de distribución). La versión es
-# exacta porque es la que parchea la copia vendorizada de `[patch.crates-io]`.
-hf-hub = { version = "=1.0.0", default-features = false, features = ["rustls-tls"] }
-indicatif = "0.17"
-chrono = "0.4"
 anyhow = "1.0"
 
 [features]
@@ -56,19 +47,13 @@ native-stt = ["avi-stt/native-stt", "avi-daemon/native-stt"]
 native-translation = ["avi-translation/native-translation", "avi-daemon/native-translation"]
 full = ["native-stt", "native-translation"]
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_UI_WindowsAndMessaging", "Win32_Globalization"] }
-# `winreg` no es dependencia: la reversión del `PATH` en Windows la lleva el
-# módulo `path_windows` del motor de ciclo de vida, que accede a `HKCU\Environment`
-# directamente con la biblioteca de sistema `windows-sys`, sin envoltorio de
-# registro adicional.
-
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [dev-dependencies]
 hound = "3"
-avi-stt = { path = "crates/avi-stt" }
+# Solo los tests de la propia crate raíz usan `tracing` (captura de logs).
+tracing = "0.1"
 # Solo para los tests: expone el generador de WAV de frecuencia nula.
 avi-audio = { path = "crates/avi-audio", features = ["test-support"] }
 # Solo para los tests: habilita el feature `faults` del motor, de modo que
@@ -78,7 +63,9 @@ avi-lifecycle = { path = "crates/avi-lifecycle", features = ["faults"] }
 
 [patch.crates-io]
 cmake = { path = "vendor/cmake-0.1.58" }
-# hf-hub crea en Windows cada puntero de `snapshots/` copiando el blob, lo que
-# duplica en disco cada modelo; la copia vendorizada usa un enlace duro (con
-# copia como alternativa donde el sistema de archivos no lo admite).
+# hf-hub (descargador de modelos desde HuggingFace Hub que usan las crates del
+# workspace, con la versión exacta `=1.0.0` que esta copia parchea) crea en
+# Windows cada puntero de `snapshots/` copiando el blob, lo que duplica en disco
+# cada modelo; la copia vendorizada usa un enlace duro (con copia como
+# alternativa donde el sistema de archivos no lo admite).
 hf-hub = { path = "vendor/hf-hub-1.0.0" }
