@@ -14,11 +14,13 @@ La Normativa del grupo está en `docs/specs/sdlc-lifecycle.md` (§5.4 superficie
 
 | Subcomando | Flags | Efecto |
 |---|---|---|
-| `self install` | `--no-setup` · `--no-modify-path` · `--force`/`-f` · `--yes` · `--json` · `--channel` (oculta) | Instala el bundle del que forma parte el ejecutable, o repara la instalación si se ejecuta desde ella |
+| `self install` | `--no-setup` · `--no-modify-path` · `--force`/`-f` · `--yes` · `--json` | Instala el bundle del que forma parte el ejecutable, o repara la instalación si se ejecuta desde ella |
 | `self update` | `--check` · `--version X.Y.Z` · `--force`/`-f` · `--no-setup` · `--yes` · `--json` | Actualiza la instalación registrada a la última estable o a una concreta, con verificación y traspaso |
 | `self uninstall` | `--keep-data` · `--dry-run` · `--yes` · `--json` | Borra el estado, revierte el `PATH` y borra el directorio de programa |
 
-`--json` es global (`Cli::json`), no un flag por subcomando. `--channel` es la única opción oculta del grupo: la reserva `cargo xtask install` (§9.5) y **solo surte efecto cuando el recibo se crea por primera vez**, de modo que reparar una instalación no reescriba su canal (`install::resolve_channel`).
+`--json` es global (`Cli::json`), no un flag por subcomando. `self install` no tiene opción de canal: el recibo nuevo lleva el canal `script`, y reparar o reemplazar una instalación conserva el del recibo anterior. Los canales son `script`, `homebrew` y `unmanaged`; `cargo xtask install` delega en `self install` y deja una instalación `script`.
+
+**Un recibo ilegible falla, no se ignora.** `Ok(None)` del recibo significa solo que el fichero no existe. Si `install-receipt.json` existe pero no se puede leer, no es JSON, tiene un campo desconocido o ausente, o declara un `schema_version` distinto del vigente, `self install`, `self update`, `self uninstall` y `doctor` fallan con su propio `reason` (`self_install_failed`, `self_update_failed`, `self_uninstall_failed`, `doctor_failed`; el resto de comandos, `lifecycle_failed`) y un mensaje que nombra la ruta del fichero.
 
 ---
 
@@ -66,7 +68,7 @@ El orden es el de §8.3 y está escrito en el propio código, con el número de 
 El orden es el de §8.4 y está escrito en el propio código (`handle_self`, brazo `Update`):
 
 1. **Recuperación y bloqueo.** La recuperación corre con el bloqueo tomado sobre la instalación registrada; barre aparcados, stagings huérfanos y temporales propios sin proceso vivo.
-2. **Leer el recibo y el canal** (§7.2). `homebrew` o `dev` → `externally_managed` (12) con el comando correcto; sin instalación → `not_installed` con el one-liner y salida 3.
+2. **Leer el recibo y el canal** (§7.2). `homebrew` → `externally_managed` (12) con el comando correcto; sin instalación → `not_installed` con el one-liner y salida 3.
 3. **Resolver la versión objetivo**: `--version` explícito sin tocar la red, o la última estable siguiendo la redirección de `releases/latest` (con `AVI_DOWNLOAD_BASE_URL` si está definida); la API REST solo es respaldo.
 4. **Comparar las versiones** con el comparador numérico vigente: iguales → `already_up_to_date` sin descargar, éxito con 0 (`--force` reinstala); objetivo menor → solo con `--version` explícito y marca destructiva.
 5. **`--check`**: informa la transición (`anterior → nueva`, o que ya se está en la última) y termina sin cambios de actualización. En `--json`: `current`, `latest`, `update_available` y `channel`.
@@ -198,7 +200,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `path_conflict` | 14 | Hay un archivo ajeno en la ruta del enlace; nada aplicado, salvo `--force` |
 | `daemon_stop_failed` | 16 | No se pudo detener el daemon; nada del plan se aplicó |
 | `rolled_back` | 13 | Fallo en el reemplazo; la versión anterior quedó restaurada |
-| `externally_managed` | 12 | `homebrew`: la copia la gestiona Homebrew (`self uninstall`); también el canal `dev` en `self update` |
+| `externally_managed` | 12 | `homebrew`: la copia la gestiona Homebrew (`self uninstall` y `self update`) |
 | `confirmation_required` | 2 | Destructiva sin terminal y sin `--yes` |
 | `setup_failed` | 11 | `self install` terminó con el programa instalado y la provisión sin completar; `self update` propaga el mismo parcial del binario nuevo |
 | `already_up_to_date` | 0 | `self update` sin descarga: ya se está en la versión objetivo (éxito) |

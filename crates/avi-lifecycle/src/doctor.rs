@@ -56,21 +56,23 @@ pub struct Env {
 }
 
 impl Env {
-    /// Entorno con las raíces ya resueltas, que es lo que usa el binario.
-    pub fn resolve() -> Self {
-        Self {
-            roots: cleanup::Roots::resolve(),
-            path_env: std::env::var("PATH").unwrap_or_default(),
-            registry_subkey: registry_subkey_default(),
-        }
+    /// Entorno con las raíces ya resueltas, que es lo que usa el binario. Falla si el
+    /// recibo existe pero es ilegible.
+    pub fn resolve() -> anyhow::Result<Self> {
+        Ok(Self::with_roots(cleanup::Roots::resolve()?))
     }
 
     /// Entorno de la instalación registrada, con el recibo como fuente de verdad de
     /// las raíces, del recibo si lo hay.
     pub fn from_receipt(receipt: Option<&InstallReceipt>) -> Self {
+        Self::with_roots(cleanup::Roots::from_receipt(receipt))
+    }
+
+    fn with_roots(roots: cleanup::Roots) -> Self {
         Self {
-            roots: cleanup::Roots::from_receipt(receipt),
-            ..Self::resolve()
+            roots,
+            path_env: std::env::var("PATH").unwrap_or_default(),
+            registry_subkey: registry_subkey_default(),
         }
     }
 
@@ -105,7 +107,8 @@ pub struct Install {
     pub dir: PathBuf,
     /// Raíz de datos efectiva, del recibo si lo hay.
     pub data_dir: PathBuf,
-    /// `valid` o `absent`, que es como el envelope nombra el estado del recibo.
+    /// `valid`, `absent` o `invalid` (existe pero es ilegible), que es como el
+    /// envelope nombra el estado del recibo.
     pub receipt: &'static str,
     /// Versión instalada, si el recibo la declara.
     pub version: Option<String>,
@@ -221,7 +224,12 @@ impl Report {
 pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
     let roots = &env.roots;
     // El recibo se lee de la instalación registrada, que es donde vive.
-    let receipt = receipt::read_from(&roots.program_dir).ok().flatten();
+    // Un recibo ilegible no es un recibo ausente: se informa como `invalid` y la
+    // comprobación `install_receipt` falla con la causa.
+    let (receipt, receipt_error) = match receipt::read_from(&roots.program_dir) {
+        Ok(receipt) => (receipt, None),
+        Err(e) => (None, Some(e.to_string())),
+    };
     let channel = channel::detect(exe, receipt.as_ref());
     let pending = pending(env);
     let path = path_state(env, receipt.as_ref());
@@ -234,7 +242,11 @@ pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
         // rutas cuando no hay recibo, que es un sitio que el usuario no está mirando.
         dir: roots.program_dir.clone(),
         data_dir: roots.data_dir.clone(),
-        receipt: if receipt.is_some() { "valid" } else { "absent" },
+        receipt: match (&receipt, &receipt_error) {
+            (Some(_), _) => "valid",
+            (None, Some(_)) => "invalid",
+            (None, None) => "absent",
+        },
         version: receipt.as_ref().map(|r| r.version.clone()),
     };
 
@@ -254,9 +266,10 @@ pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
     check(
         "install_receipt",
         install.receipt == "valid",
-        match &receipt {
-            Some(r) => format!("recibo válido en {}", r.install_dir.display()),
-            None => "no hay recibo de instalación".to_string(),
+        match (&receipt, &receipt_error) {
+            (Some(r), _) => format!("recibo válido en {}", r.install_dir.display()),
+            (None, Some(error)) => error.clone(),
+            (None, None) => "no hay recibo de instalación".to_string(),
         },
     );
     check(
@@ -639,6 +652,30 @@ mod tests {
         assert!(
             report.is_failure(),
             "sin nada instalado, el veredicto es negativo"
+        );
+    }
+
+    /// Un recibo ilegible no se informa como ausente: el estado es `invalid` y la
+    /// comprobación `install_receipt` falla con la causa, que nombra el fichero.
+    #[test]
+    fn doctor_reports_an_unreadable_receipt_as_invalid() {
+        let (_scratch, env) = env("bad-receipt");
+        std::fs::write(receipt::receipt_path(&env.roots.program_dir), "no es JSON")
+            .expect("se escribe el recibo corrupto");
+        let exe = env.roots.program_dir.join(exe_name());
+        let report = report(&env, &exe, "0.24.0");
+
+        assert_eq!(report.install.receipt, "invalid");
+        assert!(report.failed.iter().any(|name| name == "install_receipt"));
+        let detail = &report
+            .checks
+            .iter()
+            .find(|c| c.name == "install_receipt")
+            .expect("existe la comprobación")
+            .detail;
+        assert!(
+            detail.contains(receipt::RECEIPT_NAME),
+            "el detalle nombra el recibo: {detail}"
         );
     }
 

@@ -508,3 +508,82 @@ fn self_install_no_setup_exits_0_without_reason() {
     );
     assert!(actual.get("error").is_none(), "ni `error`: {actual:?}");
 }
+
+/// Un recibo ilegible hace fallar cada comando que lo necesita, con el `reason` del propio
+/// comando y un mensaje que nombra el fichero. `Ok(None)` del recibo significa solo
+/// «ausente»: un fichero corrupto jamás se trata como si no existiera.
+#[test]
+fn unreadable_receipt_fails_lifecycle_commands_naming_the_file() {
+    let sandbox = Sandbox::new("badreceipt");
+    let install_dir = PathBuf::from(
+        sandbox
+            .envs
+            .iter()
+            .find(|(k, _)| k == "AVI_INSTALL_DIR")
+            .map(|(_, v)| v.clone())
+            .expect("el sandbox define AVI_INSTALL_DIR"),
+    );
+    std::fs::create_dir_all(&install_dir).expect("crear el directorio de programa");
+    let receipt = install_dir.join(avi_lifecycle::receipt::RECEIPT_NAME);
+    std::fs::write(&receipt, "esto no es JSON").expect("escribir el recibo corrupto");
+
+    let cases: [(&[&str], &str); 7] = [
+        (
+            &[
+                "--json",
+                "self",
+                "install",
+                "--yes",
+                "--no-modify-path",
+                "--no-setup",
+            ],
+            "self_install_failed",
+        ),
+        (
+            &["--json", "self", "update", "--check"],
+            "self_update_failed",
+        ),
+        (
+            &["--json", "self", "uninstall", "--yes"],
+            "self_uninstall_failed",
+        ),
+        (&["--json", "doctor"], "doctor_failed"),
+        (
+            &["--json", "cleanup", "--all", "--dry-run"],
+            "lifecycle_failed",
+        ),
+        (
+            &[
+                "--json",
+                "translate",
+                "--text",
+                "hola",
+                "--source-language",
+                "es",
+                "--target-language",
+                "en",
+            ],
+            "lifecycle_failed",
+        ),
+        (&["--json", "speech", "list"], "lifecycle_failed"),
+    ];
+    for (args, reason) in cases {
+        let (code, envelope) = sandbox.run(args);
+        assert_eq!(code, 1, "`{args:?}` sale con 1: {envelope:?}");
+        assert_eq!(
+            envelope["reason"],
+            Value::String(reason.to_string()),
+            "`{args:?}` falla con el reason del comando: {envelope:?}"
+        );
+        let message = envelope["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(avi_lifecycle::receipt::RECEIPT_NAME),
+            "`{args:?}`: el mensaje nombra el recibo: {message}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&receipt).expect("el recibo sigue en disco"),
+            "esto no es JSON",
+            "`{args:?}` no toca un recibo ilegible"
+        );
+    }
+}

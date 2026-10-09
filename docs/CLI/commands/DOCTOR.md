@@ -26,8 +26,8 @@ ai-voice-interconnector doctor [--repair] [--json]
 |---|---|
 | `version` | Versión del binario en ejecución |
 | `target` | Tripla del target del host |
-| `channel` | `script`, `dev`, `homebrew` o `unmanaged` |
-| `install` | `dir` (directorio de programa), `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` (la del recibo, si lo hay) |
+| `channel` | `script`, `homebrew` o `unmanaged` |
+| `install` | `dir` (directorio de programa), `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`/`invalid`) y `version` (la del recibo, si lo hay) |
 | `path` | `resolves_to_this_install`, `duplicate_entries`, `integration` (`present`/`absent`/`not_modified`) y `coexisting` (instalaciones ajenas, con su canal y cuál tiene precedencia) |
 | `pending` | `transaction_journal`, `parked`, `stagings`, `temporaries` y `temporaries_kept` |
 | `models` | `root`, `shared_root`, `provisioned`, `missing` (repos de la selección sin provisionar) y `size_bytes` |
@@ -59,7 +59,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 
 | `name` | Falla cuando | Qué mira |
 |---|---|---|
-| `install_receipt` | No hay recibo en el directorio de programa | Recibo válido o ausente |
+| `install_receipt` | No hay recibo en el directorio de programa, o existe pero es ilegible (el detalle nombra el fichero) | Recibo válido |
 | `path_resolves` | La **primera** entrada del `PATH` que apunta a una instalación no es la registrada | Orden de precedencia |
 | `path_duplicates` | Más de una entrada del `PATH` apunta a una instalación | Coexistencia (Cask + `script`) |
 | `pending_artifacts` | Quedan aparcados, stagings o temporales por recoger | Transacción interrumpida |
@@ -137,7 +137,7 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
 | Algún chequeo falló | **1** | — (no hay `reason`: el veredicto va en `checks`/`failed`) |
 | No se pudo resolver el ejecutable en ejecución | 1 | `doctor_failed` |
 
-**`doctor` no tiene `reason` de contrato propios.** Un fallo de chequeo no es un error de la operación: es el dictamen que el comando existe para dar. La única excepción es `doctor_failed`, que es un fallo real del comando (no se pudo resolver `current_exe` o serializar el reporte) y sale por el canal de error normal. `--repair` no añade códigos ni `reason`: tras barrer, el informe se reevalúa y el exit sigue al veredicto (0 si todo quedó limpio, 1 si algo sigue fallando).
+**`doctor` no tiene `reason` de contrato propios.** Un fallo de chequeo no es un error de la operación: es el dictamen que el comando existe para dar. La única excepción es `doctor_failed`, que es un fallo real del comando (no se pudo resolver `current_exe`, el recibo de la instalación registrada es ilegible —el mensaje nombra el fichero— o no se pudo serializar el reporte) y sale por el canal de error normal. `--repair` no añade códigos ni `reason`: tras barrer, el informe se reevalúa y el exit sigue al veredicto (0 si todo quedó limpio, 1 si algo sigue fallando).
 
 ---
 

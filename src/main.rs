@@ -494,9 +494,6 @@ enum SelfSub {
         /// No pedir confirmación
         #[arg(long)]
         yes: bool,
-        /// Canal de la instalación; `dev` es la opción oculta
-        #[arg(long, hide = true)]
-        channel: Option<String>,
     },
     /// Elimina el programa, la integración de PATH y (por defecto) el estado
     Uninstall {
@@ -880,7 +877,11 @@ async fn main() {
     // tocar datos o modelos y lo retienen toda su vida. Si hay una operación de
     // ciclo de vida en curso, terminan aquí con `lifecycle_locked` sin lanzar nada.
     let mut usage_lock = if takes_usage_lock(&cli.command) {
-        match lifecycle::lock::acquire_shared(&lifecycle::channel::registered_program_dir()) {
+        let program_dir = match lifecycle::channel::registered_program_dir() {
+            Ok(dir) => dir,
+            Err(e) => exit_with_error(json_mode, lifecycle_error_to_cli(e)),
+        };
+        match lifecycle::lock::acquire_shared(&program_dir) {
             Ok(lock) => Some(lock),
             Err(e) => exit_with_error(json_mode, lifecycle_error_to_cli(e.into())),
         }
@@ -2526,7 +2527,7 @@ async fn handle_cleanup(
     dry_run: bool,
     yes: bool,
 ) -> Result<(), CliError> {
-    let roots = lifecycle::cleanup::Roots::resolve();
+    let roots = lifecycle::cleanup::Roots::resolve().map_err(lifecycle_error_to_cli)?;
     let options = lifecycle::cleanup::Options {
         model,
         voices,
@@ -2850,7 +2851,6 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             no_modify_path,
             force,
             yes,
-            channel,
         } => {
             let exe = std::env::current_exe().map_err(|e| {
                 CliError::new(ExitCode::Error, "self_install_failed", e.to_string())
@@ -2862,9 +2862,6 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 no_setup,
                 no_modify_path,
                 force,
-                channel: channel
-                    .as_deref()
-                    .and_then(lifecycle::channel::Channel::from_name),
             };
             let outcome = lifecycle::install::install(&env, &options, &ProductProcesses)
                 .await
@@ -2951,10 +2948,13 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             let exe = std::env::current_exe().map_err(|e| {
                 CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
             })?;
-            let registered_program_dir = lifecycle::channel::registered_program_dir();
-            let receipt = lifecycle::receipt::read_from(&registered_program_dir)
-                .ok()
-                .flatten();
+            let registered_program_dir =
+                lifecycle::channel::registered_program_dir().map_err(|e| {
+                    CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
+                })?;
+            let receipt = lifecycle::receipt::read_from(&registered_program_dir).map_err(|e| {
+                CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
+            })?;
             let roots = lifecycle::cleanup::Roots::from_receipt(receipt.as_ref());
             let cleaner_logs = lifecycle::logs_dir_in(&roots.data_dir);
             let env = lifecycle::uninstall::Env {
@@ -3033,8 +3033,10 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // ejecuta el comando, se opera sobre la registrada. Va antes del
             // bloqueo porque el directorio de programa registrado es lo que
             // dice dónde se toma.
-            let program_dir = lifecycle::channel::registered_program_dir();
-            let receipt = lifecycle::receipt::read_from(&program_dir).ok().flatten();
+            let program_dir = lifecycle::channel::registered_program_dir()
+                .map_err(|e| CliError::new(ExitCode::Error, "self_update_failed", e.to_string()))?;
+            let receipt = lifecycle::receipt::read_from(&program_dir)
+                .map_err(|e| CliError::new(ExitCode::Error, "self_update_failed", e.to_string()))?;
             let channel = lifecycle::channel::detect(&exe, receipt.as_ref());
             if channel == lifecycle::channel::Channel::Homebrew {
                 return Err(CliError::new(
@@ -3042,13 +3044,6 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     "externally_managed",
                     "esta copia la gestiona Homebrew: actualiza con `brew upgrade --cask \
                      ai-voice-interconnector`, y `cleanup --all` para el estado de usuario",
-                ));
-            }
-            if channel == lifecycle::channel::Channel::Dev {
-                return Err(CliError::new(
-                    ExitCode::ExternallyManaged,
-                    "externally_managed",
-                    "esta instalación es del canal dev: actualiza con `cargo xtask install`",
                 ));
             }
             let Some(receipt) = receipt else {
@@ -3296,7 +3291,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
 fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     let exe = std::env::current_exe()
         .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
-    let env = lifecycle::doctor::Env::resolve();
+    let env = lifecycle::doctor::Env::resolve()
+        .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
     // `--repair`: toma el bloqueo, ejecuta el barrido
     // existente —solo lo que el barrido recoge— y reevalúa el informe sobre
     // lo que quedó. Sin el flag, `doctor` solo informa.

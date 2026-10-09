@@ -107,7 +107,6 @@ fn criterion_7_windows_user_path_type_and_vars_survive() {
                 no_setup: true,
                 no_modify_path: false,
                 force: false,
-                channel: None,
             },
             &Inert,
         ))

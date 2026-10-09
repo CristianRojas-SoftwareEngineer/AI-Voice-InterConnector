@@ -419,7 +419,6 @@ async fn criterion_9_install_strips_quarantine_from_whole_program_dir() {
             // usuario que ejecuta la puerta de macOS no es un efecto aceptable.
             no_modify_path: true,
             force: false,
-            channel: None,
         },
         &Inert,
     )
@@ -999,7 +998,6 @@ async fn install_strips_quarantine_from_whole_program_dir() {
             // usuario que ejecuta la puerta de macOS no es un efecto aceptable.
             no_modify_path: true,
             force: false,
-            channel: None,
         },
         &Inert,
     )

@@ -1,9 +1,10 @@
 //! Canal de una copia del binario: por dónde se instaló y quién la gestiona.
 //!
-//! El canal decide qué puede hacer cada comando sobre una instalación. Dos
-//! casos de la tabla de canales se resuelven con esto: una copia de Homebrew no se
-//! actualiza ni se desinstala desde aquí sino con `brew`, y una instalación de
-//! desarrollo (`cargo xtask install`) no se actualiza por el canal publicado.
+//! El canal decide qué puede hacer cada comando sobre una instalación. Los
+//! canales son `script` (instalación desde un archivo publicado o extraído a
+//! mano, también la que deja `cargo xtask install`), `homebrew` (una copia del
+//! Cask, que no se actualiza ni se desinstala desde aquí sino con `brew`) y
+//! `unmanaged` (un binario ejecutado fuera de una instalación).
 //!
 //! **Precedencia**: `homebrew` si el ejecutable resuelto está bajo el
 //! prefijo de Homebrew; si no, el canal que declara el recibo; si no hay recibo,
@@ -31,8 +32,6 @@ const HOMEBREW_MARKER: &str = "Caskroom";
 pub enum Channel {
     /// Bootstrap o `self install` desde un archivo extraído a mano.
     Script,
-    /// `cargo xtask install`, en el canal de desarrollo.
-    Dev,
     /// Cask de Homebrew, detectado sin recibo.
     Homebrew,
     /// Binario ejecutado fuera de una instalación: bundle sin instalar,
@@ -45,17 +44,15 @@ impl Channel {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Script => "script",
-            Self::Dev => "dev",
             Self::Homebrew => "homebrew",
             Self::Unmanaged => "unmanaged",
         }
     }
 
-    /// Lee el nombre de un canal; `None` si no es ninguno de los cuatro.
+    /// Lee el nombre de un canal; `None` si no es ninguno de los tres.
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "script" => Some(Self::Script),
-            "dev" => Some(Self::Dev),
             "homebrew" => Some(Self::Homebrew),
             "unmanaged" => Some(Self::Unmanaged),
             _ => None,
@@ -108,15 +105,16 @@ pub fn registered_install_dir(receipt: Option<&InstallReceipt>) -> PathBuf {
 }
 
 /// Directorio de programa registrado ahora mismo: el del recibo que hay en el
-/// directorio de la convención de rutas, o ese mismo si no hay recibo legible.
+/// directorio de la convención de rutas, o ese mismo si no hay recibo.
 /// Es la única forma de resolverlo desde el entorno, y de ella salen la ruta del
 /// bloqueo de ciclo de vida y la de todas las operaciones, para que ninguna tome
 /// el bloqueo de un sitio y opere sobre otro.
-pub fn registered_program_dir() -> PathBuf {
-    let receipt = crate::receipt::read_from(&crate::install_dir())
-        .ok()
-        .flatten();
-    registered_install_dir(receipt.as_ref())
+///
+/// Un recibo presente pero ilegible es un error que nombra el fichero: no se
+/// confunde con la ausencia de recibo.
+pub fn registered_program_dir() -> anyhow::Result<PathBuf> {
+    let receipt = crate::receipt::read_from(&crate::install_dir())?;
+    Ok(registered_install_dir(receipt.as_ref()))
 }
 
 #[cfg(test)]
@@ -140,16 +138,15 @@ mod tests {
         )
     }
 
-    /// Los cuatro canales, con la precedencia de `Caskroom` sobre la existencia
+    /// Los tres canales, con la precedencia de `Caskroom` sobre la existencia
     /// de recibo y el caso de un ejecutable de `target/` sin instalación
     /// registrada.
     #[test]
-    fn channel_detection_covers_all_four() {
+    fn channel_detection_covers_all_three() {
         let script = receipt(
             Channel::Script,
             "/home/ana/.local/opt/ai-voice-interconnector",
         );
-        let dev = receipt(Channel::Dev, "/home/ana/.local/opt/ai-voice-interconnector");
 
         // 1. `script`: recibo y ejecutable fuera de Homebrew.
         assert_eq!(
@@ -160,16 +157,7 @@ mod tests {
             Channel::Script
         );
 
-        // 2. `dev`: mismo criterio, el canal lo declara el recibo.
-        assert_eq!(
-            detect(
-                Path::new("/home/ana/.local/opt/ai-voice-interconnector/ai-voice-interconnector"),
-                Some(&dev)
-            ),
-            Channel::Dev
-        );
-
-        // 3. `homebrew` gana sobre el recibo: el Cask no deja recibo, y si se
+        // 2. `homebrew` gana sobre el recibo: el Cask no deja recibo, y si se
         //    encuentra uno la copia sigue siendo de Homebrew.
         assert_eq!(
             detect(
@@ -198,7 +186,7 @@ mod tests {
             "Cellar no es Caskroom"
         );
 
-        // 4. `unmanaged`: binario ejecutado fuera de una instalación.
+        // 3. `unmanaged`: binario ejecutado fuera de una instalación.
         assert_eq!(
             detect(
                 Path::new(
@@ -217,16 +205,12 @@ mod tests {
         );
 
         // Nombres de contrato y su ida y vuelta.
-        for channel in [
-            Channel::Script,
-            Channel::Dev,
-            Channel::Homebrew,
-            Channel::Unmanaged,
-        ] {
+        for channel in [Channel::Script, Channel::Homebrew, Channel::Unmanaged] {
             assert_eq!(Channel::from_name(channel.as_str()), Some(channel));
             assert_eq!(channel.to_string(), channel.as_str());
         }
         assert_eq!(Channel::from_name("snap"), None, "canal desconocido");
+        assert_eq!(Channel::from_name("dev"), None, "`dev` no es un canal");
 
         // Precedencia entre canal e instalación registrada: un binario `unmanaged`
         // sigue operando sobre la instalación que declara el recibo.

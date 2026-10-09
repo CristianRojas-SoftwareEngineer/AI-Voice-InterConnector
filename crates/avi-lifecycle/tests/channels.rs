@@ -1,24 +1,23 @@
-//! Los cuatro canales en las operaciones de este ciclo.
+//! Los tres canales en las operaciones de este ciclo.
 //!
 //! La tabla de canales tiene una columna por operación y una fila por canal. Las celdas de
 //! `self update` las cubre este archivo en lo que le es propio —la
-//! detección—, mientras que la negativa sin tocar nada es el criterio 15 en
-//! `tests/update.rs`. Son cuatro cosas distintas que conviene no mezclar:
+//! detección—, mientras que la negativa sin tocar nada vive en `tests/update.rs`. Son
+//! cuatro cosas distintas que conviene no mezclar:
 //!
 //! 1. **Cómo se origina cada canal.** La precedencia —Homebrew sobre el recibo, el
 //!    recibo sobre `unmanaged`— y el hecho de que `self install` escriba el canal en el
-//!    recibo y de que `--channel dev` solo surte efecto cuando el recibo se crea por
-//!    primera vez.
+//!    recibo y de que una reparación conserve el del recibo anterior.
 //! 2. **Qué puede hacer cada canal.** `homebrew` es `externally_managed` con el comando
-//!    correcto y sin tocar nada; `script`, `dev` y `unmanaged` pueden desinstalar. Para
-//!    `self update`, `homebrew` y `dev` son `externally_managed`: la detección es la misma
+//!    correcto y sin tocar nada; `script` y `unmanaged` pueden desinstalar. Para
+//!    `self update`, `homebrew` es `externally_managed`: la detección es la misma
 //!    de la tabla de canales y la afirma `update_detects_managed_channels`.
 //! 3. **Sobre qué opera la desinstalación.** `self uninstall` actúa siempre
 //!    sobre la **instalación registrada**, sea cual sea la copia del binario que ejecute el
 //!    comando. Es la propiedad que hace que `self uninstall` funcione desde `target/`, y es
 //!    la que ninguna otra prueba del ciclo cubre de punta a punta.
 //! 4. **Qué ve `self update` en cada canal.** El brazo `Update` se niega antes de tocar la
-//!    red o el disco cuando la detección dice `homebrew` o `dev`; `script` y `unmanaged`
+//!    red o el disco cuando la detección dice `homebrew`; `script` y `unmanaged`
 //!    siguen adelante. Es la misma detección de los puntos anteriores, ejercitada con las
 //!    entradas que ese brazo distingue.
 
@@ -29,20 +28,12 @@ mod support;
 use avi_core::exit_codes::ExitCode;
 use avi_lifecycle::channel::{self, Channel};
 use avi_lifecycle::cleanup;
-use avi_lifecycle::install::{self, Options as InstallOptions};
+use avi_lifecycle::install;
 use avi_lifecycle::receipt::{self, PathIntegration};
 use avi_lifecycle::uninstall;
 use support::{Inert, Now, Sandbox};
 
-/// Opciones de instalación desatendida sin provisión de modelos y con `--channel dev`.
-fn dev_options() -> InstallOptions {
-    InstallOptions {
-        channel: Some(Channel::Dev),
-        ..Sandbox::install_options()
-    }
-}
-
-/// Los cuatro canales se comportan como la tabla dice, en las operaciones de este
+/// Los tres canales se comportan como la tabla dice, en las operaciones de este
 /// ciclo.
 #[test]
 fn channels_behave_per_spec() {
@@ -85,10 +76,7 @@ fn channels_behave_per_spec() {
     let installed = runtime
         .block_on(install::install(
             &sandbox.install_env(&from_staging),
-            &InstallOptions {
-                channel: Some(Channel::Dev),
-                ..Sandbox::install_options()
-            },
+            &Sandbox::install_options(),
             &Inert,
         ))
         .expect("`self install` desde fuera de una instalación instala");
@@ -98,46 +86,22 @@ fn channels_behave_per_spec() {
         "el valor por defecto es `script`"
     );
 
-    // ── `--channel dev` solo cuando el recibo se crea por primera vez ──────────
-    // Es la opción oculta, y su regla es lo que hace que una instalación de
-    // desarrollo siga siendo `dev` después de una reparación.
-    let dev = Sandbox::new("channel-dev");
-    dev.seed_env();
-    let exe = dev.write_bundle(&dev.staging);
-    let first = runtime
-        .block_on(install::install(
-            &dev.install_env(&exe),
-            &dev_options(),
-            &Inert,
-        ))
-        .expect("`self install --channel dev` se completa");
-    assert_eq!(
-        first.receipt.channel,
-        Channel::Dev,
-        "`--channel dev` origina el canal `dev`"
-    );
-    assert_eq!(first.receipt.channel.as_str(), "dev");
-
-    let exe = dev.write_bundle(&dev.staging);
+    // ── Una reinstalación conserva el canal del recibo anterior ────────────────
+    let exe = sandbox.write_bundle(&sandbox.staging);
     let second = runtime
         .block_on(install::install(
-            &dev.install_env(&exe),
-            &dev_options(),
+            &sandbox.install_env(&exe),
+            &Sandbox::install_options(),
             &Inert,
         ))
         .expect("la segunda pasada se completa");
-    assert_eq!(
-        second.receipt.channel,
-        Channel::Dev,
-        "y una reparación conserva el canal, que es lo que hace que `self update` siga \
-         tratando la instalación como `dev`"
-    );
-    let on_disk = receipt::read_from(&dev.program_dir)
+    assert_eq!(second.receipt.channel, Channel::Script);
+    let on_disk = receipt::read_from(&sandbox.program_dir)
         .expect("se lee el recibo")
         .expect("el recibo existe");
     assert_eq!(
         on_disk.channel,
-        Channel::Dev,
+        Channel::Script,
         "y el recibo de disco lo dice"
     );
 
@@ -184,14 +148,9 @@ fn channels_behave_per_spec() {
         "y nada se toca, ni programa, ni estado, ni modelos"
     );
 
-    // `cleanup` sí opera en los cuatro canales: no depende del canal, y el estado de
+    // `cleanup` sí opera en los tres canales: no depende del canal, y el estado de
     // usuario es del usuario.
-    for channel in [
-        Channel::Script,
-        Channel::Dev,
-        Channel::Homebrew,
-        Channel::Unmanaged,
-    ] {
+    for channel in [Channel::Script, Channel::Homebrew, Channel::Unmanaged] {
         let s = Sandbox::new(&format!("cleanup-{channel}"));
         s.seed_env();
         s.seed_state();
@@ -315,10 +274,10 @@ fn env_over_registered<'a>(
     }
 }
 
-/// Lo que `self update` ve en cada canal: `homebrew` y `dev` son los dos
-/// que el brazo `Update` declara `externally_managed`, y `script` y `unmanaged` los que
+/// Lo que `self update` ve en cada canal: `homebrew` es el que el brazo `Update`
+/// declara `externally_managed`, y `script` y `unmanaged` los que
 /// siguen adelante. Es la misma detección de la prueba grande, ejercitada con las
-/// entradas que ese brazo distingue; la negativa sin tocar nada es el criterio 15 en
+/// entradas que ese brazo distingue; la negativa sin tocar nada vive en
 /// `tests/update.rs`.
 #[test]
 fn update_detects_managed_channels() {
@@ -339,27 +298,6 @@ fn update_detects_managed_channels() {
         "`self update` ve `homebrew` bajo el prefijo, aunque haya recibo de `script`"
     );
 
-    let dev_receipt = receipt::InstallReceipt::new(
-        "0.23.1",
-        avi_lifecycle::target::host_triple(),
-        Channel::Dev,
-        &sandbox.program_dir,
-        vec![uninstall::executable_name_default()],
-        PathIntegration::none(),
-        receipt::Roots {
-            data_dir: sandbox.data_dir.clone(),
-            cache_dir: sandbox.models_dir.clone(),
-        },
-        None,
-    );
-    assert_eq!(
-        channel::detect(
-            &sandbox.program_dir.join("ai-voice-interconnector"),
-            Some(&dev_receipt)
-        ),
-        Channel::Dev,
-        "`self update` ve `dev` cuando el recibo lo declara"
-    );
     assert_eq!(
         channel::detect(
             &sandbox.program_dir.join("ai-voice-interconnector"),

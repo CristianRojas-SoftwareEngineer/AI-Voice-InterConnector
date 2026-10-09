@@ -70,15 +70,14 @@ pub struct Journal {
     pub txid: String,
     pub state: JournalState,
     /// Directorio `.old-<txid>/` con el contenido anterior, si ya se aparcó.
-    #[serde(default)]
+    #[serde(deserialize_with = "crate::receipt::required")]
     pub parked_dir: Option<PathBuf>,
     /// Rutas relativas colocadas, necesarias para el rollback.
-    #[serde(default)]
     pub placed: Vec<String>,
     /// Directorio de origen del bundle. La colocación es un renombrado, así que
     /// revertir devuelve cada archivo a su sitio: sin esto, un fallo a mitad
     /// dejaría el staging vacío y el reintento instalaría nada.
-    #[serde(default)]
+    #[serde(deserialize_with = "crate::receipt::required")]
     pub source_dir: Option<PathBuf>,
 }
 

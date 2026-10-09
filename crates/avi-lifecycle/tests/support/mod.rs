@@ -291,7 +291,6 @@ impl Sandbox {
             no_setup: true,
             no_modify_path: false,
             force: false,
-            channel: None,
         }
     }
 

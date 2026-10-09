@@ -7,12 +7,10 @@
 //! instalación existente y no distingue ejecutar desde un bundle extraído a mano de
 //! ejecutar desde la propia instalación.
 //!
-//! **La opción oculta `--channel dev` vive aquí.** El comando que la
-//! invoca —`cargo xtask install`— ejecuta la otra mitad:
-//! `package --no-compress` sobre un staging hermano. Lo que aquí
-//! se fija es el otro valor del canal: **qué queda escrito en el recibo**, y que
-//! el valor surte efecto **solo cuando el recibo se crea por primera vez**, de modo
-//! que reparar una instalación no reescriba su canal.
+//! **El canal del recibo** es `script` cuando el recibo se crea por primera vez, y el
+//! del recibo anterior cuando se repara o se reemplaza una instalación, de modo que
+//! reparar no reescriba el canal. `cargo xtask install` empaqueta un staging hermano
+//! y delega aquí, igual que cualquier otra instalación.
 //!
 //! **El `PATH` se modifica en Unix por decisión cerrada D2**, se anuncia en el
 //! resumen y se revierte exactamente al desinstalar; `--no-modify-path` lo
@@ -202,9 +200,6 @@ pub struct Options {
     /// `--force`: resuelve un `path_conflict` del enlace simbólico. No es el
     /// `--force` de `uninstall`, que desaparece en T16.
     pub force: bool,
-    /// `--channel dev`, la opción oculta. Solo surte efecto cuando el recibo se crea
-    /// por primera vez.
-    pub channel: Option<Channel>,
 }
 
 impl Options {
@@ -448,7 +443,10 @@ pub async fn install(
     let executable = manifest::target_section(&env.target)?.executable_path();
 
     // ── Paso 3. Detectar la instalación previa ────────────────────────────────
-    let previous = receipt::read_from(&env.program_dir).ok().flatten();
+    // Un recibo ilegible aborta la instalación: solo la ausencia del fichero equivale
+    // a «sin instalación previa».
+    let previous = receipt::read_from(&env.program_dir)
+        .map_err(|e| LifecycleError::new("self_install_failed", e.to_string()))?;
     let replaces = previous.as_ref().map(|r| r.version.clone());
     // Una instalación ajena solo genera aviso de coexistencia y precedencia: no
     // bloquea, y es T14 quien produce `externally_managed` para Homebrew.
@@ -456,9 +454,6 @@ pub async fn install(
         .as_ref()
         .filter(|r| r.install_dir != env.program_dir)
         .map(|r| r.install_dir.clone());
-    // En una reparación, lo que hay en el directorio de programa es la instalación,
-    // así que exigir recibo no añade nada y convertiría una reparación de una
-    // instalación en canal `dev` sin recibo —que es un caso válido— en un error.
     let degradation = previous
         .as_ref()
         .is_some_and(|r| compare_versions(&env.version, &r.version) == std::cmp::Ordering::Less);
@@ -522,7 +517,7 @@ pub async fn install(
     let receipt = InstallReceipt::new(
         &env.version,
         &env.target,
-        resolve_channel(options, previous.as_ref()),
+        previous.as_ref().map_or(Channel::Script, |r| r.channel),
         &env.program_dir,
         files,
         path_integration.clone(),
@@ -742,13 +737,6 @@ fn machine_path_warning(env: &Env) -> Option<String> {
             crate::APP_NAME
         )
     })
-}
-
-/// Canal del recibo nuevo: `--channel dev` solo si el recibo se crea por
-/// primera vez. Reparar una instalación existente conserva su canal, que es lo que
-/// hace que `self update` siga trato una instalación `dev` como tal.
-pub fn resolve_channel(options: &Options, previous: Option<&InstallReceipt>) -> Channel {
-    previous.map_or_else(|| options.channel.unwrap_or(Channel::Script), |r| r.channel)
 }
 
 /// Origen del bundle en el recibo: el de la instalación anterior si la había, y si no
@@ -1135,29 +1123,6 @@ mod tests {
         assert_eq!(compare_versions("", "0.0.0"), Ordering::Equal);
     }
 
-    /// `--channel dev` solo surte efecto cuando el recibo se crea por
-    /// primera vez. Reparar una instalación existente conserva su canal: si no, una
-    /// reparación reescribiría el canal y `self update` dejaría de reconocer la
-    /// instalación como `dev`.
-    #[test]
-    fn channel_dev_only_on_first_receipt() {
-        let dev = Options {
-            channel: Some(Channel::Dev),
-            ..Options::default()
-        };
-        assert_eq!(resolve_channel(&dev, None), Channel::Dev);
-        assert_eq!(resolve_channel(&Options::default(), None), Channel::Script);
-
-        for channel in [Channel::Dev, Channel::Script, Channel::Unmanaged] {
-            let receipt = receipt_from(channel);
-            assert_eq!(
-                resolve_channel(&dev, Some(&receipt)),
-                channel,
-                "reparar conserva el canal {channel:?} aunque venga `--channel dev`"
-            );
-        }
-    }
-
     /// El recibo registra el origen de la instalación anterior, no el de la
     /// reparación: una reparación no cambia de dónde vino el bundle.
     #[test]
@@ -1231,23 +1196,6 @@ mod tests {
             .expect("el entorno se construye");
         assert_eq!(env.version, "9.9.9");
         assert_ne!(env.version, env!("CARGO_PKG_VERSION"));
-    }
-
-    fn receipt_from(channel: Channel) -> InstallReceipt {
-        let env = test_env();
-        InstallReceipt::new(
-            "0.23.1",
-            &env.target,
-            channel,
-            &env.program_dir,
-            vec!["ai-voice-interconnector".to_string()],
-            PathIntegration::none(),
-            Roots {
-                data_dir: env.data_dir.clone(),
-                cache_dir: env.models_dir.clone(),
-            },
-            None,
-        )
     }
 
     /// El resumen previo anuncia la descarga con el tamaño de la tabla de pines en

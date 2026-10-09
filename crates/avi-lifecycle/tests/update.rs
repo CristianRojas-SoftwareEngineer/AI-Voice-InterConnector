@@ -595,51 +595,6 @@ fn criterion_15_managed_channels_are_externally_managed() {
         before,
         "criterio 15: y nada se toca, ni programa ni estado"
     );
-
-    // `dev`: lo declara el recibo, como `cargo xtask install` lo deja.
-    let dev = Sandbox::new("c15-dev");
-    dev.seed_env();
-    let dev_receipt = InstallReceipt::new(
-        "0.23.1",
-        target::host_triple(),
-        Channel::Dev,
-        &dev.program_dir,
-        vec![uninstall::executable_name_default()],
-        PathIntegration::none(),
-        receipt::Roots {
-            data_dir: dev.data_dir.clone(),
-            cache_dir: dev.models_dir.clone(),
-        },
-        None,
-    );
-    support::write(
-        &dev.program_dir.join(uninstall::executable_name_default()),
-        "binario dev",
-    );
-    receipt::write_to(&dev_receipt, &dev.program_dir).expect("se escribe el recibo");
-    let before = dev.snapshot();
-    assert_eq!(
-        channel::detect(
-            &dev.program_dir.join(uninstall::executable_name_default()),
-            Some(&dev_receipt)
-        ),
-        Channel::Dev,
-        "criterio 15: el recibo declara el canal `dev`"
-    );
-    let failure = LifecycleError::externally_managed(
-        "esta instalación es del canal dev: actualiza con `cargo xtask install`",
-    );
-    assert_eq!(failure.reason, "externally_managed");
-    assert_eq!(ExitCode::from_reason(failure.reason).code(), 12);
-    assert!(
-        failure.message.contains("cargo xtask install"),
-        "criterio 15: el mensaje indica el comando correcto"
-    );
-    assert_eq!(
-        dev.snapshot(),
-        before,
-        "criterio 15: y nada se toca, ni programa ni estado"
-    );
 }
 
 // ─── Criterio 16 ────────────────────────────────────────────────────────────────

@@ -262,7 +262,7 @@ stream NDJSON de `/synthesize`, no un payload de una sola línea.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `version`, `target`, `channel` | string | Versión del binario, tripla del host y canal de instalación |
-| `install` | objeto | `dir`, `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`) y `version` |
+| `install` | objeto | `dir`, `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`/`invalid`) y `version` |
 | `path` | objeto | Resolución y duplicados en el `PATH`, integración y coexistencia |
 | `pending` | objeto | Restos de operaciones anteriores (transacción, aparcados, stagings, temporales) |
 | `models` | objeto | `root`, `shared_root`, `provisioned`, `missing` (modelos sin provisionar), `size_bytes` |
@@ -1006,7 +1006,7 @@ ai-voice-interconnector self update --force               # reinstala la misma v
 ai-voice-interconnector self update --no-setup --yes      # sin provisión y sin confirmación
 ```
 
-**Qué esperar:** resolución de la versión objetivo (sin API, con respaldo), comparación semántica (iguales → `already_up_to_date` sin descargar, éxito con 0), resumen y confirmación, descarga con SHA-256 y arranque verificado en staging, parada del daemon con el binario actual, traspaso al binario nuevo con las preferencias del recibo y resultado `anterior → nueva`. Sin reinicio automático del daemon: si estaba activo, el resumen indica cómo relanzarlo. Sin instalación → `not_installed` (3) con el one-liner; en canal `homebrew` o `dev` → `externally_managed` (12) con el comando correcto. Si la provisión del binario nuevo falla, el programa **queda actualizado** con `reason` `setup_failed` y salida **11**: es un éxito parcial y basta reintentar con `setup`.
+**Qué esperar:** resolución de la versión objetivo (sin API, con respaldo), comparación semántica (iguales → `already_up_to_date` sin descargar, éxito con 0), resumen y confirmación, descarga con SHA-256 y arranque verificado en staging, parada del daemon con el binario actual, traspaso al binario nuevo con las preferencias del recibo y resultado `anterior → nueva`. Sin reinicio automático del daemon: si estaba activo, el resumen indica cómo relanzarlo. Sin instalación → `not_installed` (3) con el one-liner; en canal `homebrew` → `externally_managed` (12) con el comando correcto. Un recibo de instalación ilegible hace fallar el comando (`self_update_failed`) con un mensaje que nombra el fichero. Si la provisión del binario nuevo falla, el programa **queda actualizado** con `reason` `setup_failed` y salida **11**: es un éxito parcial y basta reintentar con `setup`.
 
 - **macOS (Homebrew)**: `brew upgrade --cask ai-voice-interconnector`.
 
@@ -1163,7 +1163,7 @@ desde el binario como desde el código fuente. En concreto:
   | `9` | Fallo del pipeline de traducción | `translate` con el modelo cargado pero la inferencia falla |
   | `10` | Fallo del pipeline de transcripción | `speech transcribe`/`speech dub` con el modelo cargado pero la inferencia falla (directo o vía daemon) |
   | `11` | Provisión de modelos fallida, **programa instalado** | `self install` o `self update` terminan con la provisión sin completar: éxito parcial, reintentable con `setup` |
-  | `12` | La copia la gestiona otra herramienta | `self uninstall` sobre una instalación de Homebrew (o `self update` en canal `dev`) |
+  | `12` | La copia la gestiona otra herramienta | `self uninstall` o `self update` sobre una instalación de Homebrew |
   | `13` | Reemplazo revertido | Fallo al reemplazar la versión anterior; la anterior queda restaurada |
   | `14` | Conflicto en la ruta del enlace del `PATH` | Hay un archivo ajeno donde va el enlace (salvo `--force`) |
   | `15` | Bundle incompleto | `self install` desde un ejecutable sin bundle alrededor, p. ej. `target\debug` |

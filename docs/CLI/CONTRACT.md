@@ -169,7 +169,7 @@ Todos los subcomandos salvo `daemon serve` declaran `--json`, y la garantía es 
 | `cleanup` | `--model` · `--voices` · `--synthetic-speech` · `--all` · `--dry-run` · `--yes`/`-y` · `--json` | Vigente |
 | `doctor` | `--repair` · `--json` | Vigente |
 
-`--json` es **global** (`Cli::json`, `src/main.rs`): lo declara la raíz, no cada sub-acción, y por eso aparece en todas las filas. `--channel` es la única opción de `self install` que no aparece aquí porque está **oculta** (`hide = true`): la reserva `cargo xtask install` (§9.5 de la especificación), y solo surte efecto cuando el recibo se crea por primera vez.
+`--json` es **global** (`Cli::json`, `src/main.rs`): lo declara la raíz, no cada sub-acción, y por eso aparece en todas las filas. `self install` no tiene opciones ocultas ni de canal.
 
 **`self install` tiene además un modo que no es un flag.** El modo lo decide la posición del ejecutable, no una opción: dentro del directorio de programa **repara** en vez de instalar, y un ejecutable sin bundle alrededor (por ejemplo `target\debug`) sale con `bundle_invalid` (15) indicando `cargo xtask install` ([`commands/SELF.md`](commands/SELF.md)).
 
@@ -496,7 +496,7 @@ La etiqueta y el nombre de voz son la misma clase de identificador: un segmento 
 | `9` | `ExitCode::TranslationFailed` | El pipeline de traducción falló con el modelo ya cargado |
 | `10` | `ExitCode::TranscriptionFailed` | El pipeline de transcripción o la captura del micrófono falló; un audio ausente (3), ilegible (2) o con error de E/S (1) no es de esta clase |
 | `11` | `ExitCode::SetupFailed` | La provisión de modelos falló y el programa **queda instalado**: éxito parcial, reintentable con `setup` |
-| `12` | `ExitCode::ExternallyManaged` | La copia la gestiona otra herramienta (Homebrew, o el canal `dev` para `self update`) |
+| `12` | `ExitCode::ExternallyManaged` | La copia la gestiona otra herramienta (Homebrew) |
 | `13` | `ExitCode::RolledBack` | Fallo durante el reemplazo; la versión anterior quedó restaurada |
 | `14` | `ExitCode::PathConflict` | En la ruta del enlace hay un archivo ajeno; nada del plan se aplica |
 | `15` | `ExitCode::BundleInvalid` | Falta un archivo obligatorio del bundle alrededor del ejecutable; nada modificado |
@@ -690,7 +690,7 @@ Son **dos, independientes**: el envelope de la CLI va por `"5"` y el protocolo d
 | Sub-acción | Qué hace | `reason` de éxito parcial o de fallo |
 |---|---|---|
 | `self install` | Instala el bundle del que forma parte el ejecutable, o **repara** la instalación si se ejecuta desde ella; aplica al final la misma provisión que `setup` salvo `--no-setup` | `setup_failed` (11) con el programa instalado |
-| `self update` | Actualiza la instalación registrada a la última estable o a `--version X.Y.Z`, con verificación y traspaso al binario nuevo; `--check` solo informa | `already_up_to_date` (0) sin descargar; `not_installed` (3) sin instalación; `externally_managed` (12) en `homebrew`/`dev`; `setup_failed` (11) parcial; `unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20), `checksum_mismatch` (21) |
+| `self update` | Actualiza la instalación registrada a la última estable o a `--version X.Y.Z`, con verificación y traspaso al binario nuevo; `--check` solo informa | `already_up_to_date` (0) sin descargar; `not_installed` (3) sin instalación; `externally_managed` (12) en `homebrew`; `setup_failed` (11) parcial; `unsupported_platform` (18), `binary_incompatible` (19), `network_error` (20), `checksum_mismatch` (21) |
 | `self uninstall` | Borra el estado, revierte el `PATH` según el recibo y borra el directorio de programa aplicando R2 | `program_dir_kept` (22) si el directorio de programa no se pudo borrar ni programar su borrado |
 
 **`self uninstall` sin `--keep-data` borra la raíz de datos entera, no el plan de `cleanup --all`.** La diferencia es deliberada y está en `uninstall::compose_plan`: `cleanup --all` protege las voces de fábrica (`default`, `ryan`, `vivian`) porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar. Al desinstalar **el programa desaparece**, y con él las voces de fábrica: dejarlas sería residuo dentro de una raíz de propiedad exclusiva, que es exactamente lo que prohíbe el criterio 17. Con `--keep-data` sí se aplica el plan de `cleanup --all` **filtrado** —modelos, voces y habla quedan fuera— y el directorio de programa se borra igualmente.

@@ -8,10 +8,11 @@
 //! temporal hermano y renombrado, de modo que un corte a mitad no deje un
 //! recibo corrupto que la siguiente ejecución no pueda leer.
 //!
-//! **Lectura tolerante**: los campos desconocidos se ignoran, para que un
-//! binario antiguo pueda leer un recibo nuevo. Un `schema_version` mayor que el
-//! soportado aborta la operación con un mensaje que pide actualizar, porque un
-//! binario antiguo no puede saber qué hizo con el disco el nuevo.
+//! **Lectura estricta**: el recibo debe tener exactamente el esquema vigente.
+//! Un campo desconocido, un campo ausente o un `schema_version` distinto del
+//! soportado es un error, y la operación que lo lee falla nombrando el fichero.
+//! `Ok(None)` significa únicamente que el fichero no existe: un recibo ilegible
+//! nunca se trata como ausente.
 //!
 //! **Los valores efectivos de las raíces se registran** (`roots`): aunque la
 //! variable de reubicación deje de estar definida, la actualización y la
@@ -34,19 +35,30 @@ pub const RECEIPT_SCHEMA_VERSION: u32 = 1;
 /// no aplique es `null` y no una cadena vacía, para que se distinga "no se
 /// integró" de "se integró a vacío".
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PathIntegration {
     /// `false` si se pasó `--no-modify-path`: el comando se invoca por su ruta
     /// completa y no se toca ningún perfil ni el registro.
     pub modify_path: bool,
     /// Enlace simbólico del directorio del enlace, en Unix.
-    #[serde(default)]
+    #[serde(deserialize_with = "required")]
     pub symlink: Option<PathBuf>,
     /// Archivos de arranque de shell con el bloque delimitado, en Unix.
-    #[serde(default)]
+    #[serde(deserialize_with = "required")]
     pub profile_blocks: Option<Vec<PathBuf>>,
     /// Entrada añadida al valor `Path` de `HKCU\Environment`, en Windows.
-    #[serde(default)]
+    #[serde(deserialize_with = "required")]
     pub registry_entry: Option<PathBuf>,
+}
+
+/// Deserializa un campo opcional exigiendo que la clave exista: el recibo escribe
+/// `null` para lo que no aplica, así que una clave ausente es un recibo mal formado.
+pub(crate) fn required<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 impl PathIntegration {
@@ -82,6 +94,7 @@ impl PathIntegration {
 /// nombres de variable, para que una desinstalación posterior no dependa de que
 /// la variable siga definida.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Roots {
     pub data_dir: PathBuf,
     pub cache_dir: PathBuf,
@@ -90,6 +103,7 @@ pub struct Roots {
 /// Recibo de instalación completo, con la estructura que el instalador escribe y
 /// sin campos inventados.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstallReceipt {
     pub schema_version: u32,
     pub app: String,
@@ -104,9 +118,9 @@ pub struct InstallReceipt {
     pub roots: Roots,
     /// Instante de la instalación en RFC 3339 UTC.
     pub installed_at: String,
-    /// Origen del bundle, si la instalación vino de un archivo publicado; vacío
-    /// para una reparación o para el canal `dev`.
-    #[serde(default)]
+    /// Origen del bundle, si la instalación vino de un archivo publicado; `null`
+    /// para una reparación.
+    #[serde(deserialize_with = "required")]
     pub source: Option<String>,
 }
 
@@ -163,37 +177,44 @@ pub fn receipt_path(program_dir: &Path) -> PathBuf {
     program_dir.join(RECEIPT_NAME)
 }
 
-/// Lee el recibo del directorio de programa. `Ok(None)` si no hay recibo: una
-/// instalación sin recibo **no se adopta**, se trata como no instalada.
+/// Lee el recibo del directorio de programa. `Ok(None)` solo si el fichero no
+/// existe: una instalación sin recibo **no se adopta**, se trata como no instalada.
+/// Un fichero que no se puede leer o que no cumple el esquema es un error cuyo
+/// mensaje nombra la ruta del recibo.
 pub fn read_from(program_dir: &Path) -> anyhow::Result<Option<InstallReceipt>> {
     let path = receipt_path(program_dir);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(e.into()),
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "no se pudo leer el recibo de instalación {}: {e}",
+                path.display()
+            ))
+        }
     };
-    Ok(Some(parse(&text)?))
+    parse(&text).map(Some).map_err(|e| {
+        anyhow::anyhow!(
+            "el recibo de instalación {} es ilegible: {e}",
+            path.display()
+        )
+    })
 }
 
-/// Parsea un recibo, exigiendo que su `schema_version` sea compatible.
+/// Parsea un recibo, exigiendo que su `schema_version` sea exactamente el vigente.
 pub fn parse(text: &str) -> anyhow::Result<InstallReceipt> {
-    let value: serde_json::Value = serde_json::from_str(text)
-        .map_err(|e| anyhow::anyhow!("el recibo de instalación no es JSON válido: {e}"))?;
+    let value: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| anyhow::anyhow!("no es JSON válido: {e}"))?;
     let declared = value
         .get("schema_version")
         .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| {
-            anyhow::anyhow!("el recibo de instalación no declara `schema_version`: {text}")
-        })?;
-    if declared > u64::from(RECEIPT_SCHEMA_VERSION) {
+        .ok_or_else(|| anyhow::anyhow!("no declara `schema_version`"))?;
+    if declared != u64::from(RECEIPT_SCHEMA_VERSION) {
         return Err(anyhow::anyhow!(
-            "el recibo declara schema_version {declared} y esta versión de {} solo \
-             entiende hasta {RECEIPT_SCHEMA_VERSION}: actualiza {} para gestionarlo",
-            crate::APP_NAME,
-            crate::APP_NAME
+            "declara schema_version {declared} y solo se admite {RECEIPT_SCHEMA_VERSION}"
         ));
     }
-    Ok(serde_json::from_value(value)?)
+    serde_json::from_value(value).map_err(|e| anyhow::anyhow!("no cumple el esquema: {e}"))
 }
 
 /// Escribe el recibo de forma atómica: temporal hermano, escritura, renombrado
@@ -322,76 +343,85 @@ mod tests {
         assert_eq!(read_from(&scratch("receipt-empty")).unwrap(), None);
     }
 
-    /// Los campos desconocidos se ignoran: un binario antiguo puede leer un
-    /// recibo escrito por uno nuevo.
+    /// Un campo desconocido, en la raíz o anidado, hace ilegible el recibo y el
+    /// error nombra el campo y el fichero.
     #[test]
-    fn receipt_ignores_unknown_fields() {
+    fn receipt_rejects_unknown_fields() {
         let dir = scratch("receipt-unknown");
-        let mut text =
-            serde_json::to_string_pretty(&sample_receipt()).expect("el recibo se serializa");
-        // Campo nuevo en la raíz, en `path_integration` y en `roots`.
-        text = text.replacen(
-            "{",
-            "{\n  \"campo_del_futuro\": {\"anidado\": [1, 2, 3]},",
-            1,
-        );
-        text = text.replacen(
-            "\"path_integration\": {",
-            "\"path_integration\": {\n    \"future_field\": 42,",
-            1,
-        );
-        text = text.replacen(
-            "\"roots\": {",
-            "\"roots\": {\n    \"future_root\": null,",
-            1,
-        );
-        std::fs::write(receipt_path(&dir), text).unwrap();
-
-        let mut loaded = read_from(&dir).unwrap().expect("el recibo se lee");
-        let original = sample_receipt();
-        // `installed_at` se afirma por separado: dos recibos construidos en el
-        // mismo segundo tienen la misma fecha, y en el siguiente no, así que
-        // compararlo aquí haría la prueba intermitente.
-        loaded.installed_at = original.installed_at.clone();
-        assert_eq!(loaded, original, "lo desconocido no altera lo conocido");
-        assert_eq!(
-            loaded.path_integration.symlink,
-            original.path_integration.symlink
-        );
-
-        // Y en el otro sentido: un recibo sin `source` (campo opcional) también
-        // se lee, porque es opcional por definición.
-        let mut without_source = sample_receipt();
-        without_source.source = None;
-        write_to(&without_source, &dir).unwrap();
-        assert_eq!(read_from(&dir).unwrap().unwrap().source, None);
+        let base = serde_json::to_string_pretty(&sample_receipt()).expect("se serializa");
+        for (anchor, extra) in [
+            ("{", "{\n  \"campo_extra\": 1,"),
+            (
+                "\"path_integration\": {",
+                "\"path_integration\": {\n    \"campo_extra\": 42,",
+            ),
+            ("\"roots\": {", "\"roots\": {\n    \"campo_extra\": null,"),
+        ] {
+            std::fs::write(receipt_path(&dir), base.replacen(anchor, extra, 1)).unwrap();
+            let message = read_from(&dir).unwrap_err().to_string();
+            assert!(
+                message.contains("campo_extra") && message.contains(RECEIPT_NAME),
+                "el error nombra el campo y el fichero: {message}"
+            );
+        }
     }
 
-    /// Un `schema_version` mayor aborta con un mensaje que pide actualizar, y
-    /// uno menor se lee.
+    /// Cada clave opcional debe estar presente (con `null` si no aplica): su
+    /// ausencia es un recibo mal formado, no un `None`.
     #[test]
-    fn receipt_rejects_newer_schema() {
-        let dir = scratch("receipt-schema");
-        let mut text = serde_json::to_string(&sample_receipt()).expect("el recibo se serializa");
-        text = text.replacen("\"schema_version\":1", "\"schema_version\":2", 1);
-        std::fs::write(receipt_path(&dir), text).unwrap();
-        let err = read_from(&dir).unwrap_err();
-        let message = err.to_string();
-        assert!(
-            message.contains('2') && message.contains("actualiza"),
-            "el mensaje nombra la versión y pide actualizar: {message}"
-        );
-        assert!(
-            read_from(&dir).is_err(),
-            "un recibo más nuevo aborta la operación"
-        );
+    fn receipt_requires_optional_keys() {
+        let dir = scratch("receipt-missing-keys");
+        for key in ["source", "symlink", "profile_blocks", "registry_entry"] {
+            let mut value = serde_json::to_value(sample_receipt()).expect("se serializa");
+            let object = if key == "source" {
+                value.as_object_mut()
+            } else {
+                value["path_integration"].as_object_mut()
+            }
+            .expect("es un objeto");
+            assert!(object.remove(key).is_some(), "el recibo escribe `{key}`");
+            std::fs::write(receipt_path(&dir), value.to_string()).unwrap();
+            let message = read_from(&dir).unwrap_err().to_string();
+            assert!(
+                message.contains(key),
+                "sin `{key}` el recibo es ilegible: {message}"
+            );
+        }
+    }
 
-        // Sin `schema_version` tampoco hay recibo utilizable: se dice por qué.
+    /// Solo se admite el `schema_version` vigente: ni mayor, ni menor, ni
+    /// ausente; y un texto que no es JSON tampoco se lee.
+    #[test]
+    fn receipt_requires_the_current_schema_version() {
+        let dir = scratch("receipt-schema");
+        for declared in ["0", "2"] {
+            let text = serde_json::to_string(&sample_receipt())
+                .expect("el recibo se serializa")
+                .replacen(
+                    "\"schema_version\":1",
+                    &format!("\"schema_version\":{declared}"),
+                    1,
+                );
+            std::fs::write(receipt_path(&dir), text).unwrap();
+            let message = read_from(&dir).unwrap_err().to_string();
+            assert!(
+                message.contains(declared) && message.contains(RECEIPT_NAME),
+                "el mensaje nombra la versión y el fichero: {message}"
+            );
+        }
+
         std::fs::write(receipt_path(&dir), "{\"app\":\"x\"}").unwrap();
         let err = read_from(&dir).unwrap_err();
         assert!(
             err.to_string().contains("schema_version"),
             "recibo sin schema_version: {err}"
+        );
+
+        std::fs::write(receipt_path(&dir), "no es JSON").unwrap();
+        let err = read_from(&dir).unwrap_err();
+        assert!(
+            err.to_string().contains("JSON"),
+            "recibo que no es JSON: {err}"
         );
     }
 
@@ -414,7 +444,7 @@ mod tests {
         let receipt = InstallReceipt::new(
             "0.24.0",
             crate::target::host_triple(),
-            Channel::Dev,
+            Channel::Script,
             &dir,
             vec!["ai-voice-interconnector".to_string()],
             PathIntegration::none(),

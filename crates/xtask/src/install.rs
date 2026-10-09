@@ -2,10 +2,9 @@
 //!
 //! Ejecuta `package --no-compress` en un staging hermano del directorio de
 //! programa (mismo volumen) y después
-//! `<staging>/ai-voice-interconnector self install --channel dev` (`--channel`
-//! es la opción oculta del producto): el build local queda instalado por el
-//! mismo camino que un release, de modo que cada instalación de desarrollo
-//! ejercita el instalador real y queda marcada `dev` (criterio 26). Con
+//! `<staging>/ai-voice-interconnector self install`: el build local queda
+//! instalado por el mismo camino que un release, de modo que cada instalación de
+//! desarrollo ejercita el instalador real. Con
 //! `--no-setup` la delegación tampoco provisiona modelos. El staging se borra
 //! siempre, con éxito o con error, y el código de salida se propaga.
 //! Sin red ni instalación real en los tests: los argumentos delegados, la
@@ -24,15 +23,10 @@ fn product_bin_name() -> &'static str {
     }
 }
 
-/// Argumentos de la delegación: `self install --channel dev`, más
+/// Argumentos de la delegación: `self install`, más
 /// `--no-setup` cuando se pide. Puros, fijados por test.
 pub(crate) fn delegate_args(no_setup: bool) -> Vec<String> {
-    let mut args = vec![
-        "self".to_string(),
-        "install".to_string(),
-        "--channel".to_string(),
-        "dev".to_string(),
-    ];
+    let mut args = vec!["self".to_string(), "install".to_string()];
     if no_setup {
         args.push("--no-setup".to_string());
     }
@@ -138,11 +132,11 @@ pub fn run(no_setup: bool) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {}: {e}", binary.display()))?;
     if !status.success() {
         bail!(
-            "`self install --channel dev` falló (exit {:?}): el staging ya se borró",
+            "`self install` falló (exit {:?}): el staging ya se borró",
             status.code()
         );
     }
-    println!("Instalación dev completada (canal dev).");
+    println!("Instalación local completada.");
     Ok(())
 }
 
@@ -150,18 +144,12 @@ pub fn run(no_setup: bool) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// La delegación fija el canal `dev` (opción oculta del producto) y
-    /// propaga `--no-setup` solo cuando se pide.
+    /// La delegación invoca `self install` sin canal y propaga `--no-setup` solo
+    /// cuando se pide.
     #[test]
-    fn delegation_pins_dev_channel() {
-        assert_eq!(
-            delegate_args(false),
-            ["self", "install", "--channel", "dev"]
-        );
-        assert_eq!(
-            delegate_args(true),
-            ["self", "install", "--channel", "dev", "--no-setup"]
-        );
+    fn delegation_args_install_without_channel() {
+        assert_eq!(delegate_args(false), ["self", "install"]);
+        assert_eq!(delegate_args(true), ["self", "install", "--no-setup"]);
     }
 
     /// El binario se resuelve en la raíz del árbol y, como repliegue, un

@@ -112,10 +112,18 @@ impl Roots {
     /// Raíces del producto resueltas ahora, que es lo que usa el binario. El
     /// directorio de programa es el registrado, el mismo que usan `self update` y
     /// `self uninstall`, para que todas las operaciones tomen el mismo bloqueo.
-    pub fn resolve() -> Self {
+    /// Falla si el recibo existe pero es ilegible.
+    pub fn resolve() -> anyhow::Result<Self> {
+        Ok(Self::with_program_dir(
+            crate::channel::registered_program_dir()?,
+        ))
+    }
+
+    /// Raíces del entorno con el directorio de programa ya decidido.
+    fn with_program_dir(program_dir: PathBuf) -> Self {
         let models_dir = crate::models_cache_dir();
         Self {
-            program_dir: crate::channel::registered_program_dir(),
+            program_dir,
             data_dir: crate::data_dir(),
             models_shared: is_shared_models_root(&models_dir),
             models_dir,
@@ -132,9 +140,8 @@ impl Roots {
     /// recibo, así que la actualización y la desinstalación operan sobre las mismas
     /// ubicaciones aunque la variable ya no esté definida.
     pub fn from_receipt(receipt: Option<&InstallReceipt>) -> Self {
-        let mut roots = Self::resolve();
+        let mut roots = Self::with_program_dir(crate::channel::registered_install_dir(receipt));
         if let Some(receipt) = receipt {
-            roots.program_dir = receipt.install_dir.clone();
             roots.data_dir = receipt.roots.data_dir.clone();
             roots.models_dir = receipt.roots.cache_dir.clone();
         }
