@@ -92,7 +92,7 @@ pub struct DaemonState {
     /// Señal de cierre compartida: `shutdown_handler` notifica y `run_daemon_server`
     /// la observa para el graceful shutdown. Evita `process::exit` dentro del
     /// runtime tokio de `axum::serve`, que no termina fiablemente el proceso en
-    /// Windows (causa raíz del cuelgue de los E2E). Al cerrar de forma natural se
+    /// Windows. Al cerrar de forma natural se
     /// ejecutan los `Drop` (matando al `Qwen3TtsResident` y `qwen_tts.exe`).
     pub shutdown_notify: Arc<tokio::sync::Notify>,
     /// Registro en disco del daemon y de su residente: el daemon es el único
@@ -204,7 +204,8 @@ fn with_sv(val: Value) -> Value {
 /// `SendError` devuelve la línea, así que el evento perdido se imprime entero
 /// sin copiarlo antes.
 async fn emit_ndjson(tx: &tokio::sync::mpsc::Sender<String>, event: Value) {
-    let line = serde_json::to_string(&with_sv(event)).unwrap_or_default();
+    let line = serde_json::to_string(&with_sv(event))
+        .expect("un `Value` siempre se serializa: sus claves son cadenas");
     if let Err(e) = tx.send(line).await {
         eprintln!(
             "aviso: evento NDJSON perdido, el canal está cerrado: {}",
@@ -432,9 +433,7 @@ fn health_body(warm_label: &str, warm_error: Option<String>) -> Value {
 /// Separa la mutación `cfg`-gated del handler para que `health_handler` no
 /// requiera `#[allow(unused_mut)]` cuando ningún feature está activo: la
 /// mutabilidad vive dentro de esta función, donde cada `cfg` la usa.
-fn enrich_health_body(body: Value, state: &DaemonState) -> Value {
-    // Uso determinista de `state` incluso sin features (evita `unused variable` sin `allow`).
-    let _ = state as &DaemonState;
+fn enrich_health_body(body: Value, _state: &DaemonState) -> Value {
     #[cfg(any(feature = "native-stt", feature = "native-translation"))]
     let mut body = body;
     #[cfg(feature = "native-stt")]
@@ -443,7 +442,7 @@ fn enrich_health_body(body: Value, state: &DaemonState) -> Value {
     }
     #[cfg(feature = "native-translation")]
     {
-        if state.ct2_engine.is_some() {
+        if _state.ct2_engine.is_some() {
             body["ct2"] = Value::String("warm".into());
         }
     }
@@ -789,8 +788,7 @@ async fn synthesize_handler(
 
 /// POST /transcribe — transcripción de audio (PCM int16 base64)
 ///
-/// Contrato vigente: el campo es `audio_b64` (no
-/// `audio_pcm_base64`); el audio es PCM i16 little-endian 16 kHz mono; la
+/// El campo es `audio_b64`; el audio es PCM i16 little-endian 16 kHz mono; la
 /// respuesta exitosa es `TranscribeResponse{text}`.
 #[cfg(feature = "native-stt")]
 async fn transcribe_handler(
@@ -1357,6 +1355,49 @@ async fn voices_clone_handler(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
+/// Respuesta JSON plana de error de entrada con su `reason`.
+fn input_error_response(reason: &str, message: String) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(with_sv(json!({
+            "status": "error",
+            "reason": reason,
+            "message": message,
+        }))),
+    )
+        .into_response()
+}
+
+/// Audio de `/dub` decodificado a PCM de 16 kHz mono 16 bits.
+fn dub_pcm(payload: &Value) -> Result<Vec<i16>, InputError> {
+    let audio_b64 = payload
+        .get("audio_b64")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            InputError::usage("La petición no incluye el campo 'audio_b64'.".to_string())
+        })?;
+    let audio_bytes = base64::engine::general_purpose::STANDARD
+        .decode(audio_b64)
+        .map_err(|e| InputError {
+            reason: "invalid_audio",
+            message: format!("audio_b64 no decodificable: {}", e),
+        })?;
+    Ok(audio_bytes
+        .chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]))
+        .collect())
+}
+
+/// Voz, idiomas de origen y destino y temperatura opcional de `/dub`.
+fn dub_fields(payload: &Value) -> Result<(String, String, String, Option<f32>), InputError> {
+    Ok((
+        required_str(payload, "voice")?.to_string(),
+        required_language(payload, "source_language")?.to_string(),
+        required_language(payload, "target_language")?.to_string(),
+        optional_temperature(payload)?,
+    ))
+}
+
 /// POST /dub — pipeline voz→voz (transcribe→translate→synthesize), servido
 /// como stream NDJSON con latidos: `started` tras las validaciones
 /// baratas (audio, par/CT2, modelo, voz y rama sin `native-stt`, en JSON plano
@@ -1365,65 +1406,16 @@ async fn voices_clone_handler(
 /// La fase de síntesis la gobierna `run_synthesis_phase`: latidos en cola,
 /// presupuesto proporcional al texto y cancelación del trabajo en el motor al
 /// vencer o al desconectarse el cliente.
-async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value>) -> Response {
-    let audio_b64 = match payload.get("audio_b64").and_then(|v| v.as_str()) {
-        Some(s) => s,
-        None => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": "usage_error",
-                    "message": "La petición no incluye el campo 'audio_b64'.",
-                }))),
-            )
-                .into_response();
-        }
-    };
-    let audio_bytes = match base64::engine::general_purpose::STANDARD.decode(audio_b64) {
-        Ok(b) => b,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": "invalid_audio",
-                    "message": format!("audio_b64 no decodificable: {}", e),
-                }))),
-            )
-                .into_response();
-        }
-    };
-    let pcm: Vec<i16> = audio_bytes
-        .chunks_exact(2)
-        .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    let fields = (|| {
-        Ok::<_, InputError>((
-            required_str(&payload, "voice")?.to_string(),
-            required_language(&payload, "source_language")?.to_string(),
-            required_language(&payload, "target_language")?.to_string(),
-            optional_temperature(&payload)?,
-        ))
-    })();
-    let (voice, source_iso, target_iso, temperature) = match fields {
-        Ok(fields) => fields,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(with_sv(json!({
-                    "status": "error",
-                    "reason": e.reason,
-                    "message": e.message,
-                }))),
-            )
-                .into_response();
-        }
-    };
+async fn dub_handler(
+    #[cfg(feature = "native-stt")] State(state): State<SharedState>,
+    Json(payload): Json<Value>,
+) -> Response {
     // Transcripción — requiere `native-stt`; sin el feature el pipeline no puede arrancar.
     #[cfg(not(feature = "native-stt"))]
     {
-        let _ = (&state, &pcm, &voice, &source_iso, &target_iso, &temperature);
+        if let Err(e) = dub_pcm(&payload).and_then(|_| dub_fields(&payload)) {
+            return input_error_response(e.reason, e.message);
+        }
         (
             StatusCode::NOT_IMPLEMENTED,
             Json(with_sv(json!({
@@ -1434,11 +1426,21 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
         )
             .into_response()
     }
+    #[cfg(feature = "native-stt")]
+    let pcm = match dub_pcm(&payload) {
+        Ok(pcm) => pcm,
+        Err(e) => return input_error_response(e.reason, e.message),
+    };
+    #[cfg(feature = "native-stt")]
+    let (voice, source_iso, target_iso, temperature) = match dub_fields(&payload) {
+        Ok(fields) => fields,
+        Err(e) => return input_error_response(e.reason, e.message),
+    };
     // Validaciones baratas ANTES del stream (JSON plano con los códigos de
     // siempre; `started` solo se emite cuando el trabajo pesado va a arrancar).
-    // Se adelantan aquí los chequeos por parámetros (par, CT2, feature, modelo,
-    // voz) que antes corrían tras transcribir: solo cambia la precedencia cuando
-    // varios fallos coinciden (barato-primero), nunca el código de cada fallo.
+    // Los chequeos por parámetros (par, CT2, feature, modelo, voz) corren antes
+    // de transcribir: con varios fallos a la vez gana el más barato de detectar,
+    // y cada fallo conserva su código.
     // Duración máxima del audio (PCM 16 kHz mono): se rechaza antes de arrancar
     // cualquier trabajo pesado.
     #[cfg(feature = "native-stt")]
@@ -1810,18 +1812,18 @@ async fn dub_handler(State(state): State<SharedState>, Json(payload): Json<Value
 ///
 /// Notifica `state.shutdown_notify` en vez de llamar a `process::exit`: `exit`
 /// dentro del runtime tokio de `axum::serve` no termina fiablemente el proceso
-/// en Windows (la task async donde se dispara puede no completarse), dejando el
-/// daemon —y con él el `Qwen3TtsResident` más su hijo `qwen_tts.exe`— vivos,
-/// causa raíz del cuelgue de los E2E de `cli_golden`. Al notificar,
-/// `with_graceful_shutdown` cierra el runtime de forma natural y corre los
-/// `Drop` del `Arc<DaemonState>` compartido (que matan al residente) antes del
-/// exit.
+/// en Windows (la task async donde se dispara puede no completarse), y dejaría
+/// vivos al daemon y, con él, al `Qwen3TtsResident` y su hijo `qwen_tts.exe`.
+/// Al notificar, `with_graceful_shutdown` cierra el runtime de forma natural y
+/// corre los `Drop` del `Arc<DaemonState>` compartido (que matan al residente)
+/// antes del exit.
 async fn shutdown_handler(State(state): State<SharedState>) -> impl IntoResponse {
     // 1) Detener el residente qwen_tts. `Qwen3TtsEngine::shutdown` es NO BLOQUEANTE:
-    //    mata el árbol preciso por PID (sin tomar el `Mutex<resident>` que el hilo
-    //    `spawn_blocking(warmup)` retiene durante el spawn + healthcheck + síntesis,
-    //    causa raíz del deadlock anterior) y libera el residente con `try_lock`;
-    //    el kill por imagen queda solo como último recurso documentado.
+    //    mata el árbol del residente solo por su PID registrado con identidad (daemon
+    //    y CLI comparten ejecutable, por lo que nunca se mata por nombre de imagen)
+    //    y sin tomar el `Mutex<resident>` que el hilo `spawn_blocking(warmup)` retiene
+    //    durante el spawn + healthcheck + síntesis, lo que bloquearía el apagado;
+    //    libera el residente con `try_lock`.
     //    Se mantiene sincrónico y breve para que las conexiones HTTP keep-alive del
     //    residente se liberen antes de notificar el cierre del servidor.
     state.tts_engine.shutdown();
@@ -2015,44 +2017,61 @@ pub enum ReadySignal {
 
 /// Publica `content` en el fichero ready con escritura atómica (temporal
 /// hermano + rename), de modo que un lector nunca ve un registro a medias.
-/// Best-effort con diagnóstico: un fallo de señalización no derriba el daemon
-/// (el evento en stderr sigue valiendo como diagnóstico redundante).
-fn publish_ready_record(path: &std::path::Path, content: &str) {
+/// Un fallo de escritura o de rename se devuelve con la ruta: sin fichero ready
+/// el padre no puede saber que el daemon está listo.
+fn publish_ready_record(path: &std::path::Path, content: &str) -> anyhow::Result<()> {
     let tmp = path.with_extension("ready.tmp");
-    if std::fs::write(&tmp, content).is_err() {
-        eprintln!(
-            "aviso: no se pudo escribir el fichero ready {}",
+    std::fs::write(&tmp, content).map_err(|e| {
+        anyhow::anyhow!(
+            "no se pudo escribir el fichero ready {}: {e}",
+            tmp.display()
+        )
+    })?;
+    std::fs::rename(&tmp, path).map_err(|e| {
+        anyhow::anyhow!(
+            "no se pudo publicar el fichero ready {}: {e}",
             path.display()
-        );
-        return;
-    }
-    if std::fs::rename(&tmp, path).is_err() {
-        eprintln!(
-            "aviso: no se pudo publicar el fichero ready {}",
-            path.display()
-        );
-    }
+        )
+    })
 }
 
-/// Publica el registro de éxito: `addr` + `warm` + el PID propio.
-fn write_ready_file(path: &std::path::Path, addr: &SocketAddr, warm: &str) {
-    // El PID propio permite reclamar el árbol si el padre cae sin escribir o
-    // sin limpiar el pidfile: con puertos efímeros el ready es entonces la
-    // única pista de qué proceso matar.
-    let mut content = format!("addr={}\nwarm={}\npid={}\n", addr, warm, std::process::id());
-    // La identidad propia permite distinguir, tras un apagado abrupto, a este
-    // proceso de otro programa al que el sistema reasigne el PID.
-    if let Some(identity) = avi_process::process_identity(std::process::id()) {
-        content.push_str(&format!(
-            "start={}\nimage={}\n",
-            identity.start, identity.image
-        ));
-    }
-    publish_ready_record(path, &content);
+/// Contenido del registro de éxito: `addr` + `warm` + el PID propio + la
+/// identidad del proceso (`start` e `image`).
+///
+/// El PID propio permite reclamar el árbol si el padre cae sin escribir o sin
+/// limpiar el pidfile: con puertos efímeros el ready es entonces la única pista
+/// de qué proceso matar. La identidad distingue, tras un apagado abrupto, a este
+/// proceso de otro programa al que el sistema reasigne el PID, por lo que su
+/// ausencia es un error y no se publica un registro sin ella.
+fn ready_success_content(
+    addr: &SocketAddr,
+    warm: &str,
+    identity: Option<avi_process::ProcessIdentity>,
+) -> anyhow::Result<String> {
+    let identity = identity.ok_or_else(|| {
+        anyhow::anyhow!(
+            "no se pudo observar la identidad del proceso del daemon (pid {}): sin ella el fichero ready no identifica a este proceso",
+            std::process::id()
+        )
+    })?;
+    Ok(format!(
+        "addr={}\nwarm={}\npid={}\nstart={}\nimage={}\n",
+        addr,
+        warm,
+        std::process::id(),
+        identity.start,
+        identity.image
+    ))
+}
+
+/// Publica el registro de éxito de este proceso.
+fn write_ready_file(path: &std::path::Path, addr: &SocketAddr, warm: &str) -> anyhow::Result<()> {
+    let identity = avi_process::process_identity(std::process::id());
+    publish_ready_record(path, &ready_success_content(addr, warm, identity)?)
 }
 
 /// Publica el registro de fallo de un arranque que no llegó a estar listo.
-fn write_ready_failure(path: &std::path::Path, err: &StartupError) {
+fn write_ready_failure(path: &std::path::Path, err: &StartupError) -> anyhow::Result<()> {
     let content = match err {
         StartupError::PortInUse { port } => format!("error=port_in_use\nport={}\n", port),
         StartupError::WarmVoiceMissing { voice } => {
@@ -2065,27 +2084,33 @@ fn write_ready_failure(path: &std::path::Path, err: &StartupError) {
             message.replace(['\r', '\n'], " ")
         ),
     };
-    publish_ready_record(path, &content);
+    publish_ready_record(path, &content)
 }
 
 /// Lee el fichero ready. Devuelve `None` si no existe o aún no contiene un
-/// registro completo (el llamante sigue esperando). `error=` tiene prioridad
-/// sobre `addr=`; una clase de error desconocida se entrega como `Failed` con
-/// la clase en el mensaje, y un `pid=` ausente, ilegible o `0` da `pid: None`.
+/// registro de éxito completo (el llamante sigue esperando). `error=` tiene
+/// prioridad sobre `addr=`: una clase de error desconocida, o una conocida con
+/// su campo ausente o malformado, se entrega como `Failed` con la causa en el
+/// mensaje. Un `pid=` ausente, ilegible o `0` da `pid: None`.
 pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
     let content = std::fs::read_to_string(path).ok()?;
     let field = |key: &str| avi_process::registry::ready_field(&content, key);
     if let Some(class) = field("error") {
+        let malformed = |what: &str| StartupError::Failed {
+            message: format!("el registro de fallo del daemon es inválido: error={class} {what}"),
+        };
         let err = match class.as_str() {
             "port_in_use" => match field("port").and_then(|p| p.parse().ok()) {
                 Some(port) => StartupError::PortInUse { port },
-                None => return None,
+                None => malformed("sin un 'port=' numérico"),
             },
-            "warm_voice_missing" => StartupError::WarmVoiceMissing {
-                voice: field("voice")?,
+            "warm_voice_missing" => match field("voice") {
+                Some(voice) => StartupError::WarmVoiceMissing { voice },
+                None => malformed("sin 'voice='"),
             },
-            "startup_failed" => StartupError::Failed {
-                message: field("message")?,
+            "startup_failed" => match field("message") {
+                Some(message) => StartupError::Failed { message },
+                None => malformed("sin 'message='"),
             },
             other => StartupError::Failed {
                 message: format!(
@@ -2217,7 +2242,11 @@ pub async fn run_daemon_server(
     let ready_file: Option<std::path::PathBuf> =
         std::env::var_os(READY_FILE_ENV).map(std::path::PathBuf::from);
     if let Some(ref path) = ready_file {
-        write_ready_file(path, &bound, "warming");
+        write_ready_file(path, &bound, "warming")
+            .map_err(|e| StartupError::Failed {
+                message: e.to_string(),
+            })
+            .map_err(anyhow::Error::new)?;
     }
 
     // Warmup en segundo plano: `synthesize` es síncrono, por lo que corre en
@@ -2239,7 +2268,11 @@ pub async fn run_daemon_server(
         };
         eprintln!("avi-daemon-ready warm={} addr={}", warm, bound);
         if let Some(path) = ready_ok.as_ref() {
-            write_ready_file(path, &bound, warm);
+            // El daemon ya está listo y sirviendo: un fallo al actualizar el
+            // estado `warm` no tumba el arranque, pero queda escrito.
+            if let Err(e) = write_ready_file(path, &bound, warm) {
+                eprintln!("aviso: {e}");
+            }
         }
     });
 
@@ -2314,7 +2347,11 @@ fn publish_startup_failure(err: &anyhow::Error) {
         err.downcast_ref::<StartupError>(),
         std::env::var_os(READY_FILE_ENV),
     ) {
-        write_ready_failure(std::path::Path::new(&path), startup);
+        // El error original es el que se devuelve; si el registro de fallo no
+        // se puede publicar, el motivo queda escrito junto a él.
+        if let Err(e) = write_ready_failure(std::path::Path::new(&path), startup) {
+            eprintln!("aviso: {e}");
+        }
     }
 }
 
@@ -2464,9 +2501,9 @@ pub async fn run_supervised(
 /// contrato no se invierta con `full`.
 ///
 /// Estas pruebas construyen el estado con `test_state`, que con `native-stt`
-/// carga Parakeet (decisión D17: un daemon sin STT no es un estado del
-/// producto), así que `test_state` lo exige y su ausencia hace fallar la
-/// prueba de contrato con el mensaje de aprovisionamiento en vez de ocultarla.
+/// carga Parakeet (un daemon sin STT no es un estado del producto), así que
+/// `test_state` lo exige y su ausencia hace fallar la prueba de contrato con el
+/// mensaje de aprovisionamiento en vez de ocultarla.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2491,28 +2528,127 @@ mod tests {
         assert_eq!(guard.error().as_deref(), Some("motor caído"));
     }
 
-    /// `health_body` en warming: `status:ready`, sin `warm_error`, tolera aditivas.
+    /// `health_body` en warming: `status:ready`, `warm:warming`, sin `warm_error`
+    /// ni claves `ct2`/`stt` (las añade `enrich_health_body` cuando hay motores
+    /// residentes).
     #[test]
     fn health_body_warming_without_warm_error() {
         let body = health_body("warming", None);
         assert_eq!(body["status"], "ready");
-        assert!(["warming", "warm", "warm_failed"].contains(&body["warm"].as_str().unwrap()));
+        assert_eq!(body["warm"], "warming");
         assert_eq!(body["engine"], "rust_native");
         assert!(body.get("warm_error").is_none());
-        // Tolera claves aditivas ct2/stt sin exigirlas (las emite health_handler cuando residentes)
-        let _ = body.get("ct2");
-        let _ = body.get("stt");
+        assert!(body.get("ct2").is_none());
+        assert!(body.get("stt").is_none());
     }
 
-    /// `health_body` en fallo: incluye `warm_error` con la causa, tolera aditivas.
+    /// `health_body` en fallo: incluye `warm_error` con la causa y ninguna
+    /// clave `ct2`/`stt`.
     #[test]
     fn health_body_failed_includes_warm_error() {
         let body = health_body("warm_failed", Some("boom".to_string()));
-        assert!(["warming", "warm", "warm_failed"].contains(&body["warm"].as_str().unwrap()));
         assert_eq!(body["warm"], "warm_failed");
         assert_eq!(body["warm_error"], "boom");
-        let _ = body.get("ct2");
-        let _ = body.get("stt");
+        assert!(body.get("ct2").is_none());
+        assert!(body.get("stt").is_none());
+    }
+
+    fn bound_addr() -> SocketAddr {
+        "127.0.0.1:7001".parse().unwrap()
+    }
+
+    /// El registro de éxito lleva dirección, estado, PID e identidad completa, y
+    /// `read_ready_signal` lo devuelve tal cual.
+    #[test]
+    fn ready_success_content_round_trips_identity() {
+        let identity = avi_process::ProcessIdentity {
+            start: "123".to_string(),
+            image: "ai-voice-interconnector.exe".to_string(),
+        };
+        let content =
+            ready_success_content(&bound_addr(), "warming", Some(identity.clone())).unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("daemon.ready");
+        publish_ready_record(&path, &content).unwrap();
+
+        assert_eq!(
+            read_ready_signal(&path),
+            Some(ReadySignal::Ready {
+                addr: "127.0.0.1:7001".to_string(),
+                pid: Some(std::process::id()),
+                identity: Some(identity),
+            })
+        );
+    }
+
+    /// Sin identidad observable no se publica un registro de éxito.
+    #[test]
+    fn ready_success_content_requires_identity() {
+        let err = ready_success_content(&bound_addr(), "warming", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("identidad"), "{err}");
+    }
+
+    /// Un fallo de escritura del fichero ready se devuelve con la ruta y no deja
+    /// registro.
+    #[test]
+    fn publish_ready_record_propagates_write_failure() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("sin-directorio").join("daemon.ready");
+        let err = publish_ready_record(&path, "addr=127.0.0.1:1\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no se pudo escribir el fichero ready"),
+            "{err}"
+        );
+        assert!(!path.exists());
+    }
+
+    /// Un fallo del rename final se devuelve con la ruta de destino.
+    #[test]
+    fn publish_ready_record_propagates_rename_failure() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("daemon.ready");
+        // Un directorio en el destino impide el rename del temporal sobre él.
+        std::fs::create_dir(&path).unwrap();
+        let err = publish_ready_record(&path, "addr=127.0.0.1:1\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no se pudo publicar el fichero ready"),
+            "{err}"
+        );
+    }
+
+    /// Un registro de fallo conocido con su campo ausente o malformado se lee
+    /// como `Failed` con mensaje explícito, no como espera.
+    #[test]
+    fn read_ready_signal_reports_malformed_failure_records() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("daemon.ready");
+        let cases = [
+            (
+                "error=port_in_use\nport=abc\n",
+                "port_in_use sin un 'port=' numérico",
+            ),
+            ("error=port_in_use\n", "port_in_use sin un 'port=' numérico"),
+            (
+                "error=warm_voice_missing\n",
+                "warm_voice_missing sin 'voice='",
+            ),
+            ("error=startup_failed\n", "startup_failed sin 'message='"),
+        ];
+        for (content, expected) in cases {
+            std::fs::write(&path, content).unwrap();
+            let Some(ReadySignal::Failed(StartupError::Failed { message })) =
+                read_ready_signal(&path)
+            else {
+                panic!("{content:?} debe leerse como fallo de arranque");
+            };
+            assert!(message.contains(expected), "{content:?}: {message}");
+        }
     }
 
     /// Exige `nemo128.onnx` del snapshot de Parakeet, que el estado del daemon
@@ -3271,7 +3407,7 @@ mod tests {
                 message: "motor caído".to_string(),
             },
         ] {
-            write_ready_failure(&path, &err);
+            write_ready_failure(&path, &err).unwrap();
             assert_eq!(read_ready_signal(&path), Some(ReadySignal::Failed(err)));
         }
     }
@@ -3282,7 +3418,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("directorio temporal");
         let path = dir.path().join("daemon.ready");
         let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
-        write_ready_file(&path, &addr, "warming");
+        write_ready_file(&path, &addr, "warming").unwrap();
         let Some(ReadySignal::Ready { addr, pid, .. }) = read_ready_signal(&path) else {
             panic!("el registro de éxito se lee como Ready");
         };
@@ -3296,7 +3432,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("directorio temporal");
         let path = dir.path().join("daemon.ready");
         let addr: SocketAddr = "127.0.0.1:8765".parse().unwrap();
-        write_ready_file(&path, &addr, "ok");
+        write_ready_file(&path, &addr, "ok").unwrap();
         let own = avi_process::process_identity(std::process::id()).expect("identidad propia");
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(
@@ -3345,7 +3481,7 @@ mod tests {
         let err = StartupError::Failed {
             message: "línea uno\r\nlínea dos\nlínea tres".to_string(),
         };
-        write_ready_failure(&path, &err);
+        write_ready_failure(&path, &err).unwrap();
         assert_eq!(
             read_ready_signal(&path),
             Some(ReadySignal::Failed(StartupError::Failed {

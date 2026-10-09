@@ -9,13 +9,13 @@
 /// (`getpgid(child) == child`), así el kill de grupo alcanza solo a su árbol y
 /// nunca al grupo del lanzador.
 ///
-/// NOTA (cierre garantizado): el apagado ya no depende solo de
-/// `shutdown_handler` del crate vía `with_graceful_shutdown` + `tokio::sync::Notify`
-/// (el antiguo `tokio::spawn(async { process::exit(0) })` no terminaba el proceso
-/// dentro del runtime de `axum::serve`). El daemon escucha además señales del
-/// sistema por la misma ruta que POST `/shutdown`, el CLI reclama el residual
-/// degradado al arrancar (matar-y-rearrancar) y toda parada mata el árbol preciso
-/// por PID con deadline y verificación (`kill_tree_by_pid` + `pid_alive`).
+/// Cierre garantizado: el apagado no depende solo de `shutdown_handler` del
+/// crate vía `with_graceful_shutdown` + `tokio::sync::Notify`, porque
+/// `process::exit` dentro del runtime de `axum::serve` no termina el proceso.
+/// El daemon escucha además señales del sistema por la misma ruta que POST
+/// `/shutdown`, el CLI reclama el residual degradado al arrancar
+/// (matar-y-rearrancar) y toda parada mata el árbol preciso por PID con
+/// deadline y verificación (`kill_tree_by_pid` + `pid_alive`).
 /// `ready_file` viaja al hijo como flag `--ready-file` (transporte
 /// flag+fichero, nunca pipe heredable): en él el hijo publica el registro de
 /// éxito (dirección real) o el de fallo (causa tipada) de su arranque.
@@ -87,9 +87,9 @@ pub fn spawn_background(
 /// Viveza real de un PID a nivel de sistema (sin probe HTTP ni pidfile).
 ///
 /// Delega en la primitiva exacta de `avi-process` (Windows: `OpenProcess` +
-/// `GetExitCodeProcess`; Unix: `libc::kill(pid, 0)`); ya no se lanzan
-/// `tasklist` ni `kill` externos: la comparación por texto sobre `tasklist`
-/// hacía que el PID 12 matcheara dentro del 112. `0` nunca está vivo.
+/// `GetExitCodeProcess`; Unix: `libc::kill(pid, 0)`), sin lanzar `tasklist` ni
+/// `kill` externos: una comparación por texto sobre la salida de `tasklist`
+/// daría por vivo al PID 12 si existe el 112. `0` nunca está vivo.
 /// Bloqueante y breve: apto para el handler de Ctrl+C y para los bucles de
 /// verificación con deadline de las paradas.
 pub fn pid_alive(pid: u32) -> bool {
@@ -138,12 +138,10 @@ mod tests {
 
     /// La viveza es del PID exacto: el propio está vivo y el 0 no.
     ///
-    /// Causa del caso 112/12: la implementación anterior de Windows ejecutaba
-    /// `tasklist` y decidía con `text.contains(pid)`, de modo que preguntar por
-    /// el PID 12 daba vivo cuando existía el 112 (la cadena "12" aparece dentro
-    /// de "112"). La primitiva exacta de `avi-process` (`OpenProcess` +
+    /// La primitiva exacta de `avi-process` (`OpenProcess` +
     /// `GetExitCodeProcess`, vivo solo si `STILL_ACTIVE`) consulta el PID
-    /// puntual y no compara texto.
+    /// puntual y no compara texto: preguntar por el PID 12 no se confunde con
+    /// el 112, cuya cadena lo contiene.
     #[test]
     fn own_pid_is_alive_and_zero_is_not() {
         assert!(pid_alive(std::process::id()));

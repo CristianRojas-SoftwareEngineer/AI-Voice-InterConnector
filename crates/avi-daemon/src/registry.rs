@@ -66,11 +66,19 @@ impl DaemonRegistry {
         self.write(&state)
     }
 
-    /// Rechaza el arranque si el pidfile registra a otro daemon vivo y nuestro.
-    /// El propio PID no cuenta: un reinicio en proceso lo vería a sí mismo.
+    /// Rechaza el arranque si el pidfile registra a otro daemon vivo y nuestro,
+    /// o si existe pero no se puede leer: sobrescribirlo podría dejar sin
+    /// registro a un daemon vivo. El propio PID no cuenta: un reinicio en
+    /// proceso lo vería a sí mismo.
     fn ensure_no_live_peer(&self, own_pid: u32) -> anyhow::Result<()> {
-        let PidFileObservation::Present(file) = observe_pid_file(&self.data_dir) else {
-            return Ok(());
+        let file = match observe_pid_file(&self.data_dir) {
+            PidFileObservation::Absent => return Ok(()),
+            PidFileObservation::Discarded(reason) => {
+                anyhow::bail!(
+                    "daemon.pid existe pero no es válido ({reason}): no se puede comprobar si hay otro daemon en ejecución; revisa o borra el fichero"
+                );
+            }
+            PidFileObservation::Present(file) => file,
         };
         if file.pid == own_pid {
             return Ok(());
@@ -225,6 +233,21 @@ mod tests {
 
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    /// Un pidfile ilegible o con esquema inválido impide el registro, nombra el
+    /// motivo y no se modifica.
+    #[test]
+    fn register_daemon_rejects_discarded_pidfile() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = pid_path(dir.path());
+        std::fs::write(&path, "esto no es JSON").unwrap();
+        let registry = DaemonRegistry::new(dir.path().to_path_buf());
+
+        let err = registry.register_daemon(&addr()).unwrap_err().to_string();
+        assert!(err.contains("daemon.pid"), "{err}");
+        assert!(err.contains("no se entiende su esquema"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "esto no es JSON");
     }
 
     /// Anular el residente solo limpia el registro si el PID coincide.

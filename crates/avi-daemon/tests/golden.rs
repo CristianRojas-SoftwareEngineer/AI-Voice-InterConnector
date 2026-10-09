@@ -18,8 +18,8 @@
 //! carga el motor STT real (Parakeet TDT v3 int8, export de `istupakov`) y sin
 //! ese feature no tiene motor alguno (`oneshot` no ejerce `/transcribe` en las
 //! pruebas de contrato, de modo que la suite sin features corre sin ONNX
-//! Runtime). Por decisión D17 un daemon sin STT no es un estado del producto,
-//! así que el estado de prueba no se inventa: con `native-stt` activo,
+//! Runtime). Un daemon sin STT no es un estado del producto, así que el estado
+//! de prueba no se inventa: con `native-stt` activo,
 //! `contract_state` exige Parakeet y la heredan sus derivados; su ausencia hace
 //! fallar la prueba de contrato con el mensaje de aprovisionamiento, en vez de
 //! ocultarla tras un `ignore`.
@@ -233,19 +233,16 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
-// Ceguera deliberada del harness: `send`/`get`/`post_json` ejercen el contrato
-// JSON vía `oneshot` sin abrir socket, sin spawn de procesos, sin señales, sin
-// puertos reales ni pidfile; por tanto nunca prueban la ausencia de huérfanos
-// (árbol de procesos, PID, puertos), ni el endurecimiento del harness frente a
-// fallos envenenados, ni los techos de tiempo por hilo, ni la ventana entre el
-// spawn y la escritura del
-// pidfile, ni el manejo de señales durante el spawn, ni un crash con el
-// puerto ya ocupado y un reclamo activo del árbol previo (este último solo
-// aplica en `run_supervised`): al no añadir campos nuevos a `DaemonState`, el
-// doble de pruebas queda intacto, y su límite conocido es no reproducir el
-// ciclo de vida real del proceso. La ausencia real de huérfanos a nivel de
-// sistema operativo solo la verifica la serie de tests pesada
-// (con la cosecha por identidad de la instancia y `verificar_cero_huerfanos`).
+// Límite deliberado del harness: `send`/`get`/`post_json` ejercen el contrato
+// JSON vía `oneshot` sin abrir socket, sin lanzar procesos, sin señales, sin
+// puertos reales ni pidfile; por tanto no prueban la ausencia de huérfanos
+// (árbol de procesos, PID, puertos), ni la ventana entre el lanzamiento y la
+// escritura del pidfile, ni el manejo de señales durante el lanzamiento, ni un
+// crash con el puerto ocupado y un reclamo activo del árbol previo (este
+// último solo aplica en `run_supervised`). No reproducen el ciclo de vida real
+// del proceso. La ausencia real de huérfanos a nivel de sistema operativo solo
+// la verifica la serie de tests pesada (con la cosecha por identidad de la
+// instancia y `verificar_cero_huerfanos`).
 
 /// Exige `nemo128.onnx` del snapshot de Parakeet: la raíz de modelos vive fuera
 /// del repo y la provisiona `ai-voice-interconnector setup`. El mensaje lleva el
@@ -327,7 +324,7 @@ async fn health_matches_fixture() {
     assert_eq!(actual["status"], fixture_val["status"]);
     assert_eq!(actual["warm"], fixture_val["warm"]);
     assert_eq!(actual["schema_version"], Value::String("4".to_string()));
-    // Tolerar claves aditivas ct2/stt sin bump schema_version
+    // Las claves aditivas `ct2` y `stt` no cambian `schema_version`.
     assert_eq!(actual["engine"], fixture_val["engine"]);
 }
 
@@ -587,8 +584,8 @@ async fn voices_clone_oversized_body_reports_invalid_name_not_413() {
 
 /// Una referencia WAV de 31 s supera el tope de 30 s y se rechaza con 400
 /// `audio_too_long` antes de buscar el modelo Base. El estado se construye sin
-/// modelo Base para que, mientras falte el tope, la prueba no pueda lanzar el
-/// clonado real aunque el modelo esté provisionado en el equipo.
+/// modelo Base para que la prueba no pueda lanzar el clonado real aunque el
+/// modelo esté provisionado en el equipo.
 #[tokio::test]
 async fn voices_clone_reference_over_limit_is_audio_too_long() {
     #[cfg(feature = "native-stt")]
@@ -618,8 +615,8 @@ async fn voices_clone_reference_over_limit_is_audio_too_long() {
 /// Warm-on-clone: `POST /voices/clone` por daemon sirve un stream
 /// NDJSON (`started` → latidos → `result`), y el evento final conserva
 /// `precomputed: true` («precarga en caliente iniciada»; la completitud se
-/// refleja en `/health`). Invierte el «éxito inmediato»: el test solo pasa si
-/// la secuencia completa llega hasta el final.
+/// refleja en `/health`). El test solo pasa si la secuencia completa llega
+/// hasta el final.
 /// Requiere el modelo Base de clonado: sin él el handler retorna
 /// `model_missing` en vez de clonar.
 #[tokio::test]
@@ -1122,8 +1119,9 @@ async fn voices_clone_non_boolean_force_returns_usage_error() {
 /// La rama de error no se puede provocar sin motor (la síntesis escribe el
 /// fichero que luego se lee), así que este test fija el invariante de punta a
 /// punta con el motor cuando hay recursos: tras `/dub` no queda ningún
-/// `avi_daemon_dub_*.wav`, salga el doblaje o un error. La rama `Err` se
-/// corrige por construcción con el tipo dueño.
+/// `avi_daemon_dub_*.wav`, salga el doblaje o un error. La rama `Err` queda
+/// cubierta por construcción: el WAV tiene un tipo dueño que lo borra al
+/// soltarse.
 #[tokio::test]
 #[ignore = "requiere Parakeet y el binario del motor Qwen3-TTS"]
 async fn dub_leaves_no_temporary_on_any_outcome() {
@@ -1170,13 +1168,15 @@ async fn dub_leaves_no_temporary_on_any_outcome() {
         );
     }
     let residue: Vec<String> = std::fs::read_dir(std::env::temp_dir())
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.starts_with("avi_daemon_dub_") && n.ends_with(".wav"))
-                .collect()
+        .expect("el directorio temporal debe poder leerse")
+        .map(|e| {
+            e.expect("entrada del directorio temporal")
+                .file_name()
+                .to_string_lossy()
+                .to_string()
         })
-        .unwrap_or_default();
+        .filter(|n| n.starts_with("avi_daemon_dub_") && n.ends_with(".wav"))
+        .collect();
     assert!(
         residue.is_empty(),
         "tras /dub no debe quedar temporal: {residue:?}"
@@ -1212,7 +1212,7 @@ fn require_custom_voice_model() {
 }
 
 /// Temporales del daemon con el prefijo dado que pertenecen a este proceso: el
-/// nombre del guardián incluye el PID (`<prefijo><pid>_<contador>_<nanos>.wav`),
+/// nombre del `TempWav` incluye el PID (`<prefijo><pid>_<contador>_<nanos>.wav`),
 /// así que el filtro no mezcla los de esta prueba con los de otros procesos.
 fn temp_wavs(prefix: &str) -> Vec<PathBuf> {
     let own = format!("{prefix}{}_", std::process::id());
@@ -1428,9 +1428,9 @@ async fn synthesize_events_without_engine(dir_prefix: &str, voice: &str) -> Vec<
         .collect()
 }
 
-/// Una voz clonada sin el modelo Base provisionado responde `model_missing`
-/// aunque el binario y CustomVoice estén (simulados): el motor falla antes de
-/// lanzar nada porque la regla por tipo de voz corta en la selección del modelo.
+/// Una voz clonada sin el modelo Base provisionado responde `model_missing`:
+/// el motor falla antes de lanzar nada porque la selección del modelo por tipo
+/// de voz exige el Base.
 #[tokio::test]
 async fn synthesize_cloned_voice_without_base_model_is_model_missing() {
     let events = synthesize_events_without_engine("avi_golden_no_base", "default").await;
