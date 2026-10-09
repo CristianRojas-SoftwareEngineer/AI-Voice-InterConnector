@@ -796,7 +796,28 @@ fn probe_hooks_path(root: &Path) -> Option<bool> {
     if !out.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&out.stdout).trim() == ".githooks")
+    Some(hooks_path_is_githooks(
+        root,
+        String::from_utf8_lossy(&out.stdout).trim(),
+    ))
+}
+
+/// ¿El valor de `core.hooksPath` designa el `.githooks` del repositorio? Git
+/// acepta una ruta relativa a la raíz o una absoluta, así que se compara la
+/// ruta resuelta en disco y no el texto: `.githooks` y
+/// `C:\…\repo\.githooks` son el mismo hook.
+fn hooks_path_is_githooks(root: &Path, configured: &str) -> bool {
+    if configured.is_empty() {
+        return false;
+    }
+    let configured = root.join(configured);
+    match (
+        configured.canonicalize(),
+        root.join(".githooks").canonicalize(),
+    ) {
+        (Ok(configured), Ok(expected)) => configured == expected,
+        _ => false,
+    }
 }
 
 /// Sonda de higiene de `target/` (opcional): tamaño frente al umbral y
@@ -1197,6 +1218,23 @@ mod tests {
         assert!(target_hygiene_warn(10 * GB + 1, Some(true)));
         assert!(target_hygiene_warn(0, Some(false)));
         assert!(target_hygiene_warn(10 * GB + 1, None));
+    }
+
+    /// `core.hooksPath` cuenta como activo tanto relativo (`.githooks`) como
+    /// absoluto hacia el mismo directorio; otro directorio o un valor vacío no.
+    #[test]
+    fn hooks_path_matches_relative_and_absolute_githooks() {
+        let root = tempfile::tempdir().expect("directorio temporal");
+        std::fs::create_dir(root.path().join(".githooks")).unwrap();
+        std::fs::create_dir(root.path().join("otros-hooks")).unwrap();
+        let absolute = root.path().join(".githooks");
+        assert!(hooks_path_is_githooks(root.path(), ".githooks"));
+        assert!(hooks_path_is_githooks(
+            root.path(),
+            absolute.to_str().unwrap()
+        ));
+        assert!(!hooks_path_is_githooks(root.path(), "otros-hooks"));
+        assert!(!hooks_path_is_githooks(root.path(), ""));
     }
 
     #[test]
