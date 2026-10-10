@@ -85,8 +85,12 @@ El motor `Qwen3-TTS` resuelve su binario y pesos en este orden:
 
 1. `QWEN3_TTS_BIN` / `QWEN3_TTS_MODEL_DIR` / `QWEN3_TTS_BASE_MODEL_DIR` (override absoluto)
 2. `<exe_dir>/vendor/qwen3-tts/qwen_tts(.exe)` y `<exe_dir>/vendor/qwen3-tts/qwen3-tts-0.6b{,-base}` (junto al `current_exe` instalado)
-3. `<cwd>/vendor/qwen3-tts/...` (desarrollo desde la raíz del repo)
+3. `<cwd>/vendor/qwen3-tts/...` (desarrollo desde la raíz del repo; solo con `AVI_ALLOW_CWD_VENDOR=1`)
 4. `PATH` (`qwen_tts`) y snapshot HF (`ModelStore::model_snapshot_path`) como último fallback
+
+Sin la variable, la capa 3 no participa: si habría resuelto, la resolución
+avisa por stderr qué ruta ignoró y cómo habilitarla. Un `vendor/` ajeno en el
+CWD no puede suplantar al motor sin acto explícito.
 
 Este orden garantiza que `daemon start` calienta desde cualquier `CWD` sin necesidad de `QWEN3_TTS_BIN` cuando se usa el binario instalado.
 

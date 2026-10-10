@@ -156,6 +156,16 @@ Windows `ORT_DYLIB_PATH=<repo>/ort-bundle/onnxruntime.dll cargo test --workspace
 mismo: asegura `ort-bundle/` y fija la variable para su gate de pruebas con
 recursos.
 
+#### Motor TTS desde el repo (opt-in del CWD)
+
+Al ejecutar desde la raíz del repo (`cargo run`, pruebas sin instalar), el
+motor `qwen_tts` y sus modelos viven en `vendor/qwen3-tts/`, que el producto
+resuelve por la capa `<cwd>/vendor`. Esa capa está denegada por defecto: sin
+`AVI_ALLOW_CWD_VENDOR=1`, el directorio de trabajo no aporta binario ni
+modelos y la resolución avisa qué ignoró. Para desarrollar desde el repo,
+define `AVI_ALLOW_CWD_VENDOR=1` (solo desarrollo local; el producto instalado
+y CI no la necesitan).
+
 #### Empaquetado en los artefactos de release
 
 El binario distribuido es **autocontenido**: el usuario solo ejecuta el
