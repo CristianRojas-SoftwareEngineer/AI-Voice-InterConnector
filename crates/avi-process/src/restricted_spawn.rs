@@ -501,6 +501,47 @@ fn create_stdin_pipe() -> io::Result<(isize, isize)> {
     }
 }
 
+/// Restaura el modo de error del hilo al salir de ámbito: el lanzamiento
+/// suprime los diálogos del sistema ante imágenes inválidas y debe devolver
+/// el modo intacto en éxito y en fallo.
+#[cfg(windows)]
+struct ErrorModeGuard {
+    previous: u32,
+}
+
+#[cfg(windows)]
+impl ErrorModeGuard {
+    /// Suprime los diálogos de error del sistema en este hilo (fallos
+    /// críticos, GPF y cajas de archivo) y retiene el modo previo para
+    /// restaurarlo al soltarse.
+    fn suppress_system_ui() -> Self {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            GetErrorMode, SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
+            SEM_NOOPENFILEERRORBOX,
+        };
+        // SAFETY: ambas consultan y fijan el modo de error del propio hilo,
+        // sin punteros ni estado compartido.
+        let previous = unsafe { GetErrorMode() };
+        unsafe {
+            SetErrorMode(
+                previous | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX,
+            )
+        };
+        Self { previous }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ErrorModeGuard {
+    fn drop(&mut self) {
+        use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
+        // SAFETY: restaura el modo retenido del propio hilo.
+        unsafe {
+            SetErrorMode(self.previous);
+        }
+    }
+}
+
 #[cfg(windows)]
 fn launch_process_with_list(
     program: &Path,
@@ -519,6 +560,10 @@ fn launch_process_with_list(
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
+    // Supresor de UI del sistema: ante imágenes inválidas, el fallo vuelve
+    // como código en vez de ventana. El guard restaura el modo del hilo en
+    // todos los caminos de salida.
+    let _error_mode = ErrorModeGuard::suppress_system_ui();
     // SAFETY: la línea de comandos y la lista de atributos son búferes
     // locales válidos durante la llamada; los handles listados son propios.
     unsafe {

@@ -264,6 +264,52 @@ fn wait_timeout_kills_hanging_child() {
     );
 }
 
+/// El supresor de UI restaura el modo de error del hilo tras el éxito y tras
+/// el fallo: el lanzamiento no deja el hilo enmudecido.
+#[cfg(windows)]
+#[test]
+fn error_mode_is_restored_after_success_and_failure() {
+    use windows_sys::Win32::System::Diagnostics::Debug::GetErrorMode;
+    // SAFETY: solo consulta el modo de error del propio hilo.
+    let before = unsafe { GetErrorMode() };
+
+    let (program, args) = exit_command(0);
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let mut child = spawn(&program, args, log_file);
+    let status = child
+        .wait_timeout(std::time::Duration::from_secs(30))
+        .expect("la espera acotada no debe fallar")
+        .expect("el hijo termina a tiempo");
+    assert!(status.success(), "exit 0 debe dar éxito: {status:?}");
+    // SAFETY: como arriba.
+    assert_eq!(
+        unsafe { GetErrorMode() },
+        before,
+        "el éxito debe restaurar el modo"
+    );
+
+    let missing = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let request = avi_process::RestrictedSpawnRequest {
+        program: PathBuf::from("binario-que-no-existe-xyz"),
+        args: Vec::new(),
+        stdin: avi_process::StdinSpec::Null,
+        stderr_file: missing.try_clone().expect("debe clonar el registro"),
+        stdout_file: missing,
+        creation_flags: 0,
+        extra_allowed: Vec::new(),
+    };
+    assert!(
+        avi_process::spawn_with_allowlist(request).is_err(),
+        "el binario ausente debe fallar"
+    );
+    // SAFETY: como arriba.
+    assert_eq!(
+        unsafe { GetErrorMode() },
+        before,
+        "el fallo debe restaurar el modo"
+    );
+}
+
 fn spawn(
     program: &Path,
     args: Vec<String>,
