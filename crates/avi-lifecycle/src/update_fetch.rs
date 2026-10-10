@@ -28,6 +28,10 @@ pub const RETRY_BASE_DELAY_MS: u64 = 250;
 /// Plazo máximo de una petición HTTP completa.
 pub const REQUEST_TIMEOUT_SECS: u64 = 30;
 
+/// Plazo con el que `verify_boot` espera al `--version` del binario
+/// descargado: un hijo colgado no puede colgar la actualización.
+pub const VERIFY_BOOT_TIMEOUT_SECS: u64 = 60;
+
 /// Nombre del inventario de hashes del release, el que publica GitHub.
 pub const SUMS_FILE_NAME: &str = "SHA256SUMS.txt";
 
@@ -193,6 +197,64 @@ async fn fetch_into(
     })
 }
 
+/// Valida en memoria la cabecera del ejecutable descargado para assets
+/// Windows: magia `MZ`, firma `PE\0\0` y máquina contra la arquitectura del
+/// triple. Pura y sin spawns, para que la basura muera sin crear ningún
+/// proceso. Un prefijo de triple sin máquina conocida se rechaza (cierre por
+/// defecto: lo no verificable no se ejecuta).
+fn validate_pe_image(bytes: &[u8], triple: &str) -> Result<(), String> {
+    let machine = if triple.starts_with("x86_64-") {
+        0x8664u16
+    } else if triple.starts_with("aarch64-") {
+        0xAA64u16
+    } else {
+        return Err(format!(
+            "el triple {triple} no tiene máquina conocida para validar la cabecera"
+        ));
+    };
+    if bytes.len() < 64 || &bytes[0..2] != b"MZ" {
+        return Err("la imagen no tiene magia MZ".to_string());
+    }
+    let pe_offset = u32::from_le_bytes([
+        bytes[0x3C],
+        bytes[0x3C + 1],
+        bytes[0x3C + 2],
+        bytes[0x3C + 3],
+    ]) as usize;
+    let Some(header) = bytes.get(pe_offset..pe_offset + 6) else {
+        return Err("la cabecera PE queda fuera de la imagen".to_string());
+    };
+    if &header[0..4] != b"PE\0\0" {
+        return Err("la imagen no tiene firma PE".to_string());
+    }
+    let actual = u16::from_le_bytes([header[4], header[5]]);
+    if actual != machine {
+        return Err(format!(
+            "la imagen es de máquina {actual:#x}, ajena al triple {triple}"
+        ));
+    }
+    Ok(())
+}
+
+/// Error de vencimiento de `verify_boot` con el staging ya retirado: el
+/// `remove_dir_all` es best-effort con aviso, porque el staging con bytes
+/// ajenos no debe quedar retenido. Vive separado para que las pruebas lo
+/// ejerzan con plazos cortos sin esperar el timeout real.
+fn boot_timeout_expired(staging: &Path, triple: &str, timeout: Duration) -> LifecycleError {
+    if let Err(e) = std::fs::remove_dir_all(staging) {
+        eprintln!(
+            "Aviso: el staging {} quedó sin retirar tras el timeout de `verify_boot`: {e}",
+            staging.display()
+        );
+    }
+    LifecycleError::binary_incompatible(format!(
+        "el binario descargado ({triple}) no terminó `--version` en {} s (timeout): \
+         se terminó y se retiró el staging. Compila {APP} desde el código fuente \
+         (docs/BUILD.md)",
+        timeout.as_secs()
+    ))
+}
+
 /// Arranca `<staging>/… --version` y exige que informe `version`.
 ///
 /// Un binario que no ejecuta, falla o informa otra versión es
@@ -205,6 +267,23 @@ pub async fn verify_boot(
 ) -> Result<(), LifecycleError> {
     let section = manifest::target_section(triple)?;
     let exe = staging.join(section.executable_path());
+    // Puerta PE antes de spawnear: la basura muere sin crear ningún proceso.
+    // Solo cubre assets Windows; otros triples conservan su camino actual.
+    if triple.contains("windows") {
+        let bytes = std::fs::read(&exe).map_err(|e| {
+            LifecycleError::binary_incompatible(format!(
+                "no se pudo leer el binario descargado ({triple}) en {}: {e}. \
+                 Compila {APP} desde el código fuente (docs/BUILD.md)",
+                exe.display(),
+            ))
+        })?;
+        validate_pe_image(&bytes, triple).map_err(|reason| {
+            LifecycleError::binary_incompatible(format!(
+                "el binario descargado ({triple}) no es un ejecutable válido ({reason}): \
+                 compila {APP} desde el código fuente (docs/BUILD.md)"
+            ))
+        })?;
+    }
     // El `--version` se captura en un único fichero temporal (stdout y stderr
     // juntos, por clon del mismo fichero), que se lee y se borra al salir.
     let log_path = staging.join("verify-boot.log");
@@ -231,7 +310,7 @@ pub async fn verify_boot(
             creation_flags: 0,
             extra_allowed: Vec::new(),
         })
-        .and_then(|mut child| child.wait())
+        .and_then(|mut child| child.wait_timeout(Duration::from_secs(VERIFY_BOOT_TIMEOUT_SECS)))
     })
     .await
     .map_err(|e| {
@@ -246,6 +325,13 @@ pub async fn verify_boot(
             exe.display(),
         ))
     })?;
+    let Some(status) = status else {
+        return Err(boot_timeout_expired(
+            staging,
+            triple,
+            Duration::from_secs(VERIFY_BOOT_TIMEOUT_SECS),
+        ));
+    };
     let reported = std::fs::read_to_string(&log_path).map_err(|e| {
         LifecycleError::binary_incompatible(format!(
             "no se pudo leer la salida de `--version` del binario descargado ({triple}) en {}: {e}",
@@ -907,5 +993,96 @@ mod tests {
             assert_eq!(err.reason, "binary_incompatible");
             assert_eq!(ExitCode::from_reason(err.reason).code(), 19);
         }
+    }
+
+    /// PE sano mínimo para la puerta: magia MZ, e_lfanew a 64, firma PE y la
+    /// máquina pedida.
+    fn minimal_pe(machine: u16) -> Vec<u8> {
+        let mut bytes = vec![0u8; 64];
+        bytes[0] = b'M';
+        bytes[1] = b'Z';
+        bytes[0x3C] = 64;
+        bytes.extend_from_slice(b"PE\0\0");
+        bytes.extend_from_slice(&machine.to_le_bytes());
+        bytes
+    }
+
+    /// La puerta acepta un EXE x64 sano para el triple Windows x64.
+    #[test]
+    fn verify_boot_pe_gate_accepts_healthy_image() {
+        assert!(validate_pe_image(&minimal_pe(0x8664), "x86_64-pc-windows-msvc").is_ok());
+    }
+
+    /// La puerta rechaza basura, truncado y máquina ajena sin crear procesos.
+    #[test]
+    fn verify_boot_pe_gate_rejects_invalid_images() {
+        let triple = "x86_64-pc-windows-msvc";
+        assert!(validate_pe_image(b"esto no es un ejecutable", triple).is_err());
+        assert!(validate_pe_image(b"MZ", triple).is_err());
+        let mut offset_fuera = minimal_pe(0x8664);
+        offset_fuera[0x3C] = 200;
+        assert!(validate_pe_image(&offset_fuera, triple).is_err());
+        assert!(validate_pe_image(&minimal_pe(0xAA64), triple).is_err());
+        assert!(validate_pe_image(&minimal_pe(0x8664), "i686-unknown-linux-gnu").is_err());
+    }
+
+    /// Hijo colgado portable para el fault-injection (sin modelos ni red).
+    fn hanging_command() -> (std::path::PathBuf, Vec<String>) {
+        if cfg!(windows) {
+            (
+                std::path::PathBuf::from("powershell"),
+                vec![
+                    String::from("-NoProfile"),
+                    String::from("-Command"),
+                    String::from("Start-Sleep -Seconds 30"),
+                ],
+            )
+        } else {
+            (std::path::PathBuf::from("sleep"), vec![String::from("30")])
+        }
+    }
+
+    /// Un hijo colgado vence el plazo corto, muere sin huérfano y el staging
+    /// se retira con `binary_incompatible` que dice timeout.
+    #[tokio::test]
+    async fn verify_boot_timeout_kills_child_and_cleans_staging() {
+        let sandbox = scratch("fetch-boot-timeout");
+        let staging = sandbox.join("staging");
+        std::fs::create_dir_all(&staging).expect("se crea el staging");
+        std::fs::write(staging.join("marcador.txt"), "previo").expect("se escribe el marcador");
+        let (program, args) = hanging_command();
+        let log = tempfile::tempfile().expect("debe crear el registro anónimo");
+        let mut child = avi_process::spawn_with_allowlist(avi_process::RestrictedSpawnRequest {
+            program,
+            args,
+            stdin: avi_process::StdinSpec::Null,
+            stderr_file: log.try_clone().expect("debe clonar el registro"),
+            stdout_file: log,
+            creation_flags: 0,
+            extra_allowed: Vec::new(),
+        })
+        .expect("se lanza al hijo colgado");
+        let pid = child.id();
+        let outcome = child
+            .wait_timeout(Duration::from_secs(1))
+            .expect("la espera acotada no debe fallar");
+        assert!(outcome.is_none(), "el hijo colgado debió vencer el plazo");
+        let err = boot_timeout_expired(&staging, "x86_64-pc-windows-msvc", Duration::from_secs(1));
+        assert_eq!(err.reason, "binary_incompatible");
+        assert_eq!(ExitCode::from_reason(err.reason).code(), 19);
+        assert!(
+            err.message.contains("timeout"),
+            "el motivo debe decir timeout: {}",
+            err.message
+        );
+        assert!(
+            !staging.exists(),
+            "el staging vencido no debe quedar retenido"
+        );
+        assert!(
+            child.try_wait().expect("debe consultar al hijo").is_some()
+                && !avi_process::pid_alive_exact(pid),
+            "el hijo vencido debe estar muerto, sin huérfano"
+        );
     }
 }
