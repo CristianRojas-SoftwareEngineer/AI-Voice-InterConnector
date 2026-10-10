@@ -145,9 +145,16 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
         };
         std::env::remove_var(HANDOVER_PARENT_PID_ENV);
         match launched {
-            Ok(mut child) => child
-                .wait()
-                .map_err(|e| anyhow::anyhow!("la espera del binario nuevo falló: {e}")),
+            Ok(mut child) => match child
+                .wait_timeout(std::time::Duration::from_secs(60))
+                .map_err(|e| anyhow::anyhow!("la espera del binario nuevo falló: {e}"))?
+            {
+                Some(status) => Ok(status),
+                None => Err(anyhow::anyhow!(
+                    "el binario nuevo no terminó en 60 s y se terminó: la instalación \
+                     anterior sigue en su sitio"
+                )),
+            },
             Err(e) => Err(e),
         }
     })

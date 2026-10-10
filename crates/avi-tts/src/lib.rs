@@ -468,6 +468,12 @@ const HEALTH_OBS_INTERVAL_MS: u64 = 2000;
 /// Plazo con el que `shutdown` espera la muerte del residente tras matarlo.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 
+/// Plazo con el que `clone_voice` espera al subproceso de clonado: la carga
+/// del modelo y la inferencia en CPU pueden tardar minutos, así que 10 min es
+/// cota holgada, no ajuste fino. Al vencer, el hijo se mata y el clonado falla
+/// sin colgar al llamador.
+const CLONE_WAIT: Duration = Duration::from_secs(600);
+
 /// Estado del servidor residente: se indexa por voz — al cambiar
 /// de voz se termina el residente anterior y se arranca otro con `--load-voice`.
 struct ResidentState {
@@ -1052,7 +1058,7 @@ pub fn clone_voice(
     // La entrada del motor es una tubería con `--watch-stdin`: el motor termina
     // si su entrada se cierra, así que el proceso que clona muere con él aunque
     // sea abatido. El extremo de escritura queda retenido en el hijo
-    // restringido hasta que `wait` devuelve; si no, el motor vería fin de
+    // restringido hasta que la espera devuelve; si no, el motor vería fin de
     // fichero al instante. La herencia queda restringida a la lista explícita
     // (tubería de entrada y fichero de registro).
     let status = (|| -> Result<std::process::ExitStatus> {
@@ -1072,7 +1078,13 @@ pub fn clone_voice(
             extra_allowed: Vec::new(),
         };
         let mut child = avi_process::spawn_with_allowlist(request)?;
-        Ok(child.wait()?)
+        match child.wait_timeout(CLONE_WAIT)? {
+            Some(status) => Ok(status),
+            None => Err(anyhow!(
+                "El subproceso de clonado Qwen3-TTS no terminó en {} s y se terminó.",
+                CLONE_WAIT.as_secs()
+            )),
+        }
     })();
     // La referencia normalizada se borra al soltar `ref_wav`, tras esperar al hijo.
     drop(ref_wav);
@@ -1344,14 +1356,13 @@ pub mod resident {
         fn drop(&mut self) {
             if let Some(mut child) = self.child.take() {
                 // Cierre por árbol con recolección: el `shutdown()` previo ya mató el
-                // árbol preciso por PID; aquí
-                // `kill+wait` recolecta el estado del `child` (ya muerto entonces,
-                // o vivo en un drop normal). Insuficiente ante caída a medio
-                // `spawn` (sin `Child` que recolectar): por eso `run_supervised`
-                // reclama además el árbol propio previo con deadline y verificación
-                // antes del siguiente `bind`.
-                let _ = child.kill();
-                let _ = child.wait();
+                // árbol preciso por PID; aquí la espera es acotada y en mejor
+                // esfuerzo (nunca `INFINITE`): si el hijo no muere en el plazo,
+                // `wait_timeout` lo mata y lo recolecta. Insuficiente ante caída
+                // a medio `spawn` (sin `Child` que recolectar): por eso
+                // `run_supervised` reclama además el árbol propio previo con
+                // deadline y verificación antes del siguiente `bind`.
+                let _ = child.wait_timeout(super::SHUTDOWN_WAIT);
             }
         }
     }
@@ -2057,8 +2068,19 @@ mod tests {
 
     impl Drop for EngineGuard {
         fn drop(&mut self) {
+            // Mejor esfuerzo acotado, nunca espera sin cota: tras matar, el
+            // hijo está muerto y solo falta cosechar su estado con sondeo.
             let _ = self.0.kill();
-            let _ = self.0.wait();
+            let reap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while self
+                .0
+                .try_wait()
+                .map(|slot| slot.is_none())
+                .unwrap_or(false)
+                && std::time::Instant::now() < reap_deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
         }
     }
 

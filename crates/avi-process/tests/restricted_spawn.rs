@@ -229,6 +229,41 @@ fn unix_child_is_group_leader() {
     child.wait().expect("debe poder recolectar al hijo");
 }
 
+/// `wait_timeout` devuelve el estado real cuando el hijo termina a tiempo.
+#[test]
+fn wait_timeout_returns_exit_when_child_finishes_in_time() {
+    let (program, args) = exit_command(3);
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let mut child = spawn(&program, args, log_file);
+    let status = child
+        .wait_timeout(std::time::Duration::from_secs(30))
+        .expect("la espera acotada no debe fallar")
+        .expect("el hijo terminó a tiempo");
+    assert_eq!(status.code(), Some(3), "exit 3 debe dar código 3");
+}
+
+/// `wait_timeout` mata al hijo colgado al vencer y lo recolecta: la muerte es
+/// real (el PID ya no vive), no solo el retorno.
+#[test]
+fn wait_timeout_kills_hanging_child() {
+    let (program, args) = sleep_command(30);
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let mut child = spawn(&program, args, log_file);
+    let pid = child.id();
+    let outcome = child
+        .wait_timeout(std::time::Duration::from_secs(2))
+        .expect("la espera acotada no debe fallar");
+    assert!(outcome.is_none(), "el hijo colgado debió vencer el plazo");
+    assert!(
+        child.try_wait().expect("debe consultar al hijo").is_some(),
+        "el hijo vencido debe estar muerto y recolectado, sin huérfano"
+    );
+    assert!(
+        !avi_process::pid_alive_exact(pid),
+        "el PID del hijo vencido no debe seguir vivo"
+    );
+}
+
 fn spawn(
     program: &Path,
     args: Vec<String>,
@@ -261,6 +296,21 @@ fn exit_command(code: u32) -> (PathBuf, Vec<String>) {
             PathBuf::from("sh"),
             vec![String::from("-c"), format!("exit {code}")],
         )
+    }
+}
+
+fn sleep_command(secs: u64) -> (PathBuf, Vec<String>) {
+    if cfg!(windows) {
+        (
+            PathBuf::from("powershell"),
+            vec![
+                String::from("-NoProfile"),
+                String::from("-Command"),
+                format!("Start-Sleep -Seconds {secs}"),
+            ],
+        )
+    } else {
+        (PathBuf::from("sleep"), vec![secs.to_string()])
     }
 }
 

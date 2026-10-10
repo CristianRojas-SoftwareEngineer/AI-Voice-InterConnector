@@ -208,6 +208,40 @@ impl RestrictedChild {
         }
     }
 
+    /// Espera acotada hasta que el hijo termine: sondea con `try_wait` y, al
+    /// vencer el plazo, mata al hijo y lo recolecta con sondeo acotado antes
+    /// de informar. Devuelve `Some(estado)` si terminó a tiempo y `None` si
+    /// venció (el hijo queda muerto y recolectado, sin huérfanos ni handles
+    /// retenidos). Nunca espera sin cota: ni siquiera la recolecta tras la
+    /// muerte usa `INFINITE`.
+    pub fn wait_timeout(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> io::Result<Option<std::process::ExitStatus>> {
+        let start = std::time::Instant::now();
+        loop {
+            if let Some(status) = self.try_wait()? {
+                return Ok(Some(status));
+            }
+            if start.elapsed() >= timeout {
+                let _ = self.kill();
+                // Recolecta tras la muerte con su propio plazo acotado: el
+                // hijo ya está muerto, solo falta cosechar su estado para no
+                // dejar zombis en Unix ni handles abiertos en Windows.
+                let reap_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                loop {
+                    match self.try_wait()? {
+                        Some(_) => break,
+                        None if std::time::Instant::now() >= reap_deadline => break,
+                        None => std::thread::sleep(std::time::Duration::from_millis(5)),
+                    }
+                }
+                return Ok(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     /// Termina el hijo directo (sin árbol; el árbol lo cierra el llamante por
     /// PID cuando lo necesita).
     pub fn kill(&mut self) -> io::Result<()> {
