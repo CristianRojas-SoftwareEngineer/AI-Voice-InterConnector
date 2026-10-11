@@ -2031,7 +2031,9 @@ jobs:
           command: |
             echo "[STEP] Sala limpia - INICIO"
             set -euo pipefail
-            ldd --version | head -1
+            # Una sola línea, sin tubería hacia `head`: con pipefail, el SIGPIPE
+            # que recibe el productor al cerrarse la tubería haría fallar el paso.
+            getconf GNU_LIBC_VERSION
             STAGE="$(mktemp -d)"
             tar -xzf /tmp/workspace/ai-voice-interconnector-*-<< parameters.arch >>-linux.tar.gz -C "$STAGE"
             "$STAGE/ai-voice-interconnector" --version
@@ -2053,7 +2055,11 @@ jobs:
             # (`detail`, `name`, `ok`).
             doctor_out="$("$AVI_BIN_DIR/ai-voice-interconnector" --json doctor || true)"
             printf '%s\n' "$doctor_out"
-            printf '%s\n' "$doctor_out" | grep -A1 '"name": "onnx_runtime",' | grep -q '"ok": true'
+            onnx_check="$(printf '%s\n' "$doctor_out" | grep -A1 '"name": "onnx_runtime",')"
+            case "$onnx_check" in
+              *'"ok": true'*) echo "onnx_runtime: OK" ;;
+              *) echo "la comprobación onnx_runtime de doctor no pasó" >&2; exit 1 ;;
+            esac
             echo "[STEP] Sala limpia - FIN"
 
   # ──────────────────────────────────────────────────────────────
