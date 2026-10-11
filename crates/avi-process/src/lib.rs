@@ -96,12 +96,15 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     // Una sola invocación de `ps` con `LC_ALL=C`: dos llamadas separadas podrían
     // observar dos vidas distintas del PID, y sin locale fijo `lstart` cambia de
     // forma y la identidad no coincidiría con la registrada. `lstart=` y
-    // `comm=` viajan juntos para leer ambas en el mismo resultado.
-    let out = std::process::Command::new("ps")
-        .env("LC_ALL", "C")
-        .args(["-o", "lstart=,comm=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
+    // `comm=` viajan juntos para leer ambas en el mismo resultado. La ruta es
+    // fija: un `ps` puesto antes en el `PATH` no suplanta al del sistema, y si
+    // `/bin/ps` no existe la identidad no se puede observar.
+    let out = run_bounded(
+        std::process::Command::new("/bin/ps")
+            .env("LC_ALL", "C")
+            .args(["-o", "lstart=,comm=", "-p", &pid.to_string()]),
+        EXTERNAL_TOOL_DEADLINE,
+    )?;
     if !out.status.success() {
         return None;
     }
@@ -185,30 +188,92 @@ fn fits_pid_t(pid: u32) -> bool {
     i32::try_from(pid).is_ok()
 }
 
+/// Plazo de cada herramienta externa del sistema (`taskkill` en Windows, `ps`
+/// en Unix). Ambas responden en milisegundos; 2 s dejan margen ante un sistema
+/// cargado y caben varias veces dentro del plazo global de 8 s de la parada del
+/// daemon, de modo que una herramienta colgada no lo anula.
+const EXTERNAL_TOOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Lanza `cmd` sin stdin, con stdout capturado y stderr descartado, y espera
+/// su fin como mucho `deadline`. `None` si no se pudo lanzar o si venció el
+/// plazo, en cuyo caso el hijo ya está muerto y recolectado.
+fn run_bounded(
+    cmd: &mut std::process::Command,
+    deadline: std::time::Duration,
+) -> Option<std::process::Output> {
+    let child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    wait_bounded(child, deadline)
+}
+
+/// Espera a `child` como mucho `deadline`, sondeando cada 20 ms. Al vencer lo
+/// mata y lo recolecta: un hijo abandonado seguiría vivo, o como zombi en Unix.
+/// La salida capturada es pequeña (una línea), así que la tubería no se llena
+/// mientras se sondea.
+fn wait_bounded(
+    mut child: std::process::Child,
+    deadline: std::time::Duration,
+) -> Option<std::process::Output> {
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().ok(),
+            Ok(None) if start.elapsed() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "el hijo puede haber terminado entre el sondeo y la señal; la recolección siguiente cubre ambos casos"
+                )]
+                let _ = child.kill();
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "el desenlace ya es el vencimiento; la espera solo recolecta al hijo muerto"
+                )]
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
 /// Mata el árbol preciso por PID. Windows: `taskkill /F /T /PID` (mata el
-/// árbol; es exacto por PID). Unix: `libc::kill(-pid, SIGKILL)` al grupo (el
-/// daemon es líder de sesión por `setsid`) y luego `libc::kill(pid, SIGKILL)`,
-/// sin lanzar el ejecutable `kill` externo. No verifica: el llamante combina
-/// con `pid_alive_exact` y deadline. Nunca mata el PID 0 ni un PID que no
-/// cabe en `pid_t`; la guarda contra auto-muerte (`pid != proceso propio`)
-/// vive en el llamante.
+/// árbol; es exacto por PID), invocado por su ruta fija
+/// `%SystemRoot%\System32\taskkill.exe` y con plazo de 2 s. Unix:
+/// `libc::kill(-pid, SIGKILL)` al grupo (el daemon es líder de sesión por
+/// `setsid`) y luego `libc::kill(pid, SIGKILL)`, sin lanzar el ejecutable
+/// `kill` externo. No verifica: el llamante combina con `pid_alive_exact` y
+/// deadline. Nunca mata el PID 0 ni un PID que no cabe en `pid_t`; la guarda
+/// contra auto-muerte (`pid != proceso propio`) vive en el llamante.
 #[cfg(windows)]
 pub fn kill_tree_by_pid_exact(pid: u32) -> bool {
     if pid == 0 {
         return false;
     }
     use std::os::windows::process::CommandExt;
+    // Ruta fija: un `taskkill` puesto antes en el `PATH` no suplanta al del
+    // sistema. Sin `SystemRoot` la herramienta no se localiza y la primitiva
+    // falla.
+    let Some(root) = std::env::var_os("SystemRoot") else {
+        return false;
+    };
+    let taskkill = std::path::Path::new(&root)
+        .join("System32")
+        .join("taskkill.exe");
     // Sin consola propia, un invocador sin consola vería abrirse y cerrarse una
     // ventana por cada `taskkill`.
-    std::process::Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    run_bounded(
+        std::process::Command::new(taskkill)
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .creation_flags(CREATE_NO_WINDOW),
+        EXTERNAL_TOOL_DEADLINE,
+    )
+    .is_some_and(|out| out.status.success())
 }
 
 /// Mata el árbol preciso por PID: `libc::kill(-pid, SIGKILL)` al grupo (el
@@ -298,6 +363,51 @@ mod tests {
         child.kill().expect("se mata al hijo");
         child.wait().expect("se espera al hijo");
         assert!(!pid_alive_exact(pid), "el hijo muerto no está vivo");
+    }
+
+    /// Un hijo que no termina dentro del plazo se abandona como fallo: la espera
+    /// vuelve al vencer, no cuando el hijo acabaría, y el hijo queda muerto.
+    #[test]
+    fn bounded_wait_kills_child_on_deadline() {
+        #[cfg(windows)]
+        let child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("se lanza el hijo");
+        #[cfg(not(windows))]
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("se lanza el hijo");
+        let pid = child.id();
+        let start = std::time::Instant::now();
+        let out = wait_bounded(child, std::time::Duration::from_millis(300));
+        assert!(out.is_none(), "el vencimiento es un fallo");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "la espera respeta el plazo: {:?}",
+            start.elapsed()
+        );
+        assert!(!pid_alive_exact(pid), "el hijo vencido está muerto");
+    }
+
+    /// Un comando que termina dentro del plazo devuelve su salida capturada.
+    #[test]
+    fn bounded_run_returns_output_of_fast_command() {
+        #[cfg(windows)]
+        let mut cmd = std::process::Command::new("cmd");
+        #[cfg(windows)]
+        cmd.args(["/C", "echo avi"]);
+        #[cfg(not(windows))]
+        let mut cmd = std::process::Command::new("echo");
+        #[cfg(not(windows))]
+        cmd.arg("avi");
+        let out = run_bounded(&mut cmd, std::time::Duration::from_secs(10))
+            .expect("el comando termina dentro del plazo");
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "avi");
     }
 
     /// Un hijo vivo tiene identidad distinta de la propia y deja de tenerla al morir.
