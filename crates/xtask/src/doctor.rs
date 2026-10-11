@@ -186,14 +186,6 @@ fn probe_error_row(
     }
 }
 
-/// Primera sonda que produce salida, probando cada candidato en orden. Los
-/// candidatos absolutos (`/sbin/ldconfig`) se comprueban tal cual: `ldconfig`
-/// vive en `sbin`, fuera del PATH de shells restringidos, y buscarlo solo por
-/// nombre lo declara ausente aunque esté instalado.
-fn probe_first(candidates: &[&str], args: &[&str]) -> Option<String> {
-    candidates.iter().find_map(|c| probe_output(c, args))
-}
-
 /// Primer token con pinta de versión (`1.96.0`, `3.28`, `16.2.0-1`) en un
 /// texto libre como `rustc 1.96.0 (…).`
 pub(crate) fn version_token(text: &str) -> Option<String> {
@@ -786,58 +778,82 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
             hint: Some("xcode-select --install".to_string()),
         };
     }
-    // Linux: make, gcc y OpenBLAS.
+    // Linux: make, gcc y las variantes estáticas de OpenBLAS y de libgfortran.
+    // El Makefile del motor enlaza `libopenblas.a` y el runtime Fortran que usa
+    // su LAPACK para que el motor distribuido solo dependa de glibc, así que una
+    // OpenBLAS solo dinámica no basta para compilarlo.
+    let want = Some("make, gcc y OpenBLAS y libgfortran estáticas".to_string());
     let (make, gcc) = match (
         probe_version_token("make", &["--version"]),
         probe_version_token("gcc", &["--version"]),
     ) {
         (Ok(make), Ok(gcc)) => (make, gcc),
         (Err(reason), _) | (_, Err(reason)) => {
-            return probe_error_row(
-                "engine-toolchain",
-                label,
-                true,
-                Some("make, gcc y OpenBLAS".to_string()),
-                reason,
-            )
+            return probe_error_row("engine-toolchain", label, true, want, reason)
         }
     };
-    let openblas = probe_first(
-        &["ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"],
-        &["-p"],
-    )
-    .is_some_and(|o| o.lines().any(|l| l.contains("openblas")));
-    if make.is_some() && gcc.is_some() && openblas {
+    let multiarch = probe_output("gcc", &["-print-multiarch"]).unwrap_or_default();
+    let openblas = static_openblas_candidates(&multiarch)
+        .iter()
+        .any(|p| Path::new(p).is_file());
+    let gfortran = probe_output("gcc", &["-print-file-name=libgfortran.a"])
+        .is_some_and(|p| Path::new(&p).is_absolute() && Path::new(&p).is_file());
+    if make.is_some() && gcc.is_some() && openblas && gfortran {
         return Row {
             id: "engine-toolchain",
             label,
             mandatory: true,
             status: Status::Ok,
-            found: Some("make + gcc + OpenBLAS".to_string()),
-            want: Some("make, gcc y OpenBLAS".to_string()),
+            found: Some("make + gcc + libopenblas.a + libgfortran.a".to_string()),
+            want,
             hint: None,
         };
     }
+    // `libgfortran-<N>-dev` debe ser la de la versión mayor del gcc instalado:
+    // gcc solo busca la librería estática en su propio directorio de versión.
+    let gcc_major = probe_output("gcc", &["-dumpversion"])
+        .and_then(|v| v.split('.').next().map(str::to_string))
+        .unwrap_or_default();
     let hint = detect_linux_manager()
         .map(|m| {
             let packages = match m {
-                "apt" => "make gcc libopenblas-dev",
-                "dnf" => "make gcc openblas-devel",
-                "pacman" => "make gcc openblas",
-                _ => "make gcc openblas-devel o equivalentes",
+                "apt" if !gcc_major.is_empty() => {
+                    format!("make gcc libopenblas-dev libgfortran-{gcc_major}-dev")
+                }
+                "apt" => "make gcc libopenblas-dev gfortran".to_string(),
+                "dnf" => "make gcc openblas-static libgfortran-static".to_string(),
+                "pacman" => "make gcc openblas gcc-fortran".to_string(),
+                _ => "make gcc openblas-static libgfortran-static o equivalentes".to_string(),
             };
-            linux_install_command(m, packages)
+            linux_install_command(m, &packages)
         })
-        .or_else(|| Some("instala make, gcc y OpenBLAS con tu gestor".to_string()));
+        .or_else(|| {
+            Some(
+                "instala make, gcc y las librerías estáticas de OpenBLAS y libgfortran con tu gestor"
+                    .to_string(),
+            )
+        });
     Row {
         id: "engine-toolchain",
         label,
         mandatory: true,
         status: Status::Missing,
         found: None,
-        want: Some("make, gcc y OpenBLAS".to_string()),
+        want,
         hint,
     }
+}
+
+/// Rutas donde el Makefile del motor busca `libopenblas.a` en Linux, en su
+/// mismo orden: Debian y Ubuntu la instalan en `openblas-pthread/`, fuera de la
+/// ruta del enlazador, y otras distribuciones en el directorio de librerías.
+fn static_openblas_candidates(multiarch: &str) -> Vec<String> {
+    vec![
+        format!("/usr/lib/{multiarch}/openblas-pthread/libopenblas.a"),
+        format!("/usr/lib/{multiarch}/libopenblas.a"),
+        "/usr/lib64/libopenblas.a".to_string(),
+        "/usr/lib/libopenblas.a".to_string(),
+    ]
 }
 
 /// Sonda ONNX Runtime: `ort-bundle/` fresco para el pin (marcador más
@@ -1358,6 +1374,7 @@ mod tests {
         Pins {
             rust: "1.96.0".to_string(),
             ort: "1.28.0".to_string(),
+            ort_sha256: std::collections::BTreeMap::new(),
             sccache: "0.8.2".to_string(),
             msys2_base: "2026-06-11".to_string(),
             msys2_gcc: "16.2.0".to_string(),
@@ -1620,20 +1637,5 @@ mod tests {
         assert!(newest_engine_source(root.path()).is_err());
         let empty = tempfile::tempdir().unwrap();
         assert_eq!(newest_engine_source(empty.path()).unwrap(), None);
-    }
-
-    #[test]
-    fn probe_first_falls_back_to_absolute_candidate() {
-        // `ldconfig` puede no estar en el PATH aunque exista en `/sbin`: el
-        // primer candidato que produce salida gana, sea por nombre o absoluto.
-        // `--list` lo acepta el propio arnés libtest en todas las plataformas.
-        let missing = "program-that-does-not-exist-xtask-doctor";
-        assert!(probe_first(&[missing], &["--list"]).is_none());
-        let exe = std::env::current_exe().expect("ejecutable de pruebas");
-        let found = probe_first(&[missing, &exe.to_string_lossy()], &["--list"]);
-        assert!(
-            found.is_some(),
-            "el candidato absoluto debe probarse tal cual"
-        );
     }
 }

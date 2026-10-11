@@ -5,17 +5,26 @@ UNAME_M := $(shell uname -m)
 CC = gcc
 
 # Architecture / SIMD baseline (PLAN 21.3).
-#   - macOS:      -march=native (single-vendor host; Apple Silicon NEON or Intel)
+#   - macOS:      -mcpu=apple-m1 portable por defecto: M1 es el chip más antiguo
+#                 que soporta la versión mínima de macOS del producto, y todo Mac
+#                 con Apple Silicon posterior ejecuta su código. -march=native
+#                 acoplaría el codegen al chip del runner (SIGILL en un M1);
+#                 SIMD=native -> -march=native solo para compilar y ejecutar en la misma CPU
 #   - Linux x86:  PORTABLE -mavx2 -mfma by default (Haswell 2013+). We deliberately
 #                 do NOT use -march=native off-Mac: it locks codegen to the build
 #                 host and SIGILLs on any older CPU in the field (the reported
 #                 "AVX-512 Ryzen ran our scalar/illegal build" bug). Override with:
 #                   SIMD=scalar  -> no AVX2 (pre-2013 CPUs; uses portable C fallback)
 #                   SIMD=avx512  -> add AVX-512 (validate with Intel SDE / real HW)
-#   - Linux ARM:  -march=native (NEON; M1-class and up)
+#   - Linux ARM:  -march=armv8-a portable por defecto (NEON es baseline de ARMv8-A);
+#                 SIMD=native -> -march=native solo para compilar y ejecutar en la misma CPU
 SIMD ?= auto
 ifeq ($(UNAME_S),Darwin)
-    ARCH_FLAGS = -march=native
+    ifeq ($(SIMD),native)
+        ARCH_FLAGS = -march=native
+    else
+        ARCH_FLAGS = -mcpu=apple-m1
+    endif
 else ifneq (,$(filter x86_64 amd64,$(UNAME_M)))
     ifeq ($(SIMD),scalar)
         ARCH_FLAGS =
@@ -68,7 +77,30 @@ ifeq ($(UNAME_S),Darwin)
     LDLIBS += -framework Accelerate
 else ifeq ($(UNAME_S),Linux)
     CFLAGS_BASE += -DUSE_BLAS -DUSE_OPENBLAS -I/usr/include/openblas
-    LDLIBS += -lopenblas
+    # OpenBLAS se enlaza estático para que el motor distribuido no exija
+    # libopenblas en el sistema. Debian/Ubuntu instalan libopenblas.a fuera de la
+    # ruta del enlazador (en openblas-pthread/), así que se busca por ruta y se
+    # puede fijar con OPENBLAS_A=<ruta>. Su LAPACK está compilado con gfortran:
+    # libgfortran (y en x86_64 libquadmath, que libgfortran usa) también van
+    # estáticas, de modo que el motor solo enlaza dinámicamente glibc. Sin la
+    # librería estática el enlace del motor falla con un mensaje (regla
+    # openblas-static-missing) en vez de enlazar la dinámica en silencio; los
+    # objetivos que no enlazan el motor, como clean, no la exigen.
+    MULTIARCH := $(shell $(CC) -print-multiarch 2>/dev/null)
+    OPENBLAS_A ?= $(firstword $(wildcard \
+        /usr/lib/$(MULTIARCH)/openblas-pthread/libopenblas.a \
+        /usr/lib/$(MULTIARCH)/libopenblas.a \
+        /usr/lib64/libopenblas.a \
+        /usr/lib/libopenblas.a))
+    ifeq ($(OPENBLAS_A),)
+        OPENBLAS_A = openblas-static-missing
+    endif
+    ifneq (,$(filter x86_64 amd64,$(UNAME_M)))
+        FORTRAN_STATIC = -lgfortran -lquadmath
+    else
+        FORTRAN_STATIC = -lgfortran
+    endif
+    LDLIBS += $(OPENBLAS_A) -Wl,-Bstatic $(FORTRAN_STATIC) -Wl,-Bdynamic -lm -lpthread
 else
 # ——— MinGW-w64/UCRT64 (MSYS2): vendoring-local shims POSIX ———
 #   sys/mman.h + unistd.h stubs live in third_party/ingot/mingw_shim/ (§2.4 plan).
@@ -199,6 +231,17 @@ help:
 # Build
 $(TARGET): $(OBJS) $(INGOT_LIB)
 	$(CC) $(CFLAGS) -o $@ $(OBJS) $(INGOT_LIB) $(LDLIBS)
+
+ifeq ($(UNAME_S),Linux)
+# En Linux el motor enlaza libopenblas.a: es requisito del enlace, y si no se
+# encontró la regla de abajo detiene el build con el remedio.
+$(TARGET): $(OPENBLAS_A)
+
+.PHONY: openblas-static-missing
+openblas-static-missing:
+	@echo "No se encontró libopenblas.a: instala la variante estática de OpenBLAS (en Debian/Ubuntu, libopenblas-dev) o indica su ruta con OPENBLAS_A=<ruta>" >&2
+	@exit 1
+endif
 
 blas: $(TARGET)
 
