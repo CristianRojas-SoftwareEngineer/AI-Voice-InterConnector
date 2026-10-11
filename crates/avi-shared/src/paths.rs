@@ -123,6 +123,28 @@ pub fn install_dir() -> io::Result<PathBuf> {
     }
 }
 
+/// Directorio real del programa en ejecución: el que contiene el ejecutable y
+/// todo lo que el bundle trae junto a él (el motor y ONNX Runtime). En Unix la
+/// app se invoca desde el symlink de `bin_dir()` y `current_exe()` no lo
+/// resuelve en todos los sistemas (en macOS devuelve la ruta del symlink), así
+/// que se resuelve aquí; en Windows no hay symlink y canonicalizar daría una
+/// ruta `\\?\` que no coincide con las del resto del programa.
+pub fn program_dir() -> io::Result<PathBuf> {
+    real_parent(&std::env::current_exe()?)
+}
+
+/// Directorio que contiene `exe` tras resolver sus enlaces simbólicos en Unix.
+fn real_parent(exe: &Path) -> io::Result<PathBuf> {
+    #[cfg(unix)]
+    let exe = &std::fs::canonicalize(exe)?;
+    exe.parent().map(Path::to_path_buf).ok_or_else(|| {
+        io::Error::other(format!(
+            "el ejecutable {} no tiene directorio padre",
+            exe.display()
+        ))
+    })
+}
+
 /// Directorio del comando en el PATH. En Unix es el directorio del enlace
 /// simbólico; en Windows no hay enlace y la entrada que se escribe en
 /// `HKCU\Environment\Path` es el propio directorio de programa, así que ambos
@@ -360,6 +382,40 @@ pub fn xet_cache_dir() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Invocado por un symlink, el directorio del programa es el del fichero
+    /// real, no el del enlace.
+    #[cfg(unix)]
+    #[test]
+    fn real_parent_resolves_symlink_to_real_directory() {
+        let root = tempfile::tempdir().expect("directorio temporal");
+        let real_dir = root.path().join("opt");
+        let link_dir = root.path().join("bin");
+        std::fs::create_dir_all(&real_dir).expect("se crea opt");
+        std::fs::create_dir_all(&link_dir).expect("se crea bin");
+        let exe = real_dir.join("app");
+        std::fs::write(&exe, b"").expect("se crea el ejecutable");
+        let link = link_dir.join("app");
+        std::os::unix::fs::symlink(&exe, &link).expect("se crea el symlink");
+        let resolved = real_parent(&link).expect("se resuelve el symlink");
+        assert_eq!(
+            resolved,
+            std::fs::canonicalize(&real_dir).expect("ruta real de opt")
+        );
+    }
+
+    /// El directorio del programa de las pruebas existe y contiene su ejecutable.
+    #[test]
+    fn program_dir_contains_current_exe() {
+        let dir = program_dir().expect("directorio del programa");
+        let exe = std::env::current_exe().expect("ejecutable actual");
+        let name = exe.file_name().expect("nombre del ejecutable");
+        assert!(
+            dir.join(name).is_file(),
+            "{} no contiene {name:?}",
+            dir.display()
+        );
+    }
 
     /// Los modelos de traducción se fijan a los repositorios publicados ya
     /// convertidos y se acotan a los cinco ficheros del modelo; no queda ningún
