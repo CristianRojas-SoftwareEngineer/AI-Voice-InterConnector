@@ -15,6 +15,23 @@ mod tests {
     use crate::{normalize_text, EngineHolder, ParakeetEngine};
     use avi_core::engine::SttEngine;
 
+    /// Un lock envenenado por un pánico con el guard vivo se recupera: la
+    /// siguiente toma devuelve el guard con el valor intacto en vez de fallar
+    /// para siempre.
+    #[test]
+    fn poisoned_session_lock_is_recovered() {
+        let lock = std::sync::Arc::new(std::sync::Mutex::new(7));
+        let poisoner = std::sync::Arc::clone(&lock);
+        let panicked = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("pánico con el guard vivo");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(lock.is_poisoned());
+        assert_eq!(*crate::parakeet::lock_session(&lock), 7);
+    }
+
     /// Directorio del snapshot de Parakeet, exigiendo `nemo128.onnx`: la raíz de
     /// modelos vive fuera del repo y la provisiona `ai-voice-interconnector setup`.
     fn require_parakeet() -> std::path::PathBuf {

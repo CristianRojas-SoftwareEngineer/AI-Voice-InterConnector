@@ -144,7 +144,7 @@ impl SttEngine for ParakeetEngine {
             let t_wave =
                 ort::value::Tensor::from_array(([1i64, samples.len() as i64], samples.clone()))?;
             let t_lens = ort::value::Tensor::from_array(([1i64], vec![samples.len() as i64]))?;
-            let mut pre = self.pre.lock().unwrap();
+            let mut pre = lock_session(&self.pre);
             let pre_out = pre.run(inputs![
                 self.pre_in[0].as_str() => t_wave,
                 self.pre_in[1].as_str() => t_lens,
@@ -163,7 +163,7 @@ impl SttEngine for ParakeetEngine {
         let (enc_len, dim_enc, total_steps, enc_flat) = {
             let t_feat = ort::value::Tensor::from_array(([1i64, 128, t_frames as i64], feats))?;
             let t_flens = ort::value::Tensor::from_array(([1i64], vec![feat_len]))?;
-            let mut enc = self.enc.lock().unwrap();
+            let mut enc = lock_session(&self.enc);
             let enc_out = enc.run(inputs![
                 self.enc_in[0].as_str() => t_feat,
                 self.enc_in[1].as_str() => t_flens,
@@ -240,7 +240,7 @@ impl ParakeetEngine {
         let t_s2 = ort::value::Tensor::from_array((states_shape.to_vec(), s2.to_vec()))?;
 
         let (logits_out, state1, state2) = {
-            let mut dj = self.dj.lock().unwrap();
+            let mut dj = lock_session(&self.dj);
             let outs = dj.run(inputs![
                 self.dj_in[0].as_str() => t_e,
                 self.dj_in[1].as_str() => t_tok,
@@ -311,6 +311,17 @@ fn argmax(v: &[f32]) -> Option<usize> {
         .enumerate()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(i, _)| i)
+}
+
+/// Toma el lock de una sesión recuperando el guard si un pánico anterior lo
+/// envenenó. Es válido porque la sesión no guarda estado mutable entre
+/// ejecuciones de `run`: cada transcripción construye sus propios tensores, de
+/// modo que un pánico a mitad de una no deja nada a medias para la siguiente.
+/// Sin la recuperación, en el daemon (vida larga) un solo pánico haría fallar
+/// todas las transcripciones posteriores.
+pub(crate) fn lock_session<T>(lock: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn session(path: impl AsRef<Path>) -> anyhow::Result<Session> {
