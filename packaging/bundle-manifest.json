@@ -22,6 +22,7 @@
         "bcrypt.dll", "bcryptprimitives.dll", "combase.dll", "ole32.dll",
         "oleaut32.dll", "shell32.dll", "crypt32.dll", "iphlpapi.dll", "pdh.dll",
         "powrprof.dll", "psapi.dll", "dbghelp.dll", "setupapi.dll", "dxgi.dll",
+        "mmdevapi.dll",
         "api-ms-win-*"
       ]
     },
