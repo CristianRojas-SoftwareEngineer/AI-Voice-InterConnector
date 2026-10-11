@@ -2814,9 +2814,13 @@ fn main() {
         handle.join().unwrap();
     }
 
-    /// Activar la bandera de cancelación cierra la conexión en menos de
-    /// 500 ms y el servidor observa EOF: es la señal con la que el motor
-    /// aborta la generación.
+    /// Activar la bandera de cancelación cierra la conexión en pocos periodos
+    /// de sondeo y el servidor observa EOF: es la señal con la que el motor
+    /// aborta la generación. El tiempo se mide desde la activación, no desde
+    /// el inicio del intercambio, para no contar la espera del hilo que la
+    /// activa ni la planificación de hilos de una máquina cargada. El tope,
+    /// diez periodos de sondeo, sigue muy por debajo de los 10 s de plazo del
+    /// intercambio, así que solo se cumple si el corte lo causó la bandera.
     #[test]
     fn http_exchange_cancel_flag_closes_connection() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("puerto libre");
@@ -2841,10 +2845,11 @@ fn main() {
             let cancel = cancel.clone();
             thread::spawn(move || {
                 thread::sleep(Duration::from_millis(100));
+                let activated = Instant::now();
                 cancel.store(true, Ordering::SeqCst);
+                activated
             })
         };
-        let started = Instant::now();
         let err = http_exchange(
             &format!("http://127.0.0.1:{}/v1/tts", port),
             "POST",
@@ -2853,18 +2858,19 @@ fn main() {
             Some(&cancel),
         )
         .expect_err("la bandera debe cancelar el intercambio");
-        let elapsed = started.elapsed();
+        let ended = Instant::now();
         assert!(
             err.downcast_ref::<SynthesisCancelled>().is_some(),
             "el error debe envolver SynthesisCancelled: {}",
             err
         );
+        let activated = setter.join().unwrap();
+        let elapsed = ended.duration_since(activated);
         assert!(
-            elapsed < Duration::from_millis(500),
-            "la cancelación debe cerrar pronto: {:?}",
+            elapsed < CANCEL_POLL * 10,
+            "la cancelación debe cerrar pronto tras activar la bandera: {:?}",
             elapsed
         );
-        setter.join().unwrap();
         assert_eq!(handle.join().unwrap(), 0, "el servidor debe leer EOF");
     }
 
