@@ -119,26 +119,58 @@ fn system_crt_dll(_relative: &str) -> Option<PathBuf> {
     None
 }
 
+/// Puerto TCP de `127.0.0.1` reservado sin oyente: un socket enlazado sobre el
+/// que nunca se llama a `listen`. Mientras la guarda viva, el SO no puede
+/// asignar el puerto a otro proceso ni a otra prueba, y toda conexión a él se
+/// rechaza.
+struct ReservedPort {
+    port: u16,
+    _socket: tokio::net::TcpSocket,
+}
+
+impl ReservedPort {
+    fn reserve() -> Self {
+        let socket = tokio::net::TcpSocket::new_v4().expect("crear el socket del puerto reservado");
+        socket
+            .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .expect("reservar un puerto local");
+        let port = socket
+            .local_addr()
+            .expect("dirección del puerto reservado")
+            .port();
+        ReservedPort {
+            port,
+            _socket: socket,
+        }
+    }
+}
+
 /// Siembra en `data_dir` un `daemon.pid` señuelo: su dirección apunta a un
-/// puerto TCP efímero ya cerrado y sus PID están fuera de rango. Así una orden
-/// que consulte o detenga el daemon no cae a 127.0.0.1:8765 (el del usuario)
-/// ni barre por imagen los `qwen_tts` de la máquina, porque el `resident_pid`
-/// registrado no es 0.
-fn seed_decoy_daemon_pidfile(data_dir: &Path) {
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("reservar puerto efímero")
-        .local_addr()
-        .expect("dirección del puerto reservado")
-        .port();
+/// puerto reservado sin oyente durante toda la prueba y sus PID están fuera de
+/// rango. Así una orden que consulte o detenga el daemon recibe un rechazo de
+/// conexión, no cae a 127.0.0.1:8765 (el del usuario) ni barre por imagen los
+/// `qwen_tts` de la máquina, porque el `resident_pid` registrado no es 0.
+///
+/// Las claves `identity`/`resident_identity`/`resident_port` van presentes
+/// porque el esquema las exige: sin ellas el fichero es ilegible y se descarta,
+/// así que el señuelo no protegería nada. Devuelve la guarda del puerto, que el
+/// llamante conserva mientras use el señuelo.
+fn seed_decoy_daemon_pidfile(data_dir: &Path) -> ReservedPort {
+    let decoy = ReservedPort::reserve();
     let dead_pid = u32::MAX - 1;
+    let fake = serde_json::json!({ "start": "0", "image": "fake-identity.exe" });
     let content = serde_json::json!({
         "pid": dead_pid,
-        "addr": format!("127.0.0.1:{port}"),
+        "addr": format!("127.0.0.1:{}", decoy.port),
         "resident_pid": dead_pid,
+        "identity": fake,
+        "resident_identity": fake,
+        "resident_port": null,
     });
     std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
     std::fs::write(data_dir.join("daemon.pid"), content.to_string())
         .expect("sembrar daemon.pid señuelo");
+    decoy
 }
 
 /// Sandbox del contrato: un directorio con las raíces del hijo, un `tmp` aislado y un
@@ -153,6 +185,10 @@ struct Sandbox {
     /// Entorno del hijo. `TEMP`/`TMP`/`TMPDIR` reubican su temporal, que la tabla no permite
     /// reubicar por variable de la aplicación.
     envs: Vec<(String, String)>,
+    /// Puerto al que apunta el `daemon.pid` señuelo, reservado mientras viva el sandbox.
+    _decoy: ReservedPort,
+    /// Puerto de `HF_ENDPOINT`, reservado sin oyente mientras viva el sandbox.
+    _hf_endpoint: ReservedPort,
     /// Dueño del directorio raíz: lo borra al soltarse el sandbox, también con pánico.
     _guard: tempfile::TempDir,
 }
@@ -176,7 +212,7 @@ impl Sandbox {
         for dir in [&staging, &data, &models, &temp, &hf] {
             std::fs::create_dir_all(dir).expect("crear raíces del sandbox");
         }
-        seed_decoy_daemon_pidfile(&data);
+        let decoy = seed_decoy_daemon_pidfile(&data);
 
         // El bundle: la copia del ejecutable con el nombre del manifiesto y el resto de
         // archivos obligatorios con contenido de marcador. La lista no se escribe a mano.
@@ -225,12 +261,9 @@ impl Sandbox {
             }
         }
 
-        // Endpoint de HuggingFace en un puerto local cerrado: la descarga del pin sin
-        // sembrar falla de inmediato y sin tocar la red real.
-        let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
-            .and_then(|l| l.local_addr())
-            .expect("reservar un puerto local")
-            .port();
+        // Endpoint de HuggingFace en un puerto local reservado sin oyente: la descarga
+        // del pin sin sembrar falla de inmediato y sin tocar la red real.
+        let hf_endpoint = ReservedPort::reserve();
 
         let exe = staging.join(section.executable_path());
         let value = |p: &Path| p.display().to_string();
@@ -254,7 +287,7 @@ impl Sandbox {
             ("AVI_DAEMON_PORT".to_string(), "0".to_string()),
             (
                 "HF_ENDPOINT".to_string(),
-                format!("http://127.0.0.1:{closed_port}"),
+                format!("http://127.0.0.1:{}", hf_endpoint.port),
             ),
         ];
         envs.sort();
@@ -262,6 +295,8 @@ impl Sandbox {
             exe,
             envs,
             root,
+            _decoy: decoy,
+            _hf_endpoint: hf_endpoint,
             _guard: guard,
         }
     }

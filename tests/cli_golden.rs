@@ -238,38 +238,17 @@ fn read_resident_pid_dir(dir: &std::path::Path) -> u32 {
         .unwrap_or(0)
 }
 
-/// ¿Hay algo escuchando en `127.0.0.1:port`? Sondeo TCP breve, sin HTTP. Se
-/// usa con los puertos propios de una instancia: el efímero del daemon y el del
-/// residente, anotado en su `daemon.pid`. Nunca con un puerto compartido de la
-/// máquina.
+/// ¿Hay algo escuchando en `127.0.0.1:port`? Sondeo TCP breve, sin HTTP. Solo
+/// es válido sobre un puerto que nadie más puede enlazar mientras dura el
+/// sondeo: uno reservado por una guarda viva ([`DecoyPort`]) o uno servido por
+/// un proceso vivo de la propia instancia. Un puerto soltado vuelve al espacio
+/// compartido de la máquina, y su estado no dice nada de la instancia.
 fn port_open(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(
         &std::net::SocketAddr::from(([127, 0, 0, 1], port)),
         std::time::Duration::from_millis(300),
     )
     .is_ok()
-}
-
-/// Afirma que `port` sigue libre durante `window`, sondeando cada 50 ms y
-/// fallando en el instante en que algo lo enlace. Los 3 s del llamante no son
-/// una espera ciega: son el umbral que cubre varios ciclos del reintento de
-/// 500 ms del daemon supervisado, y cada muestra convierte esa cobertura en un
-/// diagnóstico («re-enlazado tras X ms») en vez de un veredicto tardío.
-fn assert_no_rebind_while_free(port: u16, window: Duration) {
-    let start = Instant::now();
-    while start.elapsed() < window {
-        assert!(
-            !port_open(port),
-            "ningún daemon debe enlazar el puerto liberado: reenlace tras {:?}",
-            start.elapsed()
-        );
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(
-        !port_open(port),
-        "ningún daemon debe enlazar el puerto liberado tras {:?}",
-        window
-    );
 }
 
 // ─── Ciclo por instancia (la fixture por sesión compartida queda eliminada) ──
@@ -472,7 +451,7 @@ fn isolated_instance_removes_its_sandbox_on_panic() {
     let (tx, rx) = std::sync::mpsc::channel();
     let handle = std::thread::spawn(move || {
         let inst = IsolatedInstance::new("drop_after_panic");
-        seed_decoy_daemon_pidfile(&inst.dir);
+        let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let intact = std::fs::read_to_string(inst.dir.join("daemon.pid"))
             .map(|content| content.contains("fake-identity.exe"))
             .unwrap_or(false);
@@ -574,10 +553,23 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
 /// Crea un sandbox de contrato nuevo y único: datos, caché de modelos y
 /// programa propios, sin modelos y con un `daemon.pid` señuelo para que el
 /// binario no consulte 127.0.0.1:8765 ni barra los `qwen_tts` de la máquina.
-fn contract_sandbox(tag: &str) -> (TempDir, Vec<(String, String)>) {
-    let (sandbox, envs) = sandbox_unique_state(tag);
-    seed_decoy_daemon_pidfile(&sandbox.path().join("data"));
-    (sandbox, envs)
+fn contract_sandbox(tag: &str) -> (ContractSandbox, Vec<(String, String)>) {
+    let (dir, envs) = sandbox_unique_state(tag);
+    let decoy = seed_decoy_daemon_pidfile(&dir.path().join("data"));
+    (ContractSandbox { dir, _decoy: decoy }, envs)
+}
+
+/// Sandbox de contrato: su carpeta temporal y la guarda del puerto al que
+/// apunta su `daemon.pid` señuelo, que se sueltan juntas al final de la prueba.
+struct ContractSandbox {
+    dir: TempDir,
+    _decoy: DecoyPort,
+}
+
+impl ContractSandbox {
+    fn path(&self) -> &std::path::Path {
+        self.dir.path()
+    }
 }
 
 /// Ejecuta el binario con `args` en un sandbox de contrato nuevo que se borra al
@@ -818,7 +810,7 @@ fn wait_for_ready_file(inst: &IsolatedInstance, timeout: Duration) -> (String, S
 const REAP_DEATH_DEADLINE: Duration = Duration::from_secs(8);
 
 /// Plazo máximo para que, tras matar el daemon a la fuerza, el motor
-/// residente muera y su puerto deje de escuchar.
+/// residente muera.
 const HARD_KILL_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Instancia aislada por test: sandbox propio + envs para el hijo. Su `Drop`
@@ -972,24 +964,26 @@ impl IsolatedInstance {
 
 impl Drop for IsolatedInstance {
     /// Cosecha siempre, también ante `panic!`, y nunca entra en pánico. Si mató
-    /// un daemon, espera a que cierre el puerto propio del residente; si sigue
-    /// abierto lo informa por stderr y no barre nada más.
+    /// un daemon, espera a que muera el residente que tenía registrado; si sigue
+    /// vivo lo informa por stderr y no barre nada más. Se observa el PID y no el
+    /// puerto del residente: un puerto soltado puede enlazarlo cualquier otro
+    /// proceso de la máquina.
     fn drop(&mut self) {
-        // El puerto del residente se lee antes de cosechar: sale del pidfile.
-        let resident_port = self.tts_port();
+        // El residente se lee antes de cosechar: sale del pidfile.
+        let resident = self.read_resident_pid();
         let killed_daemon = self.reap_registered();
-        if killed_daemon {
-            if let Some(port) = resident_port {
-                let t0 = Instant::now();
-                while port_open(port) && t0.elapsed() < HARD_KILL_DEADLINE {
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                if port_open(port) {
-                    let _ = writeln!(
-                        std::io::stderr(),
-                        "[reap] el puerto {port} de la instancia sigue abierto tras {HARD_KILL_DEADLINE:?}"
-                    );
-                }
+        if killed_daemon && resident != 0 {
+            let t0 = Instant::now();
+            while avi_tts::resident::resident_pid_alive(resident)
+                && t0.elapsed() < HARD_KILL_DEADLINE
+            {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if avi_tts::resident::resident_pid_alive(resident) {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "[reap] el residente {resident} de la instancia sigue vivo tras {HARD_KILL_DEADLINE:?}"
+                );
             }
         }
     }
@@ -1057,12 +1051,13 @@ fn start_instance_running_only(inst: &IsolatedInstance, extra: &[&str]) -> Value
 }
 
 /// Apaga la instancia aislada (`daemon stop` con sus envs) y verifica cero
-/// huérfanos sobre SU puerto/pidfile (no sobre el 8765 global). Tolera exit 0
-/// (`shutdown_sent`) y exit 5 (ya detenido).
+/// huérfanos sobre SUS procesos registrados y su pidfile (no sobre el 8765
+/// global). Tolera exit 0 (`shutdown_sent`) y exit 5 (ya detenido).
 fn stop_instance(inst: &IsolatedInstance, context: &str) {
-    let previous_port = inst.port();
-    // El residente registrado se lee antes de parar: la parada borra el pidfile.
-    let resident = (inst.read_resident_pid(), inst.tts_port());
+    // Daemon y residente registrados se leen antes de parar: la parada borra
+    // el pidfile.
+    let daemon = inst.read_daemon_pid();
+    let resident = inst.read_resident_pid();
     let a = inst.args();
     let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &a);
     assert!(
@@ -1072,45 +1067,40 @@ fn stop_instance(inst: &IsolatedInstance, context: &str) {
         actual
     );
     wait_for_daemon_state_env(inst, "stopped", 75);
-    verify_zero_orphans_instance(context, inst, previous_port, resident);
+    verify_zero_orphans_instance(context, inst, daemon, resident);
 }
 
 /// Verificación ruidosa de cero huérfanos de LA INSTANCIA tras el apagado: el
-/// árbol debe estar muerto, SU puerto del daemon cerrado, el residente ausente
-/// (el PID y el puerto que tenía registrados antes de parar: PID muerto y puerto
-/// sin escuchar) y su pidfile borrado (el producto lo borra tras muerte
-/// verificada). Si queda resto falla con `panic!`: la suite nunca pasa en verde
-/// con huérfanos vivos, y el `Drop` de la instancia cosecha lo registrado en la
-/// vía de fallo.
+/// daemon y el residente que tenía registrados antes de parar deben estar
+/// muertos y su pidfile borrado (el producto lo borra tras muerte verificada).
+/// Se observan los PID y no los puertos: un puerto soltado puede enlazarlo
+/// cualquier otro proceso de la máquina. Si queda resto falla con `panic!`: la
+/// suite nunca pasa en verde con huérfanos vivos, y el `Drop` de la instancia
+/// cosecha lo registrado en la vía de fallo.
 fn verify_zero_orphans_instance(
     context: &str,
     inst: &IsolatedInstance,
-    port: u16,
-    (resident, resident_port): (u32, Option<u16>),
+    daemon: Option<u32>,
+    resident: u32,
 ) {
-    let pid = inst.read_daemon_pid();
-    let pid_alive = pid.map(avi_daemon::pid_alive).unwrap_or(false);
+    let daemon_alive = daemon.map(avi_daemon::pid_alive).unwrap_or(false);
     let resident_alive = resident != 0 && avi_tts::resident::resident_pid_alive(resident);
-    let instance_port_open = port_open(port);
-    let resident_port_open = resident_port.is_some_and(port_open);
     let pidfile = inst.dir.join("daemon.pid");
     let pidfile_exists = pidfile.exists();
     assert!(
-        !(pid_alive || resident_alive || instance_port_open || resident_port_open || pidfile_exists),
-        "quedaron huérfanos tras {}: pid={:?} vivo={} residente={} residente_vivo={} puerto_instancia={} abierto={} puerto_residente_abierto={} pidfile={} (el apagado debe dejar cero restos a nivel SO)",
+        !(daemon_alive || resident_alive || pidfile_exists),
+        "quedaron huérfanos tras {}: daemon={:?} vivo={} residente={} residente_vivo={} pidfile={} existe={} (el apagado debe dejar cero restos a nivel SO)",
         context,
-        pid,
-        pid_alive,
+        daemon,
+        daemon_alive,
         resident,
         resident_alive,
-        port,
-        instance_port_open,
-        resident_port_open,
-        pidfile.display()
+        pidfile.display(),
+        pidfile_exists
     );
     milestone(&format!(
-        "{}: cero huérfanos verificados a nivel SO (instancia puerto {})",
-        context, port
+        "{}: cero huérfanos verificados a nivel SO (daemon {:?}, residente {})",
+        context, daemon, resident
     ));
 }
 
@@ -1176,21 +1166,47 @@ fn seed_pinned_models(models_root: &std::path::Path, names: &[&str]) {
     }
 }
 
+/// Puerto TCP de `127.0.0.1` reservado sin oyente: un socket enlazado sobre el
+/// que nunca se llama a `listen`. Mientras la guarda viva, el SO no puede
+/// asignar el puerto a otro proceso ni a otra prueba, y toda conexión a él se
+/// rechaza.
+struct DecoyPort {
+    port: u16,
+    _socket: tokio::net::TcpSocket,
+}
+
+impl DecoyPort {
+    fn reserve() -> Self {
+        let socket = tokio::net::TcpSocket::new_v4().expect("crear el socket del puerto señuelo");
+        socket
+            .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .expect("reservar el puerto señuelo");
+        let port = socket
+            .local_addr()
+            .expect("dirección del puerto señuelo")
+            .port();
+        DecoyPort {
+            port,
+            _socket: socket,
+        }
+    }
+}
+
 /// Siembra en `data_dir` un `daemon.pid` señuelo: su dirección apunta a un
-/// puerto TCP efímero ya cerrado y sus PID están fuera de rango. Así una orden
-/// que consulte o detenga el daemon no cae a 127.0.0.1:8765 (el del usuario)
-/// ni barre por imagen los `qwen_tts` de la máquina, porque el `resident_pid`
-/// registrado no es 0.
+/// puerto reservado sin oyente durante toda la prueba y sus PID están fuera de
+/// rango. Así una orden que consulte o detenga el daemon recibe un rechazo de
+/// conexión, no cae a 127.0.0.1:8765 (el del usuario) ni barre por imagen los
+/// `qwen_tts` de la máquina, porque el `resident_pid` registrado no es 0.
+///
+/// Devuelve la guarda del puerto: el llamante la conserva mientras la prueba
+/// use el señuelo, porque al soltarla el puerto queda libre para cualquiera.
 ///
 /// Las claves `identity`/`resident_identity` van presentes porque el esquema las
 /// exige: sin ellas el fichero es ilegible y se descarta, así que la dirección
 /// señuela no desviaría nada y la orden caería al puerto por defecto.
-fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) {
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("reservar puerto efímero")
-        .local_addr()
-        .expect("dirección del puerto reservado")
-        .port();
+fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) -> DecoyPort {
+    let decoy = DecoyPort::reserve();
+    let port = decoy.port;
     let dead_pid = u32::MAX - 1;
     let fake = serde_json::json!({ "start": "0", "image": "fake-identity.exe" });
     let content = serde_json::json!({
@@ -1204,6 +1220,7 @@ fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) {
     std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
     std::fs::write(data_dir.join("daemon.pid"), content.to_string())
         .expect("sembrar daemon.pid señuelo");
+    decoy
 }
 
 #[test]
@@ -2146,13 +2163,13 @@ fn cleanup_model_real_run_reports_paths() {
     // los `qwen_tts` de la máquina. El pidfile señuelo (puerto cerrado, PID muertos,
     // `resident_pid` distinto de 0) evita ambos efectos; se resiembra antes de cada
     // ejecución porque la parada lo puede borrar.
-    seed_decoy_daemon_pidfile(&data);
+    let _decoy_dry = seed_decoy_daemon_pidfile(&data);
     let (code, dry) = run_json_env(
         &["--json", "cleanup", "--model", "--dry-run"],
         &exclusive_envs,
     );
     assert_eq!(code, 0, "{}", dry);
-    seed_decoy_daemon_pidfile(&data);
+    let _decoy_real = seed_decoy_daemon_pidfile(&data);
     let (code, real) = run_json_env(&["--json", "cleanup", "--model", "--yes"], &exclusive_envs);
     assert_eq!(code, 0, "{}", real);
 
@@ -2208,7 +2225,7 @@ fn cleanup_model_real_run_reports_paths() {
         ("TMPDIR", tmp.to_str().unwrap()),
     ];
 
-    seed_decoy_daemon_pidfile(&data);
+    let _decoy_shared = seed_decoy_daemon_pidfile(&data);
     let (code, really_shared) =
         run_json_env(&["--json", "cleanup", "--model", "--yes"], &shared_envs);
     assert_eq!(code, 0, "{}", really_shared);
@@ -4706,10 +4723,71 @@ mod tts {
         );
     }
 
+    /// Pares (nombre, contenido) de los `logs/daemon_*.log` de la instancia,
+    /// ordenados por nombre: la huella que dejaría cualquier daemon que
+    /// arrancara sobre ella.
+    fn snapshot_daemon_logs(inst: &IsolatedInstance) -> Vec<(String, Vec<u8>)> {
+        let mut logs: Vec<(String, Vec<u8>)> = std::fs::read_dir(inst.dir.join("logs"))
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter_map(|e| {
+                        let name = e.file_name().to_str()?.to_string();
+                        if !(name.starts_with("daemon_") && name.ends_with(".log")) {
+                            return None;
+                        }
+                        Some((name, std::fs::read(e.path()).unwrap_or_default()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        logs.sort();
+        logs
+    }
+
+    /// Afirma que durante `window` no arranca sobre la instancia ningún daemon
+    /// huérfano: sondea cada 50 ms y falla en cuanto el `daemon.pid` difiere de
+    /// `pidfile_seed`, aparece `daemon.ready` o cambia la instantánea de logs
+    /// `logs_seed`, citando el cambio y el tiempo transcurrido. Un huérfano que
+    /// lograra enlazar el puerto tendría que dejar alguna de esas tres señales,
+    /// y ningún proceso ajeno a la instancia puede escribirlas. Los 3 s del
+    /// llamante cubren varios ciclos del reintento de 500 ms del daemon
+    /// supervisado.
+    fn assert_no_orphan_launch(
+        inst: &IsolatedInstance,
+        pidfile_seed: &Option<Vec<u8>>,
+        logs_seed: &[(String, Vec<u8>)],
+        window: Duration,
+    ) {
+        let start = Instant::now();
+        loop {
+            let elapsed = start.elapsed();
+            assert_eq!(
+                &std::fs::read(inst.dir.join("daemon.pid")).ok(),
+                pidfile_seed,
+                "ningún daemon huérfano debe registrarse en daemon.pid: cambió tras {elapsed:?}"
+            );
+            assert!(
+                !inst.dir.join("daemon.ready").exists(),
+                "ningún daemon huérfano debe publicar daemon.ready: apareció tras {elapsed:?}"
+            );
+            assert!(
+                snapshot_daemon_logs(inst) == logs_seed,
+                "ningún daemon huérfano debe escribir en logs/daemon_*.log: cambiaron tras {elapsed:?}"
+            );
+            if elapsed >= window {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// `daemon start` con el puerto de la instancia ocupado falla al instante
     /// con `port_in_use` (exit 6), con y sin `--auto-restart`, y no deja
-    /// huérfano: tras liberar el puerto nadie lo enlaza (un daemon supervisado
-    /// huérfano reintentaría a los 500 ms y lo tomaría en cuanto quedara libre).
+    /// huérfano: tras liberar el puerto el estado de la instancia no cambia
+    /// (un daemon supervisado huérfano reintentaría a los 500 ms, tomaría el
+    /// puerto en cuanto quedara libre y se registraría, publicaría su
+    /// readiness o escribiría en su log). No se observa el puerto: una vez
+    /// soltado, cualquier otro proceso de la máquina puede enlazarlo.
     /// No toma `lock_tts`: ningún modelo llega a cargarse.
     #[test]
     fn daemon_start_port_in_use_fails_fast_with_state_conflict() {
@@ -4717,13 +4795,15 @@ mod tts {
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
         seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
-        seed_decoy_daemon_pidfile(&inst.dir);
+        let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
         assert_start_port_in_use(&inst, port, &[]);
         assert_start_port_in_use(&inst, port, &["--auto-restart"]);
+        let pidfile_seed = std::fs::read(inst.dir.join("daemon.pid")).ok();
+        let logs_seed = snapshot_daemon_logs(&inst);
         drop(holder);
-        assert_no_rebind_while_free(port, Duration::from_secs(3));
+        assert_no_orphan_launch(&inst, &pidfile_seed, &logs_seed, Duration::from_secs(3));
     }
 
     /// El fallo de un `daemon start` queda en
@@ -4733,7 +4813,7 @@ mod tts {
     fn daemon_start_failure_is_written_to_daemon_log() {
         let mut inst = IsolatedInstance::new("start_failure_log");
         seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
-        seed_decoy_daemon_pidfile(&inst.dir);
+        let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
         let (code, actual) = run_json_env(&["--json", "daemon", "start"], &inst.contract_args());
@@ -4800,7 +4880,7 @@ mod tts {
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
         seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
-        seed_decoy_daemon_pidfile(&inst.dir);
+        let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let pidfile_before = std::fs::read(inst.dir.join("daemon.pid")).ok();
         let voice = format!("warm_nonexistent_{}", std::process::id());
         let t0 = Instant::now();
@@ -4831,7 +4911,7 @@ mod tts {
     #[test]
     fn daemon_stop_removes_stale_ready_and_pid_files() {
         let inst = IsolatedInstance::new("stop_stale_files");
-        seed_decoy_daemon_pidfile(&inst.dir);
+        let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let ready = inst.dir.join("daemon.ready");
         std::fs::write(
             &ready,
@@ -5103,23 +5183,22 @@ mod tts {
         // Fase 2 — timeout/aborto sin graceful: se mata el árbol sin POST
         // /shutdown (la pista queda obsoleta a propósito). El próximo `start`
         // parte de cero con `started`.
-        // El residente registrado (PID y puerto) se espera antes del kill: sale
-        // del pidfile, que el kill duro deja en su sitio.
+        // El residente registrado se espera antes del kill: sale del pidfile,
+        // que el kill duro deja en su sitio.
         #[cfg(unix)]
-        let (resident_b, resident_port) = wait_for_live_resident(&inst);
+        let (resident_b, _) = wait_for_live_resident(&inst);
         avi_daemon::kill_tree_by_pid(pid_b);
         avi_daemon::wait_for_pid_death(pid_b, std::time::Duration::from_secs(8));
         // (tensado CI Unix, sin simular Unix en local): tras matar el
         // árbol sin graceful, el residente de la instancia no debe seguir
-        // vivo ni escuchando antes del rearranque (el residente tiene su
-        // propia sesión: lo termina la tubería de vida al morir el daemon).
+        // vivo antes del rearranque (el residente tiene su propia sesión: lo
+        // termina la tubería de vida al morir el daemon).
         #[cfg(unix)]
         {
-            let (alive, listening) =
-                wait_resident_gone(resident_b, resident_port, HARD_KILL_DEADLINE);
+            let alive = wait_resident_gone(resident_b, HARD_KILL_DEADLINE);
             assert!(
-                !alive && !listening,
-                "tras matar el árbol sin graceful el residente de la instancia no debe seguir vivo ni escuchando: vivo={alive}, puerto abierto={listening}"
+                !alive,
+                "tras matar el árbol sin graceful el residente de la instancia (pid {resident_b}) no debe seguir vivo"
             );
         }
         milestone(&format!(
@@ -5168,18 +5247,18 @@ mod tts {
             .status();
     }
 
-    /// Espera hasta `deadline` a que el residente `resident` haya muerto y su
-    /// puerto deje de escuchar. Devuelve `(residente_vivo, puerto_abierto)` en
-    /// el último sondeo. A diferencia de `verify_zero_orphans_instance`, tolera
-    /// que el pidfile siga existiendo tras un kill duro. Solo mira lo que es de
-    /// la instancia: el PID de su residente registrado y el puerto que anotó.
-    fn wait_resident_gone(resident: u32, port: u16, deadline: Duration) -> (bool, bool) {
+    /// Espera hasta `deadline` a que el residente `resident` haya muerto y
+    /// devuelve si seguía vivo en el último sondeo. A diferencia de
+    /// `verify_zero_orphans_instance`, tolera que el pidfile siga existiendo
+    /// tras un kill duro. Solo mira lo que es de la instancia: el PID de su
+    /// residente registrado, no su puerto, que al soltarse puede enlazarlo
+    /// cualquier otro proceso de la máquina.
+    fn wait_resident_gone(resident: u32, deadline: Duration) -> bool {
         let t0 = Instant::now();
         loop {
             let alive = avi_tts::resident::resident_pid_alive(resident);
-            let listening = port_open(port);
-            if (!alive && !listening) || t0.elapsed() >= deadline {
-                return (alive, listening);
+            if !alive || t0.elapsed() >= deadline {
+                return alive;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
@@ -5224,7 +5303,7 @@ mod tts {
 
     /// Cuerpo común de las pruebas de kill duro del daemon sin clonado: arranca
     /// la instancia con `extra`, mata solo el PID del daemon y exige que el
-    /// residente muera y su puerto deje de escuchar dentro del plazo.
+    /// residente muera dentro del plazo.
     ///
     /// Si el residente sobreviviera al kill duro, la cosecha por identidad del
     /// `Drop` de la instancia lo mata igualmente porque está registrado en su
@@ -5260,16 +5339,16 @@ mod tts {
             avi_daemon::wait_for_pid_death(daemon, Duration::from_secs(8)),
             "el kill duro debe matar al daemon (pid {daemon})"
         );
-        let (alive, listening) = wait_resident_gone(resident, port, HARD_KILL_DEADLINE);
+        let alive = wait_resident_gone(resident, HARD_KILL_DEADLINE);
         assert!(
-            !alive && !listening,
-            "tras matar al daemon (pid {daemon}) el residente (pid {resident}) debe morir y su puerto {port} dejar de escuchar en {HARD_KILL_DEADLINE:?}: residente vivo={alive}, puerto abierto={listening}"
+            !alive,
+            "tras matar al daemon (pid {daemon}) el residente (pid {resident}) debe morir en {HARD_KILL_DEADLINE:?}"
         );
         hit_end(&format!("tts::{tag}"));
     }
 
     /// Un kill duro del daemon, sin su árbol y sin `--auto-restart`, no deja al
-    /// motor residente vivo ni escuchando.
+    /// motor residente vivo.
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn hard_kill_of_daemon_leaves_no_resident() {
@@ -5286,7 +5365,7 @@ mod tts {
 
     /// `daemon stop` justo tras `start`, con el residente ya registrado pero aún
     /// cargando el modelo (sin haber pasado su salud): al volver, el residente
-    /// que el pidfile nombraba está muerto y su puerto no escucha.
+    /// que el pidfile nombraba está muerto.
     #[test]
     #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
     fn stop_during_warmup_leaves_no_resident() {
@@ -5310,10 +5389,6 @@ mod tts {
             !avi_tts::resident::resident_pid_alive(resident),
             "al volver la parada el residente registrado (pid {resident}) debe estar muerto"
         );
-        assert!(
-            !port_open(port),
-            "al volver la parada el puerto {port} del residente no debe escuchar"
-        );
         hit_end("tts::stop_during_warmup_leaves_no_resident");
     }
 
@@ -5331,7 +5406,7 @@ mod tts {
         hit_start_heavy("tts::self_uninstall_with_hot_resident_leaves_nothing_behind");
         let inst = IsolatedInstance::new("uninstall_hot");
         start_instance(&inst, &[]);
-        let (resident, port) = wait_for_live_resident(&inst);
+        let (resident, _) = wait_for_live_resident(&inst);
         let (code, actual) = run_json_env(
             &["--json", "self", "uninstall", "--yes"],
             &inst.contract_args(),
@@ -5345,10 +5420,6 @@ mod tts {
         assert!(
             !avi_tts::resident::resident_pid_alive(resident),
             "el residente (pid {resident}) debe haber muerto antes del borrado"
-        );
-        assert!(
-            !port_open(port),
-            "el puerto {port} del residente no debe escuchar"
         );
         assert!(
             !inst.dir.join("daemon.pid").exists(),
@@ -5410,9 +5481,9 @@ mod tts {
         // cliente a un puerto cerrado y el exit 5 es observable sin tocar
         // estado compartido.
         let inst = IsolatedInstance::new("force_sin_daemon");
-        // El pidfile señuelo apunta a un puerto cerrado: el cliente no cae al
-        // 8765 del usuario, que puede tener un daemon real.
-        seed_decoy_daemon_pidfile(&inst.dir);
+        // El pidfile señuelo apunta a un puerto reservado sin oyente: el
+        // cliente no cae al 8765 del usuario, que puede tener un daemon real.
+        let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let a = inst.contract_args();
         // La ausencia es real a nivel SO (no solo HTTP): con matar-y-rearrancar
         // el `start` solo ocurre explícito, nunca implícito en delegación, así
@@ -6457,6 +6528,13 @@ fn daemon_restart_fails_with_daemon_stop_failed_when_stop_does_not_complete() {
 /// Siembra en `dir` un daemon falso que responde 200 a todo y nunca se apaga,
 /// y el pidfile que lo registra con PIDs señuelo muertos: la parada no puede
 /// concluir y nada real se mata ni se barre por imagen.
+///
+/// El socket aceptado se pone en modo bloqueante y la respuesta sigue siempre
+/// a la cabecera HTTP completa: en Windows hereda el modo no bloqueante del
+/// listener, y si la lectura se adelantara a la petición el cierre con datos
+/// sin leer produciría un RST que haría fallar el sondeo de `/health`; con PID
+/// señuelo muertos, un solo sondeo fallido bastaría para dar la parada por
+/// concluida.
 fn seed_unstoppable_daemon(dir: &std::path::Path) {
     use std::io::{Read, Write};
     let listener =
@@ -6472,8 +6550,18 @@ fn seed_unstoppable_daemon(dir: &std::path::Path) {
             .expect("el socket falso no debe bloquear");
         while std::time::Instant::now() < limit {
             if let Ok((mut sock, _)) = listener.accept() {
+                sock.set_nonblocking(false)
+                    .expect("el socket aceptado debe bloquear");
+                sock.set_read_timeout(Some(std::time::Duration::from_secs(1)))
+                    .expect("fijar plazo de lectura del socket aceptado");
+                let mut request = Vec::new();
                 let mut buf = [0u8; 1024];
-                let _ = sock.read(&mut buf);
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                    match sock.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => request.extend_from_slice(&buf[..n]),
+                    }
+                }
                 let _ = sock.write_all(
                     b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 );

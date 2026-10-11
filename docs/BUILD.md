@@ -156,6 +156,14 @@ Windows `ORT_DYLIB_PATH=<repo>/ort-bundle/onnxruntime.dll cargo test --workspace
 mismo: asegura `ort-bundle/` y fija la variable para su gate de pruebas con
 recursos.
 
+La batería completa con `--include-ignored` se ejecuta con `-j2` y
+`--test-threads=2` y sin otra carga en la máquina, por ejemplo
+`cargo test --workspace --features full -j2 -- --include-ignored --test-threads=2`.
+Las pruebas que arrancan un daemon real esperan su arranque con el mismo plazo
+que el producto (10 s para publicar su dirección), y una CPU saturada por más
+binarios de prueba en paralelo o por otra carga puede superarlo y producir
+fallos que no son defectos.
+
 #### Motor TTS desde el repo (opt-in del CWD)
 
 Al ejecutar desde la raíz del repo (`cargo run`, pruebas sin instalar), el

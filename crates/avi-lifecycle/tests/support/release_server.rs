@@ -50,6 +50,10 @@ impl FakeReleaseServer {
     pub fn serve(version: &str) -> Self {
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("se enlaza el servidor falso");
+        // El listener no bloquea solo para que el hilo vea la orden de parada entre
+        // aceptaciones; cada conexión aceptada vuelve a modo bloqueante al atenderse,
+        // porque en Windows heredaría el modo no bloqueante y su lectura fallaría con
+        // `WouldBlock` si llegara antes que la petición.
         listener
             .set_nonblocking(true)
             .expect("el servidor falso no bloquea al aceptar");
@@ -146,6 +150,12 @@ fn handle_release_connection(
     state: &std::sync::Arc<Mutex<ReleaseState>>,
 ) {
     use std::io::Read;
+    stream
+        .set_nonblocking(false)
+        .expect("la conexión del servidor falso bloquea al leer");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .expect("se fija el plazo de lectura de la conexión");
     let mut request = Vec::new();
     let mut chunk = [0u8; 1024];
     while request.len() <= 8192 {
