@@ -6656,10 +6656,11 @@ fn unreadable_audio_b64() -> String {
 /// Exige un dispositivo de salida para poder afirmar el envelope de éxito.
 ///
 /// `say` y `dub` reproducen de verdad, así que sin dispositivo el envelope sería
-/// `playback_failed` y una prueba chamada «success» no podría demostrar nada. Es
-/// el mismo requisito que declaran los recursos
-/// `#[ignore = "requiere … un dispositivo de audio"]`, comprobado con la misma
-/// enumeración que usa `devices`.
+/// `playback_failed` y una prueba chamada «success» no podría demostrar nada. Las
+/// pruebas que la llaman se declaran por eso como recurso
+/// (`#[ignore = "requiere un dispositivo de salida de audio"]`): no corren en la
+/// suite estándar y, en la batería con recursos, esta comprobación las hace
+/// fallar si el dispositivo falta. Usa la misma enumeración que `devices`.
 fn require_output_device() {
     let has_output_device = avi_audio::get_devices_json()
         .map(|d| !d.is_empty())
@@ -6690,6 +6691,7 @@ fn residue_with_prefix(dir: &std::path::Path, prefix: &str) -> Vec<String> {
 /// `audio_path`— y cuando el daemon falso deja de responder no se crea ningún
 /// temporal que assertar.
 #[test]
+#[ignore = "requiere un dispositivo de salida de audio"]
 fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
     require_output_device();
     let (sandbox, envs) = contract_sandbox("dub-no-residue");
@@ -6804,6 +6806,7 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
 /// deja su WAV temporal en ninguna salida y su envelope no lleva `audio_path`. Vale
 /// lo dicho en el test del dub sobre cada aserción.
 #[test]
+#[ignore = "requiere un dispositivo de salida de audio"]
 fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
     require_output_device();
     let (sandbox, envs) = contract_sandbox("say-no-residue");
