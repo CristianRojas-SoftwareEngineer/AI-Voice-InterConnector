@@ -228,25 +228,22 @@ enlaza nada en build-time ni requiere una `.lib`, y **el build local/CI de la ap
 no necesita compilar ni tener presente ONNX Runtime**. Por eso las cuatro
 arquitecturas compilan `--features full` sin ningún paso previo de ONNX Runtime.
 
-En runtime, `ort` carga la librería dinámica del SO. Si `ORT_DYLIB_PATH` no está
-definido, usa el nombre por defecto (`onnxruntime.dll` / `libonnxruntime.so` /
-`libonnxruntime.dylib`). Una ruta relativa, sea ese nombre o el valor de
-`ORT_DYLIB_PATH`, se resuelve primero contra el directorio del ejecutable
-(`current_exe()`) en los tres SO, y solo si ahí no existe pasa a la búsqueda de
-librerías del sistema. Por eso en el producto instalado basta con colocar la
-librería junto al binario: no hay `rpath` ni variables de entorno que fijar.
+En runtime, `avi-stt` carga la librería antes del primer uso de `ort`, una sola
+vez y por ruta: la de `ORT_DYLIB_PATH` si está definida, o la que el bundle trae
+en el directorio real del programa (`avi_shared::paths::program_dir()`, que
+resuelve el symlink de `~/.local/bin`). No hay búsqueda de librerías del
+sistema: si la librería falta o no carga, la operación falla con un error que
+nombra la ruta buscada, y `doctor` lo informa en su comprobación
+`onnx_runtime`. En el producto instalado basta con la librería junto al binario:
+no hay `rpath` ni variables de entorno que fijar.
 
 Desde el repositorio no hay librería junto a los ejecutables de `target/`, así
-que cuenta la búsqueda del sistema, y en Windows esa búsqueda mira System32
-antes que el `PATH`: si el sistema trae su
-propia `onnxruntime.dll` (Windows incluye una en algunas versiones), las pruebas
-y `cargo run` la cargan aunque sea de otra versión. Para validar con la versión
-fijada, las pruebas con recursos se ejecutan con `ORT_DYLIB_PATH` apuntando a la
-librería de `ort-bundle/` (que asegura `cargo xtask bootstrap`), por ejemplo en
-Windows `ORT_DYLIB_PATH=<repo>/ort-bundle/onnxruntime.dll cargo test --workspace
---features full -- --include-ignored`. `cargo xtask release` lo hace por sí
-mismo: asegura `ort-bundle/` y fija la variable para su gate de pruebas con
-recursos.
+que las pruebas con recursos y `cargo run` con STT necesitan `ORT_DYLIB_PATH`
+apuntando a la librería de `ort-bundle/` (que asegura `cargo xtask bootstrap`),
+por ejemplo en Windows `ORT_DYLIB_PATH=<repo>/ort-bundle/onnxruntime.dll cargo
+test --workspace --features full -- --include-ignored`. `cargo xtask release`
+lo hace por sí mismo: asegura `ort-bundle/` y fija la variable para su gate de
+pruebas con recursos.
 
 La batería completa con `--include-ignored` se ejecuta con `-j2` y
 `--test-threads=2` y sin otra carga en la máquina, por ejemplo
