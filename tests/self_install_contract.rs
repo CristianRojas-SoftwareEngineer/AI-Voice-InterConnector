@@ -108,6 +108,7 @@ fn system_crt_dll(relative: &str) -> Option<PathBuf> {
         "vcruntime140.dll",
         "vcruntime140_1.dll",
         "msvcp140.dll",
+        "msvcp140_1.dll",
         "vcomp140.dll",
     ];
     let name = relative.rsplit(['/', '\\']).next().unwrap_or(relative);

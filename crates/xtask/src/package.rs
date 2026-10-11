@@ -20,7 +20,7 @@ use avi_shared::pins::{self, Pins};
 use std::path::{Path, PathBuf};
 
 /// Manifiesto canónico, relativo a la raíz del repositorio.
-const MANIFEST_REL: &str = "packaging/bundle-manifest.json";
+pub(crate) const MANIFEST_REL: &str = "packaging/bundle-manifest.json";
 
 /// Caché local del bundle de ONNX Runtime, relativa a la raíz.
 const ORT_BUNDLE_REL: &str = "ort-bundle";
@@ -36,7 +36,7 @@ const ORT_MARKER: &str = ".ort-version";
 const ARCHIVE_MTIME: u64 = 1_577_836_800;
 
 /// DLL del runtime de VC++ que viajan junto al binario en Windows (despliegue
-/// app-local, que la licencia del Redistributable permite): las tres que
+/// app-local, que la licencia del Redistributable permite): las cuatro que
 /// necesita la librería oficial de ONNX Runtime (es /MD) y `vcomp140.dll`, el
 /// runtime OpenMP de MSVC que el binario importa porque CTranslate2 se compila
 /// con `/openmp`. Ninguna forma parte de Windows: sin ellas el binario o ONNX
@@ -45,6 +45,7 @@ const VC_DLLS: &[&str] = &[
     "vcruntime140.dll",
     "vcruntime140_1.dll",
     "msvcp140.dll",
+    "msvcp140_1.dll",
     "vcomp140.dll",
 ];
 
@@ -683,6 +684,9 @@ pub fn run(
         .tempdir()?;
     let stage = stage_guard.path().to_path_buf();
     stage_bundle(section, &sources, &root, &bundle, &stage)?;
+    // Ningún binario del bundle puede depender de algo que el sistema del
+    // usuario no trae: se audita antes de publicar nada.
+    super::deps::check_tree(&stage, section)?;
     let out_dir = out.unwrap_or_else(|| root.join("artifacts"));
     std::fs::create_dir_all(&out_dir)?;
     let asset = release_asset_name(triple, &version)?;
@@ -904,9 +908,12 @@ mod tests {
             sections.len(),
             "un hash por target, sin sobrantes"
         );
-        assert!(ort_expected_libs("x86_64-pc-windows-msvc")
-            .unwrap()
-            .contains(&"vcomp140.dll"));
+        let windows_libs = ort_expected_libs("x86_64-pc-windows-msvc").unwrap();
+        assert!(windows_libs.contains(&"vcomp140.dll"));
+        // La ONNX Runtime oficial de Windows importa `MSVCP140_1.dll`, que no
+        // forma parte de Windows: sin ella no carga en un sistema sin el
+        // Redistributable.
+        assert!(windows_libs.contains(&"msvcp140_1.dll"));
     }
 
     /// Un triple sin hash o con un hash mal formado es un error.

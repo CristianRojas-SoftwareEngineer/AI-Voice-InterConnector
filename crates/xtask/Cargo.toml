@@ -26,3 +26,7 @@ sha2 = "0.11"
 # Versión vigente del envelope `--json` de la CLI, que `pins --check` compara
 # con la que exige el humo del pipeline.
 avi-core = { path = "../avi-core" }
+# Lectura de ELF, Mach-O y PE para la auditoría de dependencias del bundle
+# (`xtask deps`): librerías importadas, versiones de símbolos y versión mínima
+# de macOS, igual en local que en la CI. Solo lectura, sin escritura de objetos.
+object = { version = "0.40", default-features = false, features = ["read_core", "elf", "macho", "pe", "std"] }

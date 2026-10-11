@@ -93,8 +93,8 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
 ## Inventario completo del lockfile
 
 <!-- inventario:inicio -->
-Generado desde `Cargo.lock` (492 paquetes resueltos, 459 crates únicos, directos y transitivos).
-Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-2.0 2, GPL-3.0-or-later 12, ISC 3, MIT 424, MPL-2.0 2, Unicode-3.0 18, Zlib 6.
+Generado desde `Cargo.lock` (493 paquetes resueltos, 460 crates únicos, directos y transitivos).
+Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-2.0 2, GPL-3.0-or-later 12, ISC 3, MIT 425, MPL-2.0 2, Unicode-3.0 18, Zlib 6.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
@@ -339,6 +339,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `objc2-foundation` | 0.3.2 | MIT | MIT |
 | `objc2-io-kit` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | MIT |
 | `objc2-system-configuration` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | MIT |
+| `object` | 0.40.0 | Apache-2.0 OR MIT | MIT |
 | `once_cell` | 1.21.4 | MIT OR Apache-2.0 | MIT |
 | `once_cell_polyfill` | 1.70.2 | MIT OR Apache-2.0 | MIT |
 | `onednn-src` | 0.1.15 | MIT | MIT |

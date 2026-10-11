@@ -187,6 +187,7 @@ mod tests {
                     "vcruntime140.dll",
                     "vcruntime140_1.dll",
                     "msvcp140.dll",
+                    "msvcp140_1.dll",
                     "vcomp140.dll",
                 ] {
                     assert!(
@@ -201,6 +202,7 @@ mod tests {
                         .iter()
                         .any(|r| r.ends_with("vcruntime140.dll")
                             || r.ends_with("msvcp140.dll")
+                            || r.ends_with("msvcp140_1.dll")
                             || r.ends_with("vcomp140.dll")),
                     "{triple}: las DLL de VC++ son solo de Windows"
                 );

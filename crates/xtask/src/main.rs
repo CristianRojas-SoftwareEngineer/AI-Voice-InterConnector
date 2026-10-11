@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 mod bootstrap;
 mod clean;
 mod comments;
+mod deps;
 mod doctor;
 mod features;
 mod install;
@@ -401,6 +402,14 @@ enum Commands {
         #[arg(long)]
         no_setup: bool,
     },
+    /// Audita las dependencias de un bundle ya montado o extraído contra el contrato del manifiesto
+    Deps {
+        #[arg(long)]
+        check: bool,
+        /// Raíz del bundle a auditar
+        #[arg(long, value_name = "DIR")]
+        dir: PathBuf,
+    },
     /// Empaqueta el bundle del release para el target del host desde el manifiesto
     Package {
         /// Directorio de salida del artefacto (por defecto, `artifacts`)
@@ -552,6 +561,7 @@ fn main() -> Result<()> {
         Commands::Comments { check, root } => comments::run(check, root.as_deref())?,
         Commands::Pins { check, sync, root } => pins::run(check, sync, root.as_deref())?,
         Commands::Features { check, root } => features::run(check, root.as_deref())?,
+        Commands::Deps { check, dir } => deps::run(check, &dir)?,
         Commands::BuildEngine {
             self_test,
             simd,
@@ -1595,6 +1605,14 @@ mod tests {
         assert!(
             install_sh.contains(&format!("versión anterior a macOS {major} ")),
             "el diagnóstico de install.sh debe nombrar macOS {major}"
+        );
+        let manifest = include_str!("../../../packaging/bundle-manifest.json");
+        let sections = avi_shared::manifest::parse_manifest_text(manifest)
+            .expect("el manifiesto de bundle es válido");
+        assert_eq!(
+            sections["aarch64-apple-darwin"].min_os.as_deref(),
+            Some(target),
+            "el min_os del manifiesto debe ser MACOSX_DEPLOYMENT_TARGET"
         );
     }
 
