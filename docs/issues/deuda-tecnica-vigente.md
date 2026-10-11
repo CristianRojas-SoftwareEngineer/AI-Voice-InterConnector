@@ -37,7 +37,7 @@ con `/bin/ps` por ruta fija y plazo (`:91`), el parser de ancho fijo de 24
 caracteres sobre `lstart` (`:122`), `pid_alive_exact` (`:172`), `fits_pid_t`
 (`:188`) y `kill_tree_by_pid_exact` (`:288`)—, el enlace simbólico atómico de
 `crates/avi-lifecycle/src/path_unix.rs`, el `xattr` por ruta fija de
-`crates/avi-lifecycle/src/quarantine.rs:183` y la prueba `cfg(unix)` de
+`crates/avi-lifecycle/src/quarantine.rs:184` y la prueba `cfg(unix)` de
 `crates/avi-process/tests/restricted_spawn.rs:207`. Los de `avi-process` están
 verificados por clippy cruzado a `aarch64-apple-darwin`; los de
 `avi-lifecycle` ni eso desde Windows, porque `ring` exige un compilador C del
