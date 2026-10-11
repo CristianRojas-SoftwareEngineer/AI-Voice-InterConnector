@@ -30,6 +30,7 @@ mod inert;
 #[cfg(target_os = "macos")]
 #[path = "support/install_env.rs"]
 mod install_env;
+#[cfg(not(target_os = "macos"))]
 #[path = "support/listing.rs"]
 mod listing;
 #[cfg(target_os = "macos")]
@@ -533,6 +534,7 @@ fn install_strips_quarantine_from_whole_program_dir() {
 
 /// `true` si el oráculo dice que la ruta conserva el atributo, para el control del hermano
 /// sin reconstruir el conjunto.
+#[cfg(not(target_os = "macos"))]
 fn keeps_at(attributes: &dyn quarantine::Quarantine, path: &Path) -> bool {
     attributes
         .has(path)
@@ -541,6 +543,7 @@ fn keeps_at(attributes: &dyn quarantine::Quarantine, path: &Path) -> bool {
 
 /// Directorios intermedios de entre lo preguntado, que es el caso que motiva que la
 /// limpieza sea sobre todo el directorio y no solo el ejecutable.
+#[cfg(not(target_os = "macos"))]
 fn asked_dirs(asked: &BTreeSet<PathBuf>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = asked.iter().filter(|path| path.is_dir()).cloned().collect();
     out.sort();

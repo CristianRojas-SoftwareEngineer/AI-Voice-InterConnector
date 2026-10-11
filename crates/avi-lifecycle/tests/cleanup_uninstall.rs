@@ -916,6 +916,7 @@ fn uninstall_dry_run_touches_nothing() {
 #[cfg(unix)]
 #[test]
 fn uninstall_reverts_path_from_the_receipt() {
+    use avi_lifecycle::receipt::{self, InstallReceipt};
     use std::os::unix::fs::symlink;
 
     let sandbox = Sandbox::new("path-unix");

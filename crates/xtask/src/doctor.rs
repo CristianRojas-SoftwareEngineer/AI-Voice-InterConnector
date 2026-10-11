@@ -103,13 +103,17 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
 /// Comando de sonda sin ventana de consola propia en Windows: un invocador sin
 /// consola vería abrirse y cerrarse una ventana por cada sonda.
 pub(crate) fn probe_command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
-    let mut cmd = std::process::Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new(program);
         cmd.creation_flags(avi_process::CREATE_NO_WINDOW);
+        cmd
     }
-    cmd
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(program)
+    }
 }
 
 /// Salida podada de `programa args…` para una sonda de la que solo importa si

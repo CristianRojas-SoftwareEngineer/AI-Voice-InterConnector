@@ -2985,6 +2985,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 let scheduled = lifecycle::update::schedule_leftovers(
                     &outcome.parked_leftovers,
                     &LifecyclePaths {
+                        #[cfg(windows)]
                         logs_dir: lifecycle::logs_dir_in(&env.data_dir),
                     },
                     wait_pid,
@@ -3064,7 +3065,6 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             let roots = lifecycle::cleanup::Roots::from_receipt(receipt.as_ref()).map_err(|e| {
                 CliError::new(ExitCode::Error, "self_uninstall_failed", e.to_string())
             })?;
-            let cleaner_logs = lifecycle::logs_dir_in(&roots.data_dir);
             let env = lifecycle::uninstall::Env {
                 roots,
                 receipt: receipt.as_ref(),
@@ -3081,7 +3081,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     assume_yes: yes,
                 },
                 &ProgramRemoval {
-                    logs_dir: cleaner_logs,
+                    #[cfg(windows)]
+                    logs_dir: lifecycle::logs_dir_in(&env.roots.data_dir),
                 },
                 &ProductProcesses,
             )
@@ -3330,6 +3331,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             lifecycle::update::cleanup_staging(
                 &staged.staging,
                 &LifecyclePaths {
+                    #[cfg(windows)]
                     logs_dir: lifecycle::logs_dir_in(&roots.data_dir),
                 },
             );
@@ -3514,7 +3516,9 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
 /// el motor decide cuál de los dos casos es y cambia el
 /// desenlace a `removal_scheduled`.
 struct ProgramRemoval {
-    /// Directorio de los registros del limpiador (`<datos>/logs`).
+    /// Directorio de los registros del limpiador (`<datos>/logs`); solo existe en
+    /// Windows, el único sistema que programa el borrado con el limpiador.
+    #[cfg(windows)]
     logs_dir: std::path::PathBuf,
 }
 
@@ -3587,7 +3591,9 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
 /// casos es. Es la contrapartida de `ProgramRemoval` para rutas arbitrarias del
 /// ciclo (staging, `.old-*`).
 struct LifecyclePaths {
-    /// Directorio de los registros del limpiador (`<datos>/logs`).
+    /// Directorio de los registros del limpiador (`<datos>/logs`); solo existe en
+    /// Windows, el único sistema que programa el borrado con el limpiador.
+    #[cfg(windows)]
     logs_dir: std::path::PathBuf,
 }
 
