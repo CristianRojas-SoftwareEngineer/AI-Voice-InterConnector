@@ -60,7 +60,7 @@ parameters:
   ort_pin:
     type: string
     default: "1.28.0"
-    description: Versión de ONNX Runtime (pareja de ort 2.0.0-rc.13) empaquetada en los 4 builds.
+    description: Versión de ONNX Runtime (pareja de ort 2.0.0-rc.13) empaquetada en los 4 builds. Al subirla, `ort_sha256` de packaging/pins.json lleva los SHA-256 de los 4 assets de la versión nueva.
   # Sonda de builds nativos: solo se activa por API (POST /pipeline con
   # `native_cache_probe: true`). Ejecuta únicamente los 4 build-* en modo
   # `probe` (sin target-*, sin empaquetado) y excluye `build-all`, así que
@@ -115,8 +115,10 @@ parameters:
 #   - toolchain (v1): cambia con rust_pin.
 #   - msys2 (v1): cambia con los pines de versión MSYS2 (solo build-windows-x64).
 #   - sccache (v1): rolling con epoch, por variant.
-#   - ort-bundle (v2): cambia con ort_pin (solo build-windows-x64). Incluye el
-#     marcador `.ort-version`, que `xtask package` exige para reutilizar el bundle.
+#   - ort-bundle (v3): cambia con ort_pin (solo build-windows-x64). Guarda el
+#     `ort-bundle/` que arma `xtask package` (con su SHA-256 verificado y las
+#     cuatro DLL de VC++), incluido el marcador `.ort-version` que exige para
+#     reutilizarlo.
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2
 #     gcc/openblas (solo build-windows-x64).
 commands:
@@ -626,8 +628,9 @@ jobs:
 
   test-windows:
     # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
-    # test-linux/macos: valida código específico de Windows (winsound, tray)
-    # antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
+    # test-linux/macos: valida código específico de Windows (lanzamiento con
+    # lista explícita de handles, limpiador diferido, PATH en HKCU, WASAPI y
+    # consola UTF-8) antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
     # Caché: registry + target/ + sccache autoconsistente (cargo_restore_caches
     # os: windows variant: test; sccache os: windows variant: test). La caché de
     # target/ tiene coste de I/O NTFS significativo en restore/save, pero sin ella
@@ -641,8 +644,10 @@ jobs:
     environment:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
-      # Puertas y suite comparten flags: RUSTFLAGS entra en el fingerprint de cargo y reemplaza los rustflags del target.
-      RUSTFLAGS: "-C linker=rust-lld"
+      # Puertas y suite comparten flags: RUSTFLAGS entra en el fingerprint de cargo y reemplaza
+      # los rustflags del target de .cargo/config.toml, así que repite `+crt-static` para que las
+      # pruebas enlacen el CRT estático como el binario de release; rust-lld solo acelera el enlace.
+      RUSTFLAGS: "-C linker=rust-lld -C target-feature=+crt-static"
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     steps:
       - checkout
@@ -1288,7 +1293,9 @@ jobs:
             & $Exe version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             # Contrato JSON determinista: `version --json` DEBE exponer name +
-            # version + schema_version. Sin este gate un binario cuyo bump de
+            # version + schema_version. El literal de schema_version es el valor
+            # vigente de CLI_SCHEMA_VERSION y `cargo xtask pins --check` falla si
+            # divergen. Sin este gate un binario cuyo bump de
             # VERSION no se propagó (p.ej. editado a mano sin recompilar) pasa el
             # smoke de texto pero viola el contrato JSON y rompe consumidores.
             $jsonRaw = & $Exe version --json | Out-String
@@ -1296,7 +1303,7 @@ jobs:
             try { $j = $jsonRaw | ConvertFrom-Json } catch { throw "version --json no es JSON válido: $jsonRaw : $_" }
             if (-not $j.PSObject.Properties['version'] -or -not $j.version) { throw "version --json: campo 'version' ausente o vacío: $jsonRaw" }
             if (-not $j.PSObject.Properties['name'] -or $j.name -ne 'ai-voice-interconnector') { throw "version --json: campo 'name' incorrecto: $jsonRaw" }
-            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '4') { throw "version --json: campo 'schema_version' != '4': $jsonRaw" }
+            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '5') { throw "version --json: campo 'schema_version' != '5': $jsonRaw" }
             $expectedTag = $env:CIRCLE_TAG; if ($expectedTag) { $expectedTag = $expectedTag.TrimStart('v'); if ($j.version -ne $expectedTag) { throw "version --json: version '$($j.version)' != CIRCLE_TAG '$expectedTag' (tag=$env:CIRCLE_TAG)" } }
             Write-Host "version --json OK: name=$($j.name) version=$($j.version) schema_version=$($j.schema_version)"
             # Valida que la voz de fábrica 'default' quede registrada en un
@@ -1363,55 +1370,16 @@ jobs:
       - unless:
           condition: << parameters.probe >>
           steps:
+            # `ort-bundle/` (ONNX Runtime oficial más las cuatro DLL app-local de
+            # VC++: vcruntime140, vcruntime140_1, msvcp140 y vcomp140) lo arma y lo
+            # verifica `xtask package`, el único descargador: comprueba el SHA-256
+            # fijado en packaging/pins.json y copia las DLL de System32. La caché
+            # solo evita repetir la descarga; `xtask package` reutiliza lo
+            # restaurado solo si trae todas las librerías y el marcador de la
+            # versión fijada, y si no lo vuelve a descargar.
             - restore_cache:
                 keys:
-                  - ort-v2-win-x64-<< pipeline.parameters.ort_pin >>
-            - run:
-                # Autocontención (requisito duro): el crate `ort` en `load-dynamic`
-                # busca onnxruntime.dll junto al ejecutable. Se empaqueta la librería
-                # oficial de Microsoft (ONNX Runtime << pipeline.parameters.ort_pin >>, pareja de ort rc.13) y sus
-                # 3 DLLs del runtime VC++ (la dll de MS es /MD), de modo que el usuario
-                # no necesite instalar el VC++ Redistributable ni nada previo.
-                # Cacheado: si onnxruntime.dll existe tras restore, se omite descarga.
-                name: Empaquetar ONNX Runtime + runtime VC++ (bundle load-dynamic)
-                command: |
-                  Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - INICIO"
-                  $ErrorActionPreference = "Stop"
-                  $OrtVersion = "<< pipeline.parameters.ort_pin >>"
-                  $Bundle = "ort-bundle"
-                  if (-not (Test-Path "$Bundle\onnxruntime.dll")) {
-                    if (Test-Path $Bundle) { Remove-Item -Recurse -Force $Bundle }
-                    New-Item -ItemType Directory -Force -Path $Bundle | Out-Null
-                    # 1. Librería dinámica oficial de Microsoft (win-x64).
-                    $Zip = "onnxruntime-win-x64-$OrtVersion.zip"
-                    $Url = "https://github.com/microsoft/onnxruntime/releases/download/v$OrtVersion/$Zip"
-                    Invoke-WebRequest -Uri $Url -OutFile "$env:TEMP\$Zip"
-                    Expand-Archive -Path "$env:TEMP\$Zip" -DestinationPath "$env:TEMP\ort-extract" -Force
-                    $Dll = Get-ChildItem -Path "$env:TEMP\ort-extract" -Recurse -Filter "onnxruntime.dll" | Select-Object -First 1
-                    if (-not $Dll) { throw "onnxruntime.dll no encontrada en $Zip" }
-                    Copy-Item $Dll.FullName "$Bundle\onnxruntime.dll"
-                    # 2. Runtime VC++ (app-local): la dll de MS es /MD y depende de estas 3.
-                    #    onnxruntime-win-x64-1.28.0.zip ya no las incluye.
-                    #    Se obtienen de System32 (Windows Server 2022 -> VC++ 2022 CRT compatible).
-                    $Vc = @("vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll")
-                    foreach ($Name in $Vc) {
-                      $Found = Get-ChildItem -Path "C:\Windows\System32" -Filter $Name -ErrorAction SilentlyContinue |
-                               Select-Object -First 1
-                      if (-not $Found) { throw "No se encontró $Name en System32" }
-                      Copy-Item $Found.FullName "$Bundle\$Name"
-                    }
-                    # 3. Marcador de versión: sin él `xtask package` descarta el bundle.
-                    Set-Content -Path "$Bundle\.ort-version" -Value $OrtVersion -NoNewline
-                  } else {
-                    Write-Host "Bundle ONNX Runtime restaurado de caché; se omite descarga"
-                  }
-                  Write-Host "Bundle ONNX Runtime + VC++:"
-                  Get-ChildItem $Bundle | ForEach-Object { Write-Host "  $($_.Name)" }
-                  Write-Host "[STEP] Empaquetar ONNX Runtime + runtime VC++ - FIN"
-            - save_cache:
-                key: ort-v2-win-x64-<< pipeline.parameters.ort_pin >>
-                paths:
-                  - ort-bundle
+                  - ort-v3-win-x64-<< pipeline.parameters.ort_pin >>
             - run:
                 # Empaquetado canónico: `xtask package` monta el bundle desde
                 # packaging/bundle-manifest.json (la misma lista que valida
@@ -1425,6 +1393,10 @@ jobs:
                   cargo xtask package --expect-version "$TagVersion"
                   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                   Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
+            - save_cache:
+                key: ort-v3-win-x64-<< pipeline.parameters.ort_pin >>
+                paths:
+                  - ort-bundle
             - run:
                 # Humo de instalación: instala el artefacto empaquetado en un
                 # sandbox con las cuatro raíces reubicadas y comprueba que el
@@ -1480,13 +1452,17 @@ jobs:
       - checkout
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
-          # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
-          # target `blas` del Makefile de qwen_tts en Linux.
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, libopenblas-dev)
+          # libopenblas-dev aporta /usr/include/openblas y libopenblas.a, que el
+          # Makefile de qwen_tts enlaza estático en Linux; su LAPACK está compilado
+          # con gfortran, así que también hace falta libgfortran.a de la misma
+          # versión que el gcc del runner (libgfortran-<versión>-dev).
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, libopenblas-dev, libgfortran-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
+            set -euo pipefail
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
+            GCC_MAJOR="$(gcc -dumpversion | cut -d. -f1)"
+            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev "libgfortran-${GCC_MAJOR}-dev"
             echo "[STEP] Instalar dependencias de sistema - FIN"
       - unless:
           condition: << parameters.probe >>
@@ -1572,6 +1548,21 @@ jobs:
           # oráculo de kernels sin pesos) en un solo paso.
           name: Compilar y verificar motor TTS
           command: cargo xtask build-engine --self-test
+      - run:
+          # El motor distribuido no puede exigir librerías que el sistema del
+          # usuario no trae: OpenBLAS, libgfortran y libquadmath van estáticas y
+          # el motor solo debe enlazar dinámicamente glibc (y el cargador).
+          name: Verificar que el motor TTS no enlaza OpenBLAS ni gfortran dinámicamente
+          command: |
+            echo "[STEP] Verificar enlace estático del motor - INICIO"
+            set -euo pipefail
+            deps="$(ldd vendor/qwen3-tts/qwen_tts)"
+            printf '%s\n' "$deps"
+            if printf '%s\n' "$deps" | grep -Eq 'openblas|gfortran|quadmath|not found'; then
+              echo "el motor enlaza dinámicamente OpenBLAS o su runtime Fortran, o le falta una librería" >&2
+              exit 1
+            fi
+            echo "[STEP] Verificar enlace estático del motor - FIN"
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1642,13 +1633,17 @@ jobs:
       - checkout
       - run:
           # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
-          # libopenblas-dev aporta /usr/include/openblas y -lopenblas que exige el
-          # target `blas` del Makefile de qwen_tts en Linux.
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, libopenblas-dev)
+          # libopenblas-dev aporta /usr/include/openblas y libopenblas.a, que el
+          # Makefile de qwen_tts enlaza estático en Linux; su LAPACK está compilado
+          # con gfortran, así que también hace falta libgfortran.a de la misma
+          # versión que el gcc del runner (libgfortran-<versión>-dev).
+          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, libopenblas-dev, libgfortran-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
+            set -euo pipefail
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev
+            GCC_MAJOR="$(gcc -dumpversion | cut -d. -f1)"
+            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev "libgfortran-${GCC_MAJOR}-dev"
             echo "[STEP] Instalar dependencias de sistema - FIN"
       - unless:
           condition: << parameters.probe >>
@@ -1736,6 +1731,21 @@ jobs:
           # oráculo de kernels sin pesos) en un solo paso.
           name: Compilar y verificar motor TTS
           command: cargo xtask build-engine --self-test
+      - run:
+          # El motor distribuido no puede exigir librerías que el sistema del
+          # usuario no trae: OpenBLAS, libgfortran y libquadmath van estáticas y
+          # el motor solo debe enlazar dinámicamente glibc (y el cargador).
+          name: Verificar que el motor TTS no enlaza OpenBLAS ni gfortran dinámicamente
+          command: |
+            echo "[STEP] Verificar enlace estático del motor - INICIO"
+            set -euo pipefail
+            deps="$(ldd vendor/qwen3-tts/qwen_tts)"
+            printf '%s\n' "$deps"
+            if printf '%s\n' "$deps" | grep -Eq 'openblas|gfortran|quadmath|not found'; then
+              echo "el motor enlaza dinámicamente OpenBLAS o su runtime Fortran, o le falta una librería" >&2
+              exit 1
+            fi
+            echo "[STEP] Verificar enlace estático del motor - FIN"
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1796,6 +1806,13 @@ jobs:
     environment:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
+      # Versión mínima de macOS del artefacto: macOS 26 (Tahoe), la más antigua
+      # con actualizaciones de seguridad que no es la siguiente en perderlas, y
+      # que corre en todos los Mac con Apple Silicon (M1 en adelante). La leen
+      # rustc, el crate `cc`, CMake y el clang del Makefile del motor, así que
+      # todo lo que se compila aquí declara ese mínimo; sin ella cada pieza
+      # tomaría su propio valor por defecto (el del SDK o el de rustc).
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
     parameters:
       probe:
         type: boolean
@@ -1935,6 +1952,22 @@ jobs:
           command: |
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo xtask build-engine --self-test
+      - run:
+          # El mínimo de macOS que carga dyld es el `minos` de LC_BUILD_VERSION de
+          # cada Mach-O. El binario y el motor se compilan aquí y deben declarar
+          # exactamente MACOSX_DEPLOYMENT_TARGET: otro valor indica que alguna pieza
+          # no recibió el mínimo (uno mayor impediría arrancar en macOS soportados).
+          name: Verificar la versión mínima de macOS del binario y del motor (minos)
+          command: |
+            echo "[STEP] Verificar minos del binario y del motor - INICIO"
+            set -euo pipefail
+            minos() { otool -l "$1" | awk '/LC_BUILD_VERSION/ { found = 1 } found && $1 == "minos" { print $2; exit }'; }
+            for f in target/release/ai-voice-interconnector vendor/qwen3-tts/qwen_tts; do
+              got="$(minos "$f")"
+              echo "$f: minos=${got:-ausente}"
+              [ "$got" = "$MACOSX_DEPLOYMENT_TARGET" ] || { echo "minos de $f es '${got:-ausente}', se esperaba $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1; }
+            done
+            echo "[STEP] Verificar minos del binario y del motor - FIN"
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1958,6 +1991,30 @@ jobs:
                   set -euo pipefail
                   cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
+            - run:
+                # Lo que se publica: el binario y el motor del archivo declaran
+                # exactamente MACOSX_DEPLOYMENT_TARGET, y la librería de ONNX
+                # Runtime, que llega compilada de Microsoft, declara uno menor o
+                # igual (si fuera mayor, no cargaría en el mínimo declarado).
+                name: Verificar la versión mínima de macOS del archivo empaquetado (minos)
+                command: |
+                  echo "[STEP] Verificar minos del archivo empaquetado - INICIO"
+                  set -euo pipefail
+                  minos() { otool -l "$1" | awk '/LC_BUILD_VERSION/ { found = 1 } found && $1 == "minos" { print $2; exit }'; }
+                  STAGE_MINOS="$(mktemp -d)"
+                  tar -xzf artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz -C "$STAGE_MINOS"
+                  for f in ai-voice-interconnector vendor/qwen3-tts/qwen_tts; do
+                    got="$(minos "$STAGE_MINOS/$f")"
+                    echo "$f: minos=${got:-ausente}"
+                    [ "$got" = "$MACOSX_DEPLOYMENT_TARGET" ] || { echo "minos de $f es '${got:-ausente}', se esperaba $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1; }
+                  done
+                  got="$(minos "$STAGE_MINOS/libonnxruntime.dylib")"
+                  echo "libonnxruntime.dylib: minos=${got:-ausente}"
+                  [ -n "$got" ] || { echo "libonnxruntime.dylib no declara minos" >&2; exit 1; }
+                  awk -v got="$got" -v want="$MACOSX_DEPLOYMENT_TARGET" 'BEGIN { split(got, g, "."); split(want, w, "."); exit !((g[1] + 0 < w[1] + 0) || (g[1] + 0 == w[1] + 0 && g[2] + 0 <= w[2] + 0)) }' \
+                    || { echo "libonnxruntime.dylib exige macOS $got, por encima del mínimo $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1; }
+                  rm -rf "$STAGE_MINOS"
+                  echo "[STEP] Verificar minos del archivo empaquetado - FIN"
             - run:
                 # Humo de instalación: instala el artefacto empaquetado en un
                 # sandbox con las cuatro raíces reubicadas y comprueba que el
