@@ -44,8 +44,8 @@ fn resolve_daemon_addr() -> SocketAddr {
 // cadencia de sondeo y recolector del hijo-, los de la limpieza acotada ante Ctrl+C
 // y el del reclamo degradado que este binario ejecuta en `start`. Los plazos del
 // protocolo de parada no viven aquí: los declara `avi-lifecycle` y se toman de allí
-// (`lifecycle::daemon_stop::STOP_DEADLINE_GLOBAL`), igual que la dirección por
-// defecto (`lifecycle::daemon_stop::DEFAULT_ADDR`).
+// (`lifecycle::daemon_stop::STOP_DEADLINE_GLOBAL`), igual que la dirección del
+// daemon (`lifecycle::daemon_stop::default_addr`).
 /// Techo de la espera del resultado de arranque en `daemon start/restart`: el
 /// registro de éxito, el de fallo o la muerte del hijo, más la confirmación por
 /// `/health`. Cubre spawn + validación + bind + carga del estado (~1-2 s sanos);
@@ -2403,11 +2403,11 @@ async fn handle_daemon(
             // Parada unificada con deadline global: el veredicto lo da el motor
             // (`StopOutcome`), sin re-sondeos fuera de él. El pidfile ya lo borró
             // el motor tras muerte verificada; la CLI solo informa. La reserva sin
-            // pidfile es la dirección por defecto del protocolo, que es donde
-            // escucha el daemon de la instancia cuando nadie ha desviado el puerto.
+            // pidfile es la dirección derivada de `AVI_DAEMON_PORT`, la misma en la
+            // que escucha el daemon.
             let outcome = lifecycle::daemon_stop::stop(
                 &effective_data_dir()?,
-                lifecycle::daemon_stop::DEFAULT_ADDR,
+                &lifecycle::daemon_stop::default_addr(),
                 &ProductProcesses,
             )
             .await;
@@ -2474,7 +2474,7 @@ async fn handle_daemon(
             let client = daemon_client();
             let outcome = lifecycle::daemon_stop::stop(
                 &effective_data_dir()?,
-                lifecycle::daemon_stop::DEFAULT_ADDR,
+                &lifecycle::daemon_stop::default_addr(),
                 &ProductProcesses,
             )
             .await;

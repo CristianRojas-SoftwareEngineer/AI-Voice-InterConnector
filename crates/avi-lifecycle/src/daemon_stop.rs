@@ -738,6 +738,39 @@ mod tests {
         assert_eq!(addr_for_port_env(Some("abc")), DEFAULT_ADDR);
     }
 
+    /// Sin pidfile, la parada busca al daemon en la dirección derivada de
+    /// `AVI_DAEMON_PORT` y no en la de por defecto: un daemon que escucha en un
+    /// puerto desviado responde, recibe el `POST /shutdown` y la parada lo da por
+    /// detenido cuando deja de responder.
+    #[tokio::test]
+    async fn stop_without_pidfile_targets_daemon_port() {
+        use crate::test_support::{serve_responses, FakeResponse};
+        let data = scratch("stop-port");
+        // Dos sondeos de salud y el apagado; después el servidor cierra y el
+        // daemon deja de responder.
+        let (base, seen, server) = serve_responses(vec![
+            FakeResponse::new(200, "ok"),
+            FakeResponse::new(200, "ok"),
+            FakeResponse::new(200, ""),
+        ])
+        .await;
+        let port = base.rsplit(':').next().expect("la URL lleva puerto");
+        let addr = addr_for_port_env(Some(port));
+        assert_ne!(addr, DEFAULT_ADDR, "el puerto está desviado");
+
+        let control = Inert::new();
+        let outcome = stop(&data, &addr, &control).await;
+        server.await.expect("el servidor termina");
+
+        assert!(
+            outcome.was_running,
+            "el daemon del puerto desviado respondía"
+        );
+        assert!(outcome.stopped, "dejó de responder tras el apagado");
+        let seen = seen.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        assert_eq!(seen, ["/health", "/health", "/shutdown"]);
+    }
+
     /// Sin pidfile, el cliente busca el daemon en el puerto de `AVI_DAEMON_PORT`;
     /// con pidfile manda la dirección publicada en él.
     #[test]
