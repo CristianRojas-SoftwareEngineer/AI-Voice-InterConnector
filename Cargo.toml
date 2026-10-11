@@ -69,3 +69,8 @@ cmake = { path = "vendor/cmake-0.1.58" }
 # cada modelo; la copia vendorizada usa un enlace duro (con copia como
 # alternativa donde el sistema de archivos no lo admite).
 hf-hub = { path = "vendor/hf-hub-1.0.0" }
+# alsa-sys (bindings de ALSA que usa `cpal` en Linux) enlaza `libasound.so.2`,
+# así que el binario no arrancaba sin ella aunque no tocara el audio; la copia
+# vendorizada la carga con `dlopen` en el primer uso y, sin ella, solo fallan
+# las órdenes de audio.
+alsa-sys = { path = "vendor/alsa-sys-0.4.0" }

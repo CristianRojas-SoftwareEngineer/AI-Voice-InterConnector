@@ -291,9 +291,51 @@ fn acquire_lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuar
     })
 }
 
-/// Servicio de Audio sobre CPAL (Playback, Capture, Enumeración)
+/// El sistema no tiene la librería del backend de audio. En Linux, `cpal` usa
+/// ALSA, que se carga en tiempo de ejecución: sin ella el resto de la app
+/// funciona y solo fallan las operaciones de audio, con este error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioBackendUnavailable {
+    /// Librería del sistema que falta.
+    pub library: &'static str,
+}
+
+impl std::fmt::Display for AudioBackendUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "No hay audio en este sistema: falta la librería {} (ALSA). Instala el paquete \
+             de runtime de ALSA de tu distribución para reproducir o grabar audio",
+            self.library
+        )
+    }
+}
+
+impl std::error::Error for AudioBackendUnavailable {}
+
+/// Host de audio por defecto. En Linux, comprobar antes que ALSA se puede
+/// cargar evita que `cpal` aborte al inicializarla.
+#[cfg(target_os = "linux")]
+fn default_host() -> std::result::Result<cpal::Host, AudioBackendUnavailable> {
+    if !alsa_sys::library_available() {
+        return Err(AudioBackendUnavailable {
+            library: "libasound.so.2",
+        });
+    }
+    Ok(cpal::default_host())
+}
+
+/// Host de audio por defecto: fuera de Linux el backend es parte del sistema.
+#[cfg(not(target_os = "linux"))]
+fn default_host() -> std::result::Result<cpal::Host, AudioBackendUnavailable> {
+    Ok(cpal::default_host())
+}
+
+/// Servicio de Audio sobre CPAL (Playback, Capture, Enumeración). Sin backend de
+/// audio en el sistema se construye igual y cada operación falla con
+/// [`AudioBackendUnavailable`].
 pub struct AudioService {
-    host: cpal::Host,
+    host: std::result::Result<cpal::Host, AudioBackendUnavailable>,
 }
 
 impl Default for AudioService {
@@ -305,8 +347,13 @@ impl Default for AudioService {
 impl AudioService {
     pub fn new() -> Self {
         Self {
-            host: cpal::default_host(),
+            host: default_host(),
         }
+    }
+
+    /// Host de audio, o el error tipado si el sistema no tiene backend.
+    fn host(&self) -> Result<&cpal::Host> {
+        self.host.as_ref().map_err(|e| e.clone().into())
     }
 
     /// Listar dispositivos de salida de audio con estimación de latencia. Un fallo
@@ -316,7 +363,7 @@ impl AudioService {
     /// la consulta esperando para siempre a `coreaudiod`.
     pub fn list_output_devices(&self) -> Result<Vec<AudioDevice>> {
         let output_devices = self
-            .host
+            .host()?
             .output_devices()
             .context("El host de audio no pudo enumerar los dispositivos de salida")?;
         Ok(output_devices
@@ -339,7 +386,7 @@ impl AudioService {
         ensure_nonzero_sample_rate(&spec)?;
 
         let device = self
-            .host
+            .host()?
             .default_output_device()
             .ok_or_else(|| anyhow!("No hay dispositivo de salida predeterminado"))?;
 
@@ -390,7 +437,7 @@ impl AudioService {
     /// Capturar audio del micrófono por N segundos remuestreado a 16kHz/mono/int16 (Whisper compatible)
     pub fn capture_16k_mono_pcm(&self, duration_secs: u64) -> Result<Vec<i16>> {
         let device = self
-            .host
+            .host()?
             .default_input_device()
             .ok_or_else(|| anyhow!("No hay dispositivo de entrada predeterminado"))?;
 
@@ -434,7 +481,7 @@ impl AudioService {
     pub fn capture_16k_mono_pcm_until_enter(&self, max_secs: u64) -> Result<Vec<i16>> {
         let max_secs = max_secs.min(push_to_talk_max_secs()?);
         let device = self
-            .host
+            .host()?
             .default_input_device()
             .ok_or_else(|| anyhow!("No hay dispositivo de entrada predeterminado"))?;
 
