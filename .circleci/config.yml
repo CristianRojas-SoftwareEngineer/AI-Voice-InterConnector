@@ -132,12 +132,13 @@ commands:
     # (x86_64-unknown-linux-gnu vs x86_64-pc-windows-msvc vs aarch64-apple-darwin)
     # y sin él Linux/Windows/macOS se pisan mutuamente (0% sccache hits en Windows).
     #
-    # Identidad de vendor/cmake-0.1.58 y vendor/hf-hub-1.0.0: `[patch.crates-io]`
-    # apunta a copias locales, que cargo fingerprintea por mtime. El checkout les
-    # da mtime nuevo en cada corrida, las marca Dirty y arrastra la re-ejecución
-    # de lo que dependa de ellas (para cmake, toda la cadena nativa: aws-lc-sys,
-    # onednn-src, sentencepiece-sys, ct2rs…). Por eso la clave exacta de la caché
-    # de `target/` incluye el tree hash git de ambos parches y NO tiene fallback por prefijo:
+    # Identidad de vendor/cmake-0.1.58, vendor/hf-hub-1.0.0 y vendor/alsa-sys-0.4.0:
+    # `[patch.crates-io]` apunta a copias locales, que cargo fingerprintea por
+    # mtime. El checkout les da mtime nuevo en cada corrida, las marca Dirty y
+    # arrastra la re-ejecución de lo que dependa de ellas (para cmake, toda la
+    # cadena nativa: aws-lc-sys, onednn-src, sentencepiece-sys, ct2rs…). Por eso
+    # la clave exacta de la caché de `target/` incluye el tree hash git de los
+    # parches y NO tiene fallback por prefijo:
     # un acierto garantiza que lo compilado en target/ corresponde al contenido
     # actual de los parches, y fijar su mtime antiguo es seguro sin comparar
     # nada. Un fallo de caché deja target/ vacío, donde la fijación es inocua. El
@@ -180,10 +181,12 @@ commands:
             {
               git rev-parse HEAD:vendor/cmake-0.1.58
               git rev-parse HEAD:vendor/hf-hub-1.0.0
+              git rev-parse HEAD:vendor/alsa-sys-0.4.0
             } > .vendor-patches.tree
-            [ "$(grep -Ec '^[0-9a-f]{40}$' .vendor-patches.tree)" = 2 ] || { echo "tree hash inválido en los parches vendorizados (se esperaban 2 líneas de 40 hex)"; exit 1; }
+            [ "$(grep -Ec '^[0-9a-f]{40}$' .vendor-patches.tree)" = 3 ] || { echo "tree hash inválido en los parches vendorizados (se esperaban 3 líneas de 40 hex)"; exit 1; }
             echo "vendor/cmake-0.1.58 tree: $(sed -n 1p .vendor-patches.tree)"
             echo "vendor/hf-hub-1.0.0 tree: $(sed -n 2p .vendor-patches.tree)"
+            echo "vendor/alsa-sys-0.4.0 tree: $(sed -n 3p .vendor-patches.tree)"
       - restore_cache:
           keys:
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
@@ -195,11 +198,11 @@ commands:
                 keys:
                   - target-v5-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
             - run:
-                name: Fijar mtime de los parches vendorizados cmake y hf-hub (evita cascada Dirty)
+                name: Fijar mtime de los parches vendorizados cmake, hf-hub y alsa-sys (evita cascada Dirty)
                 shell: bash
                 command: |
                   set -euo pipefail
-                  /usr/bin/find vendor/cmake-0.1.58 vendor/hf-hub-1.0.0 -exec touch -t 200001010000 {} +
+                  /usr/bin/find vendor/cmake-0.1.58 vendor/hf-hub-1.0.0 vendor/alsa-sys-0.4.0 -exec touch -t 200001010000 {} +
                   if [ -d target ]; then
                     echo "target/ restaurado por clave exacta: cmake y hf-hub Fresh esperados"
                   else
@@ -372,7 +375,10 @@ commands:
               SCCACHE_PKG="sccache-v${SCCACHE_VERSION}-${SCCACHE_TRIPLE}"
               curl -fsSL "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${SCCACHE_PKG}.tar.gz" -o /tmp/sccache.tar.gz
               tar -xzf /tmp/sccache.tar.gz -C /tmp
-              sudo install -m 755 "/tmp/${SCCACHE_PKG}/sccache" /usr/local/bin/sccache
+              # Como root (imagen manylinux de los build-linux-*) no hay sudo ni hace falta.
+              SUDO=""
+              [ "$(id -u)" -eq 0 ] || SUDO=sudo
+              $SUDO install -m 755 "/tmp/${SCCACHE_PKG}/sccache" /usr/local/bin/sccache
             fi
             # Persistir env a $BASH_ENV para los steps de compilación siguientes.
             echo 'export RUSTC_WRAPPER=sccache' >> "$BASH_ENV"
@@ -545,6 +551,34 @@ commands:
             cargo xtask features --check
             echo "[STEP] Validar cadena de features - FIN"
 
+  # Los build-linux-* compilan en la imagen manylinux_2_28 (AlmaLinux 8, glibc
+  # 2.28), que corre como root y no trae cliente SSH, que `checkout` necesita
+  # para clonar: se instala antes del checkout.
+  install_manylinux_ssh:
+    description: Instala el cliente SSH que `checkout` necesita en la imagen manylinux
+    steps:
+      - run:
+          name: Instalar cliente SSH (requisito de checkout)
+          command: dnf install -y -q openssh-clients
+  # La imagen trae gcc-toolset-14 (con libgomp.a y libstdc++.a, que
+  # crates/avi-translation/build.rs enlaza estáticas, y libgfortran.a, que el
+  # motor enlaza estática), cmake, perl, git y pkg-config. Se añaden clang-devel
+  # (libclang para bindgen) y openblas-static (libopenblasp.a, la OpenBLAS con
+  # hilos que el Makefile del motor enlaza estática), y Rust con rustup en la
+  # versión de `rust_pin`.
+  install_manylinux_build_deps:
+    description: Instala clang-devel, openblas-static y Rust en la imagen manylinux
+    steps:
+      - run:
+          name: Instalar dependencias de sistema y Rust (clang-devel, openblas-static, rustup)
+          command: |
+            echo "[STEP] Instalar dependencias de sistema y Rust - INICIO"
+            set -euo pipefail
+            dnf install -y -q clang-devel openblas-static
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain << pipeline.parameters.rust_pin >>
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
+            echo "[STEP] Instalar dependencias de sistema y Rust - FIN"
+
 jobs:
   # ──────────────────────────────────────────────────────────────
   # Gate Rust — triple puerta simétrica (cargo test --all)
@@ -572,17 +606,17 @@ jobs:
     steps:
       - checkout
       - run:
-          # libasound2-dev + pkg-config exponen ALSA a cpal (sí se compila en la
-          # suite). libclang-dev (bindgen/ct2rs, solo con native-translation) ya
-          # NO se ejercita con native-stt/native-translation off (la suite no
-          # compila C++); se conserva por simetría con coverage y con los build-*,
-          # que activan --features full. Contexto histórico: sin libclang-dev el
-          # build-script moría con «Unable to find libclang» (pipeline #2).
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
+          # ALSA no hace falta para compilar: la copia vendorizada de alsa-sys la
+          # carga en tiempo de ejecución. libclang-dev (bindgen/ct2rs, solo con
+          # native-translation) NO se ejercita con native-stt/native-translation
+          # off (la suite no compila C++); se conserva por simetría con coverage.
+          # Contexto histórico: sin libclang-dev el build-script moría con
+          # «Unable to find libclang» (pipeline #2).
+          name: Instalar dependencias de sistema (cmake, pkg-config, libclang-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
+            sudo apt-get install -y cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches:
           os: linux
@@ -836,11 +870,13 @@ jobs:
           # coverage compila la workspace SIN los stacks C++ (no aparece
           # ct2rs con C++); libclang-dev/cmake se conservan por simetría
           # con test-linux y por si un futuro umbral corre coverage con features.
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev)
+          # ALSA no hace falta: la copia vendorizada de alsa-sys la carga en
+          # tiempo de ejecución.
+          name: Instalar dependencias de sistema (cmake, pkg-config, libclang-dev)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev
+            sudo apt-get install -y cmake pkg-config libclang-dev
             echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches:
           os: linux
@@ -1370,8 +1406,8 @@ jobs:
       - unless:
           condition: << parameters.probe >>
           steps:
-            # `ort-bundle/` (ONNX Runtime oficial más las cuatro DLL app-local de
-            # VC++: vcruntime140, vcruntime140_1, msvcp140 y vcomp140) lo arma y lo
+            # `ort-bundle/` (ONNX Runtime oficial más las cinco DLL app-local de
+            # VC++: vcruntime140, vcruntime140_1, msvcp140, msvcp140_1 y vcomp140) lo arma y lo
             # verifica `xtask package`, el único descargador: comprueba el SHA-256
             # fijado en packaging/pins.json y copia las DLL de System32. La caché
             # solo evita repetir la descarga; `xtask package` reutiliza lo
@@ -1379,11 +1415,13 @@ jobs:
             # versión fijada, y si no lo vuelve a descargar.
             - restore_cache:
                 keys:
-                  - ort-v3-win-x64-<< pipeline.parameters.ort_pin >>
+                  - ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
             - run:
                 # Empaquetado canónico: `xtask package` monta el bundle desde
                 # packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`) y aborta si VERSION != tag.
+                # `self install`), aborta si VERSION != tag y audita que ningún
+                # binario del bundle importe nada fuera del sistema base que
+                # declara el manifiesto para el target.
                 name: Empaquetar bundle con xtask package
                 command: |
                   Write-Host "[STEP] Empaquetar bundle con xtask package - INICIO"
@@ -1394,7 +1432,7 @@ jobs:
                   if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
                   Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
             - save_cache:
-                key: ort-v3-win-x64-<< pipeline.parameters.ort_pin >>
+                key: ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
                 paths:
                   - ort-bundle
             - run:
@@ -1438,8 +1476,12 @@ jobs:
     # `large` (8 GB RAM): el linking de cpal + tokio + ct2rs (ort es
     # load-dynamic) supera los 4 GB de `medium` (OOM silencioso). `large` trae
     # 4 vCPU de regalo no aprovechados.
+    # La imagen manylinux_2_28 (AlmaLinux 8, glibc 2.28) fija el suelo de glibc
+    # del binario: lo que se enlaza contra ella corre en cualquier distribución
+    # con glibc >= 2.28 (RHEL/Rocky/Alma 8, Debian 10, Ubuntu 20.04 y
+    # posteriores).
     docker:
-      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
+      - image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae # manylinux_2_28 2026.10.10-1: AlmaLinux 8, gcc-toolset-14
     resource_class: large
     environment:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
@@ -1449,33 +1491,21 @@ jobs:
         type: boolean
         default: false
     steps:
+      - install_manylinux_ssh
       - checkout
-      - run:
-          # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
-          # libopenblas-dev aporta /usr/include/openblas y libopenblas.a, que el
-          # Makefile de qwen_tts enlaza estático en Linux; su LAPACK está compilado
-          # con gfortran, así que también hace falta libgfortran.a de la misma
-          # versión que el gcc del runner (libgfortran-<versión>-dev).
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, libopenblas-dev, libgfortran-dev)
-          command: |
-            echo "[STEP] Instalar dependencias de sistema - INICIO"
-            set -euo pipefail
-            sudo apt-get update
-            GCC_MAJOR="$(gcc -dumpversion | cut -d. -f1)"
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev "libgfortran-${GCC_MAJOR}-dev"
-            echo "[STEP] Instalar dependencias de sistema - FIN"
+      - install_manylinux_build_deps
       - unless:
           condition: << parameters.probe >>
           steps:
             - cargo_restore_caches:
-                os: linux
+                os: linux-el8
                 variant: full
                 target: true
       - when:
           condition: << parameters.probe >>
           steps:
             - cargo_restore_caches:
-                os: linux
+                os: linux-el8
                 variant: full
                 target: false
       - run:
@@ -1486,7 +1516,7 @@ jobs:
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
       - sccache_restore_cache:
-          os: linux
+          os: linux-el8
           variant: full
       - sccache_setup_unix
       - native_sccache_setup_unix
@@ -1548,30 +1578,15 @@ jobs:
           # oráculo de kernels sin pesos) en un solo paso.
           name: Compilar y verificar motor TTS
           command: cargo xtask build-engine --self-test
-      - run:
-          # El motor distribuido no puede exigir librerías que el sistema del
-          # usuario no trae: OpenBLAS, libgfortran y libquadmath van estáticas y
-          # el motor solo debe enlazar dinámicamente glibc (y el cargador).
-          name: Verificar que el motor TTS no enlaza OpenBLAS ni gfortran dinámicamente
-          command: |
-            echo "[STEP] Verificar enlace estático del motor - INICIO"
-            set -euo pipefail
-            deps="$(ldd vendor/qwen3-tts/qwen_tts)"
-            printf '%s\n' "$deps"
-            if printf '%s\n' "$deps" | grep -Eq 'openblas|gfortran|quadmath|not found'; then
-              echo "el motor enlaza dinámicamente OpenBLAS o su runtime Fortran, o le falta una librería" >&2
-              exit 1
-            fi
-            echo "[STEP] Verificar enlace estático del motor - FIN"
       - unless:
           condition: << parameters.probe >>
           steps:
             - cargo_save_target:
-                os: linux
+                os: linux-el8
                 variant: full
                 when: on_success
       - sccache_save_cache:
-          os: linux
+          os: linux-el8
           variant: full
       - unless:
           condition: << parameters.probe >>
@@ -1579,7 +1594,9 @@ jobs:
             - run:
                 # Empaquetado canónico: `xtask package` monta el bundle desde
                 # packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`) y aborta si VERSION != tag.
+                # `self install`), aborta si VERSION != tag y audita que ningún
+                # binario del bundle importe nada fuera del sistema base que
+                # declara el manifiesto para el target.
                 name: Empaquetar bundle con xtask package
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
@@ -1619,8 +1636,10 @@ jobs:
     # aarch64 real, evitando toolchain de cross-compilación y sysroot.
     # Sin test-linux-arm64 (suite mockeada arch-independiente), el smoke
     # test de este build es el único gate del stack aarch64 (binario nativo).
+    # Misma imagen manylinux_2_28 que build-linux-x64, en su variante aarch64:
+    # suelo de glibc 2.28.
     docker:
-      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
+      - image: quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6 # manylinux_2_28 2026.10.10-1: AlmaLinux 8, gcc-toolset-14
     resource_class: arm.medium
     environment:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
@@ -1630,33 +1649,21 @@ jobs:
         type: boolean
         default: false
     steps:
+      - install_manylinux_ssh
       - checkout
-      - run:
-          # libclang-dev es requisito de bindgen (ct2rs, solo con native-translation), igual que en test-linux.
-          # libopenblas-dev aporta /usr/include/openblas y libopenblas.a, que el
-          # Makefile de qwen_tts enlaza estático en Linux; su LAPACK está compilado
-          # con gfortran, así que también hace falta libgfortran.a de la misma
-          # versión que el gcc del runner (libgfortran-<versión>-dev).
-          name: Instalar dependencias de sistema (libasound2-dev, cmake, pkg-config, libclang-dev, libopenblas-dev, libgfortran-dev)
-          command: |
-            echo "[STEP] Instalar dependencias de sistema - INICIO"
-            set -euo pipefail
-            sudo apt-get update
-            GCC_MAJOR="$(gcc -dumpversion | cut -d. -f1)"
-            sudo apt-get install -y libasound2-dev cmake pkg-config libclang-dev libopenblas-dev "libgfortran-${GCC_MAJOR}-dev"
-            echo "[STEP] Instalar dependencias de sistema - FIN"
+      - install_manylinux_build_deps
       - unless:
           condition: << parameters.probe >>
           steps:
             - cargo_restore_caches:
-                os: linux
+                os: linux-el8
                 variant: full
                 target: true
       - when:
           condition: << parameters.probe >>
           steps:
             - cargo_restore_caches:
-                os: linux
+                os: linux-el8
                 variant: full
                 target: false
       - run:
@@ -1667,7 +1674,7 @@ jobs:
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
       - cargo_save_registry
       - sccache_restore_cache:
-          os: linux
+          os: linux-el8
           variant: full
       - sccache_setup_unix
       - native_sccache_setup_unix
@@ -1731,30 +1738,15 @@ jobs:
           # oráculo de kernels sin pesos) en un solo paso.
           name: Compilar y verificar motor TTS
           command: cargo xtask build-engine --self-test
-      - run:
-          # El motor distribuido no puede exigir librerías que el sistema del
-          # usuario no trae: OpenBLAS, libgfortran y libquadmath van estáticas y
-          # el motor solo debe enlazar dinámicamente glibc (y el cargador).
-          name: Verificar que el motor TTS no enlaza OpenBLAS ni gfortran dinámicamente
-          command: |
-            echo "[STEP] Verificar enlace estático del motor - INICIO"
-            set -euo pipefail
-            deps="$(ldd vendor/qwen3-tts/qwen_tts)"
-            printf '%s\n' "$deps"
-            if printf '%s\n' "$deps" | grep -Eq 'openblas|gfortran|quadmath|not found'; then
-              echo "el motor enlaza dinámicamente OpenBLAS o su runtime Fortran, o le falta una librería" >&2
-              exit 1
-            fi
-            echo "[STEP] Verificar enlace estático del motor - FIN"
       - unless:
           condition: << parameters.probe >>
           steps:
             - cargo_save_target:
-                os: linux
+                os: linux-el8
                 variant: full
                 when: on_success
       - sccache_save_cache:
-          os: linux
+          os: linux-el8
           variant: full
       - unless:
           condition: << parameters.probe >>
@@ -1762,7 +1754,9 @@ jobs:
             - run:
                 # Empaquetado canónico: `xtask package` monta el bundle desde
                 # packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`) y aborta si VERSION != tag.
+                # `self install`), aborta si VERSION != tag y audita que ningún
+                # binario del bundle importe nada fuera del sistema base que
+                # declara el manifiesto para el target.
                 name: Empaquetar bundle con xtask package
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
@@ -1952,22 +1946,6 @@ jobs:
           command: |
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo xtask build-engine --self-test
-      - run:
-          # El mínimo de macOS que carga dyld es el `minos` de LC_BUILD_VERSION de
-          # cada Mach-O. El binario y el motor se compilan aquí y deben declarar
-          # exactamente MACOSX_DEPLOYMENT_TARGET: otro valor indica que alguna pieza
-          # no recibió el mínimo (uno mayor impediría arrancar en macOS soportados).
-          name: Verificar la versión mínima de macOS del binario y del motor (minos)
-          command: |
-            echo "[STEP] Verificar minos del binario y del motor - INICIO"
-            set -euo pipefail
-            minos() { otool -l "$1" | awk '/LC_BUILD_VERSION/ { found = 1 } found && $1 == "minos" { print $2; exit }'; }
-            for f in target/release/ai-voice-interconnector vendor/qwen3-tts/qwen_tts; do
-              got="$(minos "$f")"
-              echo "$f: minos=${got:-ausente}"
-              [ "$got" = "$MACOSX_DEPLOYMENT_TARGET" ] || { echo "minos de $f es '${got:-ausente}', se esperaba $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1; }
-            done
-            echo "[STEP] Verificar minos del binario y del motor - FIN"
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1984,37 +1962,16 @@ jobs:
             - run:
                 # Empaquetado canónico: `xtask package` monta el bundle desde
                 # packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`) y aborta si VERSION != tag.
+                # `self install`), aborta si VERSION != tag y audita que ningún
+                # binario del bundle declare un `minos` por encima del `min_os`
+                # del manifiesto ni importe nada fuera de libSystem, /usr/lib y
+                # los frameworks de /System.
                 name: Empaquetar bundle con xtask package
                 command: |
                   echo "[STEP] Empaquetar bundle con xtask package - INICIO"
                   set -euo pipefail
                   cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
-            - run:
-                # Lo que se publica: el binario y el motor del archivo declaran
-                # exactamente MACOSX_DEPLOYMENT_TARGET, y la librería de ONNX
-                # Runtime, que llega compilada de Microsoft, declara uno menor o
-                # igual (si fuera mayor, no cargaría en el mínimo declarado).
-                name: Verificar la versión mínima de macOS del archivo empaquetado (minos)
-                command: |
-                  echo "[STEP] Verificar minos del archivo empaquetado - INICIO"
-                  set -euo pipefail
-                  minos() { otool -l "$1" | awk '/LC_BUILD_VERSION/ { found = 1 } found && $1 == "minos" { print $2; exit }'; }
-                  STAGE_MINOS="$(mktemp -d)"
-                  tar -xzf artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz -C "$STAGE_MINOS"
-                  for f in ai-voice-interconnector vendor/qwen3-tts/qwen_tts; do
-                    got="$(minos "$STAGE_MINOS/$f")"
-                    echo "$f: minos=${got:-ausente}"
-                    [ "$got" = "$MACOSX_DEPLOYMENT_TARGET" ] || { echo "minos de $f es '${got:-ausente}', se esperaba $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1; }
-                  done
-                  got="$(minos "$STAGE_MINOS/libonnxruntime.dylib")"
-                  echo "libonnxruntime.dylib: minos=${got:-ausente}"
-                  [ -n "$got" ] || { echo "libonnxruntime.dylib no declara minos" >&2; exit 1; }
-                  awk -v got="$got" -v want="$MACOSX_DEPLOYMENT_TARGET" 'BEGIN { split(got, g, "."); split(want, w, "."); exit !((g[1] + 0 < w[1] + 0) || (g[1] + 0 == w[1] + 0 && g[2] + 0 <= w[2] + 0)) }' \
-                    || { echo "libonnxruntime.dylib exige macOS $got, por encima del mínimo $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1; }
-                  rm -rf "$STAGE_MINOS"
-                  echo "[STEP] Verificar minos del archivo empaquetado - FIN"
             - run:
                 # Humo de instalación: instala el artefacto empaquetado en un
                 # sandbox con las cuatro raíces reubicadas y comprueba que el
@@ -2045,6 +2002,60 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   # CD — publicación del GitHub Release (Rust nativo, 4 binarios)
+  # ──────────────────────────────────────────────────────────────
+  clean-room-linux:
+    # Sala limpia: el artefacto Linux que se va a publicar, sin compilar nada,
+    # en una imagen sin paquetes de desarrollo ni ALSA, libgomp o procps.
+    # AlmaLinux 8 es el suelo de glibc (2.28) y Debian stable-slim, una
+    # instalación mínima actual. Si el binario, el motor o ONNX Runtime
+    # exigieran algo que el sistema base no trae, o una glibc mayor, fallan
+    # aquí antes de publicar. `self install` y la comprobación de ONNX Runtime
+    # se ejercen también a través del symlink instalado, que es como el usuario
+    # invoca la app.
+    parameters:
+      image:
+        type: string
+      arch:
+        type: enum
+        enum: ["x86_64", "arm64"]
+      resource_class:
+        type: string
+    docker:
+      - image: << parameters.image >>
+    resource_class: << parameters.resource_class >>
+    steps:
+      - attach_workspace:
+          at: /tmp/workspace
+      - run:
+          name: Sala limpia del artefacto Linux << parameters.arch >>
+          command: |
+            echo "[STEP] Sala limpia - INICIO"
+            set -euo pipefail
+            ldd --version | head -1
+            STAGE="$(mktemp -d)"
+            tar -xzf /tmp/workspace/ai-voice-interconnector-*-<< parameters.arch >>-linux.tar.gz -C "$STAGE"
+            "$STAGE/ai-voice-interconnector" --version
+            # Captura previa en variable: `grep -q` cerraría la tubería antes de
+            # que el binario termine de escribir.
+            voice_list_out="$("$STAGE/ai-voice-interconnector" voice list)"
+            printf '%s\n' "$voice_list_out" | grep -q '^  - default'
+            SANDBOX="$(mktemp -d)"
+            export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
+            mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
+            # Sin --no-modify-path: es la integración de PATH la que crea el symlink
+            # de AVI_BIN_DIR (el contenedor es efímero).
+            "$STAGE/ai-voice-interconnector" self install --no-setup --yes
+            # Por el symlink instalado: el programa debe resolver su directorio real.
+            "$AVI_BIN_DIR/ai-voice-interconnector" --version
+            # `doctor` falla sin modelos provisionados; lo que se exige aquí es su
+            # comprobación `onnx_runtime`, que carga la librería empaquetada. El
+            # JSON sale con sangría y las claves de cada comprobación ordenadas
+            # (`detail`, `name`, `ok`).
+            doctor_out="$("$AVI_BIN_DIR/ai-voice-interconnector" --json doctor || true)"
+            printf '%s\n' "$doctor_out"
+            printf '%s\n' "$doctor_out" | grep -A1 '"name": "onnx_runtime",' | grep -q '"ok": true'
+            echo "[STEP] Sala limpia - FIN"
+
   # ──────────────────────────────────────────────────────────────
   publish-release:
     # Recolecta los 4 binarios Rust versionados por workspace (no `gh run
@@ -2385,6 +2396,41 @@ workflows:
             - coverage
             - validate-licenses
             - validate-changelog
+      # ── Sala limpia de los artefactos Linux (AlmaLinux 8 y Debian stable-slim) ──
+      - clean-room-linux:
+          name: clean-room-linux-x64-<< matrix.image >>
+          matrix:
+            alias: clean-room-linux-x64
+            parameters:
+              image:
+                - almalinux:8@sha256:8b469a3a78515e8a18ea8fc727e6a3679e1d0c5ba6f58d5b30be3d0d9b86cffe
+                - debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5
+          arch: x86_64
+          resource_class: medium
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+          requires:
+            - build-linux-x64
+      - clean-room-linux:
+          name: clean-room-linux-arm64-<< matrix.image >>
+          matrix:
+            alias: clean-room-linux-arm64
+            parameters:
+              image:
+                - almalinux:8@sha256:8b469a3a78515e8a18ea8fc727e6a3679e1d0c5ba6f58d5b30be3d0d9b86cffe
+                - debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5
+          arch: arm64
+          resource_class: arm.medium
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+          requires:
+            - build-linux-arm64
       # ── Publicación — solo en tags v* ──
       - publish-release:
           context:
@@ -2399,6 +2445,8 @@ workflows:
             - build-linux-x64
             - build-linux-arm64
             - build-darwin-arm64
+            - clean-room-linux-x64
+            - clean-room-linux-arm64
       - publish-metadata:
           context:
             - github-release

@@ -37,7 +37,8 @@
         "vendor/qwen3-tts/qwen_tts"
       ],
       "system_libs": [
-        "libc.so.6", "libm.so.6", "libdl.so.2", "librt.so.1", "libpthread.so.0",
+        "libc.so.6", "libm.so.6", "libmvec.so.1", "libdl.so.2", "librt.so.1",
+        "libpthread.so.0",
         "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1",
         "libstdc++.so.6", "libgcc_s.so.1"
       ],
@@ -55,7 +56,8 @@
         "vendor/qwen3-tts/qwen_tts"
       ],
       "system_libs": [
-        "libc.so.6", "libm.so.6", "libdl.so.2", "librt.so.1", "libpthread.so.0",
+        "libc.so.6", "libm.so.6", "libmvec.so.1", "libdl.so.2", "librt.so.1",
+        "libpthread.so.0",
         "ld-linux-x86-64.so.2", "ld-linux-aarch64.so.1",
         "libstdc++.so.6", "libgcc_s.so.1"
       ],

@@ -76,11 +76,16 @@ ifeq ($(UNAME_S),Darwin)
     CFLAGS_BASE += -DUSE_BLAS -DACCELERATE_NEW_LAPACK
     LDLIBS += -framework Accelerate
 else ifeq ($(UNAME_S),Linux)
-    CFLAGS_BASE += -DUSE_BLAS -DUSE_OPENBLAS -I/usr/include/openblas
+    # _GNU_SOURCE: glibc solo declara extensiones como strcasestr con ella. Sin
+    # la declaración, gcc anterior a 14 asumía que devuelve int (y truncaba el
+    # puntero a 32 bits en x86_64), y gcc 14 lo rechaza como error.
+    CFLAGS_BASE += -DUSE_BLAS -DUSE_OPENBLAS -D_GNU_SOURCE -I/usr/include/openblas
     # OpenBLAS se enlaza estático para que el motor distribuido no exija
     # libopenblas en el sistema. Debian/Ubuntu instalan libopenblas.a fuera de la
-    # ruta del enlazador (en openblas-pthread/), así que se busca por ruta y se
-    # puede fijar con OPENBLAS_A=<ruta>. Su LAPACK está compilado con gfortran:
+    # ruta del enlazador (en openblas-pthread/), y EL8 (la imagen manylinux_2_28
+    # de la CI) llama libopenblasp.a a la variante con hilos y libopenblas.a a la
+    # secuencial, así que se busca por ruta, con la variante con hilos primero, y
+    # se puede fijar con OPENBLAS_A=<ruta>. Su LAPACK está compilado con gfortran:
     # libgfortran (y en x86_64 libquadmath, que libgfortran usa) también van
     # estáticas, de modo que el motor solo enlaza dinámicamente glibc. Sin la
     # librería estática el enlace del motor falla con un mensaje (regla
@@ -90,6 +95,7 @@ else ifeq ($(UNAME_S),Linux)
     OPENBLAS_A ?= $(firstword $(wildcard \
         /usr/lib/$(MULTIARCH)/openblas-pthread/libopenblas.a \
         /usr/lib/$(MULTIARCH)/libopenblas.a \
+        /usr/lib64/libopenblasp.a \
         /usr/lib64/libopenblas.a \
         /usr/lib/libopenblas.a))
     ifeq ($(OPENBLAS_A),)

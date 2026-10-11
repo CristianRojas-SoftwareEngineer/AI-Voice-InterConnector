@@ -2010,7 +2010,11 @@ mod tests {
             .lines()
             .find(|l| l.contains("touch -t 200001010000"))
             .unwrap_or("");
-        for dir in ["vendor/cmake-0.1.58", "vendor/hf-hub-1.0.0"] {
+        for dir in [
+            "vendor/cmake-0.1.58",
+            "vendor/hf-hub-1.0.0",
+            "vendor/alsa-sys-0.4.0",
+        ] {
             assert!(
                 restore_section.contains(&format!("git rev-parse HEAD:{dir}")),
                 "cargo_restore_caches debe calcular el tree hash git de {dir}"
@@ -2022,7 +2026,7 @@ mod tests {
         }
         assert!(
             restore_section.contains(".vendor-patches.tree"),
-            "el tree hash de ambos parches debe escribirse en .vendor-patches.tree"
+            "el tree hash de los parches debe escribirse en .vendor-patches.tree"
         );
         assert!(
             restore_section.contains("set -euo pipefail"),
@@ -2287,7 +2291,7 @@ mod tests {
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
         for marker in [
             "- target-v5-",
-            "name: Fijar mtime de los parches vendorizados cmake y hf-hub",
+            "name: Fijar mtime de los parches vendorizados cmake, hf-hub y alsa-sys",
         ] {
             let i = cmd_lines
                 .iter()

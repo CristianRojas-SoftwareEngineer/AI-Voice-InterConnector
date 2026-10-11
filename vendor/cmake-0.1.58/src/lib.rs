@@ -707,6 +707,15 @@ impl Config {
             cmd.arg(dstflag);
         }
 
+        // Patch: fijar CMAKE_INSTALL_LIBDIR=lib salvo que el llamador lo defina.
+        // En distribuciones tipo RHEL de 64 bits (la imagen manylinux_2_28 de la
+        // CI), GNUInstallDirs instala las librerías en `lib64`, y los build.rs que
+        // solo buscan en `<out>/lib` (onednn-src) no las encuentran. `lib` es lo
+        // que ya rige en Windows, macOS y Debian.
+        if !self.defined("CMAKE_INSTALL_LIBDIR") {
+            cmd.arg("-DCMAKE_INSTALL_LIBDIR=lib");
+        }
+
         let build_type = self
             .defines
             .iter()
