@@ -316,30 +316,34 @@ pub async fn stop(
         control.kill_tree_resident_by_pid(resident);
     }
 
-    // 3) Verificación con lo que queda del plazo global.
+    // 3) Verificación con lo que queda del plazo global. El bucle se queda con la
+    // observación con la que rompe; si el plazo se agota sin romper, se observa una
+    // vez más para el veredicto.
+    let mut settled = None;
     while start.elapsed() < STOP_DEADLINE_GLOBAL {
-        let alive = daemon_registered(data_dir, control).1 == Registered::Ours;
-        let resident_alive = resident_alive_by_pid(data_dir, control);
-        if !probe(&addr).await && !alive && !resident_alive {
+        let seen = observe_stop(data_dir, &addr, control).await;
+        if seen.fully_stopped() {
+            settled = Some(seen);
             break;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
+    // Los tres hechos de la verificación a nivel de sistema vienen de una sola
+    // observación: el veredicto completo, la frase de lo que quedó vivo y el
+    // borrado del pidfile se apoyan en ella, en lugar de repetir sondeos que pueden
+    // discrepar entre sí y que consumen plazo.
+    let seen = match settled {
+        Some(seen) => seen,
+        None => observe_stop(data_dir, &addr, control).await,
+    };
 
     // 4) Veredicto y borrado del pidfile solo tras muerte verificada.
-    let (pid_final, final_state) = daemon_registered(data_dir, control);
-    let final_alive = final_state == Registered::Ours;
-    // Los tres hechos de la verificación a nivel de sistema se observan una vez cada
-    // uno y se nombran: el veredicto completo, la frase de lo que quedó vivo y el
-    // borrado del pidfile se apoyan en la misma observación, en lugar de repetir
-    // sondeos que pueden discrepar entre sí.
-    let resident_alive = resident_alive_by_pid(data_dir, control);
-    let responding = probe(&addr).await;
     // El veredicto completo: el daemon no responde, su PID registrado no está vivo y
     // el residente tampoco. Lo afirma el motor también cuando la parada no concluye, y
     // entonces vale `false`: quien recibe el desenlace necesita saber si lo que quedó
     // vivo es el residente.
-    let daemon_fully_stopped = !responding && !final_alive && !resident_alive;
+    let daemon_fully_stopped = seen.fully_stopped();
+    let resident_alive = seen.resident_alive;
     // `stopped` es el mismo veredicto aplicado a las mutaciones del protocolo: sin él
     // el pidfile se conserva como pista y el fichero ready no se borra.
     let stopped = daemon_fully_stopped;
@@ -347,10 +351,10 @@ pub async fn stop(
         None
     } else {
         let mut parts = Vec::new();
-        if let (Some(pid), true) = (pid_final, final_alive) {
+        if let (Some(pid), true) = (seen.pid, seen.daemon_alive) {
             parts.push(format!("daemon pid {pid}"));
         }
-        if responding {
+        if seen.responding {
             parts.push(format!("el daemon en {addr} responde"));
         }
         if resident_alive {
@@ -400,6 +404,41 @@ pub async fn stop(
         pidfile_removed,
         ready_removed,
         remaining,
+    }
+}
+
+/// Los tres hechos de la verificación a nivel de sistema, observados una vez:
+/// el estado del daemon registrado, el del residente y si el daemon responde.
+struct StopObservation {
+    /// PID del daemon registrado, si lo hay.
+    pid: Option<u32>,
+    /// El daemon registrado vive y es nuestro.
+    daemon_alive: bool,
+    /// El residente registrado vive y es nuestro.
+    resident_alive: bool,
+    /// El daemon responde en su dirección.
+    responding: bool,
+}
+
+impl StopObservation {
+    /// Nada queda vivo: el daemon no responde y ni su PID ni el residente viven.
+    fn fully_stopped(&self) -> bool {
+        !self.responding && !self.daemon_alive && !self.resident_alive
+    }
+}
+
+/// Observa una vez los tres hechos de la verificación.
+async fn observe_stop(
+    data_dir: &Path,
+    addr: &str,
+    control: &dyn ProcessControl,
+) -> StopObservation {
+    let (pid, state) = daemon_registered(data_dir, control);
+    StopObservation {
+        pid,
+        daemon_alive: state == Registered::Ours,
+        resident_alive: resident_alive_by_pid(data_dir, control),
+        responding: probe(addr).await,
     }
 }
 
@@ -1356,6 +1395,57 @@ mod tests {
                 resident_port: None,
             },
         )
+    }
+
+    /// Control donde nadie vive y que cuenta cada consulta de viveza del daemon y
+    /// del residente.
+    struct CountingDead {
+        daemon_checks: AtomicU32,
+        resident_checks: AtomicU32,
+    }
+
+    impl ProcessControl for CountingDead {
+        fn pid_alive(&self, _pid: u32) -> bool {
+            self.daemon_checks.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+        fn kill_tree_by_pid(&self, _pid: u32) -> bool {
+            true
+        }
+        fn resident_pid_alive(&self, _pid: u32) -> bool {
+            self.resident_checks.fetch_add(1, Ordering::Relaxed);
+            false
+        }
+        fn kill_tree_resident_by_pid(&self, _pid: u32) -> bool {
+            true
+        }
+    }
+
+    /// El veredicto reutiliza la observación con la que rompe la verificación: con
+    /// todo muerto desde la primera vuelta, el daemon registrado se consulta tres
+    /// veces (antes de parar, antes de reclamar su árbol y en la verificación) y
+    /// el residente dos (antes de reclamarlo y en la verificación), sin una
+    /// cuarta y una tercera consulta para el veredicto.
+    #[tokio::test]
+    async fn stop_verdict_reuses_breaking_observation() {
+        let data = scratch("single-observation");
+        set_pid_file(
+            &data,
+            999_998,
+            &dead_port(),
+            999_997,
+            identity_of("111", "daemon.exe"),
+        )
+        .unwrap();
+        let control = CountingDead {
+            daemon_checks: AtomicU32::new(0),
+            resident_checks: AtomicU32::new(0),
+        };
+        let outcome = stop(&data, &dead_port(), &control).await;
+
+        assert!(outcome.stopped && outcome.daemon_fully_stopped);
+        assert_eq!(control.daemon_checks.load(Ordering::Relaxed), 3);
+        assert_eq!(control.resident_checks.load(Ordering::Relaxed), 2);
     }
 
     /// Control con procesos vivos e identidades configurables. Matar un PID lo
