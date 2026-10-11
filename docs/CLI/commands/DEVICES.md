@@ -37,7 +37,13 @@ ramificación por sistema operativo).
 2. Itera `host.output_devices()`; si la llamada falla, `list_output_devices`
    devuelve `Err` (no hay dispositivo "Default" sintético ni lista vacía en su
    lugar). Un host sin dispositivos devuelve una lista vacía, que no es un error.
-3. Para cada dispositivo, el nombre es `None` si el backend no puede leerlo.
+3. Para cada dispositivo, el nombre es el de su descripción
+   (`DeviceDescription::name`) y es `None` si el backend no puede describirlo.
+   Difiere por plataforma: en Windows (WASAPI) es el nombre descriptivo del
+   sistema (`FriendlyName`); en Linux (ALSA) la enumeración sigue el criterio de
+   `aplay -L` y puede listar más entradas; en macOS enumerar salidas no abre la
+   entrada de audio (micrófono), así que no pide permiso ni se bloquea sin sesión
+   de usuario.
 4. La latencia se **estima**, no se lee de un campo nativo del sistema: se
    toma `buffer_size().min` de `default_output_config()` y se calcula
    `(buffer_size / sample_rate) * 1000.0` para obtener milisegundos. Es `None`
@@ -90,7 +96,7 @@ inyecta `schema_version` sobre el objeto antes de serializar
 |---|---|---|
 | `devices` | array de objetos | Lista de dispositivos de salida enumerados por `cpal` |
 | `devices[].id` | integer | Índice secuencial 0-based asignado durante la iteración de `host.output_devices()` (`crates/avi-audio/src/lib.rs`) |
-| `devices[].name` | string o `null` | Nombre del dispositivo reportado por `cpal`; `null` si el backend no lo expone |
+| `devices[].name` | string o `null` | Nombre de la descripción del dispositivo (`DeviceDescription::name`); `null` si el backend no lo expone |
 | `devices[].latency` | number o `null` | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs`); `null` si no se puede estimar. En salida texto se reconvierte a milisegundos para mostrarse |
 | `schema_version` | string | `"5"`, inyectado por `emit_raw_json`/`with_schema_version` — no forma parte del payload que construye el handler |
 

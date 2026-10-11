@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, StreamConfig};
+use cpal::{FromSample, Sample, SampleFormat, SizedSample, StreamConfig};
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -80,7 +80,7 @@ fn estimate_latency_ms(buffer_size: &cpal::SupportedBufferSize, sample_rate: u32
 fn stream_error_callback(
     label: &'static str,
     failed: &Arc<AtomicBool>,
-) -> impl FnMut(cpal::StreamError) + Send + 'static {
+) -> impl FnMut(cpal::Error) + Send + 'static {
     let failed = Arc::clone(failed);
     move |err| {
         eprintln!("{label}: {err}");
@@ -94,6 +94,128 @@ fn ensure_stream_alive(failed: &AtomicBool, operation: &str) -> Result<()> {
         return Err(anyhow!("El stream de audio falló durante {operation}"));
     }
     Ok(())
+}
+
+/// Despacha `$body` con `$t` fijado al tipo Rust del `SampleFormat` dado. Es el
+/// único sitio que enumera los formatos de muestra: reproducción y captura lo
+/// comparten en lugar de repetir una rama por formato. Los formatos que cpal no
+/// sabe convertir a `f32` (los DSD de 1 bit) terminan en error.
+macro_rules! with_sample_type {
+    ($format:expr, $t:ident => $body:expr) => {
+        match $format {
+            SampleFormat::I8 => {
+                type $t = i8;
+                $body
+            }
+            SampleFormat::I16 => {
+                type $t = i16;
+                $body
+            }
+            SampleFormat::I24 => {
+                type $t = cpal::I24;
+                $body
+            }
+            SampleFormat::I32 => {
+                type $t = i32;
+                $body
+            }
+            SampleFormat::I64 => {
+                type $t = i64;
+                $body
+            }
+            SampleFormat::U8 => {
+                type $t = u8;
+                $body
+            }
+            SampleFormat::U16 => {
+                type $t = u16;
+                $body
+            }
+            SampleFormat::U24 => {
+                type $t = cpal::U24;
+                $body
+            }
+            SampleFormat::U32 => {
+                type $t = u32;
+                $body
+            }
+            SampleFormat::U64 => {
+                type $t = u64;
+                $body
+            }
+            SampleFormat::F32 => {
+                type $t = f32;
+                $body
+            }
+            SampleFormat::F64 => {
+                type $t = f64;
+                $body
+            }
+            other => Err(anyhow!(
+                "Formato de muestra no soportado por el dispositivo: {other:?}"
+            )),
+        }
+    };
+}
+
+/// Rellena `data` con las muestras `f32` pendientes convertidas al tipo `T` del
+/// dispositivo y avanza `idx`; lo que sobra se rellena con el silencio de `T`
+/// (`EQUILIBRIUM`, que no es 0 en los formatos sin signo).
+fn fill_converted<T: SizedSample + FromSample<f32>>(
+    data: &mut [T],
+    samples: &[f32],
+    idx: &mut usize,
+) {
+    for out in data.iter_mut() {
+        if *idx < samples.len() {
+            *out = T::from_sample(samples[*idx].clamp(-1.0, 1.0));
+            *idx += 1;
+        } else {
+            *out = T::EQUILIBRIUM;
+        }
+    }
+}
+
+/// Construye el stream de salida para el formato de muestra `T` del dispositivo,
+/// convirtiendo cada `f32` normalizado con `T::from_sample`.
+fn build_playback_stream<T: SizedSample + FromSample<f32> + 'static>(
+    device: &cpal::Device,
+    config: StreamConfig,
+    samples: Vec<f32>,
+    sample_idx: Arc<Mutex<usize>>,
+    failed: &Arc<AtomicBool>,
+) -> Result<cpal::Stream> {
+    Ok(device.build_output_stream(
+        config,
+        move |data: &mut [T], _| {
+            let mut idx = acquire_lock(&sample_idx, "índice de reproducción");
+            fill_converted(data, &samples, &mut idx);
+        },
+        stream_error_callback("Error en stream de audio", failed),
+        None,
+    )?)
+}
+
+/// Construye el stream de entrada para el formato de muestra `T` del
+/// dispositivo, acumulando las muestras normalizadas a `f32`.
+fn build_capture_stream<T: SizedSample + 'static>(
+    device: &cpal::Device,
+    config: StreamConfig,
+    recorded: Arc<Mutex<Vec<f32>>>,
+    failed: &Arc<AtomicBool>,
+) -> Result<cpal::Stream>
+where
+    f32: FromSample<T>,
+{
+    Ok(device.build_input_stream(
+        config,
+        move |data: &[T], _| {
+            let mut buffer = acquire_lock(&recorded, "buffer de grabación");
+            buffer.extend(data.iter().map(|&s| f32::from_sample(s)));
+        },
+        stream_error_callback("Error en captura de micrófono", failed),
+        None,
+    )?)
 }
 
 /// Intervalo con el que las esperas comprueban si el stream falló.
@@ -189,7 +311,9 @@ impl AudioService {
 
     /// Listar dispositivos de salida de audio con estimación de latencia. Un fallo
     /// del host al enumerar es un error; un nombre o una latencia que el backend
-    /// no expone quedan como `None`.
+    /// no expone quedan como `None`. Con `cpal` 0.18 enumerar salidas ya no abre
+    /// la entrada de audio (micrófono), que en macOS sin sesión de usuario dejaba
+    /// la consulta esperando para siempre a `coreaudiod`.
     pub fn list_output_devices(&self) -> Result<Vec<AudioDevice>> {
         let output_devices = self
             .host
@@ -199,11 +323,11 @@ impl AudioService {
             .enumerate()
             .map(|(idx, dev)| AudioDevice {
                 id: idx,
-                name: dev.name().ok(),
+                name: dev.description().ok().map(|d| d.name().to_owned()),
                 latency_ms: dev
                     .default_output_config()
                     .ok()
-                    .and_then(|c| estimate_latency_ms(c.buffer_size(), c.sample_rate().0)),
+                    .and_then(|c| estimate_latency_ms(c.buffer_size(), c.sample_rate())),
             })
             .collect())
     }
@@ -222,11 +346,11 @@ impl AudioService {
         // El dispositivo puede no soportar la tasa del WAV (p. ej. 24 kHz del
         // TTS); se remuestrea a la tasa nativa del dispositivo por defecto.
         let dev_config = device.default_output_config()?;
-        let device_rate = dev_config.sample_rate().0;
+        let device_rate = dev_config.sample_rate();
 
         let config = StreamConfig {
             channels: spec.channels,
-            sample_rate: cpal::SampleRate(device_rate),
+            sample_rate: device_rate,
             buffer_size: cpal::BufferSize::Default,
         };
 
@@ -241,68 +365,15 @@ impl AudioService {
         let sample_idx = Arc::new(Mutex::new(0usize));
         let stream_failed = Arc::new(AtomicBool::new(false));
 
-        let stream = match dev_config.sample_format() {
-            SampleFormat::F32 => {
-                let idx_arc = sample_idx.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [f32], _| {
-                        let mut idx = acquire_lock(&idx_arc, "índice de reproducción");
-                        for sample in data.iter_mut() {
-                            if *idx < samples.len() {
-                                *sample = samples[*idx];
-                                *idx += 1;
-                            } else {
-                                *sample = 0.0;
-                            }
-                        }
-                    },
-                    stream_error_callback("Error en stream de audio", &stream_failed),
-                    None,
-                )?
-            }
-            SampleFormat::I16 => {
-                let idx_arc = sample_idx.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [i16], _| {
-                        let mut idx = acquire_lock(&idx_arc, "índice de reproducción");
-                        for sample in data.iter_mut() {
-                            if *idx < samples.len() {
-                                *sample = (samples[*idx].clamp(-1.0, 1.0) * 32767.0) as i16;
-                                *idx += 1;
-                            } else {
-                                *sample = 0;
-                            }
-                        }
-                    },
-                    stream_error_callback("Error en stream de audio", &stream_failed),
-                    None,
-                )?
-            }
-            SampleFormat::U16 => {
-                let idx_arc = sample_idx.clone();
-                device.build_output_stream(
-                    &config,
-                    move |data: &mut [u16], _| {
-                        let mut idx = acquire_lock(&idx_arc, "índice de reproducción");
-                        for sample in data.iter_mut() {
-                            if *idx < samples.len() {
-                                *sample = (((samples[*idx].clamp(-1.0, 1.0) + 1.0) * 0.5)
-                                    * u16::MAX as f32)
-                                    as u16;
-                                *idx += 1;
-                            } else {
-                                *sample = u16::MAX / 2;
-                            }
-                        }
-                    },
-                    stream_error_callback("Error en stream de audio", &stream_failed),
-                    None,
-                )?
-            }
-            _ => return Err(anyhow!("Formato de muestra no soportado para reproducción")),
-        };
+        let stream = with_sample_type!(dev_config.sample_format(), T => {
+            build_playback_stream::<T>(
+                &device,
+                config,
+                samples,
+                sample_idx.clone(),
+                &stream_failed,
+            )
+        })?;
 
         stream.play()?;
 
@@ -324,54 +395,20 @@ impl AudioService {
             .ok_or_else(|| anyhow!("No hay dispositivo de entrada predeterminado"))?;
 
         let config = device.default_input_config()?;
-        let sample_rate = config.sample_rate().0;
+        let sample_rate = config.sample_rate();
         let channels = config.channels() as usize;
 
         let recorded_samples = Arc::new(Mutex::new(Vec::<f32>::new()));
         let stream_failed = Arc::new(AtomicBool::new(false));
 
-        let stream = match config.sample_format() {
-            SampleFormat::F32 => {
-                let rec = recorded_samples.clone();
-                device.build_input_stream(
-                    &config.config(),
-                    move |data: &[f32], _| {
-                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
-                        buffer.extend_from_slice(data);
-                    },
-                    stream_error_callback("Error en captura de micrófono", &stream_failed),
-                    None,
-                )?
-            }
-            SampleFormat::I16 => {
-                let rec = recorded_samples.clone();
-                device.build_input_stream(
-                    &config.config(),
-                    move |data: &[i16], _| {
-                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
-                        buffer.extend(data.iter().map(|&s| s as f32 / 32768.0));
-                    },
-                    stream_error_callback("Error en captura de micrófono", &stream_failed),
-                    None,
-                )?
-            }
-            SampleFormat::U16 => {
-                let rec = recorded_samples.clone();
-                device.build_input_stream(
-                    &config.config(),
-                    move |data: &[u16], _| {
-                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
-                        buffer.extend(
-                            data.iter()
-                                .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
-                        );
-                    },
-                    stream_error_callback("Error en captura de micrófono", &stream_failed),
-                    None,
-                )?
-            }
-            _ => return Err(anyhow!("Formato de muestra no soportado para captura")),
-        };
+        let stream = with_sample_type!(config.sample_format(), T => {
+            build_capture_stream::<T>(
+                &device,
+                config.config(),
+                recorded_samples.clone(),
+                &stream_failed,
+            )
+        })?;
 
         stream.play()?;
         wait_checking_stream(
@@ -402,54 +439,20 @@ impl AudioService {
             .ok_or_else(|| anyhow!("No hay dispositivo de entrada predeterminado"))?;
 
         let config = device.default_input_config()?;
-        let sample_rate = config.sample_rate().0;
+        let sample_rate = config.sample_rate();
         let channels = config.channels() as usize;
 
         let recorded_samples = Arc::new(Mutex::new(Vec::<f32>::new()));
         let stream_failed = Arc::new(AtomicBool::new(false));
 
-        let stream = match config.sample_format() {
-            SampleFormat::F32 => {
-                let rec = recorded_samples.clone();
-                device.build_input_stream(
-                    &config.config(),
-                    move |data: &[f32], _| {
-                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
-                        buffer.extend_from_slice(data);
-                    },
-                    stream_error_callback("Error en captura de micrófono", &stream_failed),
-                    None,
-                )?
-            }
-            SampleFormat::I16 => {
-                let rec = recorded_samples.clone();
-                device.build_input_stream(
-                    &config.config(),
-                    move |data: &[i16], _| {
-                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
-                        buffer.extend(data.iter().map(|&s| s as f32 / 32768.0));
-                    },
-                    stream_error_callback("Error en captura de micrófono", &stream_failed),
-                    None,
-                )?
-            }
-            SampleFormat::U16 => {
-                let rec = recorded_samples.clone();
-                device.build_input_stream(
-                    &config.config(),
-                    move |data: &[u16], _| {
-                        let mut buffer = acquire_lock(&rec, "buffer de grabación");
-                        buffer.extend(
-                            data.iter()
-                                .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0),
-                        );
-                    },
-                    stream_error_callback("Error en captura de micrófono", &stream_failed),
-                    None,
-                )?
-            }
-            _ => return Err(anyhow!("Formato de muestra no soportado para captura")),
-        };
+        let stream = with_sample_type!(config.sample_format(), T => {
+            build_capture_stream::<T>(
+                &device,
+                config.config(),
+                recorded_samples.clone(),
+                &stream_failed,
+            )
+        })?;
 
         stream.play()?;
         eprintln!("Grabando… pulsa Enter para detener.");
@@ -1124,6 +1127,32 @@ mod tests {
                 "el error debe nombrar la variable: {err}"
             );
         }
+    }
+
+    /// La conversión genérica normaliza y rellena con el silencio de cada
+    /// formato, sin dispositivo: el equilibrio de los sin signo no es 0.
+    #[test]
+    fn test_fill_converted_converts_and_pads_with_equilibrium() {
+        let samples = [0.0f32, 1.0, -1.0, 2.0];
+        let mut idx = 0usize;
+        let mut out = [7i16; 6];
+        crate::fill_converted(&mut out, &samples, &mut idx);
+        assert_eq!(idx, 4);
+        assert_eq!(&out[..2], &[0, i16::MAX]);
+        assert_eq!(out[2], i16::MIN);
+        assert_eq!(out[3], i16::MAX, "2.0 se recorta a 1.0");
+        assert_eq!(&out[4..], &[0, 0]);
+
+        let mut idx = 0usize;
+        let mut out = [0u16; 5];
+        crate::fill_converted(&mut out, &samples[..1], &mut idx);
+        assert_eq!(out[0], 32768);
+        assert_eq!(&out[1..], &[32768; 4]);
+
+        let mut idx = 0usize;
+        let mut out = [1i32; 3];
+        crate::fill_converted(&mut out, &samples[..2], &mut idx);
+        assert_eq!(&out, &[0, i32::MAX, 0]);
     }
 
     #[test]
