@@ -158,13 +158,23 @@ y no declara más librerías que las del sistema base:
 
 - **ALSA** se carga en tiempo de ejecución: la copia vendorizada de `alsa-sys`
   (`vendor/alsa-sys-0.4.0`) resuelve cada función con `dlopen`/`dlsym` sobre
-  `libasound.so.2` en el primer uso. Sin ALSA el binario arranca y solo
-  `devices` y las órdenes que reproducen o capturan audio fallan, con un error
-  que nombra la librería.
-- **OpenMP y C++**: `crates/avi-translation/build.rs` sirve `libgomp.a` y
-  `libstdc++.a` del compilador en un directorio de búsqueda propio, de modo que
-  `-lgomp` y `-lstdc++` resuelven a las estáticas. Solo `libonnxruntime.so`, la
-  librería oficial de Microsoft, usa la `libstdc++.so.6` del sistema, con
+  `libasound.so.2` en el primer uso. Antes de crear el host de audio se
+  resuelven todas las funciones de ALSA que llama el crate `alsa` (la lista
+  fija de `vendor/alsa-sys-0.4.0/src/required_symbols.rs`, que el `build.rs`
+  del parche contrasta con los bindings). Sin ALSA, o con una ALSA a la que le
+  falte alguna de esas funciones, el binario arranca y solo `devices` y las
+  órdenes que reproducen o capturan audio fallan, con un error que nombra la
+  librería y, si es el caso, la función ausente.
+- **OpenMP y C++** se piden estáticas en origen: la copia vendorizada de
+  `ct2rs` (`vendor/ct2rs-0.10.0`) emite `static:-bundle=gomp` en Linux, y
+  `.cargo/config.toml` fija `CXXSTDLIB_x86_64_unknown_linux_gnu` y
+  `CXXSTDLIB_aarch64_unknown_linux_gnu` a `static:-bundle=stdc++`, valor que el
+  crate `cc` emite tal cual en cada crate C++ (`cxx`, `sentencepiece-sys`,
+  `esaxx-rs`). rustc pasa ambas entre `-Bstatic` y `-Bdynamic`, de modo que el
+  enlazador solo acepta `libgomp.a` y `libstdc++.a`, que aporta el compilador;
+  sin ellas el enlace falla, y `cargo xtask doctor` comprueba de antemano que
+  `gcc -print-file-name` las encuentra. Solo `libonnxruntime.so`, la librería
+  oficial de Microsoft, usa la `libstdc++.so.6` del sistema, con
   `GLIBCXX_3.4.21` como máximo.
 - El motor TTS (`qwen_tts`) enlaza OpenBLAS y el runtime Fortran que usa su
   LAPACK (`libgfortran` y, en x86_64, `libquadmath`) de forma estática.
@@ -229,7 +239,9 @@ no necesita compilar ni tener presente ONNX Runtime**. Por eso las cuatro
 arquitecturas compilan `--features full` sin ningún paso previo de ONNX Runtime.
 
 En runtime, `avi-stt` carga la librería antes del primer uso de `ort`, una sola
-vez y por ruta: la de `ORT_DYLIB_PATH` si está definida, o la que el bundle trae
+vez y por ruta: la de `ORT_DYLIB_PATH` si está definida, que puede nombrar el
+fichero de la librería o el directorio que la contiene (al que se añade el
+nombre de la librería del sistema), o la que el bundle trae
 en el directorio real del programa (`avi_shared::paths::program_dir()`, que
 resuelve el symlink de `~/.local/bin`). No hay búsqueda de librerías del
 sistema: si la librería falta o no carga, la operación falla con un error que
@@ -238,12 +250,13 @@ nombra la ruta buscada, y `doctor` lo informa en su comprobación
 no hay `rpath` ni variables de entorno que fijar.
 
 Desde el repositorio no hay librería junto a los ejecutables de `target/`, así
-que las pruebas con recursos y `cargo run` con STT necesitan `ORT_DYLIB_PATH`
-apuntando a la librería de `ort-bundle/` (que asegura `cargo xtask bootstrap`),
-por ejemplo en Windows `ORT_DYLIB_PATH=<repo>/ort-bundle/onnxruntime.dll cargo
-test --workspace --features full -- --include-ignored`. `cargo xtask release`
-lo hace por sí mismo: asegura `ort-bundle/` y fija la variable para su gate de
-pruebas con recursos.
+que `.cargo/config.toml` fija en `[env]` `ORT_DYLIB_PATH` al directorio
+`ort-bundle/` de la raíz (que asegura `cargo xtask bootstrap`): las pruebas con
+recursos y `cargo run` con STT la encuentran sin pasos manuales. Ese valor solo
+rige en los procesos que lanza cargo, no se incrusta en el binario distribuido,
+y una `ORT_DYLIB_PATH` exportada explícitamente lo sustituye. `cargo xtask
+release` asegura `ort-bundle/` en la versión fijada y exporta la ruta de su
+librería para su gate de pruebas con recursos.
 
 La batería completa con `--include-ignored` se ejecuta con `-j2` y
 `--test-threads=2` y sin otra carga en la máquina, por ejemplo
@@ -539,7 +552,7 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 | Caché | Qué guarda | Jobs | Clave (se invalida cuando cambia…) |
 |-------|------------|------|------------------------------------|
 | `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_pin` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
-| `target-v5` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58` y de `vendor/hf-hub-1.0.0`. Sin fallback. |
+| `target-v5` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58`, `vendor/hf-hub-1.0.0`, `vendor/alsa-sys-0.4.0` y `vendor/ct2rs-0.10.0`. Sin fallback. |
 | `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (`3G`, que `sccache` lee como 3 GiB, unos 3,2 GB) | los mismos jobs que la caché de `target/`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
 | `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_pin`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
@@ -574,18 +587,20 @@ registry y las cachés del job. La vigila
 
 #### Parches vendorizados en la clave de `target/`
 
-El `Cargo.toml` raíz reemplaza tres crates por copias parcheadas locales
+El `Cargo.toml` raíz reemplaza cuatro crates por copias parcheadas locales
 (`[patch.crates-io]`): `cmake` (`vendor/cmake-0.1.58`), `hf-hub`
-(`vendor/hf-hub-1.0.0`) y `alsa-sys` (`vendor/alsa-sys-0.4.0`). Al ser paquetes locales, cargo los identifica por
+(`vendor/hf-hub-1.0.0`), `alsa-sys` (`vendor/alsa-sys-0.4.0`) y `ct2rs`
+(`vendor/ct2rs-0.10.0`). Al ser paquetes locales, cargo los identifica por
 `mtime`, y el `mtime` nuevo del checkout los marcaría `Dirty` en cada corrida.
 Para `cmake` eso arrastraría la recompilación de toda la cadena nativa que
-depende de él (`aws-lc-sys`, `onednn-src`, `sentencepiece-sys`, `ct2rs`) aunque
-su contenido no hubiera cambiado.
+depende de él (`aws-lc-sys`, `onednn-src`, `sentencepiece-sys`, `ct2rs`), y para
+`ct2rs` la de CTranslate2, aunque su contenido no hubiera cambiado.
 
 Para evitarlo, `cargo_restore_caches` escribe en `.vendor-patches.tree` el tree
-hash git de los tres directorios (`git rev-parse HEAD:vendor/cmake-0.1.58`,
-`git rev-parse HEAD:vendor/hf-hub-1.0.0` y
-`git rev-parse HEAD:vendor/alsa-sys-0.4.0`, una línea por directorio) y lo
+hash git de los cuatro directorios (`git rev-parse HEAD:vendor/cmake-0.1.58`,
+`git rev-parse HEAD:vendor/hf-hub-1.0.0`,
+`git rev-parse HEAD:vendor/alsa-sys-0.4.0` y
+`git rev-parse HEAD:vendor/ct2rs-0.10.0`, una línea por directorio) y lo
 incorpora a la clave de `target/`. Como la clave no tiene fallback, un acierto
 garantiza que `target/` se compiló con el mismo contenido de los parches, y es
 seguro fijarles un `mtime` antiguo (`touch -t 200001010000`) para que cargo los
@@ -670,7 +685,7 @@ costo:
 | Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts-v1` | Solo se recompila el motor TTS en `build-windows-x64`; el resto acierta. |
 | Cambio de los pines de MSYS2, gcc, openblas o make | `msys2-v1` y, con gcc u openblas, `tts-v1` | Reinstalación de MSYS2 y recompilación del motor TTS en `build-windows-x64`. |
 | Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | La caché de `target/` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: 2–5 min por job en Unix y ~11–15 min previstos en windows-x64. |
-| Edición del parche `vendor/cmake-0.1.58` o del parche `vendor/hf-hub-1.0.0`, o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | La caché de `target/`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
+| Edición de un parche vendorizado (`vendor/cmake-0.1.58`, `vendor/hf-hub-1.0.0`, `vendor/alsa-sys-0.4.0` o `vendor/ct2rs-0.10.0`), o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | La caché de `target/`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
 | Cambio de `rust_pin` | `toolchain-v1`, `cargo-v2`, la caché de `target/` y `sccache-v1` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Referencia de `cargo build --release` en frío: `1969 s` en windows-x64, `1569 s` en linux-arm64, `956 s` en linux-x64 y `149 s` en darwin-arm64. |
 
 Causas ajenas al repositorio, que invalidan sin que cambie ningún archivo:

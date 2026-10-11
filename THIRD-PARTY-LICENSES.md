@@ -95,7 +95,13 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
 - **`alsa-sys` vendorizado** (`vendor/alsa-sys-0.4.0`, solo Linux): copia del
   crate `alsa-sys` 0.4.0 bajo **MIT** (`vendor/alsa-sys-0.4.0/LICENSE`),
   modificada para cargar `libasound.so.2` en tiempo de ejecución con `dlopen` en
-  lugar de enlazarla.
+  lugar de enlazarla y para comprobar de antemano que define todas las funciones
+  que usa el crate `alsa` (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`).
+- **`ct2rs` vendorizado** (`vendor/ct2rs-0.10.0`): copia del crate `ct2rs`
+  0.10.0, con las fuentes de CTranslate2 que incluye, bajo **MIT**
+  (`vendor/ct2rs-0.10.0/LICENSE` y `vendor/ct2rs-0.10.0/CTranslate2/LICENSE`),
+  modificada para pedir en Linux el runtime OpenMP de GNU (`libgomp`) como
+  librería estática en lugar de dinámica.
 
 ---
 

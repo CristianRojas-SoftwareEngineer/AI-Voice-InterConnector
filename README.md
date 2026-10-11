@@ -147,7 +147,7 @@ Hasta provisionar, `speech synthesize`/`daemon start` fallan con exit 4 remitien
 
 ### Compilar desde código (Rust)
 
-Requisitos: Rust 1.96.0, `cmake`, `pkg-config` y `libclang-dev` solo con `--features native-translation/full` (traducción); el motor TTS en Linux necesita además `make`, `gcc`, `libopenblas-dev` y `libgfortran-<versión de gcc>-dev`, porque enlaza OpenBLAS estático. La lista completa por host la da `cargo xtask doctor`. Ver `docs/BUILD.md`.
+Requisitos: Rust 1.96.0, `cmake` y `libclang-dev` solo con `--features native-translation/full` (traducción); en Linux, el binario enlaza `libgomp` y `libstdc++` estáticas (`libgcc-<versión de gcc>-dev` y `libstdc++-<versión de gcc>-dev`), y el motor TTS necesita además `make`, `gcc`, `libopenblas-dev` y `libgfortran-<versión de gcc>-dev`, porque enlaza OpenBLAS estático. La lista completa por host la da `cargo xtask doctor`. Ver `docs/BUILD.md`.
 
 ```bash
 cargo fmt --all --check
