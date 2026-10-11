@@ -178,9 +178,10 @@ pub fn platform() -> &'static dyn Quarantine {
 pub struct Xattr;
 
 /// Ruta fija del `xattr` del sistema: un `xattr` puesto antes en el `PATH` no lo
-/// suplanta, y si falta la operación falla.
+/// suplanta, y si falta la operación falla. Es pública para que la puerta de
+/// macOS compruebe exactamente la herramienta que usa el producto.
 #[cfg(target_os = "macos")]
-const XATTR: &str = "/usr/bin/xattr";
+pub const XATTR: &str = "/usr/bin/xattr";
 
 #[cfg(target_os = "macos")]
 impl Quarantine for Xattr {

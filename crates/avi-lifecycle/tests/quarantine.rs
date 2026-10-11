@@ -924,16 +924,21 @@ fn quarantine_strip_survives_a_real_directory_loop() {
     );
 }
 
-/// La premisa de la puerta de macOS: `xattr` existe y responde. Si no, la
-/// instalación sin cuarentena no se puede demostrar, y hay que saberlo en la puerta y no
-/// en el release.
+/// La premisa de la puerta de macOS: el `xattr` que usa el producto, en su ruta
+/// fija, existe y responde. Si no, la instalación sin cuarentena no se puede
+/// demostrar, y hay que saberlo en la puerta y no en el release.
 #[cfg(target_os = "macos")]
 #[test]
 fn quarantine_gate_needs_xattr() {
-    let output = std::process::Command::new("xattr")
+    let output = std::process::Command::new(quarantine::XATTR)
         .arg("-h")
         .output()
-        .unwrap_or_else(|error| panic!("la puerta de macOS necesita `xattr` en el PATH: {error}"));
+        .unwrap_or_else(|error| {
+            panic!(
+                "la puerta de macOS necesita `{}`: {error}",
+                quarantine::XATTR
+            )
+        });
     assert!(
         output.status.success(),
         "`xattr -h` debe responder con éxito; salió con {:?}",
