@@ -438,7 +438,10 @@ fn write_journal(program_dir: &Path, journal: &Journal) -> anyhow::Result<()> {
     match std::fs::rename(&temp, &dest) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = std::fs::remove_file(&temp);
+            avi_shared::best_effort(
+                std::fs::remove_file(&temp),
+                format_args!("no se pudo borrar el temporal {}", temp.display()),
+            );
             Err(e.into())
         }
     }

@@ -14,6 +14,8 @@
 //! fuente única y este crate las reexporta para que el motor tenga una
 //! sola forma de nombrarlas.
 
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 pub mod channel;
 pub mod cleanup;
 pub mod confirm;

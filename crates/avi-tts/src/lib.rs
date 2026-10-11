@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -1348,7 +1350,15 @@ pub mod resident {
                 // Un motor que no llegó a estar sano se termina y se recoge aquí:
                 // soltar el `Child` sin `wait` dejaría un zombi en Unix, que
                 // seguiría pareciendo vivo para una comprobación por PID.
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "el motor puede haber muerto ya; la recolección siguiente cubre ambos casos"
+                )]
                 let _ = child.kill();
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "el desenlace ya es el error del arranque; la espera solo recolecta"
+                )]
                 let _ = child.wait();
                 registration.clear(pid);
                 return Err(e);
@@ -1391,6 +1401,10 @@ pub mod resident {
                 // a medio `spawn` (sin `Child` que recolectar): por eso
                 // `run_supervised` reclama además el árbol propio previo con
                 // deadline y verificación antes del siguiente `bind`.
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "en `drop` no hay a quién devolver el error; la espera acotada mata y recolecta"
+                )]
                 let _ = child.wait_timeout(super::SHUTDOWN_WAIT);
             }
         }

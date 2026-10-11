@@ -283,11 +283,19 @@ pub async fn stop(
 
     // 1) Graceful acotado si responde (no hereda el timeout largo del cliente).
     if probe(&addr).await {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "el apagado ordenado es un intento: su fallo o su vencimiento lo resuelve el árbol por PID y lo juzga la verificación"
+        )]
         let _ = tokio::time::timeout(SHUTDOWN_TIMEOUT, post_shutdown(&addr)).await;
         let remaining = STOP_DEADLINE_GLOBAL
             .checked_sub(start.elapsed())
             .unwrap_or(Duration::from_millis(500));
         let wait = remaining.min(Duration::from_secs(3));
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "la espera solo da tiempo al apagado; si vence, decide la verificación"
+        )]
         let _ = tokio::time::timeout(wait, wait_health_down(&addr, wait)).await;
     }
 

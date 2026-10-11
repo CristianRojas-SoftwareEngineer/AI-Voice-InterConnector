@@ -300,7 +300,13 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
         })?;
     }
     let temp = link.with_extension(format!("avi-link-{}", std::process::id()));
-    let _ = std::fs::remove_file(&temp);
+    avi_shared::best_effort(
+        std::fs::remove_file(&temp),
+        format_args!(
+            "no se pudo borrar el enlace temporal previo {}",
+            temp.display()
+        ),
+    );
     std::os::unix::fs::symlink(program_exe, &temp).map_err(|e| {
         LifecycleError::new(
             "path_conflict",
@@ -315,13 +321,19 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
     // que el conflicto que evita.
     if let Ok(meta) = std::fs::symlink_metadata(link) {
         if meta.file_type().is_symlink() {
-            let _ = std::fs::remove_file(link);
+            avi_shared::best_effort(
+                std::fs::remove_file(link),
+                format_args!("no se pudo retirar el enlace previo {}", link.display()),
+            );
         }
     }
     match std::fs::rename(&temp, link) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = std::fs::remove_file(&temp);
+            avi_shared::best_effort(
+                std::fs::remove_file(&temp),
+                format_args!("no se pudo borrar el enlace temporal {}", temp.display()),
+            );
             Err(LifecycleError::new(
                 "path_conflict",
                 format!("no se pudo poner el enlace en {}: {e}", link.display()),

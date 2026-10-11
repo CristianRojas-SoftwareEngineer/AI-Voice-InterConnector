@@ -46,8 +46,19 @@ pub fn schedule_clean_removal(
         .as_millis();
     let copy = std::env::temp_dir().join(format!("avi-cleaner-{}-{stamp}.exe", std::process::id()));
     // La copia a medio escribir también es un resto: si falla, se retira.
+    // Toda salida con error retira la copia; su fallo se avisa sin tapar el
+    // error de la operación.
+    let discard_copy = || {
+        avi_shared::best_effort(
+            std::fs::remove_file(&copy),
+            format_args!(
+                "no se pudo borrar la copia del limpiador {}",
+                copy.display()
+            ),
+        );
+    };
     if let Err(e) = std::fs::copy(std::env::current_exe()?, &copy) {
-        let _ = std::fs::remove_file(&copy);
+        discard_copy();
         return Err(e.into());
     }
 
@@ -66,7 +77,7 @@ pub fn schedule_clean_removal(
             if handle == 0 {
                 let code = GetLastError();
                 if crate::pid_alive_exact(wait_pid) {
-                    let _ = std::fs::remove_file(&copy);
+                    discard_copy();
                     anyhow::bail!(
                         "no se pudo abrir el proceso {wait_pid} para esperar su muerte (código {code}) y sigue vivo"
                     );
@@ -83,7 +94,7 @@ pub fn schedule_clean_removal(
         // ámbito, también si el lanzamiento del limpiador falla.
         let _inherit_guard = if wait_handle != 0 {
             if let Err(e) = mark_inheritable(wait_handle) {
-                let _ = std::fs::remove_file(&copy);
+                discard_copy();
                 anyhow::bail!("no se pudo marcar como heredable el handle de espera: {e}");
             }
             Some(InheritFlagGuard::new(wait_handle))
@@ -141,7 +152,7 @@ pub fn schedule_clean_removal(
         let (process, thread) = match launched {
             Ok(pair) => pair,
             Err(code) => {
-                let _ = std::fs::remove_file(&copy);
+                discard_copy();
                 anyhow::bail!("no se pudo lanzar el limpiador (código {code})");
             }
         };
@@ -160,7 +171,7 @@ pub fn schedule_clean_removal(
             let mut code = 1u32;
             GetExitCodeProcess(process, &mut code);
             if code != 0 {
-                let _ = std::fs::remove_file(&copy);
+                discard_copy();
                 anyhow::bail!("el limpiador terminó con fallo al arrancar");
             }
         }

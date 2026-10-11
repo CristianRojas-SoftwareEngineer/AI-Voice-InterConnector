@@ -59,7 +59,10 @@ pub fn write_pid_file(data_dir: &Path, file: &PidFile) -> anyhow::Result<()> {
     match std::fs::rename(&temp, &path) {
         Ok(()) => Ok(()),
         Err(e) => {
-            let _ = std::fs::remove_file(&temp);
+            avi_shared::best_effort(
+                std::fs::remove_file(&temp),
+                format_args!("no se pudo borrar el temporal {}", temp.display()),
+            );
             Err(e.into())
         }
     }

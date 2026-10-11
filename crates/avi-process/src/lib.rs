@@ -4,6 +4,8 @@
 //! de rutas. Es la definición única para el binario y para `xtask`; ningún otro
 //! crate escribe flags como literales ni reimplementa el borrado diferido.
 
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 // `CREATE_NO_WINDOW`: el proceso recibe una consola propia oculta que heredan
 // sus hijos de consola, que así no abren ventana.
 // `DETACHED_PROCESS`: el proceso queda sin consola; solo sirve para procesos

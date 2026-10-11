@@ -5,6 +5,8 @@
 //! ella el crate es una capa vacía y `cargo test`/`cargo llvm-cov` no pagan el
 //! costo de compilar ONNX Runtime.
 
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 #[cfg(feature = "native-stt")]
 pub mod parakeet;
 #[cfg(feature = "native-stt")]

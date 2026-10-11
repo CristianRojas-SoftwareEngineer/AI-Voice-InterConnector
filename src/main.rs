@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 use avi_audio as audio;
 // El trait STT y el motor real solo entran en scope con `native-stt` (off por
 // defecto); sin el feature, los subcomandos de transcripción devuelven un error
@@ -1518,6 +1520,10 @@ where
             "Opciones: [1] mantener (reproducir de nuevo)  [2] guardar  [3] repetir (nueva síntesis)  [4] descartar"
         );
         eprint!("Opción [1-4]: ");
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "si stderr no admite el vaciado, la lectura de la opción sigue igual"
+        )]
         let _ = std::io::stderr().flush();
 
         let mut line = String::new();
@@ -2817,6 +2823,10 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) -> Result<(), CliEr
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     // 1) Graceful breve si el probe responde (no hereda el techo `REQUEST_FAILSAFE` del cliente HTTP).
     if probe_health(client, &client_addr).await {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "el apagado ordenado es un intento: su fallo o su vencimiento lo resuelve el árbol por PID"
+        )]
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(1500),
             client
@@ -2828,6 +2838,10 @@ async fn reclaim_degraded_residual(client: &reqwest::Client) -> Result<(), CliEr
             .checked_sub(start.elapsed())
             .unwrap_or(std::time::Duration::from_millis(500));
         let wait = std::cmp::min(remaining, std::time::Duration::from_secs(3));
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "la espera solo da tiempo al apagado; si vence, sigue el árbol por PID"
+        )]
         let _ = tokio::time::timeout(wait, wait_health_down(client, wait)).await;
     }
     // 2) Árbol preciso por PID con guarda anti-auto-muerte (imagen compartida).
@@ -3289,7 +3303,10 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             )
             .await;
             if let Err(failure) = lifecycle::daemon_stop::require_stopped(&daemon) {
-                let _ = std::fs::remove_dir_all(&staged.staging);
+                avi_shared::best_effort(
+                    std::fs::remove_dir_all(&staged.staging),
+                    format_args!("no se pudo borrar el staging {}", staged.staging.display()),
+                );
                 return Err(lifecycle_error_to_cli(failure.into()));
             }
 

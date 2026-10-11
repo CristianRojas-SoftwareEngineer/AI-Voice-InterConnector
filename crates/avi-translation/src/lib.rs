@@ -6,6 +6,8 @@
 //! SentencePiece embebido + token `</s>` manual, sin `sacremoses` ni
 //! `MarianTokenizer`.
 
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 // Estos símbolos solo los consume el motor real (`Ct2TranslationEngine` y
 // `translate`), gateado tras `native-translation`; sin el feature quedarían sin
 // uso, por eso el import se gatea junto con ellos.

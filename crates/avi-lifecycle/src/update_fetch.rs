@@ -464,6 +464,10 @@ fn hex_sha256(bytes: &[u8]) -> String {
     let digest = sha2::Sha256::digest(bytes);
     let mut out = String::with_capacity(64);
     for byte in digest {
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "escribir en un String no falla"
+        )]
         let _ = write!(out, "{byte:02x}");
     }
     out

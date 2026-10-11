@@ -94,7 +94,10 @@ pub fn rename_log_to_pid(path: &Path, family: &str, pid: u32) -> std::io::Result
         .create_new(true)
         .open(&target)?;
     if let Err(e) = std::fs::rename(path, &target) {
-        let _ = std::fs::remove_file(&target);
+        crate::best_effort(
+            std::fs::remove_file(&target),
+            format_args!("no se pudo borrar el marcador {}", target.display()),
+        );
         return Err(e);
     }
     Ok(target)
@@ -143,7 +146,11 @@ fn prune(dir: &Path, family: &str, keep: &Path, pid_alive: &dyn Fn(u32) -> bool)
     // El log recién creado cuenta como uno de los conservados.
     let excess = logs.len().saturating_sub(LOG_RETENTION - 1);
     for (_, name) in logs.into_iter().take(excess) {
-        let _ = std::fs::remove_file(dir.join(name));
+        let path = dir.join(name);
+        crate::best_effort(
+            std::fs::remove_file(&path),
+            format_args!("no se pudo podar el log {}", path.display()),
+        );
     }
 }
 

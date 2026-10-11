@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 use anyhow::{anyhow, Context, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, StreamConfig};
@@ -460,7 +462,10 @@ impl AudioService {
         std::thread::spawn(move || {
             let mut line = String::new();
             let read = std::io::stdin().read_line(&mut line).map(|_| ());
-            // Si el receptor ya terminó (límite o fallo), nadie espera el mensaje.
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "si el receptor ya terminó (límite o fallo), nadie espera el mensaje"
+            )]
             let _ = tx.send(read);
         });
 

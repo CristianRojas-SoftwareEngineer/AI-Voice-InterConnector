@@ -224,6 +224,10 @@ impl RestrictedChild {
                 return Ok(Some(status));
             }
             if start.elapsed() >= timeout {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "el hijo puede haber terminado entre el sondeo y la señal; la recolección siguiente cubre ambos casos"
+                )]
                 let _ = self.kill();
                 // Recolecta tras la muerte con su propio plazo acotado: el
                 // hijo ya está muerto, solo falta cosechar su estado para no

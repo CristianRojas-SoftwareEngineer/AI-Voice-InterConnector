@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 pub mod engine;
 pub mod exit_codes;
 pub mod json_emitter;

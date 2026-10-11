@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -315,7 +317,10 @@ impl VoiceStore {
             name.to_lowercase(),
             std::process::id()
         ));
-        let _ = std::fs::remove_dir_all(&staging);
+        avi_shared::best_effort(
+            std::fs::remove_dir_all(&staging),
+            format_args!("no se pudo borrar el staging previo {}", staging.display()),
+        );
         std::fs::create_dir_all(&staging)?;
         let published = std::fs::copy(src, staging.join("reference.qvoice"))
             .map_err(anyhow::Error::from)
@@ -324,7 +329,10 @@ impl VoiceStore {
                 std::fs::rename(&staging, &dir).map_err(anyhow::Error::from)
             });
         if let Err(e) = published {
-            let _ = std::fs::remove_dir_all(&staging);
+            avi_shared::best_effort(
+                std::fs::remove_dir_all(&staging),
+                format_args!("no se pudo borrar el staging {}", staging.display()),
+            );
             return Err(e);
         }
         Ok(dest)

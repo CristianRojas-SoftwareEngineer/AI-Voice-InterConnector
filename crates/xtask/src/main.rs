@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 use anyhow::{anyhow, Result};
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use regex::Regex;

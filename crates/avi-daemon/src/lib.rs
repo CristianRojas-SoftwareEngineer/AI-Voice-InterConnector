@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
+
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, State},
@@ -1310,6 +1312,10 @@ async fn voices_clone_handler(
         let warm_state = state.clone();
         let warm_name = name.clone();
         tokio::task::spawn_blocking(move || {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "la precarga registra su fallo en el estado de calentamiento del daemon"
+            )]
             let _ = warm_voice_engine(&warm_state, &warm_name);
         });
         emit_ndjson(
