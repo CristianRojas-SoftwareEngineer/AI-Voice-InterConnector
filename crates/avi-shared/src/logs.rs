@@ -69,6 +69,11 @@ fn create_log_at_with(
 /// familia o un renombrado fallido son errores: devolver la ruta original haría
 /// pasar el log por el del hijo, y la poda lo trataría como el de un proceso
 /// distinto del que lo escribe.
+///
+/// El renombrado nunca pisa un fichero: `fs::rename` reemplaza el destino en
+/// ambas plataformas, así que antes se reserva el nombre creándolo con
+/// `create_new`. Un destino que ya existe es un error (`AlreadyExists`) y queda
+/// intacto; si el renombrado falla tras la reserva, el marcador se retira.
 pub fn rename_log_to_pid(path: &Path, family: &str, pid: u32) -> std::io::Result<PathBuf> {
     let ms = path
         .file_name()
@@ -84,7 +89,14 @@ pub fn rename_log_to_pid(path: &Path, family: &str, pid: u32) -> std::io::Result
         })?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let target = dir.join(format!("{family}_{pid}_{ms}.log"));
-    std::fs::rename(path, &target)?;
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&target)?;
+    if let Err(e) = std::fs::rename(path, &target) {
+        let _ = std::fs::remove_file(&target);
+        return Err(e);
+    }
     Ok(target)
 }
 
@@ -336,6 +348,26 @@ mod tests {
         let missing = tmp.path().join("daemon_1_77.log");
         let err = rename_log_to_pid(&missing, "daemon", 555).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(
+            !tmp.path().join("daemon_555_77.log").exists(),
+            "el marcador reservado se retira"
+        );
+    }
+
+    /// Un destino que ya existe no se pisa: el renombrado falla y tanto el
+    /// fichero existente como el log de origen quedan intactos.
+    #[test]
+    fn rename_log_to_pid_never_overwrites_the_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let source = dir.join("daemon_1_77.log");
+        let taken = dir.join("daemon_555_77.log");
+        std::fs::write(&source, "origen").unwrap();
+        std::fs::write(&taken, "ajeno").unwrap();
+        let err = rename_log_to_pid(&source, "daemon", 555).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read_to_string(&taken).unwrap(), "ajeno");
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "origen");
     }
 
     fn log_name(pid: u32, ms: u128) -> String {
