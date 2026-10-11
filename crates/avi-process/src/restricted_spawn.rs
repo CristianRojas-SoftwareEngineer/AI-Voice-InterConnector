@@ -514,17 +514,21 @@ impl ErrorModeGuard {
     /// Suprime los diálogos de error del sistema en este hilo (fallos
     /// críticos, GPF y cajas de archivo) y retiene el modo previo para
     /// restaurarlo al soltarse.
+    /// El modo es el del hilo y no el del proceso: con el del proceso, dos
+    /// lanzamientos concurrentes se cruzan al guardar y restaurar, y el modo
+    /// suprimido queda fijado para todo el proceso.
     fn suppress_system_ui() -> Self {
         use windows_sys::Win32::System::Diagnostics::Debug::{
-            GetErrorMode, SetErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
+            GetThreadErrorMode, SetThreadErrorMode, SEM_FAILCRITICALERRORS, SEM_NOGPFAULTERRORBOX,
             SEM_NOOPENFILEERRORBOX,
         };
-        // SAFETY: ambas consultan y fijan el modo de error del propio hilo,
-        // sin punteros ni estado compartido.
-        let previous = unsafe { GetErrorMode() };
+        // SAFETY: ambas consultan y fijan el modo de error del propio hilo;
+        // sin puntero de salida, porque el modo previo ya se leyó.
+        let previous = unsafe { GetThreadErrorMode() };
         unsafe {
-            SetErrorMode(
+            SetThreadErrorMode(
                 previous | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX,
+                std::ptr::null_mut(),
             )
         };
         Self { previous }
@@ -534,10 +538,10 @@ impl ErrorModeGuard {
 #[cfg(windows)]
 impl Drop for ErrorModeGuard {
     fn drop(&mut self) {
-        use windows_sys::Win32::System::Diagnostics::Debug::SetErrorMode;
+        use windows_sys::Win32::System::Diagnostics::Debug::SetThreadErrorMode;
         // SAFETY: restaura el modo retenido del propio hilo.
         unsafe {
-            SetErrorMode(self.previous);
+            SetThreadErrorMode(self.previous, std::ptr::null_mut());
         }
     }
 }

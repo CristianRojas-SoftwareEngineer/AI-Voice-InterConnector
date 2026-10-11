@@ -269,9 +269,9 @@ fn wait_timeout_kills_hanging_child() {
 #[cfg(windows)]
 #[test]
 fn error_mode_is_restored_after_success_and_failure() {
-    use windows_sys::Win32::System::Diagnostics::Debug::GetErrorMode;
+    use windows_sys::Win32::System::Diagnostics::Debug::GetThreadErrorMode;
     // SAFETY: solo consulta el modo de error del propio hilo.
-    let before = unsafe { GetErrorMode() };
+    let before = unsafe { GetThreadErrorMode() };
 
     let (program, args) = exit_command(0);
     let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
@@ -283,7 +283,7 @@ fn error_mode_is_restored_after_success_and_failure() {
     assert!(status.success(), "exit 0 debe dar éxito: {status:?}");
     // SAFETY: como arriba.
     assert_eq!(
-        unsafe { GetErrorMode() },
+        unsafe { GetThreadErrorMode() },
         before,
         "el éxito debe restaurar el modo"
     );
@@ -304,7 +304,7 @@ fn error_mode_is_restored_after_success_and_failure() {
     );
     // SAFETY: como arriba.
     assert_eq!(
-        unsafe { GetErrorMode() },
+        unsafe { GetThreadErrorMode() },
         before,
         "el fallo debe restaurar el modo"
     );
