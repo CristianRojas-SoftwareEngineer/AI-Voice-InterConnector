@@ -90,7 +90,7 @@ fn piped_child_sees_eof_when_the_child_handle_is_dropped() {
     );
     let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
     let request = avi_process::RestrictedSpawnRequest {
-        program: PathBuf::from("powershell"),
+        program: powershell(),
         args: vec![String::from("-NoProfile"), String::from("-Command"), script],
         stdin: avi_process::StdinSpec::Piped,
         stderr_file: log_file.try_clone().expect("debe clonar el registro"),
@@ -175,7 +175,7 @@ public static class Probe {
 
     let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
     let request = avi_process::RestrictedSpawnRequest {
-        program: PathBuf::from("powershell"),
+        program: powershell(),
         args: vec![String::from("-NoProfile"), String::from("-Command"), script],
         stdin: avi_process::StdinSpec::Null,
         stderr_file: log_file.try_clone().expect("debe clonar el registro"),
@@ -327,10 +327,44 @@ fn spawn(
     avi_process::spawn_with_allowlist(request).expect("debe lanzar al hijo")
 }
 
+/// El lanzamiento ejecuta exactamente la ruta recibida y no recorre el orden de
+/// búsqueda del sistema: un nombre suelto que el `PATH` sí resolvería no se
+/// lanza, de modo que un ejecutable homónimo en el `PATH` nunca suplanta al
+/// programa resuelto.
+#[cfg(windows)]
+#[test]
+fn bare_program_name_is_not_searched_in_path() {
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let request = avi_process::RestrictedSpawnRequest {
+        program: PathBuf::from("powershell"),
+        args: vec![
+            String::from("-NoProfile"),
+            String::from("-Command"),
+            String::from("exit 0"),
+        ],
+        stdin: avi_process::StdinSpec::Null,
+        stderr_file: log_file.try_clone().expect("debe clonar el registro"),
+        stdout_file: log_file,
+        creation_flags: 0,
+        extra_allowed: Vec::new(),
+    };
+    assert!(
+        avi_process::spawn_with_allowlist(request).is_err(),
+        "un nombre suelto no se busca en el PATH"
+    );
+}
+
+/// PowerShell del sistema por su ruta completa: el lanzamiento restringido
+/// ejecuta exactamente la ruta que recibe y no busca un nombre suelto.
+fn powershell() -> PathBuf {
+    PathBuf::from(std::env::var_os("SystemRoot").expect("Windows define SystemRoot"))
+        .join(r"System32\WindowsPowerShell\v1.0\powershell.exe")
+}
+
 fn exit_command(code: u32) -> (PathBuf, Vec<String>) {
     if cfg!(windows) {
         (
-            PathBuf::from("powershell"),
+            powershell(),
             vec![
                 String::from("-NoProfile"),
                 String::from("-Command"),
@@ -348,7 +382,7 @@ fn exit_command(code: u32) -> (PathBuf, Vec<String>) {
 fn sleep_command(secs: u64) -> (PathBuf, Vec<String>) {
     if cfg!(windows) {
         (
-            PathBuf::from("powershell"),
+            powershell(),
             vec![
                 String::from("-NoProfile"),
                 String::from("-Command"),
@@ -363,7 +397,7 @@ fn sleep_command(secs: u64) -> (PathBuf, Vec<String>) {
 fn echo_command(marker: &str) -> (PathBuf, Vec<String>) {
     if cfg!(windows) {
         (
-            PathBuf::from("powershell"),
+            powershell(),
             vec![
                 String::from("-NoProfile"),
                 String::from("-Command"),

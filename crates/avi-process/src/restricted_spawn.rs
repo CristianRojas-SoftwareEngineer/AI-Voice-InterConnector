@@ -8,7 +8,9 @@
 //! en `pre_exec`.
 
 use std::io;
-use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::path::Path;
+use std::path::PathBuf;
 
 /// Entrada estándar del hijo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -577,6 +579,16 @@ fn launch_process_with_list(
     unsafe {
         let cmdline = build_command_line(program, args);
         let mut cmdline: Vec<u16> = cmdline.encode_utf16().chain([0]).collect();
+        // El programa viaja también como nombre de la aplicación: así el
+        // sistema ejecuta exactamente esa ruta (relativa al directorio actual
+        // si no es absoluta) y nunca recorre su orden de búsqueda, que con
+        // `NoDefaultCurrentDirectoryInExePath` salta el directorio actual y
+        // acaba en el `PATH`, donde un ejecutable homónimo suplantaría al
+        // resuelto. Un programa que no está en esa ruta es un error.
+        let application: Vec<u16> = {
+            use std::os::windows::ffi::OsStrExt;
+            program.as_os_str().encode_wide().chain([0]).collect()
+        };
 
         let mut size = 0usize;
         InitializeProcThreadAttributeList(std::ptr::null_mut(), 1, 0, &mut size);
@@ -612,7 +624,7 @@ fn launch_process_with_list(
 
         let mut info: PROCESS_INFORMATION = std::mem::zeroed();
         let launched = CreateProcessW(
-            std::ptr::null(),
+            application.as_ptr(),
             cmdline.as_mut_ptr(),
             std::ptr::null_mut(),
             std::ptr::null_mut(),

@@ -173,10 +173,14 @@ pub fn platform() -> &'static dyn Quarantine {
 }
 
 /// Atributos extendidos de macOS, con `xattr`, que es la herramienta del sistema que
-/// los gestiona. No hay crate nueva por esto: `xattr` está en el `PATH` de cualquier
-/// macOS con herramientas de línea de comandos, que es la premisa de la puerta.
+/// los gestiona. No hay crate nueva por esto: `xattr` viene con macOS.
 #[cfg(target_os = "macos")]
 pub struct Xattr;
+
+/// Ruta fija del `xattr` del sistema: un `xattr` puesto antes en el `PATH` no lo
+/// suplanta, y si falta la operación falla.
+#[cfg(target_os = "macos")]
+const XATTR: &str = "/usr/bin/xattr";
 
 #[cfg(target_os = "macos")]
 impl Quarantine for Xattr {
@@ -184,7 +188,7 @@ impl Quarantine for Xattr {
         // `xattr -p` devuelve 1 cuando el atributo no está, y ese 1 no es un error: es
         // la respuesta. Por eso se consulta antes de borrar en lugar de interpretar el
         // fallo de `xattr -d` como "no lo tenía".
-        let output = std::process::Command::new("xattr")
+        let output = std::process::Command::new(XATTR)
             .arg("-p")
             .arg(BLOCK_MARKER)
             .arg(path)
@@ -198,7 +202,7 @@ impl Quarantine for Xattr {
         if !self.has(path)? {
             return Ok(false);
         }
-        let output = std::process::Command::new("xattr")
+        let output = std::process::Command::new(XATTR)
             .arg("-d")
             .arg(BLOCK_MARKER)
             .arg(path)
@@ -215,7 +219,7 @@ impl Quarantine for Xattr {
     fn put(&self, path: &Path) -> std::io::Result<()> {
         // El valor es un sello de 16 dígitos hexadecimales, que es lo que pone el
         // navegador; a `xattr` le da igual el contenido, solo la existencia.
-        let output = std::process::Command::new("xattr")
+        let output = std::process::Command::new(XATTR)
             .arg("-w")
             .arg(BLOCK_MARKER)
             .arg("0000-0000-0000-0000")
