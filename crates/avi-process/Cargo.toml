@@ -13,7 +13,8 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Viveza y muerte exactas de PID en Unix: `libc::kill` directo, sin lanzar el
-# ejecutable `kill` externo.
+# ejecutable `kill` externo. En macOS, además, `proc_pidinfo` da la identidad
+# del proceso sin lanzar `ps`.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

@@ -86,49 +86,110 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     }
 }
 
-/// Observa la identidad del proceso con ese PID. `None` si no existe o no se
-/// puede observar.
+/// Observa la identidad del proceso con ese PID. `None` si no existe, es un
+/// zombi o no se puede observar. Se lee del núcleo, sin lanzar herramientas
+/// externas, de modo que funciona en sistemas sin `procps`.
 #[cfg(unix)]
 pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     // Un PID que no cabe en `pid_t` firmado se interpretaría como grupo o
     // difusión en las llamadas del sistema: no es un proceso.
-    if pid == 0 || i32::try_from(pid).is_err() {
+    if pid == 0 || !fits_pid_t(pid) {
         return None;
     }
-    // Una sola invocación de `ps` con `LC_ALL=C`: dos llamadas separadas podrían
-    // observar dos vidas distintas del PID, y sin locale fijo `lstart` cambia de
-    // forma y la identidad no coincidiría con la registrada. `lstart=` y
-    // `comm=` viajan juntos para leer ambas en el mismo resultado. La ruta es
-    // fija: un `ps` puesto antes en el `PATH` no suplanta al del sistema, y si
-    // `/bin/ps` no existe la identidad no se puede observar.
-    let out = run_bounded(
-        std::process::Command::new("/bin/ps")
-            .env("LC_ALL", "C")
-            .args(["-o", "lstart=,comm=", "-p", &pid.to_string()]),
-        EXTERNAL_TOOL_DEADLINE,
-    )?;
-    if !out.status.success() {
-        return None;
+    #[cfg(target_os = "linux")]
+    {
+        observe_linux(pid)
     }
-    let (start, comm) = split_ps_identity(&out.stdout)?;
-    let image = comm.rsplit('/').next()?.to_string();
-    Some(ProcessIdentity { start, image })
+    #[cfg(target_os = "macos")]
+    {
+        observe_macos(pid)
+    }
 }
 
-/// Separa `lstart` y `comm` de la línea de una única invocación de
-/// `ps -o lstart=,comm=`: `lstart` ocupa sus 24 caracteres fijos
-/// (`%a %b %e %H:%M:%S %Y`, p. ej. `Wed Oct  5 12:34:56 2026`) y `comm` es lo
-/// que sigue tras los espacios separadores.
-#[cfg(unix)]
-fn split_ps_identity(stdout: &[u8]) -> Option<(String, String)> {
-    let text = String::from_utf8_lossy(stdout);
-    let line = text.trim();
-    let start = line.get(..24)?;
-    let comm = line.get(24..)?.trim_start();
-    if comm.is_empty() {
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+compile_error!("la identidad de proceso solo está implementada para Linux y macOS");
+
+/// Linux: una sola lectura de `/proc/<pid>/stat` da `comm` y `starttime`
+/// juntos, así que ambos pertenecen a la misma vida del PID. `starttime` cuenta
+/// ticks de reloj desde el arranque del sistema: no depende de la zona horaria
+/// ni del locale y distingue procesos creados en el mismo segundo.
+#[cfg(target_os = "linux")]
+fn observe_linux(pid: u32) -> Option<ProcessIdentity> {
+    let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+    parse_proc_stat(&String::from_utf8_lossy(&stat))
+}
+
+/// Extrae la identidad de una línea de `/proc/<pid>/stat`. `comm` va entre el
+/// primer `(` y el último `)`, porque el propio nombre puede contener espacios
+/// y paréntesis; tras el último `)` siguen campos separados por espacios, el
+/// primero es el estado y el vigésimo, `starttime`. Un zombi (`Z`) o un proceso
+/// muerto (`X`) ya no está vivo y no tiene identidad. Se compila en todos los
+/// hosts para que sus pruebas corran también fuera de Linux.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_proc_stat(stat: &str) -> Option<ProcessIdentity> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    let comm = stat.get(open + 1..close)?;
+    let mut fields = stat.get(close + 1..)?.split_ascii_whitespace();
+    let state = fields.next()?;
+    if state == "Z" || state == "X" {
         return None;
     }
-    Some((start.to_string(), comm.to_string()))
+    let start = fields.nth(18)?;
+    if comm.is_empty() || start.parse::<u64>().is_err() {
+        return None;
+    }
+    Some(ProcessIdentity {
+        start: start.to_string(),
+        image: comm.to_string(),
+    })
+}
+
+/// macOS: `proc_pidinfo(PROC_PIDTBSDINFO)` da en una sola llamada la hora de
+/// creación, con microsegundos, y el nombre del proceso. Una respuesta de tamaño
+/// distinto al de la estructura es un fallo, y un zombi ya no está vivo.
+#[cfg(target_os = "macos")]
+fn observe_macos(pid: u32) -> Option<ProcessIdentity> {
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
+    // SAFETY: el búfer es una `proc_bsdinfo` local del tamaño declarado, el PID
+    // ya está validado como `pid_t` representable y la estructura solo se lee
+    // si el núcleo informa haberla escrito completa.
+    let info = unsafe {
+        let written = libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            info.as_mut_ptr().cast(),
+            size as libc::c_int,
+        );
+        if usize::try_from(written).ok()? != size {
+            return None;
+        }
+        info.assume_init()
+    };
+    if info.pbi_status == libc::SZOMB {
+        return None;
+    }
+    // `pbi_name` admite nombres de hasta 32 bytes; `pbi_comm`, el respaldo del
+    // núcleo cuando no hay nombre largo, se corta en 16.
+    let name: &[libc::c_char] = if info.pbi_name[0] != 0 {
+        &info.pbi_name
+    } else {
+        &info.pbi_comm
+    };
+    let bytes: Vec<u8> = name
+        .iter()
+        .take_while(|&&c| c != 0)
+        .map(|&c| c as u8)
+        .collect();
+    if bytes.is_empty() {
+        return None;
+    }
+    Some(ProcessIdentity {
+        start: format!("{}.{:06}", info.pbi_start_tvsec, info.pbi_start_tvusec),
+        image: String::from_utf8_lossy(&bytes).into_owned(),
+    })
 }
 
 /// Viveza exacta de un PID a nivel de sistema.
@@ -190,15 +251,16 @@ fn fits_pid_t(pid: u32) -> bool {
     i32::try_from(pid).is_ok()
 }
 
-/// Plazo de cada herramienta externa del sistema (`taskkill` en Windows, `ps`
-/// en Unix). Ambas responden en milisegundos; 2 s dejan margen ante un sistema
-/// cargado y caben varias veces dentro del plazo global de 8 s de la parada del
-/// daemon, de modo que una herramienta colgada no lo anula.
+/// Plazo de `taskkill`. Responde en milisegundos; 2 s dejan margen ante un
+/// sistema cargado y caben varias veces dentro del plazo global de 8 s de la
+/// parada del daemon, de modo que una herramienta colgada no lo anula.
+#[cfg(windows)]
 const EXTERNAL_TOOL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Lanza `cmd` sin stdin, con stdout capturado y stderr descartado, y espera
 /// su fin como mucho `deadline`. `None` si no se pudo lanzar o si venció el
 /// plazo, en cuyo caso el hijo ya está muerto y recolectado.
+#[cfg(windows)]
 fn run_bounded(
     cmd: &mut std::process::Command,
     deadline: std::time::Duration,
@@ -213,9 +275,10 @@ fn run_bounded(
 }
 
 /// Espera a `child` como mucho `deadline`, sondeando cada 20 ms. Al vencer lo
-/// mata y lo recolecta: un hijo abandonado seguiría vivo, o como zombi en Unix.
+/// mata y lo recolecta: un hijo abandonado seguiría vivo.
 /// La salida capturada es pequeña (una línea), así que la tubería no se llena
 /// mientras se sondea.
+#[cfg(windows)]
 fn wait_bounded(
     mut child: std::process::Child,
     deadline: std::time::Duration,
@@ -311,6 +374,10 @@ mod tests {
         let second = process_identity(std::process::id()).expect("segunda lectura");
         assert_eq!(first, second);
         assert!(!first.start.is_empty() && !first.image.is_empty());
+        assert!(
+            !first.start.contains(['\n', '\r']) && !first.image.contains(['\n', '\r']),
+            "la identidad no lleva saltos de línea: {first:?}"
+        );
     }
 
     /// El PID 0 y un PID inexistente no tienen identidad.
@@ -369,17 +436,11 @@ mod tests {
 
     /// Un hijo que no termina dentro del plazo se abandona como fallo: la espera
     /// vuelve al vencer, no cuando el hijo acabaría, y el hijo queda muerto.
+    #[cfg(windows)]
     #[test]
     fn bounded_wait_kills_child_on_deadline() {
-        #[cfg(windows)]
         let child = std::process::Command::new("ping")
             .args(["-n", "30", "127.0.0.1"])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("se lanza el hijo");
-        #[cfg(not(windows))]
-        let child = std::process::Command::new("sleep")
-            .arg("30")
             .stdout(std::process::Stdio::piped())
             .spawn()
             .expect("se lanza el hijo");
@@ -396,16 +457,11 @@ mod tests {
     }
 
     /// Un comando que termina dentro del plazo devuelve su salida capturada.
+    #[cfg(windows)]
     #[test]
     fn bounded_run_returns_output_of_fast_command() {
-        #[cfg(windows)]
         let mut cmd = std::process::Command::new("cmd");
-        #[cfg(windows)]
         cmd.args(["/C", "echo avi"]);
-        #[cfg(not(windows))]
-        let mut cmd = std::process::Command::new("echo");
-        #[cfg(not(windows))]
-        cmd.arg("avi");
         let out = run_bounded(&mut cmd, std::time::Duration::from_secs(10))
             .expect("el comando termina dentro del plazo");
         assert!(out.status.success());
@@ -437,5 +493,71 @@ mod tests {
             None,
             "el hijo muerto no tiene identidad"
         );
+    }
+
+    /// Línea de `/proc/<pid>/stat` con `comm` y `starttime` dados: tras el
+    /// último `)` van el estado y 18 campos de relleno antes de `starttime`.
+    fn stat_line(comm: &str, state: &str, starttime: &str) -> String {
+        let filler: Vec<String> = (1..=18).map(|n| n.to_string()).collect();
+        format!(
+            "4242 ({comm}) {state} {} {starttime} 7 8 9",
+            filler.join(" ")
+        )
+    }
+
+    /// Una línea normal da `comm` como imagen y `starttime` como inicio.
+    #[test]
+    fn proc_stat_parses_comm_and_starttime() {
+        let id = parse_proc_stat(&stat_line("bash", "S", "987654")).expect("línea válida");
+        assert_eq!(id.image, "bash");
+        assert_eq!(id.start, "987654");
+    }
+
+    /// `comm` puede contener espacios: se toma completo hasta el último `)`.
+    #[test]
+    fn proc_stat_comm_with_spaces() {
+        let id = parse_proc_stat(&stat_line("tmux: server", "S", "11")).expect("línea válida");
+        assert_eq!(id.image, "tmux: server");
+        assert_eq!(id.start, "11");
+    }
+
+    /// `comm` puede contener paréntesis: el corte es el último `)` de la línea.
+    #[test]
+    fn proc_stat_comm_with_parentheses() {
+        let id = parse_proc_stat(&stat_line("a) b (c", "R", "12")).expect("línea válida");
+        assert_eq!(id.image, "a) b (c");
+        assert_eq!(id.start, "12");
+    }
+
+    /// Una línea sin todos los campos no tiene identidad.
+    #[test]
+    fn proc_stat_truncated_line_has_no_identity() {
+        assert_eq!(parse_proc_stat("4242 (bash) S 1 2 3"), None);
+        assert_eq!(parse_proc_stat("4242 (bash"), None);
+        assert_eq!(parse_proc_stat(""), None);
+    }
+
+    /// Un `starttime` no numérico no es una identidad.
+    #[test]
+    fn proc_stat_non_numeric_starttime_has_no_identity() {
+        assert_eq!(parse_proc_stat(&stat_line("bash", "S", "x12")), None);
+    }
+
+    /// Un zombi o un proceso muerto no tiene identidad.
+    #[test]
+    fn proc_stat_zombie_has_no_identity() {
+        assert_eq!(parse_proc_stat(&stat_line("bash", "Z", "12")), None);
+        assert_eq!(parse_proc_stat(&stat_line("bash", "X", "12")), None);
+    }
+
+    /// En Linux, la identidad propia coincide con lo que publica
+    /// `/proc/self/stat`.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn own_identity_matches_proc_self_stat() {
+        let raw = std::fs::read_to_string("/proc/self/stat").expect("se lee /proc/self/stat");
+        let expected = parse_proc_stat(&raw).expect("línea propia válida");
+        let own = process_identity(std::process::id()).expect("identidad propia");
+        assert_eq!(own, expected);
     }
 }
