@@ -1,8 +1,9 @@
 //! `xtask language --check`: escáner de identificadores en español del código de
 //! primera parte.
 //!
-//! Sin dependencias nuevas: el inventario congelado de `THIRD-PARTY-LICENSES.md`
-//! obliga a no añadir crates.
+//! Sin dependencias nuevas: las letras acentuadas se pliegan con una tabla
+//! propia en lugar de un crate de normalización Unicode, porque solo hacen falta
+//! las del español.
 //!
 //! El escáner falla si algún fichero es ilegible o si no encuentra ningún fichero
 //! que escanear: un barrido vacío no demuestra nada.
@@ -770,8 +771,8 @@ fn is_camel_boundary(chars: &[char], i: usize) -> bool {
 /// alfabetos no latinos (cirílico, griego…). Se acepta porque la lista de
 /// palabras es castellana y el código de primera parte es ASCII: lo que la tabla
 /// no cubre es lo que no puede aparecer en la lista. Una descomposición completa
-/// exigiría un crate nuevo, y añadir dependencias está prohibido aquí
-/// (inventario congelado en `THIRD-PARTY-LICENSES.md`).
+/// exigiría un crate de normalización Unicode para resolver solo las letras del
+/// español, que esta tabla ya cubre.
 fn base_letter(c: char) -> char {
     match c {
         'á' | 'Á' => 'a',

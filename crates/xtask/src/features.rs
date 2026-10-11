@@ -13,8 +13,7 @@
 //! accidente de unificación de features, y convierte un eslabón ausente en un
 //! fallo de la puerta en vez de en un reporte de usuario.
 //!
-//! Sin dependencias nuevas: el inventario está congelado y lo que hace falta es
-//! lectura de manifiestos, una expresión regular sobre el código fuente y
+//! Sin dependencias nuevas: lo que hace falta es lectura de manifiestos, una expresión regular sobre el código fuente y
 //! comparación de cadenas. No compila nada, de modo que corre en la puerta
 //! featureless sin C++.
 

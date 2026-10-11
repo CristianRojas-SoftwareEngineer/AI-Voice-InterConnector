@@ -20,8 +20,7 @@
 //! El control falla si algún fichero es ilegible o si el escaneo no encuentra ningún
 //! fichero: un barrido vacío no demuestra nada.
 //!
-//! Sin dependencias nuevas: el inventario congelado de `THIRD-PARTY-LICENSES.md` obliga
-//! a no añadir crates, y el lexer que hace falta es una expresión regular.
+//! Sin dependencias nuevas: el lexer que hace falta es una expresión regular.
 
 use anyhow::{anyhow, Result};
 use regex::Regex;

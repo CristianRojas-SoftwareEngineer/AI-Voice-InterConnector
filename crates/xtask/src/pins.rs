@@ -18,8 +18,7 @@
 //! `version --json` debe ser `CLI_SCHEMA_VERSION`, de modo que subir la versión
 //! del envelope sin tocar el humo falla aquí y no al publicar un tag.
 //!
-//! Sin dependencias nuevas: el inventario congelado obliga a no añadir crates,
-//! y lo que hace falta es lectura de ficheros y comparación de cadenas.
+//! Sin dependencias nuevas: basta con leer ficheros y comparar cadenas.
 
 use anyhow::{anyhow, Result};
 use avi_shared::pins::{self, Pins};
