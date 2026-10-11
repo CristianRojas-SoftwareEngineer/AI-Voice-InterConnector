@@ -186,6 +186,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - `daemon stop` y `daemon restart` sin pidfile ni `daemon.ready` buscan al daemon en el puerto de `AVI_DAEMON_PORT`, el mismo en el que escucha, como ya hacían `self install`, `self uninstall`, `self update` y `cleanup`. Antes lo buscaban siempre en `127.0.0.1:8765`: con el puerto desviado, `stop` respondía que no había daemon con el daemon vivo y `restart` chocaba con el puerto ocupado.
 - Las limpiezas de mejor esfuerzo (temporales del pidfile, del recibo y del diario de transacción, copia del limpiador, staging de voces y de `self update`, logs podados, enlaces temporales en Unix) ya no fallan en silencio: un error distinto de «no existe» se avisa por stderr con `Aviso:` y la ruta afectada, sin cambiar el desenlace de la operación.
 - Un pánico durante una transcripción ya no deja inutilizado el STT del daemon: las sesiones de Parakeet recuperan su lock tras el pánico, en lugar de hacer fallar todas las transcripciones posteriores hasta reiniciar el daemon.
+- `daemon start` y `daemon restart` ya no fallan con «El daemon no respondió a /health tras 0ns» cuando el daemon publica su dirección al final del plazo de arranque: la confirmación por `/health` dejó de heredar el resto de ese plazo, tiene su propio presupuesto de 5 s y hace siempre al menos una sonda, así que el resultado refleja si el daemon responde.
 
 ## [0.28.0] — 2026-10-03
 

@@ -48,12 +48,19 @@ fn resolve_daemon_addr() -> SocketAddr {
 // protocolo de parada no viven aquí: los declara `avi-lifecycle` y se toman de allí
 // (`lifecycle::daemon_stop::STOP_DEADLINE_GLOBAL`), igual que la dirección del
 // daemon (`lifecycle::daemon_stop::default_addr`).
-/// Techo de la espera del resultado de arranque en `daemon start/restart`: el
-/// registro de éxito, el de fallo o la muerte del hijo, más la confirmación por
-/// `/health`. Cubre spawn + validación + bind + carga del estado (~1-2 s sanos);
-/// el warmup TTS corre en segundo plano y no cuenta. Vencerlo con el hijo vivo
-/// es un diagnóstico (`daemon_unreachable`), no un flake a reintentar.
+/// Techo de la espera de la publicación del resultado de arranque en
+/// `daemon start/restart`: el registro de éxito, el de fallo o la muerte del
+/// hijo. Cubre spawn + validación + bind + carga del estado (~1-2 s sanos); el
+/// warmup TTS corre en segundo plano y no cuenta, y la confirmación por
+/// `/health` posterior tiene su propio presupuesto (`DAEMON_HEALTH_DEADLINE`).
+/// Vencerlo con el hijo vivo es un diagnóstico (`daemon_unreachable`), no un
+/// flake a reintentar.
 const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Presupuesto de la confirmación por `/health` una vez publicada la dirección,
+/// independiente de lo que la publicación haya consumido de
+/// `DAEMON_READY_DEADLINE`. El daemon ya está enlazado y sirviendo, así que
+/// `/health` responde en milisegundos; el margen cubre una máquina saturada.
+const DAEMON_HEALTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 /// Cadencia de lectura del fichero ready, de vigilancia del hijo y del sondeo
 /// de `/health`.
 const DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
@@ -2492,8 +2499,9 @@ async fn handle_daemon(
             let remaining = budget
                 .checked_sub(elapsed)
                 .unwrap_or(std::time::Duration::from_millis(800));
-            // Espera del arranque acotada al restante del presupuesto global,
-            // nunca por encima de `DAEMON_READY_DEADLINE`.
+            // Espera de la publicación del arranque acotada al restante del
+            // presupuesto global, nunca por encima de `DAEMON_READY_DEADLINE`; la
+            // confirmación por `/health` tiene su propio presupuesto.
             let ready_deadline = std::cmp::min(remaining, DAEMON_READY_DEADLINE);
             // Mismo lanzamiento que `Start`, con sus mismos resultados y
             // códigos de fallo.
@@ -3715,7 +3723,9 @@ fn ready_file_path() -> Result<PathBuf, CliError> {
 ///   de salida.
 ///
 /// Un hijo vivo que no publica antes de `deadline`, o que publica y no responde
-/// a `/health`, sale con exit 5 `daemon_unreachable`. Cada arranque crea un log
+/// a `/health` dentro de `DAEMON_HEALTH_DEADLINE` (con al menos una sonda,
+/// aunque la publicación haya agotado `deadline`), sale con exit 5
+/// `daemon_unreachable`. Cada arranque crea un log
 /// `daemon_<pid>_<ms>.log` con stdout y stderr del hijo, renombrado acto seguido
 /// con el PID del hijo (el del lanzador solo sirve para crearlo), de modo que el
 /// nombre identifica al proceso que escribe y la poda puede conservarlo mientras
@@ -3861,8 +3871,9 @@ async fn launch_daemon(
         tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
     };
 
-    let remaining = deadline.saturating_sub(start.elapsed());
-    if let Err(e) = await_daemon_ready(client, &addr, remaining, DAEMON_POLL_INTERVAL).await {
+    if let Err(e) =
+        await_daemon_ready(client, &addr, DAEMON_HEALTH_DEADLINE, DAEMON_POLL_INTERVAL).await
+    {
         abort_launch(&mut child, &ready_path).await;
         return Err(with_log(CliError::new(
             ExitCode::DaemonUnreachable,
@@ -3903,8 +3914,9 @@ async fn abort_launch(child: &mut avi_process::RestrictedChild, ready_path: &std
 }
 
 /// Sondeo acotado de `/health` tras la publicación de la dirección: con el
-/// warmup en segundo plano, «alcanzable = listo». Agota `deadline` por reloj
-/// de pared con cadencia `interval`.
+/// warmup en segundo plano, «alcanzable = listo». Hace siempre al menos una
+/// sonda, aunque `deadline` sea 0, y después agota `deadline` por reloj de
+/// pared con cadencia `interval`.
 async fn await_daemon_ready(
     client: &reqwest::Client,
     addr: &str,
@@ -3912,13 +3924,19 @@ async fn await_daemon_ready(
     interval: std::time::Duration,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
-    while start.elapsed() < deadline {
+    loop {
         if probe_health(client, addr).await {
             return Ok(());
         }
+        if start.elapsed() >= deadline {
+            break;
+        }
         tokio::time::sleep(interval).await;
     }
-    anyhow::bail!("El daemon no respondió a /health tras {:?}", deadline)
+    anyhow::bail!(
+        "El daemon no respondió a /health tras {:?}",
+        start.elapsed()
+    )
 }
 
 /// Construye el cuerpo JSON de `daemon status`. Función pura (testeable sin daemon):
@@ -4876,16 +4894,19 @@ mod tests {
     }
 
     /// `await_daemon_ready` debe agotar el deadline por reloj de pared (no un
-    /// recuento fijo de iteraciones) contra un puerto cerrado: retorna `Err` y el
-    /// tiempo transcurrido queda acotado por el deadline. Hermético: no arranca
-    /// daemon ni paga warmup, y usa un puerto efímero cerrado (no el 8765 compartido).
+    /// recuento fijo de iteraciones) contra un puerto sin oyente: retorna `Err` y
+    /// el tiempo transcurrido queda acotado por el deadline. Hermético: no arranca
+    /// daemon ni paga warmup, y usa un puerto efímero reservado (no el 8765
+    /// compartido).
     #[tokio::test]
     async fn await_daemon_ready_respects_deadline() {
-        // Puerto efímero: enlazamos, capturamos la dirección y dropeamos el
-        // listener para garantizar que el puerto queda cerrado (connection-refused).
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind efímero");
-        let addr = listener.local_addr().expect("local_addr").to_string();
-        drop(listener);
+        // Puerto efímero enlazado sin `listen`: mientras viva el socket nadie
+        // más puede enlazarlo y toda conexión se rechaza.
+        let reserved = tokio::net::TcpSocket::new_v4().expect("socket efímero");
+        reserved
+            .bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .expect("bind efímero");
+        let addr = reserved.local_addr().expect("local_addr").to_string();
 
         let deadline = std::time::Duration::from_millis(800);
         let interval = std::time::Duration::from_millis(100);
@@ -4905,6 +4926,47 @@ mod tests {
             "no debe exceder holgadamente el deadline: elapsed={:?}",
             elapsed
         );
+    }
+
+    /// Con presupuesto 0, `await_daemon_ready` sigue haciendo una sonda: un
+    /// daemon que publica su dirección al final del plazo de arranque y ya
+    /// responde a `/health` se confirma como listo.
+    #[tokio::test]
+    async fn await_daemon_ready_probes_at_least_once_with_zero_budget() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind efímero");
+        let addr = listener.local_addr().expect("local_addr").to_string();
+        let server = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut sock, _) = listener.accept().await.expect("aceptar la sonda");
+            let mut request = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.expect("leer la sonda");
+                if n == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+            sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await
+                .expect("responder a la sonda");
+        });
+
+        let res = await_daemon_ready(
+            &daemon_client(),
+            &addr,
+            std::time::Duration::ZERO,
+            std::time::Duration::from_millis(100),
+        )
+        .await;
+
+        assert!(
+            res.is_ok(),
+            "con presupuesto 0 debe sondear una vez y confirmar: {res:?}"
+        );
+        server.await.expect("el servidor de la sonda termina");
     }
 
     /// La falta del modelo que exige la voz sale como `model_missing` (exit 4),
