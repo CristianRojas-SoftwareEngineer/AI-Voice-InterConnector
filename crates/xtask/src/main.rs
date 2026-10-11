@@ -2014,6 +2014,7 @@ mod tests {
             "vendor/cmake-0.1.58",
             "vendor/hf-hub-1.0.0",
             "vendor/alsa-sys-0.4.0",
+            "vendor/ct2rs-0.10.0",
         ] {
             assert!(
                 restore_section.contains(&format!("git rev-parse HEAD:{dir}")),
@@ -2291,7 +2292,7 @@ mod tests {
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
         for marker in [
             "- target-v5-",
-            "name: Fijar mtime de los parches vendorizados cmake, hf-hub y alsa-sys",
+            "name: Fijar mtime de los parches vendorizados cmake, hf-hub, alsa-sys y ct2rs",
         ] {
             let i = cmd_lines
                 .iter()
