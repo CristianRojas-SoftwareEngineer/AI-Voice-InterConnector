@@ -78,3 +78,8 @@ alsa-sys = { path = "vendor/alsa-sys-0.4.0" }
 # OpenMP de GNU como librería dinámica, y el binario declaraba `libgomp.so.1`,
 # que una instalación mínima no trae; la copia vendorizada lo pide estático.
 ct2rs = { path = "vendor/ct2rs-0.10.0" }
+# onednn-src (oneDNN, el backend de CTranslate2) no pide la librería estándar de
+# C++ ni el runtime OpenMP que usa, y en Linux, donde ambos se enlazan
+# estáticos, quedaban símbolos sin resolver según el orden de enlace; la copia
+# vendorizada los pide estáticos detrás de `dnnl`.
+onednn-src = { path = "vendor/onednn-src-0.1.15" }

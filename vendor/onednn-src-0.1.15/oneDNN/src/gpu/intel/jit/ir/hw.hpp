@@ -1,0 +1,67 @@
+/*******************************************************************************
+* Copyright 2022 Intel Corporation
+*
+* Licensed under the Apache License, Version 2.0 (the "License");
+* you may not use this file except in compliance with the License.
+* You may obtain a copy of the License at
+*
+*     http://www.apache.org/licenses/LICENSE-2.0
+*
+* Unless required by applicable law or agreed to in writing, software
+* distributed under the License is distributed on an "AS IS" BASIS,
+* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+* See the License for the specific language governing permissions and
+* limitations under the License.
+*******************************************************************************/
+
+#ifndef GPU_INTEL_JIT_IR_HW_HPP
+#define GPU_INTEL_JIT_IR_HW_HPP
+
+#include "gemmstone/dsl/hw.hpp"
+#include "gpu/intel/compute/device_info.hpp"
+#include "gpu/intel/engine.hpp"
+#include "gpu/intel/jit/utils/type_bridge.hpp"
+
+namespace dnnl {
+namespace impl {
+namespace gpu {
+namespace intel {
+namespace jit {
+
+namespace dsl = gemmstone::dsl;
+
+inline dsl::hw_t make_ir_hw(const impl::engine_t *engine) {
+    using namespace compute;
+    using namespace gemmstone;
+    auto intel_engine = utils::downcast<const engine_t *>(engine);
+
+    auto *device_info = intel_engine->device_info();
+    auto product = device_info->product();
+    int eu_count = device_info->eu_count();
+    int max_wg_size = static_cast<int>(device_info->max_wg_size());
+    size_t l3_cache_size = device_info->l3_cache_size();
+    dsl::hw::attr_t attr = dsl::hw::attr_t::none;
+    if (intel_engine->mayiuse_large_grf_mode())
+        attr |= dsl::hw::attr_t::large_grf;
+    if (device_info->mayiuse_systolic()) attr |= dsl::hw_t::attr_t::systolic;
+    if (device_info->mayiuse_float_atomic_add(data_type::f64))
+        attr |= dsl::hw_t::attr_t::atomic_fp64;
+    if (device_info->is_efficient_64bit())
+        attr |= dsl::hw_t::attr_t::efficient_64bit;
+
+    return dsl::hw_t(product, eu_count, max_wg_size, l3_cache_size, attr);
+}
+
+inline bool prefer_large_grf(
+        const dsl::hw_t &hw, const gpu_primitive_attr_t *gpu_attr) {
+    if (!gpu_attr || !hw.large_grf_support()) return false;
+    return gpu_attr->grf_per_thread() > 128;
+}
+
+} // namespace jit
+} // namespace intel
+} // namespace gpu
+} // namespace impl
+} // namespace dnnl
+
+#endif

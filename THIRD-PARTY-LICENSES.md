@@ -88,8 +88,8 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
   GPL-3.0 con la **GCC Runtime Library Exception**, y, en Windows y Linux x86_64,
   `libquadmath` bajo **LGPL-2.1-or-later**, compatible con la GPLv3 del proyecto).
 - **Runtime de GCC en el binario de Linux**: el binario principal enlaza
-  estáticamente `libgomp` (runtime OpenMP de CTranslate2) y `libstdc++` (runtime
-  C++ de CTranslate2, SentencePiece y `cxx`), del gcc-toolset de la imagen de
+  estáticamente `libgomp` (runtime OpenMP de CTranslate2 y oneDNN) y `libstdc++`
+  (runtime C++ de CTranslate2, oneDNN, SentencePiece y `cxx`), del gcc-toolset de la imagen de
   build, bajo GPL-3.0 con la **GCC Runtime Library Exception**; `libgcc_s` se
   usa dinámica, del sistema.
 - **`alsa-sys` vendorizado** (`vendor/alsa-sys-0.4.0`, solo Linux): copia del
@@ -102,6 +102,13 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
   (`vendor/ct2rs-0.10.0/LICENSE` y `vendor/ct2rs-0.10.0/CTranslate2/LICENSE`),
   modificada para pedir en Linux el runtime OpenMP de GNU (`libgomp`) como
   librería estática en lugar de dinámica.
+- **`onednn-src` vendorizado** (`vendor/onednn-src-0.1.15`): copia del crate
+  `onednn-src` 0.1.15 bajo **MIT** (`vendor/onednn-src-0.1.15/LICENSE`), con las
+  fuentes de oneDNN que incluye bajo **Apache-2.0**
+  (`vendor/onednn-src-0.1.15/oneDNN/LICENSE` y
+  `vendor/onednn-src-0.1.15/oneDNN/THIRD-PARTY-PROGRAMS`), modificada para pedir
+  en Linux la librería estándar de C++ y el runtime OpenMP de GNU que oneDNN
+  usa, como librerías estáticas.
 
 ---
 

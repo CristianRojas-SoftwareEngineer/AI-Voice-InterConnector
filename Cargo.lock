@@ -2497,8 +2497,6 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "onednn-src"
 version = "0.1.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "870617521eb4e8cb694f69b23654be566bf957b1cd37362b6364bd8bf0252936"
 dependencies = [
  "cmake",
 ]
