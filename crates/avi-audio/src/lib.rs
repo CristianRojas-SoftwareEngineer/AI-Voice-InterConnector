@@ -291,35 +291,49 @@ fn acquire_lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuar
     })
 }
 
-/// El sistema no tiene la librería del backend de audio. En Linux, `cpal` usa
-/// ALSA, que se carga en tiempo de ejecución: sin ella el resto de la app
-/// funciona y solo fallan las operaciones de audio, con este error.
+/// El sistema no tiene la librería del backend de audio, o la tiene sin alguna
+/// de las funciones que se usan. En Linux, `cpal` usa ALSA, que se carga en
+/// tiempo de ejecución: sin ella el resto de la app funciona y solo fallan las
+/// operaciones de audio, con este error.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioBackendUnavailable {
-    /// Librería del sistema que falta.
+    /// Librería del sistema que falta o está incompleta.
     pub library: &'static str,
+    /// Función que la librería cargada no define; `None` si la librería falta.
+    pub missing: Option<String>,
 }
 
 impl std::fmt::Display for AudioBackendUnavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "No hay audio en este sistema: falta la librería {} (ALSA). Instala el paquete \
-             de runtime de ALSA de tu distribución para reproducir o grabar audio",
-            self.library
-        )
+        match &self.missing {
+            Some(symbol) => write!(
+                f,
+                "No hay audio en este sistema: la librería {} (ALSA) no define {symbol}. \
+                 Actualiza el paquete de runtime de ALSA de tu distribución para reproducir \
+                 o grabar audio",
+                self.library
+            ),
+            None => write!(
+                f,
+                "No hay audio en este sistema: falta la librería {} (ALSA). Instala el paquete \
+                 de runtime de ALSA de tu distribución para reproducir o grabar audio",
+                self.library
+            ),
+        }
     }
 }
 
 impl std::error::Error for AudioBackendUnavailable {}
 
 /// Host de audio por defecto. En Linux, comprobar antes que ALSA se puede
-/// cargar evita que `cpal` aborte al inicializarla.
+/// cargar y define todas las funciones que se usan evita que `cpal` aborte al
+/// inicializarla o en una llamada posterior.
 #[cfg(target_os = "linux")]
 fn default_host() -> std::result::Result<cpal::Host, AudioBackendUnavailable> {
     if !alsa_sys::library_available() {
         return Err(AudioBackendUnavailable {
             library: "libasound.so.2",
+            missing: alsa_sys::missing_symbol().map(|s| s.to_string_lossy().into_owned()),
         });
     }
     Ok(cpal::default_host())

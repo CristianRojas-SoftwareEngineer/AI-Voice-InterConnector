@@ -22,7 +22,6 @@ pub(crate) const ROW_IDS: &[&str] = &[
     "c-compiler",
     "cmake",
     "libclang",
-    "alsa",
     "engine-toolchain",
     "onnx",
     "sccache",
@@ -591,76 +590,6 @@ fn check_libclang() -> Row {
         want: Some("libclang-dev o equivalente".to_string()),
         hint,
     }
-}
-
-/// Sonda pkg-config y cabeceras de ALSA (solo Linux; en el resto no aplica y
-/// la fila queda correcta por construcción).
-fn check_alsa() -> Row {
-    let label = "pkg-config y cabeceras de ALSA";
-    if !cfg!(target_os = "linux") {
-        return Row {
-            id: "alsa",
-            label,
-            mandatory: true,
-            status: Status::Ok,
-            found: Some("no aplica en este SO".to_string()),
-            want: Some("—".to_string()),
-            hint: None,
-        };
-    }
-    let has_pkg_config = command_exists("pkg-config") || command_exists("pkgconf");
-    let has_alsa = probe_output("pkg-config", &["--exists", "alsa"]).is_some()
-        || probe_output("pkgconf", &["--exists", "alsa"]).is_some();
-    // `pkg-config --exists` no imprime nada al tener éxito: basta con que el
-    // proceso exista… pero `probe_output` devuelve `None` con salida vacía.
-    // Se reevalúa por código de salida lanzando de nuevo de forma barata.
-    let has_alsa = has_alsa || alsa_present_by_status();
-    if has_pkg_config && has_alsa {
-        return Row {
-            id: "alsa",
-            label,
-            mandatory: true,
-            status: Status::Ok,
-            found: Some("pkg-config + alsa".to_string()),
-            want: Some("pkg-config, libasound2-dev o equivalentes".to_string()),
-            hint: None,
-        };
-    }
-    let hint = detect_linux_manager()
-        .map(|m| {
-            let packages = match m {
-                "apt" => "pkg-config libasound2-dev",
-                "dnf" => "pkgconf alsa-lib-devel",
-                "pacman" => "pkgconf alsa-lib",
-                _ => "pkgconf alsa-devel o equivalentes",
-            };
-            linux_install_command(m, packages)
-        })
-        .or_else(|| Some("instala pkg-config y las cabeceras de ALSA".to_string()));
-    Row {
-        id: "alsa",
-        label,
-        mandatory: true,
-        status: Status::Missing,
-        found: None,
-        want: Some("pkg-config, libasound2-dev o equivalentes".to_string()),
-        hint,
-    }
-}
-
-/// `true` si `pkg-config --exists alsa` (o `pkgconf`) sale con éxito,
-/// aunque no imprima nada.
-fn alsa_present_by_status() -> bool {
-    for prog in ["pkg-config", "pkgconf"] {
-        if std::process::Command::new(prog)
-            .args(["--exists", "alsa"])
-            .output()
-            .is_ok_and(|o| o.status.success())
-        {
-            return true;
-        }
-    }
-    false
 }
 
 /// Sonda de la toolchain del motor TTS según el SO, con los pines de MSYS2
@@ -1242,7 +1171,6 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         check_c_compiler(),
         check_cmake(),
         check_libclang(),
-        check_alsa(),
         check_engine_toolchain(pins),
         check_onnx(root, pins),
         check_sccache(pins),
@@ -1416,7 +1344,6 @@ mod tests {
         assert_eq!(
             ids,
             [
-                "alsa",
                 "c-compiler",
                 "cmake",
                 "engine-toolchain",
@@ -1449,7 +1376,7 @@ mod tests {
         }
     }
 
-    /// `check` sobre fixtures produce las 9 filas en orden y `ok()` solo
+    /// `check` sobre fixtures produce las 8 filas en orden y `ok()` solo
     /// exige las obligatorias (`sccache` y `target-hygiene` no bloquean).
     #[test]
     fn check_yields_all_rows_in_order() {

@@ -6,7 +6,12 @@
 // `dlsym` sobre `libasound.so.2`, cargada con `dlopen` en el primer uso. Las
 // funciones variádicas (`snd_input_scanf`, `snd_output_printf`,
 // `snd_config_searchv`) no se pueden reenviar desde Rust estable y se omiten.
+//
+// La compilación falla si la salida conserva algún bloque `extern "C"`, que
+// volvería a enlazar ALSA, o si `src/required_symbols.rs` nombra una función
+// sin envoltura.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -14,15 +19,47 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/generated.rs");
+    println!("cargo:rerun-if-changed=src/required_symbols.rs");
     let source = fs::read_to_string("src/generated.rs").expect("se lee src/generated.rs");
+    let (bindings, wrapped) = transform(&source);
+    for marker in ["extern \"C\" {", "extern \"C\"{"] {
+        if let Some(at) = bindings.find(marker) {
+            let end = bindings[at..].find('\n').map_or(bindings.len(), |n| at + n);
+            panic!(
+                "queda un bloque externo sin transformar en bindings.rs: {}",
+                &bindings[at..end]
+            );
+        }
+    }
+    let required =
+        fs::read_to_string("src/required_symbols.rs").expect("se lee src/required_symbols.rs");
+    let names = required_names(&required);
+    assert!(!names.is_empty(), "src/required_symbols.rs no declara ningún símbolo");
+    for name in names {
+        assert!(
+            wrapped.contains(name),
+            "src/required_symbols.rs nombra {name}, que no tiene envoltura en src/generated.rs"
+        );
+    }
     let out = PathBuf::from(env::var("OUT_DIR").expect("cargo define OUT_DIR"));
-    fs::write(out.join("bindings.rs"), transform(&source)).expect("se escribe bindings.rs");
+    fs::write(out.join("bindings.rs"), bindings).expect("se escribe bindings.rs");
+}
+
+/// Nombres de los literales `c"…",` de `src/required_symbols.rs`, uno por
+/// línea.
+fn required_names(source: &str) -> Vec<&str> {
+    source
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("c\""))
+        .map(|rest| rest.strip_suffix("\",").expect("literal `c\"…\",` cerrado"))
+        .collect()
 }
 
 /// Copia `source` sustituyendo cada bloque `unsafe extern "C" { ... }` por las
-/// envolturas de sus funciones.
-fn transform(source: &str) -> String {
+/// envolturas de sus funciones, y devuelve también los nombres envueltos.
+fn transform(source: &str) -> (String, BTreeSet<String>) {
     let mut out = String::with_capacity(source.len() * 2);
+    let mut wrapped = BTreeSet::new();
     let mut lines = source.lines();
     while let Some(line) = lines.next() {
         if line != "unsafe extern \"C\" {" {
@@ -40,14 +77,18 @@ fn transform(source: &str) -> String {
             body.push(' ');
         }
         for decl in body.split(';').map(str::trim).filter(|d| !d.is_empty()) {
-            out.push_str(&wrapper(decl));
+            if let Some((name, code)) = wrapper(decl) {
+                out.push_str(&code);
+                wrapped.insert(name);
+            }
         }
     }
-    out
+    (out, wrapped)
 }
 
-/// Envoltura de una declaración `pub fn nombre(parámetros) -> retorno`.
-fn wrapper(decl: &str) -> String {
+/// Nombre y envoltura de una declaración `pub fn nombre(parámetros) -> retorno`;
+/// `None` si es variádica.
+fn wrapper(decl: &str) -> Option<(String, String)> {
     let rest = decl
         .strip_prefix("pub fn ")
         .unwrap_or_else(|| panic!("declaración externa inesperada: {decl}"));
@@ -61,9 +102,9 @@ fn wrapper(decl: &str) -> String {
         .map(|p| p.split(':').next().expect("parámetro con nombre").trim())
         .collect();
     if args.contains(&"...") {
-        return String::new();
+        return None;
     }
-    format!(
+    let code = format!(
         "#[inline]\n\
          pub unsafe fn {name}({params}) {ret} {{\n\
          \x20   static SYMBOL: ::core::sync::atomic::AtomicPtr<::core::ffi::c_void> =\n\
@@ -73,7 +114,8 @@ fn wrapper(decl: &str) -> String {
          \x20   f({args})\n\
          }}\n",
         args = args.join(", ")
-    )
+    );
+    Some((name.to_string(), code))
 }
 
 /// Índice del `)` que cierra el `(` de `open`.

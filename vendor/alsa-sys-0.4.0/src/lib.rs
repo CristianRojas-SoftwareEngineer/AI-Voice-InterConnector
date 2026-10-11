@@ -35,11 +35,28 @@ pub const SND_SEQ_EVENT_LENGTH_VARUSR: u8 = 2 << 2;
 // símbolo en tiempo de ejecución (ver `dynamic`).
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-/// Indica si `libasound.so.2` se puede cargar en este sistema. Llamarla antes
-/// de usar cualquier función del crate permite fallar con un error propio en
-/// lugar de abortar en la primera llamada.
+mod required_symbols;
+
+/// Indica si `libasound.so.2` se puede cargar en este sistema y define todas
+/// las funciones que usa el crate `alsa`. Llamarla antes de usar cualquier
+/// función del crate permite fallar con un error propio en lugar de abortar
+/// en la primera llamada a una función ausente.
 pub fn library_available() -> bool {
-    !dynamic::handle().is_null()
+    !dynamic::handle().is_null() && missing_symbol().is_none()
+}
+
+/// Primera función que usa el crate `alsa` y que la `libasound.so.2` cargada
+/// no define; `None` si las define todas o si la librería no se puede cargar.
+pub fn missing_symbol() -> Option<&'static core::ffi::CStr> {
+    let lib = dynamic::handle();
+    if lib.is_null() {
+        return None;
+    }
+    required_symbols::REQUIRED_SYMBOLS
+        .iter()
+        .copied()
+        // SAFETY: handle válido devuelto por `dlopen` y nombres terminados en NUL.
+        .find(|name| unsafe { libc::dlsym(lib, name.as_ptr()) }.is_null())
 }
 
 /// Carga diferida de `libasound.so.2` y resolución de sus símbolos.
@@ -68,7 +85,8 @@ mod dynamic {
 
     /// Dirección del símbolo `name`, resuelta una vez y guardada en `cache`.
     /// Llamar a una función de ALSA sin la librería, o con una versión que no
-    /// define el símbolo, es un error de programación: aborta nombrándolo.
+    /// define el símbolo, es un error de programación, porque
+    /// `library_available()` ya lo habría detectado: aborta nombrándolo.
     pub(crate) fn resolve(cache: &AtomicPtr<c_void>, name: &CStr) -> *mut c_void {
         let cached = cache.load(Ordering::Acquire);
         if !cached.is_null() {

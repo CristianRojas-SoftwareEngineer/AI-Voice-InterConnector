@@ -13,19 +13,12 @@ keywords = ["ALSA", "audio", "sound"]
 categories = ["os::unix-apis", "external-ffi-bindings", "multimedia::audio"]
 edition = "2021"
 
+# Patch: sin `pkg-config` ni `bindgen`. La librería de ALSA no se enlaza al
+# compilar: `build.rs` genera envolturas que la cargan con `dlopen` en el primer
+# uso, así que ni el binario la declara como dependencia ni compilar exige sus
+# cabeceras.
 [dependencies]
 libc = "0.2.178"
-
-[build-dependencies]
-pkg-config = "0.3.7"
-bindgen = { version = "0.72", optional = true }
-
-[features]
-use-bindgen = ["bindgen"]
-
-[[bin]]
-name = "regenerate_bindings"
-path = "regenerate_bindings.rs"
 
 [lib]
 doctest = false
