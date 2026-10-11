@@ -94,15 +94,22 @@ fn read_capture(file: &mut std::fs::File) -> String {
     text
 }
 
-/// Ruta a la CRT real del sistema para un archivo del bundle, si lo es.
+/// Ruta a la DLL real del runtime de VC++ del sistema para un archivo del
+/// bundle, si lo es.
 ///
-/// El binario enlazado con rust-lld importa `VCRUNTIME140.dll` por nombre y el
-/// cargador la busca primero junto al ejecutable: un marcador de texto en su
+/// Un binario enlazado con el CRT dinámico importa `VCRUNTIME140.dll` por
+/// nombre, y con `--features full` el binario importa siempre `VCOMP140.dll`
+/// (OpenMP de CTranslate2); el cargador las busca primero junto al ejecutable: un marcador de texto en su
 /// lugar mata al hijo con imagen inválida antes de que emita nada. El staging
-/// lleva la real y no un marcador.
+/// lleva las reales y no un marcador.
 #[cfg(windows)]
 fn system_crt_dll(relative: &str) -> Option<PathBuf> {
-    const CRT: &[&str] = &["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
+    const CRT: &[&str] = &[
+        "vcruntime140.dll",
+        "vcruntime140_1.dll",
+        "msvcp140.dll",
+        "vcomp140.dll",
+    ];
     let name = relative.rsplit(['/', '\\']).next().unwrap_or(relative);
     if !CRT.iter().any(|c| c.eq_ignore_ascii_case(name)) {
         return None;

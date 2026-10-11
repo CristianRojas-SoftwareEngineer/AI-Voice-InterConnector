@@ -1,5 +1,5 @@
 {
-  "note": "Lista canonica de archivos que el bundle de release debe contener, por target. La valida `self install` contra el directorio de programa en ejecucion y la montara `cargo xtask package`; al ser la unica fuente, empaquetado e instalacion no pueden divergir. Replica el staging de los cuatro jobs de build de .circleci/config.yml: ejecutable, los cuatro documentos de la raiz, el derivado del motor en vendor/qwen3-tts/ y la libreria de ONNX Runtime con el nombre exacto que el crate `ort` busca en load-dynamic, mas las tres DLL del runtime de VC++ que esa libreria de Windows necesita. Rutas relativas a la raiz del bundle, separador `/` en todos los targets.",
+  "note": "Lista canonica de archivos que el bundle de release debe contener, por target. La valida `self install` contra el directorio de programa en ejecucion y la montara `cargo xtask package`; al ser la unica fuente, empaquetado e instalacion no pueden divergir. Replica el staging de los cuatro jobs de build de .circleci/config.yml: ejecutable, los cuatro documentos de la raiz, el derivado del motor en vendor/qwen3-tts/ y la libreria de ONNX Runtime con el nombre exacto que el crate `ort` busca en load-dynamic, mas las DLL del runtime de VC++ de Windows: las tres que esa libreria necesita y vcomp140.dll, el runtime OpenMP que importa el ejecutable. Rutas relativas a la raiz del bundle, separador `/` en todos los targets.",
   "targets": {
     "x86_64-pc-windows-msvc": {
       "executable": "ai-voice-interconnector.exe",
@@ -13,6 +13,7 @@
         "vcruntime140.dll",
         "vcruntime140_1.dll",
         "msvcp140.dll",
+        "vcomp140.dll",
         "vendor/qwen3-tts/qwen_tts.exe"
       ]
     },

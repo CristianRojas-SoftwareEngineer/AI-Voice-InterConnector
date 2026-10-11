@@ -1,6 +1,12 @@
 {
   "rust": "1.96.0",
   "ort": "1.28.0",
+  "ort_sha256": {
+    "x86_64-pc-windows-msvc": "abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc",
+    "x86_64-unknown-linux-gnu": "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407",
+    "aarch64-unknown-linux-gnu": "e15ff8b5d85afe6c144d97c6fd432254bf76a219daaf17658087d6ecb3e8f0bb",
+    "aarch64-apple-darwin": "1268b359718099bde2cedb55787f182a130067bc4f31e8c88478c445b850d3d8"
+  },
   "sccache": "0.8.2",
   "msys2_base": "2026-06-11",
   "msys2_gcc": "16.2.0",

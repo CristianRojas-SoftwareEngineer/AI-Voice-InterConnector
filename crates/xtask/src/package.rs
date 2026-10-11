@@ -3,31 +3,21 @@
 //! Lee `packaging/bundle-manifest.json` como lista canónica (la misma que valida
 //! `self install`): empaquetado e instalación no pueden divergir. Resuelve ONNX
 //! Runtime reutilizando `ort-bundle/` si está fresco para la versión fijada
-//! en `packaging/pins.json` (fuente única, espejo del parámetro `ort_version` de
-//! la CI), o con descarga verificada si no. Valida `--expect-version` (la
-//! puerta tag-versión vive aquí, ningún paso YAML la duplica), pasa el humo
-//! (`version` y `voice list`) y comprime de forma determinista con el nombre de
-//! `release_asset_name`.
+//! en `packaging/pins.json` (fuente única, espejo del parámetro `ort_pin` de
+//! la CI), o descargándolo si no: el archivo descargado debe tener el SHA-256
+//! que fija `pins.json` para el target y traer la librería esperada. Valida
+//! `--expect-version` (la puerta tag-versión vive aquí, ningún paso YAML la
+//! duplica), pasa el humo (`version` y `voice list`) y comprime de forma
+//! determinista con el nombre de `release_asset_name`.
 //!
 //! Sin red en los tests: la descarga vive en `ensure_ort_bundle` y todo lo demás
-//! (manifiesto, nombres, puerta de versión, montaje, compresión) es puro o solo
-//! toca temporales.
+//! (manifiesto, nombres, puerta de versión, hash, montaje, compresión) es puro
+//! o solo toca temporales.
 
 use anyhow::{bail, Result};
 use avi_shared::manifest::{parse_manifest_text, BundleTarget};
-use avi_shared::pins;
+use avi_shared::pins::{self, Pins};
 use std::path::{Path, PathBuf};
-
-/// Versión de ONNX Runtime empaquetada (pareja del crate `ort` en uso). Se lee
-/// de `packaging/pins.json` (fuente única, espejo del parámetro
-/// `ort_version` de la CI): si el pipeline la sube, el
-/// pin sube con ella o el bundle reutilizado no coincidirá con el que espera
-/// el motor. Sin réplica en el código.
-fn load_ort_version(root: &Path) -> Result<String> {
-    pins::load_from_root(root)
-        .map(|p| p.ort)
-        .map_err(|e| anyhow::anyhow!("{e}"))
-}
 
 /// Manifiesto canónico, relativo a la raíz del repositorio.
 const MANIFEST_REL: &str = "packaging/bundle-manifest.json";
@@ -45,9 +35,18 @@ const ORT_MARKER: &str = ".ort-version";
 /// archivo y el `SHA256SUMS.txt` del release es reproducible.
 const ARCHIVE_MTIME: u64 = 1_577_836_800;
 
-/// DLL del runtime de VC++ que la librería oficial de Windows necesita (la DLL
-/// de Microsoft es /MD). Réplica de la lista del job `build-windows-x64`.
-const VC_DLLS: &[&str] = &["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"];
+/// DLL del runtime de VC++ que viajan junto al binario en Windows (despliegue
+/// app-local, que la licencia del Redistributable permite): las tres que
+/// necesita la librería oficial de ONNX Runtime (es /MD) y `vcomp140.dll`, el
+/// runtime OpenMP de MSVC que el binario importa porque CTranslate2 se compila
+/// con `/openmp`. Ninguna forma parte de Windows: sin ellas el binario o ONNX
+/// Runtime no cargan en un sistema sin el Redistributable.
+const VC_DLLS: &[&str] = &[
+    "vcruntime140.dll",
+    "vcruntime140_1.dll",
+    "msvcp140.dll",
+    "vcomp140.dll",
+];
 
 /// Une un fragmento del manifiesto (siempre con `/`) con una raíz, con el
 /// separador de la plataforma.
@@ -127,6 +126,47 @@ fn ort_download(triple: &str, ort_version: &str) -> Result<(String, String)> {
     let url =
         format!("https://github.com/microsoft/onnxruntime/releases/download/v{ort_version}/{file}");
     Ok((file, url))
+}
+
+/// SHA-256 fijado en `pins.json` para el asset de ONNX Runtime del triple: 64
+/// dígitos hexadecimales en minúsculas. Un triple sin entrada o un valor mal
+/// formado es un error, nunca una descarga sin verificar.
+fn pinned_ort_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&'a str> {
+    let Some(hash) = pins.ort_sha256.get(triple) else {
+        bail!("packaging/pins.json no fija el SHA-256 de ONNX Runtime para {triple} (clave `ort_sha256`)");
+    };
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        bail!("el SHA-256 de ONNX Runtime para {triple} en packaging/pins.json no son 64 dígitos hexadecimales en minúsculas: {hash:?}");
+    }
+    Ok(hash)
+}
+
+/// SHA-256 en hexadecimal minúsculo de unos bytes.
+fn hex_sha256(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Falla si el fichero descargado no tiene el SHA-256 fijado: un asset
+/// alterado, truncado o de otra versión no llega al bundle.
+fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| anyhow::anyhow!("no se pudo leer {}: {e}", path.display()))?;
+    let actual = hex_sha256(&bytes);
+    if actual != expected {
+        bail!(
+            "el SHA-256 de {} no coincide con el fijado en packaging/pins.json (esperado {expected}, obtenido {actual})",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Librerías que el bundle debe aportar por triple: la que el crate `ort` busca
@@ -250,8 +290,8 @@ fn rank_lib_candidate(
 }
 
 /// Extrae la librería de ONNX Runtime del archivo descargado a `bundle/` con su
-/// nombre canónico (el que el crate `ort` busca en `load-dynamic`). Verificada:
-/// falla si el archivo no trae la librería esperada.
+/// nombre canónico (el que el crate `ort` busca en `load-dynamic`). Falla si el
+/// archivo no trae la librería esperada con tamaño mayor que cero.
 fn extract_ort_library(
     archive: &Path,
     bundle: &Path,
@@ -344,9 +384,15 @@ fn copy_vc_runtime(bundle: &Path) -> Result<()> {
 }
 
 /// Asegura `ort-bundle/` para el triple: lo reutiliza si está fresco o lo
-/// reconstruye con descarga verificada en caso contrario. Lo reutiliza
-/// `bootstrap`: un solo descargador verificado en el crate.
-pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, ort_version: &str) -> Result<PathBuf> {
+/// reconstruye descargándolo en caso contrario. La descarga va por HTTPS, su
+/// SHA-256 debe coincidir con el fijado en `pins.json` y el archivo debe traer
+/// la librería esperada con tamaño mayor que cero; el marcador de versión solo
+/// se escribe tras esas comprobaciones, así que un bundle fresco procede de
+/// una descarga verificada. Lo reutilizan `bootstrap`, la gate de pruebas con
+/// recursos y la CI: un solo descargador en el repositorio.
+pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
+    let ort_version = pins.ort.as_str();
+    let expected_sha256 = pinned_ort_sha256(pins, triple)?;
     let bundle = root.join(ORT_BUNDLE_REL);
     if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple, ort_version)? {
         eprintln!("Bundle ONNX Runtime reutilizado de {ORT_BUNDLE_REL}");
@@ -366,6 +412,7 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, ort_version: &str) ->
         .into_temp_path();
     eprintln!("Descargando ONNX Runtime {ort_version}: {url}");
     download_https(&url, &dest)?;
+    verify_sha256(&dest, expected_sha256)?;
     extract_ort_library(&dest, &bundle, triple, ort_version)?;
     #[cfg(windows)]
     copy_vc_runtime(&bundle)?;
@@ -615,7 +662,7 @@ pub fn run(
     }
     let version = super::get_version()?;
     check_expect_version(&version, expect_version.as_deref())?;
-    let ort_version = load_ort_version(&root)?;
+    let pins = pins::load_from_root(&root).map_err(|e| anyhow::anyhow!("{e}"))?;
     let text = std::fs::read_to_string(&manifest_path)?;
     let sections = parse_manifest_text(&text).map_err(|e| anyhow::anyhow!("{e}"))?;
     let triple = host_triple()?;
@@ -624,7 +671,7 @@ pub fn run(
     })?;
     let sources = locate_sources(&root)?;
     smoke_binary(&sources.binary)?;
-    let bundle = ensure_ort_bundle(&root, triple, &ort_version)?;
+    let bundle = ensure_ort_bundle(&root, triple, &pins)?;
     for lib in ort_expected_libs(triple)? {
         if !bundle.join(lib).is_file() {
             bail!("librería no encontrada en {}: {lib}", bundle.display());
@@ -831,6 +878,63 @@ mod tests {
         assert!(ort_expected_libs("x86_64-unknown-linux-gnu")
             .unwrap()
             .contains(&"libonnxruntime.so"));
+    }
+
+    /// Cada target del manifiesto canónico tiene su SHA-256 de ONNX Runtime
+    /// fijado y bien formado, y su sección exige en el bundle todas las
+    /// librerías que aporta `ort-bundle/` (en Windows, también las cuatro DLL
+    /// de VC++): empaquetado, instalación y pines no pueden divergir.
+    #[test]
+    fn manifest_targets_have_pinned_hash_and_bundle_libs() {
+        let pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido");
+        let sections =
+            parse_manifest_text(include_str!("../../../packaging/bundle-manifest.json")).unwrap();
+        for (triple, section) in &sections {
+            pinned_ort_sha256(&pins, triple).unwrap();
+            for lib in ort_expected_libs(triple).unwrap() {
+                assert!(
+                    section.required.iter().any(|r| r == lib),
+                    "el manifiesto de {triple} debe exigir {lib}"
+                );
+            }
+        }
+        assert_eq!(
+            pins.ort_sha256.len(),
+            sections.len(),
+            "un hash por target, sin sobrantes"
+        );
+        assert!(ort_expected_libs("x86_64-pc-windows-msvc")
+            .unwrap()
+            .contains(&"vcomp140.dll"));
+    }
+
+    /// Un triple sin hash o con un hash mal formado es un error.
+    #[test]
+    fn pinned_hash_must_exist_and_be_lowercase_hex() {
+        let mut pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido");
+        assert!(pinned_ort_sha256(&pins, "riscv64gc-unknown-linux-gnu").is_err());
+        pins.ort_sha256
+            .insert("x86_64-unknown-linux-gnu".to_string(), "AB".repeat(32));
+        assert!(pinned_ort_sha256(&pins, "x86_64-unknown-linux-gnu").is_err());
+        pins.ort_sha256
+            .insert("x86_64-unknown-linux-gnu".to_string(), "ab".repeat(31));
+        assert!(pinned_ort_sha256(&pins, "x86_64-unknown-linux-gnu").is_err());
+    }
+
+    /// La verificación acepta el SHA-256 exacto del fichero y rechaza otro.
+    #[test]
+    fn sha256_verification_accepts_match_and_rejects_mismatch() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), b"abc").unwrap();
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        verify_sha256(file.path(), abc).unwrap();
+        let err = verify_sha256(file.path(), &"0".repeat(64)).unwrap_err();
+        assert!(
+            err.to_string().contains(abc),
+            "el error nombra el hash obtenido: {err}"
+        );
     }
 
     /// Un `ort-bundle/` con las librerías y marcador coincidente se reutiliza;

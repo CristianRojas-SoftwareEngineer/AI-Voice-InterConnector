@@ -4882,12 +4882,14 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "avi-core",
  "avi-process",
  "avi-shared",
  "clap",
  "flate2",
  "regex",
  "serde_json",
+ "sha2",
  "tar",
  "tempfile",
  "zip",

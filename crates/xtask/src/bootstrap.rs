@@ -178,7 +178,7 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
 
     // Paso 3. ONNX Runtime en la versión fijada (reutiliza si está fresco).
     let triple = super::package::host_triple()?;
-    super::package::ensure_ort_bundle(&root, triple, &pins.ort)?;
+    super::package::ensure_ort_bundle(&root, triple, &pins)?;
     println!(
         "Paso 3/6 (ONNX Runtime {}): asegurado en ort-bundle/.",
         pins.ort

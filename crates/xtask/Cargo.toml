@@ -20,3 +20,9 @@ tar = "0.4"
 flate2 = "1.1"
 # Temporales con dueño: se borran al soltarse, por cualquier camino de salida.
 tempfile = "3"
+# Verificación del SHA-256 fijado del asset de ONNX Runtime (misma versión que
+# ya usa `avi-lifecycle`, sin crates nuevos en el lockfile).
+sha2 = "0.11"
+# Versión vigente del envelope `--json` de la CLI, que `pins --check` compara
+# con la que exige el humo del pipeline.
+avi-core = { path = "../avi-core" }

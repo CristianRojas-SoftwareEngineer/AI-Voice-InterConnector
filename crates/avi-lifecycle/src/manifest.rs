@@ -183,7 +183,12 @@ mod tests {
                 "{triple}: falta la librería de ONNX Runtime {ort}"
             );
             if triple.contains("-windows-") {
-                for dll in ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll"] {
+                for dll in [
+                    "vcruntime140.dll",
+                    "vcruntime140_1.dll",
+                    "msvcp140.dll",
+                    "vcomp140.dll",
+                ] {
                     assert!(
                         section.required.iter().any(|r| r == dll),
                         "{triple}: falta la DLL del runtime de VC++ {dll}"
@@ -194,7 +199,9 @@ mod tests {
                     !section
                         .required
                         .iter()
-                        .any(|r| r.ends_with("vcruntime140.dll") || r.ends_with("msvcp140.dll")),
+                        .any(|r| r.ends_with("vcruntime140.dll")
+                            || r.ends_with("msvcp140.dll")
+                            || r.ends_with("vcomp140.dll")),
                     "{triple}: las DLL de VC++ son solo de Windows"
                 );
             }

@@ -10,7 +10,13 @@
 //! La clave `sccache` es la excepción escrita: no tiene parámetro porque ningún
 //! paso lo interpola como tal; los instaladores leen el fichero directamente.
 //! Exigirle parámetro contradiría esa decisión, así que el validador la perdona
-//! aquí y en ningún otro sitio.
+//! aquí y en ningún otro sitio. `ort_sha256` no es una versión sino la tabla de
+//! hashes que verifica `xtask package`, y ningún paso de la CI la interpola.
+//!
+//! La misma puerta compara el otro literal de la CI que espeja un valor del
+//! código: la `schema_version` que el humo de `build-windows-x64` exige a
+//! `version --json` debe ser `CLI_SCHEMA_VERSION`, de modo que subir la versión
+//! del envelope sin tocar el humo falla aquí y no al publicar un tag.
 //!
 //! Sin dependencias nuevas: el inventario congelado obliga a no añadir crates,
 //! y lo que hace falta es lectura de ficheros y comparación de cadenas.
@@ -24,6 +30,10 @@ const PIN_SUFFIX: &str = "_pin";
 
 /// Fichero del canal de Rust, relativo a la raíz del repositorio.
 const TOOLCHAIN_REL: &str = "rust-toolchain.toml";
+
+/// Prefijos que preceden, en el humo de la CI, al literal de `schema_version`
+/// que se exige a `version --json`: la comparación y su mensaje de error.
+const SCHEMA_SMOKE_MARKERS: [&str; 2] = ["$j.schema_version -ne '", "campo 'schema_version' != '"];
 
 /// Ejecuta el subcomando: `--check` verifica y `--sync` regenera el canal.
 pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
@@ -51,7 +61,9 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
             .map_err(|e| anyhow!("no se pudo leer {}: {e}", toolchain_path.display()))?;
         let errors = check_text(&pins, &cfg, &toolchain);
         if errors.is_empty() {
-            println!("pines en sincronía: parámetros, canal de Rust e instaladores");
+            println!(
+                "pines en sincronía: parámetros, canal de Rust, instaladores y schema_version del humo"
+            );
             return Ok(());
         }
         for error in &errors {
@@ -187,6 +199,35 @@ fn check_text(pins: &Pins, cfg: &str, toolchain: &str) -> Vec<String> {
             "la CI fija sccache en un literal de shell: debe leer packaging/pins.json".to_string(),
         );
     }
+    errors.extend(schema_smoke_errors(
+        cfg,
+        avi_core::json_emitter::CLI_SCHEMA_VERSION,
+    ));
+    errors
+}
+
+/// Errores del literal de `schema_version` del humo: debe aparecer en cada
+/// prefijo de `SCHEMA_SMOKE_MARKERS` y coincidir siempre con `expected`.
+fn schema_smoke_errors(cfg: &str, expected: &str) -> Vec<String> {
+    let mut errors = Vec::new();
+    for marker in SCHEMA_SMOKE_MARKERS {
+        let literals: Vec<&str> = cfg
+            .match_indices(marker)
+            .filter_map(|(pos, _)| cfg[pos + marker.len()..].split('\'').next())
+            .collect();
+        if literals.is_empty() {
+            errors.push(format!(
+                "el humo de la CI no contiene la comprobación de schema_version (`{marker}`)"
+            ));
+        }
+        for literal in literals {
+            if literal != expected {
+                errors.push(format!(
+                    "el humo de la CI exige schema_version {literal:?} y el envelope de la CLI es {expected:?} (CLI_SCHEMA_VERSION)"
+                ));
+            }
+        }
+    }
     errors
 }
 
@@ -213,6 +254,7 @@ mod tests {
         Pins {
             rust: "1.96.0".to_string(),
             ort: "1.28.0".to_string(),
+            ort_sha256: std::collections::BTreeMap::new(),
             sccache: "0.8.2".to_string(),
             msys2_base: "2026-06-11".to_string(),
             msys2_gcc: "16.2.0".to_string(),
@@ -224,7 +266,8 @@ mod tests {
         }
     }
 
-    /// CI de juguete con los nueve parámetros esperados y sin literales.
+    /// CI de juguete con los nueve parámetros esperados, sin literales de
+    /// versión y con el humo de `schema_version` en la versión vigente.
     fn toy_config() -> String {
         let pins = toy_pins();
         let mut cfg = String::from("parameters:\n");
@@ -236,7 +279,17 @@ mod tests {
                 "  {key}_pin:\n    type: string\n    default: \"{value}\"\n"
             ));
         }
+        cfg.push_str(&toy_schema_smoke(
+            avi_core::json_emitter::CLI_SCHEMA_VERSION,
+        ));
         cfg
+    }
+
+    /// Línea del humo de Windows que exige `version` a `version --json`.
+    fn toy_schema_smoke(version: &str) -> String {
+        format!(
+            "            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '{version}') {{ throw \"version --json: campo 'schema_version' != '{version}': $jsonRaw\" }}\n"
+        )
     }
 
     /// Canal de juguete que copia el pin de Rust.
@@ -318,6 +371,44 @@ mod tests {
         assert!(check_text(&toy_pins(), &cfg, &toy_toolchain()).is_empty());
     }
 
+    /// Un humo que exige otra `schema_version` que la del envelope vigente se
+    /// rechaza, también si solo diverge el mensaje de error.
+    #[test]
+    fn stale_schema_smoke_is_rejected() {
+        let current = avi_core::json_emitter::CLI_SCHEMA_VERSION;
+        let cfg = toy_config().replace(&toy_schema_smoke(current), &toy_schema_smoke("0"));
+        let errors = check_text(&toy_pins(), &cfg, &toy_toolchain());
+        assert_eq!(errors.len(), 2, "comparación y mensaje: {errors:?}");
+        assert!(errors
+            .iter()
+            .all(|e| e.contains("\"0\"") && e.contains(current)));
+
+        let half = toy_config().replacen(&format!("-ne '{current}'"), "-ne '0'", 1);
+        let errors = check_text(&toy_pins(), &half, &toy_toolchain());
+        assert_eq!(errors.len(), 1, "solo diverge la comparación: {errors:?}");
+    }
+
+    /// Un pipeline sin la comprobación de `schema_version` se rechaza: retirarla
+    /// no puede pasar la puerta en silencio.
+    #[test]
+    fn missing_schema_smoke_is_rejected() {
+        let cfg = toy_config().replace(
+            &toy_schema_smoke(avi_core::json_emitter::CLI_SCHEMA_VERSION),
+            "",
+        );
+        let errors = check_text(&toy_pins(), &cfg, &toy_toolchain());
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert!(errors.iter().all(|e| e.contains("no contiene")));
+    }
+
+    /// El pipeline real exige al humo la `schema_version` vigente.
+    #[test]
+    fn real_pipeline_smoke_matches_cli_schema_version() {
+        let cfg = include_str!("../../../.circleci/config.yml");
+        let errors = schema_smoke_errors(cfg, avi_core::json_emitter::CLI_SCHEMA_VERSION);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
     #[test]
     fn sync_writes_channel_from_pins() {
         let guard = own_dir("sync");
@@ -326,7 +417,7 @@ mod tests {
         std::fs::write(
             dir.join("packaging/pins.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "rust": "1.96.0", "ort": "1.28.0", "sccache": "0.8.2",
+                "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "sccache": "0.8.2",
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6",
@@ -348,7 +439,7 @@ mod tests {
         std::fs::write(
             dir.join("packaging/pins.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "rust": "1.96.0", "ort": "1.28.0", "sccache": "0.8.2",
+                "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "sccache": "0.8.2",
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6",
