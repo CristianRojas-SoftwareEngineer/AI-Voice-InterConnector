@@ -297,7 +297,7 @@ fn cwd_vendor_allowed() -> bool {
 
 /// Resolución del binario del motor por capas:
 /// 1. `QWEN3_TTS_BIN` (si está definida debe ser un archivo existente);
-///    2. `<exe_dir>/vendor/qwen3-tts/qwen_tts(.exe)`; 3. `<cwd>/vendor/qwen3-tts/qwen_tts(.exe)`
+///    2. `<directorio real del programa>/vendor/qwen3-tts/qwen_tts(.exe)`; 3. `<cwd>/vendor/qwen3-tts/qwen_tts(.exe)`
 ///    (solo con `AVI_ALLOW_CWD_VENDOR=1`; si habría resuelto, avisa qué se
 ///    ignoró y cómo habilitarlo);
 ///    4. búsqueda en `PATH`. `Ok(None)` indica que ninguna capa lo halló.
@@ -306,16 +306,14 @@ fn resolve_binary() -> Result<Option<PathBuf>> {
     {
         return Ok(Some(bin));
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let cand = dir.join(if cfg!(windows) {
-                "vendor/qwen3-tts/qwen_tts.exe"
-            } else {
-                "vendor/qwen3-tts/qwen_tts"
-            });
-            if cand.is_file() {
-                return Ok(Some(cand));
-            }
+    if let Ok(dir) = avi_shared::paths::program_dir() {
+        let cand = dir.join(if cfg!(windows) {
+            "vendor/qwen3-tts/qwen_tts.exe"
+        } else {
+            "vendor/qwen3-tts/qwen_tts"
+        });
+        if cand.is_file() {
+            return Ok(Some(cand));
         }
     }
     let vendored = PathBuf::from(if cfg!(windows) {
@@ -372,12 +370,10 @@ fn resolve_named_model_dir(
             }
         }
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let cand = dir.join("vendor/qwen3-tts").join(dir_name);
-            if cand.is_dir() {
-                return Ok(Some(cand));
-            }
+    if let Ok(dir) = avi_shared::paths::program_dir() {
+        let cand = dir.join("vendor/qwen3-tts").join(dir_name);
+        if cand.is_dir() {
+            return Ok(Some(cand));
         }
     }
     if let Some(p) = avi_store::ModelStore::new()?.model_snapshot_path(dir_name) {

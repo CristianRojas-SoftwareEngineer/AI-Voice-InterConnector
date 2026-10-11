@@ -310,6 +310,7 @@ dependencies = [
  "anyhow",
  "avi-audio",
  "avi-core",
+ "avi-shared",
  "avi-store",
  "ort",
 ]

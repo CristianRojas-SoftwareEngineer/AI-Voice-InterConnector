@@ -219,6 +219,19 @@ impl Report {
     pub fn is_failure(&self) -> bool {
         !self.failed.is_empty()
     }
+
+    /// Añade una comprobación que este crate no puede hacer porque exige un
+    /// motor que no enlaza (la hace el binario) y mantiene `failed` coherente.
+    pub fn push_check(&mut self, name: &str, ok: bool, detail: String) {
+        self.checks.push(Check {
+            name: name.to_string(),
+            ok,
+            detail,
+        });
+        if !ok {
+            self.failed.push(name.to_string());
+        }
+    }
 }
 
 /// Informa del ciclo de vida y devuelve el veredicto como dato.
@@ -955,5 +968,37 @@ mod tests {
         let report = report(&env, &exe, "9.9.9");
         assert_eq!(report.version, "9.9.9");
         assert_ne!(report.version, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// Una comprobación externa fallida entra en `checks` y en `failed`; una
+    /// superada, solo en `checks`.
+    #[test]
+    fn push_check_keeps_failed_in_sync() {
+        let mut report = Report {
+            version: String::new(),
+            target: String::new(),
+            channel: Channel::Unmanaged,
+            install: Install {
+                dir: PathBuf::new(),
+                data_dir: PathBuf::new(),
+                receipt: "absent",
+                version: None,
+            },
+            path: PathState {
+                resolves_to_this_install: false,
+                duplicate_entries: Vec::new(),
+                integration: "not_modified",
+                coexisting: Vec::new(),
+            },
+            pending: Pending::default(),
+            models: Models::default(),
+            checks: Vec::new(),
+            failed: Vec::new(),
+        };
+        report.push_check("ok_check", true, "bien".to_string());
+        report.push_check("bad_check", false, "mal".to_string());
+        assert_eq!(report.checks.len(), 2);
+        assert_eq!(report.failed, vec!["bad_check".to_string()]);
+        assert!(report.is_failure());
     }
 }

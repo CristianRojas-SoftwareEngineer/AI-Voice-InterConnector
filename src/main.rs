@@ -3430,6 +3430,8 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
         drop(lock);
     }
     let report = lifecycle::doctor::report(&env, &exe, VERSION);
+    #[cfg(feature = "native-stt")]
+    let report = with_onnx_runtime_check(report);
     let failed = report.is_failure();
 
     if json_mode {
@@ -3467,6 +3469,22 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     } else {
         Ok(Outcome::Done)
     }
+}
+
+/// Añade al reporte de `doctor` la comprobación `onnx_runtime`: carga la
+/// librería de ONNX Runtime que trae el bundle (o la de `ORT_DYLIB_PATH`) y
+/// falla con la ruta buscada si no carga.
+#[cfg(feature = "native-stt")]
+fn with_onnx_runtime_check(mut report: lifecycle::doctor::Report) -> lifecycle::doctor::Report {
+    match avi_stt::parakeet::ensure_onnx_runtime() {
+        Ok(path) => report.push_check(
+            "onnx_runtime",
+            true,
+            format!("ONNX Runtime cargada desde {}", path.display()),
+        ),
+        Err(e) => report.push_check("onnx_runtime", false, e.to_string()),
+    }
+    report
 }
 
 /// Traduce un `reason` del motor a la variante de `ExitCode` que le corresponde.
