@@ -95,7 +95,7 @@ El toolchain de Rust basta para compilar y empaquetar; no se requiere ningún ot
 | SO | Probado en (CI) | Mínimo declarado | Origen del mínimo |
 |----|-----------------|------------------|-------------------|
 | Windows | Executor `circleci/windows@5.0` (Windows Server 2022) | Windows 10 1903+ x64 | Binario Rust sin APIs posteriores; el motor TTS incrusta un manifiesto `activeCodePage` UTF-8, que las versiones anteriores ignoran (el motor recibiría el texto y las rutas no ASCII en la página de códigos ANSI) |
-| Linux | `cimg/rust:1.96.0` (base Ubuntu 22.04, glibc 2.35) | glibc ≥ 2.35 y las librerías de [Dependencias de runtime](#dependencias-de-runtime-por-plataforma) | Binario `gnu` enlazado contra la glibc del runner; el bootstrap lo diagnostica con la comprobación de arranque (`binary_incompatible`) |
+| Linux | Imagen `manylinux_2_28` (AlmaLinux 8, glibc 2.28) para compilar; sala limpia en `almalinux:8` y `debian:stable-slim` | glibc ≥ 2.28, sin librerías aparte (ver [Dependencias de runtime](#dependencias-de-runtime-por-plataforma)) | Binario `gnu` enlazado contra la glibc 2.28 de la imagen de build; `xtask package` audita el techo de símbolos y el bootstrap lo diagnostica con la comprobación de arranque (`binary_incompatible`) |
 | macOS | Runner Apple Silicon Xcode 26.4 | macOS 26+ (Tahoe), cualquier Mac con Apple Silicon (M1 en adelante) | `MACOSX_DEPLOYMENT_TARGET=26.0` en `build-darwin-arm64`; ver [Versión mínima de macOS](#versión-mínima-de-macos) |
 
 **Limitación aceptada:** los mínimos declarados **no** se prueban en máquinas
@@ -125,8 +125,9 @@ un target que está por quedar obsoleto cuesta más de lo que aporta.
 
 El job `build-darwin-arm64` fija `MACOSX_DEPLOYMENT_TARGET=26.0`, que leen
 rustc, el crate `cc`, CMake y el clang del Makefile del motor, y comprueba con
-`otool -l` el `minos` del binario y del motor (debe ser exactamente 26.0) y el
-de la librería de ONNX Runtime empaquetada (menor o igual). El motor se compila
+`cargo xtask package` que ningún binario del bundle, incluida la librería de
+ONNX Runtime, declare un `minos` mayor que el `min_os` del manifiesto (26.0).
+El motor se compila
 con `-mcpu=apple-m1`: M1 es el chip más antiguo que soporta macOS 26, y su
 código corre en todos los posteriores. El Cask de Homebrew declara
 `depends_on macos: ">= :tahoe"`, y `install.sh` nombra esta versión mínima en
@@ -134,35 +135,57 @@ su diagnóstico `binary_incompatible`.
 
 ### Dependencias de runtime por plataforma
 
-En **Windows** no hace falta instalar nada: el binario principal y
-CTranslate2 enlazan el CRT estático (`+crt-static`), el motor TTS se enlaza con
-`-static`, y el archivo trae las cuatro DLL del runtime de VC++ que no forman
-parte de Windows: `vcruntime140.dll`, `vcruntime140_1.dll` y `msvcp140.dll`,
+El archivo de cada target solo depende del **sistema base** de su plataforma:
+no hay que instalar nada más. El contrato está declarado por target en
+`packaging/bundle-manifest.json` y `cargo xtask package` lo hace cumplir antes
+de comprimir (ver [Auditoría de dependencias](#auditoría-de-dependencias)):
+
+| Target | Sistema base que puede usar el bundle |
+|---|---|
+| Windows x64 | DLL de Windows (`kernel32.dll`, `ntdll.dll`, el Universal CRT `api-ms-win-*` y las demás de la lista del manifiesto) y las que trae el propio archivo |
+| Linux x64 y arm64 | glibc ≥ 2.28 (`libc`, `libm` y su `libmvec`, `libdl`, `librt`, `libpthread` y el cargador) más `libstdc++.so.6` y `libgcc_s.so.1`, que toda distribución con glibc trae; ningún símbolo por encima de `GLIBC_2.28` ni de `GLIBCXX_3.4.21` |
+| macOS arm64 | `/usr/lib` (libSystem, libc++) y los frameworks de `/System`, con `minos` ≤ 26.0 |
+
+En **Windows**, el binario principal y CTranslate2 enlazan el CRT estático
+(`+crt-static`), el motor TTS se enlaza con `-static`, y el archivo trae las
+cinco DLL del runtime de VC++ que no forman parte de Windows:
+`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll` y `msvcp140_1.dll`,
 que necesita ONNX Runtime, y `vcomp140.dll`, el runtime OpenMP de MSVC que el
 binario importa porque CTranslate2 se compila con `/openmp`.
 
-En **Linux** el binario principal enlaza de forma dinámica estas librerías del
-sistema, que deben estar instaladas (nombres de paquete de Debian/Ubuntu; otras
-distribuciones las publican con nombres equivalentes):
+En **Linux**, el binario se compila contra glibc 2.28 (imagen `manylinux_2_28`)
+y no declara más librerías que las del sistema base:
 
-| Librería | Paquete (Debian/Ubuntu) | La necesita | Por qué |
-|---|---|---|---|
-| `libasound.so.2` | `libasound2` (`libasound2t64` en Ubuntu 24.04+) | binario principal | Audio ALSA de `cpal`, que `alsa-sys` enlaza de forma dinámica |
-| `libgomp.so.1` | `libgomp1` | binario principal | Runtime OpenMP de CTranslate2 (traducción) |
-| `libstdc++.so.6` | `libstdc++6` | binario principal y `libonnxruntime.so` | Runtime C++ de CTranslate2 y de ONNX Runtime |
-
-Sin ellas el binario no arranca, y el bootstrap aborta con
-`binary_incompatible`. El motor TTS (`qwen_tts`) enlaza OpenBLAS y el runtime
-Fortran que usa su LAPACK (`libgfortran` y, en x86_64, `libquadmath`) de forma
-estática, así que solo depende de glibc; el job de build lo comprueba con `ldd`.
+- **ALSA** se carga en tiempo de ejecución: la copia vendorizada de `alsa-sys`
+  (`vendor/alsa-sys-0.4.0`) resuelve cada función con `dlopen`/`dlsym` sobre
+  `libasound.so.2` en el primer uso. Sin ALSA el binario arranca y solo
+  `devices` y las órdenes que reproducen o capturan audio fallan, con un error
+  que nombra la librería.
+- **OpenMP y C++**: `crates/avi-translation/build.rs` sirve `libgomp.a` y
+  `libstdc++.a` del compilador en un directorio de búsqueda propio, de modo que
+  `-lgomp` y `-lstdc++` resuelven a las estáticas. Solo `libonnxruntime.so`, la
+  librería oficial de Microsoft, usa la `libstdc++.so.6` del sistema, con
+  `GLIBCXX_3.4.21` como máximo.
+- El motor TTS (`qwen_tts`) enlaza OpenBLAS y el runtime Fortran que usa su
+  LAPACK (`libgfortran` y, en x86_64, `libquadmath`) de forma estática.
 
 En **macOS** el motor usa el framework Accelerate y el audio CoreAudio, que
-forman parte del sistema, así que no hace falta instalar nada.
+forman parte del sistema.
 
 En **Linux y macOS** la parada del daemon y su registro observan la identidad
-de los procesos con `/bin/ps` (por ruta fija, con `LC_ALL=C`): sin `/bin/ps`
-(algunas imágenes de contenedor mínimas no traen `procps`) el daemon no arranca,
-porque no puede registrar su propia identidad.
+de los procesos sin herramientas externas: en Linux, de una sola lectura de
+`/proc/<pid>/stat` (`starttime` y `comm`); en macOS, con
+`proc_pidinfo(PROC_PIDTBSDINFO)`.
+
+#### Auditoría de dependencias
+
+`cargo xtask package` lee cada ejecutable y librería del bundle montado (ELF,
+Mach-O o PE, con el crate `object`) y falla, nombrando fichero y dependencia, si
+importa una librería que no es del sistema base del target ni del propio
+bundle, si exige una versión de símbolo por encima del techo de su familia o si
+declara un `minos` mayor que el mínimo de macOS. Reporta todas las violaciones
+juntas. `cargo xtask deps --check --dir <ruta>` aplica la misma auditoría a un
+árbol ya montado o extraído, con el contrato del target del host.
 
 ---
 
@@ -269,15 +292,16 @@ corridas con la caché `ort-v3`.
 | build-darwin-arm64 | `onnxruntime-osx-arm64-1.28.0.tgz` | `libonnxruntime.dylib` |
 
 En **Windows**, la `onnxruntime.dll` de Microsoft es `/MD` y depende del runtime
-de VC++ (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`), y el binario
-principal importa `vcomp140.dll`, el runtime OpenMP de MSVC que usa CTranslate2.
-Para no exigir al usuario instalar el *Visual C++ Redistributable*, esas cuatro
+de VC++ (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`,
+`msvcp140_1.dll`), y el binario principal importa `vcomp140.dll`, el runtime
+OpenMP de MSVC que usa CTranslate2. Para no exigir al usuario instalar el
+*Visual C++ Redistributable*, esas cinco
 DLLs se empaquetan junto al binario (*app-local deployment*, permitido por la
 licencia de redistribución de MS): `cargo xtask package` las copia de System32
 del runner. El Universal CRT (`ucrtbase.dll`) ya forma parte de Windows 10/11.
 En Linux/macOS la librería depende del runtime C++ del SO
-(`libstdc++` / `libc++`); en Linux es una de las
-[dependencias de runtime](#dependencias-de-runtime-por-plataforma).
+(`libstdc++` / `libc++`), que forma parte del sistema base (ver
+[dependencias de runtime](#dependencias-de-runtime-por-plataforma)).
 
 Los instaladores extraen el archivo completo al directorio de instalación y
 ejecutan el binario desde ahí, de modo que la librería llega junto al binario y
@@ -296,16 +320,19 @@ antes de publicar el artefacto, ejecuta en este orden:
    falla si el literal del humo y la constante divergen). `voice list` hace
    fallar el job si falta la voz `default`.
 2. `cargo xtask build-engine --self-test`: compila el motor TTS y ejecuta su
-   oráculo de kernels, sin pesos del modelo. En Linux, `ldd` comprueba además
-   que el motor no enlaza OpenBLAS ni su runtime Fortran de forma dinámica; en
-   macOS, `otool -l` comprueba que el binario y el motor declaran `minos` 26.0.
-3. `cargo xtask package --expect-version`, que repite `version` y `voice list`
-   sobre el binario, verifica el SHA-256 de ONNX Runtime si lo descarga y monta
-   el bundle. En macOS se comprueba después el `minos` de lo empaquetado,
-   incluida la librería de ONNX Runtime.
+   oráculo de kernels, sin pesos del modelo.
+ 3. `cargo xtask package --expect-version`, que repite `version` y `voice list`
+    sobre el binario, verifica el SHA-256 de ONNX Runtime si lo descarga, monta
+    el bundle y audita sus dependencias contra el contrato del target (ver
+    [Auditoría de dependencias](#auditoría-de-dependencias)).
 4. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
    archivo empaquetado en un sandbox con las cuatro raíces reubicadas, y
    `--version` del binario instalado.
+5. En Linux, la sala limpia (`clean-room-linux`): el artefacto, sin compilar
+   nada, en `almalinux:8` y `debian:stable-slim` (sin paquetes de desarrollo,
+   ALSA, `libgomp` ni `procps`): `--version`, `voice list`, `self install` en
+   un sandbox, `--version` por el symlink instalado y la comprobación
+   `onnx_runtime` de `doctor`. `publish-release` depende de ella.
 
 `version` y `voice list` **no cargan el modelo** (las voces de fábrica viajan
 embebidas en el binario vía `crates/avi-store/assets/`), así que el chequeo es
@@ -432,8 +459,9 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 | `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo xtask changelog --check` |
 | `test-bootstrap-*` | `build-all` | por SO | bats/Pester | Suites de los bootstrap (`tests/bootstrap/`; bats contra `openssl s_server`, Pester contra `Serve.ps1`) |
 | `build-windows-x64` | `build-all` | Windows x64 | `win/server-2022` | `cargo build --release --features full` + staging `.zip` |
-| `build-linux-x64` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
-| `build-linux-arm64` | `build-all` | Linux ARM64 | docker `cimg/rust:1.96.0` (`arm.medium`) | idem, nativo aarch64 |
+| `build-linux-x64` | `build-all` | Linux x64 | docker `manylinux_2_28_x86_64` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
+| `build-linux-arm64` | `build-all` | Linux ARM64 | docker `manylinux_2_28_aarch64` (`arm.medium`) | idem, nativo aarch64 |
+| `clean-room-linux` | `build-all` | Linux x64 y ARM64 | docker `almalinux:8` y `debian:stable-slim` | Sala limpia del artefacto Linux; `publish-release` depende de ella |
 | `build-darwin-arm64` | `build-all` | macOS arm64 | macos `m4pro.medium` | idem, Xcode 26.4 |
 | `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:2026.09` (pineada por digest) | Solo en tags `v*`: estampa los bootstrap, genera `SHA256SUMS.txt` sobre los 6 ficheros y publica el GitHub Release con 7 assets |
 | `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/rust` | Solo en tags `v*`: renderiza Cask con `cargo xtask cask` y empuja al tap |
@@ -447,7 +475,7 @@ distintos**.
   validan lógica Rust por SO (Windows: lanzamiento con lista explícita de
   handles, limpiador diferido, `PATH` en HKCU y WASAPI; macOS: CoreAudio y
   cuarentena de Gatekeeper; Linux y macOS: `setsid`, señales e identidad de
-  proceso con `/bin/ps`; Linux: ALSA). Los builds son **por target de
+  proceso por `/proc` y `proc_pidinfo`; Linux: ALSA). Los builds son **por target de
   distribución**, y Linux publica **dos**
   arquitecturas. Son dos ejes ortogonales (SO × build-target).
 
@@ -549,17 +577,18 @@ registry y las cachés del job. La vigila
 
 #### Parches vendorizados en la clave de `target/`
 
-El `Cargo.toml` raíz reemplaza dos crates por copias parcheadas locales
-(`[patch.crates-io]`): `cmake` (`vendor/cmake-0.1.58`) y `hf-hub`
-(`vendor/hf-hub-1.0.0`). Al ser paquetes locales, cargo los identifica por
+El `Cargo.toml` raíz reemplaza tres crates por copias parcheadas locales
+(`[patch.crates-io]`): `cmake` (`vendor/cmake-0.1.58`), `hf-hub`
+(`vendor/hf-hub-1.0.0`) y `alsa-sys` (`vendor/alsa-sys-0.4.0`). Al ser paquetes locales, cargo los identifica por
 `mtime`, y el `mtime` nuevo del checkout los marcaría `Dirty` en cada corrida.
 Para `cmake` eso arrastraría la recompilación de toda la cadena nativa que
 depende de él (`aws-lc-sys`, `onednn-src`, `sentencepiece-sys`, `ct2rs`) aunque
 su contenido no hubiera cambiado.
 
 Para evitarlo, `cargo_restore_caches` escribe en `.vendor-patches.tree` el tree
-hash git de ambos directorios (`git rev-parse HEAD:vendor/cmake-0.1.58` y
-`git rev-parse HEAD:vendor/hf-hub-1.0.0`, una línea por directorio) y lo
+hash git de los tres directorios (`git rev-parse HEAD:vendor/cmake-0.1.58`,
+`git rev-parse HEAD:vendor/hf-hub-1.0.0` y
+`git rev-parse HEAD:vendor/alsa-sys-0.4.0`, una línea por directorio) y lo
 incorpora a la clave de `target/`. Como la clave no tiene fallback, un acierto
 garantiza que `target/` se compiló con el mismo contenido de los parches, y es
 seguro fijarles un `mtime` antiguo (`touch -t 200001010000`) para que cargo los
@@ -627,6 +656,11 @@ El entorno de `sccache` (`RUSTC_WRAPPER`, `SCCACHE_DIR` y el límite `SCCACHE_CA
 
 El parche `vendor/cmake-0.1.58` fija `CMAKE_<LANG>_FLAGS_RELEASE` con los flags que calcula el crate `cc` (runtime estático `/MT`) más `/O2 /Ob2 /DNDEBUG`, tanto sin generador explícito como con Ninja. La rama de Ninja es necesaria porque los proyectos con la política CMP0091 en OLD (oneDNN) heredarían `/MD` del valor por defecto de CMake mientras Rust enlaza con `/MT`, y el enlace fallaría con `LNK2038`. Así, los objetos C++ de Windows se compilan con los mismos flags de optimización y runtime que con Visual Studio, lo que se verifica con el diagnóstico de la sonda (`CMakeCache.txt` y `build.ninja`). Medición en una compilación local del binario de Windows (`--features full`, 4 hilos, mismo MSVC 14.44 que el executor): `16 min` con `target/` y `sccache` fríos frente a `4 min 45 s` con `target/` frío y `sccache` caliente (809 de 825 unidades C/C++ servidas por `sccache`). El executor de Windows compila unas 2,35 veces más lento que esa máquina, de modo que tras un cambio de clave de `target/` sin cambios nativos se espera `build-windows-x64` en torno a 11–15 min.
 
+El mismo parche fija `CMAKE_INSTALL_LIBDIR=lib` salvo que el llamador lo
+defina: en distribuciones tipo RHEL de 64 bits (la imagen `manylinux_2_28`),
+`GNUInstallDirs` instala las librerías en `lib64`, y los build scripts que solo
+buscan en `<out>/lib` (`onednn-src`) no las encontrarían.
+
 #### Escenarios de invalidación y su costo
 
 Qué cambio invalida qué caché y cuánto alarga los `build-*`, de menor a mayor
@@ -668,10 +702,11 @@ Las claves exactas de cada familia están en `.circleci/config.yml`.
 
 ### Reproducibilidad: pines por digest y sus implicaciones
 
-Las imágenes `cimg/rust:1.96.0` van pineadas por digest (`@sha256:...`), y
+Las imágenes (`cimg/rust:1.96.0`, `manylinux_2_28` de los build-linux-* y las
+de la sala limpia) van pineadas por digest (`@sha256:...`), y
 `rust_pin` + `ort_pin` son parámetros únicos del pipeline (`pipeline.parameters`).
 Ver `.circleci/config.yml` §Reproducibilidad para procedimiento de bump (bumpear
-`ort_pin` invalida `ort-v3` en el siguiente tag).
+`ort_pin` invalida `ort-v4` en el siguiente tag).
 
 El archivo de configuración completo está en `.circleci/config.yml`.
 
@@ -840,7 +875,9 @@ pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidenc
 
 > **OpenBLAS estático en Linux.** Debian y Ubuntu instalan `libopenblas.a`
 > (paquete `libopenblas-dev`) en `/usr/lib/<multiarch>/openblas-pthread/`, fuera
-> de la ruta del enlazador, así que el `Makefile` la busca por ruta (o la toma
+> de la ruta del enlazador, y EL8 (la imagen `manylinux_2_28` de la CI, paquete
+> `openblas-static`) llama `libopenblasp.a` a la variante con hilos, así que el
+> `Makefile` la busca por ruta, con la variante con hilos primero (o la toma
 > de `OPENBLAS_A=<ruta>`) y, si no la encuentra, el enlace del motor falla con
 > el remedio en lugar de enlazar la dinámica. Su LAPACK está compilado con
 > gfortran: `libgfortran.a` debe ser la de la versión mayor del `gcc` en uso

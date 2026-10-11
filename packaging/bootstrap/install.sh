@@ -175,7 +175,7 @@ main() {
         if [ "$os" = "Darwin" ]; then
             log "Causa probable en macOS: versión anterior a macOS 26 (Tahoe), la mínima que exige el binario."
         else
-            log "Causa probable en Linux: glibc insuficiente (se requiere glibc >= 2.35), una librería del sistema ausente (libasound.so.2, libgomp.so.1 o libstdc++.so.6), musl (Alpine) o userland de 32 bits."
+            log "Causa probable en Linux: glibc insuficiente (se requiere glibc >= 2.28), musl (Alpine) o userland de 32 bits."
         fi
         log "Alternativa: compila desde la fuente siguiendo docs/BUILD.md. La instalación existente no se ha modificado."
         exit 1

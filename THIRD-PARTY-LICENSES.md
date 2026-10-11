@@ -80,13 +80,22 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
   la librería oficial de Microsoft, bajo **MIT**
   (<https://github.com/microsoft/onnxruntime/blob/main/LICENSE>).
 - **Runtime de Visual C++** (solo Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
-  `msvcp140.dll` y `vcomp140.dll`): ficheros redistribuibles del Microsoft Visual C++
+  `msvcp140.dll`, `msvcp140_1.dll` y `vcomp140.dll`): ficheros redistribuibles del Microsoft Visual C++
   Redistributable, que su licencia permite desplegar junto a la aplicación
   (<https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files>).
 - **Motor TTS `qwen_tts`**: enlaza estáticamente OpenBLAS (**BSD-3-Clause**) y, en
   Windows y Linux, el runtime de GCC que usa su LAPACK (`libgfortran` y `libgcc` bajo
   GPL-3.0 con la **GCC Runtime Library Exception**, y, en Windows y Linux x86_64,
   `libquadmath` bajo **LGPL-2.1-or-later**, compatible con la GPLv3 del proyecto).
+- **Runtime de GCC en el binario de Linux**: el binario principal enlaza
+  estáticamente `libgomp` (runtime OpenMP de CTranslate2) y `libstdc++` (runtime
+  C++ de CTranslate2, SentencePiece y `cxx`), del gcc-toolset de la imagen de
+  build, bajo GPL-3.0 con la **GCC Runtime Library Exception**; `libgcc_s` se
+  usa dinámica, del sistema.
+- **`alsa-sys` vendorizado** (`vendor/alsa-sys-0.4.0`, solo Linux): copia del
+  crate `alsa-sys` 0.4.0 bajo **MIT** (`vendor/alsa-sys-0.4.0/LICENSE`),
+  modificada para cargar `libasound.so.2` en tiempo de ejecución con `dlopen` en
+  lugar de enlazarla.
 
 ---
 

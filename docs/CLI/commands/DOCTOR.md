@@ -49,6 +49,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `path_duplicates` | Más de una entrada del `PATH` apunta a una instalación | Coexistencia (Cask + `script`) |
 | `pending_artifacts` | Quedan aparcados, stagings o temporales por recoger | Transacción interrumpida |
 | `models_provisioned` | Falta algún repo de la selección, el modelo Base de clonado incluido | Solo presencia de snapshot, con los ficheros críticos |
+| `onnx_runtime` | La librería de ONNX Runtime del directorio real del programa (o la de `ORT_DYLIB_PATH`) no existe o no carga; el detalle nombra la ruta buscada | Solo en binarios con STT (`native-stt`): carga la librería, sin modelos |
 
 **El modelo Base de clonado no tiene un chequeo propio.** `qwen3-tts-0.6b-base` es un modelo obligatorio como los demás: su ausencia aparece en `models.missing` y hace fallar `models_provisioned`.
 

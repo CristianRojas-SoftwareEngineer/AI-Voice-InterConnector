@@ -48,7 +48,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 | Término | Definición |
 |---|---|
-| **Bundle** | Contenido completo de un release para un target: ejecutable, motor TTS (`qwen_tts`), librería de ONNX Runtime (más las cuatro DLL del runtime de VC++ en Windows: las tres que necesita ONNX Runtime y `vcomp140.dll`, que importa el ejecutable) y documentos de licencia. Se instala siempre entero. |
+| **Bundle** | Contenido completo de un release para un target: ejecutable, motor TTS (`qwen_tts`), librería de ONNX Runtime (más las cinco DLL del runtime de VC++ en Windows: las cuatro que necesita ONNX Runtime y `vcomp140.dll`, que importa el ejecutable) y documentos de licencia. Se instala siempre entero. |
 | **Archivo de release** | El bundle comprimido (`.tar.gz` o `.zip`) publicado en GitHub Releases y listado en `SHA256SUMS.txt`. |
 | **Bootstrap** | Script mínimo de primer contacto (`install.sh`, `install.ps1`) que obtiene y verifica el bundle y delega la instalación en el propio binario. |
 | **Directorio de programa** | Directorio donde vive el bundle instalado. Propiedad exclusiva de la aplicación; nunca contiene datos del usuario. |
@@ -64,8 +64,8 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 | Target | Triple de Rust | Archivo de release | Mínimo declarado |
 |---|---|---|---|
 | Windows x86_64 | `x86_64-pc-windows-msvc` | `ai-voice-interconnector-<ver>-x86_64-windows.zip` | Windows 10 x64 |
-| Linux x86_64 | `x86_64-unknown-linux-gnu` | `ai-voice-interconnector-<ver>-x86_64-linux.tar.gz` | glibc ≥ 2.35 |
-| Linux arm64 | `aarch64-unknown-linux-gnu` | `ai-voice-interconnector-<ver>-arm64-linux.tar.gz` | glibc ≥ 2.35, userland de 64 bits |
+| Linux x86_64 | `x86_64-unknown-linux-gnu` | `ai-voice-interconnector-<ver>-x86_64-linux.tar.gz` | glibc ≥ 2.28 |
+| Linux arm64 | `aarch64-unknown-linux-gnu` | `ai-voice-interconnector-<ver>-arm64-linux.tar.gz` | glibc ≥ 2.28, userland de 64 bits |
 | macOS arm64 | `aarch64-apple-darwin` | `ai-voice-interconnector-<ver>-arm64-macos.tar.gz` | macOS 26 (Tahoe), cualquier Mac con Apple Silicon |
 
 **Detección del target.** El bootstrap y el binario aplican la misma tabla:
@@ -76,7 +76,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 **Plataformas no soportadas**: Windows ARM64, macOS Intel, Linux con musl (Alpine), Linux de 32 bits y userland de 32 bits sobre kernel de 64 bits. Terminan con `unsupported_platform` (o con `binary_incompatible` si la incompatibilidad solo se detecta al ejecutar el binario) y un mensaje que remite a compilar desde el código fuente ([BUILD.md](../BUILD.md)).
 
-**Compatibilidad comprobada, no inferida.** No se parsean versiones de glibc para decidir si se instala: se ejecuta el binario descargado (`--version`) y, si no arranca, el mensaje enumera las causas probables de su SO sin averiguar cuál es: en Linux, glibc insuficiente, una librería del sistema ausente, musl o userland de 32 bits; en macOS, una versión anterior a la mínima (macOS 26). Una sola comprobación cubre todas las incompatibilidades de ABI, incluidas las que un parseo no detecta.
+**Compatibilidad comprobada, no inferida.** No se parsean versiones de glibc para decidir si se instala: se ejecuta el binario descargado (`--version`) y, si no arranca, el mensaje enumera las causas probables de su SO sin averiguar cuál es: en Linux, glibc insuficiente (se requiere glibc ≥ 2.28), musl o userland de 32 bits; en macOS, una versión anterior a la mínima (macOS 26). Una sola comprobación cubre todas las incompatibilidades de ABI, incluidas las que un parseo no detecta.
 
 ## 4. Evaluación de alternativas
 
@@ -609,7 +609,6 @@ La tabla de requisitos y las versiones fijadas (Rust, ONNX Runtime, paquetes de 
 | Compilador C/C++ del workspace (CTranslate2) | Visual Studio Build Tools (C++) | gcc/g++ | Xcode Command Line Tools | Sistema |
 | CMake ≥ 3.20 | winget | Gestor de la distribución | Homebrew | Sistema |
 | libclang (bindgen de `ct2rs`) | LLVM | `libclang-dev` o equivalente | Xcode Command Line Tools | Sistema |
-| pkg-config y cabeceras de ALSA | — | `pkg-config`, `libasound2-dev` o equivalentes | — | Sistema |
 | Toolchain del motor TTS | MSYS2 UCRT64 (gcc, OpenBLAS y `mingw32-make` fijados) | make, gcc y las librerías estáticas de OpenBLAS y libgfortran (el motor las enlaza estáticas) | make, clang y Accelerate (Xcode CLT) | Sistema (MSYS2: su `pacman`) |
 | ONNX Runtime (runtime de STT, versión fijada) | Descarga del asset oficial verificada con el SHA-256 fijado | Ídem | Ídem | `cargo xtask bootstrap` |
 | sccache (opcional) | ✅ | ✅ | ✅ | `cargo install` o gestor |
@@ -683,7 +682,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Primera instalación | `irm …/install.ps1 \| iex` | `curl …/install.sh \| sh` | Ídem | Ídem (o Cask) |
 | Directorio de programa | `%LOCALAPPDATA%\Programs\ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` | Ídem | Ídem |
 | Integración de PATH | `HKCU\Environment\Path` (tipo conservado) + `WM_SETTINGCHANGE` | Enlace en `~/.local/bin` + bloque en los perfiles | Ídem | Ídem |
-| Particularidad | Ejecutable en uso: se aparca y se borra de forma diferida | glibc ≥ 2.35 comprobada al arrancar | Ídem + userland de 64 bits | Cuarentena limpiada en todo el bundle; detección correcta bajo Rosetta |
+| Particularidad | Ejecutable en uso: se aparca y se borra de forma diferida | glibc ≥ 2.28 comprobada al arrancar | Ídem + userland de 64 bits | Cuarentena limpiada en todo el bundle; detección correcta bajo Rosetta |
 | Actualizar | `ai-voice-interconnector self update` | Ídem | Ídem | Ídem (Cask: `brew upgrade --cask`) |
 | Desinstalar | `ai-voice-interconnector self uninstall` | Ídem | Ídem | Ídem (Cask: `brew uninstall --cask --zap`) |
 | Limpiar estado | `ai-voice-interconnector cleanup …` | Ídem | Ídem | Ídem |
@@ -768,7 +767,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 2. Repetir el one-liner con la misma versión termina con éxito y deja el mismo estado, sin entradas de PATH ni bloques de perfil duplicados.
 3. Un checksum incorrecto termina con `checksum_mismatch` sin modificar nada fuera del staging, y el staging se borra.
 4. En un target no soportado, el bootstrap termina con `unsupported_platform` antes de descargar el archivo.
-5. En Linux con glibc < 2.35 o con musl, el bootstrap termina con `binary_incompatible` y un diagnóstico, sin tocar la instalación existente.
+5. En Linux con glibc < 2.28 o con musl, el bootstrap termina con `binary_incompatible` y un diagnóstico, sin tocar la instalación existente.
 6. Con `--no-setup` no se descarga ningún modelo. Sin esa opción, un fallo de `setup` deja el programa instalado y termina con `setup_failed`.
 7. En Windows, el tipo del valor `Path` de HKCU y sus entradas `%VAR%` quedan intactos después de instalar y de desinstalar.
 8. Bajo `irm | iex`, un error no cierra la consola, y la sesión no conserva variables de preferencia ni funciones del instalador.

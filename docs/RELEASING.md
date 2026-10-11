@@ -137,19 +137,22 @@ Con el tag pusheado, ejecuta sin intervención:
     - comprueba el binario recién compilado: su versión contra el tag
       (`--version`; en Windows además `version --json`) y `voice list` con la
       voz `default`;
-    - compila el motor TTS y ejecuta su `--self-test`; en Linux comprueba con
-      `ldd` que el motor no enlaza OpenBLAS ni su runtime Fortran de forma
-      dinámica, y en macOS comprueba con `otool -l` que el binario y el motor
-      declaran el `minos` de `MACOSX_DEPLOYMENT_TARGET` (26.0);
+    - compila el motor TTS y ejecuta su `--self-test`;
     - empaqueta su artefacto con `cargo xtask package
       --expect-version "${CIRCLE_TAG#v}"` (fail-fast si el tag difiere de
       `VERSION`; repite `version` y `voice list`, descarga ONNX Runtime
-      verificando el SHA-256 fijado en `packaging/pins.json` y monta el bundle;
-      en macOS se comprueba después el `minos` de lo empaquetado);
+      verificando el SHA-256 fijado en `packaging/pins.json`, monta el bundle y
+      audita que ningún binario importe nada fuera del sistema base del target,
+      ni exija símbolos por encima de `GLIBC_2.28`/`GLIBCXX_3.4.21` en Linux ni
+      un `minos` mayor que 26.0 en macOS);
     - ejecuta el humo de instalación (`self install --no-setup --no-modify-path`
       en sandbox con raíces reubicadas, y después `--version` del binario
       instalado);
     - emite su SHA-256 en el log, en el step «Emitir SHA-256 del artefacto»;
+    - en Linux, sus artefactos pasan la sala limpia (`clean-room-linux`): sin
+      compilar nada, en `almalinux:8` y `debian:stable-slim`, `--version`,
+      `voice list`, `self install`, `--version` por el symlink y la
+      comprobación `onnx_runtime` de `doctor`; `publish-release` la exige;
     - lo persiste en el workspace compartido.
 
     Los artefactos son:

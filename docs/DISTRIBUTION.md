@@ -21,7 +21,7 @@ binario Rust con el motor TTS, ONNX Runtime y los documentos de licencia GPLv3
 | **Audiencia** | Cualquier usuario final (no requiere toolchain) |
 | **Instalación** | One-liner por SO (`curl \| sh` / `irm \| iex`) o Homebrew Cask (macOS) |
 | **Tamaño** | Binario Rust con CTranslate2 (ct2rs) enlazado estático; el archivo suma además la librería de ONNX Runtime (Parakeet la carga con `ort` `load-dynamic`) y el motor `qwen_tts` |
-| **Dependencias del sistema** | Ninguna instalación adicional: solo el sistema base. Windows: el archivo trae las cuatro DLL del runtime de VC++. Linux: glibc ≥ 2.28 y las librerías de C y C++ que toda distribución con glibc trae; sin ALSA solo fallan las órdenes de audio. macOS: macOS 26 (Tahoe) o posterior. Detalle en [BUILD.md](BUILD.md#dependencias-de-runtime-por-plataforma) |
+| **Dependencias del sistema** | Ninguna instalación adicional: solo el sistema base. Windows: el archivo trae las cinco DLL del runtime de VC++. Linux: glibc ≥ 2.28 y las librerías de C y C++ que toda distribución con glibc trae; sin ALSA solo fallan las órdenes de audio. macOS: macOS 26 (Tahoe) o posterior. Detalle en [BUILD.md](BUILD.md#dependencias-de-runtime-por-plataforma) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
 | **Actualización** | Con el binario instalado: `self update --check` (informa sin modificar) o `self update`; el bootstrap no tiene `--check`; o `brew upgrade --cask` |
 | **Desinstalación** | `ai-voice-interconnector self uninstall` (todo, con `--yes` para no preguntar) o `ai-voice-interconnector cleanup --model` solo para los modelos; en Homebrew `brew uninstall --cask --zap` |
@@ -38,9 +38,9 @@ dentro del archivo, se descargan en el primer `setup`.
 
 Cada uno de los 4 targets se publica como un archivo comprimido con el layout
 de `packaging/bundle-manifest.json`: en la raíz, el binario, los 4 documentos de
-la raíz del repositorio y la librería de ONNX Runtime (más las cuatro DLL del
+la raíz del repositorio y la librería de ONNX Runtime (más las cinco DLL del
 runtime de VC++ en Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
-`msvcp140.dll` y `vcomp140.dll`); el motor, en `vendor/qwen3-tts/qwen_tts[.exe]`:
+`msvcp140.dll`, `msvcp140_1.dll` y `vcomp140.dll`); el motor, en `vendor/qwen3-tts/qwen_tts[.exe]`:
 
 | Target | Asset del release | Binario interno |
 |---|---|---|
