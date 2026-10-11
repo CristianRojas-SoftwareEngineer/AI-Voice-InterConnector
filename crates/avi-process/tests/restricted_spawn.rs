@@ -229,6 +229,88 @@ fn unix_child_is_group_leader() {
     child.wait().expect("debe poder recolectar al hijo");
 }
 
+/// En Unix el hijo no hereda los descriptores que el padre abrió con
+/// `FD_CLOEXEC`, que es como `std` abre ficheros, tuberías y sockets: esa marca
+/// es la que impide que la tubería de captura del lanzador o los sockets del
+/// CLI lleguen al daemon. La sonda pregunta desde el hijo si el número de
+/// descriptor sigue abierto (`/dev/fd/N`). El control positivo quita la marca
+/// al mismo descriptor y exige que el hijo sí lo vea: sin él, una sonda que no
+/// detectara nunca nada daría la prueba por buena. Solo se desmarca el extremo
+/// de lectura, cuyo escritor retiene el padre, así que un hijo de otra prueba
+/// que lo heredara en esa ventana no altera nada.
+#[cfg(unix)]
+#[test]
+fn unix_child_does_not_inherit_cloexec_descriptors() {
+    use std::os::fd::AsRawFd;
+
+    let (reader, writer) = std::io::pipe().expect("debe crear la tubería");
+    let fd = reader.as_raw_fd();
+    assert_eq!(
+        probe_descriptor(fd),
+        "closed",
+        "un descriptor con FD_CLOEXEC no debió llegar al hijo"
+    );
+
+    // SAFETY: `fcntl` solo cambia las marcas de un descriptor propio y abierto.
+    let cleared = unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
+    assert_eq!(cleared, 0, "debe poder quitar FD_CLOEXEC al descriptor");
+    assert_eq!(
+        probe_descriptor(fd),
+        "open",
+        "sin FD_CLOEXEC el hijo debió heredar el descriptor: la sonda no detecta la herencia"
+    );
+    drop(writer);
+    drop(reader);
+}
+
+/// En Unix el lanzamiento no puede declarar descriptores extra: una lista
+/// `extra_allowed` no vacía falla sin lanzar nada, en vez de lanzar a un hijo
+/// que no recibiría lo pedido.
+#[cfg(unix)]
+#[test]
+fn unix_rejects_extra_allowed() {
+    let (program, args) = exit_command(0);
+    let log_file = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let request = avi_process::RestrictedSpawnRequest {
+        program,
+        args,
+        stdin: avi_process::StdinSpec::Null,
+        stderr_file: log_file.try_clone().expect("debe clonar el registro"),
+        stdout_file: log_file,
+        creation_flags: 0,
+        extra_allowed: vec![3],
+    };
+    match avi_process::spawn_with_allowlist(request) {
+        Ok(_) => panic!("una lista extra_allowed no vacía debió fallar en Unix"),
+        Err(error) => assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::Unsupported,
+            "el fallo debe ser de operación no admitida: {error}"
+        ),
+    }
+}
+
+/// Lanza `sh` con el lanzamiento restringido para que informe si el
+/// descriptor `fd` está abierto en el hijo, y devuelve su testigo (`open` o
+/// `closed`) leído del registro.
+#[cfg(unix)]
+fn probe_descriptor(fd: i32) -> String {
+    let mut reader = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let log_file = reader.try_clone().expect("debe clonar el registro");
+    let script = format!("if [ -e /dev/fd/{fd} ]; then echo open; else echo closed; fi");
+    let mut child = spawn(Path::new("sh"), vec![String::from("-c"), script], log_file);
+    let status = child.wait().expect("debe poder esperar al hijo");
+    assert!(status.success(), "la sonda debe salir 0: {status:?}");
+    reader
+        .seek(SeekFrom::Start(0))
+        .expect("debe rebobinar el registro");
+    let mut text = String::new();
+    reader
+        .read_to_string(&mut text)
+        .expect("debe leer el registro");
+    text.trim().to_string()
+}
+
 /// `wait_timeout` devuelve el estado real cuando el hijo termina a tiempo.
 #[test]
 fn wait_timeout_returns_exit_when_child_finishes_in_time() {

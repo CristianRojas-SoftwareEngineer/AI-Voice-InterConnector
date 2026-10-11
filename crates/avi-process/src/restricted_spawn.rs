@@ -3,9 +3,10 @@
 //! En Windows cada spawn declara exactamente qué handles hereda el hijo
 //! mediante `STARTUPINFOEX` con `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`: solo lo
 //! listado se hereda, aunque el resto de la tabla siga marcado como
-//! heredable. En Unix se delega en `Command` (`close-on-exec` ya da la misma
-//! propiedad) y el hijo nace líder de su propia sesión y grupo con `setsid`
-//! en `pre_exec`.
+//! heredable. En Unix se delega en `Command`: `std` abre todo con
+//! `close-on-exec`, así que el hijo hereda solo su stdio (un descriptor sin esa
+//! marca, abierto por código ajeno a `std`, sí llegaría), y el hijo nace líder
+//! de su propia sesión y grupo con `setsid` en `pre_exec`.
 
 use std::io;
 #[cfg(windows)]
@@ -50,7 +51,8 @@ pub struct RestrictedSpawnRequest {
     pub creation_flags: u32,
     /// Handles extra que el hijo debe heredar además de su stdio
     /// (p. ej. el extremo de lectura de una tubería creada por el padre que el
-    /// hijo debe leer). Normalmente vacío.
+    /// hijo debe leer). Normalmente vacío. Solo Windows: en Unix el lanzamiento
+    /// no sabe declarar descriptores extra y una lista no vacía es un error.
     pub extra_allowed: Vec<isize>,
 }
 
@@ -306,10 +308,19 @@ pub fn spawn_with_allowlist(request: RestrictedSpawnRequest) -> io::Result<Restr
 /// Lanza al hijo con `setsid` (vía `libc` en `pre_exec`): nace líder de su
 /// propia sesión y grupo, de modo que el kill de grupo (`kill(-pid)`) alcanza
 /// solo a su árbol y nunca al grupo del lanzador. El resto del cableado
-/// (stdio y registro) no cambia.
+/// (stdio y registro) no cambia. El hijo hereda solo su stdio porque todo lo
+/// demás que abre `std` lleva `FD_CLOEXEC`; no hay forma de añadirle
+/// descriptores, así que un `extra_allowed` no vacío falla en lugar de
+/// lanzar a un hijo que no recibiría lo pedido.
 fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<RestrictedChild> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
+    if !request.extra_allowed.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "extra_allowed solo se admite en Windows: en Unix el hijo no puede heredar descriptores extra",
+        ));
+    }
     let mut cmd = std::process::Command::new(&request.program);
     cmd.args(&request.args);
     match request.stdin {
