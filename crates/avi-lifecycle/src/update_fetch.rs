@@ -1033,8 +1033,10 @@ mod tests {
     /// Hijo colgado portable para el fault-injection (sin modelos ni red).
     fn hanging_command() -> (std::path::PathBuf, Vec<String>) {
         if cfg!(windows) {
+            // Ruta completa: el lanzamiento restringido no busca nombres sueltos.
             (
-                std::path::PathBuf::from("powershell"),
+                std::path::PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+                    .join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
                 vec![
                     String::from("-NoProfile"),
                     String::from("-Command"),

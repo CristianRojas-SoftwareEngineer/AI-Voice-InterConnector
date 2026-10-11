@@ -2889,9 +2889,11 @@ fn main() {
     /// `resident_kill_tree_by_pid_terminates_child`.
     fn sleeping_process() -> avi_process::RestrictedChild {
         let log_file = tempfile::tempfile().expect("log del proceso durmiente");
+        // Rutas completas: el lanzamiento restringido no busca nombres sueltos.
         let (program, args) = if cfg!(windows) {
             (
-                PathBuf::from("powershell"),
+                PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+                    .join(r"System32\WindowsPowerShell\v1.0\powershell.exe"),
                 vec![
                     String::from("-NoProfile"),
                     String::from("-Command"),
@@ -2919,7 +2921,8 @@ fn main() {
         let log_file = tempfile::tempfile().expect("log del proceso saliente");
         let (program, args) = if cfg!(windows) {
             (
-                PathBuf::from("cmd"),
+                PathBuf::from(std::env::var_os("SystemRoot").expect("SystemRoot"))
+                    .join(r"System32\cmd.exe"),
                 vec![String::from("/C"), String::from("exit 1")],
             )
         } else {
