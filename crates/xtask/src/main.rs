@@ -33,7 +33,7 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
     strategy :github_latest
   end
 
-  depends_on macos: ">= :ventura"
+  depends_on macos: ">= :tahoe"
 
   binary "ai-voice-interconnector"
 
@@ -1468,7 +1468,7 @@ fn check_resource_tests_gate() -> Result<()> {
     let root = std::env::current_dir()?;
     let pins = doctor::load_pins(&root)?;
     let triple = package::host_triple()?;
-    let bundle = package::ensure_ort_bundle(&root, triple, &pins.ort)?;
+    let bundle = package::ensure_ort_bundle(&root, triple, &pins)?;
     let ort_dylib = package::ort_dylib_path(&bundle, triple)?;
     let status = std::process::Command::new("cargo")
         .env("ORT_DYLIB_PATH", &ort_dylib)
@@ -1565,8 +1565,37 @@ mod tests {
         assert!(!c.contains("~/.cache/huggingface/xet"));
         assert!(!c.contains("~/.cache/huggingface/hub/.locks"));
         assert!(c.contains("GPL-3.0-or-later"));
-        assert!(c.contains(r#"depends_on macos: ">= :ventura""#));
+        // El mínimo del Cask es el que el job de macOS fija con
+        // MACOSX_DEPLOYMENT_TARGET (macOS 26, Tahoe): Homebrew no debe
+        // instalar el binario donde dyld no lo cargaría.
+        assert!(c.contains(r#"depends_on macos: ">= :tahoe""#));
         assert!(c.contains("síntesis"));
+    }
+
+    /// El mínimo de macOS se fija una sola vez, con MACOSX_DEPLOYMENT_TARGET en
+    /// el job `build-darwin-arm64`, y lo repiten el `depends_on` del Cask y el
+    /// diagnóstico de `install.sh`: si el pipeline lo sube y alguno de los dos
+    /// no, esta prueba falla.
+    #[test]
+    fn test_macos_minimum_matches_deployment_target() {
+        let cfg = include_str!("../../../.circleci/config.yml");
+        let target = cfg
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("MACOSX_DEPLOYMENT_TARGET: \""))
+            .and_then(|v| v.strip_suffix('"'))
+            .expect("el pipeline fija MACOSX_DEPLOYMENT_TARGET");
+        let major = target.split('.').next().unwrap_or_default();
+        let symbol = match major {
+            "26" => "tahoe",
+            other => panic!("falta el símbolo de Homebrew para macOS {other}"),
+        };
+        let cask = render_cask("9.9.9", &"b".repeat(64));
+        assert!(cask.contains(&format!(r#"depends_on macos: ">= :{symbol}""#)));
+        let install_sh = include_str!("../../../packaging/bootstrap/install.sh");
+        assert!(
+            install_sh.contains(&format!("versión anterior a macOS {major} ")),
+            "el diagnóstico de install.sh debe nombrar macOS {major}"
+        );
     }
 
     #[test]

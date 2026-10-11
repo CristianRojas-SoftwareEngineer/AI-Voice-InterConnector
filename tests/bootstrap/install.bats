@@ -223,6 +223,22 @@ assert_no_staging_left() {
     assert_no_staging_left
 }
 
+@test "binario incompatible en macOS diagnostica la versión mínima y no la glibc" {
+    mock_uname arm64 Darwin
+    mock_sysctl 1
+    export AVI_FAKE_MODE="noexec"
+    printf 'instalación previa' > "$AVI_INSTALL_DIR/sentinel"
+
+    run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
+
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"binary_incompatible"* ]]
+    [[ "$output" == *"macOS 26"* ]]
+    [[ "$output" != *"glibc"* ]]
+    [ "$(cat "$AVI_INSTALL_DIR/sentinel")" = "instalación previa" ]
+    assert_no_staging_left
+}
+
 @test "las opciones se pasan tal cual a self install" {
     mock_uname x86_64
 
