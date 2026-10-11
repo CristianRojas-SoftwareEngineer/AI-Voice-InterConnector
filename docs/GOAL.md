@@ -70,7 +70,7 @@ Implementar y validar la síntesis en español latinoamericano con voz propia de
 
 - **100% local**: Sin APIs externas ni conexiones a internet para síntesis
 - **Instalador único por SO (canal nativo)**: Un archivo comprimido por plataforma (`tar.gz`/`.zip` con binario Rust); ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)
-- **Sin dependencias externas (canal nativo)**: El usuario final no necesita instalar nada más (binario autocontenido)
+- **Ninguna instalación adicional (canal nativo)**: solo el sistema base de cada plataforma. Windows no necesita el Redistributable de VC++, macOS pide macOS 26 o posterior y Linux una glibc ≥ 2.28 con las librerías de C y C++ que toda distribución con glibc trae; el archivo aporta todo lo demás
 - **Licencia**: El código propio se distribuye bajo GPL-3.0-or-later; todas las dependencias y los modelos usados deben tener licencias compatibles con GPLv3 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible, como LGPL-2.1+/MPL-2.0). El par de traducción `opus-mt` (derivados int8 de Helsinki-NLP/opus-mt, ya convertidos a CTranslate2 y publicados) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
 
 ### Especificación
@@ -80,7 +80,7 @@ Implementar y validar la síntesis en español latinoamericano con voz propia de
 Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO), que es el único canal de distribución:
 
 - **Un solo artefacto por SO**: Windows (`.zip`), Linux (`tar.gz` x64/arm64), macOS (`tar.gz` arm64) — binario autocontenido + docs GPLv3, instala vía one-liner `curl|sh`/`irm|iex` o Cask de Homebrew
-- **Cero dependencias externas**: El usuario final no instala ningún runtime ni toolchain
+- **Ninguna instalación adicional: solo el sistema base de cada plataforma**: El usuario final no instala ningún runtime, librería ni toolchain
 - **Descarga + instalación + configuración** en un solo paso (one-liner verifica checksum, extrae, integra PATH y encadena `setup`)
 - **Audio nativo**: playback usando APIs nativas del SO (cpal)
 - **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`self uninstall` borra programa+PATH+estado; `cleanup --all` es la limpieza granular del estado sin tocar el programa — ver `docs/CLI/CONTRACT.md §11`), en los tres sistemas operativos por igual (ver [§10 de la especificación](specs/sdlc-lifecycle.md#10-matriz-de-paridad-por-target))

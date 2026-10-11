@@ -116,7 +116,7 @@ Expand-Archive ai.zip -Force; .\ai-voice-interconnector.exe setup
 ```
 
 > Mac Intel (x86_64) y Windows ARM64 no están soportados (limitación de toolchain aceptada, ver `docs/BUILD.md`).
-> Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+) y las librerías del sistema `libasound2`, `libgomp1` y `libstdc++6` (nombres de Debian/Ubuntu; en Ubuntu 24.04+ `libasound2t64`); el bootstrap comprueba que el binario arranca y, si no lo hace, aborta con `binary_incompatible` remitiendo a `docs/BUILD.md`. macOS requiere **macOS 26 (Tahoe)** o posterior, en cualquier Mac con Apple Silicon. Linux y macOS requieren además `/bin/ps` para el daemon. En Windows no hace falta instalar nada: el archivo trae las DLL del runtime de VC++. Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
+> No hace falta instalar nada más que el sistema base de cada plataforma. Linux requiere **glibc ≥ 2.28** (Debian 10+, Ubuntu 20.04+, RHEL, Rocky y Alma 8+, Fedora 29+ o equivalente) y no pide librerías aparte: el binario solo usa la glibc y las librerías de C y C++ que toda distribución con glibc trae; sin ALSA, solo las órdenes de audio fallan, con un error que lo explica. El bootstrap comprueba que el binario arranca y, si no lo hace, aborta con `binary_incompatible` remitiendo a `docs/BUILD.md`. macOS requiere **macOS 26 (Tahoe)** o posterior, en cualquier Mac con Apple Silicon. En Windows el archivo trae las DLL del runtime de VC++. Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
 
 Cada Release publica `SHA256SUMS.txt` sobre los 6 ficheros (4 archivos + 2 bootstrap); verifica con `sha256sum -c` o `Get-FileHash` antes de ejecutar.
 
@@ -147,7 +147,7 @@ Hasta provisionar, `speech synthesize`/`daemon start` fallan con exit 4 remitien
 
 ### Compilar desde código (Rust)
 
-Requisitos: Rust 1.96.0, `cmake`, `pkg-config`, `libasound2-dev` (Linux) y `libclang-dev` solo con `--features native-translation/full` (traducción); el motor TTS en Linux necesita además `make`, `gcc`, `libopenblas-dev` y `libgfortran-<versión de gcc>-dev`, porque enlaza OpenBLAS estático. La lista completa por host la da `cargo xtask doctor`. Ver `docs/BUILD.md`.
+Requisitos: Rust 1.96.0, `cmake`, `pkg-config` y `libclang-dev` solo con `--features native-translation/full` (traducción); el motor TTS en Linux necesita además `make`, `gcc`, `libopenblas-dev` y `libgfortran-<versión de gcc>-dev`, porque enlaza OpenBLAS estático. La lista completa por host la da `cargo xtask doctor`. Ver `docs/BUILD.md`.
 
 ```bash
 cargo fmt --all --check

@@ -37,7 +37,7 @@
 - [Formato de audio](#formato-de-audio)
 - [Solución de problemas](#solución-de-problemas)
   - ["El modelo … no está provisionado. Ejecuta 'setup' primero." (exit 4)](#el-modelo--no-está-provisionado-ejecuta-setup-primero-exit-4)
-  - ["GLIBC_2.35 not found" (o similar) al ejecutar el binario en Linux](#glibc_235-not-found-o-similar-al-ejecutar-el-binario-en-linux)
+  - ["GLIBC_2.28 not found" (o similar) al ejecutar el binario en Linux](#glibc_228-not-found-o-similar-al-ejecutar-el-binario-en-linux)
   - [El binario no arranca en macOS (`binary_incompatible`)](#el-binario-no-arranca-en-macos-binary_incompatible)
   - ["La voz 'x' no existe." (exit 3)](#la-voz-x-no-existe-exit-3)
   - ["La voz 'x' ya existe"](#la-voz-x-ya-existe)
@@ -81,18 +81,18 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
   duplica. El binario instalado ocupa ~40 MB.
 - **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
   funcionamiento.
-- **Linux — glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+ o equivalente):
-  ver la entrada correspondiente en «Solución de problemas» más abajo.
-- **Linux — librerías del sistema**: `libasound2` (`libasound2t64` en Ubuntu
-  24.04+), `libgomp1` y `libstdc++6` para el binario (nombres de Debian/Ubuntu;
-  otras distribuciones usan nombres equivalentes). En Debian/Ubuntu:
-  `sudo apt install libasound2 libgomp1 libstdc++6`. El motor TTS no necesita
-  ninguna: lleva OpenBLAS enlazado estático.
+- **Linux — glibc ≥ 2.28** (Debian 10+, Ubuntu 20.04+, RHEL, Rocky y Alma 8+,
+  Fedora 29+ o equivalente), sin nada más que instalar: el binario solo usa la
+  glibc y las librerías de C y C++ que toda distribución con glibc trae, y el
+  motor TTS lleva OpenBLAS enlazado estático. Ver la entrada correspondiente en
+  «Solución de problemas» más abajo.
+- **Linux — audio**: la reproducción y la captura usan ALSA, que traen las
+  distribuciones de escritorio. En un sistema sin ALSA (servidores o
+  contenedores mínimos) el binario arranca igual: solo `devices` y las órdenes
+  que reproducen o capturan audio fallan, con un error que nombra la librería
+  de ALSA ausente.
 - **macOS — macOS 26 (Tahoe) o posterior**, en cualquier Mac con Apple Silicon
   (M1 en adelante).
-- **Linux y macOS — `/bin/ps`**: el daemon observa con él la identidad de sus
-  procesos; sin él, `daemon start` y `daemon serve` fallan (algunas imágenes de
-  contenedor mínimas no traen `procps`).
 - **Windows**: nada que instalar; el archivo trae las DLL del runtime de VC++
   que necesitan el binario y ONNX Runtime.
 - Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
@@ -132,7 +132,7 @@ de la instalación» más abajo.
 ### Compilar desde el código fuente (Rust)
 
 ```bash
-# Requisitos: Rust 1.96, cmake, pkg-config (libasound2-dev/libclang-dev en Linux)
+# Requisitos: Rust 1.96, cmake, pkg-config (libclang-dev en Linux)
 cargo build --release --features full
 ./target/release/ai-voice-interconnector <comando>
 ```
@@ -1198,10 +1198,10 @@ sistema debe aportar:
 |---------|---------|-------|-------|
 | Reproducción de audio | cpal (WASAPI) | cpal (ALSA) | cpal (CoreAudio) |
 | Enumeración de dispositivos (`devices`) | cpal; el nombre es el descriptivo del sistema (`FriendlyName`) | cpal; sigue el criterio de `aplay -L` y puede listar más entradas | cpal; no abre el micrófono para enumerar |
-| Paralelismo de la traducción (CTranslate2) | OpenMP (`vcomp140.dll`, incluida en el archivo) | OpenMP (`libgomp`) | Sin OpenMP: sin paralelismo dentro de cada operación, más lenta con el mismo resultado |
+| Paralelismo de la traducción (CTranslate2) | OpenMP (`vcomp140.dll`, incluida en el archivo) | OpenMP (enlazado en el binario) | Sin OpenMP: sin paralelismo dentro de cada operación, más lenta con el mismo resultado |
 | Señales que paran `daemon serve` | Ctrl+C | Ctrl+C y `SIGTERM` | Ctrl+C y `SIGTERM` |
-| Identidad de proceso del daemon | API del sistema | `/bin/ps` | `/bin/ps` |
-| Librerías que aporta el sistema | Ninguna | `libasound2`, `libgomp1`, `libstdc++6` | Ninguna (macOS 26 o posterior) |
+| Identidad de proceso del daemon | API del sistema | `/proc/<pid>/stat` | `proc_pidinfo` |
+| Librerías que hay que instalar | Ninguna | Ninguna (glibc ≥ 2.28; sin ALSA solo falla el audio) | Ninguna (macOS 26 o posterior) |
 | Voces de usuario (binario) | `%LOCALAPPDATA%\ai-voice-interconnector\data\voices` | `~/.local/share/ai-voice-interconnector/voices` | `~/Library/Application Support/ai-voice-interconnector/voices` |
 | Caché del modelo | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` | `~/.cache/ai-voice-interconnector/models` | `~/Library/Caches/ai-voice-interconnector/models` |
 | Directorio del programa | `%LOCALAPPDATA%\Programs\ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` |
@@ -1228,22 +1228,20 @@ pinneados provisionados, y nunca los descargan por sí mismos. Provisiónalos co
 ai-voice-interconnector setup
 ```
 
-### "GLIBC_2.35 not found" (o similar) al ejecutar el binario en Linux
+### "GLIBC_2.28 not found" (o similar) al ejecutar el binario en Linux
 
-El binario Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+
-o equivalente): se compila contra la glibc del runner de build y `crt-static` no
-enlaza glibc estáticamente. En una distro más antigua (p. ej. Ubuntu 20.04,
-Debian 11) el binario no arranca — el bootstrap comprueba que el binario arranca
+El binario Linux requiere **glibc ≥ 2.28** (Debian 10+, Ubuntu 20.04+, RHEL,
+Rocky y Alma 8+, Fedora 29+ o equivalente): se compila contra glibc 2.28 y
+`crt-static` no enlaza glibc estáticamente. En una distro más antigua (p. ej.
+CentOS 7, Debian 9) el binario no arranca — el bootstrap comprueba que el binario arranca
 antes de delegar y aborta con `binary_incompatible` (lo instalado queda intacto).
 Actualiza la distro o compila desde código fuente en tu distro actual (ver
 [docs/BUILD.md](docs/BUILD.md)).
 
-El mismo `binary_incompatible` sale si falta una librería del sistema que el
-binario enlaza (`libasound.so.2`, `libgomp.so.1` o `libstdc++.so.6`): el mensaje
-del cargador nombra la que falta (`error while loading shared libraries`).
-Instálala con el gestor de paquetes (en Debian/Ubuntu,
-`sudo apt install libasound2 libgomp1 libstdc++6`; `libasound2t64` en Ubuntu
-24.04+).
+Sin ALSA el binario arranca igual: solo `devices` y las órdenes que reproducen
+o capturan audio fallan, con un error que nombra la librería de ALSA ausente.
+Si necesitas audio en ese sistema, instala el paquete de runtime de ALSA con el
+gestor de paquetes de la distribución.
 
 ### El binario no arranca en macOS (`binary_incompatible`)
 

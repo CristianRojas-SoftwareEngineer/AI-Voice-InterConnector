@@ -21,7 +21,7 @@ binario Rust con el motor TTS, ONNX Runtime y los documentos de licencia GPLv3
 | **Audiencia** | Cualquier usuario final (no requiere toolchain) |
 | **Instalación** | One-liner por SO (`curl \| sh` / `irm \| iex`) o Homebrew Cask (macOS) |
 | **Tamaño** | Binario Rust con CTranslate2 (ct2rs) enlazado estático; el archivo suma además la librería de ONNX Runtime (Parakeet la carga con `ort` `load-dynamic`) y el motor `qwen_tts` |
-| **Dependencias del sistema** | Windows: ninguna (el archivo trae las cuatro DLL del runtime de VC++). Linux: `libasound2`, `libgomp1` y `libstdc++6` (nombres de Debian/Ubuntu). macOS: macOS 26 (Tahoe) o posterior. Linux y macOS: `/bin/ps` para el daemon. Detalle en [BUILD.md](BUILD.md#dependencias-de-runtime-por-plataforma) |
+| **Dependencias del sistema** | Ninguna instalación adicional: solo el sistema base. Windows: el archivo trae las cuatro DLL del runtime de VC++. Linux: glibc ≥ 2.28 y las librerías de C y C++ que toda distribución con glibc trae; sin ALSA solo fallan las órdenes de audio. macOS: macOS 26 (Tahoe) o posterior. Detalle en [BUILD.md](BUILD.md#dependencias-de-runtime-por-plataforma) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
 | **Actualización** | Con el binario instalado: `self update --check` (informa sin modificar) o `self update`; el bootstrap no tiene `--check`; o `brew upgrade --cask` |
 | **Desinstalación** | `ai-voice-interconnector self uninstall` (todo, con `--yes` para no preguntar) o `ai-voice-interconnector cleanup --model` solo para los modelos; en Homebrew `brew uninstall --cask --zap` |
@@ -68,7 +68,7 @@ mismo** y encadena `setup` (el `setup` solo provisiona modelos):
 - **Linux** — `install.sh` (`curl | sh` sobre `releases/latest/download`)
   detecta la arquitectura del host (x86_64/arm64), verifica el checksum exacto
   contra `SHA256SUMS.txt`, comprueba el arranque (`binary_incompatible` con
-  diagnóstico de glibc ≥ 2.35 o de librerías del sistema ausentes si el
+  diagnóstico de glibc ≥ 2.28 si el
   binario no arranca) y delega en
   `self install`, que crea el symlink
   `~/.local/bin/ai-voice-interconnector` y encadena `setup`.
