@@ -1470,10 +1470,10 @@ fn check_code_quality_gate() -> Result<()> {
 /// las pruebas marcadas como `#[ignore]` (modelos, daemon, instalación real),
 /// con el entorno y la salida heredados. No tiene modo de omisión.
 ///
-/// Las pruebas cargan ONNX Runtime por nombre, y en Windows la búsqueda del
-/// sistema encuentra antes una `onnxruntime.dll` de System32 que la del PATH;
-/// por eso la gate asegura `ort-bundle/` en la versión fijada y la impone con
-/// `ORT_DYLIB_PATH`, de modo que valida el mismo runtime que se distribuye.
+/// Las pruebas cargan ONNX Runtime desde `ORT_DYLIB_PATH`; la gate asegura
+/// `ort-bundle/` en la versión fijada y exporta la ruta del fichero de la
+/// librería, que prevalece sobre el valor por defecto de la configuración de
+/// cargo, de modo que valida el mismo runtime que se distribuye.
 fn check_resource_tests_gate() -> Result<()> {
     let root = std::env::current_dir()?;
     let pins = doctor::load_pins(&root)?;

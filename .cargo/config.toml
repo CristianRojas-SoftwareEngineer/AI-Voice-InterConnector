@@ -19,6 +19,14 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [env]
 CMAKE_POLICY_DEFAULT_CMP0091 = "NEW"
 CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
+# El STT carga ONNX Runtime desde `ORT_DYLIB_PATH` o, sin ella, desde el
+# directorio del ejecutable, donde dentro de `target/` no hay librería. Esta
+# entrada apunta al directorio `ort-bundle/` de la raíz del repo, que el STT
+# completa con el nombre de la librería de cada sistema. Solo rige en los
+# procesos que lanza cargo (pruebas, `cargo run`, `cargo xtask`), no se
+# incrusta en el binario distribuido, y una `ORT_DYLIB_PATH` exportada
+# explícitamente la sustituye.
+ORT_DYLIB_PATH = { value = "ort-bundle", relative = true }
 
 # Forma canónica de las tareas de desarrollo: `cargo xtask …` (ciclo 4), que
 # compila y ejecuta el binario `xtask` del workspace pasándole los argumentos

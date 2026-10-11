@@ -16,6 +16,7 @@
 //!   `output_states_1` / `output_states_2` (hay un `prednet_lengths` intermedio
 //!   que se ignora).
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context;
@@ -65,12 +66,13 @@ impl std::fmt::Display for OnnxRuntimeUnavailable {
 impl std::error::Error for OnnxRuntimeUnavailable {}
 
 /// Ruta de la librería de ONNX Runtime: la de `ORT_DYLIB_PATH` si está
-/// definida y no vacía, o la que el bundle trae en el directorio real del
-/// programa, que sigue siendo el correcto cuando la app se invoca desde su
+/// definida y no vacía, que puede nombrar el fichero de la librería o el
+/// directorio que la contiene, o la que el bundle trae en el directorio real
+/// del programa, que sigue siendo el correcto cuando la app se invoca desde su
 /// symlink.
 pub fn onnx_runtime_path() -> Result<PathBuf, OnnxRuntimeUnavailable> {
-    if let Some(path) = std::env::var_os("ORT_DYLIB_PATH").filter(|p| !p.is_empty()) {
-        return Ok(PathBuf::from(path));
+    if let Some(value) = std::env::var_os("ORT_DYLIB_PATH").filter(|p| !p.is_empty()) {
+        return Ok(resolve_ort_path(&value));
     }
     avi_shared::paths::program_dir()
         .map(|dir| dir.join(ORT_LIBRARY))
@@ -78,6 +80,18 @@ pub fn onnx_runtime_path() -> Result<PathBuf, OnnxRuntimeUnavailable> {
             path: PathBuf::from(ORT_LIBRARY),
             reason: format!("no se pudo resolver el directorio del programa: {e}"),
         })
+}
+
+/// Ruta de la librería según el valor de `ORT_DYLIB_PATH`: si nombra un
+/// directorio existente, la librería de ONNX Runtime de este sistema dentro de
+/// él; si no, la ruta tal cual.
+fn resolve_ort_path(value: &OsStr) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_dir() {
+        path.join(ORT_LIBRARY)
+    } else {
+        path
+    }
 }
 
 /// Carga ONNX Runtime una sola vez por proceso y devuelve la ruta cargada;
@@ -483,5 +497,20 @@ mod tests {
             err.to_string().contains(&path.display().to_string()),
             "{err}"
         );
+    }
+
+    /// Un directorio en `ORT_DYLIB_PATH` apunta a la librería de este sistema
+    /// dentro de él.
+    #[test]
+    fn ort_path_directory_appends_library_name() {
+        let dir = std::env::temp_dir();
+        assert_eq!(resolve_ort_path(dir.as_os_str()), dir.join(ORT_LIBRARY));
+    }
+
+    /// Una ruta que no es un directorio se usa tal cual.
+    #[test]
+    fn ort_path_file_is_used_as_is() {
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        assert_eq!(resolve_ort_path(file.as_os_str()), file);
     }
 }
