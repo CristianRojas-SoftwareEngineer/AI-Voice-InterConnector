@@ -38,6 +38,7 @@
 - [Solución de problemas](#solución-de-problemas)
   - ["El modelo … no está provisionado. Ejecuta 'setup' primero." (exit 4)](#el-modelo--no-está-provisionado-ejecuta-setup-primero-exit-4)
   - ["GLIBC_2.35 not found" (o similar) al ejecutar el binario en Linux](#glibc_235-not-found-o-similar-al-ejecutar-el-binario-en-linux)
+  - [El binario no arranca en macOS (`binary_incompatible`)](#el-binario-no-arranca-en-macos-binary_incompatible)
   - ["La voz 'x' no existe." (exit 3)](#la-voz-x-no-existe-exit-3)
   - ["La voz 'x' ya existe"](#la-voz-x-ya-existe)
   - ["El modelo Base de clonado TTS no está provisionado"](#el-modelo-base-de-clonado-tts-no-está-provisionado)
@@ -53,8 +54,9 @@ del usuario: qué comando ejecutar, qué ocurre y qué salida esperar.
 
 Todos los comandos funcionan **de forma idéntica en Windows, Linux y macOS**: la
 misma sintaxis, la misma salida y los mismos códigos de retorno. Las diferencias
-internas por plataforma (backend de reproducción, ubicación de datos) se detallan
-en [Experiencia unificada entre sistemas operativos](#experiencia-unificada-entre-sistemas-operativos).
+por plataforma (backend de reproducción, nombres de dispositivo, ubicación de
+datos, señales del daemon, rendimiento de la traducción y dependencias del
+sistema) se detallan en [Experiencia unificada entre sistemas operativos](#experiencia-unificada-entre-sistemas-operativos).
 
 ## Instalación
 
@@ -81,6 +83,19 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
   funcionamiento.
 - **Linux — glibc ≥ 2.35** (Ubuntu 22.04+, Debian 12+, Fedora 36+ o equivalente):
   ver la entrada correspondiente en «Solución de problemas» más abajo.
+- **Linux — librerías del sistema**: `libasound2` (`libasound2t64` en Ubuntu
+  24.04+), `libgomp1` y `libstdc++6` para el binario (nombres de Debian/Ubuntu;
+  otras distribuciones usan nombres equivalentes). En Debian/Ubuntu:
+  `sudo apt install libasound2 libgomp1 libstdc++6`. El motor TTS no necesita
+  ninguna: lleva OpenBLAS enlazado estático.
+- **macOS — macOS 26 (Tahoe) o posterior**, en cualquier Mac con Apple Silicon
+  (M1 en adelante).
+- **Linux y macOS — `/bin/ps`**: el daemon observa con él la identidad de sus
+  procesos; sin él, `daemon start` y `daemon serve` fallan (algunas imágenes de
+  contenedor mínimas no traen `procps`).
+- **Windows**: nada que instalar; el archivo trae las DLL del runtime de VC++
+  que necesitan el binario y ONNX Runtime.
+- Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
 
 ### Usuario del binario
 
@@ -1175,12 +1190,18 @@ desde el binario como desde el código fuente. En concreto:
 - **El motor de audio** es nativo por SO (`cpal`: WASAPI/CoreAudio/ALSA); no
   requiere configuración ni selección de backend por el usuario.
 
-Las únicas diferencias son internas y no cambian la forma de usar la aplicación:
+Las diferencias por plataforma no cambian los comandos ni los códigos de
+salida, pero algunas se ven en la salida, en el rendimiento o en lo que el
+sistema debe aportar:
 
 | Aspecto | Windows | Linux | macOS |
 |---------|---------|-------|-------|
 | Reproducción de audio | cpal (WASAPI) | cpal (ALSA) | cpal (CoreAudio) |
-| Enumeración de dispositivos | cpal | cpal | cpal |
+| Enumeración de dispositivos (`devices`) | cpal; el nombre es el descriptivo del sistema (`FriendlyName`) | cpal; sigue el criterio de `aplay -L` y puede listar más entradas | cpal; no abre el micrófono para enumerar |
+| Paralelismo de la traducción (CTranslate2) | OpenMP (`vcomp140.dll`, incluida en el archivo) | OpenMP (`libgomp`) | Sin OpenMP: sin paralelismo dentro de cada operación, más lenta con el mismo resultado |
+| Señales que paran `daemon serve` | Ctrl+C | Ctrl+C y `SIGTERM` | Ctrl+C y `SIGTERM` |
+| Identidad de proceso del daemon | API del sistema | `/bin/ps` | `/bin/ps` |
+| Librerías que aporta el sistema | Ninguna | `libasound2`, `libgomp1`, `libstdc++6` | Ninguna (macOS 26 o posterior) |
 | Voces de usuario (binario) | `%LOCALAPPDATA%\ai-voice-interconnector\data\voices` | `~/.local/share/ai-voice-interconnector/voices` | `~/Library/Application Support/ai-voice-interconnector/voices` |
 | Caché del modelo | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` | `~/.cache/ai-voice-interconnector/models` | `~/Library/Caches/ai-voice-interconnector/models` |
 | Directorio del programa | `%LOCALAPPDATA%\Programs\ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` |
@@ -1216,6 +1237,20 @@ Debian 11) el binario no arranca — el bootstrap comprueba que el binario arran
 antes de delegar y aborta con `binary_incompatible` (lo instalado queda intacto).
 Actualiza la distro o compila desde código fuente en tu distro actual (ver
 [docs/BUILD.md](docs/BUILD.md)).
+
+El mismo `binary_incompatible` sale si falta una librería del sistema que el
+binario enlaza (`libasound.so.2`, `libgomp.so.1` o `libstdc++.so.6`): el mensaje
+del cargador nombra la que falta (`error while loading shared libraries`).
+Instálala con el gestor de paquetes (en Debian/Ubuntu,
+`sudo apt install libasound2 libgomp1 libstdc++6`; `libasound2t64` en Ubuntu
+24.04+).
+
+### El binario no arranca en macOS (`binary_incompatible`)
+
+El binario de macOS exige **macOS 26 (Tahoe)** o posterior: en una versión
+anterior el sistema rechaza cargarlo, y el bootstrap aborta con
+`binary_incompatible` nombrando la versión mínima (lo instalado queda intacto).
+Actualiza macOS: macOS 26 corre en todos los Mac con Apple Silicon.
 
 ### "La voz 'x' no existe." (exit 3)
 

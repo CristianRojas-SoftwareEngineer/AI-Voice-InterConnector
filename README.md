@@ -6,7 +6,7 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 - **Clonación de voz**: Usa tu propia voz como referencia (~10 s)
 - **Multiplataforma**: Windows x64, Linux x64/ARM64, macOS ARM64 (Apple Silicon)
 - **Consumible via CLI**: Invocable desde cualquier lenguaje de programación
-- **Binario autocontenido**: Rust (`cargo build --release --features full`), sin dependencias externas
+- **Binario nativo**: Rust (`cargo build --release --features full`); el archivo de release trae el motor TTS y ONNX Runtime, y requiere algunas librerías del sistema (ver [Instalación](#instalación))
 
 ## Tabla de contenidos
 
@@ -46,7 +46,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 - **Traducción**: `translate` es↔en (CTranslate2)
 - **Daemon**: `daemon start/status/stop/restart/serve` (Axum, `127.0.0.1:8765` por defecto con override `AVI_DAEMON_PORT`, streaming NDJSON)
 - **100% offline**: Sin APIs externas ni conexiones a internet (modelos en la caché de la aplicación, `~/.cache/ai-voice-interconnector/models` en Linux)
-- **Binario autocontenido por plataforma**: `tar.gz` (Linux/macOS) / `.zip` (Windows) con `LICENSE`/`THIRD-PARTY-LICENSES.md`/`SOURCE-OFFER.md`
+- **Un archivo por plataforma**: `tar.gz` (Linux/macOS) / `.zip` (Windows) con el binario, el motor TTS, ONNX Runtime y `LICENSE`/`THIRD-PARTY-LICENSES.md`/`SOURCE-OFFER.md`
 - **CLI universal**: `subprocess.run(["./ai-voice-interconnector", "speech", "say", "--text", "..."])`
 - **Audio nativo**: `cpal` (WASAPI/CoreAudio/ALSA)
 
@@ -116,7 +116,7 @@ Expand-Archive ai.zip -Force; .\ai-voice-interconnector.exe setup
 ```
 
 > Mac Intel (x86_64) y Windows ARM64 no están soportados (limitación de toolchain aceptada, ver `docs/BUILD.md`).
-> Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+); el bootstrap comprueba que el binario arranca y, si no lo hace, aborta con `binary_incompatible` remitiendo a `docs/BUILD.md`.
+> Linux requiere **glibc ≥ 2.35** (Ubuntu 22.04+) y las librerías del sistema `libasound2`, `libgomp1` y `libstdc++6` (nombres de Debian/Ubuntu; en Ubuntu 24.04+ `libasound2t64`); el bootstrap comprueba que el binario arranca y, si no lo hace, aborta con `binary_incompatible` remitiendo a `docs/BUILD.md`. macOS requiere **macOS 26 (Tahoe)** o posterior, en cualquier Mac con Apple Silicon. Linux y macOS requieren además `/bin/ps` para el daemon. En Windows no hace falta instalar nada: el archivo trae las DLL del runtime de VC++. Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
 
 Cada Release publica `SHA256SUMS.txt` sobre los 6 ficheros (4 archivos + 2 bootstrap); verifica con `sha256sum -c` o `Get-FileHash` antes de ejecutar.
 
@@ -147,7 +147,7 @@ Hasta provisionar, `speech synthesize`/`daemon start` fallan con exit 4 remitien
 
 ### Compilar desde código (Rust)
 
-Requisitos: Rust 1.96.0, `cmake`, `pkg-config`, `libasound2-dev` (Linux) y `libclang-dev` solo con `--features native-translation/full` (traducción). Ver `docs/BUILD.md`.
+Requisitos: Rust 1.96.0, `cmake`, `pkg-config`, `libasound2-dev` (Linux) y `libclang-dev` solo con `--features native-translation/full` (traducción); el motor TTS en Linux necesita además `make`, `gcc`, `libopenblas-dev` y `libgfortran-<versión de gcc>-dev`, porque enlaza OpenBLAS estático. La lista completa por host la da `cargo xtask doctor`. Ver `docs/BUILD.md`.
 
 ```bash
 cargo fmt --all --check

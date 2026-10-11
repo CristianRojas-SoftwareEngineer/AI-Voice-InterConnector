@@ -48,7 +48,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 | Término | Definición |
 |---|---|
-| **Bundle** | Contenido completo de un release para un target: ejecutable, motor TTS (`qwen_tts`), librería de ONNX Runtime (más las DLL del runtime de VC++ en Windows) y documentos de licencia. Se instala siempre entero. |
+| **Bundle** | Contenido completo de un release para un target: ejecutable, motor TTS (`qwen_tts`), librería de ONNX Runtime (más las cuatro DLL del runtime de VC++ en Windows: las tres que necesita ONNX Runtime y `vcomp140.dll`, que importa el ejecutable) y documentos de licencia. Se instala siempre entero. |
 | **Archivo de release** | El bundle comprimido (`.tar.gz` o `.zip`) publicado en GitHub Releases y listado en `SHA256SUMS.txt`. |
 | **Bootstrap** | Script mínimo de primer contacto (`install.sh`, `install.ps1`) que obtiene y verifica el bundle y delega la instalación en el propio binario. |
 | **Directorio de programa** | Directorio donde vive el bundle instalado. Propiedad exclusiva de la aplicación; nunca contiene datos del usuario. |
@@ -66,7 +66,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 | Windows x86_64 | `x86_64-pc-windows-msvc` | `ai-voice-interconnector-<ver>-x86_64-windows.zip` | Windows 10 x64 |
 | Linux x86_64 | `x86_64-unknown-linux-gnu` | `ai-voice-interconnector-<ver>-x86_64-linux.tar.gz` | glibc ≥ 2.35 |
 | Linux arm64 | `aarch64-unknown-linux-gnu` | `ai-voice-interconnector-<ver>-arm64-linux.tar.gz` | glibc ≥ 2.35, userland de 64 bits |
-| macOS arm64 | `aarch64-apple-darwin` | `ai-voice-interconnector-<ver>-arm64-macos.tar.gz` | macOS 13 |
+| macOS arm64 | `aarch64-apple-darwin` | `ai-voice-interconnector-<ver>-arm64-macos.tar.gz` | macOS 26 (Tahoe), cualquier Mac con Apple Silicon |
 
 **Detección del target.** El bootstrap y el binario aplican la misma tabla:
 
@@ -76,7 +76,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 **Plataformas no soportadas**: Windows ARM64, macOS Intel, Linux con musl (Alpine), Linux de 32 bits y userland de 32 bits sobre kernel de 64 bits. Terminan con `unsupported_platform` (o con `binary_incompatible` si la incompatibilidad solo se detecta al ejecutar el binario) y un mensaje que remite a compilar desde el código fuente ([BUILD.md](../BUILD.md)).
 
-**Compatibilidad comprobada, no inferida.** No se parsean versiones de glibc para decidir si se instala: se ejecuta el binario descargado (`--version`) y, si no arranca, se diagnostica la causa probable (glibc insuficiente vía `getconf GNU_LIBC_VERSION`, musl, userland de 32 bits). Una sola comprobación cubre todas las incompatibilidades de ABI, incluidas las que un parseo no detecta.
+**Compatibilidad comprobada, no inferida.** No se parsean versiones de glibc para decidir si se instala: se ejecuta el binario descargado (`--version`) y, si no arranca, el mensaje enumera las causas probables de su SO sin averiguar cuál es: en Linux, glibc insuficiente, una librería del sistema ausente, musl o userland de 32 bits; en macOS, una versión anterior a la mínima (macOS 26). Una sola comprobación cubre todas las incompatibilidades de ABI, incluidas las que un parseo no detecta.
 
 ## 4. Evaluación de alternativas
 
@@ -610,8 +610,8 @@ La tabla de requisitos y las versiones fijadas (Rust, ONNX Runtime, paquetes de 
 | CMake ≥ 3.20 | winget | Gestor de la distribución | Homebrew | Sistema |
 | libclang (bindgen de `ct2rs`) | LLVM | `libclang-dev` o equivalente | Xcode Command Line Tools | Sistema |
 | pkg-config y cabeceras de ALSA | — | `pkg-config`, `libasound2-dev` o equivalentes | — | Sistema |
-| Toolchain del motor TTS | MSYS2 UCRT64 (gcc, OpenBLAS y `mingw32-make` fijados) | make, gcc y OpenBLAS | make, clang y Accelerate (Xcode CLT) | Sistema (MSYS2: su `pacman`) |
-| ONNX Runtime (runtime de STT, versión fijada) | Descarga verificada | Descarga verificada | Descarga verificada | `cargo xtask bootstrap` |
+| Toolchain del motor TTS | MSYS2 UCRT64 (gcc, OpenBLAS y `mingw32-make` fijados) | make, gcc y las librerías estáticas de OpenBLAS y libgfortran (el motor las enlaza estáticas) | make, clang y Accelerate (Xcode CLT) | Sistema (MSYS2: su `pacman`) |
+| ONNX Runtime (runtime de STT, versión fijada) | Descarga del asset oficial verificada con el SHA-256 fijado | Ídem | Ídem | `cargo xtask bootstrap` |
 | sccache (opcional) | ✅ | ✅ | ✅ | `cargo install` o gestor |
 
 ### 9.2 `cargo xtask doctor`
@@ -624,7 +624,7 @@ Es **convergente**: la misma orden prepara el entorno la primera vez y lo pone a
 
 1. Ejecuta `doctor`. Para los requisitos del sistema que falten, imprime los comandos de instalación. Con `--system`, los ejecuta, y es la única operación de toda la especificación que puede pedir `sudo` o UAC, y solo por petición explícita.
 2. Asegura los componentes de Rust necesarios (clippy, rustfmt y, si se usa cobertura, las herramientas LLVM). La versión de Rust ya la aplica `rust-toolchain.toml`.
-3. Descarga ONNX Runtime en la versión fijada para el target del host, verifica su checksum fijado, lo deja en `ort-bundle/` y hace que lo encuentren los binarios de `target/`.
+3. Descarga ONNX Runtime en la versión fijada para el target del host por HTTPS (TLS ≥ 1.2), exige que el archivo tenga el SHA-256 que fija `packaging/pins.json` para el target (clave `ort_sha256`) y que traiga la librería esperada con tamaño mayor que cero, y falla si no; la deja en `ort-bundle/` con el marcador `.ort-version` y hace que la encuentren los binarios de `target/`.
 4. Compila el motor TTS (`build-engine --self-test`) si falta o está desactualizado.
 5. Con `--models`, provisiona los modelos ejecutando `setup` con el build local.
 6. Imprime un resumen del estado alcanzado.
@@ -633,11 +633,12 @@ Es **convergente**: la misma orden prepara el entorno la primera vez y lo pone a
 
 Produce el bundle y el archivo de release del target del host. No hay compilación cruzada: cada target se empaqueta en su runner nativo.
 
-1. Compila `--release --features full`.
-2. Monta el bundle con la lista canónica de archivos del target (la misma que valida `self install`): ejecutable, motor TTS, ONNX Runtime (más las DLL del runtime de VC++ en Windows) y documentos de licencia.
-3. Valida la versión contra `--expect-version` (en CI, el tag).
-4. Hace una prueba de humo (`--version` y `voice list`).
-5. Comprime de forma determinista (`.tar.gz` o `.zip`) con el nombre convencional.
+1. Valida la versión contra `--expect-version` (en CI, el tag).
+2. Exige lo que el repositorio debe aportar ya compilado: el binario en `target/release/` (`cargo build --release --features full`), el motor en `vendor/qwen3-tts/` (`cargo xtask build-engine`) y los documentos de licencia. No compila nada.
+3. Hace una prueba de humo del binario (`version` y `voice list`).
+4. Asegura `ort-bundle/` en la versión fijada (lo reutiliza si está completo y su marcador coincide; si no, lo descarga como `bootstrap`).
+5. Monta el bundle con la lista canónica de archivos del target (la misma que valida `self install`): ejecutable, motor TTS, ONNX Runtime (más las DLL del runtime de VC++ en Windows) y documentos de licencia.
+6. Comprime de forma determinista (`.tar.gz` o `.zip`) con el nombre convencional.
 
 Los cuatro jobs de build de CI invocan este comando en lugar de repetir cada uno su propio staging. El job de publicación estampa la versión en los bootstrap, los añade como assets y calcula `SHA256SUMS.txt` sobre todos los assets.
 

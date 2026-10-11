@@ -40,7 +40,7 @@ CLI (--json / texto)                    ai-voice-interconnector daemon serve
 | `/translate` | POST | Traducción CT2 residente (feature `native-translation`) |
 | `/voices/clone` | POST | Clonado con streaming NDJSON y warm-on-clone (`{name, speech, precomputed:true}` = precarga en caliente iniciada; sin endpoint `precompute` separado) |
 | `/dub` | POST | Pipeline transcribe→translate→synthesize con streaming NDJSON y latidos |
-| `/shutdown` | POST | Apagado limpio (misma ruta que Ctrl+C/SIGTERM: kill preciso del residente por PID registrado + `notify_one()`) |
+| `/shutdown` | POST | Apagado limpio (misma ruta que Ctrl+C y, en Unix, SIGTERM: kill preciso del residente por PID registrado + `notify_one()`) |
 
 Son 7 rutas públicas (podados `GET /voices` y `POST /voices/precompute`; sin legado, ver `docs/CLI/commands/DAEMON.md`).
 
@@ -52,7 +52,7 @@ Readiness (`status:"ready"`) y warm son estados distintos: readiness es inmediat
 
 ```bash
 ai-voice-interconnector daemon start     # revalida el residual (sano → already_running; degradado → reclama el árbol y rearranca con started —incluido Stopped con residente vivo por resident_pid—; con --auto-restart los reintentos parten de reclamo activo del árbol propio previo con deadline y verificación —crash vivo con log pendiente de CI/entorno rápido, runtime diferido—; un puerto ocupado sale al instante con exit 6 port_in_use y --auto-restart no reintenta fallos previos a estar listo)
-ai-voice-interconnector daemon serve     # primer plano (escucha Ctrl+C/SIGTERM por la misma ruta que POST /shutdown)
+ai-voice-interconnector daemon serve     # primer plano (escucha Ctrl+C, y SIGTERM en Linux y macOS, por la misma ruta que POST /shutdown)
 ai-voice-interconnector daemon status    # GET /health → running/stopped, además del estado `warm` para diagnóstico (el stopped por probe incluye en el arranque la detección del residente por resident_pid vivo)
 ai-voice-interconnector daemon stop      # parada unificada con deadline global de 8 s (graceful + árbol preciso + verificación por resident_pid muerto, sin kill por imagen; encuentra al daemon por daemon.pid o, si falta, por daemon.ready; borra daemon.pid y daemon.ready solo tras muerte verificada del daemon y del residente)
 ai-voice-interconnector daemon restart   # parada unificada + arranque fresco (presupuesto 12 s)

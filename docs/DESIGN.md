@@ -34,7 +34,7 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 ┌─────────────────────────────────────────────────────────────┐
 │              ai-voice-interconnector (binario Rust)         │
 │   Bootstrap install.sh / install.ps1 -> self install        │
-│   Binario autocontenido (cargo build --release --features full) │
+│   Binario nativo (cargo build --release --features full)    │
 └──────────────────────┬──────────────────────────────────────┘
                        │
                        ▼

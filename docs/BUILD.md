@@ -1,10 +1,12 @@
 # Guía de construcción
 
-`ai-voice-interconnector` se compila como un **binario Rust autocontenido**
+`ai-voice-interconnector` se compila como un **binario Rust**
 (`cargo build --release --features full`; CTranslate2 (ct2rs) compilado estático +
 Parakeet vía ort load-dynamic (sin enlace en build)) y se **empaqueta por SO en un
 archivo comprimido** (`tar.gz` en los 3 targets Unix, `.zip` en Windows) que
-agrupa el binario con los documentos de licencia GPLv3.
+agrupa el binario con el motor TTS, ONNX Runtime y los documentos de licencia
+GPLv3. El binario y el motor enlazan además librerías dinámicas que el archivo
+no trae: ver [Dependencias de runtime por plataforma](#dependencias-de-runtime-por-plataforma).
 
 ## Tabla de contenidos
 
@@ -12,9 +14,11 @@ agrupa el binario con los documentos de licencia GPLv3.
 - [2. Plataformas soportadas](#2-plataformas-soportadas)
   - [Matriz de arquitecturas y brechas](#matriz-de-arquitecturas-y-brechas)
   - [Matriz de SO probados y mínimos declarados](#matriz-de-so-probados-y-mínimos-declarados)
+  - [Versión mínima de macOS](#versión-mínima-de-macos)
+  - [Dependencias de runtime por plataforma](#dependencias-de-runtime-por-plataforma)
 - [3. Compilación local](#3-compilación-local)
   - [Verificación rápida](#verificación-rápida)
-  - [Build de distribución (binario autocontenido)](#build-de-distribución-binario-autocontenido)
+  - [Build de distribución](#build-de-distribución)
   - [ONNX Runtime vía `load-dynamic` (sin build en compilación)](#onnx-runtime-vía-load-dynamic-sin-build-en-compilación)
   - [Verificación post-build](#verificación-post-build)
 - [4. CI/CD con CircleCI](#4-cicd-con-circleci)
@@ -90,12 +94,75 @@ El toolchain de Rust basta para compilar y empaquetar; no se requiere ningún ot
 
 | SO | Probado en (CI) | Mínimo declarado | Origen del mínimo |
 |----|-----------------|------------------|-------------------|
-| Windows | Executor `circleci/windows@5.0` (Windows Server 2022) | Windows 10 1903+ x64 | Binario Rust autocontenido, sin APIs posteriores; el motor TTS incrusta un manifiesto `activeCodePage` UTF-8, que las versiones anteriores ignoran (el motor recibiría el texto y las rutas no ASCII en la página de códigos ANSI) |
-| Linux | `cimg/rust:1.96.0` (base Ubuntu 22.04, glibc 2.35) | glibc ≥ 2.35 | Binario `gnu` (crt-static no cubre glibc); el bootstrap lo diagnostica con la comprobación de arranque (`binary_incompatible`) |
-| macOS | Runner Apple Silicon Xcode 26.4 | macOS 13+ (Ventura) | Binario Rust arm64 |
+| Windows | Executor `circleci/windows@5.0` (Windows Server 2022) | Windows 10 1903+ x64 | Binario Rust sin APIs posteriores; el motor TTS incrusta un manifiesto `activeCodePage` UTF-8, que las versiones anteriores ignoran (el motor recibiría el texto y las rutas no ASCII en la página de códigos ANSI) |
+| Linux | `cimg/rust:1.96.0` (base Ubuntu 22.04, glibc 2.35) | glibc ≥ 2.35 y las librerías de [Dependencias de runtime](#dependencias-de-runtime-por-plataforma) | Binario `gnu` enlazado contra la glibc del runner; el bootstrap lo diagnostica con la comprobación de arranque (`binary_incompatible`) |
+| macOS | Runner Apple Silicon Xcode 26.4 | macOS 26+ (Tahoe), cualquier Mac con Apple Silicon (M1 en adelante) | `MACOSX_DEPLOYMENT_TARGET=26.0` en `build-darwin-arm64`; ver [Versión mínima de macOS](#versión-mínima-de-macos) |
 
 **Limitación aceptada:** los mínimos declarados **no** se prueban en máquinas
 con esas versiones exactas. Un reporte de fallo reabriría la decisión.
+
+### Versión mínima de macOS
+
+El artefacto de macOS exige **macOS 26 (Tahoe)** y corre en cualquier Mac con
+Apple Silicon. El criterio es soportar solo versiones de macOS que reciben
+actualizaciones de seguridad y que no son las siguientes en perderlas: mantener
+un target que está por quedar obsoleto cuesta más de lo que aporta.
+
+- **Soporte de Apple (octubre de 2026).** Apple publica parches de seguridad
+  para la versión actual de macOS y las dos anteriores: macOS 27, 26 (Tahoe) y
+  15 (Sequoia). macOS 14 (Sonoma) dejó de recibirlos en 2026, y macOS 15 es la
+  siguiente en perderlos cuando salga la próxima versión mayor. macOS 26 es la
+  más antigua que no está en esa situación.
+- **Hardware.** macOS 26 corre en todos los Mac con Apple Silicon, desde los M1
+  de 2020, así que exigirlo no deja fuera ningún Mac que el producto soporte
+  (Mac Intel no es target).
+- **Restricciones técnicas, todas por debajo de 26.0.** La
+  `libonnxruntime.dylib` 1.28 que empaquetamos declara `minos 14.0`; el SDK de
+  Xcode 26.4 admite desplegar desde macOS 11; el target `aarch64-apple-darwin`
+  de Rust, desde macOS 11; el motor usa la API de LAPACK nueva de Accelerate
+  (`ACCELERATE_NEW_LAPACK`), disponible desde macOS 13.3; CTranslate2 no fija
+  mínimo propio.
+
+El job `build-darwin-arm64` fija `MACOSX_DEPLOYMENT_TARGET=26.0`, que leen
+rustc, el crate `cc`, CMake y el clang del Makefile del motor, y comprueba con
+`otool -l` el `minos` del binario y del motor (debe ser exactamente 26.0) y el
+de la librería de ONNX Runtime empaquetada (menor o igual). El motor se compila
+con `-mcpu=apple-m1`: M1 es el chip más antiguo que soporta macOS 26, y su
+código corre en todos los posteriores. El Cask de Homebrew declara
+`depends_on macos: ">= :tahoe"`, y `install.sh` nombra esta versión mínima en
+su diagnóstico `binary_incompatible`.
+
+### Dependencias de runtime por plataforma
+
+En **Windows** no hace falta instalar nada: el binario principal y
+CTranslate2 enlazan el CRT estático (`+crt-static`), el motor TTS se enlaza con
+`-static`, y el archivo trae las cuatro DLL del runtime de VC++ que no forman
+parte de Windows: `vcruntime140.dll`, `vcruntime140_1.dll` y `msvcp140.dll`,
+que necesita ONNX Runtime, y `vcomp140.dll`, el runtime OpenMP de MSVC que el
+binario importa porque CTranslate2 se compila con `/openmp`.
+
+En **Linux** el binario principal enlaza de forma dinámica estas librerías del
+sistema, que deben estar instaladas (nombres de paquete de Debian/Ubuntu; otras
+distribuciones las publican con nombres equivalentes):
+
+| Librería | Paquete (Debian/Ubuntu) | La necesita | Por qué |
+|---|---|---|---|
+| `libasound.so.2` | `libasound2` (`libasound2t64` en Ubuntu 24.04+) | binario principal | Audio ALSA de `cpal`, que `alsa-sys` enlaza de forma dinámica |
+| `libgomp.so.1` | `libgomp1` | binario principal | Runtime OpenMP de CTranslate2 (traducción) |
+| `libstdc++.so.6` | `libstdc++6` | binario principal y `libonnxruntime.so` | Runtime C++ de CTranslate2 y de ONNX Runtime |
+
+Sin ellas el binario no arranca, y el bootstrap aborta con
+`binary_incompatible`. El motor TTS (`qwen_tts`) enlaza OpenBLAS y el runtime
+Fortran que usa su LAPACK (`libgfortran` y, en x86_64, `libquadmath`) de forma
+estática, así que solo depende de glibc; el job de build lo comprueba con `ldd`.
+
+En **macOS** el motor usa el framework Accelerate y el audio CoreAudio, que
+forman parte del sistema, así que no hace falta instalar nada.
+
+En **Linux y macOS** la parada del daemon y su registro observan la identidad
+de los procesos con `/bin/ps` (por ruta fija, con `LC_ALL=C`): sin `/bin/ps`
+(algunas imágenes de contenedor mínimas no traen `procps`) el daemon no arranca,
+porque no puede registrar su propia identidad.
 
 ---
 
@@ -110,7 +177,7 @@ cargo test --all
 cargo test --all --verbose   # pruebas de contrato (≈70 tests en cli_golden); las de recursos locales salen como ignored
 ```
 
-### Build de distribución (binario autocontenido)
+### Build de distribución
 
 ```bash
 # Binario featureless (sin STT/traducción, rápido, sin C++)
@@ -139,14 +206,16 @@ no necesita compilar ni tener presente ONNX Runtime**. Por eso las cuatro
 arquitecturas compilan `--features full` sin ningún paso previo de ONNX Runtime.
 
 En runtime, `ort` carga la librería dinámica del SO. Si `ORT_DYLIB_PATH` no está
-definido, carga el nombre por defecto (`onnxruntime.dll` / `libonnxruntime.so` /
-`libonnxruntime.dylib`) con la búsqueda de librerías del sistema. En Windows esa
-búsqueda mira primero el directorio del ejecutable, así que en el producto
-instalado basta con colocar la librería junto al binario: no hay `rpath` ni
-variables de entorno que fijar.
+definido, usa el nombre por defecto (`onnxruntime.dll` / `libonnxruntime.so` /
+`libonnxruntime.dylib`). Una ruta relativa, sea ese nombre o el valor de
+`ORT_DYLIB_PATH`, se resuelve primero contra el directorio del ejecutable
+(`current_exe()`) en los tres SO, y solo si ahí no existe pasa a la búsqueda de
+librerías del sistema. Por eso en el producto instalado basta con colocar la
+librería junto al binario: no hay `rpath` ni variables de entorno que fijar.
 
-Desde el repositorio no hay librería junto a los ejecutables de `target/`, y en
-Windows la búsqueda mira System32 antes que el `PATH`: si el sistema trae su
+Desde el repositorio no hay librería junto a los ejecutables de `target/`, así
+que cuenta la búsqueda del sistema, y en Windows esa búsqueda mira System32
+antes que el `PATH`: si el sistema trae su
 propia `onnxruntime.dll` (Windows incluye una en algunas versiones), las pruebas
 y `cargo run` la cargan aunque sea de otra versión. Para validar con la versión
 fijada, las pruebas con recursos se ejecutan con `ORT_DYLIB_PATH` apuntando a la
@@ -176,11 +245,21 @@ y CI no la necesitan).
 
 #### Empaquetado en los artefactos de release
 
-El binario distribuido es **autocontenido**: el usuario solo ejecuta el
-instalador de la app, sin instalar nada previo. Cada job de build de CircleCI,
-antes del staging del artefacto, descarga el asset oficial de Microsoft de
-**ONNX Runtime 1.28.0** (pareja de `ort` rc.13) para su plataforma y coloca la
-librería dinámica junto al binario con el nombre por defecto que busca `ort`:
+El archivo de release trae ONNX Runtime: el usuario no lo instala. El bundle
+lleva el asset oficial de Microsoft de **ONNX Runtime 1.28.0** (pareja de `ort`
+rc.13) de su plataforma, con la librería dinámica junto al binario y con el nombre
+por defecto que busca `ort`. Lo descarga un único descargador, el de
+`cargo xtask package` (el mismo que usan `cargo xtask bootstrap` y la gate de
+pruebas con recursos de `cargo xtask release`), en los cuatro jobs. La descarga
+va por HTTPS (TLS ≥ 1.2) y el archivo debe tener el SHA-256 que fija
+`packaging/pins.json` para su target (clave `ort_sha256`) y traer la librería
+esperada con tamaño mayor que cero; si no, el empaquetado falla. Los hashes son
+los `digest` que GitHub publica para cada asset del release oficial de
+Microsoft, que no publica ficheros de checksum propios; al subir `ort_pin` hay
+que actualizarlos en el mismo cambio. `ort-bundle/` se reutiliza solo si trae
+todas las librerías y el marcador `.ort-version` de la versión fijada, que solo
+se escribe tras una descarga verificada; `build-windows-x64` lo conserva entre
+corridas con la caché `ort-v3`.
 
 | Job | Asset MS v1.28.0 | Librería empaquetada |
 |---|---|---|
@@ -190,26 +269,47 @@ librería dinámica junto al binario con el nombre por defecto que busca `ort`:
 | build-darwin-arm64 | `onnxruntime-osx-arm64-1.28.0.tgz` | `libonnxruntime.dylib` |
 
 En **Windows**, la `onnxruntime.dll` de Microsoft es `/MD` y depende del runtime
-de VC++ (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`). Para no exigir
-al usuario instalar el *Visual C++ Redistributable*, esas tres DLLs se empaquetan
-también junto al binario (*app-local deployment*, permitido por la licencia de
-redistribución de MS); el Universal CRT (`ucrtbase.dll`) ya forma parte de
-Windows 10/11. En Linux/macOS la librería depende del runtime C++ del SO
-(`libstdc++` / `libc++`), ya considerado base.
+de VC++ (`vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`), y el binario
+principal importa `vcomp140.dll`, el runtime OpenMP de MSVC que usa CTranslate2.
+Para no exigir al usuario instalar el *Visual C++ Redistributable*, esas cuatro
+DLLs se empaquetan junto al binario (*app-local deployment*, permitido por la
+licencia de redistribución de MS): `cargo xtask package` las copia de System32
+del runner. El Universal CRT (`ucrtbase.dll`) ya forma parte de Windows 10/11.
+En Linux/macOS la librería depende del runtime C++ del SO
+(`libstdc++` / `libc++`); en Linux es una de las
+[dependencias de runtime](#dependencias-de-runtime-por-plataforma).
 
-Los instaladores extraen el archivo completo (layout plano) al directorio de
-instalación y ejecutan el binario desde ahí, de modo que la librería llega junto
-al binario y `ort` la encuentra sin cambios en los instaladores. La versión
+Los instaladores extraen el archivo completo al directorio de instalación y
+ejecutan el binario desde ahí, de modo que la librería llega junto al binario y
+`ort` la encuentra sin cambios en los instaladores. La versión
 1.28.0 no se cambia sin revalidar el binding `ort` ↔ librería nativa.
 
 ### Verificación post-build
 
-El **smoke test del binario está automatizado en CI**: cada uno de los
-4 jobs de build ejecuta `ai-voice-interconnector version` (exit 0) **y
-`ai-voice-interconnector voice list`** antes de publicar el artefacto, de modo
-que la ausencia de la voz `default` hace fallar el job. `version` y `voice list`
-**no cargan el modelo** (las voces de fábrica viajan embebidas en el binario
-vía `crates/avi-store/assets/`), así que el chequeo es de segundos.
+El **smoke test está automatizado en CI**. Cada uno de los 4 jobs de build,
+antes de publicar el artefacto, ejecuta en este orden:
+
+1. Sobre el binario recién compilado, la versión y `voice list`: en Linux y
+   macOS compara `--version` con el tag; en Windows ejecuta `version` y exige a
+   `version --json` los campos `name`, `version` (igual al tag) y
+   `schema_version` igual a `CLI_SCHEMA_VERSION` (`cargo xtask pins --check`
+   falla si el literal del humo y la constante divergen). `voice list` hace
+   fallar el job si falta la voz `default`.
+2. `cargo xtask build-engine --self-test`: compila el motor TTS y ejecuta su
+   oráculo de kernels, sin pesos del modelo. En Linux, `ldd` comprueba además
+   que el motor no enlaza OpenBLAS ni su runtime Fortran de forma dinámica; en
+   macOS, `otool -l` comprueba que el binario y el motor declaran `minos` 26.0.
+3. `cargo xtask package --expect-version`, que repite `version` y `voice list`
+   sobre el binario, verifica el SHA-256 de ONNX Runtime si lo descarga y monta
+   el bundle. En macOS se comprueba después el `minos` de lo empaquetado,
+   incluida la librería de ONNX Runtime.
+4. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
+   archivo empaquetado en un sandbox con las cuatro raíces reubicadas, y
+   `--version` del binario instalado.
+
+`version` y `voice list` **no cargan el modelo** (las voces de fábrica viajan
+embebidas en el binario vía `crates/avi-store/assets/`), así que el chequeo es
+de segundos.
 
 Queda **manual** (requiere modelo, audio real y hardware por SO): `doctor`,
 `setup` y una síntesis real (`speech synthesize`). La validación end-to-end de
@@ -293,7 +393,7 @@ garantía "commit taggeado probado".
 │build-windows│ │build-linux- │ │build-linux- │ │ build-darwin-    │
 │ -x64        │ │    x64      │ │   arm64     │ │     arm64        │
 └─────────────┘ └─────────────┘ └─────────────┘ └──────────────────┘
-     (cada build: `cargo xtask package --expect-version` + humo de `self install` en sandbox + `version`/`voice list`)
+     (cada build: versión + `voice list`, `build-engine --self-test`, `cargo xtask package --expect-version` y humo de `self install` en sandbox + `--version`)
                               │
                               ▼   publish-release → publish-metadata
 ```
@@ -344,8 +444,11 @@ Las 3 puertas de test y los 4 builds (ambos en `build-all`) responden a **ejes
 distintos**.
 
 - **Por qué 3 puertas de test y 4 builds.** Los tests son **por familia de SO**:
-  validan lógica Rust por SO (Windows: winsound/tray; macOS: CoreAudio; Linux:
-  ALSA). Los builds son **por target de distribución**, y Linux publica **dos**
+  validan lógica Rust por SO (Windows: lanzamiento con lista explícita de
+  handles, limpiador diferido, `PATH` en HKCU y WASAPI; macOS: CoreAudio y
+  cuarentena de Gatekeeper; Linux y macOS: `setsid`, señales e identidad de
+  proceso con `/bin/ps`; Linux: ALSA). Los builds son **por target de
+  distribución**, y Linux publica **dos**
   arquitecturas. Son dos ejes ortogonales (SO × build-target).
 
 - **Por qué el runner de `test-linux` es x86_64.** Es el executor Docker más
@@ -353,8 +456,12 @@ distintos**.
   basta la arquitectura más barata.
 
 - **Hueco de cobertura de ARM64 (divergencia aceptada).** `build-linux-arm64`
-  está *gated* por tests en x86_64; el smoke test `ai-voice-interconnector
-  version` (que importa el stack nativo en ARM) cubre el riesgo arch-específico.
+  está *gated* por tests en x86_64; en ARM solo corre el smoke test de
+  [Verificación post-build](#verificación-post-build): arrancar el binario
+  (`--version`, que exige resolver sus librerías dinámicas), `voice list`, el
+  `--self-test` de los kernels del motor y el humo de `self install`. Ni la
+  traducción (CTranslate2) ni la transcripción (ONNX Runtime) se ejecutan en
+  ARM dentro del pipeline.
 
 ### CD: publicación del GitHub Release (`publish-release`)
 
@@ -408,11 +515,11 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 |-------|------------|------|------------------------------------|
 | `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_pin` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
 | `target-v5` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de `vendor/cmake-0.1.58` y de `vendor/hf-hub-1.0.0`. Sin fallback. |
-| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (3,2 GB) | los mismos jobs que la caché de `target/`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
+| `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (`3G`, que `sccache` lee como 3 GiB, unos 3,2 GB) | los mismos jobs que la caché de `target/`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
 | `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_pin`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
 | `tts-v1` | el motor `qwen_tts.exe` compilado | `build-windows-x64` | `vendor/qwen3-tts/.engine-cachekey` (`Makefile`, `*.c`/`*.h` y `third_party/ingot`) y los pines de gcc y openblas. |
-| `ort-v1` | la librería oficial de ONNX Runtime para Windows | `build-windows-x64` | `ort_pin`. |
+| `ort-v3` | `ort-bundle/` tal como lo deja `cargo xtask package`: la librería oficial de ONNX Runtime para Windows (con su SHA-256 verificado), las cuatro DLL del runtime de VC++ y el marcador `.ort-version` | `build-windows-x64` | `ort_pin`. |
 
 `variant` separa los conjuntos de features (`test` sin features, `cov`
 instrumentado, `full` con C++), y `os` separa los targets: sin esos
@@ -500,7 +607,7 @@ es además inmune a la conversión de fin de línea del checkout.
   acaba de compilar, y omitir el guardado haría que la siguiente corrida los
   volviera a fallar. Cada cambio de `Cargo.lock` agrega objetos que ya nadie
   usa, así que el tamaño se acota con `SCCACHE_CACHE_SIZE`, fijado por el
-  parámetro de pipeline `sccache_cache_size` (3,2 GB, más del doble del working
+  parámetro de pipeline `sccache_cache_size` (`3G`: 3 GiB, unos 3,2 GB, más del doble del working
   set de `build-windows-x64`, la variante más grande). Al superarlo, `sccache`
   desaloja por LRU: un acierto actualiza el `mtime` de la entrada, también en
   una caché recién restaurada desde el tar de CircleCI, así que se desalojan los
@@ -514,7 +621,7 @@ es además inmune a la conversión de fin de línea del checkout.
 - **Entorno de MSVC**: Ninja no carga `INCLUDE`/`LIB` por sí mismo (el generador Visual Studio sí), así que el paso localiza Visual Studio con `vswhere`, importa `vcvars64.bat` y solo después antepone Ninja y `.cargo\bin` al `PATH`.
 - **`CC`/`CXX` con la ruta absoluta de `cl.exe`**: el crate `cc` solo usa `RUSTC_WRAPPER` como wrapper en MSVC cuando el compilador es la ruta de un ejecutable existente.
 
-`CARGO_INCREMENTAL=0` está en el `environment:` de cada uno de los 11 jobs que usan cargo, porque `sccache` no cachea compilaciones incrementales y el estado incremental no debe viajar en la caché de `target/`; lo vigila `test_cargo_jobs_disable_incremental_at_job_level`. En `test-windows` también está ahí `RUSTFLAGS=-C linker=rust-lld`: entra en el fingerprint de cargo y reemplaza los `rustflags` del target de `.cargo/config.toml` en todo el job, de modo que las puertas y la suite comparten flags y `target/`.
+`CARGO_INCREMENTAL=0` está en el `environment:` de cada uno de los 11 jobs que usan cargo, porque `sccache` no cachea compilaciones incrementales y el estado incremental no debe viajar en la caché de `target/`; lo vigila `test_cargo_jobs_disable_incremental_at_job_level`. En `test-windows` también está ahí `RUSTFLAGS=-C linker=rust-lld -C target-feature=+crt-static`: entra en el fingerprint de cargo y reemplaza los `rustflags` del target de `.cargo/config.toml` en todo el job, de modo que las puertas y la suite comparten flags y `target/`. Como el reemplazo es completo, repite `+crt-static` para que las pruebas enlacen el CRT estático igual que el binario de release; rust-lld solo acelera el enlace.
 
 El entorno de `sccache` (`RUSTC_WRAPPER`, `SCCACHE_DIR` y el límite `SCCACHE_CACHE_SIZE`) lo exporta `sccache_setup_unix` a `$BASH_ENV` en Linux y macOS (y solo esas tres variables); en Windows, sin `$BASH_ENV`, `RUSTC_WRAPPER` y `SCCACHE_DIR` se definen inline en los pasos de compilación de `test-windows` y `build-windows-x64`, y `SCCACHE_CACHE_SIZE` en el `environment:` de ambos jobs. `sccache --show-stats` muestra el límite vigente como `Max cache size`.
 
@@ -528,7 +635,7 @@ costo:
 | Escenario | Cachés que se invalidan | Efecto en los `build-*` |
 |-----------|-------------------------|-------------------------|
 | Cambio en el código fuente del workspace (`src/`, `crates/*`), bump de versión de una release, documentación o `CHANGELOG.md` | Ninguna | Todas las cachés aciertan. Cargo recompila los crates del workspace (siempre `Dirty` por `mtime`): `sccache` devuelve al instante los que no cambiaron y compila de verdad los editados y el binario final. `cargo build --release` tarda unos 20 s en linux-x64. |
-| Cambio de `ort_pin` | `ort-v1` | Solo una descarga nueva de ONNX Runtime en `build-windows-x64`. |
+| Cambio de `ort_pin` (con sus `ort_sha256`) | `ort-v3` | Una descarga nueva de ONNX Runtime en `build-windows-x64`; los jobs Unix no cachean `ort-bundle/` y lo descargan en cada corrida dentro de `cargo xtask package`. |
 | Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts-v1` | Solo se recompila el motor TTS en `build-windows-x64`; el resto acierta. |
 | Cambio de los pines de MSYS2, gcc, openblas o make | `msys2-v1` y, con gcc u openblas, `tts-v1` | Reinstalación de MSYS2 y recompilación del motor TTS en `build-windows-x64`. |
 | Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | La caché de `target/` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: 2–5 min por job en Unix y ~11–15 min previstos en windows-x64. |
@@ -564,7 +671,7 @@ Las claves exactas de cada familia están en `.circleci/config.yml`.
 Las imágenes `cimg/rust:1.96.0` van pineadas por digest (`@sha256:...`), y
 `rust_pin` + `ort_pin` son parámetros únicos del pipeline (`pipeline.parameters`).
 Ver `.circleci/config.yml` §Reproducibilidad para procedimiento de bump (bumpear
-`ort_pin` invalida `ort-v1` en el siguiente tag).
+`ort_pin` invalida `ort-v3` en el siguiente tag).
 
 El archivo de configuración completo está en `.circleci/config.yml`.
 
@@ -600,8 +707,8 @@ quedan documentados aquí de forma autocontenida:
 ## 5. Distribución de artefactos
 
 El **deliverable** que se publica a usuarios es el **archivo comprimido** de
-cada target (binario Rust + los 4 documentos de licencia + `ort-bundle` +
-`qwen_tts` vendido), con su nombre de
+cada target (binario Rust + los 4 documentos de licencia + la librería de ONNX
+Runtime, con las DLL de VC++ en Windows + el motor `qwen_tts`), con su nombre de
 release **versionado y con arch** (p. ej.
 `ai-voice-interconnector-<ver>-x86_64-windows.zip`). Estos cuatro archivos, junto a los dos bootstrap estampados, llegan
 al GitHub Release a través de `persist_to_workspace` / `attach_workspace` (7 assets con `SHA256SUMS.txt`).
@@ -617,34 +724,39 @@ artifacts/
 ```
 
 `publish-release` estampa ambos bootstrap, recoge los 4 archivos más los 2 bootstrap por `attach_workspace`, calcula
-`SHA256SUMS.txt` sobre los 6 ficheros y crea el GitHub Release (7 assets). Cada archivo tiene layout
-plano (binario + 4 documentos + `ort-bundle` + `qwen_tts` vendido, en la raíz).
+`SHA256SUMS.txt` sobre los 6 ficheros y crea el GitHub Release (7 assets). El
+layout de cada archivo es el de `packaging/bundle-manifest.json`: en la raíz,
+el binario, los 4 documentos y la librería de ONNX Runtime (más las cuatro DLL de
+VC++ en Windows); el motor, en `vendor/qwen3-tts/qwen_tts[.exe]`.
 
 ### Empaquetado por plataforma (archivos comprimidos)
 
-El binario Rust es autocontenido (`crt-static`; CTranslate2 (ct2rs) enlazado
-estático; Parakeet vía ort load-dynamic), así que el empaquetado **no requiere
-herramientas de terceros**: cada target se comprime con una utilidad del sistema base.
+El empaquetado **no requiere herramientas de terceros**: lo hace el propio
+`cargo xtask package` en Rust, con los crates `tar` + `flate2` y `zip`, de forma
+determinista (entradas ordenadas, marca temporal y permisos fijos), así que el
+mismo árbol produce el mismo archivo en cualquier runner.
 
-| Plataforma | Formato | Utilidad de empaquetado |
-|------------|---------|-------------------------|
-| Linux x64 / ARM64 | `tar.gz` | `tar -czf` (coreutils) |
-| macOS arm64 | `tar.gz` | `tar -czf` (base del SO) |
-| Windows x64 | `.zip` | `Compress-Archive` (PowerShell) |
+| Plataforma | Formato | Compresión en `xtask package` |
+|------------|---------|-------------------------------|
+| Linux x64 / ARM64 | `tar.gz` | crates `tar` + `flate2` |
+| macOS arm64 | `tar.gz` | crates `tar` + `flate2` |
+| Windows x64 | `.zip` | crate `zip` (Deflate) |
 
 Cada `build-*` en `.circleci/config.yml` empaqueta con `cargo xtask
 package --expect-version "${CIRCLE_TAG#v}"` (puerta tag-versión fail-fast:
-`const VERSION` de `src/main.rs` vs `CIRCLE_TAG`) más el humo de §12 (`self
-install --no-setup --no-modify-path` en sandbox con raíces reubicadas, y
-después `--version`/`voice list`). El subcomando `package`
-(`crates/xtask/src/package.rs`) monta el bundle desde
-`packaging/bundle-manifest.json` —la misma lista que valida `self install`—
-con **layout plano**
-—el binario renombrado a `ai-voice-interconnector[.exe]` (sin sufijo de
+`const VERSION` de `src/main.rs` vs `CIRCLE_TAG`) y después corre el humo de
+instalación (`self install --no-setup --no-modify-path` en sandbox con raíces
+reubicadas, y `--version` del binario instalado). El subcomando `package`
+(`crates/xtask/src/package.rs`) exige el binario ya compilado en
+`target/release/` y el motor en `vendor/qwen3-tts/`, ejecuta `version` y
+`voice list` sobre el binario, asegura `ort-bundle/` y monta el bundle desde
+`packaging/bundle-manifest.json` —la misma lista que valida `self install`—:
+el binario renombrado a `ai-voice-interconnector[.exe]` (sin sufijo de
 arquitectura) más los 4 documentos de la raíz (`LICENSE`,
-`THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`, `README.md`), el `ort-bundle`
-(ONNX Runtime + DLLs VC++ en Windows) y el `qwen_tts` vendido— y lo comprime al
-archivo del target con el nombre de `release_asset_name`. Los documentos GPLv3 viajan así **dentro del archivo** y
+`THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`, `README.md`) y la librería de
+ONNX Runtime (con las DLL de VC++ en Windows) en la raíz, y el motor en
+`vendor/qwen3-tts/`. Lo comprime al archivo del target con el nombre de
+`release_asset_name`. Los documentos GPLv3 viajan así **dentro del archivo** y
 quedan instalados junto al binario (cumplimiento §6 de la GPLv3 sin depender de
 un bundle).
 
@@ -714,16 +826,26 @@ pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidenc
 | Plataforma | `ARCH_FLAGS` | `CFLAGS_BASE` | `LDLIBS` / BLAS | Shims |
 |---|---|---|---|---|
 | Windows UCRT64 | `-mavx2 -mfma` (Haswell 2013+, `SIMD=auto`; `SIMD=scalar` vacía) | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `-static -L$(UCRT64_LIB) -lopenblas -lgomp -lws2_32 -lwinpthread -lm` (33 MB autocontenido) | `third_party/ingot/mingw_shim/unistd.h`, `sys/mman.h` vía `-include` |
-| Linux x86_64 | `-mavx2 -mfma` | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `-lopenblas` | — |
-| Linux ARM64 | `-march=armv8-a` (portable; NEON baseline ARMv8-A. `SIMD=native` → `-march=native`) | idem | `-lopenblas` | — |
-| macOS (arm64) | `-march=native` (single-vendor) | idem | `-framework Accelerate` | — |
+| Linux x86_64 | `-mavx2 -mfma` | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `libopenblas.a -Wl,-Bstatic -lgfortran -lquadmath -Wl,-Bdynamic -lm -lpthread` (solo glibc dinámica) | — |
+| Linux ARM64 | `-march=armv8-a` (portable; NEON baseline ARMv8-A. `SIMD=native` → `-march=native`) | idem | `libopenblas.a -Wl,-Bstatic -lgfortran -Wl,-Bdynamic -lm -lpthread` (solo glibc dinámica) | — |
+| macOS (arm64) | `-mcpu=apple-m1` (portable; `SIMD=native` → `-march=native`) | idem; `MACOSX_DEPLOYMENT_TARGET=26.0` en CI | `-framework Accelerate` | — |
 
-> **Baseline ARM portable.** La rama ARM del `Makefile` honra `SIMD` como x86:
-> por defecto `-march=armv8-a` (NEON garantizado en todo ARMv8-A), no
-> `-march=native` — que acoplaría el codegen a la microarquitectura del runner y
-> haría `SIGILL` en CPUs de campo más viejas. `SIMD=native` recupera `-march=native`
-> para el dev box (misma CPU build=run). macOS conserva `-march=native` (host
-> single-vendor).
+> **Baseline portable en ARM y macOS.** Las ramas ARM y Darwin del `Makefile`
+> honran `SIMD` como x86: por defecto `-march=armv8-a` en Linux ARM (NEON
+> garantizado en todo ARMv8-A) y `-mcpu=apple-m1` en macOS (M1, el chip más
+> antiguo que soporta la versión mínima de macOS), no `-march=native`, que
+> acoplaría el codegen a la microarquitectura del runner (un M4 Pro en CI) y
+> haría `SIGILL` en CPUs más antiguas. `SIMD=native` recupera `-march=native`
+> para compilar y ejecutar en la misma CPU.
+
+> **OpenBLAS estático en Linux.** Debian y Ubuntu instalan `libopenblas.a`
+> (paquete `libopenblas-dev`) en `/usr/lib/<multiarch>/openblas-pthread/`, fuera
+> de la ruta del enlazador, así que el `Makefile` la busca por ruta (o la toma
+> de `OPENBLAS_A=<ruta>`) y, si no la encuentra, el enlace del motor falla con
+> el remedio en lugar de enlazar la dinámica. Su LAPACK está compilado con
+> gfortran: `libgfortran.a` debe ser la de la versión mayor del `gcc` en uso
+> (`libgfortran-<versión>-dev`), porque `gcc` solo la busca en su propio
+> directorio. `cargo xtask doctor` comprueba ambas librerías estáticas.
 
 ### Caché del motor en CI
 
@@ -732,7 +854,8 @@ clave `tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipelin
 `.engine-cachekey` es el agregado determinista de `Makefile` + `*.c/*.h` (incluye `vendor/lz4.*`) + `third_party/ingot/**/*.{c,h}`.
 Si existe tras `restore_cache` (clave exacta sin fallback) solo se verifica con `--self-test`;
 si no, se compila. El bundle ONNX Runtime (`ort-bundle/`) se cachea con
-`ort-v2-win-x64-<< pipeline.parameters.ort_pin >>` y guarda tras el bundling.
+`ort-v3-win-x64-<< pipeline.parameters.ort_pin >>` y se guarda tras
+`cargo xtask package`, que es quien lo descarga y verifica.
 El bundle incluye el marcador `ort-bundle/.ort-version`: sin él la versión es
 desconocida, `cargo xtask doctor` marca `Mismatch` y `cargo xtask package`
 vuelve a descargar.

@@ -134,10 +134,21 @@ Con el tag pusheado, ejecuta sin intervención:
 
 2. **Builds.** Son `build-windows-x64`, `build-linux-x64`, `build-linux-arm64`
     y `build-darwin-arm64`. Cada uno:
+    - comprueba el binario recién compilado: su versión contra el tag
+      (`--version`; en Windows además `version --json`) y `voice list` con la
+      voz `default`;
+    - compila el motor TTS y ejecuta su `--self-test`; en Linux comprueba con
+      `ldd` que el motor no enlaza OpenBLAS ni su runtime Fortran de forma
+      dinámica, y en macOS comprueba con `otool -l` que el binario y el motor
+      declaran el `minos` de `MACOSX_DEPLOYMENT_TARGET` (26.0);
     - empaqueta su artefacto con `cargo xtask package
-      --expect-version "${CIRCLE_TAG#v}"` (fail-fast si el tag difiere de `VERSION`);
-    - ejecuta el humo (`self install --no-setup --no-modify-path` en sandbox
-      con raíces reubicadas, y después `--version`/`voice list`);
+      --expect-version "${CIRCLE_TAG#v}"` (fail-fast si el tag difiere de
+      `VERSION`; repite `version` y `voice list`, descarga ONNX Runtime
+      verificando el SHA-256 fijado en `packaging/pins.json` y monta el bundle;
+      en macOS se comprueba después el `minos` de lo empaquetado);
+    - ejecuta el humo de instalación (`self install --no-setup --no-modify-path`
+      en sandbox con raíces reubicadas, y después `--version` del binario
+      instalado);
     - emite su SHA-256 en el log, en el step «Emitir SHA-256 del artefacto»;
     - lo persiste en el workspace compartido.
 

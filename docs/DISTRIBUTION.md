@@ -2,8 +2,8 @@
 
 `ai-voice-interconnector` se distribuye por un **único canal nativo**, publicado
 en cada tag `v*`: **archivos comprimidos** (`tar.gz`/`.zip`) que agrupan el
-binario Rust autocontenido con los documentos de licencia GPLv3 (ver
-[docs/BUILD.md](BUILD.md)). La distribución es 100 % Rust.
+binario Rust con el motor TTS, ONNX Runtime y los documentos de licencia GPLv3
+(ver [docs/BUILD.md](BUILD.md)). La distribución es 100 % Rust.
 
 ## Tabla de contenidos
 
@@ -20,8 +20,8 @@ binario Rust autocontenido con los documentos de licencia GPLv3 (ver
 |---|---|
 | **Audiencia** | Cualquier usuario final (no requiere toolchain) |
 | **Instalación** | One-liner por SO (`curl \| sh` / `irm \| iex`) o Homebrew Cask (macOS) |
-| **Tamaño** | Binario Rust pequeño y autocontenido (el archivo total suma además `ort-bundle` + `qwen_tts` vendido; CTranslate2 (ct2rs) enlazado estático + Parakeet vía `ort` `load-dynamic` vía `crt-static`) |
-| **Dependencias del sistema** | Ninguna (autocontenido) |
+| **Tamaño** | Binario Rust con CTranslate2 (ct2rs) enlazado estático; el archivo suma además la librería de ONNX Runtime (Parakeet la carga con `ort` `load-dynamic`) y el motor `qwen_tts` |
+| **Dependencias del sistema** | Windows: ninguna (el archivo trae las cuatro DLL del runtime de VC++). Linux: `libasound2`, `libgomp1` y `libstdc++6` (nombres de Debian/Ubuntu). macOS: macOS 26 (Tahoe) o posterior. Linux y macOS: `/bin/ps` para el daemon. Detalle en [BUILD.md](BUILD.md#dependencias-de-runtime-por-plataforma) |
 | **SmartScreen / Gatekeeper** | Bloquea el primer arranque si el binario se descarga por navegador; el one-liner lo evita (ver más abajo) |
 | **Actualización** | Con el binario instalado: `self update --check` (informa sin modificar) o `self update`; el bootstrap no tiene `--check`; o `brew upgrade --cask` |
 | **Desinstalación** | `ai-voice-interconnector self uninstall` (todo, con `--yes` para no preguntar) o `ai-voice-interconnector cleanup --model` solo para los modelos; en Homebrew `brew uninstall --cask --zap` |
@@ -36,9 +36,11 @@ dentro del archivo, se descargan en el primer `setup`.
 
 ## Formato de los artefactos
 
-Cada uno de los 4 targets se publica como un archivo comprimido con **layout
-plano** (binario + los 4 documentos de la raíz + `ort-bundle` + `qwen_tts`
-vendido, todos en la raíz del archivo):
+Cada uno de los 4 targets se publica como un archivo comprimido con el layout
+de `packaging/bundle-manifest.json`: en la raíz, el binario, los 4 documentos de
+la raíz del repositorio y la librería de ONNX Runtime (más las cuatro DLL del
+runtime de VC++ en Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
+`msvcp140.dll` y `vcomp140.dll`); el motor, en `vendor/qwen3-tts/qwen_tts[.exe]`:
 
 | Target | Asset del release | Binario interno |
 |---|---|---|
@@ -66,7 +68,8 @@ mismo** y encadena `setup` (el `setup` solo provisiona modelos):
 - **Linux** — `install.sh` (`curl | sh` sobre `releases/latest/download`)
   detecta la arquitectura del host (x86_64/arm64), verifica el checksum exacto
   contra `SHA256SUMS.txt`, comprueba el arranque (`binary_incompatible` con
-  diagnóstico de glibc ≥ 2.35 si el binario no arranca) y delega en
+  diagnóstico de glibc ≥ 2.35 o de librerías del sistema ausentes si el
+  binario no arranca) y delega en
   `self install`, que crea el symlink
   `~/.local/bin/ai-voice-interconnector` y encadena `setup`.
 - **macOS** — el mismo `install.sh` (POSIX, `curl | sh`): descarga el `tar.gz`

@@ -5,7 +5,9 @@ Este documento es el **procedimiento operativo** de la validación end-to-end qu
 manual `instalar → setup → síntesis real → desinstalar` que el propietario
 ejecuta en Windows sobre cada release, y que sirve de guion para el feedback de
 usuarios reales en Linux y macOS. El pipeline de CI solo corre un **smoke test
-automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0); la matriz de
+automatizado** sin modelos (versión contra el tag, `voice list`, `--self-test` de
+los kernels del motor y `self install` del archivo en un sandbox, descrito en
+[docs/BUILD.md](BUILD.md#verificación-post-build)); la matriz de
 comandos de abajo es la parte que **no** cabe en un runner de CI porque exige
 cargar Qwen3-TTS + Parakeet, descargar 5,85 GB de modelos,
 sintetizar audio real y —en las rutas interactivas— un micrófono y una terminal

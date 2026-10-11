@@ -157,7 +157,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 ### Criterios de aceptación
 
-<!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado del binario congelado (`ai-voice-interconnector version`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
+<!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado (versión contra el tag, `voice list`, `--self-test` del motor y `self install` en sandbox; ver docs/BUILD.md «Verificación post-build»), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
 1. [ ] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en Windows 10/11 sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
 2. [ ] El artefacto de Linux (`ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`) funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
@@ -172,7 +172,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 #### Validación E2E
 
-La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de 5,85 GB de modelos + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** del binario congelado (`ai-voice-interconnector version`, exit 0) en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo.
+La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de 5,85 GB de modelos + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo: la versión del binario contra el tag (`--version`; en Windows además `version --json`), `voice list` con la voz `default`, el `--self-test` de los kernels del motor TTS (sin pesos), y la instalación del archivo empaquetado con `self install --no-setup --no-modify-path` en un sandbox, seguida de `--version` del binario instalado.
 
 Fuera del pipeline, la validación se reparte así:
 

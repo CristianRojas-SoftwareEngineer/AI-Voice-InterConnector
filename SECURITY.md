@@ -122,7 +122,8 @@ consulta de versión; con el binario instalado se usa `self update --check`):
   nada, detecta el target
   del host (`unsupported_platform` antes de descargar), crea un staging hermano
   solo para el usuario, verifica el hash, comprueba que el binario arranca
-  (`binary_incompatible` con diagnóstico de glibc ≥ 2.35 en Linux, sin tocar lo
+  (`binary_incompatible` con diagnóstico de glibc ≥ 2.35 o de librerías del
+  sistema ausentes en Linux, sin tocar lo
   instalado) y delega en `self install` (que integra el PATH, limpia la
   cuarentena en macOS y encadena `setup`).
 - **Windows** (`install.ps1`): instalación per-user
@@ -177,7 +178,7 @@ publicada). La firma OV no suprime la advertencia de SmartScreen de inmediato
 —la reputación se acumula por volumen de descargas— pero reemplaza «editor
 desconocido» por un editor verificable.
 
-El artefacto es un binario Rust `crt-static` autocontenido (CTranslate2 enlazado
+El artefacto de Windows es un binario Rust `crt-static` (CTranslate2 enlazado
 estático; Parakeet vía `ort` `load-dynamic`).
 
 ### Runbook: reportar un falso positivo de Defender Antivirus (WDSI)

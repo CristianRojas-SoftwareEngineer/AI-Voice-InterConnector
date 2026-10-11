@@ -1,7 +1,7 @@
 # Licencias de terceros (Third-Party Licenses)
 
 AI Voice InterConnector se distribuye bajo **GPL-3.0-or-later** (ver `LICENSE`). El binario
-autocontenido Rust empaqueta software de terceros bajo sus propias
+Rust y su archivo de release empaquetan software de terceros bajo sus propias
 licencias. Este documento reúne los avisos de copyright y las licencias correspondientes,
 cuya preservación exigen dichas licencias al redistribuir el software.
 
@@ -73,6 +73,20 @@ Solo crates permisivos y el propio proyecto (GPL-3.0-or-later) están presentes 
 binario Rust. No hay componentes MPL/LGPL/GPL adicionales más allá del proyecto.
 Los pesos de modelos y OpenBLAS (BSD-3-Clause, GCC Runtime Exception) se documentan
 en `docs/BUILD.md` §6.
+
+El archivo de release añade al binario Rust estos componentes binarios de terceros:
+
+- **ONNX Runtime** (`onnxruntime.dll`, `libonnxruntime.so`, `libonnxruntime.dylib`):
+  la librería oficial de Microsoft, bajo **MIT**
+  (<https://github.com/microsoft/onnxruntime/blob/main/LICENSE>).
+- **Runtime de Visual C++** (solo Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
+  `msvcp140.dll` y `vcomp140.dll`): ficheros redistribuibles del Microsoft Visual C++
+  Redistributable, que su licencia permite desplegar junto a la aplicación
+  (<https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files>).
+- **Motor TTS `qwen_tts`**: enlaza estáticamente OpenBLAS (**BSD-3-Clause**) y, en
+  Windows y Linux, el runtime de GCC que usa su LAPACK (`libgfortran` y `libgcc` bajo
+  GPL-3.0 con la **GCC Runtime Library Exception**, y, en Windows y Linux x86_64,
+  `libquadmath` bajo **LGPL-2.1-or-later**, compatible con la GPLv3 del proyecto).
 
 ---
 
