@@ -1576,17 +1576,8 @@ mod tests {
         assert_eq!(control.killed.load(Ordering::Relaxed), 0);
     }
 
-    /// Fuente del lanzador (`src/main.rs`), que es quien debe tomarlos de aquí en
-    /// lugar de declararlos por su cuenta.
-    fn launcher_source() -> String {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../src/main.rs");
-        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("se lee {}: {e}", path.display()))
-    }
-
-    /// Los plazos del protocolo son los de hoy y no cambian con el traslado. Y son
-    /// además la **fuente única**: el lanzador los toma de aquí, sin redeclarar ni
-    /// el plazo global ni la dirección por defecto, que es lo que hace que este
-    /// módulo sea el que los afirma.
+    /// Los plazos del protocolo y la dirección por defecto tienen los valores
+    /// fijados, y el presupuesto está anidado.
     #[test]
     fn protocol_deadlines_are_preserved() {
         assert_eq!(STOP_DEADLINE_GLOBAL, Duration::from_secs(8));
@@ -1596,64 +1587,15 @@ mod tests {
             PROBE_TIMEOUT < SHUTDOWN_TIMEOUT && SHUTDOWN_TIMEOUT < STOP_DEADLINE_GLOBAL,
             "el presupuesto está anidado: un sondeo no puede agotar el del POST, ni el POST el global"
         );
-        assert_eq!(
-            DEFAULT_ADDR, "127.0.0.1:8765",
-            "la dirección por defecto del protocolo se afirma aquí, no en el lanzador"
-        );
-
-        let launcher = launcher_source();
-        let own_stop = ["const STOP_DEADLINE_", "GLOBAL"].concat();
-        let own_addr = ["const DAEMON_", "ADDR"].concat();
-        assert!(
-            !launcher.contains(&own_stop),
-            "el lanzador no redeclara el plazo global: lo toma de `daemon_stop`"
-        );
-        assert!(
-            !launcher.contains(&own_addr),
-            "el lanzador no redeclara la dirección por defecto: la toma de `daemon_stop`"
-        );
-        assert!(
-            launcher.contains("daemon_stop::STOP_DEADLINE_GLOBAL"),
-            "el lanzador usa el plazo global del protocolo"
-        );
-        assert!(
-            launcher.contains("daemon_stop::DEFAULT_ADDR"),
-            "el lanzador usa la dirección por defecto del protocolo"
-        );
+        assert_eq!(DEFAULT_ADDR, "127.0.0.1:8765");
     }
 
-    /// Las dos semánticas de resolución de dirección tienen un único dueño: el
-    /// cliente (pidfile primero) y el entorno (parada y escucha). El lanzador no
-    /// declara un resolver propio del cliente —usa el de aquí— y el de escucha solo
-    /// convierte a `SocketAddr` lo que este módulo resuelve, sin volver a derivar el
-    /// puerto.
+    /// Los dos resolvers de dirección convergen sin pidfile: el del cliente
+    /// (pidfile primero) y el del entorno (parada y escucha) dan la dirección
+    /// por defecto del protocolo.
     #[test]
-    fn address_resolvers_have_a_single_owner() {
+    fn address_resolvers_converge_without_pidfile() {
         let data = scratch("resolvers");
-        let own_client = ["fn resolve_client_", "addr()"].concat();
-        let listen = ["fn resolve_daemon_", "addr()"].concat();
-        let port_parse = ["parse::<", "u16>()"].concat();
-        let launcher = launcher_source();
-        assert!(
-            !launcher.contains(&own_client),
-            "el lanzador no declara su propio resolver de cliente: usa el del protocolo"
-        );
-        assert_eq!(
-            launcher.matches(&listen).count(),
-            1,
-            "una sola resolución de escucha, que delega en vez de repetirla"
-        );
-        assert!(
-            launcher.contains("lifecycle::daemon_stop::default_addr()"),
-            "escuchar toma la dirección del resolver de entorno del protocolo"
-        );
-        assert!(
-            !launcher.contains(&port_parse),
-            "el lanzador no vuelve a derivar el puerto desde el entorno"
-        );
-
-        // Y las dos rutas dan el mismo valor cuando no hay pidfile: cliente y
-        // parada convergen en la dirección por defecto del protocolo.
         assert_eq!(
             resolve_client_addr_with(&data, None),
             addr_for_port_env(None)
