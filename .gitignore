@@ -47,5 +47,10 @@ vendor/qwen3-tts/compile_commands.json
 Cargo.lock.cachekey
 vendor/qwen3-tts/.engine-cachekey
 ort-bundle/
+# Las reglas `models/` y `samples/` de arriba excluirían directorios de
+# fuentes de CTranslate2 en la copia vendorizada de ct2rs, que se compila
+# entera desde ahí.
+!vendor/ct2rs-0.10.0/**/models/
+!vendor/ct2rs-0.10.0/**/samples/
 # Informe NUnit que Pester escribe en el directorio actual con `-CI`
 testResults.xml

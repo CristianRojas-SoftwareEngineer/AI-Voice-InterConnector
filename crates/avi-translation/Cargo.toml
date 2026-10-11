@@ -10,8 +10,9 @@ anyhow = "1.0"
 
 # Backend oneDNN + OpenMP COMP (sin ruy): es ~2.4x más rápido que ruy en CPU.
 # Verificada por benchmarks.
-# En Linux, ct2rs fuerza COMP igualmente cuando dnnl está activo (build.rs);
-# en Windows, COMP usa el runtime de MSVC (vcomp) sin link explícito.
+# En Linux, ct2rs fuerza COMP igualmente cuando dnnl está activo, y su copia
+# vendorizada enlaza `libgomp` estática; en Windows, COMP usa el runtime de MSVC
+# (vcomp) sin link explícito.
 # Declarado en secciones por-target porque una misma dependencia en
 # [dependencies] + [target...] UNIFICA features y macOS heredaría COMP.
 # `optional = true` tras el feature `native-translation` (off por defecto): así

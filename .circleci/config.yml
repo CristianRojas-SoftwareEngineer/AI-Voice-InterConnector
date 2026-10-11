@@ -560,9 +560,9 @@ commands:
       - run:
           name: Instalar cliente SSH (requisito de checkout)
           command: dnf install -y -q openssh-clients
-  # La imagen trae gcc-toolset-14 (con libgomp.a y libstdc++.a, que
-  # crates/avi-translation/build.rs enlaza estáticas, y libgfortran.a, que el
-  # motor enlaza estática), cmake, perl, git y pkg-config. Se añaden clang-devel
+  # La imagen trae gcc-toolset-14 (con libgomp.a y libstdc++.a, que el parche
+  # vendorizado de ct2rs y `CXXSTDLIB_*` de .cargo/config.toml piden estáticas,
+  # y libgfortran.a, que el motor enlaza estática), cmake, perl, git y pkg-config. Se añaden clang-devel
   # (libclang para bindgen) y openblas-static (libopenblasp.a, la OpenBLAS con
   # hilos que el Makefile del motor enlaza estática), y Rust con rustup en la
   # versión de `rust_pin`.

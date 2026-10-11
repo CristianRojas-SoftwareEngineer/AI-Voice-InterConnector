@@ -778,11 +778,13 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
             hint: Some("xcode-select --install".to_string()),
         };
     }
-    // Linux: make, gcc y las variantes estáticas de OpenBLAS y de libgfortran.
-    // El Makefile del motor enlaza `libopenblas.a` y el runtime Fortran que usa
-    // su LAPACK para que el motor distribuido solo dependa de glibc, así que una
-    // OpenBLAS solo dinámica no basta para compilarlo.
-    let want = Some("make, gcc y OpenBLAS y libgfortran estáticas".to_string());
+    // Linux: make, gcc y las variantes estáticas de OpenBLAS, libgfortran,
+    // libgomp y libstdc++. El Makefile del motor enlaza `libopenblas.a` y el
+    // runtime Fortran que usa su LAPACK para que el motor distribuido solo
+    // dependa de glibc, así que una OpenBLAS solo dinámica no basta para
+    // compilarlo. El binario de la app pide `libgomp` (OpenMP de CTranslate2) y
+    // `libstdc++` como estáticas, y sin sus `.a` el enlace falla.
+    let want = Some("make, gcc y OpenBLAS, libgfortran, libgomp y libstdc++ estáticas".to_string());
     let (make, gcc) = match (
         probe_version_token("make", &["--version"]),
         probe_version_token("gcc", &["--version"]),
@@ -796,40 +798,33 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
     let openblas = static_openblas_candidates(&multiarch)
         .iter()
         .any(|p| Path::new(p).is_file());
-    let gfortran = probe_output("gcc", &["-print-file-name=libgfortran.a"])
-        .is_some_and(|p| Path::new(&p).is_absolute() && Path::new(&p).is_file());
-    if make.is_some() && gcc.is_some() && openblas && gfortran {
+    let gcc_runtimes = GCC_STATIC_RUNTIMES.iter().all(|name| {
+        gcc_static_runtime_present(probe_output("gcc", &[&format!("-print-file-name={name}")]))
+    });
+    if make.is_some() && gcc.is_some() && openblas && gcc_runtimes {
         return Row {
             id: "engine-toolchain",
             label,
             mandatory: true,
             status: Status::Ok,
-            found: Some("make + gcc + libopenblas.a + libgfortran.a".to_string()),
+            found: Some(
+                "make + gcc + libopenblas.a + libgfortran.a + libgomp.a + libstdc++.a".to_string(),
+            ),
             want,
             hint: None,
         };
     }
-    // `libgfortran-<N>-dev` debe ser la de la versión mayor del gcc instalado:
-    // gcc solo busca la librería estática en su propio directorio de versión.
+    // Los paquetes `-<N>-dev` deben ser los de la versión mayor del gcc
+    // instalado: gcc solo busca las librerías estáticas en su propio
+    // directorio de versión.
     let gcc_major = probe_output("gcc", &["-dumpversion"])
         .and_then(|v| v.split('.').next().map(str::to_string))
         .unwrap_or_default();
     let hint = detect_linux_manager()
-        .map(|m| {
-            let packages = match m {
-                "apt" if !gcc_major.is_empty() => {
-                    format!("make gcc libopenblas-dev libgfortran-{gcc_major}-dev")
-                }
-                "apt" => "make gcc libopenblas-dev gfortran".to_string(),
-                "dnf" => "make gcc openblas-static libgfortran-static".to_string(),
-                "pacman" => "make gcc openblas gcc-fortran".to_string(),
-                _ => "make gcc openblas-static libgfortran-static o equivalentes".to_string(),
-            };
-            linux_install_command(m, &packages)
-        })
+        .map(|m| linux_install_command(m, &linux_toolchain_packages(m, &gcc_major)))
         .or_else(|| {
             Some(
-                "instala make, gcc y las librerías estáticas de OpenBLAS y libgfortran con tu gestor"
+                "instala make, gcc y las librerías estáticas de OpenBLAS, libgfortran, libgomp y libstdc++ con tu gestor"
                     .to_string(),
             )
         });
@@ -841,6 +836,31 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
         found: None,
         want,
         hint,
+    }
+}
+
+/// Runtimes de GCC que en Linux se enlazan estáticos: `libgfortran` en el
+/// motor, `libgomp` y `libstdc++` en el binario de la app.
+const GCC_STATIC_RUNTIMES: [&str; 3] = ["libgfortran.a", "libgomp.a", "libstdc++.a"];
+
+/// Si la salida de `gcc -print-file-name=<lib>` nombra una librería que
+/// existe. Sin la librería, gcc imprime el nombre tal cual, sin ruta.
+fn gcc_static_runtime_present(printed: Option<String>) -> bool {
+    printed.is_some_and(|p| Path::new(&p).is_absolute() && Path::new(&p).is_file())
+}
+
+/// Paquetes que aportan el toolchain de Linux con sus librerías estáticas,
+/// según el gestor y la versión mayor de gcc (vacía si no se pudo leer).
+fn linux_toolchain_packages(manager: &str, gcc_major: &str) -> String {
+    match manager {
+        "apt" if !gcc_major.is_empty() => format!(
+            "make gcc g++ libopenblas-dev libgfortran-{gcc_major}-dev libgcc-{gcc_major}-dev libstdc++-{gcc_major}-dev"
+        ),
+        "apt" => "make gcc g++ libopenblas-dev gfortran".to_string(),
+        "dnf" => "make gcc gcc-c++ openblas-static libgfortran-static libstdc++-static".to_string(),
+        "pacman" => "make gcc openblas gcc-fortran".to_string(),
+        _ => "make gcc g++ openblas-static libgfortran-static libstdc++-static o equivalentes"
+            .to_string(),
     }
 }
 
@@ -1583,6 +1603,30 @@ mod tests {
             linux_install_command("zypper", "cmake"),
             "sudo zypper install cmake"
         );
+    }
+
+    /// Una ruta absoluta a un fichero existente cuenta como presente; el
+    /// nombre suelto que gcc imprime sin la librería, o ninguna salida, no.
+    #[test]
+    fn gcc_static_runtime_requires_existing_absolute_path() {
+        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        assert!(gcc_static_runtime_present(Some(
+            file.to_string_lossy().into_owned()
+        )));
+        assert!(!gcc_static_runtime_present(Some("libgomp.a".to_string())));
+        assert!(!gcc_static_runtime_present(None));
+    }
+
+    /// Con la versión de gcc, apt pide los paquetes de desarrollo de esa
+    /// versión, que aportan `libgfortran.a`, `libgomp.a` y `libstdc++.a`.
+    #[test]
+    fn linux_toolchain_packages_cover_gcc_static_runtimes() {
+        let apt = linux_toolchain_packages("apt", "14");
+        for package in ["libgfortran-14-dev", "libgcc-14-dev", "libstdc++-14-dev"] {
+            assert!(apt.contains(package), "{apt}");
+        }
+        assert!(linux_toolchain_packages("dnf", "").contains("libstdc++-static"));
+        assert!(linux_toolchain_packages("apt", "").contains("g++"));
     }
 
     #[test]
