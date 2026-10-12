@@ -223,7 +223,7 @@ assert_no_staging_left() {
     assert_no_staging_left
 }
 
-@test "binario incompatible en macOS diagnostica la versión mínima y no la glibc" {
+@test "binario incompatible en macOS diagnostica la version minima y no la glibc" {
     mock_uname arm64 Darwin
     mock_sysctl 1
     export AVI_FAKE_MODE="noexec"
