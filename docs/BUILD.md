@@ -277,7 +277,9 @@ recursos y `cargo run` con STT la encuentran sin pasos manuales. Ese valor solo
 rige en los procesos que lanza cargo, no se incrusta en el binario distribuido,
 y una `ORT_DYLIB_PATH` exportada explícitamente lo sustituye. `cargo xtask
 release` asegura `ort-bundle/` en la versión fijada y exporta la ruta de su
-librería para su gate de pruebas con recursos.
+librería para su gate de pruebas con recursos, junto con
+`AVI_ALLOW_CWD_VENDOR=1` para que los hijos CLI resuelvan el motor recién
+compilado sin exigir un programa instalado.
 
 La batería completa con `--include-ignored` se ejecuta con `-j2` y
 `--test-threads=2` y sin otra carga en la máquina, por ejemplo

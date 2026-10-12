@@ -1484,6 +1484,12 @@ fn check_code_quality_gate() -> Result<()> {
 /// `ort-bundle/` en la versión fijada y exporta la ruta del fichero de la
 /// librería, que prevalece sobre el valor por defecto de la configuración de
 /// cargo, de modo que valida el mismo runtime que se distribuye.
+///
+/// Además habilita la capa `<cwd>/vendor` (`AVI_ALLOW_CWD_VENDOR=1`): las
+/// pruebas se ejecutan desde la raíz del repo y los hijos CLI que lanzan
+/// resuelven el motor recién compilado en `vendor/qwen3-tts/`, sin exigir un
+/// programa instalado. Sin este opt-in, un entorno limpio falla las 21 pruebas
+/// del motor aunque todo esté provisionado.
 fn check_resource_tests_gate() -> Result<()> {
     let root = std::env::current_dir()?;
     let pins = doctor::load_pins(&root)?;
@@ -1492,6 +1498,7 @@ fn check_resource_tests_gate() -> Result<()> {
     let ort_dylib = package::ort_dylib_path(&bundle, triple)?;
     let status = std::process::Command::new("cargo")
         .env("ORT_DYLIB_PATH", &ort_dylib)
+        .env("AVI_ALLOW_CWD_VENDOR", "1")
         .args([
             "test",
             "--workspace",
@@ -1503,7 +1510,7 @@ fn check_resource_tests_gate() -> Result<()> {
         .status()?;
     if !status.success() {
         anyhow::bail!(
-            "las pruebas con recursos fallaron y no se ha modificado nada: corrígelas antes de release (reprodúcelo con `ORT_DYLIB_PATH={} cargo test --workspace --features full -- --include-ignored`)",
+            "las pruebas con recursos fallaron y no se ha modificado nada: corrígelas antes de release (reprodúcelo con `AVI_ALLOW_CWD_VENDOR=1 ORT_DYLIB_PATH={} cargo test --workspace --features full -- --include-ignored`)",
             ort_dylib.display()
         );
     }
