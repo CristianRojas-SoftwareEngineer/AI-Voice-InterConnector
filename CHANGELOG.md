@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.29.1 — 2026-10-12](#0291--2026-10-12)
 - [0.29.0 — 2026-10-12](#0290--2026-10-12)
 - [0.28.0 — 2026-10-03](#0280--2026-10-03)
 - [0.27.1 — 2026-10-02](#0271--2026-10-02)
@@ -101,7 +101,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.29.1] — 2026-10-12
 
 Este ciclo no toca el producto: deja el pipeline de CI sin duplicación ni drifts y con las cachés que le faltaban. La publicación 0.29.1 valida desde un entorno limpio que la refactorización del pipeline compila, empaqueta y publica igual que antes, con las mismas puertas y garantías.
 
@@ -3007,3 +3007,4 @@ estado con el que nace el producto.
 [0.27.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.27.0...v0.27.1
 [0.28.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.27.1...v0.28.0
 [0.29.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.28.0...v0.29.0
+[0.29.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.29.0...v0.29.1
