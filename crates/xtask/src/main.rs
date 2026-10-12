@@ -1685,39 +1685,84 @@ mod tests {
         std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
     }
 
-    /// Directorios de los parches de `[patch.crates-io]` del Cargo.toml raíz,
-    /// con la misma regla que usa el CI: las claves `path` de esa sección.
-    fn vendored_patch_dirs() -> Vec<String> {
-        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
-        let text = std::fs::read_to_string(&manifest).expect("se lee el Cargo.toml raíz");
-        let path_re = regex::Regex::new(r#"\bpath\s*=\s*"([^"]+)""#).unwrap();
-        let mut inside = false;
-        let mut dirs = Vec::new();
-        for line in text.lines() {
-            if line.starts_with('[') {
-                inside = line.trim() == "[patch.crates-io]";
-                continue;
-            }
-            if let Some(c) = path_re.captures(line).filter(|_| inside) {
-                dirs.push(c[1].to_string());
-            }
-        }
+    /// Directorios `vendor/<dir>` con `Cargo.toml`, ordenados: la regla del CI
+    /// para decidir qué crates son parches vendorizados.
+    fn vendor_crate_dirs() -> Vec<String> {
+        let vendor = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor");
+        let mut dirs: Vec<String> = std::fs::read_dir(&vendor)
+            .expect("se lee vendor/")
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                entry
+                    .path()
+                    .join("Cargo.toml")
+                    .is_file()
+                    .then(|| format!("vendor/{}", entry.file_name().to_string_lossy()))
+            })
+            .collect();
+        dirs.sort();
         dirs
     }
 
-    /// Cada parche de `[patch.crates-io]` es un crate bajo `vendor/`.
+    /// Los crates de `vendor/*/Cargo.toml` que toma el CI son exactamente los
+    /// paquetes de ruta ajenos al workspace que resuelve cargo con todas las
+    /// features: detecta parches sin usar, parches fuera de `vendor/` y crates
+    /// vendorizados sin `[patch]`.
     #[test]
-    fn test_vendored_patches_are_crates_under_vendor() {
-        let dirs = vendored_patch_dirs();
-        assert!(!dirs.is_empty(), "[patch.crates-io] debe declarar parches");
+    fn test_vendored_patches_match_cargo_metadata() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for dir in dirs {
-            assert!(dir.starts_with("vendor/"), "{dir} debe vivir bajo vendor/");
-            assert!(
-                root.join(&dir).join("Cargo.toml").is_file(),
-                "{dir} debe ser un crate"
-            );
+        let out = std::process::Command::new("cargo")
+            .args([
+                "metadata",
+                "--format-version",
+                "1",
+                "--locked",
+                "--all-features",
+            ])
+            .current_dir(&root)
+            .output()
+            .expect("se ejecuta cargo metadata");
+        assert!(
+            out.status.success(),
+            "cargo metadata falló: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let meta: serde_json::Value =
+            serde_json::from_slice(&out.stdout).expect("cargo metadata emite JSON");
+        let members: HashSet<&str> = meta["workspace_members"]
+            .as_array()
+            .expect("workspace_members es una lista")
+            .iter()
+            .filter_map(|m| m.as_str())
+            .collect();
+        let root_abs = root.canonicalize().expect("se resuelve la raíz");
+        let mut resolved: Vec<String> = Vec::new();
+        for pkg in meta["packages"].as_array().expect("packages es una lista") {
+            let id = pkg["id"].as_str().unwrap_or_default();
+            if !pkg["source"].is_null() || members.contains(id) {
+                continue;
+            }
+            let manifest = PathBuf::from(pkg["manifest_path"].as_str().unwrap_or_default());
+            let dir = manifest.parent().expect("el manifiesto tiene directorio");
+            let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+            let rel = dir
+                .strip_prefix(&root_abs)
+                .unwrap_or_else(|_| panic!("{} queda fuera del repositorio", dir.display()))
+                .to_string_lossy()
+                .replace('\\', "/");
+            assert!(rel.starts_with("vendor/"), "{rel} debe vivir bajo vendor/");
+            resolved.push(rel);
         }
+        resolved.sort();
+        assert!(
+            !resolved.is_empty(),
+            "cargo debe resolver parches vendorizados"
+        );
+        assert_eq!(
+            vendor_crate_dirs(),
+            resolved,
+            "vendor/*/Cargo.toml debe coincidir con los paquetes de ruta que resuelve cargo"
+        );
     }
 
     /// Ninguna regla de ignorado alcanza los ficheros de un parche vendorizado,
@@ -1728,7 +1773,7 @@ mod tests {
     #[test]
     fn test_vendored_patches_have_no_ignored_files() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for dir in vendored_patch_dirs() {
+        for dir in vendor_crate_dirs() {
             let out = std::process::Command::new("git")
                 .args([
                     "ls-files",
@@ -2063,8 +2108,8 @@ mod tests {
         let cfg = read_ci_config();
         // Los parches locales se fingerprintean por mtime: el checkout los marca
         // Dirty y arrastra lo que dependa de ellos. La clave exacta de la caché
-        // de target/ lleva el tree hash git de cada uno, con la lista leída de
-        // `[patch.crates-io]`, y NO tiene fallback,
+        // de target/ lleva el tree hash git de cada uno, con la lista tomada del
+        // glob `vendor/*/Cargo.toml`, y NO tiene fallback,
         // de modo que un acierto garantiza que target/ corresponde al contenido
         // actual y fijar el mtime es seguro. Reintroducir un fallback fijaría
         // mtimes sobre snapshots ajenos.
@@ -2084,10 +2129,22 @@ mod tests {
             .unwrap_or("");
 
         let hash_cmd = r#"git rev-parse "HEAD:$dir""#;
+        // Paso que calcula la identidad: desde su nombre hasta la restauración.
+        let identity_step = restore_section
+            .split("Calcular identidad de contenido de los parches vendorizados")
+            .nth(1)
+            .unwrap_or("")
+            .split("- restore_cache:")
+            .next()
+            .unwrap_or("");
         assert!(
-            restore_section.contains(r"/^\[patch\.crates-io\]/")
-                && restore_section.contains("Cargo.toml > .vendor-patches.list"),
-            "cargo_restore_caches debe leer los parches de [patch.crates-io] del Cargo.toml"
+            identity_step.contains("for manifest in vendor/*/Cargo.toml")
+                && identity_step.contains("LC_ALL=C"),
+            "cargo_restore_caches debe tomar los parches del glob vendor/*/Cargo.toml en orden determinista"
+        );
+        assert!(
+            !identity_step.contains("perl") && !identity_step.contains(r"[patch\.crates-io]"),
+            "la lista de parches no debe analizar TOML"
         );
         assert!(
             restore_section.contains(hash_cmd),

@@ -109,7 +109,7 @@ parameters:
 #   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock;
 #     conserva fallback por prefijo.
 #   - target (v5): cambia con dependencias reales en Cargo.lock y con el tree hash
-#     git de cada parche vendorizado de `[patch.crates-io]`. Clave exacta SIN
+#     git de cada crate parcheado de `vendor/*/Cargo.toml`. Clave exacta SIN
 #     fallback: un acierto garantiza que lo compilado corresponde a los parches
 #     actuales, así que su mtime se fija tras restaurar y cargo no los marca Dirty.
 #   - toolchain (v1): cambia con rust_pin.
@@ -132,9 +132,10 @@ commands:
     # (x86_64-unknown-linux-gnu vs x86_64-pc-windows-msvc vs aarch64-apple-darwin)
     # y sin él Linux/Windows/macOS se pisan mutuamente (0% sccache hits en Windows).
     #
-    # Identidad de los parches vendorizados: los directorios se leen de la
-    # sección `[patch.crates-io]` del Cargo.toml raíz, la única lista, de modo que
-    # un parche nuevo entra en la clave sin tocar este fichero.
+    # Identidad de los parches vendorizados: cada `vendor/*/Cargo.toml` es un
+    # parche, de modo que uno nuevo entra en la clave sin tocar este fichero y sin
+    # analizar TOML. Una prueba de xtask exige que ese conjunto coincida con los
+    # paquetes de ruta que resuelve `cargo metadata --all-features`.
     # `[patch.crates-io]` apunta a copias locales, que cargo fingerprintea por
     # mtime. El checkout les da mtime nuevo en cada corrida, las marca Dirty y
     # arrastra la re-ejecución de lo que dependa de ellas (para cmake, toda la
@@ -180,8 +181,12 @@ commands:
           shell: bash
           command: |
             set -euo pipefail
-            perl -ne 'if (/^\[patch\.crates-io\]/) { $in = 1; next } $in = 0 if /^\[/; print "$1\n" if $in && /\bpath\s*=\s*"([^"]+)"/' Cargo.toml > .vendor-patches.list
-            [ -s .vendor-patches.list ] || { echo "no se encontró ningún parche en [patch.crates-io] de Cargo.toml"; exit 1; }
+            export LC_ALL=C
+            : > .vendor-patches.list
+            for manifest in vendor/*/Cargo.toml; do
+              [ -f "$manifest" ] && dirname "$manifest" >> .vendor-patches.list
+            done
+            [ -s .vendor-patches.list ] || { echo "vendor/ no contiene ningún crate parcheado"; exit 1; }
             : > .vendor-patches.tree
             while read -r dir; do
               hash="$(git rev-parse "HEAD:$dir")"
