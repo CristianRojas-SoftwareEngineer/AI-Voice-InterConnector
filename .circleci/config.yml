@@ -2064,7 +2064,7 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   # CD — publicación del GitHub Release (Rust nativo, 4 binarios)
   # ──────────────────────────────────────────────────────────────
-  clean-room-linux:
+  verify-portability:
     # Sala limpia: el artefacto Linux que se va a publicar, sin compilar nada,
     # en una imagen sin paquetes de desarrollo ni ALSA, libgomp o procps.
     # AlmaLinux 8 es el suelo de glibc (2.28) y Debian stable-slim, una
@@ -2419,16 +2419,14 @@ workflows:
             branches:
               ignore: /.*/
           requires: *build-gates
-      # ── Sala limpia de los artefactos Linux (AlmaLinux 8 y Debian stable-slim) ──
-      - clean-room-linux:
-          name: clean-room-linux-x64-<< matrix.image >>
-          matrix:
-            alias: clean-room-linux-x64
-            parameters:
-              image:
-                - almalinux:8@sha256:8b469a3a78515e8a18ea8fc727e6a3679e1d0c5ba6f58d5b30be3d0d9b86cffe
-                - debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5
+      # ── Verificación de portabilidad de los artefactos Linux (AlmaLinux 8 y Debian stable-slim) ──
+      # Entradas explícitas (sin matriz): el `name` no puede derivar una etiqueta
+      # corta de `matrix.image` (trae el digest) y dos listas paralelas harían
+      # producto cartesiano; 4 entradas fijas son más líneas pero nombres exactos.
+      - verify-portability:
+          name: verify-portability-x64-alma8
           arch: x86_64
+          image: almalinux:8@sha256:8b469a3a78515e8a18ea8fc727e6a3679e1d0c5ba6f58d5b30be3d0d9b86cffe
           resource_class: medium
           filters:
             tags:
@@ -2437,15 +2435,34 @@ workflows:
               ignore: /.*/
           requires:
             - build-linux-x64
-      - clean-room-linux:
-          name: clean-room-linux-arm64-<< matrix.image >>
-          matrix:
-            alias: clean-room-linux-arm64
-            parameters:
-              image:
-                - almalinux:8@sha256:8b469a3a78515e8a18ea8fc727e6a3679e1d0c5ba6f58d5b30be3d0d9b86cffe
-                - debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5
+      - verify-portability:
+          name: verify-portability-x64-debian
+          arch: x86_64
+          image: debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5
+          resource_class: medium
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+          requires:
+            - build-linux-x64
+      - verify-portability:
+          name: verify-portability-arm64-alma8
           arch: arm64
+          image: almalinux:8@sha256:8b469a3a78515e8a18ea8fc727e6a3679e1d0c5ba6f58d5b30be3d0d9b86cffe
+          resource_class: arm.medium
+          filters:
+            tags:
+              only: /^v.*/
+            branches:
+              ignore: /.*/
+          requires:
+            - build-linux-arm64
+      - verify-portability:
+          name: verify-portability-arm64-debian
+          arch: arm64
+          image: debian:stable-slim@sha256:eb593cf2c358cacef45ca0a424bbc7d30cfa3466265fc2662b9466a0ca6ba1c5
           resource_class: arm.medium
           filters:
             tags:
@@ -2468,8 +2485,10 @@ workflows:
             - build-linux-x64
             - build-linux-arm64
             - build-darwin-arm64
-            - clean-room-linux-x64
-            - clean-room-linux-arm64
+            - verify-portability-x64-alma8
+            - verify-portability-x64-debian
+            - verify-portability-arm64-alma8
+            - verify-portability-arm64-debian
       - publish-metadata:
           context:
             - github-release

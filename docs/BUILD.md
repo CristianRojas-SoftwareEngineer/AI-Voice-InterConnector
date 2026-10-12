@@ -361,7 +361,7 @@ antes de publicar el artefacto, ejecuta en este orden:
 4. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
    archivo empaquetado en un sandbox con las cuatro raíces reubicadas, y
    `--version` del binario instalado.
-5. En Linux, la sala limpia (`clean-room-linux`): el artefacto, sin compilar
+5. En Linux, la verificación de portabilidad (`verify-portability`): el artefacto, sin compilar
    nada, en `almalinux:8` y `debian:stable-slim` (sin paquetes de desarrollo,
    ALSA, `libgomp` ni `procps`): `--version`, `voice list`, `self install` en
    un sandbox, `--version` por el symlink instalado y la comprobación
@@ -494,7 +494,7 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 | `build-windows-x64` | `build-all` | Windows x64 | `win/server-2022` | `cargo build --release --features full` + staging `.zip` |
 | `build-linux-x64` | `build-all` | Linux x64 | docker `manylinux_2_28_x86_64` (`large`) | `cargo build --release --features full` + staging `tar.gz` |
 | `build-linux-arm64` | `build-all` | Linux ARM64 | docker `manylinux_2_28_aarch64` (`arm.medium`) | idem, nativo aarch64 |
-| `clean-room-linux` | `build-all` | Linux x64 y ARM64 | docker `almalinux:8` y `debian:stable-slim` | Sala limpia del artefacto Linux; `publish-release` depende de ella |
+| `verify-portability` | `build-all` | Linux x64 y ARM64 | docker `almalinux:8` y `debian:stable-slim` | Verificación de portabilidad del artefacto Linux (4 instancias con nombre corto); `publish-release` depende de ella |
 | `build-darwin-arm64` | `build-all` | macOS arm64 | macos `m4pro.medium` | idem, Xcode 26.4 |
 | `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:2026.09` (pineada por digest) | Solo en tags `v*`: estampa los bootstrap, genera `SHA256SUMS.txt` sobre los 6 ficheros y publica el GitHub Release con 7 assets |
 | `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/rust` | Solo en tags `v*`: renderiza Cask con `cargo xtask cask` y empuja al tap |

@@ -149,7 +149,7 @@ Con el tag pusheado, ejecuta sin intervención:
       en sandbox con raíces reubicadas, y después `--version` del binario
       instalado);
     - emite su SHA-256 en el log, en el step «Emitir SHA-256 del artefacto»;
-    - en Linux, sus artefactos pasan la sala limpia (`clean-room-linux`): sin
+    - en Linux, sus artefactos pasan la verificación de portabilidad (`verify-portability`): sin
       compilar nada, en `almalinux:8` y `debian:stable-slim`, `--version`,
       `voice list`, `self install`, `--version` por el symlink y la
       comprobación `onnx_runtime` de `doctor`; `publish-release` la exige;
