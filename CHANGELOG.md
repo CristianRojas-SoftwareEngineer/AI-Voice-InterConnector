@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.29.1 — 2026-10-12](#0291--2026-10-12)
 - [0.29.0 — 2026-10-12](#0290--2026-10-12)
 - [0.28.0 — 2026-10-03](#0280--2026-10-03)
@@ -100,6 +101,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Este ciclo no toca el producto: renombra el job de sala limpia a `verify-portability` con 4 instancias de nombre corto (`x64/arm64` × `alma8/debian`), sin matriz. La publicación 0.29.2 valida en caliente que las cachés del pipeline aciertan tras la refactorización.
+
+### Cambiado
+
+- El job `clean-room-linux` pasa a `verify-portability` con entradas explícitas por plataforma y distribución, en lugar de una matriz cuyo nombre interpolaba el digest completo de la imagen. La documentación acompaña el renombre.
 
 ## [0.29.1] — 2026-10-12
 
