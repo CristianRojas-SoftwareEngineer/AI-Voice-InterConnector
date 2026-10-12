@@ -992,7 +992,7 @@ Cada capa tiene su comando:
 
 | Capa | Qué contiene | Comando |
 |------|--------------|---------|
-| Proyecto (repo) | `target/`, `ort-bundle/`, `build/`, `dist*/`, cobertura, binario/objetos/`output.wav` del motor en `vendor/qwen3-tts` | `cargo xtask clean --repo` (capa por defecto) |
+| Proyecto (repo) | `target/`, `ort-bundle/`, `artifacts/`, cobertura, binario/objetos/`output.wav` del motor en `vendor/qwen3-tts` | `cargo xtask clean --repo` (capa por defecto) |
 | App (perfil de usuario) | Instalación, `data_dir()`, raíz de modelos y temporales `avi_*`/`avi-*`/`*.qvoice` | `cargo xtask clean --app` (delega en `ai-voice-interconnector self uninstall --yes`, o `cleanup --all --yes` en canal `homebrew`) |
 | Ambas | Aplicación y después repositorio | `cargo xtask clean --all` |
 | Global compartida | `~/.cargo/registry`, `~/.cargo/git`, caché de `sccache` | Manual: la comparten otros proyectos |

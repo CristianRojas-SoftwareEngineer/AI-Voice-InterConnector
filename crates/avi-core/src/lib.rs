@@ -53,10 +53,8 @@ mod tests {
 
     #[test]
     fn test_multi_sentence_text_splits_in_es() {
-        // Derivado de `test_multi_sentence_text_splits_by_sentence_via_pysbd_es`:
-        // invariante estructural (el nivel de oración no es `pysbd`): un único
-        // párrafo que excede `max_length` se parte en más de un segmento y
-        // ninguno es igual al texto completo.
+        // Invariante estructural: un único párrafo que excede `max_length` se
+        // parte en más de un segmento y ninguno es igual al texto completo.
         let segmenter = HierarchicalSegmenter::new(30);
         let text = "Hola mundo. Esta es la segunda oración. Y una tercera aquí.";
         let result = segmenter.segment(text);
@@ -72,8 +70,7 @@ mod tests {
 
     #[test]
     fn test_multi_sentence_text_splits_in_en() {
-        // Derivado de `test_multi_sentence_text_splits_by_sentence_via_pysbd_en`:
-        // misma invariante estructural que el caso en español; el segmentador es
+        // Misma invariante estructural que el caso en español; el segmentador es
         // agnóstico de idioma (no detecta el idioma del texto de entrada, por lo
         // que las mismas reglas de segmentación aplican sin distinción).
         let segmenter = HierarchicalSegmenter::new(35);
@@ -91,9 +88,9 @@ mod tests {
 
     #[test]
     fn test_preserves_paragraph_order() {
-        // Derivado de `test_preserves_paragraph_order`: un texto con `"\n\n"`
-        // produce tantos párrafos como separadores + 1, en el mismo orden, con
-        // el primer y último segmento reconocibles por prefijo.
+        // Un texto con `"\n\n"` produce tantos párrafos como separadores + 1,
+        // en el mismo orden, con el primer y último segmento reconocibles por
+        // prefijo.
         let segmenter = HierarchicalSegmenter::new(10);
         let result = segmenter.segment("Uno. Dos.\n\nTres. Cuatro.");
 
@@ -104,8 +101,7 @@ mod tests {
 
     #[test]
     fn test_long_sentence_falls_back_to_strong_punctuation() {
-        // Derivado de `test_exceptionally_long_sentence_falls_back_to_strong_punctuation`:
-        // una "oración" sin punto final pero con comas que excede el límite cae
+        // Una "oración" sin punto final pero con comas que excede el límite cae
         // al fallback de puntuación fuerte (más de un segmento) sin perder texto.
         let segmenter = HierarchicalSegmenter::new(25);
         let text = "Primero esto, luego lo otro, y finalmente esto de aquí";
@@ -129,8 +125,7 @@ mod tests {
 
     #[test]
     fn test_extreme_case_falls_back_to_tokenizer_without_losing_text() {
-        // Derivado de `test_extreme_case_falls_back_to_tokenizer_without_losing_text`:
-        // sin puntuación utilizable, cae al fallback por tokens; cada segmento
+        // Sin puntuación utilizable, cae al fallback por tokens; cada segmento
         // cumple el límite o es un único token que lo excede, y ninguna palabra
         // del texto original se pierde.
         let segmenter = HierarchicalSegmenter::new(10);

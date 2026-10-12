@@ -73,7 +73,7 @@ cargo xtask licenses --check
 
 ### Cobertura
 
-La cobertura es **opt-in** y usa `cargo-llvm-cov` (no `pytest-cov`). El job `coverage` de CI la mide:
+La cobertura es **opt-in** y usa `cargo-llvm-cov`. El job `coverage` de CI la mide:
 
 ```bash
 cargo install cargo-llvm-cov --locked

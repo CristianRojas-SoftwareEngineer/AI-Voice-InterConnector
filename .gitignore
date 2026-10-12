@@ -1,8 +1,7 @@
-build/
-dist/
-dist_test/
 # Artefactos de build de Cargo/Rust
 target/
+# Archivos de distribución que escribe `cargo xtask package`.
+/artifacts/
 # Config de Claude Code: ignorar todo el contenido de .claude/ (incluido el prompt
 # de continuidad — se genera localmente y no se versiona).
 .claude/*
@@ -12,11 +11,6 @@ coverage.json
 coverage.xml
 
 # --- Runtime nativo Rust/CT2 y motor Qwen (desbloqueo de Fase 0) ---
-# Pesos de modelos en el directorio de modelos de la aplicación, multi-GB, nunca se versionan.
-# `models/` CWD es legado eliminado (STT/CT2 ya no leen `models/parakeet-tdt-v3` ni `models/ct2` CWD).
-models/
-# Muestras/artefactos de audio de pruebas locales (no son fuente).
-samples/
 # Motor Qwen3-TTS vendorizado: se versionan SOLO fuentes C/H/CU, shims,
 # Makefile, scripts y docs; se excluyen pesos, presets y media binaria.
 vendor/qwen3-tts/qwen3-tts-0.6b/
@@ -30,14 +24,16 @@ vendor/**/*.mp3
 # El .gitignore vendorizado de qwen3-tts re-incluye `!tests/golden/*.wav`; excluir
 # el directorio padre invalida esa negación (git no re-incluye bajo un dir excluido).
 vendor/qwen3-tts/tests/golden/
-# Artefactos de compilación C (objetos, libs estáticas, deps, ejecutables).
-*.o
-*.a
-*.d
-*.exe
-# Binarios del motor TTS: ahora se compilan desde fuente en CI/dev vía
-# `cargo xtask build-engine` (no se versionan). `qwen_tts.exe` ya lo cubre `*.exe`;
-# `qwen_tts` (Unix) necesita regla propia (sin extensión).
+# Artefactos de compilación C del motor (objetos, libs estáticas, deps,
+# ejecutables). Se acotan a su directorio: en el resto de `vendor/` hay copias
+# de crates que se compilan enteras desde sus fuentes y no deben perder ficheros.
+vendor/qwen3-tts/**/*.o
+vendor/qwen3-tts/**/*.a
+vendor/qwen3-tts/**/*.d
+vendor/qwen3-tts/**/*.exe
+# Binarios del motor TTS: se compilan desde fuente en CI/dev vía
+# `cargo xtask build-engine` (no se versionan). `qwen_tts.exe` ya lo cubre la
+# regla de `*.exe`; `qwen_tts` (Unix) necesita regla propia (sin extensión).
 vendor/qwen3-tts/qwen_tts
 # compile_commands.json (soporte editor/clangd): generado localmente con
 # `compiledb` a partir del Makefile real; contiene rutas absolutas del
@@ -47,10 +43,5 @@ vendor/qwen3-tts/compile_commands.json
 Cargo.lock.cachekey
 vendor/qwen3-tts/.engine-cachekey
 ort-bundle/
-# Las reglas `models/` y `samples/` de arriba excluirían directorios de
-# fuentes de CTranslate2 en la copia vendorizada de ct2rs, que se compila
-# entera desde ahí.
-!vendor/ct2rs-0.10.0/**/models/
-!vendor/ct2rs-0.10.0/**/samples/
 # Informe NUnit que Pester escribe en el directorio actual con `-CI`
 testResults.xml

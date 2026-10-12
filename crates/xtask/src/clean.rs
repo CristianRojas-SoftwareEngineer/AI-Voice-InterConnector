@@ -54,10 +54,7 @@ impl Layer {
 const REPO_ENTRIES: &[&str] = &[
     "target",
     "ort-bundle",
-    "build",
-    "dist",
-    "dist_test",
-    "models",
+    "artifacts",
     ".coverage",
     "coverage.json",
     "coverage.xml",

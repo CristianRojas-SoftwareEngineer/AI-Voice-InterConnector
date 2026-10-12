@@ -16,12 +16,8 @@ pub trait Segmenter: Send + Sync {
 /// pierde texto.
 ///
 /// El nivel de oración usa una regla determinista propia (escaneo manual de
-/// caracteres). `pysbd` aparece aquí solo como **referencia histórica**: era el
-/// segmentador de Python del que este motor toma la forma de las pruebas, y ya no
-/// es dependencia ni se ejecuta (el repositorio no contiene Python). No maneja
-/// abreviaturas ni decimales (p. ej. "Sr.", "3.14"): es una brecha de fidelidad
-/// aceptada frente a aquel, documentada como limitación conocida y no como defecto
-/// a corregir.
+/// caracteres). No maneja abreviaturas ni decimales (p. ej. "Sr.", "3.14"): es
+/// una limitación conocida y aceptada, no un defecto a corregir.
 pub struct HierarchicalSegmenter {
     max_length: usize,
 }
