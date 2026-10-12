@@ -100,15 +100,16 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
 - **`ct2rs` vendorizado** (`vendor/ct2rs-0.10.0`): copia del crate `ct2rs`
   0.10.0, con las fuentes de CTranslate2 que incluye, bajo **MIT**
   (`vendor/ct2rs-0.10.0/LICENSE` y `vendor/ct2rs-0.10.0/CTranslate2/LICENSE`),
-  modificada para pedir en Linux el runtime OpenMP de GNU (`libgomp`) como
-  librería estática en lugar de dinámica.
+  modificada para pedir el runtime OpenMP de GNU (`libgomp`) como indica
+  `GOMPLIB_<target>` en lugar de siempre como librería dinámica.
 - **`onednn-src` vendorizado** (`vendor/onednn-src-0.1.15`): copia del crate
   `onednn-src` 0.1.15 bajo **MIT** (`vendor/onednn-src-0.1.15/LICENSE`), con las
   fuentes de oneDNN que incluye bajo **Apache-2.0**
   (`vendor/onednn-src-0.1.15/oneDNN/LICENSE` y
   `vendor/onednn-src-0.1.15/oneDNN/THIRD-PARTY-PROGRAMS`), modificada para pedir
-  en Linux la librería estándar de C++ y el runtime OpenMP de GNU que oneDNN
-  usa, como librerías estáticas.
+  la librería estándar de C++ y el runtime OpenMP de GNU que oneDNN usa según
+  su configuración de CMake, como indican `CXXSTDLIB_<target>` y
+  `GOMPLIB_<target>`.
 
 ---
 

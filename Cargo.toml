@@ -74,12 +74,14 @@ hf-hub = { path = "vendor/hf-hub-1.0.0" }
 # vendorizada la carga con `dlopen` en el primer uso y, sin ella, solo fallan
 # las órdenes de audio.
 alsa-sys = { path = "vendor/alsa-sys-0.4.0" }
-# ct2rs (bindings de CTranslate2 que usa la traducción) pide en Linux el runtime
-# OpenMP de GNU como librería dinámica, y el binario declaraba `libgomp.so.1`,
-# que una instalación mínima no trae; la copia vendorizada lo pide estático.
+# ct2rs (bindings de CTranslate2 que usa la traducción) pedía el runtime OpenMP
+# de GNU siempre como librería dinámica, y el binario declaraba `libgomp.so.1`,
+# que una instalación mínima no trae; la copia vendorizada lo pide como indica
+# `GOMPLIB_<target>` de .cargo/config.toml.
 ct2rs = { path = "vendor/ct2rs-0.10.0" }
-# onednn-src (oneDNN, el backend de CTranslate2) no pide la librería estándar de
-# C++ ni el runtime OpenMP que usa, y en Linux, donde ambos se enlazan
-# estáticos, quedaban símbolos sin resolver según el orden de enlace; la copia
-# vendorizada los pide estáticos detrás de `dnnl`.
+# onednn-src (oneDNN, el backend de CTranslate2) no pedía la librería estándar
+# de C++ ni el runtime OpenMP que usa, y con ambos estáticos quedaban símbolos
+# sin resolver según el orden de enlace; la copia vendorizada los pide detrás de
+# `dnnl`, según su configuración de CMake y como indican `CXXSTDLIB_<target>` y
+# `GOMPLIB_<target>`.
 onednn-src = { path = "vendor/onednn-src-0.1.15" }

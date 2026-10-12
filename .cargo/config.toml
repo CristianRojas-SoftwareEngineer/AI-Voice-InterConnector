@@ -27,15 +27,24 @@ CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
 # incrusta en el binario distribuido, y una `ORT_DYLIB_PATH` exportada
 # explícitamente la sustituye.
 ORT_DYLIB_PATH = { value = "ort-bundle", relative = true }
-# Las piezas C++ que compila el crate `cc` (`cxx`, `sentencepiece-sys`,
-# `esaxx-rs`) piden la librería estándar de C++ con el valor de
-# `CXXSTDLIB_<target>`, que `cc` emite tal cual como petición de enlace. Con
-# `static:-bundle`, rustc pasa `stdc++` entre `-Bstatic` y `-Bdynamic`, el
-# enlazador solo acepta `libstdc++.a` y el binario de Linux no declara
+# Cómo se enlazan en Linux los runtimes de GCC que necesitan los crates C++:
+# única fuente de esa política. Cada crate declara qué necesita y emite tal cual
+# el valor de estas variables como petición de enlace, que rustc coloca justo
+# detrás de él:
+#   - `CXXSTDLIB_<target>`, la librería estándar de C++: la leen el crate `cc`
+#     (`cxx`, `sentencepiece-sys`, `esaxx-rs`) y la copia vendorizada de
+#     `onednn-src`.
+#   - `GOMPLIB_<target>`, el runtime OpenMP de GNU: la leen las copias
+#     vendorizadas de `ct2rs` y `onednn-src`, que fallan nombrándola si falta.
+# Con `static:-bundle`, rustc pasa cada librería entre `-Bstatic` y `-Bdynamic`:
+# el enlazador solo acepta `libstdc++.a` y `libgomp.a`, y el binario no declara
 # `libstdc++.so.6`, cuya versión en el sistema puede ser más antigua que la del
-# compilador. Sin `libstdc++.a` el enlace falla en vez de caer en la dinámica.
+# compilador, ni `libgomp.so.1`, que una instalación mínima no trae. Sin las
+# `.a` el enlace falla en vez de caer en las dinámicas.
 CXXSTDLIB_x86_64_unknown_linux_gnu = "static:-bundle=stdc++"
 CXXSTDLIB_aarch64_unknown_linux_gnu = "static:-bundle=stdc++"
+GOMPLIB_x86_64_unknown_linux_gnu = "static:-bundle=gomp"
+GOMPLIB_aarch64_unknown_linux_gnu = "static:-bundle=gomp"
 
 # Forma canónica de las tareas de desarrollo: `cargo xtask …` (ciclo 4), que
 # compila y ejecuta el binario `xtask` del workspace pasándole los argumentos

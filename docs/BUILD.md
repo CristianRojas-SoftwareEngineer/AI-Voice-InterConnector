@@ -168,18 +168,25 @@ y no declara más librerías que las del sistema base:
   órdenes que reproducen o capturan audio fallan, con un error que nombra la
   librería y, si es el caso, la función ausente.
 - **OpenMP y C++** se piden estáticas en origen, cada una detrás del crate
-  que la necesita: la copia vendorizada de `ct2rs` (`vendor/ct2rs-0.10.0`)
-  emite `static:-bundle=gomp` en Linux; `.cargo/config.toml` fija
-  `CXXSTDLIB_x86_64_unknown_linux_gnu` y `CXXSTDLIB_aarch64_unknown_linux_gnu`
-  a `static:-bundle=stdc++`, valor que el crate `cc` emite tal cual en cada
-  crate C++ (`cxx`, `sentencepiece-sys`, `esaxx-rs`); y la copia vendorizada
-  de `onednn-src` (`vendor/onednn-src-0.1.15`) pide ambas detrás de `dnnl`, que
-  rustc coloca después de los demás crates C++ y que el original dejaba sin
-  ellas (en arm64 quedaban símbolos de `libstdc++` sin resolver). rustc pasa
-  cada petición entre `-Bstatic` y `-Bdynamic`, de modo que el
-  enlazador solo acepta `libgomp.a` y `libstdc++.a`, que aporta el compilador;
-  sin ellas el enlace falla, y `cargo xtask doctor` comprueba de antemano que
-  `gcc -print-file-name` las encuentra. Solo `libonnxruntime.so`, la librería
+  que la necesita. La política vive solo en `.cargo/config.toml`:
+  `CXXSTDLIB_<target>` y `GOMPLIB_<target>` (para `x86_64` y `aarch64`
+  `unknown_linux_gnu`) valen `static:-bundle=stdc++` y `static:-bundle=gomp`.
+  Cada crate declara qué necesita y emite tal cual esa petición:
+  - el crate `cc`, en cada crate C++ (`cxx`, `sentencepiece-sys`,
+    `esaxx-rs`), con `CXXSTDLIB_<target>`;
+  - la copia vendorizada de `ct2rs` (`vendor/ct2rs-0.10.0`), que compila
+    CTranslate2 con el OpenMP de GNU, con `GOMPLIB_<target>`;
+  - la copia vendorizada de `onednn-src` (`vendor/onednn-src-0.1.15`), con las
+    dos, según lo que su configuración de CMake dice que usa `dnnl` (`stdc++`
+    entre las librerías implícitas del compilador, `gomp` como runtime
+    OpenMP). `dnnl` va detrás de los demás crates C++, y el original no las
+    pedía: con las `.a`, en arm64 quedaban símbolos sin resolver.
+
+  Si falta la variable que un crate necesita, su compilación falla
+  nombrándola. rustc pasa cada petición entre `-Bstatic` y `-Bdynamic`, de
+  modo que el enlazador solo acepta `libgomp.a` y `libstdc++.a`, que aporta el
+  compilador; sin ellas el enlace falla, y `cargo xtask doctor` comprueba de
+  antemano que `gcc -print-file-name` las encuentra. Solo `libonnxruntime.so`, la librería
   oficial de Microsoft, usa la `libstdc++.so.6` del sistema, con
   `GLIBCXX_3.4.21` como máximo.
 - El motor TTS (`qwen_tts`) enlaza OpenBLAS y el runtime Fortran que usa su

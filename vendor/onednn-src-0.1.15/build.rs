@@ -52,17 +52,7 @@ fn main() {
         .build();
     println!("cargo::rustc-link-search={}/lib", cmake.display());
     println!("cargo::rustc-link-lib=static=dnnl");
-    // Patch: en Linux, oneDNN necesita la librería estándar de C++ y, con su
-    // runtime de CPU por defecto (OpenMP), el de GNU, pero el original no los
-    // pedía y dependía de que otro crate los enlazara. rustc coloca cada
-    // petición justo detrás del crate que la emite, y `dnnl` va detrás de los
-    // demás crates C++: pedidas aquí como `static:-bundle`, `libstdc++.a` y
-    // `libgomp.a` quedan detrás de `dnnl` y resuelven todo lo que usa. Sin
-    // ellas el enlace falla en vez de caer en las dinámicas.
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        println!("cargo::rustc-link-lib=static:-bundle=stdc++");
-        println!("cargo::rustc-link-lib=static:-bundle=gomp");
-    }
+    link_runtimes(&cmake.join("build"));
     println!("cargo::metadata=ROOT={}", cmake.display());
     println!(
         "cargo::metadata=INCLUDE_PATH={}",
@@ -72,4 +62,54 @@ fn main() {
         "cargo::metadata=LIBRARY_PATH={}",
         cmake.join("lib").display()
     );
+}
+
+// Patch: el original no pedía los runtimes que usa `dnnl` y dependía de que
+// otro crate los enlazara, pero rustc coloca cada petición justo detrás del
+// crate que la emite y `dnnl` va detrás de los demás crates C++: con runtimes
+// estáticos quedaban símbolos sin resolver. Lo que `dnnl` necesita sale de su
+// propia configuración de CMake en `build_dir`: la librería estándar de C++
+// que enlaza su compilador (`stdc++` en `CMAKE_CXX_IMPLICIT_LINK_LIBRARIES`) y
+// el runtime OpenMP que encontró (`gomp` en `OpenMP_CXX_LIB_NAMES`). Cómo se
+// enlaza cada una lo decide el proyecto con `CXXSTDLIB_<target>` y
+// `GOMPLIB_<target>` (el triple con `_` en lugar de `-`), cuyo valor se emite
+// tal cual, igual que hace el crate `cc` con `CXXSTDLIB_<target>`. Si la
+// variable falta, la compilación falla nombrándola.
+fn link_runtimes(build_dir: &std::path::Path) {
+    let cache = std::fs::read_to_string(build_dir.join("CMakeCache.txt"))
+        .expect("CMake deja CMakeCache.txt en el directorio de build");
+    let compiler = std::fs::read_dir(build_dir.join("CMakeFiles"))
+        .expect("CMake deja CMakeFiles en el directorio de build")
+        .filter_map(|entry| {
+            std::fs::read_to_string(entry.ok()?.path().join("CMakeCXXCompiler.cmake")).ok()
+        })
+        .next()
+        .expect("CMake deja CMakeCXXCompiler.cmake en CMakeFiles/<versión>");
+    let cxx_libs = cmake_list(&compiler, "set(CMAKE_CXX_IMPLICIT_LINK_LIBRARIES \"", "\")");
+    if cxx_libs.contains(&"stdc++") {
+        link_as_configured("CXXSTDLIB");
+    }
+    let openmp_libs = cmake_list(&cache, "OpenMP_CXX_LIB_NAMES:STRING=", "\n");
+    if openmp_libs.contains(&"gomp") {
+        link_as_configured("GOMPLIB");
+    }
+}
+
+/// Elementos de la lista de CMake (separada por `;`) que sigue a `prefix` hasta
+/// `end`; vacía si `prefix` no aparece.
+fn cmake_list<'a>(text: &'a str, prefix: &str, end: &str) -> Vec<&'a str> {
+    text.split_once(prefix)
+        .and_then(|(_, rest)| rest.split(end).next())
+        .map(|list| list.split(';').filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default()
+}
+
+/// Emite como petición de enlace el valor de `<prefix>_<target>`.
+fn link_as_configured(prefix: &str) {
+    let target = env::var("TARGET").expect("cargo define TARGET");
+    let var = format!("{prefix}_{}", target.replace('-', "_"));
+    println!("cargo::rerun-if-env-changed={var}");
+    let request = env::var(&var)
+        .unwrap_or_else(|_| panic!("{var} no está definida: indica cómo enlazar la librería que necesita oneDNN"));
+    println!("cargo::rustc-link-lib={request}");
 }

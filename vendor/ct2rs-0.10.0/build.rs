@@ -381,19 +381,21 @@ fn link_system_libraries() {
     }
 }
 
-// Patch: en Linux, `gomp` se pide estática (`static:-bundle`). rustc la pasa
-// entre `-Bstatic` y `-Bdynamic` justo detrás de este crate, así que el
-// enlazador solo acepta `libgomp.a` y el binario no declara `libgomp.so.1`, que
-// una instalación mínima de Linux no trae. `-bundle` deja el archivo fuera del
-// `.rlib` y lo enlaza en el binario final. Sin `libgomp.a` el enlace falla en
-// vez de caer en la dinámica. El resto de toolchains no MSVC la siguen pidiendo
-// dinámica.
+// Patch: el original pedía `gomp` siempre como librería dinámica. Este crate
+// solo declara que necesita el runtime OpenMP de GNU; cómo se enlaza lo decide
+// el proyecto con `GOMPLIB_<target>` (el triple con `_` en lugar de `-`), cuyo
+// valor se emite tal cual como petición de enlace, igual que hace el crate `cc`
+// con `CXXSTDLIB_<target>`. rustc coloca la petición justo detrás de este
+// crate. Si la variable falta, la compilación falla nombrándola en lugar de
+// elegir un modo de enlace por su cuenta.
 fn link_gomp() {
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
-        println!("cargo:rustc-link-lib=static:-bundle=gomp");
-    } else {
-        println!("cargo:rustc-link-lib=gomp");
-    }
+    let target = env::var("TARGET").expect("cargo define TARGET");
+    let var = format!("GOMPLIB_{}", target.replace('-', "_"));
+    println!("cargo:rerun-if-env-changed={var}");
+    let request = env::var(&var).unwrap_or_else(|_| {
+        panic!("{var} no está definida: indica cómo enlazar el runtime OpenMP de GNU (p. ej. `static:-bundle=gomp`)")
+    });
+    println!("cargo:rustc-link-lib={request}");
 }
 
 fn main() {
