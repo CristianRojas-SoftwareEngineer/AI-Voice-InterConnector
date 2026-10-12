@@ -572,19 +572,19 @@ commands:
   # La imagen trae gcc-toolset-14 (con libgomp.a y libstdc++.a, que los parches
   # vendorizados de ct2rs y onednn-src y `CXXSTDLIB_*` de .cargo/config.toml
   # piden estáticas,
-  # y libgfortran.a, que el motor enlaza estática), cmake, perl, git y pkg-config. Se añaden clang-devel
-  # (libclang para bindgen) y openblas-static (libopenblasp.a, la OpenBLAS con
+  # y libgfortran.a, que el motor enlaza estática), cmake, perl y git. Se añaden
+  # openblas-static (libopenblasp.a, la OpenBLAS con
   # hilos que el Makefile del motor enlaza estática), y Rust con rustup en la
   # versión de `rust_pin`.
   install_manylinux_build_deps:
-    description: Instala clang-devel, openblas-static y Rust en la imagen manylinux
+    description: Instala openblas-static y Rust en la imagen manylinux
     steps:
       - run:
-          name: Instalar dependencias de sistema y Rust (clang-devel, openblas-static, rustup)
+          name: Instalar dependencias de sistema y Rust (openblas-static, rustup)
           command: |
             echo "[STEP] Instalar dependencias de sistema y Rust - INICIO"
             set -euo pipefail
-            dnf install -y -q clang-devel openblas-static
+            dnf install -y -q openblas-static
             curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain << pipeline.parameters.rust_pin >>
             echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
             echo "[STEP] Instalar dependencias de sistema y Rust - FIN"
@@ -614,20 +614,10 @@ jobs:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
     steps:
+      # Sin paquetes de sistema: la suite no compila C++ (native-stt y
+      # native-translation apagados), `aws-lc-sys` se compila con `cc` y la copia
+      # vendorizada de alsa-sys carga ALSA en tiempo de ejecución.
       - checkout
-      - run:
-          # ALSA no hace falta para compilar: la copia vendorizada de alsa-sys la
-          # carga en tiempo de ejecución. libclang-dev (bindgen/ct2rs, solo con
-          # native-translation) NO se ejercita con native-stt/native-translation
-          # off (la suite no compila C++); se conserva por simetría con coverage.
-          # Contexto histórico: sin libclang-dev el build-script moría con
-          # «Unable to find libclang» (pipeline #2).
-          name: Instalar dependencias de sistema (cmake, pkg-config, libclang-dev)
-          command: |
-            echo "[STEP] Instalar dependencias de sistema - INICIO"
-            sudo apt-get update
-            sudo apt-get install -y cmake pkg-config libclang-dev
-            echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches:
           os: linux
           variant: test
@@ -827,12 +817,11 @@ jobs:
           os: macos
           variant: test
       - run:
-          name: Instalar dependencias de sistema (cmake, pkg-config)
+          name: Instalar dependencias de sistema (cmake)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
-            # cmake y pkg-config pueden no estar en la imagen base de Xcode
+            # cmake puede no estar en la imagen base de Xcode
             if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
-            if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
             cmake --version
             echo "[STEP] Instalar dependencias de sistema - FIN"
       # NOTA: la suite featureless no compila ct2rs (native-translation off).
@@ -884,20 +873,11 @@ jobs:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
     steps:
+      # Sin paquetes de sistema: con native-stt y native-translation apagados por
+      # defecto, coverage compila la workspace sin los stacks C++, `aws-lc-sys` se
+      # compila con `cc` y la copia vendorizada de alsa-sys carga ALSA en tiempo
+      # de ejecución.
       - checkout
-      - run:
-          # NOTA: con native-stt/native-translation off por defecto,
-          # coverage compila la workspace SIN los stacks C++ (no aparece
-          # ct2rs con C++); libclang-dev/cmake se conservan por simetría
-          # con test-linux y por si un futuro umbral corre coverage con features.
-          # ALSA no hace falta: la copia vendorizada de alsa-sys la carga en
-          # tiempo de ejecución.
-          name: Instalar dependencias de sistema (cmake, pkg-config, libclang-dev)
-          command: |
-            echo "[STEP] Instalar dependencias de sistema - INICIO"
-            sudo apt-get update
-            sudo apt-get install -y cmake pkg-config libclang-dev
-            echo "[STEP] Instalar dependencias de sistema - FIN"
       - cargo_restore_caches:
           os: linux
           variant: cov
@@ -1858,11 +1838,10 @@ jobs:
       - toolchain_save_cache:
           os: macos
       - run:
-          name: Instalar dependencias de sistema (cmake, pkg-config, make)
+          name: Instalar dependencias de sistema (cmake, make)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
-            if ! command -v pkg-config >/dev/null 2>&1; then brew install pkg-config; fi
             cmake --version
             # make y gcc/clang (el Makefile de qwen_tts invoca `gcc`, que en macOS
             # resuelve al shim de Apple clang) vienen con el toolchain de Xcode;

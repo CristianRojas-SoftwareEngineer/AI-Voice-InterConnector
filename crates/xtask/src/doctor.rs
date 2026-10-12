@@ -21,7 +21,6 @@ pub(crate) const ROW_IDS: &[&str] = &[
     "rust",
     "c-compiler",
     "cmake",
-    "libclang",
     "engine-toolchain",
     "onnx",
     "sccache",
@@ -118,7 +117,7 @@ pub(crate) fn probe_command(program: impl AsRef<std::ffi::OsStr>) -> std::proces
 /// Salida podada de `programa args…` para una sonda de la que solo importa si
 /// responde: `None` si no se pudo lanzar, falló o no imprimió nada. Es válida
 /// solo cuando la ausencia del programa y su fallo son la misma respuesta
-/// (`xcode-select -p`, `ldconfig -p`, `pkg-config --exists`); las sondas de
+/// (`xcode-select -p`, `gcc -print-file-name`); las sondas de
 /// versión usan `probe_version`, que distingue «no instalado» de «no se pudo
 /// ejecutar».
 fn probe_output(program: &str, args: &[&str]) -> Option<String> {
@@ -490,107 +489,6 @@ fn check_cmake() -> Row {
                 hint,
             }
         }
-    }
-}
-
-/// Sonda libclang (bindgen de `ct2rs`).
-fn check_libclang() -> Row {
-    let label = "libclang (bindgen de ct2rs)";
-    if cfg!(windows) {
-        if command_exists("clang") {
-            let found = match probe_version_token("clang", &["--version"]) {
-                Ok(found) => found,
-                Err(reason) => {
-                    return probe_error_row(
-                        "libclang",
-                        label,
-                        true,
-                        Some("LLVM".to_string()),
-                        reason,
-                    )
-                }
-            };
-            return Row {
-                id: "libclang",
-                label,
-                mandatory: true,
-                status: Status::Ok,
-                found,
-                want: Some("LLVM".to_string()),
-                hint: None,
-            };
-        }
-        return Row {
-            id: "libclang",
-            label,
-            mandatory: true,
-            status: Status::Missing,
-            found: None,
-            want: Some("LLVM".to_string()),
-            hint: Some("winget install LLVM.LLVM".to_string()),
-        };
-    }
-    if cfg!(target_os = "macos") {
-        // Lo cubren las Xcode Command Line Tools.
-        return Row {
-            id: "libclang",
-            label,
-            mandatory: true,
-            status: if probe_output("xcode-select", &["-p"]).is_some() {
-                Status::Ok
-            } else {
-                Status::Missing
-            },
-            found: Some("Xcode Command Line Tools".to_string()),
-            want: Some("Xcode Command Line Tools".to_string()),
-            hint: Some("xcode-select --install".to_string()),
-        };
-    }
-    // Linux: `clang --version` o la librería visible en `ldconfig -p`.
-    let clang = match probe_version_token("clang", &["--version"]) {
-        Ok(found) => found,
-        Err(reason) => {
-            return probe_error_row(
-                "libclang",
-                label,
-                true,
-                Some("libclang-dev o equivalente".to_string()),
-                reason,
-            )
-        }
-    };
-    let in_ldconfig = probe_output("ldconfig", &["-p"])
-        .is_some_and(|o| o.lines().any(|l| l.contains("libclang")));
-    if clang.is_some() || in_ldconfig {
-        return Row {
-            id: "libclang",
-            label,
-            mandatory: true,
-            status: Status::Ok,
-            found: clang.or(Some("libclang en ldconfig".to_string())),
-            want: Some("libclang-dev o equivalente".to_string()),
-            hint: None,
-        };
-    }
-    let hint = detect_linux_manager()
-        .map(|m| {
-            let packages = match m {
-                "apt" => "libclang-dev",
-                "dnf" => "clang-devel",
-                "pacman" => "clang",
-                _ => "clang-devel o equivalente",
-            };
-            linux_install_command(m, packages)
-        })
-        .or_else(|| Some("instala libclang-dev o equivalente con tu gestor".to_string()));
-    Row {
-        id: "libclang",
-        label,
-        mandatory: true,
-        status: Status::Missing,
-        found: None,
-        want: Some("libclang-dev o equivalente".to_string()),
-        hint,
     }
 }
 
@@ -1183,7 +1081,6 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         check_rust(pins),
         check_c_compiler(),
         check_cmake(),
-        check_libclang(),
         check_engine_toolchain(pins),
         check_onnx(root, pins),
         check_sccache(pins),
@@ -1360,7 +1257,6 @@ mod tests {
                 "c-compiler",
                 "cmake",
                 "engine-toolchain",
-                "libclang",
                 "onnx",
                 "rust",
                 "sccache",
@@ -1389,7 +1285,7 @@ mod tests {
         }
     }
 
-    /// `check` sobre fixtures produce las 8 filas en orden y `ok()` solo
+    /// `check` sobre fixtures produce las 7 filas en orden y `ok()` solo
     /// exige las obligatorias (`sccache` y `target-hygiene` no bloquean).
     #[test]
     fn check_yields_all_rows_in_order() {
