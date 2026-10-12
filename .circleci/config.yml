@@ -661,6 +661,16 @@ jobs:
             cargo test --all --verbose
             echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
       - run:
+          # La lista de funciones de ALSA que resuelve la comprobación de audio
+          # debe ser exactamente la que alcanza el binario enlazado: `cargo test`
+          # ya lo dejó compilado y la tabla de símbolos lo dice. Cambiar `cpal`,
+          # `alsa` o el uso de audio sin regenerar la lista falla aquí.
+          name: Verificar la lista de funciones de ALSA contra el binario enlazado
+          command: |
+            echo "[STEP] Verificar la lista de funciones de ALSA - INICIO"
+            cargo --quiet xtask alsa-symbols --check --binary target/debug/ai-voice-interconnector
+            echo "[STEP] Verificar la lista de funciones de ALSA - FIN"
+      - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
       - sccache_save_cache:
@@ -977,15 +987,6 @@ jobs:
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - INICIO"
             cargo --quiet xtask licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
-      - run:
-          # La lista de funciones de ALSA que resuelve la comprobación de audio
-          # debe salir de la versión de `alsa` fijada en Cargo.lock: actualizar
-          # `cpal` o `alsa` sin regenerarla falla aquí.
-          name: Verificar la lista de funciones de ALSA
-          command: |
-            echo "[STEP] Verificar la lista de funciones de ALSA - INICIO"
-            cargo --quiet xtask alsa-symbols --check
-            echo "[STEP] Verificar la lista de funciones de ALSA - FIN"
       - run:
           name: Verificar comentarios (puerta de política en CI)
           command: |

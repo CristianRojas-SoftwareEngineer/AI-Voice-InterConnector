@@ -687,6 +687,12 @@ pub fn run(
     // Ningún binario del bundle puede depender de algo que el sistema del
     // usuario no trae: se audita antes de publicar nada.
     super::deps::check_tree(&stage, section)?;
+    // Si el binario enlaza `alsa-sys`, la lista de funciones de ALSA que
+    // comprueba el audio debe ser exactamente la que ese binario alcanza: así no
+    // se publica un ejecutable capaz de llamar a una función sin verificar.
+    if super::alsa_symbols::linked_in(&root, triple)? {
+        super::alsa_symbols::check_binary(&root, &stage.join(&section.executable))?;
+    }
     let out_dir = out.unwrap_or_else(|| root.join("artifacts"));
     std::fs::create_dir_all(&out_dir)?;
     let asset = release_asset_name(triple, &version)?;

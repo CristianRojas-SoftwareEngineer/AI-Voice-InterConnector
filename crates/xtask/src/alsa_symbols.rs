@@ -1,71 +1,126 @@
-//! `xtask alsa-symbols [--check]`: genera o verifica la lista de funciones de
-//! ALSA que `alsa_sys::availability()` resuelve antes de dar el audio por
-//! disponible (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`).
+//! `xtask alsa-symbols [--check] --binary <ruta>`: genera o verifica la lista de
+//! funciones de ALSA que `alsa_sys::availability()` resuelve antes de dar el
+//! audio por disponible (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`).
 //!
-//! La lista sale de las fuentes de la versión del crate `alsa` fijada en
-//! `Cargo.lock`, el único consumidor de esos bindings. Con comentarios y
-//! literales apagados, cuenta como llamada a `alsa-sys` cada `<alias>::snd_*`,
-//! donde el alias es el de `extern crate alsa_sys as <alias>;`, y cada primer
-//! argumento `snd_*` de una macro cuyo cuerpo reenvía por ese alias
-//! (`<alias>::$f`). De esos nombres se quedan los que `src/generated.rs`
-//! declara como función. Con `--check` falla si el fichero no coincide, de modo
-//! que actualizar `alsa` sin regenerar la lista no pasa desapercibido.
+//! La lista sale de la tabla de símbolos de un binario Linux ya enlazado. Cada
+//! envoltura de `alsa-sys` guarda su dirección en un estático con el nombre de
+//! símbolo estable `avi_alsa_fn_<función>`; rustc emite cada estático en su
+//! propia sección y el enlazador descarta las de las envolturas que nadie
+//! alcanza, así que los símbolos presentes son exactamente las funciones que el
+//! binario puede llamar. Con `--check` se exige igualdad exacta con el fichero.
 
-use crate::language::strip_code;
 use anyhow::{anyhow, bail, Result};
-use regex::Regex;
+use object::{Object, ObjectSymbol};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// Bindings de ALSA, relativos a la raíz del repositorio.
-const BINDINGS: &str = "vendor/alsa-sys-0.4.0/src/generated.rs";
+/// Prefijo del nombre de símbolo de cada envoltura; debe coincidir con el
+/// `export_name` que genera `vendor/alsa-sys-0.4.0/build.rs`.
+pub(crate) const SYMBOL_PREFIX: &str = "avi_alsa_fn_";
 
 /// Fichero generado, relativo a la raíz del repositorio.
 const OUTPUT: &str = "vendor/alsa-sys-0.4.0/src/required_symbols.rs";
 
-pub(crate) fn run(check: bool) -> Result<()> {
+pub(crate) fn run(check: bool, binary: &Path) -> Result<()> {
     let root = std::env::current_dir()?;
-    let (version, source_dir) = locked_alsa_source()?;
-    let mut files = Vec::new();
-    collect_rust_files(&source_dir, &mut files)?;
-    let sources = files
-        .iter()
-        .map(|f| {
-            std::fs::read_to_string(f).map_err(|e| anyhow!("no se pudo leer {}: {e}", f.display()))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let bindings = std::fs::read_to_string(root.join(BINDINGS))?;
-    let symbols = required_symbols(&sources, &bindings)?;
-    let rendered = render(&version, &symbols);
+    let symbols = binary_symbols(binary)?;
+    let rendered = render(&symbols);
     let path = root.join(OUTPUT);
     if check {
-        let current = std::fs::read_to_string(&path)?.replace("\r\n", "\n");
-        if current != rendered {
-            let listed = listed_symbols(&current);
-            let added: Vec<_> = symbols.difference(&listed).collect();
-            let removed: Vec<_> = listed.difference(&symbols).collect();
-            bail!(
-                "{OUTPUT} no coincide con alsa {version} (faltan {added:?}; sobran {removed:?}): ejecuta `cargo xtask alsa-symbols` y revisa el diff"
-            );
-        }
+        compare(&path, binary, &symbols, &rendered)?;
         println!(
-            "{OUTPUT} en sincronía con alsa {version}: {} funciones",
+            "{OUTPUT} coincide con {}: {} funciones",
+            binary.display(),
             symbols.len()
         );
     } else {
         std::fs::write(&path, rendered)?;
         println!(
-            "{OUTPUT} regenerado desde alsa {version}: {} funciones",
+            "{OUTPUT} regenerado desde {}: {} funciones",
+            binary.display(),
             symbols.len()
         );
     }
     Ok(())
 }
 
-/// Versión y directorio `src` del único paquete `alsa` de `cargo metadata`.
-fn locked_alsa_source() -> Result<(String, PathBuf)> {
+/// Exige que la lista del repositorio coincida con la del binario `binary`.
+pub(crate) fn check_binary(root: &Path, binary: &Path) -> Result<()> {
+    let symbols = binary_symbols(binary)?;
+    let rendered = render(&symbols);
+    compare(&root.join(OUTPUT), binary, &symbols, &rendered)?;
+    println!(
+        "{OUTPUT} coincide con {}: {} funciones",
+        binary.display(),
+        symbols.len()
+    );
+    Ok(())
+}
+
+/// Falla, listando lo que falta y lo que sobra, si `path` no es `rendered`.
+fn compare(path: &Path, binary: &Path, symbols: &BTreeSet<String>, rendered: &str) -> Result<()> {
+    let current = std::fs::read_to_string(path)
+        .map_err(|e| anyhow!("no se pudo leer {}: {e}", path.display()))?
+        .replace("\r\n", "\n");
+    if current == rendered {
+        return Ok(());
+    }
+    let listed = listed_symbols(&current);
+    let missing: Vec<_> = symbols.difference(&listed).collect();
+    let extra: Vec<_> = listed.difference(symbols).collect();
+    bail!(
+        "{OUTPUT} no coincide con {} (faltan {missing:?}; sobran {extra:?}): ejecuta `cargo xtask alsa-symbols --binary <binario Linux>` y revisa el diff",
+        binary.display()
+    )
+}
+
+/// Funciones de ALSA que alcanza el ELF `binary`; falla si no es un ELF o no
+/// tiene ninguna.
+fn binary_symbols(binary: &Path) -> Result<BTreeSet<String>> {
+    let data =
+        std::fs::read(binary).map_err(|e| anyhow!("no se pudo leer {}: {e}", binary.display()))?;
+    let file = object::File::parse(&*data)
+        .map_err(|e| anyhow!("{} no es un binario válido: {e}", binary.display()))?;
+    if file.format() != object::BinaryFormat::Elf {
+        bail!("{} no es un ELF", binary.display());
+    }
+    let names = file
+        .symbols()
+        .filter_map(|s| s.name().ok().map(str::to_string))
+        .collect::<Vec<_>>();
+    let functions = functions_from_symbols(names.iter().map(String::as_str));
+    if functions.is_empty() {
+        bail!(
+            "{} no tiene ningún símbolo {SYMBOL_PREFIX}*: ¿está sin símbolos o no enlaza alsa-sys?",
+            binary.display()
+        );
+    }
+    Ok(functions)
+}
+
+/// Funciones (sin el prefijo) de los nombres de símbolo que lo llevan.
+fn functions_from_symbols<'a>(names: impl Iterator<Item = &'a str>) -> BTreeSet<String> {
+    names
+        .filter_map(|n| n.strip_prefix(SYMBOL_PREFIX))
+        .filter(|f| !f.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Si `alsa-sys` está en el grafo de dependencias del target `triple`, según
+/// cargo y no según el nombre del sistema.
+pub(crate) fn linked_in(root: &Path, triple: &str) -> Result<bool> {
     let out = std::process::Command::new("cargo")
-        .args(["metadata", "--format-version", "1", "--locked"])
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--locked",
+            "--all-features",
+            "--filter-platform",
+            triple,
+        ])
+        .current_dir(root)
         .output()
         .map_err(|e| anyhow!("no se pudo invocar cargo metadata: {e}"))?;
     if !out.status.success() {
@@ -75,129 +130,34 @@ fn locked_alsa_source() -> Result<(String, PathBuf)> {
         );
     }
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    let alsa: Vec<&serde_json::Value> = json["packages"]
+    let id = json["packages"]
         .as_array()
         .ok_or_else(|| anyhow!("cargo metadata no devolvió `packages`"))?
         .iter()
-        .filter(|p| p["name"] == "alsa")
-        .collect();
-    let [package] = alsa.as_slice() else {
-        bail!(
-            "se esperaba un único paquete `alsa` en Cargo.lock y hay {}",
-            alsa.len()
-        );
+        .find(|p| p["name"] == "alsa-sys")
+        .and_then(|p| p["id"].as_str());
+    let Some(id) = id else {
+        return Ok(false);
     };
-    let version = package["version"]
-        .as_str()
-        .ok_or_else(|| anyhow!("el paquete `alsa` no tiene versión"))?;
-    let manifest = package["manifest_path"]
-        .as_str()
-        .ok_or_else(|| anyhow!("el paquete `alsa` no tiene manifest_path"))?;
-    let src = Path::new(manifest)
-        .parent()
-        .ok_or_else(|| anyhow!("manifest_path sin directorio: {manifest}"))?
-        .join("src");
-    Ok((version.to_string(), src))
-}
-
-/// Ficheros `.rs` bajo `dir`, en orden estable.
-fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    let mut entries = std::fs::read_dir(dir)
-        .map_err(|e| anyhow!("no se pudo listar {}: {e}", dir.display()))?
-        .collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|e| e.path());
-    for entry in entries {
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            collect_rust_files(&path, files)?;
-        } else if path.extension().is_some_and(|e| e == "rs") {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-/// Funciones de `bindings` que las fuentes de `alsa` llaman a través de
-/// `alsa-sys`.
-fn required_symbols(sources: &[String], bindings: &str) -> Result<BTreeSet<String>> {
-    let code: Vec<String> = sources.iter().map(|s| strip_code(s)).collect();
-    let alias_re = Regex::new(r"extern\s+crate\s+alsa_sys\s+as\s+(\w+)\s*;").unwrap();
-    let alias = code
+    Ok(json["resolve"]["nodes"]
+        .as_array()
+        .ok_or_else(|| anyhow!("cargo metadata no devolvió `resolve.nodes`"))?
         .iter()
-        .find_map(|c| alias_re.captures(c).map(|m| m[1].to_string()))
-        .ok_or_else(|| anyhow!("las fuentes de `alsa` no importan `alsa_sys` con un alias"))?;
-    let alias = regex::escape(&alias);
-    let qualified = Regex::new(&format!(r"\b{alias}::(snd_\w+)")).unwrap();
-    let mut called = BTreeSet::new();
-    for c in &code {
-        called.extend(qualified.captures_iter(c).map(|m| m[1].to_string()));
-    }
-    for name in forwarding_macros(&code, &alias) {
-        let invocation = Regex::new(&format!(r"\b{name}!\s*\(\s*(snd_\w+)")).unwrap();
-        for c in &code {
-            called.extend(invocation.captures_iter(c).map(|m| m[1].to_string()));
-        }
-    }
-    let declared_re = Regex::new(r"\bpub fn (snd_\w+)\s*\(").unwrap();
-    let declared: BTreeSet<String> = declared_re
-        .captures_iter(bindings)
-        .map(|m| m[1].to_string())
-        .collect();
-    let symbols: BTreeSet<String> = called.intersection(&declared).cloned().collect();
-    if symbols.is_empty() {
-        bail!("no se encontró ninguna llamada de `alsa` a funciones de {BINDINGS}");
-    }
-    Ok(symbols)
+        .any(|n| n["id"] == id))
 }
 
-/// Nombres de las macros `macro_rules!` cuyo cuerpo reenvía su argumento por
-/// el alias de `alsa-sys` (`<alias>::$f`).
-fn forwarding_macros(code: &[String], alias: &str) -> Vec<String> {
-    let definition = Regex::new(r"macro_rules!\s*(\w+)\s*\{").unwrap();
-    let forward = Regex::new(&format!(r"\b{alias}::\$\w+")).unwrap();
-    let mut names = Vec::new();
-    for c in code {
-        for m in definition.captures_iter(c) {
-            let open = m.get(0).unwrap().end() - 1;
-            if forward.is_match(&c[open..block_end(c, open)]) {
-                names.push(m[1].to_string());
-            }
-        }
-    }
-    names
-}
-
-/// Índice del `}` que cierra el `{` de `open` (o el final del texto).
-fn block_end(text: &str, open: usize) -> usize {
-    let mut depth = 0usize;
-    for (i, ch) in text[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return open + i + 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    text.len()
-}
-
-/// Contenido de `required_symbols.rs` para `symbols` de `alsa` `version`.
-fn render(version: &str, symbols: &BTreeSet<String>) -> String {
-    let mut out = format!(
-        "// Patch: funciones de ALSA que llama el crate `alsa` {version}, el único\n\
-         // consumidor de estos bindings (vía `cpal`). `availability()` las resuelve\n\
-         // todas antes de dar el audio por disponible, de modo que a una ALSA a la\n\
-         // que le falte alguna se le responde con un error y no con un pánico en\n\
-         // mitad de una orden de audio.\n\
+/// Contenido de `required_symbols.rs` para `symbols`.
+fn render(symbols: &BTreeSet<String>) -> String {
+    let mut out = String::from(
+        "// Patch: funciones de ALSA que alcanza el binario del producto. `availability()`\n\
+         // las resuelve todas antes de dar el audio por disponible, de modo que a una\n\
+         // ALSA a la que le falte alguna se le responde con un error y no con un pánico\n\
+         // en mitad de una orden de audio.\n\
          //\n\
-         // Fichero generado por `cargo xtask alsa-symbols` desde las fuentes de esa\n\
-         // versión de `alsa`; `cargo xtask alsa-symbols --check` falla si no coincide.\n\
+         // Fichero generado por `cargo xtask alsa-symbols --binary <binario Linux>` desde\n\
+         // la tabla de símbolos del binario enlazado; `--check` exige igualdad exacta.\n\
          \n\
-         pub(crate) const REQUIRED_SYMBOLS: &[&core::ffi::CStr] = &[\n"
+         pub(crate) const REQUIRED_SYMBOLS: &[&core::ffi::CStr] = &[\n",
     );
     for symbol in symbols {
         out.push_str(&format!("    c\"{symbol}\",\n"));
@@ -218,39 +178,28 @@ fn listed_symbols(text: &str) -> BTreeSet<String> {
 mod tests {
     use super::*;
 
-    const BINDINGS_FIXTURE: &str = "unsafe extern \"C\" {\n    pub fn snd_a(x: i32) -> i32;\n}\n\
-                                    unsafe extern \"C\" {\n    pub fn snd_b() -> i32;\n}\n\
-                                    unsafe extern \"C\" {\n    pub fn snd_c() -> i32;\n}\n\
-                                    pub struct snd_t;\n";
-
-    /// Cuentan las llamadas por el alias y las que pasan por una macro que
-    /// reenvía por él; no cuentan los comentarios, los literales, los tipos ni
-    /// las llamadas a otro crate.
+    /// Solo cuentan los símbolos con el prefijo, y se devuelven sin él.
     #[test]
-    fn collects_qualified_and_forwarded_calls_only() {
-        let lib = "extern crate alsa_sys as al;\n\
-                   macro_rules! check { ($f: ident ( $($x: expr),* )) => { al::$f($($x),*) } }\n\
-                   fn f() { unsafe { al::snd_a(1) }; check!(snd_b()); }\n\
-                   // al::snd_c()\n\
-                   fn g() -> &'static str { \"al::snd_c\" }\n\
-                   fn h(_: *mut al::snd_t) { other::snd_c(); }\n"
-            .to_string();
-        let symbols = required_symbols(&[lib], BINDINGS_FIXTURE).unwrap();
-        assert_eq!(symbols.into_iter().collect::<Vec<_>>(), ["snd_a", "snd_b"]);
-    }
-
-    /// Sin el alias de `alsa_sys` la extracción falla en vez de devolver una
-    /// lista vacía.
-    #[test]
-    fn missing_alias_is_an_error() {
-        let lib = "fn f() { alsa::snd_a(1); }\n".to_string();
-        assert!(required_symbols(&[lib], BINDINGS_FIXTURE).is_err());
+    fn keeps_only_prefixed_symbols() {
+        let names = [
+            "main",
+            "avi_alsa_fn_snd_pcm_open",
+            "avi_alsa_fn_snd_card_next",
+            "avi_alsa_fn_",
+            "snd_pcm_open",
+            "x_avi_alsa_fn_snd_a",
+        ];
+        let functions = functions_from_symbols(names.into_iter());
+        assert_eq!(
+            functions.into_iter().collect::<Vec<_>>(),
+            ["snd_card_next", "snd_pcm_open"]
+        );
     }
 
     /// El fichero generado se vuelve a leer con los mismos nombres.
     #[test]
     fn render_round_trips_through_listed_symbols() {
         let symbols: BTreeSet<String> = ["snd_a", "snd_b"].map(str::to_string).into();
-        assert_eq!(listed_symbols(&render("0.11.0", &symbols)), symbols);
+        assert_eq!(listed_symbols(&render(&symbols)), symbols);
     }
 }

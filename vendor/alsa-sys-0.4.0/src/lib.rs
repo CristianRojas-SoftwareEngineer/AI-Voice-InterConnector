@@ -42,12 +42,12 @@ mod required_symbols;
 pub enum Unavailable {
     /// `libasound.so.2` no se puede cargar.
     Library,
-    /// La librería carga pero no define esta función, que usa el crate `alsa`.
+    /// La librería carga pero no define esta función, que alcanza el binario.
     Symbol(&'static core::ffi::CStr),
 }
 
 /// Comprueba que `libasound.so.2` se puede cargar y define todas las funciones
-/// que usa el crate `alsa`. Llamarla antes de usar cualquier función del crate
+/// que alcanza el binario. Llamarla antes de usar cualquier función del crate
 /// permite fallar con un error propio en lugar de abortar en la primera
 /// llamada a una función ausente.
 pub fn availability() -> Result<(), Unavailable> {

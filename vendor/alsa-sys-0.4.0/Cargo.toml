@@ -18,7 +18,6 @@ authors = [
     "David Henningsson <coding@diwic.se>",
 ]
 build = "build.rs"
-links = "alsa"
 autolib = false
 autobins = false
 autoexamples = false

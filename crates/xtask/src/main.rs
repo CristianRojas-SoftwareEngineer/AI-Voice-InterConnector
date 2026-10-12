@@ -300,10 +300,13 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
-    /// Genera o verifica la lista de funciones de ALSA que usa el crate `alsa` fijado en Cargo.lock
+    /// Genera o verifica la lista de funciones de ALSA que alcanza un binario Linux enlazado
     AlsaSymbols {
         #[arg(long)]
         check: bool,
+        /// Binario Linux enlazado cuya tabla de símbolos define la lista
+        #[arg(long, value_name = "FILE")]
+        binary: PathBuf,
     },
     /// Corta una release: valida (licencias, fmt, clippy, árbol limpio, commits nuevos y pruebas con recursos) y luego hace el bump de versión + promoción de la sección [No publicado] del CHANGELOG
     Release {
@@ -563,7 +566,7 @@ fn main() -> Result<()> {
                 println!("Usa --check para verificar la sección del CHANGELOG");
             }
         }
-        Commands::AlsaSymbols { check } => alsa_symbols::run(check)?,
+        Commands::AlsaSymbols { check, binary } => alsa_symbols::run(check, &binary)?,
         Commands::Language { check, root } => language::run(check, root.as_deref())?,
         Commands::Comments { check, root } => comments::run(check, root.as_deref())?,
         Commands::Pins { check, sync, root } => pins::run(check, sync, root.as_deref())?,
@@ -1798,6 +1801,23 @@ mod tests {
                 "ficheros ignorados en el parche {dir}: {ignored:?}"
             );
         }
+    }
+
+    /// El prefijo con que xtask busca las envolturas de ALSA en la tabla de
+    /// símbolos es el mismo que escribe el parche en cada `export_name`.
+    #[test]
+    fn test_alsa_wrapper_export_name_uses_symbol_prefix() {
+        let build =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/alsa-sys-0.4.0/build.rs");
+        let text = std::fs::read_to_string(&build).expect("se lee el build.rs de alsa-sys");
+        let expected = format!(
+            "export_name = \\\"{}{{name}}\\\"",
+            alsa_symbols::SYMBOL_PREFIX
+        );
+        assert!(
+            text.contains(&expected),
+            "el build.rs de alsa-sys debe nombrar cada estático con `{expected}`"
+        );
     }
 
     /// Jobs de la sección `jobs:` como pares (nombre, texto). Cada sección va

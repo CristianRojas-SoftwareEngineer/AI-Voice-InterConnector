@@ -7,6 +7,12 @@
 // funciones variádicas (`snd_input_scanf`, `snd_output_printf`,
 // `snd_config_searchv`) no se pueden reenviar desde Rust estable y se omiten.
 //
+// Cada envoltura guarda su dirección en un estático propio con el nombre de
+// símbolo estable `avi_alsa_fn_<función>`. Como rustc emite cada estático en su
+// propia sección y el enlazador descarta las que nadie alcanza, la tabla de
+// símbolos del binario enlazado dice exactamente qué funciones de ALSA puede
+// llamar (`cargo xtask alsa-symbols`).
+//
 // La compilación falla si la salida conserva algún bloque `extern "C"`, que
 // volvería a enlazar ALSA.
 
@@ -80,6 +86,7 @@ fn wrapper(decl: &str) -> String {
     format!(
         "#[inline]\n\
          pub unsafe fn {name}({params}) {ret} {{\n\
+         \x20   #[export_name = \"avi_alsa_fn_{name}\"]\n\
          \x20   static SYMBOL: ::core::sync::atomic::AtomicPtr<::core::ffi::c_void> =\n\
          \x20       ::core::sync::atomic::AtomicPtr::new(::core::ptr::null_mut());\n\
          \x20   let f: unsafe extern \"C\" fn({params}) {ret} =\n\
