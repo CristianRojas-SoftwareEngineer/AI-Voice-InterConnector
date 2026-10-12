@@ -350,7 +350,6 @@ clave sería redundante.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Nombre de la voz registrada |
-| `timbre` | string \| null | Solo ruta daemon: siempre `null` (el timbre queda fundido en `reference.qvoice`; no se persiste WAV de referencia separado). Ausente en ruta local |
 | `speech` | string | Ruta absoluta del `.qvoice` generado (`reference.qvoice`) |
 | `precomputed` | boolean | Ruta local: siempre `false` (motor efímero, sin residente que calentar). Ruta daemon: `true` (warm-on-clone iniciado; completitud en `GET /health`) |
 
@@ -360,6 +359,9 @@ clave sería redundante.
 |-------|------|-------------|
 | `status` | string | `"removed"` |
 | `voice` | string | Nombre de la voz eliminada |
+| `removed_speech` | array de strings | Etiquetas de las locuciones que se borraron con la voz (`[]` si no tenía) |
+
+Si el usuario cancela la confirmación, `status` es `"cancelled"` y `removed_speech` es `[]`.
 
 **`translate --json`**
 
@@ -487,14 +489,13 @@ ai-voice-interconnector speech synthesize --text "Bienvenido" --label saludo --v
 abajo) y, al terminar:
 
 ```
-Locución 'saludo' guardada (voz 'default').
+Síntesis completada: <ruta del WAV persistido>
 ```
 
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
 - `--label, -l` (requerido): Etiqueta de la locución en el almacén (normalizada a minúsculas)
 - `--voice, -v`: Nombre de la voz a usar (default: `default`)
-- `--output, -o`: Copia adicional del WAV a la ruta indicada
 - `--play`: Reproduce el WAV tras guardar
 - `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
 - `--source-language`: Idioma del texto de entrada (`es` o `en`; por defecto igual a `--target-language`, sin traducir)
@@ -602,7 +603,9 @@ ai-voice-interconnector speech play --label saludo --voice mi_voz --json
 - `--voice, -v`: Nombre de la voz (default: `default`)
 - `--json`: Emite `{"status", "voice", "label"}`
 
-Una etiqueta inexistente para la voz sale con exit **3**.
+Una voz con caracteres ilegales sale con exit **2** (`invalid_identifier`) y una voz
+inexistente con exit **3** (`voice_not_found`), antes de buscar la etiqueta. Una
+etiqueta inexistente de una voz que existe sale con exit **3** (`speech_not_found`).
 
 #### `speech list`
 
@@ -655,7 +658,9 @@ ai-voice-interconnector speech remove --label saludo --voice mi_voz
 - `--voice, -v`: Nombre de la voz (default: `default`)
 - `--json`: Emite `{"status", "voice", "label"}`
 
-Una etiqueta inexistente sale con exit **3**. El borrado masivo es tarea de
+Una voz con caracteres ilegales sale con exit **2** (`invalid_identifier`) y una voz
+inexistente con exit **3** (`voice_not_found`), antes de buscar la etiqueta. Una
+etiqueta inexistente de una voz que existe sale con exit **3** (`speech_not_found`). El borrado masivo es tarea de
 `cleanup --synthetic-speech` (ver más abajo).
 
 ---
@@ -801,9 +806,8 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.w
 Voz 'mi_voz' clonada.
 ```
 
-Internamente el timbre y el habla quedan fundidos en un único
-`reference.qvoice` (bajo `data_dir()/voices/mi_voz/`); no se persisten WAV de
-referencia separados.
+La única referencia de habla produce un `reference.qvoice` (bajo
+`data_dir()/voices/mi_voz/`); el WAV de referencia no se persiste.
 
 A partir de ese momento la voz aparece en `voice list` y puede usarse con
 `speech say --voice mi_voz`.
@@ -822,8 +826,7 @@ archivo, con `io_error` (exit 1); si falla el propio clonado, con `voice_clone_f
 
 **Opciones:**
 - `--name, -n` (requerido): Nombre para la voz
-- `--timbre-reference, -t` (opcional): Audio para timbre (cualquier largo — el audio completo se usa para el embedding)
-- `--speech-reference, -s` (requerido): Audio de habla (10+ segundos de habla limpia)
+- `--speech-reference, -s` (requerido): Audio de referencia de habla (10+ segundos de habla limpia); es el único audio de referencia
 - `--force, -f`: Sobrescribir la voz si ya existe (incluida una de fábrica homónima)
 - `--daemon` / `--no-daemon`: igual que en las sub-acciones de `speech`;
   con `--daemon` el precómputo aprovecha el modelo caliente; sin flags se
@@ -831,15 +834,8 @@ archivo, con `io_error` (exit 1); si falla el propio clonado, con `voice_clone_f
 - `--json`: Emitir el resultado como JSON (nombre y rutas registradas; ver la
   referencia de esquemas más arriba)
 
-**¿Por qué dos archivos?**
-- `--timbre-reference` captura el **timbre** de la voz (cómo suena)
-- `--speech-reference` provee el **patrón de habla** (ritmo, entonación)
-
-Pueden ser el mismo archivo si solo tienes una grabación, pero separar ambos da
-mejores resultados.
-
 **Requisitos del audio:**
-- Duración: 10+ segundos recomendados para `--speech-reference`; `--timbre-reference` puede ser de cualquier largo
+- Duración: 10+ segundos recomendados para `--speech-reference`
 - Idioma: Español
 - Calidad: Sin ruido de fondo, habla clara
 - Formato: WAV 16-bit
@@ -869,10 +865,11 @@ La voz `default` siempre está presente (viene de fábrica).
 
 #### `voice remove`
 
-Elimina una voz registrada por el usuario.
+Elimina una voz registrada por el usuario **junto con sus locuciones guardadas**.
 
 ```bash
 ai-voice-interconnector voice remove --name mi_voz
+ai-voice-interconnector voice remove --name mi_voz --yes
 ```
 
 **Qué esperar:**
@@ -880,6 +877,11 @@ ai-voice-interconnector voice remove --name mi_voz
 ```
 Voz 'mi_voz' eliminada.
 ```
+
+Si la voz tiene locuciones, el comando muestra la voz y sus locuciones y pide
+confirmación `[s/N]` (por defecto, no). Sin terminal exige `--yes/-y`; sin él sale
+con exit **2** (`confirmation_required`) y no borra nada. Si cancelas, sale con exit
+**0** y `Cancelado.`. Una voz sin locuciones se elimina sin preguntar.
 
 Las voces de fábrica (como `default`) son de solo lectura y no pueden
 eliminarse; el comando lo indica y termina con error si lo intentas.
@@ -1107,16 +1109,15 @@ Con `--json`, en lugar de esa línea emite el payload
 De principio a fin, desde grabar tu voz hasta escucharla sintetizada:
 
 ```bash
-# 1. Graba dos audios en español (WAV 16-bit, sin ruido de fondo):
-#    timbre.wav  - cualquier largo, captura tu timbre
+# 1. Graba un audio en español (WAV 16-bit, sin ruido de fondo):
 #    habla.wav   - 10+ segundos de habla limpia y continua
 
 # 2. Clona la voz
-ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav
+ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav
 # → Voz 'mi_voz' clonada.
 
 # 2b. Con --json, el único artefacto que se guarda
-ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav --json
+ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav --json
 # → {"name":"mi_voz","speech":"…/voices/mi_voz/reference.qvoice","precomputed":false}
 
 # 3. Verifica que aparece
@@ -1133,8 +1134,8 @@ ai-voice-interconnector speech synthesize --text "Hola, esto es una prueba" --la
 ```
 
 Lo que queda en disco es **un único artefacto por voz**, `voices/<nombre>/reference.qvoice`:
-el timbre y el habla quedan fundidos en él durante el clonado y no se guarda ninguna copia de
-los WAV de referencia. `voice clone` escribe `Voz '<nombre>' clonada.` por stdout, o con
+se genera a partir de la referencia de habla y no se guarda ninguna copia del
+WAV de referencia. `voice clone` escribe `Voz '<nombre>' clonada.` por stdout, o con
 `--json` el envelope de arriba, cuyo `speech` es esa ruta y cuyo `precomputed` es `false` en la
 vía directa (el motor es efímero por proceso): solo la vía del daemon lo deja en `true`.
 
@@ -1263,7 +1264,7 @@ ai-voice-interconnector voice list
 `voice clone` no sobrescribe voces por accidente. Si quieres reemplazarla:
 
 ```bash
-ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference habla.wav --force
+ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav --force
 ```
 
 ### "El modelo Base de clonado TTS no está provisionado"
@@ -1273,7 +1274,7 @@ ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav 
 
 ```bash
 ai-voice-interconnector setup
-ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav --force
+ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav --force
 ```
 
 ### "La voz 'x' no se puede eliminar." (exit 2)

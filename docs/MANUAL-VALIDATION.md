@@ -148,13 +148,9 @@ ai-voice-interconnector speech say --text "Modo directo." --no-daemon
 ai-voice-interconnector voice list
 ai-voice-interconnector voice list --json
 
-# Registrar una voz de usuario con una sola muestra (caso base: --speech-reference,
-# ≥10s, es el único obligatorio; el habla cubre también el Voice Encoder)
+# Registrar una voz de usuario con una sola muestra (--speech-reference, ≥10s,
+# es el único audio de referencia)
 ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav
-
-# Registrar una voz de usuario con timbre y habla por separado (--timbre-reference
-# es opcional; útil para separar timbre y prosodia)
-ai-voice-interconnector voice clone --name mi_voz_dual --timbre-reference timbre.wav --speech-reference habla.wav
 
 # Verificar que aparece la nueva voz
 ai-voice-interconnector voice list
@@ -405,7 +401,7 @@ esa misma función.
 | Exit | Significado (`reason`) | Canal | Sonda |
 |---|---|---|---|
 | **1** | Error genérico (`io_error`) | stderr, stdout limpio | `speech transcribe --audio <wav.tomlado en exclusiva por otro proceso>`: existe como fichero (`validate_audio_arg` pasa) pero leerlo falla por E/S |
-| **2** | Entrada inválida (`usage_error`, `invalid_audio`, `invalid_identifier`, `audio_too_long`, `daemon_not_supported`) | stderr; envelope por stdout con `--json` | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (local-only con `--daemon`) |
+| **2** | Entrada inválida (`usage_error`, `invalid_audio`, `invalid_identifier`, `audio_too_long`) | stderr; envelope por stdout con `--json` | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (`--daemon` en un comando que no lo declara); `speech transcribe --audio a.wav --duration 5 --source-language es` (`--duration` sin `--mic`) |
 | **3** | Recurso no encontrado (`audio_not_found`, `voice_not_found`, `speech_not_found`) | stderr, stdout limpio | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es` |
 | **4** | Modelo no provisionado (`model_missing`) | stderr, stdout limpio | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el modelo de traducción del par sin provisionar |
 | **5** | Daemon inalcanzable (`daemon_unreachable`) | stderr; envelope por stdout con `--json` | `speech say --text x --daemon` con el daemon detenido |

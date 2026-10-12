@@ -15,7 +15,7 @@ Implementación: `handle_translate` (`src/main.rs`), despacho al daemon vía
 ## Superficie CLI
 
 ```
-ai-voice-interconnector [--daemon|--no-daemon] [--json] translate --text <TEXTO> [--source-language <es|en>] [--target-language <es|en>]
+ai-voice-interconnector [--json] translate --text <TEXTO> [--source-language <es|en>] [--target-language <es|en>] [--daemon|--no-daemon]
 ```
 
 Definición del subcomando: `Commands::Translate` (`src/main.rs`).
@@ -25,8 +25,8 @@ Definición del subcomando: `Commands::Translate` (`src/main.rs`).
 | `-t`, `--text` | string | (requerido) | Texto a traducir |
 | `--source-language` | `es`\|`en` | `es` | Opcional. Idioma origen, alfabeto estricto del parser (`value_parser = ["es", "en"]`, `src/main.rs`) |
 | `--target-language` | `es`\|`en` | `en` | Opcional. Idioma destino, mismo alfabeto estricto (`src/main.rs`) |
-| `--daemon` | flag global | `false` | Fuerza el uso exclusivo del daemon IPC (exit 5 `daemon_unreachable` si no responde) |
-| `--no-daemon` | flag global | `false` | Fuerza la ejecución local directa, sin daemon |
+| `--daemon` | flag | `false` | Fuerza el uso exclusivo del daemon IPC (exit 5 `daemon_unreachable` si no responde); excluyente con `--no-daemon` |
+| `--no-daemon` | flag | `false` | Fuerza la ejecución local directa, sin daemon |
 | `--json` | flag global | `false` | Emite JSON legible por máquina en stdout |
 
 El vocabulario de idioma de la CLI es `es|en` en todos los comandos: `clap` rechaza cualquier otro valor con exit 2 antes de llegar al handler. El daemon acepta las mismas claves `source_language`/`target_language` con los mismos valores. `translate` no tiene límite de longitud.
@@ -187,6 +187,6 @@ Vía CLI solo pueden ser `es` o `en` (el parser rechaza el resto).
 ```bash
 ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --source-language es --target-language en
 ai-voice-interconnector --json translate --text "Hola" --source-language es --target-language es   # passthrough, sin motor
-ai-voice-interconnector --no-daemon translate --text "Hello" --source-language en --target-language es
-ai-voice-interconnector --daemon --json translate --text "Buenos días" --source-language es --target-language en
+ai-voice-interconnector translate --no-daemon --text "Hello" --source-language en --target-language es
+ai-voice-interconnector --json translate --daemon --text "Buenos días" --source-language es --target-language en
 ```

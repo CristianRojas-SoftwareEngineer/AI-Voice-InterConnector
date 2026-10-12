@@ -36,7 +36,7 @@ pub enum Kind {
     /// `self install`, `self update`, `setup`: no borran nada por sí solas.
     NonDestructive,
     /// `self uninstall`, `cleanup`, `setup --force-update`, degradar de versión,
-    /// `xtask clean`.
+    /// `xtask clean` y `voice remove` de una voz con locuciones.
     Destructive,
 }
 

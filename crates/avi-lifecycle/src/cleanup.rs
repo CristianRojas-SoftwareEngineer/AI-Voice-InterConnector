@@ -375,6 +375,10 @@ fn collect_voices(roots: &Roots, options: &Options, collected: &mut Vec<Target>)
         Ok(entries) => entries,
         Err(_) => return,
     };
+    // El namespace de habla de cada voz lo ubica el mismo almacén que usa
+    // `voice remove`, de modo que los dos comandos comparten el criterio de qué
+    // locuciones se van con la voz.
+    let speech = avi_store::SpeechStore::at(roots.data_dir.join("speech"));
     for entry in entries.flatten() {
         if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
@@ -385,11 +389,7 @@ fn collect_voices(roots: &Roots, options: &Options, collected: &mut Vec<Target>)
         }
         push(collected, entry.path(), Category::Voices);
         if !options.wants_speech() && name != "default" {
-            push(
-                collected,
-                roots.data_dir.join("speech").join(&name),
-                Category::Voices,
-            );
+            push(collected, speech.voice_dir(&name), Category::Voices);
         }
     }
 }

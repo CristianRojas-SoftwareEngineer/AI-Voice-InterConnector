@@ -22,7 +22,7 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 
 - **Licencia**: GPL-3.0-or-later (código del proyecto); modelo y dependencias conservan sus licencias permisivas (MIT/BSD/Apache), salvo traducción `opus-mt` (CC-BY-4.0)
 - **Idiomas**: los 10 que soporta Qwen3-TTS, entre ellos Español (es)
-- **Clonación**: `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional
+- **Clonación**: un único audio de referencia, `--speech-reference` (≥10s)
 - **Parámetros del modelo**: 0.6B (Qwen3-TTS)
 - **Hardware**: CPU con BLAS (Accelerate en macOS, OpenBLAS en Linux y Windows) — inferencia local sin APIs externas
 
@@ -111,7 +111,7 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Modelos** | `qwen3-tts-0.6b` (síntesis) y `qwen3-tts-0.6b-base` (clonado) |
 | **Licencia** | MIT / Apache-2.0 |
 | **Parámetros** | 0.6B |
-| **Clonación de voz** | `speech-reference.wav` obligatorio (≥10s); `timbre-reference.wav` opcional; se guarda solo la huella de timbre (sin transcripción) |
+| **Clonación de voz** | un único audio de referencia, `--speech-reference` (≥10s); se guarda solo la huella de timbre (sin transcripción) |
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 |
 

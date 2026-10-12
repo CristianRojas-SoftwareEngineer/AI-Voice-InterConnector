@@ -14,27 +14,29 @@ Implementación: `handle_speech`, enum `SpeechCommands`. Helpers de despacho al 
 ## Superficie CLI
 
 ```
-ai-voice-interconnector [--daemon|--no-daemon] [--json] speech <subcomando> [flags]
+ai-voice-interconnector [--json] speech <subcomando> [flags]
 ```
 
-`--daemon`/`--no-daemon` son flags globales de `Cli` (mutuamente excluyentes) que fijan el `DaemonMode` (`ForceDaemon`/`ForceDirect`/
-`Auto` sin ninguno de los dos). No son flags de `speech`; se anteponen al
-comando raíz.
+`--daemon`/`--no-daemon` (mutuamente excluyentes) fijan el `DaemonMode`
+(`ForceDaemon`/`ForceDirect`/`Auto` sin ninguno de los dos). Son flags de los
+subcomandos delegables (`transcribe`, `synthesize`, `say` y `dub`), no de
+`speech` ni globales: se escriben tras el subcomando
+(`speech say --daemon …`).
 
 | Subcomando | Delegable al daemon | Local-only |
 |---|---|---|
-| `speech list` | No | Sí (`require_local`) |
+| `speech list` | No | Sí |
 | `speech transcribe` | Sí | — |
 | `speech synthesize` | Sí | — |
 | `speech say` | Sí | — |
 | `speech dub` | Sí | — |
-| `speech play` | No | Sí (`require_local`) |
-| `speech remove` | No | Sí (`require_local`) |
+| `speech play` | No | Sí |
+| `speech remove` | No | Sí |
 
-`require_local` hace que `list`/`play`/`remove` con
-`--daemon` forzado fallen con `daemon_not_supported` (exit 2) en vez de
-ejecutarse localmente: son operaciones sobre `SpeechStore`, que el daemon no
-expone por HTTP, así que pedir el daemon es un error de invocación.
+`list`/`play`/`remove` son operaciones sobre `SpeechStore`, que el daemon no
+expone por HTTP: no declaran `--daemon` ni `--no-daemon` y, si se les pasa
+alguno, el parser lo rechaza como argumento desconocido (exit 2
+`usage_error`).
 
 ---
 
@@ -89,18 +91,22 @@ exit 1 `io_error`; el mensaje nombra el fichero y remite a `speech remove`.
 ## `speech transcribe`
 
 ```
-ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en>
+ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en> [--daemon|--no-daemon]
 ```
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--audio` | string | — | Ruta del WAV a transcribir. Mutuamente excluyente con `--mic` (`conflicts_with`) |
+| `--audio` | string | — | Ruta del WAV a transcribir. Forma con `--mic` un grupo obligatorio y excluyente |
 | `--mic` | flag | `false` | Captura desde el micrófono en vez de leer un archivo |
-| `--duration` | u64 | — | Duración fija de grabación en segundos. Solo tiene efecto con `--mic` |
+| `--duration` | u64 | — | Duración fija de grabación en segundos. Solo válido con `--mic` (el parser lo declara incompatible con `--audio`): con `--audio` sale con exit 2 `usage_error` |
 | `--source-language` | `es`\|`en` | — | Obligatorio. Idioma hablado en el audio |
+| `--daemon` / `--no-daemon` | flag | — | Despacho tri-modal; mutuamente excluyentes |
+
+El parser exige exactamente uno de `--audio` o `--mic` y rechaza
+`--duration` sin `--mic`; en los tres casos (ninguno, ambos, `--duration` sin
+`--mic`) sale con exit 2 `usage_error`.
 
 Validaciones puras antes de despachar:
-- Ni `--audio` ni `--mic`: exit 2 `usage_error`.
 - `--mic` sin `--duration` **y sin TTY** (`stdin.is_terminal` es `false`,
  p. ej. en un pipe o en CI): exit 2 `usage_error` ("`--mic` requiere
  `--duration` en este host").
@@ -151,14 +157,13 @@ Despacho:
 ## `speech synthesize`
 
 ```
-ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--voice <nombre>] [--output <ruta>] [--force] [--play] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>]
+ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--voice <nombre>] [--force] [--play] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>] [--daemon|--no-daemon]
 ```
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
 | `--text`, `-t` | string | — | Obligatorio. Texto a sintetizar; no vacío y de hasta 500 caracteres Unicode (si no, exit 2 `empty_text` / `text_too_long`, antes de cualquier despacho) |
 | `--voice`, `-v` | string | `default` | Voz a usar |
-| `--output`, `-o` | string | — | Copia adicional del WAV persistido a esta ruta |
 | `--label`, `-l` | string | — | Obligatorio. Etiqueta bajo la que se persiste la locución (se normaliza a minúsculas) |
 | `--force`, `-f` | flag | `false` | Sobrescribe una locución existente con la misma etiqueta |
 | `--play` | flag | `false` | Reproduce el WAV tras sintetizar |
@@ -191,14 +196,14 @@ Validaciones y flujo local:
  (passthrough si `source == target`; si no, exige el modelo de traducción
  provisionado, exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_options` → sin
  `--play`, persiste directamente; con `--play`, entra al bucle de 4
- opciones y persiste solo al aceptar (con recomprobación de colisión) →
- si `--output`, copia el WAV persistido a esa ruta.
+ opciones y persiste solo al aceptar (con recomprobación de colisión).
+ La CLI imprime la ruta calculada del WAV persistido.
 
 La rama vía daemon repite las mismas validaciones de etiqueta/duplicado en el
 cliente antes de despachar la síntesis al daemon (`POST /synthesize`, consume
 el NDJSON y decodifica `audio_b64` del evento `result`), guarda el WAV
 temporal, aplica el mismo bucle de `--play` (o persiste directo sin él) y
-copia a `--output` si corresponde — el mismo contrato de salida que la rama
+expone la ruta del WAV persistido — el mismo contrato de salida que la rama
 local.
 
 ### Contrato `--json`
@@ -214,7 +219,7 @@ local.
 ## `speech say`
 
 ```
-ai-voice-interconnector speech say --text <texto> [--voice <nombre>] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>]
+ai-voice-interconnector speech say --text <texto> [--voice <nombre>] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>] [--daemon|--no-daemon]
 ```
 
 Sintetiza y reproduce sin persistir en `SpeechStore` (no tiene `--label`).
@@ -253,7 +258,7 @@ paridad de inteligibilidad la cubre `synthesize`.
 ## `speech dub`
 
 ```
-ai-voice-interconnector speech dub (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en> [--target-language <es|en>] [--voice <nombre>] [--temperature <0<t<=2.0>]
+ai-voice-interconnector speech dub (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en> [--target-language <es|en>] [--voice <nombre>] [--temperature <0<t<=2.0>] [--daemon|--no-daemon]
 ```
 
 Pipeline voz→voz: transcribe → traduce (si `source != target`) → sintetiza →
@@ -261,31 +266,34 @@ reproduce.
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--audio`, `-a` | string | — | Archivo de audio a doblar. Mutuamente excluyente con `--mic` |
+| `--audio`, `-a` | string | — | Archivo de audio a doblar. Forma con `--mic` un grupo obligatorio y excluyente |
 | `--voice`, `-v` | string | `default` | Voz destino de la síntesis |
 | `--source-language` | `es`\|`en` | — | Obligatorio. Idioma hablado en el audio de entrada |
 | `--target-language` | `es`\|`en` | `es` | Idioma/modelo de síntesis; dispara traducción si difiere del origen |
 | `--temperature` | f32 | producción (`0.35`) | Override de muestreo |
 | `--mic` | flag | `false` | Captura desde micrófono. Mutuamente excluyente con `--audio` |
-| `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` |
+| `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` (el parser lo declara incompatible con `--audio`) |
+| `--daemon` / `--no-daemon` | flag | — | Despacho tri-modal; mutuamente excluyentes |
+
+El parser exige exactamente uno de `--audio` o `--mic` y rechaza
+`--duration` sin `--mic`; en los tres casos (ninguno, ambos, `--duration` sin
+`--mic`) sale con exit 2 `usage_error`.
 
 Validaciones puras (en este orden):
 1. `validate_temperature`.
-2. `--duration` sin `--mic`: exit 2 `usage_error`.
-3. `--mic` sin `--duration` sin TTY: exit 2 `usage_error`. **Con TTY, mismo
+2. `--mic` sin `--duration` sin TTY: exit 2 `usage_error`. **Con TTY, mismo
  push-to-talk que en `transcribe`**: aviso mínimo por stderr al iniciar,
  captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (default
  300 s, exit 0 al vencer). No hay panic por `duration` ausente en este caso.
-4. Ni `--audio` ni `--mic`: exit 2 `usage_error`.
-5. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
-6. Duración del audio: el audio de entrada dura como máximo 40 s. Un WAV que
+3. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
+4. Duración del audio: el audio de entrada dura como máximo 40 s. Un WAV que
  lo supera, o un `--duration` mayor que 40, sale con exit 2 `audio_too_long`;
  el push-to-talk se corta a 40 s (además del techo
  `AVI_PUSH_TO_TALK_MAX_SECS`). La duración del `--audio` se mide por la
  cabecera del WAV antes de contactar con el daemon, de comprobar los modelos y
  de `stt_unsupported`, igual en las dos vías. Un WAV corrupto sale con exit 2
  `invalid_audio` y un fallo de E/S al leerlo con exit 1 `io_error`.
-7. El texto traducido, que es el que se sintetiza, no supera 500 caracteres
+5. El texto traducido, que es el que se sintetiza, no supera 500 caracteres
  Unicode: si no, exit 2 `text_too_long`.
 
 Despacho: si aplica, `dub_via_daemon` hace `POST /dub`
@@ -361,10 +369,11 @@ humo sin puerta de calidad sobre lo que sonó.
 ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
 ```
 
-Local-only (`require_local`). Busca la locución en `SpeechStore` por
-`(voice, label)` y reproduce el WAV persistido. Si no existe, exit 3
-`speech_not_found`. Valida los identificadores con `is_valid_identifier`
-antes de buscar. La existencia la decide el WAV; un sidecar corrupto sale con
+Local-only. Busca la locución en `SpeechStore` por
+`(voice, label)` y reproduce el WAV persistido. Valida los identificadores con
+`is_valid_identifier` (exit 2 `invalid_identifier`) y la existencia de la voz con
+`VoiceStore::exists` (exit 3 `voice_not_found`) antes de buscar la etiqueta; con
+la voz válida, una etiqueta inexistente es exit 3 `speech_not_found`. La existencia la decide el WAV; un sidecar corrupto sale con
 exit 1 `io_error` (el mensaje nombra el fichero y remite a `speech remove`).
 
 ### Contrato `--json`
@@ -382,8 +391,12 @@ ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>]
 ```
 
 Local-only. Elimina el WAV y el sidecar de la locución de `SpeechStore` sin
-interpretar el sidecar (también elimina una locución con sidecar corrupto); si
-no existe ninguno de los dos, exit 3 `speech_not_found`.
+interpretar el sidecar (también elimina una locución con sidecar corrupto). Valida
+los identificadores (exit 2 `invalid_identifier`) y la existencia de la voz (exit 3
+`voice_not_found`) antes de buscar la etiqueta; con la voz válida, si no existe
+ninguno de los dos ficheros, exit 3 `speech_not_found`. Las locuciones de una voz
+se borran con la propia voz (`voice remove`), así que toda locución guardada
+pertenece a una voz existente.
 
 ### Contrato `--json`
 
@@ -412,16 +425,15 @@ rechaza un `source_language`/`target_language` distinto de `es` y `en` con `usag
 
 | Reason | Exit | Origen |
 |---|---|---|
-| `usage_error` | 2 | Falta `--audio`/`--mic`, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango |
+| `usage_error` | 2 | Falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
 | `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera 500 caracteres Unicode |
 | `audio_too_long` | 2 | El audio de `dub` supera 40 s, o `--duration` es mayor que 40; el de `transcribe` supera 300 s, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` son mayores que 300 |
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
-| `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `speech list --voice` ilegal) |
-| `daemon_not_supported` | 2 | `--daemon` en un subcomando local-only (`list`/`play`/`remove`) |
+| `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `list --voice`, `play` y `remove` con voz ilegal) |
 | `audio_not_found` | 3 | `--audio` en `transcribe` o `dub` apunta a un archivo inexistente |
-| `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `speech list --voice` sobre voz inexistente) |
-| `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente |
+| `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `list --voice`, `play` y `remove` sobre voz inexistente) |
+| `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente de una voz que existe |
 | `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`) |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
@@ -447,8 +459,8 @@ ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo --v
 ai-voice-interconnector speech synthesize --text "Hello" --label greeting --source-language en --target-language es --play
 ai-voice-interconnector speech say --text "Probando" --voice default
 ai-voice-interconnector speech dub --audio entrevista.wav --source-language en --target-language es --voice default
-ai-voice-interconnector --daemon speech synthesize --text "Vía daemon" --label demo
-ai-voice-interconnector --no-daemon speech transcribe --audio entrada.wav --source-language es
+ai-voice-interconnector speech synthesize --daemon --text "Vía daemon" --label demo
+ai-voice-interconnector speech transcribe --no-daemon --audio entrada.wav --source-language es
 ai-voice-interconnector speech play --label saludo
 ai-voice-interconnector speech remove --label saludo
 ai-voice-interconnector --json speech list

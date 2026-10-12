@@ -40,7 +40,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 
 ## Características
 
-- **Clonación de voz**: ~10 segundos de audio de referencia (`speech-reference.wav` obligatorio, `timbre-reference.wav` opcional)
+- **Clonación de voz**: ~10 segundos de audio de referencia (un único audio de habla, `--speech-reference`)
 - **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés (`--target-language`)
 - **Transcripción STT**: `speech transcribe` (Parakeet TDT 0.6B v3 int8, ONNX Runtime)
 - **Traducción**: `translate` es↔en (CTranslate2)
@@ -163,7 +163,7 @@ cargo build --release --features full
 ### Clonación de voz
 
 ```bash
-ai-voice-interconnector voice clone --name mi_voz --timbre-reference timbre.wav --speech-reference condicion.wav
+ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
 ai-voice-interconnector speech say --text "Hola mundo" -v mi_voz
 ai-voice-interconnector speech synthesize --text "Hola mundo" -v mi_voz --label saludo
 ```
@@ -176,7 +176,7 @@ ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
 ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo
 ```
 
-Sin `--voice` usa `default` (embebida en el binario, `crates/avi-store/assets/default/`).
+Sin `--voice` usa `default` (embebida en el binario, `crates/avi-store/assets/default/`). `speech synthesize` guarda el WAV en el almacén `(voz, etiqueta)` y muestra su ruta; con `--json`, se obtiene en `audio_path`. No acepta `--output` ni `-o`.
 
 ### Modelo de voces
 
@@ -192,7 +192,7 @@ ai-voice-interconnector speech say --text "..."                    # reproducir 
 ai-voice-interconnector speech synthesize --text "..." --label L   # persistir
 ai-voice-interconnector speech transcribe --audio file.wav --source-language es
 ai-voice-interconnector speech dub --mic --source-language es --target-language en -v mi_voz
-ai-voice-interconnector voice clone --name X --timbre-reference ref.wav --speech-reference speech.wav
+ai-voice-interconnector voice clone --name X --speech-reference speech.wav
 ai-voice-interconnector voice list / remove --name X
 ai-voice-interconnector translate --text "Hola" --source-language es --target-language en
 ai-voice-interconnector devices / doctor / version

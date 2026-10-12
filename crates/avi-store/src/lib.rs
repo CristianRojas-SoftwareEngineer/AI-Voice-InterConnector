@@ -20,7 +20,7 @@ pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 /// la huella de timbre (x-vector) que se sintetiza con el modelo Base y
 /// `--graft`. Se materializa en `ensure_initialized` si falta. Se regenera
 /// copiando aquí el `reference.qvoice` que deja en el almacén de voces la orden
-/// `ai-voice-interconnector --no-daemon voice clone --name default --force
+/// `ai-voice-interconnector voice clone --no-daemon --name default --force
 /// --speech-reference "assets/audios/Speech Sampler.wav"`.
 const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
 
@@ -256,18 +256,26 @@ impl VoiceStore {
         Ok(self.base_dir.join(name.to_lowercase()).is_dir())
     }
 
-    /// Eliminar una voz (no permite eliminar voces de fábrica: default, ryan, vivian)
-    pub fn remove(&self, name: &str) -> Result<(), String> {
+    /// Eliminar solo el registro de una voz (no permite eliminar voces de fábrica:
+    /// default, ryan, vivian). No toca sus locuciones, así que no es pública: fuera
+    /// del crate una voz solo se borra con [`remove_voice`], que se las lleva con ella.
+    fn remove(&self, name: &str) -> Result<(), String> {
+        let name = self.ensure_removable(name)?;
+        std::fs::remove_dir_all(self.base_dir.join(&name)).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Nombre normalizado de una voz que se puede eliminar: descarta las de fábrica
+    /// y las que no existen.
+    fn ensure_removable(&self, name: &str) -> Result<String, String> {
         let name = name.to_lowercase();
         if is_factory_name(&name) {
             return Err(format!("La voz '{}' no se puede eliminar.", name));
         }
-        let dir = self.base_dir.join(&name);
-        if !dir.is_dir() {
+        if !self.base_dir.join(&name).is_dir() {
             return Err(format!("La voz '{}' no existe.", name));
         }
-        std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-        Ok(())
+        Ok(name)
     }
 
     /// Buscar el archivo de referencia de una voz: `reference.qvoice`.
@@ -512,6 +520,28 @@ impl SpeechStore {
         self.base_dir.join(voice.to_lowercase())
     }
 
+    /// Etiquetas de las locuciones de una voz, ordenadas. El WAV es el registro y
+    /// no se lee ningún sidecar, de modo que un sidecar corrupto no impide
+    /// conocer qué locuciones tiene la voz. Voz sin locuciones → lista vacía.
+    pub fn labels_of(&self, voice: &str) -> Result<Vec<String>> {
+        let dir = self.voice_dir(voice);
+        let mut labels = Vec::new();
+        if !dir.is_dir() {
+            return Ok(labels);
+        }
+        for file in std::fs::read_dir(&dir)? {
+            let path = file?.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("wav") || !path.is_file() {
+                continue;
+            }
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                labels.push(stem.to_lowercase());
+            }
+        }
+        labels.sort();
+        Ok(labels)
+    }
+
     /// Ruta del WAV para una locución (voice/label normalizados)
     pub fn audio_path(&self, voice: &str, label: &str) -> PathBuf {
         self.voice_dir(voice)
@@ -596,6 +626,29 @@ impl SpeechStore {
     fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
     }
+}
+
+/// Elimina una voz del usuario junto con su namespace de locuciones y devuelve las
+/// etiquetas que se llevó. Las locuciones se van con su voz: así no queda ninguna
+/// locución de una voz inexistente.
+///
+/// Las voces de fábrica y las inexistentes se rechazan antes de tocar nada. Las
+/// locuciones se borran antes que el registro: si el proceso muere entre ambos
+/// pasos queda una voz sin locuciones, que es un estado válido, y nunca locuciones
+/// sin voz.
+pub fn remove_voice(
+    voices: &VoiceStore,
+    speech: &SpeechStore,
+    name: &str,
+) -> Result<Vec<String>, String> {
+    let name = voices.ensure_removable(name)?;
+    let labels = speech.labels_of(&name).map_err(|e| e.to_string())?;
+    let speech_dir = speech.voice_dir(&name);
+    if speech_dir.is_dir() {
+        std::fs::remove_dir_all(&speech_dir).map_err(|e| e.to_string())?;
+    }
+    voices.remove(&name)?;
+    Ok(labels)
 }
 
 // ─── ModelStore ──────────────────────────────────────────────────────
@@ -1500,6 +1553,59 @@ mod tests {
         assert_eq!(speech.list().unwrap().len(), 2);
     }
 
+    /// `labels_of` lista los WAV de la voz ordenados y sin leer sidecars; una voz
+    /// sin namespace da lista vacía.
+    #[test]
+    fn labels_of_lists_wavs_without_reading_sidecars() {
+        let dir = temp_dir("labels_of");
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let wav_src = dir.join("src.wav");
+        std::fs::write(&wav_src, min_wav()).unwrap();
+        speech.save("ryan", "zeta", "Z", &wav_src).unwrap();
+        speech.save("ryan", "Alfa", "A", &wav_src).unwrap();
+        std::fs::write(speech.voice_dir("ryan").join("zeta.json"), b"{roto").unwrap();
+
+        assert_eq!(speech.labels_of("RYAN").unwrap(), vec!["alfa", "zeta"]);
+        assert!(speech.labels_of("vivian").unwrap().is_empty());
+    }
+
+    /// `remove_voice` borra el registro de la voz y su namespace de locuciones y
+    /// devuelve las etiquetas; rechaza fábrica e inexistentes sin tocar nada.
+    #[test]
+    fn remove_voice_drags_speech_namespace() {
+        let dir = temp_dir("remove_voice");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        voices.ensure_initialized().unwrap();
+        let wav_src = dir.join("src.wav");
+        std::fs::write(&wav_src, min_wav()).unwrap();
+        std::fs::create_dir_all(voices.voice_dir("locutor")).unwrap();
+        std::fs::create_dir_all(voices.voice_dir("otra")).unwrap();
+        speech.save("locutor", "b", "B", &wav_src).unwrap();
+        speech.save("locutor", "a", "A", &wav_src).unwrap();
+        speech.save("otra", "c", "C", &wav_src).unwrap();
+        speech.save("default", "d", "D", &wav_src).unwrap();
+
+        // Fábrica e inexistente: error y nada borrado.
+        assert!(remove_voice(&voices, &speech, "default").is_err());
+        assert!(remove_voice(&voices, &speech, "noexiste").is_err());
+        assert!(speech.find("default", "d").unwrap().is_some());
+
+        let labels = remove_voice(&voices, &speech, "LOCUTOR").unwrap();
+        assert_eq!(labels, vec!["a", "b"]);
+        assert!(!voices.voice_dir("locutor").exists());
+        assert!(!speech.voice_dir("locutor").exists());
+        // Las demás voces y sus locuciones quedan intactas.
+        assert!(voices.voice_dir("otra").is_dir());
+        assert!(speech.find("otra", "c").unwrap().is_some());
+        assert!(speech.find("default", "d").unwrap().is_some());
+
+        // Voz sin namespace de locuciones: se borra con lista vacía.
+        assert!(remove_voice(&voices, &speech, "otra").is_ok());
+        std::fs::create_dir_all(voices.voice_dir("sola")).unwrap();
+        assert!(remove_voice(&voices, &speech, "sola").unwrap().is_empty());
+    }
+
     /// round-trip `save` → `find` con `duration_secs` calculada del WAV.
     #[test]
     fn save_find_round_trip_with_duration() {
@@ -1695,11 +1801,6 @@ mod tests {
             assert!(
                 !d.join("speech-reference.wav").is_file(),
                 "no debe materializar speech-reference.wav para '{}'",
-                name
-            );
-            assert!(
-                !d.join("timbre-reference.wav").is_file(),
-                "no debe materializar timbre-reference.wav para '{}'",
                 name
             );
         }

@@ -95,7 +95,6 @@ impl ExitCode {
 pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("confirmation_required", ExitCode::InvalidInput),
     ("usage_error", ExitCode::InvalidInput),
-    ("daemon_not_supported", ExitCode::InvalidInput),
     ("empty_text", ExitCode::InvalidInput),
     ("text_too_long", ExitCode::InvalidInput),
     ("invalid_voice_name", ExitCode::InvalidInput),
@@ -176,7 +175,6 @@ mod tests {
     const ORACLE: &[(&str, i32)] = &[
         ("confirmation_required", 2),
         ("usage_error", 2),
-        ("daemon_not_supported", 2),
         ("empty_text", 2),
         ("text_too_long", 2),
         ("invalid_voice_name", 2),

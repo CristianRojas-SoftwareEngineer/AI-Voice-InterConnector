@@ -58,9 +58,9 @@ CLI (ai-voice-interconnector)
 
 | Endpoint | Método | Request | Response | Descripción |
 |---|---|---|---|---|
-| `/health` | GET | — | `{status:"ready", warm, engine, warm_error?, ct2?, stt?}` + `schema_version="4"` | Readiness + warmup (7 rutas) |
-| `/synthesize` | POST | `{text, voice, source_language, target_language, temperature?}` | NDJSON `start → progress → result{audio_b64}` o `error` | Síntesis streaming 24 kHz |
-| `/transcribe` | POST | `{audio_b64, source_language}` | `{text}` + `schema_version="4"`; error con `{status:"error", reason, message}`: 400 (`usage_error` sin audio, `invalid_audio` si el base64 no es válido, `audio_too_long` si hay más de 300 s de muestras), 413 (cuerpo de más de 13 848 576 B) o 500 (`transcription_failed`) | Transcripción Parakeet (feature `native-stt`) |
+| `/health` | GET | — | `{status:"ready", warm, engine, warm_error?, ct2?, stt?}` + `schema_version="5"` | Readiness + warmup (7 rutas) |
+| `/synthesize` | POST | `{text, voice, source_language, target_language, temperature?}` | NDJSON `started → progress → result{audio_b64}` o `error` | Síntesis streaming 24 kHz |
+| `/transcribe` | POST | `{audio_b64, source_language}` | `{text}` + `schema_version="5"`; error con `{status:"error", reason, message}`: 400 (`usage_error` sin audio, `invalid_audio` si el base64 no es válido, `audio_too_long` si hay más de 300 s de muestras), 413 (cuerpo de más de 13 848 576 B) o 500 (`transcription_failed`) | Transcripción Parakeet (feature `native-stt`) |
 | `/translate` | POST | `{text, source_language, target_language}` | `{translated, source_language, target_language}` o `error` | Traducción CT2 residente (feature `native-translation`) |
 | `/voices/clone` | POST | `{name, audio_b64, force?}` | NDJSON `started → heartbeat/progress → result{name, speech, precomputed:true}` o `error`; antes del stream, 400 `audio_too_long` si la referencia dura más de 30 s y 413 si el cuerpo supera 31 768 576 B | Clonar voz (audio base64) con streaming NDJSON y warm-on-clone (`precomputed:true` = precarga iniciada) |
 | `/dub` | POST | `{audio_b64, voice, source_language, target_language, temperature?}` | NDJSON `started → heartbeat → result{status:"dubbed", text, translated, audio_b64, voice, work_ms}` o `error` | Pipeline transcribe→translate→synthesize con streaming NDJSON |

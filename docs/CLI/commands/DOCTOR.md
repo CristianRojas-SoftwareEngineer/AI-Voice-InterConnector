@@ -16,7 +16,7 @@ Emite un **veredicto** —texto o JSON— y termina con exit code **1** si algú
 ai-voice-interconnector doctor [--repair] [--json]
 ```
 
-`Doctor` admite un solo flag propio, `--repair`: recoge los restos pendientes (aparcados, stagings y temporales, solo lo que el barrido recoge) tomando el bloqueo, y vuelve a evaluar el informe sobre lo que quedó. Sin flags no admite subcomandos. Hereda el flag global `--json`. Los flags globales `--daemon`/`--no-daemon` no aplican porque `doctor` nunca dialoga con el daemon: la llamada es síncrona y no recibe `daemon_mode`.
+`Doctor` admite un solo flag propio, `--repair`: recoge los restos pendientes (aparcados, stagings y temporales, solo lo que el barrido recoge) tomando el bloqueo, y vuelve a evaluar el informe sobre lo que quedó. Sin flags no admite subcomandos. Hereda el flag global `--json`. `doctor` no declara `--daemon` ni `--no-daemon` (el parser los rechaza como argumento desconocido) porque nunca dialoga con el daemon.
 
 ---
 
@@ -34,7 +34,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
-`schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**. El protocolo del daemon va por `"4"`: son contratos independientes y este no lo toca.
+`schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**. El protocolo del daemon va por `"5"`: son contratos independientes y este no lo toca.
 
 ---
 

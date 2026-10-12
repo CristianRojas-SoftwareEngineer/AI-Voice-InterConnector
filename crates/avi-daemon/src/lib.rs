@@ -195,7 +195,7 @@ type SharedState = Arc<DaemonState>;
 /// Inserta `schema_version` en un envelope objeto, reutilizado por handlers que
 /// devuelven JSON directamente.
 ///
-/// **El protocolo del daemon tiene su propia versión**, `DAEMON_SCHEMA_VERSION`: el
+/// **El protocolo del daemon tiene su propia versión**, `DAEMON_SCHEMA_VERSION = 5`: el
 /// emisor compartido de `avi-core` lo comparte con el envelope `--json` de la CLI,
 /// pero los dos son contratos independientes y sus versiones se gobiernan por
 /// separado. Por eso la versión se pasa explícitamente en vez de leerse de una
@@ -471,7 +471,7 @@ async fn health_handler(State(state): State<SharedState>) -> Json<Value> {
 
 /// POST /synthesize — síntesis con streaming NDJSON de progreso
 ///
-/// Contrato NDJSON vigente: `start` → `progress`(N)
+/// Contrato NDJSON vigente: `started` → `progress`(N)
 /// → `result`{`audio_b64`,`t3_time`,`s3gen_time`} OR `error`{`reason`,`message`}.
 /// El motor `TtsEngine` no expone callback de progreso, por lo que se emite un
 /// único marcador `progress` genérico antes de sintetizar.
@@ -533,13 +533,13 @@ async fn synthesize_handler(
     let target_owned = target_raw.clone();
 
     tokio::spawn(async move {
-        // `start` sale antes de esperar `synthesis_lock`: la espera en cola la
+        // `started` sale antes de esperar `synthesis_lock`: la espera en cola la
         // cubre `run_synthesis_phase` con latidos, así que el cliente nunca queda
         // en silencio mientras otra síntesis o el warmup retienen el lock.
         emit_ndjson(
             &tx,
             json!({
-                "event": "start",
+                "event": "started",
                 "voice": voice_owned,
                 "text_length": text_owned.chars().count(),
             }),
@@ -3296,7 +3296,7 @@ mod tests {
         (status, bytes.to_vec())
     }
 
-    /// El evento `start` de `/synthesize` mide `text_length` en caracteres: «canción»
+    /// El evento `started` de `/synthesize` mide `text_length` en caracteres: «canción»
     /// tiene 7 caracteres y 8 bytes. La temperatura fuera de rango cierra el stream
     /// sin llegar al motor.
     #[tokio::test]
@@ -3313,8 +3313,8 @@ mod tests {
         let start: Value = body
             .lines()
             .map(|l| serde_json::from_str::<Value>(l).unwrap())
-            .find(|ev| ev["event"] == "start")
-            .expect("el stream emite el evento start");
+            .find(|ev| ev["event"] == "started")
+            .expect("el stream emite el evento started");
         assert_eq!(start["text_length"], 7);
     }
 

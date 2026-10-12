@@ -1325,9 +1325,9 @@ fn speech_transcribe_with_audio_matches_contract() {
     let (code, actual) = run_json_env(
         &[
             "--json",
-            "--no-daemon",
             "speech",
             "transcribe",
+            "--no-daemon",
             "--audio",
             "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
             "--source-language",
@@ -1350,6 +1350,27 @@ fn speech_transcribe_without_audio_nor_mic_exits_2() {
         "omitir --audio y --mic debe mapear a ExitCode::InvalidInput"
     );
     assert_eq!(actual["reason"], "usage_error");
+}
+
+/// `voice clone` clona con un único audio de referencia: `--timbre-reference`
+/// y su corto `-t` no existen y se rechazan como argumento desconocido.
+#[test]
+fn voice_clone_rejects_timbre_reference_flag() {
+    for flag in ["--timbre-reference", "-t"] {
+        let (code, actual) = run_json(&[
+            "--json",
+            "voice",
+            "clone",
+            "--name",
+            "x",
+            "--speech-reference",
+            "ref.wav",
+            flag,
+            "timbre.wav",
+        ]);
+        assert_eq!(code, 2, "{flag} debe salir con exit 2");
+        assert_eq!(actual["reason"], "usage_error", "{flag}: {actual}");
+    }
 }
 
 /// Un `--audio` inexistente sale con exit 3 y `audio_not_found`, sin llegar
@@ -1404,9 +1425,9 @@ fn transcribe_invalid_wav_exits_2() {
     let (code, actual) = run_json_env(
         &[
             "--json",
-            "--no-daemon",
             "speech",
             "transcribe",
+            "--no-daemon",
             "--audio",
             path.to_str().expect("ruta UTF-8"),
             "--source-language",
@@ -1636,9 +1657,9 @@ fn transcribe_audio_over_limit_is_audio_too_long() {
         let result = run_json_env(
             &[
                 "--json",
-                mode,
                 "speech",
                 "transcribe",
+                mode,
                 "--audio",
                 wav.to_str().expect("ruta UTF-8"),
                 "--source-language",
@@ -1663,9 +1684,9 @@ fn clone_reference_over_limit_is_audio_too_long() {
         let result = run_json_env(
             &[
                 "--json",
-                mode,
                 "voice",
                 "clone",
+                mode,
                 "--name",
                 "long_reference",
                 "--speech-reference",
@@ -1693,9 +1714,9 @@ fn dub_audio_over_limit_is_audio_too_long() {
         let result = run_json_env(
             &[
                 "--json",
-                mode,
                 "speech",
                 "dub",
+                mode,
                 "--audio",
                 wav.to_str().expect("ruta UTF-8"),
                 "--source-language",
@@ -1722,9 +1743,9 @@ fn clone_reference_zero_sample_rate_is_invalid_audio() {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                mode,
                 "voice",
                 "clone",
+                mode,
                 "--name",
                 "reference_rate0",
                 "--speech-reference",
@@ -1746,9 +1767,9 @@ fn transcribe_mic_duration_over_limit_is_audio_too_long() {
         "mic_duration_limit",
         &[
             "--json",
-            "--no-daemon",
             "speech",
             "transcribe",
+            "--no-daemon",
             "--mic",
             "--duration",
             "301",
@@ -1769,9 +1790,9 @@ fn transcribe_mic_env_over_limit_is_audio_too_long() {
         "mic_env_limit",
         &[
             "--json",
-            "--no-daemon",
             "speech",
             "transcribe",
+            "--no-daemon",
             "--mic",
             "--source-language",
             "es",
@@ -1913,9 +1934,9 @@ fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<Strin
     let (code, actual) = run_json_env(
         &[
             "--json",
-            "--daemon",
             "speech",
             "dub",
+            "--daemon",
             "--audio",
             wav.to_str().expect("ruta UTF-8"),
             "--source-language",
@@ -1960,9 +1981,9 @@ fn dub_daemon_404_model_missing_exits_4_without_transcribe() {
     );
 }
 
-/// Un 404 de `/dub` sin `reason` ni `error` es un daemon antiguo sin la ruta:
-/// sale con exit 1, un mensaje que indica reiniciarlo y ninguna petición a
-/// `/transcribe`.
+/// Un 404 de `/dub` sin `reason` ni `error` es una ruta ausente (el daemon en
+/// marcha es de otro binario, o su build no incluye la función): sale con exit 1,
+/// un mensaje que nombra ambas causas y ninguna petición a `/transcribe`.
 #[test]
 fn dub_daemon_bare_404_exits_1_with_restart_hint_without_transcribe() {
     let (code, actual, paths) = dub_against_fake_daemon_404("dub_404_bare", serde_json::json!({}));
@@ -2455,8 +2476,8 @@ fn translate_es_to_en_produces_translation() {
     let (code, actual) = run_json_env(
         &[
             "--json",
-            "--no-daemon",
             "translate",
+            "--no-daemon",
             "--text",
             "Hola, ¿cómo estás?",
             "--source-language",
@@ -2899,9 +2920,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--daemon",
                 "speech",
                 "synthesize",
+                "--daemon",
                 "--text",
                 "Hola, este es un mensaje de prueba para la verificación.",
                 "--voice",
@@ -2965,9 +2986,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "speech",
                 "synthesize",
+                "--no-daemon",
                 "--text",
                 short_text,
                 "--voice",
@@ -3022,9 +3043,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "speech",
                 "synthesize",
+                "--no-daemon",
                 "--text",
                 text,
                 "--voice",
@@ -3196,9 +3217,9 @@ mod tts {
         let limit_text = "a".repeat(500);
         let (_code, actual) = run_json(&[
             "--json",
-            "--no-daemon",
             "speech",
             "synthesize",
+            "--no-daemon",
             "--text",
             &limit_text,
             "--label",
@@ -3225,9 +3246,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "speech",
                 "synthesize",
+                "--no-daemon",
                 "--text",
                 "Hola",
                 "--voice",
@@ -3259,9 +3280,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "speech",
                 "synthesize",
+                "--no-daemon",
                 "--text",
                 "Hola",
                 "--voice",
@@ -3313,9 +3334,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "speech",
                 "synthesize",
+                "--no-daemon",
                 "--text",
                 "Hola",
                 "--label",
@@ -3373,14 +3394,7 @@ mod tts {
         )
         .expect("borrar el sidecar fabricado");
         let (code, actual) = run_json_env(
-            &[
-                "--json",
-                "--no-daemon",
-                "speech",
-                "list",
-                "--voice",
-                "default",
-            ],
+            &["--json", "speech", "list", "--voice", "default"],
             &inst.contract_args(),
         );
         assert_eq!(code, 0, "{actual}");
@@ -3414,22 +3428,8 @@ mod tts {
         std::fs::write(&sidecar, b"{roto").expect("corromper el sidecar");
         let a = inst.contract_args();
         for args in [
-            vec![
-                "--json",
-                "--no-daemon",
-                "speech",
-                "list",
-                "--voice",
-                "default",
-            ],
-            vec![
-                "--json",
-                "--no-daemon",
-                "speech",
-                "play",
-                "--label",
-                label.as_str(),
-            ],
+            vec!["--json", "speech", "list", "--voice", "default"],
+            vec!["--json", "speech", "play", "--label", label.as_str()],
         ] {
             let (code, actual) = run_json_env(&args, &a);
             assert_eq!(code, 1, "{actual}");
@@ -3438,17 +3438,7 @@ mod tts {
             assert!(message.contains(&format!("{label}.json")), "{message}");
             assert!(message.contains("speech remove"), "{message}");
         }
-        let (code, actual) = run_json_env(
-            &[
-                "--json",
-                "--no-daemon",
-                "speech",
-                "remove",
-                "--label",
-                &label,
-            ],
-            &a,
-        );
+        let (code, actual) = run_json_env(&["--json", "speech", "remove", "--label", &label], &a);
         assert_eq!(code, 0, "{actual}");
         assert!(!sidecar.exists());
     }
@@ -3465,14 +3455,7 @@ mod tts {
         create_utterance(&inst, "default", &label_def);
         create_utterance(&inst, "ryan", &label_ryan);
         let (code, actual) = run_json_env(
-            &[
-                "--json",
-                "--no-daemon",
-                "speech",
-                "list",
-                "--voice",
-                "default",
-            ],
+            &["--json", "speech", "list", "--voice", "default"],
             &inst.contract_args(),
         );
         assert_eq!(code, 0);
@@ -3500,7 +3483,6 @@ mod tts {
     fn speech_list_missing_voice_exits_3() {
         let (code, actual) = run_json(&[
             "--json",
-            "--no-daemon",
             "speech",
             "list",
             "--voice",
@@ -3520,14 +3502,7 @@ mod tts {
     /// `speech list --voice` con identificador ilegal sale con 2 (InvalidInput).
     #[test]
     fn speech_list_invalid_voice_exits_2() {
-        let (code, actual) = run_json(&[
-            "--json",
-            "--no-daemon",
-            "speech",
-            "list",
-            "--voice",
-            "mi voz",
-        ]);
+        let (code, actual) = run_json(&["--json", "speech", "list", "--voice", "mi voz"]);
         assert_eq!(
             code, 2,
             "identificador ilegal → ExitCode::InvalidInput (reason={:?})",
@@ -3550,10 +3525,7 @@ mod tts {
         let label_ryan = unique_label("listallryan");
         create_utterance(&inst, "default", &label_def);
         create_utterance(&inst, "ryan", &label_ryan);
-        let (code, actual) = run_json_env(
-            &["--json", "--no-daemon", "speech", "list"],
-            &inst.contract_args(),
-        );
+        let (code, actual) = run_json_env(&["--json", "speech", "list"], &inst.contract_args());
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         let entries = actual["speech"]
@@ -3571,6 +3543,133 @@ mod tts {
                 .any(|e| e["label"] == Value::String(label_ryan.clone())),
             "sin filtro debe aparecer la locución de ryan"
         );
+    }
+
+    /// `speech play` y `speech remove` validan la voz antes de buscar la etiqueta:
+    /// una voz inexistente es `voice_not_found` (3) y una ilegal `invalid_identifier` (2).
+    #[test]
+    fn speech_play_and_remove_validate_voice() {
+        let inst = IsolatedInstance::new("speech_validates_voice");
+        let a = inst.contract_args();
+        for action in ["play", "remove"] {
+            let (code, actual) = run_json_env(
+                &[
+                    "--json", "speech", action, "--label", "x", "--voice", "noexiste",
+                ],
+                &a,
+            );
+            assert_eq!(code, 3, "speech {action}: {actual}");
+            assert_eq!(actual["reason"], "voice_not_found");
+            let (code, actual) = run_json_env(
+                &[
+                    "--json", "speech", action, "--label", "x", "--voice", "mi voz",
+                ],
+                &a,
+            );
+            assert_eq!(code, 2, "speech {action}: {actual}");
+            assert_eq!(actual["reason"], "invalid_identifier");
+        }
+    }
+
+    /// Voz de usuario fabricada en el sandbox de `inst`: directorio de registro más
+    /// una locución por etiqueta.
+    fn create_user_voice(inst: &IsolatedInstance, voice: &str, labels: &[&str]) {
+        std::fs::create_dir_all(inst.dir.join("voices").join(voice)).expect("crear la voz");
+        for label in labels {
+            create_utterance(inst, voice, label);
+        }
+    }
+
+    /// `voice remove` de una voz sin locuciones borra sin preguntar, sin terminal y
+    /// sin `--yes`, y el envelope lleva `removed_speech` vacío.
+    #[test]
+    fn voice_remove_without_speech_removes_without_confirmation() {
+        let inst = IsolatedInstance::new("voice_remove_plain");
+        create_user_voice(&inst, "locutor", &[]);
+        let (code, actual) = run_json_env(
+            &["--json", "voice", "remove", "--name", "locutor"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 0, "{actual}");
+        assert_eq!(actual["status"], "removed");
+        assert_eq!(actual["voice"], "locutor");
+        assert_eq!(actual["removed_speech"], serde_json::json!([]));
+        assert!(!inst.dir.join("voices").join("locutor").exists());
+    }
+
+    /// Con locuciones, sin terminal y sin `--yes`: `confirmation_required` (2) y
+    /// nada borrado.
+    #[test]
+    fn voice_remove_with_speech_without_yes_requires_confirmation() {
+        let inst = IsolatedInstance::new("voice_remove_noyes");
+        create_user_voice(&inst, "locutor", &["uno"]);
+        let (code, actual) = run_json_env(
+            &["--json", "voice", "remove", "--name", "locutor"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "confirmation_required");
+        assert!(inst.dir.join("voices").join("locutor").is_dir());
+        assert!(inst
+            .dir
+            .join("speech")
+            .join("locutor")
+            .join("uno.wav")
+            .is_file());
+    }
+
+    /// Con `--yes` se borran la voz y su namespace de habla, las demás voces
+    /// conservan sus locuciones y el envelope lista las etiquetas arrastradas.
+    #[test]
+    fn voice_remove_with_yes_drags_speech_namespace() {
+        let inst = IsolatedInstance::new("voice_remove_yes");
+        create_user_voice(&inst, "locutor", &["uno", "dos"]);
+        create_user_voice(&inst, "otra", &["tres"]);
+        let (code, actual) = run_json_env(
+            &["--json", "voice", "remove", "--name", "locutor", "--yes"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 0, "{actual}");
+        assert_eq!(actual["status"], "removed");
+        assert_eq!(actual["removed_speech"], serde_json::json!(["dos", "uno"]));
+        assert!(!inst.dir.join("voices").join("locutor").exists());
+        assert!(!inst.dir.join("speech").join("locutor").exists());
+        assert!(inst.dir.join("voices").join("otra").is_dir());
+        assert!(inst
+            .dir
+            .join("speech")
+            .join("otra")
+            .join("tres.wav")
+            .is_file());
+        // Sin voz no hay locuciones: `speech list --voice` ya no la encuentra.
+        let (code, actual) = run_json_env(
+            &["--json", "speech", "list", "--voice", "locutor"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 3, "{actual}");
+        assert_eq!(actual["reason"], "voice_not_found");
+    }
+
+    /// Las voces de fábrica siguen protegidas aunque tengan locuciones.
+    #[test]
+    fn voice_remove_factory_with_speech_is_rejected() {
+        let inst = IsolatedInstance::new("voice_remove_factory");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        create_utterance(&inst, "default", "uno");
+        let (code, actual) = run_json_env(
+            &["--json", "voice", "remove", "--name", "default", "--yes"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "cannot_remove_default");
+        assert!(inst
+            .dir
+            .join("speech")
+            .join("default")
+            .join("uno.wav")
+            .is_file());
     }
 
     // ─── say ───────────────────────────────────────────────────────────
@@ -3599,9 +3698,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "speech",
                 "say",
+                "--no-daemon",
                 "--text",
                 "Hola mundo",
                 "--voice",
@@ -3656,9 +3755,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "speech",
                 "dub",
+                "--no-daemon",
                 "--audio",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
                 "--source-language",
@@ -3713,9 +3812,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "voice",
                 "clone",
+                "--no-daemon",
                 "--name",
                 &name,
                 "--speech-reference",
@@ -3727,6 +3826,7 @@ mod tts {
         assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(actual["precomputed"], Value::Bool(false));
+        assert_clone_envelope_keys(&actual);
         // La salida del motor de clonado queda en el log de su familia.
         let engine_logs = std::fs::read_dir(inst.dir.join("logs"))
             .map(|d| {
@@ -3743,7 +3843,28 @@ mod tts {
         let qvoice = Path::new(speech);
         assert!(qvoice.is_file(), "reference.qvoice debe existir");
         assert_timbre_only_qvoice(qvoice, &name);
-        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
+        let _ = avi_store::remove_voice(
+            &avi_store::VoiceStore::at(inst.dir.join("voices")),
+            &avi_store::SpeechStore::at(inst.dir.join("speech")),
+            &name,
+        );
+    }
+
+    /// El envelope de `voice clone` es idéntico en la vía local y en la del
+    /// daemon: exactamente `name`, `speech`, `precomputed` y `schema_version`.
+    fn assert_clone_envelope_keys(actual: &Value) {
+        let mut keys: Vec<&str> = actual
+            .as_object()
+            .expect("el envelope de clone es un objeto")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["name", "precomputed", "schema_version", "speech"],
+            "{actual}"
+        );
     }
 
     /// Campos de la cabecera de un `.qvoice` v3 que verifican las pruebas de
@@ -3837,9 +3958,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "voice",
                 "clone",
+                "--no-daemon",
                 "--name",
                 &name,
                 "--speech-reference",
@@ -3857,7 +3978,11 @@ mod tts {
             m.wer,
             m.transcript
         );
-        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
+        let _ = avi_store::remove_voice(
+            &avi_store::VoiceStore::at(inst.dir.join("voices")),
+            &avi_store::SpeechStore::at(inst.dir.join("speech")),
+            &name,
+        );
     }
 
     /// Clonado repetido → 6. La voz existente se fabrica con un `.qvoice` mínimo.
@@ -3879,9 +4004,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "voice",
                 "clone",
+                "--no-daemon",
                 "--name",
                 &name,
                 "--speech-reference",
@@ -3966,9 +4091,9 @@ mod tts {
         let output = bin_command()
             .args([
                 "--json",
-                "--no-daemon",
                 "voice",
                 "clone",
+                "--no-daemon",
                 "--name",
                 &name,
                 "--speech-reference",
@@ -4093,9 +4218,9 @@ mod tts {
         let output = bin_command()
             .args([
                 "--json",
-                "--no-daemon",
                 "voice",
                 "clone",
+                "--no-daemon",
                 "--name",
                 &name,
                 "--speech-reference",
@@ -4137,9 +4262,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "voice",
                 "clone",
+                "--no-daemon",
                 "--name",
                 "voz invalida",
                 "--speech-reference",
@@ -4167,9 +4292,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "voice",
                 "clone",
+                "--no-daemon",
                 "--name",
                 "clone_ok",
                 "--speech-reference",
@@ -4200,9 +4325,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--no-daemon",
                 "voice",
                 "clone",
+                "--no-daemon",
                 "--name",
                 &name,
                 "--speech-reference",
@@ -5449,8 +5574,8 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--daemon",
                 "translate",
+                "--daemon",
                 "--text",
                 "Hola",
                 "--source-language",
@@ -5503,8 +5628,8 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--daemon",
                 "translate",
+                "--daemon",
                 "--text",
                 "Hola",
                 "--source-language",
@@ -5544,9 +5669,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--daemon",
                 "voice",
                 "clone",
+                "--daemon",
                 "--name",
                 &name,
                 "--speech-reference",
@@ -5566,7 +5691,12 @@ mod tts {
             Value::Bool(true),
             "vía daemon el evento final trae precomputed:true (precarga iniciada)"
         );
-        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
+        assert_clone_envelope_keys(&actual);
+        let _ = avi_store::remove_voice(
+            &avi_store::VoiceStore::at(inst.dir.join("voices")),
+            &avi_store::SpeechStore::at(inst.dir.join("speech")),
+            &name,
+        );
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "clone_delegates_to_daemon");
         hit_end("tts::clone_delegates_to_daemon");
@@ -5589,9 +5719,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--daemon",
                 "voice",
                 "clone",
+                "--daemon",
                 "--name",
                 &name,
                 "--speech-reference",
@@ -5599,7 +5729,11 @@ mod tts {
             ],
             &a,
         );
-        let _ = avi_store::VoiceStore::at(inst.dir.join("voices")).remove(&name);
+        let _ = avi_store::remove_voice(
+            &avi_store::VoiceStore::at(inst.dir.join("voices")),
+            &avi_store::SpeechStore::at(inst.dir.join("speech")),
+            &name,
+        );
         stop_instance(&inst, "clone_daemon_truncated");
         assert_eq!(code, 2, "referencia truncada por daemon → InvalidInput");
         assert_eq!(actual["reason"], Value::String("invalid_audio".to_string()));
@@ -5628,9 +5762,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--daemon",
                 "speech",
                 "dub",
+                "--daemon",
                 "--audio",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
                 "--source-language",
@@ -5677,9 +5811,9 @@ mod tts {
         let (code, actual) = run_json_env(
             &[
                 "--json",
-                "--daemon",
                 "speech",
                 "dub",
+                "--daemon",
                 "--audio",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
                 "--source-language",
@@ -5830,26 +5964,148 @@ fn speech_invalid_temperature_exits_2() {
     );
 }
 
-/// `--daemon` en un comando que siempre se ejecuta en local es un error de
-/// invocación: exit 2 con `daemon_not_supported`, sin culpar al daemon.
+/// `--daemon` y `--no-daemon` solo existen en los subcomandos con dos vías: en
+/// cualquier otro el parser los rechaza como argumento desconocido (exit 2,
+/// `usage_error` con `--json`).
 #[test]
-fn daemon_flag_on_local_commands_exits_2() {
+fn routing_flags_on_commands_without_two_paths_are_usage_errors() {
     for args in [
+        vec!["version"],
+        vec!["devices"],
+        vec!["doctor"],
         vec!["voice", "list"],
         vec!["voice", "remove", "--name", "nonexistent-voice"],
         vec!["speech", "list"],
         vec!["speech", "play", "--label", "nonexistent-label"],
         vec!["speech", "remove", "--label", "nonexistent-label"],
+        vec!["daemon", "status"],
     ] {
-        let mut full = vec!["--json", "--daemon"];
-        full.extend(args.iter().copied());
-        let (code, actual) = run_json(&full);
-        assert_eq!(code, 2, "--daemon en {:?} debe salir 2", args);
-        assert_eq!(
-            actual["reason"], "daemon_not_supported",
-            "--daemon en {:?} debe dar daemon_not_supported",
-            args
+        for flag in ["--daemon", "--no-daemon"] {
+            let mut full = vec!["--json"];
+            full.extend(args.iter().copied());
+            full.push(flag);
+            let (code, actual) = run_json(&full);
+            assert_eq!(code, 2, "{flag} en {args:?} debe salir 2");
+            assert_eq!(
+                actual["reason"], "usage_error",
+                "{flag} en {args:?} debe dar usage_error"
+            );
+        }
+    }
+}
+
+/// `speech synthesize` rechaza las dos formas de destino externo antes de
+/// sintetizar: exit 2 y `usage_error` en el envelope JSON.
+#[test]
+fn speech_synthesize_rejects_output_flags() {
+    for flag in ["--output", "-o"] {
+        let (code, actual) = run_json(&[
+            "--json",
+            "speech",
+            "synthesize",
+            "--text",
+            "Hola",
+            "--label",
+            "saludo",
+            flag,
+            "copia.wav",
+        ]);
+        assert_eq!(code, 2, "{flag} debe salir con exit 2");
+        assert_eq!(actual["reason"], "usage_error", "{flag} debe rechazarse");
+    }
+}
+
+/// Los seis subcomandos con dos vías (daemon o proceso local) declaran
+/// `--daemon` y `--no-daemon` y los rechazan cuando vienen juntos.
+#[test]
+fn routing_flags_are_declared_by_the_six_two_path_commands() {
+    let routed: [&[&str]; 6] = [
+        &["translate", "--text", "Hola"],
+        &["speech", "synthesize", "--text", "Hola", "--label", "x"],
+        &["speech", "say", "--text", "Hola"],
+        &[
+            "speech",
+            "transcribe",
+            "--audio",
+            "x.wav",
+            "--source-language",
+            "es",
+        ],
+        &[
+            "speech",
+            "dub",
+            "--audio",
+            "x.wav",
+            "--source-language",
+            "es",
+        ],
+        &[
+            "voice",
+            "clone",
+            "--name",
+            "n",
+            "--speech-reference",
+            "r.wav",
+        ],
+    ];
+    let (_sandbox, envs) = contract_sandbox("routing_flags_declared");
+    for args in routed {
+        // La ayuda del subcomando lista los dos flags.
+        let command_path: Vec<&str> = args
+            .iter()
+            .copied()
+            .take_while(|a| !a.starts_with("--"))
+            .collect();
+        let mut help = bin_command();
+        help.args(&command_path).arg("--help");
+        for (k, v) in &envs {
+            help.env(k, v);
+        }
+        let output = help.output().expect("el binario debe ejecutarse");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("--daemon") && stdout.contains("--no-daemon"),
+            "la ayuda de {command_path:?} debe listar --daemon y --no-daemon: {stdout}"
         );
+        // Juntos son excluyentes.
+        let mut full = vec!["--json"];
+        full.extend(args.iter().copied());
+        full.extend(["--daemon", "--no-daemon"]);
+        let (code, actual) = run_json(&full);
+        assert_eq!(code, 2, "{args:?} con ambos flags debe salir 2");
+        assert_eq!(actual["reason"], "usage_error", "{args:?}: {actual}");
+        let message = actual["error"].as_str().expect("`error` es texto");
+        assert!(
+            message.contains("no se puede usar junto con"),
+            "{args:?} debe fallar por conflicto entre los flags: {message}"
+        );
+    }
+}
+
+/// `speech transcribe` y `speech dub` exigen exactamente uno de `--audio` o
+/// `--mic`, y `--duration` solo se acepta con `--mic`; el parser lo rechaza con
+/// exit 2 y `usage_error`.
+#[test]
+fn audio_mic_duration_rules_are_enforced_by_the_parser() {
+    for command in ["transcribe", "dub"] {
+        for extra in [
+            // Ni `--audio` ni `--mic`.
+            vec![],
+            // Los dos a la vez.
+            vec!["--audio", "x.wav", "--mic"],
+            // `--duration` sin `--mic`.
+            vec!["--audio", "x.wav", "--duration", "5"],
+        ] {
+            let mut full = vec!["--json", "speech", command];
+            full.extend(extra.iter().copied());
+            full.extend(["--source-language", "es"]);
+            let (code, actual) = run_json(&full);
+            assert_eq!(code, 2, "speech {command} {extra:?} debe salir 2");
+            assert_eq!(
+                actual["reason"], "usage_error",
+                "speech {command} {extra:?}: {actual}"
+            );
+        }
     }
 }
 
@@ -5875,9 +6131,9 @@ fn usage_commands_fail_with_lifecycle_locked_while_exclusive_lock_is_held() {
         vec!["--json", "voice", "list"],
         vec![
             "--json",
-            "--no-daemon",
             "speech",
             "synthesize",
+            "--no-daemon",
             "--text",
             "Hola",
             "--label",
@@ -6803,9 +7059,9 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
     let (code, actual) = run_json_env(
         &[
             "--json",
-            "--daemon",
             "speech",
             "dub",
+            "--daemon",
             "--audio",
             wav.to_str().expect("ruta UTF-8"),
             "--source-language",
@@ -6861,9 +7117,9 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
     let (code, actual) = run_json_env(
         &[
             "--json",
-            "--daemon",
             "speech",
             "dub",
+            "--daemon",
             "--audio",
             wav.to_str().expect("ruta UTF-8"),
             "--source-language",
@@ -6910,7 +7166,7 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
     fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
-        &["--json", "--daemon", "speech", "say", "--text", "Hola"],
+        &["--json", "speech", "say", "--daemon", "--text", "Hola"],
         &envs,
     );
     assert_eq!(
@@ -6948,7 +7204,7 @@ fn say_daemon_playback_failure_leaves_no_residue() {
     fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
-        &["--json", "--daemon", "speech", "say", "--text", "Hola"],
+        &["--json", "speech", "say", "--daemon", "--text", "Hola"],
         &envs,
     );
     assert_eq!(

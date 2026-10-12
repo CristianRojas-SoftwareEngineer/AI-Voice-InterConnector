@@ -1,5 +1,5 @@
 {
-  "schema_version": "4",
+  "schema_version": "5",
   "status": "ready",
   "warm": "warming",
   "engine": "rust_native"

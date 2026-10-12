@@ -325,7 +325,7 @@ async fn health_matches_fixture() {
     let fixture_val = fixture("daemon_health.json");
     assert_eq!(actual["status"], fixture_val["status"]);
     assert_eq!(actual["warm"], fixture_val["warm"]);
-    assert_eq!(actual["schema_version"], Value::String("4".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
     // Las claves aditivas `ct2` y `stt` no cambian `schema_version`.
     assert_eq!(actual["engine"], fixture_val["engine"]);
 }
@@ -418,7 +418,7 @@ async fn synthesize_emits_contract_ndjson_stream() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // El cuerpo es NDJSON: una línea JSON por evento (start/progress/result|error).
+    // El cuerpo es NDJSON: una línea JSON por evento (started/progress/result|error).
     let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
     let events: Vec<Value> = text
         .lines()
@@ -427,20 +427,20 @@ async fn synthesize_emits_contract_ndjson_stream() {
         .collect();
     assert!(!events.is_empty(), "debe haber al menos un evento");
 
-    // Invariante de envelope: schema_version=4 en todo evento.
+    // Invariante de envelope: schema_version=5 en todo evento.
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("4".to_string()),
+            Value::String("5".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
 
-    // Invariante: el primer evento es `start`.
+    // Invariante: el primer evento es `started`.
     assert_eq!(
         events.first().unwrap()["event"],
-        Value::String("start".to_string()),
-        "el stream NDJSON debe comenzar con `start`"
+        Value::String("started".to_string()),
+        "el stream NDJSON debe comenzar con `started`"
     );
 
     // Invariante: evento final `error` por falta de motor.
@@ -666,11 +666,11 @@ async fn voices_clone_daemon_precomputed_true() {
         state.tts_engine.shutdown();
     }
     assert!(!events.is_empty(), "debe haber al menos un evento");
-    // Invariante de envelope: schema_version=4 en todo evento.
+    // Invariante de envelope: schema_version=5 en todo evento.
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("4".to_string()),
+            Value::String("5".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -702,7 +702,8 @@ async fn voices_clone_daemon_precomputed_true() {
             );
         }
     }
-    let _ = clone_state().voice_store.remove(&name);
+    let state = clone_state();
+    let _ = avi_store::remove_voice(&state.voice_store, &state.speech_store, &name);
 }
 
 /// Una referencia WAV truncada (la cabecera declara más datos de los que hay)
@@ -746,7 +747,8 @@ async fn voices_clone_truncated_wav_emits_invalid_audio() {
         .expect("cada línea debe ser JSON");
     assert_eq!(last["event"], Value::String("error".to_string()));
     assert_eq!(last["reason"], Value::String("invalid_audio".to_string()));
-    let _ = test_state().voice_store.remove(&name);
+    let state = test_state();
+    let _ = avi_store::remove_voice(&state.voice_store, &state.speech_store, &name);
 }
 
 /// Warm-voice configurable: `run_daemon_server` con una `--warm-voice`

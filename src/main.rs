@@ -172,14 +172,6 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Fuerza el uso exclusivo del daemon IPC (exit 5 si no responde)
-    #[arg(long, global = true, conflicts_with = "no_daemon")]
-    daemon: bool,
-
-    /// Fuerza la ejecución en proceso local directo (sin daemon)
-    #[arg(long, global = true, conflicts_with = "daemon")]
-    no_daemon: bool,
-
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -413,8 +405,23 @@ pub enum DaemonMode {
     ForceDirect,
 }
 
-impl Cli {
-    pub fn daemon_mode(&self) -> DaemonMode {
+/// Flags de enrutado, presentes solo en los subcomandos que tienen dos vías
+/// (daemon o proceso local): `translate`, `speech synthesize|say|transcribe|dub`
+/// y `voice clone`. Los demás comandos no los declaran y los rechazan como
+/// argumento desconocido.
+#[derive(clap::Args)]
+struct Routing {
+    /// Fuerza el uso exclusivo del daemon IPC (exit 5 si no responde)
+    #[arg(long, conflicts_with = "no_daemon")]
+    daemon: bool,
+
+    /// Fuerza la ejecución en proceso local directo (sin daemon)
+    #[arg(long, conflicts_with = "daemon")]
+    no_daemon: bool,
+}
+
+impl Routing {
+    fn mode(&self) -> DaemonMode {
         if self.daemon {
             DaemonMode::ForceDaemon
         } else if self.no_daemon {
@@ -441,6 +448,8 @@ enum Commands {
         /// Idioma de destino de la traducción
         #[arg(long, default_value = "en", value_parser = ["es", "en"])]
         target_language: String,
+        #[command(flatten)]
+        routing: Routing,
     },
     /// Gestión de voces clonadas
     Voice {
@@ -561,17 +570,19 @@ enum VoiceCommands {
         /// Audio de referencia de habla (obligatorio)
         #[arg(short = 's', long)]
         speech_reference: String,
-        /// Audio de referencia de timbre (opcional)
-        #[arg(short = 't', long)]
-        timbre_reference: Option<String>,
         /// Sobrescribir una voz existente con el mismo nombre
         #[arg(short, long)]
         force: bool,
+        #[command(flatten)]
+        routing: Routing,
     },
-    /// Eliminar una voz clonada
+    /// Eliminar una voz clonada y sus locuciones guardadas
     Remove {
         #[arg(short, long)]
         name: String,
+        /// No pedir confirmación al borrar las locuciones de la voz
+        #[arg(long, short)]
+        yes: bool,
     },
 }
 
@@ -584,19 +595,24 @@ enum SpeechCommands {
         voice: Option<String>,
     },
     /// Transcribir audio
+    #[command(group(
+        clap::ArgGroup::new("input").required(true).multiple(false).args(["audio", "mic"])
+    ))]
     Transcribe {
         /// Ruta del archivo WAV a transcribir (mutuamente excluyente con --mic)
-        #[arg(long, conflicts_with = "mic")]
+        #[arg(long)]
         audio: Option<String>,
         /// Transcribir desde el micrófono (mutuamente excluyente con --audio)
         #[arg(long)]
         mic: bool,
         /// Duración fija de grabación en segundos; solo válido con --mic
-        #[arg(long)]
+        #[arg(long, conflicts_with = "audio")]
         duration: Option<u64>,
         /// Idioma hablado en el audio
         #[arg(long, value_parser = ["es", "en"])]
         source_language: String,
+        #[command(flatten)]
+        routing: Routing,
     },
     /// Sintetizar texto a habla y persistir la locución
     Synthesize {
@@ -604,8 +620,6 @@ enum SpeechCommands {
         text: String,
         #[arg(short, long, default_value = "default")]
         voice: String,
-        #[arg(short, long)]
-        output: Option<String>,
         /// Etiqueta de la locución persistida (obligatorio)
         #[arg(short, long)]
         label: String,
@@ -623,6 +637,8 @@ enum SpeechCommands {
         /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
         #[arg(long)]
         temperature: Option<f32>,
+        #[command(flatten)]
+        routing: Routing,
     },
     /// Sintetizar y reproducir
     Say {
@@ -639,8 +655,13 @@ enum SpeechCommands {
         /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
         #[arg(long)]
         temperature: Option<f32>,
+        #[command(flatten)]
+        routing: Routing,
     },
     /// Doblaje voz→voz: transcribe, traduce, sintetiza y reproduce
+    #[command(group(
+        clap::ArgGroup::new("input").required(true).multiple(false).args(["audio", "mic"])
+    ))]
     Dub {
         /// Archivo de audio a doblar
         #[arg(short = 'a', long)]
@@ -657,11 +678,13 @@ enum SpeechCommands {
         #[arg(long)]
         temperature: Option<f32>,
         /// Capturar desde el micrófono (mutuamente excluyente con --audio)
-        #[arg(long, conflicts_with = "audio")]
+        #[arg(long)]
         mic: bool,
         /// Duración fija de grabación en segundos; solo válido con --mic
-        #[arg(long)]
+        #[arg(long, conflicts_with = "audio")]
         duration: Option<u64>,
+        #[command(flatten)]
+        routing: Routing,
     },
     /// Reproducir una locución guardada
     Play {
@@ -864,7 +887,6 @@ async fn main() {
         .unwrap_or_else(|e| render_clap_error(e, json_hint));
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| render_clap_error(e, json_hint));
     let json_mode = cli.json;
-    let daemon_mode = cli.daemon_mode();
     let daemon_serve = matches!(
         cli.command,
         Some(Commands::Daemon {
@@ -928,18 +950,17 @@ async fn main() {
             text,
             source_language,
             target_language,
+            routing,
         }) => ok(handle_translate(
             json_mode,
-            daemon_mode,
+            routing.mode(),
             &text,
             &source_language,
             &target_language,
         )
         .await),
-        Some(Commands::Voice { action }) => ok(handle_voice(json_mode, daemon_mode, action).await),
-        Some(Commands::Speech { action }) => {
-            ok(handle_speech(json_mode, daemon_mode, action).await)
-        }
+        Some(Commands::Voice { action }) => ok(handle_voice(json_mode, action).await),
+        Some(Commands::Speech { action }) => ok(handle_speech(json_mode, action).await),
         Some(Commands::Daemon { action }) => {
             handle_daemon(json_mode, action, usage_lock.take()).await
         }
@@ -1200,17 +1221,11 @@ fn translate_if_different(text: &str, source: &str, target: &str) -> Result<Stri
 
 // ─── Voice ───────────────────────────────────────────────────────────
 
-async fn handle_voice(
-    json_mode: bool,
-    daemon_mode: DaemonMode,
-    action: VoiceCommands,
-) -> Result<(), CliError> {
+async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliError> {
     let voice_store = open_voice_store()?;
 
     match action {
         VoiceCommands::List => {
-            // List es local-only; ForceDaemon falla con `daemon_not_supported` (paridad con speech list/play/remove)
-            require_local(daemon_mode)?;
             let voices = voice_store
                 .list()
                 .map_err(|e| CliError::new(ExitCode::Error, "voice_list_failed", e.to_string()))?;
@@ -1229,8 +1244,8 @@ async fn handle_voice(
         VoiceCommands::Clone {
             name,
             speech_reference,
-            timbre_reference,
             force,
+            routing,
         } => {
             // Orden de validaciones del contrato: el nombre se valida antes que el modelo.
             let name = name.to_lowercase();
@@ -1242,16 +1257,9 @@ async fn handle_voice(
             // Despacho 3 modos para Clone vía POST /voices/clone
             {
                 let client = daemon_client();
-                if route_to_daemon(daemon_mode, &client).await? {
-                    return clone_via_daemon(
-                        json_mode,
-                        &client,
-                        &name,
-                        &speech_reference,
-                        timbre_reference.as_deref(),
-                        force,
-                    )
-                    .await;
+                if route_to_daemon(routing.mode(), &client).await? {
+                    return clone_via_daemon(json_mode, &client, &name, &speech_reference, force)
+                        .await;
                 }
             }
             require_model_provisioned()?;
@@ -1262,15 +1270,6 @@ async fn handle_voice(
                     "audio_not_found",
                     format!("El audio de referencia '{}' no existe.", speech_reference),
                 ));
-            }
-            if let Some(t) = &timbre_reference {
-                if !std::path::Path::new(t).is_file() {
-                    return Err(CliError::new(
-                        ExitCode::NotFound,
-                        "audio_not_found",
-                        format!("El audio de timbre '{}' no existe.", t),
-                    ));
-                }
             }
             if !force
                 && voice_store
@@ -1318,8 +1317,8 @@ async fn handle_voice(
                     _ => CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()),
                 }
             })?;
-            // El timbre y el habla quedan fundidos en `reference.qvoice` durante el
-            // clonado; no se persisten WAV de referencia separados (nadie los lee).
+            // La única referencia de habla produce `reference.qvoice`; el WAV de
+            // entrada no se persiste.
             if json_mode {
                 // La ruta local no tiene residente TTS persistente (el motor es
                 // efímero por proceso): no hay nada que precalentar en caliente,
@@ -1335,8 +1334,7 @@ async fn handle_voice(
             }
             Ok(())
         }
-        VoiceCommands::Remove { name } => {
-            require_local(daemon_mode)?;
+        VoiceCommands::Remove { name, yes } => {
             VoiceStore::validate_name(&name)
                 .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
             // Validación estructural: fábrica protegida se rechaza antes de tocar el store,
@@ -1348,13 +1346,87 @@ async fn handle_voice(
                     format!("La voz '{}' no se puede eliminar.", name.to_lowercase()),
                 ));
             }
-            voice_store
-                .remove(&name)
-                .map_err(|e| CliError::new(ExitCode::NotFound, "voice_not_found", e))?;
+            if !voice_store
+                .exists(&name)
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+            {
+                return Err(CliError::new(
+                    ExitCode::NotFound,
+                    "voice_not_found",
+                    format!("La voz '{}' no existe.", name.to_lowercase()),
+                ));
+            }
+            // Las locuciones se van con su voz: si las hay, se muestra el plan y se
+            // pide la confirmación destructiva antes de borrar nada.
+            let speech_store = open_speech_store()?;
+            let labels = speech_store
+                .labels_of(&name)
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+            if !labels.is_empty() {
+                let voice_dir = voice_store.voice_dir(&name);
+                let speech_dir = speech_store.voice_dir(&name);
+                let summary = vec![format!(
+                    "Se eliminará la voz '{}' y sus {} locución(es): {}.",
+                    name.to_lowercase(),
+                    labels.len(),
+                    labels.join(", ")
+                )];
+                let entries = [
+                    lifecycle::confirm::PlanEntry {
+                        size: Some(lifecycle::cleanup::path_size(&voice_dir)),
+                        path: voice_dir,
+                    },
+                    lifecycle::confirm::PlanEntry {
+                        size: Some(lifecycle::cleanup::path_size(&speech_dir)),
+                        path: speech_dir,
+                    },
+                ];
+                let decision = {
+                    let stdin = std::io::stdin();
+                    let mut input = stdin.lock();
+                    lifecycle::confirm::confirm(
+                        &lifecycle::confirm::Confirmation {
+                            kind: lifecycle::confirm::Kind::Destructive,
+                            summary: &summary,
+                            entries: &entries,
+                            assume_yes: yes,
+                            dry_run: false,
+                            stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
+                        },
+                        &mut input,
+                        &mut std::io::stderr(),
+                    )
+                    .map_err(lifecycle_error_to_cli)?
+                };
+                if decision == lifecycle::confirm::Decision::Cancelled {
+                    if json_mode {
+                        emit_raw_json(json!({
+                            "status": "cancelled",
+                            "voice": name,
+                            "removed_speech": Vec::<String>::new(),
+                        }));
+                    } else {
+                        println!("Cancelado.");
+                    }
+                    return Ok(());
+                }
+            }
+            let removed_speech = avi_store::remove_voice(&voice_store, &speech_store, &name)
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e))?;
             if json_mode {
-                emit_raw_json(json!({ "status": "removed", "voice": name }));
-            } else {
+                emit_raw_json(json!({
+                    "status": "removed",
+                    "voice": name,
+                    "removed_speech": removed_speech,
+                }));
+            } else if removed_speech.is_empty() {
                 println!("Voz '{}' eliminada.", name);
+            } else {
+                println!(
+                    "Voz '{}' eliminada junto con {} locución(es).",
+                    name,
+                    removed_speech.len()
+                );
             }
             Ok(())
         }
@@ -1593,6 +1665,23 @@ fn sidecar_cli_error(e: &anyhow::Error) -> Option<CliError> {
     })
 }
 
+/// Exige que la voz exista en el registro: `voice_not_found` (exit 3) si no. Lo
+/// comparten `speech list`, `play` y `remove`, de modo que una voz mal escrita
+/// nunca se disfrace de «sin resultados» o de etiqueta inexistente.
+fn ensure_voice_exists(voice: &str) -> Result<(), CliError> {
+    if open_voice_store()?
+        .exists(voice)
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+    {
+        return Ok(());
+    }
+    Err(CliError::new(
+        ExitCode::NotFound,
+        "voice_not_found",
+        format!("La voz '{}' no existe.", voice),
+    ))
+}
+
 /// Error del almacén de locuciones al buscar una etiqueta.
 fn speech_find_error(e: anyhow::Error) -> CliError {
     sidecar_cli_error(&e)
@@ -1605,31 +1694,17 @@ fn speech_list_error(e: anyhow::Error) -> CliError {
         .unwrap_or_else(|| CliError::new(ExitCode::Error, "speech_list_failed", e.to_string()))
 }
 
-async fn handle_speech(
-    json_mode: bool,
-    daemon_mode: DaemonMode,
-    action: SpeechCommands,
-) -> Result<(), CliError> {
+async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), CliError> {
     match action {
         SpeechCommands::List { voice } => {
             // Listado de locuciones: local-only; el daemon no expone GET /speech.
-            require_local(daemon_mode)?;
             let speech_store = open_speech_store()?;
             // Con --voice se valida el identificador (exit 2) y la existencia
             // de la voz (exit 3) antes de acotar la lectura al almacén.
             let items = match &voice {
                 Some(v) => {
                     is_valid_identifier(Some(v), None)?;
-                    if !open_voice_store()?
-                        .exists(v)
-                        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
-                    {
-                        return Err(CliError::new(
-                            ExitCode::NotFound,
-                            "voice_not_found",
-                            format!("La voz '{}' no existe.", v),
-                        ));
-                    }
+                    ensure_voice_exists(v)?;
                     speech_store.list_by_voice(v).map_err(speech_list_error)?
                 }
                 None => speech_store.list().map_err(speech_list_error)?,
@@ -1672,16 +1747,8 @@ async fn handle_speech(
             mic,
             duration,
             source_language,
+            routing,
         } => {
-            // Validación de argumentos: --audio/--mic mutuamente excluyentes, uno
-            // requerido; --duration solo válido con --mic.
-            if audio.is_none() && !mic {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "usage_error",
-                    "Debe especificarse --audio o --mic.",
-                ));
-            }
             // Tope de duración antes de grabar: la captura pedida es `--duration` o,
             // sin ella, el techo de push-to-talk.
             if mic {
@@ -1719,7 +1786,7 @@ async fn handle_speech(
             // vida usa un deadline corto para que el fallback Auto→directo sea
             // prácticamente instantáneo cuando el daemon no está en ejecución.
             let client = daemon_client();
-            if route_to_daemon(daemon_mode, &client).await? {
+            if route_to_daemon(routing.mode(), &client).await? {
                 return transcribe_via_daemon(
                     json_mode,
                     &client,
@@ -1793,13 +1860,13 @@ async fn handle_speech(
         SpeechCommands::Synthesize {
             text,
             voice,
-            output,
             label,
             force,
             play,
             source_language,
             target_language,
             temperature,
+            routing,
         } => {
             // Precondiciones puras de --play, antes de cualquier síntesis.
             // No introducen exit codes nuevos.
@@ -1825,7 +1892,7 @@ async fn handle_speech(
 
             // Dispatch 3 modos (Synthesize es delegable al daemon).
             let client = daemon_client();
-            if route_to_daemon(daemon_mode, &client).await? {
+            if route_to_daemon(routing.mode(), &client).await? {
                 return synthesize_via_daemon(
                     json_mode,
                     &client,
@@ -1834,7 +1901,6 @@ async fn handle_speech(
                     &label,
                     force,
                     play,
-                    &output,
                     source_eff,
                     &target_language,
                     temperature,
@@ -1933,11 +1999,6 @@ async fn handle_speech(
                         CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
                     })?
             };
-            if let Some(out) = &output {
-                std::fs::copy(&saved, out).map_err(|e| {
-                    CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
-                })?;
-            }
             if json_mode {
                 emit_raw_json(json!({
                     "status": "success",
@@ -1955,6 +2016,7 @@ async fn handle_speech(
             source_language,
             target_language,
             temperature,
+            routing,
         } => {
             validate_temperature(temperature)?;
             avi_core::validate_synthesis_text(&text)?;
@@ -1963,7 +2025,7 @@ async fn handle_speech(
 
             // Dispatch 3 modos (Say es delegable al daemon).
             let client = daemon_client();
-            if route_to_daemon(daemon_mode, &client).await? {
+            if route_to_daemon(routing.mode(), &client).await? {
                 return say_via_daemon(
                     json_mode,
                     &client,
@@ -2031,28 +2093,15 @@ async fn handle_speech(
             source_language,
             target_language,
             temperature,
+            routing,
         } => {
             validate_temperature(temperature)?;
             // Validaciones puras del contrato, antes del despacho:
-            if duration.is_some() && !mic {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "usage_error",
-                    "--duration solo es válido con --mic.",
-                ));
-            }
             if mic && duration.is_none() && !std::io::stdin().is_terminal() {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
                     "usage_error",
                     "--mic requiere --duration en este host.",
-                ));
-            }
-            if audio.is_none() && !mic {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "usage_error",
-                    "Debe especificarse --audio o --mic.",
                 ));
             }
             if duration.is_some_and(|d| d > avi_core::MAX_DUB_AUDIO_SECS) {
@@ -2074,7 +2123,7 @@ async fn handle_speech(
             // Despacho 3 modos: delega a POST /dub si daemon activo
             {
                 let client = daemon_client();
-                if route_to_daemon(daemon_mode, &client).await? {
+                if route_to_daemon(routing.mode(), &client).await? {
                     return dub_via_daemon(
                         json_mode,
                         &client,
@@ -2237,8 +2286,8 @@ async fn handle_speech(
         }
         SpeechCommands::Play { label, voice } => {
             // Reproducción de locución persistida: local-only.
-            require_local(daemon_mode)?;
             is_valid_identifier(Some(&voice), Some(&label))?;
+            ensure_voice_exists(&voice)?;
             let speech_store = open_speech_store()?;
             match speech_store
                 .find(&voice, &label)
@@ -2275,8 +2324,8 @@ async fn handle_speech(
         }
         SpeechCommands::Remove { label, voice } => {
             // Borrado de locución: local-only.
-            require_local(daemon_mode)?;
             is_valid_identifier(Some(&voice), Some(&label))?;
+            ensure_voice_exists(&voice)?;
             open_speech_store()?
                 .remove(&voice, &label)
                 .map_err(|e| CliError::new(ExitCode::NotFound, "speech_not_found", e))?;
@@ -2930,6 +2979,24 @@ fn compose_update_summary(
     out
 }
 
+/// Envelope de `self update` para los desenlaces que no instalan nada y no
+/// tienen más datos que las versiones y el canal (`already_up_to_date` y
+/// `cancelled`): ambos comparten forma y se emiten por esta única vía.
+fn compose_update_status_envelope(
+    status: &str,
+    current: &str,
+    latest: &str,
+    channel: lifecycle::channel::Channel,
+) -> Value {
+    json!({
+        "status": status,
+        "reason": Value::Null,
+        "current": current,
+        "latest": latest,
+        "channel": channel.as_str(),
+    })
+}
+
 /// PID por cuyo término espera el limpiador de los restos del aparcado. Lo
 /// fija `self update` al lanzar el traspaso; sin traspaso (variable ausente)
 /// es el propio proceso, que termina enseguida. Una variable presente con un
@@ -3235,13 +3302,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             if resolution.verdict == lifecycle::update_resolve::Verdict::UpToDate {
                 drop(lock);
                 if json_mode {
-                    emit_raw_json(json!({
-                        "status": "already_up_to_date",
-                        "reason": Value::Null,
-                        "current": receipt.version,
-                        "latest": resolution.target,
-                        "channel": channel.as_str(),
-                    }));
+                    emit_raw_json(compose_update_status_envelope(
+                        "already_up_to_date",
+                        &receipt.version,
+                        &resolution.target,
+                        channel,
+                    ));
                 } else {
                     println!("Ya está actualizado ({}).", receipt.version);
                 }
@@ -3281,7 +3347,17 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 .map_err(|e| CliError::new(ExitCode::Error, "lifecycle_failed", e.to_string()))?
             };
             if decision == lifecycle::confirm::Decision::Cancelled {
-                println!("Cancelado.");
+                drop(lock);
+                if json_mode {
+                    emit_raw_json(compose_update_status_envelope(
+                        "cancelled",
+                        &receipt.version,
+                        &resolution.target,
+                        channel,
+                    ));
+                } else {
+                    println!("Cancelado.");
+                }
                 return Ok(Outcome::Done);
             }
 
@@ -4044,20 +4120,6 @@ async fn route_to_daemon(mode: DaemonMode, client: &reqwest::Client) -> Result<b
     }
 }
 
-/// Acciones local-only rechazan ForceDaemon como error de invocación
-/// (`daemon_not_supported`, exit 2): el daemon no interviene en ellas.
-fn require_local(daemon_mode: DaemonMode) -> Result<(), CliError> {
-    if daemon_mode == DaemonMode::ForceDaemon {
-        Err(CliError::new(
-            ExitCode::from_reason("daemon_not_supported"),
-            "daemon_not_supported",
-            "Este comando se ejecuta siempre en local; no admite --daemon.",
-        ))
-    } else {
-        Ok(())
-    }
-}
-
 /// POST /transcribe al daemon: codifica PCM i16 LE 16 kHz mono a base64 y devuelve
 /// el texto transcrito, emitiendo el mismo envelope local ({text, source}).
 async fn transcribe_via_daemon(
@@ -4467,7 +4529,7 @@ fn process_stream_line(line: &str) -> Result<Option<Value>, CliError> {
 }
 
 /// `synthesize` vía daemon: persiste el WAV en `SpeechStore` y respeta
-/// --label/--output/--play, devolviendo la ruta del WAV persistido (paralelo al
+/// --label/--play, devolviendo la ruta del WAV persistido (paralelo al
 /// handler local para que el envelope JSON de salida coincida).
 // Firma ancha deliberada: cada argumento mapea 1:1 a un flag de `speech synthesize`.
 #[allow(clippy::too_many_arguments)]
@@ -4479,7 +4541,6 @@ async fn synthesize_via_daemon(
     label: &str,
     force: bool,
     play: bool,
-    output: &Option<String>,
     source_language: &str,
     target_language: &str,
     temperature: Option<f32>,
@@ -4561,10 +4622,6 @@ async fn synthesize_via_daemon(
             .save(voice, &label_lower, text, &tmp)
             .map_err(|e| CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()))?
     };
-    if let Some(out) = output {
-        std::fs::copy(&saved, out)
-            .map_err(|e| CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()))?;
-    }
     if json_mode {
         emit_raw_json(json!({
             "status": "success",
@@ -4626,7 +4683,6 @@ async fn clone_via_daemon(
     client: &reqwest::Client,
     name: &str,
     speech_reference: &str,
-    timbre_reference: Option<&str>,
     force: bool,
 ) -> Result<(), CliError> {
     let speech_bytes = std::fs::read(speech_reference).map_err(|e| {
@@ -4640,16 +4696,6 @@ async fn clone_via_daemon(
         )
     })?;
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&speech_bytes);
-    // El timbre no viaja al daemon, pero el archivo se exige igual que en la vía local.
-    if let Some(t) = timbre_reference {
-        if !std::path::Path::new(t).is_file() {
-            return Err(CliError::new(
-                ExitCode::NotFound,
-                "audio_not_found",
-                format!("El audio de timbre '{}' no existe.", t),
-            ));
-        }
-    }
     let payload = serde_json::json!({
         "name": name,
         "audio_b64": audio_b64,
@@ -4709,7 +4755,6 @@ async fn clone_via_daemon(
         emit_raw_json(json!({
             "name": cloned_name,
             "speech": cloned_speech,
-            "timbre": val.get("timbre").cloned().unwrap_or(Value::Null),
             "precomputed": precomputed,
         }));
     } else {
@@ -4830,6 +4875,28 @@ async fn dub_via_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// El envelope de `self update` cancelado lleva `status: "cancelled"`,
+    /// `reason` nulo y las mismas claves que `already_up_to_date`, sin claves de más.
+    #[test]
+    fn update_cancelled_envelope_has_fixed_shape() {
+        let envelope = compose_update_status_envelope(
+            "cancelled",
+            "1.0.0",
+            "1.1.0",
+            lifecycle::channel::Channel::Script,
+        );
+        assert_eq!(
+            envelope,
+            json!({
+                "status": "cancelled",
+                "reason": null,
+                "current": "1.0.0",
+                "latest": "1.1.0",
+                "channel": "script",
+            })
+        );
+    }
 
     /// Escritor en memoria para capturar lo que emite el `fmt` con un filtro dado.
     #[derive(Clone, Default)]
@@ -5250,8 +5317,9 @@ mod tests {
         assert_eq!(err.reason, "model_missing");
     }
 
-    /// Un 404 sin `reason` ni `error` es un daemon antiguo sin la ruta: sale como
-    /// `daemon_error` (exit 1) con un mensaje que indica reiniciarlo.
+    /// Un 404 sin `reason` ni `error` es una ruta ausente (el daemon en marcha es de
+    /// otro binario, o su build no incluye la función de la ruta): falla de forma
+    /// explícita como `daemon_error` (exit 1) con un mensaje que nombra ambas causas.
     #[tokio::test]
     async fn daemon_error_from_response_maps_bare_404_to_restart_hint() {
         let resp = serve_status_json(404, json!({})).await;
