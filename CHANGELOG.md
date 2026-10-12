@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.29.0 — 2026-10-12](#0290--2026-10-12)
 - [0.28.0 — 2026-10-03](#0280--2026-10-03)
 - [0.27.1 — 2026-10-02](#0271--2026-10-02)
@@ -99,6 +100,20 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Este ciclo no toca el producto: deja el pipeline de CI sin duplicación ni drifts y con las cachés que le faltaban. La publicación 0.29.1 valida desde un entorno limpio que la refactorización del pipeline compila, empaqueta y publica igual que antes, con las mismas puertas y garantías.
+
+### Corregido
+
+- Se silencian 3 avisos de clippy (`mismatched_lifetime_syntaxes`) en la copia vendorizada de `ct2rs`, sin cambios de comportamiento.
+
+### Cambiado
+
+- El pipeline de CI extrae 8 commands compartidos (instalación de Rust en Windows/macOS, precarga de dependencias, gh CLI, bats, smokes Unix, caché del motor), unifica la lista de puertas de los 4 builds en un ancla única y refina los display names de los pasos.
+- El motor TTS y el bundle de ONNX Runtime se cachean también en los 3 builds Unix (hasta ahora solo en Windows), con claves segmentadas por plataforma.
+- Pester pasa a versión pineada por parámetro (`pester_pin`, 5.8.0), como el resto de herramientas, y la documentación registra el sistema de pines y cachés vigente.
 
 ## [0.29.0] — 2026-10-12
 
