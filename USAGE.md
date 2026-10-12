@@ -132,7 +132,7 @@ de la instalación» más abajo.
 ### Compilar desde el código fuente (Rust)
 
 ```bash
-# Requisitos: Rust 1.96, cmake, pkg-config (libclang-dev en Linux)
+# Requisitos: Rust 1.96 y cmake; la lista completa por host la da `cargo xtask doctor`
 cargo build --release --features full
 ./target/release/ai-voice-interconnector <comando>
 ```

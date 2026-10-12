@@ -159,11 +159,16 @@ y no declara más librerías que las del sistema base:
 - **ALSA** se carga en tiempo de ejecución: la copia vendorizada de `alsa-sys`
   (`vendor/alsa-sys-0.4.0`) resuelve cada función con `dlopen`/`dlsym` sobre
   `libasound.so.2` en el primer uso. Antes de crear el host de audio se
-  resuelven todas las funciones de ALSA que llama el crate `alsa`
-  (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`, generado por `cargo xtask
-  alsa-symbols` desde las fuentes de la versión de `alsa` fijada en
-  `Cargo.lock`; `--check`, en el job `validate-licenses` y en el hook
-  pre-commit, falla si actualizar `cpal` o `alsa` la deja desfasada). Sin ALSA, o con una ALSA a la que le
+  resuelven todas las funciones de ALSA que alcanza el binario
+  (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`). La lista contiene
+  exactamente esas funciones: cada envoltura guarda su dirección en un estático
+  llamado `avi_alsa_fn_<función>` que el enlazador conserva solo si el binario
+  la alcanza, de modo que la tabla de símbolos del binario enlazado la define.
+  Se genera con `cargo xtask alsa-symbols --binary <binario Linux>` y se exige
+  la igualdad exacta con `--check` en `test-linux` (binario de pruebas) y en la
+  auditoría de `cargo xtask package` (binario que se publica, en x86_64 y
+  arm64), allí donde cargo dice que `alsa-sys` está en el grafo del target.
+  Sin ALSA, o con una ALSA a la que le
   falte alguna de esas funciones, el binario arranca y solo `devices` y las
   órdenes que reproducen o capturan audio fallan, con un error que nombra la
   librería y, si es el caso, la función ausente.
@@ -177,10 +182,13 @@ y no declara más librerías que las del sistema base:
   - la copia vendorizada de `ct2rs` (`vendor/ct2rs-0.10.0`), que compila
     CTranslate2 con el OpenMP de GNU, con `GOMPLIB_<target>`;
   - la copia vendorizada de `onednn-src` (`vendor/onednn-src-0.1.15`), con las
-    dos, según lo que su configuración de CMake dice que usa `dnnl` (`stdc++`
-    entre las librerías implícitas del compilador, `gomp` como runtime
-    OpenMP). `dnnl` va detrás de los demás crates C++, y el original no las
-    pedía: con las `.a`, en arm64 quedaban símbolos sin resolver.
+    dos, según el contrato `avi-link-runtimes.txt` que escribe su script de
+    CMake (`avi-link-runtimes.cmake`, inyectado con `CMAKE_PROJECT_INCLUDE`) al
+    final de la configuración: `cxx=` con las librerías implícitas del
+    compilador (`stdc++`) y `openmp=` con el runtime OpenMP (`gomp`). `dnnl` va
+    detrás de los demás crates C++, y el original no las pedía: con las `.a`,
+    en arm64 quedaban símbolos sin resolver. Si falta el contrato o una de sus
+    líneas, la compilación falla nombrándolo.
 
   Si falta la variable que un crate necesita, su compilación falla
   nombrándola. rustc pasa cada petición entre `-Bstatic` y `-Bdynamic`, de
@@ -565,7 +573,7 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 | Caché | Qué guarda | Jobs | Clave (se invalida cuando cambia…) |
 |-------|------------|------|------------------------------------|
 | `cargo-v2` (registry) | `~/.cargo/registry` y `~/.cargo/git`: las fuentes descargadas de crates | todos los que compilan | `arch`, `rust_pin` y el checksum de `Cargo.lock.cachekey`. Tiene fallback por prefijo. |
-| `target-v5` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de cada parche de `[patch.crates-io]`. Sin fallback. |
+| `target-v5` | `target/` completo: dependencias compiladas y los `OUT_DIR` de los proyectos CMake | `test-linux`, `test-windows`, `test-macos` (`variant: test`), `coverage` (`cov`) y los 4 `build-*` (`full`) | `arch`, `os`, `rust_pin`, `variant`, el checksum de `Cargo.lock.cachekey` y el tree hash git de cada crate de `vendor/*/Cargo.toml`. Sin fallback. |
 | `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (`3G`, que `sccache` lee como 3 GiB, unos 3,2 GB) | los mismos jobs que la caché de `target/`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
 | `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_pin`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
@@ -611,19 +619,22 @@ depende de él (`aws-lc-sys`, `onednn-src`, `sentencepiece-sys`, `ct2rs`), y par
 `ct2rs` y `onednn-src` la de CTranslate2 y oneDNN, aunque su contenido no
 hubiera cambiado.
 
-Para evitarlo, `cargo_restore_caches` lee los directorios de la sección
-`[patch.crates-io]` del `Cargo.toml` (la única lista: un parche nuevo entra en la
-clave sin tocar el pipeline), escribe en `.vendor-patches.tree` el tree hash git
+Para evitarlo, `cargo_restore_caches` toma como parches los directorios que
+cumplen el glob `vendor/*/Cargo.toml`, en orden `LC_ALL=C` (sin analizar TOML:
+un parche nuevo entra en la clave sin tocar el pipeline), escribe en
+`.vendor-patches.tree` el tree hash git
 de cada uno (`git rev-parse HEAD:<directorio>`, una línea por parche) y lo
 incorpora a la clave de `target/`. Como la clave no tiene fallback, un acierto
 garantiza que `target/` se compiló con el mismo contenido de los parches, y es
 seguro fijarles un `mtime` antiguo (`touch -t 200001010000`) para que cargo los
 vea `Fresh`. Si un parche cambia, cambia la clave y `target/` parte vacío. El
-paso aborta si la sección no declara ningún parche o si alguna línea no tiene 40
+paso aborta si `vendor/` no contiene ningún crate o si alguna línea no tiene 40
 caracteres hexadecimales, para no cachear nunca bajo una clave degenerada. Las
-pruebas de `xtask` comprueban que cada parche es un crate bajo `vendor/` y que
-ninguna regla de ignorado alcanza sus ficheros, que se compilan enteros desde
-ahí. Se usa git y no `find | sort` porque en
+pruebas de `xtask` exigen que ese conjunto coincida con los paquetes de ruta
+ajenos al workspace que resuelve `cargo metadata --all-features` (detectan
+parches sin usar, parches fuera de `vendor/` y crates vendorizados sin
+`[patch]`) y que ninguna regla de ignorado alcanza sus ficheros, que se
+compilan enteros desde ahí. Se usa git y no `find | sort` porque en
 el executor de Windows `sort` resuelve al `sort.exe` de System32, y el tree hash
 es además inmune a la conversión de fin de línea del checkout.
 
@@ -702,7 +713,7 @@ costo:
 | Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts-v1` | Solo se recompila el motor TTS en `build-windows-x64`; el resto acierta. |
 | Cambio de los pines de MSYS2, gcc, openblas o make | `msys2-v1` y, con gcc u openblas, `tts-v1` | Reinstalación de MSYS2 y recompilación del motor TTS en `build-windows-x64`. |
 | Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | La caché de `target/` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: 2–5 min por job en Unix y ~11–15 min previstos en windows-x64. |
-| Edición, alta o baja de un parche vendorizado de `[patch.crates-io]`, o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | La caché de `target/`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
+| Edición, alta o baja de un crate de `vendor/*/Cargo.toml` (parche vendorizado), o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | La caché de `target/`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
 | Cambio de `rust_pin` | `toolchain-v1`, `cargo-v2`, la caché de `target/` y `sccache-v1` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Referencia de `cargo build --release` en frío: `1969 s` en windows-x64, `1569 s` en linux-arm64, `956 s` en linux-x64 y `149 s` en darwin-arm64. |
 
 Causas ajenas al repositorio, que invalidan sin que cambie ningún archivo:

@@ -96,7 +96,8 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
   crate `alsa-sys` 0.4.0 bajo **MIT** (`vendor/alsa-sys-0.4.0/LICENSE`),
   modificada para cargar `libasound.so.2` en tiempo de ejecución con `dlopen` en
   lugar de enlazarla y para comprobar de antemano que define todas las funciones
-  que usa el crate `alsa` (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`).
+  que alcanza el binario enlazado (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`,
+  generado desde su tabla de símbolos).
 - **`ct2rs` vendorizado** (`vendor/ct2rs-0.10.0`): copia del crate `ct2rs`
   0.10.0, con las fuentes de CTranslate2 que incluye, bajo **MIT**
   (`vendor/ct2rs-0.10.0/LICENSE` y `vendor/ct2rs-0.10.0/CTranslate2/LICENSE`),
@@ -108,8 +109,9 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
   (`vendor/onednn-src-0.1.15/oneDNN/LICENSE` y
   `vendor/onednn-src-0.1.15/oneDNN/THIRD-PARTY-PROGRAMS`), modificada para pedir
   la librería estándar de C++ y el runtime OpenMP de GNU que oneDNN usa según
-  su configuración de CMake, como indican `CXXSTDLIB_<target>` y
-  `GOMPLIB_<target>`.
+  el contrato `avi-link-runtimes.txt` que escribe un script de CMake propio
+  (`vendor/onednn-src-0.1.15/avi-link-runtimes.cmake`), como indican
+  `CXXSTDLIB_<target>` y `GOMPLIB_<target>`.
 
 ---
 

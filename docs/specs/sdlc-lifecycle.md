@@ -606,9 +606,8 @@ La tabla de requisitos y las versiones fijadas (Rust, ONNX Runtime, paquetes de 
 | Requisito | Windows x86_64 | Linux x86_64 / arm64 | macOS arm64 | Lo provee |
 |---|---|---|---|---|
 | Rust (versión fijada) | rustup | rustup | rustup | `rust-toolchain.toml` (rustup la instala sola) |
-| Compilador C/C++ del workspace (CTranslate2) | Visual Studio Build Tools (C++) | gcc/g++ | Xcode Command Line Tools | Sistema |
+| Compilador C/C++ del workspace (CTranslate2) | Visual Studio Build Tools (C++) | gcc/g++ y `libgomp` y `libstdc++` estáticas | Xcode Command Line Tools | Sistema |
 | CMake ≥ 3.20 | winget | Gestor de la distribución | Homebrew | Sistema |
-| libclang (bindgen de `ct2rs`) | LLVM | `libclang-dev` o equivalente | Xcode Command Line Tools | Sistema |
 | Toolchain del motor TTS | MSYS2 UCRT64 (gcc, OpenBLAS y `mingw32-make` fijados) | make, gcc y las librerías estáticas de OpenBLAS y libgfortran (el motor las enlaza estáticas) | make, clang y Accelerate (Xcode CLT) | Sistema (MSYS2: su `pacman`) |
 | ONNX Runtime (runtime de STT, versión fijada) | Descarga del asset oficial verificada con el SHA-256 fijado | Ídem | Ídem | `cargo xtask bootstrap` |
 | sccache (opcional) | ✅ | ✅ | ✅ | `cargo install` o gestor |
