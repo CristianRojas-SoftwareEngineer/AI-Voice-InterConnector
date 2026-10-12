@@ -16,7 +16,16 @@ fn main() {
         return;
     }
 
+    println!("cargo::rerun-if-changed=avi-link-runtimes.cmake");
+    let contract_script = format!(
+        "{}/avi-link-runtimes.cmake",
+        env::var("CARGO_MANIFEST_DIR")
+            .expect("cargo define CARGO_MANIFEST_DIR")
+            .replace('\\', "/")
+    );
+
     let cmake = Config::new("oneDNN")
+        .define("CMAKE_PROJECT_INCLUDE", contract_script)
         .define("ONEDNN_LIBRARY_TYPE", "STATIC")
         .define("ONEDNN_BUILD_DOC", "OFF")
         .define("ONEDNN_BUILD_EXAMPLES", "OFF")
@@ -67,41 +76,36 @@ fn main() {
 // Patch: el original no pedía los runtimes que usa `dnnl` y dependía de que
 // otro crate los enlazara, pero rustc coloca cada petición justo detrás del
 // crate que la emite y `dnnl` va detrás de los demás crates C++: con runtimes
-// estáticos quedaban símbolos sin resolver. Lo que `dnnl` necesita sale de su
-// propia configuración de CMake en `build_dir`: la librería estándar de C++
-// que enlaza su compilador (`stdc++` en `CMAKE_CXX_IMPLICIT_LINK_LIBRARIES`) y
-// el runtime OpenMP que encontró (`gomp` en `OpenMP_CXX_LIB_NAMES`). Cómo se
-// enlaza cada una lo decide el proyecto con `CXXSTDLIB_<target>` y
-// `GOMPLIB_<target>` (el triple con `_` en lugar de `-`), cuyo valor se emite
-// tal cual, igual que hace el crate `cc` con `CXXSTDLIB_<target>`. Si la
-// variable falta, la compilación falla nombrándola.
+// estáticos quedaban símbolos sin resolver. Lo que `dnnl` necesita lo declara
+// el script `avi-link-runtimes.cmake`, inyectado con `CMAKE_PROJECT_INCLUDE`,
+// que al final de la configuración escribe en `build_dir` el contrato
+// `avi-link-runtimes.txt` con dos líneas: `cxx=` (la librería estándar de C++
+// que enlaza su compilador, `stdc++` entre ellas) y `openmp=` (el runtime
+// OpenMP que encontró, `gomp` entre ellos). Cómo se enlaza cada una lo decide
+// el proyecto con `CXXSTDLIB_<target>` y `GOMPLIB_<target>` (el triple con `_`
+// en lugar de `-`), cuyo valor se emite tal cual, igual que hace el crate `cc`
+// con `CXXSTDLIB_<target>`. Si falta el contrato, una de sus líneas o la
+// variable, la compilación falla nombrándolo.
 fn link_runtimes(build_dir: &std::path::Path) {
-    let cache = std::fs::read_to_string(build_dir.join("CMakeCache.txt"))
-        .expect("CMake deja CMakeCache.txt en el directorio de build");
-    let compiler = std::fs::read_dir(build_dir.join("CMakeFiles"))
-        .expect("CMake deja CMakeFiles en el directorio de build")
-        .filter_map(|entry| {
-            std::fs::read_to_string(entry.ok()?.path().join("CMakeCXXCompiler.cmake")).ok()
-        })
-        .next()
-        .expect("CMake deja CMakeCXXCompiler.cmake en CMakeFiles/<versión>");
-    let cxx_libs = cmake_list(&compiler, "set(CMAKE_CXX_IMPLICIT_LINK_LIBRARIES \"", "\")");
-    if cxx_libs.contains(&"stdc++") {
+    let path = build_dir.join("avi-link-runtimes.txt");
+    let contract = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no se pudo leer el contrato {}: {e}", path.display()));
+    if contract_list(&contract, "cxx=", &path).contains(&"stdc++") {
         link_as_configured("CXXSTDLIB");
     }
-    let openmp_libs = cmake_list(&cache, "OpenMP_CXX_LIB_NAMES:STRING=", "\n");
-    if openmp_libs.contains(&"gomp") {
+    if contract_list(&contract, "openmp=", &path).contains(&"gomp") {
         link_as_configured("GOMPLIB");
     }
 }
 
-/// Elementos de la lista de CMake (separada por `;`) que sigue a `prefix` hasta
-/// `end`; vacía si `prefix` no aparece.
-fn cmake_list<'a>(text: &'a str, prefix: &str, end: &str) -> Vec<&'a str> {
-    text.split_once(prefix)
-        .and_then(|(_, rest)| rest.split(end).next())
-        .map(|list| list.split(';').filter(|s| !s.is_empty()).collect())
-        .unwrap_or_default()
+/// Elementos de la lista de CMake (separada por `;`) de la línea `key` del
+/// contrato; falla si la línea no existe.
+fn contract_list<'a>(contract: &'a str, key: &str, path: &std::path::Path) -> Vec<&'a str> {
+    let line = contract
+        .lines()
+        .find_map(|line| line.strip_prefix(key))
+        .unwrap_or_else(|| panic!("el contrato {} no tiene la línea `{key}`", path.display()));
+    line.split(';').filter(|s| !s.is_empty()).collect()
 }
 
 /// Emite como petición de enlace el valor de `<prefix>_<target>`.
