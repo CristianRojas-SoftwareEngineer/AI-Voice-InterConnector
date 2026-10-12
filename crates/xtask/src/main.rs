@@ -6,6 +6,7 @@ use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+mod alsa_symbols;
 mod bootstrap;
 mod clean;
 mod comments;
@@ -299,6 +300,11 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    /// Genera o verifica la lista de funciones de ALSA que usa el crate `alsa` fijado en Cargo.lock
+    AlsaSymbols {
+        #[arg(long)]
+        check: bool,
+    },
     /// Corta una release: valida (licencias, fmt, clippy, árbol limpio, commits nuevos y pruebas con recursos) y luego hace el bump de versión + promoción de la sección [No publicado] del CHANGELOG
     Release {
         #[arg(value_name = "X.Y.Z")]
@@ -557,6 +563,7 @@ fn main() -> Result<()> {
                 println!("Usa --check para verificar la sección del CHANGELOG");
             }
         }
+        Commands::AlsaSymbols { check } => alsa_symbols::run(check)?,
         Commands::Language { check, root } => language::run(check, root.as_deref())?,
         Commands::Comments { check, root } => comments::run(check, root.as_deref())?,
         Commands::Pins { check, sync, root } => pins::run(check, sync, root.as_deref())?,

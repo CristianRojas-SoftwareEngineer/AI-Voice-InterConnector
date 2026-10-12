@@ -330,10 +330,13 @@ impl std::error::Error for AudioBackendUnavailable {}
 /// inicializarla o en una llamada posterior.
 #[cfg(target_os = "linux")]
 fn default_host() -> std::result::Result<cpal::Host, AudioBackendUnavailable> {
-    if !alsa_sys::library_available() {
+    if let Err(reason) = alsa_sys::availability() {
         return Err(AudioBackendUnavailable {
             library: "libasound.so.2",
-            missing: alsa_sys::missing_symbol().map(|s| s.to_string_lossy().into_owned()),
+            missing: match reason {
+                alsa_sys::Unavailable::Library => None,
+                alsa_sys::Unavailable::Symbol(name) => Some(name.to_string_lossy().into_owned()),
+            },
         });
     }
     Ok(cpal::default_host())

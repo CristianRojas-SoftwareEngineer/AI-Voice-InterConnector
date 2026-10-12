@@ -59,8 +59,8 @@ una vez por clon (y por cada worktree que los necesite):
 git config core.hooksPath .githooks
 ```
 
-- `pre-commit`: puertas de idioma, comentarios, pines y features. Falla el
-  commit si no pasan.
+- `pre-commit`: puertas de idioma, comentarios, pines, features y lista de
+  funciones de ALSA. Falla el commit si no pasan.
 - `post-merge`: poda fina tras integrar en `main`. Solo actúa si la rama
   actual es `main`, el merge tocó dependencias o toolchain (`Cargo.lock`,
   manifiestos, `vendor/`, toolchain o pines) y `target/` supera

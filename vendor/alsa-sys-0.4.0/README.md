@@ -14,15 +14,15 @@ ni `pkg-config`:
   `dlsym` sobre `libasound.so.2`, cargada con `dlopen` en el primer uso. Las
   funciones variádicas no se pueden reenviar desde Rust estable y se omiten.
 - `src/required_symbols.rs` lista las funciones que llama el crate `alsa`.
-  `library_available()` comprueba que la librería carga y las define todas, y
-  `missing_symbol()` devuelve la primera que falta, para que quien use el crate
-  falle con un error propio en vez de abortar en mitad de una llamada.
-- La compilación falla si la salida conserva algún bloque `extern "C"` o si la
-  lista nombra una función sin envoltura.
+  `availability()` comprueba que la librería carga y las define todas, y si no,
+  devuelve `Unavailable::Library` o `Unavailable::Symbol` con la primera que
+  falta, para que quien use el crate falle con un error propio en vez de
+  abortar en mitad de una llamada.
+- La compilación falla si la salida conserva algún bloque `extern "C"`.
 
-## Regenerar la lista de funciones requeridas
+## Lista de funciones requeridas
 
-Al subir de versión el crate `alsa`, la lista se regenera con las funciones
-`snd_*` de `src/generated.rs` que su código llama, ya sea como `alsa::snd_*` o
-dentro de `acheck!(snd_*(…))`, macro que antepone `alsa::`. `build.rs` rechaza
-cualquier nombre que no tenga envoltura.
+`src/required_symbols.rs` es un fichero generado. `cargo xtask alsa-symbols`
+lo regenera desde las fuentes de la versión de `alsa` fijada en `Cargo.lock`, y
+`cargo xtask alsa-symbols --check`, que corre en el CI y en el hook pre-commit,
+falla si no coincide.

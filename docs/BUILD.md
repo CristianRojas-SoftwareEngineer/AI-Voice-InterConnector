@@ -159,9 +159,11 @@ y no declara más librerías que las del sistema base:
 - **ALSA** se carga en tiempo de ejecución: la copia vendorizada de `alsa-sys`
   (`vendor/alsa-sys-0.4.0`) resuelve cada función con `dlopen`/`dlsym` sobre
   `libasound.so.2` en el primer uso. Antes de crear el host de audio se
-  resuelven todas las funciones de ALSA que llama el crate `alsa` (la lista
-  fija de `vendor/alsa-sys-0.4.0/src/required_symbols.rs`, que el `build.rs`
-  del parche contrasta con los bindings). Sin ALSA, o con una ALSA a la que le
+  resuelven todas las funciones de ALSA que llama el crate `alsa`
+  (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`, generado por `cargo xtask
+  alsa-symbols` desde las fuentes de la versión de `alsa` fijada en
+  `Cargo.lock`; `--check`, en el job `validate-licenses` y en el hook
+  pre-commit, falla si actualizar `cpal` o `alsa` la deja desfasada). Sin ALSA, o con una ALSA a la que le
   falte alguna de esas funciones, el binario arranca y solo `devices` y las
   órdenes que reproducen o capturan audio fallan, con un error que nombra la
   librería y, si es el caso, la función ausente.

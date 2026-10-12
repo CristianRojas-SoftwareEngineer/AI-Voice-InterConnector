@@ -1,11 +1,11 @@
-// Patch: funciones de ALSA que referencia el crate `alsa` 0.11.0, el único
-// consumidor de estos bindings (vía `cpal`). `library_available()` las resuelve
-// todas antes de dar el audio por disponible, de modo que a una ALSA a la que
-// le falte alguna se le responde con un error y no con un pánico en mitad de
-// una orden de audio. `build.rs` falla si alguna no está entre las envolturas
-// generadas. Al subir `alsa` de versión, la lista se regenera con las
-// funciones `snd_*` de `src/generated.rs` que su código llama, ya sea como
-// `alsa::snd_*` o dentro de `acheck!(snd_*(…))`, que antepone `alsa::`.
+// Patch: funciones de ALSA que llama el crate `alsa` 0.11.0, el único
+// consumidor de estos bindings (vía `cpal`). `availability()` las resuelve
+// todas antes de dar el audio por disponible, de modo que a una ALSA a la
+// que le falte alguna se le responde con un error y no con un pánico en
+// mitad de una orden de audio.
+//
+// Fichero generado por `cargo xtask alsa-symbols` desde las fuentes de esa
+// versión de `alsa`; `cargo xtask alsa-symbols --check` falla si no coincide.
 
 pub(crate) const REQUIRED_SYMBOLS: &[&core::ffi::CStr] = &[
     c"snd_card_get_index",
@@ -30,14 +30,12 @@ pub(crate) const REQUIRED_SYMBOLS: &[&core::ffi::CStr] = &[
     c"snd_ctl_close",
     c"snd_ctl_convert_from_dB",
     c"snd_ctl_convert_to_dB",
-    c"snd_ctl_elem_id_free",
     c"snd_ctl_elem_id_get_device",
     c"snd_ctl_elem_id_get_index",
     c"snd_ctl_elem_id_get_interface",
     c"snd_ctl_elem_id_get_name",
     c"snd_ctl_elem_id_get_numid",
     c"snd_ctl_elem_id_get_subdevice",
-    c"snd_ctl_elem_id_malloc",
     c"snd_ctl_elem_id_set_device",
     c"snd_ctl_elem_id_set_index",
     c"snd_ctl_elem_id_set_interface",

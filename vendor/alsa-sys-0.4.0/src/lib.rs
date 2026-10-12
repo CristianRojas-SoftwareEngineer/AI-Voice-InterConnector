@@ -37,26 +37,33 @@ include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 mod required_symbols;
 
-/// Indica si `libasound.so.2` se puede cargar en este sistema y define todas
-/// las funciones que usa el crate `alsa`. Llamarla antes de usar cualquier
-/// función del crate permite fallar con un error propio en lugar de abortar
-/// en la primera llamada a una función ausente.
-pub fn library_available() -> bool {
-    !dynamic::handle().is_null() && missing_symbol().is_none()
+/// Motivo por el que ALSA no se puede usar en este sistema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unavailable {
+    /// `libasound.so.2` no se puede cargar.
+    Library,
+    /// La librería carga pero no define esta función, que usa el crate `alsa`.
+    Symbol(&'static core::ffi::CStr),
 }
 
-/// Primera función que usa el crate `alsa` y que la `libasound.so.2` cargada
-/// no define; `None` si las define todas o si la librería no se puede cargar.
-pub fn missing_symbol() -> Option<&'static core::ffi::CStr> {
+/// Comprueba que `libasound.so.2` se puede cargar y define todas las funciones
+/// que usa el crate `alsa`. Llamarla antes de usar cualquier función del crate
+/// permite fallar con un error propio en lugar de abortar en la primera
+/// llamada a una función ausente.
+pub fn availability() -> Result<(), Unavailable> {
     let lib = dynamic::handle();
     if lib.is_null() {
-        return None;
+        return Err(Unavailable::Library);
     }
-    required_symbols::REQUIRED_SYMBOLS
+    match required_symbols::REQUIRED_SYMBOLS
         .iter()
         .copied()
         // SAFETY: handle válido devuelto por `dlopen` y nombres terminados en NUL.
         .find(|name| unsafe { libc::dlsym(lib, name.as_ptr()) }.is_null())
+    {
+        Some(name) => Err(Unavailable::Symbol(name)),
+        None => Ok(()),
+    }
 }
 
 /// Carga diferida de `libasound.so.2` y resolución de sus símbolos.
@@ -86,7 +93,7 @@ mod dynamic {
     /// Dirección del símbolo `name`, resuelta una vez y guardada en `cache`.
     /// Llamar a una función de ALSA sin la librería, o con una versión que no
     /// define el símbolo, es un error de programación, porque
-    /// `library_available()` ya lo habría detectado: aborta nombrándolo.
+    /// `availability()` ya lo habría detectado: aborta nombrándolo.
     pub(crate) fn resolve(cache: &AtomicPtr<c_void>, name: &CStr) -> *mut c_void {
         let cached = cache.load(Ordering::Acquire);
         if !cached.is_null() {

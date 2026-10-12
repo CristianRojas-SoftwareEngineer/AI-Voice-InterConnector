@@ -973,6 +973,15 @@ jobs:
             cargo --quiet xtask licenses --check
             echo "[STEP] Verificar THIRD-PARTY-LICENSES.md - FIN"
       - run:
+          # La lista de funciones de ALSA que resuelve la comprobación de audio
+          # debe salir de la versión de `alsa` fijada en Cargo.lock: actualizar
+          # `cpal` o `alsa` sin regenerarla falla aquí.
+          name: Verificar la lista de funciones de ALSA
+          command: |
+            echo "[STEP] Verificar la lista de funciones de ALSA - INICIO"
+            cargo --quiet xtask alsa-symbols --check
+            echo "[STEP] Verificar la lista de funciones de ALSA - FIN"
+      - run:
           name: Verificar comentarios (puerta de política en CI)
           command: |
             echo "[STEP] Verificar comentarios - INICIO"

@@ -597,8 +597,8 @@ fn is_vendor_path(relative: &Path) -> bool {
 /// la numeración de líneas del texto resultante.
 ///
 /// Un lifetime (`'a`) no es un literal y **no** se apaga: solo se consume una
-/// comilla si cierra en tres caracteres (`'a'`, `'\n'`), igual que hacía el script.
-fn strip_code(text: &str) -> String {
+/// comilla si cierra en tres caracteres (`'a'`, `'\n'`).
+pub(crate) fn strip_code(text: &str) -> String {
     let src: Vec<char> = text.chars().collect();
     let n = src.len();
     let mut out = String::with_capacity(text.len());
