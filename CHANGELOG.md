@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.29.0 — 2026-10-12](#0290--2026-10-12)
 - [0.28.0 — 2026-10-03](#0280--2026-10-03)
 - [0.27.1 — 2026-10-02](#0271--2026-10-02)
 - [0.27.0 — 2026-10-02](#0270--2026-10-02)
@@ -100,7 +100,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.29.0] — 2026-10-12
 
 Este ciclo cierra la deuda pre-release acumulada hacia la beta pública: reescritura del ciclo de vida (bloqueos, parada verificada, identidades de proceso), sustitución de dependencias de runtime (ALSA dinámica → símbolos desde binario, oneDNN/OpenMP/C++ estáticos, ONNX Runtime vendorizado), endurecimiento del build hermético (auditoría de símbolos, claves de caché normalizadas, salas limpias) y contratos CLI/daemon sin retrocompatibilidad (flags, vocabularios, esquemas, códigos de salida). Todos los cambios son incompatibles y no dejan fallbacks; la versión 0.29.0 publica el estado final sin capas de transición.
 
@@ -2991,3 +2991,4 @@ estado con el que nace el producto.
 [0.27.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.26.0...v0.27.0
 [0.27.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.27.0...v0.27.1
 [0.28.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.27.1...v0.28.0
+[0.29.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.28.0...v0.29.0
