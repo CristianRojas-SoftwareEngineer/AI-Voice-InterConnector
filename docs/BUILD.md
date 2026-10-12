@@ -587,15 +587,17 @@ componentes, jobs distintos compartirían una entrada incompatible.
 #### Clave normalizada de `Cargo.lock`
 
 Las claves de `cargo-v2` y de la caché de `target/` no usan `Cargo.lock` directamente sino
-`Cargo.lock.cachekey`, que el primer paso de `cargo_restore_caches` (y de
-`cargo_restore_registry`, en los jobs que solo restauran `cargo-v2`) genera con
-`perl` (en `shell: bash`, disponible en los tres executors) reemplazando la
-versión del propio crate (`ai-voice-interconnector`) por `0.0.0`. Cada release
-cambia esa versión; sin la normalización, la clave cambiaría en cada corte
-aunque las dependencias fueran las mismas, y la caché de `target/`, que no tiene
-fallback, partiría siempre en frío. Se usa un transform de texto en lugar de
-`xtask` para no compilar `xtask` y su árbol de dependencias antes de restaurar
-la caché.
+`Cargo.lock.cachekey`, que genera el command `cargo_lock_cachekey`, primer paso
+de `cargo_restore_caches` y de `cargo_restore_registry` (los jobs que solo
+restauran `cargo-v2`). Lo hace con `perl` (en `shell: bash`, disponible en los
+tres executors), reemplazando la versión del propio crate
+(`ai-voice-interconnector`) por `0.0.0`. Cada release cambia esa versión; sin la
+normalización, la clave cambiaría en cada corte aunque las dependencias fueran
+las mismas, y la caché de `target/`, que no tiene fallback, partiría siempre en
+frío. Por eso el paso falla si la sustitución no ocurre exactamente una vez: un
+`Cargo.lock` con otro formato no puede degradar la caché en silencio. Se usa un
+transform de texto en lugar de `xtask` para no compilar `xtask` y su árbol de
+dependencias antes de restaurar la caché.
 
 Esa es la invariante de orden de los 11 jobs que usan cargo: ningún paso
 compila antes de restaurar las cachés. Una restauración extraída sobre un

@@ -103,7 +103,8 @@ parameters:
 #
 # Clave normalizada: la clave exacta de registry y target se computa del checksum
 # de `Cargo.lock.cachekey`, un lock efímero que genera `perl` neutralizando la
-# línea `version` del propio crate. Así el bump de cada release no cambia la
+# línea `version` del propio crate (command `cargo_lock_cachekey`, que falla si
+# no la encuentra exactamente una vez). Así el bump de cada release no cambia la
 # clave; solo la cambian dependencias reales.
 # Invalidación por familia de caché:
 #   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock;
@@ -122,6 +123,26 @@ parameters:
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2
 #     gcc/openblas (solo build-windows-x64).
 commands:
+  cargo_lock_cachekey:
+    description: Genera Cargo.lock.cachekey, el Cargo.lock con la versión del propio crate en 0.0.0
+    # Va ANTES de restore_cache: la clave de CircleCI se forma en tiempo de
+    # config, así que el insumo del checksum debe existir en el working dir antes
+    # de restaurar. `shell: bash` está disponible en los tres executors (nativo
+    # Linux/macOS, Git-bash en el orb de Windows) y `perl` viene con Git-bash y
+    # con los SO *nix. Es un transform de texto, y no `cargo xtask`, porque
+    # ningún paso puede compilar antes de restaurar `target/`: una restauración
+    # extraída sobre un `target/` ya poblado mezcla el estado de dos ejecuciones.
+    # La sustitución debe ocurrir exactamente una vez; si el formato del lock
+    # cambia y no coincide, el paso falla en lugar de dejar una clave que cambia
+    # con cada release y deja la caché de `target/` siempre en frío.
+    steps:
+      - run:
+          name: Generar Cargo.lock.cachekey (clave de caché normalizada)
+          shell: bash
+          command: |
+            set -euo pipefail
+            perl -0777 -pe '$n = s/^(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/mg; END { $? = 1 if $n != 1 }' Cargo.lock > Cargo.lock.cachekey \
+              || { echo "Cargo.lock no declara exactamente una vez el paquete ai-voice-interconnector seguido de su version: no se puede normalizar la clave de caché"; exit 1; }
   cargo_restore_caches:
     description: Restaura caché de registry/git y de target/ (clave exacta, sin fallback)
     # `variant` discrimina el feature set del target/ (test featureless, full con
@@ -163,19 +184,7 @@ commands:
         type: boolean
         default: true
     steps:
-      # Genera Cargo.lock.cachekey ANTES de restore_cache: la clave de CircleCI se
-      # forma en tiempo de config, así que el insumo del checksum debe existir en el
-      # working dir antes de restaurar. `shell: bash` está disponible en los tres
-      # executors (nativo Linux/macOS, Git-bash en el orb de Windows) y `perl`
-      # viene bundleado con Git-bash (presente también en los SO *nix). Generar la
-      # clave con un transform de texto, y no con `cargo xtask`, porque ningún paso
-      # puede compilar antes de restaurar `target/`: una restauración extraída sobre
-      # un `target/` ya poblado mezcla el estado de dos ejecuciones. Un único
-      # mecanismo cross-platform, sin ramas por shell.
-      - run:
-          name: Generar Cargo.lock.cachekey (clave de caché normalizada)
-          shell: bash
-          command: perl -0777 -pe 's/(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/' Cargo.lock > Cargo.lock.cachekey
+      - cargo_lock_cachekey
       - run:
           name: Calcular identidad de contenido de los parches vendorizados (clave de target/)
           shell: bash
@@ -265,10 +274,7 @@ commands:
   cargo_restore_registry:
     description: Restaura solo registry/git (sin target) — para los jobs pequeños xtask/changelog-gate (validate-licenses, validate-changelog, publish-metadata); test-linux/test-macos/test-windows/coverage y build-* usan cargo_restore_caches con la caché de target/
     steps:
-      - run:
-          name: Generar Cargo.lock.cachekey (clave de caché normalizada)
-          shell: bash
-          command: perl -0777 -pe 's/(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/' Cargo.lock > Cargo.lock.cachekey
+      - cargo_lock_cachekey
       - restore_cache:
           keys:
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}

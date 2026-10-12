@@ -1747,7 +1747,9 @@ mod tests {
             }
             let manifest = PathBuf::from(pkg["manifest_path"].as_str().unwrap_or_default());
             let dir = manifest.parent().expect("el manifiesto tiene directorio");
-            let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+            let dir = dir
+                .canonicalize()
+                .unwrap_or_else(|e| panic!("no se pudo resolver {}: {e}", dir.display()));
             let rel = dir
                 .strip_prefix(&root_abs)
                 .unwrap_or_else(|_| panic!("{} queda fuera del repositorio", dir.display()))
@@ -2119,6 +2121,42 @@ mod tests {
             assert!(
                 !section.contains("cargo clean -p"),
                 "{job} no debe ejecutar cargo clean -p: es un no-op sobre target/release sin --release"
+            );
+        }
+    }
+
+    /// `Cargo.lock.cachekey` se genera en un único command, que usan las dos
+    /// restauraciones, y que falla si la versión del propio crate no se
+    /// sustituye exactamente una vez: un lock con otro formato no puede dejar en
+    /// silencio una clave que cambie con cada release.
+    #[test]
+    fn test_lock_cachekey_is_one_checked_command() {
+        let cfg = read_ci_config();
+        assert_eq!(
+            cfg.matches("Cargo.lock > Cargo.lock.cachekey").count(),
+            1,
+            "Cargo.lock.cachekey debe generarse en un solo sitio"
+        );
+        let command = cfg
+            .split("\n  cargo_lock_cachekey:")
+            .nth(1)
+            .and_then(|s| s.split("\n  cargo_restore_caches:").next())
+            .expect("el command cargo_lock_cachekey precede a cargo_restore_caches");
+        assert!(
+            command.contains("Cargo.lock > Cargo.lock.cachekey")
+                && command.contains("END { $? = 1 if $n != 1 }")
+                && command.contains("set -euo pipefail"),
+            "cargo_lock_cachekey debe fallar si la sustitución no ocurre exactamente una vez"
+        );
+        for restore in ["cargo_restore_caches", "cargo_restore_registry"] {
+            let steps = cfg
+                .split(&format!("\n  {restore}:"))
+                .nth(1)
+                .and_then(|s| s.split("\n    steps:\n").nth(1))
+                .unwrap_or_else(|| panic!("{restore} debe tener pasos"));
+            assert!(
+                steps.starts_with("      - cargo_lock_cachekey\n"),
+                "{restore} debe generar la clave antes de restaurar"
             );
         }
     }
