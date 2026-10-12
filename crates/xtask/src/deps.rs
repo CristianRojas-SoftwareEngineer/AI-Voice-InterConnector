@@ -315,10 +315,10 @@ pub(crate) fn run(check: bool, dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Contrato de juguete con los campos que cada prueba necesita.
+    /// Contrato de fixture con los campos que cada prueba necesita.
     fn section(system_libs: &[&str], ceilings: &[&str], min_os: Option<&str>) -> BundleTarget {
         BundleTarget {
-            triple: "juguete".to_string(),
+            triple: "fixture".to_string(),
             executable: "bin".to_string(),
             required: vec!["bin".to_string()],
             system_libs: system_libs.iter().map(|s| (*s).to_string()).collect(),
@@ -332,7 +332,7 @@ mod tests {
         names.iter().map(|n| (*n).to_ascii_lowercase()).collect()
     }
 
-    /// Importaciones de juguete con solo librerías.
+    /// Importaciones de fixture con solo librerías.
     fn libs(names: &[&str]) -> Imports {
         Imports {
             libs: names.iter().map(|n| (*n).to_string()).collect(),
@@ -341,7 +341,7 @@ mod tests {
         }
     }
 
-    /// Importaciones de juguete con solo versiones de símbolo.
+    /// Importaciones de fixture con solo versiones de símbolo.
     fn symbols(names: &[&str]) -> Imports {
         Imports {
             libs: Vec::new(),

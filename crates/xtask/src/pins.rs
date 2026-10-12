@@ -74,8 +74,8 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Las nueve claves con su valor, en el orden del manifiesto.
-fn all_pins(pins: &Pins) -> [(&'static str, &String); 10] {
+/// Las once claves con su valor, en el orden del manifiesto.
+fn all_pins(pins: &Pins) -> [(&'static str, &String); 11] {
     [
         ("rust", &pins.rust),
         ("ort", &pins.ort),
@@ -87,6 +87,7 @@ fn all_pins(pins: &Pins) -> [(&'static str, &String); 10] {
         ("ninja", &pins.ninja),
         ("bats", &pins.bats),
         ("pwsh", &pins.pwsh),
+        ("pester", &pins.pester),
     ]
 }
 
@@ -248,8 +249,8 @@ fn has_shell_literal(cfg: &str, prefix: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// Pines de juguete (los reales viven en `packaging/pins.json`).
-    fn toy_pins() -> Pins {
+    /// Pines de fixture (los reales viven en `packaging/pins.json`).
+    fn fixture_pins() -> Pins {
         Pins {
             rust: "1.96.0".to_string(),
             ort: "1.28.0".to_string(),
@@ -262,13 +263,14 @@ mod tests {
             ninja: "1.13.2".to_string(),
             bats: "1.14.0".to_string(),
             pwsh: "7.6.6".to_string(),
+            pester: "5.8.0".to_string(),
         }
     }
 
-    /// CI de juguete con los nueve parámetros esperados, sin literales de
+    /// CI de fixture con los diez parámetros esperados, sin literales de
     /// versión y con el humo de `schema_version` en la versión vigente.
-    fn toy_config() -> String {
-        let pins = toy_pins();
+    fn fixture_config() -> String {
+        let pins = fixture_pins();
         let mut cfg = String::from("parameters:\n");
         for (key, value) in all_pins(&pins) {
             if key == "sccache" {
@@ -278,22 +280,22 @@ mod tests {
                 "  {key}_pin:\n    type: string\n    default: \"{value}\"\n"
             ));
         }
-        cfg.push_str(&toy_schema_smoke(
+        cfg.push_str(&fixture_schema_smoke(
             avi_core::json_emitter::CLI_SCHEMA_VERSION,
         ));
         cfg
     }
 
     /// Línea del humo de Windows que exige `version` a `version --json`.
-    fn toy_schema_smoke(version: &str) -> String {
+    fn fixture_schema_smoke(version: &str) -> String {
         format!(
             "            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '{version}') {{ throw \"version --json: campo 'schema_version' != '{version}': $jsonRaw\" }}\n"
         )
     }
 
-    /// Canal de juguete que copia el pin de Rust.
-    fn toy_toolchain() -> String {
-        render_toolchain(&toy_pins())
+    /// Canal de fixture que copia el pin de Rust.
+    fn fixture_toolchain() -> String {
+        render_toolchain(&fixture_pins())
     }
 
     /// Directorio temporal propio de cada prueba, con dueño: se borra al soltarse,
@@ -307,31 +309,31 @@ mod tests {
 
     #[test]
     fn clean_tree_passes() {
-        assert!(check_text(&toy_pins(), &toy_config(), &toy_toolchain()).is_empty());
+        assert!(check_text(&fixture_pins(), &fixture_config(), &fixture_toolchain()).is_empty());
     }
 
     #[test]
     fn param_without_key_is_rejected() {
-        let mut cfg = toy_config();
+        let mut cfg = fixture_config();
         cfg.push_str("  unknown_pin:\n    type: string\n    default: \"9.9.9\"\n");
-        let errors = check_text(&toy_pins(), &cfg, &toy_toolchain());
+        let errors = check_text(&fixture_pins(), &cfg, &fixture_toolchain());
         assert!(errors.iter().any(|e| e.contains("unknown_pin")));
     }
 
     #[test]
     fn divergent_value_is_rejected() {
-        let cfg = toy_config().replace("1.96.0", "1.95.0");
-        let errors = check_text(&toy_pins(), &cfg, &toy_toolchain());
+        let cfg = fixture_config().replace("1.96.0", "1.95.0");
+        let errors = check_text(&fixture_pins(), &cfg, &fixture_toolchain());
         assert!(errors.iter().any(|e| e.contains("pin divergente: rust")));
     }
 
     #[test]
     fn key_without_param_is_rejected() {
-        let cfg = toy_config().replace(
+        let cfg = fixture_config().replace(
             "  ninja_pin:\n    type: string\n    default: \"1.13.2\"\n",
             "",
         );
-        let errors = check_text(&toy_pins(), &cfg, &toy_toolchain());
+        let errors = check_text(&fixture_pins(), &cfg, &fixture_toolchain());
         assert!(errors
             .iter()
             .any(|e| e.contains("ninja") && e.contains("sin parámetro")));
@@ -339,14 +341,14 @@ mod tests {
 
     #[test]
     fn sccache_without_param_is_accepted() {
-        assert!(!toy_config().contains("sccache_pin"));
-        assert!(check_text(&toy_pins(), &toy_config(), &toy_toolchain()).is_empty());
+        assert!(!fixture_config().contains("sccache_pin"));
+        assert!(check_text(&fixture_pins(), &fixture_config(), &fixture_toolchain()).is_empty());
     }
 
     #[test]
     fn divergent_channel_is_rejected() {
-        let toolchain = toy_toolchain().replace("1.96.0", "1.95.0");
-        let errors = check_text(&toy_pins(), &toy_config(), &toolchain);
+        let toolchain = fixture_toolchain().replace("1.96.0", "1.95.0");
+        let errors = check_text(&fixture_pins(), &fixture_config(), &toolchain);
         assert!(errors
             .iter()
             .any(|e| e.contains("canal de Rust divergente")));
@@ -354,20 +356,20 @@ mod tests {
 
     #[test]
     fn sccache_literal_is_rejected() {
-        let mut cfg = toy_config();
+        let mut cfg = fixture_config();
         cfg.push_str("            SCCACHE_VERSION=\"0.8.2\"\n");
-        let errors = check_text(&toy_pins(), &cfg, &toy_toolchain());
+        let errors = check_text(&fixture_pins(), &cfg, &fixture_toolchain());
         assert!(errors.iter().any(|e| e.contains("literal de shell")));
     }
 
     #[test]
     fn live_sccache_read_is_accepted() {
-        let mut cfg = toy_config();
+        let mut cfg = fixture_config();
         cfg.push_str(
             "            SCCACHE_VERSION=\"$(sed -n 's/.*\"sccache\": *\"\\([^\"]*\\)\".*/\\1/p' packaging/pins.json)\"\n",
         );
         cfg.push_str("            $SccacheVersion = (Get-Content packaging/pins.json -Raw | ConvertFrom-Json).sccache\n");
-        assert!(check_text(&toy_pins(), &cfg, &toy_toolchain()).is_empty());
+        assert!(check_text(&fixture_pins(), &cfg, &fixture_toolchain()).is_empty());
     }
 
     /// Un humo que exige otra `schema_version` que la del envelope vigente se
@@ -375,15 +377,16 @@ mod tests {
     #[test]
     fn stale_schema_smoke_is_rejected() {
         let current = avi_core::json_emitter::CLI_SCHEMA_VERSION;
-        let cfg = toy_config().replace(&toy_schema_smoke(current), &toy_schema_smoke("0"));
-        let errors = check_text(&toy_pins(), &cfg, &toy_toolchain());
+        let cfg =
+            fixture_config().replace(&fixture_schema_smoke(current), &fixture_schema_smoke("0"));
+        let errors = check_text(&fixture_pins(), &cfg, &fixture_toolchain());
         assert_eq!(errors.len(), 2, "comparación y mensaje: {errors:?}");
         assert!(errors
             .iter()
             .all(|e| e.contains("\"0\"") && e.contains(current)));
 
-        let half = toy_config().replacen(&format!("-ne '{current}'"), "-ne '0'", 1);
-        let errors = check_text(&toy_pins(), &half, &toy_toolchain());
+        let half = fixture_config().replacen(&format!("-ne '{current}'"), "-ne '0'", 1);
+        let errors = check_text(&fixture_pins(), &half, &fixture_toolchain());
         assert_eq!(errors.len(), 1, "solo diverge la comparación: {errors:?}");
     }
 
@@ -391,11 +394,11 @@ mod tests {
     /// no puede pasar la puerta en silencio.
     #[test]
     fn missing_schema_smoke_is_rejected() {
-        let cfg = toy_config().replace(
-            &toy_schema_smoke(avi_core::json_emitter::CLI_SCHEMA_VERSION),
+        let cfg = fixture_config().replace(
+            &fixture_schema_smoke(avi_core::json_emitter::CLI_SCHEMA_VERSION),
             "",
         );
-        let errors = check_text(&toy_pins(), &cfg, &toy_toolchain());
+        let errors = check_text(&fixture_pins(), &cfg, &fixture_toolchain());
         assert_eq!(errors.len(), 2, "{errors:?}");
         assert!(errors.iter().all(|e| e.contains("no contiene")));
     }
@@ -419,7 +422,7 @@ mod tests {
                 "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "sccache": "0.8.2",
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
-                "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6",
+                "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
             }))
             .unwrap(),
         )
@@ -441,13 +444,13 @@ mod tests {
                 "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "sccache": "0.8.2",
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
-                "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6",
+                "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
             }))
             .unwrap(),
         )
         .unwrap();
-        std::fs::write(dir.join(".circleci/config.yml"), toy_config()).unwrap();
-        std::fs::write(dir.join("rust-toolchain.toml"), toy_toolchain()).unwrap();
+        std::fs::write(dir.join(".circleci/config.yml"), fixture_config()).unwrap();
+        std::fs::write(dir.join("rust-toolchain.toml"), fixture_toolchain()).unwrap();
         run(true, false, Some(dir)).unwrap();
     }
 }

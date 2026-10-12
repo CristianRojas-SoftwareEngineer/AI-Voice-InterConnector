@@ -244,8 +244,8 @@ mod tests {
     use super::*;
     use crate::doctor::{Report, Row, Status};
 
-    /// Informe de juguete: una fila ejecutable, una manual y una correcta.
-    fn toy_report() -> Report {
+    /// Informe de fixture: una fila ejecutable, una manual y una correcta.
+    fn fixture_report() -> Report {
         Report {
             rows: vec![
                 Row {
@@ -299,7 +299,7 @@ mod tests {
     /// omite las filas correctas: sin `--system` nada se ejecuta.
     #[test]
     fn plan_classifies_without_executing() {
-        let plan = plan_system_commands(&toy_report());
+        let plan = plan_system_commands(&fixture_report());
         assert_eq!(plan.len(), 3);
         assert_eq!(
             plan[0],

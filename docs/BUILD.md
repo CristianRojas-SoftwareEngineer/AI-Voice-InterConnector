@@ -312,8 +312,8 @@ los `digest` que GitHub publica para cada asset del release oficial de
 Microsoft, que no publica ficheros de checksum propios; al subir `ort_pin` hay
 que actualizarlos en el mismo cambio. `ort-bundle/` se reutiliza solo si trae
 todas las librerías y el marcador `.ort-version` de la versión fijada, que solo
-se escribe tras una descarga verificada; `build-windows-x64` lo conserva entre
-corridas con la caché `ort-v3`.
+se escribe tras una descarga verificada; cada `build-*` lo conserva entre
+corridas con su caché `ort-v4`.
 
 | Job | Asset MS v1.28.0 | Librería empaquetada |
 |---|---|---|
@@ -412,7 +412,7 @@ completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
   Los runners bats están pineados: bats-core se instala desde el tag de git
   según el parámetro `bats_pin` (1.14.0, verificado con `bats --version`),
   la misma versión en Linux y macOS, y `test-bootstrap-linux` corre sobre
-  `cimg/base` pineada por digest. `test-bootstrap-windows` instala Pester 5.8.0
+  `cimg/base` pineada por digest. `test-bootstrap-windows` instala Pester según el parámetro `pester_pin` (5.8.0)
   desde PSGallery con `$ErrorActionPreference = "Stop"`, de modo que un fallo de
   instalación o de importación hace fallar el paso. Además instala PowerShell 7
   según el parámetro `pwsh_pin` (7.6.6, zip del release oficial verificado con
@@ -577,8 +577,8 @@ externas vuelven a compilarse, con la ayuda de `sccache`. La tabla de
 | `sccache-v1` | objetos Rust, C y C++ indexados por contenido, con tamaño acotado por el parámetro `sccache_cache_size` (`3G`, que `sccache` lee como 3 GiB, unos 3,2 GB) | los mismos jobs que la caché de `target/`; `validate-licenses`, `validate-changelog` y `publish-metadata` solo la restauran | `arch`, `os`, `rust_pin` y `variant`, más `{{ epoch }}` al guardar: se restaura la entrada más reciente del prefijo. |
 | `toolchain-v1` | `~/.rustup` y `~/.cargo/bin`: el Rust instalado con `rustup` y las herramientas instaladas con `cargo install` | `test-windows`, `test-macos`, `build-windows-x64` y `build-darwin-arm64`, que instalan Rust; `coverage`, cuya imagen Docker ya trae Rust, la usa para conservar `llvm-tools-preview` y `cargo-llvm-cov` | `arch`, `os` y `rust_pin`. |
 | `msys2-v1` | la instalación de MSYS2 | `build-windows-x64` | los pines de MSYS2: release base, gcc, openblas y make. |
-| `tts-v1` | el motor `qwen_tts.exe` compilado | `build-windows-x64` | `vendor/qwen3-tts/.engine-cachekey` (`Makefile`, `*.c`/`*.h` y `third_party/ingot`) y los pines de gcc y openblas. |
-| `ort-v3` | `ort-bundle/` tal como lo deja `cargo xtask package`: la librería oficial de ONNX Runtime para Windows (con su SHA-256 verificado), las cuatro DLL del runtime de VC++ y el marcador `.ort-version` | `build-windows-x64` | `ort_pin`. |
+| `tts-v1` | el motor `qwen_tts[.exe]` compilado | los 4 `build-*` | `vendor/qwen3-tts/.engine-cachekey` (`Makefile`, `*.c`/`*.h` y `third_party/ingot`); más los pines de gcc y openblas en Windows y `os`+`arch` en Unix. Sin fallback. |
+| `ort-v4` | `ort-bundle/` tal como lo deja `cargo xtask package`: la librería oficial de ONNX Runtime (con su SHA-256 verificado), las cuatro DLL del runtime de VC++ en Windows y el marcador `.ort-version` | los 4 `build-*` | `ort_pin` y triple de target (`ort-v4-<triple>-<pin>`). |
 
 `variant` separa los conjuntos de features (`test` sin features, `cov`
 instrumentado, `full` con C++), y `os` separa los targets: sin esos
@@ -711,8 +711,8 @@ costo:
 | Escenario | Cachés que se invalidan | Efecto en los `build-*` |
 |-----------|-------------------------|-------------------------|
 | Cambio en el código fuente del workspace (`src/`, `crates/*`), bump de versión de una release, documentación o `CHANGELOG.md` | Ninguna | Todas las cachés aciertan. Cargo recompila los crates del workspace (siempre `Dirty` por `mtime`): `sccache` devuelve al instante los que no cambiaron y compila de verdad los editados y el binario final. `cargo build --release` tarda unos 20 s en linux-x64. |
-| Cambio de `ort_pin` (con sus `ort_sha256`) | `ort-v3` | Una descarga nueva de ONNX Runtime en `build-windows-x64`; los jobs Unix no cachean `ort-bundle/` y lo descargan en cada corrida dentro de `cargo xtask package`. |
-| Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts-v1` | Solo se recompila el motor TTS en `build-windows-x64`; el resto acierta. |
+| Cambio de `ort_pin` (con sus `ort_sha256`) | `ort-v4` | Una descarga nueva de ONNX Runtime en los 4 `build-*` (cada uno cachea su triple). |
+| Cambio de fuentes del motor TTS (`vendor/qwen3-tts`, `third_party/ingot`) | `tts-v1` | Solo se recompila el motor TTS en cada `build-*`; el resto acierta. |
 | Cambio de los pines de MSYS2, gcc, openblas o make | `msys2-v1` y, con gcc u openblas, `tts-v1` | Reinstalación de MSYS2 y recompilación del motor TTS en `build-windows-x64`. |
 | Cambio real de dependencias Rust en `Cargo.lock` (añadir, quitar o actualizar crates sin tocar nativos) | La caché de `target/` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: 2–5 min por job en Unix y ~11–15 min previstos en windows-x64. |
 | Edición, alta o baja de un crate de `vendor/*/Cargo.toml` (parche vendorizado), o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | La caché de `target/`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
@@ -928,12 +928,17 @@ pin, el bootstrap registra `[WARN]` y continúa usando la instalada como evidenc
 
 ### Caché del motor en CI
 
-En CI Windows el binario del motor (`vendor/qwen3-tts/qwen_tts.exe`) se cachea con
-clave `tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}` donde
-`.engine-cachekey` es el agregado determinista de `Makefile` + `*.c/*.h` (incluye `vendor/lz4.*`) + `third_party/ingot/**/*.{c,h}`.
+En CI el binario del motor (`vendor/qwen3-tts/qwen_tts[.exe]`) se cachea con
+clave `tts-v1-<segmento>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}` donde
+`.engine-cachekey` es el agregado determinista de `Makefile` + `*.c/*.h` (incluye `vendor/lz4.*`) + `third_party/ingot/**/*.{c,h}`
+(lo genera el command `tts_engine_cachekey`, sin `-r` en `xargs` porque el de macOS no admite ese flag).
+El segmento es `{{ arch }}-gcc<gcc>-ob<openblas>` en Windows y `linux-el8-{{ arch }}` o
+`macos-{{ arch }}` en Unix: `{{ arch }}` solo discrimina la arquitectura del executor,
+y sin el `os` el ARM64 de Linux y el de macOS colisionarían.
 Si existe tras `restore_cache` (clave exacta sin fallback) solo se verifica con `--self-test`;
 si no, se compila. El bundle ONNX Runtime (`ort-bundle/`) se cachea con
-`ort-v3-win-x64-<< pipeline.parameters.ort_pin >>` y se guarda tras
+`ort-v4-<triple>-<< pipeline.parameters.ort_pin >>` (`win-x64`, `linux-x64`,
+`linux-arm64`, `darwin-arm64`) y se guarda tras
 `cargo xtask package`, que es quien lo descarga y verifica.
 El bundle incluye el marcador `ort-bundle/.ort-version`: sin él la versión es
 desconocida, `cargo xtask doctor` marca `Mismatch` y `cargo xtask package`

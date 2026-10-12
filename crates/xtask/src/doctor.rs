@@ -1227,8 +1227,8 @@ fn print_json(report: &Report, pins: &Pins) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Pines de juguete (los reales viven en `packaging/pins.json`).
-    fn toy_pins() -> Pins {
+    /// Pines de fixture (los reales viven en `packaging/pins.json`).
+    fn fixture_pins() -> Pins {
         Pins {
             rust: "1.96.0".to_string(),
             ort: "1.28.0".to_string(),
@@ -1241,6 +1241,7 @@ mod tests {
             ninja: "1.13.2".to_string(),
             bats: "1.14.0".to_string(),
             pwsh: "7.6.6".to_string(),
+            pester: "5.8.0".to_string(),
         }
     }
 
@@ -1280,6 +1281,7 @@ mod tests {
             &pins.msys2_openblas,
             &pins.msys2_make,
             &pins.ninja,
+            &pins.pester,
         ] {
             assert!(!field.trim().is_empty());
         }
@@ -1293,7 +1295,7 @@ mod tests {
             .prefix("xtask_doctor_")
             .tempdir()
             .unwrap();
-        let report = check(root_guard.path(), &toy_pins());
+        let report = check(root_guard.path(), &fixture_pins());
         let ids: Vec<&str> = report.rows.iter().map(|r| r.id).collect();
         assert_eq!(ids, ROW_IDS);
         let optional: Vec<&str> = report
@@ -1393,15 +1395,15 @@ mod tests {
     #[test]
     fn onnx_without_marker_is_a_mismatch() {
         let root = onnx_fixture(None);
-        let row = check_onnx(root.path(), &toy_pins());
+        let row = check_onnx(root.path(), &fixture_pins());
         assert_eq!(row.status, Status::Mismatch);
         assert!(row.hint.unwrap().contains("cargo xtask bootstrap"));
-        assert!(probe_onnx_drift(root.path(), &toy_pins()).is_some());
+        assert!(probe_onnx_drift(root.path(), &fixture_pins()).is_some());
     }
 
     #[test]
     fn onnx_with_matching_marker_is_ok_and_other_version_drifts() {
-        let pins = toy_pins();
+        let pins = fixture_pins();
         let good = onnx_fixture(Some("1.28.0\n"));
         assert_eq!(check_onnx(good.path(), &pins).status, Status::Ok);
         assert!(probe_onnx_drift(good.path(), &pins).is_none());
@@ -1416,7 +1418,7 @@ mod tests {
     fn onnx_unreadable_marker_is_reported() {
         let root = onnx_fixture(None);
         std::fs::create_dir(root.path().join("ort-bundle").join(".ort-version")).unwrap();
-        let row = check_onnx(root.path(), &toy_pins());
+        let row = check_onnx(root.path(), &fixture_pins());
         assert_eq!(row.status, Status::Mismatch);
         assert!(row.found.unwrap().contains("ilegible"));
     }
@@ -1491,7 +1493,7 @@ mod tests {
             .prefix("xtask_doctor_onnx_")
             .tempdir()
             .unwrap();
-        let row = check_onnx(root_guard.path(), &toy_pins());
+        let row = check_onnx(root_guard.path(), &fixture_pins());
         assert_eq!(row.id, "onnx");
         assert_eq!(row.status, Status::Missing);
         assert_eq!(row.want, Some("1.28.0".to_string()));

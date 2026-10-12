@@ -95,6 +95,13 @@ parameters:
       `irm | iex` (además de Windows PowerShell 5.1). Se instala desde el zip
       del release oficial en C:\pwsh y el paso aborta si `pwsh` informa una
       versión distinta.
+  pester_pin:
+    type: string
+    default: "5.8.0"
+    description: >
+      Versión de Pester con la que la suite de Windows ejecuta sus pruebas.
+      El executor trae Pester 3.x; se instala esta versión desde PSGallery y
+      el paso aborta si la importación no coincide.
 
 # Cachés compartidas por los jobs Rust (restore/save nativos, idénticos en bash
 # y PowerShell). Ninguna clave depende del código fuente del workspace: editar
@@ -116,12 +123,12 @@ parameters:
 #   - toolchain (v1): cambia con rust_pin.
 #   - msys2 (v1): cambia con los pines de versión MSYS2 (solo build-windows-x64).
 #   - sccache (v1): rolling con epoch, por variant.
-#   - ort-bundle (v3): cambia con ort_pin (solo build-windows-x64). Guarda el
-#     `ort-bundle/` que arma `xtask package` (con su SHA-256 verificado y las
-#     cuatro DLL de VC++), incluido el marcador `.ort-version` que exige para
-#     reutilizarlo.
-#   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey + msys2
-#     gcc/openblas (solo build-windows-x64).
+#   - ort-bundle (v4): cambia con ort_pin (los 4 builds, clave por triple de
+#     target). Guarda el `ort-bundle/` que arma `xtask package` (con su SHA-256
+#     verificado; más las cuatro DLL de VC++ en Windows), incluido el marcador
+#     `.ort-version` que exige para reutilizarlo.
+#   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey (+ msys2
+#     gcc/openblas en Windows; os+arch en Unix). Clave exacta sin fallback.
 commands:
   cargo_lock_cachekey:
     description: Genera Cargo.lock.cachekey, el Cargo.lock con la versión del propio crate en 0.0.0
@@ -320,11 +327,16 @@ commands:
             - msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
   msys2_save_cache:
     description: Guarda C:\msys64 (clave inmutable por arch + pines de versión MSYS2)
+    parameters:
+      when:
+        type: string
+        default: "on_success"
     steps:
       - save_cache:
           key: msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
           paths:
             - C:\msys64
+          when: << parameters.when >>
 
   # sccache: envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
   # hash de contenido en ~/.cache/sccache. Cada variante (test/full/cov) guarda
@@ -595,6 +607,202 @@ commands:
             echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
             echo "[STEP] Instalar dependencias de sistema y Rust - FIN"
 
+  # Instalación de Rust vía rustup en Windows, idempotente por caché de
+  # toolchain. Extraído de test-windows y build-windows-x64 (bloques idénticos).
+  install_rust_windows:
+    description: Instala Rust << pipeline.parameters.rust_pin >> vía rustup en Windows (idempotente por caché)
+    steps:
+      - run:
+          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
+          command: |
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
+            $ErrorActionPreference = "Stop"
+            $RustVersion = "<< pipeline.parameters.rust_pin >>"
+            # Prefijo de PATH SOLO para este step: los steps posteriores que
+            # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
+            # equivalente de $BASH_ENV).
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # Idempotente: si la caché de toolchain ya trae cargo, no
+            # re-ejecutar rustup-init (ahorra ~2-3 min por corrida). rustup-init
+            # estático oficial (pin exacto, no choco): reproducible e
+            # independiente del repo de Chocolatey. Invoke-WebRequest no setea
+            # $LASTEXITCODE: con ErrorActionPreference=Stop un fallo de descarga
+            # lanza y aborta el step.
+            # La guarda comprueba la RUTA específica del toolchain fijado
+            # (~/.cargo/bin/cargo.exe), no Get-Command: el executor trae Rust
+            # preinstalado en PATH, así que Get-Command siempre acertaría y
+            # saltaría rustup-init, dejando el 1.96.0 sin instalar y ~/.cargo/bin
+            # inexistente (espeja la guarda de macOS).
+            if (Test-Path "$env:USERPROFILE\.cargo\bin\cargo.exe") {
+              Write-Host "Toolchain restaurado de caché; se omite rustup-init"
+            } else {
+              Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
+              .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            }
+            cargo --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            rustc --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+  # Instalación de Rust vía rustup en macOS, idempotente por caché de toolchain.
+  # Extraído de test-macos y build-darwin-arm64 (idénticos salvo el
+  # `no_output_timeout: 10m` explícito del build, igual al default de CircleCI,
+  # que se omite aquí).
+  install_rust_macos:
+    description: Instala Rust << pipeline.parameters.rust_pin >> vía rustup en macOS (idempotente por caché)
+    steps:
+      - run:
+          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
+          command: |
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
+            # Idempotente: si la caché de toolchain ya trae rustup, se omite
+            # la instalación (ahorra ~2-3 min por corrida).
+            if [ -x "$HOME/.cargo/bin/rustup" ]; then
+              echo "Toolchain restaurado de caché; se omite rustup-init"
+            else
+              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_pin >> --profile minimal
+            fi
+            # No sourcear ~/.cargo/env: no está en la caché de toolchain
+            # (solo ~/.rustup y ~/.cargo/bin), así que en caché tibia no existe.
+            # El env de rustup solo antepone ~/.cargo/bin al PATH; lo hacemos directo.
+            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $BASH_ENV
+            export PATH="$HOME/.cargo/bin:$PATH"
+            cargo --version
+            rustc --version
+            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+  # Precarga de dependencias al registry (todos los SO): `shell: bash` existe en
+  # los tres executors (nativo Linux/macOS, Git-bash en Windows) y `validate_pins`
+  # ya lo usa en Windows, así que un solo command cubre los 8 usos.
+  cargo_fetch:
+    description: Descarga todas las dependencias al registry (cargo fetch --locked)
+    steps:
+      - run:
+          name: Precargar dependencias (cargo fetch)
+          shell: bash
+          command: |
+            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
+            export PATH="$HOME/.cargo/bin:$PATH"
+            cargo fetch --locked
+            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+  # Instalación de gh CLI desde el repo apt oficial firmado. `extra_packages`
+  # cubre la divergencia de publish-metadata (git + ruby para el push al tap).
+  install_gh_cli:
+    description: Instala gh CLI desde el repo apt oficial firmado
+    parameters:
+      extra_packages:
+        type: string
+        default: ""
+    steps:
+      - run:
+          name: Instalar gh CLI (repo apt oficial, firmado)
+          command: |
+            echo "[STEP] Instalar gh CLI - INICIO"
+            set -euo pipefail
+            sudo mkdir -p -m 755 /etc/apt/keyrings
+            wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+              | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+            sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+              | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh << parameters.extra_packages >>
+            echo "[STEP] Instalar gh CLI - FIN"
+  # Instalación de bats-core desde el tag de git (misma versión en Linux y macOS).
+  # Extraído de test-bootstrap-linux y test-bootstrap-macos (bloques idénticos).
+  install_bats:
+    description: Instala bats-core pineado desde el tag de git
+    steps:
+      - run:
+          name: Instalar bats-core (pineado << pipeline.parameters.bats_pin >>)
+          command: |
+            echo "[STEP] Instalar bats-core - INICIO"
+            BATS_VERSION="<< pipeline.parameters.bats_pin >>"
+            git -c advice.detachedHead=false clone -q --depth 1 --branch "v${BATS_VERSION}" https://github.com/bats-core/bats-core.git /tmp/bats-core
+            /tmp/bats-core/install.sh "$HOME/.local" >/dev/null
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
+            . "$BASH_ENV"
+            test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
+            echo "[STEP] Instalar bats-core - FIN"
+  # Agregado determinista de las fuentes del motor TTS (Makefile + C/H +
+  # ingot) para la clave de su caché. Un solo command para los 4 builds:
+  # `shell: bash` existe en los tres executors.
+  tts_engine_cachekey:
+    description: Genera vendor/qwen3-tts/.engine-cachekey (clave de la caché del motor)
+    steps:
+      - run:
+          name: Generar .engine-cachekey (clave TTS)
+          shell: bash
+          command: |
+            echo "[STEP] Generar .engine-cachekey - INICIO"
+            # Agregado determinista: Makefile + fuentes C/H (incluye vendor/lz4) + ingot.
+            # `/usr/bin/*` evita el find/sort de Windows (System32); sin `-r` en
+            # xargs porque el de macOS (BSD) no admite ese flag — con entrada vacía
+            # `cat` hereda la tubería cerrada y no emite nada, así que es seguro.
+            cat vendor/qwen3-tts/Makefile > vendor/qwen3-tts/.engine-cachekey
+            /usr/bin/find vendor/qwen3-tts -maxdepth 1 -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            /usr/bin/find vendor/qwen3-tts/vendor -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            /usr/bin/find vendor/qwen3-tts/third_party/ingot -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
+            echo "[STEP] Generar .engine-cachekey - FIN"
+  # Smoke test del binario en runners Unix: version textual, igualdad con el tag
+  # y voz de fábrica `default` (no carga el modelo). Extraído de los 3 builds
+  # Unix (bloques idénticos salvo el eco final, parametrizado como `label`).
+  smoke_test_unix:
+    description: Smoke test del binario Unix (version + tag + voz de fábrica)
+    parameters:
+      label:
+        type: string
+    steps:
+      - run:
+          name: Smoke test del binario (version + tag + voz default)
+          command: |
+            echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
+            export PATH="$HOME/.cargo/bin:$PATH"
+            test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
+            target/release/ai-voice-interconnector version
+            # La versión del binario release debe coincidir con el tag; el
+            # contrato JSON de `version --json` lo cubre el golden de la CLI.
+            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
+            # Valida la voz de fábrica 'default' (runner limpio: voice list
+            # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
+            # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
+            # Captura previa en variable en lugar de tubería directa a `grep -q`:
+            # `grep -q` sale en cuanto encuentra la coincidencia y cierra la
+            # tubería; si el binario aún tiene líneas por escribir, esa
+            # escritura devuelve EPIPE y `println!` hace panic (Rust ignora
+            # SIGPIPE por defecto). Con `pipefail` eso tumbaba el paso de forma
+            # intermitente (visto en v0.20.9, build-linux-x64).
+            voice_list_out="$(target/release/ai-voice-interconnector voice list)"
+            printf '%s\n' "$voice_list_out" | grep -q '^  - default'
+            echo "Binario << parameters.label >> OK: version + voice list + versión del tag"
+            echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
+  # Humo de instalación en sandbox con las cuatro raíces reubicadas. Extraído de
+  # los 3 builds Unix (idénticos salvo el tarball, parametrizado como
+  # `artifact_glob`).
+  sandbox_install_unix:
+    description: Humo de instalación en sandbox (self install)
+    parameters:
+      artifact_glob:
+        type: string
+    steps:
+      - run:
+          # Humo de instalación: instala el artefacto empaquetado en un
+          # sandbox con las cuatro raíces reubicadas y comprueba que el
+          # binario instalado arranca.
+          name: Humo de instalación en sandbox (self install)
+          command: |
+            echo "[STEP] Humo de instalación en sandbox - INICIO"
+            set -euo pipefail
+            SANDBOX="$(mktemp -d)"
+            export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
+            mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
+            STAGE_SMOKE="$(mktemp -d)"
+            tar -xzf artifacts/<< parameters.artifact_glob >> -C "$STAGE_SMOKE"
+            "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
+            "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
+            rm -rf "$SANDBOX" "$STAGE_SMOKE"
+            echo "[STEP] Humo de instalación en sandbox - FIN"
+
 jobs:
   # ──────────────────────────────────────────────────────────────
   # Gate Rust — triple puerta simétrica (cargo test --all)
@@ -635,14 +843,9 @@ jobs:
             cargo --version
             echo "rust_pin parámetro: << pipeline.parameters.rust_pin >>"
             echo "[STEP] Verificar toolchain Rust - FIN"
-      - run:
-          # Descarga TODAS las deps al registry antes de guardar su caché:
-          # un fallo posterior de test no pierde las descargas.
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            cargo fetch --locked
-            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      # Descarga TODAS las deps al registry antes de guardar su caché:
+      # un fallo posterior de test no pierde las descargas.
+      - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
           os: linux
@@ -703,52 +906,24 @@ jobs:
       - checkout
       - toolchain_restore_cache:
           os: windows
-      - run:
-          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
-          command: |
-            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
-            $ErrorActionPreference = "Stop"
-            $RustVersion = "<< pipeline.parameters.rust_pin >>"
-            # Prefijo de PATH SOLO para este step: los steps posteriores que
-            # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
-            # equivalente de $BASH_ENV).
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            # Idempotente: si la caché de toolchain ya trae cargo, no
-            # re-ejecutar rustup-init (ahorra ~2-3 min por corrida). rustup-init
-            # estático oficial (pin exacto, no choco): reproducible e
-            # independiente del repo de Chocolatey. Invoke-WebRequest no setea
-            # $LASTEXITCODE: con ErrorActionPreference=Stop un fallo de descarga
-            # lanza y aborta el step.
-            # La guarda comprueba la RUTA específica del toolchain fijado
-            # (~/.cargo/bin/cargo.exe), no Get-Command: el executor trae Rust
-            # preinstalado en PATH, así que Get-Command siempre acertaría y
-            # saltaría rustup-init, dejando el 1.96.0 sin instalar y ~/.cargo/bin
-            # inexistente (espeja la guarda de macOS).
-            if (Test-Path "$env:USERPROFILE\.cargo\bin\cargo.exe") {
-              Write-Host "Toolchain restaurado de caché; se omite rustup-init"
-            } else {
-              Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
-              .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            }
-            cargo --version
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            rustc --version
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+      - install_rust_windows
       - toolchain_save_cache:
           os: windows
+      - run:
+          name: Verificar toolchain Rust
+          command: |
+            Write-Host "[STEP] Verificar toolchain Rust - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            rustc --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "rust_pin parámetro: << pipeline.parameters.rust_pin >>"
+            Write-Host "[STEP] Verificar toolchain Rust - FIN"
       - cargo_restore_caches:
           os: windows
           variant: test
-      - run:
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            Write-Host "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            cargo fetch --locked
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
           os: windows
@@ -766,8 +941,12 @@ jobs:
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
             cargo test --all --verbose
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            sccache --show-stats
             Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: |
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            sccache --show-stats
       - sccache_save_cache:
           os: windows
           variant: test
@@ -798,25 +977,7 @@ jobs:
       - checkout
       - toolchain_restore_cache:
           os: macos
-      - run:
-          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
-          command: |
-            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
-            # Idempotente: si la caché de toolchain ya trae rustup, se omite
-            # la instalación (ahorra ~2-3 min por corrida).
-            if [ -x "$HOME/.cargo/bin/rustup" ]; then
-              echo "Toolchain restaurado de caché; se omite rustup-init"
-            else
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_pin >> --profile minimal
-            fi
-            # No sourcear ~/.cargo/env: no está en la caché de toolchain
-            # (solo ~/.rustup y ~/.cargo/bin), así que en caché tibia no existe.
-            # El env de rustup solo antepone ~/.cargo/bin al PATH; lo hacemos directo.
-            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $BASH_ENV
-            export PATH="$HOME/.cargo/bin:$PATH"
-            cargo --version
-            rustc --version
-            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+      - install_rust_macos
       - toolchain_save_cache:
           os: macos
       - cargo_restore_caches:
@@ -835,13 +996,7 @@ jobs:
       # avi-translation usa OPENMP_RUNTIME=NONE en macOS (features por target en
       # su Cargo.toml): los runners con Apple clang no traen libomp y
       # find_package(OpenMP REQUIRED) fallaba (#2/#4).
-      - run:
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            export PATH="$HOME/.cargo/bin:$PATH"
-            cargo fetch --locked
-            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
           os: macos
@@ -887,12 +1042,7 @@ jobs:
       - cargo_restore_caches:
           os: linux
           variant: cov
-      - run:
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            cargo fetch --locked
-            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      - cargo_fetch
       - cargo_save_registry
       - toolchain_restore_cache:
           os: linux
@@ -1021,17 +1171,7 @@ jobs:
       - image: cimg/base:2026.09@sha256:668174490adc470cd34eb3aa178939d65f817bc13ef657a94ff0278338f7d8da
     steps:
       - checkout
-      - run:
-          name: Instalar bats-core (pineado << pipeline.parameters.bats_pin >>)
-          command: |
-            echo "[STEP] Instalar bats-core - INICIO"
-            BATS_VERSION="<< pipeline.parameters.bats_pin >>"
-            git -c advice.detachedHead=false clone -q --depth 1 --branch "v${BATS_VERSION}" https://github.com/bats-core/bats-core.git /tmp/bats-core
-            /tmp/bats-core/install.sh "$HOME/.local" >/dev/null
-            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
-            . "$BASH_ENV"
-            test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
-            echo "[STEP] Instalar bats-core - FIN"
+      - install_bats
       - run:
           name: Ejecutar suite del bootstrap POSIX (bats)
           command: |
@@ -1061,21 +1201,21 @@ jobs:
             if ($got -ne $pin) { throw "pwsh: $got != $pin" }
             Write-Host "[STEP] Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>) - FIN"
       - run:
-          name: Instalar Pester (pineado 5.8.0)
+          name: Instalar Pester (pineado << pipeline.parameters.pester_pin >>)
           command: |
-            Write-Host "[STEP] Instalar Pester (pineado 5.8.0) - INICIO"
+            Write-Host "[STEP] Instalar Pester (pineado << pipeline.parameters.pester_pin >>) - INICIO"
             # Los errores de cmdlet no fijan $LASTEXITCODE: sin Stop, un fallo de
             # instalación dejaba el paso en verde. -Repository desambigua el
             # módulo, que el executor expone también en un repositorio Nuget.
             $ErrorActionPreference = "Stop"
-            Install-Module Pester -RequiredVersion 5.8.0 -Repository PSGallery -Force -SkipPublisherCheck -Scope CurrentUser
-            Write-Host "[STEP] Instalar Pester (pineado 5.8.0) - FIN"
+            Install-Module Pester -RequiredVersion << pipeline.parameters.pester_pin >> -Repository PSGallery -Force -SkipPublisherCheck -Scope CurrentUser
+            Write-Host "[STEP] Instalar Pester (pineado << pipeline.parameters.pester_pin >>) - FIN"
       - run:
           name: Ejecutar suite del bootstrap Windows (Pester)
           command: |
             Write-Host "[STEP] Ejecutar suite del bootstrap Windows (Pester) - INICIO"
             $ErrorActionPreference = "Stop"
-            Import-Module Pester -RequiredVersion 5.8.0
+            Import-Module Pester -RequiredVersion << pipeline.parameters.pester_pin >>
             # Las pruebas de tubería resuelven `pwsh` por el PATH.
             $env:Path = "C:\pwsh;$env:Path"
             Invoke-Pester tests/bootstrap/install.tests.ps1 -CI
@@ -1106,17 +1246,7 @@ jobs:
             # asume el mismo `s_server` que en Linux, no el LibreSSL del sistema.
             openssl version | grep -q '^OpenSSL 3\.' || { echo "openssl: se esperaba OpenSSL 3.x" >&2; exit 1; }
             echo "[STEP] Instalar openssl@3 - FIN"
-      - run:
-          name: Instalar bats-core (pineado << pipeline.parameters.bats_pin >>)
-          command: |
-            echo "[STEP] Instalar bats-core - INICIO"
-            BATS_VERSION="<< pipeline.parameters.bats_pin >>"
-            git -c advice.detachedHead=false clone -q --depth 1 --branch "v${BATS_VERSION}" https://github.com/bats-core/bats-core.git /tmp/bats-core
-            /tmp/bats-core/install.sh "$HOME/.local" >/dev/null
-            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$BASH_ENV"
-            . "$BASH_ENV"
-            test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
-            echo "[STEP] Instalar bats-core - FIN"
+      - install_bats
       - run:
           name: Ejecutar suite del bootstrap POSIX (bats)
           command: |
@@ -1159,33 +1289,20 @@ jobs:
       - checkout
       - toolchain_restore_cache:
           os: windows
-      - run:
-          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
-          command: |
-            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
-            $ErrorActionPreference = "Stop"
-            $RustVersion = "<< pipeline.parameters.rust_pin >>"
-            # Prefijo de PATH SOLO para este step: los steps posteriores que
-            # invocan cargo re-prefijan por sí mismos (PowerShell no tiene el
-            # equivalente de $BASH_ENV).
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            # Idempotente: si la caché de toolchain ya trae cargo, se omite
-            # rustup-init (ahorra ~2-3 min por corrida). Guarda por RUTA
-            # específica del toolchain fijado (no Get-Command): el executor trae
-            # Rust preinstalado en PATH y Get-Command saltaría rustup-init
-            # dejando el 1.96.0 sin instalar y ~/.cargo/bin inexistente.
-            if (Test-Path "$env:USERPROFILE\.cargo\bin\cargo.exe") {
-              Write-Host "Toolchain restaurado de caché; se omite rustup-init"
-            } else {
-              Invoke-WebRequest -Uri https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe -OutFile rustup-init.exe
-              .\rustup-init.exe -y --default-toolchain $RustVersion --profile minimal --no-modify-path
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            }
-            cargo --version
-            rustc --version
-            Write-Host "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+      - install_rust_windows
       - toolchain_save_cache:
           os: windows
+      - run:
+          name: Verificar toolchain Rust
+          command: |
+            Write-Host "[STEP] Verificar toolchain Rust - INICIO"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            rustc --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            cargo --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "rust_pin parámetro: << pipeline.parameters.rust_pin >>"
+            Write-Host "[STEP] Verificar toolchain Rust - FIN"
       - msys2_restore_cache
       - run:
           # Bootstrap del toolchain C del motor TTS (MSYS2 UCRT64). Idempotente: si
@@ -1251,14 +1368,7 @@ jobs:
                 os: windows
                 variant: full
                 target: false
-      - run:
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            Write-Host "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            cargo fetch --locked
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
           os: windows
@@ -1268,7 +1378,7 @@ jobs:
       - validate_pins
       - validate_features
       - run:
-          name: Compilar binario release (cargo build --release)
+          name: Compilar binario release (--features full)
           no_output_timeout: 25m
           command: |
             Write-Host "[STEP] Compilar binario release (cargo build --release) - INICIO"
@@ -1313,8 +1423,12 @@ jobs:
             # --timings: desglose por crate en target/cargo-timings (artefacto).
             cargo build --release --features full --verbose --timings
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            sccache --show-stats
             Write-Host "[STEP] Compilar binario release (cargo build --release) - FIN"
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: |
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            sccache --show-stats
       - store_artifacts:
           path: target/cargo-timings
           destination: cargo-timings
@@ -1368,18 +1482,7 @@ jobs:
                 os: windows
                 variant: full
                 when: on_success
-      - run:
-          name: Generar .engine-cachekey (clave TTS)
-          shell: bash
-          command: |
-            echo "[STEP] Generar .engine-cachekey - INICIO"
-            # Agregado determinista: Makefile + fuentes C/H (incluye vendor/lz4) + ingot
-            # Usa /usr/bin/find y /usr/bin/sort + xargs -r para evitar el find de Windows (System32) y ruido "File not found - *.c"
-            cat vendor/qwen3-tts/Makefile > vendor/qwen3-tts/.engine-cachekey
-            /usr/bin/find vendor/qwen3-tts -maxdepth 1 -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs -r cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
-            /usr/bin/find vendor/qwen3-tts/vendor -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs -r cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
-            /usr/bin/find vendor/qwen3-tts/third_party/ingot -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs -r cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
-            echo "[STEP] Generar .engine-cachekey - FIN"
+      - tts_engine_cachekey
       - restore_cache:
           keys:
             - tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
@@ -1391,7 +1494,7 @@ jobs:
           # El empaquetado de abajo lo consume.
           # Cacheado: si qwen_tts.exe existe tras restore (clave exacta sin fallback),
           # es fresco y solo se verifica; si no, build completo.
-          name: Compilar y verificar motor TTS
+          name: Compilar motor TTS (make blas + --self-test)
           command: |
             Write-Host "[STEP] Compilar y verificar motor TTS - INICIO"
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
@@ -1409,6 +1512,7 @@ jobs:
           key: tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
           paths:
             - vendor/qwen3-tts/qwen_tts.exe
+          when: on_success
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1441,6 +1545,7 @@ jobs:
                 key: ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
                 paths:
                   - ort-bundle
+                when: on_success
             - run:
                 # Humo de instalación: instala el artefacto empaquetado en un
                 # sandbox con las cuatro raíces reubicadas y comprueba que el
@@ -1514,12 +1619,7 @@ jobs:
                 os: linux-el8
                 variant: full
                 target: false
-      - run:
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            cargo fetch --locked
-            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
           os: linux-el8
@@ -1529,7 +1629,7 @@ jobs:
       - validate_pins
       - validate_features
       - run:
-          name: Compilar binario release (cargo build --release)
+          name: Compilar binario release (--features full)
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
@@ -1555,35 +1655,35 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      - run:
-          name: Smoke test del binario (version + voces de fábrica)
-          command: |
-            echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
-            test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
-            target/release/ai-voice-interconnector version
-            # La versión del binario release debe coincidir con el tag; el
-            # contrato JSON de `version --json` lo cubre el golden de la CLI.
-            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
-            # Valida la voz de fábrica 'default' (runner limpio: voice list
-            # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
-            # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
-            # Captura previa en variable en lugar de tubería directa a `grep -q`:
-            # `grep -q` sale en cuanto encuentra la coincidencia y cierra la
-            # tubería; si el binario aún tiene líneas por escribir, esa
-            # escritura devuelve EPIPE y `println!` hace panic (Rust ignora
-            # SIGPIPE por defecto). Con `pipefail` eso tumbaba el paso de forma
-            # intermitente (visto en v0.20.9, build-linux-x64).
-            voice_list_out="$(target/release/ai-voice-interconnector voice list)"
-            printf '%s\n' "$voice_list_out" | grep -q '^  - default'
-            echo "Binario Linux x64 OK: version + voice list + versión del tag"
-            echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
+      - smoke_test_unix:
+          label: "Linux x64"
+      - tts_engine_cachekey
+      - restore_cache:
+          keys:
+            - tts-v1-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
           # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
           # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
           # oráculo de kernels sin pesos) en un solo paso.
-          name: Compilar y verificar motor TTS
-          command: cargo xtask build-engine --self-test
+          # Cacheado como en Windows: si el binario existe tras el restore
+          # (clave exacta sin fallback), es fresco y solo se verifica.
+          name: Compilar motor TTS (make blas + --self-test)
+          command: |
+            echo "[STEP] Compilar y verificar motor TTS - INICIO"
+            set -euo pipefail
+            if [ -x vendor/qwen3-tts/qwen_tts ]; then
+              echo "Motor TTS restaurado de caché; se ejecuta --self-test directo"
+              ./vendor/qwen3-tts/qwen_tts --self-test
+            else
+              cargo xtask build-engine --self-test
+            fi
+            echo "[STEP] Compilar y verificar motor TTS - FIN"
+      - save_cache:
+          key: tts-v1-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          paths:
+            - vendor/qwen3-tts/qwen_tts
+          when: on_success
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1597,6 +1697,12 @@ jobs:
       - unless:
           condition: << parameters.probe >>
           steps:
+            # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
+            # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+            # descarga; sin acierto se vuelve a descargar.
+            - restore_cache:
+                keys:
+                  - ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
             - run:
                 # Empaquetado canónico: `xtask package` monta el bundle desde
                 # packaging/bundle-manifest.json (la misma lista que valida
@@ -1609,23 +1715,13 @@ jobs:
                   set -euo pipefail
                   cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
-            - run:
-                # Humo de instalación: instala el artefacto empaquetado en un
-                # sandbox con las cuatro raíces reubicadas y comprueba que el
-                # binario instalado arranca.
-                name: Humo de instalación en sandbox (self install)
-                command: |
-                  echo "[STEP] Humo de instalación en sandbox - INICIO"
-                  set -euo pipefail
-                  SANDBOX="$(mktemp -d)"
-                  export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
-                  mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
-                  STAGE_SMOKE="$(mktemp -d)"
-                  tar -xzf artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz -C "$STAGE_SMOKE"
-                  "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
-                  "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
-                  rm -rf "$SANDBOX" "$STAGE_SMOKE"
-                  echo "[STEP] Humo de instalación en sandbox - FIN"
+            - save_cache:
+                key: ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
+                paths:
+                  - ort-bundle
+                when: on_success
+            - sandbox_install_unix:
+                artifact_glob: "ai-voice-interconnector-*-x86_64-linux.tar.gz"
             - run:
                 name: Emitir SHA-256 del artefacto
                 command: |
@@ -1672,12 +1768,7 @@ jobs:
                 os: linux-el8
                 variant: full
                 target: false
-      - run:
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            cargo fetch --locked
-            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
           os: linux-el8
@@ -1687,7 +1778,7 @@ jobs:
       - validate_pins
       - validate_features
       - run:
-          name: Compilar binario release (cargo build --release)
+          name: Compilar binario release (--features full)
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
@@ -1713,37 +1804,37 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      - run:
-          # Gate de facto ARM64: no hay test-linux-arm64 (suite mockeada),
-          # así que este smoke test es la única validación del stack aarch64.
-          name: Smoke test del binario (version + voces de fábrica)
-          command: |
-            echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
-            test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
-            target/release/ai-voice-interconnector version
-            # La versión del binario release debe coincidir con el tag; el
-            # contrato JSON de `version --json` lo cubre el golden de la CLI.
-            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
-            # Valida la voz de fábrica 'default' (runner limpio: voice list
-            # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
-            # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
-            # Captura previa en variable en lugar de tubería directa a `grep -q`:
-            # `grep -q` sale en cuanto encuentra la coincidencia y cierra la
-            # tubería; si el binario aún tiene líneas por escribir, esa
-            # escritura devuelve EPIPE y `println!` hace panic (Rust ignora
-            # SIGPIPE por defecto). Con `pipefail` eso tumbaba el paso de forma
-            # intermitente (visto en v0.20.9, build-linux-x64).
-            voice_list_out="$(target/release/ai-voice-interconnector voice list)"
-            printf '%s\n' "$voice_list_out" | grep -q '^  - default'
-            echo "Binario Linux ARM64 OK: version + voice list + versión del tag"
-            echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
+      # Gate de facto ARM64: no hay test-linux-arm64 (suite mockeada),
+      # así que este smoke test es la única validación del stack aarch64.
+      - smoke_test_unix:
+          label: "Linux ARM64"
+      - tts_engine_cachekey
+      - restore_cache:
+          keys:
+            - tts-v1-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
           # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
           # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
           # oráculo de kernels sin pesos) en un solo paso.
-          name: Compilar y verificar motor TTS
-          command: cargo xtask build-engine --self-test
+          # Cacheado como en Windows: si el binario existe tras el restore
+          # (clave exacta sin fallback), es fresco y solo se verifica.
+          name: Compilar motor TTS (make blas + --self-test)
+          command: |
+            echo "[STEP] Compilar y verificar motor TTS - INICIO"
+            set -euo pipefail
+            if [ -x vendor/qwen3-tts/qwen_tts ]; then
+              echo "Motor TTS restaurado de caché; se ejecuta --self-test directo"
+              ./vendor/qwen3-tts/qwen_tts --self-test
+            else
+              cargo xtask build-engine --self-test
+            fi
+            echo "[STEP] Compilar y verificar motor TTS - FIN"
+      - save_cache:
+          key: tts-v1-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          paths:
+            - vendor/qwen3-tts/qwen_tts
+          when: on_success
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1757,6 +1848,12 @@ jobs:
       - unless:
           condition: << parameters.probe >>
           steps:
+            # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
+            # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+            # descarga; sin acierto se vuelve a descargar.
+            - restore_cache:
+                keys:
+                  - ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
             - run:
                 # Empaquetado canónico: `xtask package` monta el bundle desde
                 # packaging/bundle-manifest.json (la misma lista que valida
@@ -1769,23 +1866,13 @@ jobs:
                   set -euo pipefail
                   cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
-            - run:
-                # Humo de instalación: instala el artefacto empaquetado en un
-                # sandbox con las cuatro raíces reubicadas y comprueba que el
-                # binario instalado arranca.
-                name: Humo de instalación en sandbox (self install)
-                command: |
-                  echo "[STEP] Humo de instalación en sandbox - INICIO"
-                  set -euo pipefail
-                  SANDBOX="$(mktemp -d)"
-                  export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
-                  mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
-                  STAGE_SMOKE="$(mktemp -d)"
-                  tar -xzf artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz -C "$STAGE_SMOKE"
-                  "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
-                  "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
-                  rm -rf "$SANDBOX" "$STAGE_SMOKE"
-                  echo "[STEP] Humo de instalación en sandbox - FIN"
+            - save_cache:
+                key: ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
+                paths:
+                  - ort-bundle
+                when: on_success
+            - sandbox_install_unix:
+                artifact_glob: "ai-voice-interconnector-*-arm64-linux.tar.gz"
             - run:
                 name: Emitir SHA-256 del artefacto
                 command: |
@@ -1821,26 +1908,7 @@ jobs:
       - checkout
       - toolchain_restore_cache:
           os: macos
-      - run:
-          name: Instalar Rust << pipeline.parameters.rust_pin >> vía rustup
-          no_output_timeout: 10m
-          command: |
-            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - INICIO"
-            # Idempotente: si la caché de toolchain ya trae rustup, se omite
-            # la instalación (ahorra ~2-3 min por corrida).
-            if [ -x "$HOME/.cargo/bin/rustup" ]; then
-              echo "Toolchain restaurado de caché; se omite rustup-init"
-            else
-              curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain << pipeline.parameters.rust_pin >> --profile minimal
-            fi
-            # No sourcear ~/.cargo/env: no está en la caché de toolchain
-            # (solo ~/.rustup y ~/.cargo/bin), así que en caché tibia no existe.
-            # El env de rustup solo antepone ~/.cargo/bin al PATH; lo hacemos directo.
-            echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> $BASH_ENV
-            export PATH="$HOME/.cargo/bin:$PATH"
-            cargo --version
-            rustc --version
-            echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+      - install_rust_macos
       - toolchain_save_cache:
           os: macos
       - run:
@@ -1874,13 +1942,7 @@ jobs:
                 os: macos
                 variant: full
                 target: false
-      - run:
-          name: Precargar dependencias (cargo fetch)
-          command: |
-            echo "[STEP] Precargar dependencias (cargo fetch) - INICIO"
-            export PATH="$HOME/.cargo/bin:$PATH"
-            cargo fetch --locked
-            echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+      - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
           os: macos
@@ -1890,7 +1952,7 @@ jobs:
       - validate_pins
       - validate_features
       - run:
-          name: Compilar binario release (cargo build --release)
+          name: Compilar binario release (--features full)
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
@@ -1919,38 +1981,36 @@ jobs:
           command: |
             export PATH="$HOME/.cargo/bin:$PATH"
             sccache --show-stats
-      - run:
-          name: Smoke test del binario (version + voces de fábrica)
-          command: |
-            echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
-            export PATH="$HOME/.cargo/bin:$PATH"
-            test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
-            target/release/ai-voice-interconnector version
-            # La versión del binario release debe coincidir con el tag; el
-            # contrato JSON de `version --json` lo cubre el golden de la CLI.
-            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
-            # Valida la voz de fábrica 'default' (runner limpio: voice list
-            # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
-            # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
-            # Captura previa en variable en lugar de tubería directa a `grep -q`:
-            # `grep -q` sale en cuanto encuentra la coincidencia y cierra la
-            # tubería; si el binario aún tiene líneas por escribir, esa
-            # escritura devuelve EPIPE y `println!` hace panic (Rust ignora
-            # SIGPIPE por defecto). Con `pipefail` eso tumbaba el paso de forma
-            # intermitente (visto en v0.20.9, build-linux-x64).
-            voice_list_out="$(target/release/ai-voice-interconnector voice list)"
-            printf '%s\n' "$voice_list_out" | grep -q '^  - default'
-            echo "Binario macOS ARM64 OK: version + voice list + versión del tag"
-            echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
+      - smoke_test_unix:
+          label: "macOS ARM64"
+      - tts_engine_cachekey
+      - restore_cache:
+          keys:
+            - tts-v1-macos-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
           # por plataforma (make + framework Accelerate en macOS), centraliza la
           # política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
           # oráculo de kernels sin pesos) en un solo paso.
-          name: Compilar y verificar motor TTS
+          # Cacheado como en Windows: si el binario existe tras el restore
+          # (clave exacta sin fallback), es fresco y solo se verifica.
+          name: Compilar motor TTS (make blas + --self-test)
           command: |
             export PATH="$HOME/.cargo/bin:$PATH"
-            cargo xtask build-engine --self-test
+            echo "[STEP] Compilar y verificar motor TTS - INICIO"
+            set -euo pipefail
+            if [ -x vendor/qwen3-tts/qwen_tts ]; then
+              echo "Motor TTS restaurado de caché; se ejecuta --self-test directo"
+              ./vendor/qwen3-tts/qwen_tts --self-test
+            else
+              cargo xtask build-engine --self-test
+            fi
+            echo "[STEP] Compilar y verificar motor TTS - FIN"
+      - save_cache:
+          key: tts-v1-macos-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          paths:
+            - vendor/qwen3-tts/qwen_tts
+          when: on_success
       - unless:
           condition: << parameters.probe >>
           steps:
@@ -1964,6 +2024,12 @@ jobs:
       - unless:
           condition: << parameters.probe >>
           steps:
+            # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
+            # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+            # descarga; sin acierto se vuelve a descargar.
+            - restore_cache:
+                keys:
+                  - ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
             - run:
                 # Empaquetado canónico: `xtask package` monta el bundle desde
                 # packaging/bundle-manifest.json (la misma lista que valida
@@ -1977,23 +2043,13 @@ jobs:
                   set -euo pipefail
                   cargo xtask package --expect-version "${CIRCLE_TAG#v}"
                   echo "[STEP] Empaquetar bundle con xtask package - FIN"
-            - run:
-                # Humo de instalación: instala el artefacto empaquetado en un
-                # sandbox con las cuatro raíces reubicadas y comprueba que el
-                # binario instalado arranca.
-                name: Humo de instalación en sandbox (self install)
-                command: |
-                  echo "[STEP] Humo de instalación en sandbox - INICIO"
-                  set -euo pipefail
-                  SANDBOX="$(mktemp -d)"
-                  export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
-                  mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
-                  STAGE_SMOKE="$(mktemp -d)"
-                  tar -xzf artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz -C "$STAGE_SMOKE"
-                  "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
-                  "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
-                  rm -rf "$SANDBOX" "$STAGE_SMOKE"
-                  echo "[STEP] Humo de instalación en sandbox - FIN"
+            - save_cache:
+                key: ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
+                paths:
+                  - ort-bundle
+                when: on_success
+            - sandbox_install_unix:
+                artifact_glob: "ai-voice-interconnector-*-arm64-macos.tar.gz"
             - run:
                 name: Emitir SHA-256 del artefacto
                 command: |
@@ -2080,20 +2136,7 @@ jobs:
       - checkout
       - attach_workspace:
           at: artifacts
-      - run:
-          name: Instalar gh CLI (repo apt oficial, firmado)
-          command: |
-            echo "[STEP] Instalar gh CLI - INICIO"
-            set -euo pipefail
-            sudo mkdir -p -m 755 /etc/apt/keyrings
-            wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-              | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-            sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-              | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt-get update
-            sudo apt-get install -y gh
-            echo "[STEP] Instalar gh CLI - FIN"
+      - install_gh_cli
       - run:
           name: Estampar la versión del tag en los bootstrap
           command: |
@@ -2163,7 +2206,7 @@ jobs:
             } >> notes.md
             echo "[STEP] Anexar pie de oferta GPLv3 - FIN"
       - run:
-          name: Publicar GitHub Release con 7 assets
+          name: Publicar GitHub Release (artefactos + SHA256SUMS)
           command: |
             echo "[STEP] Publicar GitHub Release - INICIO"
             set -euo pipefail
@@ -2193,20 +2236,8 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
-      - run:
-          name: Instalar gh CLI (repo apt oficial, firmado)
-          command: |
-            echo "[STEP] Instalar gh CLI - INICIO"
-            set -euo pipefail
-            sudo mkdir -p -m 755 /etc/apt/keyrings
-            wget -nv -O- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-              | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
-            sudo chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-              | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt-get update
-            sudo apt-get install -y gh git ruby
-            echo "[STEP] Instalar gh CLI - FIN"
+      - install_gh_cli:
+          extra_packages: "git ruby"
       - run:
           name: Descargar SHA256SUMS.txt del release recién publicado
           command: |
@@ -2234,14 +2265,20 @@ jobs:
             ruby -c /tmp/tap-clone/Casks/ai-voice-interconnector.rb
             echo "[STEP] Verificar sintaxis del Cask - FIN"
       - run:
-          name: Clonar tap, commitear Cask y empujar
+          name: Clonar tap de Homebrew
           command: |
-            echo "[STEP] Clonar tap, commitear Cask y empujar - INICIO"
+            echo "[STEP] Clonar tap de Homebrew - INICIO"
             set -euo pipefail
             RENDERED="/tmp/tap-clone/Casks/ai-voice-interconnector.rb"
             git clone --depth 1 "https://x-access-token:${HOMEBREW_TAP_PAT}@github.com/CristianRojas-SoftwareEngineer/homebrew-ai-voice-interconnector.git" /tmp/tap-repo
             mkdir -p /tmp/tap-repo/Casks
             cp "$RENDERED" /tmp/tap-repo/Casks/ai-voice-interconnector.rb
+            echo "[STEP] Clonar tap de Homebrew - FIN"
+      - run:
+          name: Commitear Cask y empujar al tap
+          command: |
+            echo "[STEP] Commitear Cask y empujar al tap - INICIO"
+            set -euo pipefail
             cd /tmp/tap-repo
             git config user.name "ai-voice-interconnector-ci"
             git config user.email "ci@ai-voice-interconnector.invalid"
@@ -2252,7 +2289,7 @@ jobs:
               git commit -m "Cask: actualizar a ${CIRCLE_TAG}"
               git push origin HEAD:main
             fi
-            echo "[STEP] Clonar tap, commitear Cask y empujar - FIN"
+            echo "[STEP] Commitear Cask y empujar al tap - FIN"
 
 # ══════════════════════════════════════════════════════════════════════
 # UN pipeline de release (`build-all`), disparado SOLO en tags `v*`:
@@ -2349,7 +2386,9 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
-          requires:
+          # Puertas de los 4 builds (ancla única): añadir un gate aquí lo exige
+          # en todos; no repetir la lista a mano (divergencia silenciosa).
+          requires: &build-gates
             - test-linux
             - test-windows
             - test-macos
@@ -2365,48 +2404,21 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
-          requires:
-            - test-linux
-            - test-windows
-            - test-macos
-            - test-bootstrap-linux
-            - test-bootstrap-windows
-            - test-bootstrap-macos
-            - coverage
-            - validate-licenses
-            - validate-changelog
+          requires: *build-gates
       - build-linux-arm64:
           filters:
             tags:
               only: /^v.*/
             branches:
               ignore: /.*/
-          requires:
-            - test-linux
-            - test-windows
-            - test-macos
-            - test-bootstrap-linux
-            - test-bootstrap-windows
-            - test-bootstrap-macos
-            - coverage
-            - validate-licenses
-            - validate-changelog
+          requires: *build-gates
       - build-darwin-arm64:
           filters:
             tags:
               only: /^v.*/
             branches:
               ignore: /.*/
-          requires:
-            - test-linux
-            - test-windows
-            - test-macos
-            - test-bootstrap-linux
-            - test-bootstrap-windows
-            - test-bootstrap-macos
-            - coverage
-            - validate-licenses
-            - validate-changelog
+          requires: *build-gates
       # ── Sala limpia de los artefactos Linux (AlmaLinux 8 y Debian stable-slim) ──
       - clean-room-linux:
           name: clean-room-linux-x64-<< matrix.image >>

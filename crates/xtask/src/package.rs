@@ -735,8 +735,8 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// Manifiesto mínimo de juguete para los tests (sin red ni disco del repo).
-    const TOY_MANIFEST: &str = r#"{
+    /// Manifiesto mínimo de fixture para los tests (sin red ni disco del repo).
+    const FIXTURE_MANIFEST: &str = r#"{
         "targets": {
             "x86_64-pc-windows-msvc": {
                 "executable": "ai-voice-interconnector.exe",
@@ -783,7 +783,7 @@ mod tests {
     /// El árbol montado desde orígenes falsos coincide con `required`.
     #[test]
     fn staged_layout_matches_required() {
-        let sections = parse_manifest_text(TOY_MANIFEST).unwrap();
+        let sections = parse_manifest_text(FIXTURE_MANIFEST).unwrap();
         let triple = if cfg!(windows) {
             "x86_64-pc-windows-msvc"
         } else {
@@ -810,7 +810,7 @@ mod tests {
             binary: src.join(&section.executable),
             engine: src.join(&section.executable),
         };
-        // Orígenes de juguete en `src/`, documentos simulados en la raíz.
+        // Orígenes de fixture en `src/`, documentos simulados en la raíz.
         let root = src.clone();
         stage_bundle(section, &sources, &root, &src, &stage).unwrap();
         let mut staged = Vec::new();

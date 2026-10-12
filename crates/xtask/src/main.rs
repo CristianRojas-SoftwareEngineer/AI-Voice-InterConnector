@@ -2567,7 +2567,6 @@ mod tests {
             );
             for name in [
                 "name: Empaquetar bundle con xtask package",
-                "name: Humo de instalación en sandbox (self install)",
                 "name: Emitir SHA-256 del artefacto",
             ] {
                 let n = lines
@@ -2580,6 +2579,45 @@ mod tests {
                     Some(not_probe.clone()),
                     "{job}: `{name}` debe ir bajo unless: << parameters.probe >>"
                 );
+            }
+            // El humo de instalación vive inline (Windows, PowerShell) o en el
+            // command `sandbox_install_unix` (Unix): en ambos casos la invocación
+            // debe ir bajo unless-probe y el paso conserva su nombre.
+            let sandbox_name = "name: Humo de instalación en sandbox (self install)";
+            match lines
+                .iter()
+                .position(|l| l.trim() == "- sandbox_install_unix:")
+            {
+                Some(r) => {
+                    assert_eq!(
+                        guard_of(&lines, r),
+                        Some(not_probe.clone()),
+                        "{job}: `sandbox_install_unix` debe ir bajo unless: << parameters.probe >>"
+                    );
+                    let def = cfg
+                        .split("\n  sandbox_install_unix:\n")
+                        .nth(1)
+                        .unwrap_or("")
+                        .split("\njobs:")
+                        .next()
+                        .unwrap_or("");
+                    assert!(
+                        def.lines().any(|l| l.trim() == sandbox_name),
+                        "sandbox_install_unix debe contener `{sandbox_name}`"
+                    );
+                }
+                None => {
+                    let n = lines
+                        .iter()
+                        .position(|l| l.trim() == sandbox_name)
+                        .unwrap_or_else(|| panic!("{job} debe contener `{sandbox_name}`"));
+                    let item = (0..n).rev().find(|&k| lines[k].trim() == "- run:").unwrap();
+                    assert_eq!(
+                        guard_of(&lines, item),
+                        Some(not_probe.clone()),
+                        "{job}: `{sandbox_name}` debe ir bajo unless: << parameters.probe >>"
+                    );
+                }
             }
 
             // Diagnóstico de CMake solo en modo sonda.
@@ -2661,7 +2699,7 @@ mod tests {
             "build-windows-x64 debe instalar Ninja (native_sccache_setup_windows) sin condición"
         );
         let compile_step = win
-            .split("name: Compilar binario release (cargo build --release)")
+            .split("name: Compilar binario release (--features full)")
             .nth(1)
             .expect("build-windows-x64 debe tener el paso de compilación")
             .split("\n      - ")
