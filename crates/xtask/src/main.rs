@@ -1678,6 +1678,76 @@ mod tests {
         std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
     }
 
+    /// Directorios de los parches de `[patch.crates-io]` del Cargo.toml raíz,
+    /// con la misma regla que usa el CI: las claves `path` de esa sección.
+    fn vendored_patch_dirs() -> Vec<String> {
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
+        let text = std::fs::read_to_string(&manifest).expect("se lee el Cargo.toml raíz");
+        let path_re = regex::Regex::new(r#"\bpath\s*=\s*"([^"]+)""#).unwrap();
+        let mut inside = false;
+        let mut dirs = Vec::new();
+        for line in text.lines() {
+            if line.starts_with('[') {
+                inside = line.trim() == "[patch.crates-io]";
+                continue;
+            }
+            if let Some(c) = path_re.captures(line).filter(|_| inside) {
+                dirs.push(c[1].to_string());
+            }
+        }
+        dirs
+    }
+
+    /// Cada parche de `[patch.crates-io]` es un crate bajo `vendor/`.
+    #[test]
+    fn test_vendored_patches_are_crates_under_vendor() {
+        let dirs = vendored_patch_dirs();
+        assert!(!dirs.is_empty(), "[patch.crates-io] debe declarar parches");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for dir in dirs {
+            assert!(dir.starts_with("vendor/"), "{dir} debe vivir bajo vendor/");
+            assert!(
+                root.join(&dir).join("Cargo.toml").is_file(),
+                "{dir} debe ser un crate"
+            );
+        }
+    }
+
+    /// Ninguna regla de ignorado alcanza los ficheros de un parche vendorizado,
+    /// que se compila entero desde sus fuentes: un fichero ignorado al copiarlo
+    /// no entraría en git y el build fallaría solo en un checkout limpio. Solo
+    /// se admite el `Cargo.lock` propio del crate, que cargo no usa en una
+    /// dependencia por ruta.
+    #[test]
+    fn test_vendored_patches_have_no_ignored_files() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        for dir in vendored_patch_dirs() {
+            let out = std::process::Command::new("git")
+                .args([
+                    "ls-files",
+                    "--others",
+                    "--ignored",
+                    "--exclude-standard",
+                    "--",
+                ])
+                .arg(&dir)
+                .current_dir(&root)
+                .output()
+                .expect("se ejecuta git ls-files");
+            assert!(out.status.success(), "git ls-files falló en {dir}");
+            let allowed = format!("{dir}/Cargo.lock");
+            let ignored: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter(|l| *l != allowed)
+                .map(str::to_string)
+                .collect();
+            assert!(
+                ignored.is_empty(),
+                "ficheros ignorados en el parche {dir}: {ignored:?}"
+            );
+        }
+    }
+
     /// Jobs de la sección `jobs:` como pares (nombre, texto). Cada sección va
     /// desde su clave a dos espacios de sangría hasta la siguiente clave del
     /// mismo nivel (o hasta `workflows:` para el último).
@@ -1984,9 +2054,10 @@ mod tests {
     #[test]
     fn test_target_key_with_vendored_patches_identity() {
         let cfg = read_ci_config();
-        // Los parches locales de cmake y hf-hub se fingerprintean por mtime: el
-        // checkout los marca Dirty y arrastra lo que dependa de ellos. La clave
-        // exacta de la caché de target/ lleva el tree hash git de ambos y NO tiene fallback,
+        // Los parches locales se fingerprintean por mtime: el checkout los marca
+        // Dirty y arrastra lo que dependa de ellos. La clave exacta de la caché
+        // de target/ lleva el tree hash git de cada uno, con la lista leída de
+        // `[patch.crates-io]`, y NO tiene fallback,
         // de modo que un acierto garantiza que target/ corresponde al contenido
         // actual y fijar el mtime es seguro. Reintroducir un fallback fijaría
         // mtimes sobre snapshots ajenos.
@@ -2005,27 +2076,25 @@ mod tests {
             .next()
             .unwrap_or("");
 
-        let hash_cmd = "git rev-parse HEAD:vendor/cmake-0.1.58";
-        let touch_line = restore_section
-            .lines()
-            .find(|l| l.contains("touch -t 200001010000"))
-            .unwrap_or("");
-        for dir in [
-            "vendor/cmake-0.1.58",
-            "vendor/hf-hub-1.0.0",
-            "vendor/alsa-sys-0.4.0",
-            "vendor/ct2rs-0.10.0",
-            "vendor/onednn-src-0.1.15",
-        ] {
-            assert!(
-                restore_section.contains(&format!("git rev-parse HEAD:{dir}")),
-                "cargo_restore_caches debe calcular el tree hash git de {dir}"
-            );
-            assert!(
-                touch_line.contains(dir),
-                "cargo_restore_caches debe fijar el mtime de {dir}"
-            );
-        }
+        let hash_cmd = r#"git rev-parse "HEAD:$dir""#;
+        assert!(
+            restore_section.contains(r"/^\[patch\.crates-io\]/")
+                && restore_section.contains("Cargo.toml > .vendor-patches.list"),
+            "cargo_restore_caches debe leer los parches de [patch.crates-io] del Cargo.toml"
+        );
+        assert!(
+            restore_section.contains(hash_cmd),
+            "cargo_restore_caches debe calcular el tree hash git de cada parche de la lista"
+        );
+        assert!(
+            restore_section.contains("done < .vendor-patches.list")
+                && restore_section.contains(r#"/usr/bin/find "$dir" -exec touch -t 200001010000"#),
+            "cargo_restore_caches debe fijar el mtime de cada parche de la lista"
+        );
+        assert!(
+            !restore_section.contains("HEAD:vendor/"),
+            "cargo_restore_caches no debe enumerar parches a mano"
+        );
         assert!(
             restore_section.contains(".vendor-patches.tree"),
             "el tree hash de los parches debe escribirse en .vendor-patches.tree"
@@ -2293,7 +2362,7 @@ mod tests {
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
         for marker in [
             "- target-v5-",
-            "name: Fijar mtime de los parches vendorizados cmake, hf-hub, alsa-sys, ct2rs y onednn-src",
+            "name: Fijar mtime de los parches vendorizados",
         ] {
             let i = cmd_lines
                 .iter()
