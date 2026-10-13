@@ -2781,6 +2781,8 @@ mod tts {
             .read(true)
             .write(true)
             .create(true)
+            // El fichero solo sirve de ancla del bloqueo: nunca se escribe en él.
+            .truncate(false)
             .open(&path)
             .unwrap_or_else(|e| {
                 panic!("no se puede abrir el bloqueo TTS ({}): {e}", path.display())
@@ -6502,6 +6504,80 @@ fn help_subcommand_is_disabled() {
     assert_eq!(code, 2, "help speech debe salir 2");
     let (code, _, _) = run_text_with_stderr(&["speech", "--help"]);
     assert_eq!(code, 0, "speech --help debe salir 0");
+}
+
+/// El programa sin subcomando muestra la ayuda de la raíz: exit 0 y stdout
+/// idéntico al de `--help`.
+#[test]
+fn no_subcommand_shows_root_help() {
+    let (code, bare, _) = run_text_with_stderr(&[]);
+    let (help_code, help, _) = run_text_with_stderr(&["--help"]);
+    assert_eq!(code, 0, "sin subcomando debe salir 0");
+    assert_eq!(help_code, 0);
+    assert!(bare.contains("Uso:"), "debe mostrar la ayuda: {bare}");
+    assert_eq!(bare, help, "debe coincidir con `--help`");
+}
+
+/// Con `--json`, la ayuda de la raíz (sin subcomando, `--help` o `-h`) sale
+/// como un único objeto `{"help"}` idéntico entre invocaciones.
+#[test]
+fn json_root_help_is_payload() {
+    let (code, bare) = run_json(&["--json"]);
+    assert_eq!(code, 0);
+    assert_eq!(bare["schema_version"], "5");
+    let text = bare["help"].as_str().expect("`help` es texto");
+    assert!(text.contains("Uso:"), "la ayuda lleva `Uso:`: {text}");
+    for args in [["--json", "--help"], ["--json", "-h"]] {
+        let (code, actual) = run_json(&args);
+        assert_eq!(code, 0, "{args:?}");
+        assert_eq!(actual, bare, "{args:?}");
+    }
+}
+
+/// Con `--json`, la ayuda de un nivel interior trae la ayuda de ese nivel.
+#[test]
+fn json_nested_help_is_payload_of_that_level() {
+    let (code, group) = run_json(&["--json", "speech", "--help"]);
+    assert_eq!(code, 0);
+    let text = group["help"].as_str().expect("`help` es texto");
+    assert!(text.contains("Uso:") && text.contains(" speech "), "{text}");
+    let (code, leaf) = run_json(&["--json", "speech", "say", "--help"]);
+    assert_eq!(code, 0);
+    let text = leaf["help"].as_str().expect("`help` es texto");
+    assert!(text.contains("Uso:") && text.contains(" say "), "{text}");
+}
+
+/// Con `--json`, `--version` y `-V` emiten el mismo objeto que `version`.
+#[test]
+fn json_version_flags_match_version_command() {
+    let (code, expected) = run_json(&["--json", "version"]);
+    assert_eq!(code, 0);
+    for flag in ["--version", "-V"] {
+        let (code, actual) = run_json(&["--json", flag]);
+        assert_eq!(code, 0, "{flag}");
+        assert_eq!(actual, expected, "{flag}");
+    }
+}
+
+/// Un grupo sin subcomando es un error de uso (2): sin `--json` ayuda por
+/// stderr y stdout vacío; con `--json` envelope `usage_error` con la ayuda.
+#[test]
+fn group_without_subcommand_is_usage_error() {
+    for group in ["speech", "voice", "daemon", "self"] {
+        let (code, stdout, stderr) = run_text_with_stderr(&[group]);
+        assert_eq!(code, 2, "{group}");
+        assert!(stdout.is_empty(), "{group}: stdout vacío: {stdout}");
+        assert!(stderr.contains("Uso:"), "{group}: {stderr}");
+        let (code, actual) = run_json(&["--json", group]);
+        assert_eq!(code, 2, "{group} --json");
+        assert_eq!(actual["reason"], "usage_error", "{group}");
+        let error = actual["error"].as_str().expect("`error` es texto");
+        assert!(
+            error.starts_with("Error: falta un subcomando"),
+            "{group}: {error}"
+        );
+        assert!(error.contains("Comandos:"), "{group}: {error}");
+    }
 }
 
 /// Argumento desconocido: exit 2 con error en español en stderr.

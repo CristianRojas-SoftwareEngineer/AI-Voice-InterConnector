@@ -264,14 +264,36 @@ fn localize_arg(arg: clap::Arg) -> clap::Arg {
 }
 
 /// Traduce los errores comunes de parseo de clap al español conservando el
-/// exit code. Ayuda/versión y los tipos sin mapear conservan el render
-/// original de clap.
+/// exit code. Los tipos sin mapear conservan el render original de clap.
 /// Con `json_mode` el rechazo mapeado sale como envelope `usage_error` por
 /// stdout (vía el emisor existente, que aporta `schema_version`); sin él se
-/// conserva el texto español por stderr.
+/// conserva el texto español por stderr. También con `json_mode`, la ayuda
+/// sale como payload `{"help"}`, la versión como el payload de `version` y un
+/// grupo sin subcomando como `usage_error` con la ayuda del grupo; sin él,
+/// los tres conservan el render original de clap.
 fn render_clap_error(err: clap::Error, json_mode: bool) -> ! {
     use clap::error::{ContextKind, ErrorKind};
     let kind = err.kind();
+    if json_mode {
+        match kind {
+            ErrorKind::DisplayHelp => {
+                emit_help(true, err.to_string().trim_end());
+                std::process::exit(0)
+            }
+            ErrorKind::DisplayVersion => {
+                // `handle_version` no falla; el código de salida refleja su resultado.
+                std::process::exit(if handle_version(true).is_ok() { 0 } else { 1 })
+            }
+            ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
+                emit_raw_json(json!({
+                    "error": format!("Error: falta un subcomando\n\n{}", err.to_string().trim_end()),
+                    "reason": "usage_error",
+                }));
+                std::process::exit(err.exit_code())
+            }
+            _ => {}
+        }
+    }
     let mapped = matches!(
         kind,
         ErrorKind::UnknownArgument
@@ -986,7 +1008,24 @@ async fn main() {
         .await),
         Some(Commands::SelfCmd { action }) => handle_self(json_mode, action).await,
         Some(Commands::Doctor { repair }) => handle_doctor(json_mode, repair),
-        None => ok(handle_version(json_mode)),
+        None => {
+            // Mismo nombre de binario que deriva clap de `argv[0]`, para que el
+            // texto coincida byte a byte con el de `--help`.
+            let bin_name = std::env::args_os()
+                .next()
+                .and_then(|a| {
+                    std::path::Path::new(&a)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                })
+                .unwrap_or_else(|| APP_NAME.to_string());
+            let help = localize_command(Cli::command())
+                .bin_name(bin_name)
+                .render_help()
+                .to_string();
+            emit_help(json_mode, help.trim_end());
+            Ok(Outcome::Done)
+        }
     };
 
     match result {
@@ -1062,6 +1101,15 @@ fn handle_version(json_mode: bool) -> Result<(), CliError> {
         println!("{} {}", APP_NAME, VERSION);
     }
     Ok(())
+}
+
+/// Emite la ayuda: con `json_mode` como payload `{"help"}`, sin él como texto.
+fn emit_help(json_mode: bool, text: &str) {
+    if json_mode {
+        emit_raw_json(json!({ "help": text }));
+    } else {
+        println!("{text}");
+    }
 }
 
 fn handle_devices(json_mode: bool) -> Result<(), CliError> {
