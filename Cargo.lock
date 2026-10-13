@@ -49,8 +49,10 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "ctrlc",
+ "fd-lock",
  "hound",
  "libc",
+ "parking_lot",
  "reqwest 0.12.28",
  "serde_json",
  "tempfile",
@@ -1240,6 +1242,17 @@ name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
+
+[[package]]
+name = "fd-lock"
+version = "4.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
+dependencies = [
+ "cfg-if 1.0.4",
+ "rustix",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "filetime"
