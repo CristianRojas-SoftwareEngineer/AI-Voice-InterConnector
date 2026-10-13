@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.29.2 — 2026-10-12](#0292--2026-10-12)
 - [0.29.1 — 2026-10-12](#0291--2026-10-12)
 - [0.29.0 — 2026-10-12](#0290--2026-10-12)
@@ -101,6 +102,34 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Este ciclo acelera la suite y endurece las descargas: el test de `self install`
+con fallo de provisión deja de colgar 7,6 min en macOS, las descargas de modelos
+no cuelgan más allá de 30 s por apretón de manos, y las tres suites Rust corren
+con `cargo-nextest` pineado. La publicación 0.29.3 mide el suelo del pipeline en
+caliente.
+
+### Cambiado
+
+- Las puertas `test-linux`, `test-windows` y `test-macos` ejecutan la suite con
+  `cargo nextest run --all` (binario 0.9.148 pineado e instalado desde el asset
+  oficial, con pin espejo `nextest_pin`). Misma suite, sin cambiar qué se valida;
+  en `test-linux` el binario dev se compila explícito porque `nextest` no lo
+  compila y la comprobación de ALSA lo necesita enlazado.
+
+### Corregido
+
+- El sandbox del contrato de `self install` libera el puerto de `HF_ENDPOINT`
+  tras reservarlo: en macOS, conectar contra un puerto retenido sin oyente
+  colgaba hasta el timeout TCP (~76 s por intento; ~7,6 min con los reintentos
+  de `hf-hub`), mientras que contra un puerto libre el sistema rechaza al
+  instante.
+- Las descargas de modelos (`avi-store`) usan un cliente HTTP propio con
+  `connect_timeout` de 30 s: una red agujereada ya no cuelga cada intento hasta
+  el timeout del sistema operativo. Solo acota el apretón de manos; los
+  reintentos de `hf-hub` siguen intactos.
 
 ## [0.29.2] — 2026-10-12
 
