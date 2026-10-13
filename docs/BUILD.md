@@ -498,7 +498,7 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 | `verify-portability` | `build-all` | Linux x64 y ARM64 | docker `almalinux:8` y `debian:stable-slim` | Verificación de portabilidad del artefacto Linux (4 instancias con nombre corto); `publish-release` depende de ella |
 | `build-darwin-arm64` | `build-all` | macOS arm64 | macos `m4pro.medium` | idem, Xcode 26.4 |
 | `publish-release` | `build-all` (CD) | Linux x64 | docker `cimg/base:2026.09` (pineada por digest) | Solo en tags `v*`: estampa los bootstrap, genera `SHA256SUMS.txt` sobre los 6 ficheros y publica el GitHub Release con 7 assets |
-| `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/rust` | Solo en tags `v*`: renderiza Cask con `cargo xtask cask` y empuja al tap |
+| `publish-metadata` | `build-all` (CD) | Linux x64 | docker `cimg/rust:1.96.0` | Solo en tags `v*`: renderiza Cask con `cargo xtask cask` y empuja al tap |
 
 ### Simetría: 3 puertas de test vs. 4 targets de build
 

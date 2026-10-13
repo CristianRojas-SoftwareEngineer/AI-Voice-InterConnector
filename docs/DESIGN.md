@@ -184,7 +184,7 @@ cargo build --release --features full
 ./target/release/ai-voice-interconnector voice list
 ```
 
-El pipeline CI ejecuta `cargo test --all` en Linux/Windows/macOS, `cargo llvm-cov`, `validate-licenses`, `validate-changelog` y los 3 smoke tests de one-liners, y luego 4 builds `cargo build --release --features full` con staging `tar.gz`/`.zip`. Ver `docs/BUILD.md`.
+El pipeline CI ejecuta `cargo nextest run --all` en Linux/Windows/macOS, `cargo llvm-cov`, `validate-licenses`, `validate-changelog` y los 3 smoke tests de one-liners, y luego 4 builds `cargo build --release --features full` con staging `tar.gz`/`.zip`. Ver `docs/BUILD.md`.
 
 ## Extensibilidad
 
