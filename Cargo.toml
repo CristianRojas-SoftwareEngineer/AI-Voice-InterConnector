@@ -60,18 +60,6 @@ avi-audio = { path = "crates/avi-audio", features = ["test-support"] }
 # `cargo test --all` disponga del punto de inyección de fallo sin que
 # `cargo build --release` lo lleve.
 avi-lifecycle = { path = "crates/avi-lifecycle", features = ["faults"] }
-# Solo para los tests: exclusión mutua entre procesos de los tests TTS pesados
-# (`tests/cli_golden.rs`, `mod tts`); nextest ejecuta cada test en su propio
-# proceso y el `static Mutex` en-proceso no los serializa. Elegida `fd-lock`
-# frente a `fs2` porque devuelve guarda RAII (`RwLock::write` libera al hacer
-# drop, sin unlock manual) y está mantenida (2025 frente a 2018).
-# `default-features = false` no altera la unión ya compilada: la crate no
-# declara features (solo bloqueo; nada de TLS/red/proxy).
-fd-lock = { version = "4", default-features = false }
-# Solo para los tests: `MappedMutexGuard` permite devolver la guarda del
-# file-lock desde `lock_tts()` siendo dueña del `Mutex` estático (sin
-# auto-referencia); ya estaba en el árbol, cero crates nuevas.
-parking_lot = { version = "0.12", default-features = false }
 
 [patch.crates-io]
 cmake = { path = "vendor/cmake-0.1.58" }
