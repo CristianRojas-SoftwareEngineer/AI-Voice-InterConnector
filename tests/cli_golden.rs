@@ -2783,16 +2783,10 @@ mod tts {
             .create(true)
             .open(&path)
             .unwrap_or_else(|e| {
-                panic!(
-                    "no se puede abrir el bloqueo TTS ({}): {e}",
-                    path.display()
-                )
+                panic!("no se puede abrir el bloqueo TTS ({}): {e}", path.display())
             });
         file.lock().unwrap_or_else(|e| {
-            panic!(
-                "no se puede tomar el bloqueo TTS ({}): {e}",
-                path.display()
-            )
+            panic!("no se puede tomar el bloqueo TTS ({}): {e}", path.display())
         });
         TtsGuard { _file: file }
     }
