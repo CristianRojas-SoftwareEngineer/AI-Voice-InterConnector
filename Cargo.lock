@@ -295,6 +295,7 @@ dependencies = [
  "hf-hub",
  "hound",
  "indicatif 0.17.11",
+ "reqwest 0.13.4",
  "same-file",
  "serde",
  "serde_json",

@@ -881,8 +881,17 @@ impl ModelStore {
         let progress = indicatif_progress();
         // Cache explícita: la resolución de la app (models_cache_dir) manda sobre el
         // fallback roto de hf-hub (HOME→/tmp); lectura y escritura convergen.
+        // Cliente propio con `connect_timeout`: sin él, una red agujereada cuelga
+        // cada intento hasta el timeout TCP del SO (~76 s en macOS; con los 6
+        // intentos de `hf-hub` son ~7,6 min por archivo antes del `network_error`).
+        // Solo acota el apretón de manos; las descargas lentas pero vivas no se
+        // tocan. Los reintentos de `hf-hub` siguen aplicándose encima.
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .build()?;
         let client = hf_hub::HFClient::builder()
             .cache_dir(models_cache_dir()?)
+            .client(http)
             .build()?;
         let (owner, name) = hf_hub::split_id(repo_id);
         let repo = client.model(owner, name);
