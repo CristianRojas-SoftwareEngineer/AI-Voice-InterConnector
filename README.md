@@ -331,14 +331,14 @@ mantiene los motores calientes entre invocaciones. Detalle en
 - [docs/MANUAL-VALIDATION.md](docs/MANUAL-VALIDATION.md) — validación manual de la CLI.
 - [docs/dev/CONTEXT-OPTIMIZATION.md](docs/dev/CONTEXT-OPTIMIZATION.md) — optimización de contexto para agentes de código.
 - [AGENTS.md](AGENTS.md) — guías para agentes de código.
-- [SOURCE-OFFER.md](SOURCE-OFFER.md) — oferta de fuente GPLv3 §6.
+- [SOURCE-OFFER.md](SOURCE-OFFER.md) — disponibilidad de la fuente (MPL-2.0 §3.2).
 - [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) — inventario de licencias de terceros.
 - [docs/issues/README.md](docs/issues/README.md) — registro de defectos abiertos.
 
 ## Licencia
 
-Copyright © 2026 Cristián Rojas Arredondo — **GPL-3.0-or-later** ([LICENSE](LICENSE)).
-Motor Qwen3-TTS MIT/Apache-2.0; par de traducción `opus-mt` (Helsinki-NLP) CC-BY-4.0; dependencias en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) (inventario Rust `Cargo.lock`). Oferta de fuente GPLv3 §6 en [SOURCE-OFFER.md](SOURCE-OFFER.md).
+Copyright © 2026 Cristián Rojas Arredondo — **MPL-2.0** ([LICENSE](LICENSE), avisos en [NOTICE](NOTICE)).
+Motor Qwen3-TTS MIT/Apache-2.0; par de traducción `opus-mt` (Helsinki-NLP) CC-BY-4.0; dependencias en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) (inventario Rust `Cargo.lock`). Disponibilidad de la fuente (MPL-2.0 §3.2) en [SOURCE-OFFER.md](SOURCE-OFFER.md).
 
 ## Comunidad y soporte
 

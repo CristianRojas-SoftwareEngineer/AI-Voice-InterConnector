@@ -5,7 +5,7 @@
 Parakeet vía ort load-dynamic (sin enlace en build)) y se **empaqueta por SO en un
 archivo comprimido** (`tar.gz` en los 3 targets Unix, `.zip` en Windows) que
 agrupa el binario con el motor TTS, ONNX Runtime y los documentos de licencia
-GPLv3. El binario y el motor enlazan además librerías dinámicas que el archivo
+MPL-2.0. El binario y el motor enlazan además librerías dinámicas que el archivo
 no trae: ver [Dependencias de runtime por plataforma](#dependencias-de-runtime-por-plataforma).
 
 Esta guía explica cómo se compila y por qué se compila así. Las versiones y los
@@ -371,9 +371,9 @@ El archivo de cada target lo monta de forma determinista `cargo xtask package`
 fijos, sin herramientas de terceros), así que el mismo árbol produce el mismo
 archivo en cualquier runner. Su layout es el de
 [`packaging/bundle-manifest.json`](../packaging/bundle-manifest.json), la misma
-lista que valida `self install`; los documentos GPLv3 viajan dentro del archivo
-y quedan instalados junto al binario (cumplimiento del §6 de la GPLv3 sin
-depender de un bundle).
+lista que valida `self install`; los documentos MPL-2.0 viajan dentro del archivo
+y quedan instalados junto al binario (disponibilidad de la fuente según §3.2
+de la MPL-2.0 sin depender de un bundle).
 
 Dónde está cada tema:
 

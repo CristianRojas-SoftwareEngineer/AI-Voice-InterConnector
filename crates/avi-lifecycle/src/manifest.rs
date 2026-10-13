@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 //! Lista canónica de archivos del bundle y su validación, que es el paso 2 de la
 //! instalación.
 //!
@@ -141,10 +147,11 @@ mod tests {
                     );
                 }
             }
-            // Los cuatro documentos, el motor y la librería de ONNX Runtime con
+            // Los cinco documentos, el motor y la librería de ONNX Runtime con
             // el nombre que el crate `ort` busca en `load-dynamic`.
             for document in [
                 "LICENSE",
+                "NOTICE",
                 "THIRD-PARTY-LICENSES.md",
                 "SOURCE-OFFER.md",
                 "README.md",

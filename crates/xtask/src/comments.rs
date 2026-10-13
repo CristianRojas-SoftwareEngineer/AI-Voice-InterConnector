@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 //! `xtask comments --check`: puerta que rechaza dos formas de documentar que se
 //! desalinean con el tiempo en cuanto el código se mueve.
 //!
@@ -69,18 +75,18 @@ struct AllowEntry {
 
 /// Supervivencias conocidas, una por fichero y con su razón.
 ///
-/// Las cuatro son la **sección 6 de la GNU GPL**, que es una sección del contrato de
+/// Las dos son la **sección 3.2 de la MPL-2.0**, que es una sección del contrato de
 /// licencia y no de la especificación. Este control no las reescribe y no puede hacerlo,
 /// porque es el texto que la propia licencia exige publicar.
 const ALLOWLIST: &[AllowEntry] = &[
     AllowEntry {
         file: "crates/xtask/src/main.rs",
-        reason: "sección 6 de la GNU GPL en la plantilla y el anuncio de la oferta de \
-                 código fuente; es contrato de licencia, no de la especificación",
+        reason: "sección 3.2 de la MPL-2.0 en la plantilla y el anuncio del aviso de \
+                 disponibilidad de la fuente; es contrato de licencia, no de la especificación",
     },
     AllowEntry {
         file: ".circleci/config.yml",
-        reason: "sección 6 de la GNU GPL en el título de la oferta de código fuente que \
+        reason: "sección 3.2 de la MPL-2.0 en el título del pie de fuente que \
                  publica el job de release; mismo contrato de licencia",
     },
 ];
@@ -179,9 +185,9 @@ fn scan(base: &Path, files: &[PathBuf]) -> Result<Vec<Hit>> {
 }
 
 /// Si el fichero tiene una supervivencia declarada. La lista es por fichero y no por
-/// línea porque la razón es la misma para todas las de un fichero: aquí son las cuatro
-/// líneas de la GNU GPL, y separarlas daría cuatro entradas que alguien tendría que podar
-/// en cuanto la línea se moviera.
+/// línea porque la razón es la misma para todas las de un fichero: aquí son las citas
+/// de la sección 3.2 de la MPL-2.0, y separarlas daría entradas que alguien tendría
+/// que podar en cuanto la línea se moviera.
 fn is_allowed(relative: &str) -> bool {
     ALLOWLIST.iter().any(|e| e.file == relative)
 }

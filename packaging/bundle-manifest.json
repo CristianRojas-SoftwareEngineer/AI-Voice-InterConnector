@@ -1,11 +1,11 @@
 {
-  "note": "Lista canonica de archivos que el bundle de release debe contener, por target. La valida `self install` contra el directorio de programa en ejecucion y la montara `cargo xtask package`; al ser la unica fuente, empaquetado e instalacion no pueden divergir. Replica el staging de los cuatro jobs de build de .circleci/config.yml: ejecutable, los cuatro documentos de la raiz, el derivado del motor en vendor/qwen3-tts/ y la libreria de ONNX Runtime con el nombre exacto que el crate `ort` busca en load-dynamic, mas las DLL del runtime de VC++ de Windows: las cuatro que esa libreria necesita y vcomp140.dll, el runtime OpenMP que importa el ejecutable. Rutas relativas a la raiz del bundle, separador `/` en todos los targets. Cada target declara ademas su contrato de dependencias: system_libs (librerias del sistema base que un binario del bundle puede importar; una entrada que termina en / o en * admite todo lo que empieza por ese prefijo), symbol_ceilings (version maxima de cada familia de simbolos versionados de ELF) y min_os (version minima de macOS que deben declarar los binarios); cargo xtask package los audita antes de comprimir.",
+  "note": "Lista canonica de archivos que el bundle de release debe contener, por target. La valida `self install` contra el directorio de programa en ejecucion y la montara `cargo xtask package`; al ser la unica fuente, empaquetado e instalacion no pueden divergir. Replica el staging de los cuatro jobs de build de .circleci/config.yml: ejecutable, los cinco documentos de la raiz, el derivado del motor en vendor/qwen3-tts/ y la libreria de ONNX Runtime con el nombre exacto que el crate `ort` busca en load-dynamic, mas las DLL del runtime de VC++ de Windows: las cuatro que esa libreria necesita y vcomp140.dll, el runtime OpenMP que importa el ejecutable. Rutas relativas a la raiz del bundle, separador `/` en todos los targets. Cada target declara ademas su contrato de dependencias: system_libs (librerias del sistema base que un binario del bundle puede importar; una entrada que termina en / o en * admite todo lo que empieza por ese prefijo), symbol_ceilings (version maxima de cada familia de simbolos versionados de ELF) y min_os (version minima de macOS que deben declarar los binarios); cargo xtask package los audita antes de comprimir.",
   "targets": {
     "x86_64-pc-windows-msvc": {
       "executable": "ai-voice-interconnector.exe",
       "required": [
         "ai-voice-interconnector.exe",
-        "LICENSE",
+        "LICENSE", "NOTICE",
         "THIRD-PARTY-LICENSES.md",
         "SOURCE-OFFER.md",
         "README.md",
@@ -30,7 +30,7 @@
       "executable": "ai-voice-interconnector",
       "required": [
         "ai-voice-interconnector",
-        "LICENSE",
+        "LICENSE", "NOTICE",
         "THIRD-PARTY-LICENSES.md",
         "SOURCE-OFFER.md",
         "README.md",
@@ -49,7 +49,7 @@
       "executable": "ai-voice-interconnector",
       "required": [
         "ai-voice-interconnector",
-        "LICENSE",
+        "LICENSE", "NOTICE",
         "THIRD-PARTY-LICENSES.md",
         "SOURCE-OFFER.md",
         "README.md",
@@ -68,7 +68,7 @@
       "executable": "ai-voice-interconnector",
       "required": [
         "ai-voice-interconnector",
-        "LICENSE",
+        "LICENSE", "NOTICE",
         "THIRD-PARTY-LICENSES.md",
         "SOURCE-OFFER.md",
         "README.md",

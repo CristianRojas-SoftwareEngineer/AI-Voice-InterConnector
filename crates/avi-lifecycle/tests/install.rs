@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 //! `self install` de punta a punta sobre raíces reubicadas a temporales.
 //!
 //! Todas las raíces se reubican por sus variables, que es lo que el aislamiento declara
@@ -6,7 +12,7 @@
 //! programa, el directorio del enlace, la raíz de datos, la raíz de modelos, el
 //! `HOME` y la clave de registro son todos del test.
 //!
-//! El bundle que se instala es **sintético y completo**: los cuatro documentos, la
+//! El bundle que se instala es **sintético y completo**: los cinco documentos, la
 //! librería de runtime y el derivado del motor, con los nombres exactos que
 //! `packaging/bundle-manifest.json` exige para el target del host. El ejecutable es
 //! un fichero de texto: esta prueba afirma el flujo de la instalación, no que el binario

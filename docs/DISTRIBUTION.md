@@ -2,7 +2,7 @@
 
 `ai-voice-interconnector` se distribuye por un **único canal nativo**, publicado
 en cada tag `v*`: **archivos comprimidos** (`tar.gz`/`.zip`) que agrupan el
-binario Rust con el motor TTS, ONNX Runtime y los documentos de licencia GPLv3
+binario Rust con el motor TTS, ONNX Runtime y los documentos de licencia MPL-2.0
 (ver [docs/BUILD.md](BUILD.md)). La distribución es 100 % Rust.
 
 ## Tabla de contenidos
@@ -37,7 +37,7 @@ dentro del archivo, se descargan en el primer `setup`.
 ## Formato de los artefactos
 
 Cada uno de los 4 targets se publica como un archivo comprimido con el layout
-de `packaging/bundle-manifest.json`: en la raíz, el binario, los 4 documentos de
+de `packaging/bundle-manifest.json`: en la raíz, el binario, los 5 documentos de
 la raíz del repositorio y la librería de ONNX Runtime (más las cinco DLL del
 runtime de VC++ en Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
 `msvcp140.dll`, `msvcp140_1.dll` y `vcomp140.dll`); el motor, en `vendor/qwen3-tts/qwen_tts[.exe]`:
@@ -49,10 +49,10 @@ runtime de VC++ en Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
 | `build-darwin-arm64` | `ai-voice-interconnector-<ver>-arm64-macos.tar.gz` | `ai-voice-interconnector` |
 | `build-windows-x64` | `ai-voice-interconnector-<ver>-x86_64-windows.zip` | `ai-voice-interconnector.exe` |
 
-Los 4 documentos incluidos son `LICENSE`, `THIRD-PARTY-LICENSES.md`,
-`SOURCE-OFFER.md` (oferta de fuente GPLv3 §6) y `README.md`. Al viajar dentro
-del archivo, quedan instalados junto al binario, satisfaciendo el cumplimiento
-GPLv3 sin depender del bundle. `SHA256SUMS.txt` se calcula sobre los 4 archivos
+Los 5 documentos incluidos son `LICENSE`, `NOTICE`, `THIRD-PARTY-LICENSES.md`,
+`SOURCE-OFFER.md` (disponibilidad de la fuente, MPL-2.0 §3.2) y `README.md`. Al viajar dentro
+del archivo, quedan instalados junto al binario, satisfaciendo la disponibilidad
+de la fuente sin depender del bundle. `SHA256SUMS.txt` se calcula sobre los 4 archivos
 comprimidos más los 2 bootstrap (`install.sh`, `install.ps1`); el release
 publica 7 assets.
 
@@ -137,7 +137,7 @@ binario en el prefix (`/opt/homebrew/bin`, ya en el PATH) sin `sudo` y elimina e
 atributo de cuarentena, con lo que mitiga Gatekeeper. Toda la integración de `PATH`,
 la desinstalación (`brew uninstall --cask --zap`) y la limpieza de cuarentena las
 resuelve Homebrew; solo el modelo queda pendiente, porque el Cask no puede correr
-post-install: sus `caveats` remiten a `setup` y a la licencia GPL-3.0-or-later.
+post-install: sus `caveats` remiten a `setup` y a la licencia MPL-2.0.
 
 **Antivirus.** El Cask de macOS es la única vía que sí limpia la cuarentena. Los
 one-liners no eliminan por sí mismos las alertas de antivirus; evitan SmartScreen

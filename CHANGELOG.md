@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.29.5 — 2026-10-13](#0295--2026-10-13)
 - [0.29.4 — 2026-10-13](#0294--2026-10-13)
 - [0.29.3 — 2026-10-13](#0293--2026-10-13)
@@ -104,6 +105,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Cambiado
+
+- Licencia del proyecto: de `GPL-3.0-or-later` a `MPL-2.0` (copyleft a nivel de
+  archivo). Quien modifique archivos cubiertos debe publicarlos bajo MPL-2.0;
+  la obra mayor que los combina puede mantener su licencia propia. Ver
+  `LICENSE`, `NOTICE` y `THIRD-PARTY-LICENSES.md`.
 
 ## [0.29.5] — 2026-10-13
 

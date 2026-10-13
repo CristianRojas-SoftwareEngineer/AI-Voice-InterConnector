@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 //! Confirmación y simulación de las operaciones de ciclo de vida.
 //!
 //! La tabla de confirmaciones tiene cuatro celdas, y las cuatro importan porque el

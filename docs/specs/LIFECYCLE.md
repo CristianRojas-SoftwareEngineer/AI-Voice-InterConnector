@@ -290,6 +290,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
     "libonnxruntime.so",
     "vendor/qwen3-tts/qwen_tts",
     "LICENSE",
+    "NOTICE",
     "THIRD-PARTY-LICENSES.md",
     "SOURCE-OFFER.md",
     "README.md"
@@ -763,7 +764,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `SECURITY.md` | Política y runbook: Mark-of-the-Web, los dos bootstrap como única ejecución previa al binario, y el aviso de binarios sin firmar diferido al goal a largo plazo |
 | `AGENTS.md` | Directrices de trabajo en este repositorio: idioma, surgicalidad, disciplina de versionado y prohibiciones; gobierna a quien modifica el proyecto, no al usuario final |
 | `CHANGELOG.md` | Historial de cambios por versión; la sección `[No publicado]` se cura durante el desarrollo y `cargo xtask release` la promueve |
-| `SOURCE-OFFER.md` | Oferta de código fuente exigida por la GPLv3 §6, ligada a la versión publicada y actualizada en el corte de release |
+| `SOURCE-OFFER.md` | Aviso de disponibilidad de la fuente (MPL-2.0 §3.2), ligado a la versión publicada y actualizado en el corte de release |
 | `docs/dev/CONTEXT-OPTIMIZATION.md` | Guía de desarrollo sobre la optimización de contexto de los agentes de código con Engram y Codebase Memory MCP |
 | `docs/issues/README.md` | Índice y convenciones del registro de defectos: estructura común de cada documento de defecto abierto |
 ## 14. Criterios de aceptación

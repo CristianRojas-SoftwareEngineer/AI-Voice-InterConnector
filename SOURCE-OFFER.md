@@ -1,9 +1,8 @@
-# Oferta de código fuente (GPLv3 §6)
+# Disponibilidad del código fuente (MPL-2.0 §3.2)
 
 **AI Voice InterConnector 0.29.5** se distribuye bajo la licencia
-**GPL-3.0-or-later** (ver `LICENSE`). Conforme a la sección 6 de la GPLv3,
-este binario va acompañado de una oferta de acceso al código fuente completo
-correspondiente a esta versión exacta:
+**MPL-2.0** (ver `LICENSE`). Conforme a la sección 3.2 de la MPL-2.0,
+el código fuente correspondiente a esta versión exacta está disponible en:
 
 - **Código fuente (tarball del tag):**
   <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/v0.29.5.tar.gz>

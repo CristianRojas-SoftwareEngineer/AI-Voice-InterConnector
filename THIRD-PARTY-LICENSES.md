@@ -1,6 +1,6 @@
 # Licencias de terceros (Third-Party Licenses)
 
-AI Voice InterConnector se distribuye bajo **GPL-3.0-or-later** (ver `LICENSE`). El binario
+AI Voice InterConnector se distribuye bajo **MPL-2.0** (ver `LICENSE` y `NOTICE`). El binario
 Rust y su archivo de release empaquetan software de terceros bajo sus propias
 licencias. Este documento reúne los avisos de copyright y las licencias correspondientes,
 cuya preservación exigen dichas licencias al redistribuir el software.
@@ -31,7 +31,7 @@ completitud.
 ## Familias de licencias permisivas
 
 La mayoría de los crates empaquetados usan licencias permisivas compatibles con
-GPLv3: **MIT**, **Apache-2.0**, **BSD**, **ISC**, **Unlicense**.
+MPL-2.0: **MIT**, **Apache-2.0**, **BSD**, **ISC**, **Unlicense**.
 
 - **MIT** — permiso de uso, copia, modificación y distribución conservando el aviso de
   copyright y la nota de permiso. Texto: <https://opensource.org/license/mit>.
@@ -69,8 +69,9 @@ SOFTWARE.
 
 ## Componentes con obligaciones adicionales
 
-Solo crates permisivos y el propio proyecto (GPL-3.0-or-later) están presentes en el
-binario Rust. No hay componentes MPL/LGPL/GPL adicionales más allá del proyecto.
+Solo crates permisivos y el propio proyecto (MPL-2.0) están presentes en el
+binario Rust. No hay componentes GPL/AGPL adicionales más allá de los runtimes
+del sistema con excepción (GCC Runtime Library Exception, documentados abajo).
 Los pesos de modelos y OpenBLAS (BSD-3-Clause, GCC Runtime Exception) se documentan
 en `docs/BUILD.md` §6 (build del motor) y §7 (descarga de modelos).
 
@@ -86,7 +87,8 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
 - **Motor TTS `qwen_tts`**: enlaza estáticamente OpenBLAS (**BSD-3-Clause**) y, en
   Windows y Linux, el runtime de GCC que usa su LAPACK (`libgfortran` y `libgcc` bajo
   GPL-3.0 con la **GCC Runtime Library Exception**, y, en Windows y Linux x86_64,
-  `libquadmath` bajo **LGPL-2.1-or-later**, compatible con la GPLv3 del proyecto).
+   `libquadmath` bajo **LGPL-2.1-or-later**, combinable con el proyecto MPL-2.0
+   como obra mayor).
 - **Runtime de GCC en el binario de Linux**: el binario principal enlaza
   estáticamente `libgomp` (runtime OpenMP de CTranslate2 y oneDNN) y `libstdc++`
   (runtime C++ de CTranslate2, oneDNN, SentencePiece y `cxx`), del gcc-toolset de la imagen de
@@ -119,14 +121,14 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
 
 <!-- inventario:inicio -->
 Generado desde `Cargo.lock` (493 paquetes resueltos, 460 crates únicos, directos y transitivos).
-Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-2.0 2, GPL-3.0-or-later 12, ISC 3, MIT 425, MPL-2.0 2, Unicode-3.0 18, Zlib 6.
+Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-2.0 2, ISC 3, MIT 425, MPL-2.0 14, Unicode-3.0 18, Zlib 6.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
 | `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | MIT |
 | `ahash` | 0.8.12 | MIT OR Apache-2.0 | MIT |
 | `aho-corasick` | 1.1.5 | Unlicense OR MIT | MIT |
-| `ai-voice-interconnector` | 0.29.5 | GPL-3.0-or-later | GPL-3.0-or-later |
+| `ai-voice-interconnector` | 0.29.5 | MPL-2.0 | MPL-2.0 |
 | `alsa` | 0.11.0 | Apache-2.0/MIT | MIT |
 | `alsa-sys` | 0.4.0 | MIT | MIT |
 | `android_system_properties` | 0.1.6 | MIT OR Apache-2.0 | MIT |
@@ -142,16 +144,16 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `async-trait` | 0.1.92 | MIT OR Apache-2.0 | MIT |
 | `atomic-waker` | 1.1.2 | Apache-2.0 OR MIT | MIT |
 | `autocfg` | 1.5.1 | Apache-2.0 OR MIT | MIT |
-| `avi-audio` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-core` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-daemon` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-lifecycle` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-process` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-shared` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-store` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-stt` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-translation` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
-| `avi-tts` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
+| `avi-audio` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-core` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-daemon` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-lifecycle` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-process` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-shared` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-store` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-stt` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-translation` | 0.1.0 | MPL-2.0 | MPL-2.0 |
+| `avi-tts` | 0.1.0 | MPL-2.0 | MPL-2.0 |
 | `aws-lc-rs` | 1.18.0 | ISC AND (Apache-2.0 OR ISC) | Apache-2.0 |
 | `aws-lc-sys` | 0.44.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) | MIT |
 | `axum` | 0.7.9 | MIT | MIT |
@@ -601,7 +603,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `xet-core-structures` | 1.6.0 | Apache-2.0 | Apache-2.0 |
 | `xet-data` | 1.6.0 | Apache-2.0 | Apache-2.0 |
 | `xet-runtime` | 1.6.0 | Apache-2.0 | Apache-2.0 |
-| `xtask` | 0.1.0 | GPL-3.0-or-later | GPL-3.0-or-later |
+| `xtask` | 0.1.0 | MPL-2.0 | MPL-2.0 |
 | `yoke` | 0.8.3 | Unicode-3.0 | Unicode-3.0 |
 | `yoke-derive` | 0.8.2 | Unicode-3.0 | Unicode-3.0 |
 | `zerocopy` | 0.8.56 | BSD-2-Clause OR Apache-2.0 OR MIT | MIT |
@@ -618,7 +620,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `zopfli` | 0.8.3 | Apache-2.0 | Apache-2.0 |
 <!-- inventario:fin -->
 
-> `ai-voice-interconnector`, `avi-*` y `xtask` son crates locales del proyecto (GPL-3.0-or-later).
+> `ai-voice-interconnector`, `avi-*` y `xtask` son crates locales del proyecto (MPL-2.0).
 
 ---
 

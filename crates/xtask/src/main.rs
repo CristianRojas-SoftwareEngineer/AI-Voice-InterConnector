@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
 use anyhow::{anyhow, Result};
@@ -49,20 +55,20 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
     descargalos una sola vez con:
       ai-voice-interconnector setup
 
-    Licencia: GPL-3.0-or-later. La oferta de codigo fuente (GPLv3 seccion 6)
-    y las atribuciones de terceros viajan dentro del archivo instalado:
+    Licencia: MPL-2.0. El aviso de disponibilidad del codigo fuente (MPL-2.0
+    seccion 3.2) y las atribuciones de terceros viajan dentro del archivo
+    instalado:
       #{staged_path}/SOURCE-OFFER.md
       #{staged_path}/THIRD-PARTY-LICENSES.md
   EOS
 end
 "#;
 
-const SOURCE_OFFER_TEMPLATE: &str = r#"# Oferta de código fuente (GPLv3 §6)
+const SOURCE_OFFER_TEMPLATE: &str = r#"# Disponibilidad del código fuente (MPL-2.0 §3.2)
 
 **AI Voice InterConnector {version}** se distribuye bajo la licencia
-**GPL-3.0-or-later** (ver `LICENSE`). Conforme a la sección 6 de la GPLv3,
-este binario va acompañado de una oferta de acceso al código fuente completo
-correspondiente a esta versión exacta:
+**MPL-2.0** (ver `LICENSE`). Conforme a la sección 3.2 de la MPL-2.0,
+el código fuente correspondiente a esta versión exacta está disponible en:
 
 - **Código fuente (tarball del tag):**
   <https://github.com/{repo}/archive/refs/tags/v{version}.tar.gz>
@@ -548,7 +554,7 @@ fn main() -> Result<()> {
             println!("  - Cargo.lock (ai-voice-interconnector)");
             println!("  - tests/golden/cli_version.json");
             println!("  - THIRD-PARTY-LICENSES.md (inventario regenerado)");
-            println!("  - SOURCE-OFFER.md (oferta GPLv3 §6 versionada)");
+            println!("  - SOURCE-OFFER.md (aviso MPL-2.0 §3.2 versionado)");
             println!("  - CHANGELOG.md (sección promovida desde [No publicado] + ToC + enlace)");
             println!(
                 "Comprobaciones: formato (cargo fmt), clippy sin avisos, pruebas con recursos (--include-ignored); licencias, SOURCE-OFFER.md y CHANGELOG.md en sincronía"
@@ -836,7 +842,7 @@ fn bump_version(version: &str) -> Result<()> {
         version,
     )?;
 
-    // SOURCE-OFFER.md: oferta GPLv3 §6 versionada
+    // SOURCE-OFFER.md: aviso MPL-2.0 §3.2 versionado
     let offer = render_source_offer(version);
     std::fs::write(Path::new("SOURCE-OFFER.md"), offer)?;
 
@@ -1591,7 +1597,7 @@ mod tests {
         // R3: sin globales compartidos.
         assert!(!c.contains("~/.cache/huggingface/xet"));
         assert!(!c.contains("~/.cache/huggingface/hub/.locks"));
-        assert!(c.contains("GPL-3.0-or-later"));
+        assert!(c.contains("MPL-2.0"));
         // El mínimo del Cask es el que el job de macOS fija con
         // MACOSX_DEPLOYMENT_TARGET (macOS 26, Tahoe): Homebrew no debe
         // instalar el binario donde dyld no lo cargaría.

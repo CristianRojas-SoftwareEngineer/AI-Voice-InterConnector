@@ -97,8 +97,8 @@ git push origin main --tags           # sin --tags el tag no dispara build-all
      se distribuye y no otra `onnxruntime.dll` del sistema. Si falla, aborta
      antes del bump sin modificar nada.
 2. **Bump.** Escribe `X.Y.Z` en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
-   `tests/golden/cli_version.json` y `SOURCE-OFFER.md`. `SOURCE-OFFER.md` es la
-   oferta de código fuente GPLv3 §6 que viaja dentro de los 4 artefactos.
+   `tests/golden/cli_version.json` y `SOURCE-OFFER.md`. `SOURCE-OFFER.md` es el
+   aviso de disponibilidad de la fuente (MPL-2.0 §3.2) que viaja dentro de los 4 artefactos.
    Después regenera el inventario de `THIRD-PARTY-LICENSES.md`, que incluye la
    versión del propio crate.
 3. **Promoción.** Convierte `## [No publicado]` de `CHANGELOG.md` en
@@ -173,7 +173,7 @@ Con el tag pusheado, ejecuta sin intervención:
     - Genera `SHA256SUMS.txt` sobre los artefactos y los dos bootstrap.
     - Extrae de `CHANGELOG.md` la sección `[X.Y.Z]` como notas. Si no la
       encuentra, falla.
-    - Agrega a las notas un pie con la oferta de código fuente GPLv3 §6: el
+    - Agrega a las notas un pie con la disponibilidad de la fuente (MPL-2.0 §3.2): el
       tarball del tag (`archive/refs/tags/vX.Y.Z.tar.gz`) y el enlace al tag.
     - Publica el GitHub Release sobre `vX.Y.Z` con los artefactos, los dos
       bootstrap y `SHA256SUMS.txt`, y las notas. Si el tag ya tiene un Release,
@@ -197,7 +197,7 @@ Verifica:
 
 - Los **7 assets** están presentes (4 artefactos, 2 bootstrap y `SHA256SUMS.txt`).
 - Las **notas** corresponden a la sección `[X.Y.Z]` del `CHANGELOG.md` e
-  incluyen el pie de oferta de código fuente GPLv3 §6 con el enlace al tarball
+  incluyen el pie de disponibilidad de la fuente (MPL-2.0 §3.2) con el enlace al tarball
   (`.../archive/refs/tags/vX.Y.Z.tar.gz`).
 - Opcional: los hashes de `SHA256SUMS.txt` coinciden con los que cada build
   emitió en el log del pipeline.

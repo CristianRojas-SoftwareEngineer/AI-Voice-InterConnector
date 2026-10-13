@@ -88,7 +88,7 @@ cargo test --all --verbose          # tests (avi-core/audio/tts/stt/translation/
 cargo fmt --all --check
 cargo clippy --all-targets
 
-# Validación GPLv3 (gate de CI)
+# Validación de licencias MPL-2.0 (gate de CI)
 cargo xtask source-offer --check
 cargo xtask licenses --check
 ```

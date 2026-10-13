@@ -52,7 +52,7 @@ Si la spec **no cumple ninguno** de los tres, va al **goal inmediato** y se trab
 
 ### Objetivo
 
-Obtener un sistema TTS **100% local** con audio nativo por sistema operativo, para transformar texto a audio en **español latino** de la mejor calidad disponible, distribuido bajo **licencia GPL-3.0-or-later** (con dependencias y modelo bajo licencias permisivas compatibles).
+Obtener un sistema TTS **100% local** con audio nativo por sistema operativo, para transformar texto a audio en **español latino** de la mejor calidad disponible, distribuido bajo **licencia MPL-2.0** (con dependencias y modelo bajo licencias compatibles).
 
 Motor TTS: **Qwen3-TTS 0.6B CustomVoice** - multilingüe, clonación de voz; licencia MIT/Apache-2.0.
 
@@ -71,7 +71,7 @@ Implementar y validar la síntesis en español latinoamericano con voz propia de
 - **100% local**: Sin APIs externas ni conexiones a internet para síntesis
 - **Instalador único por SO (canal nativo)**: Un archivo comprimido por plataforma (`tar.gz`/`.zip` con binario Rust); ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)
 - **Ninguna instalación adicional (canal nativo)**: solo el sistema base de cada plataforma; el archivo aporta todo lo demás. Los mínimos por plataforma están en [Requisitos del README](../README.md#requisitos)
-- **Licencia**: El código propio se distribuye bajo GPL-3.0-or-later; todas las dependencias y los modelos usados deben tener licencias compatibles con GPLv3 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible, como LGPL-2.1+/MPL-2.0). El par de traducción `opus-mt` (derivados int8 de Helsinki-NLP/opus-mt, ya convertidos a CTranslate2 y publicados) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
+- **Licencia**: El código propio se distribuye bajo MPL-2.0; todas las dependencias y los modelos usados deben tener licencias compatibles con MPL-2.0 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible a nivel de archivo o librería, como MPL-2.0/LGPL-2.1+). El par de traducción `opus-mt` (derivados int8 de Helsinki-NLP/opus-mt, ya convertidos a CTranslate2 y publicados) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
 
 ### Especificación
 
@@ -79,7 +79,7 @@ Implementar y validar la síntesis en español latinoamericano con voz propia de
 
 Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO), que es el único canal de distribución:
 
-- **Un solo artefacto por SO**: Windows (`.zip`), Linux (`tar.gz` x64/arm64), macOS (`tar.gz` arm64) — binario autocontenido + docs GPLv3, instala vía one-liner `curl|sh`/`irm|iex` o Cask de Homebrew
+- **Un solo artefacto por SO**: Windows (`.zip`), Linux (`tar.gz` x64/arm64), macOS (`tar.gz` arm64) — binario autocontenido + docs MPL-2.0, instala vía one-liner `curl|sh`/`irm|iex` o Cask de Homebrew
 - **Ninguna instalación adicional: solo el sistema base de cada plataforma**: El usuario final no instala ningún runtime, librería ni toolchain
 - **Descarga + instalación + configuración** en un solo paso (one-liner verifica checksum, extrae, integra PATH y encadena `setup`)
 - **Audio nativo**: playback usando APIs nativas del SO (cpal)

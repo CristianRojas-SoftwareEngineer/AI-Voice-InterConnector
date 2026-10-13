@@ -1,0 +1,15 @@
+# Avisos de atribución (NOTICE)
+
+AI Voice InterConnector — Copyright © 2026 Cristián Rojas Arredondo.
+
+Este proyecto se distribuye bajo la **Mozilla Public License, v. 2.0**
+(ver `LICENSE`). Cada archivo fuente cubierto lleva la cabecera del Exhibit A
+de la MPL-2.0 con el aviso de copyright; no elimines ni alteres esos avisos
+(MPL-2.0 §3.4).
+
+- Proyecto: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector>
+- Licencia: MPL-2.0 — <https://mozilla.org/MPL/2.0/>
+- Los avisos de copyright y licencias de las dependencias redistribuidas
+  figuran en `THIRD-PARTY-LICENSES.md`.
+- Los pesos de los modelos no se empaquetan en el binario y conservan sus
+  propias licencias (ver `THIRD-PARTY-LICENSES.md`).

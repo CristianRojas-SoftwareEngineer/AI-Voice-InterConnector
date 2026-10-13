@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 //! `Env` y opciones de `self install` sobre el sandbox. Lo declaran con
 //! `#[path = "support/install_env.rs"] mod install_env;`; necesita también el módulo
 //! `net`.

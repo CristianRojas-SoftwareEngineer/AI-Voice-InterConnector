@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 //! `xtask alsa-symbols [--check] --binary <ruta>`: genera o verifica la lista de
 //! funciones de ALSA que `alsa_sys::availability()` resuelve antes de dar el
 //! audio por disponible (`vendor/alsa-sys-0.4.0/src/required_symbols.rs`).

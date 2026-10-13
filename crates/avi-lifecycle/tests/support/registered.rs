@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 //! Instalación registrada y estado de usuario del sandbox, para las pruebas de
 //! desinstalación y limpieza. Lo declaran con
 //! `#[path = "support/registered.rs"] mod registered;`; necesita también el módulo

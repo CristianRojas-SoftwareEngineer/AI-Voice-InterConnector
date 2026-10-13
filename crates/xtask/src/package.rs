@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+// If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Copyright (c) 2026 Cristián Rojas Arredondo.
+// SPDX-License-Identifier: MPL-2.0
+
 //! `xtask package`: monta el bundle del release para el target del host.
 //!
 //! Lee `packaging/bundle-manifest.json` como lista canónica (la misma que valida
@@ -430,7 +436,7 @@ struct Sources {
     engine: PathBuf,
 }
 
-/// Localiza el binario ya compilado, el motor vendido y los cuatro documentos.
+/// Localiza el binario ya compilado, el motor vendido y los cinco documentos.
 /// Va antes de la descarga de ONNX Runtime para fallar rápido sin red si falta
 /// lo que el propio repo debe aportar.
 fn locate_sources(root: &Path) -> Result<Sources> {
@@ -455,6 +461,7 @@ fn locate_sources(root: &Path) -> Result<Sources> {
     }
     for doc in [
         "LICENSE",
+        "NOTICE",
         "THIRD-PARTY-LICENSES.md",
         "SOURCE-OFFER.md",
         "README.md",

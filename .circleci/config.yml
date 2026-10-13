@@ -1140,10 +1140,10 @@ jobs:
           variant: cov
 
   # ──────────────────────────────────────────────────────────────
-  # Validación GPLv3 — SOURCE-OFFER.md y THIRD-PARTY-LICENSES.md vivos
+  # Validación MPL-2.0 — SOURCE-OFFER.md y THIRD-PARTY-LICENSES.md vivos
   # ──────────────────────────────────────────────────────────────
   validate-licenses:
-    # Gate de licencias GPLv3: verifica que SOURCE-OFFER.md esté regenerado para
+    # Gate de licencias MPL-2.0: verifica que SOURCE-OFFER.md esté regenerado para
     # la versión vigente (cargo xtask source-offer --check) y que THIRD-PARTY-
     # LICENSES.md esté en sincronía con Cargo.lock (cargo xtask licenses --check).
     # Corre solo en tags v* como gate de los builds (ver workflow build-all).
@@ -2238,23 +2238,23 @@ jobs:
             cat notes.md
             echo "[STEP] Extraer notas de release desde CHANGELOG - FIN"
       - run:
-          name: Anexar pie de oferta GPLv3 a notas
+          name: Anexar pie de fuente MPL-2.0 a notas
           command: |
-            echo "[STEP] Anexar pie de oferta GPLv3 - INICIO"
+            echo "[STEP] Anexar pie de fuente MPL-2.0 - INICIO"
             set -euo pipefail
             {
               echo ""
               echo "---"
               echo ""
-              echo "## Código fuente (oferta GPLv3 §6)"
+              echo "## Código fuente (MPL-2.0 §3.2)"
               echo ""
-              echo "Este release se distribuye bajo **GPL-3.0-or-later**. El código"
+              echo "Este release se distribuye bajo **MPL-2.0**. El código"
               echo "fuente correspondiente a este tag está disponible en:"
               echo ""
               echo "- Tarball de fuente: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/${CIRCLE_TAG}.tar.gz"
               echo "- Etiqueta del release: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/${CIRCLE_TAG}"
             } >> notes.md
-            echo "[STEP] Anexar pie de oferta GPLv3 - FIN"
+            echo "[STEP] Anexar pie de fuente MPL-2.0 - FIN"
       - run:
           name: Publicar GitHub Release (artefactos + SHA256SUMS)
           command: |
