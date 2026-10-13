@@ -383,7 +383,8 @@ los instaladores por SO es por diseño **externa al pipeline** (ver
 La CI es **un solo pipeline de release** (`build-all`), disparado **solo en
 tags `v*`** (todos sus jobs con `filters.tags: /^v.*/` y `branches: ignore /.*/`).
 La **triple puerta simétrica** `test-linux` + `test-windows` + `test-macos`
-(cada uno `cargo test --all` en su SO nativo) es `requires:` de los 4 builds, de
+(cada uno `cargo nextest run --all` en su SO nativo, con `cargo-nextest`
+pineado) es `requires:` de los 4 builds, de
 modo que la publicación queda **mecánicamente condicionada** al resultado
 completo de la suite sobre el commit taggeado, dentro de la **misma** pipeline.
 
@@ -437,7 +438,7 @@ garantía "commit taggeado probado".
 ```
 ┌────────────────────┐  ┌────────────────────┐  ┌────────────────────┐
 │     test-linux     │  │    test-windows    │  │     test-macos     │
-│ (cargo test --all) │  │ (cargo test --all) │  │ (cargo test --all) │
+│ (cargo nextest)    │  │ (cargo nextest)    │  │ (cargo nextest)    │
 └─────────┬──────────┘  └─────────┬──────────┘  └─────────┬──────────┘
           │        (triple puerta = gate mecánico)         │
           └──────────────────────┬────────────────────────┘
@@ -484,9 +485,9 @@ Los tests de topología de `xtask` fallan si el workflow de sonda llega a conten
 
 | Job | Pipeline | Plataforma | Executor | Notas |
 |-----|----------|------------|----------|-------|
-| `test-linux` | `build-all` (gate) | Linux x64 | docker `cimg/rust:1.96.0` | `cargo test --all --verbose` |
-| `test-windows` | `build-all` (gate) | Windows x64 | `win/server-2022` | `cargo test --all` en Windows nativo |
-| `test-macos` | `build-all` (gate) | macOS arm64 | macos `m4pro.medium` | `cargo test --all` en macOS nativo |
+| `test-linux` | `build-all` (gate) | Linux x64 | docker `cimg/rust:1.96.0` | `cargo nextest run --all` (+ `cargo build` dev para la comprobación de ALSA) |
+| `test-windows` | `build-all` (gate) | Windows x64 | `win/server-2022` | `cargo nextest run --all` en Windows nativo |
+| `test-macos` | `build-all` (gate) | macOS arm64 | macos `m4pro.medium` | `cargo nextest run --all` en macOS nativo |
 | `coverage` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo llvm-cov --workspace --lcov` genera `lcov.info` (artefacto `coverage-lcov`) y `cargo llvm-cov report` imprime el resumen sin re-ejecutar la suite; sin umbral de % |
 | `validate-licenses` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo xtask source-offer --check` + `licenses --check` |
 | `validate-changelog` | `build-all` | Linux x64 | docker `cimg/rust:1.96.0` | `cargo xtask changelog --check` |

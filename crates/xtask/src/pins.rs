@@ -74,8 +74,8 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Las once claves con su valor, en el orden del manifiesto.
-fn all_pins(pins: &Pins) -> [(&'static str, &String); 11] {
+/// Las doce claves con su valor, en el orden del manifiesto.
+fn all_pins(pins: &Pins) -> [(&'static str, &String); 12] {
     [
         ("rust", &pins.rust),
         ("ort", &pins.ort),
@@ -88,6 +88,7 @@ fn all_pins(pins: &Pins) -> [(&'static str, &String); 11] {
         ("bats", &pins.bats),
         ("pwsh", &pins.pwsh),
         ("pester", &pins.pester),
+        ("nextest", &pins.nextest),
     ]
 }
 
@@ -264,10 +265,11 @@ mod tests {
             bats: "1.14.0".to_string(),
             pwsh: "7.6.6".to_string(),
             pester: "5.8.0".to_string(),
+            nextest: "0.9.148".to_string(),
         }
     }
 
-    /// CI de fixture con los diez parámetros esperados, sin literales de
+    /// CI de fixture con los once parámetros esperados, sin literales de
     /// versión y con el humo de `schema_version` en la versión vigente.
     fn fixture_config() -> String {
         let pins = fixture_pins();
@@ -423,6 +425,7 @@ mod tests {
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
+                "nextest": "0.9.148",
             }))
             .unwrap(),
         )
@@ -445,6 +448,7 @@ mod tests {
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
+                "nextest": "0.9.148",
             }))
             .unwrap(),
         )

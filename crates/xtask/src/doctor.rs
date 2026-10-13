@@ -1242,6 +1242,7 @@ mod tests {
             bats: "1.14.0".to_string(),
             pwsh: "7.6.6".to_string(),
             pester: "5.8.0".to_string(),
+            nextest: "0.9.148".to_string(),
         }
     }
 

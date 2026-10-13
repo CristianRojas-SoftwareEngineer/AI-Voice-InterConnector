@@ -32,6 +32,7 @@ pub struct Pins {
     pub bats: String,
     pub pwsh: String,
     pub pester: String,
+    pub nextest: String,
 }
 
 /// Parsea el texto de `pins.json`.

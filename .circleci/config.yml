@@ -102,6 +102,14 @@ parameters:
       Versión de Pester con la que la suite de Windows ejecuta sus pruebas.
       El executor trae Pester 3.x; se instala esta versión desde PSGallery y
       el paso aborta si la importación no coincide.
+  nextest_pin:
+    type: string
+    default: "0.9.148"
+    description: >
+      Versión de cargo-nextest con la que las tres suites Rust ejecutan sus
+      pruebas (Linux, Windows y macOS). Se instala desde el asset oficial del
+      release en $HOME/.cargo/bin y el paso aborta si `cargo-nextest
+      --version` no coincide: mismo runner en los tres SO, sin cargo install.
 
 # Cachés compartidas por los jobs Rust (restore/save nativos, idénticos en bash
 # y PowerShell). Ninguna clave depende del código fuente del workspace: editar
@@ -854,15 +862,34 @@ jobs:
       - validate_pins
       - validate_features
       - run:
-          name: Ejecutar suite Rust (cargo test --all)
+          name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
-            echo "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
-            cargo test --all --verbose
-            echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+            echo "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - INICIO"
+            set -euo pipefail
+            pin="<< pipeline.parameters.nextest_pin >>"
+            curl -LsSf "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${pin}/cargo-nextest-${pin}-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/nextest.tar.gz
+            mkdir -p "$HOME/.cargo/bin" && tar zxf /tmp/nextest.tar.gz -C "$HOME/.cargo/bin"
+            got="$("$HOME/.cargo/bin/cargo-nextest" --version | head -1 | awk '{print $2}')"
+            if [ "$got" != "$pin" ]; then echo "nextest: $got != $pin" >&2; exit 1; fi
+            echo "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - FIN"
+      - run:
+          name: Ejecutar suite con nextest (cargo nextest run --all)
+          command: |
+            echo "[STEP] Ejecutar suite con nextest - INICIO"
+            cargo nextest run --all
+            echo "[STEP] Ejecutar suite con nextest - FIN"
+      - run:
+          # `nextest` no compila el binario (solo targets de test): se compila
+          # explícito para la comprobación de ALSA de abajo, que lo necesita enlazado.
+          name: Compilar binario dev para la comprobación de ALSA
+          command: |
+            echo "[STEP] Compilar binario dev - INICIO"
+            cargo build
+            echo "[STEP] Compilar binario dev - FIN"
       - run:
           # La lista de funciones de ALSA que resuelve la comprobación de audio
-          # debe ser exactamente la que alcanza el binario enlazado: `cargo test`
-          # ya lo dejó compilado y la tabla de símbolos lo dice. Cambiar `cpal`,
+          # debe ser exactamente la que alcanza el binario enlazado: el paso
+          # anterior lo dejó compilado y la tabla de símbolos lo dice. Cambiar `cpal`,
           # `alsa` o el uso de audio sin regenerar la lista falla aquí.
           name: Verificar la lista de funciones de ALSA contra el binario enlazado
           command: |
@@ -932,16 +959,28 @@ jobs:
       - validate_pins
       - validate_features
       - run:
-          name: Ejecutar suite Rust (cargo test --all)
+          name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
-            Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
+            Write-Host "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - INICIO"
+            $ErrorActionPreference = "Stop"
+            $pin = "<< pipeline.parameters.nextest_pin >>"
+            $zip = Join-Path $env:TEMP "cargo-nextest-$pin-x86_64-pc-windows-msvc.zip"
+            Invoke-WebRequest -Uri "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-$pin/cargo-nextest-$pin-x86_64-pc-windows-msvc.zip" -OutFile $zip
+            Expand-Archive -Path $zip -DestinationPath "$env:USERPROFILE\.cargo\bin" -Force
+            $got = & "$env:USERPROFILE\.cargo\bin\cargo-nextest.exe" --version | Select-Object -First 1
+            if ($got -notmatch [regex]::Escape($pin)) { throw "nextest: $got != $pin" }
+            Write-Host "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - FIN"
+      - run:
+          name: Ejecutar suite con nextest (cargo nextest run --all)
+          command: |
+            Write-Host "[STEP] Ejecutar suite con nextest - INICIO"
             $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
-            cargo test --all --verbose
+            cargo nextest run --all
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+            Write-Host "[STEP] Ejecutar suite con nextest - FIN"
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: |
@@ -1005,12 +1044,23 @@ jobs:
       - validate_pins
       - validate_features
       - run:
-          name: Ejecutar suite Rust (cargo test --all)
+          name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
-            echo "[STEP] Ejecutar suite Rust (cargo test --all) - INICIO"
+            echo "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - INICIO"
+            set -euo pipefail
+            pin="<< pipeline.parameters.nextest_pin >>"
+            curl -LsSf "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${pin}/cargo-nextest-${pin}-universal-apple-darwin.tar.gz" -o /tmp/nextest.tar.gz
+            mkdir -p "$HOME/.cargo/bin" && tar zxf /tmp/nextest.tar.gz -C "$HOME/.cargo/bin"
+            got="$("$HOME/.cargo/bin/cargo-nextest" --version | head -1 | awk '{print $2}')"
+            if [ "$got" != "$pin" ]; then echo "nextest: $got != $pin" >&2; exit 1; fi
+            echo "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - FIN"
+      - run:
+          name: Ejecutar suite con nextest (cargo nextest run --all)
+          command: |
+            echo "[STEP] Ejecutar suite con nextest - INICIO"
             export PATH="$HOME/.cargo/bin:$PATH"
-            cargo test --all --verbose
-            echo "[STEP] Ejecutar suite Rust (cargo test --all) - FIN"
+            cargo nextest run --all
+            echo "[STEP] Ejecutar suite con nextest - FIN"
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
