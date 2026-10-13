@@ -195,8 +195,6 @@ struct Sandbox {
     envs: Vec<(String, String)>,
     /// Puerto al que apunta el `daemon.pid` señuelo, reservado mientras viva el sandbox.
     _decoy: ReservedPort,
-    /// Puerto de `HF_ENDPOINT`, reservado sin oyente mientras viva el sandbox.
-    _hf_endpoint: ReservedPort,
     /// Dueño del directorio raíz: lo borra al soltarse el sandbox, también con pánico.
     _guard: tempfile::TempDir,
 }
@@ -269,9 +267,14 @@ impl Sandbox {
             }
         }
 
-        // Endpoint de HuggingFace en un puerto local reservado sin oyente: la descarga
-        // del pin sin sembrar falla de inmediato y sin tocar la red real.
-        let hf_endpoint = ReservedPort::reserve();
+        // Endpoint de HuggingFace en un puerto local que se reserva y se libera
+        // de inmediato: la descarga del pin sin sembrar debe fallar de inmediato
+        // y sin tocar la red real. El puerto se libera a propósito, no se retiene:
+        // en macOS, conectar contra un puerto retenido sin oyente cuelga hasta el
+        // timeout TCP (~76 s por intento; con los reintentos de `hf-hub` son ~7,6 min
+        // en este test), mientras que contra un puerto libre el sistema rechaza al
+        // instante en todas las plataformas (medido en CI: 0,2 ms).
+        let hf_port = ReservedPort::reserve().port;
 
         let exe = staging.join(section.executable_path());
         let value = |p: &Path| p.display().to_string();
@@ -295,7 +298,7 @@ impl Sandbox {
             ("AVI_DAEMON_PORT".to_string(), "0".to_string()),
             (
                 "HF_ENDPOINT".to_string(),
-                format!("http://127.0.0.1:{}", hf_endpoint.port),
+                format!("http://127.0.0.1:{hf_port}"),
             ),
         ];
         envs.sort();
@@ -304,7 +307,6 @@ impl Sandbox {
             envs,
             root,
             _decoy: decoy,
-            _hf_endpoint: hf_endpoint,
             _guard: guard,
         }
     }
