@@ -92,10 +92,9 @@ limitada, pero conviene explicitar sus supuestos:
 
 ### Contenido generado
 
-- El audio sintetizado **no lleva marca de agua** (el watermark de PerthNet está
-  desactivado). Esto es una decisión de diseño con implicaciones de uso responsable,
-  no una vulnerabilidad; ver «Uso ético y responsable» en
-  [README.md](README.md)/[USAGE.md](USAGE.md).
+- El audio sintetizado **no lleva marca de agua** (el motor Qwen3-TTS no incorpora
+  watermarker). Esto es una decisión de diseño con implicaciones de uso responsable,
+  no una vulnerabilidad; ver [Uso ético y responsable](README.md#uso-ético-y-responsable).
 
 ### Nota sobre los bootstrap de una línea
 
@@ -167,7 +166,7 @@ publicado junto a cada
 pipeline de CI que construyó el artefacto. Ver el flujo completo de
 publicación y verificación en [docs/RELEASING.md](docs/RELEASING.md), y la
 guía de usuario para los diálogos de bloqueo en
-[USAGE.md](USAGE.md#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar).
+[README.md](README.md#primer-arranque-smartscreen--gatekeeper).
 
 **Ruta prevista**: incorporar firma de código vía
 [SignPath Foundation](https://signpath.org/), que ofrece firma gratuita a
@@ -214,7 +213,7 @@ individual, así que **cada versión nueva puede requerir un reporte propio**;
 con firma de código, la reputación se hereda entre versiones y esa
 recurrencia disminuye considerablemente. Ver también la guía de usuario para
 los diálogos de bloqueo en
-[USAGE.md](USAGE.md#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar).
+[README.md](README.md#primer-arranque-smartscreen--gatekeeper).
 
 ### Runbook: bloqueo de Gatekeeper en macOS
 
@@ -237,4 +236,4 @@ usuario puede desbloquear el binario:
 4. Verifica siempre la integridad cotejando el SHA-256 del artefacto contra
    `SHA256SUMS.txt` del [Release](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases)
    antes de desbloquear (ver [docs/RELEASING.md](docs/RELEASING.md) y la guía de
-   usuario en [USAGE.md](USAGE.md#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar)).
+   usuario en [README.md](README.md#primer-arranque-smartscreen--gatekeeper)).

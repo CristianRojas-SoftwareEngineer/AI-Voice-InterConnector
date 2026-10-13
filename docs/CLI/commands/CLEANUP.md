@@ -26,13 +26,14 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 ## El planificador: una sola fuente de la lista
 
-`cleanup::plan(roots, options)` construye la lista de destinos con sus tamaños aplicando **R1 a R3**, y la usan **las tres cosas que la necesitan**: el resumen de la confirmación, la salida de `--dry-run` y la ejecución. No puede haber divergencia entre lo que se anuncia y lo que ocurre porque no hay dos implementaciones: el plan de `--dry-run` y la lista de borrado salen de la misma llamada, como comprueba `plan_and_execution_agree_under_shared_root`.
+`cleanup::plan(roots, options)` construye la lista de destinos con sus tamaños aplicando **R1 y R3**, y la usan **las tres cosas que la necesitan**: el resumen de la confirmación, la salida de `--dry-run` y la ejecución. No puede haber divergencia entre lo que se anuncia y lo que ocurre porque no hay dos implementaciones: el plan de `--dry-run` y la lista de borrado salen de la misma llamada, como comprueba `plan_and_execution_agree_under_shared_root`.
 
-### R1 a R3, en una frase cada una
+### R1 y R3, en una frase cada una
 
 - **R1**: solo se borra dentro de raíces de propiedad exclusiva. Una ruta fuera de ellas es un error interno y nunca se borra.
-- **El directorio de programa no lo toca `cleanup`** —eso es `self uninstall`— y aparece en el plan como recurso **conservado**, con su motivo, porque un plan que no dice qué se queda no permite saber que los modelos de otra herramienta siguen ahí.
 - **R3**: en la raíz de modelos **exclusiva** el borrado es de **directorio entero** (snapshots, locks y `xet` cuelgan de ella). En la raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME` solo se borran los repos fijados (`MODEL_REVISIONS`), y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de otra herramienta.
+
+**R2 (el directorio de programa) no la aplica `cleanup`**: corresponde a `self uninstall` (ver [la especificación del ciclo de vida](../../specs/LIFECYCLE.md)). En el plan de `cleanup` el directorio de programa aparece como recurso **conservado**, con su motivo, porque un plan que no dice qué se queda no permite saber que los modelos de otra herramienta siguen ahí.
 
 **La exclusividad se decide por identidad de ruta, no por el valor de la variable**: la raíz registrada en el recibo era exclusiva en el momento de instalar, y que el usuario después apunte `HF_HUB_CACHE` a otro sitio no convierte la raíz registrada en compartida. Es lo que evita que un recibo viejo autorice borrar lo ajeno o, al revés, que una variable obsoleta impida borrar lo propio.
 
@@ -52,11 +53,13 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 **`NotFound` es éxito.** El plan dice lo que tiene que dejar de existir, y si ya no existe el objetivo está cumplido. No es un caso teórico: la parada del daemon borra el pidfile cuando no había daemon vivo, y el pidfile es un destino de `--all`.
 
-**Lo que no se pudo borrar no es un fallo de la operación**: §8.1 lo considera un archivo en uso que recoge el borrado diferido, y va en `kept`/`failed` con su motivo en lugar de tumbar la operación entera.
+**Lo que no se pudo borrar no es un fallo de la operación**: cada destino que falla se avisa por stderr (`no se pudo borrar <ruta>: <motivo>`) y el borrado sigue con el resto del plan, sin tumbar la operación. Ese destino no entra en `removed` pero sí sigue en `planned`, así que con `--json` se detecta comparando las dos listas; el envelope no tiene una clave propia para él.
 
 ---
 
-## Confirmación: la tabla de §8.1, y solo su parte destructiva
+## Confirmación: la tabla de las reglas transversales, y solo su parte destructiva
+
+La tabla vive en las [reglas transversales](../../specs/LIFECYCLE.md#81-reglas-transversales) del ciclo de vida.
 
 `cleanup` es **destructiva**, y su celda es la que obliga:
 
@@ -64,11 +67,11 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 |---|---|---|
 | `cleanup` | Lista de rutas con tamaños, luego `Esto eliminará lo indicado. ¿Continuar? [s/N]` | **Exige `--yes`**: sin él termina con `confirmation_required` (2) y **no borra nada** |
 
-La aceptación es `s`/`si`/`sí`/`y`/`yes`/`dale`/`ok` (sin distinguir mayúsculas). **Cualquier otra respuesta es un no**, incluido el salto de línea, y también en el prompt no destructivo: una errata nunca debe autorizar un borrado. Responder «no» **no es un error**: es `status` `cancelled` con salida 0, porque §8.1 no cuenta la cancelación entre los `reason`.
+La aceptación es `s`/`si`/`sí`/`y`/`yes`/`dale`/`ok` (sin distinguir mayúsculas). **Cualquier otra respuesta es un no**, incluido el salto de línea, y también en el prompt no destructivo: una errata nunca debe autorizar un borrado. Responder «no» **no es un error**: es `status` `cancelled` con salida 0, porque las reglas transversales no cuentan la cancelación entre los `reason`.
 
 El prompt va a **stderr** y la respuesta se lee de **stdin**, para que `--json` no se contamine. La celda no destructiva de la tabla —lo que no borra nada procede sin preguntar— es la de `self install` y `setup`, **no** la de `cleanup`.
 
-Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la purga de `setup --force-update`) usan **el mismo módulo `confirm`**, para que la tabla de §8.1 tenga una sola implementación.
+Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la purga de `setup --force-update`) usan **el mismo módulo `confirm`**, para que esa tabla tenga una sola implementación.
 
 ---
 
@@ -89,7 +92,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 
 `status` toma `cleanup_complete`, `planned` o `cancelled`. `planned` es el recibo de `plan()`: lo que la operación iba a borrar, y en `--dry-run` lo único que dice, porque no borra nada. `removed` son las rutas del plan con lo que la operación borró de verdad, y con `--dry-run` copia `planned`, que es lo que permite comparar el simulacro con la ejecución real. **Los dos salen de la misma llamada al planificador**, así que no pueden divergir. Exactamente un objeto JSON por invocación, incluso cuando falla: sin categoría con `--json` sale el objeto de error de §10 del contrato (`error` + `reason`), y nada más.
 
-`schema_version` vale **`"5"`** (el envelope de la CLI); el protocolo del daemon va por `"4"` porque es otro contrato. El simulacro informa `status` `planned` sin clave `dry_run`: con `planned` la clave sobra.
+Sobre `schema_version`, ver [las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema). El simulacro informa `status` `planned` sin clave `dry_run`: con `planned` la clave sobra.
 
 ---
 
@@ -101,7 +104,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 | Borrar muchas locuciones | `cleanup --synthetic-speech` |
 | Borrar una voz clonada | `voice remove --name X` |
 | Borrar las voces del usuario | `cleanup --voices` |
-| Liberar los 5,85 GB de los modelos y volver a descargarlos con `setup` | `cleanup --model` |
+| Liberar el espacio de los modelos y volver a descargarlos con `setup` | `cleanup --model` |
 | Desinstalar el programa y su `PATH` | `self uninstall` |
 | Desinstalar conservando modelos, voces y habla | `self uninstall --keep-data` |
 
@@ -121,7 +124,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 | Otra operación de ciclo de vida tiene el bloqueo | 17 | `lifecycle_locked` |
 | Unix: ejecución lanzada con `sudo` | 1 | `sudo_not_supported` |
 | Cancelación del usuario | 0 | — (`status` `cancelled`, no es un error) |
-| Destino que no se pudo borrar | 0 | — (va en `failed`, no tumba la operación) |
+| Destino que no se pudo borrar | 0 | — (aviso por stderr; está en `planned` y no en `removed`, no tumba la operación) |
 
 ---
 

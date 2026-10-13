@@ -98,7 +98,7 @@ inyecta `schema_version` sobre el objeto antes de serializar
 | `devices[].id` | integer | Índice secuencial 0-based asignado durante la iteración de `host.output_devices()` (`crates/avi-audio/src/lib.rs`) |
 | `devices[].name` | string o `null` | Nombre de la descripción del dispositivo (`DeviceDescription::name`); `null` si el backend no lo expone |
 | `devices[].latency` | number o `null` | Latencia estimada **en segundos** (`latency_ms / 1000.0`, `crates/avi-audio/src/lib.rs`); `null` si no se puede estimar. En salida texto se reconvierte a milisegundos para mostrarse |
-| `schema_version` | string | `"5"`, inyectado por `emit_raw_json`/`with_schema_version` — no forma parte del payload que construye el handler |
+| `schema_version` | string | Inyectado por `emit_raw_json`/`with_schema_version` (ver [las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)); no forma parte del payload que construye el handler |
 
 Nota de orden de claves: `with_schema_version` inserta `schema_version` en el
 mapa ya construido, por lo que en la salida serializada aparece **después**

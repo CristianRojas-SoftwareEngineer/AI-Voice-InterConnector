@@ -24,9 +24,9 @@ No existen `--with-stt` (`parakeet-tdt-v3` se provisiona siempre) ni `--with-voi
 
 ## Flujo de provisión
 
-1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio de datos y materializa la voz de fábrica `default`.
+1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio del registro con un directorio por voz de fábrica (`default`, `ryan`, `vivian`) y escribe el `reference.qvoice` embebido solo en `default` si aún no existe; `ryan` y `vivian` quedan sin archivo, porque son presets del motor (ver [el modelo de voces de dos niveles](../../DESIGN.md#modelo-de-voces-de-dos-niveles)).
 2. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar: todos los modelos, el de clonado incluido. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
-3. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (§8.7).
+3. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (ver [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)).
 4. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
 5. **Envelope `--json`** o mensaje humano.
 
@@ -50,16 +50,16 @@ Cada modelo se fija por **commit hash** de HuggingFace, así que un push upstrea
 
 Todos los modelos se provisionan siempre: no hay selección opcional.
 
-**Tamaño.** La descarga es de 5,85 GB (el modelo de clonado suma 2,5 GB). La cifra sale de la suma del tamaño medido de cada repo (`approx_bytes` de su `ModelPin`), y es la misma que anuncia la confirmación previa, en escala decimal y con un decimal:
+**Tamaño.** El tamaño de cada descarga es el `approx_bytes` de su `ModelPin` en [`MODEL_REVISIONS`](../../../crates/avi-shared/src/paths.rs). La confirmación previa anuncia la suma de los repos pendientes, en escala decimal y con un decimal:
 
 ```
-Se descargarán 5 modelo(s), unos 5.9 GB.
+Se descargarán N modelo(s), unos X.Y GB.
 ```
 
 El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `snapshots/` como enlace simbólico en Unix y como enlace duro en Windows, así que el blob no se duplica. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), `hf-hub` copia el blob y el espacio en disco se duplica.
 **Descarga interrumpida.** `hf-hub` no reanuda por `Range`: una descarga interrumpida se repite completa desde el primer byte del archivo afectado.
 
-**Dónde se descargan.** A la **caché exclusiva de la aplicación**, no a la caché HF del usuario: `models_cache_dir()` (`avi-store`), que es `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS y `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux. La razón es que el borrado pueda ser de directorio entero sin tocar nada ajeno. **Si el usuario define `HF_HUB_CACHE` o `HF_HOME`, esa raíz pasa a ser compartida** y se respeta su elección: entonces `cleanup --model` limita el alcance a lo atribuible a la aplicación (regla R3) y `doctor` lo dice con `models.shared_root`.
+**Dónde se descargan.** A la **caché exclusiva de la aplicación**, no a la caché HF del usuario: `models_cache_dir()` ([`paths.rs`](../../../crates/avi-shared/src/paths.rs)); la ruta por sistema operativo está en la [arquitectura](../../DESIGN.md#arquitectura). La razón es que el borrado pueda ser de directorio entero sin tocar nada ajeno. **Si el usuario define `HF_HUB_CACHE` o `HF_HOME`, esa raíz pasa a ser compartida** y se respeta su elección: entonces `cleanup --model` limita el alcance a lo atribuible a la aplicación (regla R3) y `doctor` lo dice con `models.shared_root`.
 
 **`HF_XET_CACHE` no se decide en dos sitios.** Toda la provisión pasa por `ModelStore::new()`, que ya la fija al subdirectorio `xet` de la raíz de modelos antes de construir el cliente. Fijarla también desde el motor duplicaría la decisión.
 
@@ -85,7 +85,7 @@ El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `
 | Causa del fallo de provisión | Anidada en `models_cause.reason`: `network_error` |
 | Qué hacer | Reintentar con `setup` |
 
-Es un **éxito parcial**, y por eso el envelope de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en §11 de [`../CONTRACT.md`](../CONTRACT.md).
+Es un **éxito parcial**, y por eso el envelope de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en el [contrato de `setup`](../CONTRACT.md#setup).
 
 Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de descarga sale con `network_error` y **20**.
 
@@ -93,7 +93,7 @@ Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo 
 
 ## Poda de revisiones obsoletas
 
-**La poda de las revisiones obsoletas de los repos propios** —lo que §8.7 pide— **está vigente**, porque la necesita una actualización, no una instalación.
+**La poda de las revisiones obsoletas de los repos propios** —lo que pide [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)— **está vigente**, porque la necesita una actualización, no una instalación.
 
 La selección es siempre la tabla de pines completa: no hay modelos opcionales, así que no se persiste ninguna selección. Tras el reemplazo, el `setup` de la versión nueva provisiona los modelos cuyo pin cambió y poda las revisiones propias obsoletas (`selection`/`purge`), con R3 en raíz compartida. La confirmación de tamaño y `called_from_lifecycle` siguen vigentes y la idempotencia se conserva.
 
@@ -106,7 +106,7 @@ La selección es siempre la tabla de pines completa: no hay modelos opcionales, 
 | `status` | string | `"completed"` |
 | `models_provisioned` | array de strings | Los modelos de la selección disponibles tras la ejecución |
 
-No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a stderr, reservando stdout para el JSON; `schema_version` lo inyecta el emisor y vale **`"5"`**.
+No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a stderr, reservando stdout para el JSON; `schema_version` lo inyecta el emisor ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)).
 
 ---
 

@@ -34,13 +34,13 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
 
-`schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**. El protocolo del daemon va por `"5"`: son contratos independientes y este no lo toca.
+`schema_version` lo inyecta `emit_raw_json`; ver [las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema).
 
 ---
 
-## Los cinco chequeos
+## Los chequeos
 
-`checks` y `failed` son el veredicto, y `failed` no está vacío si y solo si hay algún `ok: false`:
+`checks` y `failed` son el veredicto, y `failed` no está vacío si y solo si hay algún `ok: false`. `onnx_runtime` solo aparece en los builds con `native-stt`:
 
 | `name` | Falla cuando | Qué mira |
 |---|---|---|
@@ -53,7 +53,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 
 **El modelo Base de clonado no tiene un chequeo propio.** `qwen3-tts-0.6b-base` es un modelo obligatorio como los demás: su ausencia aparece en `models.missing` y hace fallar `models_provisioned`.
 
-**Nada de esto escribe en disco, salvo `--repair`.** La recuperación de §8.1 se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca. La excepción es `--repair`, que toma el bloqueo, ejecuta ese mismo barrido y reevalúa: su alcance es exactamente lo que el barrido recoge, ni más ni menos.
+**Nada de esto escribe en disco, salvo `--repair`.** La recuperación de las [reglas transversales](../../specs/LIFECYCLE.md#81-reglas-transversales) se ejecuta aquí en **modo informe**: `doctor` **calcula** lo que la recuperación haría —con la misma decisión que usa el barrido real— y lo publica en `pending`, sin tomar el bloqueo y sin modificar nada. Barrer de verdad desde un diagnóstico convertiría el comando más inocuo del producto en uno que borra temporales de la máquina que lo invoca. La excepción es `--repair`, que toma el bloqueo, ejecuta ese mismo barrido y reevalúa: su alcance es exactamente lo que el barrido recoge, ni más ni menos.
 
 ---
 
@@ -74,14 +74,14 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
 ```json
 {
   "schema_version": "5",
-  "version": "0.23.1",
+  "version": "X.Y.Z",
   "target": "x86_64-pc-windows-msvc",
   "channel": "script",
   "install": {
-    "dir": "C:\\Users\\…\\AppData\\Local\\Programs\\ai-voice-interconnector",
-    "data_dir": "C:\\Users\\…\\AppData\\Local\\ai-voice-interconnector\\data",
+    "dir": "<directorio-de-programa>",
+    "data_dir": "<raíz-de-datos>",
     "receipt": "valid",
-    "version": "0.23.1"
+    "version": "X.Y.Z"
   },
   "path": {
     "resolves_to_this_install": true,
@@ -98,11 +98,11 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
     "unreadable": []
   },
   "models": {
-    "root": "C:\\Users\\…\\AppData\\Local\\ai-voice-interconnector\\cache\\models",
+    "root": "<raíz-de-modelos>",
     "shared_root": false,
     "provisioned": ["qwen3-tts-0.6b", "opus-mt-es-en", "opus-mt-en-es", "parakeet-tdt-v3", "qwen3-tts-0.6b-base"],
     "missing": [],
-    "size_bytes": 9876543210
+    "size_bytes": 0
   },
   "checks": [
     { "name": "install_receipt", "ok": true, "detail": "recibo válido en …" }

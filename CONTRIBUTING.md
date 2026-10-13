@@ -7,6 +7,9 @@ flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 
 - [Requisitos](#requisitos)
 - [Configuración del entorno de desarrollo](#configuración-del-entorno-de-desarrollo)
+  - [Hooks de git](#hooks-de-git-corehookspath-opt-in-por-clon)
+  - [Worktrees](#worktrees)
+  - [Higiene de `target/`](#higiene-de-target)
 - [Tests](#tests)
   - [Cobertura](#cobertura)
   - [Smoke-tests de instaladores](#smoke-tests-de-instaladores)
@@ -14,6 +17,10 @@ flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 - [Compilación de binarios](#compilación-de-binarios)
 - [Estilo y convenciones](#estilo-y-convenciones)
 - [Flujo de Pull Request](#flujo-de-pull-request)
+  - [Ramas](#ramas)
+  - [Actualizar e integrar](#actualizar-e-integrar-siempre-merge-nunca-rebase)
+  - [Tags y releases](#tags-y-releases)
+  - [Pasos](#pasos)
 - [Reporte de problemas](#reporte-de-problemas)
 
 ## Requisitos
@@ -50,7 +57,26 @@ cargo run -- voice list
 los gestores del sistema (con `sudo` o UAC), así que solo se usa cuando se pide
 de forma explícita.
 
-La voz `default` está embebida en el binario (`crates/avi-store/assets/default/`); no requiere `src/`.
+El origen de las voces se explica en [docs/DESIGN.md](docs/DESIGN.md#modelo-de-voces-de-dos-niveles).
+
+### Hooks de git (`core.hooksPath`, opt-in por clon)
+
+Los hooks viven versionados en `.githooks/` y no se activan solos. Actívalos una vez por clon (y por cada worktree que los necesite):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+- `pre-commit`: puertas de idioma, comentarios, pines y features; falla el commit si no pasan.
+- `post-merge`: poda fina de `target/` tras integrar en `main`, solo si el merge tocó dependencias o toolchain y `target/` supera el umbral definido en la cabecera del hook. Es best-effort y nunca falla el merge.
+
+### Worktrees
+
+Cada worktree lleva su propia rama transitoria y resuelve su propia raíz con `git rev-parse --show-toplevel`, así que el hook y `xtask` operan por worktree. Para no multiplicar el coste en disco, cada worktree compila con su propio `target-dir` o comparte el principal por turnos (nunca dos builds concurrentes contra el mismo `target/`), y cada uno usa su propio `data-dir` y puertos del daemon.
+
+### Higiene de `target/`
+
+`target/` crece sin límite. La poda fina (`cargo xtask clean --prune`, con `--dry-run` para ver qué borraría) y su relación con `doctor` y el hook están descritas en [docs/specs/LIFECYCLE.md §9.6](docs/specs/LIFECYCLE.md#96-cargo-xtask-clean); los parámetros vigentes, con `cargo xtask clean --help`.
 
 ## Tests
 
@@ -70,6 +96,8 @@ cargo xtask licenses --check
 - Añade tests para todo comportamiento nuevo o corregido (`#[test]` en el crate correspondiente).
 - La suite se ejecuta en CI en **Linux**, **Windows** y **macOS** nativos (`test-linux`/`test-windows`/`test-macos`); evita supuestos de un SO.
 - Verificación rápida de sintaxis Rust: `cargo check --all`.
+- Las pruebas pesadas de inferencia TTS se serializan con el file-lock `lock_tts()` de `tests/cli_golden.rs`: cada residente ocupa varios GB de RAM, y quitar o debilitar el lock para paralelizar arriesga un OOM del runner. Que un test de esa serie parezca detenido más de 60 s es espera en cola y no un cuelgue: no se le añaden reintentos ni timeouts. El razonamiento completo está en los comentarios de `lock_tts()` en ese archivo.
+- Las pruebas con recursos (`#[ignore = "requiere …"]`) no se omiten ni aprovisionan por su cuenta: con `--include-ignored` fallan con un mensaje que nombra el comando que aprovisiona lo que falta. No descargan modelos, porque el runner de CI no tiene el motor ni los pesos locales y la descarga costaría gigabytes en cada corrida sin aportar cobertura. `cargo xtask release` las ejecuta antes del bump.
 
 ### Cobertura
 
@@ -132,18 +160,46 @@ cargo build --release                   # featureless (rápido, sin C++)
 ./target/release/ai-voice-interconnector setup
 ```
 
-El empaquetado de distribución (`tar.gz`/`.zip` con 4 docs GPLv3) lo hace el step `Preparar artefacto versionado` de `.circleci/config.yml` solo en tags `v*`.
+El empaquetado de distribución lo hace `cargo xtask package` en los jobs de build de los tags `v*`; ver [docs/BUILD.md](docs/BUILD.md).
 
 ## Estilo y convenciones
 
-- **Idioma**: código, comentarios, mensajes de commit y documentación en **español**, con ortografía correcta.
+- **Idioma**: identificadores de código en inglés; comentarios, documentación, mensajes de commit y textos de usuario en **español**, con ortografía correcta.
 - **Comentarios**: explican el *porqué*, no el *qué*; sigue la densidad del código circundante.
 - **Formato/lint**: `cargo fmt --all` y `cargo clippy --all-targets` deben pasar sin diff ni warnings nuevos. `cargo xtask release` lo verifica (`cargo fmt --all --check` y `cargo clippy --all-targets -- -D warnings`) y aborta el corte si no se cumple.
 - **Commits**: mensajes descriptivos en español, prefijo de tipo cuando aplique (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `build:`), en imperativo.
 
 ## Flujo de Pull Request
 
-1. Crea una rama a partir de `main`.
+### Ramas
+
+`main` contiene siempre el estado vigente y todo cambio entra por ramas transitorias de vida corta; no hay ramas de desarrollo, release ni soporte. `main` no se commitea directamente salvo retoques triviales.
+
+- Nombres: `fix/<sintoma>`, `feat/<capacidad>`, `hotfix/<asunto>` o `docs/<tema>`.
+- Una rama es un cambio revisable y se elimina al integrarse.
+
+### Actualizar e integrar (siempre merge, nunca rebase)
+
+```bash
+# Poner la rama al día con main
+git checkout fix/mi-cambio
+git merge main
+
+# Integrarla en main con commit de merge explícito, para que el historial conserve qué commits agrupó cada flujo
+git checkout main
+git merge --no-ff fix/mi-cambio
+git branch -d fix/mi-cambio
+```
+
+No se rebasea lo ya publicado: el rebase reescribe hashes y rompe la trazabilidad que el merge conserva.
+
+### Tags y releases
+
+Las releases se cortan con tags `v*` sobre `main`; el procedimiento completo, incluida la verificación posterior, está en [docs/RELEASING.md](docs/RELEASING.md).
+
+### Pasos
+
+1. Crea una rama transitoria a partir de `main`.
 2. Implementa el cambio con sus tests y la actualización documental correspondiente (código, CI y docs sincronizados).
 3. Verifica que `cargo test --all`, `cargo fmt --all --check` y `cargo clippy --all-targets` pasan.
 4. Abre el PR describiendo problema, solución y cómo verificarla.

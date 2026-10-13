@@ -840,7 +840,7 @@ fn check_sccache(pins: &Pins) -> Row {
 }
 
 /// Umbral de aviso de `target/`: por encima, `doctor` sugiere la poda
-/// fina. Comparte valor con el hook `post-merge` (ver `docs/BRANCHING.md`).
+/// fina. Comparte valor con el hook `post-merge` (ver `CONTRIBUTING.md`).
 /// Son 10 GB decimales (10 000 000 000 bytes).
 pub(crate) const TARGET_HYGIENE_MAX_GB: u64 = 10;
 

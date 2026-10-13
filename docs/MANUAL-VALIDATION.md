@@ -4,19 +4,16 @@ Este documento es el **procedimiento operativo** de la validación end-to-end qu
 [docs/GOAL.md](GOAL.md) §"Validación E2E" define a nivel de política: el recorrido
 manual `instalar → setup → síntesis real → desinstalar` que el propietario
 ejecuta en Windows sobre cada release, y que sirve de guion para el feedback de
-usuarios reales en Linux y macOS. El pipeline de CI solo corre un **smoke test
-automatizado** sin modelos (versión contra el tag, `voice list`, `--self-test` de
-los kernels del motor y `self install` del archivo en un sandbox, descrito en
-[docs/BUILD.md](BUILD.md#verificación-post-build)); la matriz de
-comandos de abajo es la parte que **no** cabe en un runner de CI porque exige
-cargar Qwen3-TTS + Parakeet, descargar 5,85 GB de modelos,
-sintetizar audio real y —en las rutas interactivas— un micrófono y una terminal
-con una persona pulsando teclas.
+usuarios reales en Linux y macOS. Qué cubre el smoke test automatizado del
+pipeline y por qué la matriz de comandos de abajo queda fuera de CI está en
+[Validación E2E](GOAL.md#validación-e2e); la provisión de modelos, en
+[`setup`](CLI/commands/SETUP.md); y los artefactos del release, en
+[Formato de los artefactos](DISTRIBUTION.md#formato-de-los-artefactos). Las rutas
+interactivas exigen además un micrófono y una terminal con una persona pulsando
+teclas.
 
 La secuencia está en orden lógico: cada paso asume que el anterior pasó. Ejecutar
-tras instalar el artefacto del release (Windows `ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`,
-Linux `ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`, macOS `ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`)
-descomprimido y con `setup` ejecutado, o bien desde una terminal nueva: la integración
+tras instalar el artefacto del release descomprimido y con `setup` ejecutado, o bien desde una terminal nueva: la integración
 del `PATH` es persistente —bloque delimitado en los perfiles de shell en Linux y macOS,
 valor `Path` de `HKCU\Environment` en Windows— y por eso una terminal ya abierta no la
 ve. Solo la sesión que ejecutó el bootstrap recibe el `PATH` en el acto; con
@@ -223,8 +220,8 @@ ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --ta
 ## 9. Rutas interactivas de audio (push-to-talk y `--play`)
 
 🖥️ 🎤 🔊 🧠 · **no ejercitables por CI**: exigen una terminal real y una persona
-pulsando teclas. Son el motivo principal de esta validación manual. La
-especificación completa está en [docs/UX-AUDIO-INTERACTIVA.md](UX-AUDIO-INTERACTIVA.md).
+pulsando teclas. Son el motivo principal de esta validación manual. El
+diseño y los principios están en [UX de audio interactivo](DESIGN.md#ux-de-audio-interactivo).
 
 ### 9.1 Push-to-talk (`speech transcribe --mic` / `speech dub --mic` sin `--duration`)
 
@@ -389,38 +386,34 @@ el daemon lanzó dos procesos a la vez (riesgo teórico, sin verificar).
 
 ## 11. Casos de error por exit code canónico
 
-Tabla completa de los códigos de salida de dominio que el binario produce, con el
-`reason` que cada uno lleva y el **canal** por el que lo emite. La columna `Canal`
-distingue los dos regímenes: en texto el mensaje va a **stderr** y stdout queda limpio;
-con `--json` lo que sale es el envelope por **stdout** (`schema_version` `"5"`), con el
-`reason` anidado donde corresponda. Las fuentes son `ExitCode::from_reason`
-(`crates/avi-core/src/exit_codes.rs`) y el brazo de cada comando en `src/main.rs`; las
-salidas 11–22 las emite el motor `avi-lifecycle` y la traducción a código es siempre
-esa misma función.
+Una sonda por cada código de salida de dominio que el binario produce. El
+significado de cada código, su `reason` y el canal por el que sale están en
+[Códigos de salida](CLI/README.md#códigos-de-salida); aquí solo se lista cómo
+provocarlo a mano.
 
-| Exit | Significado (`reason`) | Canal | Sonda |
-|---|---|---|---|
-| **1** | Error genérico (`io_error`) | stderr, stdout limpio | `speech transcribe --audio <wav.tomlado en exclusiva por otro proceso>`: existe como fichero (`validate_audio_arg` pasa) pero leerlo falla por E/S |
-| **2** | Entrada inválida (`usage_error`, `invalid_audio`, `invalid_identifier`, `audio_too_long`) | stderr; envelope por stdout con `--json` | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (`--daemon` en un comando que no lo declara); `speech transcribe --audio a.wav --duration 5 --source-language es` (`--duration` sin `--mic`) |
-| **3** | Recurso no encontrado (`audio_not_found`, `voice_not_found`, `speech_not_found`) | stderr, stdout limpio | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es` |
-| **4** | Modelo no provisionado (`model_missing`) | stderr, stdout limpio | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el modelo de traducción del par sin provisionar |
-| **5** | Daemon inalcanzable (`daemon_unreachable`) | stderr; envelope por stdout con `--json` | `speech say --text x --daemon` con el daemon detenido |
-| **6** | Conflicto de estado (`label_exists`, `voice_exists`) | stderr, stdout limpio | `speech synthesize --text x --label ya_existe` sin `--force` (colisión de etiqueta); `voice clone --name mi_voz --speech-reference habla.wav` dos veces sin `--force` |
-| **9** | Fallo del pipeline de traducción (`translation_failed`) | stderr, stdout limpio | `dub`/`say`/`synthesize`/`translate` con idiomas que difieren, el modelo de traducción **ya provisionado**, y la inferencia falla en tiempo de ejecución |
-| **10** | Fallo del pipeline de transcripción o de la captura del micrófono (`transcription_failed`) | stderr, stdout limpio | difícil de sondear a mano: un `--audio` inexistente sale con 3, ilegible con 2 y con error de E/S con 1. Se alcanza con un modelo provisionado y corrupto, o forzando un fallo de la captura |
-| **11** | Provisión de modelos fallida (`setup_failed`): **éxito parcial**, el programa queda instalado y reintentable con `setup` | envelope por stdout **también sin `--json`** (`status` del resultado + `reason: "setup_failed"` + `models_cause` anidado con `network_error`); resumen por stdout | `setup` o `self install` sin red (o con la descarga de modelos bloqueada): instala igual y sale 11 |
-| **12** | La copia la gestiona otra herramienta (`externally_managed`) | stderr; envelope `error` por stdout con `--json` | `self update` sobre una copia del canal `homebrew`: no toca nada y remite a `brew upgrade --cask` |
-| **13** | Fallo en el reemplazo; versión anterior restaurada (`rolled_back`) | stderr; envelope `error` por stdout con `--json` | `self update` en el que la copia nueva no puede reemplazar la anterior (permisos o proceso reteniendo el ejecutable): restaura y deja la versión previa en pie |
-| **14** | Conflicto en la ruta del enlace del `PATH` (`path_conflict`) | stderr; envelope `error` por stdout con `--json` | `self install` o `self uninstall` con el enlace del `PATH` ya tomado por otro programa |
-| **15** | Falta un archivo obligatorio del bundle (`bundle_invalid`) | stderr; envelope `error` por stdout con `--json` | `self install`/`self update` cuyo archivo comprimido no trae el ejecutable esperado |
-| **16** | No se pudo detener el daemon; nada modificado (`daemon_stop_failed`) | stderr; envelope `error` por stdout con `--json` | `cleanup`, `self install`, `self uninstall` o `self update` con un daemon registrado **vivo** que no se puede parar (mismo camino que el `still_running` de `daemon stop`) |
-| **17** | Hay otra operación de ciclo de vida en curso (`lifecycle_locked`) | stderr; envelope `error` por stdout con `--json` | dos comandos de ciclo de vida simultáneos sobre la misma raíz (p. ej. un `self install` lento y un `cleanup`), o un comando de uso en curso: el segundo no entra en cola |
-| **18** | Plataforma no soportada (`unsupported_platform`) | stderr; envelope `error` por stdout con `--json` | `self update` con un triple del host fuera de la tabla soportada (falla antes de tocar la red); los instaladores emiten el mismo `reason` en su mensaje, pero **ellos salen con 1**, no con 18 |
-| **19** | Binario descargado incompatible (`binary_incompatible`) | stderr; envelope `error` por stdout con `--json` | `self update` cuyo artefacto descargado no arranca en este sistema o no responde a `--version` |
-| **20** | Fallo de red (`network_error`) | stderr; envelope `error` por stdout con `--json` | `self update` sin red al resolver la última versión o al descargar el artefacto |
-| **21** | El archivo descargado no coincide con su hash (`checksum_mismatch`) | stderr; envelope `error` por stdout con `--json` | `self update` contra un `SHA256SUMS.txt` manipulado (o el artefacto alterado en tránsito); el staging se borra sin tocar la instalación |
-| **22** | El directorio de programa no se pudo borrar (`program_dir_kept`): **éxito parcial**, el resto sí se desinstaló | envelope por stdout **también sin `--json`** (`status` + `reason` + `removed`/`planned`/`path_reverted`) y el motivo por stderr | `self uninstall` con el directorio de programa tomado (un proceso vivo lo tiene abierto o faltan permisos): borra el estado de usuario y deja el directorio |
-| **130** | Interrupción por el usuario. **Sin `reason` ni envelope**: el handler de Ctrl+C de `src/main.rs` sale con `ExitCode::Interrupted` (130) tras la limpieza acotada de 2 s, y el código se preserva en todos los modos | stderr (limpieza acotada de 2 s) | **Ctrl+C** durante `daemon start`/`restart`/`serve` o durante una síntesis: sale 130 con el estado preservado y el árbol del daemon reclamado |
+| Exit | Sonda |
+|---|---|
+| **1** | `speech transcribe --audio <wav.tomlado en exclusiva por otro proceso>`: existe como fichero (`validate_audio_arg` pasa) pero leerlo falla por E/S |
+| **2** | `speech synthesize --text x --label y --play --json` (flags incompatibles); `speech transcribe --mic --source-language es < /dev/null` (mic sin duración ni TTY); `voice remove --name default` (voz de fábrica); `speech play --voice default --daemon` (`--daemon` en un comando que no lo declara); `speech transcribe --audio a.wav --duration 5 --source-language es` (`--duration` sin `--mic`) |
+| **3** | `speech play --label etiqueta_que_no_existe`; `voice remove --name voz_que_no_existe`; `speech transcribe --audio no_existe.wav --source-language es` |
+| **4** | cualquier síntesis/transcripción **sin** haber corrido `setup`; también `dub`/`say`/`synthesize`/`translate` con idiomas distintos y el modelo de traducción del par sin provisionar |
+| **5** | `speech say --text x --daemon` con el daemon detenido |
+| **6** | `speech synthesize --text x --label ya_existe` sin `--force` (colisión de etiqueta); `voice clone --name mi_voz --speech-reference habla.wav` dos veces sin `--force` |
+| **9** | `dub`/`say`/`synthesize`/`translate` con idiomas que difieren, el modelo de traducción **ya provisionado**, y la inferencia falla en tiempo de ejecución |
+| **10** | difícil de sondear a mano: un `--audio` inexistente sale con 3, ilegible con 2 y con error de E/S con 1. Se alcanza con un modelo provisionado y corrupto, o forzando un fallo de la captura |
+| **11** | `setup` o `self install` sin red (o con la descarga de modelos bloqueada): instala igual y sale 11 |
+| **12** | `self update` sobre una copia del canal `homebrew`: no toca nada y remite a `brew upgrade --cask` |
+| **13** | `self update` en el que la copia nueva no puede reemplazar la anterior (permisos o proceso reteniendo el ejecutable): restaura y deja la versión previa en pie |
+| **14** | `self install` o `self uninstall` con el enlace del `PATH` ya tomado por otro programa |
+| **15** | `self install`/`self update` cuyo archivo comprimido no trae el ejecutable esperado |
+| **16** | `cleanup`, `self install`, `self uninstall` o `self update` con un daemon registrado **vivo** que no se puede parar (mismo camino que el `still_running` de `daemon stop`) |
+| **17** | dos comandos de ciclo de vida simultáneos sobre la misma raíz (p. ej. un `self install` lento y un `cleanup`), o un comando de uso en curso: el segundo no entra en cola |
+| **18** | `self update` con un triple del host fuera de la tabla soportada (falla antes de tocar la red); los instaladores emiten el mismo `reason` en su mensaje, pero **ellos salen con 1**, no con 18 |
+| **19** | `self update` cuyo artefacto descargado no arranca en este sistema o no responde a `--version` |
+| **20** | `self update` sin red al resolver la última versión o al descargar el artefacto |
+| **21** | `self update` contra un `SHA256SUMS.txt` manipulado (o el artefacto alterado en tránsito); el staging se borra sin tocar la instalación |
+| **22** | `self uninstall` con el directorio de programa tomado (un proceso vivo lo tiene abierto o faltan permisos): borra el estado de usuario y deja el directorio |
+| **130** | **Ctrl+C** durante `daemon start`/`restart`/`serve` o durante una síntesis: sale 130 con el estado preservado y el árbol del daemon reclamado |
 
 ```bash
 # Ejemplos directos:

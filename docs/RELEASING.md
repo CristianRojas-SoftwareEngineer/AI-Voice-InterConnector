@@ -118,10 +118,11 @@ CHANGELOG.
 ## 2. Automático: lo que hace el CI
 
 El pipeline `build-all` corre solo en tags `v*` (`branches: ignore: /.*/`). La
-arquitectura completa está en [docs/BUILD.md §4](BUILD.md#4-cicd-con-circleci).
+justificación del diseño y de las cachés está en [docs/CI.md](CI.md), y la
+definición ejecutable en `.circleci/config.yml`.
 Con el tag pusheado, ejecuta sin intervención:
 
-1. **Puertas.** Son 9 y todas son `requires:` de los 4 builds. Si una falla, no
+1. **Puertas.** Todas son `requires:` de los builds. Si una falla, no
    se compila ni se publica nada.
 
    | Puerta | Qué comprueba |
@@ -163,19 +164,19 @@ Con el tag pusheado, ejecuta sin intervención:
 
     más los dos bootstrap estampados (`install.sh`, `install.ps1`), que
     `publish-release` suma al release.
-3. **`publish-release`** (después de los 4 builds):
+3. **`publish-release`** (después de los builds):
     - Estampa la versión del tag en el marcador `__AVI_STAMPED_VERSION__` de
       ambos bootstrap (`packaging/bootstrap/install.sh` e `install.ps1`), con
       exactamente una sustitución verificada por fichero.
-    - Toma los 4 artefactos del workspace. El binario que se adjunta es el
+    - Toma los artefactos del workspace. El binario que se adjunta es el
       mismo que pasó las puertas.
-    - Genera `SHA256SUMS.txt` sobre los 6 ficheros (4 artefactos + 2 bootstrap).
+    - Genera `SHA256SUMS.txt` sobre los artefactos y los dos bootstrap.
     - Extrae de `CHANGELOG.md` la sección `[X.Y.Z]` como notas. Si no la
       encuentra, falla.
     - Agrega a las notas un pie con la oferta de código fuente GPLv3 §6: el
       tarball del tag (`archive/refs/tags/vX.Y.Z.tar.gz`) y el enlace al tag.
-    - Publica el GitHub Release sobre `vX.Y.Z` con 7 assets (4 artefactos, 2
-      bootstrap y `SHA256SUMS.txt`) y las notas. Si el tag ya tiene un Release,
+    - Publica el GitHub Release sobre `vX.Y.Z` con los artefactos, los dos
+      bootstrap y `SHA256SUMS.txt`, y las notas. Si el tag ya tiene un Release,
       `gh release create` falla.
 4. **`publish-metadata`** (después de `publish-release`):
    - Descarga `SHA256SUMS.txt` del Release publicado.
@@ -224,17 +225,7 @@ El corte es un commit directo en `main`, así que no dispara el hook
 ## 4. Verificación del usuario final
 
 El usuario final verifica la integridad de su descarga contra el
-`SHA256SUMS.txt` publicado en el Release (cubre los 4 archivos y los 2
-bootstrap):
-
-```bash
-# Linux/macOS
-sha256sum -c SHA256SUMS.txt --ignore-missing
-
-# Windows (PowerShell)
-Get-FileHash ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -Algorithm SHA256
-# comparar manualmente contra la línea correspondiente de SHA256SUMS.txt
-```
-
-Ver también `SECURITY.md` para el modelo de amenaza y la nota sobre binarios
-sin firmar.
+`SHA256SUMS.txt` publicado en el Release, con los comandos de
+[Descargar binario pre-compilado](../README.md#descargar-binario-pre-compilado).
+El modelo de amenaza y la nota sobre binarios sin firmar están en
+[SECURITY.md](../SECURITY.md).

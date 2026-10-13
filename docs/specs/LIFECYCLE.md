@@ -63,7 +63,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 | Target | Triple de Rust | Archivo de release | Mínimo declarado |
 |---|---|---|---|
-| Windows x86_64 | `x86_64-pc-windows-msvc` | `ai-voice-interconnector-<ver>-x86_64-windows.zip` | Windows 10 x64 |
+| Windows x86_64 | `x86_64-pc-windows-msvc` | `ai-voice-interconnector-<ver>-x86_64-windows.zip` | [Windows 10 1903+ x64](../../README.md#requisitos) |
 | Linux x86_64 | `x86_64-unknown-linux-gnu` | `ai-voice-interconnector-<ver>-x86_64-linux.tar.gz` | glibc ≥ 2.28 |
 | Linux arm64 | `aarch64-unknown-linux-gnu` | `ai-voice-interconnector-<ver>-arm64-linux.tar.gz` | glibc ≥ 2.28, userland de 64 bits |
 | macOS arm64 | `aarch64-apple-darwin` | `ai-voice-interconnector-<ver>-arm64-macos.tar.gz` | macOS 26 (Tahoe), cualquier Mac con Apple Silicon |
@@ -601,7 +601,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 
 ### 9.1 Requisitos por target
 
-La tabla de requisitos y las versiones fijadas (Rust, ONNX Runtime, paquetes de MSYS2) se declaran **una sola vez, en código de `xtask`**, y de ahí las consumen `cargo xtask doctor`, `cargo xtask bootstrap` y la CI. La guía de build remite a `cargo xtask doctor` en lugar de duplicar la lista.
+Las versiones fijadas (Rust, ONNX Runtime, paquetes de MSYS2) se declaran **una sola vez, en `packaging/pins.json`**, y de ahí las consumen `cargo xtask doctor`, `cargo xtask bootstrap` y la CI; `cargo xtask doctor` es la fuente de verdad de qué requisitos faltan en una máquina. La tabla siguiente es un resumen de diseño de los requisitos por target: la guía de build no la repite y remite a `cargo xtask doctor`.
 
 | Requisito | Windows x86_64 | Linux x86_64 / arm64 | macOS arm64 | Lo provee |
 |---|---|---|---|---|
@@ -657,7 +657,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Global compartida | — | `~/.cargo`, caché de sccache, paquetes del sistema, MSYS2 | Nunca; solo se informa |
 
 - Detiene primero los daemons lanzados desde `target/`.
-- `--prune` modera la capa repo a la poda fina (cachés, cruces ajenos y PDBs viejos) y conserva la compilación vigente; el defecto sin flag no cambia. Ver `docs/BRANCHING.md`.
+- `--prune` modera la capa repo a la poda fina (cachés, cruces ajenos y PDBs viejos) y conserva la compilación vigente; el defecto sin flag no cambia. Ver [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - Nunca borra código fuente versionado.
 - Aplica las reglas de confirmación de [§8.1](#81-reglas-transversales): `--dry-run`, y `--yes` obligatorio sin terminal.
 - En Windows, el `xtask.exe` en ejecución se borra con la misma implementación de borrado diferido que el producto (el crate `avi-process`).
@@ -734,30 +734,38 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 
 | Documento | Papel tras la implementación |
 |---|---|
-| `docs/specs/sdlc-lifecycle.md` (este) | Fuente de verdad funcional del ciclo de vida |
-| `README.md` | One-liners y los tres comandos esenciales (`self update`, `self uninstall`, `cleanup`) |
-| `USAGE.md` | Guía de usuario del ciclo de vida |
-| `docs/CLI/README.md` | **Índice** de `docs/CLI/`: el árbol de documentos, la tabla de comandos de nivel superior (con `self` y **sin** `uninstall`) y la tabla de códigos de salida con los siete enteros del ciclo de vida |
-| `docs/CLI/CONTRACT.md` | Contrato de `self *`, `setup`, `cleanup` y `doctor`: flags, `reason` y códigos de salida, envelope `--json` y las dos versiones de esquema |
-| `docs/CLI/commands/SELF.md` | Documento del grupo `self`, con 201 líneas: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
-| `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1–R3, el gate de categoría y la confirmación destructiva |
+| `docs/specs/LIFECYCLE.md` (este) | Fuente de verdad funcional del ciclo de vida |
+| `README.md` | Portada autosuficiente sin conexión: requisitos, instalación por SO (one-liners, Homebrew, descarga manual con checksum), primer arranque, `setup` inicial, primeros pasos, los tres comandos esenciales del ciclo de vida (`self update`, `self uninstall`, `cleanup`), uso ético, licencia e índice de la documentación |
+| `USAGE.md` | Guía de uso con el programa ya instalado: comandos y `--json`, modelos, ciclo de vida completo (`self`), daemon, clonación y solución de problemas; remite al README para instalar |
+| `docs/CLI/README.md` | **Índice** de `docs/CLI/`: el árbol de documentos, la tabla de comandos de nivel superior (con `self` y **sin** `uninstall`) y la tabla de códigos de salida, incluidos los del ciclo de vida |
+| `docs/CLI/CONTRACT.md` | Contrato normativo de toda la CLI: superficie, despacho al daemon, validación, códigos de salida, canal de error, envelope `--json` y las dos versiones de esquema; incluye el contrato con el plugin de narración |
+| `docs/CLI/commands/SELF.md` | Documento del grupo `self`: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
+| `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1 y R3 que aplica `cleanup`, el gate de categoría y la confirmación destructiva |
 | `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y la poda que usa `self update` |
-| `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del envelope, los cinco chequeos y el veredicto de un solo objeto |
-| `docs/BUILD.md` y `CONTRIBUTING.md` | Comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor` |
+| `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del envelope, los chequeos y el veredicto de un solo objeto |
+| `docs/BUILD.md` | Guía de compilación: comandos de `cargo xtask` para el entorno de desarrollo; los requisitos, vía `cargo xtask doctor`. No contiene análisis de CI |
+| `CONTRIBUTING.md` | Guía de contribución: flujo de trabajo, con el flujo de ramas trunk-based sobre `main` absorbido, y condiciones para proponer cambios |
+| `docs/CI.md` | Análisis de por qué el pipeline de CI tiene la forma que tiene y cómo se comportan sus cachés; la definición ejecutable es la configuración del pipeline |
+| `.github/PULL_REQUEST_TEMPLATE.md` | Plantilla de descripción de los pull requests: problema, verificación y comprobaciones previas |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
 | `docs/SELF-HOSTED-INSTALL.md` | Retirado: no existe en el arbol. Su contenido vigente esta en `docs/DISTRIBUTION.md` |
-| `docs/DESIGN.md` | Arquitectura, motor TTS, estructura del proyecto y comandos; su árbol describe las piezas vigentes, de modo que la ausencia de los cinco scripts de la raíz es un hecho comprobable y no un olvido |
+| `docs/DESIGN.md` | Arquitectura, motor TTS, estructura del proyecto, comandos y UX de audio interactivo; su árbol describe las piezas vigentes, de modo que la ausencia de los cinco scripts de la raíz es un hecho comprobable y no un olvido |
 | `docs/GOAL.md` | Especificación ideal del producto y clasificación de specs, con la firma de código en el goal a largo plazo |
 | `docs/MANUAL-VALIDATION.md` | Procedimiento operativo de la validación end-to-end manual: la matriz de la CLI que CI no puede ejercitar, con la caché de modelos y la integración de `PATH` vigentes |
 | `docs/RELEASING.md` | El corte de release: bump de las cinco versiones, promoción de `[No publicado]` por `cargo xtask release` y aborted list del gate de publicación |
+| `docs/CLI/commands/DAEMON.md` | Documento del grupo `daemon`: ciclo de vida del servidor nativo que mantiene los modelos residentes en memoria y sus subcomandos |
+| `docs/CLI/commands/SPEECH.md` | Documento de `speech`: síntesis, transcripción y doblaje voz→voz, y el CRUD de las locuciones persistidas |
+| `docs/CLI/commands/VOICE.md` | Documento de `voice`: registro de voces (fábrica y clonadas), con `clone` delegable al daemon y `list`/`remove` siempre locales |
+| `docs/CLI/commands/TRANSLATE.md` | Documento de `translate`: traducción de texto es↔en, delegable al daemon o ejecutada con el motor local |
+| `docs/CLI/commands/DEVICES.md` | Documento de `devices`: enumeración de los dispositivos de salida de audio, sin subcomandos, sin estado y sin daemon |
 | `docs/CLI/commands/VERSION.md` | Documento de `version`, el único comando de nivel superior sin motor en `avi-lifecycle`: lo resuelve `handle_version` en `src/main.rs`, y por eso el envelope `--json` es toda su superficie |
 | `THIRD-PARTY-LICENSES.md` | Inventario de licencias de terceros, con la región generada por `cargo xtask licenses` y la región curada arriba; gobierna el aviso de atribución de los pesos de modelo |
 | `SECURITY.md` | Política y runbook: Mark-of-the-Web, los dos bootstrap como única ejecución previa al binario, y el aviso de binarios sin firmar diferido al goal a largo plazo |
 | `AGENTS.md` | Directrices de trabajo en este repositorio: idioma, surgicalidad, disciplina de versionado y prohibiciones; gobierna a quien modifica el proyecto, no al usuario final |
-| `.claude/skills/test-windows-e2e-as-final-user/SKILL.md` | Receta reutilizable del recorrido E2E en Windows como usuario final. **Fuera de git** (regla `.claude/*` de `.gitignore`): su corrección no entra en ningún commit y su reversión es el texto anterior, no `git checkout` |
-| `.claude/skills/release/SKILL.md` | Receta del corte de release en ocho pasos, del gate de confirmación a la limpieza de `target/` tras verificar el release. También **fuera de git** (regla `.claude/*` de `.gitignore`), con la misma consecuencia |
-| Memorias del agente (`~/.claude/projects/…/memory/`) | Índice de lo aprendido entre sesiones, **fuera de git** y mantenido por el orquestador. No documenta el producto, así que no es parte de su documentación de primera parte |
-
+| `CHANGELOG.md` | Historial de cambios por versión; la sección `[No publicado]` se cura durante el desarrollo y `cargo xtask release` la promueve |
+| `SOURCE-OFFER.md` | Oferta de código fuente exigida por la GPLv3 §6, ligada a la versión publicada y actualizada en el corte de release |
+| `docs/dev/CONTEXT-OPTIMIZATION.md` | Guía de desarrollo sobre la optimización de contexto de los agentes de código con Engram y Codebase Memory MCP |
+| `docs/issues/README.md` | Índice y convenciones del registro de defectos: estructura común de cada documento de defecto abierto |
 ## 14. Criterios de aceptación
 
 **Instalación**

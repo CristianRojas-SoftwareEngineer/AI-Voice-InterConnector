@@ -2,11 +2,7 @@
 
 ## Tabla de contenidos
 
-- [Instalación](#instalación)
-  - [Requisitos de hardware](#requisitos-de-hardware)
-  - [Usuario del binario](#usuario-del-binario)
-  - [Compilar desde el código fuente (Rust)](#compilar-desde-el-código-fuente-rust)
-- [Primer uso: provisionar el/los modelo(s) (`setup`)](#primer-uso-provisionar-ellos-modelos-setup)
+- [Modelos (`setup`)](#modelos-setup)
 - [Comandos](#comandos)
   - [Referencia de esquemas `--json`](#referencia-de-esquemas---json)
   - [`version`](#version)
@@ -45,8 +41,6 @@
   - ["La voz 'x' no se puede eliminar." (exit 2)](#la-voz-x-no-se-puede-eliminar-exit-2)
   - [Sin audio de salida](#sin-audio-de-salida)
   - [El sistema bloquea el primer arranque (binarios sin firmar)](#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar)
-- [Uso ético y responsable](#uso-ético-y-responsable)
-- [Licencia](#licencia)
 
 AI Voice InterConnector es un sintetizador de voz (TTS) 100 % local con clonación de voz en
 español. Esta guía recorre cada caso de uso desde la perspectiva
@@ -58,108 +52,24 @@ por plataforma (backend de reproducción, nombres de dispositivo, ubicación de
 datos, señales del daemon, rendimiento de la traducción y dependencias del
 sistema) se detallan en [Experiencia unificada entre sistemas operativos](#experiencia-unificada-entre-sistemas-operativos).
 
-## Instalación
+Para instalar, ver [Instalación en el README](README.md#instalación). Si trabajas desde el código fuente, sustituye `ai-voice-interconnector` por `cargo run --`; ver [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Hay dos flujos según la audiencia: el del **usuario del binario** (canal nativo:
-one-liner o descarga desde Releases) y el del **desarrollador** (compila con
-`cargo` desde el código fuente). Detalle en
-[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
-
-### Requisitos de hardware
-
-La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
-
-- **CPU**: x86-64 o ARM64 moderna. Toda la inferencia corre en CPU, así que en
-  procesadores antiguos la síntesis es más lenta.
-- **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
-  funciona pero puede paginar (ralentizarse) en textos largos. `doctor` no mide
-  ni la CPU ni la RAM.
-- **Disco**: 5,85 GB para los modelos descargados (Qwen3-TTS 2,5 GB + modelo Base
-  de clonado 2,5 GB + opus-mt es↔en 0,17 GB + Parakeet TDT v3 0,7 GB). El disco
-  ocupa lo mismo que la descarga, salvo en sistemas de archivos sin enlaces duros (FAT32,
-  exFAT o algunos recursos de red), donde `hf-hub` copia cada archivo y el espacio se
-  duplica. El binario instalado ocupa ~40 MB.
-- **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
-  funcionamiento.
-- **Linux — glibc ≥ 2.28** (Debian 10+, Ubuntu 20.04+, RHEL, Rocky y Alma 8+,
-  Fedora 29+ o equivalente), sin nada más que instalar: el binario solo usa la
-  glibc y las librerías de C y C++ que toda distribución con glibc trae, y el
-  motor TTS lleva OpenBLAS enlazado estático. Ver la entrada correspondiente en
-  «Solución de problemas» más abajo.
-- **Linux — audio**: la reproducción y la captura usan ALSA, que traen las
-  distribuciones de escritorio. En un sistema sin ALSA (servidores o
-  contenedores mínimos) el binario arranca igual: solo `devices` y las órdenes
-  que reproducen o capturan audio fallan, con un error que nombra la librería
-  de ALSA ausente.
-- **macOS — macOS 26 (Tahoe) o posterior**, en cualquier Mac con Apple Silicon
-  (M1 en adelante).
-- **Windows**: nada que instalar; el archivo trae las DLL del runtime de VC++
-  que necesitan el binario y ONNX Runtime.
-- Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
-
-### Usuario del binario
-
-Instala el ejecutable de tu plataforma desde Releases y déjalo accesible en el
-PATH (en Windows el instalador lo agrega automáticamente al PATH de usuario,
-HKCU). Luego invoca:
-
-```bash
-ai-voice-interconnector <comando>
-```
-
-En **Linux y macOS**, el bootstrap `install.sh` (asset versionado del release) automatiza toda la descarga/verificación/instalación
-con una sola línea (detalle en [README.md](README.md#instalación-de-una-línea)):
-
-```bash
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh
-```
-
-En **Windows**, el bootstrap `install.ps1` hace lo análogo desde PowerShell (instalación
-per-user, sin UAC; delega en `self install`, que a su vez ejecuta `setup`):
-
-```powershell
-irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex
-```
-
-**Desinstalación limpia**, en **un comando** en los tres SO: `ai-voice-interconnector
-self uninstall` borra el estado, revierte la integración de PATH y borra el programa, en
-ese orden. Usa `--yes` para omitir la confirmación, `--keep-data` para conservar modelos,
-voces y habla, y `--dry-run` para ver el plan sin tocar el disco. Sin terminal, `--yes` es
-**obligatorio**: sin él la operación termina con `confirmation_required` y no borra nada.
-Con Homebrew Cask, la vía idiomática es `brew uninstall --cask --zap`. Ver «Ciclo de vida
-de la instalación» más abajo.
-
-### Compilar desde el código fuente (Rust)
-
-```bash
-# Requisitos: Rust 1.96 y cmake; la lista completa por host la da `cargo xtask doctor`
-cargo build --release --features full
-./target/release/ai-voice-interconnector <comando>
-```
-
-A partir de aquí, todos los ejemplos usan `ai-voice-interconnector <comando>`; si trabajas
-desde el código fuente, sustituye por `cargo run -- <comando>` o ejecuta el binario de
-`target/release/`. El comportamiento es el mismo. Detalle completo en
-[docs/BUILD.md](docs/BUILD.md) y [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Primer uso: provisionar el/los modelo(s) (`setup`)
+## Modelos (`setup`)
 
 `setup` descarga **los 5 modelos** desde HuggingFace Hub de forma nativa
 (crate `hf-hub`, TLS rustls) a la **caché exclusiva de la aplicación**
-(`~/.cache/ai-voice-interconnector/models` en Linux,
-`~/Library/Caches/ai-voice-interconnector/models` en macOS,
-`%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows; respeta
-`HF_HUB_CACHE`/`HF_HOME` si las defines, y en ese caso esa raíz pasa a ser compartida):
+(rutas por SO y efecto de `HF_HUB_CACHE`/`HF_HOME` en
+[Ubicaciones en disco por SO](docs/BUILD.md#ubicaciones-en-disco-por-so)):
 
 | Modelo | Repo HF | Uso |
 |---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
-| `opus-mt-es-en` / `opus-mt-en-es` | `CristianRojaas/opus-mt-es-en-ct2-int8` / `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción es↔en (0,08 GB cada uno; derivados int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertidos a CTranslate2) |
-| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (0,7 GB, ONNX int8) |
-| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (2,5 GB) | Clonado de voz y síntesis de las voces clonadas (Base) |
+| `opus-mt-es-en` / `opus-mt-en-es` | `CristianRojaas/opus-mt-es-en-ct2-int8` / `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción es↔en (derivados int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertidos a CTranslate2) |
+| `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (ONNX int8) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Clonado de voz y síntesis de las voces clonadas (Base) |
 
 Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
-(`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. Los cinco modelos suman 5,85 GB. Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
+(`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. Tamaño de la descarga y detalle de cada modelo en [`setup`](docs/CLI/commands/SETUP.md); el espacio en disco, en [Requisitos del README](README.md#requisitos). Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
 
 ```bash
 ai-voice-interconnector setup                        # descarga los 5 modelos (idempotente)
@@ -175,17 +85,6 @@ final de una instalación, el programa **queda instalado** y el comando sale con
 (`setup_failed`): es un éxito parcial y basta reintentar con `setup`. La limpieza
 posterior corresponde a `cleanup` (datos) o `self uninstall` (además programa y PATH).
 
-**Provisión por SO** (experiencia homóloga):
-
-- **Windows**: el bootstrap `install.ps1` delega en `self install`, que registra
-  el directorio en el PATH de usuario
-  (HKCU) y ejecuta `setup` al terminar.
-- **Linux / macOS**: el bootstrap `install.sh` (POSIX, común a ambos SO) delega
-  en `self install`, que crea el symlink
-  `~/.local/bin/ai-voice-interconnector` y encadena `setup` al terminar.
-  Si `~/.local/bin` no está en tu PATH, el instalador te lo avisa con la línea
-  exacta a añadir al shell profile.
-
 > **Importante**: hasta que los modelos estén provisionados, `speech say` y `daemon start`
 > **abortan de inmediato** (exit 4) con un mensaje que remite a `ai-voice-interconnector setup`. Nunca
 > disparan una descarga silenciosa.
@@ -197,13 +96,24 @@ Tanto los comandos de lectura (`version`, `doctor`, `devices`, `voice list`,
 `cleanup`) aceptan `--json` para salida legible por máquina, útil al invocar
 `ai-voice-interconnector` desde otro programa: ningún comando obliga a parsear texto.
 
-Todo payload `--json` incluye el campo **`"schema_version"`** (actualmente
-`"5"`), que identifica la forma del esquema. Es un campo aditivo: añadir claves
-nuevas no lo incrementa; solo un cambio incompatible de las claves existentes lo
-haría. Un consumidor puede leerlo para detectar cambios de contrato.
+El programa sin subcomando muestra la ayuda (exit 0); un grupo sin subcomando
+(`speech`, `voice`, `daemon`, `self`) sale con 2 mostrando la ayuda del grupo.
+La regla está en [CONTRACT §9](docs/CLI/CONTRACT.md).
 
-**Ojo: el protocolo del daemon sigue en `"4"`.** Son dos contratos
-independientes —el envelope de la CLI y el IPC del daemon— y suben por separado; el
+Todo payload `--json` incluye el campo **`"schema_version"`**, que identifica la
+forma del esquema; su valor vigente y la regla de cuándo sube están en
+[las dos versiones de esquema](docs/CLI/CONTRACT.md#las-dos-versiones-de-esquema).
+Es un campo aditivo: añadir claves nuevas no lo incrementa. Un consumidor puede
+leerlo para detectar cambios de contrato.
+
+Un `reason` desconocido se trata como ausente y se decide por el código de
+salida: añadir un `reason` no sube `schema_version`, así que un consumidor debe
+tolerar los que aún no conoce. La regla normativa está en
+[el canal de la causa fina](docs/CLI/CONTRACT.md#el-canal-de-la-causa-fina-y-la-regla-que-decide-entre-código-y-razón).
+
+**Ojo: el protocolo del daemon tiene su propia versión**, declarada en
+[las dos versiones de esquema](docs/CLI/CONTRACT.md#las-dos-versiones-de-esquema).
+Son dos contratos independientes —el envelope de la CLI y el IPC del daemon— y suben por separado; el
 número de cada uno se lee de su propia constante, `CLI_SCHEMA_VERSION` y
 `DAEMON_SCHEMA_VERSION` (`crates/avi-core/src/json_emitter.rs`), y el historial de
 subidas de cada uno vive en el [CHANGELOG](CHANGELOG.md).
@@ -214,7 +124,9 @@ Los payloads siguientes son **parte del contrato programático**: sus claves son
 estables (los cambios solo pueden ser aditivos mientras `schema_version` sea
 `"5"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
 diagnóstico/progreso va a stderr. La clave `schema_version` (string) se omite de
-las tablas por brevedad: está presente en todos.
+las tablas por brevedad: está presente en todos. Estos esquemas se repiten a
+propósito aquí y en la página de cada comando en [`docs/CLI/commands/`](docs/CLI/commands/),
+para que quien consume la salida de un comando lo tenga a mano sin cambiar de documento.
 
 **`speech synthesize --json`** — el bucle interactivo de `--play` es
 incompatible con `--json` (exit 2 si se combinan), así que bajo `--json` la
@@ -265,12 +177,19 @@ fallo emite el payload de error (`error`) y sale no-cero, no una clave `ok`.
 `daemon serve` (servidor en primer plano) no tiene `--json`: su contrato es el
 stream NDJSON de `/synthesize`, no un payload de una sola línea.
 
-**`version --json`**
+**Ayuda `--json`** (`--help`, `-h` o el programa sin subcomando) — la ayuda es
+una respuesta válida y sale como payload, no como texto.
+
+| Clave | Tipo | Significado |
+|-------|------|-------------|
+| `help` | string | El texto de la ayuda del nivel invocado, el mismo que ve una persona con `--help` |
+
+**`version --json`** — `--json --version` y `--json -V` emiten el mismo payload.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `name` | string | Siempre `"ai-voice-interconnector"` |
-| `version` | string | Versión del programa (p. ej. `"0.28.0"`) |
+| `version` | string | Versión del programa (p. ej. `"X.Y.Z"`) |
 
 **`doctor --json`**
 
@@ -407,11 +326,9 @@ Diagnóstico: todo correcto.
 Cache HF: C:\Users\<tu-usuario>\.cache\huggingface\hub
 ```
 
-`doctor` ejecuta cinco chequeos: recibo de instalación, resolución y duplicados en
-el `PATH`, artefactos pendientes y `models_provisioned` (los modelos de la
-selección: TTS Qwen3-TTS, traducción opus-mt es→en y en→es, STT
-Parakeet TDT v3 y el modelo Base de clonado). Si alguno falla, lo lista y remite a
-`ai-voice-interconnector setup`.
+Los chequeos que ejecuta `doctor` están en
+[su tabla de chequeos](docs/CLI/commands/DOCTOR.md#los-chequeos). Si alguno
+falla, lo lista y remite a `ai-voice-interconnector setup`.
 
 El veredicto es el código de salida: 0 si todos los chequeos pasan (tras una
 instalación correcta, `doctor` sale con 0) y 1 si alguno falla.
@@ -574,7 +491,7 @@ puerta de calidad sobre lo que sonó.
 - `--source-language`: Idioma del texto de entrada (`es` o `en`; por defecto igual a `--target-language`, sin traducir)
 - `--target-language`: Idioma/modelo de síntesis (`es` o `en`; default `es`; si difiere del origen, el texto se traduce antes de sintetizar)
 - `--temperature`: Override del muestreo (`0 < t <= 2.0`; sin el flag se usa la temperatura de producción)
-- `--daemon`: Usar el daemon sin sondeo previo; si falla, el error se reporta (sin fallback a directo)
+- `--daemon`: Usar el daemon sin sondeo previo; si el daemon no responde, sale con 5 (`daemon_unreachable`), sin fallback a directo (ver [el despacho al daemon](docs/CLI/CONTRACT.md#5-el-despacho-al-daemon))
 - `--no-daemon`: Forzar modo directo, sin sondear el daemon
 
 `--daemon` y `--no-daemon` son **mutuamente excluyentes**: combinarlos produce
@@ -1075,7 +992,9 @@ Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemo
 - **Sin flags**: sondea el daemon con un health check corto y lo usa si responde;
   si no, cae al modo directo sin error.
 - **`--daemon`**: asume el daemon disponible y le envía la síntesis sin sondeo
-  previo; un fallo se reporta como error (sin fallback silencioso).
+  previo; si el daemon no responde, sale con 5 (`daemon_unreachable`), sin
+  fallback silencioso (ver
+  [el despacho al daemon](docs/CLI/CONTRACT.md#5-el-despacho-al-daemon)).
 - **`--no-daemon`**: modo directo, sin ningún sondeo.
 
 ```bash
@@ -1091,7 +1010,7 @@ ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 
 **Qué esperar** con el daemon activo: `speech say` omite la carga del modelo y
 la síntesis empieza de inmediato. Mientras sintetiza, el daemon mantiene viva la
-conexión con latidos NDJSON (ver [docs/DAEMON-MODE.md](docs/DAEMON-MODE.md#streaming-ndjson));
+conexión con latidos NDJSON (ver [docs/CLI/CONTRACT.md](docs/CLI/CONTRACT.md#transporte-streaming-ndjson-y-presupuesto-de-inactividad));
 el cliente no muestra progreso intermedio. Al terminar la reproducción imprime lo
 mismo que en modo directo, sin ruta:
 
@@ -1156,36 +1075,17 @@ desde el binario como desde el código fuente. En concreto:
   scripts de forma idéntica en los tres SO.
 - **Códigos de salida (contrato público congelado)**: un orquestador distingue la
   causa del fallo sin parsear texto en español. Los valores son estables entre SO
-  y versiones:
-
-  | Código | Significado | Ejemplo |
-  |--------|-------------|---------|
-  | `0` | Éxito | Síntesis o comando completado |
-  | `1` | Error genérico | Fallo inesperado; `doctor` con algún chequeo fallido |
-  | `2` | Entrada inválida | `--text` vacío; nombre de voz ilegal; uso incorrecto (clap) |
-  | `3` | Voz o audio no encontrado | `--voice inexistente`; `voice remove` de una voz ausente |
-  | `4` | Modelo no provisionado | `speech say`/`daemon start` sin ejecutar `setup` |
-  | `5` | Daemon inalcanzable | `speech say --daemon` sin daemon; `daemon start/stop/restart` fallido |
-  | `6` | Conflicto de estado | Colisión en `voice clone` sin `--force`; voz ocupada; puerto del daemon en uso |
-  | `9` | Fallo del pipeline de traducción | `translate` con el modelo cargado pero la inferencia falla |
-  | `10` | Fallo del pipeline de transcripción | `speech transcribe`/`speech dub` con el modelo cargado pero la inferencia falla (directo o vía daemon) |
-  | `11` | Provisión de modelos fallida, **programa instalado** | `self install` o `self update` terminan con la provisión sin completar: éxito parcial, reintentable con `setup` |
-  | `12` | La copia la gestiona otra herramienta | `self uninstall` o `self update` sobre una instalación de Homebrew |
-  | `13` | Reemplazo revertido | Fallo al reemplazar la versión anterior; la anterior queda restaurada |
-  | `14` | Conflicto en la ruta del enlace del `PATH` | Hay un archivo ajeno donde va el enlace (salvo `--force`) |
-  | `15` | Bundle incompleto | `self install` desde un ejecutable sin bundle alrededor, p. ej. `target\debug` |
-  | `16` | No se pudo detener el daemon | Nada del plan de `cleanup`/`self uninstall` se aplicó (`self update` tampoco toca nada) |
-  | `17` | Otra operación de ciclo de vida en curso | El bloqueo de §6 del ciclo de vida ya está tomado |
-  | `18` | Plataforma no soportada | Target no soportado; compilar desde el código fuente |
-  | `19` | Binario descargado incompatible | `self update` verifica el arranque y la versión antes del traspaso, con diagnóstico |
-  | `20` | Fallo de red | Descarga tras reintentos acotados (`self update`, `setup`) |
-  | `21` | Hash no coincidente | `self update` con `SHA256SUMS.txt`; nada modificado |
-  | `22` | Directorio de programa no borrado | `self uninstall` completó el resto; bórralo a mano (`program_dir_kept`) |
-  | `130` | Interrupción del usuario | Ctrl+C (128 + SIGINT) durante cualquier comando |
-
-  Los códigos 0–6, el 9, el 10 y el 130 son los del contrato de la CLI y no cambian. Los del 11 al 22 son
-  la tabla cerrada del ciclo de vida, **uno por `reason`**, y hay que leer el 11 con cuidado:
-  **no es un error**, es un éxito parcial con el programa ya instalado (o actualizado).
+  y versiones, y la tabla completa con su significado está en
+  [Códigos de salida](docs/CLI/README.md#códigos-de-salida). Para orientarse: `2` es
+  una entrada inválida (`--text` vacío, nombre de voz ilegal, uso incorrecto); `3`,
+  una voz o un audio que no existe (`--voice inexistente`); `4`, un modelo sin
+  provisionar (`speech say` o `daemon start` antes de `setup`); `5`, un daemon
+  inalcanzable (`speech say --daemon` sin daemon); `6`, un conflicto de estado
+  (`voice clone` sobre una voz existente sin `--force`); `20`, un fallo de red en
+  `setup` o `self update`; y `130`, una interrupción con Ctrl+C. Los códigos del `11`
+  al `22` pertenecen al ciclo de vida, y el `11` hay que leerlo con cuidado: **no es un
+  error**, es un éxito parcial con el programa ya instalado y la provisión de modelos
+  reintentable con `setup`.
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
   audio generado para un mismo texto y voz es equivalente en cualquier SO.
 - **El motor de audio** es nativo por SO (`cpal`: WASAPI/CoreAudio/ALSA); no
@@ -1203,13 +1103,10 @@ sistema debe aportar:
 | Señales que paran `daemon serve` | Ctrl+C | Ctrl+C y `SIGTERM` | Ctrl+C y `SIGTERM` |
 | Identidad de proceso del daemon | API del sistema | `/proc/<pid>/stat` | `proc_pidinfo` |
 | Librerías que hay que instalar | Ninguna | Ninguna (glibc ≥ 2.28; sin ALSA solo falla el audio) | Ninguna (macOS 26 o posterior) |
-| Voces de usuario (binario) | `%LOCALAPPDATA%\ai-voice-interconnector\data\voices` | `~/.local/share/ai-voice-interconnector/voices` | `~/Library/Application Support/ai-voice-interconnector/voices` |
-| Caché del modelo | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` | `~/.cache/ai-voice-interconnector/models` | `~/Library/Caches/ai-voice-interconnector/models` |
-| Directorio del programa | `%LOCALAPPDATA%\Programs\ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` | `~/.local/opt/ai-voice-interconnector` |
-
-> La caché del modelo respeta las variables de entorno `HF_HUB_CACHE` y `HF_HOME`
-> si están definidas (misma resolución que usa HuggingFace Hub); la ruta de la
-> tabla es el valor por defecto.
+Las rutas por SO de las voces de usuario y de la caché del modelo están en
+[Ubicaciones en disco por SO](docs/BUILD.md#ubicaciones-en-disco-por-so) (con el efecto
+de `HF_HUB_CACHE` y `HF_HOME`), y la del directorio del programa, en la
+[tabla de rutas del ciclo de vida](docs/specs/LIFECYCLE.md).
 
 ---
 
@@ -1299,85 +1196,4 @@ En un host sin audio puedes seguir usando la síntesis a archivo
 
 ### El sistema bloquea el primer arranque (binarios sin firmar)
 
-Al abrir el instalador por primera vez es **esperable** que el sistema lo
-bloquee. No significa que el archivo contenga malware: los binarios
-distribuidos no están firmados ni notarizados, y los sistemas de reputación
-(SmartScreen en Windows, Gatekeeper en macOS) tratan todo ejecutable de «editor
-desconocido» y sin historial de descargas como no confiable por defecto. Cada
-release es un archivo nuevo, así que la advertencia reaparece con cada versión.
-
-Cómo proceder:
-
-- **Windows (SmartScreen)**: en el diálogo «Windows protegió tu PC», pulsa
-  **Más información** → **Ejecutar de todas formas**. (Si el navegador ya
-  bloqueó la descarga, consérvala desde el menú de descargas: **Conservar** →
-  **Conservar de todas formas**.)
-
-- **macOS (Gatekeeper)**: al abrir el binario por primera vez, haz clic
-  derecho sobre él → **Abrir** y confirma; o quita la cuarentena desde una
-  terminal:
-
-  ```bash
-  xattr -d com.apple.quarantine ai-voice-interconnector
-  ```
-
-Esto solo ocurre en el primer arranque; las ejecuciones posteriores no vuelven a
-pedir confirmación. Los one-liners (`curl | sh` / `irm | iex`) descargan por CLI
-y **no disparan ninguno de los dos avisos** (sin Mark-of-the-Web).
-
-Antes de aceptar, puedes comprobar objetivamente que el archivo es el que
-publicó el proyecto cotejando su SHA-256 contra el `SHA256SUMS.txt` del
-Release (ver [SECURITY.md](SECURITY.md#artefactos-sin-firmar)):
-
-```powershell
-# Windows (PowerShell)
-Get-FileHash .\ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -Algorithm SHA256
-```
-
-```bash
-# Linux / macOS
-sha256sum -c SHA256SUMS.txt --ignore-missing
-```
-
-Si un antivirus de terceros pone el instalador en cuarentena, restáuralo y
-añade una exclusión **solo después** de verificar el hash. El plan del
-proyecto es eliminar esta fricción firmando los binarios a través de
-[SignPath Foundation](https://signpath.org/) (firma de código gratuita para
-proyectos open source) en una versión futura.
-
-## Uso ético y responsable
-
-`ai-voice-interconnector` permite clonar voces arbitrarias a partir de unos segundos de audio.
-Por diseño, **el audio generado no contiene marca de agua**: el watermark de
-PerthNet está desactivado en el motor (tanto en modo directo como en el daemon),
-de modo que la salida no es distinguible por medios técnicos de una grabación
-real. Esta capacidad exige diligencia por parte de quien la usa:
-
-- **Consentimiento explícito**: clona únicamente voces para las que
-  cuentes con el permiso de la persona titular. Clonar la voz de alguien sin su
-  autorización puede ser ilegal en tu jurisdicción y es, en todo caso, una falta
-  de respeto a su identidad.
-- **Prohibición de suplantación**: no emplees la herramienta para hacerte pasar
-  por otra persona, cometer fraude, eludir sistemas de verificación por voz,
-  difamar, acosar ni generar desinformación.
-- **Divulgación del contenido sintético**: cuando publiques o compartas audio
-  generado, decláralo como sintético. Dado que **no lleva marca de agua**, la
-  transparencia depende enteramente de ti; no existe un mecanismo automático que
-  identifique la salida como generada por IA.
-- **Canal de reporte**: si detectas un uso indebido de este proyecto o de
-  material producido con él, abre un
-  [Issue](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues)
-  describiendo la situación.
-
-AI Voice InterConnector es software libre y no impone barreras técnicas al uso (serían
-triviales de sortear); establece, en cambio, la diligencia debida esperada en la
-comunidad de IA de código abierto. La responsabilidad del uso legítimo recae en
-la persona que ejecuta la herramienta.
-
-## Licencia
-
-`ai-voice-interconnector` se distribuye bajo **GPL-3.0-or-later** (ver [LICENSE](LICENSE)). El
-motor Qwen3-TTS se distribuye bajo MIT/Apache-2.0 y el par de traducción
-`opus-mt` (Helsinki-NLP) bajo CC-BY-4.0; las dependencias empaquetadas conservan
-sus propias licencias, en su mayoría permisivas (MIT/Apache-2.0/BSD/ISC),
-detalladas en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) (inventario de `Cargo.lock`).
+Es esperable en el primer arranque de un binario descargado por navegador: los pasos para continuar están en [Primer arranque en el README](README.md#primer-arranque-smartscreen--gatekeeper), y el porqué, en [SECURITY.md](SECURITY.md#artefactos-sin-firmar).

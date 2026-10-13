@@ -47,7 +47,7 @@ sección no aplica, se escribe «No aplica» y el motivo, sin borrarla.
 |---|---|
 | Estado | abierto \| en diagnóstico \| resuelto en X.Y.Z |
 | Severidad | crítica \| alta \| media \| baja |
-| Tipo | funcional \| contrato \| seguridad \| diagnóstico \| rendimiento |
+| Tipo | funcional \| contrato \| seguridad \| diagnóstico \| rendimiento \| documentación |
 | Componente | crate, módulo o artefacto afectado |
 | Versión detectada | X.Y.Z |
 | Plataforma | SO y shell donde se observó; si se sabe, dónde no ocurre |
@@ -111,7 +111,4 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 ## Defectos abiertos
 
-Ninguno. Los cinco informes que motivaron los ciclos C1 a C7 se han eliminado al
-cerrarse su última ficha, con su contenido vigente incorporado a los documentos
-canónicos y su corrección anotada en el CHANGELOG. Un defecto nuevo vuelve a la
-forma de la plantilla de arriba, con su propia fila en esta sección.
+No hay defectos abiertos.

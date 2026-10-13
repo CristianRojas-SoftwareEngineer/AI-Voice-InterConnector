@@ -1,8 +1,9 @@
 # `voice`
 
 Gestor del registro de voces (fábrica + clonadas): listar, clonar desde audio
-de referencia y eliminar. Es el único comando con despacho de 3 modos hacia el
-daemon para `clone` (delegable vía `POST /voices/clone`); `list` y `remove`
+de referencia y eliminar. `voice clone` admite el
+[despacho al daemon](../CONTRACT.md#5-el-despacho-al-daemon) (delegable vía
+`POST /voices/clone`); `list` y `remove`
 son siempre locales: no declaran `--daemon` ni `--no-daemon` y el parser los
 rechaza como argumento desconocido (exit 2 `usage_error`), igual que
 `speech list`/`speech play`/`speech remove`.
@@ -62,12 +63,12 @@ name.to_lowercase() + VoiceStore::validate_name(name)   ← exit 2 "invalid_voic
 route_to_daemon(daemon_mode, client)?
     │
     ├─ Sí ──► clone_via_daemon
-    │           (previo al POST: referencia > 30 s → exit 2 "audio_too_long")
-    │           lee speech a base64 → POST /voices/clone (cabeceras ≤1500ms)
+    │           (previo al POST: referencia > MAX_CLONE_REFERENCE_SECS → exit 2 "audio_too_long")
+    │           lee speech a base64 → POST /voices/clone (cabeceras con timeout)
     │           timeout o conexión fallida → exit 5 "daemon_unreachable"
     │           HTTP no-2xx → mapea `reason` del body a exit code (ver tabla de errores)
-    │           stream NDJSON: started → latidos (500ms) / warmup → result {name, speech, precomputed:true}
-    │           inactividad >1500ms o corte sin final → exit 5 "daemon_unreachable" / exit 1 "daemon_error"
+    │           stream NDJSON: started → latidos / warmup → result {name, speech, precomputed:true}
+    │           inactividad (`STREAM_INACTIVITY_TIMEOUT`) o corte sin final → exit 5 "daemon_unreachable" / exit 1 "daemon_error"
     │           result → reemite con schema_version
     │
     └─ No ──► require_model_provisioned()                ← exit 4 "model_missing" si falta qwen3-tts-0.6b
@@ -97,7 +98,7 @@ route_to_daemon(daemon_mode, client)?
 
 `route_to_daemon` (`src/main.rs`): `ForceDaemon` siempre delega (el POST
 falla con `daemon_unreachable` si no hay daemon corriendo); `ForceDirect`
-nunca delega; `Auto` delega solo si `GET /health` responde en ≤500 ms.
+nunca delega; `Auto` delega solo si `GET /health` responde dentro del plazo de `probe_health` (`src/main.rs`).
 
 **Precarga en caliente (warm-on-clone), solo en la ruta daemon.** El campo
 `precomputed` del envelope depende de la ruta: la **ruta daemon** dispara, tras
@@ -121,20 +122,20 @@ handler de clonado.
 { "name": "...", "audio_b64": "...", "force": false }
 ```
 
-La referencia dura como máximo 30 s (`MAX_CLONE_REFERENCE_SECS`), solo se admiten WAV, y la CLI lo comprueba, midiendo la cabecera y luego el PCM decodificado, antes de contactar con el daemon y antes de comprobar el modelo; un exceso sale con exit 2 `audio_too_long`, igual en la vía local. El cuerpo de la petición admite hasta 31 768 576 B (30 s de referencia a 96 kHz, estéreo y 32 bits, en base64, más 1 MiB): un WAV más pesado recibe 413 aunque dure menos de 30 s.
+La referencia dura como máximo `MAX_CLONE_REFERENCE_SECS` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)), solo se admiten WAV, y la CLI lo comprueba, midiendo la cabecera y luego el PCM decodificado, antes de contactar con el daemon y antes de comprobar el modelo; un exceso sale con exit 2 `audio_too_long`, igual en la vía local. El cuerpo de la petición admite hasta el tope que calcula `body_limit_for` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) a partir de esa duración: un WAV más pesado recibe 413 aunque dure menos.
 
 `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`):
 
 1. `VoiceStore::validate_name(name)` → `400` `invalid_voice_name` si falla.
 2. `!force && voice_store.exists(name)` → `409` `voice_exists`.
-3. Falta `audio_b64` → `400` `usage_error`; no decodifica base64 → `400` `invalid_audio`; la referencia dura más de 30 s (medida por su cabecera WAV) → `400` `audio_too_long`.
+3. Falta `audio_b64` → `400` `usage_error`; no decodifica base64 → `400` `invalid_audio`; la referencia supera `MAX_CLONE_REFERENCE_SECS` (medida por su cabecera WAV) → `400` `audio_too_long`.
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
 5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "name": "..."}`.
-6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `with_heartbeats`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) cada 500 ms (`STREAM_HEARTBEAT`). Si el cliente se desconecta, el daemon descarta el resultado; el clonado termina en segundo plano. Si la referencia no se puede cargar, el clonado se interrumpe y emite `{"event":"error", "reason":"invalid_audio", "message": "..."}` (WAV inválido o truncado) o `{"event":"error", "reason":"io_error", "message": "..."}` (fallo de lectura); si falla el propio clonado o el guardado, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
+6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `with_heartbeats`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) con la cadencia de `STREAM_HEARTBEAT` (`crates/avi-daemon/src/lib.rs`). Si el cliente se desconecta, el daemon descarta el resultado; el clonado termina en segundo plano. Si la referencia no se puede cargar, el clonado se interrumpe y emite `{"event":"error", "reason":"invalid_audio", "message": "..."}` (WAV inválido o truncado) o `{"event":"error", "reason":"io_error", "message": "..."}` (fallo de lectura); si falla el propio clonado o el guardado, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
 7. Al completar el clonado, `voice_store.save_reference(name, tmp_qvoice)` persiste `reference.qvoice` (único archivo que el motor consulta; sin copia de los WAV de entrada).
-8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "precomputed": true}` + `schema_version`. El calentamiento (~18-20 s en frío, acotado por el arranque del residente más el presupuesto del testigo) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada».
+8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "precomputed": true}` + `schema_version`. El calentamiento (acotado por el arranque del residente más el presupuesto del testigo) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada».
 
-El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_stream` con un timeout de inactividad entre latidos de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y un deadline failsafe de 240 s (`STREAM_TOTAL_DEADLINE`), mapeando `reason` a exit code con la tabla única
+El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_stream` con un timeout de inactividad entre latidos (`STREAM_INACTIVITY_TIMEOUT`) y un deadline failsafe (`STREAM_TOTAL_DEADLINE`, el `REQUEST_FAILSAFE` de [`limits.rs`](../../../crates/avi-core/src/limits.rs)), mapeando `reason` a exit code con la tabla única
 `ExitCode::from_reason`, tanto en las respuestas no 2xx como en los eventos
 `error` del stream:
 
@@ -208,8 +209,8 @@ Siempre local: no declara `--daemon` ni `--no-daemon`. Flujo
 
 `precomputed` depende de la ruta: `true` en la ruta daemon (warm-on-clone
 iniciado; completitud en `GET /health`) y `false` en la ruta local (motor
-efímero, sin residente que calentar). `schema_version` (`"5"` en el CLI,
-`"5"` en las respuestas del daemon) lo añade `emit_raw_json`
+efímero, sin residente que calentar). `schema_version` (cada contrato con su versión, ver
+[las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)) lo añade `emit_raw_json`
 (`crates/avi-core/src/json_emitter.rs`) en el CLI, y `with_sv` en las respuestas
 del daemon.
 
@@ -271,7 +272,7 @@ copia).
 | Referencia que no es un WAV válido, está truncada o declara una frecuencia de muestreo nula | clone | 2 | `invalid_audio` |
 | Fallo de E/S al leer la referencia | clone | 1 | `io_error` |
 | Falla el motor de `avi_tts::clone_voice` o `save_reference` (el mensaje termina con `Log del motor: <ruta>` a `data/logs/qwen3-tts_*.log`) | clone | 1 | `voice_clone_failed` |
-| Daemon inalcanzable (inactividad 1500 ms / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
+| Daemon inalcanzable (inactividad / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
 | Voz de fábrica (`default`/`ryan`/`vivian`) | remove | 2 | `cannot_remove_default` |
 | Voz no encontrada | remove | 3 | `voice_not_found` |

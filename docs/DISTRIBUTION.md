@@ -58,8 +58,7 @@ publica 7 assets.
 
 ## Instalación
 
-Ver [README.md](../README.md#instalación) y [USAGE.md](../USAGE.md#instalación)
-para el detalle completo por SO. Las tres plataformas tienen una **instalación
+Ver [README.md](../README.md#instalación) para el detalle completo por SO. Las tres plataformas tienen una **instalación
 de una línea** (`curl | sh` / `irm | iex`) desde los assets del release: el
 bootstrap descarga el archivo de su target, verifica el checksum, comprueba que
 el binario arranca y delega en `self install`, que **integra el PATH por sí
@@ -101,8 +100,8 @@ el **navegador** a un archivo descargado. Los one-liners descargan por CLI
 extraído no lleva la marca y ninguno de los dos sistemas de reputación se
 activa. En macOS, además, `self install` limpia `com.apple.quarantine` del
 programa instalado (el bootstrap no toca la cuarentena). La resolución de raíz (firma de
-código y notarización) sigue pendiente; ver `docs/BUILD.md` §"Limitación
-conocida: firma de código y notarización".
+código y notarización) sigue pendiente; ver
+[SECURITY.md](../SECURITY.md#artefactos-sin-firmar).
 
 ## Publicación, tap de Homebrew y antivirus
 
@@ -163,7 +162,7 @@ puede requerir un reporte propio; con firma de código, la reputación se hereda
 versiones y esa recurrencia disminuye mucho.
 
 El estado de esta brecha por SO (mitigada, diferida a firma de código) vive en
-[brechas conocidas de la especificación del ciclo de vida](specs/sdlc-lifecycle.md#brechas-conocidas).
+[brechas conocidas de la especificación del ciclo de vida](specs/LIFECYCLE.md#brechas-conocidas).
 
 La firma y notarización de los binarios sigue registrada como goal a largo plazo
 en [docs/GOAL.md](GOAL.md#goal-a-largo-plazo) para cuando se cumplan sus

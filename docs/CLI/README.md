@@ -1,6 +1,6 @@
 # Documentación de la CLI de AI-Voice-InterConnector
 
-Referencia completa de la interfaz de línea de comandos de AI-Voice-InterConnector. Este directorio contiene el contrato normativo de la CLI y documentación de investigación detallada por comando.
+Referencia completa de la interfaz de línea de comandos de AI-Voice-InterConnector. Este directorio contiene el contrato normativo de la CLI y la documentación por comando.
 
 ## Estructura
 
@@ -8,7 +8,7 @@ Referencia completa de la interfaz de línea de comandos de AI-Voice-InterConnec
 docs/CLI/
 ├── README.md            ← este archivo (índice)
 ├── CONTRACT.md          ← contrato público: comandos, flags, códigos de salida, payloads --json
-└── commands/            ← documentación de investigación por comando
+└── commands/            ← documentación por comando
     ├── SPEECH.md
     ├── VOICE.md
     ├── DEVICES.md
@@ -26,20 +26,20 @@ docs/CLI/
 | Documento | Contenido |
 |---|---|
 | [CONTRACT.md](CONTRACT.md) | Contrato normativo: invariantes de diseño, vocabulario, códigos de salida, payloads `--json`, reglas de validación, matrices de comportamiento |
-| [commands/SPEECH.md](commands/SPEECH.md) | Investigación del grupo `speech`: síntesis, reproducción, dubbing, transcripción, gestión del almacén |
-| [commands/VOICE.md](commands/VOICE.md) | Investigación de `voice`: clonación, listado y eliminación de voces |
-| [commands/DEVICES.md](commands/DEVICES.md) | Investigación de `devices`: enumeración de dispositivos de audio |
-| [commands/DOCTOR.md](commands/DOCTOR.md) | Investigación de `doctor`: diagnósticos del sistema, sección de ciclo de vida y patrón de veredicto |
-| [commands/SETUP.md](commands/SETUP.md) | Investigación de `setup`: provisión del runtime, modelos y el papel de `setup_failed` |
-| [commands/CLEANUP.md](commands/CLEANUP.md) | Investigación de `cleanup`: borrado por categorías, reglas de propiedad y confirmación |
-| [commands/SELF.md](commands/SELF.md) | Investigación del grupo `self`: `self install` (con reparación) y `self uninstall`, sobre el motor `avi-lifecycle` |
-| [commands/DAEMON.md](commands/DAEMON.md) | Investigación de `daemon`: ciclo de vida, endpoints Axum, protocolo IPC |
-| [commands/VERSION.md](commands/VERSION.md) | Investigación de `version`: fuente de versión y payload |
-| [commands/TRANSLATE.md](commands/TRANSLATE.md) | Investigación de `translate`: pipeline de traducción, divergencia ISO vs CLI |
+| [commands/SPEECH.md](commands/SPEECH.md) | Comportamiento e implementación del grupo `speech`: síntesis, reproducción, dubbing, transcripción, gestión del almacén |
+| [commands/VOICE.md](commands/VOICE.md) | Comportamiento e implementación de `voice`: clonación, listado y eliminación de voces |
+| [commands/DEVICES.md](commands/DEVICES.md) | Comportamiento e implementación de `devices`: enumeración de dispositivos de audio |
+| [commands/DOCTOR.md](commands/DOCTOR.md) | Comportamiento e implementación de `doctor`: diagnósticos del sistema, sección de ciclo de vida y patrón de veredicto |
+| [commands/SETUP.md](commands/SETUP.md) | Comportamiento e implementación de `setup`: provisión del runtime, modelos y el papel de `setup_failed` |
+| [commands/CLEANUP.md](commands/CLEANUP.md) | Comportamiento e implementación de `cleanup`: borrado por categorías, reglas de propiedad y confirmación |
+| [commands/SELF.md](commands/SELF.md) | Comportamiento e implementación del grupo `self`: `self install` (con reparación) y `self uninstall`, sobre el motor `avi-lifecycle` |
+| [commands/DAEMON.md](commands/DAEMON.md) | Comportamiento e implementación de `daemon`: ciclo de vida, endpoints Axum, protocolo IPC |
+| [commands/VERSION.md](commands/VERSION.md) | Comportamiento e implementación de `version`: fuente de versión y payload |
+| [commands/TRANSLATE.md](commands/TRANSLATE.md) | Comportamiento e implementación de `translate`: validación en dos carriles (parser y handler), passthrough, motor CT2 local y despacho al daemon |
 
 ## Resumen de comandos
 
-La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `src/main.rs` (binario `ai-voice-interconnector`); en desarrollo, `cargo run -- <comando>`.
+La CLI Rust (clap) expone los comandos de nivel superior que listan las dos tablas siguientes. Punto de entrada: `src/main.rs` (binario `ai-voice-interconnector`); en desarrollo, `cargo run -- <comando>`.
 
 ### Grupos nominales (con subcomandos)
 
@@ -88,6 +88,8 @@ La CLI Rust (clap) expone **10 comandos** de nivel superior. Punto de entrada: `
 | 22 | `ExitCode::ProgramDirKept` | El resto se desinstaló pero el directorio de programa no se pudo borrar |
 | 130 | `ExitCode::Interrupted` | Interrupción por usuario (Ctrl+C, con limpieza acotada de 2 s y salida preservada, con reclamo sin pidfile vía PID en memoria) |
 
-Los códigos 0–6, el 9, el 10 y el 130 son los del contrato de la CLI y no cambian; el 7 y el 8 no existen. Los siete del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de §8.1** (`crates/avi-core/src/exit_codes.rs`). Los cinco del 18 al 22 son la tabla cerrada de `self update` (18–21: plataforma, compatibilidad del binario, red e integridad) más `program_dir_kept` (22) de `self uninstall`; los doce del 11 al 22 salen por `ExitCode::from_reason`, que es la traducción única de `reason` a código.
+Los códigos 0–6, el 9, el 10 y el 130 son los del contrato de la CLI y no cambian; el 7 y el 8 no existen. Los códigos del 11 al 17 son la tabla cerrada del ciclo de vida, **uno por `reason` de las [reglas transversales](../specs/LIFECYCLE.md#81-reglas-transversales)** (`crates/avi-core/src/exit_codes.rs`). Los del 18 al 22 son la tabla cerrada de `self update` (18–21: plataforma, compatibilidad del binario, red e integridad) más `program_dir_kept` (22) de `self uninstall`; todos los del 11 al 22 salen por `ExitCode::from_reason`, que es la traducción única de `reason` a código.
 
-Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). El envelope de la CLI lleva `schema_version` `"5"`; el **protocolo del daemon va por `"4"`**, porque son contratos independientes. `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`).
+Todos los comandos soportan `--json` para salida machine-readable (excepto `daemon serve`). El envelope de la CLI lleva `schema_version`; el **protocolo del daemon lleva su propia versión** ([las dos versiones de esquema](CONTRACT.md#las-dos-versiones-de-esquema)), porque son contratos independientes.
+
+Los esquemas `--json` se mantienen a propósito tanto en [`USAGE.md`](../../USAGE.md) como en cada documento por comando, de modo que cada uno sea autosuficiente: es la única excepción a la regla de dueño único de cada afirmación. `CliError` vive en `crates/avi-core/src/exit_codes.rs` y se traduce en `src/main.rs` (`ExitCode` + `reason`).

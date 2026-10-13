@@ -1,10 +1,10 @@
 # `speech`
 
 Síntesis, transcripción y doblaje voz→voz, más el CRUD de las locuciones
-persistidas. Es el comando más grande de la CLI: reúne siete subcomandos y es
-el único punto de la superficie donde conviven los tres motores nativos
-(`avi-tts`, `avi-stt`, `avi-translation`) y el despacho tri-modal contra el
-daemon.
+persistidas. Es el comando más grande de la CLI: reúne varios subcomandos y los
+tres motores nativos (`avi-tts`, `avi-stt`, `avi-translation`); sus
+subcomandos de síntesis, transcripción y doblaje admiten el
+[despacho al daemon](../CONTRACT.md#5-el-despacho-al-daemon).
 
 Implementación: `handle_speech`, enum `SpeechCommands`. Helpers de despacho al daemon: `route_to_daemon`, `transcribe_via_daemon`,
 `daemon_synthesize_wav`, `synthesize_via_daemon`, `say_via_daemon`, `dub_via_daemon`.
@@ -115,17 +115,18 @@ Validaciones puras antes de despachar:
  grabación emite un aviso mínimo por stderr (nunca espera en silencio) y
  captura hasta que el usuario presiona Enter. Hay un techo de seguridad
  configurable con la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS`
- (default 300 s si no está definida): al alcanzarlo, detiene la grabación,
+ (el default es el de [`push_to_talk_max_secs`](../../../crates/avi-audio/src/lib.rs) si no está definida): al alcanzarlo, detiene la grabación,
  avisa por stderr y devuelve lo grabado hasta ese punto con exit **0** (no es
  un error). Una variable definida que no sea un entero de segundos sin signo
  sale con exit 2 `usage_error` y un mensaje que la nombra. Si falla la lectura
  de stdin o el stream de audio, la grabación termina con error. No hay
  panic por `duration` ausente: el modo push-to-talk cubre ese caso.
-- Duración del audio: el audio de entrada dura como máximo 300 s, igual en la
+- Duración del audio: el audio de entrada dura como máximo `MAX_TRANSCRIBE_AUDIO_SECS`
+ ([`limits.rs`](../../../crates/avi-core/src/limits.rs)), igual en la
  vía local y en la del daemon. Un WAV que lo supera sale con exit 2
  `audio_too_long`; la duración se mide por la cabecera del WAV y luego por el
  PCM decodificado, y solo se admiten WAV. Con `--mic`, un `--duration` mayor
- que 300 y un `AVI_PUSH_TO_TALK_MAX_SECS` mayor que 300 (push-to-talk) salen
+ que ese máximo y un `AVI_PUSH_TO_TALK_MAX_SECS` mayor que él (push-to-talk) salen
  con el mismo `audio_too_long` antes de grabar (y, en el segundo caso, antes
  de exigir terminal). Esta comprobación precede a la de `model_missing`, a la
  de `stt_unsupported` y al contacto con el daemon.
@@ -225,7 +226,7 @@ ai-voice-interconnector speech say --text <texto> [--voice <nombre>] [--source-l
 Sintetiza y reproduce sin persistir en `SpeechStore` (no tiene `--label`).
 El texto debe ser no vacío y de hasta 500 caracteres Unicode (exit 2
 `empty_text` / `text_too_long`, validado antes de cualquier despacho). La
-síntesis directa se acota a `30 s + 0,30 s por carácter`; al vencer, exit 1
+síntesis directa se acota al presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)); al vencer, exit 1
 `synthesis_timeout`. Mismas reglas de `--source-language`/`--target-language`/`--temperature` que
 `synthesize`. Escribe el WAV en un archivo temporal
 (`avi_say_<pid>.wav`) y siempre lo reproduce (`AudioService::play_wav`); a
@@ -283,12 +284,13 @@ Validaciones puras (en este orden):
 1. `validate_temperature`.
 2. `--mic` sin `--duration` sin TTY: exit 2 `usage_error`. **Con TTY, mismo
  push-to-talk que en `transcribe`**: aviso mínimo por stderr al iniciar,
- captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (default
- 300 s, exit 0 al vencer). No hay panic por `duration` ausente en este caso.
+ captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (exit 0
+ al vencer). No hay panic por `duration` ausente en este caso.
 3. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
-4. Duración del audio: el audio de entrada dura como máximo 40 s. Un WAV que
- lo supera, o un `--duration` mayor que 40, sale con exit 2 `audio_too_long`;
- el push-to-talk se corta a 40 s (además del techo
+4. Duración del audio: el audio de entrada dura como máximo `MAX_DUB_AUDIO_SECS`
+ ([`limits.rs`](../../../crates/avi-core/src/limits.rs)). Un WAV que
+ lo supera, o un `--duration` mayor, sale con exit 2 `audio_too_long`;
+ el push-to-talk se corta a ese máximo (además del techo
  `AVI_PUSH_TO_TALK_MAX_SECS`). La duración del `--audio` se mide por la
  cabecera del WAV antes de contactar con el daemon, de comprobar los modelos y
  de `stt_unsupported`, igual en las dos vías. Un WAV corrupto sale con exit 2
@@ -297,9 +299,9 @@ Validaciones puras (en este orden):
  Unicode: si no, exit 2 `text_too_long`.
 
 Despacho: si aplica, `dub_via_daemon` hace `POST /dub`
-consumiendo el stream NDJSON con un timeout de inactividad entre latidos de
-1500 ms (`STREAM_INACTIVITY_TIMEOUT`) y un deadline total failsafe de 240 s
-(`STREAM_TOTAL_DEADLINE`, el techo `REQUEST_FAILSAFE`).
+consumiendo el stream NDJSON con un timeout de inactividad entre latidos
+(`STREAM_INACTIVITY_TIMEOUT`) y un deadline total failsafe
+(`STREAM_TOTAL_DEADLINE`, el techo `REQUEST_FAILSAFE` de [`limits.rs`](../../../crates/avi-core/src/limits.rs)).
 Todo error de la ruta (404 incluido) se traduce por su `reason` con la tabla
 única, sin degradar a otra vía: 404 `voice_not_found` sale con exit 3 y 404
 `model_missing` con exit 4. Un 404 sin `reason` ni `error` sale con exit 1
@@ -326,14 +328,14 @@ Tras validar barato en JSON
 plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
 (`application/x-ndjson`) emitiendo `{"event":"started", "voice":"..."}`.
 
-Pipeline interno con latidos (`with_heartbeats`, 500 ms entre `heartbeat`; ante desconexión,
+Pipeline interno con latidos (`with_heartbeats`, periodo `STREAM_HEARTBEAT` entre `heartbeat`; ante desconexión,
 `AbortHandle` descarta el resultado de la transcripción y la traducción, que terminan en segundo
 plano; la cancelación del trabajo en el motor solo aplica a la síntesis):
 1. Transcribe en `spawn_blocking` con `state.stt_engine` (fase `"transcribe"`).
 2. Si `source != target`, traduce en `spawn_blocking` con el CT2 residente (`state.ct2_engine`) o `avi_translation::translate` (fase `"translate"`).
-3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` sobre `spawn_blocking` (fase `"synthesis"`). Mientras espera el lock emite latidos `warming` (el daemon aún calienta el motor) o `queued` (otra síntesis retiene el lock). El plazo es el presupuesto `30 s + 0,30 s por carácter` del texto traducido (más un margen interno de 2 s); si vence, emite evento `error` con `synthesis_timeout` y cancela el trabajo en el motor TTS residente, que queda caliente para la siguiente petición. Si el cliente se desconecta durante la síntesis, el trabajo se cancela igual.
+3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` sobre `spawn_blocking` (fase `"synthesis"`). Mientras espera el lock emite latidos `warming` (el daemon aún calienta el motor) o `queued` (otra síntesis retiene el lock). El plazo es el presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) del texto traducido, más un margen interno; si vence, emite evento `error` con `synthesis_timeout` y cancela el trabajo en el motor TTS residente, que queda caliente para la siguiente petición. Si el cliente se desconecta durante la síntesis, el trabajo se cancela igual.
 
-Antes del stream, un audio de más de 40 s se rechaza con HTTP 400 `audio_too_long`; un texto traducido de más de 500 caracteres emite un evento `error` `text_too_long`.
+Antes del stream, un audio que supera `MAX_DUB_AUDIO_SECS` se rechaza con HTTP 400 `audio_too_long`; un texto traducido que supera `MAX_TEXT_LENGTH` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) emite un evento `error` `text_too_long`.
 
 Al finalizar, emite el evento `result`:
 
@@ -427,14 +429,14 @@ rechaza un `source_language`/`target_language` distinto de `es` y `en` con `usag
 |---|---|---|
 | `usage_error` | 2 | Falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
 | `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
-| `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera 500 caracteres Unicode |
-| `audio_too_long` | 2 | El audio de `dub` supera 40 s, o `--duration` es mayor que 40; el de `transcribe` supera 300 s, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` son mayores que 300 |
+| `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera `MAX_TEXT_LENGTH` caracteres Unicode ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
+| `audio_too_long` | 2 | El audio de `dub` supera `MAX_DUB_AUDIO_SECS`, o `--duration` lo supera; el de `transcribe` supera `MAX_TRANSCRIBE_AUDIO_SECS`, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` lo superan ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
 | `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `list --voice`, `play` y `remove` con voz ilegal) |
 | `audio_not_found` | 3 | `--audio` en `transcribe` o `dub` apunta a un archivo inexistente |
 | `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `list --voice`, `play` y `remove` sobre voz inexistente) |
 | `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente de una voz que existe |
-| `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`) |
+| `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`); una voz clonada exige además `qwen3-tts-0.6b-base` |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
 | `lifecycle_locked` | 17 | Todos los subcomandos: hay una operación de ciclo de vida en curso (`self install`, `self update`, `self uninstall`, `cleanup`, `doctor --repair`) y el comando no llega a ejecutarse |
@@ -443,7 +445,7 @@ rechaza un `source_language`/`target_language` distinto de `es` y `en` con `usag
 | `transcription_failed` | 10 | Fallo de captura del micrófono o del motor Parakeet (la lectura de un `--audio` ausente, corrupto o con error de E/S sale con 3, 2 y 1) |
 | `translation_failed` | 9 | Fallo del motor CT2 |
 | `synthesis_failed` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS o de reproducción |
-| `synthesis_timeout` | 1 | La síntesis superó su presupuesto (`30 s + 0,30 s por carácter`) |
+| `synthesis_timeout` | 1 | La síntesis superó su presupuesto (`synthesis_budget`, [`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `io_error` | 1 | Fallo de E/S al leer el WAV (`--audio` de transcribe y dub, referencia de `voice clone`) |
 
 ---

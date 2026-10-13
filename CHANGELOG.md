@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.29.4 — 2026-10-13](#0294--2026-10-13)
 - [0.29.3 — 2026-10-13](#0293--2026-10-13)
 - [0.29.2 — 2026-10-12](#0292--2026-10-12)
@@ -103,6 +104,103 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Este ciclo reorganiza la documentación principal para que cada tema viva en un
+único documento, con el README como portada de instalación autosuficiente,
+serializa los tests TTS entre procesos y hace que la ayuda y la versión salgan
+como payload bajo `--json`.
+
+### Cambiado
+
+- El programa sin subcomando muestra la ayuda (exit 0) en vez de la versión. Bajo
+  `--json`, la ayuda (`--help`, `-h` y la raíz sin subcomando) sale como
+  `{"help"}` y `--version`/`-V` como el payload de `version`, de modo que stdout
+  contiene siempre exactamente un objeto JSON. `schema_version` no cambia: no se
+  altera ninguna clave existente.
+- Cada documento principal tiene un papel único, fijado en la tabla «Papel de la
+  documentación» de `docs/specs/LIFECYCLE.md` (antes `sdlc-lifecycle.md`): el README cubre requisitos,
+  instalación, primer arranque, `setup`, primeros pasos, uso ético y licencia;
+  `USAGE.md` es la guía con el programa ya instalado; `docs/DESIGN.md` es el dueño
+  de la arquitectura y `docs/CLI/` el del contrato. Los demás documentos enlazan
+  en vez de repetir.
+- El README se lee completo sin conexión dentro del archivo de release: el flujo
+  requisitos → instalar → `setup` → primera síntesis → actualizar/desinstalar no
+  necesita seguir enlaces. Gana la sección «Actualizar y desinstalar» con los
+  comandos esenciales de `self update`, `self uninstall` y `cleanup`, y pierde la
+  lista de comandos, la compilación y los datos volátiles (conteo de assets,
+  versiones de esquema, rango de códigos de salida, versión de Rust).
+- El índice de documentación del README enlaza todos los documentos de `docs/`,
+  separados para usuarios y para contribuidores.
+- La documentación por comando de `docs/CLI/commands/` se presenta como tal, no
+  como «investigación».
+- La documentación secundaria sigue la misma regla de dueño único, con la tabla
+  «Papel de la documentación» completa y sin artefactos del agente: el análisis de
+  CI sale de `docs/BUILD.md` a `docs/CI.md`; el playbook de contexto pasa a
+  `docs/dev/CONTEXT-OPTIMIZATION.md`; `docs/BRANCHING.md` se absorbe en
+  `CONTRIBUTING.md`; la integración con el plugin de narración se funde en el
+  contrato (`docs/CLI/CONTRACT.md`, «Contratos externos»); el modo daemon y la UX de
+  audio interactivo pasan a `docs/DESIGN.md` y `docs/CLI/commands/DAEMON.md`; la
+  tabla de códigos de salida tiene un solo dueño, `docs/CLI/README.md`; y las
+  cifras y versiones volátiles se sustituyen por enlaces a su fuente. Se retiran
+  `docs/BRANCHING.md`, `docs/CLAUDE-CODE-INTEGRATION.md`, `docs/DAEMON-MODE.md` y
+  `docs/UX-AUDIO-INTERACTIVA.md`, y `docs/specs/sdlc-lifecycle.md` pasa a
+  `docs/specs/LIFECYCLE.md`.
+- Los esquemas `--json` se mantienen a propósito duplicados en `USAGE.md` y en cada
+  documento de `docs/CLI/commands/`: es la única excepción a la regla de dueño
+  único.
+- Los tests TTS se ejecutan en serie también cuando cada test corre en su propio
+  proceso (nextest): la exclusión mutua pasa a ser un bloqueo de archivo del
+  sistema operativo en vez de un `Mutex` del proceso.
+
+### Corregido
+
+- Un grupo sin subcomando (`speech`, `voice`, `daemon`, `self`) con `--json` salía
+  con 2 y dejaba stdout vacío; ahora emite el envelope `usage_error` con la ayuda
+  del grupo.
+- `USAGE.md` declara la regla del `reason` desconocido (se trata como ausente y se
+  decide por el código de salida) que el contrato le atribuía.
+- `USAGE.md` y `SECURITY.md` atribuían la falta de marca de agua a «PerthNet
+  desactivado», resto de un motor anterior; el motor Qwen3-TTS no incorpora
+  watermarker.
+- `CONTRIBUTING.md` atribuía el empaquetado a un paso de CI que ya no existe (lo
+  hace `cargo xtask package`) y pedía el código en español, cuando los
+  identificadores van en inglés.
+- La plantilla de pull request citaba un `CLAUDE.md` inexistente; ahora cita
+  `AGENTS.md` y el README.
+- El diagrama de arquitectura de `docs/DESIGN.md` metía el bootstrap dentro del
+  binario y Parakeet dentro del motor TTS; ahora muestra la CLI, el despacho
+  directo o vía daemon, el motor TTS residente con sus dos modelos, STT,
+  traducción y audio.
+- La documentación daba el protocolo del daemon en `"4"` cuando el daemon emite
+  `"5"`; la versión se declara ahora solo en el contrato de la CLI («Las dos
+  versiones de esquema») y los demás documentos enlazan a esa sección.
+- `docs/CLAUDE-CODE-INTEGRATION.md` describía `doctor --json` con `status` e
+  `issues[]` y `daemon status --json` con un booleano `running`; ahora describe
+  las claves que emite el binario: `checks` y `failed`, y `daemon` con
+  `"running"`/`"stopped"`.
+- Los documentos por comando negaban el envelope `usage_error` de un rechazo del
+  parser bajo `--json` (`translate`, `setup`), se atribuían en exclusiva el
+  despacho al daemon (`voice`, `speech`), prometían claves `kept`/`failed` que el
+  JSON de `cleanup` no emite y describían a medias las voces de fábrica que crea
+  `setup`; ahora coinciden con el binario. `--daemon` documenta que sale con 5 si
+  el daemon no responde.
+- `docs/UX-AUDIO-INTERACTIVA.md` copiaba menús y mensajes que no coinciden con
+  la interfaz y no recogía los topes de audio; ahora remite al contrato y a la
+  documentación de `speech`.
+- Se retiran recuentos desactualizados (los chequeos de `doctor`, los tests de
+  `cli_golden`, las líneas de `SELF.md`, los códigos del ciclo de vida) y la
+  versión fija de los ejemplos JSON, que usan `X.Y.Z`.
+- Las citas a la especificación del ciclo de vida en el contrato y en los documentos
+  por comando ahora enlazan al encabezado real; el contrato remitía por error a «§3»
+  para el `--json` global de `speech dub` (es §2) y repetía el párrafo «Coste
+  declarado» en §1.
+- `docs/CLI/commands/SPEECH.md` omitía que la voz clonada exige además
+  `qwen3-tts-0.6b-base` en `model_missing`.
+- Los mínimos de sistema de `docs/GOAL.md` y de la especificación del ciclo de
+  vida enlazan a los requisitos del README, que declara Windows 10 1903 o
+  posterior; desaparece la mención a un `LSMinimumSystemVersion` que ya no existe.
 
 ## [0.29.4] — 2026-10-13
 

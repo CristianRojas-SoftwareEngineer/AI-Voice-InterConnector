@@ -12,7 +12,6 @@ Implementación: `handle_version` (`src/main.rs`).
 
 ```
 ai-voice-interconnector version [--json]
-ai-voice-interconnector [--json]              # sin subcomando: mismo handler
 ```
 
 | Flag | Tipo | Default | Descripción |
@@ -23,17 +22,16 @@ ai-voice-interconnector [--json]              # sin subcomando: mismo handler
 No tiene sub-subcomandos ni flags propios; `--json` es el flag global definido
 en `struct Cli` (`src/main.rs`), compartido por todos los comandos.
 
-Cuando la CLI se invoca **sin ningún subcomando**, `Cli::command` es `None` y
-el despacho en `main` cae también en `handle_version(json_mode)`
-(`src/main.rs`) — mismo comportamiento que invocar `version` explícitamente.
+La invocación **sin ningún subcomando** no es `version`: muestra la ayuda,
+según la regla de ausencia de [CONTRACT §9](../CONTRACT.md#el-2-significa-lo-que-clap-quiere-decir-con-él).
 
 ### Distinción con `-V`/`--version` de clap
 
 `#[command(version = VERSION)]` en `struct Cli` (`src/main.rs`) habilita
 además el flag estándar de clap `-V`/`--version`, generado automáticamente por
 el framework. Ese flag es un mecanismo **distinto** del subcomando `version`:
-imprime únicamente `{APP_NAME} {VERSION}` a stdout y termina el proceso vía la
-salida propia de clap, sin soportar `--json` ni pasar por `handle_version`.
+pasa por `render_clap_error` (`src/main.rs`): con `--json` emite el mismo
+payload llamando a `handle_version`, y sin él imprime `{APP_NAME} {VERSION}`.
 
 ---
 
@@ -106,6 +104,7 @@ Fixture verificado por test: `tests/golden/cli_version.json`.
 | Test | Archivo:línea | Verificación |
 |---|---|---|
 | `version_matches_fixture` | `tests/cli_golden.rs` | `ai-voice-interconnector --json version` produce exit `0` y el JSON coincide exactamente con `tests/golden/cli_version.json` |
+| `json_version_flags_match_version_command` | `tests/cli_golden.rs` | `--json --version` y `--json -V` emiten exactamente el mismo objeto que `--json version` |
 
 ---
 
@@ -114,6 +113,6 @@ Fixture verificado por test: `tests/golden/cli_version.json`.
 ```bash
 ai-voice-interconnector version           # ai-voice-interconnector X.Y.Z
 ai-voice-interconnector --json version    # payload legible por máquina con schema_version
-ai-voice-interconnector                   # sin subcomando: mismo handler que `version`
-ai-voice-interconnector -V                # flag nativo de clap; sin --json, ruta distinta a handle_version
+ai-voice-interconnector -V                # flag nativo de clap: imprime `<nombre> <versión>`
+ai-voice-interconnector --json -V         # mismo payload que `--json version`
 ```

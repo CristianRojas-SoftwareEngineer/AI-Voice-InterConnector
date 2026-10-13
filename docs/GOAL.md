@@ -60,17 +60,17 @@ Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre 
 
 **El sistema debe ser consumible via línea de comandos** para que cualquier aplicación en cualquier lenguaje de programación pueda invocarlo (JavaScript/Node, Rust, Go, Java, C#, etc.)
 
-**La experiencia del usuario final debe ser equivalente en Windows, Linux y macOS**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo en los tres SO. Las diferencias de empaquetado idiomáticas por SO (formatos `tar.gz`/`zip`/Cask) son aceptables; las diferencias de experiencia no. La matriz de equivalencia y las brechas pendientes se registran en [§10 de la especificación del ciclo de vida](specs/sdlc-lifecycle.md#10-matriz-de-paridad-por-target).
+**La experiencia del usuario final debe ser equivalente en Windows, Linux y macOS**: instalar, usar, actualizar y desinstalar con la misma cantidad de fricción, privilegios y residuo en los tres SO. Las diferencias de empaquetado idiomáticas por SO (formatos `tar.gz`/`zip`/Cask) son aceptables; las diferencias de experiencia no. La matriz de equivalencia y las brechas pendientes se registran en [§10 de la especificación del ciclo de vida](specs/LIFECYCLE.md#10-matriz-de-paridad-por-target).
 
 ### Alcance
 
-Implementar y validar la síntesis en español latinoamericano con voz propia del usuario usando Qwen3-TTS 0.6B, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las [brechas conocidas](specs/sdlc-lifecycle.md#brechas-conocidas) es parte del alcance del goal inmediato.
+Implementar y validar la síntesis en español latinoamericano con voz propia del usuario usando Qwen3-TTS 0.6B, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) es parte del alcance del goal inmediato.
 
 ### Restricciones
 
 - **100% local**: Sin APIs externas ni conexiones a internet para síntesis
 - **Instalador único por SO (canal nativo)**: Un archivo comprimido por plataforma (`tar.gz`/`.zip` con binario Rust); ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)
-- **Ninguna instalación adicional (canal nativo)**: solo el sistema base de cada plataforma. Windows no necesita el Redistributable de VC++, macOS pide macOS 26 o posterior y Linux una glibc ≥ 2.28 con las librerías de C y C++ que toda distribución con glibc trae; el archivo aporta todo lo demás
+- **Ninguna instalación adicional (canal nativo)**: solo el sistema base de cada plataforma; el archivo aporta todo lo demás. Los mínimos por plataforma están en [Requisitos del README](../README.md#requisitos)
 - **Licencia**: El código propio se distribuye bajo GPL-3.0-or-later; todas las dependencias y los modelos usados deben tener licencias compatibles con GPLv3 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible, como LGPL-2.1+/MPL-2.0). El par de traducción `opus-mt` (derivados int8 de Helsinki-NLP/opus-mt, ya convertidos a CTranslate2 y publicados) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
 
 ### Especificación
@@ -83,13 +83,13 @@ Estos requisitos aplican al **canal nativo** (binario Rust autocontenido por SO)
 - **Ninguna instalación adicional: solo el sistema base de cada plataforma**: El usuario final no instala ningún runtime, librería ni toolchain
 - **Descarga + instalación + configuración** en un solo paso (one-liner verifica checksum, extrae, integra PATH y encadena `setup`)
 - **Audio nativo**: playback usando APIs nativas del SO (cpal)
-- **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`self uninstall` borra programa+PATH+estado; `cleanup --all` es la limpieza granular del estado sin tocar el programa — ver `docs/CLI/CONTRACT.md §11`), en los tres sistemas operativos por igual (ver [§10 de la especificación](specs/sdlc-lifecycle.md#10-matriz-de-paridad-por-target))
+- **Paridad de ciclo de vida entre SO**: instalación de una línea sin privilegios de administrador, modelo provisionado al terminar, actualización sin residuo y desinstalación con residuo cero (`self uninstall` borra programa+PATH+estado; `cleanup --all` es la limpieza granular del estado sin tocar el programa — ver `docs/CLI/CONTRACT.md §11`), en los tres sistemas operativos por igual (ver [§10 de la especificación](specs/LIFECYCLE.md#10-matriz-de-paridad-por-target))
 
 La distribución es 100% Rust por archivos comprimidos (ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)).
 
 #### Paridad de experiencia
 
-El ideal de paridad que persigue el goal inmediato, por fase del ciclo de vida (la matriz real y el registro de brechas viven en [§10 de la especificación](specs/sdlc-lifecycle.md#10-matriz-de-paridad-por-target)):
+El ideal de paridad que persigue el goal inmediato, por fase del ciclo de vida (la matriz real y el registro de brechas viven en [§10 de la especificación](specs/LIFECYCLE.md#10-matriz-de-paridad-por-target)):
 
 | Fase | Ideal en los 3 SO |
 |---|---|
@@ -149,7 +149,7 @@ La desinstalación es **equivalente en esfuerzo a la instalación de una línea*
 - **macOS**: análogo a Linux (`self uninstall` retira el enlace + `~/.local/opt` + el estado) en la vía one-liner; con **Homebrew Cask**, `brew uninstall --cask --zap ai-voice-interconnector` sigue siendo la vía idiomática (cubre también el estado). Sin `sudo`.
 - **Windows**: el estado, el directorio `%LOCALAPPDATA%\Programs\ai-voice-interconnector` y la entrada del PATH de usuario (`HKCU\Environment` + `WM_SETTINGCHANGE`). Sin UAC; `--yes` omite la confirmación.
 
-Las vías idiomáticas por SO (`brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `self uninstall` es la vía equivalente de un comando en las tres plataformas. La matriz real de esta paridad vive en [§10 de la especificación](specs/sdlc-lifecycle.md#10-matriz-de-paridad-por-target). El binario gestiona PATH/dir directamente.
+Las vías idiomáticas por SO (`brew uninstall --cask --zap` en macOS vía Homebrew) se conservan en paralelo como alternativas; `self uninstall` es la vía equivalente de un comando en las tres plataformas. La matriz real de esta paridad vive en [§10 de la especificación](specs/LIFECYCLE.md#10-matriz-de-paridad-por-target). El binario gestiona PATH/dir directamente.
 
 #### Estructura del proyecto
 
@@ -159,20 +159,20 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 <!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado (versión contra el tag, `voice list`, `--self-test` del motor y `self install` en sandbox; ver docs/BUILD.md «Verificación post-build»), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
-1. [ ] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en Windows 10/11 sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
+1. [ ] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
 2. [ ] El artefacto de Linux (`ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`) funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
-3. [ ] El artefacto de macOS (`ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`) funciona en el mínimo declarado por `LSMinimumSystemVersion` (Apple Silicon; Mac Intel no soportado) — derivado dinámicamente del `MACOSX_DEPLOYMENT_TARGET` del toolchain de build, no un número fijo (validación E2E por SO, ver "Validación E2E" más abajo)
+3. [ ] El artefacto de macOS (`ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`) funciona en el mínimo declarado en el manifiesto del bundle (`min_os`, ver [versión mínima de macOS](BUILD.md#versión-mínima-de-macos) y los [requisitos](../README.md#requisitos)) (Apple Silicon; Mac Intel no soportado) (validación E2E por SO, ver "Validación E2E" más abajo)
 4. [x] `ai-voice-interconnector speech say --text "Hola mundo"` reproduce audio en español
 5. [x] `ai-voice-interconnector voice clone --name test --speech-reference speech.wav` clona la voz
 6. [x] El audio generado suena en español con las características de la voz de referencia
 7. [x] El español latinoamericano suena natural y con buena prosodia
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
-10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del [registro de brechas](specs/sdlc-lifecycle.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner con el bootstrap `install.sh` POSIX compartido más `install.ps1` para Windows, `zap` del Cask completo, README con las tres plataformas y desinstalación en un comando con `self uninstall`). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
+10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner con el bootstrap `install.sh` POSIX compartido más `install.ps1` para Windows, `zap` del Cask completo, README con las tres plataformas y desinstalación en un comando con `self uninstall`). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
 
 #### Validación E2E
 
-La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de 5,85 GB de modelos + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo: la versión del binario contra el tag (`--version`; en Windows además `version --json`), `voice list` con la voz `default`, el `--self-test` de los kernels del motor TTS (sin pesos), y la instalación del archivo empaquetado con `self install --no-setup --no-modify-path` en un sandbox, seguida de `--version` del binario instalado.
+La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de los modelos que fija [`setup`](CLI/commands/SETUP.md) + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo: la versión del binario contra el tag (`--version`; en Windows además `version --json`), `voice list` con la voz `default`, el `--self-test` de los kernels del motor TTS (sin pesos), y la instalación del archivo empaquetado con `self install --no-setup --no-modify-path` en un sandbox, seguida de `--version` del binario instalado.
 
 Fuera del pipeline, la validación se reparte así:
 
@@ -193,8 +193,8 @@ La implementación está completa únicamente cuando:
 - [x] El español latinoamericano suena natural
 - [x] El pipeline de CI produce el artefacto de cada SO (Windows, Linux, macOS) y publica los dos bootstrap del one-liner (`install.sh` e `install.ps1`) como assets del release; en la raíz del repositorio no queda ningún script de ciclo de vida, y los que se ejecutan antes del binario viven en `packaging/bootstrap/`
 - [ ] Los instaladores funcionan sin ninguna dependencia externa (validación E2E por SO, ver "Validación E2E" arriba: smoke test automatizado en CI + validación manual Windows del propietario + feedback de usuarios reales en Linux y macOS)
-- [ ] La experiencia de instalación, uso, actualización y desinstalación es equivalente en los 3 SO: las [brechas conocidas](specs/sdlc-lifecycle.md#brechas-conocidas) no incluyen ninguna **accionable** abierta (la de *firma de código* permanece registrada como diferida al goal a largo plazo y no bloquea esta condición)
-- [x] **README.md** refleja la arquitectura vigente
+- [ ] La experiencia de instalación, uso, actualización y desinstalación es equivalente en los 3 SO: las [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) no incluyen ninguna **accionable** abierta (la de *firma de código* permanece registrada como diferida al goal a largo plazo y no bloquea esta condición)
+- [x] **README.md** resume la arquitectura en un párrafo y remite a docs/DESIGN.md, su único dueño
 - [x] **docs/DESIGN.md** corresponde al estado implementado
 - [x] El daemon mode está implementado y funciona correctamente
 - [x] Los logs están normalizados con estructura consistente
@@ -208,9 +208,9 @@ Especificaciones **no comprometidas** para el goal inmediato. No se trabajan aho
 
 ### Firma de código y notarización
 
-**Motivación**: los binarios del canal nativo no están firmados, por lo que Windows SmartScreen y macOS Gatekeeper bloquean el primer arranque cuando el artefacto se descarga por navegador. El mecanismo y la mitigación ya vigente (instaladores de una línea) están explicados en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar); no elimina el bloqueo para la descarga directa desde el navegador (ver también [BUILD.md](BUILD.md#limitación-conocida-firma-de-código-y-notarización)).
+**Motivación**: los binarios del canal nativo no están firmados, por lo que Windows SmartScreen y macOS Gatekeeper bloquean el primer arranque cuando el artefacto se descarga por navegador. El mecanismo y la mitigación ya vigente (instaladores de una línea) están explicados en [SECURITY.md](../SECURITY.md#artefactos-sin-firmar); no elimina el bloqueo para la descarga directa desde el navegador.
 
-**Justificación del diferimiento**: la firma es un gate que solo vale la pena cuando el proyecto/producto esté **cristalizado y completo** — idealmente sin bugs y con funcionalidad completa y equivalente entre los 3 sistemas operativos (sin [brechas conocidas](specs/sdlc-lifecycle.md#brechas-conocidas) abiertas). El producto aún está en desarrollo: firmar ahora significaría re-tramitar la confianza externa (aprobación de SignPath OSS, cuenta Apple Developer de pago) sobre artefactos que siguen cambiando de forma. Solo entonces se iniciará el proceso de firma.
+**Justificación del diferimiento**: la firma es un gate que solo vale la pena cuando el proyecto/producto esté **cristalizado y completo** — idealmente sin bugs y con funcionalidad completa y equivalente entre los 3 sistemas operativos (sin [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) abiertas). El producto aún está en desarrollo: firmar ahora significaría re-tramitar la confianza externa (aprobación de SignPath OSS, cuenta Apple Developer de pago) sobre artefactos que siguen cambiando de forma. Solo entonces se iniciará el proceso de firma.
 
 **Especificación diferida**:
 
@@ -219,7 +219,7 @@ Especificaciones **no comprometidas** para el goal inmediato. No se trabajan aho
 
 **Condiciones de entrada** (promueven esta spec al goal inmediato):
 
-- El goal inmediato está cumplido: producto cristalizado, con equivalencia funcional completa entre los 3 SO (sin [brechas conocidas](specs/sdlc-lifecycle.md#brechas-conocidas) accionables abiertas; la única brecha restante sería esta misma, de *firma de código*).
+- El goal inmediato está cumplido: producto cristalizado, con equivalencia funcional completa entre los 3 SO (sin [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) accionables abiertas; la única brecha restante sería esta misma, de *firma de código*).
 - Windows: aprobación del proyecto por el programa SignPath OSS.
 - macOS: alta de una cuenta Apple Developer (de pago).
 
