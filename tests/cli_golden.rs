@@ -2637,7 +2637,6 @@ mod tts {
     #[cfg(feature = "native-stt")]
     use avi_core::engine::SttEngine;
     use std::path::Path;
-    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// Ruta del binario del motor Qwen3-TTS (override o vendored).
@@ -2707,7 +2706,7 @@ mod tts {
         );
     }
 
-    /// Mutex global para serializar los tests TTS pesados (cada corrida ocupa
+    /// Bloqueo global del SO para serializar los tests TTS pesados (cada corrida ocupa
     /// ~2.7 GB de RAM, y dos residentes simultáneos no caben en la memoria de
     /// la máquina).
     /// Este es el núcleo físico legítimo que sobrevive (semáforo de
@@ -2727,7 +2726,28 @@ mod tts {
     /// esquema que permita concurrencia entre residentes TTS reales; cualquier
     /// mejora de paralelismo de la suite debe respetar este techo (p. ej.
     /// paralelizar únicamente los tests que NO adquieren `lock_tts()`).
-    pub(crate) static TTS_LOCK: Mutex<()> = Mutex::new(());
+    /// Guarda del bloqueo de capacidad TTS: posee UN descriptor del fichero de
+    /// bloqueo con un lock exclusivo del SO tomado (`File::lock`, bloqueante).
+    /// El estado del lock vive en el fd propio que esta guarda posee: sin
+    /// estáticos, sin prestadas que crucen el `return`, sin `unsafe`. Vale bajo
+    /// libtest (hilos del mismo proceso), nextest (un proceso por test) e
+    /// invocaciones simultáneas cualesquiera: el SO arbitra entre descriptores
+    /// independientes del mismo fichero, dentro y entre procesos. Un titular
+    /// caído libera solo: el SO suelta el lock con el proceso y aquí ya no hay
+    /// envenenado que tolerar ni recuperar.
+    pub(crate) struct TtsGuard {
+        /// Descriptor bloqueado en exclusivo; se conserva abierto mientras viva
+        /// la guarda porque es lo que el SO tiene tomado, no un dato que se consulte.
+        _file: std::fs::File,
+    }
+
+    impl Drop for TtsGuard {
+        fn drop(&mut self) {
+            // Liberación explícita; se ignora el error porque el close del
+            // descriptor libera el lock de todos modos.
+            let _ = self._file.unlock();
+        }
+    }
 
     /// Titular del motor de transcripción para la vida del arnés: lo crea una
     /// sola vez y lo conserva sin destruirlo hasta la salida, de modo que
@@ -2736,8 +2756,42 @@ mod tts {
     #[cfg(feature = "native-stt")]
     static STT_HOLDER: avi_stt::EngineHolder = avi_stt::EngineHolder::new();
 
-    pub(crate) fn lock_tts() -> std::sync::MutexGuard<'static, ()> {
-        TTS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    /// Toma el bloqueo de capacidad TTS en exclusivo, esperando si otro titular
+    /// lo tiene (libtest, nextest u otro proceso simultáneo). El fichero vive
+    /// en `target/` del checkout (`target/tts-serial.lock`): fuera del árbol
+    /// versionado para no ensuciar `git status`, y con ámbito del checkout para
+    /// que dos clones no se serialicen entre sí. Cualquier fallo aquí es fallo
+    /// del arnés y aborta con `panic!` que nombra la ruta del lock.
+    pub(crate) fn lock_tts() -> TtsGuard {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("tts-serial.lock");
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap_or_else(|e| {
+                panic!(
+                    "no se puede crear el directorio del bloqueo TTS ({}): {e}",
+                    parent.display()
+                )
+            });
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&path)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "no se puede abrir el bloqueo TTS ({}): {e}",
+                    path.display()
+                )
+            });
+        file.lock().unwrap_or_else(|e| {
+            panic!(
+                "no se puede tomar el bloqueo TTS ({}): {e}",
+                path.display()
+            )
+        });
+        TtsGuard { _file: file }
     }
 
     // Nota (libtest): con la serie de tests pesados bajo `TTS_LOCK`, es
