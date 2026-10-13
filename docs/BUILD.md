@@ -760,18 +760,24 @@ El archivo de configuración completo está en `.circleci/config.yml`.
 Tres invariantes de la suite dorada son fáciles de "optimizar" por error y
 quedan documentados aquí de forma autocontenida:
 
-- **Serialización de residentes TTS (`TTS_LOCK`/`lock_tts()`).** Cada
+- **Serialización de residentes TTS (file-lock + `lock_tts()`/`TtsGuard`).** Cada
   residente TTS activo ocupa un pico medido de ~2.7 GB de RAM. La suite
-  serializa deliberadamente sus tests pesados de inferencia con un mutex
-  global (`TTS_LOCK`, junto a `lock_tts()` en `tests/cli_golden.rs`) para
-  garantizar que nunca haya más de un residente TTS vivo a la vez. Quitar o
-  debilitar ese lock para paralelizar los tests pesados arriesga un OOM del
-  runner de CI, no solo una degradación de tiempo: el lock no se elimina.
-- **El warning de libtest ">60 seconds" no es un cuelgue.** Con la
-  serialización vigente (`TTS_LOCK`), es esperable que `cargo test` reporte que un test
-  de la serie pesada "has been running for over 60 seconds" mientras espera
-  turno para adquirir `TTS_LOCK`. Es espera de mutex esperada, no trabajo
-  atascado: no se le añaden reintentos ni timeouts para silenciarlo.
+  serializa deliberadamente sus tests pesados de inferencia con un file-lock
+  exclusivo del SO sobre `target/tts-serial.lock` (tomado en `lock_tts()` y
+  liberado al hacer drop de la guarda `TtsGuard`, en `tests/cli_golden.rs`)
+  para garantizar que nunca haya más de un residente TTS vivo a la vez. Vale
+  entre hilos del mismo proceso (libtest), entre procesos (nextest) y entre
+  invocaciones simultáneas; si el titular cae, el SO suelta el lock con el
+  proceso. Quitar o debilitar ese lock para paralelizar los tests pesados
+  arriesga un OOM del runner de CI, no solo una degradación de tiempo: el lock
+  no se elimina.
+- **La espera en cola de la serie pesada no es un cuelgue (nota agnóstica al runner).** Con la
+  serialización vigente (file-lock), es esperable que un test de la serie
+  pesada parezca detenido más de 60 s mientras espera turno para adquirir el
+  lock (`lock_tts()`). Bajo `cargo test` (libtest) esa espera sale como el
+  aviso "has been running for over 60 seconds"; bajo nextest sale en su
+  reporte propio. Es espera en cola esperada, no trabajo atascado: no se le
+  añaden reintentos ni timeouts para silenciarla.
 - **Las pruebas con recursos no se omiten ni aprovisionan.** Las pruebas pesadas
   llevan `#[ignore = "requiere …"]`: `cargo test --all` las muestra como
   *ignored* y, con `--include-ignored`, fallan con un mensaje que nombra el

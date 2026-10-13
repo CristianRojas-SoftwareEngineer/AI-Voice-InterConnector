@@ -28,7 +28,7 @@
 //! - **Rendimiento y comandos rápidos (< 100 ms)**: `cargo test --test cli_golden -- perf_ --nocapture`
 //! - **Contratos de salida pura y ayuda CLI**: `cargo test --test cli_golden -- _help --nocapture`
 //! - **Validación de errores y flags**: `cargo test --test cli_golden -- _error --nocapture`
-//! - **Pruebas pesadas de inferencia (TTS/Dub/Clone)**: `cargo test --test cli_golden -- tts:: --nocapture` (gestionadas bajo `TTS_LOCK`)
+//! - **Pruebas pesadas de inferencia (TTS/Dub/Clone)**: `cargo test --test cli_golden -- tts:: --nocapture` (serializadas con el file-lock exclusivo del SO sobre `target/tts-serial.lock`, tomado en `lock_tts()`)
 
 use std::cell::RefCell;
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -267,8 +267,8 @@ fn port_open(port: u16) -> bool {
 //
 // Contrato de ejecución:
 // - Aislamiento por `IsolatedInstance` (puertos efímeros y sandbox independiente);
-// - `TTS_LOCK` (`tts::lock_tts`) para tests de inferencia pesada (serie por
-//   capacidad física de recursos).
+// - Guarda `TtsGuard` + `lock_tts()` (`tts::lock_tts`) para tests de inferencia pesada (serie por
+//   capacidad física de recursos: file-lock exclusivo del SO sobre `target/tts-serial.lock`, liberado al hacer drop de la guarda).
 // La contención del estado compartido la dan los namespaces por test
 // (`unique_label`).
 //
@@ -802,9 +802,9 @@ fn wait_for_ready_file(inst: &IsolatedInstance, timeout: Duration) -> (String, S
 // hora de creación e imagen registradas) ese daemon y ese residente, y nunca
 // toca el daemon ni el residente del usuario ni barre procesos por imagen.
 //
-// Límite físico: una única inferencia pesada residente, que el grupo de
-// inferencia conserva vía `TTS_LOCK`. El aislamiento es de estado+daemon; la
-// capacidad física se serializa por lock_tts.
+// Límite físico: una única inferencia pesada residente (~2.7 GB de RAM), que el grupo de
+// inferencia conserva vía el file-lock exclusivo del SO (`lock_tts()` sobre `target/tts-serial.lock`). El aislamiento es de estado+daemon; la
+// capacidad física se serializa por `lock_tts`.
 
 /// Plazo para que un proceso cosechado por `Drop` muera tras su kill.
 const REAP_DEATH_DEADLINE: Duration = Duration::from_secs(8);
@@ -2719,13 +2719,16 @@ mod tts {
     /// residente TTS es el pico medido de UN solo proceso; los runners de CI
     /// (y la máquina de desarrollo) no garantizan margen para sostener dos o
     /// más residentes simultáneos. Paralelizar los tests pesados (quitar o
-    /// debilitar `TTS_LOCK`) arriesga OOM del runner, no una mera degradación
+    /// debilitar el file-lock exclusivo del SO sobre `target/tts-serial.lock`)
+    /// arriesga OOM del runner, no una mera degradación
     /// de rendimiento: un OOM mata el proceso de test a mitad de ciclo y deja
     /// el diagnóstico (hitos) sin oportunidad de correr. Por tanto
-    /// **no se elimina `TTS_LOCK`/`lock_tts()`**, ni se reemplaza por un
+    /// **no se elimina el file-lock (`lock_tts()`/`TtsGuard`)**, ni se reemplaza por un
     /// esquema que permita concurrencia entre residentes TTS reales; cualquier
     /// mejora de paralelismo de la suite debe respetar este techo (p. ej.
     /// paralelizar únicamente los tests que NO adquieren `lock_tts()`).
+    /// No hay mutex global en proceso: la serie se ordena por el file-lock
+    /// del SO, que vale entre hilos y entre procesos.
     /// Guarda del bloqueo de capacidad TTS: posee UN descriptor del fichero de
     /// bloqueo con un lock exclusivo del SO tomado (`File::lock`, bloqueante).
     /// El estado del lock vive en el fd propio que esta guarda posee: sin
@@ -2794,11 +2797,14 @@ mod tts {
         TtsGuard { _file: file }
     }
 
-    // Nota (libtest): con la serie de tests pesados bajo `TTS_LOCK`, es
-    // esperable que `cargo test` emita el warning de libtest "test tts::<x>
-    // has been running for over 60 seconds" para el/los test(s) que esperan
-    // turno en el mutex mientras otro test pesado sintetiza. Es espera de
-    // mutex esperada (serialización deliberada por el techo de RAM de
+    // Nota de espera en cola (agnóstica al runner): con la serie de tests
+    // pesados ordenada por el file-lock exclusivo del SO (`lock_tts()` sobre
+    // `target/tts-serial.lock`), es esperable que el/los test(s) que esperan
+    // turno mientras otro test pesado sintetiza (~2.7 GB por residente, un
+    // solo residente vivo) parezcan detenidos más de 60 s. Bajo libtest esa
+    // espera sale como el warning clásico "test tts::<x> has been running
+    // for over 60 seconds"; bajo nextest sale en su reporte propio. Es espera
+    // en cola esperada (serialización deliberada por el techo de RAM de
     // arriba), NO un cuelgue: el test en cola no está atascado, solo hace
     // fila. No se le añaden reintentos ni timeouts para "arreglarlo" — hacerlo
     // enmascararía un cuelgue real si alguna vez ocurriera uno.
@@ -3025,7 +3031,8 @@ mod tts {
         require_parakeet();
         // Instancia aislada sin daemon (este test es ruta directa): el
         // sandbox propio aísla su estado (WAV + sidecar) del data_dir
-        // compartido; `TTS_LOCK` actúa como semáforo de inferencia.
+        // compartido; el file-lock exclusivo del SO (`lock_tts()`) actúa como
+        // semáforo de inferencia (un solo residente de ~2.7 GB vivo a la vez).
         let _guard = lock_tts();
         let inst = IsolatedInstance::new("wer_gate");
         avi_store::VoiceStore::at(inst.dir.join("voices"))
