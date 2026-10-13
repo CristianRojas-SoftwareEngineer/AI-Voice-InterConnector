@@ -17,9 +17,20 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 - [Uso ético y responsable](#uso-ético-y-responsable)
 - [Instalación](#instalación)
   - [Requisitos](#requisitos)
+    - [Requisitos en Windows](#requisitos-en-windows)
+    - [Requisitos en Linux](#requisitos-en-linux)
+    - [Requisitos en macOS](#requisitos-en-macos)
   - [Instalación de una línea](#instalación-de-una-línea)
+    - [Instalar en Windows](#instalar-en-windows)
+    - [Instalar en Linux](#instalar-en-linux)
+    - [Instalar en macOS](#instalar-en-macos)
   - [Descargar binario pre-compilado](#descargar-binario-pre-compilado)
+    - [Descarga manual en Windows](#descarga-manual-en-windows)
+    - [Descarga manual en Linux](#descarga-manual-en-linux)
+    - [Descarga manual en macOS](#descarga-manual-en-macos)
   - [Primer arranque: SmartScreen / Gatekeeper](#primer-arranque-smartscreen--gatekeeper)
+    - [Primer arranque en Windows](#primer-arranque-en-windows)
+    - [Primer arranque en macOS](#primer-arranque-en-macos)
   - [Provisión de los modelos (`setup`)](#provisión-de-los-modelos-setup)
 - [Primeros pasos](#primeros-pasos)
   - [Síntesis](#síntesis)
@@ -53,6 +64,14 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 
 ## Instalación
 
+**Elige tu sistema**:
+
+| Sistema | Requisitos | Instalación de una línea | Descarga manual | Primer arranque |
+|---|---|---|---|---|
+| Windows | [Requisitos en Windows](#requisitos-en-windows) | [Instalar en Windows](#instalar-en-windows) | [Descarga manual en Windows](#descarga-manual-en-windows) | [Primer arranque en Windows](#primer-arranque-en-windows) |
+| Linux | [Requisitos en Linux](#requisitos-en-linux) | [Instalar en Linux](#instalar-en-linux) | [Descarga manual en Linux](#descarga-manual-en-linux) | — |
+| macOS | [Requisitos en macOS](#requisitos-en-macos) | [Instalar en macOS](#instalar-en-macos) | [Descarga manual en macOS](#descarga-manual-en-macos) | [Primer arranque en macOS](#primer-arranque-en-macos) |
+
 AI Voice InterConnector se distribuye por **canal nativo** (archivos comprimidos Rust, ver [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)). La instalación es de **una línea**, sin privilegios de administrador y con verificación de checksum.
 
 ### Requisitos
@@ -71,34 +90,39 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
   duplica. El binario instalado ocupa ~40 MB.
 - **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
   funcionamiento.
-- **Linux — glibc ≥ 2.28** (Debian 10+, Ubuntu 20.04+, RHEL, Rocky y Alma 8+,
-  Fedora 29+ o equivalente), sin nada más que instalar: el binario solo usa la
-  glibc y las librerías de C y C++ que toda distribución con glibc trae, y el
-  motor TTS lleva OpenBLAS enlazado estático. El bootstrap comprueba que el binario
-  arranca y, si no lo hace, aborta con `binary_incompatible`.
-- **Linux — audio**: la reproducción y la captura usan ALSA, que traen las
-  distribuciones de escritorio. En un sistema sin ALSA (servidores o
-  contenedores mínimos) el binario arranca igual: solo `devices` y las órdenes
-  que reproducen o capturan audio fallan, con un error que nombra la librería
-  de ALSA ausente.
-- **macOS — macOS 26 (Tahoe) o posterior**, en cualquier Mac con Apple Silicon
-  (M1 en adelante).
-- **Windows — Windows 10 1903 o posterior** (x64); nada que instalar: el
-  archivo trae las DLL del runtime de VC++ que necesitan el binario y ONNX
-  Runtime.
 - **Plataformas no soportadas**: Mac Intel (x86_64) y Windows ARM64 (limitación de toolchain aceptada).
 
 Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
 
+#### Requisitos en Windows
+
+- **Windows 10 1903 o posterior** (x64); nada que instalar: el
+  archivo trae las DLL del runtime de VC++ que necesitan el binario y ONNX
+  Runtime.
+
+#### Requisitos en Linux
+
+- **glibc ≥ 2.28** (Debian 10+, Ubuntu 20.04+, RHEL, Rocky y Alma 8+,
+  Fedora 29+ o equivalente), sin nada más que instalar: el binario solo usa la
+  glibc y las librerías de C y C++ que toda distribución con glibc trae, y el
+  motor TTS lleva OpenBLAS enlazado estático. El bootstrap comprueba que el binario
+  arranca y, si no lo hace, aborta con `binary_incompatible`.
+- **Audio**: la reproducción y la captura usan ALSA, que traen las
+  distribuciones de escritorio. En un sistema sin ALSA (servidores o
+  contenedores mínimos) el binario arranca igual: solo `devices` y las órdenes
+  que reproducen o capturan audio fallan, con un error que nombra la librería
+  de ALSA ausente.
+
+#### Requisitos en macOS
+
+- **macOS 26 (Tahoe) o posterior**, en cualquier Mac con Apple Silicon
+  (M1 en adelante).
+
 ### Instalación de una línea
 
-En **Linux y macOS** (`curl | sh`, sin `sudo`), el bootstrap detecta el target del host, verifica `SHA256SUMS.txt`, comprueba que el binario arranca y delega en `self install` (que integra el PATH y encadena `setup`):
+Ambos bootstrap abortan si el checksum no coincide con `SHA256SUMS.txt` (ver [SECURITY.md](SECURITY.md)). Cada release los publica estampados con su versión como assets propios; nada se sirve desde `main`.
 
-```bash
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh
-```
-
-En **macOS** solo Apple Silicon está soportado; la limpieza de cuarentena Gatekeeper la aplica `self install`, no el bootstrap.
+#### Instalar en Windows
 
 En **Windows** (`irm | iex`, sin UAC), el bootstrap descarga el `.zip` x86_64, verifica su hash, comprueba el arranque y delega en `self install` (que integra el PATH de usuario y encadena `setup`):
 
@@ -106,7 +130,23 @@ En **Windows** (`irm | iex`, sin UAC), el bootstrap descarga el `.zip` x86_64, v
 irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex
 ```
 
-Ambos bootstrap abortan si el checksum no coincide con `SHA256SUMS.txt` (ver [SECURITY.md](SECURITY.md)). Cada release los publica estampados con su versión como assets propios; nada se sirve desde `main`.
+#### Instalar en Linux
+
+En **Linux y macOS** (`curl | sh`, sin `sudo`), el bootstrap detecta el target del host, verifica `SHA256SUMS.txt`, comprueba que el binario arranca y delega en `self install` (que integra el PATH y encadena `setup`):
+
+```bash
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh
+```
+
+#### Instalar en macOS
+
+El one-liner es el mismo que en [Linux](#instalar-en-linux):
+
+```bash
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh
+```
+
+En **macOS** solo Apple Silicon está soportado; la limpieza de cuarentena Gatekeeper la aplica `self install`, no el bootstrap.
 
 **Alternativa Homebrew (macOS)**: automatiza checksum/PATH/cuarentena (exige Homebrew, no provisiona modelo):
 
@@ -116,29 +156,25 @@ brew install --cask ai-voice-interconnector
 ai-voice-interconnector setup
 ```
 
-### Descargar binario pre-compilado
-
-Desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases):
+Con Homebrew, para actualizar y desinstalar:
 
 ```bash
-# Linux x64 (sustituye X.Y.Z por la versión del Release)
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz -o ai.tar.gz
-tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
+brew upgrade --cask ai-voice-interconnector
+brew uninstall --cask --zap ai-voice-interconnector
+```
 
-# macOS arm64
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz -o ai.tar.gz
-tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
+### Descargar binario pre-compilado
 
+Desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases) (sustituye X.Y.Z por la versión del Release).
+
+Cada Release publica `SHA256SUMS.txt` con el hash de cada archivo y de cada bootstrap. Antes de ejecutar, descárgalo junto al archivo y verifica el hash con la orden de tu sistema.
+
+#### Descarga manual en Windows
+
+```powershell
 # Windows x64 (PowerShell)
 Invoke-WebRequest https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -OutFile ai.zip
 Expand-Archive ai.zip -Force; .\ai-voice-interconnector.exe setup
-```
-
-Cada Release publica `SHA256SUMS.txt` con el hash de cada archivo y de cada bootstrap. Antes de ejecutar, descárgalo junto al archivo y verifica:
-
-```bash
-# Linux / macOS
-sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
 
 ```powershell
@@ -146,20 +182,35 @@ sha256sum -c SHA256SUMS.txt --ignore-missing
 Get-FileHash .\ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -Algorithm SHA256
 ```
 
+#### Descarga manual en Linux
+
+```bash
+# Linux x64
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz -o ai.tar.gz
+tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
+```
+
+```bash
+# Linux / macOS
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+#### Descarga manual en macOS
+
+```bash
+# macOS arm64
+curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz -o ai.tar.gz
+tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
+```
+
+```bash
+# Linux / macOS
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
 ### Primer arranque: SmartScreen / Gatekeeper
 
 Al ejecutar por primera vez un binario **descargado por navegador**, es esperable que el SO lo bloquee (Mark-of-the-Web): los binarios no están firmados ni notarizados, y SmartScreen y Gatekeeper tratan todo ejecutable sin historial como no confiable. No significa que el archivo contenga malware; el porqué está en [SECURITY.md](SECURITY.md#artefactos-sin-firmar). Los **one-liners no lo disparan** (descarga por CLI sin Mark-of-the-Web; la limpieza de cuarentena en macOS la aplica `self install`).
-
-- **Windows (SmartScreen)**: en el diálogo «Windows protegió tu PC», pulsa
-  **Más información** → **Ejecutar de todas formas**. Si el navegador ya
-  bloqueó la descarga, consérvala desde el menú de descargas: **Conservar** →
-  **Conservar de todas formas**.
-- **macOS (Gatekeeper)**: haz clic derecho sobre el binario → **Abrir** y confirma; o
-  quita la cuarentena desde una terminal:
-
-  ```bash
-  xattr -d com.apple.quarantine ai-voice-interconnector
-  ```
 
 Antes de aceptar, verifica el hash contra `SHA256SUMS.txt` como se indica en
 [Descargar binario pre-compilado](#descargar-binario-pre-compilado). Esto solo ocurre
@@ -167,6 +218,22 @@ en el primer arranque de cada versión. Si un antivirus de terceros pone el arch
 cuarentena, restáuralo y añade una exclusión **solo después** de verificar el hash.
 La firma Authenticode y la notarización de Apple son un objetivo a largo plazo
 ([docs/GOAL.md](docs/GOAL.md)).
+
+#### Primer arranque en Windows
+
+**SmartScreen**: en el diálogo «Windows protegió tu PC», pulsa
+**Más información** → **Ejecutar de todas formas**. Si el navegador ya
+bloqueó la descarga, consérvala desde el menú de descargas: **Conservar** →
+**Conservar de todas formas**.
+
+#### Primer arranque en macOS
+
+**Gatekeeper**: haz clic derecho sobre el binario → **Abrir** y confirma; o
+quita la cuarentena desde una terminal:
+
+```bash
+xattr -d com.apple.quarantine ai-voice-interconnector
+```
 
 ### Provisión de los modelos (`setup`)
 
@@ -229,7 +296,7 @@ ai-voice-interconnector self uninstall --keep-data --yes  # conserva modelos, vo
 ai-voice-interconnector cleanup --all --yes             # borra los datos sin tocar programa ni PATH
 ```
 
-Con Homebrew: `brew upgrade --cask ai-voice-interconnector` y `brew uninstall --cask --zap ai-voice-interconnector`.
+Con Homebrew, las órdenes para actualizar y desinstalar están en [Instalar en macOS](#instalar-en-macos).
 
 La desinstalación es completa (programa, integración de PATH y datos) e idempotente: repetirla en un sistema ya limpio termina con éxito. Detalle en [USAGE.md](USAGE.md#ciclo-de-vida-de-la-instalación-self).
 
@@ -267,6 +334,7 @@ mantiene los motores calientes entre invocaciones. Detalle en
 - [SOURCE-OFFER.md](SOURCE-OFFER.md) — oferta de fuente GPLv3 §6.
 - [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) — inventario de licencias de terceros.
 - [docs/issues/README.md](docs/issues/README.md) — registro de defectos abiertos.
+
 ## Licencia
 
 Copyright © 2026 Cristián Rojas Arredondo — **GPL-3.0-or-later** ([LICENSE](LICENSE)).

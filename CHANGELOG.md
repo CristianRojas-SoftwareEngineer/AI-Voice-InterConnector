@@ -107,10 +107,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-Este ciclo reorganiza la documentación principal para que cada tema viva en un
-único documento, con el README como portada de instalación autosuficiente,
-serializa los tests TTS entre procesos y hace que la ayuda y la versión salgan
-como payload bajo `--json`.
+La documentación repetía los mismos temas en varios documentos que divergían
+entre sí, la portada mezclaba las tres plataformas en cada paso de instalación,
+la ayuda bajo `--json` no salía como JSON y los tests TTS solo se serializaban
+dentro de un proceso. Este ciclo da a cada tema un único documento dueño, con el
+README como portada de instalación autosuficiente que se recorre por sistema
+operativo; hace que la ayuda y la versión salgan como payload bajo `--json`; y
+serializa los tests TTS entre procesos con un bloqueo de archivo del sistema
+operativo.
 
 ### Cambiado
 
@@ -131,6 +135,11 @@ como payload bajo `--json`.
   comandos esenciales de `self update`, `self uninstall` y `cleanup`, y pierde la
   lista de comandos, la compilación y los datos volátiles (conteo de assets,
   versiones de esquema, rango de códigos de salida, versión de Rust).
+- La instalación del README sigue un único flujo con subsecciones por sistema
+  operativo, en orden Windows → Linux → macOS, solo en los pasos que varían
+  (requisitos, instalación de una línea, descarga manual y primer arranque). La
+  tabla «Elige tu sistema» lleva a cada una, y las órdenes de Homebrew se agrupan
+  en la instalación de macOS.
 - El índice de documentación del README enlaza todos los documentos de `docs/`,
   separados para usuarios y para contribuidores.
 - La documentación por comando de `docs/CLI/commands/` se presenta como tal, no
