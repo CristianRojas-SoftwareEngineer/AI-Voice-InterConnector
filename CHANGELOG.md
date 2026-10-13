@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.29.3 — 2026-10-13](#0293--2026-10-13)
 - [0.29.2 — 2026-10-12](#0292--2026-10-12)
 - [0.29.1 — 2026-10-12](#0291--2026-10-12)
@@ -102,6 +103,19 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Este ciclo no toca el producto: corrige 3 drifts de la documentación operativa
+contra la CI vigente. La publicación 0.29.4 mide en caliente el suelo del
+pipeline con las cachés ya sembradas por 0.29.3.
+
+### Corregido
+
+- `docs/DESIGN.md` y `docs/RELEASING.md` citaban `cargo test --all` como comando
+  de las puertas; la realidad es `cargo nextest run --all` en los tres SO.
+- La fila de `publish-metadata` en `docs/BUILD.md` citaba un executor genérico;
+  precisa `cimg/rust:1.96.0` pineado, como el resto de la tabla.
 
 ## [0.29.3] — 2026-10-13
 
