@@ -329,7 +329,7 @@ pub fn preview_with(
         }
     }
 
-    // Registros del borrado diferido, junto al programa y junto a sus aparcados.
+    // El programa y sus aparcados dejan el registro en estos directorios.
     for dir in [roots.program_dir, parent] {
         for entry in list_entries(dir, &mut found.unreadable) {
             let name = entry.file_name().to_string_lossy().to_string();
@@ -343,6 +343,43 @@ pub fn preview_with(
                 found.pending_failures.push(entry.path());
             } else {
                 found.failure_logs.push(entry.path());
+            }
+        }
+    }
+
+    // El borrado diferido puede apuntar al contenedor de caché o al contenedor
+    // raíz cuando el programa reside dentro de ellos. Solo se inspeccionan los
+    // registros hermanos de esos destinos conocidos, no los ajenos de su padre.
+    if let Some(cache) = roots.scratch_root.parent() {
+        let mut containers = vec![cache];
+        if let (Some(data_parent), Some(cache_parent)) = (roots.data_dir.parent(), cache.parent()) {
+            if cfg!(windows)
+                && roots
+                    .data_dir
+                    .file_name()
+                    .is_some_and(|name| name == "data")
+                && cache.file_name().is_some_and(|name| name == "cache")
+                && data_parent == cache_parent
+                && cache_parent
+                    .file_name()
+                    .is_some_and(|name| name == crate::APP_NAME)
+            {
+                containers.push(cache_parent);
+            }
+        }
+        for destination in containers {
+            let Some(name) = destination.file_name() else {
+                continue;
+            };
+            let log = destination
+                .with_file_name(format!("{}{REMOVAL_FAILED_SUFFIX}", name.to_string_lossy()));
+            if !exists(&log) {
+                continue;
+            }
+            if exists(destination) {
+                found.pending_failures.push(log);
+            } else {
+                found.failure_logs.push(log);
             }
         }
     }
@@ -710,6 +747,57 @@ mod tests {
         let mut expected = vec![parked_log, staging_log];
         expected.sort();
         assert_eq!(logs, expected, "su destino ya no existe");
+    }
+
+    /// Los registros de los contenedores propiedad de la aplicación se retiran
+    /// si el destino ya no existe y se informan mientras el borrado siga pendiente.
+    #[test]
+    fn container_failure_logs_follow_destination_state() {
+        let dir = scratch("recovery-container-logs");
+        let sandbox = Sandbox::new(&dir);
+        let cache = sandbox.scratch_root.parent().unwrap();
+        let cache_log = cache.with_file_name("cache.removal-failed.log");
+        write_file(&cache_log, "no se pudo retirar");
+
+        let findings = preview_with(sandbox.roots(), classify_by_start);
+        assert_eq!(findings.failure_logs, vec![cache_log.clone()]);
+
+        std::fs::create_dir_all(cache).unwrap();
+        let findings = preview_with(sandbox.roots(), classify_by_start);
+        assert_eq!(findings.pending_failures, vec![cache_log.clone()]);
+
+        std::fs::remove_dir(cache).unwrap();
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
+        assert_eq!(outcome.removed_failure_logs, vec![cache_log.clone()]);
+        assert!(!cache_log.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn app_container_failure_log_is_found_without_touching_foreign_logs() {
+        let dir = scratch("recovery-app-container-logs");
+        let app = dir.join(crate::APP_NAME);
+        let program = app.join("bin").join("program");
+        let data = app.join("data");
+        let scratch_root = app.join("cache").join("tmp");
+        let bin = dir.join("bin");
+        let app_log = dir.join(format!("{}{REMOVAL_FAILED_SUFFIX}", crate::APP_NAME));
+        let foreign_log = dir.join("foreign.removal-failed.log");
+        write_file(&app_log, "falló");
+        write_file(&foreign_log, "ajeno");
+        let roots = Roots {
+            program_dir: &program,
+            scratch_root: &scratch_root,
+            data_dir: &data,
+            bin_dir: &bin,
+        };
+
+        let findings = preview_with(roots, classify_by_start);
+        assert_eq!(findings.failure_logs, vec![app_log.clone()]);
+        assert!(foreign_log.exists());
+        recover_with(roots, classify_by_start).unwrap();
+        assert!(!app_log.exists());
+        assert!(foreign_log.exists());
     }
 
     /// Un sandbox ajeno al scratch (aunque su nombre sea un token de dueño

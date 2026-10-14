@@ -38,7 +38,7 @@ El repo es trunk-based sobre `main`, sin ramas de larga vida, y los commits de r
 
 Las puertas de test y los builds responden a **ejes distintos**:
 
-- Los tests son **por familia de SO** y validan lógica específica de cada una (en Windows, el lanzamiento con lista explícita de handles, el limpiador diferido, `PATH` en HKCU y WASAPI; en macOS, CoreAudio y la cuarentena de Gatekeeper; en Linux y macOS, `setsid`, señales e identidad de proceso por `/proc` y `proc_pidinfo`; en Linux, ALSA).
+- Los tests son **por familia de SO** y validan lógica específica de cada una (en Windows, el lanzamiento con lista explícita de handles, el borrado diferido, `PATH` en HKCU y WASAPI; en macOS, CoreAudio y la cuarentena de Gatekeeper; en Linux y macOS, `setsid`, señales e identidad de proceso por `/proc` y `proc_pidinfo`; en Linux, ALSA).
 - Los builds son **por target de distribución**, y Linux publica dos arquitecturas.
 
 Son ejes ortogonales (SO × target). El runner de `test-linux` es x86_64 porque es el executor Docker más barato y rápido; la suite es independiente de la arquitectura y mockea el motor, así que basta la más barata.

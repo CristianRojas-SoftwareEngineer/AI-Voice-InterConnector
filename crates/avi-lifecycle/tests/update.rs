@@ -522,6 +522,56 @@ fn interrupted_update_leaves_installed_version_operational() {
     assert_eq!(installed.receipt.version, "0.24.0");
 }
 
+/// El bundle del traspaso vive en el staging del `self update` padre, y la
+/// recuperación del `self install` hijo no lo barre mientras el padre sigue vivo.
+///
+/// El padre espera al hijo durante todo el traspaso, así que su staging es de un dueño
+/// vivo a lo largo de la recuperación del hijo y se conserva con el bundle intacto. Solo
+/// un padre que murió (interrumpido a mitad) deja un staging barrible, y entonces el
+/// barrido es el esperado: la actualización ya está abortada. La prueba usa un proceso
+/// real como padre y la clasificación real, sin inyección.
+#[test]
+fn handover_staging_survives_recovery_while_parent_is_alive() {
+    let sandbox = Sandbox::new("handover-parent-alive");
+    let mut parent = if cfg!(windows) {
+        std::process::Command::new("ping")
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+    } else {
+        std::process::Command::new("sleep").arg("60").spawn()
+    }
+    .expect("el proceso que hace de padre arranca");
+    let owner = avi_process::owner_token_of(parent.id()).expect("el padre se puede observar");
+    let staging = update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0", &owner);
+    let bundle_file = staging.join("package.bin");
+    support::write(&bundle_file, "bundle del traspaso");
+    let roots = || avi_lifecycle::recovery::Roots {
+        program_dir: &sandbox.program_dir,
+        scratch_root: &sandbox.scratch_root,
+        data_dir: &sandbox.data_dir,
+        bin_dir: &sandbox.bin_dir,
+    };
+
+    // Con el padre vivo, la recuperación del hijo deja el bundle donde está.
+    let outcome = avi_lifecycle::recovery::recover(roots()).expect("la recuperación se ejecuta");
+    assert!(
+        inspect::exists(&bundle_file),
+        "el staging del padre vivo conserva el bundle: {outcome:?}"
+    );
+    assert!(outcome.is_clean(), "y no queda nada pendiente: {outcome:?}");
+
+    // Con el padre muerto, el staging es residuo de una actualización abortada.
+    parent.kill().expect("el padre se termina");
+    parent.wait().expect("el padre se recoge");
+    drop(parent);
+    avi_lifecycle::recovery::recover(roots()).expect("la recuperación se ejecuta");
+    assert!(
+        !inspect::exists(&staging),
+        "el staging de un padre muerto se barre"
+    );
+}
+
 /// Sin el feature `faults` no hay inyección, y eso es una garantía del producto y no
 /// una carencia: el binario distribuido no puede interrumpirse a propósito. El
 /// traspaso con un ejecutable inexistente falla por el lanzamiento, no por un

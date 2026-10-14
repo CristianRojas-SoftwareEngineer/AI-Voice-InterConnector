@@ -55,7 +55,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 | **Recibo de instalación** | Archivo JSON dentro del directorio de programa que registra qué se instaló, dónde, por qué canal y qué integración de PATH se aplicó. |
 | **Canal** | Vía por la que se instaló la copia: `script`, `homebrew` o `unmanaged` ([§7.2](#72-canales)). |
 | **Estado de la aplicación** | Todo lo que la aplicación crea en el perfil del usuario fuera del directorio de programa: modelos, voces de usuario, habla sintetizada, configuración, `daemon.pid`, logs y temporales. |
-| **Staging** | Directorio de trabajo, hermano del directorio de programa, donde se descarga, verifica y extrae un bundle antes de instalarlo. |
+| **Staging** | Directorio de trabajo, hermano del directorio de programa y con el token de su propietario en el nombre, donde `self update` descarga, verifica y extrae un bundle y desde el que `self install` reemplaza el programa. |
 | **Aparcar** | Renombrar un archivo instalado a un subdirectorio `.old-<txid>` en lugar de borrarlo, para poder revertir o para sortear un archivo en uso. |
 | **Operación de ciclo de vida** | `self install`, `self update`, `self uninstall`, `cleanup` y las tareas equivalentes de `xtask`. |
 
@@ -160,7 +160,7 @@ irm …/install.ps1 | iex                                     │
         ▼                                           crates/xtask
 packaging/bootstrap/install.{sh,ps1}                  doctor · bootstrap · build-engine
   detecta el target, descarga, verifica,              package · install · clean
-  extrae en staging y delega                                │
+  extrae en un temporal y delega                            │
         │                                                   │ invocación por proceso
         └──────────────────┐        ┌───────────────────────┘ (sin enlazar el motor)
                            ▼        ▼
@@ -232,7 +232,7 @@ irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/re
 | `build-engine` | Compila el motor TTS (existente) | `--self-test`, `--simd`, `-j` |
 | `package` | Produce el bundle y el archivo idénticos a los de release | `--out <dir>`, `--no-compress`, `--expect-version X.Y.Z` |
 | `install` | Instala el build local por el mismo camino que un release | `--no-setup` |
-| `clean` | Limpia por capas | `--repo` (por defecto), `--app`, `--all`, `--dry-run`, `--yes` |
+| `clean` | Limpia por capas | `--repo` (por defecto), `--app`, `--all`, `--global`, `--dry-run`, `--yes` |
 
 `release`, `cask`, `licenses`, `source-offer` y `changelog` se mantienen sin cambios (fuera de alcance).
 
@@ -246,11 +246,16 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 | Comando en el PATH | Exclusiva (solo el enlace o la entrada) | Enlace `~/.local/bin/ai-voice-interconnector` | Ídem | Entrada en el valor `Path` de `HKCU\Environment` |
 | Bloque en perfiles de shell | Exclusiva (solo el bloque delimitado) | [§8.3.1](#831-integración-de-path) | Ídem | — |
 | Datos de usuario y estado (voces, habla sintetizada, configuración, `daemon.pid`, logs) | Exclusiva | `$XDG_DATA_HOME/ai-voice-interconnector/` | `~/Library/Application Support/ai-voice-interconnector/` | `%LOCALAPPDATA%\ai-voice-interconnector\data\` |
-| Modelos (caché regenerable) | Exclusiva | `$XDG_CACHE_HOME/ai-voice-interconnector/models/` | `~/Library/Caches/ai-voice-interconnector/models/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models\` |
-| Staging y aparcados | Exclusiva | `~/.local/opt/.ai-voice-interconnector-staging-*` y `<programa>/.old-*` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector-staging-*` y `<programa>\.old-*` |
+| Contenedor de caché (solo alberga `models` y `tmp`) | Exclusiva (contenedor) | `$XDG_CACHE_HOME/ai-voice-interconnector/` | `~/Library/Caches/ai-voice-interconnector/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\` |
+| Modelos (hoja `models` del contenedor de caché; regenerable) | Exclusiva | `$XDG_CACHE_HOME/ai-voice-interconnector/models/` | `~/Library/Caches/ai-voice-interconnector/models/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models\` |
+| Temporales de ejecución (hoja `tmp` del contenedor de caché): un scratch por proceso, `tmp/<token>/` | Exclusiva por token | `$XDG_CACHE_HOME/ai-voice-interconnector/tmp/<token>/` | `~/Library/Caches/ai-voice-interconnector/tmp/<token>/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\tmp\<token>\` |
+| Contenedor raíz de la aplicación (solo Windows; alberga `data` y `cache`) | Exclusiva (contenedor) | — | — | `%LOCALAPPDATA%\ai-voice-interconnector\` |
+| Staging de instalación y aparcados (recursos de ciclo de vida) | Exclusiva: dueño es quien tiene el bloqueo exclusivo, y el nombre lleva además su token | `~/.local/opt/.ai-voice-interconnector-staging-<token>-<etiqueta>` y `<programa>/.old-<token>-<nanos>` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector-staging-<token>-<etiqueta>` y `<programa>\.old-<token>-<nanos>` |
+| Temporales de destino y staging de voz (recursos de ejecución) | Exclusiva por token | `<destino>.<token>.tmp` junto a su destino y `.staging-<token>-<voz>` en el directorio de datos | Ídem | Ídem |
+| Logs | Exclusiva por token | `<datos>/logs/<familia>_<token>_<ms>.log` | Ídem | Ídem |
+| Registro de borrado diferido fallido (solo Windows) | Exclusiva | — | — | `<destino>.removal-failed.log`, junto al destino que no se pudo retirar |
 | Bloqueo de ciclo de vida | Exclusiva | `~/.local/opt/.ai-voice-interconnector.lock` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.lock` |
 | Compuerta de traspaso (hermana del bloqueo) | Exclusiva | `~/.local/opt/.ai-voice-interconnector.gate` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.gate` |
-| Temporales de ejecución | Exclusiva por prefijo | `$TMPDIR` con prefijo `avi-`/`avi_` | Ídem | `%TEMP%` con los mismos prefijos |
 | Caché HF elegida por el usuario (`HF_HUB_CACHE` o `HF_HOME`) | **Compartida** | La indicada | Ídem | Ídem |
 
 **Reubicación.** Cada raíz admite una variable de entorno de reubicación. Además de permitir ubicaciones personalizadas, es lo que hace posibles las pruebas aisladas en CI, porque en Windows las Known Folders ignoran `LOCALAPPDATA`. Los valores efectivos se registran en el recibo, así que la actualización y la desinstalación operan sobre las mismas ubicaciones aunque la variable ya no esté definida.
@@ -260,7 +265,7 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 | `AVI_INSTALL_DIR` | Directorio de programa |
 | `AVI_BIN_DIR` | Directorio del enlace (Unix) |
 | `AVI_DATA_DIR` | Datos de usuario y estado |
-| `AVI_CACHE_DIR` | Modelos |
+| `AVI_CACHE_DIR` | Contenedor de caché: los modelos son `$AVI_CACHE_DIR/models` y los temporales `$AVI_CACHE_DIR/tmp` |
 | `HF_HUB_CACHE` / `HF_HOME` | Usa una caché HF compartida elegida por el usuario; su propiedad pasa a ser compartida |
 | `AVI_DOWNLOAD_BASE_URL` | Base de descarga de releases (espejos, redes aisladas, pruebas) |
 
@@ -269,7 +274,39 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 - **R1.** Las operaciones destructivas solo actúan dentro de raíces de propiedad exclusiva. Una ruta fuera de ellas es un error interno y nunca se borra.
 - **R2.** El directorio de programa solo se borra si contiene el recibo o el ejecutable de la aplicación. Nunca se borra `$HOME`, la raíz de una unidad ni un directorio del sistema, aunque una variable de reubicación o un recibo manipulado apunten allí.
 - **R3.** En una raíz compartida solo se borran entradas atribuibles a la aplicación (los repos fijados, `models--<org>--<nombre>`, y sus bloqueos). Nunca se borran subdirectorios globales de la caché (`xet`, `.locks` completo).
-- **R4.** Todo recurso nuevo que la aplicación empiece a crear se añade a esta tabla y a los planes de limpieza y desinstalación en el mismo cambio.
+- **R4.** Todo recurso nuevo que la aplicación empiece a crear se añade a esta tabla, al árbol de propiedad y a los planes de limpieza y desinstalación en el mismo cambio. Los temporales se crean solo en el scratch del proceso; el producto no escribe en el directorio temporal del sistema.
+
+**Árbol de propiedad.** Las raíces de propiedad exclusiva forman un árbol declarado una sola vez en `avi-shared`, con tres papeles de nodo:
+
+- **Contenedor**: directorio de la aplicación que solo alberga nodos suyos (el contenedor raíz en Windows y el contenedor de caché).
+- **Hoja**: directorio cuyo contenido es todo de la aplicación (datos, modelos, temporales).
+- **Externo**: ubicación que elige y posee el usuario, la caché HF compartida.
+
+`self uninstall` y `cleanup` borran las hojas seleccionadas y después podan de abajo arriba los contenedores que quedaron vacíos, con `remove_dir` (nunca recursivo). Un contenedor con cualquier entrada ajena se conserva intacto y se informa una vez, y la poda de esa rama se detiene ahí. Un nodo externo no se borra entero ni se poda nunca (regla R3). Los avisos de lo que se conserva (`preserved`) solo incluyen rutas que existen.
+
+**Identidad del propietario.** Todo recurso que un proceso crea y que otro puede encontrar huérfano lleva en su nombre el token `<pid>-<inicio>` del proceso que lo crea, donde `<inicio>` es el instante de arranque observado del proceso (en Linux, precedido del `boot_id` del arranque del sistema, porque el instante se repite tras reiniciar). El token identifica al proceso exacto: un PID reutilizado por otro proceso tiene otro inicio. Quien barre clasifica cada token con un único punto de decisión:
+
+| Estado | Significado | Qué hace el barrido |
+|---|---|---|
+| `Ours` | El proceso vive con esa identidad | Conserva sin informar |
+| `Dead` | El proceso no existe, o su PID lo ocupa otro proceso | Barre |
+| `Unknown` | La identidad no se puede observar (acceso denegado) | Conserva e informa; nunca se da por muerto |
+
+**Dos mecanismos de propiedad.** Los recursos de ciclo de vida (stagings de instalación y aparcados) pertenecen a quien tiene el bloqueo exclusivo de ciclo de vida, y además llevan su token en el nombre. Los recursos de ejecución (scratch, temporales de destino, stagings de voz, enlaces temporales y logs) pertenecen únicamente al proceso cuyo token llevan.
+
+**Scratch por proceso.** Cada proceso crea en su primer uso `tmp/<token>/` dentro del contenedor de caché y allí caen todos sus temporales; el motor TTS hijo lo hereda como `TMP`, `TEMP` y `TMPDIR`. Al crearlo, el proceso borra antes los directorios hermanos cuyo dueño está `Dead`. Una única salida del binario, `terminate`, lo libera en todas las rutas de terminación.
+
+**Familias con token.** Cada familia tiene un constructor de nombres y un parser inverso, de modo que quien barre recupera al propietario con el mismo código que produjo el nombre:
+
+| Familia | Forma del nombre | Dónde |
+|---|---|---|
+| Temporal de destino y enlace temporal | `<destino>.<token>.tmp` | Junto al destino |
+| Staging de voz | `.staging-<token>-<voz>` | En el directorio de datos, junto al almacén de voces |
+| Staging de instalación | `.ai-voice-interconnector-staging-<token>-<etiqueta>` | Hermano del directorio de programa |
+| Aparcado | `.old-<token>-<nanos>` | Dentro del directorio de programa |
+| Log | `<familia>_<token>_<ms>.log` | `data/logs/` |
+
+Un nombre sin token no pertenece a este modelo y la recuperación no lo toca.
 
 ## 7. Recibo de instalación y canales
 
@@ -311,6 +348,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 ```
 
 - En Windows, `path_integration.registry_entry` guarda la entrada añadida al PATH de usuario, y `symlink`/`profile_blocks` son `null`.
+- `roots.cache_dir` registra el contenedor de caché, no la raíz de modelos: los modelos son su hoja `models` y los temporales su hoja `tmp`.
 - Los campos desconocidos se ignoran, para que un binario antiguo pueda leer recibos nuevos. Un `schema_version` mayor que el soportado aborta la operación con un mensaje que pide actualizar.
 
 ### 7.2 Canales
@@ -372,7 +410,13 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 **Recuperación.** Al empezar, toda operación de ciclo de vida (y `doctor`, en modo informe):
 
 1. Si existe un diario de transacción pendiente (`<programa>/.transaction.json`), completa el rollback restaurando lo aparcado, o el commit si la transacción ya estaba confirmada.
-2. Borra aparcados `.old-*` que ya no estén en uso, stagings huérfanos y temporales propios sin proceso vivo.
+2. Barre por identidad exacta en raíces fijas, y solo lo que lleva token: clasifica el token de cada residuo y borra los de dueño `Dead`; conserva sin informar los `Ours`; conserva e informa los `Unknown`. Las raíces son:
+   - los scratch `tmp/<token>/` del contenedor de caché;
+   - los temporales con token y los stagings de voz del directorio de datos, del directorio del enlace del comando y de cada directorio de voz de los almacenes de voces y de habla;
+   - los stagings de instalación hermanos del directorio de programa y los aparcados `.old-<token>-<nanos>` de su interior;
+   - los `<destino>.removal-failed.log` junto al directorio de programa y junto a sus aparcados: se retiran cuando el destino ya no existe, y mientras exista se informa como fallo pendiente (el borrado diferido no se completó).
+
+   `doctor` en modo informe y la recuperación comparten una única función de decisión, así que lo que el informe anuncia es lo que el barrido borra.
 
 **Privilegios.** Ninguna operación pide elevación. En Unix, si se detecta ejecución vía `sudo` (uid 0 con `SUDO_USER` definido), se aborta: la instalación es per-user y con `sudo` acabaría en el perfil de root. Root sin `sudo` (contenedores) sí se permite. En Windows, si el proceso está elevado, se avisa de que la instalación se hará en el perfil de la cuenta que ejecuta.
 
@@ -407,13 +451,13 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 1. **Detectar el target** según [§3](#3-targets-soportados). Si no está soportado → `unsupported_platform`, antes de descargar nada.
 2. **Unix: rechazar `sudo`** ([§8.1](#81-reglas-transversales), privilegios).
 3. **Resolver la versión**, por este orden: opción o variable, versión estampada, y (solo si el script se ejecuta sin estampar, desde el repositorio) la última estable, obtenida siguiendo la redirección de `https://github.com/<repo>/releases/latest`. No se usa la API REST de GitHub, así que no hay límite de peticiones ni hace falta parsear JSON. La versión resuelta debe ser exactamente `X.Y.Z` (solo dígitos y puntos, tres componentes); si no → `usage_error` (código 2), antes de descargar nada.
-4. **Crear el staging** como hermano del directorio de programa (mismo volumen), con permisos solo del usuario.
+4. **Crear un directorio temporal propio** bajo el directorio temporal del sistema (`$TMPDIR` o `/tmp` en Unix; `%TEMP%` en Windows), con permisos solo del usuario. El bootstrap no crea nada junto al programa: el staging junto al programa lo crea después `self install`, con el bloqueo tomado.
 5. **Descargar** el archivo del target y `SHA256SUMS.txt` por HTTPS.
-6. **Verificar**: localizar en `SHA256SUMS.txt` la línea cuyo nombre coincide exactamente con el del archivo (comparación de cadenas, no expresión regular) y comparar el hash en minúsculas. Si el hash no coincide o falta la línea → `checksum_mismatch` y se borra el staging.
-7. **Extraer** en el staging.
-8. **Comprobar el arranque** con `<staging>/ai-voice-interconnector --version`. Si falla → `binary_incompatible` con diagnóstico ([§3](#3-targets-soportados)); la instalación existente no se toca.
-9. **Delegar**: `<staging>/ai-voice-interconnector self install`, pasando las opciones. En Unix, si stdin no es una terminal y `/dev/tty` está disponible, stdin se redirige desde `/dev/tty`.
-10. **Terminar**: borrar el staging, tanto si hubo éxito como error, y propagar el código de salida de `self install`.
+6. **Verificar**: localizar en `SHA256SUMS.txt` la línea cuyo nombre coincide exactamente con el del archivo (comparación de cadenas, no expresión regular) y comparar el hash en minúsculas. Si el hash no coincide o falta la línea → `checksum_mismatch` y se borra el directorio temporal.
+7. **Extraer** en el directorio temporal.
+8. **Comprobar el arranque** con `<temporal>/ai-voice-interconnector --version`. Si falla → `binary_incompatible` con diagnóstico ([§3](#3-targets-soportados)); la instalación existente no se toca.
+9. **Delegar**: `<temporal>/ai-voice-interconnector self install`, pasando las opciones. En Unix, si stdin no es una terminal y `/dev/tty` está disponible, stdin se redirige desde `/dev/tty`.
+10. **Terminar**: borrar el directorio temporal, tanto si hubo éxito como error (en Unix también ante `INT` y `TERM`), y propagar el código de salida de `self install`. Si el borrado falla, avisa con la ruta para que el usuario lo retire a mano y no cambia el código de salida.
 
 **Requisitos de `install.sh`:** POSIX sh (dash, bash, busybox sh, zsh en modo sh); `curl` (exigido, sin `wget`: solo `curl` limita también las redirecciones a HTTPS); `sha256sum` o `shasum -a 256`; `tar` y `mktemp`.
 
@@ -460,7 +504,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 
    Instalar una versión menor que la instalada es una degradación y se confirma como operación destructiva.
 5. **Parar el daemon** si está activo, incluido el proceso residente del motor, con el protocolo estable entre versiones (`daemon.pid` + `POST /shutdown` + árbol de procesos). Si no se detiene → `daemon_stop_failed`, sin modificar nada.
-6. **Reemplazo transaccional**, con el mismo algoritmo en los cuatro targets:
+6. **Reemplazo transaccional**, con el mismo algoritmo en los cuatro targets. Parte siempre de un staging propio, hermano del directorio de programa y con el token de este proceso en el nombre: si el bundle ya está en un staging con el token de este mismo proceso, se usa tal cual; en cualquier otro caso (descarga del bootstrap, staging de `self update`, extracción manual) `self install` lo copia, con el bloqueo ya tomado, a un staging nuevo `.ai-voice-interconnector-staging-<token>-self-install` y lo borra al terminar, con aviso si no puede.
    1. **Aparcar** el contenido actual del directorio de programa en `<programa>/.old-<txid>/` por renombrado, registrándolo en el diario. En Windows, renombrar un ejecutable en uso está permitido; borrarlo no.
    2. **Colocar** el bundle nuevo. Los archivos se mueven desde el staging (renombrado en el mismo volumen), salvo el ejecutable que está corriendo, que se copia.
    3. **Ajustar permisos**: en Unix, 0755 para ejecutables y 0644 para el resto.
@@ -522,10 +566,10 @@ ai-voice-interconnector self update [--check] [--version X.Y.Z] [--force] [--no-
    - objetivo menor → solo con `--version` explícito, y se trata como operación destructiva por la compatibilidad de datos.
 5. **`--check`**: informa la transición (`0.23.1 → 0.24.0`, o que ya se está en la última) y termina sin cambios. En JSON: `current`, `latest`, `update_available` y `channel`.
 6. **Resumen y confirmación.**
-7. **Preparar el bundle nuevo**: descargar el archivo y `SHA256SUMS.txt` en un staging hermano, verificar el SHA-256 (y la firma, cuando exista, [§11](#11-seguridad)), extraer, y comprobar que el binario nuevo arranca y que `--version` coincide con la versión objetivo.
+7. **Preparar el bundle nuevo**: descargar el archivo y `SHA256SUMS.txt` en un staging hermano del programa (`.ai-voice-interconnector-staging-<token>-update-<versión>`), verificar el SHA-256 (y la firma, cuando exista, [§11](#11-seguridad)), extraer, y comprobar que el binario nuevo arranca y que `--version` coincide con la versión objetivo.
 8. **Parar el daemon con el binario actual**, que conoce su propio protocolo y la ruta de su `daemon.pid`. Se anota si estaba en ejecución.
 9. **Traspaso**: ejecutar `<staging>/ai-voice-interconnector self install --yes` heredando la consola, con las preferencias registradas en el recibo (por ejemplo, `--no-modify-path` si se usó al instalar) y `--no-setup` si se pidió. Se espera a que termine y se propaga su resultado.
-10. **Limpiar**: borrar el staging. Los restos del aparcado que sigan en uso (en Windows, los retiene el ejecutable del proceso que actualiza) se programan con el limpiador propio, que espera a que ese proceso termine y borra con reintentos acotados. Si el limpiador no llega a hacerlo, la recuperación de la siguiente operación lo completa.
+10. **Limpiar**: borrar el staging. Los restos del aparcado que sigan en uso (en Windows, los retiene el ejecutable del proceso que actualiza) se programan con el borrado diferido (Windows), que espera por identidad a que ese proceso termine y borra con reintentos acotados. Si no se pudo programar, o el borrado falla, la recuperación de la siguiente operación lo completa.
 11. **Resultado**: `0.23.1 → 0.24.0`. Si el daemon estaba activo, el resumen indica cómo reiniciarlo.
 
 **Garantías.** Un fallo antes del traspaso deja todo intacto. Un fallo durante el traspaso se revierte con la transacción del `self install` nuevo. Una interrupción en cualquier punto se recupera en la siguiente operación de ciclo de vida.
@@ -546,13 +590,13 @@ Actúa sobre la instalación registrada, sea cual sea la copia del binario que l
 4. **Confirmación destructiva.**
 5. **Parar el daemon.** Si falla → `daemon_stop_failed`, sin borrar nada.
 6. **Borrar el estado** (salvo con `--keep-data`):
-    - **Sin `--keep-data`: la raíz de datos entera**, y no el plan de `cleanup --all`. El motivo es que al desinstalar **desaparece el programa, y con él las voces de fábrica** (`cleanup --all` las protege porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar). Dejarlas sería residuo dentro de una raíz de propiedad exclusiva, de modo que el destino del estado es la raíz completa —que R1 permite porque es exclusiva— en vez de la lista de categorías. Los modelos siguen el plan de `--model`, con sus reglas de propiedad.
+    - **Sin `--keep-data`: la raíz de datos entera**, y no el plan de `cleanup --all`. El motivo es que al desinstalar **desaparece el programa, y con él las voces de fábrica** (`cleanup --all` las protege porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar). Dejarlas sería residuo dentro de una raíz de propiedad exclusiva, de modo que el destino del estado es la raíz completa —que R1 permite porque es exclusiva— en vez de la lista de categorías. Los modelos siguen el plan de `--model`, con sus reglas de propiedad, y el scratch cae entero. Después, el ejecutor del árbol de propiedad poda los contenedores que quedaron vacíos.
    - **Con `--keep-data`: el plan de `cleanup --all` filtrado** —fuera modelos, voces y habla, dentro configuración, logs y estado del daemon—, que es lo coherente con lo que el usuario ha pedido. El directorio de programa se borra igual en los dos casos: la bandera conserva el estado, no el programa.
 7. **Revertir el PATH** según el recibo:
    - el enlace, solo si apunta al directorio de programa;
    - los bloques delimitados de los perfiles;
     - la entrada del registro, con comparación canónica, conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`.
-8. **Borrar el directorio de programa** (con la regla R2). En Unix, directamente. En Windows, si el ejecutable en uso está dentro, el limpiador propio desacoplado espera a que termine y borra el directorio con reintentos acotados → `removal_scheduled`, con su resultado en un registro bajo `data/logs/`. Si el directorio no se puede borrar ni programar → `program_dir_kept`, sin borrado parcial.
+8. **Borrar el directorio de programa** (con la regla R2). En Unix, directamente. En Windows, si el ejecutable en uso está dentro, se programa el borrado diferido → `removal_scheduled`: el Windows PowerShell del sistema, desacoplado, espera por identidad a que termine este proceso y borra el destino con reintentos acotados, sin copiar ningún ejecutable. El destino es el contenedor más externo que, retirados el programa y sus archivos de bloqueo, quedaría vacío (o el propio directorio de programa si no hay ninguno). Un borrado correcto no deja registro alguno; si fallan todos los reintentos, deja `<destino>.removal-failed.log` junto al destino. Cuando el borrado es directo (Unix, o Windows con el ejecutable en uso fuera del directorio), una vez retirados el programa y sus archivos de bloqueo se podan los contenedores que solo los retenían. Si el directorio no se puede borrar ni programar → `program_dir_kept`, sin borrado parcial.
 9. **Borrar el archivo de bloqueo y la compuerta**, como último paso con efectos. En Unix se borran con el bloqueo aún tomado; en Windows se sueltan primero los descriptores propios, porque los ficheros se abren sin permitir su borrado. Si otro proceso los tiene abiertos en ese instante, el borrado falla, el fichero se queda (sin consecuencias) y se informa en `failed` como cualquier otro resto no borrado.
 
 **Idempotencia:** sin instalación ni estado, termina con éxito y `not_installed`. **Residuo:** cero dentro de las raíces de propiedad exclusiva. Lo compartido que no se borra se informa explícitamente.
@@ -568,11 +612,12 @@ ai-voice-interconnector cleanup (--model | --voices | --synthetic-speech | --all
 | `--model` | Modelos provisionados: todas las revisiones de los repos propios. Con la caché exclusiva de la aplicación, el directorio se borra entero | Modelos de otras herramientas en una caché compartida, si el usuario eligió `HF_HUB_CACHE` o `HF_HOME` (regla R3) |
 | `--voices` | Voces de usuario (clonadas o importadas) y su registro | Voces de fábrica (van embebidas en el binario) |
 | `--synthetic-speech` | Audio sintetizado guardado | — |
-| `--all` | Todo lo anterior, más configuración, logs y `daemon.pid` | Programa e integración de PATH (eso es `self uninstall`) |
+| `--all` | Todo lo anterior, más configuración, logs, `daemon.pid` y la hoja de temporales (`scratch`) | Programa e integración de PATH (eso es `self uninstall`) |
 
 - Sin categoría → `usage_error`, sin borrar nada.
 - Antes de borrar recursos que el daemon usa, se detiene el daemon.
-- Cualquier invocación barre además los temporales propios huérfanos, los stagings huérfanos y los aparcados `.old-*`.
+- Cualquier invocación barre además los residuos de dueño `Dead` (scratch, temporales con token, stagings de instalación, aparcados y registros de borrado resueltos) y conserva e informa los de dueño `Unknown`.
+- Tras borrar, el ejecutor del árbol de propiedad poda de abajo arriba los contenedores que quedaron vacíos (por ejemplo, el contenedor de caché tras `--all`). Un contenedor con entradas ajenas se conserva y se informa. `cleanup --all` no retira el contenedor raíz de la aplicación en Windows, porque conserva los datos de fábrica (las voces embebidas); `self uninstall` sí.
 - Tras `--model`, la aplicación queda reintentable: `setup` descarga de nuevo lo necesario.
 
 ### 8.7 `setup` en el ciclo de vida
@@ -595,7 +640,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 | Canal (`channel`) | `script`, `homebrew` o `unmanaged` |
 | Instalación (`install`) | Directorio de programa y estado del recibo: válido o ausente |
 | PATH (`path`) | Si el comando resuelve a esta instalación, si hay duplicados en el PATH (Cask + `script`) y el estado del enlace o de la entrada de registro |
-| Pendientes (`pending`) | Diario de transacción, aparcados y stagings huérfanos |
+| Pendientes (`pending`) | Diario de transacción, residuos de dueño muerto por familia (aparcados, stagings, scratch, temporales y registros de borrado resueltos), residuos de dueño no observable, borrados diferidos sin completar y directorios que no se pudieron listar |
 | Modelos (`models`) | Provisionados, faltantes (evaluados contra el conjunto completo de pines) y revisiones obsoletas, con tamaños |
 
 ## 9. Entorno del desarrollador
@@ -655,8 +700,11 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, salidas de `package`, binario y objetos del motor, cobertura y pesos locales heredados bajo `vendor/qwen3-tts` | `xtask` |
 | Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew`), ejecutado con el binario del repositorio |
 | Ambas | `--all` | Aplicación y después repositorio | Ídem |
-| Global compartida | — | `~/.cargo`, caché de sccache, paquetes del sistema, MSYS2 | Nunca; solo se informa |
+| Global | `--global` (nunca incluida en `--all`) | Cachés regenerables de Cargo bajo `CARGO_HOME` (`registry/{cache,src,index}` y `git/{db,checkouts}`) y, en Windows, el contenido del `CacheDir` de pacman declarado en el `pacman.conf` de MSYS2 | `xtask` |
 
+- `--global` es explícita y, sola, no limpia el repositorio. Nunca toca `CARGO_HOME/bin`, rustup, la caché de sccache ni la instalación de MSYS2.
+- La capa repo retira `target.removal-failed.log` (el registro que deja el borrado diferido de `target/` cuando falla) si `target/` ya no existe, y lo informa mientras siga existiendo.
+- **Confinamiento de temporales.** `.cargo/config.toml` fija `TMP`, `TEMP` y `TMPDIR` a `target` para todo lo que lanza Cargo (pruebas, `cargo run`, `cargo xtask`), de modo que los restos de una prueba abortada quedan bajo `target/` y los retira esta orden. Los temporales de `xtask` llevan el prefijo `xtask-`. La CI borra `target/.tmp*` y `target/golden-avi-daemon` antes de guardar la caché de `target/`.
 - Detiene primero los daemons lanzados desde `target/`.
 - `--prune` modera la capa repo a la poda fina (cachés, cruces ajenos y PDBs viejos) y conserva la compilación vigente; el defecto sin flag no cambia. Ver [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - Nunca borra código fuente versionado.

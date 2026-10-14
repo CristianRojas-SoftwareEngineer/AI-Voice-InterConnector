@@ -610,15 +610,16 @@ Las tres reglas de compatibilidad y la regla de promoción son contrato **de con
 - Por esa razón, trazas de nivel `info` como el progreso de descarga de `setup` no salen por defecto: se piden con `RUST_LOG=info`.
 - stderr no lleva color ANSI cuando no es una terminal.
 
-**Los logs viven en `data/logs/`** y hay tres familias, todas con nombre `<familia>_<pid>_<ms>.log` (`<ms>` es la marca de tiempo de creación en milisegundos):
+**Los logs viven en `data/logs/`** y hay dos familias, ambas con nombre `<familia>_<token>_<ms>.log`, donde `<token>` es el token de propietario `<pid>-<inicio>` del proceso que escribe el log y `<ms>` la marca de tiempo de creación en milisegundos:
 
 | Familia | Fichero | Contenido |
 |---|---|---|
-| Daemon | `daemon_<pid>_<ms>.log` | stdout y stderr del daemon; uno por cada `daemon start`/`restart` (`<pid>` es el del daemon hijo) |
-| Motor Qwen3-TTS | `qwen3-tts_<pid>_<ms>.log` | salida del motor residente y del motor de `voice clone` (`<pid>` es el del proceso que lo crea: el daemon, o la CLI en la vía directa) |
-| Limpiador | `cleaner_<pid>_<ms>.log` | resultado del borrado diferido de Windows (`<pid>` es el del proceso que lo programa) |
+| Daemon | `daemon_<token>_<ms>.log` | stdout y stderr del daemon; uno por cada `daemon start`/`restart` (`<token>` es el del daemon hijo) |
+| Motor Qwen3-TTS | `qwen3-tts_<token>_<ms>.log` | salida del motor residente y del motor de `voice clone` (`<token>` es el del proceso que lo crea: el daemon, o la CLI en la vía directa) |
 
-**Retención: los 10 logs más recientes por familia**, ordenados por el `<ms>` del nombre. La poda ocurre al crear un log nuevo; no toca otras familias ni ficheros ajenos, y un log en uso que no se pueda borrar se ignora.
+El borrado diferido de Windows no escribe ningún log: un borrado correcto no deja registro, y si falla deja `<destino>.removal-failed.log` junto al destino.
+
+**Retención: los 10 logs más recientes por familia**, ordenados por el `<ms>` del nombre. La poda ocurre al crear un log nuevo; no toca otras familias ni ficheros ajenos, y nunca borra el log de un propietario que sigue en marcha ni el de uno cuya identidad no se puede observar: solo compiten por la retención los de dueño muerto (inexistente o con otro inicio) y los del propio proceso. Un log que no se pueda borrar se ignora.
 
 Cuando un arranque del daemon falla, el mensaje de error de la CLI termina con `Log del daemon: <ruta>` sin cambiar `reason` ni el exit code; si el log no se puede crear, el error es `daemon_error` («No se pudo crear el log del daemon»). El error `voice_clone_failed` termina con `Log del motor: <ruta>`.
 
@@ -627,7 +628,7 @@ Cuando un arranque del daemon falla, el mensaje de error de la CLI termina con `
 La forma de cada payload está en la [referencia de esquemas `--json`](../../USAGE.md#referencia-de-esquemas---json) y en [`commands/SPEECH.md`](commands/SPEECH.md). Las reglas que fija el contrato:
 
 - Solo `synthesize` emite ruta (`audio_path`), por el criterio de la ruta en los payloads: produce el WAV y no hay comando de exportación. Es el único cuyo WAV sobrevive a la invocación; `label` va implícito en `audio_path`. Bajo `--json` el bucle es inalcanzable y la persistencia es cierta cuando la salida es 0.
-- **`say`** no persiste y no emite ruta: sintetiza a un temporal autogestionado (`avi_say_…`, con dueño `TempWav` en `avi-shared`, que lo borra al salir de ámbito también si falla la reproducción); no repite `text` ni informa `audio_path`. El texto humano («Reproduciendo.») tampoco muestra ruta. `say` es humo de punta a punta: afirma que sintetizó y reprodujo, sin medir la calidad del audio; la paridad de inteligibilidad la cubre `synthesize`, que persiste y verifica.
+- **`say`** no persiste y no emite ruta: sintetiza a un temporal autogestionado dentro del scratch del proceso (`avi_say_…`, con dueño `TempWav` en `avi-shared`, que lo borra al salir de ámbito también si falla la reproducción); no repite `text` ni informa `audio_path`. El texto humano («Reproduciendo.») tampoco muestra ruta. `say` es humo de punta a punta: afirma que sintetizó y reprodujo, sin medir la calidad del audio; la paridad de inteligibilidad la cubre `synthesize`, que persiste y verifica.
 - **`dub`** tampoco persiste ni emite ruta: temporal autogestionado igual (`avi_dub_…`), sin `audio_path`. Quien quiera conservar el audio usa `speech synthesize`. Como `say`, es humo sin puerta de calidad sobre lo que sonó.
 - **`synthesize` y `say` comparten `voice`** porque si no se pasó `--voice` lo eligió el sistema (`default`); `dub` no lo emite, y su `text` es lo que necesita el consumidor.
 - **`list`** emite el texto completo. La clave es el nombre del recurso en snake_case, siguiendo el precedente de `voice list --json` (una lista bajo el nombre del recurso) y evitando que un identificador del contrato legible por máquina contradiga el vocabulario de la superficie.
@@ -652,10 +653,10 @@ Son **dos, independientes**: el envelope de la CLI va por `"5"` y el protocolo d
 
 `self` es el grupo que hace que **el ciclo de vida viva en el binario que se gestiona a sí mismo**. Los tres subcomandos comparten cuatro propiedades, y las cuatro importan más que sus flags:
 
-- **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas ([recibo de instalación](../specs/LIFECYCLE.md#71-recibo)).
+- **Actúan sobre la instalación registrada, no sobre la copia que se invoca.** Las raíces efectivas salen del recibo (`cleanup::Roots::from_receipt`), de modo que la operación acierta aunque `AVI_DATA_DIR` o `AVI_CACHE_DIR` ya no estén definidas ([recibo de instalación](../specs/LIFECYCLE.md#71-recibo)). `AVI_CACHE_DIR` designa el **contenedor** de caché, no la raíz de modelos: los modelos son `$AVI_CACHE_DIR/models` y los temporales del producto `$AVI_CACHE_DIR/tmp`; el recibo registra ese contenedor en `roots.cache_dir`.
 - **Toman el bloqueo de SO en modo exclusivo**, sobre el archivo de bloqueo y su compuerta de traspaso (hermanos del directorio de programa registrado, el mismo para todas las operaciones), y por eso un segundo proceso concurrente sale con `lifecycle_locked` (17) en vez de esperar. Los comandos de uso (`translate`, `voice`, `speech`, `setup`, `daemon start`, `daemon restart` y `daemon serve`) lo toman en modo compartido y lo retienen toda su vida, salvo `daemon serve`, que lo suelta al quedar registrado en `daemon.pid`: coexisten entre sí y, mientras hay una operación en curso, terminan con `lifecycle_locked` (17) sin ejecutarse. No lo toman `daemon status`, `daemon stop`, `doctor` sin `--repair` ni las simulaciones `--dry-run`. `self update` retiene la compuerta durante todo el traspaso al binario nuevo, y `self install` retiene el bloqueo hasta terminar su provisión de modelos.
-- **Ejecutan la recuperación antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido de aparcados, stagings huérfanos y temporales propios.
-- **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProductProcesses`, `ProgramRemoval`, esta última sobre `avi_process::schedule_clean_removal`).
+- **Ejecutan la recuperación antes de componer el plan**, para que el plan que el usuario ve y confirma sea el que queda después del barrido por identidad de los residuos de dueño muerto (aparcados, stagings de instalación, scratch, temporales con token y registros de borrado resueltos); los de dueño no observable se conservan y se informan.
+- **El binario aporta lo que el motor no puede tener**: el control de procesos (parada del daemon) y el borrado diferido de Windows. El motor decide; el binario ejecuta esas dos primitivas de plataforma (`ProductProcesses`, `ProgramRemoval`, esta última sobre `avi_process::schedule_removal`).
 
 | Sub-acción | Qué hace | `reason` de éxito parcial o de fallo |
 |---|---|---|
@@ -665,7 +666,7 @@ Son **dos, independientes**: el envelope de la CLI va por `"5"` y el protocolo d
 
 **`self uninstall` sin `--keep-data` borra la raíz de datos entera, no el plan de `cleanup --all`.** La diferencia es deliberada y está en `uninstall::compose_plan`: `cleanup --all` protege las voces de fábrica (`default`, `ryan`, `vivian`) porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar. Al desinstalar **el programa desaparece**, y con él las voces de fábrica: dejarlas sería residuo dentro de una raíz de propiedad exclusiva. Con `--keep-data` sí se aplica el plan de `cleanup --all` **filtrado** —modelos, voces y habla quedan fuera— y el directorio de programa se borra igualmente.
 
-**Idempotencia**: sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed`. En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se programa para cuando el proceso termine y el `status` es `removal_scheduled`, que también es éxito porque el limpiador quedó programado con su registro. Si no se puede programar, el `status` es `uninstalled` con `reason` `program_dir_kept` y salida 22.
+**Idempotencia**: sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed`. En Windows, si el ejecutable en uso está dentro del directorio de programa, el borrado se programa para cuando el proceso termine y el `status` es `removal_scheduled`, que también es éxito porque el borrado diferido quedó programado (sin registro si va bien; si falla deja `<destino>.removal-failed.log` junto al destino). Si no se puede programar, el `status` es `uninstalled` con `reason` `program_dir_kept` y salida 22.
 
 El detalle completo —los pasos de `self install` y de `self update` con traspaso y borrado diferido, el bundle y su manifiesto, el recibo y la integración de `PATH`— está en [`commands/SELF.md`](commands/SELF.md) y, como especificación, en [`LIFECYCLE.md`](../specs/LIFECYCLE.md#83-self-install).
 
@@ -676,7 +677,7 @@ El detalle completo —los pasos de `self install` y de `self update` con traspa
 | `--voices` | Las voces que puede borrar y, **con ellas, solo los namespaces de habla sintética de esas voces** (arrastre `speech/<voz>` excepto `default`) |
 | `--synthetic-speech` | La raíz `speech/` entera, `default` incluida |
 | `--model` | En la raíz de modelos **exclusiva** de la aplicación, la **raíz entera** (snapshots, locks y `xet` cuelgan de ella). En la raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME`, solo los repos fijados (`MODEL_REVISIONS`) y sus locks; **`xet` y el `.locks` completo nunca se borran** (regla R3) |
-| `--all` | Unión de las tres categorías **más** configuración (`config.json`), logs y el estado de ejecución del daemon (`daemon.pid` y `daemon.ready`) (**sin programa ni PATH**) |
+| `--all` | Unión de las tres categorías **más** configuración (`config.json`), logs, el estado de ejecución del daemon (`daemon.pid` y `daemon.ready`) y la hoja de temporales (`scratch`), con la poda de los contenedores que queden vacíos (**sin programa ni PATH**) |
 | `--dry-run` | Plan puro (exit 0): lista sin borrar, sin tomar el bloqueo y sin pedir confirmación; con `--json` emite `status: "planned"` con `removed` y su recibo `planned`, sin `dry_run` |
 | `--yes` / `-y` | Omite la confirmación interactiva (`s/si/sí/y/yes/dale/ok`); con `--dry-run` es no-op |
 

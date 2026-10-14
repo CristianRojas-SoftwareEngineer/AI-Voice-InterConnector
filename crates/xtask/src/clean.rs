@@ -616,7 +616,9 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
         Layer::All if prune => "App y después poda fina (app + --prune)",
         Layer::All => "Ambas capas (app y después repo)",
     };
-    println!("{title}:");
+    if layer != Layer::None {
+        println!("{title}:");
+    }
     if layer.wants_repo() {
         if repo_paths.is_empty() {
             println!("  (nada en el repo)");

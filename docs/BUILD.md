@@ -525,8 +525,10 @@ fallback de `hf-hub`, que en Windows sin `HOME` caería en `<unidad>:\tmp`):
 **exclusiva de la aplicación** —la columna de modelos de la tabla siguiente—, y solo la
 sustituye por la del usuario cuando este define `HF_HUB_CACHE` o, en su defecto,
 `HF_HOME/hub`, que es lo que resuelve `shared_hf_root()`
-(`crates/avi-shared/src/paths.rs`). `AVI_CACHE_DIR` tiene precedencia sobre ambas, y es
-lo que permite aislar una prueba aunque el entorno tenga un `HF_HOME` global. El cliente de
+(`crates/avi-shared/src/paths.rs`). `AVI_CACHE_DIR` designa el contenedor exclusivo de caché (modelos en
+`$AVI_CACHE_DIR/models`, scratch en `$AVI_CACHE_DIR/tmp`) y tiene precedencia
+sobre ambas, lo que permite aislar una prueba aunque el entorno tenga un
+`HF_HOME` global. El cliente de
 descarga se construye con `.cache_dir()` explícito, garantizando convergencia
 lectura=escritura.
 La provisión se decide solo por presencia del snapshot HF; no hay índice

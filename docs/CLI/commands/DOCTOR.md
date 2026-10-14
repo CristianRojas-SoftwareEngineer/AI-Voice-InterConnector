@@ -16,7 +16,7 @@ Emite un **veredicto** —texto o JSON— y termina con exit code **1** si algú
 ai-voice-interconnector doctor [--repair] [--json]
 ```
 
-`Doctor` admite un solo flag propio, `--repair`: recoge los restos pendientes (aparcados, stagings y temporales, solo lo que el barrido recoge) tomando el bloqueo, y vuelve a evaluar el informe sobre lo que quedó. Sin flags no admite subcomandos. Hereda el flag global `--json`. `doctor` no declara `--daemon` ni `--no-daemon` (el parser los rechaza como argumento desconocido) porque nunca dialoga con el daemon.
+`Doctor` admite un solo flag propio, `--repair`: ejecuta la recuperación tomando el bloqueo (completa o revierte la transacción pendiente y barre los residuos de dueño muerto: aparcados, stagings, scratch, temporales y registros de borrado resueltos) y vuelve a evaluar el informe sobre lo que quedó. Lo que la recuperación conserva a propósito —residuos de dueño no observable y borrados diferidos sin completar— sigue en `pending` tras `--repair` y mantiene fallando `pending_artifacts` hasta que se resuelva por otra vía. Sin flags no admite subcomandos. Hereda el flag global `--json`. `doctor` no declara `--daemon` ni `--no-daemon` (el parser los rechaza como argumento desconocido) porque nunca dialoga con el daemon.
 
 ---
 
@@ -29,7 +29,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `channel` | `script`, `homebrew` o `unmanaged` |
 | `install` | `dir` (directorio de programa), `data_dir` (raíz de datos efectiva), `receipt` (`valid`/`absent`/`invalid`) y `version` (la del recibo, si lo hay) |
 | `path` | `resolves_to_this_install`, `duplicate_entries`, `integration` (`present`/`absent`/`not_modified`) y `coexisting` (instalaciones ajenas, con su canal y cuál tiene precedencia) |
-| `pending` | `transaction_journal`, `parked`, `stagings`, `temporaries`, `temporaries_kept` y `unreadable` (directorios del barrido que existen y no se pueden listar; hacen fallar `pending_artifacts` y en texto salen una línea por ruta) |
+| `pending` | `transaction_journal` (booleano) y ocho listas de rutas: `parked`, `stagings`, `scratch`, `temporaries` y `failure_logs` (residuos de dueño muerto que el barrido borraría), `unknown_owner` (residuos de cualquier familia cuyo dueño no se puede observar: se conservan y se informan, sin poder afirmar que estén huérfanos), `pending_failures` (registros `*.removal-failed.log` cuyo destino sigue existiendo: el borrado diferido no se completó) y `unreadable` (directorios del barrido que existen y no se pueden listar; en texto salen una línea por ruta). Cualquier lista no vacía o el diario presente hace fallar `pending_artifacts` |
 | `models` | `root`, `shared_root`, `provisioned`, `missing` (repos de la selección sin provisionar) y `size_bytes` |
 | `checks` | Una entrada `{name, ok, detail}` por comprobación |
 | `failed` | Los `name` de las comprobaciones que fallan — **es el veredicto** |
@@ -47,7 +47,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `install_receipt` | No hay recibo en el directorio de programa, o existe pero es ilegible (el detalle nombra el fichero) | Recibo válido |
 | `path_resolves` | La **primera** entrada del `PATH` que apunta a una instalación no es la registrada | Orden de precedencia |
 | `path_duplicates` | Más de una entrada del `PATH` apunta a una instalación | Coexistencia (Cask + `script`) |
-| `pending_artifacts` | Quedan aparcados, stagings o temporales por recoger | Transacción interrumpida |
+| `pending_artifacts` | Hay diario de transacción, o alguna lista de `pending` no está vacía (residuos de dueño muerto, de dueño no observable, borrados diferidos sin completar o directorios sin poder listar) | Transacción interrumpida y residuos por identidad |
 | `models_provisioned` | Falta algún repo de la selección, el modelo Base de clonado incluido | Solo presencia de snapshot, con los ficheros críticos |
 | `onnx_runtime` | La librería de ONNX Runtime del directorio real del programa (o la de `ORT_DYLIB_PATH`) no existe o no carga; el detalle nombra la ruta buscada | Solo en binarios con STT (`native-stt`): carga la librería, sin modelos |
 
@@ -93,8 +93,11 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
     "transaction_journal": false,
     "parked": [],
     "stagings": [],
+    "scratch": [],
     "temporaries": [],
-    "temporaries_kept": [],
+    "failure_logs": [],
+    "unknown_owner": [],
+    "pending_failures": [],
     "unreadable": []
   },
   "models": {

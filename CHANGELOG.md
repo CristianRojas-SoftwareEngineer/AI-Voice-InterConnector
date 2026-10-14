@@ -114,6 +114,115 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   archivo). Quien modifique archivos cubiertos debe publicarlos bajo MPL-2.0;
   la obra mayor que los combina puede mantener su licencia propia. Ver
   `LICENSE`, `NOTICE` y `THIRD-PARTY-LICENSES.md`.
+- La propiedad de los recursos del producto se decide por identidad exacta del
+  proceso. Un token `<pid>-<inicio>` (en Linux, con el `boot_id` por delante) va
+  en el nombre de cada residuo, y un único punto de decisión lo clasifica como
+  vivo, muerto o no observable; lo no observable siempre se conserva y se
+  informa. `doctor` y la recuperación comparten esa decisión.
+- Cada proceso tiene su propio scratch en `<caché>/tmp/<token>/`, que el motor
+  TTS hijo hereda como `TMP`, `TEMP` y `TMPDIR`. El producto ya no escribe en el
+  directorio temporal del sistema, y una única salida del binario libera el
+  scratch en toda terminación.
+- Los stagings de instalación, los aparcados, los temporales de destino, los
+  stagings de voz, los enlaces temporales y los logs llevan el token de su
+  propietario en el nombre.
+- El borrado diferido de Windows ya no copia el ejecutable: lo hace el Windows
+  PowerShell del sistema, que espera por identidad y borra con reintentos. Un
+  borrado correcto no deja registro; si falla deja `<destino>.removal-failed.log`
+  junto al destino.
+- `self uninstall` y `cleanup` borran las hojas y podan de abajo arriba los
+  contenedores que quedan vacíos con `remove_dir`. Un contenedor con entradas
+  ajenas se conserva y se informa, y la raíz de modelos compartida de
+  HuggingFace nunca se poda. `cleanup --all` borra además el scratch (categoría
+  `scratch`).
+- Los instaladores de arranque (`install.sh`, `install.ps1`) descargan en su
+  propio directorio temporal y avisan con la ruta si no pueden borrarlo.
+  `self install` copia el bundle a un staging propio con token, ya con el
+  bloqueo tomado, antes del reemplazo.
+- Cargo confina `TMP`, `TEMP` y `TMPDIR` dentro de `target/`, y la CI retira
+  `target/.tmp*` y `target/golden-avi-daemon` antes de guardar la caché.
+- `cargo xtask clean` retira `target.removal-failed.log` cuando `target/` ya no
+  existe, y gana la capa `--global` (nunca incluida en `--all`): borra las
+  cachés regenerables de Cargo (`registry/{cache,src,index}` y
+  `git/{db,checkouts}`) y, en Windows, el contenido del `CacheDir` de pacman.
+  Nunca toca `CARGO_HOME/bin`, rustup, sccache ni MSYS2. Los temporales de
+  `xtask` llevan el prefijo `xtask-`.
+- `doctor`: `pending` pasa a exponer `scratch`, `failure_logs`,
+  `unknown_owner` y `pending_failures`, y deja de emitir `temporaries_kept`.
+
+### Corregido
+
+- Un PID reutilizado por otro proceso se tomaba por el dueño de un temporal
+  huérfano y lo conservaba para siempre; en Linux el instante de arranque se
+  repetía tras reiniciar el sistema. El dueño se identifica ahora por PID e
+  inicio.
+- `self uninstall` y `cleanup --all` dejaban vacíos los contenedores de la
+  aplicación (el contenedor de caché y, en Windows, el contenedor raíz).
+- Las listas de lo conservado salían hasta tres veces, y se anunciaba como
+  conservado un directorio de programa que no existía.
+- El limpiador diferido de Windows recreaba `data\logs` al escribir su log
+  después de que la desinstalación borrara los datos, y la copia del ejecutable
+  que lanzaba nunca se borraba a sí misma.
+- Un `cleanup` concurrente podía borrar el staging que un instalador de arranque
+  estaba usando a mitad de la descarga, porque lo creaba junto al programa sin
+  tomar el bloqueo.
+
+### Notas de release
+
+- **Incompatible**: `AVI_CACHE_DIR` pasa a designar el contenedor de caché y no
+  la raíz de modelos. Los modelos se leen de `$AVI_CACHE_DIR/models` (y los
+  temporales van a `$AVI_CACHE_DIR/tmp`). Quien tenía `AVI_CACHE_DIR` apuntando
+  a una raíz de modelos debe mover su contenido a `models` dentro de esa ruta,
+  o ejecutar `setup` de nuevo. El recibo registra `roots.cache_dir` como el
+  contenedor.
+- **Incompatible**: los logs se llaman `<familia>_<token>_<ms>.log`, con el token
+  `<pid>-<inicio>` en lugar del PID. Los logs con el nombre antiguo
+  (`<familia>_<pid>_<ms>.log`) ya no entran en la retención de 10 por familia;
+  `cleanup --all` los borra.
+- **Incompatible**: desaparece la familia de log `cleaner`. El borrado diferido
+  no escribe log; solo deja `<destino>.removal-failed.log` si falla.
+- **Incompatible**: el producto deja de escribir en el directorio temporal del
+  sistema (`$TMPDIR` o `/tmp`, `%TEMP%`); usa el scratch por proceso. Los
+  instaladores de arranque dejan de crear un staging junto al programa y usan su
+  propio directorio temporal.
+- **Incompatible**: los stagings de instalación y los aparcados llevan el token
+  del propietario en el nombre, y `doctor --json` cambia las claves de
+  `pending` (ver arriba).
+- Los temporales con nombre antiguo que una versión anterior dejó en el
+  directorio temporal del sistema no se barren, porque no llevan token. Eran
+  entradas cuyo nombre empieza por `avi_` o `avi-` (por ejemplo `avi_say_*.wav`,
+  `avi_tts_ref24k_*.wav`, `avi_daemon_clone_*` y, en Windows,
+  `avi-cleaner-*.exe`). Para retirarlos a mano, con el daemon detenido
+  (`ai-voice-interconnector daemon stop`), lista primero y borra solo después de
+  revisar la lista.
+
+  Windows (PowerShell):
+
+  ```powershell
+  # Lista lo que se borraría; no borra nada.
+  Get-ChildItem -LiteralPath $env:TEMP -Force |
+      Where-Object { $_.Name -match '^avi[-_]' } |
+      Select-Object Name, Length, LastWriteTime
+
+  # Tras revisar la lista, bórralo.
+  Get-ChildItem -LiteralPath $env:TEMP -Force |
+      Where-Object { $_.Name -match '^avi[-_]' } |
+      Remove-Item -Recurse -Force
+  ```
+
+  Linux y macOS (`sh`):
+
+  ```sh
+  # Lista lo que se borraría; no borra nada.
+  find "${TMPDIR:-/tmp}" -maxdepth 1 \( -name 'avi-*' -o -name 'avi_*' \) -print
+
+  # Tras revisar la lista, bórralo.
+  find "${TMPDIR:-/tmp}" -maxdepth 1 \( -name 'avi-*' -o -name 'avi_*' \) -exec rm -rf {} +
+  ```
+
+  Los stagings y aparcados sin token que quedaran junto al programa
+  (`.ai-voice-interconnector-staging-*` en el directorio padre del programa y
+  `.old-*` dentro de él) tampoco se barren; retíralos a mano si existen.
 
 ## [0.29.5] — 2026-10-13
 
