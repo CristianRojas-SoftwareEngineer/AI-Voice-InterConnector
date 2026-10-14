@@ -14,7 +14,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 |---|---|---|---|
 | `--voices` | `bool` | datos | Voces no-fábrica y, con ellas, el arrastre `speech/<voz>` excepto `default` |
 | `--synthetic-speech` | `bool` | datos | La raíz `speech/` entera, `default` incluida |
-| `--model` | `bool` | datos | La raíz de modelos: entera si es exclusiva, o solo lo atribuible si es compartida |
+| `--model` | `bool` | datos | La hoja de modelos exclusiva, entera; y, si rige una caché HF compartida, solo lo atribuible de ella |
 | `--all` | `bool` | datos | Las tres categorías **más** configuración, logs (`data/logs/`, con las familias `daemon_*` y `qwen3-tts_*`), estado del daemon y la hoja de temporales (categoría `scratch`, el directorio `tmp` del contenedor de caché entero). La retención de 10 logs por familia no es una opción de `cleanup`: se aplica sola al crear cada log |
 | `--dry-run` | `bool` | — | Lista el plan sin borrar nada y **sin tomar el bloqueo** |
 | `--yes`, `-y` | `bool` | — | Omite la confirmación interactiva |
@@ -31,11 +31,11 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 ### R1 y R3, en una frase cada una
 
 - **R1**: solo se borra dentro de raíces de propiedad exclusiva. Una ruta fuera de ellas es un error interno y nunca se borra.
-- **R3**: en la raíz de modelos **exclusiva** el borrado es de **directorio entero** (snapshots, locks y `xet` cuelgan de ella). En la raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME` solo se borran los repos fijados (`MODEL_REVISIONS`), y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de otra herramienta.
+- **R3**: la hoja de modelos **exclusiva** (`<contenedor de caché registrado>/models`) se borra siempre de **directorio entero** (snapshots, locks y `xet` cuelgan de ella), haya o no una caché compartida vigente. Si además rige una raíz **compartida** que el usuario eligió con `HF_HUB_CACHE`/`HF_HOME`, de ella solo se borran los repos fijados (`MODEL_REVISIONS`), y sus locks: nunca `xet` ni el `.locks` completo, ni un repo de otra herramienta.
 
 **R2 (el directorio de programa) no la aplica `cleanup`**: corresponde a `self uninstall` (ver [la especificación del ciclo de vida](../../specs/LIFECYCLE.md)). En el plan de `cleanup` el directorio de programa aparece como recurso **conservado**, con su motivo, porque un plan que no dice qué se queda no permite saber que los modelos de otra herramienta siguen ahí.
 
-**La exclusividad se decide por identidad de ruta, no por el valor de la variable**: la raíz registrada en el recibo era exclusiva en el momento de instalar, y que el usuario después apunte `HF_HUB_CACHE` a otro sitio no convierte la raíz registrada en compartida. Es lo que evita que un recibo viejo autorice borrar lo ajeno o, al revés, que una variable obsoleta impida borrar lo propio.
+**La exclusividad se decide por identidad de ruta, no por el valor de la variable**: la hoja `models` del contenedor registrado en el recibo es siempre exclusiva, y que el usuario después apunte `HF_HUB_CACHE` a otro sitio no la convierte en compartida; esa caché es una raíz externa adicional. Es lo que evita que un recibo viejo autorice borrar lo ajeno o, al revés, que una variable obsoleta impida borrar lo propio.
 
 **Las raíces llegan como dato, no se releen del entorno dentro del planificador**, por dos razones: leer `HF_HUB_CACHE` desde el planificador hace que dos pruebas que corren en paralelo se contaminen (el entorno del proceso es global), y el plan tiene que ser una función de sus entradas —si dependiera del entorno, `--dry-run` podría anunciar un borrado distinto del que la ejecución hace un instante después—.
 

@@ -56,7 +56,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 | **Canal** | Vía por la que se instaló la copia: `script`, `homebrew` o `unmanaged` ([§7.2](#72-canales)). |
 | **Estado de la aplicación** | Todo lo que la aplicación crea en el perfil del usuario fuera del directorio de programa: modelos, voces de usuario, habla sintetizada, configuración, `daemon.pid`, logs y temporales. |
 | **Staging** | Directorio de trabajo, hermano del directorio de programa y con el token de su propietario en el nombre, donde `self update` descarga, verifica y extrae un bundle y desde el que `self install` reemplaza el programa. |
-| **Aparcar** | Renombrar un archivo instalado a un subdirectorio `.old-<txid>` en lugar de borrarlo, para poder revertir o para sortear un archivo en uso. |
+| **Aparcar** | Renombrar un archivo instalado a un subdirectorio `.old-<token>-<único>` en lugar de borrarlo, para poder revertir o para sortear un archivo en uso. |
 | **Operación de ciclo de vida** | `self install`, `self update`, `self uninstall`, `cleanup` y las tareas equivalentes de `xtask`. |
 
 ## 3. Targets soportados
@@ -106,7 +106,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 - **A. Estado actual.** Funciona en el caso feliz, pero incumple C1, C3 y C5: el mismo flujo de instalación, actualización y desinstalación está duplicado en tres lenguajes, con divergencias no intencionadas; las rutas de instalación y de estado están replicadas a mano y exigen tests de paridad para no desincronizarse; la actualización solo funciona desde una copia del repositorio, ejecuta la copia local del instalador y reinstala aunque ya se tenga la última versión; ninguna vía detiene el daemon antes de reemplazar el programa, de modo que en Windows un ejecutable en uso aborta la instalación con el directorio a medio borrar; en Windows, reescribir el PATH de usuario aplana las entradas `%VAR%`, e `irm | iex` deja preferencias y funciones del instalador en la sesión del usuario; la confirmación es inconsistente, porque `xtask clean` exige `--yes` cuando no hay terminal y los comandos de desinstalación y limpieza del producto no; y conviven cinco piezas de ciclo de vida en la raíz del repositorio, tres frameworks de test y siete documentos que describen partes solapadas del mismo ciclo.
 - **B. Scripts unificados por familia de shell** (un `install.sh` para Linux y macOS y un `install.ps1` con instalar, actualizar y desinstalar). Reduce de cinco a dos archivos, pero la lógica sigue en dos lenguajes y duplica lo que el binario ya hace en Rust (parada del daemon, rutas, PATH en el registro). Hereda además las limitaciones de `irm | iex` (no admite parámetros y comparte ámbito con la sesión) y un testeo débil.
-- **C. Binario autogestionado + bootstrap mínimo** (patrón de `rustup` y `uv`). El producto gestiona su propio ciclo de vida con subcomandos `self`. Para la primera instalación basta un bootstrap por familia de shell, que no puede eliminarse porque en ese momento el binario todavía no existe en la máquina. El conocimiento necesario ya vive en el binario: rutas (`avi-store`), parada unificada del daemon, acceso al registro de Windows y difusión de `WM_SETTINGCHANGE`, y un stack TLS (rustls) por la descarga de modelos. Además, la lógica que instala una versión es la de esa misma versión, así que las correcciones del instalador se aplican en cuanto se publican.
+- **C. Binario autogestionado + bootstrap mínimo** (patrón de `rustup` y `uv`). El producto gestiona su propio ciclo de vida con subcomandos `self`. Para la primera instalación basta un bootstrap por familia de shell, que no puede eliminarse porque en ese momento el binario todavía no existe en la máquina. El conocimiento necesario ya vive en el binario: rutas (`avi-shared`), parada unificada del daemon, acceso al registro de Windows y difusión de `WM_SETTINGCHANGE`, y un stack TLS (rustls) por la descarga de modelos. Además, la lógica que instala una versión es la de esa misma versión, así que las correcciones del instalador se aplican en cuanto se publican.
 - **D. Instalador o gestor separado** (estilo `rustup-init`). Añade un segundo ejecutable sin firmar por target, lo que duplica el problema de reputación ante SmartScreen y Defender, exige sincronizar versiones entre instalador y aplicación, y no aporta nada que el binario del producto no pueda hacer.
 - **E. `cargo-dist` (con `axoupdater`).** Genera instaladores, recibos y un actualizador, pero asume GitHub Actions como CI, y el pipeline de CircleCI tiene puertas, `sccache`, build del motor con MSYS2 y bundle de ONNX Runtime. Su modelo está orientado a binarios sueltos en un directorio `bin`, así que el bundle multiarchivo y los ganchos propios (parar el daemon, `setup`) quedarían fuera o requerirían personalización. Su actualizador reejecuta el instalador generado, con lo que la lógica vuelve a los scripts. Se adoptan sus ideas (recibo, URLs `releases/latest/download`, `irm | iex` sobre assets del release), no la herramienta.
 - **F. Gestores de paquetes nativos como vía principal.** Son complementarios, no sustitutos: exigen prerrequisitos (Homebrew, Scoop) que la audiencia sin toolchain no tiene y multiplican el mantenimiento (un manifiesto y una publicación por gestor). Se conserva el Cask; futuros canales entrarían como gestionados externamente.
@@ -168,10 +168,10 @@ packaging/bootstrap/install.{sh,ps1}                  doctor · bootstrap · bui
                                    cleanup · setup · doctor
                                         │
                                         ▼
-                            crates/avi-lifecycle ──► crates/avi-store (rutas canónicas)
+                            crates/avi-lifecycle ──► crates/avi-shared (rutas canónicas)
 ```
 
-- **`crates/avi-lifecycle`** concentra el motor: detección de target, resolución y descarga de releases, verificación SHA-256, extracción, reemplazo transaccional, integración de PATH por SO, recibo, bloqueo, recuperación, plan de desinstalación y de limpieza. La lógica de `uninstall` y `cleanup` que hoy vive en el binario principal se traslada aquí.
+- **`crates/avi-lifecycle`** concentra el motor: detección de target, resolución y descarga de releases, verificación SHA-256, extracción, reemplazo transaccional, integración de PATH por SO, recibo, bloqueo, recuperación, plan de desinstalación y de limpieza. La lógica de `uninstall` y `cleanup` vive aquí; el binario principal solo cablea los subcomandos.
 - **`crates/avi-shared`** es la fuente única de rutas; `avi-store`, `avi-lifecycle`, `avi-daemon`, `avi-tts` y la CLI la consumen directamente, sin reexportaciones intermedias.
 - **`crates/xtask`** delega en el binario del producto por invocación de proceso. Así no arrastra dependencias de red ni TLS (el tiempo de compilación de `xtask` precede a toda tarea de desarrollo) y no replica rutas.
 
@@ -274,13 +274,13 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 - **R1.** Las operaciones destructivas solo actúan dentro de raíces de propiedad exclusiva. Una ruta fuera de ellas es un error interno y nunca se borra.
 - **R2.** El directorio de programa solo se borra si contiene el recibo o el ejecutable de la aplicación. Nunca se borra `$HOME`, la raíz de una unidad ni un directorio del sistema, aunque una variable de reubicación o un recibo manipulado apunten allí.
 - **R3.** En una raíz compartida solo se borran entradas atribuibles a la aplicación (los repos fijados, `models--<org>--<nombre>`, y sus bloqueos). Nunca se borran subdirectorios globales de la caché (`xet`, `.locks` completo).
-- **R4.** Todo recurso nuevo que la aplicación empiece a crear se añade a esta tabla, al árbol de propiedad y a los planes de limpieza y desinstalación en el mismo cambio. Los temporales se crean solo en el scratch del proceso; el producto no escribe en el directorio temporal del sistema.
+- **R4.** Todo recurso nuevo que la aplicación empiece a crear se añade a esta tabla, al árbol de propiedad y a los planes de limpieza y desinstalación en el mismo cambio. Los temporales de trabajo se crean en el scratch del proceso. Tres familias van junto a su destino porque el renombrado final exige el mismo volumen: los temporales de reemplazo atómico y los enlaces temporales (`<destino>.<token>.tmp`), los stagings de voz (junto al almacén de voces) y los stagings de instalación (junto al directorio de programa). El binario no escribe en el directorio temporal del sistema; solo lo hacen los bootstraps, que se ejecutan antes de que el binario exista.
 
 **Árbol de propiedad.** Las raíces de propiedad exclusiva forman un árbol declarado una sola vez en `avi-shared`, con tres papeles de nodo:
 
 - **Contenedor**: directorio de la aplicación que solo alberga nodos suyos (el contenedor raíz en Windows y el contenedor de caché).
 - **Hoja**: directorio cuyo contenido es todo de la aplicación (datos, modelos, temporales).
-- **Externo**: ubicación que elige y posee el usuario, la caché HF compartida.
+- **Externo**: ubicación que elige y posee el usuario, la caché HF compartida. Es un nodo adicional: la hoja `models` del contenedor de caché registrado es siempre una hoja, aunque el usuario fije la caché compartida después de instalar.
 
 `self uninstall` y `cleanup` borran las hojas seleccionadas y después podan de abajo arriba los contenedores que quedaron vacíos, con `remove_dir` (nunca recursivo). Un contenedor con cualquier entrada ajena se conserva intacto y se informa una vez, y la poda de esa rama se detiene ahí. Un nodo externo no se borra entero ni se poda nunca (regla R3). Los avisos de lo que se conserva (`preserved`) solo incluyen rutas que existen.
 
@@ -450,8 +450,8 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 
 1. **Detectar el target** según [§3](#3-targets-soportados). Si no está soportado → `unsupported_platform`, antes de descargar nada.
 2. **Unix: rechazar `sudo`** ([§8.1](#81-reglas-transversales), privilegios).
-3. **Resolver la versión**, por este orden: opción o variable, versión estampada, y (solo si el script se ejecuta sin estampar, desde el repositorio) la última estable, obtenida siguiendo la redirección de `https://github.com/<repo>/releases/latest`. No se usa la API REST de GitHub, así que no hay límite de peticiones ni hace falta parsear JSON. La versión resuelta debe ser exactamente `X.Y.Z` (solo dígitos y puntos, tres componentes); si no → `usage_error` (código 2), antes de descargar nada.
-4. **Crear un directorio temporal propio** bajo el directorio temporal del sistema (`$TMPDIR` o `/tmp` en Unix; `%TEMP%` en Windows), con permisos solo del usuario. El bootstrap no crea nada junto al programa: el staging junto al programa lo crea después `self install`, con el bloqueo tomado.
+3. **Resolver la versión**, por este orden: opción o variable, versión estampada, y (solo si el script se ejecuta sin estampar, desde el repositorio) la última estable, obtenida siguiendo la redirección de `https://github.com/<repo>/releases/latest`. Solo si esa redirección no entrega una etiqueta utilizable, el bootstrap consulta como respaldo `https://api.github.com/repos/<repo>/releases/latest` y extrae únicamente `tag_name`. El respaldo obtiene el mismo valor por otra vía y no degrada nada en silencio: si tampoco resuelve → `network_error`, antes de descargar nada. La versión resuelta debe ser exactamente `X.Y.Z` (solo dígitos y puntos, tres componentes); si no → `usage_error` (código 2), antes de descargar nada.
+4. **Crear un directorio temporal propio** bajo el directorio temporal del sistema (`$TMPDIR` o `/tmp` en Unix; `%TEMP%` en Windows), con permisos solo del usuario. Si no se pueden restringir los permisos (`chmod` en Unix; la ACL en Windows) el bootstrap falla cerrado antes de descargar nada: borra el temporal ya creado y termina con error (`permission_error` en Windows). El bootstrap no crea nada junto al programa: el staging junto al programa lo crea después `self install`, con el bloqueo tomado.
 5. **Descargar** el archivo del target y `SHA256SUMS.txt` por HTTPS.
 6. **Verificar**: localizar en `SHA256SUMS.txt` la línea cuyo nombre coincide exactamente con el del archivo (comparación de cadenas, no expresión regular) y comparar el hash en minúsculas. Si el hash no coincide o falta la línea → `checksum_mismatch` y se borra el directorio temporal.
 7. **Extraer** en el directorio temporal.
@@ -505,10 +505,10 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
    Instalar una versión menor que la instalada es una degradación y se confirma como operación destructiva.
 5. **Parar el daemon** si está activo, incluido el proceso residente del motor, con el protocolo estable entre versiones (`daemon.pid` + `POST /shutdown` + árbol de procesos). Si no se detiene → `daemon_stop_failed`, sin modificar nada.
 6. **Reemplazo transaccional**, con el mismo algoritmo en los cuatro targets. Parte siempre de un staging propio, hermano del directorio de programa y con el token de este proceso en el nombre: si el bundle ya está en un staging con el token de este mismo proceso, se usa tal cual; en cualquier otro caso (descarga del bootstrap, staging de `self update`, extracción manual) `self install` lo copia, con el bloqueo ya tomado, a un staging nuevo `.ai-voice-interconnector-staging-<token>-self-install` y lo borra al terminar, con aviso si no puede.
-   1. **Aparcar** el contenido actual del directorio de programa en `<programa>/.old-<txid>/` por renombrado, registrándolo en el diario. En Windows, renombrar un ejecutable en uso está permitido; borrarlo no.
+   1. **Aparcar** el contenido actual del directorio de programa en `<programa>/.old-<token>-<único>/` por renombrado, registrándolo en el diario. En Windows, renombrar un ejecutable en uso está permitido; borrarlo no.
    2. **Colocar** el bundle nuevo. Los archivos se mueven desde el staging (renombrado en el mismo volumen), salvo el ejecutable que está corriendo, que se copia.
    3. **Ajustar permisos**: en Unix, 0755 para ejecutables y 0644 para el resto.
-   4. **Confirmar**: marcar el diario como confirmado y borrar `.old-<txid>/`. Lo que no se pueda borrar por estar en uso queda para borrado diferido ([§8.4](#84-self-update)).
+   4. **Confirmar**: marcar el diario como confirmado y borrar `.old-<token>-<único>/`. Lo que no se pueda borrar por estar en uso queda para borrado diferido ([§8.4](#84-self-update)).
    5. **Revertir** si falla el paso 2 o el 3: retirar lo colocado, restaurar lo aparcado, borrar el diario → `rolled_back`.
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en todo el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. Si el archivo se descargó por navegador y se extrajo con el Finder, todos los archivos heredan la cuarentena.
 8. **Integración de PATH** ([§8.3.1](#831-integración-de-path)).
@@ -609,7 +609,7 @@ ai-voice-interconnector cleanup (--model | --voices | --synthetic-speech | --all
 
 | Flag | Borra | Nunca borra |
 |---|---|---|
-| `--model` | Modelos provisionados: todas las revisiones de los repos propios. Con la caché exclusiva de la aplicación, el directorio se borra entero | Modelos de otras herramientas en una caché compartida, si el usuario eligió `HF_HUB_CACHE` o `HF_HOME` (regla R3) |
+| `--model` | Modelos provisionados: todas las revisiones de los repos propios. La hoja exclusiva de la aplicación se borra entera siempre; de la caché compartida vigente, si la hay, solo los repos fijados | Modelos de otras herramientas en una caché compartida, si el usuario eligió `HF_HUB_CACHE` o `HF_HOME` (regla R3) |
 | `--voices` | Voces de usuario (clonadas o importadas) y su registro | Voces de fábrica (van embebidas en el binario) |
 | `--synthetic-speech` | Audio sintetizado guardado | — |
 | `--all` | Todo lo anterior, más configuración, logs, `daemon.pid` y la hoja de temporales (`scratch`) | Programa e integración de PATH (eso es `self uninstall`) |
@@ -858,7 +858,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 
 **Organización**
 
-28. La raíz del repositorio no contiene scripts de ciclo de vida, y ninguna ruta de instalación o de estado se define fuera de `avi-shared` —la fuente única, reexportada por `avi-store` para conservar la API de los llamadores—. La fuente se movió a `avi-shared`, donde las rutas son datos que también consume `xtask` sin red ni TLS; el listón no baja por el cambio de crate, porque la exigencia sigue siendo **una sola definición de rutas**, y la unicidad ahora se comprueba en el sitio donde vive la definición.
+28. La raíz del repositorio no contiene scripts de ciclo de vida, y ninguna ruta de instalación o de estado se define fuera de `avi-shared` —la fuente única, que los crates consumen directamente—. La fuente se movió a `avi-shared`, donde las rutas son datos que también consume `xtask` sin red ni TLS; el listón no baja por el cambio de crate, porque la exigencia sigue siendo **una sola definición de rutas**, y la unicidad ahora se comprueba en el sitio donde vive la definición.
 
 ## 15. Decisiones cerradas
 

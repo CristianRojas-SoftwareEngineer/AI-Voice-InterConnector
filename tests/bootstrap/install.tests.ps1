@@ -29,7 +29,9 @@ BeforeAll {
 
     function Get-TestEnvBase {
         param($TestDir)
-        $programDir = Join-Path $TestDir "install"
+        # El directorio de programa y su padre no existen: el arnes no los crea, para
+        # poder afirmar que el bootstrap tampoco lo hace antes de delegar.
+        $programDir = Join-Path $TestDir "programs\install"
         # Temporal del usuario acotado a la prueba: ahi vive el staging del bootstrap.
         $tempDir = Join-Path $TestDir "temp"
         New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
@@ -57,7 +59,7 @@ BeforeAll {
     function Assert-NoStagingLeft {
         param($TestDir)
         # Ni staging junto al programa ni el temporal del bootstrap.
-        $left = Get-ChildItem -Path $TestDir -Filter ".ai-voice-interconnector-staging-*"
+        $left = Get-ChildItem -Path $TestDir -Filter ".ai-voice-interconnector-staging-*" -Recurse -Force
         $left | Should -BeNullOrEmpty
         $tempLeft = Get-ChildItem -Path (Join-Path $TestDir "temp") -Filter "ai-voice-interconnector-install-*"
         $tempLeft | Should -BeNullOrEmpty
@@ -75,7 +77,7 @@ Describe "bootstrap de Windows" {
         New-Item -ItemType Directory -Force -Path $script:TestDir | Out-Null
         $serveDir = Join-Path $script:TestDir "serve"
         New-Item -ItemType Directory -Force -Path $serveDir | Out-Null
-        foreach ($d in @("install", "bin", "data", "cache")) {
+        foreach ($d in @("bin", "data", "cache")) {
             New-Item -ItemType Directory -Force -Path (Join-Path $script:TestDir $d) | Out-Null
         }
         New-HarnessAsset -Dir $serveDir -FakeExe $script:FakeExe | Out-Null
@@ -116,8 +118,31 @@ Describe "bootstrap de Windows" {
         $result.ExitCode | Should -Be 0
         # Durante `self install` el ejecutable corria dentro del temporal...
         (Get-Content -Raw $envBase.AVI_FAKE_EXE_LOG) | Should -BeLike ((Join-Path $envBase.TEMP "ai-voice-interconnector-install-*") + "*")
-        # ...y junto al programa no habia ningun staging.
-        (Get-Content -Raw $envBase.AVI_FAKE_SIBLINGS_LOG) | Should -Not -Match "ai-voice-interconnector-staging"
+        # ...y junto al programa no habia nada: el arnes no creo ni el directorio de
+        # programa ni su padre, y el bootstrap tampoco los creo antes de delegar.
+        (Get-Content -Raw $envBase.AVI_FAKE_SIBLINGS_LOG).Trim() | Should -Be "PARENT_ABSENT"
+        Assert-NoStagingLeft $script:TestDir
+    }
+
+    It "si no se pueden restringir los permisos del temporal falla con permission_error antes de descargar y lo borra" {
+        # Copia con la ACL apuntando a una ruta inexistente: Set-Acl falla.
+        $broken = Join-Path $script:TestDir "install-acl-broken.ps1"
+        $original = Get-Content -Raw $script:InstallPs1
+        $text = $original.Replace('Set-Acl -Path $staging -AclObject $acl', 'Set-Acl -Path (Join-Path $staging "no-acl-target") -AclObject $acl')
+        $text | Should -Not -BeExactly $original
+        Set-Content -Path $broken -Value $text -NoNewline
+        $envBase = Get-TestEnvBase $script:TestDir
+        $result = Invoke-ChildBootstrap -Bootstrap $broken `
+            -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
+
+        $result.ExitCode | Should -Be 1
+        # El mensaje lleva la causa concreta: en el texto del script `$_` va sin expandir.
+        # La consola parte las lineas largas, asi que se normaliza el espacio en blanco.
+        (($result.Stdout + $result.Stderr) -replace '\s+', ' ') | Should -Match ("permission_error\]: no se pudieron restringir los permisos del directorio temporal: .*no-acl-target")
+        # Nada se descargo ni se delego, y el temporal ya creado se borro.
+        [string](Get-Content -Raw $script:Server.RequestLog) | Should -Not -Match "GET /v9"
+        Test-Path $envBase.AVI_FAKE_LOG | Should -BeFalse
+        Test-Path $envBase.AVI_INSTALL_DIR | Should -BeFalse
         Assert-NoStagingLeft $script:TestDir
     }
 
@@ -199,6 +224,7 @@ Describe "bootstrap de Windows" {
     It "binario incompatible diagnostica y deja lo instalado intacto" {
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_FAKE_MODE = "noexec"
+        New-Item -ItemType Directory -Force -Path $envBase.AVI_INSTALL_DIR | Out-Null
         $sentinel = Join-Path $envBase.AVI_INSTALL_DIR "sentinel.txt"
         Set-Content -Path $sentinel -Value "instalacion previa" -NoNewline
         $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `

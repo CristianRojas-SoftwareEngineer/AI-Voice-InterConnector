@@ -34,7 +34,11 @@ printf '%s\n' "$*" >> "${AVI_FAKE_LOG:-/dev/null}"
 # Dónde corre y qué hay junto al programa en este momento (para comprobar que el
 # bootstrap no crea nada junto a él).
 printf '%s\n' "$0" > "${AVI_FAKE_EXE_LOG:-/dev/null}"
-ls -A "$(dirname "$AVI_INSTALL_DIR")" > "${AVI_FAKE_SIBLINGS_LOG:-/dev/null}" 2>/dev/null
+if [ -e "$(dirname "$AVI_INSTALL_DIR")" ]; then
+    ls -A "$(dirname "$AVI_INSTALL_DIR")" > "${AVI_FAKE_SIBLINGS_LOG:-/dev/null}" 2>/dev/null
+else
+    printf 'PARENT_ABSENT\n' > "${AVI_FAKE_SIBLINGS_LOG:-/dev/null}"
+fi
 tiene_yes=0
 for a in "$@"; do if [ "$a" = "--yes" ]; then tiene_yes=1; fi; done
 if [ "$tiene_yes" = "1" ]; then exit 0; fi
@@ -127,17 +131,29 @@ harness_stop_server() {
 }
 
 # Reubica las cuatro raíces y el registro del doble a temporales de $1.
+#
+# El directorio de programa y su padre (`$base/programs`) NO se crean: así una
+# prueba puede afirmar que el bootstrap no crea nada junto al programa antes de
+# delegar en `self install`. Las pruebas que necesitan una instalación previa la
+# crean con `harness_precreate_install`.
 harness_relocate() {
     base="$1"
-    export AVI_INSTALL_DIR="$base/install"
+    export AVI_INSTALL_DIR="$base/programs/install"
     export AVI_BIN_DIR="$base/bin"
     export AVI_DATA_DIR="$base/data"
     export AVI_CACHE_DIR="$base/cache"
     export AVI_FAKE_LOG="$base/fake.log"
     export AVI_FAKE_EXE_LOG="$base/fake-exe.log"
     export AVI_FAKE_SIBLINGS_LOG="$base/fake-siblings.log"
-    mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
+    mkdir -p "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
     : > "$AVI_FAKE_LOG"
+}
+
+# Crea el directorio de programa (y su padre) con un centinela, para las pruebas
+# que parten de una instalación previa.
+harness_precreate_install() {
+    mkdir -p "$AVI_INSTALL_DIR"
+    printf 'instalación previa' > "$AVI_INSTALL_DIR/sentinel"
 }
 
 # Sombra `uname`: $1 = máquina (`uname -m`), $2 = sistema (`uname -s`).

@@ -108,6 +108,11 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+Para evitar que un PID reutilizado confundiera recursos ajenos con residuos
+propios y que los temporales quedaran dispersos, el ciclo de vida ahora asigna
+identidad exacta a cada propietario, concentra el scratch por proceso y conserva
+los recursos cuya propiedad no puede verificar.
+
 ### Cambiado
 
 - Licencia del proyecto: de `GPL-3.0-or-later` a `MPL-2.0` (copyleft a nivel de
@@ -116,9 +121,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   `LICENSE`, `NOTICE` y `THIRD-PARTY-LICENSES.md`.
 - La propiedad de los recursos del producto se decide por identidad exacta del
   proceso. Un token `<pid>-<inicio>` (en Linux, con el `boot_id` por delante) va
-  en el nombre de cada residuo, y un único punto de decisión lo clasifica como
-  vivo, muerto o no observable; lo no observable siempre se conserva y se
-  informa. `doctor` y la recuperación comparten esa decisión.
+  en el nombre de los residuos que se barren por identidad (scratch, stagings,
+  aparcados, temporales de destino, enlaces temporales y logs), y un único punto
+  de decisión lo clasifica como vivo, muerto o no observable; lo no observable
+  siempre se conserva y se informa. `doctor` y la recuperación comparten esa
+  decisión. El diario de transacción y `<destino>.removal-failed.log` no llevan
+  token.
 - Cada proceso tiene su propio scratch en `<caché>/tmp/<token>/`, que el motor
   TTS hijo hereda como `TMP`, `TEMP` y `TMPDIR`. El producto ya no escribe en el
   directorio temporal del sistema, y una única salida del binario libera el

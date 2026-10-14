@@ -57,7 +57,7 @@ teardown() {
 # Tras la prueba no queda ningún staging junto al programa ni el temporal del
 # bootstrap en el directorio temporal.
 assert_no_staging_left() {
-    leftovers="$(find "$WORK/roots" -maxdepth 1 -name '.ai-voice-interconnector-staging-*')"
+    leftovers="$(find "$WORK/roots" -name '.ai-voice-interconnector-staging-*')"
     [ -z "$leftovers" ]
     temp_left="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -name 'ai-voice-interconnector-install.*')"
     [ -z "$temp_left" ]
@@ -218,7 +218,7 @@ assert_no_staging_left() {
 @test "binario incompatible diagnostica glibc y deja lo instalado intacto" {
     mock_uname x86_64
     export AVI_FAKE_MODE="noexec"
-    printf 'instalación previa' > "$AVI_INSTALL_DIR/sentinel"
+    harness_precreate_install
 
     run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
 
@@ -234,7 +234,7 @@ assert_no_staging_left() {
     mock_uname arm64 Darwin
     mock_sysctl 1
     export AVI_FAKE_MODE="noexec"
-    printf 'instalación previa' > "$AVI_INSTALL_DIR/sentinel"
+    harness_precreate_install
 
     run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
 
@@ -254,9 +254,33 @@ assert_no_staging_left() {
     [ "$status" -eq 0 ]
     # Durante `self install` el binario corría dentro de $TMPDIR...
     [[ "$(cat "$AVI_FAKE_EXE_LOG")" == "$TMPDIR"/ai-voice-interconnector-install.*/ai-voice-interconnector ]]
-    # ...y junto al programa no había ningún staging.
-    run ! grep -q "ai-voice-interconnector-staging" "$AVI_FAKE_SIBLINGS_LOG"
+    # ...y junto al programa no había nada: el arnés no creó ni el directorio de
+    # programa ni su padre, y el bootstrap tampoco los creó antes de delegar.
+    [ "$(cat "$AVI_FAKE_SIBLINGS_LOG")" = "PARENT_ABSENT" ]
     assert_no_staging_left
+}
+
+@test "si no se pueden restringir los permisos del temporal falla antes de descargar y lo borra" {
+    mock_uname x86_64
+    # `chmod` falla solo para el temporal del bootstrap.
+    cat > "$MOCK_BIN/chmod" <<'EOF'
+#!/bin/sh
+case "$*" in
+    *ai-voice-interconnector-install.*) exit 1 ;;
+    *) exec /bin/chmod "$@" ;;
+esac
+EOF
+    /bin/chmod +x "$MOCK_BIN/chmod"
+
+    run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
+
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no se pudieron restringir los permisos del directorio temporal"* ]]
+    # El temporal ya existía y se borra; no se descargó nada ni se delegó.
+    assert_no_staging_left
+    run ! grep -q "^FILE:" "$SERVER_LOG"
+    [ ! -s "$AVI_FAKE_LOG" ]
+    [ ! -e "$AVI_INSTALL_DIR" ]
 }
 
 @test "el temporal se borra también cuando self install falla" {

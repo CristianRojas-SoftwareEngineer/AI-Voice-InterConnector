@@ -86,7 +86,11 @@ public static class AviFakeBootstrap {
         string installDir = System.Environment.GetEnvironmentVariable("AVI_INSTALL_DIR") ?? "";
         if (!string.IsNullOrEmpty(siblingsLog) && installDir.Length > 0) {
             string parent = System.IO.Path.GetDirectoryName(installDir.TrimEnd(new char[] { '\\' }));
-            System.IO.File.WriteAllLines(siblingsLog, System.IO.Directory.GetFileSystemEntries(parent));
+            if (System.IO.Directory.Exists(parent)) {
+                System.IO.File.WriteAllLines(siblingsLog, System.IO.Directory.GetFileSystemEntries(parent));
+            } else {
+                System.IO.File.WriteAllText(siblingsLog, "PARENT_ABSENT");
+            }
         }
         // Con AVI_FAKE_LOCK_DIR deja un proceso vivo con ese directorio como
         // directorio de trabajo: Windows no deja borrar un directorio en uso.

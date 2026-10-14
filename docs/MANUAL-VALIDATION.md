@@ -367,17 +367,17 @@ referencia se prepara junto a `voices/` y se renombra de una vez. Si el motor ta
 de 10 s en morir, o queda una voz vacía, es un fallo. Limpieza posterior: `daemon stop`
 retira el `daemon.pid` y el `daemon.ready` que dejó el daemon muerto.
 
-Un clonado interrumpido deja en el directorio temporal del sistema, a lo sumo,
-el directorio `avi_daemon_clone_<pid>_<sufijo>` (con la referencia y el `.qvoice`
-parcial) y `avi_tts_ref24k_<pid>_<sufijo>.wav` (el `<pid>` es el del daemon); estos
-temporales tienen dueño y solo sobreviven si el proceso muere sin ejecutar sus
-destructores. Una pasada de
-`cleanup` los barre una vez que ese proceso ya no existe, porque su recuperación borra los
-temporales con prefijo `avi_`/`avi-` cuyo PID está muerto. Si el proceso muere durante el
-renombrado de la referencia puede quedar además un directorio
-`avi-voice-staging-<nombre>-<pid>` junto a `voices/` que ese barrido no recoge y se borra
-a mano. En macOS, un motor podría tardar en morir como mucho lo que dura un clonado si
-el daemon lanzó dos procesos a la vez (riesgo teórico, sin verificar).
+Un clonado interrumpido puede dejar en el scratch del daemon
+`<caché>/tmp/<token>/` el directorio `avi_daemon_clone_<sufijo>` (con la
+referencia y el `.qvoice` parcial) y el archivo `avi_tts_ref24k_<sufijo>.wav`.
+El siguiente proceso que crea su scratch barre los directorios hermanos cuyo
+dueño está muerto; `cleanup --all` también recoge el scratch huérfano. Los
+scratch de dueño vivo o no observable se conservan. Si el proceso muere durante
+el renombrado de la referencia, puede quedar junto a `voices/` un directorio
+`.staging-<token>-<nombre>`: la recuperación lo clasifica por identidad
+y lo borra solo si confirma que su dueño murió. En macOS, un motor podría tardar
+en morir como mucho lo que dura un clonado si el daemon lanzó dos procesos a la
+vez (riesgo teórico, sin verificar).
 
 > Nota de cobertura: algunas variantes del reclamo de puerto/PID (cierre del
 > puerto del motor residente tras la cosecha de la instancia de prueba)

@@ -150,10 +150,10 @@ main() {
     # install` copia el bundle a su propio staging. Se borra en toda salida; si el
     # borrado falla se avisa con la ruta, sin cambiar el código de salida.
     staging="$(mktemp -d "${TMPDIR:-/tmp}/ai-voice-interconnector-install.XXXXXX")" || fail "no se pudo crear el directorio temporal."
-    chmod 700 "$staging"
     trap 'remove_staging; exit 130' INT
     trap 'remove_staging; exit 143' TERM
     trap 'remove_staging' EXIT
+    chmod 700 "$staging" || fail "no se pudieron restringir los permisos del directorio temporal."
 
     base="${AVI_DOWNLOAD_BASE_URL:-https://github.com/$repo/releases/download}"
     archive="$app-$version-$asset_arch-$asset_os.tar.gz"

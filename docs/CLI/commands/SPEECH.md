@@ -228,8 +228,8 @@ El texto debe ser no vacío y de hasta 500 caracteres Unicode (exit 2
 `empty_text` / `text_too_long`, validado antes de cualquier despacho). La
 síntesis directa se acota al presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)); al vencer, exit 1
 `synthesis_timeout`. Mismas reglas de `--source-language`/`--target-language`/`--temperature` que
-`synthesize`. Escribe el WAV en un archivo temporal
-(`avi_say_<pid>.wav`) y siempre lo reproduce (`AudioService::play_wav`); a
+`synthesize`. Escribe el WAV en un archivo temporal del scratch del proceso
+(con prefijo `avi_say_`) y siempre lo reproduce (`AudioService::play_wav`); a
 diferencia de `synthesize`, no hay flag `--play` porque la reproducción es
 incondicional.
 

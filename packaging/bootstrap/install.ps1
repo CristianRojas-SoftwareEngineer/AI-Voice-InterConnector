@@ -182,21 +182,18 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
         }
         $staging = Join-Path $tempRoot ("ai-voice-interconnector-install-" + [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Path $staging -Force | Out-Null
-        # El aviso cubre solo fallos reales de ACL: la disponibilidad de los
-        # cmdlets ya se garantizo al arrancar.
-        try {
-            $acl = Get-Acl -Path $staging
-            $acl.SetAccessRuleProtection($true, $false)
-            $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-            $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
-            $acl.AddAccessRule($rule)
-            Set-Acl -Path $staging -AclObject $acl
-        } catch {
-            Write-BootstrapLog "AVISO: no se pudieron restringir los permisos del staging: $_"
-        }
-
         $code = 1
         try {
+            try {
+                $acl = Get-Acl -Path $staging -ErrorAction Stop
+                $acl.SetAccessRuleProtection($true, $false)
+                $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+                $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($identity, "FullControl", "ContainerInherit,ObjectInherit", "None", "Allow")
+                $acl.AddAccessRule($rule)
+                Set-Acl -Path $staging -AclObject $acl -ErrorAction Stop
+            } catch {
+                throw "ERROR [permission_error]: no se pudieron restringir los permisos del directorio temporal: $_"
+            }
             $base = [Environment]::GetEnvironmentVariable("AVI_DOWNLOAD_BASE_URL")
             if ([string]::IsNullOrWhiteSpace($base)) { $base = "https://github.com/$Repo/releases/download" }
             $archiveName = "$App-$version-x86_64-windows.zip"
