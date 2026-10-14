@@ -33,8 +33,11 @@ ORT_DYLIB_PATH = { value = "ort-bundle", relative = true }
 # limpiaba; ahora quedan bajo `target/`, que vacían `cargo clean` y
 # `cargo xtask clean`. La ruta es `target` y no `target/tmp` porque cargo no crea
 # `target/tmp` antes del primer proceso hijo: con `target/` en frío el enlazador
-# falla (LNK1104) al no poder escribir su temporal, mientras que `target` existe
-# siempre antes de compilar.
+# falla (LNK1104) al no poder escribir su temporal, mientras que cargo crea
+# `target` antes de compilar. Con un intermediario del compilador
+# (`RUSTC_WRAPPER`, como sccache) no basta: cargo lo invoca para consultar
+# `rustc -vV` antes de crear `target`, y el intermediario aborta si su temporal
+# no existe; en ese caso `target/` debe crearse antes del primer comando de cargo.
 TMP = { value = "target", force = true, relative = true }
 TEMP = { value = "target", force = true, relative = true }
 TMPDIR = { value = "target", force = true, relative = true }

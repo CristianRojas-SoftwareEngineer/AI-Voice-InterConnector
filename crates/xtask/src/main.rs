@@ -2248,7 +2248,7 @@ mod tests {
         let restore_keys: Vec<&str> = restore_section
             .lines()
             .map(str::trim)
-            .filter_map(|l| l.strip_prefix("- target-v5-"))
+            .filter_map(|l| l.strip_prefix("- target-v6-"))
             .collect();
         assert_eq!(
             restore_keys.len(),
@@ -2262,7 +2262,7 @@ mod tests {
         let save_key = save_section
             .lines()
             .map(str::trim)
-            .find_map(|l| l.strip_prefix("key: target-v5-"))
+            .find_map(|l| l.strip_prefix("key: target-v6-"))
             .unwrap_or("");
         assert_eq!(
             restore_keys[0], save_key,
@@ -2271,7 +2271,7 @@ mod tests {
 
         let pos_hash = restore_section.find(hash_cmd).unwrap();
         let pos_restore = restore_section
-            .find("- target-v5-")
+            .find("- target-v6-")
             .expect("cargo_restore_caches debe restaurar la caché de target/");
         let pos_touch = restore_section
             .find("touch -t 200001010000")
@@ -2498,7 +2498,7 @@ mod tests {
         let cmd_lines: Vec<&str> = cmd.lines().collect();
         let param_target = ("when".to_string(), "<< parameters.target >>".to_string());
         for marker in [
-            "- target-v5-",
+            "- target-v6-",
             "name: Fijar mtime de los parches vendorizados",
         ] {
             let i = cmd_lines
@@ -2510,7 +2510,7 @@ mod tests {
                 .rev()
                 .find(|&k| cmd_lines[k].trim().starts_with("- "))
                 .unwrap();
-            let item = if cmd_lines[item].trim().starts_with("- target-v5-") {
+            let item = if cmd_lines[item].trim().starts_with("- target-v6-") {
                 item - 2
             } else {
                 item

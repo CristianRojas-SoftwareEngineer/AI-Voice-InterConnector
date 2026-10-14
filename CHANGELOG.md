@@ -174,6 +174,12 @@ los recursos cuya propiedad no puede verificar.
 - Un `cleanup` concurrente podía borrar el staging que un instalador de arranque
   estaba usando a mitad de la descarga, porque lo creaba junto al programa sin
   tomar el bloqueo.
+- Con `target/` ausente, sccache abortaba en la primera invocación de cargo
+  porque el temporal confinado a `target` aún no existía: cargo consulta el
+  compilador a través del intermediario antes de crear `target/`. La CI crea
+  `target/` al activar sccache. Los jobs de pruebas guardan la caché de
+  `target/` solo si terminan bien, porque su clave es inmutable y un job fallido
+  la dejaba ocupada con un archivo vacío. La clave pasa a `target-v6`.
 
 ### Notas de release
 
