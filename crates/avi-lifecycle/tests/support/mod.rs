@@ -35,7 +35,7 @@
 //! **tiene precedencia** sobre `HF_HUB_CACHE` y `HF_HOME` en `avi-store`, así que el
 //! modo compartido se declara **quitando** `AVI_CACHE_DIR` y apuntando `HF_HUB_CACHE`.
 //! Un sandbox que pusiera las dos cosas estaría probando la raíz exclusiva y declararía
-//! `models_shared: true` sobre una ruta que la regla de recursos compartidos nunca
+//! `shared_models_dir` sobre una ruta que la regla de recursos compartidos nunca
 //! protege.
 //!
 //! El prefijo del directorio del sandbox es deliberadamente neutro: el barrido de

@@ -294,7 +294,7 @@ fn env_over_registered<'a>(
             scratch_root: receipt.roots.cache_dir.join("tmp"),
             bin_dir: registered.bin_dir.clone(),
             home: registered.home.clone(),
-            models_shared: registered.shared_hub.is_some(),
+            shared_models_dir: registered.shared_hub.clone(),
         },
         program_dir: channel::registered_install_dir(Some(receipt))
             .expect("el recibo declara el directorio de programa"),

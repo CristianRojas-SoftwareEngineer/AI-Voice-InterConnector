@@ -1602,7 +1602,10 @@ fn shared_resources_survive() {
         cleanup::is_shared_models_root(&sandbox.models_dir),
         "el planificador la reconoce como compartida"
     );
-    assert!(sandbox.roots().models_shared);
+    assert_eq!(
+        sandbox.roots().shared_models_dir.as_ref(),
+        Some(&sandbox.models_dir)
+    );
     assert_eq!(
         sandbox.models_dir.file_name(),
         Some(std::ffi::OsStr::new("hub")),
@@ -2358,4 +2361,122 @@ fn uninstall_plan_does_not_preserve_a_missing_program_dir() {
     );
     let preview = uninstall::simulate(&roots, None, &program_dir, &sandbox.home, &options);
     assert!(!preview.preserved.iter().any(|p| p.path == program_dir));
+}
+
+/// Una caché HF fijada después de instalar no convierte la hoja exclusiva registrada en
+/// compartida: `cleanup --model` y `self uninstall` retiran la hoja `models` entera, podan
+/// el contenedor de caché y, en la raíz compartida vigente, solo tocan los repos fijados
+/// y sus locks.
+#[test]
+fn hf_cache_set_after_install_keeps_exclusive_leaf_removable() {
+    let _guard = process_env::exclusively();
+    let runtime = runtime::runtime();
+
+    for uninstalling in [false, true] {
+        let tag = if uninstalling {
+            "late-hf-uninstall"
+        } else {
+            "late-hf-cleanup"
+        };
+        let s = Sandbox::new(tag);
+        s.seed_env();
+        s.seed_state();
+        let receipt = s.install_registered(PathIntegration::none());
+
+        // El usuario fija su caché HF después de instalar: sin `AVI_CACHE_DIR` en el
+        // entorno, que es lo que hace vigente la variable.
+        let hub = s.root.join("late-hub");
+        let (repo, rev) = MODEL_REVISIONS
+            .iter()
+            .find(|pin| pin.name == "opus-mt-es-en")
+            .map(|pin| (pin.repo.to_string(), pin.revision.to_string()))
+            .expect("el repo de traducción está fijado");
+        let our_repo = hub.join(repo::repo_dir(&repo));
+        let foreign = hub.join("models--other--tool");
+        support::write(&our_repo.join("snapshots").join(&rev).join("w.bin"), "p");
+        support::write(
+            &hub.join(".locks").join(repo::repo_dir(&repo)).join("l"),
+            "",
+        );
+        support::write(&hub.join("xet").join("shard"), "xet");
+        support::write(&foreign.join("other.safetensors"), "ajeno");
+        std::env::remove_var("AVI_CACHE_DIR");
+        std::env::set_var("HF_HUB_CACHE", &hub);
+
+        let mut roots = cleanup::Roots::from_receipt(Some(&receipt)).expect("raíces del recibo");
+        // El nombre del contenedor raíz del sandbox no es el de producción, así que no se deduce.
+        roots.app_container = Some(s.app_dir.clone());
+        let leaf = s.cache_dir.join("models");
+        assert_eq!(
+            roots.models_dir, leaf,
+            "la hoja registrada sigue siendo la exclusiva"
+        );
+        assert_eq!(roots.shared_models_dir.as_ref(), Some(&hub));
+        assert!(leaf.is_dir(), "la hoja exclusiva existe antes de operar");
+
+        if uninstalling {
+            let mut env = s.env_uninstall(Some(&receipt), Channel::Script);
+            env.roots = roots;
+            let outcome = runtime
+                .block_on(uninstall::run(
+                    &env,
+                    &uninstall::Options {
+                        assume_yes: true,
+                        ..Default::default()
+                    },
+                    &Now,
+                    &Inert,
+                ))
+                .expect("la desinstalación se ejecuta");
+            assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+            assert!(
+                !inspect::exists(&s.app_dir),
+                "los contenedores propios caen"
+            );
+        } else {
+            let outcome = runtime
+                .block_on(cleanup::run(
+                    &roots,
+                    &cleanup::Options {
+                        model: true,
+                        ..with_yes()
+                    },
+                    &Inert,
+                ))
+                .expect("`--model` se ejecuta");
+            assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+            assert!(
+                !inspect::exists(&leaf),
+                "`--model` retira la hoja exclusiva"
+            );
+            assert!(
+                inspect::exists(&s.data_dir),
+                "y no toca la hoja de datos: {tag}"
+            );
+        }
+        assert!(
+            !inspect::exists(&s.cache_dir.join("models")),
+            "la hoja exclusiva desaparece con xet y locks: {tag}"
+        );
+        assert!(
+            !inspect::exists(&our_repo),
+            "el repo fijado de la caché compartida cae"
+        );
+        assert!(
+            inspect::exists(&hub.join("xet")),
+            "`xet` compartido sobrevive"
+        );
+        assert!(
+            inspect::exists(&foreign),
+            "lo de otra herramienta sobrevive"
+        );
+        assert!(
+            inspect::exists(&hub),
+            "la raíz compartida no se borra entera"
+        );
+        assert!(
+            !inspect::exists(&s.cache_dir),
+            "el contenedor de caché queda vacío y se poda: {tag}"
+        );
+    }
 }

@@ -95,7 +95,9 @@ pub struct Roots {
     /// Contenedor raíz de la aplicación (Windows: `%LOCALAPPDATA%\ai-voice-interconnector`)
     /// cuando la raíz de datos o el contenedor de caché cuelgan de él.
     pub app_container: Option<PathBuf>,
-    /// Raíz de modelos: snapshots, locks y `xet`.
+    /// Hoja de modelos exclusiva de la aplicación, `<contenedor de caché>/models`:
+    /// snapshots, locks y `xet`. Es siempre propia, aunque el usuario fije después una
+    /// caché HF compartida: esa es [`Roots::shared_models_dir`].
     pub models_dir: PathBuf,
     /// Raíz de los scratch por proceso, para el barrido transversal.
     pub scratch_root: PathBuf,
@@ -103,8 +105,9 @@ pub struct Roots {
     pub bin_dir: PathBuf,
     /// `$HOME`, una de las rutas que el directorio de programa nunca puede ser. Vacío donde el producto no lo necesita.
     pub home: PathBuf,
-    /// `true` si la raíz de modelos es la caché HF compartida que eligió el usuario, lo
-    /// que limita el alcance de `--model` a lo atribuible a la aplicación.
+    /// Caché HF compartida que eligió el usuario (`HF_HUB_CACHE` o `HF_HOME`) y que
+    /// rige ahora, si rige. Es una raíz externa **adicional** a la hoja exclusiva: de
+    /// ella `--model` solo borra los repos fijados y sus locks.
     ///
     /// Va como **dato** y no se vuelve a leer del entorno dentro del planificador por
     /// dos razones. La primera es el aislamiento de las pruebas: leer
@@ -114,7 +117,7 @@ pub struct Roots {
     /// entradas: si el plan dependiera del entorno, `--dry-run` podría anunciar un
     /// borrado distinto del que la ejecución hace un instante después, que es
     /// exactamente el defecto que este planificador absorbe.
-    pub models_shared: bool,
+    pub shared_models_dir: Option<PathBuf>,
 }
 
 impl Roots {
@@ -129,15 +132,15 @@ impl Roots {
 
     /// Raíces del entorno con el directorio de programa ya decidido.
     fn with_program_dir(program_dir: PathBuf) -> anyhow::Result<Self> {
-        let models_dir = crate::models_cache_dir()?;
         let data_dir = crate::data_dir()?;
         let cache_container = crate::cache_container()?;
+        let models_dir = cache_container.join(crate::MODELS_SUBDIR);
         Ok(Self {
             program_dir,
             app_container: windows_app_container(&data_dir, &cache_container),
             data_dir,
             cache_container,
-            models_shared: is_shared_models_root(&models_dir),
+            shared_models_dir: current_shared_models_dir(&models_dir)?,
             models_dir,
             scratch_root: crate::scratch_root()?,
             bin_dir: crate::bin_dir()?,
@@ -167,19 +170,27 @@ impl Roots {
                 .roots
                 .cache_dir
                 .join(avi_shared::paths::SCRATCH_SUBDIR);
-            // El recibo registra el contenedor de caché: los modelos son su hoja
-            // `models`. Una raíz HF compartida vigente es externa y no cuelga del
-            // contenedor, así que se conserva la que resolvió el entorno.
-            if !roots.models_shared {
-                roots.models_dir = receipt.roots.cache_dir.join(crate::MODELS_SUBDIR);
-            }
+            // El recibo registra el contenedor de caché: los modelos exclusivos son su
+            // hoja `models`, y lo siguen siendo aunque el usuario fije después una
+            // caché HF compartida, que es una raíz externa adicional.
+            roots.models_dir = receipt.roots.cache_dir.join(crate::MODELS_SUBDIR);
+            roots.shared_models_dir = current_shared_models_dir(&roots.models_dir)?;
         }
         Ok(roots)
     }
 
+    /// Raíz de modelos que la aplicación lee ahora: la caché HF compartida si rige y,
+    /// si no, la hoja exclusiva.
+    pub fn effective_models_dir(&self) -> &Path {
+        self.shared_models_dir
+            .as_deref()
+            .unwrap_or(&self.models_dir)
+    }
+
     /// Árbol de propiedad de estas raíces, con cada padre antes que sus hijos: el
     /// contenedor raíz (si lo hay), la hoja de datos, el contenedor de caché y sus
-    /// hojas de modelos y temporales. La raíz de modelos compartida es `External`.
+    /// hojas de modelos y temporales. La hoja de modelos es siempre `Leaf`; la raíz
+    /// compartida vigente se añade como nodo `External`.
     pub fn ownership_tree(&self) -> Vec<OwnershipNode> {
         let node = |path: &PathBuf, kind| OwnershipNode {
             path: path.clone(),
@@ -191,15 +202,11 @@ impl Roots {
         }
         tree.push(node(&self.data_dir, NodeKind::Leaf));
         tree.push(node(&self.cache_container, NodeKind::Container));
-        tree.push(node(
-            &self.models_dir,
-            if self.models_shared {
-                NodeKind::External
-            } else {
-                NodeKind::Leaf
-            },
-        ));
+        tree.push(node(&self.models_dir, NodeKind::Leaf));
         tree.push(node(&self.scratch_root, NodeKind::Leaf));
+        if let Some(shared) = &self.shared_models_dir {
+            tree.push(node(shared, NodeKind::External));
+        }
         tree
     }
 
@@ -445,19 +452,21 @@ pub(crate) fn scratch_target(roots: &Roots) -> Option<Target> {
 
 /// Alcance de `--model`.
 ///
-/// **Raíz exclusiva**: un único destino, la raíz entera. Los snapshots, los locks y
-/// `xet` cuelgan de ella, así que el borrado es de directorio y no hay aritmética
-/// que acertar y no queda residuo.
+/// **Hoja exclusiva**: si existe, un destino, la hoja entera. Los snapshots, los locks
+/// y `xet` cuelgan de ella, así que el borrado es de directorio y no hay aritmética
+/// que acertar y no queda residuo. Se borra siempre, haya o no una caché compartida
+/// vigente.
 ///
-/// **Raíz compartida**: solo los repos fijados y sus locks. `xet` y
+/// **Raíz compartida vigente**: además, solo los repos fijados y sus locks. `xet` y
 /// el `.locks` completo se conservan y se anuncian como compartidos.
 fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec<Preserved>) {
-    let models = &roots.models_dir;
-    if !models.is_dir() {
-        return;
+    if roots.models_dir.is_dir() {
+        push(collected, roots.models_dir.clone(), Category::Model);
     }
-    if !roots.models_shared {
-        push(collected, models.clone(), Category::Model);
+    let Some(models) = &roots.shared_models_dir else {
+        return;
+    };
+    if !models.is_dir() {
         return;
     }
     for pin in avi_shared::paths::MODEL_REVISIONS {
@@ -591,22 +600,31 @@ pub fn path_size(path: &Path) -> u64 {
     total
 }
 
-/// `true` si la raíz de modelos es la caché HF compartida que eligió el usuario.
+/// `true` si `models_dir` es la caché HF compartida que eligió el usuario.
 ///
-/// Se decide **por identidad de ruta**, no por el valor de la variable: la raíz
+/// Se decide **por identidad de ruta**, no por el valor de la variable: la hoja
 /// registrada en el recibo era exclusiva en el momento de instalar, y que el usuario
-/// después apunte `HF_HUB_CACHE` a otro sitio no convierte el registro
-/// registrado en compartido. Es lo que evita que un recibo viejo autorice borrar lo
-/// ajeno o, al revés, que una variable obsoleta impida borrar lo propio.
-///
-/// La resuelve [`Roots::resolve`] una sola vez y el resto del motor la recibe como dato:
-/// leer el entorno dentro del planificador haría que el plan dependiera de algo que
-/// puede cambiar entre la simulación y la ejecución.
+/// después apunte `HF_HUB_CACHE` a otro sitio no la convierte en compartida. Es lo que
+/// evita que una variable obsoleta impida borrar lo propio.
 pub fn is_shared_models_root(models_dir: &Path) -> bool {
     match crate::shared_hf_root() {
         Some(shared) => crate::canonical_path_key(models_dir) == crate::canonical_path_key(&shared),
         None => false,
     }
+}
+
+/// Caché HF compartida que rige ahora, distinta de la hoja exclusiva `leaf`, o `None`
+/// si no rige ninguna. La resuelve [`Roots`] una sola vez y el resto del motor la recibe
+/// como dato: leer el entorno dentro del planificador haría que el plan dependiera de
+/// algo que puede cambiar entre la simulación y la ejecución.
+///
+/// Si la variable apunta justo a la hoja exclusiva, esa ruta es de la aplicación por
+/// definición y no se trata como externa.
+fn current_shared_models_dir(leaf: &Path) -> anyhow::Result<Option<PathBuf>> {
+    let effective = crate::models_cache_dir()?;
+    let shared = is_shared_models_root(&effective)
+        && crate::canonical_path_key(&effective) != crate::canonical_path_key(leaf);
+    Ok(shared.then_some(effective))
 }
 
 fn program_dir_exists(program_dir: &Path) -> bool {

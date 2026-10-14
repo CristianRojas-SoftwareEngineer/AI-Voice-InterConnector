@@ -373,7 +373,11 @@ fn shared_hf_cache_keeps_foreign_entries() {
     );
 
     let roots = sandbox.roots();
-    assert!(roots.models_shared, "el sandbox declara la raíz compartida");
+    assert_eq!(
+        roots.shared_models_dir.as_ref(),
+        Some(&hub),
+        "el sandbox declara la raíz compartida"
+    );
 
     let options = with_yes(CleanupOptions {
         model: true,

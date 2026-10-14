@@ -43,11 +43,11 @@ impl Sandbox {
             data_dir: self.data_dir.clone(),
             cache_container: self.cache_dir.clone(),
             app_container: Some(self.app_dir.clone()),
-            models_dir: self.models_dir.clone(),
+            models_dir: self.cache_dir.join("models"),
             scratch_root: self.scratch_root.clone(),
             bin_dir: self.bin_dir.clone(),
             home: self.home.clone(),
-            models_shared: self.shared_hub.is_some(),
+            shared_models_dir: self.shared_hub.clone(),
         }
     }
 

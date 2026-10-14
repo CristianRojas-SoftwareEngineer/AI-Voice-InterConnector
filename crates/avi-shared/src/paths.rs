@@ -417,7 +417,8 @@ fn node(path: PathBuf, kind: NodeKind) -> OwnershipNode {
 /// estándar del sistema.
 ///
 /// `AVI_DATA_DIR` mueve la hoja de datos y `AVI_CACHE_DIR` el contenedor de
-/// caché. Con una caché HF compartida la hoja de modelos es `External`. El
+/// caché. La hoja `models` es siempre `Leaf`; una caché HF compartida vigente se
+/// añade al final como nodo `External`. El
 /// directorio de programa, `Programs`, `~/.local/opt` y `~/.local/bin` nunca
 /// son nodos: el programa se modela aparte, con [`install_dir`].
 pub fn ownership_tree() -> io::Result<Vec<OwnershipNode>> {
@@ -429,11 +430,11 @@ pub fn ownership_tree() -> io::Result<Vec<OwnershipNode>> {
     }
     tree.push(node(data_dir()?, NodeKind::Leaf));
     tree.push(node(cache_container()?, NodeKind::Container));
-    tree.push(match effective_shared_root() {
-        Some(shared) => node(shared, NodeKind::External),
-        None => node(models_cache_dir()?, NodeKind::Leaf),
-    });
+    tree.push(node(cache_container()?.join(MODELS_SUBDIR), NodeKind::Leaf));
     tree.push(node(scratch_root()?, NodeKind::Leaf));
+    if let Some(shared) = effective_shared_root() {
+        tree.push(node(shared, NodeKind::External));
+    }
     Ok(tree)
 }
 
@@ -619,7 +620,7 @@ mod tests {
         assert_eq!(both[0].path, reloc);
     }
 
-    /// La raíz HF compartida es `External` y sustituye solo a la hoja de
+    /// La raíz HF compartida es `External` y se añade al árbol sin sustituir la hoja de
     /// modelos; `AVI_CACHE_DIR` manda sobre ella y la deja fuera del árbol.
     #[test]
     fn shared_hf_root_is_external() {
@@ -628,7 +629,7 @@ mod tests {
         let hub = base.join("hf").join("hub");
         std::env::set_var("HF_HUB_CACHE", &hub);
         let mut expected = default_tree(&base);
-        expected[MODELS] = node(hub.clone(), NodeKind::External);
+        expected.push(node(hub.clone(), NodeKind::External));
         assert_eq!(ownership_tree().unwrap(), expected);
         assert_eq!(models_cache_dir().unwrap(), hub);
 

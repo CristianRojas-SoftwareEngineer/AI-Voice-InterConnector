@@ -478,7 +478,14 @@ pub fn compose_plan(
                 roots.data_dir.join("speech"),
                 "`--keep-data` conserva el habla sintetizada",
             ),
-        ] {
+        ]
+        .into_iter()
+        .chain(
+            roots
+                .shared_models_dir
+                .clone()
+                .map(|shared| (shared, "`--keep-data` conserva los modelos")),
+        ) {
             if path.exists() {
                 preserved.push(Preserved { path, reason });
             }
@@ -1001,6 +1008,7 @@ pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
     for protected in [
         roots.data_dir.as_path(),
         roots.models_dir.as_path(),
+        roots.effective_models_dir(),
         roots.scratch_root.as_path(),
     ] {
         if protected.as_os_str().is_empty() {
@@ -1060,7 +1068,12 @@ fn remove_program_dir(
 
 /// `true` si hay estado de usuario que conservar o borrar.
 fn state_exists(roots: &Roots) -> bool {
-    roots.data_dir.is_dir() || roots.models_dir.is_dir()
+    roots.data_dir.is_dir()
+        || roots.models_dir.is_dir()
+        || roots
+            .shared_models_dir
+            .as_ref()
+            .is_some_and(|shared| shared.is_dir())
 }
 
 /// `true` si `key` es `ancestor` o cuelga de él, sobre claves canónicas.
@@ -1097,7 +1110,7 @@ mod program_dir_rule_tests {
             scratch_root: home.join("temp"),
             bin_dir: home.join("bin"),
             home: home.to_path_buf(),
-            models_shared: false,
+            shared_models_dir: None,
         }
     }
 

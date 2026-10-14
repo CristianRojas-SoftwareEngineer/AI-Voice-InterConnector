@@ -596,7 +596,7 @@ fn models(roots: &cleanup::Roots) -> Models {
     // del mismo árbol. Con la raíz global, un sandbox vacío informaría del
     // estado de la caché real y el reporte mentiría sobre lo que está
     // mirando.
-    let store = avi_store::ModelStore::at(roots.models_dir.clone());
+    let store = avi_store::ModelStore::at(roots.effective_models_dir().to_path_buf());
     // Todos los pines forman parte de la selección: el que no esté provisionado
     // es un faltante.
     let mut provisioned = Vec::new();
@@ -609,11 +609,11 @@ fn models(roots: &cleanup::Roots) -> Models {
         }
     }
     Models {
-        root: roots.models_dir.clone(),
-        shared_root: roots.models_shared,
+        root: roots.effective_models_dir().to_path_buf(),
+        shared_root: roots.shared_models_dir.is_some(),
         provisioned,
         missing,
-        size_bytes: cleanup::path_size(&roots.models_dir),
+        size_bytes: cleanup::path_size(roots.effective_models_dir()),
     }
 }
 
@@ -638,7 +638,7 @@ mod tests {
             scratch_root: root.join("tmp"),
             bin_dir: root.join("bin"),
             home: root.join("home/ana"),
-            models_shared: false,
+            shared_models_dir: None,
         };
         for dir in [
             &roots.program_dir,
