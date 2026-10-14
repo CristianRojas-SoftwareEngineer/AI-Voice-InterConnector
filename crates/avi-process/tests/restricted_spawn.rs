@@ -28,6 +28,58 @@ fn spawn_with_allowlist_reports_child_exit() {
     assert_eq!(status.code(), Some(3), "exit 3 debe dar código 3");
 }
 
+/// Las tres variables del temporal se sustituyen en el hijo y apuntan al
+/// directorio propio del padre, tanto con el bloque de entorno de Windows
+/// como con el entorno explícito de Unix.
+#[test]
+fn child_receives_scratch_environment() {
+    let scratch = tempfile::tempdir().expect("debe crear el scratch de prueba");
+    let mut reader = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let log_file = reader.try_clone().expect("debe clonar el registro");
+    let (program, args) = if cfg!(windows) {
+        (
+            powershell(),
+            vec![
+                String::from("-NoProfile"),
+                String::from("-Command"),
+                String::from("Write-Output \"$env:TMP|$env:TEMP|$env:TMPDIR\""),
+            ],
+        )
+    } else {
+        (
+            PathBuf::from("sh"),
+            vec![
+                String::from("-c"),
+                String::from("printf '%s|%s|%s' \"$TMP\" \"$TEMP\" \"$TMPDIR\""),
+            ],
+        )
+    };
+    let request = avi_process::RestrictedSpawnRequest {
+        program,
+        args,
+        stdin: avi_process::StdinSpec::Null,
+        stderr_file: log_file.try_clone().expect("debe clonar el registro"),
+        stdout_file: log_file,
+        creation_flags: 0,
+        extra_allowed: Vec::new(),
+    };
+    let env = [
+        ("TMP", scratch.path().as_os_str()),
+        ("TEMP", scratch.path().as_os_str()),
+        ("TMPDIR", scratch.path().as_os_str()),
+    ];
+    let mut child = avi_process::spawn_with_allowlist_env(request, &env)
+        .expect("debe lanzar al hijo con el scratch");
+    assert!(child.wait().expect("debe esperar al hijo").success());
+    reader.seek(SeekFrom::Start(0)).expect("debe rebobinar");
+    let mut text = String::new();
+    reader
+        .read_to_string(&mut text)
+        .expect("debe leer el registro");
+    let expected = scratch.path().display().to_string();
+    assert_eq!(text.trim(), format!("{expected}|{expected}|{expected}"));
+}
+
 /// El fichero de registro declarado recibe la salida del hijo: lo declarado
 /// sí se hereda y funciona.
 #[test]
