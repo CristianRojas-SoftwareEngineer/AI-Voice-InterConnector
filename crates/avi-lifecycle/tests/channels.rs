@@ -273,13 +273,13 @@ fn channels_behave_per_spec() {
 }
 
 /// `Env` de desinstalación tal como lo compone el binario en `handle_self`: el directorio
-/// de programa y las raíces de datos y modelos salen del recibo, y solo el directorio de
-/// temporales es el del sandbox.
+/// de programa y las raíces de datos y modelos salen del recibo, y solo el directorio del
+/// enlace es el del sandbox.
 ///
-/// El `temp_root` es la única diferencia con `cleanup::Roots::from_receipt`, y es
-/// deliberada: el directorio de temporales del sistema es un parámetro para que las pruebas
-/// no barren `%TEMP%` de la máquina que las ejecuta, que es el mismo motivo por el que las
-/// pruebas exigen raíces reubicadas.
+/// El `bin_dir` es la única diferencia con `cleanup::Roots::from_receipt`, y es
+/// deliberada: el recibo no lo registra y el del entorno apuntaría al de la máquina que
+/// ejecuta las pruebas, que es el mismo motivo por el que las pruebas exigen raíces
+/// reubicadas.
 fn env_over_registered<'a>(
     registered: &'a Sandbox,
     receipt: &'a receipt::InstallReceipt,
@@ -289,7 +289,8 @@ fn env_over_registered<'a>(
             program_dir: receipt.install_dir.clone(),
             data_dir: receipt.roots.data_dir.clone(),
             models_dir: receipt.roots.cache_dir.join("models"),
-            temp_root: registered.temp_root.clone(),
+            scratch_root: receipt.roots.cache_dir.join("tmp"),
+            bin_dir: registered.bin_dir.clone(),
             home: registered.home.clone(),
             models_shared: registered.shared_hub.is_some(),
         },

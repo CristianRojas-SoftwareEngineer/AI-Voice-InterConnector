@@ -18,8 +18,16 @@
 //! conserva la compilación vigente para que el siguiente build siga siendo
 //! incremental en vez de frío.
 //!
-//! La capa global compartida (`~/.cargo`, caché de sccache, paquetes del
-//! sistema, MSYS2) nunca se toca; solo se informa. Detiene
+//! La capa global (`--global`) es explícita y nunca entra en `--all`: borra
+//! solo lo que Cargo documenta como regenerable bajo `CARGO_HOME`
+//! (`registry/{cache,src,index}` y `git/{db,checkouts}`) y, en Windows, el
+//! contenido del `CacheDir` de pacman declarado en el `pacman.conf` de MSYS2.
+//! Sola, no limpia el repositorio. Nunca se toca `CARGO_HOME/bin`, rustup, la
+//! caché de sccache ni la instalación de MSYS2. El borrado diferido de
+//! `target/` puede dejar `target.removal-failed.log`: la capa repo lo retira
+//! cuando `target/` ya no existe y lo informa cuando sigue existiendo.
+//!
+//! Detiene
 //! primero los daemons lanzados desde `target/`, nunca borra código fuente
 //! versionado y aplica las reglas de confirmación (`--dry-run`, `--yes`
 //! obligatorio sin terminal). En Windows, el `xtask.exe` en ejecución se
@@ -36,15 +44,31 @@ use std::path::{Path, PathBuf};
 const APP_NAME: &str = "ai-voice-interconnector";
 
 /// Capa a limpiar: `--repo` (por defecto), `--app` o `--all` (aplicación y
-/// después repositorio).
+/// después repositorio). `None` es el caso de `--global` solo: ni repo ni app.
+/// La capa global no es una variante: se pide aparte y `All` nunca la incluye.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer {
     Repo,
     App,
     All,
+    None,
 }
 
 impl Layer {
+    /// Capa pedida por los flags. `--global` no cambia la capa salvo cuando
+    /// va solo: entonces no se limpia ni repo ni app.
+    pub fn select(repo: bool, app: bool, all: bool, global: bool) -> Self {
+        if all || (repo && app) {
+            Self::All
+        } else if app {
+            Self::App
+        } else if repo || !global {
+            Self::Repo
+        } else {
+            Self::None
+        }
+    }
+
     /// ¿Alcanza la capa del repositorio?
     pub fn wants_repo(self) -> bool {
         matches!(self, Self::Repo | Self::All)
@@ -143,8 +167,14 @@ pub(crate) fn prune_targets(root: &Path) -> Vec<PathBuf> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        // Cachés efímeras de editores y compilaciones a medias.
-        if name.starts_with("flycheck") || name == "tmp" {
+        // Cachés efímeras de editores y compilaciones a medias, y temporales
+        // confinados en `target/` (directorios `.tmp*` de `tempfile` y la raíz
+        // de las pruebas golden) que dejan las pruebas abortadas.
+        if name.starts_with("flycheck")
+            || name.starts_with(".tmp")
+            || name == "tmp"
+            || name == "golden-avi-daemon"
+        {
             out.push(path);
         // Directorio de target ajeno al host: otro triple no sirve a este
         // equipo. Los marcadores de Cargo distinguen un target real de un
@@ -415,10 +445,143 @@ fn delegate_app_layer(repo_bin: &Path, homebrew: bool, dry_run: bool) -> Result<
     Ok(())
 }
 
+/// Subdirectorios de `CARGO_HOME` que Cargo documenta como regenerables.
+/// `bin/` (herramientas instaladas) queda fuera a propósito.
+const CARGO_HOME_REGENERABLE: &[&[&str]] = &[
+    &["registry", "cache"],
+    &["registry", "src"],
+    &["registry", "index"],
+    &["git", "db"],
+    &["git", "checkouts"],
+];
+
+/// `CARGO_HOME` (variable) o `~/.cargo`.
+fn cargo_home() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("CARGO_HOME").filter(|v| !v.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
+    std::env::home_dir()
+        .map(|h| h.join(".cargo"))
+        .ok_or_else(|| anyhow::anyhow!("no se pudo resolver CARGO_HOME ni el directorio personal"))
+}
+
+/// Directorios `CacheDir` declarados en el texto de un `pacman.conf`. Las
+/// rutas estilo MSYS2 (`/var/cache/pacman/pkg/`) se anclan en `msys2_root`.
+/// Sin ninguna línea `CacheDir` vale el defecto documentado de pacman,
+/// `/var/cache/pacman/pkg/`. Pura.
+fn pacman_cache_dirs(conf: &str, msys2_root: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = conf
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "CacheDir").then_some(value.trim())
+        })
+        .filter(|v| !v.is_empty())
+        .map(|v| match v.strip_prefix('/') {
+            Some(rel) => rel
+                .split('/')
+                .filter(|c| !c.is_empty())
+                .fold(msys2_root.to_path_buf(), |acc, c| acc.join(c)),
+            None => PathBuf::from(v),
+        })
+        .collect();
+    if dirs.is_empty() {
+        dirs.push(
+            msys2_root
+                .join("var")
+                .join("cache")
+                .join("pacman")
+                .join("pkg"),
+        );
+    }
+    dirs
+}
+
+/// Rutas de la capa global: los directorios regenerables de `cargo_home` que
+/// existen y, si se da `msys2_root`, el contenido (no el directorio) de cada
+/// `CacheDir` de pacman. Falla si `msys2_root` no tiene `etc/pacman.conf`.
+fn global_targets(cargo_home: &Path, msys2_root: Option<&Path>) -> Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    for parts in CARGO_HOME_REGENERABLE {
+        let dir = parts
+            .iter()
+            .fold(cargo_home.to_path_buf(), |a, c| a.join(c));
+        push_dir(&mut out, dir);
+    }
+    if let Some(root) = msys2_root {
+        let conf_path = root.join("etc").join("pacman.conf");
+        let conf = std::fs::read_to_string(&conf_path).map_err(|e| {
+            anyhow::anyhow!(
+                "no se pudo leer {} (¿MSYS2 instalado?): {e}",
+                conf_path.display()
+            )
+        })?;
+        for dir in pacman_cache_dirs(&conf, root) {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            let mut items: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+            items.sort();
+            out.extend(items);
+        }
+    }
+    Ok(out)
+}
+
+/// Resultado de conciliar `target.removal-failed.log` con la existencia de
+/// `target/`.
+#[derive(Debug, PartialEq, Eq)]
+enum RemovalLog {
+    /// No hay registro de fallo.
+    Absent,
+    /// `target/` ya no existe: el registro sobra (retirado, o por retirar en dry-run).
+    Stale(PathBuf),
+    /// `target/` sigue existiendo: el registro se conserva e informa.
+    Active(PathBuf),
+}
+
+/// Concilia el registro que deja el borrado diferido de `target/` al fallar.
+/// Con `apply` retira el registro obsoleto; nunca borra el de un `target/`
+/// que sigue existiendo.
+fn reconcile_removal_log(root: &Path, apply: bool) -> Result<RemovalLog> {
+    let log = root.join("target.removal-failed.log");
+    if log.symlink_metadata().is_err() {
+        return Ok(RemovalLog::Absent);
+    }
+    if root.join("target").symlink_metadata().is_ok() {
+        return Ok(RemovalLog::Active(log));
+    }
+    if apply {
+        std::fs::remove_file(&log)
+            .map_err(|e| anyhow::anyhow!("no se pudo retirar {}: {e}", log.display()))?;
+    }
+    Ok(RemovalLog::Stale(log))
+}
+
+/// Concilia e informa el registro de fallo del borrado diferido; con `apply`
+/// retira el obsoleto, sin él solo anuncia lo que se haría.
+fn report_removal_log(root: &Path, apply: bool) -> Result<()> {
+    match reconcile_removal_log(root, apply)? {
+        RemovalLog::Absent => {}
+        RemovalLog::Stale(log) if apply => println!("  ✓ {} (obsoleto, retirado)", log.display()),
+        RemovalLog::Stale(log) => {
+            println!(
+                "  {} (obsoleto: target/ ya no existe; se retirará)",
+                log.display()
+            );
+        }
+        RemovalLog::Active(log) => println!(
+            "  aviso: {} indica que el borrado diferido de target/ falló; revísalo",
+            log.display()
+        ),
+    }
+    Ok(())
+}
+
 /// Punto de entrada de `xtask clean`. Con `prune`, la capa repo se limita
 /// a la poda fina y conserva la compilación vigente; el defecto (borrado
 /// total de la capa) no cambia.
-pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
+pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
     let root = std::env::current_dir()?;
     if !root.join("Cargo.toml").is_file() || !root.join("crates").join("xtask").is_dir() {
         bail!("ejecuta `cargo xtask clean` desde la raíz del repositorio");
@@ -438,8 +601,15 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
     } else {
         false
     };
+    let global_paths = if global {
+        let msys2 = cfg!(windows).then(super::doctor::msys2_root);
+        global_targets(&cargo_home()?, msys2.as_deref())?
+    } else {
+        Vec::new()
+    };
 
     let title = match layer {
+        Layer::None => "Capa global (--global)",
         Layer::Repo if prune => "Capa proyecto (poda fina --prune)",
         Layer::Repo => "Capa proyecto (repo)",
         Layer::App => "Capa app (perfil de usuario, delegada)",
@@ -457,6 +627,19 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
             println!("  {:>10}  {}", size.text(), label);
         }
         println!("Total repo: {}", total.text());
+        report_removal_log(&root, false)?;
+    }
+    if global {
+        println!("Capa global (--global):");
+        if global_paths.is_empty() {
+            println!("  (nada en la capa global)");
+        }
+        let mut total = Size::ZERO;
+        for (label, size) in summarize(&global_paths) {
+            total = total.plus(size);
+            println!("  {:>10}  {}", size.text(), label);
+        }
+        println!("Total global: {}", total.text());
     }
     if layer.wants_app() {
         println!(
@@ -469,7 +652,10 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
             if dry_run { "--dry-run" } else { "--yes" }
         );
     }
-    println!("Nunca se toca: ~/.cargo, caché de sccache, paquetes del sistema ni MSYS2.");
+    println!(
+        "Nunca se toca: CARGO_HOME/bin, rustup, la caché de sccache ni la instalación de MSYS2. \
+         Solo `--global` limpia las cachés regenerables de Cargo (registry, git) y de pacman."
+    );
     if dry_run {
         if layer.wants_app() {
             let repo_bin = repo_product_bin(&root).ok_or_else(|| {
@@ -482,7 +668,11 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
         println!("Dry-run: no se borró nada.");
         return Ok(());
     }
-    if !layer.wants_app() && repo_paths.is_empty() {
+    if !layer.wants_app() && repo_paths.is_empty() && global_paths.is_empty() {
+        // Un registro obsoleto se retira aunque no quede nada más que borrar.
+        if layer.wants_repo() {
+            report_removal_log(&root, true)?;
+        }
         println!("Nada que limpiar.");
         return Ok(());
     }
@@ -492,13 +682,19 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
             bail!("sin TTY: confirma con --yes (o revisa antes con --dry-run)");
         }
         print!(
-            "¿Borrar lo listado (capa {})? [s/N]: ",
+            "¿Borrar lo listado (capa {}{})? [s/N]: ",
             match layer {
+                Layer::None => "global",
                 Layer::Repo if prune => "poda fina",
                 Layer::Repo => "repo",
                 Layer::App => "app",
                 Layer::All if prune => "app + poda fina",
                 Layer::All => "app + repo",
+            },
+            if global && layer != Layer::None {
+                " + global"
+            } else {
+                ""
             }
         );
         std::io::stdout().flush()?;
@@ -533,7 +729,7 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
     let target_dir = root.join("target");
     let mut failed: Vec<(PathBuf, String)> = Vec::new();
     let mut deferred_target = false;
-    for p in &repo_paths {
+    for p in repo_paths.iter().chain(&global_paths) {
         if p.symlink_metadata().is_err() {
             continue;
         }
@@ -568,6 +764,10 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
         }
         bail!("limpieza incompleta");
     }
+    // Con `target/` ya borrado, el registro del fallo anterior sobra.
+    if layer.wants_repo() {
+        report_removal_log(&root, true)?;
+    }
     println!("Limpieza completa.");
     Ok(())
 }
@@ -583,6 +783,123 @@ mod tests {
         assert!(Layer::Repo.wants_repo() && !Layer::Repo.wants_app());
         assert!(!Layer::App.wants_repo() && Layer::App.wants_app());
         assert!(Layer::All.wants_repo() && Layer::All.wants_app());
+        assert!(!Layer::None.wants_repo() && !Layer::None.wants_app());
+    }
+
+    /// Selección de capa desde los flags: `--all` no implica `--global` (que
+    /// viaja aparte), y `--global` solo no limpia el repositorio.
+    #[test]
+    fn layer_selection_from_flags() {
+        assert_eq!(Layer::select(false, false, false, false), Layer::Repo);
+        assert_eq!(Layer::select(false, false, true, false), Layer::All);
+        assert_eq!(Layer::select(true, true, false, false), Layer::All);
+        assert_eq!(Layer::select(false, true, false, true), Layer::App);
+        assert_eq!(Layer::select(false, false, false, true), Layer::None);
+        assert_eq!(Layer::select(true, false, false, true), Layer::Repo);
+        assert_eq!(Layer::select(false, false, true, true), Layer::All);
+    }
+
+    /// Registro de fallo del borrado diferido: se retira si `target/` ya no
+    /// existe, se informa sin borrar si existe y no hay nada si falta.
+    #[test]
+    fn removal_log_reconciliation() {
+        let guard = tempfile::Builder::new()
+            .prefix("xtask_clean_log_")
+            .tempdir()
+            .unwrap();
+        let root = guard.path();
+        let log = root.join("target.removal-failed.log");
+        assert_eq!(
+            reconcile_removal_log(root, true).unwrap(),
+            RemovalLog::Absent
+        );
+
+        std::fs::write(&log, b"fallo").unwrap();
+        std::fs::create_dir(root.join("target")).unwrap();
+        assert_eq!(
+            reconcile_removal_log(root, true).unwrap(),
+            RemovalLog::Active(log.clone())
+        );
+        assert!(log.is_file());
+
+        std::fs::remove_dir(root.join("target")).unwrap();
+        assert_eq!(
+            reconcile_removal_log(root, false).unwrap(),
+            RemovalLog::Stale(log.clone())
+        );
+        assert!(log.is_file(), "sin apply no se borra");
+        assert_eq!(
+            reconcile_removal_log(root, true).unwrap(),
+            RemovalLog::Stale(log.clone())
+        );
+        assert!(!log.exists());
+    }
+
+    /// Lista exacta de la capa global sobre raíces falsas: los cinco
+    /// directorios regenerables de Cargo y el contenido del `CacheDir` de
+    /// pacman, sin `bin/` ni nada más.
+    #[test]
+    fn global_targets_exact_list() {
+        let guard = tempfile::Builder::new()
+            .prefix("xtask_clean_global_")
+            .tempdir()
+            .unwrap();
+        let cargo = guard.path().join("cargo");
+        for d in [
+            "registry/cache",
+            "registry/src",
+            "registry/index",
+            "git/db",
+            "git/checkouts",
+            "bin",
+        ] {
+            std::fs::create_dir_all(cargo.join(d)).unwrap();
+        }
+        let msys = guard.path().join("msys64");
+        std::fs::create_dir_all(msys.join("etc")).unwrap();
+        std::fs::create_dir_all(msys.join("custom/pkgs")).unwrap();
+        std::fs::write(msys.join("custom/pkgs/b.pkg"), b"x").unwrap();
+        std::fs::write(msys.join("custom/pkgs/a.pkg"), b"x").unwrap();
+        std::fs::write(
+            msys.join("etc/pacman.conf"),
+            "[options]\n#CacheDir = /var/cache/pacman/pkg/\nCacheDir = /custom/pkgs/\n",
+        )
+        .unwrap();
+
+        let got = global_targets(&cargo, Some(&msys)).unwrap();
+        let want = vec![
+            cargo.join("registry/cache"),
+            cargo.join("registry/src"),
+            cargo.join("registry/index"),
+            cargo.join("git/db"),
+            cargo.join("git/checkouts"),
+            msys.join("custom/pkgs/a.pkg"),
+            msys.join("custom/pkgs/b.pkg"),
+        ];
+        assert_eq!(got, want);
+
+        // Sin raíz MSYS2 (plataformas no Windows) solo entra Cargo.
+        assert_eq!(global_targets(&cargo, None).unwrap(), want[..5]);
+    }
+
+    /// En Windows, un MSYS2 sin `pacman.conf` es un error explícito, y sin
+    /// línea `CacheDir` vale el defecto documentado de pacman.
+    #[test]
+    fn global_targets_pacman_conf_rules() {
+        let guard = tempfile::Builder::new()
+            .prefix("xtask_clean_pacman_")
+            .tempdir()
+            .unwrap();
+        let err = global_targets(
+            &guard.path().join("cargo"),
+            Some(&guard.path().join("msys64")),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("pacman.conf"));
+        assert_eq!(
+            pacman_cache_dirs("[options]\n#CacheDir = /x/\n", Path::new("/m")),
+            [Path::new("/m").join("var/cache/pacman/pkg")]
+        );
     }
 
     /// La delegación usa `self uninstall --yes`, o `cleanup --all --yes` en

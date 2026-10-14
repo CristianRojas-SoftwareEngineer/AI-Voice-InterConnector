@@ -20,16 +20,16 @@ pub fn place(dest: &Path, relative: &str) -> PathBuf {
 }
 
 impl Sandbox {
-    /// Staging hermano del directorio de programa, con el prefijo de los stagings y la
-    /// etiqueta del sandbox.
+    /// Staging hermano del directorio de programa, con el token de este proceso y la
+    /// etiqueta del sandbox: lo crea un proceso vivo, como el de una descarga en curso.
     pub fn staging(&self) -> PathBuf {
+        let owner = avi_process::current_owner_token().expect("este proceso se puede observar");
         self.program_dir
             .parent()
             .expect("el directorio de programa tiene padre")
-            .join(format!(
-                "{}test-{}",
-                avi_lifecycle::STAGING_DIR_PREFIX,
-                self.tag
+            .join(avi_shared::staging_names::install_staging::name(
+                &format!("test-{}", self.tag),
+                &owner,
             ))
     }
 

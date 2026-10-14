@@ -244,23 +244,19 @@ pub const LIFECYCLE_LOCK_NAME: &str = ".ai-voice-interconnector.lock";
 pub const LIFECYCLE_GATE_NAME: &str = ".ai-voice-interconnector.gate";
 
 /// Prefijo del staging, también hermano del directorio de programa:
-/// `~/.local/opt/.ai-voice-interconnector-staging-<pid>-<ms>`.
+/// `~/.local/opt/.ai-voice-interconnector-staging-<token>-<etiqueta>`. El
+/// nombre completo lo construye `staging_names::install_staging`.
 pub const STAGING_DIR_PREFIX: &str = ".ai-voice-interconnector-staging-";
 
 /// Prefijo de los aparcados **dentro** del directorio de programa:
-/// `<programa>/.old-<timestamp>`. Vive dentro a propósito: la reversión de un
+/// `<programa>/.old-<token>-<único>`. El nombre completo lo construye
+/// `staging_names::parked`. Vive dentro a propósito: la reversión de un
 /// reemplazo tiene que poder hacerse sin mover nada fuera del programa.
 pub const PARKED_DIR_PREFIX: &str = ".old-";
 
 /// Subdirectorio de `xet` dentro de la raíz de modelos exclusiva. Lo fija
 /// `ModelStore::new()` en `HF_XET_CACHE`.
 pub const MODELS_XET_SUBDIR: &str = "xet";
-
-/// Prefijos de los temporales de ejecución de la aplicación: `$TMPDIR` en
-/// Unix y `%TEMP%` en Windows. En Windows las copias del limpiador propio
-/// (`avi-cleaner-<pid>-<ms>.exe`) caen en `avi-`, de modo
-/// que ningún otro prefijo puede sustituir a este conjunto.
-pub const TEMP_PREFIXES: &[&str] = &["avi-", "avi_"];
 
 // Las constantes de nombres y prefijos de arriba son la fuente única de los recursos que la
 // aplicación crea: todo recurso nuevo se declara aquí, en la tabla de rutas y en

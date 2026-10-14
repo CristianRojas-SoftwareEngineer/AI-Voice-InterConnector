@@ -78,7 +78,10 @@ pub struct Sandbox {
     pub models_dir: PathBuf,
     /// `Some` cuando la raíz de modelos es la caché HF compartida del usuario.
     pub shared_hub: Option<PathBuf>,
-    /// Directorio de temporales del sistema, en el papel que tendría en producción.
+    /// Raíz de los scratch por proceso: la hoja `tmp` del contenedor de caché.
+    pub scratch_root: PathBuf,
+    /// Directorio de temporales del sistema, ajeno al producto: aloja recursos de
+    /// terceros que ninguna operación puede tocar.
     pub temp_root: PathBuf,
     /// Subclave de registro propia del test. Solo existe en Windows, que es donde el
     /// `PATH` del usuario vive en el registro.
@@ -107,6 +110,7 @@ impl std::fmt::Debug for Sandbox {
             .field("cache_dir", &self.cache_dir)
             .field("models_dir", &self.models_dir)
             .field("shared_hub", &self.shared_hub)
+            .field("scratch_root", &self.scratch_root)
             .field("temp_root", &self.temp_root);
         #[cfg(windows)]
         debug.field("registry_subkey", &self.registry_subkey);
@@ -150,6 +154,7 @@ impl Sandbox {
             program_dir: opt.join(avi_lifecycle::APP_NAME),
             bin_dir: home.join(".local").join("bin"),
             data_dir: root.join("data"),
+            scratch_root: cache_dir.join("tmp"),
             cache_dir,
             models_dir,
             shared_hub,

@@ -388,6 +388,11 @@ enum Commands {
         /// viejos, sin tocar la compilación vigente (el defecto no cambia)
         #[arg(long)]
         prune: bool,
+        /// Capa global, nunca incluida en --all: cachés regenerables de Cargo
+        /// (registry y git bajo CARGO_HOME) y, en Windows, la caché de pacman
+        /// de MSYS2. Sola, no limpia el repositorio
+        #[arg(long)]
+        global: bool,
         /// Lista rutas y tamaños sin borrar nada
         #[arg(long)]
         dry_run: bool,
@@ -592,17 +597,12 @@ fn main() -> Result<()> {
             app,
             all,
             prune,
+            global,
             dry_run,
             yes,
         } => {
-            let layer = if all || (repo && app) {
-                clean::Layer::All
-            } else if app {
-                clean::Layer::App
-            } else {
-                clean::Layer::Repo
-            };
-            clean::run(layer, dry_run, yes, prune)?
+            let layer = clean::Layer::select(repo, app, all, global);
+            clean::run(layer, global, dry_run, yes, prune)?
         }
         Commands::Doctor { json } => doctor::run(json)?,
         Commands::Bootstrap {

@@ -87,8 +87,10 @@ pub struct Roots {
     pub data_dir: PathBuf,
     /// Raíz de modelos: snapshots, locks y `xet`.
     pub models_dir: PathBuf,
-    /// Directorio de temporales del sistema, para el barrido transversal.
-    pub temp_root: PathBuf,
+    /// Raíz de los scratch por proceso, para el barrido transversal.
+    pub scratch_root: PathBuf,
+    /// Directorio del enlace del comando, donde también se barren temporales.
+    pub bin_dir: PathBuf,
     /// `$HOME`, una de las rutas que el directorio de programa nunca puede ser. Vacío donde el producto no lo necesita.
     pub home: PathBuf,
     /// `true` si la raíz de modelos es la caché HF compartida que eligió el usuario, lo
@@ -123,10 +125,8 @@ impl Roots {
             data_dir: crate::data_dir()?,
             models_shared: is_shared_models_root(&models_dir),
             models_dir,
-            // Raíz del temporal del sistema, donde se barren los residuos de versiones
-            // anteriores del producto: es la lectura que el lint prohíbe para crear.
-            #[allow(clippy::disallowed_methods)]
-            temp_root: std::env::temp_dir(),
+            scratch_root: crate::scratch_root()?,
+            bin_dir: crate::bin_dir()?,
             home: std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
                 .map(PathBuf::from)
@@ -146,6 +146,11 @@ impl Roots {
         let mut roots = Self::with_program_dir(crate::channel::registered_install_dir(receipt)?)?;
         if let Some(receipt) = receipt {
             roots.data_dir = receipt.roots.data_dir.clone();
+            // Los temporales cuelgan del mismo contenedor de caché que el recibo registra.
+            roots.scratch_root = receipt
+                .roots
+                .cache_dir
+                .join(avi_shared::paths::SCRATCH_SUBDIR);
             // El recibo registra el contenedor de caché: los modelos son su hoja
             // `models`. Una raíz HF compartida vigente es externa y no cuelga del
             // contenedor, así que se conserva la que resolvió el entorno.
@@ -156,13 +161,14 @@ impl Roots {
         Ok(roots)
     }
 
-    /// `RecoveryRoots` con el staging en uso a `None`: `cleanup` no instala nada, así
-    /// que todo staging hermano es huérfano por definición.
+    /// Raíces de la recuperación: las mismas que usan `cleanup`, `self uninstall`,
+    /// `self update` y `doctor`.
     pub fn recovery_roots(&self) -> RecoveryRoots<'_> {
         RecoveryRoots {
             program_dir: &self.program_dir,
-            temp_root: &self.temp_root,
-            in_use: None,
+            scratch_root: &self.scratch_root,
+            data_dir: &self.data_dir,
+            bin_dir: &self.bin_dir,
         }
     }
 }
@@ -622,10 +628,8 @@ pub async fn run(
         removed,
         planned,
         swept: recovery
-            .removed_parked
+            .removed()
             .iter()
-            .chain(recovery.removed_stagings.iter())
-            .chain(recovery.removed_temporaries.iter())
             .map(|p| p.display().to_string())
             .collect(),
         kept: recovery
@@ -698,7 +702,7 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
             .map(|p| p.display().to_string())
             .collect(),
         kept: preview
-            .temporaries_kept
+            .undecided()
             .iter()
             .map(|p| p.display().to_string())
             .collect(),

@@ -597,33 +597,13 @@ fn run_json(args: &[&str]) -> (i32, Value) {
 // `HF_HUB_CACHE`/`HF_HOME` el caso de la caché compartida. La unicidad y el borrado
 // los da un `TempDir` con dueño: la carpeta se retira al soltarse, también ante un pánico.
 
-/// Prefijo de los sandboxes de esta puerta, y de ningún otro directorio que cree.
-///
-/// **Por qué no empieza por `avi`.** El producto reserva para la aplicación los prefijos de
-/// temporales `avi-` y `avi_`, y el barrido decide por **`starts_with`**, no por
-/// igualdad: la comparación es `name.starts_with(prefix)` contra `TEMP_PREFIXES`, que
-/// vale `&["avi-", "avi_"]`. Las dos formas "naturales" de nombrar un sandbox de
-/// pruebas **colisionan** con los dos: `avi_test_sandbox_*` empieza por `avi_`, y
-/// `avi-test-*` empieza por `avi-`. El criterio exacto es, por tanto, que el nombre **no
-/// empiece por `avi-` ni por `avi_`**, y nada más: no importa que lleve `avi` más adelante,
-/// ni que el resto del nombre no exista.
-///
-/// La consecuencia de no cumplirlos no es teórica. Un sandbox con el prefijo del producto es
-/// un temporal propio a todos los efectos, así que el barrido de `self install`, `self
-/// uninstall` o `cleanup` lo borra —`owner_pid` no encuentra un PID de tres dígitos en
-/// `test_sandbox_` y lo declara huérfano—, y si el sandbox pertenece a un test que se está
-/// ejecutando en paralelo, se lo borra por debajo. Una puerta que puede fallar por culpa
-/// del arnés no es una puerta.
-///
-/// `test_sandbox_prefix_does_not_collide_with_the_product_temporaries` afirma el invariante
-/// para que un renombrado de vuelta a `avi_` no pueda colarse sin que nadie se entere.
-const PREFIX_SANDBOX: &str = "golden-sandbox_";
-
 /// Crea un directorio sandbox único y devuelve (dueño de la carpeta, envs para el
-/// hijo). La carpeta se borra cuando el `TempDir` se suelta.
+/// hijo). La carpeta se borra cuando el `TempDir` se suelta. El aislamiento lo da
+/// `AVI_CACHE_DIR`: el producto solo escribe temporales bajo su contenedor de caché, así
+/// que ningún barrido sale del sandbox.
 fn sandbox_unique_state(tag: &str) -> (TempDir, Vec<(String, String)>) {
     let sandbox = tempfile::Builder::new()
-        .prefix(&format!("{PREFIX_SANDBOX}{tag}_"))
+        .prefix(&format!("golden-sandbox_{tag}_"))
         .tempdir()
         .expect("crear sandbox de estado");
     let dir = sandbox.path().to_path_buf();
@@ -661,73 +641,14 @@ fn sandbox_unique_state(tag: &str) -> (TempDir, Vec<(String, String)>) {
         ("HF_HUB_CACHE".to_string(), hf.to_string_lossy().to_string()),
         ("HF_HOME".to_string(), hf.to_string_lossy().to_string()),
     ];
-    // El temporal del hijo también se reubica, y no es un detalle de belt-and-braces sino
-    // la otra mitad del invariante: la tabla **no** declara variable de reubicación para
-    // el directorio de temporales, así que sin esto cualquier comando de ciclo de vida
-    // que arranque el barrido —`self install`, `self uninstall`, `cleanup`— leería el
-    // `%TEMP%` de la máquina. Con el temporal dentro del sandbox, el universo del barrido
-    // está acotado al sandbox aunque el prefijo volviera a colisionar, y las dos
-    // protections son independientes a propósito.
+    // El temporal del sistema del hijo también se reubica dentro del sandbox: las
+    // pruebas que usan archivos temporales del sistema los buscan en `child-tmp`.
     let temp = dir.join("child-tmp");
     std::fs::create_dir_all(&temp).expect("crear temporal del sandbox");
     for variable in ["TEMP", "TMP", "TMPDIR"] {
         envs.push((variable.to_string(), temp.to_string_lossy().to_string()));
     }
     (sandbox, envs)
-}
-
-/// El invariante que hace que el arnés de esta puerta no se pueda borrar a sí mismo: el
-/// prefijo de sus sandboxes no es uno de los que el producto reserva, y el temporal
-/// del hijo está dentro del sandbox.
-///
-/// Son **dos** afirmaciones y las dos importan, porque son independietes. El prefijo
-/// protege de que el barrido del `%TEMP%` de la máquina se lleve un sandbox; la
-/// reubicación del temporal protege de que el barrido del hijo se lleve el `%TEMP%` de la
-/// máquina. Con las dos, ningún barrido puede tocar el directorio de otro test ni el de la
-/// máquina, y el motivo no depende de que el prefijo siga siendo el de hoy.
-///
-/// La condición exacta es `!nombre.starts_with(prefijo_del_producto)`, y el mensaje la
-/// demuestra con las dos trampas: cambiar `avi_test_` por `avi-test-` —que parece más
-/// correcto porque lleva guion— sigue colisionando, y viceversa.
-#[test]
-fn test_sandbox_prefix_does_not_collide_with_the_product_temporaries() {
-    for product in avi_shared::paths::TEMP_PREFIXES {
-        assert!(
-            !PREFIX_SANDBOX.starts_with(product),
-            "el prefijo de los sandboxes de prueba `{PREFIX_SANDBOX}` empieza por `{product}`, \
-             que el producto reserva a la aplicación: el barrido lo borraría como si fuera un \
-             temporal nuestro"
-        );
-    }
-    // Las dos formas "naturales" colisionan, y es lo que hace que el criterio sea "no empieza
-    // por `avi-` ni por `avi_`" y no "no lleva `avi`".
-    assert!(
-        "avi_test_sandbox_x".starts_with("avi_"),
-        "precondición del criterio: `avi_test_*` empieza por `avi_` y por eso colisionaba"
-    );
-    assert!(
-        "avi-test-sandbox-x".starts_with("avi-"),
-        "precondición del criterio: `avi-test-*` empieza por `avi-` y por eso colisionaría"
-    );
-
-    // Y el temporal del hijo está dentro del sandbox, que es la otra mitad.
-    let (sandbox, envs) = sandbox_unique_state("invariantprefix");
-    let dir = sandbox.path();
-    let value = |k: &str| {
-        envs.iter()
-            .find(|(n, _)| n == k)
-            .map(|(_, v)| PathBuf::from(v))
-    };
-    for variable in ["TEMP", "TMP", "TMPDIR"] {
-        let Some(value) = value(variable) else {
-            panic!("el sandbox debe reubicar {variable} para que su barrido no salga de él");
-        };
-        assert!(
-            value.starts_with(dir),
-            "{variable} del hijo es {value:?}, que está fuera del sandbox {dir:?}: el barrido \
-             alcanzaría el temporal de la máquina"
-        );
-    }
 }
 
 // ─── Fichero ready (transporte del evento de readiness por instancia) ──
@@ -2156,7 +2077,7 @@ fn cleanup_dry_run_matches_fixture() {
 /// - En la raíz compartida que el usuario elige con `HF_HUB_CACHE`, borra el repo
 ///   propio y el derivado CT2, y conserva `xet`, el `.locks` completo y el repo de
 ///   otra herramienta.
-/// - El barrido transversal recoge un temporal propio huérfano **sin PID**.
+/// - El barrido transversal recoge el scratch huérfano de un proceso muerto.
 #[test]
 fn cleanup_model_real_run_reports_paths() {
     let sandbox_guard = tempfile::Builder::new()
@@ -2166,12 +2087,9 @@ fn cleanup_model_real_run_reports_paths() {
     let sandbox = sandbox_guard.path();
     let data = sandbox.join("data");
     std::fs::create_dir_all(&data).unwrap();
-    // El temporal del sistema se desvía al sandbox: `cleanup` barre los temporales
-    // propios y no debe tocar los de la máquina que ejecuta la prueba.
+    // El temporal del sistema se desvía al sandbox, por si algún proceso hijo lo usa.
     let tmp = sandbox.join("tmp");
     std::fs::create_dir_all(&tmp).unwrap();
-    let temp = tmp.join("avi_clone_x_1.qvoice");
-    std::fs::write(&temp, b"marker").unwrap();
 
     // ── Caso exclusivo: `AVI_CACHE_DIR` manda sobre las variables HF ──────────────
     // Las variables HF se vacían porque `models_cache_dir` da prioridad a
@@ -2180,6 +2098,13 @@ fn cleanup_model_real_run_reports_paths() {
     let exclusive = sandbox.join("models-exclusive");
     let exclusive_models = exclusive.join(avi_shared::paths::MODELS_SUBDIR);
     seed_models(&exclusive_models);
+    // Scratch de un proceso muerto (PID que el sistema no puede asignar) bajo el
+    // contenedor de caché: el barrido transversal lo recoge.
+    let temp = exclusive
+        .join(avi_shared::paths::SCRATCH_SUBDIR)
+        .join("4294967000-1");
+    std::fs::create_dir_all(&temp).unwrap();
+    std::fs::write(temp.join("clip.wav"), b"marker").unwrap();
     let install = sandbox.join("install");
     std::fs::create_dir_all(&install).unwrap();
     let exclusive_envs = [
@@ -2233,7 +2158,7 @@ fn cleanup_model_real_run_reports_paths() {
     );
     assert!(
         !temp.exists(),
-        "el barrido transversal recoge el temporal propio huérfano sin PID"
+        "el barrido transversal recoge el scratch huérfano de un proceso muerto"
     );
 
     // ── Caso compartido: `HF_HUB_CACHE` elige la raíz y solo se borran los repos propios ──
@@ -2395,10 +2320,15 @@ fn doctor_repair_collects_leftovers() {
     let dir = sandbox.path();
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let install = dir.join("install");
-    let parked = install.join(format!("{}9999", avi_lifecycle::PARKED_DIR_PREFIX));
+    // Dueño muerto: un PID que el sistema no puede asignar.
+    let dead = avi_shared::OwnerToken::new(4_294_967_000, "1").expect("token válido");
+    let parked = install.join(avi_shared::staging_names::parked::name(&dead, 9999));
     std::fs::create_dir_all(&parked).expect("crear aparcado");
     std::fs::write(parked.join("previous"), "v1").expect("rellenar aparcado");
-    let staging = dir.join(format!("{}9999", avi_lifecycle::STAGING_DIR_PREFIX));
+    let staging = dir.join(avi_shared::staging_names::install_staging::name(
+        "update-9999",
+        &dead,
+    ));
     std::fs::create_dir_all(&staging).expect("crear staging");
     std::fs::write(staging.join("downloaded"), "bundle").expect("rellenar staging");
 
@@ -2430,10 +2360,15 @@ fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
     let dir = sandbox.path();
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let install = dir.join("install");
-    let parked = install.join(format!("{}8888", avi_lifecycle::PARKED_DIR_PREFIX));
+    // Dueño muerto: un PID que el sistema no puede asignar.
+    let dead = avi_shared::OwnerToken::new(4_294_967_000, "1").expect("token válido");
+    let parked = install.join(avi_shared::staging_names::parked::name(&dead, 8888));
     std::fs::create_dir_all(&parked).expect("crear aparcado");
     std::fs::write(parked.join("previous"), "v1").expect("rellenar aparcado");
-    let staging = dir.join(format!("{}8888", avi_lifecycle::STAGING_DIR_PREFIX));
+    let staging = dir.join(avi_shared::staging_names::install_staging::name(
+        "update-8888",
+        &dead,
+    ));
     std::fs::create_dir_all(&staging).expect("crear staging");
     std::fs::write(staging.join("downloaded"), "bundle").expect("rellenar staging");
 

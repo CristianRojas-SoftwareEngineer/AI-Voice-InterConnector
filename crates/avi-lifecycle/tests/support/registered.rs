@@ -42,7 +42,8 @@ impl Sandbox {
             program_dir: self.program_dir.clone(),
             data_dir: self.data_dir.clone(),
             models_dir: self.models_dir.clone(),
-            temp_root: self.temp_root.clone(),
+            scratch_root: self.scratch_root.clone(),
+            bin_dir: self.bin_dir.clone(),
             home: self.home.clone(),
             models_shared: self.shared_hub.is_some(),
         }

@@ -413,7 +413,7 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Resul
     // Archivo descargado con dueño: se borra al salir, también si falla la
     // descarga o la extracción.
     let dest = tempfile::Builder::new()
-        .prefix(&format!("avi-ort-{ort_version}-"))
+        .prefix(&format!("xtask-ort-{ort_version}-"))
         .suffix(&format!("-{file}"))
         .tempfile()?
         .into_temp_path();
@@ -687,7 +687,7 @@ pub fn run(
     }
     // Directorio de montaje con dueño: se borra al salir por cualquier camino.
     let stage_guard = tempfile::Builder::new()
-        .prefix(&format!("avi-package-{triple}-"))
+        .prefix(&format!("xtask-package-{triple}-"))
         .tempdir()?;
     let stage = stage_guard.path().to_path_buf();
     stage_bundle(section, &sources, &root, &bundle, &stage)?;

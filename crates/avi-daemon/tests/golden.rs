@@ -46,6 +46,8 @@ use avi_daemon::{build_router_with_state, DaemonState, WarmState};
 use avi_store::{SpeechStore, VoiceStore};
 
 /// Raíz temporal única de este proceso de pruebas: `<temp>/golden-avi-daemon/<pid>`.
+/// Con la configuración de cargo, `<temp>` es el temporal confinado dentro de
+/// `target/`, que vacían `cargo clean` y `cargo xtask clean`.
 /// Los estados estáticos no ejecutan `Drop`, así que sus carpetas no pueden
 /// tener dueño; en su lugar viven bajo esta raíz y la siguiente ejecución
 /// barre las raíces de procesos que ya no existen.

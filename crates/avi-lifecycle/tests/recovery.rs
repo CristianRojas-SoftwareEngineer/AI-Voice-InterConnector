@@ -62,7 +62,7 @@ use avi_lifecycle::transaction::{Journal, JournalState, JOURNAL_SCHEMA_VERSION};
 use avi_lifecycle::uninstall;
 use inert::Inert;
 use registered::Now;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use support::Sandbox;
 
 /// Los cinco estados del diario de la transacción: el punto del flujo en el que la
@@ -126,16 +126,16 @@ fn seed_previous_version(sandbox: &Sandbox) {
 /// Se construye con la API pública de `transaction` —el diario es un dato serializable y
 /// la recuperación define su esquema— replicando el orden real del algoritmo: escribir el
 /// diario, aparcar
-/// por renombrado, y colocar moviendo desde el origen. Devuelve el `txid`, que es como
-/// se nombra el aparcado.
-fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
-    let txid = format!("t18-{slug}");
+/// por renombrado, y colocar moviendo desde el origen. Devuelve la ruta del aparcado, que
+/// lleva el token de este proceso como lo haría la operación que murió.
+fn interrupt_at(sandbox: &Sandbox, state: JournalState) -> PathBuf {
+    let owner = avi_process::current_owner_token().expect("este proceso se puede observar");
     let parked = sandbox
         .program_dir
-        .join(format!("{}{txid}", avi_lifecycle::PARKED_DIR_PREFIX));
+        .join(avi_shared::staging_names::parked::name(&owner, 18));
     let mut journal = Journal {
         schema_version: JOURNAL_SCHEMA_VERSION,
-        txid: txid.clone(),
+        txid: format!("{}-18", owner.format()),
         state: JournalState::Started,
         parked_dir: None,
         placed: Vec::new(),
@@ -151,7 +151,7 @@ fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
     // diario, igual que hace el motor.
     write_journal(&sandbox.program_dir, &journal);
     if state == JournalState::Started {
-        return txid;
+        return parked;
     }
 
     // 1. Aparcar por renombrado.
@@ -163,11 +163,11 @@ fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
         std::fs::rename(sandbox.program_dir.join(&name), parked.join(&name))
             .expect("se aparca el contenido anterior");
     }
-    journal.parked_dir = Some(parked);
+    journal.parked_dir = Some(parked.clone());
     journal.state = JournalState::Parked;
     write_journal(&sandbox.program_dir, &journal);
     if state == JournalState::Parked {
-        return txid;
+        return parked;
     }
 
     // 2. Colocar. El diario declara qué se va a colocar **antes** de colocar nada, que es
@@ -185,7 +185,7 @@ fn interrupt_at(sandbox: &Sandbox, slug: &str, state: JournalState) -> String {
         }
         std::fs::rename(&from, &dest).expect("se coloca el archivo del bundle");
     }
-    txid
+    parked
 }
 
 /// Escribe el diario como lo haría la operación: el motor usa temporal hermano y
@@ -198,32 +198,27 @@ fn write_journal(program_dir: &Path, journal: &Journal) {
     .expect("se escribe el diario");
 }
 
-/// Raíces de la recuperación con el staging **en uso**, que es lo que pasa el paso 1 de
-/// la instalación: el bundle que la operación va a instalar todavía no es huérfano aunque
-/// esté recién
-/// extraído, y barrerse a sí mismo entre el paso 1 y el paso 2 dejaría a `self install`
-/// instalando un bundle vacío.
-fn roots<'a>(sandbox: &'a Sandbox, staging: &'a Path) -> recovery::Roots<'a> {
+/// Raíces de la recuperación del sandbox. El staging de la operación lleva el token de
+/// este proceso, vivo, así que el barrido no lo toca: barrerse a sí mismo entre el paso 1 y
+/// el paso 2 dejaría a `self install` instalando un bundle vacío.
+fn roots(sandbox: &Sandbox) -> recovery::Roots<'_> {
     recovery::Roots {
         program_dir: &sandbox.program_dir,
-        temp_root: &sandbox.temp_root,
-        in_use: Some(staging),
+        scratch_root: &sandbox.scratch_root,
+        data_dir: &sandbox.data_dir,
+        bin_dir: &sandbox.bin_dir,
     }
 }
 
-/// Residuo de una operación de ciclo de vida: aparcados y temporales propios. El staging
-/// no se cuenta, porque durante una operación es suyo y no huérfano, y porque borrarlo es
-/// el paso 10 del bootstrap, que corresponde al bootstrap y no al motor.
+/// Residuo de una operación de ciclo de vida: aparcados y scratch. El staging no se
+/// cuenta, porque durante una operación es suyo y no huérfano, y porque borrarlo es el
+/// paso 10 del bootstrap, que corresponde al bootstrap y no al motor.
 fn residue(sandbox: &Sandbox) -> Vec<String> {
     let mut out: Vec<String> = listing::list(&sandbox.program_dir)
         .into_iter()
         .filter(|n| n.starts_with(avi_lifecycle::PARKED_DIR_PREFIX))
         .collect();
-    out.extend(listing::list(&sandbox.temp_root).into_iter().filter(|n| {
-        avi_lifecycle::TEMP_PREFIXES
-            .iter()
-            .any(|p| n.starts_with(p))
-    }));
+    out.extend(listing::list(&sandbox.scratch_root));
     out.sort();
     out
 }
@@ -279,10 +274,7 @@ fn interrupted_transaction_is_recovered_next_run() {
         // ── Capa 1: la recuperación resuelve el estado escrito ───────────────────
         let sandbox = Sandbox::new(&format!("recovery-{slug}"));
         sandbox.seed_env();
-        let txid = interrupt_at(&sandbox, slug, state);
-        let parked = sandbox
-            .program_dir
-            .join(format!("{}{txid}", avi_lifecycle::PARKED_DIR_PREFIX));
+        let parked = interrupt_at(&sandbox, state);
         assert!(
             avi_lifecycle::transaction::read_journal(&sandbox.program_dir)
                 .expect("se lee el diario")
@@ -308,8 +300,8 @@ fn interrupted_transaction_is_recovered_next_run() {
             );
         }
 
-        let outcome: RecoveryOutcome = recovery::recover(roots(&sandbox, &sandbox.staging()))
-            .expect("la recuperación se ejecuta");
+        let outcome: RecoveryOutcome =
+            recovery::recover(roots(&sandbox)).expect("la recuperación se ejecuta");
 
         assert_eq!(
             outcome.rolled_back, !commit,
@@ -402,7 +394,7 @@ fn interrupted_transaction_is_recovered_next_run() {
         // ── Capa 2: la operación siguiente completa la recuperación ───────────────
         let s2 = Sandbox::new(&format!("operation-{slug}"));
         s2.seed_env();
-        let _txid = interrupt_at(&s2, slug, state);
+        let _parked = interrupt_at(&s2, state);
         // El bootstrap extrae en un staging nuevo cada vez, así que el bundle se repone
         // antes de la operación. Es también lo que hace que la reversión encuentre el
         // origen ya completo y borre la copia en el programa en vez de devolver el
@@ -595,7 +587,7 @@ fn uninstall_recovers_before_it_plans() {
     let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("recover-uninstall");
     sandbox.seed_env();
-    let _txid = interrupt_at(&sandbox, "placed", JournalState::Placed);
+    let _parked = interrupt_at(&sandbox, JournalState::Placed);
     sandbox.seed_state();
 
     let runtime = runtime::runtime();
@@ -622,8 +614,8 @@ fn uninstall_recovers_before_it_plans() {
         "y no deja aparcados ni temporales propios"
     );
     assert!(
-        !inspect::exists(&sandbox.staging()),
-        "el staging, que aquí no lo usa ninguna operación en curso, también se barre"
+        inspect::exists(&sandbox.staging()),
+        "el staging lleva el token de este proceso, que sigue vivo, y no se barre"
     );
     assert!(
         !inspect::exists(&sandbox.data_dir) && !inspect::exists(&sandbox.models_dir),
@@ -631,92 +623,61 @@ fn uninstall_recovers_before_it_plans() {
     );
 }
 
-/// **El barrido es selectivo por prefijo, y por eso un sandbox de pruebas con el
-/// prefijo del producto es un temporal propio a todos los efectos.**
+/// **El barrido decide por la identidad del propietario dentro de sus raíces fijas, y por
+/// eso un sandbox ajeno al scratch nunca se toca.**
 ///
-/// Es el lado del motor del invariante que `tests/cli_golden.rs` afirma desde el lado de las
-/// pruebas. Aquí se comprueba contra el **barrido real**, con los nombres reales: un temporal
-/// propio con el prefijo de la tabla de rutas se borra, y un directorio de pruebas con un
-/// prefijo que no
-/// es del producto sobrevive, aunque esté en el mismo directorio y en el mismo instante.
-///
-/// El nombre del sandbox ajeno es el **mismo prefijo que usa `tests/cli_golden.rs`**, a
-/// propósito: si alguien renombra uno y no el otro, esta prueba sigue afirmando lo que el
-/// motor hace —que el prefijo manda— y la puerta dorada sigue afirmando que su prefijo no
-/// colisiona. Son dos afirmaciones distintas y hacen falta las dos.
-///
-/// Y el caso del que más se ha abusado como nombre "neutro": un directorio con el prefijo del
-/// producto pero **sin** racha de tres dígitos. `owner_pid` no la encuentra, así que lo
-/// declara huérfano y se borra aunque el proceso que lo creó siga vivo; por eso los
-/// sandboxes de prueba no deben llevar ese prefijo sin racha de dígitos.
+/// Se comprueba contra el **barrido real** y la identidad real de este proceso: el
+/// scratch de un propietario muerto se borra, el de este proceso sobrevive, y lo que no
+/// es de este modelo —los sandboxes de pruebas con cualquier nombre, directorios con la
+/// forma de un token fuera del scratch y los nombres antiguos con PID— no se toca.
 #[test]
-fn sweep_never_touches_a_foreign_test_sandbox() {
+fn sweep_never_touches_a_foreign_sandbox() {
     let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("sandbox-sweep");
     sandbox.seed_env();
 
-    // Los tres nombres que convivían en un `%TEMP%` real, con el mismo contenido.
-    let own_with_dead_pid = sandbox.temp_root.join("avi-orphan-4294967000.tmp");
-    let own_without_pid = sandbox.temp_root.join("avi_clone_x_1.qvoice");
-    support::write(&own_with_dead_pid, "temporal propio");
-    support::write(&own_without_pid, "temporal propio sin PID");
-    // El prefijo exacto de `tests/cli_golden.rs`, y un sandbox de contrato.
-    let golden = sandbox.temp_root.join("golden-sandbox_invariant_12345_0");
-    let contract = sandbox
-        .temp_root
-        .join("contract-sandbox_setupfailed_12345_0");
-    // Y dos controles de lo ajeno, uno con nuestro prefijo y otro sin él. La diferencia de
-    // cómo acaban los dos es **toda** la regla: decide el prefijo, no quién lo escribió.
-    let third_party_our_prefix = sandbox.temp_root.join("avi-third-party-system.tmp");
-    let third_party_without_prefix = sandbox.temp_root.join("other-program.tmp");
-    support::write(&golden.join("install").join("state"), "sandbox vivo");
-    support::write(&contract.join("opt").join("program"), "sandbox vivo");
-    support::write(
-        &third_party_our_prefix,
-        "nuestro prefijo, no nuestro temporal",
+    // Un scratch de dueño muerto (PID que el sistema no puede asignar) y el de este
+    // proceso, que sigue vivo.
+    let dead = sandbox.scratch_root.join("4294967000-1");
+    let own = sandbox.scratch_root.join(
+        avi_process::current_owner_token()
+            .expect("este proceso se puede observar")
+            .format(),
     );
-    support::write(&third_party_without_prefix, "sin nuestro prefijo");
+    support::write(&dead.join("clip.wav"), "scratch huérfano");
+    support::write(&own.join("clip.wav"), "scratch de este proceso");
+    // Sandboxes de pruebas junto al scratch y con la forma de un token fuera de él, y
+    // nombres antiguos con PID dentro de él: nada de eso es de este modelo.
+    let golden = sandbox.root.join("golden-sandbox_invariant_12345_0");
+    let outside = sandbox.root.join("elsewhere").join("4294967000-1");
+    let legacy = sandbox.scratch_root.join("avi-orphan-4294967000.tmp");
+    let legacy_dir = sandbox.scratch_root.join("avi_clone_x_1");
+    support::write(&golden.join("install").join("state"), "sandbox vivo");
+    support::write(&outside.join("state"), "fuera del scratch");
+    support::write(&legacy, "nombre antiguo");
+    support::write(&legacy_dir.join("clip.wav"), "nombre antiguo");
 
     let outcome = recovery::recover(recovery::Roots {
         program_dir: &sandbox.program_dir,
-        temp_root: &sandbox.temp_root,
-        in_use: None,
+        scratch_root: &sandbox.scratch_root,
+        data_dir: &sandbox.data_dir,
+        bin_dir: &sandbox.bin_dir,
     })
     .expect("el barrido se ejecuta");
 
-    // Los temporales propios se van, con PID muerto y sin PID: es lo que la regla obliga.
     assert!(
-        !inspect::exists(&own_with_dead_pid) && !inspect::exists(&own_without_pid),
-        "los temporales propios se barren, que es lo que la regla pide: {:?}",
-        outcome.removed_temporaries
+        !inspect::exists(&dead),
+        "el scratch de un dueño muerto se barre: {:?}",
+        outcome.removed_scratch
     );
-    // Y los sandboxes de pruebas sobreviven, con todo su contenido.
-    for foreign_sandbox in [&golden, &contract] {
+    assert!(inspect::exists(&own), "el de este proceso sobrevive");
+    for survivor in [&golden, &outside, &legacy, &legacy_dir] {
         assert!(
-            inspect::exists(foreign_sandbox),
-            "el sandbox de pruebas {} sobrevive al barrido: su prefijo no es del producto, \
-             y {:?}",
-            foreign_sandbox.display(),
-            outcome.removed_temporaries
+            inspect::exists(survivor),
+            "{} no es de este modelo y sobrevive al barrido",
+            survivor.display()
         );
     }
-    assert!(
-        inspect::exists(&golden.join("install").join("state"))
-            && inspect::exists(&contract.join("opt").join("program")),
-        "y con su contenido dentro, que es lo que se pierde cuando el barrido acierta"
-    );
-    // Los dos controles, y la asimetría es el punto: manda el prefijo, no la autoría.
-    assert!(
-        !inspect::exists(&third_party_our_prefix),
-        "un archivo de otro programa llamado `avi-…` **se borra**: el prefijo es lo que el \
-         producto reserva, no la autoría, y por eso un sandbox con prefijo del producto no está a salvo \
-         por ser de un test"
-    );
-    assert!(
-        inspect::exists(&third_party_without_prefix),
-        "y uno que no lleva el prefijo sobrevive, aunque esté en el mismo directorio: el \
-         barrido decide por prefijo, no por directorio"
-    );
     assert!(
         outcome.is_clean(),
         "nada queda pendiente: {:?}",
@@ -724,45 +685,51 @@ fn sweep_never_touches_a_foreign_test_sandbox() {
     );
 }
 
-/// Un directorio con el prefijo del producto y **sin** racha de tres dígitos se declara
-/// huérfano aunque el proceso que lo creó siga vivo. Es el caso exacto que hacía que los
-/// sandboxes dorados fueran borrables, y la aserción lo fija contra el motor para que nadie
-/// lo arregle "arreglando" el nombre sin entender por qué importa.
+/// Un PID reutilizado se barre aunque el proceso que lo tiene ahora siga vivo: el token
+/// del temporal lleva otro inicio, luego su dueño es otro proceso y está muerto. El
+/// temporal de este proceso, con su inicio real, se conserva sin informarse como pendiente.
 #[test]
-fn own_prefix_without_pid_is_swept_even_though_the_test_is_alive() {
+fn reused_pid_is_swept_while_the_live_owner_is_kept() {
     let _guard = process_env::exclusively();
-    let sandbox = Sandbox::new("sweep-without-pid");
+    let sandbox = Sandbox::new("sweep-reused-pid");
     sandbox.seed_env();
-    let with_prefix_and_without_pid = sandbox.temp_root.join("avi_test_sandbox_x_1");
-    support::write(
-        &with_prefix_and_without_pid,
-        "parece de pruebas, tiene nuestro prefijo",
-    );
-    let with_previous = sandbox
-        .temp_root
-        .join(format!("avi-mine-{}.tmp", std::process::id()));
-    support::write(&with_previous, "temporal de este proceso, que sigue vivo");
+    let own = avi_process::current_owner_token().expect("este proceso se puede observar");
+    let reused = avi_shared::OwnerToken::new(own.pid(), "1").expect("token válido");
+    let stale = sandbox
+        .data_dir
+        .join(avi_shared::staging_names::temp_file::name(
+            "daemon.pid",
+            &reused,
+        ));
+    let live = sandbox
+        .data_dir
+        .join(avi_shared::staging_names::temp_file::name(
+            "daemon.ready",
+            &own,
+        ));
+    support::write(&stale, "residuo de un proceso que tuvo este PID");
+    support::write(&live, "temporal de este proceso, que sigue vivo");
 
     let outcome = recovery::recover(recovery::Roots {
         program_dir: &sandbox.program_dir,
-        temp_root: &sandbox.temp_root,
-        in_use: None,
+        scratch_root: &sandbox.scratch_root,
+        data_dir: &sandbox.data_dir,
+        bin_dir: &sandbox.bin_dir,
     })
     .expect("el barrido se ejecuta");
 
     assert!(
-        !inspect::exists(&with_prefix_and_without_pid),
-        "sin racha de tres dígitos no hay PID, luego es huérfano por definición y se barre: \
-         por eso el prefijo de las pruebas no puede ser el del producto"
+        !inspect::exists(&stale),
+        "el PID reutilizado se barre: {:?}",
+        outcome.removed_temporaries
     );
     assert!(
-        inspect::exists(&with_previous),
-        "y el que sí lleva un PID, el de este proceso, se conserva: {:?}",
-        outcome.kept
+        inspect::exists(&live),
+        "el temporal de este proceso se conserva"
     );
     assert!(
-        outcome.kept.contains(&with_previous),
-        "y se informa como conservado, que no es un fallo: {:?}",
+        outcome.is_clean(),
+        "y conservar lo vivo no es un pendiente: {:?}",
         outcome.kept
     );
 }

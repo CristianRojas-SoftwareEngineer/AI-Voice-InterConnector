@@ -49,8 +49,8 @@ pub mod update_resolve;
 pub use avi_shared::logs::create_log;
 pub use avi_shared::paths::{
     bin_dir, cache_container, data_dir, install_dir, logs_dir_in, models_cache_dir,
-    models_root_is_shared, shared_hf_root, APP_NAME, LIFECYCLE_GATE_NAME, LIFECYCLE_LOCK_NAME,
-    MODELS_SUBDIR, MODELS_XET_SUBDIR, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
+    models_root_is_shared, scratch_root, shared_hf_root, APP_NAME, LIFECYCLE_GATE_NAME,
+    LIFECYCLE_LOCK_NAME, MODELS_SUBDIR, MODELS_XET_SUBDIR, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX,
 };
 pub use avi_store::{canonical_path_entry_matches, canonical_path_key};
 
@@ -211,10 +211,10 @@ pub(crate) mod test_support {
         }
     }
 
-    /// Directorio de trabajo limpio y único para una prueba. El prefijo es
-    /// deliberadamente neutro: los barridos de recuperación solo tocan
-    /// temporales con los prefijos propios de la tabla de rutas (`avi-`, `avi_`), y el sandbox
-    /// de una prueba no debe ser confundido con un temporal del producto.
+    /// Directorio de trabajo limpio y único para una prueba, con dueño que lo
+    /// borra al soltarse. Es un sandbox aparte del scratch del producto: la
+    /// recuperación solo barre nombres con token de propietario dentro de sus
+    /// raíces, así que un barrido de prueba nunca alcanza a otro sandbox.
     pub fn scratch(tag: &str) -> Scratch {
         Scratch(
             tempfile::Builder::new()

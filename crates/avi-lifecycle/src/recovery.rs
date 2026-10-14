@@ -17,13 +17,23 @@
 //!    aparcado, o se completa el commit si el diario estaba confirmado. La
 //!    diferencia entre las dos cosas es el estado del diario, no una heurística:
 //!    por eso el diario se marca confirmado *antes* de borrar el aparcado.
-//! 2. **Barrido.** Aparcados `.old-*` que ya no estén en uso, stagings huérfanos
-//!    hermanos del directorio de programa y temporales propios con los prefijos
-//!    de la tabla de rutas, sin proceso vivo.
+//! 2. **Barrido por identidad.** Cada residuo lleva en el nombre el token de su
+//!    propietario, y el barrido lo clasifica con la identidad exacta del proceso:
+//!    `Dead` (no existe, o su PID lo ocupa otro proceso) se barre, `Ours` (sigue
+//!    vivo) se conserva sin más, y `Unknown` (no se puede observar) se conserva y
+//!    se informa. Los nombres sin token no son de este modelo y no se tocan. Las
+//!    raíces son fijas:
+//!    - el scratch (`<raíz de temporales>/<token>/`);
+//!    - los temporales con token y los stagings de voz de los directorios de
+//!      datos, de enlaces, de voces y de habla;
+//!    - los stagings de instalación hermanos del directorio de programa y los
+//!      aparcados `.old-<token>-<único>` de dentro;
+//!    - los `<destino>.removal-failed.log` del borrado diferido, junto al
+//!      directorio de programa y a sus aparcados: se retiran cuando el destino ya
+//!      no existe, y mientras exista se informan como fallo pendiente.
 //!
 //! **Se llama con el bloqueo tomado** (paso 1 de la instalación): si no, el barrido
-//! podría
-//! llevarse por delante el staging que otra operación está usando. Por eso este
+//! podría llevarse por delante el staging que otra operación está usando. Por eso este
 //! módulo no toma el bloqueo por su cuenta.
 //!
 //! Lo que no se puede borrar **no es un fallo**: son archivos en uso, y el
@@ -33,26 +43,27 @@
 
 use crate::transaction;
 use anyhow::Result;
+use avi_shared::staging_names::{
+    install_staging, parked, temp_file, voice_staging, REMOVAL_FAILED_SUFFIX,
+};
+use avi_shared::{OwnerState, OwnerToken};
 use std::path::{Path, PathBuf};
 
-/// Raíces sobre las que actúa la recuperación. `temp_root` es un parámetro —como
-/// la clave de registro en la integración del `PATH`— para que las pruebas no barran
-/// el directorio temporal de la máquina.
+/// Raíces sobre las que actúa la recuperación. Todas son parámetros —como la
+/// clave de registro en la integración del `PATH`— para que las pruebas no barran
+/// las carpetas de la máquina.
 #[derive(Debug, Clone, Copy)]
 pub struct Roots<'a> {
-    /// Directorio de programa, donde vive el diario y los aparcados.
+    /// Directorio de programa, donde viven el diario y los aparcados; su padre
+    /// es donde viven los stagings de instalación.
     pub program_dir: &'a Path,
-    /// Directorio de temporales del sistema, donde viven los temporales propios.
-    pub temp_root: &'a Path,
-    /// Staging que la operación en curso está usando, si lo hay.
-    ///
-    /// El barrido recoge "stagings **huérfanos**", y un staging del que se va a
-    /// instalar no lo es aunque todavía no haya nada dentro: es el bundle que el
-    /// paso 2 de la instalación valida y el paso 6 coloca. Sin este campo,
-    /// `self install` se borraría a sí
-    /// mismo el bundle entre el paso 1 y el paso 2. `None` en `doctor` y en
-    /// `cleanup`, que no vienen a instalar nada.
-    pub in_use: Option<&'a Path>,
+    /// Raíz de los scratch por proceso, un directorio por propietario.
+    pub scratch_root: &'a Path,
+    /// Raíz de datos: pidfile, fichero ready, y de ella cuelgan los almacenes
+    /// `voices` y `speech`, cuyas voces contienen temporales con token.
+    pub data_dir: &'a Path,
+    /// Directorio del enlace del comando.
+    pub bin_dir: &'a Path,
 }
 
 /// Lo que el barrido **tocaría ahora mismo**, calculado sin tocar nada.
@@ -63,15 +74,24 @@ pub struct Roots<'a> {
 /// simulación anunciara un borrado que la ejecución no hace.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SweepPreview {
-    /// Aparcados `.old-*` del directorio de programa.
+    /// Aparcados `.old-<token>-<único>` de dueño muerto.
     pub parked: Vec<PathBuf>,
-    /// Stagings huérfanos hermanos del directorio de programa.
+    /// Stagings de instalación hermanos del directorio de programa, de dueño
+    /// muerto.
     pub stagings: Vec<PathBuf>,
-    /// Temporales propios huérfanos del directorio de temporales.
+    /// Scratch de dueño muerto.
+    pub scratch: Vec<PathBuf>,
+    /// Temporales con token y stagings de voz de dueño muerto.
     pub temporaries: Vec<PathBuf>,
-    /// Temporales propios que **no** se pueden decidir: los de un proceso vivo.
-    /// No es un fallo ni un residuo que se pueda forzar.
-    pub temporaries_kept: Vec<PathBuf>,
+    /// Registros `*.removal-failed.log` cuyo destino ya no existe.
+    pub failure_logs: Vec<PathBuf>,
+    /// Residuos de cualquier familia cuyo dueño no se puede observar: se
+    /// conservan y se informan. No es un fallo ni un residuo que se pueda
+    /// forzar.
+    pub unknown_owner: Vec<PathBuf>,
+    /// Registros `*.removal-failed.log` cuyo destino sigue existiendo: el borrado
+    /// diferido no pudo retirarlo y sigue pendiente.
+    pub pending_failures: Vec<PathBuf>,
     /// Directorios que existen y no se pudieron listar, con su causa. El barrido no
     /// puede afirmar que no hay nada que recoger en ellos; un directorio inexistente
     /// no entra aquí, porque no hay nada que barrer.
@@ -84,7 +104,22 @@ impl SweepPreview {
         let mut out = Vec::new();
         out.extend(self.parked.iter().cloned());
         out.extend(self.stagings.iter().cloned());
+        out.extend(self.scratch.iter().cloned());
         out.extend(self.temporaries.iter().cloned());
+        out.extend(self.failure_logs.iter().cloned());
+        out
+    }
+
+    /// Lo que el barrido conserva y debe informarse: dueño no observable y
+    /// fallos de borrado diferido aún pendientes.
+    pub fn undecided(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = self
+            .unknown_owner
+            .iter()
+            .chain(self.pending_failures.iter())
+            .cloned()
+            .collect();
+        out.sort();
         out
     }
 }
@@ -98,12 +133,17 @@ pub struct RecoveryOutcome {
     pub committed: bool,
     /// Aparcados `.old-*` borrados.
     pub removed_parked: Vec<PathBuf>,
-    /// Stagings huérfanos borrados.
+    /// Stagings de instalación huérfanos borrados.
     pub removed_stagings: Vec<PathBuf>,
-    /// Temporales propios huérfanos borrados.
+    /// Scratch de dueño muerto borrados.
+    pub removed_scratch: Vec<PathBuf>,
+    /// Temporales con token y stagings de voz huérfanos borrados.
     pub removed_temporaries: Vec<PathBuf>,
-    /// Lo que no se pudo borrar: en uso, o sin PID con el que decidir. No es un
-    /// fallo.
+    /// Registros de borrado fallido retirados porque su destino ya no existe.
+    pub removed_failure_logs: Vec<PathBuf>,
+    /// Lo que queda pendiente: lo que no se pudo borrar por estar en uso, los
+    /// residuos de dueño no observable y los fallos de borrado diferido cuyo
+    /// destino sigue existiendo. No es un fallo.
     pub kept: Vec<PathBuf>,
     /// Directorios que existen y no se pudieron listar para el barrido. También están
     /// en `kept`: lo que contienen queda sin recoger.
@@ -115,25 +155,30 @@ impl RecoveryOutcome {
     pub fn is_clean(&self) -> bool {
         self.kept.is_empty()
     }
+
+    /// Todo lo que el barrido borró, en el orden del informe.
+    pub fn removed(&self) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        out.extend(self.removed_parked.iter().cloned());
+        out.extend(self.removed_stagings.iter().cloned());
+        out.extend(self.removed_scratch.iter().cloned());
+        out.extend(self.removed_temporaries.iter().cloned());
+        out.extend(self.removed_failure_logs.iter().cloned());
+        out
+    }
 }
 
-/// Recuperación con las raíces del producto: directorio de programa según la
-/// reubicación y directorio de temporales del sistema.
-pub fn recover_default() -> Result<RecoveryOutcome> {
-    let program_dir = crate::install_dir()?;
-    // Raíz del temporal del sistema, donde se barren los residuos de versiones
-    // anteriores del producto: es la lectura que el lint prohíbe para crear.
-    #[allow(clippy::disallowed_methods)]
-    let temp_root = std::env::temp_dir();
-    recover(Roots {
-        program_dir: &program_dir,
-        temp_root: &temp_root,
-        in_use: None,
-    })
-}
-
-/// Completa la transacción pendiente y barre lo huérfano.
+/// Completa la transacción pendiente y barre lo huérfano, clasificando a los
+/// propietarios observando el sistema.
 pub fn recover(roots: Roots<'_>) -> Result<RecoveryOutcome> {
+    recover_with(roots, avi_process::classify_owner)
+}
+
+/// Igual que [`recover`] con la clasificación de propietarios inyectada.
+pub fn recover_with(
+    roots: Roots<'_>,
+    classify: impl Fn(&OwnerToken) -> OwnerState,
+) -> Result<RecoveryOutcome> {
     let mut outcome = RecoveryOutcome::default();
 
     // 1. Transacción pendiente.
@@ -160,12 +205,36 @@ pub fn recover(roots: Roots<'_>) -> Result<RecoveryOutcome> {
         }
     }
 
-    // 2. Barrido de aparcados, stagings y temporales, con la decisión del
-    //    informe: una sola clasificación para el plan y para el barrido.
-    let preview = preview(roots);
-    sweep_parked(&preview, &mut outcome);
-    sweep_stagings(&preview, &mut outcome);
-    sweep_temporaries(&preview, &mut outcome);
+    // 2. Barrido, con la decisión del informe: una sola clasificación para el
+    //    plan y para el barrido.
+    let preview = preview_with(roots, classify);
+    sweep(
+        &preview.parked,
+        &mut outcome.removed_parked,
+        &mut outcome.kept,
+    );
+    sweep(
+        &preview.stagings,
+        &mut outcome.removed_stagings,
+        &mut outcome.kept,
+    );
+    sweep(
+        &preview.scratch,
+        &mut outcome.removed_scratch,
+        &mut outcome.kept,
+    );
+    sweep(
+        &preview.temporaries,
+        &mut outcome.removed_temporaries,
+        &mut outcome.kept,
+    );
+    sweep(
+        &preview.failure_logs,
+        &mut outcome.removed_failure_logs,
+        &mut outcome.kept,
+    );
+    // Lo conservado a propósito queda pendiente y a la vista.
+    outcome.kept.extend(preview.undecided());
     // Lo que no se pudo listar queda pendiente y a la vista: ni se da por limpio ni se
     // calla.
     for (dir, cause) in &preview.unreadable {
@@ -189,20 +258,151 @@ pub fn recover(roots: Roots<'_>) -> Result<RecoveryOutcome> {
 /// la misma decisión. Derivar el plan y la ejecución de funciones distintas permitiría
 /// que la simulación anunciara un borrado que la ejecución no hace.
 pub fn preview(roots: Roots<'_>) -> SweepPreview {
+    preview_with(roots, avi_process::classify_owner)
+}
+
+/// Igual que [`preview`] con la clasificación de propietarios inyectada. Es la
+/// **única** función de decisión del barrido.
+pub fn preview_with(
+    roots: Roots<'_>,
+    classify: impl Fn(&OwnerToken) -> OwnerState,
+) -> SweepPreview {
+    let mut found = SweepPreview::default();
     let parent = roots.program_dir.parent().unwrap_or(Path::new(""));
-    let mut unreadable = Vec::new();
-    let parked = entries_with_prefix(roots.program_dir, crate::PARKED_DIR_PREFIX, &mut unreadable);
-    let stagings = entries_with_prefix(parent, crate::STAGING_DIR_PREFIX, &mut unreadable)
-        .into_iter()
-        .filter(|path| roots.in_use.is_none_or(|using| using != path))
-        .collect();
-    let (temporaries, temporaries_kept) = temporaries_decision(roots.temp_root, &mut unreadable);
-    SweepPreview {
-        parked,
-        stagings,
-        temporaries,
-        temporaries_kept,
-        unreadable,
+
+    // Aparcados de dentro del programa.
+    for entry in list_entries(roots.program_dir, &mut found.unreadable) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(owner) = family_name(&name, parked::owner_of) {
+            route(
+                classify(&owner),
+                entry.path(),
+                &mut found.parked,
+                &mut found.unknown_owner,
+            );
+        }
+    }
+
+    // Stagings de instalación, hermanos del programa.
+    for entry in list_entries(parent, &mut found.unreadable) {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(owner) = family_name(&name, install_staging::owner_of) {
+            route(
+                classify(&owner),
+                entry.path(),
+                &mut found.stagings,
+                &mut found.unknown_owner,
+            );
+        }
+    }
+
+    // Scratch: un directorio por propietario; lo que no es un token no se toca.
+    for entry in list_entries(roots.scratch_root, &mut found.unreadable) {
+        let Some(owner) = entry.file_name().to_str().and_then(OwnerToken::parse) else {
+            continue;
+        };
+        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        route(
+            classify(&owner),
+            entry.path(),
+            &mut found.scratch,
+            &mut found.unknown_owner,
+        );
+    }
+
+    // Temporales con token y stagings de voz, en los directorios donde se crean.
+    for dir in family_dirs(roots, &mut found.unreadable) {
+        for entry in list_entries(&dir, &mut found.unreadable) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let owner = family_name(&name, temp_file::owner_of)
+                .or_else(|| family_name(&name, voice_staging::owner_of));
+            if let Some(owner) = owner {
+                route(
+                    classify(&owner),
+                    entry.path(),
+                    &mut found.temporaries,
+                    &mut found.unknown_owner,
+                );
+            }
+        }
+    }
+
+    // Registros del borrado diferido, junto al programa y junto a sus aparcados.
+    for dir in [roots.program_dir, parent] {
+        for entry in list_entries(dir, &mut found.unreadable) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Some(destination) = name.strip_suffix(REMOVAL_FAILED_SUFFIX) else {
+                continue;
+            };
+            if destination.is_empty() {
+                continue;
+            }
+            if exists(&dir.join(destination)) {
+                found.pending_failures.push(entry.path());
+            } else {
+                found.failure_logs.push(entry.path());
+            }
+        }
+    }
+
+    for list in [
+        &mut found.parked,
+        &mut found.stagings,
+        &mut found.scratch,
+        &mut found.temporaries,
+        &mut found.failure_logs,
+        &mut found.unknown_owner,
+        &mut found.pending_failures,
+    ] {
+        list.sort();
+        list.dedup();
+    }
+    found
+}
+
+/// Directorios donde viven temporales con token y stagings de voz: datos,
+/// enlaces, y cada voz de los almacenes `voices` y `speech`.
+fn family_dirs(roots: Roots<'_>, unreadable: &mut Vec<(PathBuf, String)>) -> Vec<PathBuf> {
+    let mut dirs = vec![roots.data_dir.to_path_buf(), roots.bin_dir.to_path_buf()];
+    for store in ["voices", "speech"] {
+        for entry in list_entries(&roots.data_dir.join(store), unreadable) {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                dirs.push(entry.path());
+            }
+        }
+    }
+    dirs
+}
+
+/// Propietario de `name` según el `parse` de su familia, salvo que `name` sea el
+/// registro de un borrado fallido: ese nombre cuelga del destino y no es un
+/// residuo de ninguna familia.
+fn family_name(name: &str, parse: fn(&str) -> Option<OwnerToken>) -> Option<OwnerToken> {
+    if name.ends_with(REMOVAL_FAILED_SUFFIX) {
+        return None;
+    }
+    parse(name)
+}
+
+/// Reparte `path` según el estado de su dueño: `Dead` va a `dead`, `Unknown` a
+/// `unknown`, y `Ours` no se anota porque se conserva sin informe.
+fn route(state: OwnerState, path: PathBuf, dead: &mut Vec<PathBuf>, unknown: &mut Vec<PathBuf>) {
+    match state {
+        OwnerState::Dead => dead.push(path),
+        OwnerState::Unknown => unknown.push(path),
+        OwnerState::Ours => {}
+    }
+}
+
+/// `true` si `path` existe como entrada, sea o no un enlace roto. Un fallo
+/// distinto de la ausencia cuenta como existente: no se retira lo que no se
+/// puede comprobar.
+fn exists(path: &Path) -> bool {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => true,
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
     }
 }
 
@@ -228,179 +428,22 @@ fn list_entries(dir: &Path, unreadable: &mut Vec<(PathBuf, String)>) -> Vec<std:
     out
 }
 
-/// Aparcados `.old-*` del directorio de programa que ya no estén en uso. Los que
-/// el SO no deja borrar quedan en `kept` para el borrado diferido.
-fn sweep_parked(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
-    for path in &preview.parked {
-        match std::fs::remove_dir_all(path) {
-            Ok(()) => outcome.removed_parked.push(path.clone()),
-            Err(_) => outcome.kept.push(path.clone()),
-        }
-    }
-}
-
-/// Stagings huérfanos: hermanos del directorio de programa con el prefijo de la
-// tabla de rutas,
-/// que es donde los deja `self install` y `self update`. Solo hermanos, nunca
-/// otras rutas del padre.
-///
-/// `in_use` queda fuera del informe: es el staging del que la operación en curso va
-/// a instalar, que no es huérfano por definición aunque esté vacío.
-fn sweep_stagings(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
-    for path in &preview.stagings {
-        match std::fs::remove_dir_all(path) {
-            Ok(()) => outcome.removed_stagings.push(path.clone()),
-            Err(_) => outcome.kept.push(path.clone()),
-        }
-    }
-}
-
-/// Temporales propios con los prefijos de la tabla de rutas.
-///
-/// Un archivo con el PID en el nombre solo se borra si ese proceso ya no existe.
-/// Uno **sin** PID reconocible también se barre: cualquier invocación
-/// barre los temporales propios huérfanos, y un temporal sin PID no pertenece a
-/// ningún proceso vivo, luego está huérfano por definición. Conservarlos para
-/// siempre impediría que el barrido recogiera lo que el producto
-/// deja al caer una clonación o una síntesis.
-///
-/// Lo que protege al producto de borrarse a sí mismo no es la ausencia de PID sino el
-/// **resultado** del borrado: en Windows el SO rechaza borrar un archivo que otro
-/// proceso tiene abierto, y la ruta cae en `kept` para el borrado diferido. En Unix
-/// el `unlink` se resuelve sin error, pero el escritor conserva su descriptor y su
-/// escritura sigue yendo al inodo ya desenlazado: lo que se pierde es el nombre del
-/// archivo, no el proceso.
-fn sweep_temporaries(preview: &SweepPreview, outcome: &mut RecoveryOutcome) {
-    for path in &preview.temporaries {
-        let removed = if path.is_dir() {
+/// Borra cada ruta de `paths`: las borradas van a `removed` y las que el SO no
+/// deja borrar (en Windows, un archivo abierto por otro proceso) a `kept`, para el
+/// borrado diferido. Un enlace se borra a sí mismo, no su destino.
+fn sweep(paths: &[PathBuf], removed: &mut Vec<PathBuf>, kept: &mut Vec<PathBuf>) {
+    for path in paths {
+        let is_dir = std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_dir());
+        let result = if is_dir {
             std::fs::remove_dir_all(path)
         } else {
             std::fs::remove_file(path)
         };
-        match removed {
-            Ok(()) => outcome.removed_temporaries.push(path.clone()),
-            Err(_) => outcome.kept.push(path.clone()),
+        match result {
+            Ok(()) => removed.push(path.clone()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => removed.push(path.clone()),
+            Err(_) => kept.push(path.clone()),
         }
-    }
-    outcome
-        .kept
-        .extend(preview.temporaries_kept.iter().cloned());
-}
-
-/// Clasificación de los temporales propios: `(los que se barren, los que se
-/// conservan)`. Es la decisión única de la que salen el informe y el barrido.
-fn temporaries_decision(
-    temp_root: &Path,
-    unreadable: &mut Vec<(PathBuf, String)>,
-) -> (Vec<PathBuf>, Vec<PathBuf>) {
-    let mut remove_path = Vec::new();
-    let mut kept = Vec::new();
-    for entry in list_entries(temp_root, unreadable) {
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if !crate::TEMP_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-        {
-            continue;
-        }
-        match owner_pid(&name) {
-            // Proceso vivo: no se toca.
-            Some(pid) if process_is_alive(pid) => kept.push(path),
-            // PID muerto, o sin PID: huérfano por definición.
-            _ => remove_path.push(path),
-        }
-    }
-    remove_path.sort();
-    kept.sort();
-    (remove_path, kept)
-}
-
-/// Entradas de `dir` cuyo nombre empieza por `prefix`, ordenadas.
-fn entries_with_prefix(
-    dir: &Path,
-    prefix: &str,
-    unreadable: &mut Vec<(PathBuf, String)>,
-) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = list_entries(dir, unreadable)
-        .into_iter()
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with(prefix))
-        })
-        .collect();
-    out.sort();
-    out
-}
-
-/// PID del proceso dueño de un temporal propio, si el nombre lo lleva.
-///
-/// Se busca la primera racha de dígitos de tres o más porque la convención de
-/// los temporales con dueño es `<algo>-<pid>-<ms>`: las copias del limpiador
-/// propio (`avi-cleaner-<pid>-<ms>.exe`). Un número de una cifra es más probablemente un contador que un
-/// PID: con eso, un temporal como `avi_clone_x_1.qvoice` no se confunde con un
-/// proceso.
-fn owner_pid(name: &str) -> Option<u32> {
-    let bytes: Vec<char> = name.chars().collect();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i].is_ascii_digit() {
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            let run: String = bytes[start..i].iter().collect();
-            if run.len() >= 3 {
-                return run.parse().ok();
-            }
-        } else {
-            i += 1;
-        }
-    }
-    None
-}
-
-/// `true` si el proceso sigue vivo.
-///
-/// En Unix se pregunta con `kill(pid, 0)`, que no necesita permiso para preguntar
-/// por la existencia. En Windows se abre el proceso con `PROCESS_SYNCHRONIZE` y
-/// se espera cero milisegundos: si sigue sin terminar, está vivo. El borrado por
-/// sí solo no basta como prueba —un temporal de un proceso vivo no siempre está
-/// abierto—, así que en las dos plataformas la pregunta se hace antes de borrar.
-#[cfg(unix)]
-fn process_is_alive(pid: u32) -> bool {
-    let pid = pid as libc::pid_t;
-    if pid <= 0 {
-        return false;
-    }
-    // SAFETY: `kill` con señal 0 solo consulta la tabla de procesos.
-    if unsafe { libc::kill(pid, 0) } == 0 {
-        return true;
-    }
-    // El rechazo por permiso vive en el errno del hilo: se lee con la lectura
-    // portátil en vez del accesorio por plataforma, que solo existe en Linux.
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM as i32)
-}
-
-#[cfg(windows)]
-fn process_is_alive(pid: u32) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
-    use windows_sys::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
-    };
-
-    // SAFETY: se pide un permiso de solo sincronización y un tiempo de espera de
-    // cero; el descriptor se cierra antes de devolver.
-    unsafe {
-        let handle = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
-        if handle == INVALID_HANDLE_VALUE || handle == 0 {
-            // El proceso no existe o no es accesible: no está vivo.
-            return false;
-        }
-        let waited = WaitForSingleObject(handle, 0);
-        CloseHandle(handle);
-        waited != WAIT_OBJECT_0
     }
 }
 
@@ -419,92 +462,275 @@ mod tests {
         .unwrap();
     }
 
-    /// El nombre de un temporal propio con PID se lee, y uno sin PID
-    /// reconocible no se inventa.
-    #[test]
-    fn temp_owner_pid_is_read_from_the_name() {
-        assert_eq!(
-            owner_pid("avi-cleaner-12345-1780000000000.exe"),
-            Some(12345)
-        );
-        assert_eq!(owner_pid("avi_12345.tmp"), Some(12345));
-        assert_eq!(owner_pid("avi_clone_x_1.qvoice"), None);
-        assert_eq!(owner_pid("avi-temp"), None);
-        assert!(
-            !process_is_alive(u32::MAX),
-            "un PID que no existe no está vivo"
-        );
-        assert!(
-            process_is_alive(std::process::id()),
-            "este proceso está vivo"
-        );
+    /// Token de prueba: el inicio decide el estado que devuelve [`classify_by_start`].
+    fn token(pid: u32, start: &str) -> OwnerToken {
+        OwnerToken::new(pid, start).expect("token válido")
     }
 
-    /// La recuperación barre aparcados, stagings y temporales huérfanos, y deja
-    /// intacto lo que no es suyo.
-    ///
-    /// El temporal **sin** PID se barre: la regla exige que cualquier invocación barra
-    /// los temporales propios huérfanos, y uno sin PID no pertenece a ningún proceso
-    /// vivo. Conservarlo dejaría acumular `avi_clone_x_1.qvoice` sin que nada lo
-    /// recogiera.
+    /// Clasificación inyectada: el inicio `ours` está vivo, `unknown` no se puede
+    /// observar y cualquier otro es un dueño muerto (incluido un PID reutilizado).
+    fn classify_by_start(owner: &OwnerToken) -> OwnerState {
+        match owner.start() {
+            "ours" => OwnerState::Ours,
+            "unknown" => OwnerState::Unknown,
+            _ => OwnerState::Dead,
+        }
+    }
+
+    /// Raíces de prueba bajo `dir`: programa, scratch, datos y enlaces.
+    struct Sandbox {
+        program: PathBuf,
+        scratch_root: PathBuf,
+        data: PathBuf,
+        bin: PathBuf,
+    }
+
+    impl Sandbox {
+        fn new(dir: &Path) -> Self {
+            let sandbox = Self {
+                program: dir.join("opt").join("program"),
+                scratch_root: dir.join("cache").join("tmp"),
+                data: dir.join("data"),
+                bin: dir.join("bin"),
+            };
+            std::fs::create_dir_all(&sandbox.program).unwrap();
+            sandbox
+        }
+
+        fn roots(&self) -> Roots<'_> {
+            Roots {
+                program_dir: &self.program,
+                scratch_root: &self.scratch_root,
+                data_dir: &self.data,
+                bin_dir: &self.bin,
+            }
+        }
+
+        /// Hermano del programa, donde viven los stagings de instalación.
+        fn sibling(&self, name: &str) -> PathBuf {
+            self.program.parent().unwrap().join(name)
+        }
+    }
+
+    /// Un PID reutilizado (mismo PID, otro inicio) está muerto y se barre; el
+    /// dueño vivo con el mismo PID no se toca.
     #[test]
-    fn sweep_removes_orphans_and_keeps_the_rest() {
-        let dir = scratch("recovery-sweep");
-        let program = dir.join("program");
-        std::fs::create_dir_all(&program).unwrap();
-        let temp_root = dir.join("temp");
-        std::fs::create_dir_all(&temp_root).unwrap();
+    fn reused_pid_is_swept_and_live_owner_is_kept() {
+        let dir = scratch("recovery-reused-pid");
+        let sandbox = Sandbox::new(&dir);
+        let reused = sandbox
+            .data
+            .join(temp_file::name("daemon.pid", &token(100, "old")));
+        let live = sandbox
+            .data
+            .join(temp_file::name("daemon.ready", &token(100, "ours")));
+        write_file(&reused, "x");
+        write_file(&live, "x");
 
-        let parked = program.join(format!("{}12345", crate::PARKED_DIR_PREFIX));
-        write_file(&parked.join("old"), "v1");
-        let staging = dir.join(format!("{}999", crate::STAGING_DIR_PREFIX));
-        write_file(&staging.join("downloaded"), "bundle");
-        let dead_temp = temp_root.join("avi-cleaner-4294967000-1780000000000.exe");
-        write_file(&dead_temp, "borrador");
-        let live_temp = temp_root.join(format!(
-            "avi-cleaner-{}-1780000000000.exe",
-            std::process::id()
-        ));
-        write_file(&live_temp, "en uso");
-        let our = temp_root.join("lifecycle-test-of-another-test.txt");
-        write_file(&our, "ajeno");
-        let without_pid = temp_root.join("avi_clone_x_1.qvoice");
-        write_file(&without_pid, "audio");
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
 
-        let outcome = recover(Roots {
-            program_dir: &program,
-            temp_root: &temp_root,
-            in_use: None,
-        })
-        .unwrap();
+        assert_eq!(outcome.removed_temporaries, vec![reused.clone()]);
+        assert!(!reused.exists(), "el PID reutilizado es un dueño muerto");
+        assert!(live.exists(), "el dueño vivo conserva su temporal");
+        assert!(outcome.is_clean(), "conservar lo vivo no es un pendiente");
+    }
 
-        assert!(
-            !outcome.rolled_back && !outcome.committed,
-            "no había diario"
-        );
-        assert_eq!(outcome.removed_parked, vec![parked.clone()]);
-        assert_eq!(outcome.removed_stagings, vec![staging.clone()]);
-        assert_eq!(
-            outcome.removed_temporaries,
-            vec![dead_temp.clone(), without_pid.clone()],
-            "un temporal sin PID está tan huérfano como uno con PID muerto"
-        );
-        assert!(!parked.exists() && !staging.exists() && !dead_temp.exists());
-        assert!(
-            !without_pid.exists(),
-            "el temporal sin PID también se barre, porque la regla pide los huérfanos"
-        );
-        assert!(
-            live_temp.exists(),
-            "el temporal de este proceso se conserva"
-        );
-        assert!(our.exists(), "lo ajeno al producto no se toca");
-        assert_eq!(
-            outcome.kept,
-            vec![live_temp],
-            "solo se queda el que pertenece a un proceso vivo, y no es un fallo"
-        );
+    /// El scratch propio se conserva; el de un dueño muerto se barre; lo que no
+    /// es un token no se toca.
+    #[test]
+    fn own_scratch_is_kept_and_dead_scratch_is_swept() {
+        let dir = scratch("recovery-scratch");
+        let sandbox = Sandbox::new(&dir);
+        let own = sandbox.scratch_root.join(token(7, "ours").format());
+        let dead = sandbox.scratch_root.join(token(8, "gone").format());
+        let foreign = sandbox.scratch_root.join("not-a-token");
+        write_file(&own.join("clip.wav"), "x");
+        write_file(&dead.join("clip.wav"), "x");
+        write_file(&foreign.join("clip.wav"), "x");
+
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
+
+        assert_eq!(outcome.removed_scratch, vec![dead.clone()]);
+        assert!(own.exists() && foreign.exists() && !dead.exists());
+        assert!(outcome.is_clean());
+    }
+
+    /// Un dueño no observable se conserva, se informa y deja la recuperación
+    /// sin limpiar.
+    #[test]
+    fn unknown_owner_is_kept_and_reported() {
+        let dir = scratch("recovery-unknown");
+        let sandbox = Sandbox::new(&dir);
+        let unknown = sandbox.scratch_root.join(token(9, "unknown").format());
+        write_file(&unknown.join("clip.wav"), "x");
+
+        let findings = preview_with(sandbox.roots(), classify_by_start);
+        assert_eq!(findings.unknown_owner, vec![unknown.clone()]);
+        assert!(findings.all().is_empty(), "no se anuncia como borrado");
+
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
+        assert!(unknown.exists());
+        assert_eq!(outcome.kept, vec![unknown]);
         assert!(!outcome.is_clean());
+    }
+
+    /// Los stagings de instalación y los aparcados de un dueño muerto se barren;
+    /// los de un dueño vivo se conservan, y un nombre sin token (el del
+    /// instalador de arranque) no se toca.
+    #[test]
+    fn dead_owner_stagings_and_parked_are_swept() {
+        let dir = scratch("recovery-stagings");
+        let sandbox = Sandbox::new(&dir);
+        let dead_staging =
+            sandbox.sibling(&install_staging::name("update-1.0.0", &token(11, "gone")));
+        let live_staging =
+            sandbox.sibling(&install_staging::name("update-1.0.0", &token(12, "ours")));
+        let bootstrap_staging = sandbox.sibling(".ai-voice-interconnector-staging-aB3dE9");
+        let dead_parked = sandbox.program.join(parked::name(&token(13, "gone"), 5));
+        let live_parked = sandbox.program.join(parked::name(&token(14, "ours"), 5));
+        for path in [
+            &dead_staging,
+            &live_staging,
+            &bootstrap_staging,
+            &dead_parked,
+            &live_parked,
+        ] {
+            write_file(&path.join("f"), "x");
+        }
+
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
+
+        assert_eq!(outcome.removed_stagings, vec![dead_staging.clone()]);
+        assert_eq!(outcome.removed_parked, vec![dead_parked.clone()]);
+        assert!(!dead_staging.exists() && !dead_parked.exists());
+        assert!(live_staging.exists() && live_parked.exists());
+        assert!(bootstrap_staging.exists(), "sin token no es de este modelo");
+        assert!(outcome.is_clean());
+    }
+
+    /// Los temporales con token y los stagings de voz se barren en los
+    /// directorios de datos, enlaces, voces y habla.
+    #[test]
+    fn family_directories_are_swept() {
+        let dir = scratch("recovery-families");
+        let sandbox = Sandbox::new(&dir);
+        let dead = token(21, "gone");
+        let in_data = sandbox.data.join(temp_file::name("daemon.pid", &dead));
+        let in_bin = sandbox
+            .bin
+            .join(temp_file::name("ai-voice-interconnector", &dead));
+        let in_voice = sandbox
+            .data
+            .join("voices")
+            .join("ana")
+            .join(temp_file::name("reference.qvoice", &dead));
+        let in_speech = sandbox
+            .data
+            .join("speech")
+            .join("ana")
+            .join(temp_file::name("hello.wav", &dead));
+        let voice_staging_dir = sandbox.data.join(voice_staging::name("ana", &dead));
+        let live = sandbox
+            .data
+            .join("voices")
+            .join("ana")
+            .join(temp_file::name("other.qvoice", &token(22, "ours")));
+        let plain = sandbox
+            .data
+            .join("voices")
+            .join("ana")
+            .join("reference.qvoice");
+        for path in [&in_data, &in_bin, &in_voice, &in_speech, &live, &plain] {
+            write_file(path, "x");
+        }
+        write_file(&voice_staging_dir.join("reference.qvoice"), "x");
+
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
+
+        let mut expected = vec![
+            in_data.clone(),
+            in_bin.clone(),
+            in_voice.clone(),
+            in_speech.clone(),
+            voice_staging_dir.clone(),
+        ];
+        expected.sort();
+        let mut removed = outcome.removed_temporaries.clone();
+        removed.sort();
+        assert_eq!(removed, expected);
+        assert!(live.exists() && plain.exists());
+        assert!(outcome.is_clean());
+    }
+
+    /// El registro de borrado fallido se retira solo cuando su destino ya no
+    /// existe; mientras exista, se conserva y se informa como pendiente.
+    #[test]
+    fn failure_log_is_removed_only_when_destination_is_gone() {
+        let dir = scratch("recovery-failure-logs");
+        let sandbox = Sandbox::new(&dir);
+        let gone_log = sandbox.sibling("gone.removal-failed.log");
+        let present = sandbox.sibling("present");
+        let present_log = sandbox.sibling("present.removal-failed.log");
+        write_file(&gone_log, "no se pudo retirar");
+        write_file(&present.join("f"), "x");
+        write_file(&present_log, "no se pudo retirar");
+
+        let findings = preview_with(sandbox.roots(), classify_by_start);
+        assert_eq!(findings.failure_logs, vec![gone_log.clone()]);
+        assert_eq!(findings.pending_failures, vec![present_log.clone()]);
+
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
+        assert_eq!(outcome.removed_failure_logs, vec![gone_log.clone()]);
+        assert!(!gone_log.exists());
+        assert!(present.exists() && present_log.exists());
+        assert_eq!(outcome.kept, vec![present_log]);
+        assert!(!outcome.is_clean());
+    }
+
+    /// El registro de borrado fallido de un aparcado o de un staging no se toma
+    /// por el aparcado ni por el staging.
+    #[test]
+    fn failure_log_of_a_family_name_is_not_taken_for_the_family() {
+        let dir = scratch("recovery-log-names");
+        let sandbox = Sandbox::new(&dir);
+        let parked_name = parked::name(&token(31, "ours"), 7);
+        let parked_log = sandbox
+            .program
+            .join(format!("{parked_name}{REMOVAL_FAILED_SUFFIX}"));
+        let staging_name = install_staging::name("update-1.0.0", &token(32, "ours"));
+        let staging_log = sandbox.sibling(&format!("{staging_name}{REMOVAL_FAILED_SUFFIX}"));
+        write_file(&parked_log, "x");
+        write_file(&staging_log, "x");
+
+        let findings = preview_with(sandbox.roots(), |_| OwnerState::Dead);
+
+        assert!(findings.parked.is_empty() && findings.stagings.is_empty());
+        let mut logs = findings.failure_logs.clone();
+        logs.sort();
+        let mut expected = vec![parked_log, staging_log];
+        expected.sort();
+        assert_eq!(logs, expected, "su destino ya no existe");
+    }
+
+    /// Un sandbox ajeno al scratch (aunque su nombre sea un token de dueño
+    /// muerto, pero fuera de la raíz del scratch) no se toca.
+    #[test]
+    fn directory_outside_the_scratch_is_not_touched() {
+        let dir = scratch("recovery-foreign-sandbox");
+        let sandbox = Sandbox::new(&dir);
+        let foreign = dir.join("elsewhere").join(token(41, "gone").format());
+        let renamed = sandbox
+            .scratch_root
+            .join(format!("{}-sandbox", token(42, "gone").format()));
+        write_file(&foreign.join("f"), "x");
+        write_file(&renamed.join("f"), "x");
+
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
+
+        assert!(foreign.exists(), "fuera del scratch no se barre");
+        assert!(renamed.exists(), "un nombre que no es un token no se barre");
+        assert!(outcome.removed().is_empty());
+        assert!(outcome.is_clean());
     }
 
     /// Un directorio a barrer que existe pero no se puede listar (aquí, un fichero)
@@ -512,22 +738,28 @@ mod tests {
     #[test]
     fn unlistable_directories_are_reported_and_missing_ones_are_not() {
         let dir = scratch("recovery-unlistable");
-        let temp_file = dir.join("temp-is-a-file");
-        write_file(&temp_file, "no es un directorio");
+        let scratch_file = dir.join("scratch-is-a-file");
+        write_file(&scratch_file, "no es un directorio");
         let program = dir.join("missing").join("program");
+        let missing = dir.join("missing-data");
         let roots = Roots {
             program_dir: &program,
-            temp_root: &temp_file,
-            in_use: None,
+            scratch_root: &scratch_file,
+            data_dir: &missing,
+            bin_dir: &missing,
         };
 
-        let findings = preview(roots);
+        let findings = preview_with(roots, classify_by_start);
         let unreadable: Vec<&PathBuf> = findings.unreadable.iter().map(|(p, _)| p).collect();
-        assert_eq!(unreadable, vec![&temp_file], "solo el que existe y falla");
+        assert_eq!(
+            unreadable,
+            vec![&scratch_file],
+            "solo el que existe y falla"
+        );
 
-        let outcome = recover(roots).unwrap();
-        assert_eq!(outcome.kept, vec![temp_file.clone()]);
-        assert_eq!(outcome.unreadable, vec![temp_file]);
+        let outcome = recover_with(roots, classify_by_start).unwrap();
+        assert_eq!(outcome.kept, vec![scratch_file.clone()]);
+        assert_eq!(outcome.unreadable, vec![scratch_file]);
         assert!(!outcome.is_clean());
     }
 
@@ -537,81 +769,41 @@ mod tests {
     #[test]
     fn preview_matches_the_sweep_and_touches_nothing() {
         let dir = scratch("recovery-preview");
-        let program = dir.join("program");
-        let temp_root = dir.join("temp");
-        std::fs::create_dir_all(&temp_root).unwrap();
-        let parked = program.join(format!("{}1", crate::PARKED_DIR_PREFIX));
-        write_file(&parked.join("old"), "v1");
-        let staging = dir.join(format!("{}2", crate::STAGING_DIR_PREFIX));
+        let sandbox = Sandbox::new(&dir);
+        let parked_dir = sandbox.program.join(parked::name(&token(51, "gone"), 1));
+        let staging = sandbox.sibling(&install_staging::name("update-1.0.0", &token(52, "gone")));
+        let dead_scratch = sandbox.scratch_root.join(token(53, "gone").format());
+        let temp = sandbox
+            .data
+            .join(temp_file::name("daemon.pid", &token(54, "gone")));
+        let log = sandbox.sibling("old.removal-failed.log");
+        let alive = sandbox
+            .data
+            .join(temp_file::name("daemon.ready", &token(55, "ours")));
+        write_file(&parked_dir.join("old"), "v1");
         write_file(&staging.join("downloaded"), "bundle");
-        let mine = dir.join(format!("{}3", crate::STAGING_DIR_PREFIX));
-        let orphan = temp_root.join("avi-orphan.tmp");
-        write_file(&orphan, "x");
-        let alive = temp_root.join(format!("avi-alive-{}.tmp", std::process::id()));
+        write_file(&dead_scratch.join("f"), "x");
+        write_file(&temp, "x");
+        write_file(&log, "x");
         write_file(&alive, "x");
-
-        let roots = Roots {
-            program_dir: &program,
-            temp_root: &temp_root,
-            in_use: Some(&mine),
-        };
         let before = crate::test_support::snapshot(&dir);
 
-        let findings = preview(roots);
-        assert_eq!(findings.parked, vec![parked.clone()]);
-        assert_eq!(
-            findings.stagings,
-            vec![staging.clone()],
-            "el staging en uso no se anuncia ni se barre"
-        );
-        assert_eq!(findings.temporaries, vec![orphan.clone()]);
-        assert_eq!(findings.temporaries_kept, vec![alive.clone()]);
+        let findings = preview_with(sandbox.roots(), classify_by_start);
+        assert_eq!(findings.parked, vec![parked_dir.clone()]);
+        assert_eq!(findings.stagings, vec![staging.clone()]);
+        assert_eq!(findings.scratch, vec![dead_scratch.clone()]);
+        assert_eq!(findings.temporaries, vec![temp.clone()]);
+        assert_eq!(findings.failure_logs, vec![log.clone()]);
+        assert!(findings.unknown_owner.is_empty());
         assert_eq!(
             crate::test_support::snapshot(&dir),
             before,
             "el informe no modifica el disco"
         );
 
-        let outcome = recover(roots).unwrap();
-        assert_eq!(outcome.removed_parked, findings.parked);
-        assert_eq!(outcome.removed_stagings, findings.stagings);
-        assert_eq!(outcome.removed_temporaries, findings.temporaries);
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
+        assert_eq!(outcome.removed(), findings.all());
         assert!(alive.exists(), "lo que el informe conservaba se conserva");
-    }
-
-    /// El staging que la operación en curso va a instalar **no** es un staging
-    /// huérfano, aunque esté vacío: barrerse a sí mismo entre el paso 1 y el paso 2 de
-    /// la instalación dejaría a `self install` instalando un bundle vacío.
-    ///
-    /// El resto del barrido no cambia: el hermano huérfano sí se va.
-    #[test]
-    fn staging_in_use_is_not_swept() {
-        let dir = scratch("recovery-in-use");
-        let program = dir.join("program");
-        let temp_root = dir.join("temp");
-        std::fs::create_dir_all(&temp_root).unwrap();
-        let mine = dir.join(format!("{}me", crate::STAGING_DIR_PREFIX));
-        let orphan = dir.join(format!("{}other", crate::STAGING_DIR_PREFIX));
-        write_file(&mine.join("downloaded"), "bundle");
-        write_file(&orphan.join("downloaded"), "bundle");
-
-        let outcome = recover(Roots {
-            program_dir: &program,
-            temp_root: &temp_root,
-            in_use: Some(&mine),
-        })
-        .unwrap();
-
-        assert!(
-            mine.exists(),
-            "el staging del que se instala sobrevive a su propia recuperación"
-        );
-        assert!(!orphan.exists(), "el hermano huérfano sí se barre");
-        assert_eq!(outcome.removed_stagings, vec![orphan]);
-        assert!(
-            !outcome.kept.contains(&mine),
-            "y el propio tampoco se reporta como pendiente"
-        );
     }
 
     /// Un diario confirmado se completa como commit y uno sin confirmar se
@@ -622,10 +814,9 @@ mod tests {
     fn journal_state_decides_commit_or_rollback() {
         // Confirmado: se completa el commit.
         let dir = scratch("recovery-commit");
-        let program = dir.join("program");
-        let temp_root = dir.join("temp");
-        std::fs::create_dir_all(&temp_root).unwrap();
-        let parked = program.join(format!("{}77", crate::PARKED_DIR_PREFIX));
+        let sandbox = Sandbox::new(&dir);
+        let program = sandbox.program.clone();
+        let parked = program.join(parked::name(&token(77, "ours"), 77));
         write_file(&parked.join("previous"), "v1");
         write_file(&program.join("new"), "v2");
         write_journal(
@@ -640,12 +831,7 @@ mod tests {
             },
         );
 
-        let outcome = recover(Roots {
-            program_dir: &program,
-            temp_root: &temp_root,
-            in_use: None,
-        })
-        .unwrap();
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
         assert!(outcome.committed, "el diario confirmado se completa");
         assert!(!outcome.rolled_back);
         assert!(!parked.exists(), "el aparcado se borra en el commit");
@@ -659,11 +845,10 @@ mod tests {
         // Sin confirmar: se revierte y la versión anterior vuelve a ser la
         // operativa, que es lo que promete la recuperación.
         let dir = scratch("recovery-rollback");
-        let program = dir.join("program");
-        let temp_root = dir.join("temp");
+        let sandbox = Sandbox::new(&dir);
+        let program = sandbox.program.clone();
         let staging = dir.join("staging");
-        std::fs::create_dir_all(&temp_root).unwrap();
-        let parked = program.join(format!("{}88", crate::PARKED_DIR_PREFIX));
+        let parked = program.join(parked::name(&token(88, "ours"), 88));
         write_file(&parked.join("previous"), "v1");
         write_file(&parked.join("engine"), "motor v1");
         // Mitad colocada: el ejecutable nuevo ya está en el programa, el motor
@@ -682,12 +867,7 @@ mod tests {
             },
         );
 
-        let outcome = recover(Roots {
-            program_dir: &program,
-            temp_root: &temp_root,
-            in_use: None,
-        })
-        .unwrap();
+        let outcome = recover_with(sandbox.roots(), classify_by_start).unwrap();
         assert!(outcome.rolled_back, "el diario sin confirmar se revierte");
         assert!(!outcome.committed);
         assert_eq!(

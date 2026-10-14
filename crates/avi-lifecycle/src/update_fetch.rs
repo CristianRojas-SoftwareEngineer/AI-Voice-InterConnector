@@ -18,10 +18,11 @@
 //! espera creciente y respeto de `HTTPS_PROXY`, `NO_PROXY` y el proxy del sistema
 //! en Windows (feature `system-proxy`).
 
-use crate::{manifest, target, LifecycleError, STAGING_DIR_PREFIX};
+use crate::{manifest, target, LifecycleError};
 use avi_process::{spawn_with_allowlist, RestrictedSpawnRequest, StdinSpec};
 #[cfg(unix)]
 use avi_shared::manifest::relative_path;
+use avi_shared::OwnerToken;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -130,13 +131,17 @@ pub fn sums_url(version: &str) -> String {
 }
 
 /// Directorio de staging: hermano del programa (mismo volumen, para que el
-/// traspaso no cruce volúmenes) con el prefijo propio de la tabla de rutas.
+/// traspaso no cruce volúmenes), con el token del proceso `owner` que descarga
+/// para que la recuperación sepa si su dueño sigue vivo.
 ///
 /// Es seguro por construcción: la versión viaja pegada al prefijo dentro de un
 /// único componente, así que no puede escapar al padre haga lo que haga.
-pub fn staging_dir_for(program_dir: &Path, version: &str) -> PathBuf {
+pub fn staging_dir_for(program_dir: &Path, version: &str, owner: &OwnerToken) -> PathBuf {
     let parent = program_dir.parent().unwrap_or_else(|| Path::new("."));
-    parent.join(format!("{STAGING_DIR_PREFIX}update-{version}"))
+    parent.join(avi_shared::staging_names::install_staging::name(
+        &format!("update-{version}"),
+        owner,
+    ))
 }
 
 /// Descarga el archivo y el `SHA256SUMS.txt` de `request`, verifica la
@@ -148,7 +153,12 @@ pub async fn fetch(
     client: &reqwest::Client,
     request: &FetchRequest,
 ) -> Result<StagedBundle, LifecycleError> {
-    let staging = staging_dir_for(&request.program_dir, &request.version);
+    let owner = avi_process::current_owner_token().map_err(|e| {
+        LifecycleError::network_error(format!(
+            "no se pudo identificar el proceso para nombrar el staging: {e}"
+        ))
+    })?;
+    let staging = staging_dir_for(&request.program_dir, &request.version, &owner);
     if staging.exists() {
         std::fs::remove_dir_all(&staging).map_err(|e| {
             LifecycleError::network_error(format!(
@@ -748,13 +758,16 @@ mod tests {
         assert_eq!(err.reason, "checksum_mismatch");
     }
 
-    /// El staging es hermano del programa, con el prefijo propio de la tabla de rutas.
+    /// El staging es hermano del programa y lleva el token del propietario.
     #[test]
     fn update_fetch_staging_is_sibling() {
         let program = Path::new("/home/ana/.local/opt/ai-voice-interconnector");
+        let owner = OwnerToken::new(4242, "abc123").unwrap();
         assert_eq!(
-            staging_dir_for(program, "0.24.0"),
-            Path::new("/home/ana/.local/opt/.ai-voice-interconnector-staging-update-0.24.0")
+            staging_dir_for(program, "0.24.0", &owner),
+            Path::new(
+                "/home/ana/.local/opt/.ai-voice-interconnector-staging-4242-abc123-update-0.24.0"
+            )
         );
     }
 
@@ -895,7 +908,11 @@ mod tests {
         std::env::remove_var(crate::update_resolve::DOWNLOAD_BASE_ENV);
         let staged = outcome.expect("la descarga local se verifica y extrae");
         assert_eq!(staged.asset_name, asset);
-        assert_eq!(staged.staging, staging_dir_for(&program_dir, version));
+        let owner = avi_process::current_owner_token().unwrap();
+        assert_eq!(
+            staged.staging,
+            staging_dir_for(&program_dir, version, &owner)
+        );
         let section = manifest::target_section(triple).unwrap();
         assert!(staged.staging.join(section.executable_path()).is_file());
         assert!(manifest::validate_bundle(triple, &staged.staging).is_ok());
@@ -965,7 +982,12 @@ mod tests {
         assert_eq!(err.reason, "checksum_mismatch");
         assert_eq!(ExitCode::from_reason(err.reason).code(), 21);
         assert!(
-            !staging_dir_for(&program_dir, version).exists(),
+            !staging_dir_for(
+                &program_dir,
+                version,
+                &avi_process::current_owner_token().unwrap()
+            )
+            .exists(),
             "el staging se borra"
         );
         assert_eq!(

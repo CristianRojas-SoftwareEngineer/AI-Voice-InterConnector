@@ -86,9 +86,9 @@ pub struct Env {
     /// Contenedor de caché de la aplicación, del que cuelgan `models` y `tmp`. Es
     /// la raíz de caché que se registra en el recibo.
     pub cache_dir: PathBuf,
-    /// Directorio de temporales del sistema, que es donde vive lo que el barrido
-    /// recoge.
-    pub temp_root: PathBuf,
+    /// Raíz de los scratch por proceso, que es donde vive lo que el barrido
+    /// recoge de los procesos muertos.
+    pub scratch_root: PathBuf,
     /// `$HOME`, del que cuelgan los perfiles de shell. En Windows existe para que
     /// `Env` tenga la misma forma en los cuatro targets; la parte de perfiles no se
     /// usa allí.
@@ -159,10 +159,7 @@ impl Env {
             data_dir: crate::data_dir().map_err(path_error)?,
             models_dir: crate::models_cache_dir().map_err(path_error)?,
             cache_dir: crate::cache_container().map_err(path_error)?,
-            // Raíz del temporal del sistema, donde se barren los residuos de versiones
-            // anteriores del producto: es la lectura que el lint prohíbe para crear.
-            #[allow(clippy::disallowed_methods)]
-            temp_root: std::env::temp_dir(),
+            scratch_root: crate::scratch_root().map_err(path_error)?,
             home: home_dir()?,
             path_env: std::env::var("PATH").unwrap_or_default(),
             shell: path_unix::Shell::from_env(std::env::var("SHELL").ok().as_deref()),
@@ -457,16 +454,17 @@ pub async fn install(
 
     // ── Paso 1. Recuperación y bloqueo ────────────────────────────────────────
     // La recuperación va con el bloqueo tomado: si no, el barrido podría llevarse por
-    // delante el staging que otra operación está usando. Y el staging del que esta
-    // operación va a instalar se declara en uso: el barrido recoge "stagings
-    // huérfanos", y el bundle del paso 2 todavía no es huérfano aunque esté recién
-    // extraído.
+    // delante el staging que otra operación está usando. El staging del que esta
+    // operación instala no corre peligro: lo creó un proceso vivo (el que descarga o
+    // construye y espera el traspaso), y el barrido solo borra stagings de dueño
+    // muerto.
     let lock = crate::lock::acquire_exclusive(&env.program_dir)?;
     let bundle = bundle_dir(&env.exe);
     let recovery = crate::recovery::recover(crate::recovery::Roots {
         program_dir: &env.program_dir,
-        temp_root: &env.temp_root,
-        in_use: Some(&bundle),
+        scratch_root: &env.scratch_root,
+        data_dir: &env.data_dir,
+        bin_dir: &env.bin_dir,
     })?;
 
     // ── Modo, por posición del ejecutable ─────────────────────────────────────
@@ -1295,7 +1293,7 @@ mod tests {
             data_dir: PathBuf::from("/home/ana/.local/share/ai-voice-interconnector"),
             models_dir: PathBuf::from("/home/ana/.cache/ai-voice-interconnector/models"),
             cache_dir: PathBuf::from("/home/ana/.cache/ai-voice-interconnector"),
-            temp_root: PathBuf::from("/tmp"),
+            scratch_root: PathBuf::from("/home/ana/.cache/ai-voice-interconnector/tmp"),
             home: PathBuf::from("/home/ana"),
             path_env: "/usr/bin:/bin".to_string(),
             shell: path_unix::Shell::Bash,

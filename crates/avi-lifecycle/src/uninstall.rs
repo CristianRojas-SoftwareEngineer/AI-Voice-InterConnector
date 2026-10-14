@@ -391,10 +391,8 @@ pub async fn run(
         removed,
         planned,
         swept: recovery
-            .removed_parked
+            .removed()
             .iter()
-            .chain(recovery.removed_stagings.iter())
-            .chain(recovery.removed_temporaries.iter())
             .map(|p| p.display().to_string())
             .collect(),
         kept: recovery
@@ -632,7 +630,7 @@ pub fn simulate(
             .map(|p| p.display().to_string())
             .collect(),
         kept: preview
-            .temporaries_kept
+            .undecided()
             .iter()
             .map(|p| p.display().to_string())
             .collect(),
@@ -960,7 +958,7 @@ pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
     for protected in [
         roots.data_dir.as_path(),
         roots.models_dir.as_path(),
-        roots.temp_root.as_path(),
+        roots.scratch_root.as_path(),
     ] {
         if protected.as_os_str().is_empty() {
             continue;
@@ -1060,7 +1058,8 @@ mod program_dir_rule_tests {
             program_dir: program.to_path_buf(),
             data_dir: home.join("data"),
             models_dir: home.join("models"),
-            temp_root: home.join("temp"),
+            scratch_root: home.join("temp"),
+            bin_dir: home.join("bin"),
             home: home.to_path_buf(),
             models_shared: false,
         }

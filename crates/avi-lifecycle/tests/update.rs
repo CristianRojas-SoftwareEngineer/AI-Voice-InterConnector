@@ -82,6 +82,12 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use support::Sandbox;
 
+/// Staging que `self update` crearía para la 0.24.0 siendo este proceso el que descarga.
+fn own_staging(sandbox: &Sandbox) -> PathBuf {
+    let owner = avi_process::current_owner_token().expect("este proceso se puede observar");
+    update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0", &owner)
+}
+
 /// Instalación registrada de `version` en el sandbox, sin pasar por
 /// `self install`: escribe el ejecutable y el recibo. Es lo que necesitan
 /// las pruebas de actualización, cuyo objeto es la actualización y no la
@@ -290,10 +296,7 @@ fn already_up_to_date_downloads_nothing() {
         "al día no se descarga el archivo"
     );
     assert_eq!(server.sums_downloads(), 0, "y tampoco se piden las sumas");
-    assert!(
-        !update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0").exists(),
-        "y no se crea staging"
-    );
+    assert!(!own_staging(&sandbox).exists(), "y no se crea staging");
     assert!(
         previous_operational(&sandbox, "0.24.0"),
         "la instalación sigue operativa"
@@ -343,10 +346,7 @@ fn check_leaves_disk_untouched() {
     );
     assert!(!resolution.destructive, "subir no es destructivo");
     assert_eq!(sandbox.snapshot(), before, "`--check` no modifica el disco");
-    assert!(
-        !update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0").exists(),
-        "y no crea staging"
-    );
+    assert!(!own_staging(&sandbox).exists(), "y no crea staging");
 }
 
 // ─── Parada del daemon ──────────────────────────────────────────────────────────
@@ -395,14 +395,11 @@ fn daemon_stops_before_replacement() {
         previous_operational(&sandbox, "0.23.1"),
         "la parada es antes del reemplazo y el programa sigue intacto"
     );
-    assert!(
-        !update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0").exists(),
-        "y todavía no hay staging"
-    );
+    assert!(!own_staging(&sandbox).exists(), "y todavía no hay staging");
 
     // Ejecutable en uso: el borrado directo falla y queda a diferido, sin que el
     // `update` falle por ello.
-    let staging = update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0");
+    let staging = own_staging(&sandbox);
     support::write(&staging.join("package.bin"), "staging en uso");
     assert_eq!(
         update::cleanup_staging(&staging, &Busy),
@@ -498,12 +495,15 @@ fn interrupted_update_leaves_installed_version_operational() {
 
     // La siguiente operación recupera: el staging huérfano se barre y la
     // instalación de la 0.24.0 se completa sin residuo pendiente.
-    let orphan = update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0");
+    // Un staging cuyo dueño murió: un PID que el sistema no puede asignar.
+    let dead_owner = avi_shared::OwnerToken::new(4_294_967_000, "1").expect("token válido");
+    let orphan = update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0", &dead_owner);
     support::write(&orphan.join("package.bin"), "staging huérfano");
     let outcome = recovery::recover(recovery::Roots {
         program_dir: &sandbox.program_dir,
-        temp_root: &sandbox.temp_root,
-        in_use: None,
+        scratch_root: &sandbox.scratch_root,
+        data_dir: &sandbox.data_dir,
+        bin_dir: &sandbox.bin_dir,
     })
     .expect("la recuperación se ejecuta");
     assert!(
@@ -797,10 +797,7 @@ fn update_checksum_mismatch_cleans_staging() {
         1,
         "el archivo sí se descargó antes de rechazarlo"
     );
-    assert!(
-        !update_fetch::staging_dir_for(&sandbox.program_dir, "0.24.0").exists(),
-        "el staging se borra"
-    );
+    assert!(!own_staging(&sandbox).exists(), "el staging se borra");
     assert!(
         previous_operational(&sandbox, "0.23.1"),
         "la instalación queda intacta"

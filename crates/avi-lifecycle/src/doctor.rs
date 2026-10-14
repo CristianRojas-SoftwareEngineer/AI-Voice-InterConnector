@@ -88,11 +88,7 @@ impl Env {
     }
 
     fn recovery_roots(&self) -> RecoveryRoots<'_> {
-        RecoveryRoots {
-            program_dir: &self.roots.program_dir,
-            temp_root: &self.roots.temp_root,
-            in_use: None,
-        }
+        self.roots.recovery_roots()
     }
 }
 
@@ -151,16 +147,28 @@ pub struct PathState {
 }
 
 ///
-/// Fila `pending` del reporte: diario de transacción, aparcados, stagings huérfanos y
-/// temporales propios huérfanos.
+/// Fila `pending` del reporte: diario de transacción y lo que el barrido por identidad
+/// decide sobre los residuos de operaciones anteriores. Es la misma decisión que
+/// ejecuta el barrido: lo que aquí aparece como residuo es lo que `--repair` borra.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Pending {
     pub transaction_journal: bool,
+    /// Aparcados de dueño muerto.
     pub parked: Vec<String>,
+    /// Stagings de instalación de dueño muerto.
     pub stagings: Vec<String>,
+    /// Scratch de dueño muerto.
+    pub scratch: Vec<String>,
+    /// Temporales con token y stagings de voz de dueño muerto.
     pub temporaries: Vec<String>,
-    /// Temporales de un proceso vivo: no se pueden decidir y no son un residuo.
-    pub temporaries_kept: Vec<String>,
+    /// Registros de borrado diferido cuyo destino ya no existe.
+    pub failure_logs: Vec<String>,
+    /// Residuos cuyo dueño no se puede observar: se conservan y se informan, sin
+    /// poder afirmar que estén huérfanos.
+    pub unknown_owner: Vec<String>,
+    /// Registros de borrado diferido cuyo destino sigue existiendo: el borrado
+    /// no se completó.
+    pub pending_failures: Vec<String>,
     /// Directorios del barrido que existen y no se pueden listar: no se puede afirmar
     /// que no haya restos en ellos.
     pub unreadable: Vec<String>,
@@ -172,7 +180,11 @@ impl Pending {
         !self.transaction_journal
             && self.parked.is_empty()
             && self.stagings.is_empty()
+            && self.scratch.is_empty()
             && self.temporaries.is_empty()
+            && self.failure_logs.is_empty()
+            && self.unknown_owner.is_empty()
+            && self.pending_failures.is_empty()
             && self.unreadable.is_empty()
     }
 }
@@ -329,11 +341,17 @@ pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
             "sin residuos de operaciones anteriores".to_string()
         } else {
             format!(
-                "{} aparcado(s), {} staging(s) y {} temporal(es) por recoger; {} directorio(s) \
-                 sin poder listar",
+                "{} aparcado(s), {} staging(s), {} scratch y {} temporal(es) por recoger; \
+                 {} registro(s) de borrado resuelto(s); {} residuo(s) de dueño no \
+                 observable; {} borrado(s) diferido(s) sin completar; {} directorio(s) sin \
+                 poder listar",
                 pending.parked.len(),
                 pending.stagings.len(),
+                pending.scratch.len(),
                 pending.temporaries.len(),
+                pending.failure_logs.len(),
+                pending.unknown_owner.len(),
+                pending.pending_failures.len(),
                 pending.unreadable.len()
             )
         },
@@ -370,8 +388,11 @@ fn pending(env: &Env) -> Pending {
         transaction_journal: crate::transaction::journal_path(&env.roots.program_dir).is_file(),
         parked: display_all(&preview.parked),
         stagings: display_all(&preview.stagings),
+        scratch: display_all(&preview.scratch),
         temporaries: display_all(&preview.temporaries),
-        temporaries_kept: display_all(&preview.temporaries_kept),
+        failure_logs: display_all(&preview.failure_logs),
+        unknown_owner: display_all(&preview.unknown_owner),
+        pending_failures: display_all(&preview.pending_failures),
         unreadable: preview
             .unreadable
             .iter()
@@ -612,7 +633,8 @@ mod tests {
             program_dir: root.join("opt/ai-voice-interconnector"),
             data_dir: root.join("data"),
             models_dir: root.join("models"),
-            temp_root: root.join("tmp"),
+            scratch_root: root.join("tmp"),
+            bin_dir: root.join("bin"),
             home: root.join("home/ana"),
             models_shared: false,
         };
@@ -620,7 +642,7 @@ mod tests {
             &roots.program_dir,
             &roots.data_dir,
             &roots.models_dir,
-            &roots.temp_root,
+            &roots.scratch_root,
         ] {
             std::fs::create_dir_all(dir).expect("se crea el sandbox");
         }
@@ -640,7 +662,7 @@ mod tests {
         let (root, mut env) = env("unlistable");
         let temp_file = root.join("temp-is-a-file");
         write_file(&temp_file, "no es un directorio");
-        env.roots.temp_root = temp_file.clone();
+        env.roots.scratch_root = temp_file.clone();
 
         let report = report(&env, Path::new("ai-voice-interconnector"), "0.0.0");
         assert_eq!(
@@ -870,12 +892,12 @@ mod tests {
         let (_scratch, mut env) = env("coexistence");
         let registered = env.roots.program_dir.clone();
         write_file(&registered.join(exe_name()), "binario");
-        let second = env.roots.temp_root.join("second-install");
+        let second = env.roots.scratch_root.join("second-install");
         write_file(&second.join(exe_name()), "binario");
         // La del Cask va la primera, y no deja recibo: se reconoce por el prefijo.
         let cask = env
             .roots
-            .temp_root
+            .scratch_root
             .join("Caskroom/ai-voice-interconnector/0.24.0");
         write_file(&cask.join(exe_name()), "binario");
         // El separador es el de la plataforma: `separador_path()` lo decide también en
@@ -911,19 +933,24 @@ mod tests {
     #[test]
     fn doctor_reports_pending_artifacts() {
         let (_scratch, env) = env("pending");
+        // Un PID que el sistema no puede tener: su dueño está muerto.
+        let dead = avi_shared::OwnerToken::new(4_294_967_000, "1").unwrap();
         let parked = env
             .roots
             .program_dir
-            .join(format!("{}1234", crate::PARKED_DIR_PREFIX));
+            .join(avi_shared::staging_names::parked::name(&dead, 1234));
         write_file(&parked.join("previous"), "v1");
-        let staging = env
-            .roots
-            .program_dir
-            .parent()
-            .unwrap()
-            .join(format!("{}9999", crate::STAGING_DIR_PREFIX));
+        let staging = env.roots.program_dir.parent().unwrap().join(
+            avi_shared::staging_names::install_staging::name("update-0.24.0", &dead),
+        );
         write_file(&staging.join("downloaded"), "bundle");
-        let temp = env.roots.temp_root.join("avi-orphan.tmp");
+        let temp = env
+            .roots
+            .data_dir
+            .join(avi_shared::staging_names::temp_file::name(
+                "daemon.pid",
+                &dead,
+            ));
         write_file(&temp, "x");
 
         let findings = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");

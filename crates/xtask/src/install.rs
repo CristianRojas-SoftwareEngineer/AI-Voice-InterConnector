@@ -104,11 +104,12 @@ pub(crate) fn staging_dir() -> Result<PathBuf> {
             install.display()
         )
     })?;
-    Ok(sibling_base.join(format!(
-        "{}{}",
-        avi_shared::paths::STAGING_DIR_PREFIX,
-        std::process::id()
-    )))
+    let owner = avi_process::current_owner_token()?;
+    Ok(
+        sibling_base.join(avi_shared::staging_names::install_staging::name(
+            "xtask", &owner,
+        )),
+    )
 }
 
 /// Punto de entrada de `xtask install`.
@@ -219,7 +220,7 @@ mod tests {
 
     /// El staging cuelga del mismo padre que el directorio de programa
     /// (mismo volumen para el `rename` transaccional) y lleva el prefijo
-    /// canónico, sin tocar el entorno.
+    /// con el token de este proceso, sin tocar el entorno.
     #[test]
     fn staging_is_sibling_of_program_dir() {
         let staging = staging_dir().unwrap();
@@ -229,9 +230,10 @@ mod tests {
             .file_name()
             .expect("el staging tiene nombre")
             .to_string_lossy();
-        assert!(
-            name.starts_with(avi_shared::paths::STAGING_DIR_PREFIX),
-            "prefijo canónico: {name}"
+        assert_eq!(
+            avi_shared::staging_names::install_staging::owner_of(&name),
+            Some(avi_process::current_owner_token().unwrap()),
+            "nombre con el token de este proceso: {name}"
         );
     }
 }

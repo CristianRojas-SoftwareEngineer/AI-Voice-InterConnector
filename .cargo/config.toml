@@ -27,6 +27,17 @@ CMAKE_MSVC_RUNTIME_LIBRARY = "MultiThreaded"
 # incrusta en el binario distribuido, y una `ORT_DYLIB_PATH` exportada
 # explícitamente la sustituye.
 ORT_DYLIB_PATH = { value = "ort-bundle", relative = true }
+# Confina los temporales de todo lo que lanza cargo (pruebas, `cargo run`,
+# `cargo xtask`) dentro de `target/`. Antes, las pruebas abortadas dejaban
+# sandboxes y directorios temporales en el temporal del sistema, donde nada los
+# limpiaba; ahora quedan bajo `target/`, que vacían `cargo clean` y
+# `cargo xtask clean`. La ruta es `target` y no `target/tmp` porque cargo no crea
+# `target/tmp` antes del primer proceso hijo: con `target/` en frío el enlazador
+# falla (LNK1104) al no poder escribir su temporal, mientras que `target` existe
+# siempre antes de compilar.
+TMP = { value = "target", force = true, relative = true }
+TEMP = { value = "target", force = true, relative = true }
+TMPDIR = { value = "target", force = true, relative = true }
 # Cómo se enlazan en Linux los runtimes de GCC que necesitan los crates C++:
 # única fuente de esa política. Cada crate declara qué necesita y emite tal cual
 # el valor de estas variables como petición de enlace, que rustc coloca justo

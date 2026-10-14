@@ -110,7 +110,7 @@ fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
 }
 
 /// Un directorio del barrido que existe y no se puede listar (aquí, un fichero en lugar
-/// del directorio de temporales) sale en `unreadable`, tanto en la simulación como en la
+/// de la raíz del scratch) sale en `unreadable`, tanto en la simulación como en la
 /// ejecución real.
 #[test]
 fn cleanup_reports_unlistable_sweep_directories() {
@@ -118,7 +118,7 @@ fn cleanup_reports_unlistable_sweep_directories() {
     let temp_file = sandbox.root.join("temp-is-a-file");
     write(&temp_file, "no es un directorio");
     let mut roots = sandbox.roots();
-    roots.temp_root = temp_file.clone();
+    roots.scratch_root = temp_file.clone();
     let options = with_yes(CleanupOptions {
         voices: true,
         ..Default::default()
@@ -438,17 +438,17 @@ fn shared_hf_cache_keeps_foreign_entries() {
     assert!(exists(&hub), "la raíz compartida no se borra entera");
 }
 
-/// Un temporal propio sin PID se barre: la regla exige que cualquier invocación barra los
-/// temporales propios huérfanos, y uno sin PID no pertenece a ningún proceso vivo.
-///
-/// Un temporal huérfano sin PID es justo el que deja una clonación o una síntesis
-/// interrumpida, así que el barrido no puede limitarse a los que llevan un PID muerto.
+/// El scratch de un proceso muerto se barre con la identidad real del sistema, y lo que
+/// no es un scratch (un nombre que no es un token) no se toca: cualquier invocación barre
+/// los residuos huérfanos, que es justo lo que deja una clonación o una síntesis
+/// interrumpida.
 #[test]
-fn orphan_temporary_without_pid_is_swept() {
+fn orphan_scratch_of_a_dead_owner_is_swept() {
     let sandbox = Sandbox::new("temp");
-    let temp = sandbox.temp_root.join("avi_clone_x_1.qvoice");
-    write(&temp, "audio");
-    let foreign = sandbox.temp_root.join("lifecycle-test-foreign.txt");
+    // Un PID que el sistema no puede asignar: su dueño está muerto.
+    let temp = sandbox.scratch_root.join("4294967000-1");
+    write(&temp.join("avi_clone_x_1.qvoice"), "audio");
+    let foreign = sandbox.scratch_root.join("lifecycle-test-foreign.txt");
     write(&foreign, "no es del producto");
 
     let outcome = runtime()
@@ -464,7 +464,7 @@ fn orphan_temporary_without_pid_is_swept() {
 
     assert!(
         !exists(&temp),
-        "el temporal propio sin PID se barre: {:?}",
+        "el scratch de un dueño muerto se barre: {:?}",
         outcome.swept
     );
     assert!(
@@ -731,7 +731,7 @@ fn uninstall_refuses_unsafe_program_dir() {
         sandbox.home.parent().unwrap().to_path_buf(),
         sandbox.data_dir.clone(),
         sandbox.models_dir.clone(),
-        sandbox.temp_root.clone(),
+        sandbox.scratch_root.clone(),
     ] {
         write(&protected.join("install-receipt.json"), "{}");
         assert!(

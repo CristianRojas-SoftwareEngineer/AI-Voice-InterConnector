@@ -2,6 +2,9 @@
 target/
 # Archivos de distribución que escribe `cargo xtask package`.
 /artifacts/
+# Registro que deja el borrado diferido de `target/` cuando no logra retirarlo
+# (`cargo xtask clean` lo retira cuando `target/` ya no existe).
+/*.removal-failed.log
 # Config de Claude Code: ignorar todo el contenido de .claude/ (incluido el prompt
 # de continuidad — se genera localmente y no se versiona).
 .claude/*

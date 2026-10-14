@@ -11,7 +11,7 @@
 //! ejecutable en uso abortaría la operación con el directorio a medio borrar. Por
 //! eso se reemplaza por transacción. El algoritmo es el mismo en los cuatro targets:
 //!
-//! 1. **Aparcar** el contenido actual en `<programa>/.old-<txid>/` por renombrado,
+//! 1. **Aparcar** el contenido actual en `<programa>/.old-<token>-<único>/` por renombrado,
 //!    registrándolo en el diario. Aparcar en vez de borrar es lo que hace el
 //!    reemplazo reversible, y en Windows es lo único posible con un ejecutable
 //!    en uso: renombrar se permite, borrar no.
@@ -19,7 +19,7 @@
 //!    renombrado —el staging es hermano del directorio de programa, luego es el
 //!    mismo volumen—, salvo el ejecutable que está corriendo, que se copia.
 //! 3. **Ajustar permisos**: en Unix, 0755 para ejecutables y 0644 para el resto.
-//! 4. **Confirmar**: marcar el diario como confirmado y borrar `.old-<txid>/`.
+//! 4. **Confirmar**: marcar el diario como confirmado y borrar el aparcado.
 //!    Lo que no se pueda borrar por estar en uso queda para el borrado diferido
 //!    (borrado diferido), que impide que el commit falle por un archivo abierto.
 //! 5. **Revertir** si falla el paso 2 o el 3: retirar lo colocado, restaurar lo
@@ -74,7 +74,7 @@ pub struct Journal {
     pub schema_version: u32,
     pub txid: String,
     pub state: JournalState,
-    /// Directorio `.old-<txid>/` con el contenido anterior, si ya se aparcó.
+    /// Directorio aparcado con el contenido anterior, si ya se aparcó.
     #[serde(deserialize_with = "crate::receipt::required")]
     pub parked_dir: Option<PathBuf>,
     /// Rutas relativas colocadas, necesarias para el rollback.
@@ -124,9 +124,13 @@ pub fn read_journal(program_dir: &Path) -> anyhow::Result<Option<Journal>> {
 /// cumple por ser hermano del directorio de programa. Si no fuera así, el renombrado de la colocación
 /// fallaría, la transacción revertiría y no se tocaría la versión anterior.
 pub fn replace(program_dir: &Path, source_dir: &Path) -> anyhow::Result<ReplaceOutcome> {
-    let txid = new_txid();
+    // El aparcado lleva el token del proceso que sustituye, que tiene el
+    // bloqueo exclusivo: así la recuperación sabe si su dueño sigue vivo.
+    let owner = avi_process::current_owner_token()?;
+    let unique = new_unique();
+    let txid = format!("{}-{unique}", owner.format());
     std::fs::create_dir_all(program_dir)?;
-    let parked = program_dir.join(format!("{}{txid}", crate::PARKED_DIR_PREFIX));
+    let parked = program_dir.join(avi_shared::staging_names::parked::name(&owner, unique));
     let mut journal = Journal {
         schema_version: JOURNAL_SCHEMA_VERSION,
         txid: txid.clone(),
@@ -227,7 +231,7 @@ fn run(
     })
 }
 
-/// Renombra a `<programa>/.old-<txid>/` todo lo que hay en el directorio de
+/// Renombra al aparcado `<programa>/.old-<token>-<único>/` todo lo que hay en el directorio de
 /// programa, y devuelve los nombres aparcados.
 ///
 /// No aparca el diario (se escribiría dentro de sí mismo) ni los aparcados de
@@ -462,16 +466,14 @@ fn to_platform_path(relative: &str) -> PathBuf {
     path
 }
 
-/// Identificador de transacción: proceso e instante. No necesita ser único más
-/// allá del directorio de programa —ahí el proceso ya identifica a quien
-/// instala— ni aleatorio, solo tiene que distinguir dos transacciones seguidas
-/// dentro del mismo directorio.
-fn new_txid() -> String {
-    let nanos = std::time::SystemTime::now()
+/// Parte única de una transacción: el instante en nanosegundos. Junto al token
+/// del proceso identifica la transacción; no necesita ser aleatoria, solo
+/// distinguir dos transacciones seguidas del mismo proceso.
+fn new_unique() -> u128 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or_default();
-    format!("{}-{}", std::process::id(), nanos)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

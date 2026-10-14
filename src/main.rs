@@ -3304,8 +3304,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
 
             // ── Paso 1. Recuperación y bloqueo ────────────────────────────────
-            // Sin staging en uso todavía: el que cree U2 no existe y todo
-            // hermano con prefijo es huérfano por definición.
+            // El staging que cree U2 aún no existe; y cuando exista llevará el
+            // token de este proceso, vivo, así que el barrido nunca lo toca.
             let roots = lifecycle::cleanup::Roots::from_receipt(Some(&receipt))
                 .map_err(|e| CliError::new(ExitCode::Error, "self_update_failed", e.to_string()))?;
             let mut lock = lifecycle::lock::acquire_exclusive(&roots.program_dir)
@@ -3551,12 +3551,7 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     if repair {
         let lock = lifecycle::lock::acquire_exclusive(&env.roots.program_dir)
             .map_err(|e| lifecycle_error_to_cli(e.into()))?;
-        lifecycle::recovery::recover(lifecycle::recovery::Roots {
-            program_dir: &env.roots.program_dir,
-            temp_root: &env.roots.temp_root,
-            in_use: None,
-        })
-        .map_err(lifecycle_error_to_cli)?;
+        lifecycle::recovery::recover(env.roots.recovery_roots()).map_err(lifecycle_error_to_cli)?;
         drop(lock);
     }
     let report = lifecycle::doctor::report(&env, &exe, VERSION);

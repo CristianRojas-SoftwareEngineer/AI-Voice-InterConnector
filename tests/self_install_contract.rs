@@ -62,26 +62,6 @@ use std::process::Command;
 /// Ruta al binario bajo test, inyectada por Cargo en tests de integración.
 const BIN: &str = env!("CARGO_BIN_EXE_ai-voice-interconnector");
 
-/// Prefijo de los directorios que crea este archivo.
-///
-/// **Por qué no empieza por `avi`.** El producto reserva para la aplicación los prefijos
-/// de temporales `avi-` y `avi_`, y el barrido decide por **`starts_with`**: compara
-/// `name.starts_with(prefix)` contra `TEMP_PREFIXES`, que vale
-/// `&["avi-", "avi_"]`. Un directorio con el prefijo del producto es un
-/// temporal propio a todos los efectos, así que el barrido lo borra —`owner_pid` no
-/// encuentra una racha de tres dígitos en el nombre y lo declara huérfano—.
-///
-/// Y las dos correcciones "obvias" siguen colisionando: `avi_test_*` empieza por `avi_`, y
-/// `avi-test-*` empieza por `avi-`. El criterio es exactamente **no empezar por `avi-` ni por
-/// `avi_`**, y da igual qué más lleve el nombre.
-///
-/// Aquí era doble: este archivo **ejecuta `self install`**, que es una de las operaciones
-/// que barren, de modo que un prefijo colisionante exponía el sandbox de este archivo al
-/// barrido de sus propios hijos y al de cualquier otro comando de ciclo de vida en paralelo.
-/// La segunda mitad del invariante —que el temporal del hijo esté dentro del sandbox— está
-/// en `Sandbox::new`, y `sweep_never_touches_a_foreign_test_sandbox`, en
-/// `crates/avi-lifecycle/tests/recovery.rs`, la comprueba contra el barrido real.
-const PREFIX_SANDBOX: &str = "contract-sandbox_";
 /// Captura anónima para la salida del hijo: un fichero sin nombre en el directorio, que
 /// el sistema retira al soltar el último manejador, así que no queda residuo ni con
 /// pánico y no existe nombre que el barrido del producto pudiera alcanzar.
@@ -193,7 +173,6 @@ fn seed_decoy_daemon_pidfile(data_dir: &Path) -> ReservedPort {
 const UNSEEDED_PIN: &str = "opus-mt-es-en";
 
 struct Sandbox {
-    root: PathBuf,
     /// Ejecutable a invocar: la **copia** del staging, que es la que tiene el bundle alrededor.
     exe: PathBuf,
     /// Entorno del hijo. `TEMP`/`TMP`/`TMPDIR` reubican su temporal, que la tabla no permite
@@ -208,7 +187,7 @@ struct Sandbox {
 impl Sandbox {
     fn new(tag: &str) -> Self {
         let guard = tempfile::Builder::new()
-            .prefix(&format!("{PREFIX_SANDBOX}{tag}_"))
+            .prefix(&format!("contract-sandbox_{tag}_"))
             .tempdir()
             .expect("crear el directorio del sandbox");
         let root = guard.path().to_path_buf();
@@ -311,7 +290,6 @@ impl Sandbox {
         Self {
             exe,
             envs,
-            root,
             _decoy: decoy,
             _guard: guard,
         }
@@ -393,68 +371,6 @@ impl Sandbox {
         });
         (code, json)
     }
-}
-
-/// El invariante del prefijo, desde el lado de este archivo.
-///
-/// Son dos porque este archivo es el peor de los dos casos: **ejecuta `self install`**, que
-/// es una de las operaciones que barren, así que un prefijo colisionante exponía su sandbox
-/// al barrido de sus propios hijos. El prefijo protege de eso, y la reubicación de `TEMP`,
-/// `TMP` y `TMPDIR` en `Sandbox::new` protege de que el barrido del hijo salga al
-/// temporal de la máquina.
-///
-/// El criterio es `!nombre.starts_with(prefijo_del_producto)`, y no "no lleva `avi`": las
-/// dos formas naturales colisionan, como demuestra el propio mensaje.
-#[test]
-fn contract_prefixes_do_not_collide_with_the_product_temporaries() {
-    for (name, prefix) in [("el sandbox", PREFIX_SANDBOX)] {
-        for product in avi_shared::paths::TEMP_PREFIXES {
-            assert!(
-                !prefix.starts_with(product),
-                "el prefijo de {name} (`{prefix}`) empieza por `{product}`, que el producto \
-                 reserva a la aplicación: el barrido lo borraría como si fuera temporal nuestro"
-            );
-        }
-    }
-    // Las dos trampas, para que el criterio quede escrito donde se mira.
-    assert!(
-        "avi_test_sandbox_x".starts_with("avi_"),
-        "precondición: `avi_test_*` empieza por `avi_` y por eso colisionaba"
-    );
-    assert!(
-        "avi-test-sandbox-x".starts_with("avi-"),
-        "precondición: `avi-test-*` empieza por `avi-` y por eso colisionaría"
-    );
-
-    // Y la segunda mitad: el temporal del hijo está dentro de su sandbox, así que el
-    // barrido tiene el universo acotado aunque el prefijo volviera a colisionar.
-    let sandbox = Sandbox::new("invariantprefix");
-    for variable in ["TEMP", "TMP", "TMPDIR"] {
-        let value = PathBuf::from(
-            sandbox
-                .envs
-                .iter()
-                .find(|(k, _)| k == variable)
-                .map(|(_, v)| v.as_str())
-                .unwrap_or_else(|| panic!("el sandbox debe reubicar {variable}")),
-        );
-        assert!(
-            value.starts_with(&sandbox.root),
-            "{variable} del hijo es {value:?}, fuera del sandbox {:?}: el barrido \
-             alcanzaría el temporal de la máquina",
-            sandbox.root
-        );
-    }
-    assert!(
-        sandbox
-            .root
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with(PREFIX_SANDBOX),
-        "y el directorio del sandbox se llama con el prefijo declarado, que es lo que la \
-         aserción de arriba comprueba"
-    );
 }
 
 /// `self install` sin `--no-setup` y con la provisión fallida: el programa queda

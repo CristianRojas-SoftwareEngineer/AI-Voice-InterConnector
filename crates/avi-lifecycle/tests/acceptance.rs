@@ -123,13 +123,14 @@ fn entry_paths(plan: &[avi_lifecycle::confirm::PlanEntry]) -> Vec<String> {
     plan.iter().map(|e| e.path.display().to_string()).collect()
 }
 
-/// Un temporal propio huérfano, que la regla obliga a barrer, creado junto a los
-/// recursos compartidos de `seed_state`: es el contraste que demuestra que el barrido es
-/// selectivo por prefijo y no por directorio.
-fn seed_own_temp(sandbox: &Sandbox) -> PathBuf {
-    let temp = sandbox.temp_root.join("avi-orphan.tmp");
-    support::write(&temp, "temporal propio");
-    temp
+/// Un scratch huérfano (de un proceso muerto, con un PID que el sistema no puede
+/// asignar), que la regla obliga a barrer, creado junto a los recursos compartidos de
+/// `seed_state`: es el contraste que demuestra que el barrido decide por la identidad del
+/// propietario y no por directorio.
+fn seed_orphan_scratch(sandbox: &Sandbox) -> PathBuf {
+    let scratch = sandbox.scratch_root.join("4294967000-1");
+    support::write(&scratch.join("clip.wav"), "temporal propio");
+    scratch
 }
 
 /// `cleanup` con `--yes` y la categoría que le pase quien llama.
@@ -868,23 +869,18 @@ fn uninstall_leaves_no_residue() {
         !inspect::exists(&sandbox.models_dir),
         "la raíz de modelos no queda"
     );
+    // El staging lleva el token de este proceso, vivo, y la desinstalación no lo barre:
+    // lo borra quien lo creó, como el instalador de arranque al terminar.
+    std::fs::remove_dir_all(sandbox.staging()).expect("el dueño borra su staging");
     assert_eq!(
         opt_entries(&sandbox),
         Vec::<String>::new(),
         "el padre del programa queda vacío: ni staging, ni aparcados, ni bloqueo"
     );
-    let own_temps: Vec<String> = listing::list(&sandbox.temp_root)
-        .into_iter()
-        .filter(|n| {
-            avi_lifecycle::TEMP_PREFIXES
-                .iter()
-                .any(|p| n.starts_with(p))
-        })
-        .collect();
     assert_eq!(
-        own_temps,
+        listing::list(&sandbox.scratch_root),
         Vec::<String>::new(),
-        "ningún temporal propio sobrevive"
+        "ningún scratch propio sobrevive"
     );
 
     if cfg!(unix) {
@@ -1599,7 +1595,7 @@ fn shared_resources_survive() {
     );
 
     sandbox.seed_state();
-    let own_temp = seed_own_temp(&sandbox);
+    let own_temp = seed_orphan_scratch(&sandbox);
 
     // Lo que es atribuible a la aplicación, y lo que nunca lo es.
     let (repo, rev) = MODEL_REVISIONS
@@ -1721,10 +1717,10 @@ fn shared_resources_survive() {
         inspect::exists(&sandbox.data_dir.join("voices").join("mine")),
         "`--model` no toca el estado de usuario"
     );
-    // El barrido es selectivo por prefijo, no por directorio.
+    // El barrido decide por la identidad del propietario, no por directorio.
     assert!(
         !inspect::exists(&own_temp),
-        "el temporal propio sí se barre, y se anuncia: {:?}",
+        "el scratch huérfano sí se barre, y se anuncia: {:?}",
         real.swept
     );
     assert!(
