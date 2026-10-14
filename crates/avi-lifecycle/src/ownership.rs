@@ -66,13 +66,27 @@ pub struct Report {
 
 /// Planifica el borrado de `removals` sobre `tree` sin tocar el disco.
 pub fn plan(tree: &[OwnershipNode], removals: &[PathBuf]) -> Plan {
-    let removal_keys: BTreeSet<String> = removals.iter().map(|p| key(p)).collect();
+    plan_with_departing(tree, removals, &[])
+}
+
+/// Igual que [`plan`], pero contando también como retiradas las rutas de `departing`:
+/// salen del disco por otro camino y en otro momento de la operación (el directorio de
+/// programa y sus archivos de bloqueo, que `self uninstall` retira después del estado).
+/// Un contenedor que solo las retiene se predice podado, y no se informa como ajeno.
+/// `departing` no entra en `Plan::removals`: [`execute`] no las borra.
+pub fn plan_with_departing(
+    tree: &[OwnershipNode],
+    removals: &[PathBuf],
+    departing: &[PathBuf],
+) -> Plan {
+    let gone: Vec<PathBuf> = removals.iter().chain(departing).cloned().collect();
+    let removal_keys: BTreeSet<String> = gone.iter().map(|p| key(p)).collect();
     let node_keys: BTreeSet<String> = tree.iter().map(|n| key(&n.path)).collect();
     let mut pruned_keys: BTreeSet<String> = BTreeSet::new();
     let mut prune = Vec::new();
     let mut foreign = Vec::new();
 
-    for container in ancestor_containers(tree, removals) {
+    for container in ancestor_containers(tree, &gone) {
         let Ok(entries) = std::fs::read_dir(container) else {
             // Un contenedor que no existe o no se puede leer no se poda.
             continue;

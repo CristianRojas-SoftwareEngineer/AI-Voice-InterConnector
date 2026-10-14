@@ -81,10 +81,12 @@ pub trait ProgramDirRemover {
     fn exe_lives_inside(&self, program_dir: &Path) -> anyhow::Result<bool>;
     /// Borra el directorio ya. En Unix es lo que hace siempre.
     fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()>;
-    /// Programa el borrado para cuando termine el proceso `wait`, identificado por PID e
-    /// inicio. `Ok` significa que el limpiador está en marcha; si no puede garantizarse,
-    /// `Err`. Es el caso diferido del paso 8.
-    fn schedule(&self, program_dir: &Path, wait: &OwnerToken) -> anyhow::Result<()>;
+    /// Programa el borrado de `target` para cuando termine el proceso `wait`,
+    /// identificado por PID e inicio. `target` es el directorio de programa o, si vive
+    /// dentro de contenedores que quedarían vacíos, el más externo de ellos. `Ok`
+    /// significa que el limpiador está en marcha; si no puede garantizarse, `Err`. Es el
+    /// caso diferido del paso 8.
+    fn schedule(&self, target: &Path, wait: &OwnerToken) -> anyhow::Result<()>;
 }
 
 /// Plan del paso 2.
@@ -343,9 +345,18 @@ pub async fn run(
     // componerse. `program_dir` solo es destino si la regla del directorio de
     // programa lo permite, y esa regla exige recibo o ejecutable **dentro** del
     // directorio, así que ser destino implica que el directorio existe.
+    // Los contenedores del árbol que solo retienen el programa y sus archivos de
+    // bloqueo se planifican aquí, sobre el disco ya sin estado: el estado se borró en el
+    // paso 6 y no pudo podarlos porque el programa seguía dentro.
+    let tree = roots.ownership_tree();
+    let tail = if plan.program_dir.is_some() {
+        ownership::plan(&tree, &program_departing(&program_dir))
+    } else {
+        ownership::Plan::default()
+    };
     let mut program_dir_kept = None;
     let (program_dir_removed, status) = if plan.program_dir.is_some() {
-        match remove_program_dir(remover, &program_dir) {
+        match remove_program_dir(remover, &program_dir, &tail) {
             Ok(Removal::Now) => {
                 removed.push(program_dir.display().to_string());
                 (true, "uninstalled")
@@ -379,6 +390,18 @@ pub async fn run(
     for (path, error) in lock.remove_files() {
         eprintln!("  no se pudo borrar {}: {error}", path.display());
         failed.push(path.display().to_string());
+    }
+
+    // Con el programa ya retirado y sin archivos de bloqueo, se podan los contenedores
+    // que solo los retenían. En el borrado diferido el programa sigue en disco y los
+    // poda el limpiador, que recibió el contenedor más externo como destino.
+    if program_dir_removed {
+        let report = ownership::execute(&tree, &tail);
+        removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
+        for (path, e) in &report.failed {
+            eprintln!("  no se pudo borrar {}: {e}", path.display());
+            failed.push(path.display().to_string());
+        }
     }
 
     Ok(Outcome {
@@ -494,7 +517,15 @@ pub fn compose_plan(
             .cmp(&b.category)
             .then_with(|| a.path.cmp(&b.path))
     });
-    let mut state = cleanup::finish(roots, targets, preserved);
+    // Si el directorio de programa se borra por su cuenta (paso 8), sale del disco
+    // después del estado, junto con sus archivos de bloqueo. Un contenedor del árbol que
+    // solo lo retiene a él se prevé podado, y no se informa como ajeno.
+    let departing = if program_dir_is_removable(roots, program_dir) && program_dir.is_dir() {
+        program_departing(program_dir)
+    } else {
+        Vec::new()
+    };
+    let mut state = cleanup::finish(roots, targets, preserved, &departing);
     let mut preserved = std::mem::take(&mut state.preserved);
     if let Some(receipt) = receipt {
         describe_path_integration(receipt, &mut preserved);
@@ -534,6 +565,16 @@ pub fn compose_plan(
         preserved,
         program_dir_swallowed_by,
     }
+}
+
+/// Rutas que salen del disco con el directorio de programa: él mismo y el archivo de
+/// bloqueo y la compuerta, que viven en su hermano.
+fn program_departing(program_dir: &Path) -> Vec<PathBuf> {
+    vec![
+        program_dir.to_path_buf(),
+        crate::lock::lock_path_for(program_dir),
+        crate::lock::gate_path_for(program_dir),
+    ]
 }
 
 /// Destino del plan que contiene —o es— el directorio de programa, si alguno lo
@@ -986,9 +1027,15 @@ pub fn program_dir_is_removable(roots: &Roots, program_dir: &Path) -> bool {
 
 /// Paso 8: borra el directorio de programa, o lo programa si el ejecutable en uso
 /// está dentro.
+///
+/// En el caso diferido el destino programado es el contenedor más externo de `tail` (el
+/// que, retirado el programa y sus bloqueos, queda vacío) y, si no hay ninguno, el propio
+/// programa. Es seguro porque `tail` solo poda un contenedor cuyo contenido restante es
+/// el programa y contenedores a su vez vacíos: nunca hay entradas ajenas dentro.
 fn remove_program_dir(
     remover: &dyn ProgramDirRemover,
     program_dir: &Path,
+    tail: &ownership::Plan,
 ) -> anyhow::Result<Removal> {
     if !program_dir.is_dir() {
         return Ok(Removal::Now);
@@ -999,10 +1046,11 @@ fn remove_program_dir(
         // programarse, el error sube y el directorio queda intacto: borrar aquí
         // sería un borrado parcial con el ejecutable en uso.
         let own = avi_process::current_owner_token()?;
-        remover.schedule(program_dir, &own)?;
+        let target = tail.prune.last().map_or(program_dir, PathBuf::as_path);
+        remover.schedule(target, &own)?;
         eprintln!(
             "  el directorio se borrará al terminar este proceso: {}",
-            program_dir.display()
+            target.display()
         );
         return Ok(Removal::Scheduled);
     }

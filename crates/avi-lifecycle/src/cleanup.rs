@@ -341,19 +341,22 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
             reason: "el programa y la integración de PATH son de `self uninstall`",
         });
     }
-    finish(roots, targets, preserved)
+    finish(roots, targets, preserved, &[])
 }
 
 /// Cierra un plan a partir de los destinos ya seleccionados: planifica con el ejecutor
 /// del árbol de propiedad la poda de los contenedores que quedan vacíos e informa los
-/// que se conservan por entradas ajenas.
+/// que se conservan por entradas ajenas. `departing` son rutas que salen del disco fuera
+/// de este plan y que no cuentan como contenido de un contenedor (ver
+/// [`ownership::plan_with_departing`]).
 pub(crate) fn finish(
     roots: &Roots,
     targets: Vec<Target>,
     mut preserved: Vec<Preserved>,
+    departing: &[PathBuf],
 ) -> DeletionPlan {
     let removals: Vec<PathBuf> = targets.iter().map(|t| t.path.clone()).collect();
-    let ownership = ownership::plan(&roots.ownership_tree(), &removals);
+    let ownership = ownership::plan_with_departing(&roots.ownership_tree(), &removals, departing);
     for foreign in &ownership.foreign {
         preserved.push(Preserved {
             path: foreign.container.clone(),

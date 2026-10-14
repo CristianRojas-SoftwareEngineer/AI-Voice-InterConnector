@@ -523,6 +523,125 @@ fn uninstall_leaves_no_residue_in_exclusive_roots() {
     );
 }
 
+/// Removedor diferido que anota el destino que se le pide programar, sin borrar nada.
+struct DeferredRecording(std::sync::Mutex<Option<PathBuf>>);
+
+impl uninstall::ProgramDirRemover for DeferredRecording {
+    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+    fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
+        anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
+    }
+    fn schedule(&self, target: &Path, _wait: &avi_process::OwnerToken) -> anyhow::Result<()> {
+        *self.0.lock().expect("se anota el destino") = Some(target.to_path_buf());
+        Ok(())
+    }
+}
+
+/// Desinstala con el directorio de programa dentro de `container` (un contenedor del
+/// árbol de propiedad) y devuelve el sandbox tras la operación.
+fn uninstall_with_program_in(tag: &str, container: impl Fn(&Sandbox) -> PathBuf) -> Sandbox {
+    let mut sandbox = Sandbox::new(tag);
+    sandbox.program_dir = container(&sandbox).join("bin");
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    sandbox.seed_state();
+    let outcome = runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
+            &UninstallOptions {
+                assume_yes: true,
+                ..Default::default()
+            },
+            &Now,
+            &Inert,
+        ))
+        .expect("uninstall se ejecuta");
+    assert!(
+        outcome.failed.is_empty(),
+        "nada falló: {:?}",
+        outcome.failed
+    );
+    assert!(outcome.program_dir_removed);
+    sandbox
+}
+
+/// Con el directorio de programa dentro del contenedor raíz de la aplicación (p. ej.
+/// `AVI_INSTALL_DIR` personalizado), la desinstalación no deja el contenedor: se poda
+/// una vez retirados el programa y sus archivos de bloqueo.
+#[test]
+fn uninstall_prunes_app_container_holding_the_program() {
+    let sandbox = uninstall_with_program_in("program-in-app", |s| s.app_dir.clone());
+    assert!(!exists(&sandbox.program_dir));
+    assert!(
+        !exists(&sandbox.app_dir),
+        "el contenedor raíz no queda como residuo"
+    );
+}
+
+/// Igual con el programa dentro del contenedor de caché: se podan él y su ancestro.
+#[test]
+fn uninstall_prunes_cache_container_holding_the_program() {
+    let sandbox = uninstall_with_program_in("program-in-cache", |s| s.cache_dir.clone());
+    assert!(
+        !exists(&sandbox.cache_dir),
+        "el contenedor de caché no queda"
+    );
+    assert!(!exists(&sandbox.app_dir), "ni el contenedor raíz");
+}
+
+/// Una entrada ajena junto al programa conserva el contenedor: la poda nunca es
+/// recursiva sobre lo que no es de la aplicación.
+#[test]
+fn uninstall_keeps_container_with_foreign_entry_beside_the_program() {
+    let mut sandbox = Sandbox::new("program-foreign");
+    sandbox.program_dir = sandbox.app_dir.join("bin");
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    sandbox.seed_state();
+    let foreign = sandbox.app_dir.join("ajeno.txt");
+    write(&foreign, "ajeno");
+    runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
+            &UninstallOptions {
+                assume_yes: true,
+                ..Default::default()
+            },
+            &Now,
+            &Inert,
+        ))
+        .expect("uninstall se ejecuta");
+    assert!(exists(&foreign), "lo ajeno sobrevive");
+    assert!(!exists(&sandbox.program_dir));
+}
+
+/// Con el borrado diferido, el destino programado es el contenedor más externo que
+/// queda solo con el programa, y no el programa: así el contenedor no es residuo.
+#[test]
+fn deferred_removal_targets_the_outermost_container_left_with_the_program() {
+    let mut sandbox = Sandbox::new("program-deferred");
+    sandbox.program_dir = sandbox.cache_dir.join("bin");
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    sandbox.seed_state();
+    let remover = DeferredRecording(std::sync::Mutex::new(None));
+    let outcome = runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
+            &UninstallOptions {
+                assume_yes: true,
+                ..Default::default()
+            },
+            &remover,
+            &Inert,
+        ))
+        .expect("uninstall se ejecuta");
+    assert_eq!(outcome.status, "removal_scheduled");
+    assert_eq!(
+        remover.0.lock().unwrap().as_deref(),
+        Some(sandbox.app_dir.as_path())
+    );
+}
+
 /// Con un comando de uso en curso (bloqueo compartido tomado), `cleanup` y
 /// `self uninstall` terminan con `lifecycle_locked` sin borrar nada.
 #[test]
