@@ -632,6 +632,8 @@ mod tests {
         let roots = cleanup::Roots {
             program_dir: root.join("opt/ai-voice-interconnector"),
             data_dir: root.join("data"),
+            cache_container: root.join("cache"),
+            app_container: None,
             models_dir: root.join("models"),
             scratch_root: root.join("tmp"),
             bin_dir: root.join("bin"),

@@ -174,9 +174,13 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
         if ([string]::IsNullOrWhiteSpace($programDir)) {
             $programDir = Join-Path ([Environment]::GetEnvironmentVariable("LOCALAPPDATA")) "Programs\$App"
         }
-        $parentDir = Split-Path $programDir -Parent
-        if (-not (Test-Path $parentDir)) { New-Item -ItemType Directory -Path $parentDir -Force | Out-Null }
-        $staging = Join-Path $parentDir (".ai-voice-interconnector-staging-" + [guid]::NewGuid().ToString("N"))
+        # Temporal propio bajo el temporal del usuario: nada se crea junto al
+        # programa, porque `self install` copia el bundle a su propio staging.
+        $tempRoot = [Environment]::GetEnvironmentVariable("TEMP")
+        if ([string]::IsNullOrWhiteSpace($tempRoot)) {
+            throw "ERROR [usage_error]: la variable TEMP no est${a} definida; no hay d${o}nde descargar."
+        }
+        $staging = Join-Path $tempRoot ("ai-voice-interconnector-install-" + [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Path $staging -Force | Out-Null
         # El aviso cubre solo fallos reales de ACL: la disponibilidad de los
         # cmdlets ya se garantizo al arrancar.
@@ -244,7 +248,12 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
                 if (($env:Path -split ';') -notcontains $programDir) { $env:Path = "$env:Path;$programDir" }
             }
         } finally {
-            Remove-Item -Path $staging -Recurse -Force -ErrorAction SilentlyContinue
+            # Un borrado fallido no cambia el codigo de salida: se avisa con la ruta.
+            try {
+                Remove-Item -Path $staging -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-BootstrapLog "AVISO: no se pudo borrar el directorio temporal ${staging}: $_ Borralo manualmente."
+            }
         }
         return $code
     }

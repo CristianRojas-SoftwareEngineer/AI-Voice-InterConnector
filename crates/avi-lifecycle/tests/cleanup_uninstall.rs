@@ -103,9 +103,9 @@ fn with_yes(options: CleanupOptions) -> CleanupOptions {
 
 /// Las rutas del plan, como cadenas, que es la forma en que el envelope las publica.
 fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
-    plan.targets
+    plan.paths()
         .iter()
-        .map(|t| t.path.display().to_string())
+        .map(|p| p.display().to_string())
         .collect()
 }
 
@@ -150,7 +150,8 @@ fn cleanup_categories_are_scoped() {
     let voices = sandbox.data_dir.join("voices");
     let speech = sandbox.data_dir.join("speech");
 
-    // --model: la raíz de modelos entera, y nada del estado.
+    // --model: la raíz de modelos entera, y nada del estado. El contenedor de caché
+    // queda vacío con ella (aquí no hay temporales) y el plan anuncia su poda.
     let model_only = cleanup::plan(
         &roots,
         &CleanupOptions {
@@ -160,7 +161,10 @@ fn cleanup_categories_are_scoped() {
     );
     assert_eq!(
         paths(&model_only),
-        vec![sandbox.models_dir.display().to_string()]
+        vec![
+            sandbox.models_dir.display().to_string(),
+            sandbox.cache_dir.display().to_string()
+        ]
     );
     assert!(sandbox.models_dir.join("xet").exists(), "antes de borrar");
 
@@ -1023,4 +1027,245 @@ fn uninstall_reverts_path_from_the_receipt() {
         other.join(uninstall::executable_name_default()),
         "y sigue apuntando a su destino"
     );
+}
+
+// ─── Árbol de propiedad: poda de contenedores ───────────────────────────────────────
+
+/// Desinstala con `--yes` y, si procede, `--keep-data`.
+fn run_uninstall(
+    sandbox: &Sandbox,
+    receipt: &avi_lifecycle::receipt::InstallReceipt,
+    keep_data: bool,
+) -> uninstall::Outcome {
+    runtime()
+        .block_on(uninstall::run(
+            &sandbox.env_uninstall(Some(receipt), Channel::Script),
+            &UninstallOptions {
+                keep_data,
+                assume_yes: true,
+                ..Default::default()
+            },
+            &Now,
+            &Inert,
+        ))
+        .expect("uninstall se ejecuta")
+}
+
+/// Ninguna ruta aparece dos veces entre lo que el plan conserva: cada aviso se imprime
+/// una sola vez porque el plan lo lleva una sola vez.
+fn assert_preserved_unique(preserved: &[cleanup::Preserved]) {
+    let mut seen = std::collections::BTreeSet::new();
+    for item in preserved {
+        assert!(
+            seen.insert(item.path.clone()),
+            "{} aparece más de una vez entre lo conservado: {preserved:?}",
+            item.path.display()
+        );
+    }
+}
+
+/// Tras `self uninstall` desaparecen los contenedores raíz y de caché, con su scratch.
+#[test]
+fn uninstall_removes_every_container() {
+    let sandbox = Sandbox::new("containers-uninstall");
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    sandbox.seed_state();
+    write(
+        &sandbox.scratch_root.join("4294967000-1").join("clip.wav"),
+        "x",
+    );
+
+    let outcome = run_uninstall(&sandbox, &receipt, false);
+
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    assert!(
+        !exists(&sandbox.cache_dir),
+        "el contenedor de caché no queda"
+    );
+    assert!(!exists(&sandbox.app_dir), "el contenedor raíz no queda");
+    for container in [&sandbox.cache_dir, &sandbox.app_dir] {
+        assert!(
+            outcome.removed.contains(&container.display().to_string()),
+            "{} se publica como borrado: {:?}",
+            container.display(),
+            outcome.removed
+        );
+    }
+    assert!(
+        exists(sandbox.root.as_path()),
+        "el padre común de los contenedores no es un nodo y no se poda"
+    );
+}
+
+/// `cleanup --all` poda el contenedor de caché; el de datos sigue porque la hoja de datos
+/// no se borra entera (conserva las voces de fábrica).
+#[test]
+fn cleanup_all_removes_the_cache_container() {
+    let sandbox = Sandbox::new("containers-cleanup");
+    sandbox.install_registered(PathIntegration::none());
+    sandbox.seed_state();
+    write(
+        &sandbox.scratch_root.join("4294967000-1").join("clip.wav"),
+        "x",
+    );
+
+    let outcome = runtime()
+        .block_on(cleanup::run(
+            &sandbox.roots(),
+            &with_yes(CleanupOptions {
+                all: true,
+                ..Default::default()
+            }),
+            &Inert,
+        ))
+        .expect("cleanup se ejecuta");
+
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    assert!(
+        !exists(&sandbox.cache_dir),
+        "caché, modelos y scratch fuera"
+    );
+    assert!(
+        exists(&sandbox.data_dir.join("voices").join("default")),
+        "las voces de fábrica sobreviven a `cleanup`"
+    );
+    assert!(exists(&sandbox.app_dir), "y con ellas el contenedor raíz");
+}
+
+/// Un archivo ajeno dentro de un contenedor lo conserva en pie, se informa una vez y
+/// jamás se borra; el contenedor padre no se informa porque lo retiene un nodo.
+#[test]
+fn foreign_file_keeps_its_container_and_is_reported() {
+    let sandbox = Sandbox::new("containers-foreign");
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    sandbox.seed_state();
+    let stranger = sandbox.cache_dir.join("ajeno.txt");
+    write(&stranger, "no es nuestro");
+
+    let options = UninstallOptions {
+        assume_yes: true,
+        ..Default::default()
+    };
+    let plan = uninstall::compose_plan(
+        &sandbox.roots(),
+        Some(&receipt),
+        &sandbox.program_dir,
+        &options,
+    );
+    assert_preserved_unique(&plan.preserved);
+    assert!(
+        plan.preserved.iter().any(|p| p.path == sandbox.cache_dir),
+        "el contenedor con entradas ajenas se informa: {:?}",
+        plan.preserved
+    );
+    assert!(
+        !plan.preserved.iter().any(|p| p.path == sandbox.app_dir),
+        "el ancestro lo retiene un nodo y no se informa: {:?}",
+        plan.preserved
+    );
+
+    let outcome = run_uninstall(&sandbox, &receipt, false);
+
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    assert!(exists(&stranger), "lo ajeno jamás se borra");
+    assert!(exists(&sandbox.cache_dir) && exists(&sandbox.app_dir));
+    assert!(!exists(&sandbox.models_dir) && !exists(&sandbox.data_dir));
+    assert!(
+        outcome
+            .preserved
+            .iter()
+            .any(|p| p.path == sandbox.cache_dir),
+        "y el desenlace conserva el aviso del plan: {:?}",
+        outcome.preserved
+    );
+}
+
+/// La raíz HF compartida no se poda ni se borra entera: ni con `self uninstall` ni con
+/// `cleanup --all`. Los contenedores de la aplicación sí desaparecen.
+#[test]
+fn shared_hf_root_is_never_pruned() {
+    for uninstalling in [true, false] {
+        let sandbox = Sandbox::new_shared(if uninstalling {
+            "containers-shared-uninstall"
+        } else {
+            "containers-shared-cleanup"
+        });
+        let receipt = sandbox.install_registered(PathIntegration::none());
+        sandbox.seed_state();
+        let hub = sandbox.shared_hub.clone().expect("modo compartido");
+        let foreign = hub.join("models--other--tool");
+
+        if uninstalling {
+            let plan = uninstall::compose_plan(
+                &sandbox.roots(),
+                Some(&receipt),
+                &sandbox.program_dir,
+                &UninstallOptions::default(),
+            );
+            assert_preserved_unique(&plan.preserved);
+            let outcome = run_uninstall(&sandbox, &receipt, false);
+            assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+            assert!(!exists(&sandbox.app_dir), "los contenedores propios caen");
+        } else {
+            let outcome = runtime()
+                .block_on(cleanup::run(
+                    &sandbox.roots(),
+                    &with_yes(CleanupOptions {
+                        all: true,
+                        ..Default::default()
+                    }),
+                    &Inert,
+                ))
+                .expect("cleanup se ejecuta");
+            assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+            assert!(!exists(&sandbox.cache_dir), "el contenedor de caché cae");
+        }
+        assert!(exists(&hub), "la raíz compartida no se borra entera");
+        assert!(exists(&hub.join("xet")), "`xet` sobrevive");
+        assert!(exists(&foreign), "lo de otra herramienta sobrevive");
+        assert!(
+            !exists(&hub.join("models--CristianRojaas--opus-mt-es-en-ct2-int8")),
+            "el repo propio sí se borra"
+        );
+    }
+}
+
+/// `--keep-data` no poda los contenedores que retienen hojas conservadas, no los
+/// informa, y ningún aviso se repite.
+#[test]
+fn keep_data_leaves_containers_in_place_silently() {
+    let sandbox = Sandbox::new("containers-keep-data");
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    sandbox.seed_state();
+    write(
+        &sandbox.scratch_root.join("4294967000-1").join("clip.wav"),
+        "x",
+    );
+
+    let plan = uninstall::compose_plan(
+        &sandbox.roots(),
+        Some(&receipt),
+        &sandbox.program_dir,
+        &UninstallOptions {
+            keep_data: true,
+            ..Default::default()
+        },
+    );
+    assert_preserved_unique(&plan.preserved);
+    assert!(
+        !plan
+            .preserved
+            .iter()
+            .any(|p| p.path == sandbox.cache_dir || p.path == sandbox.app_dir),
+        "los contenedores retenidos por hojas conservadas no se informan: {:?}",
+        plan.preserved
+    );
+    assert!(plan.state.ownership.prune.is_empty());
+
+    let outcome = run_uninstall(&sandbox, &receipt, true);
+
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    assert!(exists(&sandbox.app_dir) && exists(&sandbox.cache_dir));
+    assert!(exists(&sandbox.models_dir) && exists(&sandbox.data_dir.join("voices")));
+    assert!(!exists(&sandbox.scratch_root), "los temporales sí caen");
 }

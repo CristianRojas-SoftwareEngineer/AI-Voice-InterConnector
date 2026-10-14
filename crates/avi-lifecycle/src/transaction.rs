@@ -17,7 +17,7 @@
 //!    en uso: renombrar se permite, borrar no.
 //! 2. **Colocar** el bundle nuevo. Los archivos se mueven desde el origen por
 //!    renombrado —el staging es hermano del directorio de programa, luego es el
-//!    mismo volumen—, salvo el ejecutable que está corriendo, que se copia.
+//!    mismo volumen, y es de uso exclusivo de esta operación—, salvo el ejecutable que está corriendo, que se copia.
 //! 3. **Ajustar permisos**: en Unix, 0755 para ejecutables y 0644 para el resto.
 //! 4. **Confirmar**: marcar el diario como confirmado y borrar el aparcado.
 //!    Lo que no se pueda borrar por estar en uso queda para el borrado diferido
@@ -120,9 +120,20 @@ pub fn read_journal(program_dir: &Path) -> anyhow::Result<Option<Journal>> {
 /// Falla con `rolled_back` y la versión anterior restaurada si algo falla tras
 /// abrir el diario.
 ///
-/// `source_dir` debe estar en el mismo volumen que `program_dir`, que el staging
-/// cumple por ser hermano del directorio de programa. Si no fuera así, el renombrado de la colocación
-/// fallaría, la transacción revertiría y no se tocaría la versión anterior.
+/// Precondiciones sobre `source_dir`, que el llamador debe cumplir:
+///
+/// - Estar en el mismo volumen que `program_dir`, lo que cumple un staging hermano
+///   del directorio de programa. Si no, el renombrado de la colocación fallaría, la
+///   transacción revertiría y no se tocaría la versión anterior.
+/// - Ser de uso exclusivo de esta operación: la colocación **mueve** sus archivos, de
+///   modo que nadie más debe leerlo ni borrarlo mientras dura el reemplazo. Por eso
+///   se llama con el bloqueo exclusivo tomado y con un staging cuyo nombre lleva el
+///   token de este proceso (`install_staging::name`): la recuperación solo barre
+///   stagings de dueño muerto, así que no se lo lleva por delante. `replace` no lo
+///   comprueba.
+///
+/// Tras el reemplazo `source_dir` queda vacío o a medias; borrarlo es cosa del
+/// llamador.
 pub fn replace(program_dir: &Path, source_dir: &Path) -> anyhow::Result<ReplaceOutcome> {
     // El aparcado lleva el token del proceso que sustituye, que tiene el
     // bloqueo exclusivo: así la recuperación sabe si su dueño sigue vivo.

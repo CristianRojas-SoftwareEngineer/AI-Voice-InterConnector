@@ -69,6 +69,9 @@ pub struct Sandbox {
     /// Directorio del enlace (`~/.local/bin`).
     pub bin_dir: PathBuf,
     pub home: PathBuf,
+    /// Contenedor raíz de la aplicación: padre de la raíz de datos y del contenedor de
+    /// caché.
+    pub app_dir: PathBuf,
     pub data_dir: PathBuf,
     /// Contenedor de caché: es lo que registra el recibo y lo que `AVI_CACHE_DIR`
     /// nombra en modo exclusivo.
@@ -106,6 +109,7 @@ impl std::fmt::Debug for Sandbox {
             .field("program_dir", &self.program_dir)
             .field("bin_dir", &self.bin_dir)
             .field("home", &self.home)
+            .field("app_dir", &self.app_dir)
             .field("data_dir", &self.data_dir)
             .field("cache_dir", &self.cache_dir)
             .field("models_dir", &self.models_dir)
@@ -143,7 +147,11 @@ impl Sandbox {
         let opt = root.join("opt");
         let home = root.join("home").join("ana");
         let hub = root.join("hub");
-        let cache_dir = root.join("cache");
+        // Árbol de propiedad real: `<root>/app/{data,cache/{models,tmp}}`, con `app`
+        // y `cache` como contenedores. En modo compartido los modelos son la caché HF
+        // del usuario, fuera del árbol, y el contenedor de caché sigue siendo propio.
+        let app_dir = root.join("app");
+        let cache_dir = app_dir.join("cache");
         let (models_dir, shared_hub) = if shared {
             (hub.clone(), Some(hub))
         } else {
@@ -153,7 +161,8 @@ impl Sandbox {
             tag: tag.to_string(),
             program_dir: opt.join(avi_lifecycle::APP_NAME),
             bin_dir: home.join(".local").join("bin"),
-            data_dir: root.join("data"),
+            data_dir: app_dir.join("data"),
+            app_dir,
             scratch_root: cache_dir.join("tmp"),
             cache_dir,
             models_dir,

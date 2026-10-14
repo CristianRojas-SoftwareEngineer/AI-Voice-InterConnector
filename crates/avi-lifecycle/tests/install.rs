@@ -329,6 +329,45 @@ async fn repair_from_inside_program_dir_copies_nothing() {
     );
 }
 
+/// Un bundle fuera del volumen del programa (el temporal del bootstrap) se instala
+/// desde una copia propia junto al programa: el original no se toca y, tras instalar,
+/// no queda ningún staging hermano.
+#[tokio::test]
+async fn bundle_outside_program_parent_is_installed_from_own_staging_copy() {
+    let sandbox = Sandbox::new("foreign-bundle");
+    let foreign = sandbox.home.join("descarga-bootstrap");
+    let exe = sandbox.write_bundle(&foreign);
+
+    install::install(
+        &sandbox.install_env(&exe),
+        &Sandbox::install_options(),
+        &Inert,
+    )
+    .await
+    .expect("la instalación desde un bundle ajeno se completa");
+
+    let section =
+        avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple()).unwrap();
+    for relative in &section.required {
+        assert!(
+            place(&sandbox.program_dir, relative).is_file(),
+            "{relative}"
+        );
+        assert!(
+            place(&foreign, relative).is_file(),
+            "el original no se mueve: {relative}"
+        );
+    }
+    let parent = sandbox.program_dir.parent().unwrap();
+    let leftovers: Vec<_> = std::fs::read_dir(parent)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".ai-voice-interconnector-staging-"))
+        .collect();
+    assert!(leftovers.is_empty(), "staging sin borrar: {leftovers:?}");
+}
+
 /// Sin bundle alrededor, `self install` termina con `bundle_invalid` y no modifica
 /// nada, que es el tercer modo de la operación.
 #[tokio::test]

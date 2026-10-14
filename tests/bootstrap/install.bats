@@ -42,6 +42,10 @@ setup() {
     harness_start_server "$SERVE_DIR" "$WORK/cert"
     harness_relocate "$WORK/roots"
 
+    # Temporal del sistema acotado a la prueba: ahí vive el staging del bootstrap.
+    export TMPDIR="$WORK/tmp"
+    mkdir -p "$TMPDIR"
+
     unset AVI_VERSION AVI_NO_SETUP AVI_NO_MODIFY_PATH AVI_YES AVI_FAKE_MODE
 }
 
@@ -50,10 +54,13 @@ teardown() {
     rm -rf "$WORK"
 }
 
-# No queda ningún staging hermano tras la prueba.
+# Tras la prueba no queda ningún staging junto al programa ni el temporal del
+# bootstrap en el directorio temporal.
 assert_no_staging_left() {
     leftovers="$(find "$WORK/roots" -maxdepth 1 -name '.ai-voice-interconnector-staging-*')"
     [ -z "$leftovers" ]
+    temp_left="$(find "$TMPDIR" -mindepth 1 -maxdepth 1 -name 'ai-voice-interconnector-install.*')"
+    [ -z "$temp_left" ]
 }
 
 @test "instala el asset x86_64-linux cuando uname -m es x86_64" {
@@ -237,6 +244,53 @@ assert_no_staging_left() {
     [[ "$output" != *"glibc"* ]]
     [ "$(cat "$AVI_INSTALL_DIR/sentinel")" = "instalación previa" ]
     assert_no_staging_left
+}
+
+@test "el bootstrap trabaja en el temporal del sistema y no crea nada junto al programa" {
+    mock_uname x86_64
+
+    run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
+
+    [ "$status" -eq 0 ]
+    # Durante `self install` el binario corría dentro de $TMPDIR...
+    [[ "$(cat "$AVI_FAKE_EXE_LOG")" == "$TMPDIR"/ai-voice-interconnector-install.*/ai-voice-interconnector ]]
+    # ...y junto al programa no había ningún staging.
+    run ! grep -q "ai-voice-interconnector-staging" "$AVI_FAKE_SIBLINGS_LOG"
+    assert_no_staging_left
+}
+
+@test "el temporal se borra también cuando self install falla" {
+    mock_uname x86_64
+    if command -v setsid >/dev/null 2>&1; then
+        run setsid --wait sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path < /dev/null
+    elif [ -e /dev/tty ]; then
+        skip "sin setsid y con terminal rectora no se puede aislar la falta de terminal"
+    else
+        run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path < /dev/null
+    fi
+
+    [ "$status" -eq 42 ]
+    assert_no_staging_left
+}
+
+@test "si el borrado del temporal falla avisa con la ruta y conserva el código de salida" {
+    mock_uname x86_64
+    # `rm` falla solo para el temporal del bootstrap.
+    cat > "$MOCK_BIN/rm" <<'EOF'
+#!/bin/sh
+case "$*" in
+    *ai-voice-interconnector-install.*) exit 1 ;;
+    *) exec /bin/rm "$@" ;;
+esac
+EOF
+    chmod +x "$MOCK_BIN/rm"
+
+    run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"AVISO: no se pudo borrar el directorio temporal $TMPDIR/ai-voice-interconnector-install."* ]]
+    # Limpieza del temporal que el doble de `rm` dejó a propósito.
+    /bin/rm -rf "$TMPDIR"/ai-voice-interconnector-install.*
 }
 
 @test "las opciones se pasan tal cual a self install" {

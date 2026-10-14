@@ -32,9 +32,11 @@
 
 use crate::confirm::{self, Confirmation, Decision, Kind, PlanEntry};
 use crate::daemon_stop::{self, ProcessControl};
+use crate::ownership;
 use crate::receipt::InstallReceipt;
 use crate::recovery::{self, Roots as RecoveryRoots, SweepPreview};
 use crate::LifecycleError;
+use avi_shared::paths::{NodeKind, OwnershipNode};
 use same_file::Handle;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -55,6 +57,8 @@ pub enum Category {
     Logs,
     /// `--all`: el estado de ejecución del daemon (`daemon.pid` y su fichero ready).
     DaemonState,
+    /// `--all`: la hoja de temporales de la aplicación, entera.
+    Scratch,
 }
 
 impl Category {
@@ -67,6 +71,7 @@ impl Category {
             Self::Config => "config",
             Self::Logs => "logs",
             Self::DaemonState => "daemon_state",
+            Self::Scratch => "scratch",
         }
     }
 }
@@ -85,6 +90,11 @@ pub struct Roots {
     pub program_dir: PathBuf,
     /// Raíz de datos: voces, habla sintetizada, configuración, logs y pidfile.
     pub data_dir: PathBuf,
+    /// Contenedor de la caché regenerable: de él cuelgan los modelos y los scratch.
+    pub cache_container: PathBuf,
+    /// Contenedor raíz de la aplicación (Windows: `%LOCALAPPDATA%\ai-voice-interconnector`)
+    /// cuando la raíz de datos o el contenedor de caché cuelgan de él.
+    pub app_container: Option<PathBuf>,
     /// Raíz de modelos: snapshots, locks y `xet`.
     pub models_dir: PathBuf,
     /// Raíz de los scratch por proceso, para el barrido transversal.
@@ -120,9 +130,13 @@ impl Roots {
     /// Raíces del entorno con el directorio de programa ya decidido.
     fn with_program_dir(program_dir: PathBuf) -> anyhow::Result<Self> {
         let models_dir = crate::models_cache_dir()?;
+        let data_dir = crate::data_dir()?;
+        let cache_container = crate::cache_container()?;
         Ok(Self {
             program_dir,
-            data_dir: crate::data_dir()?,
+            app_container: windows_app_container(&data_dir, &cache_container),
+            data_dir,
+            cache_container,
             models_shared: is_shared_models_root(&models_dir),
             models_dir,
             scratch_root: crate::scratch_root()?,
@@ -146,6 +160,8 @@ impl Roots {
         let mut roots = Self::with_program_dir(crate::channel::registered_install_dir(receipt)?)?;
         if let Some(receipt) = receipt {
             roots.data_dir = receipt.roots.data_dir.clone();
+            roots.cache_container = receipt.roots.cache_dir.clone();
+            roots.app_container = windows_app_container(&roots.data_dir, &roots.cache_container);
             // Los temporales cuelgan del mismo contenedor de caché que el recibo registra.
             roots.scratch_root = receipt
                 .roots
@@ -161,6 +177,32 @@ impl Roots {
         Ok(roots)
     }
 
+    /// Árbol de propiedad de estas raíces, con cada padre antes que sus hijos: el
+    /// contenedor raíz (si lo hay), la hoja de datos, el contenedor de caché y sus
+    /// hojas de modelos y temporales. La raíz de modelos compartida es `External`.
+    pub fn ownership_tree(&self) -> Vec<OwnershipNode> {
+        let node = |path: &PathBuf, kind| OwnershipNode {
+            path: path.clone(),
+            kind,
+        };
+        let mut tree = Vec::new();
+        if let Some(app) = &self.app_container {
+            tree.push(node(app, NodeKind::Container));
+        }
+        tree.push(node(&self.data_dir, NodeKind::Leaf));
+        tree.push(node(&self.cache_container, NodeKind::Container));
+        tree.push(node(
+            &self.models_dir,
+            if self.models_shared {
+                NodeKind::External
+            } else {
+                NodeKind::Leaf
+            },
+        ));
+        tree.push(node(&self.scratch_root, NodeKind::Leaf));
+        tree
+    }
+
     /// Raíces de la recuperación: las mismas que usan `cleanup`, `self uninstall`,
     /// `self update` y `doctor`.
     pub fn recovery_roots(&self) -> RecoveryRoots<'_> {
@@ -171,6 +213,23 @@ impl Roots {
             bin_dir: &self.bin_dir,
         }
     }
+}
+
+/// Contenedor raíz de la aplicación en Windows, deducido de la forma por defecto
+/// `%LOCALAPPDATA%\ai-voice-interconnector\{data,cache}`: el padre de la raíz de datos
+/// o del contenedor de caché cuando se llama como la aplicación y ellos tienen su
+/// nombre por defecto. En Unix no hay contenedor raíz.
+fn windows_app_container(data_dir: &Path, cache_container: &Path) -> Option<PathBuf> {
+    if !cfg!(windows) {
+        return None;
+    }
+    [(data_dir, "data"), (cache_container, "cache")]
+        .into_iter()
+        .find_map(|(dir, name)| {
+            let parent = dir.parent()?;
+            (dir.file_name()? == name && parent.file_name()? == crate::APP_NAME)
+                .then(|| parent.to_path_buf())
+        })
 }
 
 /// Opciones de `cleanup`. El parseo se queda en el binario, que es quien ve los
@@ -239,6 +298,9 @@ pub struct DeletionPlan {
     pub targets: Vec<Target>,
     /// Recursos que quedan intactos, con el motivo.
     pub preserved: Vec<Preserved>,
+    /// Planificación del ejecutor del árbol de propiedad: los mismos destinos más los
+    /// contenedores que quedarán vacíos y se podan.
+    pub ownership: ownership::Plan,
 }
 
 impl DeletionPlan {
@@ -252,15 +314,63 @@ impl DeletionPlan {
         self.targets.is_empty()
     }
 
-    /// Rutas del plan en el orden en que se borran.
+    /// Rutas del plan en el orden en que se borran: los destinos y, después, los
+    /// contenedores que quedan vacíos y se podan.
     pub fn paths(&self) -> Vec<PathBuf> {
-        self.targets.iter().map(|t| t.path.clone()).collect()
+        self.targets
+            .iter()
+            .map(|t| t.path.clone())
+            .chain(self.ownership.prune.iter().cloned())
+            .collect()
     }
 }
+
+/// Motivo con el que se informa un contenedor que se conserva por tener entradas que
+/// no son de la aplicación.
+const FOREIGN_CONTAINER_REASON: &str = "contiene entradas ajenas a la aplicación";
 
 /// Calcula el plan de borrado. Es la **única** fuente de la lista: la usan el
 /// resumen de la confirmación, `--dry-run` y la ejecución.
 pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
+    let (targets, mut preserved) = select(roots, options);
+    // `cleanup` nunca toca el programa ni su integración de `PATH` —eso es
+    // `self uninstall`—, y decirlo es parte del plan.
+    if program_dir_exists(&roots.program_dir) {
+        preserved.push(Preserved {
+            path: roots.program_dir.clone(),
+            reason: "el programa y la integración de PATH son de `self uninstall`",
+        });
+    }
+    finish(roots, targets, preserved)
+}
+
+/// Cierra un plan a partir de los destinos ya seleccionados: planifica con el ejecutor
+/// del árbol de propiedad la poda de los contenedores que quedan vacíos e informa los
+/// que se conservan por entradas ajenas.
+pub(crate) fn finish(
+    roots: &Roots,
+    targets: Vec<Target>,
+    mut preserved: Vec<Preserved>,
+) -> DeletionPlan {
+    let removals: Vec<PathBuf> = targets.iter().map(|t| t.path.clone()).collect();
+    let ownership = ownership::plan(&roots.ownership_tree(), &removals);
+    for foreign in &ownership.foreign {
+        preserved.push(Preserved {
+            path: foreign.container.clone(),
+            reason: FOREIGN_CONTAINER_REASON,
+        });
+    }
+    preserved.sort_by_key(|p| crate::canonical_path_key(&p.path));
+    DeletionPlan {
+        targets,
+        preserved,
+        ownership,
+    }
+}
+
+/// Selección de nodos de las categorías pedidas, con lo compartido que se conserva.
+/// Los destinos salen sin duplicados y en orden estable.
+pub(crate) fn select(roots: &Roots, options: &Options) -> (Vec<Target>, Vec<Preserved>) {
     let mut collected: Vec<Target> = Vec::new();
     let mut preserved: Vec<Preserved> = Vec::new();
 
@@ -301,15 +411,10 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
             roots.data_dir.join(avi_process::registry::READY_FILE),
             Category::DaemonState,
         );
-    }
-
-    // `cleanup` nunca toca el programa ni su integración de `PATH` —eso es
-    // `self uninstall`—, y decirlo es parte del plan.
-    if program_dir_exists(&roots.program_dir) {
-        preserved.push(Preserved {
-            path: roots.program_dir.clone(),
-            reason: "el programa y la integración de PATH son de `self uninstall`",
-        });
+        // La hoja de temporales cae entera con `--all`: la recuperación ya barrió a los
+        // dueños muertos, y los vivos están excluidos por el bloqueo y la parada del
+        // daemon. Sin esto el contenedor de caché nunca queda vacío.
+        collected.extend(scratch_target(roots));
     }
 
     // Deduplicación por clave canónica. `BTreeMap::insert` devuelve el valor
@@ -320,17 +425,19 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
         seen.insert(crate::canonical_path_key(&t.path), ())
             .is_none()
     });
-    preserved.sort_by_key(|p| crate::canonical_path_key(&p.path));
     collected.sort_by(|a, b| {
         a.category
             .cmp(&b.category)
             .then_with(|| a.path.cmp(&b.path))
     });
+    (collected, preserved)
+}
 
-    DeletionPlan {
-        targets: collected,
-        preserved,
-    }
+/// Destino de la hoja de temporales, si existe.
+pub(crate) fn scratch_target(roots: &Roots) -> Option<Target> {
+    let mut found = Vec::new();
+    push(&mut found, roots.scratch_root.clone(), Category::Scratch);
+    found.pop()
 }
 
 /// Alcance de `--model`.
@@ -371,14 +478,21 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
         reason: "la raíz es una caché compartida; solo se borran los repos \
                  fijados y sus locks",
     });
-    preserved.push(Preserved {
-        path: models.join("xet"),
-        reason: "`xet` es un subdirectorio global de la caché compartida",
-    });
-    preserved.push(Preserved {
-        path: models.join(".locks"),
-        reason: "el `.locks` completo nunca se borra de una raíz compartida",
-    });
+    for (name, reason) in [
+        (
+            "xet",
+            "`xet` es un subdirectorio global de la caché compartida",
+        ),
+        (
+            ".locks",
+            "el `.locks` completo nunca se borra de una raíz compartida",
+        ),
+    ] {
+        let path = models.join(name);
+        if path.exists() {
+            preserved.push(Preserved { path, reason });
+        }
+    }
 }
 
 /// Alcance de `--voices`: las voces que el usuario puede borrar, más el arrastre de
@@ -599,19 +713,19 @@ pub async fn run(
     let daemon = daemon_stop::stop(&roots.data_dir, &daemon_stop::default_addr(), control).await;
     daemon_stop::require_stopped(&daemon)?;
 
+    let report = ownership::execute(&roots.ownership_tree(), &plan.ownership);
     let mut removed = Vec::new();
     let mut failed = Vec::new();
-    for target in &plan.targets {
-        match remove_path(&target.path) {
-            Ok(()) => {
-                eprintln!("  {} {}", target.category.as_str(), target.path.display());
-                removed.push(target.path.display().to_string());
-            }
-            Err(e) => {
-                eprintln!("  no se pudo borrar {}: {e}", target.path.display());
-                failed.push(target.path.display().to_string());
-            }
+    for path in &report.removed {
+        if let Some(target) = plan.targets.iter().find(|t| &t.path == path) {
+            eprintln!("  {} {}", target.category.as_str(), path.display());
         }
+        removed.push(path.display().to_string());
+    }
+    removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
+    for (path, e) in &report.failed {
+        eprintln!("  no se pudo borrar {}: {e}", path.display());
+        failed.push(path.display().to_string());
     }
 
     drop(lock);
@@ -769,24 +883,6 @@ fn summary(plan: &DeletionPlan) -> Vec<String> {
         ));
     }
     out
-}
-
-/// Borra una ruta del plan, sea archivo o directorio.
-///
-/// `NotFound` **es** éxito: el plan dice lo que tiene que dejar de existir, y si ya no
-/// existe el objetivo está cumplido. No es un caso teórico —la parada del daemon borra
-/// el pidfile cuando no había daemon vivo, y el pidfile es un destino de `--all`, así
-/// que sin este tratamiento el mismo plan se anunciaría como fallido en una máquina limpia.
-fn remove_path(path: &Path) -> std::io::Result<()> {
-    let outcome = if path.is_dir() && !path.is_symlink() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-    match outcome {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        other => other,
-    }
 }
 
 #[cfg(test)]

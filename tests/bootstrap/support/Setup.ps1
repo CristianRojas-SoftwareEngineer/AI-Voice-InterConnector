@@ -76,6 +76,30 @@ public static class AviFakeBootstrap {
         if (!string.IsNullOrEmpty(log)) {
             System.IO.File.AppendAllText(log, string.Join(" ", args) + System.Environment.NewLine);
         }
+        // Donde corre y que hay junto al programa en este momento (para comprobar
+        // que el bootstrap no crea nada junto a el).
+        string exeLog = System.Environment.GetEnvironmentVariable("AVI_FAKE_EXE_LOG");
+        if (!string.IsNullOrEmpty(exeLog)) {
+            System.IO.File.WriteAllText(exeLog, System.Reflection.Assembly.GetExecutingAssembly().Location);
+        }
+        string siblingsLog = System.Environment.GetEnvironmentVariable("AVI_FAKE_SIBLINGS_LOG");
+        string installDir = System.Environment.GetEnvironmentVariable("AVI_INSTALL_DIR") ?? "";
+        if (!string.IsNullOrEmpty(siblingsLog) && installDir.Length > 0) {
+            string parent = System.IO.Path.GetDirectoryName(installDir.TrimEnd(new char[] { '\\' }));
+            System.IO.File.WriteAllLines(siblingsLog, System.IO.Directory.GetFileSystemEntries(parent));
+        }
+        // Con AVI_FAKE_LOCK_DIR deja un proceso vivo con ese directorio como
+        // directorio de trabajo: Windows no deja borrar un directorio en uso.
+        string lockDir = System.Environment.GetEnvironmentVariable("AVI_FAKE_LOCK_DIR");
+        if (!string.IsNullOrEmpty(lockDir)) {
+            System.Diagnostics.ProcessStartInfo psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c ping -n 6 127.0.0.1 > nul");
+            psi.WorkingDirectory = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            // Sin heredar los tubos de salida: si no, el que invoca esperaria al
+            // retenedor al leer la salida y el borrado ya no fallaria.
+            psi.UseShellExecute = true;
+            psi.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+            System.Diagnostics.Process.Start(psi);
+        }
         string subkey = System.Environment.GetEnvironmentVariable("AVI_FAKE_PATH_SUBKEY");
         bool noModify = System.Array.Exists(args, delegate(string a) { return a == "--no-modify-path"; });
         if (!string.IsNullOrEmpty(subkey) && !noModify) {

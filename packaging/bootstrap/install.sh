@@ -6,8 +6,8 @@
 # Uso con opciones (como archivo o tras `sh -s --`):
 #   curl -fsSL <url> | sh -s -- --version 0.24.0 --no-setup --yes
 #
-# Flujo: detecta el target, resuelve la versión, crea un staging hermano del
-# programa, descarga por HTTPS, verifica el hash con comparación exacta,
+# Flujo: detecta el target, resuelve la versión, crea un directorio temporal
+# propio bajo el temporal del sistema, descarga por HTTPS, verifica el hash con comparación exacta,
 # comprueba que el binario arranca y delega en `self install`. Sin `--check`:
 # con el binario instalado se usa `self update --check`. El PATH, los modelos y
 # las rutas de estado los decide `self install`, no este script.
@@ -69,6 +69,18 @@ resolve_latest_api() {
     printf '%s' "${tag#v}"
 }
 
+# Borra el temporal de descarga. Si el borrado falla avisa con la ruta y termina
+# con éxito: no puede cambiar el código de salida de la instalación.
+staging=""
+remove_staging() {
+    [ -n "$staging" ] || return 0
+    if ! rm -rf "$staging" || [ -e "$staging" ]; then
+        log "AVISO: no se pudo borrar el directorio temporal $staging; bórralo manualmente."
+    fi
+    staging=""
+    return 0
+}
+
 main() {
     # Entradas: la opción manda; si falta, vale la variable de entorno.
     opt_version="${AVI_VERSION:-}"
@@ -117,7 +129,7 @@ main() {
     esac
 
     # Requisitos: POSIX sh más descarga, hash, extracción y temporales.
-    for cmd in mktemp tar tr dirname curl; do have "$cmd" || fail "falta el comando requerido: $cmd."; done
+    for cmd in mktemp tar tr curl; do have "$cmd" || fail "falta el comando requerido: $cmd."; done
     have sha256sum || have shasum || fail "se necesita sha256sum o shasum para verificar."
 
     # Resolución de versión: opción o variable, estampada, latest.
@@ -133,14 +145,15 @@ main() {
     old_ifs="$IFS"; IFS=.; set -- $version; IFS="$old_ifs"
     [ "$#" -eq 3 ] || fail "[usage_error] versión inválida: '$version' (se espera X.Y.Z)." 2
 
-    # Staging hermano del programa (mismo volumen), solo para el usuario.
-    program_dir="${AVI_INSTALL_DIR:-${HOME:-}/.local/opt/$app}"
-    [ -n "$program_dir" ] && [ "$program_dir" != "/.local/opt/$app" ] || fail "no se puede situar el staging sin HOME ni AVI_INSTALL_DIR."
-    program_parent="$(dirname "$program_dir")"
-    mkdir -p "$program_parent" || fail "no se pudo crear $program_parent."
-    staging="$(mktemp -d "$program_parent/.ai-voice-interconnector-staging-XXXXXX")" || fail "no se pudo crear el staging."
+    # Temporal propio bajo el directorio temporal del sistema, solo para el
+    # usuario (mktemp -d crea con 0700). Nada se crea junto al programa: `self
+    # install` copia el bundle a su propio staging. Se borra en toda salida; si el
+    # borrado falla se avisa con la ruta, sin cambiar el código de salida.
+    staging="$(mktemp -d "${TMPDIR:-/tmp}/ai-voice-interconnector-install.XXXXXX")" || fail "no se pudo crear el directorio temporal."
     chmod 700 "$staging"
-    trap 'rm -rf "$staging"' EXIT INT TERM
+    trap 'remove_staging; exit 130' INT
+    trap 'remove_staging; exit 143' TERM
+    trap 'remove_staging' EXIT
 
     base="${AVI_DOWNLOAD_BASE_URL:-https://github.com/$repo/releases/download}"
     archive="$app-$version-$asset_arch-$asset_os.tar.gz"
@@ -193,8 +206,6 @@ main() {
     else
         if "$bin" "$@"; then code=0; else code=$?; fi
     fi
-    rm -rf "$staging"
-    trap - EXIT INT TERM
     exit "$code"
 }
 

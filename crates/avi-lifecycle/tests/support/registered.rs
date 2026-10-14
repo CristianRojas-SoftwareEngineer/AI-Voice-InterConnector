@@ -41,6 +41,8 @@ impl Sandbox {
         cleanup::Roots {
             program_dir: self.program_dir.clone(),
             data_dir: self.data_dir.clone(),
+            cache_container: self.cache_dir.clone(),
+            app_container: Some(self.app_dir.clone()),
             models_dir: self.models_dir.clone(),
             scratch_root: self.scratch_root.clone(),
             bin_dir: self.bin_dir.clone(),

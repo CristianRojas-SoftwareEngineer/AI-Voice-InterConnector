@@ -112,9 +112,9 @@ fn opt_entries(sandbox: &Sandbox) -> Vec<String> {
 /// Rutas del plan de borrado, como cadenas, que es la forma en que el envelope las
 /// publica.
 fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
-    plan.targets
+    plan.paths()
         .iter()
-        .map(|t| t.path.display().to_string())
+        .map(|p| p.display().to_string())
         .collect()
 }
 
@@ -870,17 +870,32 @@ fn uninstall_leaves_no_residue() {
         "la raíz de modelos no queda"
     );
     // El staging lleva el token de este proceso, vivo, y la desinstalación no lo barre:
-    // lo borra quien lo creó, como el instalador de arranque al terminar.
-    std::fs::remove_dir_all(sandbox.staging()).expect("el dueño borra su staging");
+    // lo borra quien lo creó, como el instalador de arranque al terminar. Antes de que
+    // lo borre, lo único que queda en el padre del programa es ese staging: ni
+    // aparcados ni bloqueo ni compuerta.
+    let staging = sandbox.staging();
+    let staging_name = format!(
+        "{}/",
+        staging
+            .file_name()
+            .expect("el staging tiene nombre")
+            .to_string_lossy()
+    );
+    let beside_program = opt_entries(&sandbox);
+    assert!(
+        !beside_program.is_empty() && beside_program.iter().all(|e| e.starts_with(&staging_name)),
+        "el motor no deja nada junto al programa salvo el staging de un dueño vivo: \
+         {beside_program:?}"
+    );
+    std::fs::remove_dir_all(&staging).expect("el dueño borra su staging");
     assert_eq!(
         opt_entries(&sandbox),
         Vec::<String>::new(),
         "el padre del programa queda vacío: ni staging, ni aparcados, ni bloqueo"
     );
-    assert_eq!(
-        listing::list(&sandbox.scratch_root),
-        Vec::<String>::new(),
-        "ningún scratch propio sobrevive"
+    assert!(
+        !inspect::exists(&sandbox.cache_dir) && !inspect::exists(&sandbox.app_dir),
+        "los contenedores de caché y raíz desaparecen con sus hojas, scratch incluido"
     );
 
     if cfg!(unix) {
@@ -2317,4 +2332,30 @@ fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
         !inspect::exists(&program_dir),
         "y el directorio desaparece con la raíz, como dice el plan"
     );
+}
+
+/// Un directorio de programa que no existe no se anuncia como conservado: no hay nada
+/// que conservar. Vale igual para el plan que para el simulacro.
+#[test]
+fn uninstall_plan_does_not_preserve_a_missing_program_dir() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("program-missing");
+    sandbox.seed_env();
+    sandbox.seed_state();
+    let program_dir = sandbox.home.join("no-existe");
+    let roots = sandbox.roots();
+    let options = uninstall::Options {
+        assume_yes: true,
+        ..Default::default()
+    };
+
+    let plan = uninstall::compose_plan(&roots, None, &program_dir, &options);
+    assert!(plan.program_dir.is_none());
+    assert!(
+        !plan.preserved.iter().any(|p| p.path == program_dir),
+        "un directorio ausente no se conserva: {:?}",
+        plan.preserved
+    );
+    let preview = uninstall::simulate(&roots, None, &program_dir, &sandbox.home, &options);
+    assert!(!preview.preserved.iter().any(|p| p.path == program_dir));
 }

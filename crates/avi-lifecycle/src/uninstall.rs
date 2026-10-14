@@ -42,6 +42,7 @@ use crate::channel::Channel;
 use crate::cleanup::{self, Category, DeletionPlan, Roots};
 use crate::confirm::{self, Confirmation, Decision, Kind, PlanEntry};
 use crate::daemon_stop::{self, ProcessControl};
+use crate::ownership;
 use crate::path_unix;
 use crate::receipt::{self, InstallReceipt, PathIntegration};
 use crate::LifecycleError;
@@ -126,6 +127,10 @@ impl Plan {
                 size: Some(t.size),
             })
             .collect();
+        out.extend(self.state.ownership.prune.iter().map(|path| PlanEntry {
+            path: path.clone(),
+            size: None,
+        }));
         if let Some(program_dir) = &self.program_dir {
             out.push(program_dir.clone());
         }
@@ -313,14 +318,12 @@ pub async fn run(
     let mut failed = Vec::new();
 
     // ── Paso 6. Borrar el estado: la raíz de datos entera salvo `--keep-data` ─────
-    for target in &plan.state.targets {
-        match remove_path(&target.path) {
-            Ok(()) => removed.push(target.path.display().to_string()),
-            Err(e) => {
-                eprintln!("  no se pudo borrar {}: {e}", target.path.display());
-                failed.push(target.path.display().to_string());
-            }
-        }
+    let report = ownership::execute(&roots.ownership_tree(), &plan.state.ownership);
+    removed.extend(report.removed.iter().map(|p| p.display().to_string()));
+    removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
+    for (path, e) in &report.failed {
+        eprintln!("  no se pudo borrar {}: {e}", path.display());
+        failed.push(path.display().to_string());
     }
 
     // ── Paso 7. Revertir el `PATH` exactamente según el recibo ───────────────────
@@ -355,18 +358,10 @@ pub async fn run(
                 (false, "uninstalled")
             }
         }
-    } else if plan.program_dir_swallowed_by.is_some() {
-        // La regla le impide borrarlo por su cuenta, pero un destino del plan se lo lleva:
-        // no hay nada que anunciar aquí porque **sí** se borra, y el destino que lo
-        // hace ya está en `removed` si lo consiguió. Anunciarlo como conservado
-        // sería falso.
-        (false, "uninstalled")
     } else {
-        eprintln!(
-            "  no se borra {}: {}",
-            program_dir.display(),
-            PROGRAM_DIR_PRESERVED_REASON
-        );
+        // Sin destino propio: o la regla lo conserva, y el plan ya lo anunció una vez
+        // como `preserved`, o un destino del plan se lo lleva y el destino que lo hace
+        // ya está en `removed` si lo consiguió.
         (false, "uninstalled")
     };
 
@@ -435,72 +430,75 @@ pub fn compose_plan(
     program_dir: &Path,
     options: &Options,
 ) -> Plan {
-    let models = cleanup::plan(
-        roots,
-        &cleanup::Options {
-            model: true,
-            ..Default::default()
-        },
-    );
-    // Lo que la raíz de modelos **no** puede perder se conserva en los dos casos: con
-    // `--keep-data` no es un destino, y sin él lo decide la regla de recursos compartidos.
-    let mut state = DeletionPlan {
-        targets: Vec::new(),
-        preserved: models.preserved,
-    };
-    if options.keep_data {
-        let data = cleanup::plan(
+    let mut preserved = Vec::new();
+    let mut targets = if options.keep_data {
+        // `--keep-data` conserva **modelos, voces y habla**, así que las tres
+        // categorías de datos quedan fuera de la selección. De la de `cleanup --all`
+        // solo se queda lo que es estado de ejecución: configuración, logs y pidfile.
+        let (all, _) = cleanup::select(
             roots,
             &cleanup::Options {
                 all: true,
                 ..Default::default()
             },
         );
-        // `--keep-data` conserva **modelos, voces y habla**, así que las
-        // tres categorías de datos quedan fuera. Del plan de `cleanup --all` solo se
-        // queda lo que es estado de ejecución: configuración, logs y pidfile.
-        state.targets = data
-            .targets
-            .into_iter()
+        for (path, reason) in [
+            (
+                roots.models_dir.clone(),
+                "`--keep-data` conserva los modelos",
+            ),
+            (
+                roots.data_dir.join("voices"),
+                "`--keep-data` conserva las voces",
+            ),
+            (
+                roots.data_dir.join("speech"),
+                "`--keep-data` conserva el habla sintetizada",
+            ),
+        ] {
+            if path.exists() {
+                preserved.push(Preserved { path, reason });
+            }
+        }
+        all.into_iter()
             .filter(|t| {
                 !matches!(
                     t.category,
                     Category::Model | Category::Voices | Category::SyntheticSpeech
                 )
             })
-            .collect();
-        state.preserved.extend(data.preserved);
-        state.preserved.push(Preserved {
-            path: roots.models_dir.clone(),
-            reason: "`--keep-data` conserva los modelos",
-        });
-        state.preserved.push(Preserved {
-            path: roots.data_dir.join("voices"),
-            reason: "`--keep-data` conserva las voces",
-        });
-        state.preserved.push(Preserved {
-            path: roots.data_dir.join("speech"),
-            reason: "`--keep-data` conserva el habla sintetizada",
-        });
+            .collect()
     } else {
-        state.targets = models.targets;
+        // Sin `--keep-data`: los modelos según la regla de recursos compartidos y la
+        // hoja de datos entera.
+        let (mut models, shared) = cleanup::select(
+            roots,
+            &cleanup::Options {
+                model: true,
+                ..Default::default()
+            },
+        );
+        preserved = shared;
+        models.extend(cleanup::scratch_target(roots));
         if roots.data_dir.is_dir() {
-            state.targets.push(cleanup::Target {
+            models.push(cleanup::Target {
                 path: roots.data_dir.clone(),
                 category: Category::Config,
                 size: cleanup::path_size(&roots.data_dir),
             });
         }
-    }
-    let mut preserved = std::mem::take(&mut state.preserved);
-    if let Some(receipt) = receipt {
-        describe_path_integration(receipt, &mut preserved);
-    }
-    state.targets.sort_by(|a, b| {
+        models
+    };
+    targets.sort_by(|a, b| {
         a.category
             .cmp(&b.category)
             .then_with(|| a.path.cmp(&b.path))
     });
+    let mut state = cleanup::finish(roots, targets, preserved);
+    let mut preserved = std::mem::take(&mut state.preserved);
+    if let Some(receipt) = receipt {
+        describe_path_integration(receipt, &mut preserved);
+    }
     // La regla del directorio de programa gobierna el paso 8, y el plan no puede
     // prometer lo que ella impide: un directorio de programa dentro de una raíz del
     // producto, de `$HOME` o de una unidad no se borraría por su cuenta, así que no
@@ -520,10 +518,14 @@ pub fn compose_plan(
         } else if let Some(swallower) = target_covering(&state.targets, program_dir) {
             (None, Some(swallower))
         } else {
-            preserved.push(Preserved {
-                path: program_dir.to_path_buf(),
-                reason: PROGRAM_DIR_PRESERVED_REASON,
-            });
+            // Solo se anuncia lo que existe: un directorio de programa ausente no
+            // se conserva, simplemente no está.
+            if program_dir.is_dir() {
+                preserved.push(Preserved {
+                    path: program_dir.to_path_buf(),
+                    reason: PROGRAM_DIR_PRESERVED_REASON,
+                });
+            }
             (None, None)
         };
     Plan {
@@ -1025,22 +1027,6 @@ fn is_same_or_descendant(key: &str, ancestor: &str) -> bool {
     key == ancestor || key.starts_with(&format!("{ancestor}\\"))
 }
 
-/// Borra una ruta, sea archivo o directorio. `NotFound` **es** éxito: el plan dice lo que
-/// tiene que dejar de existir, y si ya no existe el objetivo está cumplido. No es un
-/// caso teórico —la parada del daemon borra el pidfile cuando no había daemon vivo, y
-/// el pidfile es un destino de `--all`—.
-fn remove_path(path: &Path) -> std::io::Result<()> {
-    let outcome = if path.is_dir() && !path.is_symlink() {
-        std::fs::remove_dir_all(path)
-    } else {
-        std::fs::remove_file(path)
-    };
-    match outcome {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        other => other,
-    }
-}
-
 #[cfg(test)]
 mod program_dir_rule_tests {
     //! El directorio de programa cuelga de `$HOME` en todas las plataformas, así que
@@ -1057,6 +1043,8 @@ mod program_dir_rule_tests {
         Roots {
             program_dir: program.to_path_buf(),
             data_dir: home.join("data"),
+            cache_container: home.join("cache"),
+            app_container: None,
             models_dir: home.join("models"),
             scratch_root: home.join("temp"),
             bin_dir: home.join("bin"),

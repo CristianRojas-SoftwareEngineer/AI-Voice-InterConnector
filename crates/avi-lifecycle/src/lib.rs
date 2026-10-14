@@ -31,6 +31,7 @@ pub mod faults;
 pub mod install;
 pub mod lock;
 pub mod manifest;
+pub mod ownership;
 pub mod path_unix;
 #[cfg(windows)]
 pub mod path_windows;

@@ -3247,9 +3247,6 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 // al componer el plan; aquí solo el encabezado.
                 println!("Plan de desinstalación (nada se ha modificado).");
             } else {
-                for line in &outcome.preserved {
-                    println!("  no se tocará {}: {}", line.path.display(), line.reason);
-                }
                 println!("Desinstalación completada ({}).", outcome.status);
             }
             match kept {

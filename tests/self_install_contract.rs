@@ -475,6 +475,48 @@ fn self_install_no_setup_exits_0_without_reason() {
         "y sin `models_cause`, que solo existe si hubo fallo: {actual:?}"
     );
     assert!(actual.get("error").is_none(), "ni `error`: {actual:?}");
+
+    // El bundle estaba en un staging ajeno (sin el token de este proceso), así que
+    // `self install` lo copió a un staging propio junto al programa y lo borró al
+    // terminar: ningún staging de `self install` queda, ni nada del bootstrap en el
+    // temporal.
+    let value_of = |key: &str| {
+        PathBuf::from(
+            sandbox
+                .envs
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.clone())
+                .expect("el sandbox define la variable"),
+        )
+    };
+    let names = |dir: PathBuf| -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("leer el directorio")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect()
+    };
+    let parent = value_of("AVI_INSTALL_DIR")
+        .parent()
+        .expect("el programa tiene padre")
+        .to_path_buf();
+    let own_copies: Vec<String> = names(parent)
+        .into_iter()
+        .filter(|n| n.ends_with("-self-install"))
+        .collect();
+    assert!(
+        own_copies.is_empty(),
+        "el staging propio de `self install` se borra: {own_copies:?}"
+    );
+    let temp_left: Vec<String> = names(value_of("TEMP"))
+        .into_iter()
+        .filter(|n| n.starts_with("ai-voice-interconnector-install"))
+        .collect();
+    assert!(
+        temp_left.is_empty(),
+        "sin temporal del bootstrap: {temp_left:?}"
+    );
 }
 
 /// Un recibo ilegible hace fallar cada comando que lo necesita, con el `reason` del propio

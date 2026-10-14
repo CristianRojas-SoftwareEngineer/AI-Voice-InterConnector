@@ -2173,6 +2173,13 @@ fn cleanup_model_real_run_reports_paths() {
     )
     .unwrap();
     let foreign = shared.join("models--other--tool");
+    // Con la raíz HF compartida `AVI_CACHE_DIR` no puede fijarse (mandaría sobre
+    // `HF_HUB_CACHE` y volvería exclusiva la raíz), así que el contenedor de caché y el
+    // scratch se resuelven por las carpetas del sistema. Se desvían al sandbox para que el
+    // scratch no caiga en la caché real de quien ejecuta la prueba.
+    let user_home = sandbox.join("user-home");
+    let local_app_data = user_home.join("AppData").join("Local");
+    let xdg_cache = user_home.join(".cache");
     let shared_envs = [
         ("AVI_DATA_DIR", data.to_str().unwrap()),
         ("AVI_INSTALL_DIR", install.to_str().unwrap()),
@@ -2180,6 +2187,9 @@ fn cleanup_model_real_run_reports_paths() {
         ("AVI_CACHE_DIR", ""),
         ("HF_HUB_CACHE", shared.to_str().unwrap()),
         ("HF_HOME", ""),
+        ("HOME", user_home.to_str().unwrap()),
+        ("LOCALAPPDATA", local_app_data.to_str().unwrap()),
+        ("XDG_CACHE_HOME", xdg_cache.to_str().unwrap()),
         ("TMP", tmp.to_str().unwrap()),
         ("TEMP", tmp.to_str().unwrap()),
         ("TMPDIR", tmp.to_str().unwrap()),

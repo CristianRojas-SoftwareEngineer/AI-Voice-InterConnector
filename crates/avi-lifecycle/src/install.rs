@@ -439,6 +439,106 @@ pub fn bundle_dir(exe: &Path) -> PathBuf {
     exe.parent().unwrap_or(Path::new(".")).to_path_buf()
 }
 
+/// Etiqueta del staging que `self install` crea junto al programa.
+const SELF_INSTALL_STAGING_LABEL: &str = "self-install";
+
+/// Staging propio de esta operación: un directorio hermano del programa cuyo nombre
+/// lleva el token de este proceso, de donde parte el reemplazo transaccional.
+///
+/// Si el bundle ya está en un staging con el token de este proceso se usa tal cual y
+/// no se copia ni se borra: lo creó quien lo preparó y a él le toca retirarlo. Si el
+/// bundle está en cualquier otro sitio (descargado por el bootstrap en un temporal,
+/// extraído en un staging ajeno), se copia a un staging nuevo, que se borra al soltar
+/// el valor; un fallo al borrarlo se avisa con la ruta y no cambia el resultado.
+struct OwnStaging {
+    dir: PathBuf,
+    /// `true` si esta operación creó el directorio y por tanto debe borrarlo.
+    created: bool,
+}
+
+impl OwnStaging {
+    fn prepare(program_dir: &Path, bundle: &Path) -> anyhow::Result<Self> {
+        let owner = avi_process::current_owner_token()?;
+        let parent = program_dir.parent().unwrap_or(Path::new("."));
+        let bundle_is_own = bundle
+            .parent()
+            .is_some_and(|p| crate::canonical_path_entry_matches(p, parent))
+            && bundle
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(avi_shared::staging_names::install_staging::owner_of)
+                .is_some_and(|o| o == owner);
+        if bundle_is_own {
+            return Ok(Self {
+                dir: bundle.to_path_buf(),
+                created: false,
+            });
+        }
+        let dir = parent.join(avi_shared::staging_names::install_staging::name(
+            SELF_INSTALL_STAGING_LABEL,
+            &owner,
+        ));
+        // `create_dir` falla si ya existe: un staging con este nombre sería de otra
+        // operación del mismo proceso y mezclarlo corrompería el bundle.
+        std::fs::create_dir_all(parent)?;
+        std::fs::create_dir(&dir).map_err(|e| {
+            LifecycleError::new(
+                "self_install_failed",
+                format!("no se pudo crear el staging {}: {e}", dir.display()),
+            )
+        })?;
+        let staged = Self { dir, created: true };
+        // Si la copia falla, `staged` se suelta aquí y borra lo copiado a medias.
+        copy_tree(bundle, &staged.dir).map_err(|e| {
+            LifecycleError::new(
+                "self_install_failed",
+                format!(
+                    "no se pudo copiar el bundle de {} a {}: {e}",
+                    bundle.display(),
+                    staged.dir.display()
+                ),
+            )
+        })?;
+        Ok(staged)
+    }
+
+    fn dir(&self) -> &Path {
+        &self.dir
+    }
+}
+
+impl Drop for OwnStaging {
+    fn drop(&mut self) {
+        if !self.created {
+            return;
+        }
+        if let Err(e) = std::fs::remove_dir_all(&self.dir) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                eprintln!(
+                    "Aviso: no se pudo borrar el staging {}: {e}.",
+                    self.dir.display()
+                );
+            }
+        }
+    }
+}
+
+/// Copia recursiva del árbol `src` en el directorio existente `dest`.
+fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        if from.is_dir() {
+            std::fs::create_dir(&to)?;
+            copy_tree(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
 /// Ejecuta `self install` completo.
 pub async fn install(
     env: &Env,
@@ -454,10 +554,10 @@ pub async fn install(
 
     // ── Paso 1. Recuperación y bloqueo ────────────────────────────────────────
     // La recuperación va con el bloqueo tomado: si no, el barrido podría llevarse por
-    // delante el staging que otra operación está usando. El staging del que esta
-    // operación instala no corre peligro: lo creó un proceso vivo (el que descarga o
-    // construye y espera el traspaso), y el barrido solo borra stagings de dueño
-    // muerto.
+    // delante el staging que otra operación está usando. El staging propio de esta
+    // operación (el bundle ya preparado o la copia que se hace más abajo) no corre
+    // peligro: lleva el token de este proceso vivo, y el barrido solo borra stagings
+    // de dueño muerto.
     let lock = crate::lock::acquire_exclusive(&env.program_dir)?;
     let bundle = bundle_dir(&env.exe);
     let recovery = crate::recovery::recover(crate::recovery::Roots {
@@ -521,7 +621,11 @@ pub async fn install(
     // cuarentena y recibo sobre lo que ya está.
     let mut parked_leftovers = Vec::new();
     if mode == Mode::Install {
-        let outcome = transaction::replace(&env.program_dir, &bundle)?;
+        // El reemplazo parte siempre de un staging propio junto al programa, para
+        // cumplir sus precondiciones; la copia que se haga se borra al salir de
+        // este bloque, haya salido bien o mal.
+        let staged = OwnStaging::prepare(&env.program_dir, &bundle)?;
+        let outcome = transaction::replace(&env.program_dir, staged.dir())?;
         parked_leftovers = outcome.leftovers;
     }
 
@@ -1036,6 +1140,68 @@ fn final_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Un bundle fuera de un staging propio se copia a un staging hermano del programa
+    /// con el token de este proceso, el original queda intacto y la copia se borra al
+    /// soltar el valor.
+    #[test]
+    fn own_staging_copies_foreign_bundle_and_removes_the_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("opt").join("programa");
+        let bundle = root.path().join("descarga");
+        std::fs::create_dir_all(bundle.join("vendor")).unwrap();
+        std::fs::write(bundle.join("exe"), "binario").unwrap();
+        std::fs::write(bundle.join("vendor").join("lib"), "libreria").unwrap();
+
+        let staged = OwnStaging::prepare(&program, &bundle).unwrap();
+        let dir = staged.dir().to_path_buf();
+        assert_eq!(dir.parent(), program.parent(), "hermano del programa");
+        let owner = avi_process::current_owner_token().unwrap();
+        assert_eq!(
+            avi_shared::staging_names::install_staging::owner_of(
+                &dir.file_name().unwrap().to_string_lossy()
+            ),
+            Some(owner)
+        );
+        assert_eq!(std::fs::read_to_string(dir.join("exe")).unwrap(), "binario");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("vendor").join("lib")).unwrap(),
+            "libreria"
+        );
+        assert!(bundle.join("exe").is_file(), "el original no se toca");
+
+        drop(staged);
+        assert!(!dir.exists(), "la copia desaparece al soltarla");
+        assert!(bundle.join("exe").is_file());
+    }
+
+    /// Un bundle que ya está en un staging con el token de este proceso se usa tal
+    /// cual: no se copia a otro directorio ni se borra al soltar el valor.
+    #[test]
+    fn own_staging_does_not_recopy_a_bundle_already_in_it() {
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("opt").join("programa");
+        let owner = avi_process::current_owner_token().unwrap();
+        let bundle =
+            root.path()
+                .join("opt")
+                .join(avi_shared::staging_names::install_staging::name(
+                    "descarga", &owner,
+                ));
+        std::fs::create_dir_all(&bundle).unwrap();
+        std::fs::write(bundle.join("exe"), "binario").unwrap();
+
+        let staged = OwnStaging::prepare(&program, &bundle).unwrap();
+        assert_eq!(staged.dir(), bundle);
+        let siblings = std::fs::read_dir(root.path().join("opt")).unwrap().count();
+        assert_eq!(siblings, 1, "no apareció ningún staging nuevo");
+
+        drop(staged);
+        assert!(
+            bundle.join("exe").is_file(),
+            "el dueño del staging lo retira"
+        );
+    }
 
     /// Regresión: con un almacén vacío, la provisión de install descarga los dos
     /// modelos de traducción ya convertidos, sin ejecutar `setup`.

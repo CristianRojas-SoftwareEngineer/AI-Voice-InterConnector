@@ -288,6 +288,8 @@ fn env_over_registered<'a>(
         roots: cleanup::Roots {
             program_dir: receipt.install_dir.clone(),
             data_dir: receipt.roots.data_dir.clone(),
+            cache_container: receipt.roots.cache_dir.clone(),
+            app_container: Some(registered.app_dir.clone()),
             models_dir: receipt.roots.cache_dir.join("models"),
             scratch_root: receipt.roots.cache_dir.join("tmp"),
             bin_dir: registered.bin_dir.clone(),

@@ -30,7 +30,15 @@ BeforeAll {
     function Get-TestEnvBase {
         param($TestDir)
         $programDir = Join-Path $TestDir "install"
+        # Temporal del usuario acotado a la prueba: ahi vive el staging del bootstrap.
+        $tempDir = Join-Path $TestDir "temp"
+        New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
         return @{
+            TEMP                  = $tempDir
+            TMP                   = $tempDir
+            AVI_FAKE_EXE_LOG      = (Join-Path $TestDir "fake-exe.log")
+            AVI_FAKE_SIBLINGS_LOG = (Join-Path $TestDir "fake-siblings.log")
+            AVI_FAKE_LOCK_DIR     = $null
             AVI_DOWNLOAD_BASE_URL = $script:LastBaseUrl
             AVI_INSTALL_DIR       = $programDir
             AVI_BIN_DIR           = (Join-Path $TestDir "bin")
@@ -48,8 +56,11 @@ BeforeAll {
 
     function Assert-NoStagingLeft {
         param($TestDir)
+        # Ni staging junto al programa ni el temporal del bootstrap.
         $left = Get-ChildItem -Path $TestDir -Filter ".ai-voice-interconnector-staging-*"
         $left | Should -BeNullOrEmpty
+        $tempLeft = Get-ChildItem -Path (Join-Path $TestDir "temp") -Filter "ai-voice-interconnector-install-*"
+        $tempLeft | Should -BeNullOrEmpty
     }
 }
 
@@ -95,6 +106,33 @@ Describe "bootstrap de Windows" {
         (Get-Content -Raw $envBase.AVI_FAKE_LOG).Trim() | Should -Be "self install --no-setup --no-modify-path --yes"
         Get-Content -Raw $script:Server.RequestLog | Should -Match "GET /v9\.9\.9/ai-voice-interconnector-9\.9\.9-x86_64-windows\.zip"
         Assert-NoStagingLeft $script:TestDir
+    }
+
+    It "trabaja en el temporal del usuario y no crea nada junto al programa" {
+        $envBase = Get-TestEnvBase $script:TestDir
+        $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
+            -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
+
+        $result.ExitCode | Should -Be 0
+        # Durante `self install` el ejecutable corria dentro del temporal...
+        (Get-Content -Raw $envBase.AVI_FAKE_EXE_LOG) | Should -BeLike ((Join-Path $envBase.TEMP "ai-voice-interconnector-install-*") + "*")
+        # ...y junto al programa no habia ningun staging.
+        (Get-Content -Raw $envBase.AVI_FAKE_SIBLINGS_LOG) | Should -Not -Match "ai-voice-interconnector-staging"
+        Assert-NoStagingLeft $script:TestDir
+    }
+
+    It "si el borrado del temporal falla avisa con la ruta y conserva el codigo de salida" {
+        $envBase = Get-TestEnvBase $script:TestDir
+        # El doble deja un proceso vivo con el temporal como directorio de trabajo,
+        # y Windows no borra un directorio en uso.
+        $envBase.AVI_FAKE_LOCK_DIR = "1"
+        $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
+            -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
+
+        $result.ExitCode | Should -Be 0
+        ($result.Stdout + $result.Stderr) | Should -Match ("AVISO: no se pudo borrar el directorio temporal " + [regex]::Escape($envBase.TEMP))
+        # Espera a que el proceso retenedor termine para poder limpiar la prueba.
+        Start-Sleep -Seconds 7
     }
 
     It "las variables AVI_* equivalen a los parametros" {
