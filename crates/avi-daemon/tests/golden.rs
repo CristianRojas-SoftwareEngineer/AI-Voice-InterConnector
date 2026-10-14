@@ -52,6 +52,8 @@ use avi_store::{SpeechStore, VoiceStore};
 fn process_root() -> &'static std::path::Path {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
     ROOT.get_or_init(|| {
+        // Prueba: raíz propia bajo el temporal del sistema, ajena al scratch del producto.
+        #[allow(clippy::disallowed_methods)]
         let parent = std::env::temp_dir().join("golden-avi-daemon");
         sweep_dead_process_dirs(&parent);
         let root = parent.join(std::process::id().to_string());
@@ -1177,8 +1179,8 @@ async fn dub_leaves_no_temporary_on_any_outcome() {
             "el error lleva reason: {actual:?}"
         );
     }
-    let residue: Vec<String> = std::fs::read_dir(std::env::temp_dir())
-        .expect("el directorio temporal debe poder leerse")
+    let residue: Vec<String> = std::fs::read_dir(avi_process::scratch::dir().expect("scratch"))
+        .expect("el scratch debe poder leerse")
         .map(|e| {
             e.expect("entrada del directorio temporal")
                 .file_name()
@@ -1222,17 +1224,16 @@ fn require_custom_voice_model() {
     });
 }
 
-/// Temporales del daemon con el prefijo dado que pertenecen a este proceso: el
-/// nombre del `TempWav` incluye el PID (`<prefijo><pid>_<contador>_<nanos>.wav`),
-/// así que el filtro no mezcla los de esta prueba con los de otros procesos.
+/// Temporales del daemon con el prefijo dado que hay en el scratch de este
+/// proceso: el scratch es propio, así que el filtro no mezcla los de otros
+/// procesos.
 fn temp_wavs(prefix: &str) -> Vec<PathBuf> {
-    let own = format!("{prefix}{}_", std::process::id());
-    std::fs::read_dir(std::env::temp_dir())
-        .expect("el directorio temporal debe poder leerse")
-        .map(|e| e.expect("entrada del directorio temporal").path())
+    std::fs::read_dir(avi_process::scratch::dir().expect("scratch"))
+        .expect("el scratch debe poder leerse")
+        .map(|e| e.expect("entrada del scratch").path())
         .filter(|p| {
             p.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with(&own))
+                .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
         })
         .collect()
 }
@@ -1414,6 +1415,8 @@ async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
 async fn synthesize_events_without_engine(dir_prefix: &str, voice: &str) -> Vec<Value> {
     prepare_shared_env();
     let mut state = contract_state(&process_root().join(dir_prefix));
+    // Prueba: ruta inexistente bajo el temporal del sistema, sin crear nada.
+    #[allow(clippy::disallowed_methods)]
     let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
     state.tts_engine.binary_path = Some(missing.clone());
     state.tts_engine.model_dir = Some(missing);

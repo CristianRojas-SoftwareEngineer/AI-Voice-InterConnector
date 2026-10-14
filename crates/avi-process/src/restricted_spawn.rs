@@ -300,14 +300,49 @@ fn exit_status_from_raw(code: u32) -> std::process::ExitStatus {
 /// padre no llega al hijo. Sin repliegue: si la lista no se puede aplicar, el
 /// lanzamiento falla con error.
 pub fn spawn_with_allowlist(request: RestrictedSpawnRequest) -> io::Result<RestrictedChild> {
+    spawn_with_allowlist_env(request, &[])
+}
+
+/// Igual que [`spawn_with_allowlist`], pero el hijo recibe además las variables
+/// de entorno de `env`, que sustituyen a las homónimas del padre (en Windows la
+/// comparación del nombre ignora mayúsculas). El resto del entorno se hereda.
+pub fn spawn_with_allowlist_env(
+    request: RestrictedSpawnRequest,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> io::Result<RestrictedChild> {
     #[cfg(windows)]
     {
-        spawn_with_allowlist_windows(request)
+        spawn_with_allowlist_windows(request, env)
     }
     #[cfg(not(windows))]
     {
-        spawn_with_allowlist_unix(request)
+        spawn_with_allowlist_unix(request, env)
     }
+}
+
+/// Bloque de entorno UTF-16 de Windows: el entorno del padre con `overrides`
+/// aplicados, ordenado sin distinguir mayúsculas y terminado en doble nulo.
+#[cfg(windows)]
+fn environment_block(overrides: &[(&str, &std::ffi::OsStr)]) -> Vec<u16> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut vars: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+    for (key, value) in overrides {
+        let upper = key.to_uppercase();
+        vars.retain(|(k, _)| k.to_string_lossy().to_uppercase() != upper);
+        vars.push((OsString::from(key), value.to_os_string()));
+    }
+    vars.sort_by_key(|(k, _)| k.to_string_lossy().to_uppercase());
+    let mut block: Vec<u16> = Vec::new();
+    for (key, value) in vars {
+        block.extend(key.encode_wide());
+        block.push(u16::from(b'='));
+        block.extend(value.encode_wide());
+        block.push(0);
+    }
+    block.push(0);
+    block
 }
 
 #[cfg(not(windows))]
@@ -318,7 +353,10 @@ pub fn spawn_with_allowlist(request: RestrictedSpawnRequest) -> io::Result<Restr
 /// demás que abre `std` lleva `FD_CLOEXEC`; no hay forma de añadirle
 /// descriptores, así que un `extra_allowed` no vacío falla en lugar de
 /// lanzar a un hijo que no recibiría lo pedido.
-fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<RestrictedChild> {
+fn spawn_with_allowlist_unix(
+    request: RestrictedSpawnRequest,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> io::Result<RestrictedChild> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     if !request.extra_allowed.is_empty() {
@@ -329,6 +367,7 @@ fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<Rest
     }
     let mut cmd = std::process::Command::new(&request.program);
     cmd.args(&request.args);
+    cmd.envs(env.iter().copied());
     match request.stdin {
         StdinSpec::Null => {
             cmd.stdin(Stdio::null());
@@ -359,7 +398,10 @@ fn spawn_with_allowlist_unix(request: RestrictedSpawnRequest) -> io::Result<Rest
 }
 
 #[cfg(windows)]
-fn spawn_with_allowlist_windows(request: RestrictedSpawnRequest) -> io::Result<RestrictedChild> {
+fn spawn_with_allowlist_windows(
+    request: RestrictedSpawnRequest,
+    env: &[(&str, &std::ffi::OsStr)],
+) -> io::Result<RestrictedChild> {
     // Prepara el stdio del hijo y la allowlist. Los guards de restauración
     // se declaran DESPUÉS que los de cierre para que, al soltarse en orden
     // inverso, los flags se restauren ANTES de cerrar los handles.
@@ -401,14 +443,14 @@ fn spawn_with_allowlist_windows(request: RestrictedSpawnRequest) -> io::Result<R
     }
 
     let allowed = allowed_handle_list(&marked);
+    let env_block = (!env.is_empty()).then(|| environment_block(env));
     let result = launch_process_with_list(
         &request.program,
         &request.args,
-        stdin_handle,
-        stdout_handle,
-        stderr_handle,
+        (stdin_handle, stdout_handle, stderr_handle),
         request.creation_flags,
         &allowed,
+        env_block.as_deref(),
     );
 
     // Los guards restauran los flags y cierran los handles al salir de
@@ -573,17 +615,17 @@ impl Drop for ErrorModeGuard {
 fn launch_process_with_list(
     program: &Path,
     args: &[String],
-    stdin_handle: isize,
-    stdout_handle: isize,
-    stderr_handle: isize,
+    (stdin_handle, stdout_handle, stderr_handle): (isize, isize, isize),
     creation_flags: u32,
     allowed: &[isize],
+    env_block: Option<&[u16]>,
 ) -> Result<(u32, isize), u32> {
     use windows_sys::Win32::Foundation::GetLastError;
     use windows_sys::Win32::System::Threading::{
         CreateProcessW, InitializeProcThreadAttributeList, UpdateProcThreadAttribute,
-        EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-        STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW,
+        CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION,
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
+        STARTUPINFOEXW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
@@ -646,8 +688,14 @@ fn launch_process_with_list(
             std::ptr::null_mut(),
             std::ptr::null_mut(),
             1,
-            creation_flags | EXTENDED_STARTUPINFO_PRESENT,
-            std::ptr::null(),
+            creation_flags
+                | EXTENDED_STARTUPINFO_PRESENT
+                | if env_block.is_some() {
+                    CREATE_UNICODE_ENVIRONMENT
+                } else {
+                    0
+                },
+            env_block.map_or(std::ptr::null(), |block| block.as_ptr().cast()),
             std::ptr::null(),
             &startup.StartupInfo,
             &mut info,

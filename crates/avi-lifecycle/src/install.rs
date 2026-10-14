@@ -79,10 +79,13 @@ pub struct Env {
     pub bin_dir: PathBuf,
     /// Raíz de datos, donde vive el pidfile del daemon.
     pub data_dir: PathBuf,
-    /// Raíz de modelos. Es la que se registra en el recibo y la que anuncia
-    /// el resumen; el almacén la resuelve por `avi-store`, así que en una prueba
-    /// reubicada tiene que venir de `AVI_CACHE_DIR` para que ambas coincidan.
+    /// Raíz de modelos. Es la que anuncia el resumen; el almacén la resuelve por
+    /// `avi-store`, así que en una prueba reubicada tiene que ser
+    /// `<AVI_CACHE_DIR>/models` para que ambas coincidan.
     pub models_dir: PathBuf,
+    /// Contenedor de caché de la aplicación, del que cuelgan `models` y `tmp`. Es
+    /// la raíz de caché que se registra en el recibo.
+    pub cache_dir: PathBuf,
     /// Directorio de temporales del sistema, que es donde vive lo que el barrido
     /// recoge.
     pub temp_root: PathBuf,
@@ -155,6 +158,10 @@ impl Env {
             bin_dir,
             data_dir: crate::data_dir().map_err(path_error)?,
             models_dir: crate::models_cache_dir().map_err(path_error)?,
+            cache_dir: crate::cache_container().map_err(path_error)?,
+            // Raíz del temporal del sistema, donde se barren los residuos de versiones
+            // anteriores del producto: es la lectura que el lint prohíbe para crear.
+            #[allow(clippy::disallowed_methods)]
             temp_root: std::env::temp_dir(),
             home: home_dir()?,
             path_env: std::env::var("PATH").unwrap_or_default(),
@@ -360,7 +367,7 @@ impl Outcome {
                 PathIntegration::none(),
                 Roots {
                     data_dir: env.data_dir.clone(),
-                    cache_dir: env.models_dir.clone(),
+                    cache_dir: env.cache_dir.clone(),
                 },
                 None,
             ),
@@ -551,7 +558,7 @@ pub async fn install(
         path_integration.clone(),
         Roots {
             data_dir: env.data_dir.clone(),
-            cache_dir: env.models_dir.clone(),
+            cache_dir: env.cache_dir.clone(),
         },
         source_of(env, previous.as_ref()),
     );
@@ -1188,7 +1195,7 @@ mod tests {
             PathIntegration::none(),
             Roots {
                 data_dir: env.data_dir.clone(),
-                cache_dir: env.models_dir.clone(),
+                cache_dir: env.cache_dir.clone(),
             },
             Some("https://example.invalid/bundle.tar.gz".to_string()),
         );
@@ -1287,6 +1294,7 @@ mod tests {
             bin_dir: PathBuf::from("/home/ana/.local/bin"),
             data_dir: PathBuf::from("/home/ana/.local/share/ai-voice-interconnector"),
             models_dir: PathBuf::from("/home/ana/.cache/ai-voice-interconnector/models"),
+            cache_dir: PathBuf::from("/home/ana/.cache/ai-voice-interconnector"),
             temp_root: PathBuf::from("/tmp"),
             home: PathBuf::from("/home/ana"),
             path_env: "/usr/bin:/bin".to_string(),

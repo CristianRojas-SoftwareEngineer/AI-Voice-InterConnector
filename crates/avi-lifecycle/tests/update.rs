@@ -96,7 +96,7 @@ fn install_version(sandbox: &Sandbox, version: &str) -> InstallReceipt {
         PathIntegration::none(),
         receipt::Roots {
             data_dir: sandbox.data_dir.clone(),
-            cache_dir: sandbox.models_dir.clone(),
+            cache_dir: sandbox.cache_dir.clone(),
         },
         None,
     );
@@ -236,7 +236,11 @@ impl update::PathRemover for Busy {
     fn remove_now(&self, _path: &std::path::Path) -> anyhow::Result<()> {
         anyhow::bail!("el ejecutable está en uso")
     }
-    fn schedule(&self, _path: &std::path::Path, _pid: u32) -> anyhow::Result<()> {
+    fn schedule(
+        &self,
+        _path: &std::path::Path,
+        _wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<()> {
         Ok(())
     }
 }

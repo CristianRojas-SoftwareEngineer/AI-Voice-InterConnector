@@ -75,6 +75,8 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
             eprintln!("ERROR: {error}");
         }
         eprintln!("PINES DIVERGENTES: {}", errors.len());
+        // Herramienta de desarrollo sin scratch: no hay nada que liberar antes de salir.
+        #[allow(clippy::disallowed_methods)]
         std::process::exit(1);
     }
     Ok(())

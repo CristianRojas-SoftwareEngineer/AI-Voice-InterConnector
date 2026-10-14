@@ -494,6 +494,8 @@ mod tests {
     /// Una librería inexistente es un error con la ruta buscada, no un pánico.
     #[test]
     fn missing_onnx_runtime_is_typed_error() {
+        // Prueba: ruta inexistente bajo el temporal del sistema, sin crear nada.
+        #[allow(clippy::disallowed_methods)]
         let path = std::env::temp_dir()
             .join("avi-ort-inexistente")
             .join(ORT_LIBRARY);
@@ -509,6 +511,8 @@ mod tests {
     /// dentro de él.
     #[test]
     fn ort_path_directory_appends_library_name() {
+        // Prueba: solo necesita un directorio existente, no escribe en él.
+        #[allow(clippy::disallowed_methods)]
         let dir = std::env::temp_dir();
         assert_eq!(resolve_ort_path(dir.as_os_str()), dir.join(ORT_LIBRARY));
     }

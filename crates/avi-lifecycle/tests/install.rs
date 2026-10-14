@@ -78,7 +78,7 @@ async fn install_twice_is_idempotent() {
     assert_eq!(receipt.app, "ai-voice-interconnector");
     assert_eq!(receipt.channel, avi_lifecycle::channel::Channel::Script);
     assert_eq!(receipt.roots.data_dir, sandbox.data_dir);
-    assert_eq!(receipt.roots.cache_dir, sandbox.models_dir);
+    assert_eq!(receipt.roots.cache_dir, sandbox.cache_dir);
     assert_eq!(
         receipt.files, section.required,
         "el recibo lista lo colocado"

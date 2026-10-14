@@ -34,6 +34,7 @@ use avi_process::registry::{
     observe_pid_file, parse_ready_record, pid_path, PidFile, PidFileObservation, Registered,
     READY_FILE,
 };
+use avi_process::IdentityObservation;
 pub use avi_process::ProcessIdentity;
 use std::path::Path;
 use std::time::Duration;
@@ -189,6 +190,16 @@ pub trait ProcessControl {
     /// puede observar. Por defecto no se observa nada.
     fn identity(&self, _pid: u32) -> Option<ProcessIdentity> {
         None
+    }
+    /// Observación de la identidad que separa «no existe» de «no se puede
+    /// observar». Por defecto se deriva de [`identity`](Self::identity), que no
+    /// distingue y por tanto nunca da `Denied`; el control del producto la
+    /// sobrescribe con la observación real del sistema.
+    fn observe_identity(&self, pid: u32) -> IdentityObservation {
+        match self.identity(pid) {
+            Some(identity) => IdentityObservation::Present(identity),
+            None => IdentityObservation::Gone,
+        }
     }
 }
 
@@ -471,7 +482,9 @@ pub fn classify_registered(
     alive: bool,
     recorded: Option<&ProcessIdentity>,
 ) -> Registered {
-    avi_process::registry::classify_registered(pid, alive, recorded, || control.identity(pid))
+    avi_process::registry::classify_registered(pid, alive, recorded, || {
+        control.observe_identity(pid)
+    })
 }
 
 /// Daemon registrado: sus datos de identidad y su dirección, de donde se hayan
@@ -907,8 +920,6 @@ mod tests {
         assert_eq!(read_pid(&data), Some(4242));
         assert_eq!(read_resident_pid(&data), 77);
         assert_eq!(read_addr(&data).as_deref(), Some("127.0.0.1:8765"));
-        let temp = path.with_extension("pid.tmp");
-        assert!(!temp.exists(), "el temporal no sobrevive al renombrado");
         assert_eq!(
             std::fs::read_dir(&data).unwrap().count(),
             1,

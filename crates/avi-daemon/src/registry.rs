@@ -16,7 +16,7 @@ use avi_process::registry::{
     classify_registered, now_rfc3339, observe_pid_file, write_pid_file, PidFile,
     PidFileObservation, Registered,
 };
-use avi_process::{pid_alive_exact, process_identity, ProcessIdentity};
+use avi_process::{observe_identity, pid_alive_exact, process_identity, ProcessIdentity};
 use avi_tts::ResidentRegistry;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -93,15 +93,19 @@ impl DaemonRegistry {
             file.pid,
             pid_alive_exact(file.pid),
             file.identity.as_ref(),
-            || process_identity(file.pid),
+            || observe_identity(file.pid),
         );
-        if state == Registered::Ours {
-            anyhow::bail!(
+        match state {
+            Registered::Ours => anyhow::bail!(
                 "ya hay otro daemon en ejecución (pid {}): este arranque no se registra",
                 file.pid
-            );
+            ),
+            Registered::Unknown => anyhow::bail!(
+                "no se puede observar el proceso del pid {} registrado en daemon.pid: no se sabe si es otro daemon en ejecución",
+                file.pid
+            ),
+            Registered::Absent | Registered::Foreign => Ok(()),
         }
-        Ok(())
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, PidFile> {

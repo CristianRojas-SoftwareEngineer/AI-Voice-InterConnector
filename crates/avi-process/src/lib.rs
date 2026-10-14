@@ -25,12 +25,16 @@ pub use windows_sys::Win32::System::Threading::{
 #[cfg(windows)]
 mod deferred;
 #[cfg(windows)]
-pub use deferred::schedule_clean_removal;
+pub use deferred::{schedule_removal, schedule_removal_with};
+
+pub use avi_shared::{OwnerState, OwnerToken};
 
 pub mod registry;
 pub mod restricted_spawn;
+pub mod scratch;
 pub use restricted_spawn::{
-    spawn_with_allowlist, RestrictedChild, RestrictedSpawnRequest, StdinSpec,
+    spawn_with_allowlist, spawn_with_allowlist_env, RestrictedChild, RestrictedSpawnRequest,
+    StdinSpec,
 };
 
 /// Identidad observable de un proceso: la hora de creación y el nombre de la
@@ -45,24 +49,56 @@ pub struct ProcessIdentity {
     pub image: String,
 }
 
+/// Desenlace de observar la identidad de un PID. Separa «no existe» de «existe
+/// pero no se puede observar», que exigen decisiones opuestas: lo primero es un
+/// proceso muerto y lo segundo, un dueño desconocido que no se debe dar por
+/// muerto.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IdentityObservation {
+    /// El proceso existe y esta es su identidad.
+    Present(ProcessIdentity),
+    /// No existe un proceso vivo con ese PID.
+    Gone,
+    /// El sistema no permite observarlo, o la observación falló: no se sabe si
+    /// existe.
+    Denied,
+}
+
 /// Observa la identidad del proceso con ese PID. `None` si no existe o no se
-/// puede observar.
-#[cfg(windows)]
+/// puede observar; quien necesite distinguir ambos casos usa
+/// [`observe_identity`].
 pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
-    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    match observe_identity(pid) {
+        IdentityObservation::Present(identity) => Some(identity),
+        IdentityObservation::Gone | IdentityObservation::Denied => None,
+    }
+}
+
+/// Observa la identidad del proceso con ese PID. Windows: `OpenProcess` que
+/// falla con `ERROR_INVALID_PARAMETER` es un PID sin proceso; con
+/// `ERROR_ACCESS_DENIED` (o cualquier otro error) el proceso no es observable.
+#[cfg(windows)]
+pub fn observe_identity(pid: u32) -> IdentityObservation {
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, FILETIME,
+    };
     use windows_sys::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     if pid == 0 {
-        return None;
+        return IdentityObservation::Gone;
     }
     // SAFETY: el handle se abre con permiso de solo consulta, se usa dentro de
     // esta función con búferes locales del tamaño declarado y se cierra siempre.
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle == 0 {
-            return None;
+            return if GetLastError() == ERROR_INVALID_PARAMETER {
+                IdentityObservation::Gone
+            } else {
+                IdentityObservation::Denied
+            };
         }
         let zero = FILETIME {
             dwLowDateTime: 0,
@@ -75,32 +111,35 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
         let name_ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
         CloseHandle(handle);
         if times_ok == 0 || name_ok == 0 {
-            return None;
+            return IdentityObservation::Denied;
         }
         // Un proceso terminado cuyo handle sigue abierto en otro sitio conserva
         // la hora de salida: ya no es un proceso vivo.
         if exited.dwLowDateTime != 0 || exited.dwHighDateTime != 0 {
-            return None;
+            return IdentityObservation::Gone;
         }
         let start = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
         let path = String::from_utf16_lossy(&buf[..len as usize]);
-        let image = path.rsplit(['\\', '/']).next()?.to_lowercase();
-        Some(ProcessIdentity {
+        let Some(name) = path.rsplit(['\\', '/']).next() else {
+            return IdentityObservation::Denied;
+        };
+        IdentityObservation::Present(ProcessIdentity {
             start: start.to_string(),
-            image,
+            image: name.to_lowercase(),
         })
     }
 }
 
-/// Observa la identidad del proceso con ese PID. `None` si no existe, es un
-/// zombi o no se puede observar. Se lee del núcleo, sin lanzar herramientas
-/// externas, de modo que funciona en sistemas sin `procps`.
+/// Observa la identidad del proceso con ese PID. Se lee del núcleo, sin lanzar
+/// herramientas externas, de modo que funciona en sistemas sin `procps`. Un
+/// zombi ya no está vivo. Un error de «no existe» (`ESRCH`) es `Gone` y uno de
+/// permisos (`EPERM`) o cualquier otro, `Denied`.
 #[cfg(unix)]
-pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+pub fn observe_identity(pid: u32) -> IdentityObservation {
     // Un PID que no cabe en `pid_t` firmado se interpretaría como grupo o
     // difusión en las llamadas del sistema: no es un proceso.
     if pid == 0 || !fits_pid_t(pid) {
-        return None;
+        return IdentityObservation::Gone;
     }
     #[cfg(target_os = "linux")]
     {
@@ -112,17 +151,55 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
     }
 }
 
+/// Identificador del arranque actual del sistema, sin guiones y en minúsculas
+/// (`[0-9a-f]+`). `None` si no se puede leer.
+#[cfg(target_os = "linux")]
+fn boot_id() -> Option<String> {
+    let raw = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+    normalize_boot_id(&raw)
+}
+
+/// Quita los guiones y el salto de línea final del `boot_id` del núcleo y lo
+/// pasa a minúsculas. `None` si queda vacío o con algo distinto de dígitos
+/// hexadecimales. Se compila en todos los hosts para que sus pruebas corran
+/// también fuera de Linux.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn normalize_boot_id(raw: &str) -> Option<String> {
+    let id: String = raw
+        .trim()
+        .chars()
+        .filter(|c| *c != '-')
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_hexdigit())).then_some(id)
+}
+
 #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
 compile_error!("la identidad de proceso solo está implementada para Linux y macOS");
 
 /// Linux: una sola lectura de `/proc/<pid>/stat` da `comm` y `starttime`
 /// juntos, así que ambos pertenecen a la misma vida del PID. `starttime` cuenta
 /// ticks de reloj desde el arranque del sistema: no depende de la zona horaria
-/// ni del locale y distingue procesos creados en el mismo segundo.
+/// ni del locale y distingue procesos creados en el mismo segundo, pero se
+/// repite tras un reinicio. Por eso el inicio lleva delante el `boot_id`, que
+/// cambia en cada arranque. Un PID ausente en `/proc` es `Gone`; un error de
+/// permisos o cualquier otro, `Denied`.
 #[cfg(target_os = "linux")]
-fn observe_linux(pid: u32) -> Option<ProcessIdentity> {
-    let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
-    parse_proc_stat(&String::from_utf8_lossy(&stat))
+fn observe_linux(pid: u32) -> IdentityObservation {
+    let stat = match std::fs::read(format!("/proc/{pid}/stat")) {
+        Ok(stat) => stat,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return IdentityObservation::Gone,
+        Err(_) => return IdentityObservation::Denied,
+    };
+    // Un zombi o un proceso muerto no tiene identidad: ya no está vivo.
+    let Some(mut identity) = parse_proc_stat(&String::from_utf8_lossy(&stat)) else {
+        return IdentityObservation::Gone;
+    };
+    let Some(boot) = boot_id() else {
+        return IdentityObservation::Denied;
+    };
+    identity.start = format!("{boot}{}", identity.start);
+    IdentityObservation::Present(identity)
 }
 
 /// Extrae la identidad de una línea de `/proc/<pid>/stat`. `comm` va entre el
@@ -153,9 +230,11 @@ fn parse_proc_stat(stat: &str) -> Option<ProcessIdentity> {
 
 /// macOS: `proc_pidinfo(PROC_PIDTBSDINFO)` da en una sola llamada la hora de
 /// creación, con microsegundos, y el nombre del proceso. Una respuesta de tamaño
-/// distinto al de la estructura es un fallo, y un zombi ya no está vivo.
+/// distinto al de la estructura es un fallo, y un zombi ya no está vivo. Si la
+/// llamada no escribe nada, `ESRCH` es un PID sin proceso (`Gone`) y cualquier
+/// otro `errno`, como `EPERM`, un proceso no observable (`Denied`).
 #[cfg(target_os = "macos")]
-fn observe_macos(pid: u32) -> Option<ProcessIdentity> {
+fn observe_macos(pid: u32) -> IdentityObservation {
     let size = std::mem::size_of::<libc::proc_bsdinfo>();
     let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::uninit();
     // SAFETY: el búfer es una `proc_bsdinfo` local del tamaño declarado, el PID
@@ -169,13 +248,20 @@ fn observe_macos(pid: u32) -> Option<ProcessIdentity> {
             info.as_mut_ptr().cast(),
             size as libc::c_int,
         );
-        if usize::try_from(written).ok()? != size {
-            return None;
+        if written <= 0 {
+            return if std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                IdentityObservation::Gone
+            } else {
+                IdentityObservation::Denied
+            };
+        }
+        if usize::try_from(written).ok() != Some(size) {
+            return IdentityObservation::Denied;
         }
         info.assume_init()
     };
     if info.pbi_status == libc::SZOMB {
-        return None;
+        return IdentityObservation::Gone;
     }
     // `pbi_name` admite nombres de hasta 32 bytes; `pbi_comm`, el respaldo del
     // núcleo cuando no hay nombre largo, se corta en 16.
@@ -190,12 +276,58 @@ fn observe_macos(pid: u32) -> Option<ProcessIdentity> {
         .map(|&c| c as u8)
         .collect();
     if bytes.is_empty() {
-        return None;
+        return IdentityObservation::Denied;
     }
-    Some(ProcessIdentity {
-        start: format!("{}.{:06}", info.pbi_start_tvsec, info.pbi_start_tvusec),
+    // Segundos y microsegundos con ancho fijo y sin separador: el inicio queda
+    // en `[0-9]+` y se compara por igualdad como una sola cifra.
+    IdentityObservation::Present(ProcessIdentity {
+        start: format!("{:020}{:06}", info.pbi_start_tvsec, info.pbi_start_tvusec),
         image: String::from_utf8_lossy(&bytes).into_owned(),
     })
+}
+
+/// Token de propietario del proceso actual: su PID y el inicio observado. Falla
+/// si el proceso no puede observarse a sí mismo, porque sin token no hay forma
+/// de que otro lo reconozca como dueño.
+pub fn current_owner_token() -> anyhow::Result<OwnerToken> {
+    owner_token_of(std::process::id())
+}
+
+/// Token de propietario del proceso `pid`, con el inicio que se le observa
+/// ahora. Falla si el proceso no existe o no puede observarse.
+pub fn owner_token_of(pid: u32) -> anyhow::Result<OwnerToken> {
+    match observe_identity(pid) {
+        IdentityObservation::Present(identity) => OwnerToken::new(pid, identity.start.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "el inicio observado del proceso {pid} ({:?}) no es un token válido",
+                    identity.start
+                )
+            }),
+        IdentityObservation::Gone | IdentityObservation::Denied => Err(anyhow::anyhow!(
+            "no se pudo observar la identidad del proceso (pid {pid})"
+        )),
+    }
+}
+
+/// Clasifica el propietario que describe `token` observando el sistema.
+pub fn classify_owner(token: &OwnerToken) -> OwnerState {
+    classify_owner_with(token, observe_identity)
+}
+
+/// Núcleo de [`classify_owner`] con la observación inyectada, para probar los
+/// desenlaces que el sistema real no produce a voluntad.
+fn classify_owner_with(
+    token: &OwnerToken,
+    observe: impl FnOnce(u32) -> IdentityObservation,
+) -> OwnerState {
+    match observe(token.pid()) {
+        IdentityObservation::Present(identity) if identity.start == token.start() => {
+            OwnerState::Ours
+        }
+        IdentityObservation::Present(_) | IdentityObservation::Gone => OwnerState::Dead,
+        IdentityObservation::Denied => OwnerState::Unknown,
+    }
 }
 
 /// Viveza exacta de un PID a nivel de sistema.
@@ -556,14 +688,88 @@ mod tests {
         assert_eq!(parse_proc_stat(&stat_line("bash", "X", "12")), None);
     }
 
-    /// En Linux, la identidad propia coincide con lo que publica
-    /// `/proc/self/stat`.
+    /// En Linux, la identidad propia es el `boot_id` seguido del `starttime` que
+    /// publica `/proc/self/stat`.
     #[cfg(target_os = "linux")]
     #[test]
     fn own_identity_matches_proc_self_stat() {
         let raw = std::fs::read_to_string("/proc/self/stat").expect("se lee /proc/self/stat");
-        let expected = parse_proc_stat(&raw).expect("línea propia válida");
+        let stat = parse_proc_stat(&raw).expect("línea propia válida");
+        let boot = boot_id().expect("se lee el boot_id");
         let own = process_identity(std::process::id()).expect("identidad propia");
-        assert_eq!(own, expected);
+        assert_eq!(own.image, stat.image);
+        assert_eq!(own.start, format!("{boot}{}", stat.start));
+    }
+
+    /// El `boot_id` pierde guiones, salto de línea y mayúsculas; lo que no es
+    /// hexadecimal se rechaza.
+    #[test]
+    fn boot_id_is_normalized() {
+        assert_eq!(
+            normalize_boot_id("1A2B3C4D-0000-4abc-8def-0123456789AB\n").as_deref(),
+            Some("1a2b3c4d00004abc8def0123456789ab")
+        );
+        assert_eq!(normalize_boot_id(""), None);
+        assert_eq!(normalize_boot_id("\n"), None);
+        assert_eq!(normalize_boot_id("zz-top"), None);
+    }
+
+    fn token_of(pid: u32, start: &str) -> OwnerToken {
+        OwnerToken::new(pid, start).expect("token válido")
+    }
+
+    fn identity_with_start(start: &str) -> ProcessIdentity {
+        ProcessIdentity {
+            start: start.to_string(),
+            image: "x".to_string(),
+        }
+    }
+
+    /// El proceso actual se reconoce como propio con su token.
+    #[test]
+    fn current_owner_is_ours() {
+        let token = current_owner_token().expect("el proceso se observa a sí mismo");
+        assert_eq!(token.pid(), std::process::id());
+        assert_eq!(classify_owner(&token), OwnerState::Ours);
+        assert_eq!(OwnerToken::parse(&token.format()), Some(token));
+    }
+
+    /// El mismo PID con otro inicio es otro proceso: está muerto para el token.
+    #[test]
+    fn same_pid_with_other_start_is_dead() {
+        let token = token_of(42, "aaa111");
+        let other = classify_owner_with(&token, |pid| {
+            assert_eq!(pid, 42);
+            IdentityObservation::Present(identity_with_start("bbb222"))
+        });
+        assert_eq!(other, OwnerState::Dead);
+        let same = classify_owner_with(&token, |_| {
+            IdentityObservation::Present(identity_with_start("aaa111"))
+        });
+        assert_eq!(same, OwnerState::Ours);
+    }
+
+    /// Un PID inexistente está muerto, en la inyección y en el sistema real.
+    #[test]
+    fn nonexistent_pid_is_dead() {
+        let token = token_of(42, "aaa111");
+        assert_eq!(
+            classify_owner_with(&token, |_| IdentityObservation::Gone),
+            OwnerState::Dead
+        );
+        assert_eq!(
+            classify_owner(&token_of(4_000_000_000, "1")),
+            OwnerState::Dead
+        );
+    }
+
+    /// Una observación denegada no es ni vivo ni muerto: es desconocido.
+    #[test]
+    fn denied_observation_is_unknown() {
+        let token = token_of(42, "aaa111");
+        assert_eq!(
+            classify_owner_with(&token, |_| IdentityObservation::Denied),
+            OwnerState::Unknown
+        );
     }
 }

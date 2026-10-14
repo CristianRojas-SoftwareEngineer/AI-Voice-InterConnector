@@ -70,7 +70,11 @@ pub struct Sandbox {
     pub bin_dir: PathBuf,
     pub home: PathBuf,
     pub data_dir: PathBuf,
-    /// Raíz de modelos. En modo compartido es la caché HF que eligió el usuario.
+    /// Contenedor de caché: es lo que registra el recibo y lo que `AVI_CACHE_DIR`
+    /// nombra en modo exclusivo.
+    pub cache_dir: PathBuf,
+    /// Raíz de modelos. En modo exclusivo es `<cache_dir>/models`; en modo
+    /// compartido es la caché HF que eligió el usuario.
     pub models_dir: PathBuf,
     /// `Some` cuando la raíz de modelos es la caché HF compartida del usuario.
     pub shared_hub: Option<PathBuf>,
@@ -100,6 +104,7 @@ impl std::fmt::Debug for Sandbox {
             .field("bin_dir", &self.bin_dir)
             .field("home", &self.home)
             .field("data_dir", &self.data_dir)
+            .field("cache_dir", &self.cache_dir)
             .field("models_dir", &self.models_dir)
             .field("shared_hub", &self.shared_hub)
             .field("temp_root", &self.temp_root);
@@ -134,16 +139,18 @@ impl Sandbox {
         let opt = root.join("opt");
         let home = root.join("home").join("ana");
         let hub = root.join("hub");
+        let cache_dir = root.join("cache");
         let (models_dir, shared_hub) = if shared {
             (hub.clone(), Some(hub))
         } else {
-            (root.join("models"), None)
+            (cache_dir.join("models"), None)
         };
         Self {
             tag: tag.to_string(),
             program_dir: opt.join(avi_lifecycle::APP_NAME),
             bin_dir: home.join(".local").join("bin"),
             data_dir: root.join("data"),
+            cache_dir,
             models_dir,
             shared_hub,
             temp_root: root.join("tmp"),

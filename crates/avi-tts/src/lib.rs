@@ -577,8 +577,15 @@ impl Qwen3TtsEngine {
                 pid,
                 avi_process::pid_alive_exact(pid),
                 Some(&identity),
-                || avi_process::process_identity(pid),
+                || avi_process::observe_identity(pid),
             );
+            if state == avi_process::registry::Registered::Unknown {
+                eprintln!(
+                    "Aviso: no se puede observar al residente (pid {pid}); se conserva anotado"
+                );
+                *lock_live(&self.live) = Some((pid, identity));
+                return;
+            }
             if state == avi_process::registry::Registered::Ours {
                 crate::resident::kill_tree_resident_by_pid(pid);
                 if !self.wait_resident_gone(pid) {
@@ -1004,12 +1011,8 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
     let pcm = avi_audio::load_wav_24k_mono_pcm(ref_audio)?;
     // `into_temp_path` cierra el manejador abierto: así el escritor y el motor
     // hijo abren el fichero por ruta sin choque de uso compartido en Windows.
-    // El PID en el nombre permite al barrido del producto reconocer al dueño vivo.
-    let out_path = tempfile::Builder::new()
-        .prefix(&format!("avi_tts_ref24k_{}_", std::process::id()))
-        .suffix(".wav")
-        .tempfile()?
-        .into_temp_path();
+    // Vive en el scratch del proceso, cuyo barrido recoge el residuo si muere.
+    let out_path = avi_process::scratch::tempfile("avi_tts_ref24k_", ".wav")?.into_temp_path();
     let spec = hound::WavSpec {
         channels: 1,
         sample_rate: 24_000,
@@ -1022,6 +1025,21 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
     }
     writer.finalize()?;
     Ok(out_path)
+}
+
+/// Lanza el motor hijo con `TMP`, `TEMP` y `TMPDIR` apuntando al scratch del
+/// proceso padre: así los temporales del motor mueren con el scratch y no
+/// quedan en el temporal del sistema.
+fn spawn_engine(
+    request: avi_process::RestrictedSpawnRequest,
+) -> Result<avi_process::RestrictedChild> {
+    let scratch = avi_process::scratch::dir()?;
+    let env: [(&str, &std::ffi::OsStr); 3] = [
+        ("TMP", scratch.as_os_str()),
+        ("TEMP", scratch.as_os_str()),
+        ("TMPDIR", scratch.as_os_str()),
+    ];
+    Ok(avi_process::spawn_with_allowlist_env(request, &env)?)
 }
 
 /// Construye el argv del clonado, sin I/O real: programa más argumentos
@@ -1085,7 +1103,8 @@ pub fn clone_voice(
         &avi_shared::paths::logs_dir()
             .map_err(|e| anyhow!("No se pudo resolver el directorio de logs: {}", e))?,
         ENGINE_LOG_FAMILY,
-        &avi_process::pid_alive_exact,
+        &avi_process::current_owner_token()?,
+        &avi_process::classify_owner,
     )
     .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
     // La entrada del motor es una tubería con `--watch-stdin`: el motor termina
@@ -1110,7 +1129,7 @@ pub fn clone_voice(
             creation_flags,
             extra_allowed: Vec::new(),
         };
-        let mut child = avi_process::spawn_with_allowlist(request)?;
+        let mut child = spawn_engine(request)?;
         match child.wait_timeout(CLONE_WAIT)? {
             Some(status) => Ok(status),
             None => Err(anyhow!(
@@ -1260,7 +1279,8 @@ pub mod resident {
                 &avi_shared::paths::logs_dir()
                     .map_err(|e| anyhow!("No se pudo resolver el directorio de logs: {}", e))?,
                 crate::ENGINE_LOG_FAMILY,
-                &avi_process::pid_alive_exact,
+                &avi_process::current_owner_token()?,
+                &avi_process::classify_owner,
             )
             .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
             let child =
@@ -1317,7 +1337,7 @@ pub mod resident {
                 creation_flags,
                 extra_allowed: Vec::new(),
             };
-            avi_process::spawn_with_allowlist(request).map_err(|e| {
+            spawn_engine(request).map_err(|e| {
                 anyhow!(
                     "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
                     bin.display(),
@@ -2882,6 +2902,7 @@ fn main() {
 
     /// Ruta de log de prueba bajo el directorio temporal: ninguna prueba toca los
     /// logs reales de `data_dir()`. No se crea el fichero, solo se pasa la ruta.
+    #[allow(clippy::disallowed_methods)] // prueba: sin scratch, cuelga del temporal del sistema
     fn test_log_path() -> PathBuf {
         std::env::temp_dir().join("avi-tts-test-engine.log")
     }

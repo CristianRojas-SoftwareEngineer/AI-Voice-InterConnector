@@ -2148,7 +2148,7 @@ fn uninstall_plan_does_not_promise_a_program_dir_it_refuses_to_delete() {
         PathIntegration::none(),
         receipt::Roots {
             data_dir: sandbox.data_dir.clone(),
-            cache_dir: sandbox.models_dir.clone(),
+            cache_dir: sandbox.cache_dir.clone(),
         },
         None,
     );
@@ -2266,7 +2266,7 @@ fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
         PathIntegration::none(),
         receipt::Roots {
             data_dir: sandbox.data_dir.clone(),
-            cache_dir: sandbox.models_dir.clone(),
+            cache_dir: sandbox.cache_dir.clone(),
         },
         None,
     );

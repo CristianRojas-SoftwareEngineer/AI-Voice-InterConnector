@@ -326,41 +326,119 @@ pub fn models_root_is_shared() -> bool {
     shared_hf_root().is_some()
 }
 
-/// Raíz de modelos: caché regenerable y **exclusiva de la aplicación** por
-/// defecto. Snapshots, locks y `xet` cuelgan todos de ella, y
-/// es la única ubicación de modelos que existe.
+/// Nombre de la hoja de modelos dentro del contenedor de caché.
+pub const MODELS_SUBDIR: &str = "models";
+
+/// Nombre de la hoja de temporales de la aplicación dentro del contenedor de
+/// caché.
+pub const SCRATCH_SUBDIR: &str = "tmp";
+
+/// Contenedor de la caché regenerable de la aplicación: de él cuelgan los
+/// modelos (`models`) y los temporales (`tmp`).
 ///
-/// `AVI_CACHE_DIR` tiene precedencia sobre las variables de HuggingFace: es la
-/// variable de reubicación de la aplicación y es lo que permite aislar una
-/// prueba aunque el entorno tenga un `HF_HOME` global.
-///
-/// Sin reubicación y con una caché HF compartida elegida por el usuario
-/// (`HF_HUB_CACHE` o `HF_HOME`), la raíz es esa y su contenido es compartido.
-/// En cualquier otro caso es la columna de modelos de la tabla de rutas:
-/// `$XDG_CACHE_HOME/ai-voice-interconnector/models`,
-/// `~/Library/Caches/ai-voice-interconnector/models` o
-/// `%LOCALAPPDATA%\ai-voice-interconnector\cache\models`.
-pub fn models_cache_dir() -> io::Result<PathBuf> {
+/// `AVI_CACHE_DIR` lo desvía y nombra **el contenedor**, no los modelos. Sin la
+/// variable es `$XDG_CACHE_HOME/ai-voice-interconnector`,
+/// `~/Library/Caches/ai-voice-interconnector` o
+/// `%LOCALAPPDATA%\ai-voice-interconnector\cache`.
+pub fn cache_container() -> io::Result<PathBuf> {
     if let Some(dir) = relocated_dir("AVI_CACHE_DIR") {
         return Ok(dir);
     }
-    if let Some(shared) = shared_hf_root() {
+    if cfg!(windows) {
+        Ok(local_app_data()?.join(APP_NAME).join("cache"))
+    } else if cfg!(target_os = "macos") {
+        Ok(home_dir()?.join("Library").join("Caches").join(APP_NAME))
+    } else {
+        Ok(cache_home()?.join(APP_NAME))
+    }
+}
+
+/// Raíz de modelos compartida que rige, si rige: la caché HF elegida por el
+/// usuario, salvo que `AVI_CACHE_DIR` reubique la aplicación, que manda sobre
+/// las variables de HuggingFace.
+fn effective_shared_root() -> Option<PathBuf> {
+    if relocated_dir("AVI_CACHE_DIR").is_some() {
+        return None;
+    }
+    shared_hf_root()
+}
+
+/// Raíz de modelos: caché regenerable y **exclusiva de la aplicación** por
+/// defecto, la hoja `models` del contenedor de caché. Snapshots, locks y `xet`
+/// cuelgan todos de ella, y es la única ubicación de modelos que existe.
+///
+/// `AVI_CACHE_DIR` tiene precedencia sobre las variables de HuggingFace: es la
+/// variable de reubicación de la aplicación y es lo que permite aislar una
+/// prueba aunque el entorno tenga un `HF_HOME` global; con ella, los modelos
+/// son `<AVI_CACHE_DIR>/models`.
+///
+/// Sin reubicación y con una caché HF compartida elegida por el usuario
+/// (`HF_HUB_CACHE` o `HF_HOME`), la raíz es esa y su contenido es compartido.
+/// En cualquier otro caso es `<contenedor de caché>/models`.
+pub fn models_cache_dir() -> io::Result<PathBuf> {
+    if let Some(shared) = effective_shared_root() {
         return Ok(shared);
     }
-    if cfg!(windows) {
-        Ok(local_app_data()?
-            .join(APP_NAME)
-            .join("cache")
-            .join("models"))
-    } else if cfg!(target_os = "macos") {
-        Ok(home_dir()?
-            .join("Library")
-            .join("Caches")
-            .join(APP_NAME)
-            .join("models"))
-    } else {
-        Ok(cache_home()?.join(APP_NAME).join("models"))
+    Ok(cache_container()?.join(MODELS_SUBDIR))
+}
+
+/// Raíz de los temporales de la aplicación: `<contenedor de caché>/tmp`.
+pub fn scratch_root() -> io::Result<PathBuf> {
+    Ok(cache_container()?.join(SCRATCH_SUBDIR))
+}
+
+/// Papel de un nodo del árbol de propiedad de la aplicación.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    /// Directorio de la aplicación que solo contiene nodos suyos: se borra
+    /// entero cuando sus hijos ya no existen.
+    Container,
+    /// Directorio de la aplicación cuyo contenido es todo suyo.
+    Leaf,
+    /// Ubicación que elige y posee el usuario (caché HF compartida): la
+    /// aplicación solo borra en ella lo que puede atribuirse.
+    External,
+}
+
+/// Nodo del árbol de propiedad: una ruta y su papel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnershipNode {
+    pub path: PathBuf,
+    pub kind: NodeKind,
+}
+
+fn node(path: PathBuf, kind: NodeKind) -> OwnershipNode {
+    OwnershipNode { path, kind }
+}
+
+/// Árbol de propiedad vigente, con cada padre antes que sus hijos.
+///
+/// Windows: el contenedor raíz `%LOCALAPPDATA%\ai-voice-interconnector`, con la
+/// hoja `data` y el contenedor `cache` (hojas `models` y `tmp`). El contenedor
+/// raíz solo existe como nodo si alguna de las dos raíces cuelga de él, es
+/// decir, si no están ambas reubicadas. Linux y macOS no tienen contenedor raíz:
+/// la hoja de datos y el contenedor de caché son hermanos de los directorios
+/// estándar del sistema.
+///
+/// `AVI_DATA_DIR` mueve la hoja de datos y `AVI_CACHE_DIR` el contenedor de
+/// caché. Con una caché HF compartida la hoja de modelos es `External`. El
+/// directorio de programa, `Programs`, `~/.local/opt` y `~/.local/bin` nunca
+/// son nodos: el programa se modela aparte, con [`install_dir`].
+pub fn ownership_tree() -> io::Result<Vec<OwnershipNode>> {
+    let mut tree = Vec::new();
+    let data_relocated = relocated_dir("AVI_DATA_DIR").is_some();
+    let cache_relocated = relocated_dir("AVI_CACHE_DIR").is_some();
+    if cfg!(windows) && !(data_relocated && cache_relocated) {
+        tree.push(node(local_app_data()?.join(APP_NAME), NodeKind::Container));
     }
+    tree.push(node(data_dir()?, NodeKind::Leaf));
+    tree.push(node(cache_container()?, NodeKind::Container));
+    tree.push(match effective_shared_root() {
+        Some(shared) => node(shared, NodeKind::External),
+        None => node(models_cache_dir()?, NodeKind::Leaf),
+    });
+    tree.push(node(scratch_root()?, NodeKind::Leaf));
+    Ok(tree)
 }
 
 /// Directorio de la caché `xet` (shard-cache) del proceso que provisiona
@@ -385,9 +463,185 @@ pub fn xet_cache_dir() -> io::Result<PathBuf> {
     Ok(models_cache_dir()?.join(MODELS_XET_SUBDIR))
 }
 
+// Las pruebas cuelgan sus raíces simuladas del temporal del sistema: no son
+// código de producto y no tienen scratch.
+#[allow(clippy::disallowed_methods)]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// El entorno del proceso es global: las pruebas que lo tocan se serializan.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    const ENV_VARS: &[&str] = &[
+        "AVI_DATA_DIR",
+        "AVI_CACHE_DIR",
+        "HF_HUB_CACHE",
+        "HF_HOME",
+        "LOCALAPPDATA",
+        "HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+    ];
+
+    /// Aísla el entorno en `base` y lo restaura al soltarse. Toma el cerrojo.
+    struct EnvSandbox {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    }
+
+    impl EnvSandbox {
+        fn new(base: &Path) -> Self {
+            let lock = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let saved = ENV_VARS.iter().map(|v| (*v, std::env::var_os(v))).collect();
+            for var in ENV_VARS {
+                std::env::remove_var(var);
+            }
+            std::env::set_var("LOCALAPPDATA", base.join("Local"));
+            std::env::set_var("HOME", base.join("home"));
+            std::env::set_var("XDG_DATA_HOME", base.join("xdg_data"));
+            std::env::set_var("XDG_CACHE_HOME", base.join("xdg_cache"));
+            Self { _lock: lock, saved }
+        }
+    }
+
+    impl Drop for EnvSandbox {
+        fn drop(&mut self) {
+            for (var, value) in &self.saved {
+                match value {
+                    Some(v) => std::env::set_var(var, v),
+                    None => std::env::remove_var(var),
+                }
+            }
+        }
+    }
+
+    fn leaf(path: PathBuf) -> OwnershipNode {
+        node(path, NodeKind::Leaf)
+    }
+
+    fn container(path: PathBuf) -> OwnershipNode {
+        node(path, NodeKind::Container)
+    }
+
+    /// Árbol por defecto del sistema que compila la prueba, sobre `base`.
+    fn default_tree(base: &Path) -> Vec<OwnershipNode> {
+        #[cfg(windows)]
+        {
+            let root = base.join("Local").join(APP_NAME);
+            let cache = root.join("cache");
+            vec![
+                container(root.clone()),
+                leaf(root.join("data")),
+                container(cache.clone()),
+                leaf(cache.join("models")),
+                leaf(cache.join("tmp")),
+            ]
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let library = base.join("home").join("Library");
+            let cache = library.join("Caches").join(APP_NAME);
+            vec![
+                leaf(library.join("Application Support").join(APP_NAME)),
+                container(cache.clone()),
+                leaf(cache.join("models")),
+                leaf(cache.join("tmp")),
+            ]
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            let cache = base.join("xdg_cache").join(APP_NAME);
+            vec![
+                leaf(base.join("xdg_data").join(APP_NAME)),
+                container(cache.clone()),
+                leaf(cache.join("models")),
+                leaf(cache.join("tmp")),
+            ]
+        }
+    }
+
+    /// Posición del nodo de datos, de la caché y de los modelos en el árbol por
+    /// defecto: depende de que haya o no contenedor raíz.
+    const DATA: usize = if cfg!(windows) { 1 } else { 0 };
+    const CACHE: usize = DATA + 1;
+    const MODELS: usize = DATA + 2;
+    const SCRATCH: usize = DATA + 3;
+
+    /// El árbol por defecto fija contenedor raíz (solo Windows), hoja de datos,
+    /// contenedor de caché y sus hojas `models` y `tmp`; el programa no figura.
+    #[test]
+    fn ownership_tree_default_per_system() {
+        let base = std::env::temp_dir().join("avi-paths-default");
+        let _env = EnvSandbox::new(&base);
+        let tree = ownership_tree().expect("árbol de propiedad");
+        assert_eq!(tree, default_tree(&base));
+        let program = install_dir().expect("directorio de programa");
+        assert!(
+            tree.iter().all(|n| !n.path.starts_with(&program)),
+            "el directorio de programa no es un nodo: {program:?}"
+        );
+        assert_eq!(models_cache_dir().unwrap(), tree[MODELS].path);
+        assert_eq!(scratch_root().unwrap(), tree[SCRATCH].path);
+        assert_eq!(cache_container().unwrap(), tree[CACHE].path);
+        assert_eq!(data_dir().unwrap(), tree[DATA].path);
+    }
+
+    /// `AVI_CACHE_DIR` nombra el contenedor: modelos y temporales cuelgan de él.
+    #[test]
+    fn avi_cache_dir_relocates_the_container() {
+        let base = std::env::temp_dir().join("avi-paths-cache");
+        let _env = EnvSandbox::new(&base);
+        let reloc = base.join("reloc_cache");
+        std::env::set_var("AVI_CACHE_DIR", &reloc);
+        let mut expected = default_tree(&base);
+        expected[CACHE] = container(reloc.clone());
+        expected[MODELS] = leaf(reloc.join("models"));
+        expected[SCRATCH] = leaf(reloc.join("tmp"));
+        assert_eq!(ownership_tree().unwrap(), expected);
+        assert_eq!(cache_container().unwrap(), reloc);
+    }
+
+    /// `AVI_DATA_DIR` mueve solo la hoja de datos. Con las dos raíces
+    /// reubicadas ya nada cuelga del contenedor raíz de Windows.
+    #[test]
+    fn avi_data_dir_relocates_the_data_leaf() {
+        let base = std::env::temp_dir().join("avi-paths-data");
+        let _env = EnvSandbox::new(&base);
+        let reloc = base.join("reloc_data");
+        std::env::set_var("AVI_DATA_DIR", &reloc);
+        let mut expected = default_tree(&base);
+        expected[DATA] = leaf(reloc.clone());
+        assert_eq!(ownership_tree().unwrap(), expected);
+
+        let reloc_cache = base.join("reloc_cache");
+        std::env::set_var("AVI_CACHE_DIR", &reloc_cache);
+        let both = ownership_tree().unwrap();
+        assert_eq!(both[0].kind, NodeKind::Leaf);
+        assert_eq!(both.len(), expected.len() - usize::from(cfg!(windows)));
+        assert_eq!(both[0].path, reloc);
+    }
+
+    /// La raíz HF compartida es `External` y sustituye solo a la hoja de
+    /// modelos; `AVI_CACHE_DIR` manda sobre ella y la deja fuera del árbol.
+    #[test]
+    fn shared_hf_root_is_external() {
+        let base = std::env::temp_dir().join("avi-paths-hf");
+        let _env = EnvSandbox::new(&base);
+        let hub = base.join("hf").join("hub");
+        std::env::set_var("HF_HUB_CACHE", &hub);
+        let mut expected = default_tree(&base);
+        expected[MODELS] = node(hub.clone(), NodeKind::External);
+        assert_eq!(ownership_tree().unwrap(), expected);
+        assert_eq!(models_cache_dir().unwrap(), hub);
+
+        let reloc = base.join("reloc_cache");
+        std::env::set_var("AVI_CACHE_DIR", &reloc);
+        let tree = ownership_tree().unwrap();
+        assert!(tree.iter().all(|n| n.kind != NodeKind::External));
+        assert_eq!(models_cache_dir().unwrap(), reloc.join("models"));
+    }
 
     /// Invocado por un symlink, el directorio del programa es el del fichero
     /// real, no el del enlace.

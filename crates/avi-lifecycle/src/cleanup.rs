@@ -123,6 +123,9 @@ impl Roots {
             data_dir: crate::data_dir()?,
             models_shared: is_shared_models_root(&models_dir),
             models_dir,
+            // Raíz del temporal del sistema, donde se barren los residuos de versiones
+            // anteriores del producto: es la lectura que el lint prohíbe para crear.
+            #[allow(clippy::disallowed_methods)]
             temp_root: std::env::temp_dir(),
             home: std::env::var("HOME")
                 .or_else(|_| std::env::var("USERPROFILE"))
@@ -143,7 +146,12 @@ impl Roots {
         let mut roots = Self::with_program_dir(crate::channel::registered_install_dir(receipt)?)?;
         if let Some(receipt) = receipt {
             roots.data_dir = receipt.roots.data_dir.clone();
-            roots.models_dir = receipt.roots.cache_dir.clone();
+            // El recibo registra el contenedor de caché: los modelos son su hoja
+            // `models`. Una raíz HF compartida vigente es externa y no cuelga del
+            // contenedor, así que se conserva la que resolvió el entorno.
+            if !roots.models_shared {
+                roots.models_dir = receipt.roots.cache_dir.join(crate::MODELS_SUBDIR);
+            }
         }
         Ok(roots)
     }

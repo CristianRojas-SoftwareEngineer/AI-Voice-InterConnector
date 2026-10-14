@@ -10,45 +10,28 @@
 //! error: el `Drop` ignora solo que el fichero ya no exista y avisa por stderr
 //! de cualquier otro fallo de borrado.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-/// Contador para unicidad entre hilos del mismo proceso con igual marca temporal.
-static COUNTER: AtomicU64 = AtomicU64::new(0);
+use std::path::{Path, PathBuf};
 
 /// WAV temporal con dueño: lo borra al salir de ámbito.
 ///
-/// El constructor reserva una ruta única con el prefijo dado dentro del
-/// temporal del sistema y crea el fichero vacío; el `Drop` lo retira sin
-/// fallar aunque ya se haya borrado fuera.
+/// El constructor reserva una ruta con nombre aleatorio dentro del directorio
+/// dado y crea el fichero vacío; el `Drop` lo retira sin fallar aunque ya se
+/// haya borrado fuera.
 pub struct TempWav {
     path: PathBuf,
 }
 
 impl TempWav {
-    /// Reserva un WAV temporal con el prefijo de producto dado (p. ej. `"avi_say_"`).
-    pub fn new(prefix: &str) -> std::io::Result<Self> {
-        loop {
-            let nanos = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            let candidate = std::env::temp_dir().join(format!(
-                "{prefix}{}_{}_{}.wav",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::SeqCst),
-                nanos,
-            ));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
-                Ok(_) => return Ok(Self { path: candidate }),
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
-                Err(e) => return Err(e),
-            }
-        }
+    /// Reserva un WAV temporal dentro de `dir` con el prefijo de producto dado
+    /// (p. ej. `"avi_say_"`) y un sufijo aleatorio.
+    pub fn new(dir: &Path, prefix: &str) -> std::io::Result<Self> {
+        let (_file, path) = tempfile::Builder::new()
+            .prefix(prefix)
+            .suffix(".wav")
+            .tempfile_in(dir)?
+            .keep()
+            .map_err(|e| e.error)?;
+        Ok(Self { path })
     }
 
     /// Ruta del temporal, para sintetizar, escribir o reproducir.
@@ -83,8 +66,9 @@ mod tests {
     /// Salida normal de ámbito: al soltarse el guardián el fichero desaparece.
     #[test]
     fn scope_exit_removes_the_file() {
+        let dir = tempfile::tempdir().expect("directorio de destino");
         let path = {
-            let guard = TempWav::new("avi_shared_test_").expect("reservar el temporal");
+            let guard = TempWav::new(dir.path(), "avi_shared_test_").expect("reservar el temporal");
             assert!(guard.path().is_file(), "el constructor crea el fichero");
             guard.path().clone()
         };
@@ -97,7 +81,8 @@ mod tests {
     /// Descarte explícito con `drop`: también borra el fichero.
     #[test]
     fn explicit_drop_removes_the_file() {
-        let guard = TempWav::new("avi_shared_test_").expect("reservar el temporal");
+        let dir = tempfile::tempdir().expect("directorio de destino");
+        let guard = TempWav::new(dir.path(), "avi_shared_test_").expect("reservar el temporal");
         let path = guard.path().clone();
         assert!(path.is_file(), "el constructor crea el fichero");
         drop(guard);
@@ -108,7 +93,8 @@ mod tests {
     /// ruta) no entra en pánico al soltarse el guardián.
     #[test]
     fn drop_with_unremovable_path_does_not_panic() {
-        let guard = TempWav::new("avi_shared_test_").expect("reservar el temporal");
+        let dir = tempfile::tempdir().expect("directorio de destino");
+        let guard = TempWav::new(dir.path(), "avi_shared_test_").expect("reservar el temporal");
         let path = guard.path().clone();
         std::fs::remove_file(&path).expect("borrado externo");
         std::fs::create_dir(&path).expect("carpeta en la ruta del temporal");
@@ -119,7 +105,8 @@ mod tests {
     /// Borrado externo previo: soltarse después no falla y no recrea nada.
     #[test]
     fn drop_after_external_delete_does_not_fail() {
-        let guard = TempWav::new("avi_shared_test_").expect("reservar el temporal");
+        let dir = tempfile::tempdir().expect("directorio de destino");
+        let guard = TempWav::new(dir.path(), "avi_shared_test_").expect("reservar el temporal");
         let path = guard.path().clone();
         std::fs::remove_file(&path).expect("borrado externo");
         drop(guard);

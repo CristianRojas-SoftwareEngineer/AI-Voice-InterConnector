@@ -151,6 +151,8 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
         hits.len(),
         dirty.len()
     );
+    // Herramienta de desarrollo sin scratch: no hay nada que liberar antes de salir.
+    #[allow(clippy::disallowed_methods)]
     std::process::exit(1);
 }
 

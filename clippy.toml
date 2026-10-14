@@ -1,0 +1,4 @@
+disallowed-methods = [
+    { path = "std::process::exit", reason = "las salidas del producto pasan por `avi_process::scratch::terminate`, que libera el scratch y vacía stdout; `exit` no ejecuta Drop" },
+    { path = "std::env::temp_dir", reason = "los temporales del producto viven en el scratch por proceso (`avi_process::scratch`), no en el temporal del sistema" },
+]

@@ -48,9 +48,9 @@ pub mod update_resolve;
 
 pub use avi_shared::logs::create_log;
 pub use avi_shared::paths::{
-    bin_dir, data_dir, install_dir, logs_dir_in, models_cache_dir, models_root_is_shared,
-    shared_hf_root, APP_NAME, LIFECYCLE_GATE_NAME, LIFECYCLE_LOCK_NAME, MODELS_XET_SUBDIR,
-    PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
+    bin_dir, cache_container, data_dir, install_dir, logs_dir_in, models_cache_dir,
+    models_root_is_shared, shared_hf_root, APP_NAME, LIFECYCLE_GATE_NAME, LIFECYCLE_LOCK_NAME,
+    MODELS_SUBDIR, MODELS_XET_SUBDIR, PARKED_DIR_PREFIX, STAGING_DIR_PREFIX, TEMP_PREFIXES,
 };
 pub use avi_store::{canonical_path_entry_matches, canonical_path_key};
 

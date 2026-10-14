@@ -30,6 +30,14 @@ pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 /// --speech-reference "assets/audios/Speech Sampler.wav"`.
 const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
 
+/// Temporal hermano de `dest` con el token de este proceso en el nombre: dos
+/// procesos que escriben el mismo destino nunca comparten temporal.
+fn owned_temp_path(dest: &Path) -> Result<PathBuf> {
+    let owner = avi_process::current_owner_token()?;
+    avi_shared::staging_names::temp_file::sibling(dest, &owner)
+        .ok_or_else(|| anyhow::anyhow!("{} no tiene un nombre de fichero UTF-8", dest.display()))
+}
+
 pub fn is_factory_name(name: &str) -> bool {
     FACTORY_VOICES.contains(&name.to_lowercase().as_str())
 }
@@ -316,7 +324,7 @@ impl VoiceStore {
         let dir = self.voice_dir(name);
         let dest = dir.join("reference.qvoice");
         if dir.exists() {
-            let tmp = dir.join("reference.qvoice.tmp");
+            let tmp = owned_temp_path(&dest)?;
             std::fs::copy(src, &tmp)?;
             std::fs::rename(&tmp, &dest)?;
             return Ok(dest);
@@ -326,10 +334,10 @@ impl VoiceStore {
             .base_dir
             .parent()
             .ok_or_else(|| anyhow::anyhow!("el directorio de voces no tiene directorio padre"))?;
-        let staging = parent.join(format!(
-            "avi-voice-staging-{}-{}",
-            name.to_lowercase(),
-            std::process::id()
+        let owner = avi_process::current_owner_token()?;
+        let staging = parent.join(avi_shared::staging_names::voice_staging::name(
+            &name.to_lowercase(),
+            &owner,
         ));
         avi_shared::best_effort(
             std::fs::remove_dir_all(&staging),
@@ -622,7 +630,7 @@ impl SpeechStore {
         let dir = self.voice_dir(voice);
         std::fs::create_dir_all(&dir)?;
         let final_path = self.audio_path(voice, label);
-        let tmp_path = dir.join(format!("{}.wav.tmp", label.to_lowercase()));
+        let tmp_path = owned_temp_path(&final_path)?;
         std::fs::copy(wav_src, &tmp_path)?;
         std::fs::rename(&tmp_path, &final_path)?;
         Ok(final_path)
@@ -1187,7 +1195,10 @@ mod tests {
         );
 
         std::env::set_var("AVI_CACHE_DIR", "/isolated_root");
-        assert_eq!(models_cache_dir().unwrap(), PathBuf::from("/isolated_root"));
+        assert_eq!(
+            models_cache_dir().unwrap(),
+            PathBuf::from("/isolated_root").join("models")
+        );
         assert!(
             models_root_is_shared(),
             "reubicar no cambia la propiedad: el contenido sigue siendo compartido"
@@ -1205,10 +1216,10 @@ mod tests {
         std::env::remove_var("AVI_INSTALL_DIR");
         std::env::remove_var("AVI_BIN_DIR");
         // La aserción no puede depender de la máquina del que corre el test.
-        std::env::set_var(
-            "LOCALAPPDATA",
-            std::env::temp_dir().join("AppData").join("Local"),
-        );
+        // Prueba: la raíz simulada cuelga del temporal del sistema, sin scratch.
+        #[allow(clippy::disallowed_methods)]
+        let fake_local = std::env::temp_dir().join("AppData").join("Local");
+        std::env::set_var("LOCALAPPDATA", fake_local);
 
         let (install, bin) = (install_dir().unwrap(), bin_dir().unwrap());
         let rendered = install.to_string_lossy().to_string();
@@ -1930,7 +1941,7 @@ mod tests {
         std::env::remove_var("HF_HUB_CACHE");
         std::env::remove_var("HF_HOME");
         let store = ModelStore::new().unwrap();
-        assert_eq!(models_cache_dir().unwrap(), &*tmp);
+        assert_eq!(models_cache_dir().unwrap(), tmp.join("models"));
         // Crear snapshot vacío con al menos un fichero para que is_provisioned sea true
         let (repo2, rev2) = ModelStore::revision_of("qwen3-tts-0.6b-base").unwrap();
         let repo_dir = models_cache_dir()

@@ -27,7 +27,7 @@
 
 use crate::faults::{self, FaultPoint};
 use crate::LifecycleError;
-use avi_process::{spawn_with_allowlist, RestrictedSpawnRequest, StdinSpec};
+use avi_process::{spawn_with_allowlist, OwnerToken, RestrictedSpawnRequest, StdinSpec};
 use std::path::{Path, PathBuf};
 
 /// Variable interna con el PID del `self update` que lanza el traspaso.
@@ -272,9 +272,10 @@ pub trait PathRemover {
     /// Borra la ruta ya. Una ruta ausente es éxito: el plan dice lo que tiene
     /// que dejar de existir, y si ya no existe el objetivo está cumplido.
     fn remove_now(&self, path: &Path) -> anyhow::Result<()>;
-    /// Programa el borrado para cuando termine el proceso en curso. `Ok` significa que
-    /// el limpiador está en marcha. Es el caso diferido de Windows.
-    fn schedule(&self, path: &Path, pid: u32) -> anyhow::Result<()>;
+    /// Programa el borrado para cuando termine el proceso `wait`, identificado por
+    /// PID e inicio. `Ok` significa que el limpiador está en marcha. Es el caso
+    /// diferido de Windows.
+    fn schedule(&self, path: &Path, wait: &OwnerToken) -> anyhow::Result<()>;
 }
 
 /// Cómo quedó el staging tras la limpieza post-traspaso.
@@ -298,7 +299,9 @@ pub fn cleanup_staging(staging: &Path, remover: &dyn PathRemover) -> StagingClea
     if remover.remove_now(staging).is_ok() {
         return StagingCleanup::Removed;
     }
-    match remover.schedule(staging, std::process::id()) {
+    let scheduled =
+        avi_process::current_owner_token().and_then(|own| remover.schedule(staging, &own));
+    match scheduled {
         Ok(()) => {
             eprintln!(
                 "  el staging se borrará al terminar este proceso: {}",
@@ -327,19 +330,19 @@ pub struct ScheduledLeftovers {
 /// Programa los restos del aparcado que sobrevivieron al commit con el
 /// limpiador propio, en vez de descartarlos.
 ///
-/// `wait_pid` es el proceso cuya muerte libera los restos (el viejo en el
+/// `wait` es el proceso cuya muerte libera los restos (el viejo en el
 /// traspaso, el propio en el staging). Lo que el limpiador no borre queda para
 /// el barrido de la siguiente operación y su red (`doctor --repair`).
 pub fn schedule_leftovers(
     leftovers: &[PathBuf],
     remover: &dyn PathRemover,
-    wait_pid: u32,
+    wait: &OwnerToken,
 ) -> ScheduledLeftovers {
     // Programar no falla la operación: lo que el limpiador no acepte queda
     // para el barrido de la siguiente operación, como el staging `Kept`.
     let mut scheduled = Vec::with_capacity(leftovers.len());
     for leftover in leftovers {
-        if remover.schedule(leftover, wait_pid).is_ok() {
+        if remover.schedule(leftover, wait).is_ok() {
             scheduled.push(leftover.clone());
         }
     }
@@ -443,7 +446,7 @@ mod tests {
             }
         }
 
-        fn schedule(&self, _path: &Path, _pid: u32) -> anyhow::Result<()> {
+        fn schedule(&self, _path: &Path, _wait: &OwnerToken) -> anyhow::Result<()> {
             match &self.schedule {
                 Ok(()) => Ok(()),
                 Err(_) => Err(anyhow::anyhow!("diferido no disponible")),
@@ -501,7 +504,7 @@ mod tests {
                 remove_ok: false,
                 schedule: Ok(()),
             },
-            1234,
+            &OwnerToken::new(1234, "abc123").expect("token válido"),
         );
         assert_eq!(
             scheduled.scheduled, leftovers,

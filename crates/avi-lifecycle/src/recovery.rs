@@ -121,6 +121,9 @@ impl RecoveryOutcome {
 /// reubicación y directorio de temporales del sistema.
 pub fn recover_default() -> Result<RecoveryOutcome> {
     let program_dir = crate::install_dir()?;
+    // Raíz del temporal del sistema, donde se barren los residuos de versiones
+    // anteriores del producto: es la lectura que el lint prohíbe para crear.
+    #[allow(clippy::disallowed_methods)]
     let temp_root = std::env::temp_dir();
     recover(Roots {
         program_dir: &program_dir,

@@ -554,16 +554,7 @@ pub fn run(layer: Layer, dry_run: bool, yes: bool, prune: bool) -> Result<()> {
     if deferred_target {
         #[cfg(windows)]
         {
-            let stamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|e| anyhow::anyhow!("el reloj del sistema es anterior a 1970: {e}"))?
-                .as_millis();
-            let log = std::env::temp_dir().join(format!(
-                "avi-xtask-clean-{}-{}.log",
-                std::process::id(),
-                stamp
-            ));
-            avi_process::schedule_clean_removal(&target_dir, std::process::id(), &log)?;
+            avi_process::schedule_removal(&target_dir, &avi_process::current_owner_token()?)?;
         }
         println!(
             "  … {} se termina de borrar al salir este proceso (limpiador en segundo plano)",

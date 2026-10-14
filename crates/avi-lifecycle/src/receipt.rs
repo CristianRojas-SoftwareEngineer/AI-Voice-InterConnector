@@ -95,10 +95,11 @@ impl PathIntegration {
     }
 }
 
-/// Raíces de datos y de modelos tal como quedaron resueltas en el momento de la
+/// Raíces de datos y de caché tal como quedaron resueltas en el momento de la
 /// instalación. Se guardan como valores efectivos, no como
 /// nombres de variable, para que una desinstalación posterior no dependa de que
-/// la variable siga definida.
+/// la variable siga definida. `cache_dir` es el contenedor de caché (del que
+/// cuelgan `models` y `tmp`), no la raíz de modelos.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Roots {
@@ -430,9 +431,14 @@ mod tests {
         std::env::set_var("AVI_CACHE_DIR", relocated.join("cache"));
         let roots = Roots {
             data_dir: crate::data_dir().unwrap(),
-            cache_dir: crate::models_cache_dir().unwrap(),
+            cache_dir: crate::cache_container().unwrap(),
         };
         assert_eq!(roots.data_dir, relocated.join("data"), "la raíz se reubicó");
+        assert_eq!(
+            roots.cache_dir,
+            relocated.join("cache"),
+            "el recibo registra el contenedor de caché"
+        );
 
         let receipt = InstallReceipt::new(
             "0.24.0",

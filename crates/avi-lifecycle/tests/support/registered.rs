@@ -30,7 +30,7 @@ impl uninstall::ProgramDirRemover for Now {
         std::fs::remove_dir_all(program_dir)?;
         Ok(())
     }
-    fn schedule(&self, _program_dir: &Path, _pid: u32) -> anyhow::Result<()> {
+    fn schedule(&self, _program_dir: &Path, _wait: &avi_process::OwnerToken) -> anyhow::Result<()> {
         Ok(())
     }
 }
@@ -163,7 +163,7 @@ impl Sandbox {
             integration,
             receipt::Roots {
                 data_dir: self.data_dir.clone(),
-                cache_dir: self.models_dir.clone(),
+                cache_dir: self.cache_dir.clone(),
             },
             None,
         )

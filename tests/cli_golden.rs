@@ -638,6 +638,9 @@ fn sandbox_unique_state(tag: &str) -> (TempDir, Vec<(String, String)>) {
     for d in [&data, &install, &cache, &hf] {
         std::fs::create_dir_all(d).expect("crear raíces del sandbox");
     }
+    // La raíz de modelos es la hoja `models` del contenedor de caché.
+    std::fs::create_dir_all(cache.join(avi_shared::paths::MODELS_SUBDIR))
+        .expect("crear la raíz de modelos del sandbox");
     // `AVI_CACHE_DIR` tiene precedencia sobre las variables HF, así que la raíz
     // de modelos del sandbox es la **exclusiva** de la aplicación; `HF_HUB_CACHE` y
     // `HF_HOME` se fijan igualmente para que ninguna prueba que las herede del entorno
@@ -853,9 +856,10 @@ impl IsolatedInstance {
         }
     }
 
-    /// Raíz de modelos del sandbox de la instancia (hermana de la raíz de datos).
+    /// Raíz de modelos del sandbox de la instancia: la hoja `models` del
+    /// contenedor de caché, hermano de la raíz de datos.
     fn cache_dir(&self) -> PathBuf {
-        PathBuf::from(&self.contract_cache)
+        PathBuf::from(&self.contract_cache).join(avi_shared::paths::MODELS_SUBDIR)
     }
 
     /// Envs de la clase contrato: los de `args` más `AVI_CACHE_DIR` apuntando a
@@ -1424,7 +1428,10 @@ fn dub_missing_audio_exits_3() {
 fn transcribe_invalid_wav_exits_2() {
     let (sandbox, envs) = sandbox_unique_state("invalid_wav");
     let dir = sandbox.path();
-    seed_pinned_models(&dir.join("cache"), &["parakeet-tdt-v3"]);
+    seed_pinned_models(
+        &dir.join("cache").join(avi_shared::paths::MODELS_SUBDIR),
+        &["parakeet-tdt-v3"],
+    );
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let path = dir.join("invalid.wav");
     std::fs::write(&path, b"esto no es un wav").expect("debe escribirse el archivo basura");
@@ -2093,7 +2100,7 @@ fn cleanup_model_dry_run_reports_planned() {
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
     assert_eq!(actual["schema_version"], Value::String("5".to_string()));
-    let roots = dir.join("cache");
+    let roots = dir.join("cache").join(avi_shared::paths::MODELS_SUBDIR);
     assert!(
         actual["removed"]
             .as_array()
@@ -2171,7 +2178,8 @@ fn cleanup_model_real_run_reports_paths() {
     // `AVI_CACHE_DIR` pero, sin ella, un `HF_HUB_CACHE` del entorno de la máquina
     // haría que la raíz se resolviera a otro sitio y la prueba probaría otra cosa.
     let exclusive = sandbox.join("models-exclusive");
-    seed_models(&exclusive);
+    let exclusive_models = exclusive.join(avi_shared::paths::MODELS_SUBDIR);
+    seed_models(&exclusive_models);
     let install = sandbox.join("install");
     std::fs::create_dir_all(&install).unwrap();
     let exclusive_envs = [
@@ -2215,13 +2223,13 @@ fn cleanup_model_real_run_reports_paths() {
         "real y dry-run listan el mismo conjunto: salen de la misma función de cálculo"
     );
     assert!(
-        real_removed.contains(&exclusive.display().to_string()),
-        "en la raíz exclusiva `--model` borra el directorio entero: {real_removed:?}"
+        real_removed.contains(&exclusive_models.display().to_string()),
+        "en la raíz exclusiva `--model` borra el directorio de modelos entero: {real_removed:?}"
     );
     assert!(
-        !exclusive.exists(),
-        "y la raíz desaparece, `xet` incluido: {:?}",
-        exclusive.join("xet")
+        !exclusive_models.exists(),
+        "y la raíz de modelos desaparece, `xet` incluido: {:?}",
+        exclusive_models.join("xet")
     );
     assert!(
         !temp.exists(),

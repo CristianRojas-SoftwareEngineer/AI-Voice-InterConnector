@@ -282,7 +282,9 @@ fn render_clap_error(err: clap::Error) -> ! {
     }
     lines.push("Para más información, ejecuta '--help'.".to_string());
     eprintln!("{}", lines.join("\n"));
-    std::process::exit(err.exit_code())
+    // Herramienta de desarrollo sin scratch: no hay nada que liberar antes de salir.
+    #[allow(clippy::disallowed_methods)]
+    std::process::exit(err.exit_code());
 }
 
 #[derive(Subcommand)]

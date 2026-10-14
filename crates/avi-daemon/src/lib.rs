@@ -696,7 +696,7 @@ async fn synthesize_handler(
         // el borrado nunca antecede a la escritura del motor y este no puede
         // recrear el fichero detrás; así no queda residuo en ninguna salida, ni
         // en el camino feliz ni en las salidas por plazo y desconexión.
-        let tmp_guard = match avi_shared::TempWav::new("avi_daemon_synth_") {
+        let tmp_guard = match avi_process::scratch::temp_wav("avi_daemon_synth_") {
             Ok(guard) => guard,
             Err(e) => {
                 emit_ndjson(
@@ -704,7 +704,7 @@ async fn synthesize_handler(
                     json!({
                         "event": "error",
                         "reason": "io_error",
-                        "message": format!("Error creando el WAV temporal de síntesis: {}", e),
+                        "message": format!("Error creando el WAV temporal de síntesis: {:#}", e),
                     }),
                 )
                 .await;
@@ -1206,11 +1206,8 @@ async fn voices_clone_handler(
     };
     // Directorio de trabajo con dueño: contiene el WAV de referencia y el
     // `.qvoice` parcial, y se borra al soltarse por cualquier camino de salida.
-    // El PID en el nombre permite al barrido del producto reconocer al dueño vivo.
-    let work_dir = match tempfile::Builder::new()
-        .prefix(&format!("avi_daemon_clone_{}_", std::process::id()))
-        .tempdir()
-    {
+    // Cuelga del scratch del daemon, cuyo barrido recoge el residuo si el proceso muere.
+    let work_dir = match avi_process::scratch::tempdir("avi_daemon_clone_") {
         Ok(dir) => dir,
         Err(_) => {
             return (
@@ -1706,7 +1703,7 @@ async fn dub_handler(
             // por plazo o desconexión, lo suelta el hilo cuando termina, así el
             // borrado nunca antecede a la escritura del motor ni este recrea el
             // fichero detrás y no queda residuo en ninguna salida.
-            let tmp_guard = match avi_shared::TempWav::new("avi_daemon_dub_") {
+            let tmp_guard = match avi_process::scratch::temp_wav("avi_daemon_dub_") {
                 Ok(guard) => guard,
                 Err(e) => {
                     emit_ndjson(
@@ -1714,7 +1711,7 @@ async fn dub_handler(
                         json!({
                             "event": "error",
                             "reason": "io_error",
-                            "message": format!("Error creando el WAV temporal del doblaje: {}", e),
+                            "message": format!("Error creando el WAV temporal del doblaje: {:#}", e),
                         }),
                     )
                     .await;
@@ -1931,8 +1928,8 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
     let work_t0 = std::time::Instant::now();
     // El WAV de calentamiento tiene dueño: se borra al salir, también si falla.
     // El texto de calentamiento es fijo y en español: el idioma es siempre `es`.
-    let result = avi_shared::TempWav::new("avi_daemon_warmup_")
-        .map_err(|e| anyhow::anyhow!("No se pudo reservar el WAV de calentamiento: {}", e))
+    let result = avi_process::scratch::temp_wav("avi_daemon_warmup_")
+        .map_err(|e| anyhow::anyhow!("No se pudo reservar el WAV de calentamiento: {:#}", e))
         .and_then(|tmp| {
             state
                 .tts_engine
@@ -2023,7 +2020,9 @@ pub enum ReadySignal {
 /// Un fallo de escritura o de rename se devuelve con la ruta: sin fichero ready
 /// el padre no puede saber que el daemon está listo.
 fn publish_ready_record(path: &std::path::Path, content: &str) -> anyhow::Result<()> {
-    let tmp = path.with_extension("ready.tmp");
+    let owner = avi_process::current_owner_token()?;
+    let tmp = avi_shared::staging_names::temp_file::sibling(path, &owner)
+        .ok_or_else(|| anyhow::anyhow!("{} no tiene un nombre de fichero UTF-8", path.display()))?;
     std::fs::write(&tmp, content).map_err(|e| {
         anyhow::anyhow!(
             "no se pudo escribir el fichero ready {}: {e}",
@@ -2331,6 +2330,9 @@ pub async fn run_daemon_server(
     // registro sin residente. El warmup en segundo plano puede conservar el
     // estado compartido, así que el cierre no depende de soltarlo.
     closing_state.tts_engine.close();
+    // Con el motor muerto nadie usa ya el scratch: se libera aquí y no al
+    // terminar el proceso, porque el supervisor puede reiniciar `serve` en proceso.
+    avi_process::scratch::release();
     served?;
     Ok(())
 }

@@ -31,7 +31,6 @@ use std::io::IsTerminal;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::process::exit;
 
 const VERSION: &str = "0.29.5";
 const APP_NAME: &str = "ai-voice-interconnector";
@@ -284,18 +283,18 @@ fn render_clap_error(err: clap::Error, json_mode: bool) -> ! {
         match kind {
             ErrorKind::DisplayHelp => {
                 emit_help(true, err.to_string().trim_end());
-                std::process::exit(0)
+                avi_process::scratch::terminate(0)
             }
             ErrorKind::DisplayVersion => {
                 // `handle_version` no falla; el código de salida refleja su resultado.
-                std::process::exit(if handle_version(true).is_ok() { 0 } else { 1 })
+                avi_process::scratch::terminate(if handle_version(true).is_ok() { 0 } else { 1 })
             }
             ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
                 emit_raw_json(json!({
                     "error": format!("Error: falta un subcomando\n\n{}", err.to_string().trim_end()),
                     "reason": "usage_error",
                 }));
-                std::process::exit(err.exit_code())
+                avi_process::scratch::terminate(err.exit_code())
             }
             _ => {}
         }
@@ -314,7 +313,9 @@ fn render_clap_error(err: clap::Error, json_mode: bool) -> ! {
             | ErrorKind::NoEquals
     );
     if !mapped {
-        err.exit();
+        // Mismo render que `err.exit()` de clap, pero saliendo por `terminate`.
+        err.print().expect("no se pudo escribir el error de clap");
+        avi_process::scratch::terminate(err.exit_code());
     }
     let param = |k: ContextKind| err.get(k).map(|v| v.to_string()).unwrap_or_default();
     let message = match kind {
@@ -417,10 +418,10 @@ fn render_clap_error(err: clap::Error, json_mode: bool) -> ! {
             "error": lines.join("\n"),
             "reason": "usage_error",
         }));
-        std::process::exit(err.exit_code())
+        avi_process::scratch::terminate(err.exit_code())
     }
     eprintln!("{}", lines.join("\n"));
-    std::process::exit(err.exit_code())
+    avi_process::scratch::terminate(err.exit_code())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -820,7 +821,7 @@ fn install_sigint_handler() {
         }
         // Exit code 130 = interrumpido por usuario (Ctrl+C)
         eprintln!("\nInterrumpido por el usuario.");
-        exit(ExitCode::Interrupted.code());
+        avi_process::scratch::terminate(ExitCode::Interrupted.code());
     })
     .expect("Error al instalar el handler de Ctrl+C");
 }
@@ -900,6 +901,9 @@ fn log_filter(rust_log: Option<&str>, daemon_serve: bool) -> tracing_subscriber:
 
 #[tokio::main]
 async fn main() {
+    // Libera el scratch del proceso en la vuelta normal y en el pánico; las
+    // salidas explícitas pasan por `terminate`, que no ejecuta `Drop`.
+    let _scratch_guard = avi_process::scratch::ReleaseGuard;
     // Bootstrap: UTF-8, SIGINT, parseo de la CLI y tracing
     avi_shared::force_utf8_console();
     install_sigint_handler();
@@ -1042,8 +1046,7 @@ async fn main() {
         // emita **un solo objeto** también cuando falla: si esto fuera un `CliError`,
         // `main` adjuntaría detrás el objeto `error` y el envelope sería ilegible.
         Ok(Outcome::Verdict(code)) => {
-            std::io::stdout().flush().ok();
-            exit(code);
+            avi_process::scratch::terminate(code);
         }
         Err(err) => exit_with_error(json_mode, err),
     }
@@ -1059,8 +1062,7 @@ fn exit_with_error(json_mode: bool, err: CliError) -> ! {
     } else {
         eprintln!("Error: {}", err.message);
     }
-    std::io::stdout().flush().ok();
-    exit(err.code.code());
+    avi_process::scratch::terminate(err.code.code());
 }
 
 /// Indica si el comando es de uso: lee o escribe datos o modelos, o lanza el
@@ -1348,14 +1350,10 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     "El modelo Base de clonado TTS no está provisionado. Ejecuta 'setup' primero.",
                 )
             })?;
-            // Temporal con dueño: se borra al soltarse por cualquier camino. El
-            // prefijo `avi_` deja que el barrido de temp de `cleanup`/`uninstall`
-            // lo alcance si el proceso muere antes del borrado.
-            let tmp_qvoice = tempfile::Builder::new()
-                .prefix(&format!("avi_clone_{}_", std::process::id()))
-                .suffix(".qvoice")
-                .tempfile()
-                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
+            // Temporal con dueño: se borra al soltarse por cualquier camino y,
+            // si el proceso muere antes, el barrido del scratch lo recoge.
+            let tmp_qvoice = avi_process::scratch::tempfile("avi_clone_", ".qvoice")
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?
                 .into_temp_path();
             let cloned = avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name)
                 .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
@@ -1994,8 +1992,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             }
 
             // Guardián del temporal: lo borra al salir de ámbito por cualquier camino.
-            let tmp_guard = avi_shared::TempWav::new("avi_tts_")
-                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+            let tmp_guard = avi_process::scratch::temp_wav("avi_tts_")
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
             let tmp_wav = tmp_guard.path().clone();
             let engine = direct_tts_engine()?;
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
@@ -2105,8 +2103,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 ));
             }
             // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
-            let tmp_wav = avi_shared::TempWav::new("avi_say_")
-                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+            let tmp_wav = avi_process::scratch::temp_wav("avi_say_")
+                .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
             let engine = direct_tts_engine()?;
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
             let final_text = translate_if_different(&text, source_eff, &target_language)?;
@@ -2306,8 +2304,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     ));
                 }
                 // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
-                let tmp_wav = avi_shared::TempWav::new("avi_dub_")
-                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+                let tmp_wav = avi_process::scratch::temp_wav("avi_dub_")
+                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
                 let engine = direct_tts_engine()?;
                 synthesize_voice_directly(
                     &engine,
@@ -3051,21 +3049,35 @@ fn compose_update_status_envelope(
     })
 }
 
-/// PID por cuyo término espera el limpiador de los restos del aparcado. Lo
-/// fija `self update` al lanzar el traspaso; sin traspaso (variable ausente)
-/// es el propio proceso, que termina enseguida. Una variable presente con un
-/// valor que no es un PID es un error: no se sustituye por el proceso propio.
-fn handover_wait_pid() -> Result<u32, CliError> {
+/// Identidad del proceso por cuyo término espera el limpiador de los restos del
+/// aparcado. Lo fija `self update` al lanzar el traspaso (variable con su PID,
+/// cuyo inicio se observa aquí); sin traspaso (variable ausente) es el propio
+/// proceso, que termina enseguida. Una variable presente con un valor que no es
+/// un PID, o cuyo proceso ya no se puede observar, es un error: no se sustituye
+/// por el proceso propio.
+fn handover_wait_token() -> Result<avi_process::OwnerToken, CliError> {
     let name = lifecycle::update::HANDOVER_PARENT_PID_ENV;
+    let fail = |message: String| CliError::new(ExitCode::Error, "self_install_failed", message);
     match std::env::var(name) {
-        Ok(value) => value.trim().parse::<u32>().map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "self_install_failed",
-                format!("La variable {name} debe contener un PID numérico (valor '{value}'): {e}"),
-            )
-        }),
-        Err(std::env::VarError::NotPresent) => Ok(std::process::id()),
+        Ok(value) => {
+            let pid = value.trim().parse::<u32>().map_err(|e| {
+                fail(format!(
+                    "La variable {name} debe contener un PID numérico (valor '{value}'): {e}"
+                ))
+            })?;
+            let identity = avi_process::process_identity(pid).ok_or_else(|| {
+                fail(format!(
+                    "No se pudo observar el proceso {pid} de la variable {name}"
+                ))
+            })?;
+            avi_process::OwnerToken::new(pid, identity.start).ok_or_else(|| {
+                fail(format!(
+                    "El inicio observado del proceso {pid} no es un token válido"
+                ))
+            })
+        }
+        Err(std::env::VarError::NotPresent) => avi_process::current_owner_token()
+            .map_err(|e| fail(format!("No se pudo observar el propio proceso: {e}"))),
         Err(std::env::VarError::NotUnicode(_)) => Err(CliError::new(
             ExitCode::Error,
             "self_install_failed",
@@ -3078,7 +3090,7 @@ fn handover_wait_pid() -> Result<u32, CliError> {
 ///
 /// El binario aporta lo que el motor no puede tener: el **control de procesos** —que
 /// vive en `avi-daemon` y `avi-tts`— y el **borrado diferido** de Windows, que necesita
-/// `avi_process::schedule_clean_removal`. El motor decide; el binario ejecuta las dos
+/// `avi_process::schedule_removal`. El motor decide; el binario ejecuta las dos
 /// primitivas de plataforma.
 async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliError> {
     match action {
@@ -3090,7 +3102,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
         } => {
             // Se valida antes de instalar nada: un valor inválido no deja una
             // instalación a medias.
-            let wait_pid = handover_wait_pid()?;
+            let wait_token = handover_wait_token()?;
             let exe = std::env::current_exe().map_err(|e| {
                 CliError::new(ExitCode::Error, "self_install_failed", e.to_string())
             })?;
@@ -3113,11 +3125,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             if !outcome.parked_leftovers.is_empty() {
                 let scheduled = lifecycle::update::schedule_leftovers(
                     &outcome.parked_leftovers,
-                    &LifecyclePaths {
-                        #[cfg(windows)]
-                        logs_dir: lifecycle::logs_dir_in(&env.data_dir),
-                    },
-                    wait_pid,
+                    &LifecyclePaths,
+                    &wait_token,
                 );
                 if scheduled.scheduled.len() == outcome.parked_leftovers.len() {
                     eprintln!(
@@ -3209,10 +3218,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     dry_run,
                     assume_yes: yes,
                 },
-                &ProgramRemoval {
-                    #[cfg(windows)]
-                    logs_dir: lifecycle::logs_dir_in(&env.roots.data_dir),
-                },
+                &ProgramRemoval,
                 &ProductProcesses,
             )
             .await
@@ -3466,13 +3472,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             })
             .await
             .map_err(lifecycle_error_to_cli)?;
-            lifecycle::update::cleanup_staging(
-                &staged.staging,
-                &LifecyclePaths {
-                    #[cfg(windows)]
-                    logs_dir: lifecycle::logs_dir_in(&roots.data_dir),
-                },
-            );
+            lifecycle::update::cleanup_staging(&staged.staging, &LifecyclePaths);
 
             // ── Resultado `anterior → nueva` ─────────────────────────────────
             // Sin reinicio automático del daemon (D6): el resultado indica cómo
@@ -3661,6 +3661,10 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
     fn identity(&self, pid: u32) -> Option<avi_process::ProcessIdentity> {
         avi_process::process_identity(pid)
     }
+
+    fn observe_identity(&self, pid: u32) -> avi_process::IdentityObservation {
+        avi_process::observe_identity(pid)
+    }
 }
 
 /// Borrado del directorio de programa con el mecanismo de plataforma (paso 8 de
@@ -3671,12 +3675,7 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
 /// borrado directo es imposible y se programa con el limpiador propio desacoplado;
 /// el motor decide cuál de los dos casos es y cambia el
 /// desenlace a `removal_scheduled`.
-struct ProgramRemoval {
-    /// Directorio de los registros del limpiador (`<datos>/logs`); solo existe en
-    /// Windows, el único sistema que programa el borrado con el limpiador.
-    #[cfg(windows)]
-    logs_dir: std::path::PathBuf,
-}
+struct ProgramRemoval;
 
 impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
     fn exe_lives_inside(&self, program_dir: &std::path::Path) -> anyhow::Result<bool> {
@@ -3716,24 +3715,22 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         Ok(())
     }
 
-    fn schedule(&self, program_dir: &std::path::Path, pid: u32) -> anyhow::Result<()> {
+    fn schedule(
+        &self,
+        program_dir: &std::path::Path,
+        wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<()> {
         // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
         // impide el borrado directo. En Unix no hay tal impedance y el motor ya habría
         // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
         // tenga una implementación silenciosa.
         #[cfg(windows)]
         {
-            let (log, _) =
-                lifecycle::create_log(&self.logs_dir, "cleaner", &avi_process::pid_alive_exact)
-                    .map_err(|e| {
-                        anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}")
-                    })?;
-            avi_process::schedule_clean_removal(program_dir, pid, &log)?;
-            Ok(())
+            avi_process::schedule_removal(program_dir, wait)
         }
         #[cfg(not(windows))]
         {
-            let _ = (program_dir, pid);
+            let _ = (program_dir, wait);
             anyhow::bail!("el borrado diferido del directorio de programa es de Windows")
         }
     }
@@ -3746,12 +3743,7 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
 /// con el borrado diferido de `avi-process`; el motor decide cuál de los dos
 /// casos es. Es la contrapartida de `ProgramRemoval` para rutas arbitrarias del
 /// ciclo (staging, `.old-*`).
-struct LifecyclePaths {
-    /// Directorio de los registros del limpiador (`<datos>/logs`); solo existe en
-    /// Windows, el único sistema que programa el borrado con el limpiador.
-    #[cfg(windows)]
-    logs_dir: std::path::PathBuf,
-}
+struct LifecyclePaths;
 
 impl lifecycle::update::PathRemover for LifecyclePaths {
     fn remove_now(&self, path: &std::path::Path) -> anyhow::Result<()> {
@@ -3762,24 +3754,22 @@ impl lifecycle::update::PathRemover for LifecyclePaths {
         Ok(())
     }
 
-    fn schedule(&self, path: &std::path::Path, pid: u32) -> anyhow::Result<()> {
+    fn schedule(
+        &self,
+        path: &std::path::Path,
+        wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<()> {
         // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
         // impide el borrado directo. En Unix no hay tal impedimento y el motor ya habría
         // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
         // tenga una implementación silenciosa.
         #[cfg(windows)]
         {
-            let (log, _) =
-                lifecycle::create_log(&self.logs_dir, "cleaner", &avi_process::pid_alive_exact)
-                    .map_err(|e| {
-                        anyhow::anyhow!("no se pudo crear el registro del limpiador: {e}")
-                    })?;
-            avi_process::schedule_clean_removal(path, pid, &log)?;
-            Ok(())
+            avi_process::schedule_removal(path, wait)
         }
         #[cfg(not(windows))]
         {
-            let _ = (path, pid);
+            let _ = (path, wait);
             anyhow::bail!("el borrado diferido de rutas del ciclo es de Windows")
         }
     }
@@ -3921,10 +3911,13 @@ async fn launch_daemon(
     }
     let logs_dir = avi_shared::paths::logs_dir()
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    let launcher_token = avi_process::current_owner_token()
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
     let (log_path, log_file) = avi_shared::logs::create_log(
         &logs_dir,
         daemon::DAEMON_LOG_FAMILY,
-        &avi_process::pid_alive_exact,
+        &launcher_token,
+        &avi_process::classify_owner,
     )
     .map_err(|e| {
         CliError::new(
@@ -3954,27 +3947,35 @@ async fn launch_daemon(
         }
     };
     let pid = child.id();
-    // El log nació con el PID del lanzador porque su handle se entrega al
-    // spawn; ya conocido el del hijo, el nombre pasa a identificar al proceso
-    // que escribe, y la poda puede reconocer por PID el log de un daemon vivo.
-    let log_path =
-        match avi_shared::logs::rename_log_to_pid(&log_path, daemon::DAEMON_LOG_FAMILY, pid) {
-            Ok(renamed) => renamed,
-            Err(e) => {
-                let err = CliError::new(
-                    ExitCode::Error,
-                    "io_error",
-                    format!(
-                        "No se pudo renombrar el log del daemon '{}' con el PID {}: {}",
-                        log_path.display(),
-                        pid,
-                        e
-                    ),
-                );
-                abort_launch(&mut child, &ready_path).await;
-                return Err(err);
-            }
-        };
+    // El log nació con el token del lanzador porque su handle se entrega al
+    // spawn; ya conocido el hijo, el nombre pasa a identificar al proceso que
+    // escribe, y la poda puede reconocer por su token el log de un daemon vivo.
+    let renamed = match avi_process::owner_token_of(pid) {
+        Ok(child_token) => avi_shared::logs::rename_log_to_owner(
+            &log_path,
+            daemon::DAEMON_LOG_FAMILY,
+            &child_token,
+        )
+        .map_err(|e| e.to_string()),
+        Err(e) => Err(e.to_string()),
+    };
+    let log_path = match renamed {
+        Ok(renamed) => renamed,
+        Err(e) => {
+            let err = CliError::new(
+                ExitCode::Error,
+                "io_error",
+                format!(
+                    "No se pudo renombrar el log del daemon '{}' con la identidad del proceso {}: {}",
+                    log_path.display(),
+                    pid,
+                    e
+                ),
+            );
+            abort_launch(&mut child, &ready_path).await;
+            return Err(err);
+        }
+    };
     let with_log = |mut e: CliError| {
         e.message = format!("{}\nLog del daemon: {}", e.message, log_path.display());
         e
@@ -4627,8 +4628,8 @@ async fn synthesize_via_daemon(
     )
     .await?;
     // Guardián del temporal: lo borra al salir de ámbito por cualquier camino.
-    let tmp_guard = avi_shared::TempWav::new("avi_tts_")
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    let tmp_guard = avi_process::scratch::temp_wav("avi_tts_")
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
     let tmp = tmp_guard.path().clone();
     std::fs::write(&tmp, &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
@@ -4708,8 +4709,8 @@ async fn say_via_daemon(
     )
     .await?;
     // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
-    let tmp = avi_shared::TempWav::new("avi_say_")
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    let tmp = avi_process::scratch::temp_wav("avi_say_")
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
     std::fs::write(tmp.path(), &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
     audio::AudioService::new()
@@ -4902,8 +4903,8 @@ async fn dub_via_daemon(
         .unwrap_or("")
         .to_string();
     // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
-    let tmp_wav = avi_shared::TempWav::new("avi_dub_")
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    let tmp_wav = avi_process::scratch::temp_wav("avi_dub_")
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
     std::fs::write(tmp_wav.path(), &wav_bytes)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
     audio::AudioService::new()

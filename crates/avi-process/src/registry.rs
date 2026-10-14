@@ -12,7 +12,7 @@
 //! entre sí. Un solo formato con un solo intérprete evita que cada lector lo
 //! reinterprete por su cuenta.
 
-use crate::ProcessIdentity;
+use crate::{IdentityObservation, ProcessIdentity};
 use std::path::{Path, PathBuf};
 
 /// Nombre del pidfile dentro de la raíz de datos.
@@ -60,7 +60,9 @@ pub fn write_pid_file(data_dir: &Path, file: &PidFile) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let content = serde_json::to_string_pretty(file)?;
-    let temp = path.with_extension("pid.tmp");
+    let owner = crate::current_owner_token()?;
+    let temp = avi_shared::staging_names::temp_file::sibling(&path, &owner)
+        .ok_or_else(|| anyhow::anyhow!("{} no tiene un nombre de fichero UTF-8", path.display()))?;
     std::fs::write(&temp, content.as_bytes())?;
     match std::fs::rename(&temp, &path) {
         Ok(()) => Ok(()),
@@ -84,6 +86,10 @@ pub enum Registered {
     Foreign,
     /// El proceso es el registrado.
     Ours,
+    /// Hay un proceso vivo con ese PID pero el sistema no deja observar su
+    /// identidad: no se sabe si es el registrado. No es nuestro para actuar
+    /// sobre él, pero tampoco se da por muerto ni se borra su registro.
+    Unknown,
 }
 
 /// Decide si un PID registrado es nuestro. `alive` es la viveza que el llamante
@@ -91,20 +97,25 @@ pub enum Registered {
 /// identidad actual del PID solo cuando hace falta compararla. Sin identidad
 /// registrada no hay clasificación `Ours`: solo es nuestro si la identidad
 /// observada coincide con la que se registró. Un fichero sin identidad es
-/// ilegible y se propaga como ausencia, no como «PID solo».
+/// ilegible y se propaga como ausencia, no como «PID solo». Una observación
+/// denegada es `Unknown`; que el PID haya desaparecido entre la viveza y la
+/// observación, o que su identidad difiera, es `Foreign`.
 pub fn classify_registered(
     pid: u32,
     alive: bool,
     recorded: Option<&ProcessIdentity>,
-    observe: impl FnOnce() -> Option<ProcessIdentity>,
+    observe: impl FnOnce() -> IdentityObservation,
 ) -> Registered {
     if pid == 0 || !alive {
         return Registered::Absent;
     }
-    match recorded {
-        None => Registered::Absent,
-        Some(recorded) if observe().as_ref() == Some(recorded) => Registered::Ours,
-        Some(_) => Registered::Foreign,
+    let Some(recorded) = recorded else {
+        return Registered::Absent;
+    };
+    match observe() {
+        IdentityObservation::Present(observed) if &observed == recorded => Registered::Ours,
+        IdentityObservation::Present(_) | IdentityObservation::Gone => Registered::Foreign,
+        IdentityObservation::Denied => Registered::Unknown,
     }
 }
 
@@ -355,7 +366,6 @@ mod tests {
             };
             assert_eq!(back, file, "se lee el último registro escrito");
         }
-        assert!(!pid_path(dir.path()).with_extension("pid.tmp").exists());
         assert_eq!(
             std::fs::read_dir(dir.path()).unwrap().count(),
             1,
@@ -368,9 +378,9 @@ mod tests {
     #[test]
     fn classification_requires_live_matching_identity() {
         let recorded = identity_of("111", "daemon.exe");
-        let same = || Some(identity_of("111", "daemon.exe"));
-        let other = || Some(identity_of("999", "daemon.exe"));
-        let never = || -> Option<ProcessIdentity> { panic!("no debe observarse") };
+        let same = || IdentityObservation::Present(identity_of("111", "daemon.exe"));
+        let other = || IdentityObservation::Present(identity_of("999", "daemon.exe"));
+        let never = || -> IdentityObservation { panic!("no debe observarse") };
 
         assert_eq!(
             classify_registered(7, true, Some(&recorded), same),
@@ -381,8 +391,12 @@ mod tests {
             Registered::Foreign
         );
         assert_eq!(
-            classify_registered(7, true, Some(&recorded), || None),
+            classify_registered(7, true, Some(&recorded), || IdentityObservation::Gone),
             Registered::Foreign
+        );
+        assert_eq!(
+            classify_registered(7, true, Some(&recorded), || IdentityObservation::Denied),
+            Registered::Unknown
         );
         assert_eq!(
             classify_registered(7, false, Some(&recorded), never),

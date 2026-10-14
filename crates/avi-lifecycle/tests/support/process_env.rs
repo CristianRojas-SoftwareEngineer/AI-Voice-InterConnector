@@ -47,7 +47,7 @@ impl Sandbox {
                 std::env::remove_var("HF_HOME");
             }
             None => {
-                std::env::set_var("AVI_CACHE_DIR", value(&self.models_dir));
+                std::env::set_var("AVI_CACHE_DIR", value(&self.cache_dir));
                 std::env::remove_var("HF_HUB_CACHE");
                 std::env::remove_var("HF_HOME");
             }

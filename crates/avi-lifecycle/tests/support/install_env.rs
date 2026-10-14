@@ -35,6 +35,7 @@ impl Sandbox {
             bin_dir: self.bin_dir.clone(),
             data_dir: self.data_dir.clone(),
             models_dir: self.models_dir.clone(),
+            cache_dir: self.cache_dir.clone(),
             temp_root: self.temp_root.clone(),
             home: self.home.clone(),
             // Sin el directorio del enlace en el `PATH`: así el bloque de perfil sí se

@@ -305,7 +305,14 @@ pub fn create_symlink(link: &Path, program_exe: &Path, force: bool) -> Result<()
             LifecycleError::new("path_conflict", format!("{}: {e}", parent.display()))
         })?;
     }
-    let temp = link.with_extension(format!("avi-link-{}", std::process::id()));
+    let owner = avi_process::current_owner_token()
+        .map_err(|e| LifecycleError::new("path_conflict", format!("{e}")))?;
+    let temp = avi_shared::staging_names::temp_file::sibling(link, &owner).ok_or_else(|| {
+        LifecycleError::new(
+            "path_conflict",
+            format!("{} no tiene un nombre de fichero UTF-8", link.display()),
+        )
+    })?;
     avi_shared::best_effort(
         std::fs::remove_file(&temp),
         format_args!(

@@ -463,7 +463,7 @@ pub(crate) mod tests {
     ) -> (MutexGuard<'static, ()>, crate::test_support::Scratch) {
         let guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = scratch(tag);
-        std::env::set_var("AVI_CACHE_DIR", dir.join("models"));
+        std::env::set_var("AVI_CACHE_DIR", &*dir);
         (guard, dir)
     }
 

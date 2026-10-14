@@ -45,6 +45,7 @@ use crate::daemon_stop::{self, ProcessControl};
 use crate::path_unix;
 use crate::receipt::{self, InstallReceipt, PathIntegration};
 use crate::LifecycleError;
+use avi_process::OwnerToken;
 use std::path::{Path, PathBuf};
 
 /// Comando de Homebrew que sustituye a la desinstalación de la copia del Cask
@@ -79,10 +80,10 @@ pub trait ProgramDirRemover {
     fn exe_lives_inside(&self, program_dir: &Path) -> anyhow::Result<bool>;
     /// Borra el directorio ya. En Unix es lo que hace siempre.
     fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()>;
-    /// Programa el borrado para cuando termine el proceso en curso. `Ok` significa que
-    /// el limpiador está en marcha; si no puede garantizarse, `Err`. Es el caso diferido
-    /// del paso 8.
-    fn schedule(&self, program_dir: &Path, pid: u32) -> anyhow::Result<()>;
+    /// Programa el borrado para cuando termine el proceso `wait`, identificado por PID e
+    /// inicio. `Ok` significa que el limpiador está en marcha; si no puede garantizarse,
+    /// `Err`. Es el caso diferido del paso 8.
+    fn schedule(&self, program_dir: &Path, wait: &OwnerToken) -> anyhow::Result<()>;
 }
 
 /// Plan del paso 2.
@@ -997,7 +998,8 @@ fn remove_program_dir(
         // limpiador propio desacoplado con reintentos acotados; si no puede
         // programarse, el error sube y el directorio queda intacto: borrar aquí
         // sería un borrado parcial con el ejecutable en uso.
-        remover.schedule(program_dir, std::process::id())?;
+        let own = avi_process::current_owner_token()?;
+        remover.schedule(program_dir, &own)?;
         eprintln!(
             "  el directorio se borrará al terminar este proceso: {}",
             program_dir.display()

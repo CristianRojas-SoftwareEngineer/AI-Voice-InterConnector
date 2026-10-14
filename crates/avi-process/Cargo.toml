@@ -11,6 +11,8 @@ anyhow = "1.0"
 avi-shared = { path = "../avi-shared" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Temporales dentro del scratch por proceso (`scratch`).
+tempfile = "3"
 
 # Viveza y muerte exactas de PID en Unix: `libc::kill` directo, sin lanzar el
 # ejecutable `kill` externo. En macOS, además, `proc_pidinfo` da la identidad
@@ -22,10 +24,3 @@ libc = "0.2"
 # las importa de aquí con los nombres oficiales de `windows-sys`.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Diagnostics_Debug", "Win32_UI_WindowsAndMessaging"] }
-# Despacho temprano del limpiador: la copia relanzada debe trabajar antes de
-# `main` (también antes del arnés de pruebas), sin depender del binario que
-# la lanzó. Solo se usa bajo `cfg(windows)`, en `deferred.rs`.
-ctor = "1.0"
-
-[dev-dependencies]
-tempfile = "3"
