@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.30.1 — 2026-10-15](#0301--2026-10-15)
 - [0.30.0 — 2026-10-14](#0300--2026-10-14)
 - [0.29.5 — 2026-10-13](#0295--2026-10-13)
 - [0.29.4 — 2026-10-13](#0294--2026-10-13)
@@ -107,7 +107,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.30.1] — 2026-10-15
 
 La prueba de extremo a extremo como usuario final en Windows con la 0.30.0
 mostró que lo instalado no coincidía con lo que el recibo registra y que los
@@ -3334,3 +3334,4 @@ estado con el que nace el producto.
 [0.29.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.29.3...v0.29.4
 [0.29.5]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.29.4...v0.29.5
 [0.30.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.29.5...v0.30.0
+[0.30.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.30.0...v0.30.1
