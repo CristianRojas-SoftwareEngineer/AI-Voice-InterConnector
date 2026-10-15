@@ -109,6 +109,13 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+La prueba de extremo a extremo como usuario final en Windows con la 0.30.0
+mostró que lo instalado no coincidía con lo que el recibo registra y que los
+planes del ciclo de vida decían cosas falsas antes de pedir confirmación. Esta
+versión hace que el directorio de programa contenga solo el bundle y que los
+resúmenes y planes de `self install` y `self uninstall` describan lo que de
+verdad ocurre.
+
 ### Corregido
 
 - `self install` copiaba al directorio de programa todo lo que había junto al
