@@ -2042,6 +2042,61 @@ fn uninstall_dry_run_needs_no_confirmation() {
     );
 }
 
+/// La reversión del `PATH` es una acción del plan, no un recurso conservado: lo que se
+/// retira no puede anunciarse como «no se tocará». El plan la lista aparte, con la
+/// acción, y `preserved` no incluye ni el archivo de perfil ni el directorio de programa
+/// que el propio `PATH` nombra.
+#[test]
+fn uninstall_plan_lists_path_revert_apart_from_preserved() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("path-revert-plan");
+    sandbox.seed_env();
+    sandbox.seed_state();
+    let receipt = sandbox.install_registered(PathIntegration::none());
+    let profile = sandbox.home.join(".profile");
+    let mut with_block = receipt.clone();
+    with_block.path_integration = PathIntegration::unix(
+        sandbox.bin_dir.join("avi-voice-interconnector"),
+        vec![profile.clone()],
+    );
+
+    let plan = uninstall::compose_plan(
+        &sandbox.roots(),
+        Some(&with_block),
+        &sandbox.program_dir,
+        &uninstall::Options::default(),
+    );
+
+    assert!(
+        plan.path_revert
+            .iter()
+            .any(|r| r.target == profile && r.action.contains("bloque")),
+        "el bloque del perfil se anuncia como reversión: {:?}",
+        plan.path_revert
+    );
+    assert!(
+        plan.path_revert
+            .iter()
+            .all(|r| r.to_string().starts_with("se revertirá el PATH: se retira")),
+        "cada línea dice que se retira: {:?}",
+        plan.path_revert
+    );
+    assert!(
+        !plan.preserved.iter().any(|p| p.path == profile),
+        "lo que se retira no se anuncia como conservado: {:?}",
+        plan.preserved
+    );
+
+    // Sin integración de `PATH` en el recibo, no hay nada que revertir.
+    let none = uninstall::compose_plan(
+        &sandbox.roots(),
+        Some(&receipt),
+        &sandbox.program_dir,
+        &uninstall::Options::default(),
+    );
+    assert!(none.path_revert.is_empty(), "{:?}", none.path_revert);
+}
+
 /// El simulacro y la ejecución real publican el mismo `path_reverted`, en las dos
 /// direcciones.
 ///

@@ -123,7 +123,7 @@ Los pasos de [`self uninstall`](../../specs/LIFECYCLE.md#85-self-uninstall), en 
 
 1. **El canal decide si se puede actuar**: `homebrew` → `externally_managed` (12) con el comando de Homebrew en el mensaje. Sin instalación, sin estado y sin directorio de programa → **`not_installed` y salida 0**.
 2. **`--dry-run`**: imprime el plan y termina **sin tomar el bloqueo**: tomar el bloqueo crea el archivo, y una simulación que deja un archivo detrás no es una simulación.
-3. **Plan** con rutas y tamaños, más la lista de lo que **no** se tocará y por qué.
+3. **Plan** con rutas y tamaños; las reversiones del `PATH` que el recibo registra, una línea por cada una con lo que se retira (`se revertirá el PATH: …`), que son acciones del plan y no recursos conservados; y la lista de lo que **no** se tocará y por qué.
 4. **Confirmación destructiva** `[s/N]`. Sin terminal y sin `--yes` → `confirmation_required` (2) y nada borrado.
 5. **Parar el daemon**: va **después** de la confirmación, para que un `daemon_stop_failed` no deje nada a medias.
 6. **Borrar el estado.**

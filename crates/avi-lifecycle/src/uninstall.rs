@@ -104,9 +104,13 @@ pub struct Plan {
     /// Directorio de programa con su tamaño, que es un destino propio de la
     /// desinstalación.
     pub program_dir: Option<PlanEntry>,
-    /// Lo que se conserva a propósito, con el motivo: recursos compartidos y la
-    /// integración de `PATH`, que se revierte en vez de borrarse.
+    /// Lo que se conserva a propósito, con el motivo: recursos compartidos y, si la regla
+    /// del directorio de programa lo impide, el propio directorio.
     pub preserved: Vec<Preserved>,
+    /// Cómo se revierte la integración de `PATH` según el recibo. Es una acción del plan y
+    /// no un recurso conservado: el enlace, el bloque del perfil o la entrada del registro
+    /// se **retiran**, y anunciarlos como «no se tocará» diría lo contrario.
+    pub path_revert: Vec<PathRevert>,
     /// Destino del plan que se lleva el directorio de programa cuando la regla de
     /// [`program_dir_is_removable`] le impide borrarlo por su cuenta. Va en el plan porque
     /// cambia lo que el comando afirma: si el directorio de programa vive dentro de una
@@ -142,6 +146,27 @@ impl Plan {
 
 /// Recurso compartido que la operación deja intacto a propósito, con su motivo.
 pub type Preserved = cleanup::Preserved;
+
+/// Una reversión de la integración de `PATH`: qué se retira y dónde.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathRevert {
+    /// Enlace, archivo de perfil o, en Windows, la entrada que se retira del `PATH` de
+    /// usuario (la ruta del directorio de programa).
+    pub target: PathBuf,
+    /// Qué se hace con él.
+    pub action: &'static str,
+}
+
+impl std::fmt::Display for PathRevert {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "se revertirá el PATH: {} ({})",
+            self.action,
+            self.target.display()
+        )
+    }
+}
 
 /// Estado de partida de la operación, tal como lo ve el binario.
 pub struct Env<'a> {
@@ -534,9 +559,7 @@ pub fn compose_plan(
     };
     let mut state = cleanup::finish(roots, targets, preserved, &departing);
     let mut preserved = std::mem::take(&mut state.preserved);
-    if let Some(receipt) = receipt {
-        describe_path_integration(receipt, &mut preserved);
-    }
+    let path_revert = receipt.map(describe_path_integration).unwrap_or_default();
     // La regla del directorio de programa gobierna el paso 8, y el plan no puede
     // prometer lo que ella impide: un directorio de programa dentro de una raíz del
     // producto, de `$HOME` o de una unidad no se borraría por su cuenta, así que no
@@ -570,6 +593,7 @@ pub fn compose_plan(
         state,
         program_dir: program_dir_entry,
         preserved,
+        path_revert,
         program_dir_swallowed_by,
     }
 }
@@ -598,30 +622,33 @@ fn target_covering(targets: &[cleanup::Target], program_dir: &Path) -> Option<Pa
         .map(|t| t.path.clone())
 }
 
-/// Anuncia la integración de `PATH` como lo que se va a **revertir**, no a borrar.
-fn describe_path_integration(receipt: &InstallReceipt, preserved: &mut Vec<Preserved>) {
+/// Las reversiones de la integración de `PATH` que el recibo registra, como acciones del
+/// plan.
+fn describe_path_integration(receipt: &InstallReceipt) -> Vec<PathRevert> {
     if !receipt.path_integration.modify_path {
-        return;
+        return Vec::new();
     }
     let integration: &PathIntegration = &receipt.path_integration;
+    let mut out = Vec::new();
     if let Some(symlink) = &integration.symlink {
-        preserved.push(Preserved {
-            path: symlink.clone(),
-            reason: "se retira el enlace, no se borra",
+        out.push(PathRevert {
+            target: symlink.clone(),
+            action: "se retira el enlace",
         });
     }
     for block in integration.profile_blocks.iter().flatten() {
-        preserved.push(Preserved {
-            path: block.clone(),
-            reason: "se retira el bloque delimitado, no se borra el archivo",
+        out.push(PathRevert {
+            target: block.clone(),
+            action: "se retira el bloque delimitado del perfil, sin borrar el archivo",
         });
     }
     if let Some(entry) = &integration.registry_entry {
-        preserved.push(Preserved {
-            path: entry.clone(),
-            reason: "se retira la entrada del registro, conservando el tipo del valor",
+        out.push(PathRevert {
+            target: entry.clone(),
+            action: "se retira la entrada del PATH del usuario, conservando el tipo del valor",
         });
     }
+    out
 }
 
 /// Paso 3: la simulación.
@@ -657,6 +684,9 @@ pub fn simulate(
     }
     for path in preview.all() {
         eprintln!("  barrido {}", path.display());
+    }
+    for revert in &plan.path_revert {
+        eprintln!("  {revert}");
     }
     for item in &plan.preserved {
         eprintln!("  no se tocará {}: {}", item.path.display(), item.reason);
@@ -718,6 +748,9 @@ fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
             target.path.display(),
             crate::human_bytes(target.size)
         ));
+    }
+    for revert in &plan.path_revert {
+        out.push(format!("  {revert}"));
     }
     for item in &plan.preserved {
         out.push(format!(

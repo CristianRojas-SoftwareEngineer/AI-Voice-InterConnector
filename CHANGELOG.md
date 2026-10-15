@@ -119,6 +119,11 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   bundle se extrajo a mano en una carpeta con otros archivos.
 - El resumen previo de `self install --no-setup` anunciaba la descarga de unos
   5.9 GB de modelos aunque no se iba a provisionar nada.
+- El plan de `self uninstall` anunciaba la integración del `PATH` como «no se
+  tocará», con la ruta del directorio de programa en Windows, cuando en realidad
+  se retira. Ahora la reversión del `PATH` es una línea propia del plan (`se
+  revertirá el PATH: …`) y la lista de lo conservado solo contiene lo que de
+  verdad se conserva. Cambio visible en el texto del plan; el `--json` no cambia.
 - El plan de `self install` (degradación) y de `self uninstall` mostraba el
   directorio de programa con el tamaño de su entrada (4.1 KB) en lugar del total
   de su contenido.
