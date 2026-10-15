@@ -205,6 +205,15 @@ async fn fetch_into(
     let sums_text = String::from_utf8_lossy(&sums_bytes);
     verify_sums(&sums_text, &asset, &asset_path)?;
     extract_bundle(&asset_path, staging)?;
+    // Verificado y extraído, el archivo ya no sirve. El staging se entrega a
+    // `self install` como el bundle y nada más; con el archivo dentro, acabaría
+    // instalado junto al programa sin figurar en el recibo.
+    std::fs::remove_file(&asset_path).map_err(|e| {
+        LifecycleError::bundle_invalid(format!(
+            "no se pudo retirar el archivo descargado {}: {e}",
+            asset_path.display()
+        ))
+    })?;
     apply_permissions(&request.target, staging)?;
     manifest::validate_bundle(&request.target, staging)?;
     Ok(StagedBundle {
@@ -916,6 +925,24 @@ mod tests {
         let section = manifest::target_section(triple).unwrap();
         assert!(staged.staging.join(section.executable_path()).is_file());
         assert!(manifest::validate_bundle(triple, &staged.staging).is_ok());
+        // El staging es el bundle y nada más: ni el archivo descargado ni otro resto.
+        fn files_under(dir: &Path, prefix: &str, out: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let name = format!("{prefix}{}", entry.file_name().to_string_lossy());
+                if entry.path().is_dir() {
+                    files_under(&entry.path(), &format!("{name}/"), out);
+                } else {
+                    out.push(name);
+                }
+            }
+        }
+        let mut found = Vec::new();
+        files_under(&staged.staging, "", &mut found);
+        found.sort();
+        let mut expected = section.required.clone();
+        expected.sort();
+        assert_eq!(found, expected, "el staging solo contiene el bundle");
         handle.await.expect("el servidor local termina");
         assert_eq!(
             seen.lock()

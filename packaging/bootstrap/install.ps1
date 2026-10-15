@@ -223,6 +223,9 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             Write-BootstrapLog "Checksum verificado: $archiveName"
 
             Expand-Archive -Path $archivePath -DestinationPath $staging -Force
+            # Verificado y extraido, el archivo y las sumas ya no sirven: el directorio
+            # que se entrega a `self install` es el bundle y nada mas.
+            Remove-Item -Path $archivePath, $sumsPath -Force
             $exe = Join-Path $staging "$App.exe"
             if (-not (Test-Path $exe)) { throw "ERROR [bundle_invalid]: el archivo no contiene el ejecutable esperado: $App.exe." }
             $incompatible = "ERROR [binary_incompatible]: el binario descargado ($target) no arranca en este sistema. Alternativa: compila desde la fuente siguiendo docs/BUILD.md. La instalaci${o}n existente no se ha modificado."

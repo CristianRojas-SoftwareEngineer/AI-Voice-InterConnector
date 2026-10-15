@@ -113,8 +113,10 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 - `self install` copiaba al directorio de programa todo lo que había junto al
   bundle, incluido el archivo comprimido descargado por el bootstrap (unos 48 MB)
-  y `SHA256SUMS.txt`, que no figuran en el recibo. Ahora solo llegan los archivos
-  obligatorios del bundle.
+  y `SHA256SUMS.txt`, que no figuran en el recibo. Los bootstraps y `self update`
+  retiran ahora el archivo y las sumas una vez verificado y extraído el bundle, y
+  `self install` copia solo los archivos que lista el manifiesto, también cuando el
+  bundle se extrajo a mano en una carpeta con otros archivos.
 - El resumen previo de `self install --no-setup` anunciaba la descarga de unos
   5.9 GB de modelos aunque no se iba a provisionar nada.
 - El plan de `self install` (degradación) y de `self uninstall` mostraba el

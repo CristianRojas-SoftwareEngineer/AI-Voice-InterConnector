@@ -40,7 +40,8 @@ BeforeAll {
             TMP                   = $tempDir
             AVI_FAKE_EXE_LOG      = (Join-Path $TestDir "fake-exe.log")
             AVI_FAKE_SIBLINGS_LOG = (Join-Path $TestDir "fake-siblings.log")
-            AVI_FAKE_LOCK_DIR     = $null
+            AVI_FAKE_BUNDLE_LOG   = (Join-Path $TestDir "fake-bundle.log")
+            AVI_FAKE_LOCK_DIR    = $null
             AVI_DOWNLOAD_BASE_URL = $script:LastBaseUrl
             AVI_INSTALL_DIR       = $programDir
             AVI_BIN_DIR           = (Join-Path $TestDir "bin")
@@ -121,6 +122,17 @@ Describe "bootstrap de Windows" {
         # ...y junto al programa no habia nada: el arnes no creo ni el directorio de
         # programa ni su padre, y el bootstrap tampoco los creo antes de delegar.
         (Get-Content -Raw $envBase.AVI_FAKE_SIBLINGS_LOG).Trim() | Should -Be "PARENT_ABSENT"
+        Assert-NoStagingLeft $script:TestDir
+    }
+
+    It "entrega a self install solo el bundle, sin el archivo descargado ni las sumas" {
+        $envBase = Get-TestEnvBase $script:TestDir
+        $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
+            -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
+
+        $result.ExitCode | Should -Be 0
+        $entries = @(Get-Content $envBase.AVI_FAKE_BUNDLE_LOG)
+        $entries | Should -Be @("ai-voice-interconnector.exe")
         Assert-NoStagingLeft $script:TestDir
     }
 

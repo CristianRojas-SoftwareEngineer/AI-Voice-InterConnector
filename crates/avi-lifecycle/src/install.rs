@@ -450,6 +450,10 @@ const SELF_INSTALL_STAGING_LABEL: &str = "self-install";
 /// bundle está en cualquier otro sitio (descargado por el bootstrap en un temporal,
 /// extraído en un staging ajeno), se copia a un staging nuevo, que se borra al soltar
 /// el valor; un fallo al borrarlo se avisa con la ruta y no cambia el resultado.
+///
+/// La copia lleva solo los archivos obligatorios (`required`). El staging propio ya
+/// preparado no se filtra: quien lo prepara (`self update`) lo deja con el bundle y
+/// nada más.
 struct OwnStaging {
     dir: PathBuf,
     /// `true` si esta operación creó el directorio y por tanto debe borrarlo.
@@ -457,7 +461,7 @@ struct OwnStaging {
 }
 
 impl OwnStaging {
-    fn prepare(program_dir: &Path, bundle: &Path) -> anyhow::Result<Self> {
+    fn prepare(program_dir: &Path, bundle: &Path, required: &[String]) -> anyhow::Result<Self> {
         let owner = avi_process::current_owner_token()?;
         let parent = program_dir.parent().unwrap_or(Path::new("."));
         let bundle_is_own = bundle
@@ -489,7 +493,7 @@ impl OwnStaging {
         })?;
         let staged = Self { dir, created: true };
         // Si la copia falla, `staged` se suelta aquí y borra lo copiado a medias.
-        copy_tree(bundle, &staged.dir).map_err(|e| {
+        copy_bundle(bundle, &staged.dir, required).map_err(|e| {
             LifecycleError::new(
                 "self_install_failed",
                 format!(
@@ -523,47 +527,20 @@ impl Drop for OwnStaging {
     }
 }
 
-/// Copia recursiva del árbol `src` en el directorio existente `dest`.
-fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dest.join(entry.file_name());
-        if from.is_dir() {
-            std::fs::create_dir(&to)?;
-            copy_tree(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)?;
+/// Copia a `dest` exactamente los archivos obligatorios del bundle, con su ruta
+/// relativa. Lo instalado es lo que lista el manifiesto, y el recibo lo registra así:
+/// el directorio de donde sale el bundle puede traer más (una extracción manual dentro
+/// de una carpeta con otros archivos), y eso no es del programa.
+fn copy_bundle(src: &Path, dest: &Path, required: &[String]) -> std::io::Result<()> {
+    for relative in required {
+        let relative = avi_shared::manifest::relative_path(relative);
+        let to = dest.join(&relative);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)?;
         }
+        std::fs::copy(src.join(&relative), &to)?;
     }
     Ok(())
-}
-
-/// Borra de `dir` todo lo que no sea un archivo obligatorio del bundle.
-///
-/// El directorio de donde sale el bundle puede traer más que él: el bootstrap lo
-/// extrae junto al archivo comprimido y a `SHA256SUMS.txt` que acaba de descargar, y
-/// `self update` hace lo mismo. Sin esta poda esos archivos acabarían dentro del
-/// directorio de programa sin figurar en el recibo. Los directorios que quedan vacíos
-/// se borran también.
-fn prune_to_manifest(dir: &Path, required: &[String]) -> std::io::Result<()> {
-    fn walk(dir: &Path, prefix: &str, required: &[String]) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            let relative = format!("{prefix}{}", entry.file_name().to_string_lossy());
-            if path.is_dir() {
-                walk(&path, &format!("{relative}/"), required)?;
-                if std::fs::read_dir(&path)?.next().is_none() {
-                    std::fs::remove_dir(&path)?;
-                }
-            } else if !required.contains(&relative) {
-                std::fs::remove_file(&path)?;
-            }
-        }
-        Ok(())
-    }
-    walk(dir, "", required)
 }
 
 /// Ejecuta `self install` completo.
@@ -651,16 +628,7 @@ pub async fn install(
         // El reemplazo parte siempre de un staging propio junto al programa, para
         // cumplir sus precondiciones; la copia que se haga se borra al salir de
         // este bloque, haya salido bien o mal.
-        let staged = OwnStaging::prepare(&env.program_dir, &bundle)?;
-        prune_to_manifest(staged.dir(), &files).map_err(|e| {
-            LifecycleError::new(
-                "self_install_failed",
-                format!(
-                    "no se pudo depurar el staging {}: {e}",
-                    staged.dir().display()
-                ),
-            )
-        })?;
+        let staged = OwnStaging::prepare(&env.program_dir, &bundle, &files)?;
         let outcome = transaction::replace(&env.program_dir, staged.dir())?;
         parked_leftovers = outcome.leftovers;
     }
@@ -1191,8 +1159,22 @@ mod tests {
         std::fs::write(bundle.join("exe"), "binario").unwrap();
         std::fs::write(bundle.join("vendor").join("lib"), "libreria").unwrap();
 
-        let staged = OwnStaging::prepare(&program, &bundle).unwrap();
+        // Junto al bundle hay archivos ajenos a él (el archivo descargado, sus sumas, una
+        // carpeta de otro uso): no son del programa y no deben copiarse.
+        std::fs::write(bundle.join("paquete.zip"), "zip").unwrap();
+        std::fs::write(bundle.join("SHA256SUMS.txt"), "sumas").unwrap();
+        std::fs::create_dir_all(bundle.join("otra")).unwrap();
+        std::fs::write(bundle.join("otra").join("x"), "x").unwrap();
+        let required = vec!["exe".to_string(), "vendor/lib".to_string()];
+
+        let staged = OwnStaging::prepare(&program, &bundle, &required).unwrap();
         let dir = staged.dir().to_path_buf();
+        let mut copied: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        copied.sort();
+        assert_eq!(copied, ["exe", "vendor"], "solo lo que lista el manifiesto");
         assert_eq!(dir.parent(), program.parent(), "hermano del programa");
         let owner = avi_process::current_owner_token().unwrap();
         assert_eq!(
@@ -1211,33 +1193,6 @@ mod tests {
         drop(staged);
         assert!(!dir.exists(), "la copia desaparece al soltarla");
         assert!(bundle.join("exe").is_file());
-    }
-
-    /// La poda deja solo los archivos obligatorios: el archivo comprimido y las sumas
-    /// que el bootstrap deja junto al bundle no llegan al programa, y un directorio
-    /// que queda vacío se borra.
-    #[test]
-    fn prune_to_manifest_keeps_only_required_files() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("bundle");
-        std::fs::create_dir_all(dir.join("vendor").join("motor")).unwrap();
-        std::fs::create_dir_all(dir.join("sobrante")).unwrap();
-        std::fs::write(dir.join("exe"), "binario").unwrap();
-        std::fs::write(dir.join("vendor").join("motor").join("tts"), "motor").unwrap();
-        std::fs::write(dir.join("paquete.zip"), "zip").unwrap();
-        std::fs::write(dir.join("SHA256SUMS.txt"), "sumas").unwrap();
-        std::fs::write(dir.join("sobrante").join("x"), "x").unwrap();
-
-        let required = vec!["exe".to_string(), "vendor/motor/tts".to_string()];
-        prune_to_manifest(&dir, &required).unwrap();
-
-        let mut left: Vec<String> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        left.sort();
-        assert_eq!(left, ["exe", "vendor"]);
-        assert!(dir.join("vendor").join("motor").join("tts").is_file());
     }
 
     /// El resumen previo no anuncia una descarga que `--no-setup` desactiva.
@@ -1285,7 +1240,7 @@ mod tests {
         std::fs::create_dir_all(&bundle).unwrap();
         std::fs::write(bundle.join("exe"), "binario").unwrap();
 
-        let staged = OwnStaging::prepare(&program, &bundle).unwrap();
+        let staged = OwnStaging::prepare(&program, &bundle, &["exe".to_string()]).unwrap();
         assert_eq!(staged.dir(), bundle);
         let siblings = std::fs::read_dir(root.path().join("opt")).unwrap().count();
         assert_eq!(siblings, 1, "no apareció ningún staging nuevo");

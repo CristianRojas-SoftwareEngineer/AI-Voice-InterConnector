@@ -179,6 +179,9 @@ main() {
     log "Checksum verificado: $archive"
 
     tar -xzf "$staging/$archive" -C "$staging" || fail "no se pudo extraer $archive."
+    # Verificado y extraído, el archivo y las sumas ya no sirven: el directorio que
+    # se entrega a `self install` es el bundle y nada más.
+    rm -f "$staging/$archive" "$staging/SHA256SUMS.txt" || fail "no se pudo retirar el archivo descargado."
     bin="$staging/$app"
     [ -x "$bin" ] || fail "[bundle_invalid] el archivo no contiene el binario esperado: $app."
     # Compatibilidad comprobada, no inferida: si no arranca se

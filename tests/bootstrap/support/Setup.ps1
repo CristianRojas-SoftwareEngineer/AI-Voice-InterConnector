@@ -82,6 +82,12 @@ public static class AviFakeBootstrap {
         if (!string.IsNullOrEmpty(exeLog)) {
             System.IO.File.WriteAllText(exeLog, System.Reflection.Assembly.GetExecutingAssembly().Location);
         }
+        // Que hay en el directorio del bundle cuando se invoca `self install`.
+        string bundleLog = System.Environment.GetEnvironmentVariable("AVI_FAKE_BUNDLE_LOG");
+        if (!string.IsNullOrEmpty(bundleLog)) {
+            string bundleDir = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+            System.IO.File.WriteAllLines(bundleLog, System.Array.ConvertAll(System.IO.Directory.GetFileSystemEntries(bundleDir), delegate(string p) { return System.IO.Path.GetFileName(p); }));
+        }
         string siblingsLog = System.Environment.GetEnvironmentVariable("AVI_FAKE_SIBLINGS_LOG");
         string installDir = System.Environment.GetEnvironmentVariable("AVI_INSTALL_DIR") ?? "";
         if (!string.IsNullOrEmpty(siblingsLog) && installDir.Length > 0) {

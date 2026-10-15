@@ -207,6 +207,55 @@ fn provision_selection(sandbox: &Sandbox) {
 /// Windows, el bloque delimitado y el enlace en Unix—. Un duplicado es exactamente el
 /// defecto que la idempotencia prohíbe, y comparar solo los desenlaces no lo vería.
 #[test]
+fn install_places_only_the_manifest_files_from_a_cluttered_bundle_dir() {
+    let _guard = process_env::exclusively();
+    let sandbox = Sandbox::new("install-cluttered");
+    sandbox.seed_env();
+    let options = Sandbox::install_options();
+
+    // Un bundle extraído a mano en una carpeta con otras cosas: el archivo descargado,
+    // sus sumas y una carpeta ajena. Nada de eso es del programa.
+    let download = sandbox.program_dir.parent().unwrap().join("descarga");
+    let exe = sandbox.write_bundle(&download);
+    std::fs::write(download.join("paquete.zip"), "zip").unwrap();
+    std::fs::write(download.join("SHA256SUMS.txt"), "sumas").unwrap();
+    std::fs::create_dir_all(download.join("otra")).unwrap();
+    std::fs::write(download.join("otra").join("x"), "x").unwrap();
+
+    let outcome = runtime::runtime()
+        .block_on(install::install(
+            &sandbox.install_env(&exe),
+            &options,
+            &Inert,
+        ))
+        .expect("la instalación se completa");
+    assert_eq!(outcome.status, "installed");
+
+    let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
+        .expect("el target del host tiene sección en el manifiesto");
+    let mut expected: Vec<String> = section
+        .required
+        .iter()
+        .map(|r| r.replace('\\', "/"))
+        .collect();
+    expected.push(receipt::RECEIPT_NAME.to_string());
+    expected.sort();
+    let mut installed: Vec<String> = listing::list(&sandbox.program_dir)
+        .into_iter()
+        .filter(|entry| !entry.ends_with('/'))
+        .collect();
+    installed.sort();
+    assert_eq!(
+        installed, expected,
+        "lo instalado es el manifiesto y el recibo"
+    );
+    assert!(
+        download.join("paquete.zip").is_file(),
+        "el origen no se toca"
+    );
+}
+
+#[test]
 fn install_twice_is_idempotent() {
     let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("install-twice");
