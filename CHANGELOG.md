@@ -120,10 +120,10 @@ verdad ocurre.
 
 - `self install` copiaba al directorio de programa todo lo que había junto al
   bundle, incluido el archivo comprimido descargado por el bootstrap (unos 48 MB)
-  y `SHA256SUMS.txt`, que no figuran en el recibo. Los bootstraps y `self update`
-  retiran ahora el archivo y las sumas una vez verificado y extraído el bundle, y
-  `self install` copia solo los archivos que lista el manifiesto, también cuando el
-  bundle se extrajo a mano en una carpeta con otros archivos.
+  y `SHA256SUMS.txt`, que no figuran en el recibo. Ahora `self install` copia solo
+  los archivos que lista el manifiesto, también cuando el bundle se extrajo a mano
+  en una carpeta con otros archivos, y `self update` retira el archivo descargado
+  del staging que entrega.
 - El resumen previo de `self install --no-setup` anunciaba la descarga de unos
   5.9 GB de modelos aunque no se iba a provisionar nada.
 - El plan de `self uninstall` anunciaba la integración del `PATH` como «no se

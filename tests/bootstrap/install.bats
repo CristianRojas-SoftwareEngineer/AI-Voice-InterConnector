@@ -63,16 +63,6 @@ assert_no_staging_left() {
     [ -z "$temp_left" ]
 }
 
-@test "entrega a self install solo el bundle, sin el archivo descargado ni las sumas" {
-    mock_uname x86_64
-
-    run sh "$INSTALL_SH" --version 9.9.9 --no-setup --no-modify-path --yes
-
-    [ "$status" -eq 0 ]
-    [ "$(cat "$AVI_FAKE_BUNDLE_LOG")" = "ai-voice-interconnector" ]
-    assert_no_staging_left
-}
-
 @test "instala el asset x86_64-linux cuando uname -m es x86_64" {
     mock_uname x86_64
 

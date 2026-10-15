@@ -34,8 +34,6 @@ printf '%s\n' "$*" >> "${AVI_FAKE_LOG:-/dev/null}"
 # Dónde corre y qué hay junto al programa en este momento (para comprobar que el
 # bootstrap no crea nada junto a él).
 printf '%s\n' "$0" > "${AVI_FAKE_EXE_LOG:-/dev/null}"
-# Qué hay en el directorio del bundle al invocar `self install`.
-ls -A "$(dirname "$0")" > "${AVI_FAKE_BUNDLE_LOG:-/dev/null}" 2>/dev/null
 if [ -e "$(dirname "$AVI_INSTALL_DIR")" ]; then
     ls -A "$(dirname "$AVI_INSTALL_DIR")" > "${AVI_FAKE_SIBLINGS_LOG:-/dev/null}" 2>/dev/null
 else
@@ -147,7 +145,6 @@ harness_relocate() {
     export AVI_FAKE_LOG="$base/fake.log"
     export AVI_FAKE_EXE_LOG="$base/fake-exe.log"
     export AVI_FAKE_SIBLINGS_LOG="$base/fake-siblings.log"
-    export AVI_FAKE_BUNDLE_LOG="$base/fake-bundle.log"
     mkdir -p "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"
     : > "$AVI_FAKE_LOG"
 }
