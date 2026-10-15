@@ -539,6 +539,33 @@ fn copy_tree(src: &Path, dest: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Borra de `dir` todo lo que no sea un archivo obligatorio del bundle.
+///
+/// El directorio de donde sale el bundle puede traer más que él: el bootstrap lo
+/// extrae junto al archivo comprimido y a `SHA256SUMS.txt` que acaba de descargar, y
+/// `self update` hace lo mismo. Sin esta poda esos archivos acabarían dentro del
+/// directorio de programa sin figurar en el recibo. Los directorios que quedan vacíos
+/// se borran también.
+fn prune_to_manifest(dir: &Path, required: &[String]) -> std::io::Result<()> {
+    fn walk(dir: &Path, prefix: &str, required: &[String]) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = format!("{prefix}{}", entry.file_name().to_string_lossy());
+            if path.is_dir() {
+                walk(&path, &format!("{relative}/"), required)?;
+                if std::fs::read_dir(&path)?.next().is_none() {
+                    std::fs::remove_dir(&path)?;
+                }
+            } else if !required.contains(&relative) {
+                std::fs::remove_file(&path)?;
+            }
+        }
+        Ok(())
+    }
+    walk(dir, "", required)
+}
+
 /// Ejecuta `self install` completo.
 pub async fn install(
     env: &Env,
@@ -625,6 +652,15 @@ pub async fn install(
         // cumplir sus precondiciones; la copia que se haga se borra al salir de
         // este bloque, haya salido bien o mal.
         let staged = OwnStaging::prepare(&env.program_dir, &bundle)?;
+        prune_to_manifest(staged.dir(), &files).map_err(|e| {
+            LifecycleError::new(
+                "self_install_failed",
+                format!(
+                    "no se pudo depurar el staging {}: {e}",
+                    staged.dir().display()
+                ),
+            )
+        })?;
         let outcome = transaction::replace(&env.program_dir, staged.dir())?;
         parked_leftovers = outcome.leftovers;
     }
@@ -1010,7 +1046,9 @@ fn compose_summary(
             env.bin_dir.join(crate::APP_NAME).display()
         )
     });
-    out.push(if pending.is_empty() {
+    out.push(if options.no_setup {
+        "  Modelos:   no se provisionan (--no-setup)".to_string()
+    } else if pending.is_empty() {
         format!(
             "  Modelos:   ya están provisionados en {}",
             env.models_dir.display()
@@ -1173,6 +1211,62 @@ mod tests {
         drop(staged);
         assert!(!dir.exists(), "la copia desaparece al soltarla");
         assert!(bundle.join("exe").is_file());
+    }
+
+    /// La poda deja solo los archivos obligatorios: el archivo comprimido y las sumas
+    /// que el bootstrap deja junto al bundle no llegan al programa, y un directorio
+    /// que queda vacío se borra.
+    #[test]
+    fn prune_to_manifest_keeps_only_required_files() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("bundle");
+        std::fs::create_dir_all(dir.join("vendor").join("motor")).unwrap();
+        std::fs::create_dir_all(dir.join("sobrante")).unwrap();
+        std::fs::write(dir.join("exe"), "binario").unwrap();
+        std::fs::write(dir.join("vendor").join("motor").join("tts"), "motor").unwrap();
+        std::fs::write(dir.join("paquete.zip"), "zip").unwrap();
+        std::fs::write(dir.join("SHA256SUMS.txt"), "sumas").unwrap();
+        std::fs::write(dir.join("sobrante").join("x"), "x").unwrap();
+
+        let required = vec!["exe".to_string(), "vendor/motor/tts".to_string()];
+        prune_to_manifest(&dir, &required).unwrap();
+
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        assert_eq!(left, ["exe", "vendor"]);
+        assert!(dir.join("vendor").join("motor").join("tts").is_file());
+    }
+
+    /// El resumen previo no anuncia una descarga que `--no-setup` desactiva.
+    #[test]
+    fn summary_does_not_announce_download_with_no_setup() {
+        let env = test_env();
+        let pending = setup::Pending {
+            models: setup::selection().into_iter().map(String::from).collect(),
+        };
+        let options = Options {
+            no_setup: true,
+            ..Options::unattended()
+        };
+        let summary = compose_summary(
+            &env,
+            &options,
+            Mode::Install,
+            &None,
+            &PathPlan::default(),
+            &pending,
+        );
+        assert!(
+            summary.contains(&"  Modelos:   no se provisionan (--no-setup)".to_string()),
+            "{summary:?}"
+        );
+        assert!(
+            !summary.iter().any(|l| l.contains("se descargarán")),
+            "{summary:?}"
+        );
     }
 
     /// Un bundle que ya está en un staging con el token de este proceso se usa tal

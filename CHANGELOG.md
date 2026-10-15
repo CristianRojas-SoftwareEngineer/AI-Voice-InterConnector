@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.30.0 — 2026-10-14](#0300--2026-10-14)
 - [0.29.5 — 2026-10-13](#0295--2026-10-13)
 - [0.29.4 — 2026-10-13](#0294--2026-10-13)
@@ -105,6 +106,20 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Corregido
+
+- `self install` copiaba al directorio de programa todo lo que había junto al
+  bundle, incluido el archivo comprimido descargado por el bootstrap (unos 48 MB)
+  y `SHA256SUMS.txt`, que no figuran en el recibo. Ahora solo llegan los archivos
+  obligatorios del bundle.
+- El resumen previo de `self install --no-setup` anunciaba la descarga de unos
+  5.9 GB de modelos aunque no se iba a provisionar nada.
+- El plan de `self install` (degradación) y de `self uninstall` mostraba el
+  directorio de programa con el tamaño de su entrada (4.1 KB) en lugar del total
+  de su contenido.
 
 ## [0.30.0] — 2026-10-14
 

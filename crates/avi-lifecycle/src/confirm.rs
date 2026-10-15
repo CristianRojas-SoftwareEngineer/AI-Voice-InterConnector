@@ -81,10 +81,13 @@ pub struct PlanEntry {
 }
 
 impl PlanEntry {
-    /// Construye la entrada leyendo el tamaño actual de `path`.
+    /// Construye la entrada leyendo el tamaño actual de `path`: el total recursivo si
+    /// es un directorio, no el de su entrada en el sistema de archivos.
     pub fn of(path: impl AsRef<Path>) -> Self {
         let path = path.as_ref().to_path_buf();
-        let size = std::fs::metadata(&path).map(|m| m.len()).ok();
+        let size = std::fs::symlink_metadata(&path)
+            .is_ok()
+            .then(|| crate::cleanup::path_size(&path));
         Self { path, size }
     }
 }
@@ -249,6 +252,19 @@ mod tests {
             dry_run,
             stdin_is_terminal,
         }
+    }
+
+    /// El tamaño de un directorio es el total de lo que contiene, no el de su entrada
+    /// en el sistema de archivos; una ruta ausente no tiene tamaño.
+    #[test]
+    fn plan_entry_sizes_a_directory_recursively() {
+        let dir = scratch("plan-entry-recursive");
+        write_file(&dir.join("a"), "12345");
+        write_file(&dir.join("sub").join("b"), "123");
+
+        assert_eq!(PlanEntry::of(&dir).size, Some(8));
+        assert_eq!(PlanEntry::of(dir.join("a")).size, Some(5));
+        assert_eq!(PlanEntry::of(dir.join("no_existe")).size, None);
     }
 
     /// Las cuatro celdas de la tabla de confirmaciones con el predicado de terminal
