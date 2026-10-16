@@ -63,8 +63,8 @@ impl Mode {
 /// Entorno de la operación. Todo lo que las rutas del sistema resuelven va aquí como
 /// dato y no como llamada a `avi-store`, por dos razones: las pruebas aisladas tienen
 /// que funcionar con las raíces reubicadas a temporales, y en Windows las Known Folders
-/// ignoran `LOCALAPPDATA`, así que sin parámetros el sandbox no representaría nada
-/// del mecanismo nuevo.
+/// ignoran `LOCALAPPDATA`, así que sin parámetros el sandbox no aislaría las rutas
+/// reales.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Env {
     /// Ejecutable que se invoca, ya resuelto a ruta real: es lo que decide el modo.

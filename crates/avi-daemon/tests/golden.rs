@@ -251,8 +251,8 @@ fn post_json(uri: &str, body: Value) -> Request<Body> {
 // crash con el puerto ocupado y un reclamo activo del árbol previo (este
 // último solo aplica en `run_supervised`). No reproducen el ciclo de vida real
 // del proceso. La ausencia real de huérfanos a nivel de sistema operativo solo
-// la verifica la serie de tests pesada (con la cosecha por identidad de la
-// instancia y `verificar_cero_huerfanos`).
+// la verifica la serie de tests pesada, con la cosecha por identidad de la
+// instancia aislada.
 
 /// Exige `nemo128.onnx` del snapshot de Parakeet: la raíz de modelos vive fuera
 /// del repo y la provisiona `ai-voice-interconnector setup`. El mensaje lleva el

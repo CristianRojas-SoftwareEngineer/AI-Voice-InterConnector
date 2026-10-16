@@ -424,7 +424,7 @@ fn resolve_model_dir(bin: Option<&Path>) -> Result<Option<PathBuf>> {
 /// separado de `resolve_model_dir`: lo usan el clonado (`--ref-audio`) y la
 /// síntesis de voces clonadas, que exigen el modelo Base, distinto del
 /// CustomVoice usado por los presets. La variable de entorno es
-/// `QWEN3_TTS_BASE_MODEL_DIR`. Capas en [`resolve_named_model_dir`].
+/// `QWEN3_TTS_BASE_MODEL_DIR`. Capas en `resolve_named_model_dir`.
 pub fn resolve_base_model_dir(bin: Option<&Path>) -> Result<Option<PathBuf>> {
     resolve_named_model_dir("QWEN3_TTS_BASE_MODEL_DIR", "qwen3-tts-0.6b-base", bin)
 }

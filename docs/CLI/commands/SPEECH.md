@@ -193,7 +193,7 @@ Validaciones y flujo local:
  debe existir en `VoiceStore` (exit 3 `voice_not_found`) →
  `is_valid_identifier` sobre la etiqueta normalizada (exit 2
  `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) → comprobación fast-fail
- de colisión de etiqueta (exit 6 sin `--force`) → `traducir_si_difiere`
+ de colisión de etiqueta (exit 6 sin `--force`) → `translate_if_different`
  (passthrough si `source == target`; si no, exige el modelo de traducción
  provisionado, exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_options` → sin
  `--play`, persiste directamente; con `--play`, entra al bucle de 4
@@ -234,7 +234,7 @@ diferencia de `synthesize`, no hay flag `--play` porque la reproducción es
 incondicional.
 
 Despacho: `say_via_daemon` si aplica, o rama directa con
-`require_model_provisioned` + `VoiceStore::exists` + `traducir_si_difiere` +
+`require_model_provisioned` + `VoiceStore::exists` + `translate_if_different` +
 `Qwen3TtsEngine::synthesize_with_options` + `AudioService::play_wav`.
 
 ### Contrato `--json`

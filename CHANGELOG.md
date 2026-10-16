@@ -136,6 +136,13 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - `daemon start` reclama un residual con la misma parada que `daemon stop` y
   `daemon restart`. Si el reclamo no concluye, falla con `daemon_stop_failed`
   (exit 16) sin lanzar otro daemon, en lugar de intentar el arranque igualmente.
+- El README daba ~40 MB para el programa instalado. En Windows ocupa ~124 MB:
+  el binario, el motor TTS y ONNX Runtime.
+- La documentación afirmaba que `voice clone` valida un mínimo de 10 s de
+  referencia. No existe ese mínimo: se recomiendan unos 10 s y se rechaza lo que
+  pasa de 30 s. También describía mal el valor por defecto de `--voice` en
+  `speech list` (sin él recorre todas las voces) y el backoff del supervisor del
+  daemon (empieza en 0,5 s).
 
 ## [0.30.1] — 2026-10-15
 

@@ -9,12 +9,11 @@
 //! `status` por comando, la completitud de las tablas de códigos de salida y la
 //! derivación de los flags globales.
 //!
-//! Lo demás que afirmaba este fichero —la forma del envelope de parada, la de los
-//! simulacros de `cleanup`/`self uninstall` y el envelope `usage_error` del rechazo de
-//! parseo— ya está en `cli_golden.rs`, que es el dueño del arnés (sandbox con
-//! `daemon.pid` señuelo y `TEMP` reubicado) y de las fixtures doradas. Duplicar aquí
-//! ese arnés solo multiplicaba su coste de mantenimiento, así que este fichero ya no
-//! ejecuta el binario: las pruebas siguientes leen documentos, fixtures y código.
+//! Las formas de los envelopes que exigen ejecutar el binario —la parada, los
+//! simulacros de `cleanup`/`self uninstall` y el `usage_error` del rechazo de parseo—
+//! viven en `cli_golden.rs`, que es el dueño del arnés (sandbox con `daemon.pid`
+//! señuelo y `TEMP` reubicado) y de las fixtures doradas. Este fichero no ejecuta el
+//! binario: sus pruebas leen documentos, fixtures y código.
 
 use std::path::{Path, PathBuf};
 

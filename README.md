@@ -87,7 +87,7 @@ La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
   de clonado 2,5 GB + opus-mt es↔en 0,17 GB + Parakeet TDT v3 0,7 GB). El disco
   ocupa lo mismo que la descarga, salvo en sistemas de archivos sin enlaces duros (FAT32,
   exFAT o algunos recursos de red), donde `hf-hub` copia cada archivo y el espacio se
-  duplica. El binario instalado ocupa ~40 MB.
+  duplica. El programa instalado (binario, motor TTS y ONNX Runtime) ocupa ~124 MB en Windows.
 - **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
   funcionamiento.
 - **Plataformas no soportadas**: Mac Intel (x86_64) y Windows ARM64 (limitación de toolchain aceptada).

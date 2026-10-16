@@ -902,7 +902,7 @@ mod tests {
             .scratch_root
             .join("Caskroom/ai-voice-interconnector/0.24.0");
         write_file(&cask.join(exe_name()), "binario");
-        // El separador es el de la plataforma: `separador_path()` lo decide también en
+        // El separador es el de la plataforma: `path_separator()` lo decide también en
         // producción, y con el equivocado el `PATH` entero se lee como una sola entrada y
         // la prueba mide otra cosa.
         let sep = if cfg!(windows) { ";" } else { ":" };

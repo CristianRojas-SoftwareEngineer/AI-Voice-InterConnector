@@ -1055,7 +1055,8 @@ async fn translate_handler(
             }
         }
     }
-    // Fallback a carga bajo demanda si residente no tenía el par
+    // Sin motor residente para el par (no se precargó al arrancar), se carga
+    // bajo demanda para esta petición: mismo resultado, más lento.
     match avi_translation::translate(&text, &ct2_dir) {
         Ok(translated) => Json(with_sv(json!({
             "translated": translated,
@@ -2370,7 +2371,7 @@ fn publish_startup_failure(err: &anyhow::Error) {
 ///
 /// Si `auto_restart` es `false`, ejecuta `run_daemon_server` una sola vez.
 /// Si es `true`, reintenta hasta `max_retries` veces tras un fallo no graceful
-/// (crash) con backoff exponencial `500ms * 2^retries` capado a 4s, precedido de
+/// (crash) con backoff exponencial `500ms * 2^(retries-1)` capado a 4s, precedido de
 /// reclamo activo del árbol propio previo con deadline y verificación: antes de
 /// reintentar se espera (hasta 5 s, sondeo 200 ms) a que el puerto quede libre
 /// (el `Drop` de la iteración previa ya mató el árbol preciso del residente;

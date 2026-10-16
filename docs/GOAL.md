@@ -117,7 +117,7 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 ./ai-voice-interconnector daemon start         # Iniciar daemon
 ./ai-voice-interconnector daemon status        # Verificar que está activo
 
-# 4. Clonación de voz (requiere --speech-reference, ≥10s, único audio de referencia)
+# 4. Clonación de voz (requiere --speech-reference: un único audio, ~10 s recomendados, máximo 30 s)
 ./ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
 
 # 5. Listar voces registradas (verifica que la voz quedó registrada)

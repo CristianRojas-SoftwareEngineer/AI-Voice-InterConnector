@@ -355,9 +355,8 @@ fn dry_run_lists_paths_without_touching_disk() {
 /// los repos propios y sus locks, y **no** `xet`, ni el `.locks` completo, ni el repo de
 /// otra herramienta.
 ///
-/// Y la misma lista es la que anuncian el plan, la simulación y la ejecución: el
-/// defecto que este lote absorbe era precisamente que el plan y el ejecutor no
-/// coincidieran bajo raíz compartida.
+/// Y la misma lista es la que anuncian el plan, la simulación y la ejecución: bajo
+/// raíz compartida el plan y el ejecutor tienen que coincidir.
 #[test]
 fn shared_hf_cache_keeps_foreign_entries() {
     let sandbox = Sandbox::new_shared("shared");
@@ -424,8 +423,7 @@ fn shared_hf_cache_keeps_foreign_entries() {
         );
     }
 
-    // Y la ejecución coincide con el plan bajo raíz compartida: este es el caso que
-    // fallaba antes de este lote.
+    // Y la ejecución coincide con el plan bajo raíz compartida.
     let real = runtime()
         .block_on(cleanup::run(&roots, &options, &Inert))
         .expect("cleanup se ejecuta");

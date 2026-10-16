@@ -23,7 +23,7 @@ AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 
 - **Licencia**: MPL-2.0 (código del proyecto, copyleft a nivel de archivo); modelo y dependencias conservan sus licencias (MIT/BSD/Apache), salvo traducción `opus-mt` (CC-BY-4.0)
 - **Idiomas**: los 10 que soporta Qwen3-TTS, entre ellos Español (es)
-- **Clonación**: un único audio de referencia, `--speech-reference` (≥10s)
+- **Clonación**: un único audio de referencia, `--speech-reference` (~10 s recomendados, máximo 30 s)
 - **Parámetros del modelo**: 0.6B (Qwen3-TTS)
 - **Hardware**: CPU con BLAS (Accelerate en macOS, OpenBLAS en Linux y Windows) — inferencia local sin APIs externas
 
@@ -97,7 +97,9 @@ AI-Voice-InterConnector/
 │   └── qwen3-tts/                      # Binario y pesos Qwen3-TTS (no commiteados todos)
 ├── tests/
 │   ├── cli_golden.rs                   # Harness dorado del CLI
+│   ├── contract_conformance.rs         # Conformidad del contrato que se lee de docs, fixtures y código
 │   ├── self_install_contract.rs        # Contrato de self install (recibo, bloqueo, integracion de PATH)
+│   ├── test_classes.rs                 # Regla de clases de pruebas: ninguna se omite en silencio
 │   └── bootstrap/                      # bats (openssl s_server) + Pester (Serve.ps1) de los dos bootstrap
 ├── Cargo.toml                          # Workspace Rust (version = X.Y.Z, espejo de src/main.rs)
 ├── Cargo.lock
@@ -121,7 +123,7 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Modelos** | `qwen3-tts-0.6b` (síntesis) y `qwen3-tts-0.6b-base` (clonado) |
 | **Licencia** | MIT / Apache-2.0 |
 | **Parámetros** | 0.6B |
-| **Clonación de voz** | un único audio de referencia, `--speech-reference` (≥10s); se guarda solo la huella de timbre (sin transcripción) |
+| **Clonación de voz** | un único audio de referencia, `--speech-reference` (~10 s recomendados, máximo 30 s); se guarda solo la huella de timbre (sin transcripción) |
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 |
 

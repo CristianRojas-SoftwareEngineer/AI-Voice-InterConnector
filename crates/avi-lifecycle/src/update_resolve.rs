@@ -14,7 +14,7 @@
 //! mismo que usa la descarga (`update_fetch::http_client`).
 //!
 //! Nada de este módulo escribe en disco: `--check` devuelve estos mismos datos y
-//! es U4 quien decide no crear el staging.
+//! es `self update` quien decide no crear el staging.
 
 use crate::install::compare_versions;
 use crate::{update_fetch, LifecycleError};
@@ -38,7 +38,7 @@ pub struct ResolveRequest {
 /// Veredicto de la comparación entre la instalada y la objetivo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Iguales sin `--force`: `already_up_to_date`, sin descargar (lo emite U4).
+    /// Iguales sin `--force`: `already_up_to_date`, sin descargar (lo emite `self update`).
     UpToDate,
     /// Objetivo mayor, o igual con `--force` (reinstalación).
     Upgrade,

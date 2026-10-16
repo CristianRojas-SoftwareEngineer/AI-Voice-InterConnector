@@ -737,7 +737,7 @@ mod tests {
         assert!(verify_sums_bytes(&sums, asset, bytes).is_ok());
     }
 
-    /// Hash distinto: `checksum_mismatch` con el 21 del plan.
+    /// Hash distinto: `checksum_mismatch`, salida 21.
     #[test]
     fn update_fetch_verify_rejects_tampered_hash() {
         let asset = "ai-voice-interconnector-0.24.0-x86_64-linux.tar.gz";

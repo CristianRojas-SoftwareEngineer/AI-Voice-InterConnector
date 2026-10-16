@@ -11,7 +11,7 @@
 //! tamaños y la usan las tres cosas que la necesitan: el resumen de la
 //! confirmación, la salida de `--dry-run` y la ejecución. El plan y la ejecución no
 //! pueden divergir porque no hay dos implementaciones;
-//! `plan_and_execution_agree_under_shared_root` lo afirma con una raíz compartida.
+//! `shared_hf_cache_keeps_foreign_entries` lo afirma con una raíz compartida.
 //!
 //! **Reglas de propiedad.** Solo se borra dentro de raíces de propiedad
 //! exclusiva. El directorio de programa no lo toca `cleanup` en absoluto —eso es
@@ -655,13 +655,6 @@ pub struct Outcome {
     pub daemon_was_running: bool,
     /// Destinos del plan que fallaron al borrarse.
     pub failed: Vec<String>,
-}
-
-impl Outcome {
-    /// `true` si la operación se ejecutó y no dejó destinos sin borrar.
-    pub fn is_complete(&self) -> bool {
-        self.status == "cleanup_complete" && self.failed.is_empty()
-    }
 }
 
 /// Ejecuta `cleanup`.

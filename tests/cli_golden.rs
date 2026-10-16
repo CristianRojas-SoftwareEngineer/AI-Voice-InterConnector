@@ -83,7 +83,7 @@ fn bin_command() -> Command {
 // Techos: 180 s (resto) y 360 s (dub). Parten de los techos del producto: el
 // stream NDJSON tolera 1500 ms de inactividad entre latidos y un failsafe
 // total de 240 s (`REQUEST_FAILSAFE`), el arranque espera hasta 10 s y la
-// parada usa `wait_health_down` más 1,5 s de shutdown graceful. Se suma el
+// parada está acotada por `STOP_DEADLINE_GLOBAL`. Se suma el
 // warmup TTS en segundo plano: una operación típica (síntesis de texto corto,
 // muy por debajo del failsafe) + arranque/parada (~15-25 s) + margen → 180 s;
 // el dub encadena STT + traducción + TTS + arranque/parada → 360 s. Sin
@@ -485,8 +485,8 @@ fn isolated_instance_removes_its_sandbox_on_panic() {
 
 /// Ejecuta el binario con `args` y envs extra, devolviendo (código de salida, stdout
 /// parseado a JSON). Las envs se inyectan vía `.env()` en el `Command` hijo: los tests
-/// que necesitan aislar el estado del sandbox (p. ej. `LOCALAPPDATA`/`HF_*` en
-/// `uninstall_force_no_se_auto_mata`) las pasan por aquí; `run_json` delega sin envs.
+/// que necesitan aislar el estado del sandbox (p. ej. `LOCALAPPDATA`/`HF_*` en las
+/// pruebas de `self uninstall`) las pasan por aquí; `run_json` delega sin envs.
 ///
 /// Usa un archivo anónimo (`Stdio::from(File)`) en vez de `Command::output()` (que captura
 /// `stdout` vía un **pipe** con `bInheritHandle=TRUE`). El archivo no tiene nombre en el
@@ -1800,7 +1800,12 @@ impl FakeDaemon {
                 let (code, payload) = if path == "/health" {
                     (
                         200,
-                        serde_json::json!({ "status": "ok", "schema_version": "4", "warm": "ready" }),
+                        serde_json::json!({
+                            "status": "ready",
+                            "warm": "warm",
+                            "engine": "rust_native",
+                            "schema_version": avi_core::json_emitter::DAEMON_SCHEMA_VERSION,
+                        }),
                     )
                 } else {
                     (status, body.clone())
@@ -3042,7 +3047,7 @@ mod tts {
         let wer = wer_vs_text(audio_path, short_text);
         assert!(
             wer <= 0.25,
-            "WER texto corto '{}' = {} debe ser ≤ 0.25 (disparador H1)",
+            "WER texto corto '{}' = {} debe ser ≤ 0.25",
             short_text,
             wer
         );
@@ -6467,7 +6472,7 @@ fn speech_contract_matches_help() {
     }
 }
 
-// ─── Ayuda y errores de clap en español (T17) ─────────────────────────────
+// ─── Ayuda y errores de clap en español ───────────────────────────────────
 
 /// Ejecuta el binario con `args` capturando stdout+stderr como texto plano.
 fn run_text_with_stderr(args: &[&str]) -> (i32, String, String) {

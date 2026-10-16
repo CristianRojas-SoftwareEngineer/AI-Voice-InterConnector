@@ -135,7 +135,7 @@ fn via_sudo() -> bool {
 }
 
 /// Detección de elevación en Windows con `GetTokenInformation` y
-/// `TokenElevation`, tal como fija el plan. Sin crate nuevo: `windows-sys`
+/// `TokenElevation`, la consulta del token del proceso. Sin crate nuevo: `windows-sys`
 /// expone `Win32_Security` y `Win32_System_Threading`, y las dos features ya
 /// están declaradas.
 #[cfg(windows)]

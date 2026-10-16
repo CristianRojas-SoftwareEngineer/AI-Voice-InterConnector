@@ -3095,7 +3095,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
 
             // ── Paso 1. Recuperación y bloqueo ────────────────────────────────
-            // El staging que cree U2 aún no existe; y cuando exista llevará el
+            // El staging que cree la descarga aún no existe; y cuando exista llevará el
             // token de este proceso, vivo, así que el barrido nunca lo toca.
             let roots = lifecycle::cleanup::Roots::from_receipt(Some(&receipt))
                 .map_err(|e| CliError::new(ExitCode::Error, "self_update_failed", e.to_string()))?;
@@ -3104,7 +3104,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             let recovery = lifecycle::recovery::recover(roots.recovery_roots())
                 .map_err(lifecycle_error_to_cli)?;
 
-            // ── U1. Resolución de la versión objetivo ────────────────────────
+            // ── Paso 3. Resolución de la versión objetivo ────────────────────
             // Con `--version` explícito no se toca la red: la resolución lo usa
             // como objetivo sin pedir la última estable.
             let client = lifecycle::update_fetch::http_client()
@@ -3212,7 +3212,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 return Ok(Outcome::Done);
             }
 
-            // ── U2. Descarga, verificación y extracción ──────────────────────
+            // ── Paso 7. Descarga, verificación y extracción ──────────────────
             // Ante cualquier fallo el staging se borra y la instalación queda
             // intacta.
             let staged = lifecycle::update_fetch::fetch(
@@ -3229,7 +3229,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 .await
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
 
-            // ── Paso 8 (U4). Parar el daemon con el binario actual ───────────
+            // ── Paso 8. Parar el daemon con el binario actual ────────────────
             // Si no se detiene, `daemon_stop_failed` sin tocar nada: la
             // instalación sigue intacta y el staging se retira.
             let daemon = lifecycle::daemon_stop::stop(
@@ -3246,7 +3246,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 return Err(lifecycle_error_to_cli(failure.into()));
             }
 
-            // ── U3. Traspaso al binario nuevo ────────────────────────────────
+            // ── Paso 9. Traspaso al binario nuevo ────────────────────────────
             // Se suelta solo el bloqueo principal antes de lanzar: el `self install`
             // interno lo toma, y con él tomado el hijo vería `lifecycle_locked`. La
             // compuerta se retiene hasta que vuelve el traspaso, de modo que ningún
@@ -3266,7 +3266,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             lifecycle::update::cleanup_staging(&staged.staging, &LifecyclePaths);
 
             // ── Resultado `anterior → nueva` ─────────────────────────────────
-            // Sin reinicio automático del daemon (D6): el resultado indica cómo
+            // Sin reinicio automático del daemon: el resultado indica cómo
             // relanzarlo. `setup_failed` es éxito parcial con el mecanismo de
             // veredicto del brazo `Install`.
             let partial = matches!(

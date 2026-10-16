@@ -16,7 +16,7 @@
 //! escribe es texto, y la lógica de "no lo escribas dos veces" y de "reviértelo
 //! byte a byte" es lo que hay que afirmar; dejar la edición entera tras
 //! `#[cfg(unix)]` la volvería imposible de probar desde la puerta de Windows,
-//! que es donde se compila y se ejecuta el lote. Solo el enlace simbólico es de
+//! que también compila y ejecuta estas pruebas. Solo el enlace simbólico es de
 //! Unix, y esa parte sí está acotada.
 
 use crate::LifecycleError;

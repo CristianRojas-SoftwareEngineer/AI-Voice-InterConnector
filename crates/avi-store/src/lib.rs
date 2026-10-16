@@ -858,23 +858,6 @@ impl ModelStore {
         Ok(false)
     }
 
-    /// Borra la raíz de modelos **entera** cuando es exclusiva, y `xet`
-    /// incluido. Es el alcance que `cleanup --model` y `self uninstall` usan
-    /// para dejar residuo cero dentro de las raíces de propiedad exclusiva; con
-    /// una raíz compartida devuelve `Ok(false)` y el llamador se limita a los
-    /// repos fijados y sus locks.
-    pub fn remove_models_root() -> Result<bool> {
-        if models_root_is_shared() {
-            return Ok(false);
-        }
-        let root = models_cache_dir()?;
-        if root.is_dir() {
-            std::fs::remove_dir_all(&root)?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
     /// Descarga nativa de un modelo pinneado vía HuggingFace Hub.
     ///
     /// Usa `hf-hub` (`snapshot_download` con revisión de `MODEL_REVISIONS`): cache

@@ -93,8 +93,8 @@ struct Cli {
     command: Commands,
 }
 
-/// Localiza el árbol de comandos de clap al español (réplica de la T17 del
-/// producto, sin acoplamiento entre crates): plantilla con `Uso:`,
+/// Localiza el árbol de comandos de clap al español (réplica de la localización
+/// del binario del producto, sin acoplamiento entre crates): plantilla con `Uso:`,
 /// encabezados `Opciones`/`Argumentos`/`Comandos`, flag propio `-h/--help`
 /// en español, subcomando `help` deshabilitado y anotaciones
 /// `[por defecto: …]`/`[valores posibles: …]` derivadas de los valores
@@ -1596,7 +1596,8 @@ mod tests {
                 "el zap debe derivar el snapshot canónico {snapshot}"
             );
         }
-        // R3: sin globales compartidos.
+        // Los recursos globales de la caché HF compartida no son de la aplicación:
+        // el zap no los nombra.
         assert!(!c.contains("~/.cache/huggingface/xet"));
         assert!(!c.contains("~/.cache/huggingface/hub/.locks"));
         assert!(c.contains("MPL-2.0"));
@@ -1664,14 +1665,15 @@ mod tests {
                 "el zap debe derivar el snapshot canónico {snapshot}"
             );
         }
-        // R3: sin globales compartidos.
+        // Los recursos globales de la caché HF compartida no son de la aplicación:
+        // el zap no los nombra.
         for forbidden in [
             "~/.cache/huggingface/xet",
             "~/.cache/huggingface/hub/.locks",
         ] {
             assert!(
                 !c.contains(forbidden),
-                "el zap no debe incluir el global {forbidden} (R3)"
+                "el zap no debe incluir el global {forbidden}"
             );
         }
         // Conteo exacto: modelos + soporte + un snapshot por modelo.

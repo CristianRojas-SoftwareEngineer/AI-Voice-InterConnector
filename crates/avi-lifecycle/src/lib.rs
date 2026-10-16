@@ -297,7 +297,7 @@ pub(crate) mod test_support {
     /// Sirve `responses` en orden a conexiones locales, una respuesta por
     /// conexión, y devuelve la URL base más las rutas pedidas en orden.
     ///
-    /// Es el mock de red a nivel de cliente que el plan de `self update` exige:
+    /// Es el mock de red a nivel de cliente con el que se prueba `self update`:
     /// ninguna prueba de resolución o descarga sale a internet. Solo atiende
     /// `GET` sin cuerpo: lee hasta el fin de las cabeceras, anota la ruta de la
     /// primera línea y responde con `Content-Length` y cierre de conexión, que es

@@ -27,8 +27,7 @@
 //! La segunda capa solo existe compilada con el feature `faults`, y no es un `skip`: es
 //! una función que **no existe** sin él. `cargo test --all` lo activa —la dev-dependency
 //! del paquete raíz lo declara—, mientras que `cargo test -p avi-lifecycle` no lo hace, y
-//! por eso la primera capa no lo necesita: la puerta canónica del lote demuestra la
-//! recuperación sin él.
+//! por eso la primera capa no lo necesita: demuestra la recuperación sin él.
 
 #![allow(clippy::disallowed_methods)]
 
