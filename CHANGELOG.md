@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.31.1 — 2026-10-16](#0311--2026-10-16)
 - [0.31.0 — 2026-10-16](#0310--2026-10-16)
 - [0.30.1 — 2026-10-15](#0301--2026-10-15)
 - [0.30.0 — 2026-10-14](#0300--2026-10-14)
@@ -109,7 +109,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.31.1] — 2026-10-16
 
 El instalador de Windows ocultaba el resumen final de la instalación y,
 ejecutado como archivo, terminaba con éxito aunque la instalación fallara. Esta
@@ -3407,3 +3407,4 @@ estado con el que nace el producto.
 [0.30.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.29.5...v0.30.0
 [0.30.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.30.0...v0.30.1
 [0.31.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.30.1...v0.31.0
+[0.31.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.31.0...v0.31.1
