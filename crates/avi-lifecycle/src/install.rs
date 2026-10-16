@@ -256,13 +256,24 @@ pub enum ModelsState {
 }
 
 impl ModelsState {
-    /// Literal para el envelope.
+    /// Literal del contrato `--json`: no se usa en el texto, que describe el estado con
+    /// [`ModelsState::describe`].
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Skipped => "skipped",
             Self::AlreadyProvisioned => "already_provisioned",
             Self::Provisioned { .. } => "provisioned",
             Self::Failed { .. } => "failed",
+        }
+    }
+
+    /// Descripción en español para el resumen de texto.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Skipped => "no se provisionaron (--no-setup)".to_string(),
+            Self::AlreadyProvisioned => "ya estaban provisionados".to_string(),
+            Self::Provisioned { count } => format!("se descargaron {count} modelo(s)"),
+            Self::Failed { .. } => "falló la provisión".to_string(),
         }
     }
 }
@@ -1059,7 +1070,7 @@ fn final_summary(
             line.trim_start().trim_start_matches("PATH:").trim()
         ));
     }
-    out.push(format!("  Modelos:   {}", models.as_str()));
+    out.push(format!("  Modelos:   {}", models.describe()));
     if let ModelsState::Failed { cause } = models {
         // La misma frase que `Outcome::lifecycle_error` pone en el `reason` del envelope, y
         // con la causa debajo: el usuario ve qué falló, no solo que algo falló.
@@ -1317,6 +1328,28 @@ mod tests {
             program,
             "el bundle es el directorio del exe"
         );
+    }
+
+    /// El texto describe cada estado en español y nunca imprime el literal del contrato.
+    #[test]
+    fn models_describe_in_spanish_and_never_the_contract_literal() {
+        let cause = LifecycleError::new("network_error", "sin red".to_string());
+        let cases = [
+            (ModelsState::Skipped, "no se provisionaron (--no-setup)"),
+            (ModelsState::AlreadyProvisioned, "ya estaban provisionados"),
+            (
+                ModelsState::Provisioned { count: 5 },
+                "se descargaron 5 modelo(s)",
+            ),
+            (ModelsState::Failed { cause }, "falló la provisión"),
+        ];
+        for (state, text) in cases {
+            assert_eq!(state.describe(), text);
+            assert!(
+                !state.describe().contains(state.as_str()),
+                "la descripción de {state:?} contiene su literal de contrato"
+            );
+        }
     }
 
     /// La degradación se distingue de la actualización y de la misma versión, que es

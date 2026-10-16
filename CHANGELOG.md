@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.31.1 — 2026-10-16](#0311--2026-10-16)
 - [0.31.0 — 2026-10-16](#0310--2026-10-16)
 - [0.30.1 — 2026-10-15](#0301--2026-10-15)
@@ -108,6 +109,22 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Dos líneas de texto en español mostraban valores internos del contrato `--json`, en
+inglés. Esta versión describe en español el estado de los modelos del resumen de
+`self install` y el calentamiento de `daemon status`, y deja el contrato `--json` sin
+cambios.
+
+### Corregido
+
+- El resumen final de `self install` imprimía `provisioned`, `skipped`,
+  `already_provisioned` o `failed` en la línea `Modelos:`; ahora dice
+  `se descargaron N modelo(s)`, `no se provisionaron (--no-setup)`,
+  `ya estaban provisionados` o `falló la provisión`.
+- `daemon status` imprimía `warm: warming`, `warm` o `warm_failed`; ahora dice
+  `calentamiento: calentando`, `listo` o `falló el calentamiento`.
 
 ## [0.31.1] — 2026-10-16
 

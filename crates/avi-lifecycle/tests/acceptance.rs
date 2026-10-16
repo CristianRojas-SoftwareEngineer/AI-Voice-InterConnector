@@ -537,6 +537,14 @@ fn no_setup_provisions_nothing() {
         "el desenlace dice que no se provisionó nada"
     );
     assert_eq!(outcome.models.as_str(), "skipped");
+    assert!(
+        outcome
+            .summary
+            .iter()
+            .any(|l| l == "  Modelos:   no se provisionaron (--no-setup)"),
+        "el resumen describe en español que no se provisionó: {:?}",
+        outcome.summary
+    );
     assert_eq!(
         outcome.lifecycle_error(),
         None,
@@ -712,8 +720,16 @@ fn setup_failure_keeps_install() {
         outcome
             .summary
             .iter()
+            .any(|l| l.contains("Modelos:") && l.contains("falló la provisión")),
+        "el resumen final dice en español que la provisión falló: {:?}",
+        outcome.summary
+    );
+    assert!(
+        !outcome
+            .summary
+            .iter()
             .any(|l| l.contains("Modelos:") && l.contains("failed")),
-        "el resumen final dice que los modelos fallaron: {:?}",
+        "el literal del contrato no aparece en el texto: {:?}",
         outcome.summary
     );
     assert!(
@@ -798,6 +814,14 @@ fn successful_provisioning_has_no_reason() {
             .iter()
             .any(|l| l.contains("Causa:") || l.contains("no se completó")),
         "y el resumen no dice nada de un fallo que no ha habido: {:?}",
+        outcome.summary
+    );
+    assert!(
+        outcome
+            .summary
+            .iter()
+            .any(|l| l == "  Modelos:   ya estaban provisionados"),
+        "y el resumen describe en español que ya estaban provisionados: {:?}",
         outcome.summary
     );
 }

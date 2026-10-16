@@ -54,7 +54,7 @@ El orden es el de [`self install`](../../specs/LIFECYCLE.md#83-self-install) y e
 8. **Integración de `PATH`** ([contrato de `self`](../CONTRACT.md#self-install-self-update-y-self-uninstall) e [integración de PATH](../../specs/LIFECYCLE.md#831-integración-de-path)). En Unix el `PATH` se modifica **por defecto** y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
 9. **Escribir el recibo** de forma atómica.
 10. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección (todos los modelos, el Base de clonado incluido) según el estado real del almacén, sin repetir la confirmación. El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
-11. **Resumen final**: versión, rutas, estado del `PATH` y estado de los modelos.
+11. **Resumen final**: versión, rutas, estado del `PATH` y estado de los modelos; el estado de los modelos se describe en español (`no se provisionaron (--no-setup)`, `ya estaban provisionados`, `se descargaron N modelo(s)`, `falló la provisión`).
 
 **Lo que el recibo registra es el estado, no el diff de esta pasada.** El recibo dice qué integración de `PATH` está en pie, no qué cambió en esta ejecución: si registrara solo el diff, una segunda instalación desde el mismo bundle escribiría un recibo sin entrada de `PATH` y `self uninstall` no podría revertir la que puso la primera, dejando residuo dentro de una raíz de propiedad exclusiva. El diff vive aparte, en `Outcome::path_rewritten`, y es lo único que decide si el resumen pide abrir una terminal nueva.
 
@@ -110,7 +110,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 }
 ```
 
-`models_cause` **solo existe si hubo fallo**: un envelope estable es más fácil de leer que uno con nulos. Los cuatro valores de `models` son `skipped` (`--no-setup`), `already_provisioned`, `provisioned` y `failed`.
+`models_cause` **solo existe si hubo fallo**: un envelope estable es más fácil de leer que uno con nulos. Los cuatro valores de `models` son `skipped` (`--no-setup`), `already_provisioned`, `provisioned` y `failed`. Son valores del envelope; el texto del resumen nunca los imprime.
 
 Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el mismo parcial: si el `setup` del binario nuevo falla, el resultado es `updated` con `reason` `setup_failed`, salida 11 y causa anidada en `models_cause`.
 

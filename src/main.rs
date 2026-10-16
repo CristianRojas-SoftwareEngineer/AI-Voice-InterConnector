@@ -3898,6 +3898,17 @@ fn status_body(state: lifecycle::daemon_stop::DaemonState, health: Option<&Value
     }
 }
 
+/// Descripción en español del calentamiento que informa `/health`; un valor que no es de
+/// contrato se muestra como desconocido.
+fn warm_description(label: &str) -> &'static str {
+    match label {
+        "warming" => "calentando",
+        "warm" => "listo",
+        "warm_failed" => "falló el calentamiento",
+        _ => "desconocido",
+    }
+}
+
 /// Línea de texto de `daemon status`, con los mismos casos que [`status_body`].
 fn status_line(state: lifecycle::daemon_stop::DaemonState, health: Option<&Value>) -> String {
     use lifecycle::daemon_stop::DaemonState;
@@ -3910,10 +3921,10 @@ fn status_line(state: lifecycle::daemon_stop::DaemonState, health: Option<&Value
     };
     match state {
         DaemonState::Running { pid } => format!(
-            "Daemon: en ejecución (pid {}, motor: {}, warm: {}).",
+            "Daemon: en ejecución (pid {}, motor: {}, calentamiento: {}).",
             pid,
             field("engine"),
-            field("warm")
+            warm_description(&field("warm"))
         ),
         DaemonState::Degraded(degradation) => format!(
             "Daemon: no está en servicio: {}. `daemon start` lo reclama antes de arrancar.",
@@ -4988,6 +4999,42 @@ mod tests {
             degraded,
             json!({ "daemon": "stopped", "degraded": "unresponsive" })
         );
+    }
+
+    /// El texto de `daemon status` describe el calentamiento en español y no imprime
+    /// ningún valor del contrato `--json`.
+    #[test]
+    fn status_line_describes_warmup_in_spanish() {
+        use lifecycle::daemon_stop::{DaemonState, Degradation};
+        let line = |warm: Option<&str>| {
+            let health = warm.map(|w| json!({ "engine": "rust_native", "warm": w }));
+            status_line(DaemonState::Running { pid: 1234 }, health.as_ref())
+        };
+        let cases = [
+            (Some("warming"), "calentando"),
+            (Some("warm"), "listo"),
+            (Some("warm_failed"), "falló el calentamiento"),
+            (Some("otro"), "desconocido"),
+        ];
+        for (warm, text) in cases {
+            let expected = format!(
+                "Daemon: en ejecución (pid 1234, motor: rust_native, calentamiento: {text})."
+            );
+            assert_eq!(line(warm), expected);
+            assert!(!line(warm).contains("warm"));
+        }
+        let absent = status_line(DaemonState::Running { pid: 1234 }, None);
+        assert_eq!(
+            absent,
+            "Daemon: en ejecución (pid 1234, motor: desconocido, calentamiento: desconocido)."
+        );
+        assert!(!absent.contains("warm"));
+        assert_eq!(
+            status_line(DaemonState::Stopped, None),
+            "Daemon: no está en ejecución."
+        );
+        let degraded = status_line(DaemonState::Degraded(Degradation::Unresponsive), None);
+        assert!(degraded.starts_with("Daemon: no está en servicio: "));
     }
 
     /// El estado de la parada sale del `was_running` del motor: sin ejecución
