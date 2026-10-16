@@ -4,8 +4,8 @@
 // Copyright (c) 2026 Cristián Rojas Arredondo.
 // SPDX-License-Identifier: MPL-2.0
 
-//! `setup` en el motor: provisión de modelos, que es el paso 11 de la
-//! instalación.
+//! `setup` en el motor: provisión de modelos, que `self install` y `self update`
+//! ejecutan también tras escribir el recibo.
 //!
 //! Reúne la selección de modelos, la idempotencia por presencia del snapshot y
 //! la purga de `--force-update`.

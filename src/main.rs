@@ -2938,7 +2938,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             }
             // `setup_failed` es un **éxito parcial** —el programa está instalado y
             // lo único que falta es la provisión—, con código propio. No es un `CliError`:
-            // el resumen del paso 12 y el envelope se emiten igual, y lo único que cambia es
+            // el resumen final y el envelope se emiten igual, y lo único que cambia es
             // el `reason` y el código de salida. `Salida::Veredicto` es el mecanismo que ya
             // existe para eso —el comando emitió su payload y solo queda fijar el código—,
             // y es el mismo que usa `doctor` para su envelope único.

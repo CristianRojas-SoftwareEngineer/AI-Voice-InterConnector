@@ -110,6 +110,18 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+### Cambios incompatibles
+
+- `daemon.pid` exige todas sus claves. Un pidfile al que le falte alguna,
+  como el que escribía un binario anterior sin `started_at`, se descarta con un
+  aviso que nombra la clave, en lugar de leerse con valores supuestos.
+
+### Eliminado
+
+- `self install` ya no avisa de instalaciones per-machine antiguas en el `PATH`
+  del sistema. Sigue avisando de cualquier otra instalación que tenga precedencia
+  en el `PATH`, que es el caso que importa.
+
 ### Corregido
 
 - `daemon status` y `daemon start` decidían por criterios distintos si el daemon

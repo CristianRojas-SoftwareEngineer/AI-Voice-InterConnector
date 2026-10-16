@@ -646,7 +646,7 @@ de audio inexistente (ruta `--audio`) sale con exit **3**. Si el modelo de
 transcripción no está provisionado, falla remitiendo a
 `ai-voice-interconnector setup` con exit **4**; si la transcripción falla con
 el modelo ya cargado, sale con exit **10**. En la ruta daemon, un fallo de
-comunicación (daemon inactivo o de versión antigua sin `/transcribe`) sale con
+comunicación con el daemon (inactivo o inalcanzable) sale con
 exit **5**.
 
 ---
@@ -694,8 +694,8 @@ captura en modo push-to-talk hasta que presiones Enter (o hasta el techo
 una terminal no interactiva (no TTY) también sale con exit **2**. Un `--audio`
 inexistente sale con exit **3**. Códigos de fallo de la cadena: exit **4**
 (modelo de transcripción no provisionado, remite a
-`ai-voice-interconnector setup`), **5** (daemon exigido pero inactivo o de
-versión antigua sin `/transcribe`), **9** (fallo de traducción con el modelo
+`ai-voice-interconnector setup`), **5** (daemon exigido pero inactivo o
+inalcanzable), **9** (fallo de traducción con el modelo
 cargado) y **10** (fallo de transcripción con el modelo cargado).
 
 ---

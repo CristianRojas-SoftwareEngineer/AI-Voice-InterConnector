@@ -36,7 +36,7 @@ pub enum FaultPoint {
     BeforeCommit,
     /// Antes de integrar el PATH.
     BeforePathIntegration,
-    /// Antes de escribir el recibo (paso 10).
+    /// Antes de escribir el recibo de la instalación.
     BeforeReceipt,
     /// Al parar el daemon (paso 5).
     OnDaemonStop,

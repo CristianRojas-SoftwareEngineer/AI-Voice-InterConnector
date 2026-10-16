@@ -952,7 +952,7 @@ mod tests {
             "y el parseo entero falla limpio"
         );
 
-        // 2. Un esquema viejo sin identidad se descarta como ilegible: se
+        // 2. Un fichero al que le faltan claves se descarta como ilegible: se
         //    propaga como ausencia, nunca como un PID sin contrastar.
         crate::test_support::write_file(&path, r#"{"pid": 4242}"#);
         assert_eq!(read_pid(&data), None, "sin identidad no hay PID legítimo");
@@ -1666,7 +1666,7 @@ mod tests {
         let data = scratch("null-identities");
         crate::test_support::write_file(
             &pid_path(&data),
-            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 77, "identity": null, "resident_identity": null, "resident_port": null}"#,
+            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "started_at": null, "resident_pid": 77, "identity": null, "resident_identity": null, "resident_port": null}"#,
         );
         let file = read_pid_file(&data).expect("las claves presentes se leen");
         assert_eq!(file.identity, None);

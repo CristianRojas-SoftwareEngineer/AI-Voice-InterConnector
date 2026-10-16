@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Contrato de `self install` cuando la provisión de modelos falla: `setup_failed` como
-//! **éxito parcial**, que es el paso 11 de la instalación: el programa queda
+//! **éxito parcial**, porque la provisión es lo último de la instalación: el programa queda
 //! instalado y el envelope informa el fallo de provisión con salida 11.
 //!
 //! ### Por qué este archivo existe y no está en `cli_golden.rs`
@@ -156,6 +156,7 @@ fn seed_decoy_daemon_pidfile(data_dir: &Path) -> ReservedPort {
     let content = serde_json::json!({
         "pid": dead_pid,
         "addr": format!("127.0.0.1:{}", decoy.port),
+        "started_at": null,
         "resident_pid": dead_pid,
         "identity": fake,
         "resident_identity": fake,
@@ -403,7 +404,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
     assert_eq!(
         actual["status"],
         Value::String("installed".to_string()),
-        "el paso 11: el programa queda instalado, que es la otra mitad del criterio"
+        "la provisión falló, pero el programa queda instalado, que es la otra mitad del criterio"
     );
     assert_eq!(actual["reason"], Value::String("setup_failed".to_string()));
     assert_eq!(actual["models"], Value::String("failed".to_string()));
@@ -441,8 +442,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
         program_dir
             .join(avi_lifecycle::receipt::RECEIPT_NAME)
             .is_file(),
-        "con su recibo: `self install` lo escribió antes de provisionar, que es el orden de \
-         los pasos 10 y 11"
+        "con su recibo: `self install` lo escribe antes de provisionar"
     );
     assert!(
         actual["version"].as_str().is_some_and(|v| !v.is_empty()),
@@ -451,7 +451,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
 }
 
 /// El camino de éxito no cambia: con `--no-setup` se sale con 0, sin `reason` y sin
-/// `models_cause`. Es el camino que el paso 11 no toca, y el que demuestra
+/// `models_cause`. Es el camino que la provisión no toca, y el que demuestra
 /// que el `reason` nuevo no se ha colado en las operaciones limpias.
 #[test]
 fn self_install_no_setup_exits_0_without_reason() {

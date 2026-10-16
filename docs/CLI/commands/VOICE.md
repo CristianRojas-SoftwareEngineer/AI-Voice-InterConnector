@@ -107,10 +107,8 @@ la voz caliente previa; el residente TTS es de una sola voz) y responde
 `precomputed: true` con la semántica «precarga en caliente iniciada» —la
 completitud real se refleja en `GET /health` (`warm`). La **ruta local** responde
 siempre `precomputed: false`: su motor TTS es efímero por proceso, no hay
-residente persistente que calentar. El antiguo endpoint `POST /voices/precompute`
-fue purgado (`crates/avi-daemon/src/lib.rs` expone 7 rutas públicas, sin
-`/voices/precompute` ni `GET /voices`); la precarga vive ahora en el propio
-handler de clonado.
+residente persistente que calentar. La precarga vive en el propio handler de
+clonado: el daemon no expone ninguna ruta aparte para precargar voces.
 
 ---
 

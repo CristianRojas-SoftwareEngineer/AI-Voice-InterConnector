@@ -349,7 +349,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 - En Windows, `path_integration.registry_entry` guarda la entrada añadida al PATH de usuario, y `symlink`/`profile_blocks` son `null`.
 - `roots.cache_dir` registra el contenedor de caché, no la raíz de modelos: los modelos son su hoja `models` y los temporales su hoja `tmp`.
-- Los campos desconocidos se ignoran, para que un binario antiguo pueda leer recibos nuevos. Un `schema_version` mayor que el soportado aborta la operación con un mensaje que pide actualizar.
+- La lectura es estricta: un campo desconocido, un campo ausente o un `schema_version` distinto del soportado aborta la operación que lo lee, con un error que nombra el fichero.
 
 ### 7.2 Canales
 
@@ -512,10 +512,9 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
    5. **Revertir** si falla el paso 2 o el 3: retirar lo colocado, restaurar lo aparcado, borrar el diario → `rolled_back`.
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en todo el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. Si el archivo se descargó por navegador y se extrajo con el Finder, todos los archivos heredan la cuarentena.
 8. **Integración de PATH** ([§8.3.1](#831-integración-de-path)).
-9. **Windows**: si el PATH de máquina contiene una entrada de una instalación per-machine antigua, se avisa y se muestra el comando exacto para quitarla desde una PowerShell de administrador. HKLM nunca se modifica.
-10. **Escribir el recibo** (de forma atómica).
-11. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`. El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
-12. **Resumen final**: versión, rutas, estado del PATH (con "abre una terminal nueva" cuando corresponda) y estado de los modelos.
+9. **Escribir el recibo** (de forma atómica).
+10. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`. El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
+11. **Resumen final**: versión, rutas, estado del PATH (con "abre una terminal nueva" cuando corresponda) y estado de los modelos.
 
 #### 8.3.1 Integración de PATH
 

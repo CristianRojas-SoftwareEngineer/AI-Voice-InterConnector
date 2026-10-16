@@ -27,20 +27,17 @@ pub fn pid_path(data_dir: &Path) -> PathBuf {
     data_dir.join(PID_FILE)
 }
 
-/// Contenido del pidfile tal como está en disco. Las claves de identidad y de
-/// puerto del residente son obligatorias en la observación: un fichero sin
-/// ellas no cumple el esquema y se descarta.
+/// Contenido del pidfile tal como está en disco. Todas sus claves son
+/// obligatorias en la observación (las opcionales van presentes con `null`): un
+/// fichero al que le falte alguna no cumple el esquema y se descarta.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PidFile {
     pub pid: u32,
     /// Dirección **real** publicada por el daemon: con puerto efímero difiere
     /// de la literal.
-    #[serde(default)]
     pub addr: Option<String>,
-    #[serde(default)]
     pub started_at: Option<String>,
     /// PID del residente; `0` mientras no hay ninguno registrado.
-    #[serde(default)]
     pub resident_pid: u32,
     /// Identidad del proceso del daemon observada al registrarlo. Sin ella el
     /// PID no se trata como nuestro, y la clave tiene que estar (`null`).
@@ -174,6 +171,17 @@ pub enum PidFileObservation {
     Present(PidFile),
 }
 
+/// Claves de [`PidFile`], todas obligatorias en disco.
+const PID_FILE_KEYS: [&str; 7] = [
+    "pid",
+    "addr",
+    "started_at",
+    "resident_pid",
+    "identity",
+    "resident_identity",
+    "resident_port",
+];
+
 /// Observa el pidfile sin emitir nada: devuelve el desenlace y deja el aviso a
 /// quien decide cuándo darlo.
 pub fn observe_pid_file(data_dir: &Path) -> PidFileObservation {
@@ -188,15 +196,8 @@ pub fn observe_pid_file(data_dir: &Path) -> PidFileObservation {
             return PidFileObservation::Discarded(format!("no se entiende su esquema ({e})"));
         }
     };
-    let has_identity_keys =
-        value.get("identity").is_some() && value.get("resident_identity").is_some();
-    if !has_identity_keys {
-        return PidFileObservation::Discarded("falta la identidad obligatoria".to_string());
-    }
-    if value.get("resident_port").is_none() {
-        return PidFileObservation::Discarded(
-            "falta el puerto del residente obligatorio".to_string(),
-        );
+    if let Some(key) = PID_FILE_KEYS.iter().find(|key| value.get(key).is_none()) {
+        return PidFileObservation::Discarded(format!("falta la clave obligatoria `{key}`"));
     }
     match serde_json::from_value(value) {
         Ok(file) => PidFileObservation::Present(file),
@@ -289,10 +290,10 @@ mod tests {
         assert_eq!(back, file);
     }
 
-    /// Un pidfile sin alguna clave obligatoria se descarta con su motivo; con
-    /// todas las claves en `null` se lee.
+    /// Un pidfile al que le falta cualquier clave se descarta nombrándola; con
+    /// todas las claves, aunque las opcionales valgan `null`, se lee.
     #[test]
-    fn pid_file_requires_identity_and_port_keys() {
+    fn pid_file_requires_every_key() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = pid_path(dir.path());
         assert!(matches!(
@@ -300,27 +301,24 @@ mod tests {
             PidFileObservation::Absent
         ));
 
-        std::fs::write(&path, r#"{"pid": 4242}"#).unwrap();
-        assert!(matches!(
-            observe_pid_file(dir.path()),
-            PidFileObservation::Discarded(reason) if reason.contains("identidad")
-        ));
-
-        std::fs::write(
-            &path,
-            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 77, "identity": null, "resident_identity": null}"#,
+        let complete: serde_json::Value = serde_json::from_str(
+            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "started_at": null, "resident_pid": 77, "identity": null, "resident_identity": null, "resident_port": null}"#,
         )
         .unwrap();
-        assert!(matches!(
-            observe_pid_file(dir.path()),
-            PidFileObservation::Discarded(reason) if reason.contains("puerto")
-        ));
+        for key in PID_FILE_KEYS {
+            let mut partial = complete.clone();
+            partial.as_object_mut().unwrap().remove(key);
+            std::fs::write(&path, partial.to_string()).unwrap();
+            assert!(
+                matches!(
+                    observe_pid_file(dir.path()),
+                    PidFileObservation::Discarded(reason) if reason.contains(key)
+                ),
+                "sin `{key}` el pidfile se descarta"
+            );
+        }
 
-        std::fs::write(
-            &path,
-            r#"{"pid": 4242, "addr": "127.0.0.1:7001", "resident_pid": 77, "identity": null, "resident_identity": null, "resident_port": null}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, complete.to_string()).unwrap();
         let PidFileObservation::Present(file) = observe_pid_file(dir.path()) else {
             panic!("con todas las claves presentes se lee");
         };

@@ -1143,6 +1143,7 @@ fn seed_decoy_daemon_pidfile(data_dir: &std::path::Path) -> DecoyPort {
     let content = serde_json::json!({
         "pid": dead_pid,
         "addr": format!("127.0.0.1:{port}"),
+        "started_at": null,
         "resident_pid": dead_pid,
         "identity": fake,
         "resident_identity": fake,
@@ -1829,6 +1830,7 @@ impl FakeDaemon {
         let content = serde_json::json!({
             "pid": dead_pid,
             "addr": self.addr.to_string(),
+            "started_at": null,
             "resident_pid": dead_pid,
             "identity": fake,
             "resident_identity": fake,
@@ -5149,6 +5151,7 @@ mod tts {
         let content = serde_json::json!({
             "pid": daemon_pid,
             "addr": format!("127.0.0.1:{port}"),
+            "started_at": null,
             "resident_pid": resident_pid,
             "identity": fake,
             "resident_identity": fake,
@@ -7065,6 +7068,7 @@ fn seed_unstoppable_daemon(dir: &std::path::Path) {
     let content = serde_json::json!({
         "pid": dead_pid,
         "addr": addr,
+        "started_at": null,
         "resident_pid": dead_pid,
         "identity": fake,
         "resident_identity": fake,

@@ -277,7 +277,7 @@ pub struct Outcome {
     /// versión, canal y origen: reaplicar el recibo es uno de los pasos de la
     /// instalación.
     pub receipt: InstallReceipt,
-    /// Resumen final, paso 12.
+    /// Resumen final.
     pub summary: Vec<String>,
     /// Resumen previo, paso 4, el que se mostró **antes** de confirmar. Se
     /// conserva porque es el que anuncia los cambios y con el que el binario compone
@@ -292,7 +292,7 @@ pub struct Outcome {
     pub path_rewritten: bool,
     pub models: ModelsState,
     /// Desenlace de la parada del daemon, que el resumen necesita para indicar cómo
-    /// reiniciarlo (paso 11).
+    /// reiniciarlo en el resumen final.
     pub daemon: StopOutcome,
     /// Una instalación ajena detectada, que el paso 3 solo avisa: coexistir con un
     /// Cask no bloquea.
@@ -330,7 +330,7 @@ impl Outcome {
     /// `setup_failed` es **éxito parcial** con código propio —`SetupFailed =
     /// 11` de la tabla cerrada—, no un error: el programa está instalado y lo único que
     /// falta es la provisión. Por eso vive aquí y no como `Err` de [`install`], que
-    /// perdería el resumen del paso 12 y dejaría al usuario sin el estado de su
+    /// perdería el resumen final y dejaría al usuario sin el estado de su
     /// instalación. Quien cablea decide qué hacer con él: emitir el envelope y salir por
     /// veredicto con el código, que es lo que hace `self install`.
     ///
@@ -649,11 +649,7 @@ pub async fn install(
     let program_exe = env.program_dir.join(&executable);
     let (path_integration, path_rewritten) = apply_path(env, options, &program_exe)?;
 
-    // ── Paso 9. Aviso de instalación per-machine antigua, en Windows ─────────
-    // HKLM nunca se modifica, ni para escribir: solo se informa del comando exacto.
-    let machine_warning = machine_path_warning(env);
-
-    // ── Paso 10. Recibo atómico ───────────────────────────────────────────────
+    // ── Paso 9. Recibo atómico ───────────────────────────────────────────────
     crate::faults::trip(crate::faults::FaultPoint::BeforeReceipt)?;
     let receipt = InstallReceipt::new(
         &env.version,
@@ -670,7 +666,7 @@ pub async fn install(
     );
     receipt::write_to(&receipt, &env.program_dir)?;
 
-    // ── Paso 11. `setup` en el mismo proceso, salvo `--no-setup` ──────────────
+    // ── Paso 10. `setup` en el mismo proceso, salvo `--no-setup` ──────────────
     // El bloqueo exclusivo se retiene hasta aquí: `setup` descarga y purga modelos, y
     // ningún comando de uso ni otra operación puede cruzarse con esa escritura.
     let models = if options.no_setup {
@@ -680,7 +676,7 @@ pub async fn install(
     };
     drop(lock);
 
-    // ── Paso 12. Resumen final ────────────────────────────────────────────────
+    // ── Paso 11. Resumen final ────────────────────────────────────────────────
     let summary = final_summary(
         env,
         mode,
@@ -689,7 +685,6 @@ pub async fn install(
         &previous_summary,
         &models,
         &daemon,
-        &machine_warning,
         foreign_in_path.as_ref(),
         &recovery.kept,
         !quarantine.failed.is_empty(),
@@ -844,39 +839,6 @@ pub fn apply_path(
     }
 }
 
-/// Detecta una instalación de Homebrew por la ruta del ejecutable. Lo usa el
-/// resumen previo para el aviso de coexistencia; `externally_managed` lo produce el canal.
-pub fn foreign_installation(exe: &Path) -> Option<PathBuf> {
-    crate::channel::is_homebrew_path(exe).then(|| bundle_dir(exe))
-}
-
-/// Aviso del paso 9: si el `PATH` de la sesión lleva una entrada de una
-/// instalación per-machine antigua, se muestra el comando exacto para quitarla desde
-/// una PowerShell de administrador. **HKLM nunca se modifica** y ni siquiera se lee:
-/// el motor no pide elevación, así que la información disponible es la del
-/// `PATH` de la sesión, que es la misma que ve el usuario.
-fn machine_path_warning(env: &Env) -> Option<String> {
-    if !cfg!(windows) {
-        return None;
-    }
-    let per_machine = env.path_env.split(';').any(|entry| {
-        let entry = entry.to_lowercase();
-        !entry.is_empty()
-            && entry.contains("program files")
-            && entry.contains("ai-voice-interconnector")
-    });
-    per_machine.then(|| {
-        format!(
-            "  Aviso: el PATH del sistema parece llevar una instalación antigua de \
-             {}. HKLM no se modifica nunca. Para quitarla, en una PowerShell de \
-             administrador:\n    [Environment]::SetEnvironmentVariable('Path', \
-             (([Environment]::GetEnvironmentVariable('Path','Machine')).Split(';') | \
-             Where-Object {{ $_ -notlike '*ai-voice-interconnector*' }}) -join ';', 'Machine')",
-            crate::APP_NAME
-        )
-    })
-}
-
 /// Origen del bundle en el recibo: el de la instalación anterior si la había, y si no
 /// el que el bootstrap estampó. Un bundle extraído a mano no lo tiene, y ahí
 /// `source` queda vacío.
@@ -887,7 +849,7 @@ fn source_of(env: &Env, previous: Option<&InstallReceipt>) -> Option<String> {
 }
 
 /// Modelos pendientes de provisionar: solo alimenta el resumen previo del paso 4.
-/// No gobierna la ejecución: el paso 11 decide con el estado real del almacén.
+/// No gobierna la ejecución: la provisión decide con el estado real del almacén.
 ///
 /// El almacén se construye por `avi-store`, que resuelve la raíz de modelos por
 /// `AVI_CACHE_DIR`; `Env::models_dir` tiene que coincidir con ella, y en producción
@@ -903,7 +865,7 @@ fn pending_models() -> Result<setup::Pending, LifecycleError> {
     Ok(setup::pending(&store))
 }
 
-/// Paso 11: la misma provisión que `setup` (descarga de la selección según el
+/// Provisión de modelos: la misma que `setup` (descarga de la selección según el
 /// estado real del almacén), sin la confirmación, que ya mostró el resumen del
 /// paso 4.
 ///
@@ -938,7 +900,7 @@ async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
 /// Prose de `setup_failed`: el programa queda instalado y basta
 /// reintentar con `setup`.
 ///
-/// **Una sola fuente** para el resumen del paso 12 y para el `reason` del envelope, para que
+/// **Una sola fuente** para el resumen final y para el `reason` del envelope, para que
 /// las dos salidas no puedan divergir: es la razón de que el mensaje viva aquí y no en las
 /// dos ramas que lo imprimen.
 fn setup_failed_message(program_dir: &Path, cause: &LifecycleError) -> String {
@@ -1031,7 +993,7 @@ fn compose_summary(
     out
 }
 
-/// Resumen final, paso 12: versión, rutas, estado del `PATH` —con la
+/// Resumen final: versión, rutas, estado del `PATH` —con la
 /// indicación de abrir una terminal nueva cuando corresponda— y estado de los
 /// modelos.
 // Cada parámetro es un hecho distinto observado en un paso anterior y una línea del
@@ -1046,7 +1008,6 @@ fn final_summary(
     previous: &[String],
     models: &ModelsState,
     daemon: &StopOutcome,
-    machine_warning: &Option<String>,
     foreign: Option<&PathBuf>,
     recovery_kept: &[PathBuf],
     incomplete_quarantine: bool,
@@ -1107,9 +1068,6 @@ fn final_summary(
             setup_failed_message(&env.program_dir, cause)
         ));
         out.push(format!("  Causa:  {} ({})", cause.message, cause.reason));
-    }
-    if let Some(warning) = machine_warning {
-        out.push(warning.clone());
     }
     if let Some(root) = foreign {
         out.push(format!(

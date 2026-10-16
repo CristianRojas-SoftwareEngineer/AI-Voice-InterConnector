@@ -329,7 +329,7 @@ fn interrupted_transaction_is_recovered_next_run() {
         );
         if commit {
             // El commit **conserva** lo colocado y borra el aparcado. No hay recibo todavía:
-            // el recibo es el paso 10 de la instalación, posterior a la transacción, así que en este
+            // el recibo se escribe después de la transacción, así que en este
             // punto la instalación está colocada pero sin registrar. Lo que se afirma es que
             // el bundle entero está en su sitio, que es lo que distingue un commit de un
             // rollback a medias.
@@ -348,8 +348,8 @@ fn interrupted_transaction_is_recovered_next_run() {
                 receipt::read_from(&sandbox.program_dir)
                     .expect("se lee el recibo")
                     .is_none(),
-                "punto «{point}»: y el recibo todavía no, porque se escribe en el \
-                 paso 10, después de la transacción"
+                "punto «{point}»: y el recibo todavía no, porque se escribe después \
+                 de la transacción"
             );
         } else {
             assert!(
