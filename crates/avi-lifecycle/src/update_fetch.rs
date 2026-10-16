@@ -1078,9 +1078,9 @@ mod tests {
         let triple = "x86_64-pc-windows-msvc";
         assert!(validate_pe_image(b"esto no es un ejecutable", triple).is_err());
         assert!(validate_pe_image(b"MZ", triple).is_err());
-        let mut offset_fuera = minimal_pe(0x8664);
-        offset_fuera[0x3C] = 200;
-        assert!(validate_pe_image(&offset_fuera, triple).is_err());
+        let mut offset_out_of_bounds = minimal_pe(0x8664);
+        offset_out_of_bounds[0x3C] = 200;
+        assert!(validate_pe_image(&offset_out_of_bounds, triple).is_err());
         assert!(validate_pe_image(&minimal_pe(0xAA64), triple).is_err());
         assert!(validate_pe_image(&minimal_pe(0x8664), "i686-unknown-linux-gnu").is_err());
     }

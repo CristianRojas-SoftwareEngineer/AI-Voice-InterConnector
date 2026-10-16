@@ -55,6 +55,7 @@ const MIN_SEGMENT: usize = 4;
 const ES_WORDS: &[&str] = &[
     "ancestro",
     "anunciado",
+    "apagada",
     "archivo",
     "archivos",
     "atribuciones",
@@ -89,6 +90,7 @@ const ES_WORDS: &[&str] = &[
     "fichero",
     "ficheros",
     "fuente",
+    "fuera",
     "habla",
     "hasta",
     "hecho",

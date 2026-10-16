@@ -1203,11 +1203,11 @@ async fn dub_leaves_no_temporary_on_any_outcome() {
 /// binario de pruebas corre en paralelo y el barrido de residuo de una vería el
 /// temporal en vuelo de otra. Cerrojo asíncrono para no retener un
 /// `std::sync::MutexGuard` a través de un `await`.
-static TEMPORALS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static TEMPORARIES_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Toma el cerrojo de temporales del binario de pruebas.
 async fn lock_temporaries() -> tokio::sync::MutexGuard<'static, ()> {
-    TEMPORALS_LOCK.lock().await
+    TEMPORARIES_LOCK.lock().await
 }
 
 /// Exige `model.safetensors` del snapshot del modelo CustomVoice de los

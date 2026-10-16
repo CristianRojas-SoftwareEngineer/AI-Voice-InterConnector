@@ -177,7 +177,7 @@ fn indent_of(line: &str) -> usize {
 /// La demostración cabe en la propia línea (`if hay { return; }`) o en la línea
 /// previa no vacía, que es donde vive la condición de la rama. La condición
 /// cuenta solo si afirma disponibilidad: negarla o comprobar su ausencia
-/// (`!preprocesador.is_file()`, `is_none()`) describe justo el caso en que el
+/// (`!preprocessor.is_file()`, `is_none()`) describe justo el caso en que el
 /// recurso falta, y salir ahí es la omisión silenciosa que esta regla prohibe.
 fn branch_proves_available(lines: &[&str], idx: usize, pos: usize) -> bool {
     let same_line = &lines[idx][..pos];
@@ -232,12 +232,12 @@ fn seeded_silent_skip() -> String {
     [
         concat!("#[ig", "nore = \"falta Parakeet\"]"),
         "#[test]",
-        "fn parakeet_transcribe_apagada() {}",
+        "fn parakeet_transcribe_disabled() {}",
         "",
         concat!("fn requi", "re_parakeet() {"),
-        concat!("    if !preprocesador.is_file() { retu", "rn; }"),
+        concat!("    if !preprocessor.is_file() { retu", "rn; }"),
         concat!(
-            "    assert!(preprocesador.is_file(), \"",
+            "    assert!(preprocessor.is_file(), \"",
             "requie",
             "re Parakeet\");"
         ),
@@ -259,9 +259,9 @@ fn well_formed_class_gates() -> String {
         "fn parakeet_transcribe() {}",
         "",
         concat!("fn requi", "re_parakeet() {"),
-        "    let preprocesador = Path::new(\"nemo128.onnx\");",
+        "    let preprocessor = Path::new(\"nemo128.onnx\");",
         concat!(
-            "    assert!(preprocesador.is_file(), \"",
+            "    assert!(preprocessor.is_file(), \"",
             "requie",
             "re Parakeet\");"
         ),
