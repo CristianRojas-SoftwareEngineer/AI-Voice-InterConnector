@@ -110,14 +110,17 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-### Cambios incompatibles
+`daemon status` y `daemon start` decidían por criterios distintos si el daemon
+estaba en marcha, y quedaban mecanismos de retrocompatibilidad que leían datos
+con valores supuestos. Esta versión unifica la observación del estado del daemon
+y retira esas reservas, de modo que un dato incompleto se descarta con un aviso
+en lugar de aceptarse en silencio.
+
+### Cambiado
 
 - `daemon.pid` exige todas sus claves. Un pidfile al que le falte alguna,
   como el que escribía un binario anterior sin `started_at`, se descarta con un
   aviso que nombra la clave, en lugar de leerse con valores supuestos.
-
-### Eliminado
-
 - `self install` ya no avisa de instalaciones per-machine antiguas en el `PATH`
   del sistema. Sigue avisando de cualquier otra instalación que tenga precedencia
   en el `PATH`, que es el caso que importa.
@@ -143,6 +146,13 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
   pasa de 30 s. También describía mal el valor por defecto de `--voice` en
   `speech list` (sin él recorre todas las voces) y el backoff del supervisor del
   daemon (empieza en 0,5 s).
+
+### Notas de release
+
+- **Incompatible**: `daemon.pid` exige sus 7 claves (`pid`, `addr`,
+  `started_at`, `resident_pid`, `identity`, `resident_identity`,
+  `resident_port`). Un pidfile escrito por una versión anterior que no las
+  tenga todas se descarta con un aviso; basta con reiniciar el daemon.
 
 ## [0.30.1] — 2026-10-15
 
