@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.31.0 — 2026-10-16](#0310--2026-10-16)
 - [0.30.1 — 2026-10-15](#0301--2026-10-15)
 - [0.30.0 — 2026-10-14](#0300--2026-10-14)
@@ -107,6 +108,23 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+El instalador de Windows ocultaba el resumen final de la instalación y,
+ejecutado como archivo, terminaba con éxito aunque la instalación fallara. Esta
+versión hace que el bootstrap delegue en `self install` sin interceptar su
+salida, de modo que el usuario ve el resumen y el código de salida es el de la
+instalación.
+
+### Corregido
+
+- `install.ps1` capturaba la salida de `self install` como parte de su valor de
+  retorno: el resumen final de la instalación nunca se mostraba y, ejecutado
+  como archivo, salía con 0 aunque `self install` fallara (por ejemplo, con 11
+  en `setup_failed`). Ahora `self install` escribe directamente en la consola y
+  el bootstrap termina con su código de salida. Con `irm | iex` el resultado ya
+  quedaba en `$LASTEXITCODE`; lo nuevo es que el resumen se ve.
 
 ## [0.31.0] — 2026-10-16
 

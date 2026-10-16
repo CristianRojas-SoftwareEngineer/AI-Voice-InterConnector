@@ -144,6 +144,13 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
     }
 
     function Invoke-BootstrapInstall {
+        # El codigo de salida viaja en $Result y no en la salida de la funcion:
+        # el llamador no la asigna, asi que `self install` escribe directamente en
+        # la consola. Asignarla haria que PowerShell capturara su stdout (el
+        # resumen final se perderia y el codigo se mezclaria con esas lineas) y,
+        # en Windows PowerShell 5.1, lo recodificaria con la pagina OEM.
+        param([hashtable]$Result)
+
         # TLS 1.2; la barra de progreso ya esta desactivada arriba.
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -182,7 +189,6 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
         }
         $staging = Join-Path $tempRoot ("ai-voice-interconnector-install-" + [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Path $staging -Force | Out-Null
-        $code = 1
         try {
             try {
                 $acl = Get-Acl -Path $staging -ErrorAction Stop
@@ -238,8 +244,8 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             if ($noModifyPath) { $installArgs += "--no-modify-path" }
             if ($yes) { $installArgs += "--yes" }
             & $exe @installArgs
-            $code = $LASTEXITCODE
-            if ($code -eq 0) {
+            $Result.ExitCode = $LASTEXITCODE
+            if ($Result.ExitCode -eq 0) {
                 # El programa en el PATH en curso (los modulos estandar, si hubo que
                 # repararlos, ya se cargaron al arrancar).
                 if (($env:Path -split ';') -notcontains $programDir) { $env:Path = "$env:Path;$programDir" }
@@ -252,18 +258,19 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
                 Write-BootstrapLog "AVISO: no se pudo borrar el directorio temporal ${staging}: $_ Borralo manualmente."
             }
         }
-        return $code
     }
 
     if ($InvocationName -eq ".") { return }
     $fromFile = -not [string]::IsNullOrEmpty($InvocationName)
+    # Falla cerrado: solo un `self install` que llega a ejecutarse fija otro codigo.
+    $result = @{ ExitCode = 1 }
     try {
-        $resultCode = Invoke-BootstrapInstall
+        Invoke-BootstrapInstall -Result $result
     } catch {
         # No terminante a proposito: bajo `irm | iex` la sesion sigue viva.
         Write-Error $_ -ErrorAction Continue
-        $resultCode = 1
+        $result.ExitCode = 1
     }
     # Bajo `irm | iex` nunca se usa `exit`: un error no cierra la consola.
-    if ($fromFile) { exit $resultCode }
+    if ($fromFile) { exit $result.ExitCode }
 } -InvocationName $MyInvocation.InvocationName @args

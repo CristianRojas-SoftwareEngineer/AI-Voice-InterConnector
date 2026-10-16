@@ -11,7 +11,9 @@
 # con AVI_FAKE_MODE=noexec no arranca (binario incompatible) y, cuando se le
 # pide con AVI_FAKE_PATH_SUBKEY, emula el contrato PATH de `self install`
 # contra esa subclave de prueba: sin --no-modify-path anade el directorio de
-# programa al valor Path, con --no-modify-path no toca el registro.
+# programa al valor Path, con --no-modify-path no toca el registro. Como el
+# real, escribe su resumen final en stdout (RESUMEN-FINAL-SELF-INSTALL) y sale
+# con el codigo de AVI_FAKE_EXIT (0 si no esta definida).
 
 $script:HarnessVersion = "9.9.9"
 $script:SavedEnv = @{}
@@ -116,7 +118,11 @@ public static class AviFakeBootstrap {
                 }
             }
         }
-        return 0;
+        // Como el `self install` real: el resumen final va a stdout y el codigo
+        // de salida es el de la operacion (AVI_FAKE_EXIT, 0 por defecto).
+        System.Console.Out.WriteLine("RESUMEN-FINAL-SELF-INSTALL");
+        string exit = System.Environment.GetEnvironmentVariable("AVI_FAKE_EXIT");
+        return string.IsNullOrEmpty(exit) ? 0 : int.Parse(exit);
     }
 }
 '@

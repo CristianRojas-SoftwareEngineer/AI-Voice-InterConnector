@@ -5,8 +5,9 @@
 # reubicadas a temporales. Cubre el checksum con staging borrado, la
 # plataforma no soportada antes de descargar, el binario incompatible con
 # diagnostico, la ausencia de efectos en la sesion salvo el PATH de esa sesion
-# (la consola sobrevive al error bajo tuberia) y el paso de parametros y
-# variables. Cubre ademas el canal real `irm <url> | iex` en
+# (la consola sobrevive al error bajo tuberia), el paso de parametros y
+# variables, y que el resumen final y el codigo de salida de `self install`
+# llegan al usuario sin que el bootstrap intercepte su salida. Cubre ademas el canal real `irm <url> | iex` en
 # PowerShell 5.1 y 7 (las pruebas de tuberia necesitan `pwsh` en el PATH para
 # no omitirse), el entorno con PSModulePath heredado de PowerShell 7 (se
 # construye a proposito, sin depender del anfitrion) y la guarda de
@@ -53,6 +54,7 @@ BeforeAll {
             AVI_YES               = $null
             AVI_FAKE_MODE         = $null
             AVI_FAKE_PATH_SUBKEY  = $null
+            AVI_FAKE_EXIT         = $null
         }
     }
 
@@ -273,6 +275,39 @@ Describe "bootstrap de Windows" {
         $output | Should -Not -Match ("Instalando ai-voice-interconnector " + [regex]::Escape($Bad))
     }
 
+    It "como archivo propaga el codigo <Code> de self install y deja ver su resumen final" -ForEach @(@{ Code = 0 }, @{ Code = 11 }) {
+        $envBase = Get-TestEnvBase $script:TestDir
+        $envBase.AVI_FAKE_EXIT = [string]$Code
+        $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
+            -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase
+
+        $result.ExitCode | Should -Be $Code
+        $result.Stdout | Should -Match "RESUMEN-FINAL-SELF-INSTALL"
+        Assert-NoStagingLeft $script:TestDir
+    }
+
+    It "bajo tuberia (irm | iex) con <Engine> un self install fallido deja ver su resumen, su codigo y no toca el PATH de la sesion" -ForEach @(@{ Engine = "powershell.exe" }, @{ Engine = "pwsh" }) {
+        $cmd = Get-Command $Engine -ErrorAction SilentlyContinue
+        if ($null -eq $cmd) {
+            Set-ItResult -Skipped -Because "$Engine no disponible"
+            return
+        }
+        $envBase = Get-TestEnvBase $script:TestDir
+        $envBase.AVI_VERSION = "9.9.9"
+        $envBase.AVI_NO_SETUP = "1"
+        $envBase.AVI_NO_MODIFY_PATH = "1"
+        $envBase.AVI_YES = "1"
+        $envBase.AVI_FAKE_EXIT = "11"
+        $stdinText = "irm $($script:LastBaseUrl)/install.ps1 | iex`n[Console]::Out.WriteLine('LAST-EXIT:' + `$LASTEXITCODE)`n[Console]::Out.WriteLine('PATH-EFFECT:' + `$env:Path)"
+        $result = Invoke-ChildBootstrap -StdinText $stdinText -ExtraEnv $envBase -Engine $cmd.Source
+
+        $result.Stdout | Should -Match "RESUMEN-FINAL-SELF-INSTALL"
+        $result.Stdout | Should -Match "LAST-EXIT:11"
+        $marker = ($result.Stdout -split "`r?`n" | Where-Object { $_ -match "PATH-EFFECT:" } | Select-Object -First 1)
+        $marker | Should -Not -BeNullOrEmpty
+        ($marker -split ";" ) -contains $envBase.AVI_INSTALL_DIR | Should -BeFalse
+    }
+
     It "no deja variables ni funciones en la sesion tras dot-source" {
         $varsBefore = Get-Variable -Scope Global | Select-Object -ExpandProperty Name
         $funcsBefore = Get-ChildItem function: | Select-Object -ExpandProperty Name
@@ -399,6 +434,51 @@ Describe "bootstrap de Windows" {
 
         $result.ExitCode | Should -Be 0
         Test-Path "HKCU:\$($script:RegSubkey)" | Should -BeFalse
+    }
+}
+
+Describe "delegacion sin interceptar la salida" {
+    # `self install` tiene que escribir directamente en la consola: si PowerShell
+    # captura su stdout (asignando la salida de la funcion que lo invoca o
+    # pasandolo por una tuberia), el resumen final se pierde o, en Windows
+    # PowerShell 5.1, se recodifica con la pagina OEM y corrompe las tildes. En
+    # la CI no hay consola y la redireccion a fichero no distingue una escritura
+    # directa de una interceptada, asi que la invariante se comprueba sobre el AST.
+    BeforeAll {
+        $tokens = $null
+        $errors = $null
+        $script:Ast = [System.Management.Automation.Language.Parser]::ParseFile($script:InstallPs1, [ref]$tokens, [ref]$errors)
+        $errors | Should -BeNullOrEmpty
+
+        function Test-CapturedPipeline {
+            # Una orden esta interceptada si su tuberia tiene mas elementos o si
+            # la tuberia es el valor de una asignacion.
+            param($Command)
+            $pipeline = $Command.Parent
+            return ($pipeline.PipelineElements.Count -ne 1) -or
+                ($pipeline.Parent -is [System.Management.Automation.Language.AssignmentStatementAst])
+        }
+    }
+
+    It "self install se invoca solo en su tuberia y sin asignar" {
+        $calls = @($script:Ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.InvocationOperator -eq "Ampersand" -and
+                @($node.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.VariableExpressionAst] -and $_.Splatted -and $_.VariablePath.UserPath -eq "installArgs" }).Count -eq 1
+        }, $true))
+        $calls.Count | Should -Be 1
+        Test-CapturedPipeline $calls[0] | Should -BeFalse
+    }
+
+    It "la funcion que delega se invoca sin asignar su salida" {
+        $calls = @($script:Ast.FindAll({
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -eq "Invoke-BootstrapInstall"
+        }, $true))
+        $calls.Count | Should -Be 1
+        Test-CapturedPipeline $calls[0] | Should -BeFalse
     }
 }
 
