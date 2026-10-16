@@ -548,6 +548,70 @@ fn resident_registered(data_dir: &Path, control: &dyn ProcessControl) -> Registe
     )
 }
 
+/// Estado del daemon tal como lo observan `daemon status` y `daemon start`: un único
+/// criterio para los dos, de modo que lo que `status` informa es lo que `start` hará.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonState {
+    /// Daemon propio registrado, vivo y que responde a `/health`: en servicio.
+    Running { pid: u32 },
+    /// Hay restos que no forman un daemon en servicio; `daemon start` los reclama
+    /// antes de arrancar.
+    Degraded(Degradation),
+    /// Ni daemon ni residente: vía libre.
+    Stopped,
+}
+
+/// Qué resto impide dar el daemon por en servicio o por detenido.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Degradation {
+    /// El daemon propio registrado sigue vivo pero no responde a `/health`.
+    Unresponsive,
+    /// Algo responde a `/health` en la dirección del daemon sin un daemon propio
+    /// registrado vivo.
+    Unregistered,
+    /// El residente registrado sigue vivo sin daemon.
+    OrphanResident,
+}
+
+impl Degradation {
+    /// Código estable del envelope `--json`.
+    pub fn code(self) -> &'static str {
+        match self {
+            Degradation::Unresponsive => "unresponsive",
+            Degradation::Unregistered => "unregistered",
+            Degradation::OrphanResident => "orphan_resident",
+        }
+    }
+
+    /// Descripción para la salida de texto.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Degradation::Unresponsive => "el daemon registrado sigue vivo pero no responde",
+            Degradation::Unregistered => {
+                "algo responde en la dirección del daemon sin un daemon registrado"
+            }
+            Degradation::OrphanResident => "el motor residente sigue vivo sin daemon",
+        }
+    }
+}
+
+/// Clasifica el daemon de `data_dir`. `responds` es el resultado del sondeo de
+/// `/health` que hace quien llama, porque `status` necesita además el cuerpo de esa
+/// respuesta y así no se sondea dos veces.
+pub fn observe(data_dir: &Path, control: &dyn ProcessControl, responds: bool) -> DaemonState {
+    let (pid, state) = daemon_registered(data_dir, control);
+    let ours = pid.filter(|_| state == Registered::Ours);
+    match (ours, responds) {
+        (Some(pid), true) => DaemonState::Running { pid },
+        (Some(_), false) => DaemonState::Degraded(Degradation::Unresponsive),
+        (None, true) => DaemonState::Degraded(Degradation::Unregistered),
+        (None, false) if resident_alive_by_pid(data_dir, control) => {
+            DaemonState::Degraded(Degradation::OrphanResident)
+        }
+        (None, false) => DaemonState::Stopped,
+    }
+}
+
 /// ¿Vive el proceso cuyo PID publica el fichero ready (línea `pid=<n>`)? Un
 /// fichero ausente, ilegible, sin esa línea o con el PID del propio proceso no
 /// tiene dueño vivo: es obsoleto. También lo es el que lleva un PID vivo pero sin
@@ -1523,6 +1587,76 @@ mod tests {
                 .find(|(p, _)| *p == pid)
                 .map(|(_, id)| id.clone())
         }
+    }
+
+    /// Pidfile con el daemon `daemon` y el residente `resident`, cada uno con su
+    /// identidad registrada.
+    fn set_pid_file_with_resident(data_dir: &Path, daemon: u32, resident: u32) {
+        write_pid_file(
+            data_dir,
+            &PidFile {
+                pid: daemon,
+                addr: Some("127.0.0.1:1".to_string()),
+                started_at: None,
+                resident_pid: resident,
+                identity: Some(identity_of("111", "daemon.exe")),
+                resident_identity: Some(identity_of("222", "qwen_tts.exe")),
+                resident_port: None,
+            },
+        )
+        .unwrap();
+    }
+
+    /// Con un daemon propio registrado y vivo, la respuesta de `/health` decide
+    /// entre en servicio (con su PID) y colgado.
+    #[test]
+    fn observe_registered_daemon_by_health() {
+        let data = scratch("observe-registered");
+        set_pid_file_with_resident(&data, 10, 20);
+        let control = Observed::new(&[10], &[(10, identity_of("111", "daemon.exe"))]);
+
+        assert_eq!(
+            observe(&data, &control, true),
+            DaemonState::Running { pid: 10 }
+        );
+        assert_eq!(
+            observe(&data, &control, false),
+            DaemonState::Degraded(Degradation::Unresponsive)
+        );
+    }
+
+    /// Sin daemon propio registrado vivo, que algo responda a `/health` no lo
+    /// convierte en el daemon; si nada responde es vía libre.
+    #[test]
+    fn observe_without_registered_daemon() {
+        let empty = scratch("observe-empty");
+        let control = Observed::new(&[], &[]);
+        assert_eq!(observe(&empty, &control, false), DaemonState::Stopped);
+        assert_eq!(
+            observe(&empty, &control, true),
+            DaemonState::Degraded(Degradation::Unregistered)
+        );
+
+        let dead = scratch("observe-dead-daemon");
+        set_pid_file_with_resident(&dead, 10, 20);
+        assert_eq!(
+            observe(&dead, &control, true),
+            DaemonState::Degraded(Degradation::Unregistered)
+        );
+        assert_eq!(observe(&dead, &control, false), DaemonState::Stopped);
+    }
+
+    /// Un residente registrado vivo sin daemon no es vía libre.
+    #[test]
+    fn observe_orphan_resident() {
+        let data = scratch("observe-orphan-resident");
+        set_pid_file_with_resident(&data, 10, 20);
+        let control = Observed::new(&[20], &[(20, identity_of("222", "qwen_tts.exe"))]);
+
+        assert_eq!(
+            observe(&data, &control, false),
+            DaemonState::Degraded(Degradation::OrphanResident)
+        );
     }
 
     /// Un pidfile con las claves de identidad presentes pero en `null` se

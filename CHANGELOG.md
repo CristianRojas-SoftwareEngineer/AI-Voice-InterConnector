@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.30.1 — 2026-10-15](#0301--2026-10-15)
 - [0.30.0 — 2026-10-14](#0300--2026-10-14)
 - [0.29.5 — 2026-10-13](#0295--2026-10-13)
@@ -106,6 +107,23 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Corregido
+
+- `daemon status` y `daemon start` decidían por criterios distintos si el daemon
+  estaba en marcha. `status` solo preguntaba a `/health`: un daemon colgado o un
+  residente huérfano salían como `stopped` sin más, indistinguibles de la vía
+  libre, y cualquier proceso que respondiera en el puerto salía como `running`
+  aunque no fuera el daemon. Ahora los dos usan la misma clasificación: `running`
+  solo con un daemon propio registrado que responde, y entonces `status --json`
+  incluye su `pid`. Si quedan restos, `status` añade `degraded` con su causa
+  (`unresponsive`, `unregistered` u `orphan_resident`). Son las mismas causas por
+  las que `start` reclama antes de arrancar.
+- `daemon start` reclama un residual con la misma parada que `daemon stop` y
+  `daemon restart`. Si el reclamo no concluye, falla con `daemon_stop_failed`
+  (exit 16) sin lanzar otro daemon, en lugar de intentar el arranque igualmente.
 
 ## [0.30.1] — 2026-10-15
 

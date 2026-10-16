@@ -742,7 +742,7 @@ El integrador es **tts-sidecar-narrator**, un plugin de [Claude Code](https://co
 | `speech synthesize --text "<aviso>" --label <label>` | Pre-síntesis de avisos; se guarda en el almacén de habla sintética bajo un `label`. | Mantener el flag `--label` y la colisión de label (exit `6`, ver abajo). |
 | `speech play --label <label>` | Reproducción de una locución pre-cacheada por `label`. | Mantener el subcomando `play` y el flag `--label`; exit `3`/`NotFound` si el label no existe. |
 | `doctor --json` | Verifica el entorno; lee `checks` (una entrada `{name, ok, detail}` por chequeo) y `failed` (los `name` que fallan: el entorno está sano si `failed` está vacío). Ver [`doctor`](commands/DOCTOR.md). | Mantener las claves `checks` y `failed` con ese significado. |
-| `daemon status --json` | Lee `daemon` (`"running"`/`"stopped"`) para saber si el daemon corre. Ver [`daemon`](commands/DAEMON.md). | Mantener la clave `daemon` con esos dos valores. |
+| `daemon status --json` | Lee `daemon` (`"running"`/`"stopped"`) para saber si el daemon corre: `running` solo con un daemon propio en servicio, el mismo criterio con el que `daemon start` decide si arranca. `pid` (en servicio) y `degraded` (restos) son aditivos. Ver [`daemon`](commands/DAEMON.md). | Mantener la clave `daemon` con esos dos valores. |
 | `daemon start` | Levanta el daemon para dejar los modelos en memoria. | Mantener el subcomando y su arranque desanclable. |
 
 Además, el plugin interpreta dos exit codes semánticos (definidos en `crates/avi-core/src/exit_codes.rs`) para decidir sin parsear stderr:

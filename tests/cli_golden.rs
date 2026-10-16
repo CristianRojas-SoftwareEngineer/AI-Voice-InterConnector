@@ -2341,6 +2341,13 @@ fn doctor_repair_collects_leftovers() {
     ));
     std::fs::create_dir_all(&staging).expect("crear staging");
     std::fs::write(staging.join("downloaded"), "bundle").expect("rellenar staging");
+    // El scratch de un proceso muerto, como el que deja un daemon matado en duro.
+    let scratch = dir
+        .join("cache")
+        .join(avi_shared::paths::SCRATCH_SUBDIR)
+        .join(dead.format());
+    std::fs::create_dir_all(&scratch).expect("crear scratch");
+    std::fs::write(scratch.join("clip.wav"), "temporal").expect("rellenar scratch");
 
     let (code, _out, _err) = run_text_env(&["doctor", "--repair"], &envs);
     assert!(
@@ -2351,6 +2358,10 @@ fn doctor_repair_collects_leftovers() {
     assert!(
         !staging.exists(),
         "el staging huérfano debe haberse recogido"
+    );
+    assert!(
+        !scratch.exists(),
+        "el scratch del proceso muerto debe haberse recogido"
     );
     let (_, value) = run_json_env(&["--json", "doctor"], &envs);
     let failed = value["failed"].as_array().cloned().unwrap_or_default();
@@ -4622,6 +4633,11 @@ mod tts {
             "con status running el PID de la pista debe estar vivo (pid {:?})",
             pid
         );
+        assert_eq!(
+            actual["pid"].as_u64(),
+            pid.map(u64::from),
+            "status informa el PID del daemon registrado: {actual}"
+        );
         // Cuando está running, el fixture running debe coincidir (schema_version 5)
         assert_eq!(actual["schema_version"], Value::String("5".to_string()));
         let expected = fixture("cli_daemon_status_running.json");
@@ -5223,6 +5239,131 @@ mod tts {
         );
         assert!(!daemon.alive(), "el daemon debe quedar detenido");
         assert!(!ready.exists(), "con el daemon muerto el ready se retira");
+    }
+
+    /// Servidor HTTP mínimo que contesta `200` con `body` a cualquier petición:
+    /// hace de daemon que responde a `/health` sin cargar modelos. El hilo vive
+    /// hasta que termina el proceso de pruebas.
+    fn spawn_health_responder(body: &str) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("enlazar el respondedor");
+        let port = listener
+            .local_addr()
+            .expect("dirección del respondedor")
+            .port();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = [0u8; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut request);
+                let _ = std::io::Write::write_all(&mut stream, response.as_bytes());
+            }
+        });
+        port
+    }
+
+    /// Siembra un `daemon.pid` que registra a `daemon` con su identidad real, como
+    /// lo hace un daemon propio al arrancar, escuchando en `addr`. El residente
+    /// lleva un PID fuera de rango con identidad falsa: no hay residente vivo.
+    fn seed_pidfile_as_ours(data_dir: &Path, daemon: &ForeignProcess, addr: &str) {
+        let identity = avi_process::process_identity(daemon.pid())
+            .expect("observar la identidad del proceso que hace de daemon");
+        let content = serde_json::json!({
+            "pid": daemon.pid(),
+            "addr": addr,
+            "started_at": null,
+            "resident_pid": u32::MAX - 1,
+            "identity": { "start": identity.start, "image": identity.image },
+            "resident_identity": { "start": "0", "image": "fake-identity.exe" },
+            "resident_port": null,
+        });
+        std::fs::create_dir_all(data_dir).expect("crear directorio de datos");
+        std::fs::write(data_dir.join("daemon.pid"), content.to_string())
+            .expect("sembrar daemon.pid propio");
+    }
+
+    /// Cuerpo de `/health` de un daemon en servicio y ya caliente.
+    const HEALTH_WARM: &str =
+        r#"{"status":"ready","warm":"warm","engine":"rust_native","schema_version":"5"}"#;
+
+    /// Un daemon propio que responde a `/health` sale `running` con su PID, el
+    /// mismo que `daemon start` informa al lanzarlo.
+    #[test]
+    fn daemon_status_reports_running_daemon_with_pid() {
+        let inst = IsolatedInstance::new("status_running_pid");
+        let daemon = ForeignProcess::spawn();
+        let port = spawn_health_responder(HEALTH_WARM);
+        seed_pidfile_as_ours(&inst.dir, &daemon, &format!("127.0.0.1:{port}"));
+
+        let (code, actual) = run_json_env(&["--json", "daemon", "status"], &inst.contract_args());
+        assert_eq!(code, 0, "{actual}");
+        assert_eq!(actual["daemon"], "running", "{actual}");
+        assert_eq!(actual["pid"], daemon.pid(), "{actual}");
+        assert_eq!(actual["engine"], "rust_native", "{actual}");
+        assert_eq!(actual["warm"], "warm", "{actual}");
+        assert!(actual.get("degraded").is_none(), "{actual}");
+    }
+
+    /// Un daemon propio vivo que no responde a `/health` no está en servicio, y
+    /// `status` lo distingue de la vía libre con `degraded`: es el residuo que
+    /// `daemon start` reclama antes de arrancar.
+    #[test]
+    fn daemon_status_reports_unresponsive_registered_daemon() {
+        let inst = IsolatedInstance::new("status_unresponsive");
+        let daemon = ForeignProcess::spawn();
+        let closed = DecoyPort::reserve();
+        seed_pidfile_as_ours(&inst.dir, &daemon, &format!("127.0.0.1:{}", closed.port));
+
+        let (code, actual) = run_json_env(&["--json", "daemon", "status"], &inst.contract_args());
+        assert_eq!(code, 0, "{actual}");
+        assert_eq!(actual["daemon"], "stopped", "{actual}");
+        assert_eq!(actual["degraded"], "unresponsive", "{actual}");
+        assert!(actual.get("pid").is_none(), "{actual}");
+    }
+
+    /// Algo que responde a `/health` en la dirección del daemon sin un daemon
+    /// propio registrado no es el daemon: `status` lo informa como `unregistered`.
+    #[test]
+    fn daemon_status_reports_unregistered_responder() {
+        let mut inst = IsolatedInstance::new("status_unregistered");
+        let port = spawn_health_responder(HEALTH_WARM);
+        for (k, v) in inst.envs.iter_mut() {
+            if k == "AVI_DAEMON_PORT" {
+                *v = port.to_string();
+            }
+        }
+
+        let (code, actual) = run_json_env(&["--json", "daemon", "status"], &inst.contract_args());
+        assert_eq!(code, 0, "{actual}");
+        assert_eq!(actual["daemon"], "stopped", "{actual}");
+        assert_eq!(actual["degraded"], "unregistered", "{actual}");
+    }
+
+    /// `daemon start` ante un daemon propio colgado lo reclama (su árbol muere)
+    /// antes de lanzar uno nuevo; el puerto ocupado hace fallar ese lanzamiento con
+    /// `port_in_use`, que corta la prueba sin cargar modelos. Solo en Windows: en
+    /// Unix el hijo muerto de la prueba sigue siendo un zombi, visible como vivo
+    /// para la viveza exacta, hasta que la prueba lo recolecta.
+    #[cfg(windows)]
+    #[test]
+    fn daemon_start_reclaims_unresponsive_registered_daemon() {
+        let mut inst = IsolatedInstance::new("start_reclaims_unresponsive");
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        let mut daemon = ForeignProcess::spawn();
+        let closed = DecoyPort::reserve();
+        seed_pidfile_as_ours(&inst.dir, &daemon, &format!("127.0.0.1:{}", closed.port));
+        let _holder = occupy_instance_port(&mut inst);
+
+        let (code, actual) = run_json_env(&["--json", "daemon", "start"], &inst.contract_args());
+        assert_eq!(
+            code, 6,
+            "tras el reclamo el lanzamiento choca con el puerto: {actual}"
+        );
+        assert_eq!(actual["reason"], "port_in_use", "{actual}");
+        assert!(!daemon.alive(), "el daemon colgado debe quedar reclamado");
     }
 
     /// Soltar la instancia no mata a un proceso ajeno: el `Drop` solo cosecha un
