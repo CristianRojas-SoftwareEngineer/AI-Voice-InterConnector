@@ -289,7 +289,7 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 | Estado | Significado | Qué hace el barrido |
 |---|---|---|
 | `Ours` | El proceso vive con esa identidad | Conserva sin informar |
-| `Dead` | El proceso no existe, o su PID lo ocupa otro proceso | Barre |
+| `Dead` | El proceso no existe o ya terminó, aunque otro proceso conserve un handle suyo, o su PID lo ocupa otro proceso | Barre |
 | `Unknown` | La identidad no se puede observar (acceso denegado) | Conserva e informa; nunca se da por muerto |
 
 **Dos mecanismos de propiedad.** Los recursos de ciclo de vida (stagings de instalación y aparcados) pertenecen a quien tiene el bloqueo exclusivo de ciclo de vida, y además llevan su token en el nombre. Los recursos de ejecución (scratch, temporales de destino, stagings de voz, enlaces temporales y logs) pertenecen únicamente al proceso cuyo token llevan.

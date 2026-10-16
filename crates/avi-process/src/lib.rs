@@ -77,6 +77,7 @@ pub fn process_identity(pid: u32) -> Option<ProcessIdentity> {
 /// Observa la identidad del proceso con ese PID. Windows: `OpenProcess` que
 /// falla con `ERROR_INVALID_PARAMETER` es un PID sin proceso; con
 /// `ERROR_ACCESS_DENIED` (o cualquier otro error) el proceso no es observable.
+/// Un proceso que ya tiene hora de salida es `Gone` aunque el handle se abra.
 #[cfg(windows)]
 pub fn observe_identity(pid: u32) -> IdentityObservation {
     use windows_sys::Win32::Foundation::{
@@ -105,18 +106,25 @@ pub fn observe_identity(pid: u32) -> IdentityObservation {
             dwHighDateTime: 0,
         };
         let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
-        let times_ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
+        if GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) == 0 {
+            CloseHandle(handle);
+            return IdentityObservation::Denied;
+        }
+        // Un proceso terminado cuyo handle sigue abierto en otro sitio (un
+        // antivirus, el agente de la CI) conserva la hora de salida: ya no es un
+        // proceso vivo. Se decide antes de pedir el nombre de la imagen, que el
+        // sistema ya no da para un proceso terminado y cuyo fallo lo haría pasar
+        // por no observable.
+        if exited.dwLowDateTime != 0 || exited.dwHighDateTime != 0 {
+            CloseHandle(handle);
+            return IdentityObservation::Gone;
+        }
         let mut buf = [0u16; 1024];
         let mut len = buf.len() as u32;
         let name_ok = QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut len);
         CloseHandle(handle);
-        if times_ok == 0 || name_ok == 0 {
+        if name_ok == 0 {
             return IdentityObservation::Denied;
-        }
-        // Un proceso terminado cuyo handle sigue abierto en otro sitio conserva
-        // la hora de salida: ya no es un proceso vivo.
-        if exited.dwLowDateTime != 0 || exited.dwHighDateTime != 0 {
-            return IdentityObservation::Gone;
         }
         let start = ((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64;
         let path = String::from_utf16_lossy(&buf[..len as usize]);
@@ -631,6 +639,31 @@ mod tests {
             None,
             "el hijo muerto no tiene identidad"
         );
+    }
+
+    /// Un proceso terminado cuyo handle sigue abierto en otro sitio no existe:
+    /// es `Gone` y su dueño, `Dead`, no un `Denied` que lo conservaría como dueño
+    /// desconocido. El `Child` sin soltar mantiene ese handle, como lo haría un
+    /// antivirus o el agente de la CI.
+    #[test]
+    fn terminated_process_with_open_handle_is_gone() {
+        #[cfg(windows)]
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("se lanza el hijo");
+        #[cfg(not(windows))]
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("se lanza el hijo");
+        let owner = owner_token_of(child.id()).expect("el hijo vivo se puede observar");
+        child.kill().expect("se mata al hijo");
+        child.wait().expect("se espera al hijo");
+        assert_eq!(observe_identity(child.id()), IdentityObservation::Gone);
+        assert_eq!(classify_owner(&owner), OwnerState::Dead);
+        drop(child);
     }
 
     /// Línea de `/proc/<pid>/stat` con `comm` y `starttime` dados: tras el

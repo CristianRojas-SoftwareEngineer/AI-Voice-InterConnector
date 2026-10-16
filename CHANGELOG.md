@@ -139,6 +139,12 @@ en lugar de aceptarse en silencio.
 - `daemon start` reclama un residual con la misma parada que `daemon stop` y
   `daemon restart`. Si el reclamo no concluye, falla con `daemon_stop_failed`
   (exit 16) sin lanzar otro daemon, en lugar de intentar el arranque igualmente.
+- En Windows, un proceso terminado del que otro proceso (un antivirus, un agente)
+  conservaba un handle se clasificaba como dueño no observable en lugar de
+  muerto, porque la observación pedía el nombre de su imagen antes de mirar la
+  hora de salida. Sus stagings, scratch y temporales se conservaban como
+  pendientes en vez de barrerse. Ahora un proceso con hora de salida es un
+  dueño muerto.
 - El README daba ~40 MB para el programa instalado. En Windows ocupa ~124 MB:
   el binario, el motor TTS y ONNX Runtime.
 - La documentación afirmaba que `voice clone` valida un mínimo de 10 s de
