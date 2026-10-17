@@ -316,7 +316,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "app": "ai-voice-interconnector",
   "version": "0.24.0",
   "target": "x86_64-unknown-linux-gnu",
@@ -342,8 +342,7 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
     "data_dir": "/home/ana/.local/share/ai-voice-interconnector",
     "cache_dir": "/home/ana/.cache/ai-voice-interconnector"
   },
-  "installed_at": "2026-09-25T18:00:00Z",
-  "source": "https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.24.0/ai-voice-interconnector-0.24.0-x86_64-linux.tar.gz"
+  "installed_at": "2026-09-25T18:00:00Z"
 }
 ```
 
@@ -369,10 +368,12 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 | Tipo de operación | Con terminal | Sin terminal |
 |---|---|---|
-| No destructiva (`self install`, `self update`, `setup`) | Resumen de cambios y confirmación `[S/n]`; `--yes` la omite | Procede sin preguntar |
-| Destructiva (`self uninstall`, `cleanup`, `setup --force-update`, degradar de versión, `xtask clean`) | Lista de rutas con tamaños y confirmación `[s/N]`; `--yes` la omite | Exige `--yes`; sin él termina con `confirmation_required` y no borra nada |
+| No destructiva (`self install`, `self update`, `setup`) | Resumen de cambios y confirmación `¿Continuar? [S/n] `; `--yes` la omite | Procede sin preguntar |
+| Destructiva (`self uninstall`, `cleanup`, `setup --force-update`, degradar de versión, `xtask clean`) | Plan con cada ruta una vez, su categoría en español y su tamaño, y confirmación `Esto eliminará lo indicado. ¿Continuar? [s/N] `; `--yes` la omite | Exige `--yes`; sin él termina con `confirmation_required` y no borra nada |
 
-**Simulación.** Toda operación destructiva acepta `--dry-run`: imprime el plan (rutas, tamaños, cambios de PATH) sin modificar el disco.
+Los dos prompts terminan con un espacio, para que la respuesta no quede pegada.
+
+**Simulación.** Toda operación destructiva acepta `--dry-run`: imprime el mismo plan que mostraría la ejecución (rutas, categorías, tamaños, cambios de PATH) y después, una sola vez, `Simulación: no se ha modificado nada.`, sin modificar el disco.
 
 **Salida.** El progreso y los avisos van a stderr en español; el resultado, a stdout. Con `--json`, stdout contiene únicamente el envelope estándar del contrato de la CLI, con `status`, `reason` y los campos de cada operación.
 
@@ -452,8 +453,8 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 2. **Unix: rechazar `sudo`** ([§8.1](#81-reglas-transversales), privilegios).
 3. **Resolver la versión**, por este orden: opción o variable, versión estampada, y (solo si el script se ejecuta sin estampar, desde el repositorio) la última estable, obtenida siguiendo la redirección de `https://github.com/<repo>/releases/latest`. Solo si esa redirección no entrega una etiqueta utilizable, el bootstrap consulta como respaldo `https://api.github.com/repos/<repo>/releases/latest` y extrae únicamente `tag_name`. El respaldo obtiene el mismo valor por otra vía y no degrada nada en silencio: si tampoco resuelve → `network_error`, antes de descargar nada. La versión resuelta debe ser exactamente `X.Y.Z` (solo dígitos y puntos, tres componentes); si no → `usage_error` (código 2), antes de descargar nada.
 4. **Crear un directorio temporal propio** bajo el directorio temporal del sistema (`$TMPDIR` o `/tmp` en Unix; `%TEMP%` en Windows), con permisos solo del usuario. Si no se pueden restringir los permisos (`chmod` en Unix; la ACL en Windows) el bootstrap falla cerrado antes de descargar nada: borra el temporal ya creado y termina con error (`permission_error` en Windows). El bootstrap no crea nada junto al programa: el staging junto al programa lo crea después `self install`, con el bloqueo tomado.
-5. **Descargar** el archivo del target y `SHA256SUMS.txt` por HTTPS.
-6. **Verificar**: localizar en `SHA256SUMS.txt` la línea cuyo nombre coincide exactamente con el del archivo (comparación de cadenas, no expresión regular) y comparar el hash en minúsculas. Si el hash no coincide o falta la línea → `checksum_mismatch` y se borra el directorio temporal.
+5. **Descargar** el archivo del target y `SHA256SUMS.txt` por HTTPS. Anuncia `Descargando <archivo>...` antes de empezar; no se dibuja la barra nativa de PowerShell porque ralentiza la descarga en 5.1.
+6. **Verificar**: localizar en `SHA256SUMS.txt` la línea cuyo nombre coincide exactamente con el del archivo (comparación de cadenas, no expresión regular) y comparar el hash en minúsculas. Si el hash no coincide o falta la línea → `checksum_mismatch` y se borra el directorio temporal. Tras el éxito muestra `<tamaño> en <s> s; checksum verificado.` con MB decimales y coma, y una línea en blanco que separa el bloque del bootstrap del plan de `self install`.
 7. **Extraer** en el directorio temporal.
 8. **Comprobar el arranque** con `<temporal>/ai-voice-interconnector --version`. Si falla → `binary_incompatible` con diagnóstico ([§3](#3-targets-soportados)); la instalación existente no se toca.
 9. **Delegar**: `<temporal>/ai-voice-interconnector self install`, pasando las opciones. En Unix, si stdin no es una terminal y `/dev/tty` está disponible, stdin se redirige desde `/dev/tty`.
@@ -468,7 +469,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 - Delega en `self install` sin interceptar su salida: el binario escribe directamente en la consola, así que su resumen final llega al usuario, y el código de salida viaja por un canal propio, separado de esa salida. Si PowerShell capturara el stdout del binario, el resumen se perdería y, en PowerShell 5.1, se recodificaría con la página OEM de la consola, corrompiendo las tildes.
 - Desactiva la barra de progreso durante las descargas (en PowerShell 5.1 ralentiza mucho `Invoke-WebRequest`) y habilita TLS 1.2 si falta.
 - Usa `Invoke-WebRequest -UseBasicParsing`, `Get-FileHash`, `Get-Acl`, `Set-Acl` y `Expand-Archive`. Al arrancar, antes de descargar nada, verifica que esos cmdlets estén disponibles; si el entorno heredado los sombrea (el `PSModulePath` de PowerShell 7 bajo Windows PowerShell 5.1), importa los módulos estándar del propio motor desde su directorio de instalación, sin modificar `PSModulePath`, y si aun así faltan falla con `unsupported_platform` nombrando los cmdlets ausentes.
-- Su efecto sobre la sesión es añadir el directorio de programa al PATH de esa sesión, para que el comando funcione sin abrir otra terminal, y, solo si hubo que reparar el entorno, cargar en ella esos módulos estándar.
+- Su efecto sobre la sesión es añadir el directorio de programa al PATH de esa sesión, para que el comando funcione sin abrir otra terminal. Tras el éxito informa `El comando ya está disponible en esta ventana.`; solo si hubo que reparar el entorno carga en ella los módulos estándar.
 - El archivo es ASCII puro y sin BOM. Bajo `irm | iex` el cuerpo llega como texto sin `charset` (ISO-8859-1 en PowerShell 5.1, UTF-8 que conserva `U+FEFF` en 7): un BOM impide el parseo y un byte no ASCII corrompe los mensajes. Las tildes de los mensajes se componen con variables `[char]` definidas al inicio del bloque de ámbito propio.
 
 ### 8.3 `self install`
@@ -491,9 +492,11 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
      Programa:  ~/.local/opt/ai-voice-interconnector   (reemplaza 0.23.1)
      Comando:   ~/.local/bin/ai-voice-interconnector
      PATH:      se añadirá ~/.local/bin en ~/.bashrc y ~/.profile
-     Modelos:   se descargarán unos 5.9 GB en ~/.cache/ai-voice-interconnector/models
+     Modelos:   se descargarán unos 5,9 GB en ~/.cache/ai-voice-interconnector/models
    ¿Continuar? [S/n]
    ```
+
+   El prompt termina con un espacio después de `[S/n]`, aunque el bloque de Markdown no lo muestre.
 
    Con la integración del `PATH` ya hecha (entrada del registro en Windows, enlace del comando en Unix), la línea del `PATH` no anuncia cambios:
 
@@ -514,8 +517,8 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en todo el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. Si el archivo se descargó por navegador y se extrajo con el Finder, todos los archivos heredan la cuarentena.
 8. **Integración de PATH** ([§8.3.1](#831-integración-de-path)).
 9. **Escribir el recibo** (de forma atómica).
-10. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`. El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
-11. **Resumen final**: versión, rutas, estado del PATH (con "abre una terminal nueva" cuando corresponda) y estado de los modelos.
+10. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y basta reintentar con `setup`. El bloqueo se retiene hasta aquí y se libera al terminar la provisión. La vista abre otro bloque con una línea en blanco, anuncia `Descargando N modelo(s):`, muestra una barra por modelo pendiente con su total real, velocidad y tiempos rotulados (solo con terminal), deja una línea permanente `✓ [i/N]` con tamaño, duración y velocidad al terminar cada modelo, y cierra con `Modelos descargados: <tamaño> en <duración>.`. Las líneas permanentes salen también sin terminal.
+11. **Resumen final**: precedido de una línea en blanco; versión, rutas (`Comando:` incluye `.exe` en Windows), estado del PATH (`se añadió <dir>; las terminales que ya estaban abiertas no lo verán hasta reiniciarse.` cuando esta pasada lo reescribió) y estado de los modelos (`se descargaron N modelo(s), <tamaño> en <duración>` cuando se descargó algo).
 
 #### 8.3.1 Integración de PATH
 

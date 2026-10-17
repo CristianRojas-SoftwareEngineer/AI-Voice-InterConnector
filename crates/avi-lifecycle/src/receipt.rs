@@ -33,7 +33,7 @@ use std::path::{Path, PathBuf};
 pub const RECEIPT_NAME: &str = "install-receipt.json";
 
 /// Versión del esquema que esta versión del motor sabe leer.
-pub const RECEIPT_SCHEMA_VERSION: u32 = 1;
+pub const RECEIPT_SCHEMA_VERSION: u32 = 2;
 
 /// Integración de `PATH` efectivamente aplicada. Los tres
 /// campos son mutuamente excluyentes según la plataforma: en Unix el enlace
@@ -125,18 +125,11 @@ pub struct InstallReceipt {
     pub roots: Roots,
     /// Instante de la instalación en RFC 3339 UTC.
     pub installed_at: String,
-    /// Origen del bundle, si la instalación vino de un archivo publicado; `null`
-    /// para una reparación.
-    #[serde(deserialize_with = "required")]
-    pub source: Option<String>,
 }
 
 impl InstallReceipt {
     /// Recibo de una instalación nueva. `roots` y `install_dir` se pasan ya
     /// resueltos: quien escribe es quien sabe qué valor efectivo se aplicó.
-    // Los ocho campos son los que el instalador conoce uno a uno; un
-    // agrupador aquí solo movería la misma lista un sitio más arriba.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         version: &str,
         target: &str,
@@ -145,7 +138,6 @@ impl InstallReceipt {
         files: Vec<String>,
         path_integration: PathIntegration,
         roots: Roots,
-        source: Option<String>,
     ) -> Self {
         Self {
             schema_version: RECEIPT_SCHEMA_VERSION,
@@ -158,7 +150,6 @@ impl InstallReceipt {
             path_integration,
             roots,
             installed_at: now_rfc3339(),
-            source,
         }
     }
 }
@@ -282,7 +273,6 @@ mod tests {
                 data_dir: PathBuf::from("/home/ana/.local/share/ai-voice-interconnector"),
                 cache_dir: PathBuf::from("/home/ana/.cache/ai-voice-interconnector"),
             },
-            Some("https://example.invalid/bundle.tar.gz".to_string()),
         )
     }
 
@@ -365,14 +355,11 @@ mod tests {
     #[test]
     fn receipt_requires_optional_keys() {
         let dir = scratch("receipt-missing-keys");
-        for key in ["source", "symlink", "profile_blocks", "registry_entry"] {
+        for key in ["symlink", "profile_blocks", "registry_entry"] {
             let mut value = serde_json::to_value(sample_receipt()).expect("se serializa");
-            let object = if key == "source" {
-                value.as_object_mut()
-            } else {
-                value["path_integration"].as_object_mut()
-            }
-            .expect("es un objeto");
+            let object = value["path_integration"]
+                .as_object_mut()
+                .expect("es un objeto");
             assert!(object.remove(key).is_some(), "el recibo escribe `{key}`");
             std::fs::write(receipt_path(&dir), value.to_string()).unwrap();
             let message = read_from(&dir).unwrap_err().to_string();
@@ -388,11 +375,11 @@ mod tests {
     #[test]
     fn receipt_requires_the_current_schema_version() {
         let dir = scratch("receipt-schema");
-        for declared in ["0", "2"] {
+        for declared in ["1", "3"] {
             let text = serde_json::to_string(&sample_receipt())
                 .expect("el recibo se serializa")
                 .replacen(
-                    "\"schema_version\":1",
+                    "\"schema_version\":2",
                     &format!("\"schema_version\":{declared}"),
                     1,
                 );
@@ -448,7 +435,6 @@ mod tests {
             vec!["ai-voice-interconnector".to_string()],
             PathIntegration::none(),
             roots.clone(),
-            None,
         );
         write_to(&receipt, &dir).unwrap();
 
