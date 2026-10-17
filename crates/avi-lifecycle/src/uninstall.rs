@@ -45,6 +45,7 @@ use crate::daemon_stop::{self, ProcessControl};
 use crate::ownership;
 use crate::path_unix;
 use crate::receipt::{self, InstallReceipt, PathIntegration};
+use crate::recovery::SweepPreview;
 use crate::LifecycleError;
 use avi_process::OwnerToken;
 use std::path::{Path, PathBuf};
@@ -326,8 +327,8 @@ pub async fn run(
         .collect();
 
     // ── Paso 4. Confirmación destructiva ─────────────────────────────────────────
-    let summary = compose_summary(&plan, options);
-    let decision = confirm(&summary, &entries, options)?;
+    let summary = plan_lines(&plan, options, None);
+    let decision = confirm(&summary, options)?;
     if decision == Decision::Cancelled {
         return Ok(Outcome {
             status: "cancelled",
@@ -538,7 +539,7 @@ pub fn compose_plan(
         if roots.data_dir.is_dir() {
             models.push(cleanup::Target {
                 path: roots.data_dir.clone(),
-                category: Category::Config,
+                category: Category::UserData,
                 size: cleanup::path_size(&roots.data_dir),
             });
         }
@@ -672,25 +673,10 @@ pub fn simulate(
 ) -> Outcome {
     let plan = compose_plan(roots, receipt, program_dir, options);
     let preview = crate::recovery::preview(roots.recovery_roots());
-    eprintln!(
-        "Simulación: se muestra lo que {} borraría, no se ha modificado nada.",
-        crate::APP_NAME
-    );
-    for entry in plan.entries() {
-        match entry.size {
-            Some(size) => eprintln!("  {} ({})", entry.path.display(), crate::human_bytes(size)),
-            None => eprintln!("  {}", entry.path.display()),
-        }
+    for line in plan_lines(&plan, options, Some(&preview)) {
+        eprintln!("{line}");
     }
-    for path in preview.all() {
-        eprintln!("  barrido {}", path.display());
-    }
-    for revert in &plan.path_revert {
-        eprintln!("  {revert}");
-    }
-    for item in &plan.preserved {
-        eprintln!("  no se tocará {}: {}", item.path.display(), item.reason);
-    }
+    eprintln!("{}", confirm::simulation_notice());
     // `removed` son las entradas del plan y `swept` el barrido previsto, en las dos
     // ramas: mezclar el barrido dentro de `removed` en la simulación y no en la
     // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
@@ -724,8 +710,12 @@ pub fn simulate(
     }
 }
 
-/// Resumen legible del plan, que es lo que el paso 2 muestra antes de preguntar.
-fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
+/// Plan legible: la única composición del plan de `self uninstall`, que imprimen
+/// igual la simulación y la confirmación del paso 2. Cada entrada del plan aparece
+/// una vez, con la categoría de su destino cuando la tiene y su tamaño cuando
+/// existe; después, el barrido que se haría (solo en la simulación, que recibe
+/// `preview`), la reversión del `PATH` y lo que se conserva.
+fn plan_lines(plan: &Plan, options: &Options, preview: Option<&SweepPreview>) -> Vec<String> {
     let mut out = vec![format!(
         "Se desinstalará {}{}.",
         crate::APP_NAME,
@@ -741,13 +731,26 @@ fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
         entries.len(),
         plan.preserved.len()
     ));
-    for target in &plan.state.targets {
-        out.push(format!(
-            "  {} {} ({})",
-            target.category.as_str(),
-            target.path.display(),
-            crate::human_bytes(target.size)
-        ));
+    for entry in &entries {
+        let category = plan
+            .state
+            .targets
+            .iter()
+            .find(|t| t.path == entry.path)
+            .map(|t| t.category.describe());
+        let mut line = match category {
+            Some(category) => format!("  {category}: {}", entry.path.display()),
+            None => format!("  {}", entry.path.display()),
+        };
+        if let Some(size) = entry.size {
+            line.push_str(&format!(" ({})", crate::human_bytes(size)));
+        }
+        out.push(line);
+    }
+    if let Some(preview) = preview {
+        for path in preview.all() {
+            out.push(format!("  barrido {}", path.display()));
+        }
     }
     for revert in &plan.path_revert {
         out.push(format!("  {revert}"));
@@ -763,18 +766,14 @@ fn compose_summary(plan: &Plan, options: &Options) -> Vec<String> {
 }
 
 /// Aplica la confirmación destructiva.
-fn confirm(
-    summary: &[String],
-    entries: &[PlanEntry],
-    options: &Options,
-) -> anyhow::Result<Decision> {
+fn confirm(summary: &[String], options: &Options) -> anyhow::Result<Decision> {
     let stdin = std::io::stdin();
     let mut entry = stdin.lock();
     confirm::confirm(
         &Confirmation {
             kind: Kind::Destructive,
             summary,
-            entries,
+            entries: &[],
             assume_yes: options.assume_yes,
             dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
@@ -1208,6 +1207,58 @@ mod program_dir_rule_tests {
         assert!(
             !program_dir_is_removable(&roots(&home, &program), &program),
             "la mitad positiva exige recibo o ejecutable"
+        );
+    }
+
+    /// El plan lista cada ruta una vez, la raíz de datos como `datos de usuario` y
+    /// sin literales internos, y la simulación y la ejecución muestran el mismo.
+    #[test]
+    fn plan_lines_list_each_path_once_in_spanish() {
+        let root = sandbox("plan-lines");
+        let home = root.join("home").join("ana");
+        let program = home.join("programs").join("ai-voice-interconnector");
+        with_receipt(&program);
+        crate::test_support::write_file(&home.join("data").join("voices").join("v.wav"), "voz");
+        crate::test_support::write_file(&home.join("models").join("m.bin"), "pesos");
+        let r = roots(&home, &program);
+        let options = Options::default();
+
+        let plan = compose_plan(&r, None, &program, &options);
+        let lines = plan_lines(&plan, &options, None);
+        for entry in plan.entries() {
+            let shown = entry.path.display().to_string();
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|l| l.contains(&shown) && !l.contains("no se tocará"))
+                    .count(),
+                1,
+                "{shown}: {lines:?}"
+            );
+        }
+        let data = r.data_dir.display().to_string();
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with(&format!("  datos de usuario: {data} ("))),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.contains("  config ") && !l.contains("  model ")),
+            "{lines:?}"
+        );
+
+        let preview = crate::recovery::preview(r.recovery_roots());
+        assert!(
+            preview.all().is_empty(),
+            "el sandbox no tiene nada que barrer"
+        );
+        assert_eq!(
+            plan_lines(&plan, &options, Some(&preview)),
+            plan_lines(&compose_plan(&r, None, &program, &options), &options, None),
+            "la simulación y la ejecución muestran el mismo plan"
         );
     }
 }

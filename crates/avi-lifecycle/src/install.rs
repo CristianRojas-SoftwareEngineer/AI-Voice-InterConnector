@@ -115,9 +115,6 @@ pub struct Env {
     /// Dirección a la que se conecta el protocolo de parada cuando no hay pidfile.
     /// Parámetro por lo mismo que en `daemon_stop::stop`.
     pub daemon_addr: String,
-    /// Origen del bundle para el recibo. El bootstrap lo estampa en la variable que
-    /// se lee aquí; vacío para una reparación.
-    pub source: Option<String>,
 }
 
 impl Env {
@@ -170,7 +167,6 @@ impl Env {
             #[cfg(unix)]
             link_state,
             daemon_addr: daemon_stop::default_addr(),
-            source: std::env::var("AVI_SOURCE_URL").ok(),
         })
     }
 }
@@ -242,8 +238,13 @@ pub enum ModelsState {
     Skipped,
     /// Ya estaba todo provisionado y no se descargó nada.
     AlreadyProvisioned,
-    /// Se provisionó lo que faltaba.
-    Provisioned { count: usize },
+    /// Se provisionó lo que faltaba: cuántos modelos, cuántos bytes y en cuánto
+    /// tiempo.
+    Provisioned {
+        count: usize,
+        bytes: u64,
+        elapsed: std::time::Duration,
+    },
     /// Se empezó a provisionar y falló. El programa queda instalado y basta reintentar
     /// con `setup`, que es lo que se llama éxito parcial de `setup_failed`.
     ///
@@ -272,7 +273,15 @@ impl ModelsState {
         match self {
             Self::Skipped => "no se provisionaron (--no-setup)".to_string(),
             Self::AlreadyProvisioned => "ya estaban provisionados".to_string(),
-            Self::Provisioned { count } => format!("se descargaron {count} modelo(s)"),
+            Self::Provisioned {
+                count,
+                bytes,
+                elapsed,
+            } => format!(
+                "se descargaron {count} modelo(s), {} en {}",
+                crate::human_bytes(*bytes),
+                crate::progress::format_duration(*elapsed)
+            ),
             Self::Failed { .. } => "falló la provisión".to_string(),
         }
     }
@@ -285,7 +294,7 @@ pub struct Outcome {
     pub status: &'static str,
     pub mode: Mode,
     /// Recibo escrito. En reparación es un recibo nuevo con los mismos valores de
-    /// versión, canal y origen: reaplicar el recibo es uno de los pasos de la
+    /// versión y canal: reaplicar el recibo es uno de los pasos de la
     /// instalación.
     pub receipt: InstallReceipt,
     /// Resumen final.
@@ -377,7 +386,6 @@ impl Outcome {
                     data_dir: env.data_dir.clone(),
                     cache_dir: env.cache_dir.clone(),
                 },
-                None,
             ),
             summary: vec!["Cancelado.".to_string()],
             summary_before: vec!["Cancelado.".to_string()],
@@ -673,7 +681,6 @@ pub async fn install(
             data_dir: env.data_dir.clone(),
             cache_dir: env.cache_dir.clone(),
         },
-        source_of(env, previous.as_ref()),
     );
     receipt::write_to(&receipt, &env.program_dir)?;
 
@@ -850,15 +857,6 @@ pub fn apply_path(
     }
 }
 
-/// Origen del bundle en el recibo: el de la instalación anterior si la había, y si no
-/// el que el bootstrap estampó. Un bundle extraído a mano no lo tiene, y ahí
-/// `source` queda vacío.
-fn source_of(env: &Env, previous: Option<&InstallReceipt>) -> Option<String> {
-    previous
-        .and_then(|r| r.source.clone())
-        .or_else(|| env.source.clone())
-}
-
 /// Modelos pendientes de provisionar: solo alimenta el resumen previo del paso 4.
 /// No gobierna la ejecución: la provisión decide con el estado real del almacén.
 ///
@@ -898,9 +896,13 @@ async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
         }
     };
     match setup::provision(&store, provisioner).await {
-        Ok(done) if done.downloaded.is_empty() => ModelsState::AlreadyProvisioned,
-        Ok(done) => ModelsState::Provisioned {
-            count: done.downloaded.len(),
+        Ok(done) => match done.stats {
+            None => ModelsState::AlreadyProvisioned,
+            Some(stats) => ModelsState::Provisioned {
+                count: done.downloaded.len(),
+                bytes: stats.bytes,
+                elapsed: stats.elapsed,
+            },
         },
         Err(setup::ProvisionError::Download { name, cause }) => ModelsState::Failed {
             cause: setup::map_download_failure(&name, &cause),
@@ -922,6 +924,16 @@ fn setup_failed_message(program_dir: &Path, cause: &LifecycleError) -> String {
         cause.message,
         program_dir.display()
     )
+}
+
+/// Ruta del ejecutable del comando tal como existe en disco, con la extensión
+/// del sistema (`.exe` en Windows), para que sea copiable.
+fn command_path(env: &Env) -> PathBuf {
+    env.bin_dir.join(format!(
+        "{}{}",
+        crate::APP_NAME,
+        std::env::consts::EXE_SUFFIX
+    ))
 }
 
 /// Resumen previo, paso 4.
@@ -956,10 +968,7 @@ fn compose_summary(
             env.program_dir.display()
         ),
     });
-    out.push(format!(
-        "  Comando:   {}",
-        env.bin_dir.join(crate::APP_NAME).display()
-    ));
+    out.push(format!("  Comando:   {}", command_path(env).display()));
     out.push(if options.no_modify_path {
         "  PATH:      no se modifica (--no-modify-path); invoca el comando por su ruta \
          completa."
@@ -1004,8 +1013,8 @@ fn compose_summary(
     out
 }
 
-/// Resumen final: versión, rutas, estado del `PATH` —con la
-/// indicación de abrir una terminal nueva cuando corresponda— y estado de los
+/// Resumen final: versión, rutas, estado del `PATH` —con el aviso de que las
+/// terminales ya abiertas no lo ven cuando se acaba de añadir— y estado de los
 /// modelos.
 // Cada parámetro es un hecho distinto observado en un paso anterior y una línea del
 // resumen depende de él; agruparlos en una estructura de un solo uso solo movería los
@@ -1034,10 +1043,7 @@ fn final_summary(
             env.version
         ),
         format!("  Programa:  {}", env.program_dir.display()),
-        format!(
-            "  Comando:   {}",
-            env.bin_dir.join(crate::APP_NAME).display()
-        ),
+        format!("  Comando:   {}", command_path(env).display()),
     ];
     // El resumen final lleva **una** línea del `PATH`, y es la del **estado**, no la del
     // plan. Copiar aquí la línea del resumen previo —que dice lo que se va a hacer— y
@@ -1050,10 +1056,14 @@ fn final_summary(
     // que acaba de pasar; "ya estaba integrado" cuando la integración está en pie y esta
     // pasada no la tocó; y el texto del plan cuando no se va a integrar nada
     // (`--no-modify-path`), donde el plan *es* el estado porque no hubo escritura.
+    //
+    // "Se añadió" avisa de que solo las terminales que ya estaban abiertas no lo ven: no
+    // pide abrir otra, porque la ventana del bootstrap sí lo ve (el bootstrap de Windows
+    // actualiza su propio `PATH`) y las que se abran después también.
     if path_rewritten {
         out.push(format!(
-            "  PATH:      se añadió {}; abre una terminal nueva para que el comando \
-             se encuentre.",
+            "  PATH:      se añadió {}; las terminales que ya estaban abiertas no lo verán \
+             hasta reiniciarse.",
             env.bin_dir.display()
         ));
     } else if integration.modify_path {
@@ -1338,8 +1348,12 @@ mod tests {
             (ModelsState::Skipped, "no se provisionaron (--no-setup)"),
             (ModelsState::AlreadyProvisioned, "ya estaban provisionados"),
             (
-                ModelsState::Provisioned { count: 5 },
-                "se descargaron 5 modelo(s)",
+                ModelsState::Provisioned {
+                    count: 5,
+                    bytes: 5_850_187_279,
+                    elapsed: std::time::Duration::from_secs(119),
+                },
+                "se descargaron 5 modelo(s), 5,9 GB en 1 min 59 s",
             ),
             (ModelsState::Failed { cause }, "falló la provisión"),
         ];
@@ -1385,49 +1399,6 @@ mod tests {
         }
     }
 
-    /// El recibo registra el origen de la instalación anterior, no el de la
-    /// reparación: una reparación no cambia de dónde vino el bundle.
-    #[test]
-    fn receipt_source_is_preserved_across_repair() {
-        let env = test_env();
-        let previous = InstallReceipt::new(
-            "0.23.1",
-            &env.target,
-            Channel::Script,
-            &env.program_dir,
-            vec![env.target.clone()],
-            PathIntegration::none(),
-            Roots {
-                data_dir: env.data_dir.clone(),
-                cache_dir: env.cache_dir.clone(),
-            },
-            Some("https://example.invalid/bundle.tar.gz".to_string()),
-        );
-        assert_eq!(
-            source_of(&env, Some(&previous)),
-            previous.source,
-            "el origen se conserva"
-        );
-
-        let mut without_source = env.clone();
-        without_source.source = Some("https://other.invalid/bundle.tar.gz".to_string());
-        assert_eq!(
-            source_of(&without_source, Some(&previous)),
-            previous.source,
-            "el del entorno no pisa el del recibo"
-        );
-        assert_eq!(
-            source_of(&without_source, None),
-            without_source.source,
-            "sin recibo previo, manda el del entorno"
-        );
-        assert_eq!(
-            source_of(&env, None),
-            None,
-            "un bundle a mano no tiene origen"
-        );
-    }
-
     /// `--no-modify-path` no toca nada en ninguna plataforma, y sin él el plan nombra
     /// el archivo de arranque que se va a tocar: es la línea que el resumen anuncia.
     #[test]
@@ -1462,7 +1433,8 @@ mod tests {
 
     /// El resumen previo anuncia la descarga con el tamaño de la tabla de pines en
     /// escala decimal: la selección (Qwen3-TTS, los dos opus-mt, Parakeet y el
-    /// Base de clonado) suma 5 850 187 279 bytes, que son 5.9 GB.
+    /// Base de clonado) suma 5 850 187 279 bytes, que son 5,9 GB. La línea del comando
+    /// lleva la extensión del sistema, que es la ruta que existe en disco.
     #[test]
     fn summary_announces_the_pinned_download_size() {
         let env = test_env();
@@ -1479,9 +1451,16 @@ mod tests {
         );
         assert!(
             summary.contains(&format!(
-                "  Modelos:   se descargarán unos 5.9 GB en {}",
+                "  Modelos:   se descargarán unos 5,9 GB en {}",
                 env.models_dir.display()
             )),
+            "{summary:?}"
+        );
+        let command = format!("{}{}", crate::APP_NAME, std::env::consts::EXE_SUFFIX);
+        assert!(
+            summary
+                .iter()
+                .any(|l| l.starts_with("  Comando:   ") && l.ends_with(&command)),
             "{summary:?}"
         );
     }
@@ -1510,7 +1489,6 @@ mod tests {
             #[cfg(unix)]
             link_state: path_unix::Existing::Absent,
             daemon_addr: "127.0.0.1:1".to_string(),
-            source: None,
         }
     }
 

@@ -29,8 +29,11 @@
 //! raíz compartida más que lo atribuible a la aplicación— y la misma confirmación
 //! destructiva.
 
+use crate::progress::{ProvisionStats, ProvisionView};
 use crate::LifecycleError;
+use avi_store::TransferObserver;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Opciones de `setup` que el motor necesita conocer. El resto de la superficie
 /// (`--json`) se queda en el binario, que es quien parsea la CLI.
@@ -257,16 +260,21 @@ pub fn map_download_failure(model: &str, cause: &anyhow::Error) -> LifecycleErro
 /// regla sin ella.
 #[allow(async_fn_in_trait)]
 pub trait Provisioner {
-    /// Descarga el modelo `name` al almacén.
-    async fn download(&self, name: &str) -> anyhow::Result<()>;
+    /// Descarga el modelo `name` al almacén y le cuenta el progreso a `observer`.
+    async fn download(&self, name: &str, observer: Arc<dyn TransferObserver>)
+        -> anyhow::Result<()>;
 }
 
 /// Implementación de producción: `ModelStore::ensure_downloaded`.
 pub struct HubProvisioner;
 
 impl Provisioner for HubProvisioner {
-    async fn download(&self, name: &str) -> anyhow::Result<()> {
-        avi_store::ModelStore::ensure_downloaded(name)
+    async fn download(
+        &self,
+        name: &str,
+        observer: Arc<dyn TransferObserver>,
+    ) -> anyhow::Result<()> {
+        avi_store::ModelStore::ensure_downloaded(name, observer)
             .await
             .map(|_| ())
     }
@@ -279,6 +287,8 @@ pub struct Provisioned {
     pub provisioned: Vec<String>,
     /// Repos que hubo que descargar en esta pasada.
     pub downloaded: Vec<String>,
+    /// Bytes y duración de lo descargado; `None` si no hubo nada que descargar.
+    pub stats: Option<ProvisionStats>,
 }
 
 /// Fallo de [`provision`], sin traducir todavía al `reason` de contrato: cada
@@ -291,26 +301,42 @@ pub enum ProvisionError {
 
 /// Provisión compartida por `setup` y `self install`: descarga la selección no
 /// provisionada. No confirma nada ni escribe la selección.
+///
+/// Es el único punto que conoce la selección pendiente, así que es quien abre
+/// la vista de progreso: solo si hay algo que descargar, numerando `[i/N]` sobre
+/// los pendientes, y devuelve el total descargado y su duración.
 pub async fn provision(
     store: &avi_store::ModelStore,
     provisioner: &impl Provisioner,
 ) -> Result<Provisioned, ProvisionError> {
-    let mut out = Provisioned::default();
-
-    // 1. Descarga idempotente de la selección.
-    for name in selection() {
-        if !store.is_provisioned(name) {
-            provisioner
-                .download(name)
-                .await
-                .map_err(|cause| ProvisionError::Download {
-                    name: name.to_string(),
-                    cause,
-                })?;
-            out.downloaded.push(name.to_string());
-        }
-        out.provisioned.push(name.to_string());
+    let names = selection();
+    let pending: Vec<&str> = names
+        .iter()
+        .copied()
+        .filter(|name| !store.is_provisioned(name))
+        .collect();
+    let mut out = Provisioned {
+        provisioned: names.iter().map(|name| name.to_string()).collect(),
+        ..Provisioned::default()
+    };
+    if pending.is_empty() {
+        return Ok(out);
     }
+
+    let view = ProvisionView::start(pending.len());
+    for (index, name) in pending.iter().enumerate() {
+        let bar = Arc::new(view.model(index + 1, name));
+        provisioner
+            .download(name, Arc::clone(&bar) as Arc<dyn TransferObserver>)
+            .await
+            .map_err(|cause| ProvisionError::Download {
+                name: name.to_string(),
+                cause,
+            })?;
+        bar.finish();
+        out.downloaded.push(name.to_string());
+    }
+    out.stats = Some(view.finish());
     Ok(out)
 }
 
@@ -443,16 +469,51 @@ pub(crate) mod tests {
     use std::path::PathBuf;
     use std::sync::MutexGuard;
 
-    /// Provisionador simulado: la descarga escribe el snapshot pinneado, sin red.
+    /// Provisionador simulado: la descarga escribe el snapshot pinneado, sin red,
+    /// y le cuenta al observador un total y un completado iguales a lo escrito.
     pub(crate) struct FakeProvisioner;
 
     impl Provisioner for FakeProvisioner {
-        async fn download(&self, name: &str) -> anyhow::Result<()> {
+        async fn download(
+            &self,
+            name: &str,
+            observer: Arc<dyn TransferObserver>,
+        ) -> anyhow::Result<()> {
             let (repo, revision) = avi_store::ModelStore::revision_of(name)
                 .ok_or_else(|| anyhow::anyhow!("sin pin: {name}"))?;
-            fake_snapshot(&repo.replace('/', "--"), revision);
+            let dir = fake_snapshot(&repo.replace('/', "--"), revision);
+            let written = crate::test_support::snapshot(&dir)
+                .iter()
+                .map(|(_, size)| size)
+                .sum();
+            observer.update(written, written);
             Ok(())
         }
+    }
+
+    /// La provisión devuelve el tamaño y la duración de lo descargado, y no
+    /// abre la vista ni devuelve estadísticas cuando todo estaba provisionado.
+    #[test]
+    fn provision_reports_stats_only_when_it_downloads() {
+        let (_guard, _root) = cache_relocated("setup-provision-stats");
+        let store = avi_store::ModelStore::new().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime de la prueba");
+
+        let first = runtime
+            .block_on(provision(&store, &FakeProvisioner))
+            .expect("la provisión simulada se completa");
+        assert_eq!(first.downloaded.len(), selection().len());
+        let stats = first.stats.expect("hubo descarga, hay estadísticas");
+        assert!(stats.bytes > 0, "{stats:?}");
+
+        let second = runtime
+            .block_on(provision(&store, &FakeProvisioner))
+            .expect("la segunda pasada se completa");
+        assert!(second.downloaded.is_empty());
+        assert_eq!(second.provisioned.len(), selection().len());
+        assert_eq!(second.stats, None);
     }
 
     /// Fija `AVI_CACHE_DIR` a un directorio de pruebas y devuelve el guard que lo
@@ -502,7 +563,7 @@ pub(crate) mod tests {
         assert_eq!(all.estimated_bytes(), 5_850_187_279);
         assert_eq!(
             download_summary(&all),
-            "Se descargarán 5 modelo(s), unos 5.9 GB."
+            "Se descargarán 5 modelo(s), unos 5,9 GB."
         );
     }
 

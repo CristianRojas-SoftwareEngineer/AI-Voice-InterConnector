@@ -46,6 +46,9 @@ flate2 = "1.0"
 # Identidad de archivo para medir tamaños: los enlaces duros de la caché de
 # modelos en Windows no deben contarse dos veces.
 same-file = "1"
+# Barras de la vista de progreso de la provisión de modelos. Es la versión que
+# ya compila `tokenizers` en el mismo lockfile, así que no añade otra copia.
+indicatif = "0.18"
 
 [dev-dependencies]
 # Las pruebas del crate afirman el código de salida de cada `reason` con la tabla

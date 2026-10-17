@@ -63,7 +63,6 @@ impl Sandbox {
             ),
             // Puerto donde no hay nada: la parada del daemon es un no-op.
             daemon_addr: dead_port(),
-            source: None,
         }
     }
 }

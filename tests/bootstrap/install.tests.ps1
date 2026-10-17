@@ -254,7 +254,7 @@ Describe "bootstrap de Windows" {
         $output = $result.Stdout + $result.Stderr
         # `$osArch` se expande a ARM64 solo en la ejecucion real.
         $output | Should -Match ([regex]::Escape("arquitectura no soportada: ARM64"))
-        $output | Should -Not -Match "Instalando ai-voice-interconnector 9.9.9"
+        $output | Should -Not -Match "Descargando ai-voice-interconnector-9.9.9"
     }
 
     It "una version que no tiene exactamente tres componentes falla sin descargar" -ForEach @(
@@ -272,7 +272,7 @@ Describe "bootstrap de Windows" {
         # reproduce el texto del script (con `usage_error` sin expandir), asi
         # que buscar solo el codigo daria falsos positivos.
         $output | Should -Match ([regex]::Escape("usage_error]: ") + "versi.n inv.lida: '" + [regex]::Escape($Bad) + "'")
-        $output | Should -Not -Match ("Instalando ai-voice-interconnector " + [regex]::Escape($Bad))
+        $output | Should -Not -Match ("Descargando ai-voice-interconnector-" + [regex]::Escape($Bad))
     }
 
     It "como archivo propaga el codigo <Code> de self install y deja ver su resumen final" -ForEach @(@{ Code = 0 }, @{ Code = 11 }) {
@@ -333,8 +333,8 @@ Describe "bootstrap de Windows" {
         $envBase = Get-TestEnvBase $script:TestDir
         $envBase.AVI_VERSION = "9.9.9"
         $envBase.AVI_NO_SETUP = "1"
-        $envBase.AVI_NO_MODIFY_PATH = "1"
         $envBase.AVI_YES = "1"
+        # Sin --no-modify-path para que el PATH de la sesion se anada.
         # `$env:Path se evalua en el hijo (escapado): lo observado es el PATH
         # de la sesion del bootstrap, con el programa anadido.
         $stdinText = "irm $($script:LastBaseUrl)/install.ps1 | iex`n[Console]::Out.WriteLine('PATH-EFFECT:' + `$env:Path)"
@@ -342,7 +342,9 @@ Describe "bootstrap de Windows" {
 
         # Sin `exit` bajo tuberia: el proceso completa el marcador con codigo 0.
         $result.ExitCode | Should -Be 0
-        $result.Stdout | Should -Match "Checksum verificado"
+        $result.Stdout | Should -Match "Descargando ai-voice-interconnector-9.9.9-x86_64-windows.zip"
+        $result.Stdout | Should -Match "MB en [0-9]+ s; checksum verificado\."
+        $result.Stdout | Should -Not -Match "El comando ya est"
         $marker = ($result.Stdout -split "`r?`n" | Where-Object { $_ -match "PATH-EFFECT:" } | Select-Object -First 1)
         $marker | Should -Not -BeNullOrEmpty
         ($marker -split ";" ) -contains $envBase.AVI_INSTALL_DIR | Should -BeTrue
@@ -364,7 +366,7 @@ Describe "bootstrap de Windows" {
         $result = Invoke-ChildBootstrap -StdinText $stdinText -ExtraEnv $envBase -Engine $cmd.Source
 
         $result.Stderr | Should -Match ([regex]::Escape("el checksum de ai-voice-interconnector-9.9.9-x86_64-windows.zip no coincide"))
-        $result.Stdout | Should -Not -Match "Checksum verificado"
+        $result.Stdout | Should -Not -Match "checksum verificado"
         # La consola sigue viva: el marcador posterior se imprime.
         $result.Stdout | Should -Match "PATH-EFFECT-ALIVE"
     }
@@ -381,7 +383,7 @@ Describe "bootstrap de Windows" {
             -Engine (Get-Command powershell.exe).Source -ChildEnv @{ PSModulePath = $contaminated }
 
         $result.ExitCode | Should -Be 0
-        $result.Stdout | Should -Match "Checksum verificado"
+        $result.Stdout | Should -Match "checksum verificado"
         ($result.Stdout + $result.Stderr) | Should -Not -Match "AVISO: no se pudieron restringir"
         Assert-NoStagingLeft $script:TestDir
     }
@@ -408,7 +410,7 @@ Describe "bootstrap de Windows" {
         $output = $result.Stdout + $result.Stderr
         # Los nombres concretos solo aparecen si el mensaje salio de la ejecucion.
         $output | Should -Match ([regex]::Escape("unsupported_platform]: ") + "faltan cmdlets est.ndar de PowerShell: Get-FileHash")
-        $output | Should -Not -Match "Instalando ai-voice-interconnector 9.9.9"
+        $output | Should -Not -Match "Descargando ai-voice-interconnector-9.9.9"
     }
 
     It "sin -NoModifyPath integra el PATH en la subclave de prueba" {

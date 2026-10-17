@@ -104,7 +104,6 @@ fn install_version(sandbox: &Sandbox, version: &str) -> InstallReceipt {
             data_dir: sandbox.data_dir.clone(),
             cache_dir: sandbox.cache_dir.clone(),
         },
-        None,
     );
     support::write(
         &sandbox

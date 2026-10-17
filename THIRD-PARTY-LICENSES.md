@@ -120,8 +120,8 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
 ## Inventario completo del lockfile
 
 <!-- inventario:inicio -->
-Generado desde `Cargo.lock` (493 paquetes resueltos, 460 crates únicos, directos y transitivos).
-Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-2.0 2, ISC 3, MIT 425, MPL-2.0 14, Unicode-3.0 18, Zlib 6.
+Generado desde `Cargo.lock` (489 paquetes resueltos, 459 crates únicos, directos y transitivos).
+Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-2.0 2, ISC 3, MIT 421, MPL-2.0 14, Unicode-3.0 18, Zlib 6.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
@@ -187,7 +187,6 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `colored` | 3.1.1 | MPL-2.0 | MPL-2.0 |
 | `combine` | 4.6.7 | MIT | MIT |
 | `compact_str` | 0.9.1 | MIT | MIT |
-| `console` | 0.15.11 | MIT | MIT |
 | `console` | 0.16.4 | MIT | MIT |
 | `const-oid` | 0.10.2 | Apache-2.0 OR MIT | MIT |
 | `const-str` | 1.1.0 | MIT | MIT |
@@ -296,7 +295,6 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `idna` | 1.1.0 | MIT OR Apache-2.0 | MIT |
 | `idna_adapter` | 1.2.2 | Apache-2.0 OR MIT | MIT |
 | `indexmap` | 2.14.0 | Apache-2.0 OR MIT | MIT |
-| `indicatif` | 0.17.11 | MIT | MIT |
 | `indicatif` | 0.18.6 | MIT | MIT |
 | `ipnet` | 2.12.1 | MIT OR Apache-2.0 | MIT |
 | `is_terminal_polyfill` | 1.70.2 | MIT OR Apache-2.0 | MIT |
@@ -355,7 +353,6 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `num_cpus` | 1.17.0 | MIT OR Apache-2.0 | MIT |
 | `num_enum` | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | MIT |
 | `num_enum_derive` | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | MIT |
-| `number_prefix` | 0.4.0 | MIT | MIT |
 | `objc2` | 0.6.4 | MIT | MIT |
 | `objc2-audio-toolbox` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | MIT |
 | `objc2-avf-audio` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | MIT |
@@ -575,7 +572,6 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `windows-strings` | 0.5.1 | MIT OR Apache-2.0 | MIT |
 | `windows-sys` | 0.48.0 | MIT OR Apache-2.0 | MIT |
 | `windows-sys` | 0.52.0 | MIT OR Apache-2.0 | MIT |
-| `windows-sys` | 0.59.0 | MIT OR Apache-2.0 | MIT |
 | `windows-sys` | 0.61.2 | MIT OR Apache-2.0 | MIT |
 | `windows-targets` | 0.48.5 | MIT OR Apache-2.0 | MIT |
 | `windows-targets` | 0.52.6 | MIT OR Apache-2.0 | MIT |

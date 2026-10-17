@@ -140,7 +140,6 @@ mod tests {
                 data_dir: PathBuf::from("/home/ana/data"),
                 cache_dir: PathBuf::from("/home/ana/cache"),
             },
-            None,
         )
     }
 

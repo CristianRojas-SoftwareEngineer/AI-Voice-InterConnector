@@ -2746,9 +2746,7 @@ async fn handle_cleanup(
         }));
     } else if outcome.status == "cancelled" {
         println!("Cancelado.");
-    } else if outcome.dry_run {
-        println!("Nada se ha modificado (dry-run).");
-    } else {
+    } else if !outcome.dry_run {
         println!(
             "Limpieza completada: {} ruta(s), {} barrido(s).",
             outcome.removed.len(),
@@ -2968,6 +2966,9 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 }
                 emit_raw_json(on);
             } else {
+                // La línea en blanco separa el resumen final del bloque anterior (el
+                // progreso de la provisión o el plan confirmado).
+                println!();
                 for line in &outcome.summary {
                     println!("{line}");
                 }
@@ -3036,12 +3037,10 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 }));
             } else if outcome.status == "cancelled" {
                 println!("Cancelado.");
-            } else if outcome.status == "planned" {
-                // El motor ya escribió por stderr la lista de lo que no se toca,
-                // al componer el plan; aquí solo el encabezado.
-                println!("Plan de desinstalación (nada se ha modificado).");
-            } else {
-                println!("Desinstalación completada ({}).", outcome.status);
+            } else if outcome.status != "planned" {
+                // La simulación ya imprimió por stderr el plan y su aviso único; el
+                // literal de `status` es del contrato `--json` y no sale en el texto.
+                println!("Desinstalación completada.");
             }
             match kept {
                 Some(failure) => {

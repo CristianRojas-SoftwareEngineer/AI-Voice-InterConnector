@@ -70,6 +70,8 @@ assert_no_staging_left() {
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz"* ]]
+    [[ "$output" == *"Descargando ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz..."* ]]
+    [[ "$output" == *" MB en "*" s; checksum verificado."* ]]
     grep -q "^FILE:v9.9.9/ai-voice-interconnector-9.9.9-x86_64-linux.tar.gz$" "$SERVER_LOG"
     assert_no_staging_left
 }

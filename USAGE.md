@@ -77,8 +77,9 @@ ai-voice-interconnector setup --force-update         # purga los snapshots pinne
 ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva
 ```
 
-**Qué esperar:** barra de progreso por bytes con ETA y resume automático si se
-interrumpe. La provisión se decide solo por presencia del snapshot HF (no hay
+**Qué esperar:** una barra por modelo con su tamaño real, velocidad, tiempo
+transcurrido y restante, y una línea por modelo terminado; una descarga
+interrumpida se repite entera. La provisión se decide solo por presencia del snapshot HF (no hay
 índice `manifest.json` que consultar): si lo vuelves a ejecutar con los
 snapshots presentes, termina al instante sin descargar nada. Si la provisión falla al
 final de una instalación, el programa **queda instalado** y el comando sale con `11`

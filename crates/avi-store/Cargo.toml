@@ -23,7 +23,6 @@ hf-hub = { version = "=1.0.0", default-features = false, features = ["rustls-tls
 # Solo para el `connect_timeout` del cliente propio que se inyecta a `hf-hub`:
 # sin features, no suma nada a la unión ya compilada (TLS lo aporta `hf-hub`).
 reqwest = { version = "0.13", default-features = false }
-indicatif = "0.17"
 tracing = "0.1"
 
 [dev-dependencies]

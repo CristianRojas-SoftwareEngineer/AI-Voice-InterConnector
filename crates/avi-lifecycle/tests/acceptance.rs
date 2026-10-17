@@ -388,7 +388,7 @@ fn summary_lines(summary: &[String]) -> Vec<&str> {
 ///
 /// ```text
 ///   PATH:      se añadirá <dir> en el PATH del usuario
-///   PATH:      se añadió <dir>; abre una terminal nueva para que el comando se encuentre.
+///   PATH:      se añadió <dir>; las terminales que ya estaban abiertas no lo verán hasta reiniciarse.
 /// ```
 ///
 /// Dos líneas para un hecho, y la primera en futuro y la segunda en pasado: leído de un
@@ -433,8 +433,8 @@ fn final_summary_reports_the_path_state_once() {
         lines[0]
     );
     assert!(
-        lines[0].contains("abre una terminal nueva"),
-        "con la indicación de terminal nueva, que solo aparece si se acaba de escribir: {}",
+        lines[0].contains("las terminales que ya estaban abiertas no lo verán hasta reiniciarse"),
+        "con el aviso a las terminales ya abiertas, que solo aparece si se acaba de escribir: {}",
         lines[0]
     );
 
@@ -2292,7 +2292,6 @@ fn uninstall_plan_does_not_promise_a_program_dir_it_refuses_to_delete() {
             data_dir: sandbox.data_dir.clone(),
             cache_dir: sandbox.cache_dir.clone(),
         },
-        None,
     );
     receipt::write_to(&receipt, &program_dir).expect("se escribe el recibo");
     let roots = sandbox.roots();
@@ -2410,7 +2409,6 @@ fn uninstall_announces_a_program_dir_swallowed_by_its_root() {
             data_dir: sandbox.data_dir.clone(),
             cache_dir: sandbox.cache_dir.clone(),
         },
-        None,
     );
     receipt::write_to(&receipt, &program_dir).expect("se escribe el recibo");
     let roots = sandbox.roots();

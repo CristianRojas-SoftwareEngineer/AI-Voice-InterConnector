@@ -36,6 +36,7 @@ pub mod path_unix;
 #[cfg(windows)]
 pub mod path_windows;
 pub mod privileges;
+pub mod progress;
 pub mod quarantine;
 pub mod receipt;
 pub mod recovery;

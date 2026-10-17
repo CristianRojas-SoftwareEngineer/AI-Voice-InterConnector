@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.31.2 — 2026-10-16](#0312--2026-10-16)
 - [0.31.1 — 2026-10-16](#0311--2026-10-16)
 - [0.31.0 — 2026-10-16](#0310--2026-10-16)
@@ -109,6 +110,25 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La instalación interactiva mostraba barras sin etiqueta con totales falsos que hacían parecer lenta la descarga. Esta versión muestra el progreso exacto y etiquetado de cada modelo, separa los bloques y deja los mensajes para personas coherentes entre instalación, limpieza y desinstalación.
+
+### Corregido
+
+- Progreso por modelo con total real, velocidad y tiempos transcurrido/restante; cada descarga deja una línea permanente y la provisión cierra con tamaño y duración totales. El resumen final incluye esos datos y ya no queda pegado a la barra.
+- Prompts con espacio final; un plan único con categorías en español y rutas no duplicadas para `cleanup` y `self uninstall`, y un solo aviso al final de cada simulación. Ningún literal interno de categoría o `status` sale en el texto.
+- `Comando:` señala el ejecutable real, con `.exe` en Windows; el aviso de PATH distingue las terminales ya abiertas de la ventana del bootstrap.
+- Los bootstraps muestran el nombre del archivo, su tamaño y el tiempo de descarga tras verificar el checksum, y separan su bloque del plan.
+
+### Cambiado
+
+- Los tamaños de todos los comandos usan coma decimal.
+
+### Notas de release
+
+- **Incompatible**: el recibo pasa a `schema_version` 2 sin `source`. Una instalación 0.31.x no se actualiza con `self update`: se desinstala con su propio binario y se instala de nuevo con el one-liner.
 
 ## [0.31.2] — 2026-10-16
 

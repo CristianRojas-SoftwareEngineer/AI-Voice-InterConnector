@@ -11,6 +11,7 @@
 - [Transcripción STT (Parakeet TDT v3 int8 / ort)](#transcripción-stt-parakeet-tdt-v3-int8--ort)
 - [Flujo de síntesis](#flujo-de-síntesis)
 - [UX de audio interactivo](#ux-de-audio-interactivo)
+- [Salida en terminal](#salida-en-terminal)
 - [Modelo de voces de dos niveles](#modelo-de-voces-de-dos-niveles)
 - [Comandos CLI](#comandos-cli)
 - [Compilación Rust (cargo)](#compilación-rust-cargo)
@@ -80,12 +81,12 @@ AI-Voice-InterConnector/
 │   ├── avi-tts/                        # Qwen3TtsEngine, GenerationOptions, resident
 │   ├── avi-shared/                     # Fuente única de rutas y canonicalización (la consumen los crates directamente)
 │   ├── avi-process/                    # Flags de creación de procesos y borrado diferido (Windows)
-│   ├── avi-store/                      # VoiceStore, SpeechStore, ModelStore (hf-hub + indicatif; cache_dir propio; los pines `MODEL_REVISIONS` viven en avi-shared)
+│   ├── avi-store/                      # VoiceStore, SpeechStore, ModelStore (hf-hub; progreso por observador, sin dibujo; cache_dir propio; los pines `MODEL_REVISIONS` viven en avi-shared)
 │   │   └── assets/default/             # reference.qvoice de la voz de fábrica `default` (huella de timbre), embebido
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
 │   ├── avi-stt/                        # ParakeetEngine (ort, load-dynamic)
 │   ├── avi-translation/                # Ct2TranslationEngine (CTranslate2/ct2rs)
-│   ├── avi-lifecycle/                  # Motor del ciclo de vida: install, uninstall, cleanup, doctor, recibo, bloqueo, PATH
+│   ├── avi-lifecycle/                  # Motor del ciclo de vida: install, uninstall, cleanup, doctor, recibo, bloqueo, PATH; vista de progreso de la provisión (indicatif)
 │   └── xtask/                          # tooling Rust: release, cask, licenses, gates de deriva, bootstrap, package, clean
 ├── packaging/
 │   ├── bundle-manifest.json            # Lista canónica de archivos del bundle (la validan self install y cargo xtask package)
@@ -203,6 +204,18 @@ Las guardas no interactivas (`--mic` sin `--duration` y sin TTY, `--duration` si
 
 - No reintroducir el endpoint `/voices/precompute` ni otra superficie de daemon: la captura push-to-talk y el bucle `--play` son client-side (P6).
 - No cambiar el formato de audio, el pipeline de traducción ni los exit codes canónicos.
+
+## Salida en terminal
+
+Convenciones del texto para personas (prompts, progreso y avisos por stderr; resultado por stdout). No alcanzan al envelope `--json`, que es contrato máquina y conserva sus literales.
+
+- **Bloques.** Cada bloque que no es el primero de la salida va precedido de una línea en blanco, y dentro de un bloque no hay ninguna. En `self install` el orden es bloque del bootstrap → plan → progreso → resumen final, y cada separación tiene un dueño: el bootstrap (tras su bloque), el encabezado de la vista de progreso y `main.rs` (antes del resumen final).
+- **Prompt.** Termina con un espacio, para que la respuesta no quede pegada: `¿Continuar? [S/n] ` y `Esto eliminará lo indicado. ¿Continuar? [s/N] `. Lo escribe solo `confirm::confirm`.
+- **Simulación.** Toda simulación (`--dry-run`) imprime el plan y después, una sola vez, `Simulación: no se ha modificado nada.` (`confirm::simulation_notice`).
+- **Planes.** El plan de `cleanup` y el de `self uninstall` salen de una única función de composición por operación (`plan_lines`), la misma para la simulación y para la confirmación. Cada ruta aparece una vez, con su categoría en español y su tamaño: `  modelos: C:\…\cache\models (5,9 GB)`.
+- **Tamaños y duraciones.** Los tamaños salen de `human_bytes` (escala decimal, un decimal con coma: `5,9 GB`), también en las barras. Las duraciones, de `progress::format_duration` (`7 s`, `1 min 59 s`, `1 h 02 min`).
+- **Progreso de la provisión.** `avi-store` calcula los bytes completados y el total de cada modelo a partir de los eventos de `hf-hub` y los entrega a un observador, sin dibujar. La vista (`avi-lifecycle/src/progress.rs`) abre el bloque con `Descargando N modelo(s):`, dibuja una barra por modelo (`  [3/5] opus-mt-en-es  ████████░░░░  48,0 MB/82,5 MB  12,1 MB/s  transcurrido 0:04  quedan 0:03`), la borra al terminar y deja una línea permanente (`  ✓ [1/5] qwen3-tts-0.6b  2,5 GB en 49 s (51,0 MB/s)`), y cierra con `Modelos descargados: 5,9 GB en 1 min 59 s.`. Sin terminal no hay barras, pero el encabezado, las líneas por modelo y el cierre salen igual.
+- **Sin literales de contrato.** El texto nunca imprime un literal del contrato `--json` (`status`, `reason`, categorías): cada estado y cada categoría tiene su descripción en español (`describe`).
 
 ## Modelo de voces de dos niveles
 

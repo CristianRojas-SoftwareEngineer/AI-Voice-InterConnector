@@ -137,11 +137,7 @@ pub fn confirm<R: BufRead>(
     print_plan(request, out)?;
 
     if request.dry_run {
-        writeln!(
-            out,
-            "Simulación: se muestra lo que {} haría, no se ha modificado nada.",
-            crate::APP_NAME
-        )?;
+        writeln!(out, "{}", simulation_notice())?;
         return Ok(Decision::DryRun);
     }
 
@@ -162,9 +158,10 @@ pub fn confirm<R: BufRead>(
         };
     }
 
+    // El espacio final separa la respuesta que el usuario teclea del prompt.
     write!(
         out,
-        "{} {}",
+        "{} {} ",
         request.kind.question(),
         request.kind.prompt_literal()
     )?;
@@ -177,6 +174,12 @@ pub fn confirm<R: BufRead>(
         writeln!(out, "Cancelado.")?;
         Ok(Decision::Cancelled)
     }
+}
+
+/// Aviso único de toda simulación (`--dry-run`), que se imprime una sola vez y
+/// después del plan, sea cual sea la operación.
+pub fn simulation_notice() -> &'static str {
+    "Simulación: no se ha modificado nada."
 }
 
 /// Interpreta la respuesta. El valor por defecto de cada celda manda cuando la
@@ -289,6 +292,10 @@ mod tests {
         assert_eq!(decision, Decision::Proceed);
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("[S/n]"), "literal de la celda: {out}");
+        assert!(
+            out.ends_with("[S/n] "),
+            "el prompt termina con espacio: {out:?}"
+        );
         assert!(!out.contains("[s/N]"), "no es la celda destructiva: {out}");
 
         // Columna "con terminal", fila destructiva: se pregunta con `[s/N]`,
@@ -303,6 +310,10 @@ mod tests {
         assert_eq!(decision, Decision::Cancelled, "el valor por defecto es no");
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("[s/N]"), "literal de la celda: {out}");
+        assert!(
+            out.ends_with("[s/N] Cancelado.\n"),
+            "el prompt termina con espacio: {out:?}"
+        );
         assert!(out.contains("Cancelado."), "cancela sin error: {out}");
         assert!(
             out.contains(&dest.display().to_string()) && out.contains("9 B)"),
@@ -480,12 +491,17 @@ mod tests {
         assert_eq!(snapshot(&dir), before, "el disco no se toca");
 
         let printed = String::from_utf8(out.clone()).unwrap();
-        assert!(
-            printed.contains("Simulación"),
-            "se anuncia la simulación: {printed}"
+        assert_eq!(
+            printed.matches(simulation_notice()).count(),
+            1,
+            "la simulación se anuncia una sola vez: {printed}"
         );
         assert!(
-            printed.contains(&model.display().to_string()) && printed.contains("2.0 KB)"),
+            printed.ends_with(&format!("2,0 KB)\n{}\n", simulation_notice())),
+            "el aviso va después de la última línea del plan: {printed}"
+        );
+        assert!(
+            printed.contains(&model.display().to_string()) && printed.contains("2,0 KB)"),
             "el plan se imprime con rutas y tamaños: {printed}"
         );
         assert!(

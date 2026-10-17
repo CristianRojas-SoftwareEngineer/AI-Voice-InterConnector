@@ -28,8 +28,8 @@ pub use console::force_utf8_console;
 pub use owner::{OwnerState, OwnerToken};
 pub use temp_wav::TempWav;
 
-/// Tamaño legible en escala decimal (B, KB, MB, GB, TB) con un decimal.
-/// Es el único formateador de tamaños del workspace, compartido por el producto
+/// Tamaño legible en escala decimal (B, KB, MB, GB, TB) con un decimal separado
+/// por coma, porque el texto es para personas en español. Es el único formateador de tamaños del workspace, compartido por el producto
 /// y por `xtask`: cada unidad vale 1000 de la anterior y la etiqueta lo dice.
 pub fn human_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -42,7 +42,11 @@ pub fn human_bytes(bytes: u64) -> String {
     if unit == 0 {
         format!("{bytes} B")
     } else {
-        format!("{value:.1} {}", UNITS[unit])
+        format!(
+            "{} {}",
+            format!("{value:.1}").replace('.', ","),
+            UNITS[unit]
+        )
     }
 }
 
@@ -54,11 +58,11 @@ mod human_bytes_tests {
     fn formats_decimal_units_with_one_decimal() {
         assert_eq!(human_bytes(0), "0 B");
         assert_eq!(human_bytes(999), "999 B");
-        assert_eq!(human_bytes(1000), "1.0 KB");
-        assert_eq!(human_bytes(1500), "1.5 KB");
-        assert_eq!(human_bytes(5 * 1000 * 1000), "5.0 MB");
-        assert_eq!(human_bytes(3 * 1000 * 1000 * 1000 / 2), "1.5 GB");
-        assert_eq!(human_bytes(1000u64.pow(4)), "1.0 TB");
+        assert_eq!(human_bytes(1000), "1,0 KB");
+        assert_eq!(human_bytes(1500), "1,5 KB");
+        assert_eq!(human_bytes(5 * 1000 * 1000), "5,0 MB");
+        assert_eq!(human_bytes(3 * 1000 * 1000 * 1000 / 2), "1,5 GB");
+        assert_eq!(human_bytes(1000u64.pow(4)), "1,0 TB");
     }
 }
 

@@ -607,7 +607,7 @@ Las tres reglas de compatibilidad y la regla de promoción son contrato **de con
 
 - **Con `RUST_LOG` definida, manda**: aplica tanto a la CLI como a `daemon serve`.
 - **Sin ella** (o vacía), la CLI emite `warn` y superiores; `daemon serve` emite `info` de los crates propios y `warn` de las dependencias.
-- Por esa razón, trazas de nivel `info` como el progreso de descarga de `setup` no salen por defecto: se piden con `RUST_LOG=info`.
+- El progreso de la descarga de modelos (`setup` y `self install`) es un mensaje del producto, no una traza: sale siempre por stderr. Las barras solo se dibujan con terminal; el encabezado, la línea de cada modelo terminado y la de cierre salen también sin ella.
 - stderr no lleva color ANSI cuando no es una terminal.
 
 **Los logs viven en `data/logs/`** y hay dos familias, ambas con nombre `<familia>_<token>_<ms>.log`, donde `<token>` es el token de propietario `<pid>-<inicio>` del proceso que escribe el log y `<ms>` la marca de tiempo de creación en milisegundos:

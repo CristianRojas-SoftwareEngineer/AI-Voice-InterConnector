@@ -471,9 +471,10 @@ de invocación del motor.
 ## 7. Descarga nativa de modelos (`hf-hub`)
 
 `setup` descarga los pesos de HuggingFace Hub de forma nativa vía el crate
-**`hf-hub`** (rustls, sin OpenSSL: compila igual en los 4 targets) con barra de
-progreso **`indicatif`** y validación ETag/commit-hash del propio crate. `hf-hub`
-no reanuda por `Range`: una descarga interrumpida se repite completa. El crate está
+**`hf-hub`** (rustls, sin OpenSSL: compila igual en los 4 targets) con validación
+ETag/commit-hash del propio crate. La provisión muestra una barra por modelo con su
+tamaño real y, al terminar cada uno, una línea con su tamaño, duración y velocidad.
+`hf-hub` no reanuda por `Range`: una descarga interrumpida se repite completa. El crate está
 vendorizado (ver `[patch.crates-io]` en [`Cargo.toml`](../Cargo.toml)): los punteros de
 `snapshots/` son enlaces simbólicos en Unix y enlaces duros en Windows, por lo que el
 blob no se duplica en disco; si el sistema de archivos no admite enlaces duros (FAT32,

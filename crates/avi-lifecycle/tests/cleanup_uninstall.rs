@@ -1083,7 +1083,6 @@ fn uninstall_reverts_path_from_the_receipt() {
             data_dir: sandbox.data_dir.clone(),
             cache_dir: sandbox.cache_dir.clone(),
         },
-        None,
     );
     receipt::write_to(&receipt, &sandbox.program_dir).unwrap();
 
@@ -1127,7 +1126,6 @@ fn uninstall_reverts_path_from_the_receipt() {
             data_dir: sandbox.data_dir.clone(),
             cache_dir: sandbox.cache_dir.clone(),
         },
-        None,
     );
     let revert_report = uninstall::revert_path(Some(&foreign_receipt), &sandbox.home);
     assert!(

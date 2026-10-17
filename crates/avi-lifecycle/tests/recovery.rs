@@ -102,7 +102,6 @@ fn previous_receipt(sandbox: &Sandbox) -> InstallReceipt {
             data_dir: sandbox.data_dir.clone(),
             cache_dir: sandbox.cache_dir.clone(),
         },
-        None,
     )
 }
 

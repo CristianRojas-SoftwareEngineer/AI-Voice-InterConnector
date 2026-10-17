@@ -61,6 +61,7 @@ puede ejercitar y el núcleo de esta validación.
 - [9. Rutas interactivas de audio (push-to-talk y `--play`)](#9-rutas-interactivas-de-audio-push-to-talk-y---play)
   - [9.1 Push-to-talk (`speech transcribe --mic` / `speech dub --mic` sin `--duration`)](#91-push-to-talk-speech-transcribe---mic--speech-dub---mic-sin---duration)
   - [9.2 Bucle interactivo de `speech synthesize --play`](#92-bucle-interactivo-de-speech-synthesize---play)
+  - [9.3 Progreso de la instalación interactiva](#93-progreso-de-la-instalación-interactiva)
 - [10. Daemon](#10-daemon)
 - [11. Casos de error por exit code canónico](#11-casos-de-error-por-exit-code-canónico)
 
@@ -294,6 +295,22 @@ ai-voice-interconnector speech synthesize --text "Otra toma." --label demo_loop 
 # entra al bucle y elige la opción 2 (guardar)
 ```
 **Esperado**: al elegir `2`, **exit 6** (`label_exists`), sin sobrescribir — la colisión se recomprueba **en el instante de guardar**, no solo al inicio. Con `--force` en el comando, la opción `2` sí sobrescribe (**exit 0**).
+
+### 9.3 Progreso de la instalación interactiva
+
+🖥️ · conexión para descargar los cinco modelos · Windows PowerShell en una ventana nueva y sin redirigir la salida. Antes de empezar, la instalación anterior debe haberse desinstalado con **su propio binario** y la caché de modelos debe estar vacía. Si existe una instalación 0.31.x, `self update` no puede leer su recibo desde la 0.32.0: usa el binario 0.31.x para desinstalar y después el one-liner de la nueva versión.
+
+```powershell
+# Si aún hay una instalación, desinstálala con su binario actual.
+ai-voice-interconnector self uninstall --yes
+# En una ventana NUEVA de Windows PowerShell, sin redirección:
+irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex
+$LASTEXITCODE
+ai-voice-interconnector self uninstall --dry-run
+ai-voice-interconnector cleanup --all --dry-run
+```
+
+**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `5,9 GB` y el prompt `¿Continuar? [S/n] ` deja un espacio antes de la respuesta. La provisión abre otro bloque con `Descargando 5 modelo(s):`; cada barra está etiquetada `[i/5] nombre`, muestra el total real del modelo (no el de un archivo pequeño), velocidad, `transcurrido` y `quedan`. Al completarse cada modelo queda una línea permanente `✓ [i/5]` con tamaño, duración y velocidad. Cierra con `Modelos descargados: <tamaño> en <duración>.`, deja una línea en blanco y después aparece el resumen final, con `Comando:` terminado en `.exe`, el estado del PATH y los modelos con tamaño y tiempo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones muestran cada ruta una vez, su categoría en español, tamaños con coma y un único `Simulación: no se ha modificado nada.` al final del plan; no modifican el disco.
 
 ## 10. Daemon
 

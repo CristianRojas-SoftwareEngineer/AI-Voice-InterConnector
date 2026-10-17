@@ -30,7 +30,7 @@
 //! descargar lo que falte, porque la provisión no depende de nada que sobreviva al
 //! borrado.
 
-use crate::confirm::{self, Confirmation, Decision, Kind, PlanEntry};
+use crate::confirm::{self, Confirmation, Decision, Kind};
 use crate::daemon_stop::{self, ProcessControl};
 use crate::ownership;
 use crate::receipt::InstallReceipt;
@@ -59,19 +59,23 @@ pub enum Category {
     DaemonState,
     /// `--all`: la hoja de temporales de la aplicación, entera.
     Scratch,
+    /// `self uninstall`: la raíz de datos del usuario entera (voces, habla
+    /// sintetizada, configuración, logs y estado del daemon).
+    UserData,
 }
 
 impl Category {
-    /// Literal de la categoría, el que va en el envelope y en el resumen.
-    pub fn as_str(self) -> &'static str {
+    /// Descripción en español de la categoría, la que se muestra en el plan.
+    pub fn describe(self) -> &'static str {
         match self {
-            Self::Model => "model",
-            Self::Voices => "voices",
-            Self::SyntheticSpeech => "synthetic_speech",
-            Self::Config => "config",
-            Self::Logs => "logs",
-            Self::DaemonState => "daemon_state",
-            Self::Scratch => "scratch",
+            Self::Model => "modelos",
+            Self::Voices => "voces",
+            Self::SyntheticSpeech => "locuciones",
+            Self::Config => "configuración",
+            Self::Logs => "registros",
+            Self::DaemonState => "estado del daemon",
+            Self::Scratch => "temporales",
+            Self::UserData => "datos de usuario",
         }
     }
 }
@@ -697,16 +701,9 @@ pub async fn run(
 
     let plan = plan(roots, options);
 
-    // `cleanup` es destructiva. Lista con tamaños y confirmación `[s/N]`.
-    let entries: Vec<PlanEntry> = plan
-        .targets
-        .iter()
-        .map(|t| PlanEntry {
-            path: t.path.clone(),
-            size: Some(t.size),
-        })
-        .collect();
-    let decision = confirm(&plan, &entries, options)?;
+    // `cleanup` es destructiva: el plan con categorías y tamaños, el mismo que
+    // muestra la simulación, y confirmación `[s/N]`.
+    let decision = confirm(&plan, options)?;
     if decision == Decision::Cancelled {
         // Recibo del plan aunque se cancele: lo que se habría borrado.
         let planned: Vec<String> = plan
@@ -732,7 +729,7 @@ pub async fn run(
     let mut failed = Vec::new();
     for path in &report.removed {
         if let Some(target) = plan.targets.iter().find(|t| &t.path == path) {
-            eprintln!("  {} {}", target.category.as_str(), path.display());
+            eprintln!("  {}: {}", target.category.describe(), path.display());
         }
         removed.push(path.display().to_string());
     }
@@ -787,27 +784,10 @@ pub async fn run(
 pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     let plan = plan(roots, options);
     let preview: SweepPreview = recovery::preview(roots.recovery_roots());
-    eprintln!(
-        "Simulación: se muestra lo que {} borraría, no se ha modificado nada.",
-        crate::APP_NAME
-    );
-    for target in &plan.targets {
-        eprintln!(
-            "  {} {} ({})",
-            target.category.as_str(),
-            target.path.display(),
-            crate::human_bytes(target.size)
-        );
+    for line in plan_lines(&plan, Some(&preview)) {
+        eprintln!("{line}");
     }
-    for path in preview.all() {
-        eprintln!("  barrido {}", path.display());
-    }
-    for (path, cause) in &preview.unreadable {
-        eprintln!("  no se puede listar {}: {cause}", path.display());
-    }
-    for item in &plan.preserved {
-        eprintln!("  no se tocará {}: {}", item.path.display(), item.reason);
-    }
+    eprintln!("{}", confirm::simulation_notice());
     // `removed` son las categorías y `swept` el barrido transversal, **en las dos
     // ramas**: mezclar el barrido dentro de `removed` en la simulación y no en la
     // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
@@ -846,20 +826,17 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     }
 }
 
-/// Aplica la confirmación con el plan ya calculado.
-fn confirm(
-    plan: &DeletionPlan,
-    entries: &[PlanEntry],
-    options: &Options,
-) -> anyhow::Result<Decision> {
-    let summary = summary(plan);
+/// Aplica la confirmación con el plan ya calculado. En la ejecución el barrido
+/// ya ocurrió, así que el plan no lo anuncia.
+fn confirm(plan: &DeletionPlan, options: &Options) -> anyhow::Result<Decision> {
+    let summary = plan_lines(plan, None);
     let stdin = std::io::stdin();
     let mut entry = stdin.lock();
     confirm::confirm(
         &Confirmation {
             kind: Kind::Destructive,
             summary: &summary,
-            entries,
+            entries: &[],
             assume_yes: options.assume_yes,
             dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
@@ -869,8 +846,12 @@ fn confirm(
     )
 }
 
-/// Resumen legible del plan, que es la lista de rutas con tamaños que ve el usuario.
-fn summary(plan: &DeletionPlan) -> Vec<String> {
+/// Plan legible: la única composición del plan de `cleanup`, que imprimen igual la
+/// simulación y la confirmación. Cada destino aparece una vez, con su categoría en
+/// español y su tamaño; después, el barrido que se haría y los directorios que no
+/// se pueden listar (solo en la simulación, que recibe `preview`) y lo que se
+/// conserva.
+pub(crate) fn plan_lines(plan: &DeletionPlan, preview: Option<&SweepPreview>) -> Vec<String> {
     let mut out = Vec::new();
     if plan.is_empty() {
         out.push("No hay nada que limpiar.".to_string());
@@ -882,11 +863,19 @@ fn summary(plan: &DeletionPlan) -> Vec<String> {
         ));
         for target in &plan.targets {
             out.push(format!(
-                "  {} {} ({})",
-                target.category.as_str(),
+                "  {}: {} ({})",
+                target.category.describe(),
                 target.path.display(),
                 crate::human_bytes(target.size)
             ));
+        }
+    }
+    if let Some(preview) = preview {
+        for path in preview.all() {
+            out.push(format!("  barrido {}", path.display()));
+        }
+        for (path, cause) in &preview.unreadable {
+            out.push(format!("  no se puede listar {}: {cause}", path.display()));
         }
     }
     for item in &plan.preserved {
@@ -918,5 +907,87 @@ mod path_size_tests {
             15,
             "el blob y su enlace duro suman una vez, más el archivo independiente"
         );
+    }
+}
+
+#[cfg(test)]
+mod plan_lines_tests {
+    use super::*;
+
+    const ALL: [Category; 8] = [
+        Category::Model,
+        Category::Voices,
+        Category::SyntheticSpeech,
+        Category::Config,
+        Category::Logs,
+        Category::DaemonState,
+        Category::Scratch,
+        Category::UserData,
+    ];
+
+    #[test]
+    fn categories_describe_in_spanish() {
+        let described: Vec<&str> = ALL.iter().map(|c| c.describe()).collect();
+        assert_eq!(
+            described,
+            [
+                "modelos",
+                "voces",
+                "locuciones",
+                "configuración",
+                "registros",
+                "estado del daemon",
+                "temporales",
+                "datos de usuario",
+            ]
+        );
+    }
+
+    /// Cada destino sale una sola vez, con su categoría en español y su tamaño, y
+    /// ninguna línea lleva un literal interno en inglés.
+    #[test]
+    fn plan_lines_list_each_path_once_with_its_category() {
+        let plan = DeletionPlan {
+            targets: ALL
+                .iter()
+                .enumerate()
+                .map(|(i, category)| Target {
+                    path: PathBuf::from(format!("/raiz/destino-{i}")),
+                    category: *category,
+                    size: 1500,
+                })
+                .collect(),
+            preserved: vec![Preserved {
+                path: PathBuf::from("/raiz/programa"),
+                reason: "el programa y la integración de PATH son de `self uninstall`",
+            }],
+            ownership: ownership::Plan::default(),
+        };
+        let lines = plan_lines(&plan, None);
+        assert_eq!(lines[0], "Se borrarán 8 ruta(s), 12,0 KB en total:");
+        for (i, category) in ALL.iter().enumerate() {
+            let path = format!("/raiz/destino-{i}");
+            let shown = PathBuf::from(&path).display().to_string();
+            assert_eq!(
+                lines.iter().filter(|l| l.contains(&shown)).count(),
+                1,
+                "{lines:?}"
+            );
+            assert!(lines.contains(&format!("  {}: {shown} (1,5 KB)", category.describe())));
+        }
+        for literal in [
+            "model ",
+            "voices",
+            "synthetic_speech",
+            "config ",
+            "logs",
+            "daemon_state",
+            "scratch",
+        ] {
+            assert!(
+                lines.iter().all(|l| !l.contains(literal)),
+                "{literal}: {lines:?}"
+            );
+        }
     }
 }

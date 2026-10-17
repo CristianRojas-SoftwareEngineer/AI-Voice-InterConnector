@@ -205,7 +205,10 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             $archiveName = "$App-$version-x86_64-windows.zip"
             $archivePath = Join-Path $staging $archiveName
             $sumsPath = Join-Path $staging "SHA256SUMS.txt"
-            Write-BootstrapLog "Instalando $App $version ($target)..."
+            # La barra nativa sigue desactivada (en 5.1 ralentiza la descarga): en su
+            # lugar se informa el tamano y la duracion medidos al terminar.
+            Write-BootstrapLog "Descargando $archiveName..."
+            $watch = [Diagnostics.Stopwatch]::StartNew()
             try {
                 Invoke-WebRequest -Uri "$base/v$version/$archiveName" -OutFile $archivePath -UseBasicParsing
             } catch {
@@ -226,7 +229,14 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             if ([string]::IsNullOrWhiteSpace($expected)) { throw "ERROR [checksum_mismatch]: SHA256SUMS.txt no contiene ninguna l${i}nea para $archiveName; instalaci${o}n abortada." }
             $actual = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($actual -cne $expected) { throw "ERROR [checksum_mismatch]: el checksum de $archiveName no coincide con SHA256SUMS.txt; instalaci${o}n abortada." }
-            Write-BootstrapLog "Checksum verificado: $archiveName"
+            # MB decimales con un decimal y coma, con la cultura invariante para no
+            # depender de la de la sesion; la linea en blanco cierra el bloque. El
+            # tamano sale de .NET y no de Get-Item, que es un cmdlet de modulo.
+            $watch.Stop()
+            $megabytes = (([IO.FileInfo]$archivePath).Length / 1000000).ToString("0.0", [Globalization.CultureInfo]::InvariantCulture).Replace('.', ',')
+            $seconds = [int][math]::Round($watch.Elapsed.TotalSeconds)
+            Write-BootstrapLog "$megabytes MB en $seconds s; checksum verificado."
+            Write-BootstrapLog ""
 
             Expand-Archive -Path $archivePath -DestinationPath $staging -Force
             $exe = Join-Path $staging "$App.exe"
@@ -245,10 +255,13 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             if ($yes) { $installArgs += "--yes" }
             & $exe @installArgs
             $Result.ExitCode = $LASTEXITCODE
-            if ($Result.ExitCode -eq 0) {
-                # El programa en el PATH en curso (los modulos estandar, si hubo que
-                # repararlos, ya se cargaron al arrancar).
+            if ($Result.ExitCode -eq 0 -and -not $noModifyPath) {
+                # Una cancelacion devuelve codigo 0 pero no instala el comando;
+                # no anadir el PATH respeta quien eligio no tocarlo.
                 if (($env:Path -split ';') -notcontains $programDir) { $env:Path = "$env:Path;$programDir" }
+                if (Test-Path (Join-Path $programDir "$App.exe")) {
+                    Write-BootstrapLog "El comando ya est${a} disponible en esta ventana."
+                }
             }
         } finally {
             # Un borrado fallido no cambia el codigo de salida: se avisa con la ruta.

@@ -157,7 +157,8 @@ main() {
 
     base="${AVI_DOWNLOAD_BASE_URL:-https://github.com/$repo/releases/download}"
     archive="$app-$version-$asset_arch-$asset_os.tar.gz"
-    log "Instalando $app $version ($target)..."
+    log "Descargando $archive..."
+    started="$(date +%s)"
     fetch "$base/v$version/$archive" "$staging/$archive" || fail "[network_error] descarga fallida: $archive."
     fetch "$base/v$version/SHA256SUMS.txt" "$staging/SHA256SUMS.txt" || fail "[network_error] descarga fallida: SHA256SUMS.txt."
 
@@ -176,7 +177,12 @@ main() {
     expected="$(printf '%s' "$expected" | tr 'A-Z' 'a-z')"
     actual="$(printf '%s' "$actual" | tr 'A-Z' 'a-z')"
     [ "$actual" = "$expected" ] || fail "[checksum_mismatch] el checksum de $archive no coincide con SHA256SUMS.txt; instalación abortada."
-    log "Checksum verificado: $archive"
+    # Tamaño en MB decimales con un decimal y coma, y la duración medida; la
+    # línea en blanco cierra el bloque del bootstrap.
+    bytes="$(wc -c < "$staging/$archive" | tr -d ' ')"
+    megabytes="$(awk -v b="$bytes" 'BEGIN { printf "%.1f", b / 1000000 }' | tr '.' ',')"
+    log "$megabytes MB en $(( $(date +%s) - started )) s; checksum verificado."
+    log ""
 
     tar -xzf "$staging/$archive" -C "$staging" || fail "no se pudo extraer $archive."
     bin="$staging/$app"

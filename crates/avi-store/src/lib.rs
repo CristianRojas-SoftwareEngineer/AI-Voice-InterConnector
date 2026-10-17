@@ -9,6 +9,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use avi_shared::paths::{
     data_dir, models_cache_dir, models_root_is_shared, xet_cache_dir, MODELS_XET_SUBDIR,
@@ -864,18 +865,25 @@ impl ModelStore {
     /// estándar en `models_cache_dir()`, ETag/commit-hash y reintentos del propio
     /// crate. No reanuda: ante una descarga interrumpida vuelve a bajar el archivo
     /// completo sobre `.incomplete`. Los punteros de `snapshots/` son symlinks en
-    /// Unix y enlaces duros en Windows. La barra `indicatif` refleja archivos/bytes agregados vía
-    /// `ProgressHandler`. Idempotente: si el snapshot ya existe y no es
+    /// Unix y enlaces duros en Windows. El progreso (bytes completados y total
+    /// del modelo) se entrega a `observer` sin dibujar nada: dibujarlo es cosa de
+    /// quien conoce la selección. Idempotente: si el snapshot ya existe y no es
     /// `force_download`, HF resuelve desde cache sin red. Compila igual en los 4
     /// targets (rustls, sin OpenSSL nativo).
-    pub async fn ensure_downloaded(model_name: &str) -> Result<PathBuf> {
+    pub async fn ensure_downloaded(
+        model_name: &str,
+        observer: Arc<dyn TransferObserver>,
+    ) -> Result<PathBuf> {
         let (repo_id, revision) = ModelStore::revision_of(model_name).ok_or_else(|| {
             anyhow::anyhow!(
                 "Modelo desconocido (sin pin en MODEL_REVISIONS): {}",
                 model_name
             )
         })?;
-        let progress = indicatif_progress();
+        let progress = hf_hub::progress::Progress::new(TrackerHandler {
+            tracker: std::sync::Mutex::new(TransferTracker::default()),
+            observer,
+        });
         // Cache explícita: la resolución de la app (models_cache_dir) manda sobre el
         // fallback roto de hf-hub (HOME→/tmp); lectura y escritura convergen.
         // Cliente propio con `connect_timeout`: sin él, una red agujereada cuelga
@@ -983,87 +991,90 @@ impl ModelStore {
     }
 }
 
-/// Handler de progreso que puentea los eventos de `hf-hub` a una barra
-/// `indicatif` (bytes totales agregados; los eventos `Progress` son deltas
-/// por archivo y se acumulan por nombre de archivo).
-fn indicatif_progress() -> hf_hub::progress::Progress {
-    use std::collections::HashMap;
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Mutex;
+/// Destinatario del progreso de una descarga: recibe los bytes completados y el
+/// total del modelo cada vez que cambian. Lo implementa quien dibuja, que es quien
+/// conoce el contexto (qué modelo es y cuántos hay); este crate solo calcula.
+pub trait TransferObserver: Send + Sync {
+    fn update(&self, completed: u64, total: u64);
+}
 
-    struct BarHandler {
-        bar: indicatif::ProgressBar,
-        // Estado acumulado por archivo: los eventos Progress son deltas.
-        per_file: Mutex<HashMap<String, u64>>,
-        total_bytes: AtomicU64,
-    }
+/// Cálculo del progreso de un modelo a partir de los eventos de `hf-hub`.
+///
+/// `hf-hub` emite por el mismo canal el `Start` del snapshot (suma de tamaños de
+/// todos los archivos, tras sus HEAD) y después un `Start` por cada archivo que
+/// no va por xet; los `Progress` traen bytes absolutos por archivo, y
+/// `AggregateProgress` repite en bloque lo que el lote xet ya informa por
+/// archivo. Por eso: el total es el del primer `Start` (o, si llega a 0, la suma
+/// de los totales por archivo), lo completado es la suma del último
+/// `bytes_completed` de cada archivo **que realmente se transfirió**, y
+/// `AggregateProgress` se ignora. Un archivo que llega ya en caché (`Complete`
+/// sin un `Started`/`InProgress` previo) no cuenta como transferido.
+#[derive(Default)]
+struct TransferTracker {
+    snapshot_total: Option<u64>,
+    per_file: std::collections::HashMap<String, (u64, u64, bool)>,
+    last: Option<(u64, u64)>,
+}
 
-    impl hf_hub::progress::ProgressHandler for BarHandler {
-        fn on_progress(&self, event: &hf_hub::progress::ProgressEvent) {
-            match event {
-                hf_hub::progress::ProgressEvent::Download(
-                    hf_hub::progress::DownloadEvent::Start { total_bytes, .. },
-                ) => {
-                    self.total_bytes.store(*total_bytes, Ordering::Relaxed);
-                    self.bar.set_length(*total_bytes);
-                }
-                hf_hub::progress::ProgressEvent::Download(
-                    hf_hub::progress::DownloadEvent::Progress { files },
-                ) => {
-                    let mut acc = 0u64;
-                    // El acumulador por archivo solo lo escribe este handler, así
-                    // que un veneno no lo invalida: un `unwrap()` mataría la
-                    // descarga por un pánico de otro hilo. Se registra la traza
-                    // y la barra sigue avanzando sobre el estado recuperado.
-                    let mut map = self.per_file.lock().unwrap_or_else(|poisoned| {
-                        tracing::warn!("mutex del progreso por archivo envenenado; se recupera");
-                        poisoned.into_inner()
-                    });
-                    for f in files {
-                        map.insert(f.filename.clone(), f.bytes_completed);
-                    }
-                    for v in map.values() {
-                        acc += *v;
-                    }
-                    drop(map);
-                    self.bar
-                        .set_position(acc.min(self.bar.length().unwrap_or(u64::MAX)));
-                }
-                hf_hub::progress::ProgressEvent::Download(
-                    hf_hub::progress::DownloadEvent::AggregateProgress {
-                        bytes_completed,
-                        total_bytes,
-                        ..
-                    },
-                ) => {
-                    // Lote xet: totales agregados del lote en curso.
-                    if self.total_bytes.load(Ordering::Relaxed) == 0 && *total_bytes > 0 {
-                        self.bar.set_length(*total_bytes);
-                    }
-                    let pos = (*bytes_completed).min(self.bar.length().unwrap_or(u64::MAX));
-                    self.bar.set_position(pos);
-                }
-                hf_hub::progress::ProgressEvent::Download(
-                    hf_hub::progress::DownloadEvent::Complete,
-                ) => {
-                    self.bar.finish_with_message("descarga completa");
-                }
-                _ => {}
+impl TransferTracker {
+    /// Aplica un evento y devuelve `(completado, total)` solo si cambió.
+    fn apply(&mut self, event: &hf_hub::progress::ProgressEvent) -> Option<(u64, u64)> {
+        use hf_hub::progress::{DownloadEvent, FileStatus, ProgressEvent};
+        match event {
+            ProgressEvent::Download(DownloadEvent::Start { total_bytes, .. }) => {
+                self.snapshot_total.get_or_insert(*total_bytes);
             }
+            ProgressEvent::Download(DownloadEvent::Progress { files }) => {
+                for f in files {
+                    let transferred = f.status != FileStatus::Complete;
+                    let entry = self.per_file.entry(f.filename.clone()).or_default();
+                    entry.0 = f.bytes_completed;
+                    entry.1 = entry.1.max(f.total_bytes);
+                    entry.2 = entry.2 || transferred;
+                }
+            }
+            _ => return None,
+        }
+        let completed = self
+            .per_file
+            .values()
+            .filter(|(_, _, transferred)| *transferred)
+            .map(|(done, _, _)| done)
+            .sum();
+        let total = match self.snapshot_total {
+            Some(total) if total > 0 => total,
+            _ => self.per_file.values().map(|(_, total, _)| total).sum(),
+        };
+        let current = (completed, total);
+        if self.last == Some(current) {
+            return None;
+        }
+        self.last = Some(current);
+        Some(current)
+    }
+}
+
+/// Handler de `hf-hub` que pasa cada evento por el `TransferTracker` y avisa
+/// al observador cuando el progreso cambia.
+struct TrackerHandler {
+    tracker: std::sync::Mutex<TransferTracker>,
+    observer: Arc<dyn TransferObserver>,
+}
+
+impl hf_hub::progress::ProgressHandler for TrackerHandler {
+    fn on_progress(&self, event: &hf_hub::progress::ProgressEvent) {
+        // El estado solo lo escribe este handler, así que un veneno no lo
+        // invalida: un `unwrap()` mataría la descarga por un pánico de otro hilo.
+        let mut tracker = self.tracker.lock().unwrap_or_else(|poisoned| {
+            tracing::warn!("mutex del progreso de descarga envenenado; se recupera");
+            poisoned.into_inner()
+        });
+        if let Some((completed, total)) = tracker.apply(event) {
+            // Mantener el orden del cálculo y de la notificación: los eventos
+            // pueden llegar desde tareas distintas y la barra no debe retroceder.
+            self.observer.update(completed, total);
         }
     }
-
-    let bar = indicatif::ProgressBar::new(0);
-    bar.set_style(
-        indicatif::ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] {bar:30.cyan/blue} {bytes}/{total_bytes} {bytes_per_sec} eta:{eta}")
-            .unwrap(),
-    );
-    hf_hub::progress::Progress::new(BarHandler {
-        bar,
-        per_file: Mutex::new(HashMap::new()),
-        total_bytes: AtomicU64::new(0),
-    })
 }
 
 #[cfg(test)]
@@ -1075,6 +1086,100 @@ mod tests {
     /// Serializa los tests que manipulan variables de entorno (estado global
     /// del proceso): `cargo test` los corre en paralelo y sin lock se pisan.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn download(event: hf_hub::progress::DownloadEvent) -> hf_hub::progress::ProgressEvent {
+        hf_hub::progress::ProgressEvent::Download(event)
+    }
+
+    fn file(name: &str, completed: u64, total: u64) -> hf_hub::progress::FileProgress {
+        hf_hub::progress::FileProgress {
+            filename: name.to_string(),
+            bytes_completed: completed,
+            total_bytes: total,
+            status: if completed == total {
+                hf_hub::progress::FileStatus::Complete
+            } else {
+                hf_hub::progress::FileStatus::InProgress
+            },
+        }
+    }
+
+    /// Secuencia real de `hf-hub` para un snapshot: `Start` del snapshot, `Start`
+    /// de un archivo HTTP pequeño, `Progress` por archivo de xet y de HTTP, y
+    /// `AggregateProgress` del lote xet intercalados. El total no puede tomar el
+    /// del archivo pequeño, la posición no retrocede y termina en el total.
+    #[test]
+    fn transfer_tracker_keeps_the_snapshot_total_across_per_file_starts() {
+        use hf_hub::progress::DownloadEvent::*;
+        const TOTAL: u64 = 2_500_000_000;
+        const VOCAB: u64 = 2_776_833;
+        const WEIGHTS: u64 = TOTAL - VOCAB;
+        let events = vec![
+            download(Start {
+                total_files: 2,
+                total_bytes: TOTAL,
+            }),
+            download(Start {
+                total_files: 1,
+                total_bytes: VOCAB,
+            }),
+            download(Progress {
+                files: vec![file("vocab.json", 1_000_000, VOCAB)],
+            }),
+            download(Progress {
+                files: vec![file("model.safetensors", 500_000_000, WEIGHTS)],
+            }),
+            download(AggregateProgress {
+                bytes_completed: 500_000_000,
+                total_bytes: WEIGHTS,
+                bytes_per_sec: None,
+            }),
+            download(Progress {
+                files: vec![file("vocab.json", VOCAB, VOCAB)],
+            }),
+            download(Progress {
+                files: vec![file("model.safetensors", WEIGHTS, WEIGHTS)],
+            }),
+            download(AggregateProgress {
+                bytes_completed: WEIGHTS,
+                total_bytes: WEIGHTS,
+                bytes_per_sec: None,
+            }),
+            download(Complete),
+        ];
+        let mut tracker = TransferTracker::default();
+        let updates: Vec<(u64, u64)> = events.iter().filter_map(|e| tracker.apply(e)).collect();
+        assert!(
+            updates.iter().all(|(_, total)| *total == TOTAL),
+            "{updates:?}"
+        );
+        assert!(updates.windows(2).all(|w| w[0].0 <= w[1].0), "{updates:?}");
+        assert_eq!(updates.last(), Some(&(TOTAL, TOTAL)));
+    }
+
+    /// Si el `Start` del snapshot llega con 0 bytes, el total es la suma de los
+    /// totales por archivo.
+    #[test]
+    fn transfer_tracker_sums_per_file_totals_when_the_start_is_zero() {
+        use hf_hub::progress::DownloadEvent::*;
+        let mut tracker = TransferTracker::default();
+        assert_eq!(
+            tracker.apply(&download(Start {
+                total_files: 2,
+                total_bytes: 0
+            })),
+            Some((0, 0))
+        );
+        tracker.apply(&download(Progress {
+            files: vec![file("a", 10, 100)],
+        }));
+        assert_eq!(
+            tracker.apply(&download(Progress {
+                files: vec![file("b", 50, 200)]
+            })),
+            Some((60, 300))
+        );
+    }
 
     /// Copia de las variables de entorno que un test va a tocar. `ENV_LOCK`
     /// serializa a los lectores, pero sin restaurar al final un fallo a mitad

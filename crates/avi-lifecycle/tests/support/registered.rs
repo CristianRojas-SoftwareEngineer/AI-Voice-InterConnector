@@ -168,7 +168,6 @@ impl Sandbox {
                 data_dir: self.data_dir.clone(),
                 cache_dir: self.cache_dir.clone(),
             },
-            None,
         )
     }
 

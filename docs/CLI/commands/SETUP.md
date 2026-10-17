@@ -27,7 +27,7 @@ No existen `--with-stt` (`parakeet-tdt-v3` se provisiona siempre) ni `--with-voi
 1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio del registro con un directorio por voz de fábrica (`default`, `ryan`, `vivian`) y escribe el `reference.qvoice` embebido solo en `default` si aún no existe; `ryan` y `vivian` quedan sin archivo, porque son presets del motor (ver [el modelo de voces de dos niveles](../../DESIGN.md#modelo-de-voces-de-dos-niveles)).
 2. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar: todos los modelos, el de clonado incluido. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
 3. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (ver [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)).
-4. **Descargar** lo pendiente, repo a repo, en la revisión fijada.
+4. **Descargar** lo pendiente, repo a repo, en la revisión fijada, con la vista de progreso por stderr (ver abajo).
 5. **Envelope `--json`** o mensaje humano.
 
 La traducción es **obligatoria**: `setup` siempre provisiona `opus-mt-es-en` y `opus-mt-en-es`, que son modelos CTranslate2 int8 ya convertidos y publicados, sin pasos locales de conversión. Cada uno se lee directo del snapshot de HuggingFace y se valida por presencia de sus cinco ficheros (`config.json`, `model.bin`, `shared_vocabulary.json`, `source.spm`, `target.spm`), todos con tamaño mayor que cero.
@@ -50,10 +50,19 @@ Cada modelo se fija por **commit hash** de HuggingFace, así que un push upstrea
 
 Todos los modelos se provisionan siempre: no hay selección opcional.
 
-**Tamaño.** El tamaño de cada descarga es el `approx_bytes` de su `ModelPin` en [`MODEL_REVISIONS`](../../../crates/avi-shared/src/paths.rs). La confirmación previa anuncia la suma de los repos pendientes, en escala decimal y con un decimal:
+**Tamaño.** El tamaño de cada descarga es el `approx_bytes` de su `ModelPin` en [`MODEL_REVISIONS`](../../../crates/avi-shared/src/paths.rs). La confirmación previa anuncia la suma de los repos pendientes, en escala decimal y con un decimal separado por coma:
 
 ```
-Se descargarán N modelo(s), unos X.Y GB.
+Se descargarán N modelo(s), unos X,Y GB.
+```
+
+**Progreso.** Solo si hay algo pendiente, la provisión abre un bloque propio por stderr, precedido de una línea en blanco: un encabezado, una barra por modelo numerada sobre los pendientes —con su tamaño real, velocidad, tiempo transcurrido y restante—, que al terminar se sustituye por una línea permanente, y un cierre con el total. Sin terminal no se dibujan las barras, pero el resto sale igual:
+
+```
+Descargando 5 modelo(s):
+  ✓ [1/5] qwen3-tts-0.6b  2,5 GB en 49 s (51,0 MB/s)
+  …
+Modelos descargados: 5,9 GB en 1 min 59 s.
 ```
 
 El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `snapshots/` como enlace simbólico en Unix y como enlace duro en Windows, así que el blob no se duplica. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), `hf-hub` copia el blob y el espacio en disco se duplica.
@@ -68,7 +77,7 @@ El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `
 ## Integridad e idempotencia
 
 - `is_provisioned(name)` valida no solo la existencia del snapshot sino también los ficheros críticos con `size > 0`, lo que evita una caché truncada que pasa `.exists()` y revienta al cargar.
-- `ensure_downloaded` valida y hace rollback de snapshot y blobs ante una descarga parcial.
+- `ModelStore::ensure_downloaded(name, observer)` valida y hace rollback de snapshot y blobs ante una descarga parcial; el progreso lo entrega a `observer` sin dibujar nada.
 - `Pending::is_empty()` es la condición de idempotencia: si no hay nada pendiente, no se descarga nada y no se pregunta el tamaño.
 
 ---
