@@ -84,5 +84,6 @@ pub(crate) const REQUIRED_SYMBOLS: &[&core::ffi::CStr] = &[
     c"snd_pcm_sw_params_set_start_threshold",
     c"snd_pcm_sw_params_set_tstamp_mode",
     c"snd_pcm_sw_params_set_tstamp_type",
+    c"snd_pcm_type",
     c"snd_pcm_writei",
 ];

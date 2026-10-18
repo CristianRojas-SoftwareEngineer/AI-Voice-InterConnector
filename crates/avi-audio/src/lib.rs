@@ -81,8 +81,22 @@ fn estimate_latency_ms(buffer_size: &cpal::SupportedBufferSize, sample_rate: u32
     }
 }
 
-/// Crea el callback de error de un stream: lo escribe por stderr y marca el
-/// fallo en `failed` para que la espera de la operación termine con error.
+/// Indica si el kind invalida el stream y debe terminar la operación.
+fn is_fatal(kind: cpal::ErrorKind) -> bool {
+    match kind {
+        // Un xrun señala una discontinuidad transitoria, no la muerte del stream.
+        cpal::ErrorKind::Xrun
+        // La promoción de prioridad fue denegada, pero el stream sigue activo.
+        | cpal::ErrorKind::RealtimeDenied
+        // El backend cambió de dispositivo y mantiene el stream en el nuevo.
+        | cpal::ErrorKind::DeviceChanged => false,
+        // Los kinds desconocidos también se consideran fatales.
+        _ => true,
+    }
+}
+
+/// Crea el callback de error de un stream: siempre lo escribe por stderr y
+/// marca `failed` solo si el error fatal hace terminar la operación.
 fn stream_error_callback(
     label: &'static str,
     failed: &Arc<AtomicBool>,
@@ -90,11 +104,13 @@ fn stream_error_callback(
     let failed = Arc::clone(failed);
     move |err| {
         eprintln!("{label}: {err}");
-        failed.store(true, Ordering::SeqCst);
+        if is_fatal(err.kind()) {
+            failed.store(true, Ordering::SeqCst);
+        }
     }
 }
 
-/// Devuelve error si el callback de error del stream marcó un fallo.
+/// Devuelve error si el callback de error fatal del stream marcó un fallo.
 fn ensure_stream_alive(failed: &AtomicBool, operation: &str) -> Result<()> {
     if failed.load(Ordering::SeqCst) {
         return Err(anyhow!("El stream de audio falló durante {operation}"));
@@ -250,8 +266,9 @@ enum StopReason {
 }
 
 /// Espera el fin de una grabación push-to-talk: Enter (mensaje `Ok` del canal),
-/// el vencimiento de `max` o un fallo. Es un error que falle la lectura de stdin,
-/// que el hilo lector desaparezca sin avisar o que el stream marque un fallo.
+/// el vencimiento de `max` o un fallo fatal del stream. Es un error que falle la
+/// lectura de stdin, que el hilo lector desaparezca sin avisar o que el stream
+/// quede invalidado.
 fn wait_for_stop(
     rx: &std::sync::mpsc::Receiver<std::io::Result<()>>,
     max: Duration,
@@ -447,8 +464,8 @@ impl AudioService {
 
         stream.play()?;
 
-        // Esperar a que finalice la reproducción de las muestras; un fallo del
-        // stream la interrumpe con error.
+        // Esperar a que finalice la reproducción de las muestras; un error fatal
+        // que invalide el stream la interrumpe con error.
         while *acquire_lock(&sample_idx, "índice de reproducción") < total_samples {
             ensure_stream_alive(&stream_failed, "la reproducción")?;
             std::thread::sleep(POLL_INTERVAL);
@@ -500,7 +517,8 @@ impl AudioService {
     /// del entorno (`u64::MAX` deja solo el del entorno). Comparte
     /// formato de salida (16 kHz, mono, int16) con `capture_16k_mono_pcm`.
     /// Devuelve error si la variable de entorno es inválida, si falla la
-    /// lectura de stdin o si el stream de audio notifica un fallo.
+    /// lectura de stdin o si un error fatal invalida el stream de audio; los
+    /// errores transitorios se registran en stderr y la captura continúa.
     pub fn capture_16k_mono_pcm_until_enter(&self, max_secs: u64) -> Result<Vec<i16>> {
         let max_secs = max_secs.min(push_to_talk_max_secs()?);
         let device = self
@@ -824,6 +842,36 @@ pub fn write_zero_rate_wav(path: &Path) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_is_fatal_classifies_error_kinds() {
+        for kind in [
+            cpal::ErrorKind::Xrun,
+            cpal::ErrorKind::RealtimeDenied,
+            cpal::ErrorKind::DeviceChanged,
+        ] {
+            assert!(!crate::is_fatal(kind), "{kind:?} debe tolerarse");
+        }
+        for kind in [
+            cpal::ErrorKind::DeviceNotAvailable,
+            cpal::ErrorKind::StreamInvalidated,
+            cpal::ErrorKind::BackendError,
+        ] {
+            assert!(crate::is_fatal(kind), "{kind:?} debe ser fatal");
+        }
+    }
+
+    #[test]
+    fn test_stream_error_callback_only_marks_fatal_errors() {
+        let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut callback = crate::stream_error_callback("prueba", &failed);
+
+        callback(cpal::Error::new(cpal::ErrorKind::Xrun));
+        assert!(!failed.load(std::sync::atomic::Ordering::SeqCst));
+
+        callback(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
+        assert!(failed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
     /// Reserva un `.wav` temporal con dueño: el fichero se borra al soltar la
     /// ruta devuelta, también si la prueba falla.
     fn temp_wav_path(name: &str) -> tempfile::TempPath {

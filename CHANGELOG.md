@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.32.0 — 2026-10-17](#0320--2026-10-17)
 - [0.31.2 — 2026-10-16](#0312--2026-10-16)
 - [0.31.1 — 2026-10-16](#0311--2026-10-16)
@@ -110,6 +111,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Al grabar el micrófono mientras OBS estaba grabando, una discontinuidad transitoria del audio podía interrumpir toda la captura. Esta versión mantiene la grabación y la reproducción ante esos fallos recuperables y da prioridad de tiempo real al hilo de audio en Windows para reducirlos bajo carga.
+
+### Corregido
+
+- Los fallos transitorios `Xrun`, `RealtimeDenied` y `DeviceChanged` del stream de captura y reproducción se registran y ya no abortan la operación; los errores fatales que invalidan el stream siguen abortándola.
+- El hilo de audio de WASAPI pasa a prioridad de tiempo real para reducir los glitches bajo carga.
 
 ## [0.32.0] — 2026-10-17
 

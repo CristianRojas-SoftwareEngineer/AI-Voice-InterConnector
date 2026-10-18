@@ -119,7 +119,8 @@ Validaciones puras antes de despachar:
  avisa por stderr y devuelve lo grabado hasta ese punto con exit **0** (no es
  un error). Una variable definida que no sea un entero de segundos sin signo
  sale con exit 2 `usage_error` y un mensaje que la nombra. Si falla la lectura
- de stdin o el stream de audio, la grabación termina con error. No hay
+ de stdin o el stream queda invalidado, la grabación termina con error; los
+ fallos transitorios del motor se registran en stderr y la captura continúa. No hay
  panic por `duration` ausente: el modo push-to-talk cubre ese caso.
 - Duración del audio: el audio de entrada dura como máximo `MAX_TRANSCRIBE_AUDIO_SECS`
  ([`limits.rs`](../../../crates/avi-core/src/limits.rs)), igual en la

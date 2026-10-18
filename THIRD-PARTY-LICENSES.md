@@ -120,8 +120,8 @@ El archivo de release añade al binario Rust estos componentes binarios de terce
 ## Inventario completo del lockfile
 
 <!-- inventario:inicio -->
-Generado desde `Cargo.lock` (489 paquetes resueltos, 459 crates únicos, directos y transitivos).
-Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-2.0 2, ISC 3, MIT 421, MPL-2.0 14, Unicode-3.0 18, Zlib 6.
+Generado desde `Cargo.lock` (491 paquetes resueltos, 460 crates únicos, directos y transitivos).
+Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-2.0 2, ISC 3, MIT 422, MPL-2.0 15, Unicode-3.0 18, Zlib 6.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
@@ -143,6 +143,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `arrayvec` | 0.7.8 | MIT OR Apache-2.0 | MIT |
 | `async-trait` | 0.1.92 | MIT OR Apache-2.0 | MIT |
 | `atomic-waker` | 1.1.2 | Apache-2.0 OR MIT | MIT |
+| `audio_thread_priority` | 0.35.1 | MPL-2.0 | MPL-2.0 |
 | `autocfg` | 1.5.1 | Apache-2.0 OR MIT | MIT |
 | `avi-audio` | 0.1.0 | MPL-2.0 | MPL-2.0 |
 | `avi-core` | 0.1.0 | MPL-2.0 | MPL-2.0 |
@@ -322,6 +323,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `log` | 0.4.33 | MIT OR Apache-2.0 | MIT |
 | `lru-slab` | 0.1.2 | MIT OR Apache-2.0 OR Zlib | MIT |
 | `lz4_flex` | 0.13.1 | MIT | MIT |
+| `mach2` | 0.4.3 | BSD-2-Clause OR MIT OR Apache-2.0 | MIT |
 | `mach2` | 0.6.0 | BSD-2-Clause OR MIT OR Apache-2.0 | MIT |
 | `macro_rules_attribute` | 0.2.3 | Apache-2.0 OR MIT OR Zlib | MIT |
 | `macro_rules_attribute-proc_macro` | 0.2.3 | Apache-2.0 OR MIT OR Zlib | MIT |
