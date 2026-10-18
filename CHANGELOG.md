@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.33.1 — 2026-10-18](#0331--2026-10-18)
 - [0.33.0 — 2026-10-18](#0330--2026-10-18)
 - [0.32.0 — 2026-10-17](#0320--2026-10-17)
 - [0.31.2 — 2026-10-16](#0312--2026-10-16)
@@ -113,7 +113,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.33.1] — 2026-10-18
 
 ### Corregido
 
@@ -3465,3 +3465,4 @@ estado con el que nace el producto.
 [0.31.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.31.1...v0.31.2
 [0.32.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.31.2...v0.32.0
 [0.33.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.32.0...v0.33.0
+[0.33.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.33.0...v0.33.1
