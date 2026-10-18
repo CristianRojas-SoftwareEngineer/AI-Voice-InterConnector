@@ -95,16 +95,19 @@ fn is_fatal(kind: cpal::ErrorKind) -> bool {
     }
 }
 
-/// Crea el callback de error de un stream: siempre lo escribe por stderr y
-/// marca `failed` solo si el error fatal hace terminar la operación.
+/// Crea el callback de error de un stream: escribe por stderr y marca `failed`
+/// solo si el error es fatal (invalida el stream y termina la operación).
+/// Los errores transitorios (`Xrun`, `RealtimeDenied`, `DeviceChanged`) no se
+/// registran en stderr ni marcan el flag; el stream continúa entregando
+/// muestras.
 fn stream_error_callback(
     label: &'static str,
     failed: &Arc<AtomicBool>,
 ) -> impl FnMut(cpal::Error) + Send + 'static {
     let failed = Arc::clone(failed);
     move |err| {
-        eprintln!("{label}: {err}");
         if is_fatal(err.kind()) {
+            eprintln!("{label}: {err}");
             failed.store(true, Ordering::SeqCst);
         }
     }
@@ -518,7 +521,7 @@ impl AudioService {
     /// formato de salida (16 kHz, mono, int16) con `capture_16k_mono_pcm`.
     /// Devuelve error si la variable de entorno es inválida, si falla la
     /// lectura de stdin o si un error fatal invalida el stream de audio; los
-    /// errores transitorios se registran en stderr y la captura continúa.
+    /// errores transitorios no se registran en stderr y la captura continúa.
     pub fn capture_16k_mono_pcm_until_enter(&self, max_secs: u64) -> Result<Vec<i16>> {
         let max_secs = max_secs.min(push_to_talk_max_secs()?);
         let device = self

@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.33.0 — 2026-10-18](#0330--2026-10-18)
 - [0.32.0 — 2026-10-17](#0320--2026-10-17)
 - [0.31.2 — 2026-10-16](#0312--2026-10-16)
@@ -111,6 +112,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Corregido
+
+- El callback de error del stream ya no informa por stderr los fallos transitorios (`Xrun`, `RealtimeDenied`, `DeviceChanged`) que no abortan la operación; solo los errores fatales que invalidan el stream se registran en stderr y abortan, coherente con el flag de fallo.
 
 ## [0.33.0] — 2026-10-18
 
