@@ -946,10 +946,17 @@ pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
     }
 
     // PCM i16 little-endian → Vec<i16> mono 16 kHz (el motor normaliza a i16::MAX).
-    Ok(audio_bytes
+    let pcm = audio_bytes
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect())
+        .collect::<Vec<i16>>();
+    if pcm.is_empty() {
+        return Err(InputError {
+            reason: "empty_audio",
+            message: "El audio de la transcripción no contiene muestras PCM.".to_string(),
+        });
+    }
+    Ok(pcm)
 }
 
 /// Par de traducción CT2 (`es-en` o `en-es`) que corresponde a un idioma de
@@ -1383,10 +1390,17 @@ fn dub_pcm(payload: &Value) -> Result<Vec<i16>, InputError> {
             reason: "invalid_audio",
             message: format!("audio_b64 no decodificable: {}", e),
         })?;
-    Ok(audio_bytes
+    let pcm = audio_bytes
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
-        .collect())
+        .collect::<Vec<i16>>();
+    if pcm.is_empty() {
+        return Err(InputError {
+            reason: "empty_audio",
+            message: "El audio del doblaje no contiene muestras PCM.".to_string(),
+        });
+    }
+    Ok(pcm)
 }
 
 /// Voz, idiomas de origen y destino y temperatura opcional de `/dub`.
@@ -3175,6 +3189,14 @@ mod tests {
         let body = silence_transcribe_body(300 * 16_000 + 1);
         let result = validate_transcribe_input(&body);
         assert_eq!(result.err().map(|e| e.reason), Some("audio_too_long"));
+    }
+
+    /// Un `audio_b64` que decodifica a 0 muestras PCM se rechaza como `empty_audio`.
+    #[test]
+    fn validate_transcribe_empty_pcm_is_empty_audio() {
+        let body = json!({ "audio_b64": "" });
+        let result = validate_transcribe_input(&body);
+        assert_eq!(result.err().map(|e| e.reason), Some("empty_audio"));
     }
 
     /// Un texto vacío o solo de espacios no se traduce.

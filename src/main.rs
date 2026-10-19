@@ -1507,17 +1507,25 @@ async fn capture_mic_pcm(duration: Option<u64>, max_secs: u64) -> Result<Vec<i16
     })
     .await
     .map_err(|e| {
+        let message = e.to_string();
+        if message.contains("empty_audio") {
+            return CliError::new(ExitCode::InvalidInput, "empty_audio", message);
+        }
         CliError::new(
             ExitCode::TranscriptionFailed,
             "transcription_failed",
-            e.to_string(),
+            message,
         )
     })?
     .map_err(|e| {
+        let message = e.to_string();
+        if message.contains("empty_audio") {
+            return CliError::new(ExitCode::InvalidInput, "empty_audio", message);
+        }
         CliError::new(
             ExitCode::TranscriptionFailed,
             "transcription_failed",
-            e.to_string(),
+            message,
         )
     })
 }
@@ -4637,6 +4645,13 @@ async fn dub_via_daemon(
 ) -> Result<(), CliError> {
     // Captura/lectura PCM y encode a base64 para POST /dub
     let pcm = acquire_pcm(audio, mic, duration, avi_core::MAX_DUB_AUDIO_SECS).await?;
+    if pcm.is_empty() {
+        return Err(CliError::new(
+            ExitCode::InvalidInput,
+            "empty_audio",
+            "No se capturó audio; pulsa Enter después de hablar o verifica el micrófono.",
+        ));
+    }
     ensure_pcm_within_limit(&pcm, "El audio del doblaje", avi_core::MAX_DUB_AUDIO_SECS)?;
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);

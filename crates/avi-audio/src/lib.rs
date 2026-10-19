@@ -522,6 +522,9 @@ impl AudioService {
     /// Devuelve error si la variable de entorno es inválida, si falla la
     /// lectura de stdin o si un error fatal invalida el stream de audio; los
     /// errores transitorios no se registran en stderr y la captura continúa.
+    /// Rechaza con error cuando la captura no produjo muestras (usuario pulsa
+    /// Enter sin hablar o un Xrun descarta todos los frames), con `reason
+    /// "empty_audio"`; no retorna `Ok(Vec::new())`.
     pub fn capture_16k_mono_pcm_until_enter(&self, max_secs: u64) -> Result<Vec<i16>> {
         let max_secs = max_secs.min(push_to_talk_max_secs()?);
         let device = self
@@ -573,8 +576,23 @@ impl AudioService {
         drop(stream);
 
         let raw_samples = acquire_lock(&recorded_samples, "buffer de grabación").clone();
+        let raw_samples = ensure_captured_samples_non_empty(raw_samples)?;
         Ok(finish(raw_samples, channels, sample_rate))
     }
+}
+
+/// Rechaza una captura de micrófono que no produjo muestras: el usuario pulsó
+/// Enter sin hablar o un error transitorio del stream (Xrun) descartó todos los
+/// frames. Devuelve el error con `reason "empty_audio"` para que las capas
+/// superiores (CLI, daemon) lo mapeen a un mensaje claro y no pasen un tensor
+/// vacío a Parakeet STT.
+fn ensure_captured_samples_non_empty(raw_samples: Vec<f32>) -> Result<Vec<f32>> {
+    if raw_samples.is_empty() {
+        return Err(anyhow!(
+            "No se capturaron muestras de audio; el micrófono no entregó datos (reason: empty_audio)"
+        ));
+    }
+    Ok(raw_samples)
 }
 
 /// Post-procesado compartido de captura de micrófono: mono → resample a
@@ -873,6 +891,30 @@ mod tests {
 
         callback(cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable));
         assert!(failed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_ensure_captured_samples_non_empty_rejects_empty_capture() {
+        let result = crate::ensure_captured_samples_non_empty(vec![]);
+        assert!(
+            result.is_err(),
+            "una captura con 0 muestras debe retornar error"
+        );
+        let message = result.unwrap_err().to_string();
+        assert!(
+            message.contains("empty_audio"),
+            "el mensaje debe incluir el reason 'empty_audio', obtuvo: {message}"
+        );
+    }
+
+    #[test]
+    fn test_ensure_captured_samples_non_empty_passes_valid_capture() {
+        let result = crate::ensure_captured_samples_non_empty(vec![0.1, -0.2, 0.3]);
+        assert!(
+            result.is_ok(),
+            "una captura con muestras no debe rechazar el audio"
+        );
+        assert_eq!(result.unwrap().len(), 3);
     }
 
     /// Reserva un `.wav` temporal con dueño: el fichero se borra al soltar la

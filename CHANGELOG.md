@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.33.1 — 2026-10-18](#0331--2026-10-18)
 - [0.33.0 — 2026-10-18](#0330--2026-10-18)
 - [0.32.0 — 2026-10-17](#0320--2026-10-17)
@@ -112,6 +113,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Corregido
+
+- El doblaje y la transcripción por micrófono rechazan el audio vacío (0 muestras PCM) con `reason: "empty_audio"` y código de salida `InvalidInput`, en vez de abortar con el error interno de ONNX Runtime `Pad node … Input shape:{1,0}` de Parakeet STT. La validación rige en la captura (`crates/avi-audio`), la CLI (`src/main.rs`) y el daemon (`crates/avi-daemon`, endpoints `/dub` y `/transcribe`).
 
 ## [0.33.1] — 2026-10-18
 
