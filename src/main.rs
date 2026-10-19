@@ -1330,8 +1330,8 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 let client = daemon_client();
                 if route_to_daemon(routing.mode(), &client).await? {
                     progress.phase("cloning", "Clonando voz (daemon)…");
-                    let result = clone_via_daemon(json_mode, &client, &name, &speech_reference, force)
-                        .await;
+                    let result =
+                        clone_via_daemon(json_mode, &client, &name, &speech_reference, force).await;
                     match &result {
                         Ok(()) => progress.finish(true, "Voz clonada."),
                         Err(_) => progress.finish(false, "Clonado fallido."),
@@ -1378,8 +1378,8 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 .into_temp_path();
             progress.phase("cloning", "Clonando voz… (puede tardar varios minutos)");
             progress.tick();
-            let cloned = avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name)
-                .and_then(|()| {
+            let cloned =
+                avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name).and_then(|()| {
                     progress.phase("saving", "Guardando referencia de voz…");
                     voice_store.save_reference(&name, &tmp_qvoice)
                 });
@@ -1445,8 +1445,8 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             if !labels.is_empty() {
                 let voice_dir = voice_store.voice_dir(&name);
                 let speech_dir = speech_store.voice_dir(&name);
-                let total_bytes =
-                    lifecycle::cleanup::path_size(&voice_dir) + lifecycle::cleanup::path_size(&speech_dir);
+                let total_bytes = lifecycle::cleanup::path_size(&voice_dir)
+                    + lifecycle::cleanup::path_size(&speech_dir);
                 let summary = vec![format!(
                     "Se eliminará la voz '{}' y sus {} locución(es): {} (~{}).",
                     name.to_lowercase(),
@@ -2656,7 +2656,9 @@ async fn handle_daemon(
                 Ok(pid) => {
                     progress.finish(true, "Daemon iniciado.");
                     if json_mode {
-                        emit_raw_json(json!({ "status": "started", "daemon": "running", "pid": pid }));
+                        emit_raw_json(
+                            json!({ "status": "started", "daemon": "running", "pid": pid }),
+                        );
                     } else {
                         println!("Daemon iniciado correctamente (pid {}).", pid);
                     }
@@ -2781,7 +2783,9 @@ async fn handle_daemon(
                 Ok(pid) => {
                     progress.finish(true, "Daemon iniciado.");
                     if json_mode {
-                        emit_raw_json(json!({ "status": "restarted", "daemon": "running", "pid": pid }));
+                        emit_raw_json(
+                            json!({ "status": "restarted", "daemon": "running", "pid": pid }),
+                        );
                     } else {
                         println!("Daemon reiniciado (pid {}).", pid);
                     }
@@ -3539,8 +3543,8 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
         let mut progress = PhaseProgress::new();
         progress.phase("repairing", "Reparando restos del entorno…");
         progress.tick();
-        let repair_result =
-            lifecycle::recovery::recover(env.roots.recovery_roots()).map_err(lifecycle_error_to_cli);
+        let repair_result = lifecycle::recovery::recover(env.roots.recovery_roots())
+            .map_err(lifecycle_error_to_cli);
         match repair_result {
             Ok(_) => progress.finish(true, "Reparación completada."),
             Err(e) => {
