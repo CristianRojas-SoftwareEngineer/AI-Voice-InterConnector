@@ -44,6 +44,7 @@ use crate::confirm::{self, Confirmation, Decision, Kind, PlanEntry};
 use crate::daemon_stop::{self, ProcessControl};
 use crate::ownership;
 use crate::path_unix;
+use crate::progress::PhaseProgress;
 use crate::receipt::{self, InstallReceipt, PathIntegration};
 use crate::recovery::SweepPreview;
 use crate::LifecycleError;
@@ -338,14 +339,22 @@ pub async fn run(
         });
     }
 
+    // El indicador nace tras la confirmación destructiva: ni `--dry-run` (paso 3)
+    // ni la cancelación emiten progreso.
+    let mut progress = PhaseProgress::new();
+    progress.phase("stopping", "Deteniendo daemon…");
+
     // ── Paso 5. Parar el daemon; si falla, `daemon_stop_failed` sin borrar nada ──
     let daemon = daemon_stop::stop(&roots.data_dir, &env.daemon_addr, control).await;
-    daemon_stop::require_stopped(&daemon)?;
+    daemon_stop::require_stopped(&daemon).inspect_err(|_| {
+        progress.finish(false, "Desinstalación fallida.");
+    })?;
 
     let mut removed = Vec::new();
     let mut failed = Vec::new();
 
     // ── Paso 6. Borrar el estado: la raíz de datos entera salvo `--keep-data` ─────
+    progress.phase("state", "Borrando el estado…");
     let report = ownership::execute(&roots.ownership_tree(), &plan.state.ownership);
     removed.extend(report.removed.iter().map(|p| p.display().to_string()));
     removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
@@ -358,6 +367,7 @@ pub async fn run(
     // El valor que se publica sale del mismo predicado que usa el simulacro, y se
     // consulta **antes** de revertir: después no quedaría nada que prever, y la
     // reversión —que sí se hace, y siempre— es la que decide qué se tocó.
+    progress.phase("path", "Revirtiendo el PATH…");
     let path_pending = path_would_be_reverted(receipt, &env.home);
     let revert_report = revert_path(receipt, &env.home);
     for failure in &revert_report.failures {
@@ -374,6 +384,7 @@ pub async fn run(
     // Los contenedores del árbol que solo retienen el programa y sus archivos de
     // bloqueo se planifican aquí, sobre el disco ya sin estado: el estado se borró en el
     // paso 6 y no pudo podarlos porque el programa seguía dentro.
+    progress.phase("program", "Borrando el directorio de programa…");
     let tree = roots.ownership_tree();
     let tail = if plan.program_dir.is_some() {
         ownership::plan(&tree, &program_departing(&program_dir))
@@ -413,6 +424,7 @@ pub async fn run(
     // proceso los abrió en ese instante, el borrado falla y el fichero se queda, sin
     // consecuencias (su dueño bloquea el fichero que está en la ruta). Un fallo se
     // informa como cualquier otro resto que no se pudo borrar.
+    progress.phase("locks", "Borrando los ficheros de bloqueo…");
     for (path, error) in lock.remove_files() {
         eprintln!("  no se pudo borrar {}: {error}", path.display());
         failed.push(path.display().to_string());
@@ -428,6 +440,13 @@ pub async fn run(
             eprintln!("  no se pudo borrar {}: {e}", path.display());
             failed.push(path.display().to_string());
         }
+    }
+
+    // El estado final refleja `failed`: los pasos 6–9 no abortan, solo recogen.
+    if failed.is_empty() {
+        progress.finish(true, "Desinstalación completada.");
+    } else {
+        progress.finish(false, "Quedaron restos sin borrar.");
     }
 
     Ok(Outcome {

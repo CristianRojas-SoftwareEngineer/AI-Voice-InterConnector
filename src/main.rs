@@ -16,6 +16,7 @@ use avi_core::exit_codes::{CliError, ExitCode};
 use avi_core::json_emitter::emit_raw_json;
 use avi_daemon as daemon;
 use avi_lifecycle as lifecycle;
+use avi_lifecycle::progress::PhaseProgress;
 use avi_store as store;
 use avi_store::{ModelStore, SpeechStore, VoiceStore};
 #[cfg(feature = "native-stt")]
@@ -1190,7 +1191,14 @@ async fn handle_translate(
     // Despacho 3 modos vía daemon_client + route_to_daemon
     let client = daemon_client();
     if route_to_daemon(daemon_mode, &client).await? {
-        return translate_via_daemon(json_mode, &client, text, source, target).await;
+        let mut progress = PhaseProgress::new();
+        progress.phase("translating", "Traduciendo texto (daemon)…");
+        let result = translate_via_daemon(json_mode, &client, text, source, target).await;
+        match &result {
+            Ok(()) => progress.finish(true, "Traducción completada."),
+            Err(_) => progress.finish(false, "Traducción fallida."),
+        }
+        return result;
     }
     // Rama local: verifica modelo y traduce
     let model_name = format!("opus-mt-{}", translation_pair(source));
@@ -1217,13 +1225,18 @@ async fn handle_translate(
     }
     #[cfg(feature = "native-translation")]
     {
+        let mut progress = PhaseProgress::new();
+        progress.phase("translating", "Traduciendo texto…");
+        progress.tick();
         let translated = translation::translate(text, &ct2_dir).map_err(|e| {
+            progress.finish(false, "Traducción fallida.");
             CliError::new(
                 ExitCode::TranslationFailed,
                 "translation_failed",
                 e.to_string(),
             )
         })?;
+        progress.finish(true, "Traducción completada.");
         if json_mode {
             emit_raw_json(
                 json!({ "translated": translated, "source_language": source, "target_language": target }),
@@ -1303,6 +1316,8 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             force,
             routing,
         } => {
+            let mut progress = PhaseProgress::new();
+            progress.phase("validating", "Validando referencia y nombre…");
             // Orden de validaciones del contrato: el nombre se valida antes que el modelo.
             let name = name.to_lowercase();
             VoiceStore::validate_name(&name)
@@ -1314,8 +1329,14 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             {
                 let client = daemon_client();
                 if route_to_daemon(routing.mode(), &client).await? {
-                    return clone_via_daemon(json_mode, &client, &name, &speech_reference, force)
+                    progress.phase("cloning", "Clonando voz (daemon)…");
+                    let result = clone_via_daemon(json_mode, &client, &name, &speech_reference, force)
                         .await;
+                    match &result {
+                        Ok(()) => progress.finish(true, "Voz clonada."),
+                        Err(_) => progress.finish(false, "Clonado fallido."),
+                    }
+                    return result;
                 }
             }
             require_model_provisioned()?;
@@ -1355,9 +1376,15 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             let tmp_qvoice = avi_process::scratch::tempfile("avi_clone_", ".qvoice")
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?
                 .into_temp_path();
+            progress.phase("cloning", "Clonando voz… (puede tardar varios minutos)");
+            progress.tick();
             let cloned = avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name)
-                .and_then(|()| voice_store.save_reference(&name, &tmp_qvoice));
+                .and_then(|()| {
+                    progress.phase("saving", "Guardando referencia de voz…");
+                    voice_store.save_reference(&name, &tmp_qvoice)
+                });
             let saved_qvoice = cloned.map_err(|e| {
+                progress.finish(false, "Clonado fallido.");
                 // Una referencia ilegible se clasifica igual que en transcripción.
                 match e.downcast_ref::<avi_audio::WavLoadError>() {
                     Some(avi_audio::WavLoadError::Invalid(_)) => {
@@ -1369,6 +1396,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     _ => CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()),
                 }
             })?;
+            progress.finish(true, "Voz clonada.");
             // La única referencia de habla produce `reference.qvoice`; el WAV de
             // entrada no se persiste.
             if json_mode {
@@ -1417,11 +1445,14 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             if !labels.is_empty() {
                 let voice_dir = voice_store.voice_dir(&name);
                 let speech_dir = speech_store.voice_dir(&name);
+                let total_bytes =
+                    lifecycle::cleanup::path_size(&voice_dir) + lifecycle::cleanup::path_size(&speech_dir);
                 let summary = vec![format!(
-                    "Se eliminará la voz '{}' y sus {} locución(es): {}.",
+                    "Se eliminará la voz '{}' y sus {} locución(es): {} (~{}).",
                     name.to_lowercase(),
                     labels.len(),
-                    labels.join(", ")
+                    labels.join(", "),
+                    avi_shared::human_bytes(total_bytes),
                 )];
                 let entries = [
                     lifecycle::confirm::PlanEntry {
@@ -1463,8 +1494,14 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     return Ok(());
                 }
             }
+            let mut progress = PhaseProgress::new();
+            progress.phase("removing", "Eliminando voz y locuciones…");
             let removed_speech = avi_store::remove_voice(&voice_store, &speech_store, &name)
-                .map_err(|e| CliError::new(ExitCode::Error, "io_error", e))?;
+                .map_err(|e| {
+                    progress.finish(false, "Eliminación fallida.");
+                    CliError::new(ExitCode::Error, "io_error", e)
+                })?;
+            progress.finish(true, "Voz eliminada.");
             if json_mode {
                 emit_raw_json(json!({
                     "status": "removed",
@@ -1847,7 +1884,16 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // prácticamente instantáneo cuando el daemon no está en ejecución.
             let client = daemon_client();
             if route_to_daemon(routing.mode(), &client).await? {
-                return transcribe_via_daemon(
+                let mut progress = PhaseProgress::new();
+                progress.phase(
+                    "transcribing",
+                    if mic {
+                        "Capturando y transcribiendo audio (daemon)…"
+                    } else {
+                        "Transcribiendo audio (daemon)…"
+                    },
+                );
+                let result = transcribe_via_daemon(
                     json_mode,
                     &client,
                     audio.as_deref(),
@@ -1856,6 +1902,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     &source_language,
                 )
                 .await;
+                match &result {
+                    Ok(()) => progress.finish(true, "Transcripción completada."),
+                    Err(_) => progress.finish(false, "Transcripción fallida."),
+                }
+                return result;
             }
 
             // Modelo ausente -> exit 4, previo a construir el motor.
@@ -1881,6 +1932,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             }
             #[cfg(feature = "native-stt")]
             {
+                let mut progress = PhaseProgress::new();
+                if mic {
+                    progress.phase("capturing", "Capturando audio del micrófono…");
+                }
                 let pcm = acquire_pcm(
                     audio.as_deref(),
                     mic,
@@ -1894,6 +1949,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
                 )?;
 
+                progress.phase("transcribing", "Transcribiendo audio…");
                 let engine = STT_HOLDER.get_or_try_init(stt_dir).map_err(|e| {
                     CliError::new(
                         ExitCode::TranscriptionFailed,
@@ -1902,12 +1958,14 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     )
                 })?;
                 let text = engine.transcribe(&pcm).map_err(|e| {
+                    progress.finish(false, "Transcripción fallida.");
                     CliError::new(
                         ExitCode::TranscriptionFailed,
                         "transcription_failed",
                         e.to_string(),
                     )
                 })?;
+                progress.finish(true, "Transcripción completada.");
 
                 if json_mode {
                     emit_raw_json(json!({ "text": text, "source_language": source_language }));
@@ -1930,6 +1988,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
         } => {
             // Precondiciones puras de --play, antes de cualquier síntesis.
             // No introducen exit codes nuevos.
+            let mut progress = PhaseProgress::new();
+            progress.phase("validating", "Validando texto y voz…");
             if play && json_mode {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
@@ -1953,7 +2013,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // Dispatch 3 modos (Synthesize es delegable al daemon).
             let client = daemon_client();
             if route_to_daemon(routing.mode(), &client).await? {
-                return synthesize_via_daemon(
+                progress.phase("synthesizing", "Sintetizando voz (daemon)…");
+                let result = synthesize_via_daemon(
                     json_mode,
                     &client,
                     &text,
@@ -1966,6 +2027,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     temperature,
                 )
                 .await;
+                match &result {
+                    Ok(()) => progress.finish(true, "Síntesis completada."),
+                    Err(_) => progress.finish(false, "Síntesis fallida."),
+                }
+                return result;
             }
 
             require_model_provisioned()?;
@@ -2005,7 +2071,14 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             let tmp_wav = tmp_guard.path().clone();
             let engine = direct_tts_engine()?;
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
-            let final_text = translate_if_different(&text, source_eff, &target_language)?;
+            let final_text = if source_eff != target_language {
+                progress.phase("translating", "Traduciendo texto…");
+                translate_if_different(&text, source_eff, &target_language)?
+            } else {
+                text.clone()
+            };
+            progress.phase("synthesizing", "Sintetizando voz…");
+            progress.tick();
             synthesize_voice_directly(
                 &engine,
                 &voice_store,
@@ -2053,12 +2126,15 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     }
                 }
             } else {
+                progress.phase("saving", "Guardando locución…");
                 speech_store
                     .save(&voice, &label, &final_text, &tmp_wav)
                     .map_err(|e| {
+                        progress.finish(false, "Síntesis fallida.");
                         CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
                     })?
             };
+            progress.finish(true, "Síntesis completada.");
             if json_mode {
                 emit_raw_json(json!({
                     "status": "success",
@@ -2078,6 +2154,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             temperature,
             routing,
         } => {
+            let mut progress = PhaseProgress::new();
+            progress.phase("validating", "Validando texto y voz…");
             validate_temperature(temperature)?;
             avi_core::validate_synthesis_text(&text)?;
             // Origen por defecto = destino (sin traducir).
@@ -2086,7 +2164,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // Dispatch 3 modos (Say es delegable al daemon).
             let client = daemon_client();
             if route_to_daemon(routing.mode(), &client).await? {
-                return say_via_daemon(
+                progress.phase("synthesizing", "Sintetizando voz (daemon)…");
+                let result = say_via_daemon(
                     json_mode,
                     &client,
                     &text,
@@ -2096,6 +2175,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     temperature,
                 )
                 .await;
+                match &result {
+                    Ok(()) => progress.finish(true, "Reproducción completada."),
+                    Err(_) => progress.finish(false, "Reproducción fallida."),
+                }
+                return result;
             }
 
             require_model_provisioned()?;
@@ -2115,7 +2199,14 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
             let engine = direct_tts_engine()?;
             // Traducción opt-in antes de sintetizar (passthrough si coinciden).
-            let final_text = translate_if_different(&text, source_eff, &target_language)?;
+            let final_text = if source_eff != target_language {
+                progress.phase("translating", "Traduciendo texto…");
+                translate_if_different(&text, source_eff, &target_language)?
+            } else {
+                text.clone()
+            };
+            progress.phase("synthesizing", "Sintetizando voz…");
+            progress.tick();
             synthesize_voice_directly(
                 &engine,
                 &voice_store,
@@ -2126,15 +2217,18 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 tmp_wav.path(),
             )?;
             // Divergencia 5 corregida: `say` reproduce de verdad.
+            progress.phase("playing", "Reproduciendo…");
             audio::AudioService::new()
                 .play_wav(tmp_wav.path())
                 .map_err(|e| {
+                    progress.finish(false, "Reproducción fallida.");
                     CliError::new(
                         ExitCode::Error,
                         "playback_failed",
                         format!("Fallo al reproducir la locución: {}", e),
                     )
                 })?;
+            progress.finish(true, "Reproducción completada.");
             if json_mode {
                 emit_raw_json(json!({
                     "status": "reproduced",
@@ -2184,7 +2278,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             {
                 let client = daemon_client();
                 if route_to_daemon(routing.mode(), &client).await? {
-                    return dub_via_daemon(
+                    let mut progress = PhaseProgress::new();
+                    progress.phase("dubbing", "Doblando audio (daemon)…");
+                    let result = dub_via_daemon(
                         json_mode,
                         &client,
                         audio.as_deref(),
@@ -2196,6 +2292,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &voice,
                     )
                     .await;
+                    match &result {
+                        Ok(()) => progress.finish(true, "Doblaje completado."),
+                        Err(_) => progress.finish(false, "Doblaje fallido."),
+                    }
+                    return result;
                 }
             }
             // Rama local: modelos ausentes → exit 4
@@ -2222,6 +2323,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             }
             #[cfg(feature = "native-stt")]
             {
+                let mut progress = PhaseProgress::new();
+                if mic {
+                    progress.phase("capturing", "Capturando audio del micrófono…");
+                } else {
+                    progress.phase("reading", "Leyendo archivo de audio…");
+                }
                 let pcm = acquire_pcm(
                     audio.as_deref(),
                     mic,
@@ -2234,7 +2341,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     "El audio del doblaje",
                     avi_core::MAX_DUB_AUDIO_SECS,
                 )?;
+                progress.phase("transcribing", "Transcribiendo audio…");
+                progress.tick();
                 let stt = STT_HOLDER.get_or_try_init(stt_dir).map_err(|e| {
+                    progress.finish(false, "Doblaje fallido.");
                     CliError::new(
                         ExitCode::TranscriptionFailed,
                         "transcription_failed",
@@ -2242,6 +2352,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     )
                 })?;
                 let transcribed = stt.transcribe(&pcm).map_err(|e| {
+                    progress.finish(false, "Doblaje fallido.");
                     CliError::new(
                         ExitCode::TranscriptionFailed,
                         "transcription_failed",
@@ -2262,6 +2373,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 let final_text = if source == target {
                     transcribed.clone()
                 } else {
+                    progress.phase("translating", "Traduciendo texto transcrito…");
                     let model_name = format!("opus-mt-{}", translation_pair(source));
                     let model_store = open_model_store()?;
                     let ct2_dir = model_store.model_dir(&model_name);
@@ -2315,6 +2427,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 let tmp_wav = avi_process::scratch::temp_wav("avi_dub_")
                     .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
                 let engine = direct_tts_engine()?;
+                progress.phase("synthesizing", "Sintetizando voz doblada…");
+                progress.tick();
                 synthesize_voice_directly(
                     &engine,
                     &voice_store,
@@ -2324,15 +2438,18 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     &target_language,
                     tmp_wav.path(),
                 )?;
+                progress.phase("playing", "Reproduciendo doblaje…");
                 audio::AudioService::new()
                     .play_wav(tmp_wav.path())
                     .map_err(|e| {
+                        progress.finish(false, "Doblaje fallido.");
                         CliError::new(
                             ExitCode::Error,
                             "playback_failed",
                             format!("Fallo al reproducir el doblaje: {}", e),
                         )
                     })?;
+                progress.finish(true, "Doblaje completado.");
                 if json_mode {
                     emit_raw_json(json!({
                         "status": "dubbed",
@@ -2354,9 +2471,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 .map_err(speech_find_error)?
             {
                 Some(entry) => {
+                    let mut progress = PhaseProgress::new();
+                    progress.phase("playing", "Reproduciendo locución…");
                     audio::AudioService::new()
                         .play_wav(&entry.audio_path)
                         .map_err(|e| {
+                            progress.finish(false, "Reproducción fallida.");
                             CliError::new(
                                 ExitCode::Error,
                                 "playback_failed",
@@ -2366,6 +2486,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                                 ),
                             )
                         })?;
+                    progress.finish(true, "Reproducción completada.");
                     if json_mode {
                         emit_raw_json(
                             json!({ "status": "played", "label": label, "voice": voice }),
@@ -2516,20 +2637,36 @@ async fn handle_daemon(
                 }
                 lifecycle::daemon_stop::DaemonState::Stopped => {}
             }
+            let mut progress = PhaseProgress::new();
+            progress.phase("starting", "Iniciando daemon…");
+            // Mientras launch_daemon espera el ready del hijo, el usuario ve
+            // la fase de calentamiento (el warmup TTS corre en segundo plano
+            // en el residente y no bloquea este bucle de sondeo).
+            progress.phase("warming", "Calentando motor de síntesis…");
             let pid = launch_daemon(
                 &client,
                 auto_restart,
                 max_retries,
                 &warm_voice,
                 DAEMON_READY_DEADLINE,
+                Some(&progress),
             )
-            .await?;
-            if json_mode {
-                emit_raw_json(json!({ "status": "started", "daemon": "running", "pid": pid }));
-            } else {
-                println!("Daemon iniciado correctamente (pid {}).", pid);
+            .await;
+            match pid {
+                Ok(pid) => {
+                    progress.finish(true, "Daemon iniciado.");
+                    if json_mode {
+                        emit_raw_json(json!({ "status": "started", "daemon": "running", "pid": pid }));
+                    } else {
+                        println!("Daemon iniciado correctamente (pid {}).", pid);
+                    }
+                    Ok(Outcome::Done)
+                }
+                Err(e) => {
+                    progress.finish(false, "Daemon no iniciado.");
+                    Err(e)
+                }
             }
-            Ok(Outcome::Done)
         }
         DaemonCommands::Stop => {
             // Parada unificada con deadline global: el veredicto lo da el motor
@@ -2537,6 +2674,8 @@ async fn handle_daemon(
             // el motor tras muerte verificada; la CLI solo informa. La reserva sin
             // pidfile es la dirección derivada de `AVI_DAEMON_PORT`, la misma en la
             // que escucha el daemon.
+            let mut progress = PhaseProgress::new();
+            progress.phase("stopping", "Deteniendo daemon…");
             let outcome = lifecycle::daemon_stop::stop(
                 &effective_data_dir()?,
                 &lifecycle::daemon_stop::default_addr(),
@@ -2544,6 +2683,7 @@ async fn handle_daemon(
             )
             .await;
             if outcome.stopped {
+                progress.finish(true, "Daemon detenido.");
                 let status = stop_status(outcome.was_running);
                 if json_mode {
                     emit_raw_json(json!({
@@ -2564,6 +2704,7 @@ async fn handle_daemon(
                 }
                 Ok(Outcome::Done)
             } else {
+                progress.finish(false, "El daemon no se detuvo.");
                 let client_addr =
                     lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
                 // El matiz del residente lo dice el predicado del motor
@@ -2624,13 +2765,33 @@ async fn handle_daemon(
             let ready_deadline = std::cmp::min(remaining, DAEMON_READY_DEADLINE);
             // Mismo lanzamiento que `Start`, con sus mismos resultados y
             // códigos de fallo.
-            let pid = launch_daemon(&client, false, 3, "default", ready_deadline).await?;
-            if json_mode {
-                emit_raw_json(json!({ "status": "restarted", "daemon": "running", "pid": pid }));
-            } else {
-                println!("Daemon reiniciado (pid {}).", pid);
+            let mut progress = PhaseProgress::new();
+            progress.phase("starting", "Iniciando daemon…");
+            progress.phase("warming", "Calentando motor de síntesis…");
+            let pid = launch_daemon(
+                &client,
+                false,
+                3,
+                "default",
+                ready_deadline,
+                Some(&progress),
+            )
+            .await;
+            match pid {
+                Ok(pid) => {
+                    progress.finish(true, "Daemon iniciado.");
+                    if json_mode {
+                        emit_raw_json(json!({ "status": "restarted", "daemon": "running", "pid": pid }));
+                    } else {
+                        println!("Daemon reiniciado (pid {}).", pid);
+                    }
+                    Ok(Outcome::Done)
+                }
+                Err(e) => {
+                    progress.finish(false, "Daemon no reiniciado.");
+                    Err(e)
+                }
             }
-            Ok(Outcome::Done)
         }
         DaemonCommands::Status => {
             // Un solo GET /health contra la dirección descubierta: su éxito es el
@@ -2740,9 +2901,18 @@ async fn handle_cleanup(
         dry_run,
         assume_yes: yes,
     };
+    let mut progress = PhaseProgress::new();
+    progress.phase("cleaning", "Limpiando datos…");
+    progress.tick();
     let outcome = lifecycle::cleanup::run(&roots, &options, &ProductProcesses)
         .await
-        .map_err(lifecycle_error_to_cli)?;
+        .map_err(|e| {
+            progress.finish(false, "Limpieza fallida.");
+            lifecycle_error_to_cli(e)
+        })?;
+    if outcome.status != "cancelled" && !dry_run {
+        progress.finish(true, "Limpieza completada.");
+    }
 
     if json_mode {
         emit_raw_json(json!({
@@ -3114,6 +3284,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // ── Paso 3. Resolución de la versión objetivo ────────────────────
             // Con `--version` explícito no se toca la red: la resolución lo usa
             // como objetivo sin pedir la última estable.
+            let mut progress = PhaseProgress::new();
+            progress.phase("checking", "Buscando actualizaciones…");
             let client = lifecycle::update_fetch::http_client()
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
             let request = lifecycle::update_resolve::ResolveRequest {
@@ -3222,6 +3394,11 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // ── Paso 7. Descarga, verificación y extracción ──────────────────
             // Ante cualquier fallo el staging se borra y la instalación queda
             // intacta.
+            progress.phase(
+                "downloading",
+                &format!("Descargando versión {}…", resolution.target),
+            );
+            progress.tick();
             let staged = lifecycle::update_fetch::fetch(
                 &client,
                 &lifecycle::update_fetch::FetchRequest {
@@ -3231,10 +3408,16 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 },
             )
             .await
-            .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+            .map_err(|e| {
+                progress.finish(false, "Actualización fallida.");
+                lifecycle_error_to_cli(e.into())
+            })?;
             lifecycle::update_fetch::verify_boot(&staged.staging, target, &resolution.target)
                 .await
-                .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+                .map_err(|e| {
+                    progress.finish(false, "Actualización fallida.");
+                    lifecycle_error_to_cli(e.into())
+                })?;
 
             // ── Paso 8. Parar el daemon con el binario actual ────────────────
             // Si no se detiene, `daemon_stop_failed` sin tocar nada: la
@@ -3269,8 +3452,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 force,
             })
             .await
-            .map_err(lifecycle_error_to_cli)?;
+            .map_err(|e| {
+                progress.finish(false, "Actualización fallida.");
+                lifecycle_error_to_cli(e)
+            })?;
             lifecycle::update::cleanup_staging(&staged.staging, &LifecyclePaths);
+            progress.finish(true, "Actualización completada.");
 
             // ── Resultado `anterior → nueva` ─────────────────────────────────
             // Sin reinicio automático del daemon: el resultado indica cómo
@@ -3349,7 +3536,19 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     if repair {
         let lock = lifecycle::lock::acquire_exclusive(&env.roots.program_dir)
             .map_err(|e| lifecycle_error_to_cli(e.into()))?;
-        lifecycle::recovery::recover(env.roots.recovery_roots()).map_err(lifecycle_error_to_cli)?;
+        let mut progress = PhaseProgress::new();
+        progress.phase("repairing", "Reparando restos del entorno…");
+        progress.tick();
+        let repair_result =
+            lifecycle::recovery::recover(env.roots.recovery_roots()).map_err(lifecycle_error_to_cli);
+        match repair_result {
+            Ok(_) => progress.finish(true, "Reparación completada."),
+            Err(e) => {
+                progress.finish(false, "Reparación fallida.");
+                drop(lock);
+                return Err(e);
+            }
+        }
         drop(lock);
     }
     let report = lifecycle::doctor::report(&env, &exe, VERSION);
@@ -3671,6 +3870,7 @@ async fn launch_daemon(
     max_retries: u32,
     warm_voice: &str,
     deadline: std::time::Duration,
+    progress: Option<&PhaseProgress>,
 ) -> Result<u32, CliError> {
     let start = std::time::Instant::now();
     // El hijo publica su registro en el fichero ready de la instancia (ruta
@@ -3811,10 +4011,19 @@ async fn launch_daemon(
             )));
         }
         tokio::time::sleep(DAEMON_POLL_INTERVAL).await;
+        if let Some(progress) = progress {
+            progress.tick();
+        }
     };
 
-    if let Err(e) =
-        await_daemon_ready(client, &addr, DAEMON_HEALTH_DEADLINE, DAEMON_POLL_INTERVAL).await
+    if let Err(e) = await_daemon_ready(
+        client,
+        &addr,
+        DAEMON_HEALTH_DEADLINE,
+        DAEMON_POLL_INTERVAL,
+        progress,
+    )
+    .await
     {
         abort_launch(&mut child, &ready_path).await;
         return Err(with_log(CliError::new(
@@ -3864,6 +4073,7 @@ async fn await_daemon_ready(
     addr: &str,
     deadline: std::time::Duration,
     interval: std::time::Duration,
+    progress: Option<&PhaseProgress>,
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     loop {
@@ -3874,6 +4084,9 @@ async fn await_daemon_ready(
             break;
         }
         tokio::time::sleep(interval).await;
+        if let Some(progress) = progress {
+            progress.tick();
+        }
     }
     anyhow::bail!(
         "El daemon no respondió a /health tras {:?}",
@@ -4145,6 +4358,7 @@ async fn daemon_synthesize_wav(
     }
     // El POST apunta a la dirección descubierta.
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
+    let started = std::time::Instant::now();
     let resp = client
         .post(format!("http://{}/synthesize", client_addr))
         .json(&payload)
@@ -4181,6 +4395,9 @@ async fn daemon_synthesize_wav(
                 format!("NDJSON inválido del daemon: {}", e),
             )
         })?;
+        // Re-emite eventos intermedios (started/progress/heartbeat) a stderr
+        // sin tocar process_stream_line; result/error los gestiona el match.
+        emit_ndjson_progress(&ev, started)?;
         match ev["event"].as_str() {
             Some("result") => {
                 let b64 = ev["audio_b64"].as_str().ok_or_else(|| {
@@ -4297,8 +4514,25 @@ async fn consume_ndjson_stream(
         rest.push_str(&String::from_utf8_lossy(&bytes));
         while let Some(pos) = rest.find('\n') {
             let line: String = rest.drain(..=pos).collect();
-            if let Some(v) = process_stream_line(line.trim())? {
-                return Ok(v);
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            // Parse una sola vez: emite progreso intermedio y clasifica
+            // result/error con la misma lógica que process_stream_line
+            // (que permanece pura y con su test).
+            let ev: Value = serde_json::from_str(trimmed).map_err(|e| {
+                CliError::new(
+                    ExitCode::Error,
+                    "daemon_error",
+                    format!("NDJSON inválido del daemon: {}", e),
+                )
+            })?;
+            emit_ndjson_progress(&ev, start)?;
+            match ev.get("event").and_then(|v| v.as_str()) {
+                Some("result") => return Ok(ev),
+                Some("error") => return Err(stream_error_event(&ev)),
+                _ => {}
             }
         }
     }
@@ -4393,6 +4627,53 @@ fn process_stream_line(line: &str) -> Result<Option<Value>, CliError> {
         Some("error") => Err(stream_error_event(&ev)),
         _ => Ok(None),
     }
+}
+
+/// Re-emite un evento intermedio del daemon (`started`, `progress`,
+/// `heartbeat`) a stderr en español, para que el usuario vea actividad
+/// durante el trabajo remoto. `process_stream_line` permanece pura; esta
+/// función es un side-effect separado que solo escribe a stderr y respeta
+/// `AVI_NO_PROGRESS=1`. `started` debe capturarse en el call site antes del
+/// `.send()` HTTP o del bucle de stream. Los eventos finales
+/// (`result`/`error`) no se imprimen aquí: los gestiona el `match` del
+/// call site.
+fn emit_ndjson_progress(ev: &Value, started: std::time::Instant) -> Result<(), CliError> {
+    if std::env::var("AVI_NO_PROGRESS")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let event = match ev.get("event").and_then(|v| v.as_str()) {
+        Some(e) => e,
+        None => return Ok(()),
+    };
+    let stage = ev.get("stage").and_then(|v| v.as_str()).unwrap_or("");
+    let elapsed = lifecycle::progress::format_duration(started.elapsed());
+    match event {
+        "started" => {
+            let op = ev
+                .get("operation")
+                .and_then(|v| v.as_str())
+                .unwrap_or("operación");
+            eprintln!("Iniciando {op}… ({elapsed})");
+        }
+        "progress" => {
+            eprintln!("Procesando… ({elapsed})");
+        }
+        "heartbeat" => {
+            let msg = match stage {
+                "warming" => "Calentando motor de síntesis…",
+                "queued" => "En cola de síntesis…",
+                "synthesis" => "Sintetizando voz…",
+                "clone" => "Clonando voz… (puede tardar varios minutos)",
+                _ => "Procesando…",
+            };
+            eprintln!("{msg} ({elapsed})");
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// `synthesize` vía daemon: persiste el WAV en `SpeechStore` y respeta
@@ -4870,7 +5151,7 @@ mod tests {
         let deadline = std::time::Duration::from_millis(800);
         let interval = std::time::Duration::from_millis(100);
         let start = std::time::Instant::now();
-        let res = await_daemon_ready(&daemon_client(), &addr, deadline, interval).await;
+        let res = await_daemon_ready(&daemon_client(), &addr, deadline, interval, None).await;
         let elapsed = start.elapsed();
 
         assert!(res.is_err(), "esperado Err contra puerto cerrado");
@@ -4918,6 +5199,7 @@ mod tests {
             &addr,
             std::time::Duration::ZERO,
             std::time::Duration::from_millis(100),
+            None,
         )
         .await;
 

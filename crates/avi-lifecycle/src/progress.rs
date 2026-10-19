@@ -15,8 +15,13 @@
 //! terminal es legible. Sin terminal, `indicatif` no dibuja las barras, pero el
 //! encabezado, las líneas por modelo y el cierre salen igual.
 //!
+//! Aloja además `PhaseProgress`, el indicador de fase que la CLI y el propio
+//! motor (install, uninstall) usan en operaciones largas: una sola definición
+//! del mecanismo para todos los consumidores.
+//!
 //! Los textos salen de funciones puras para poder fijarlos en pruebas.
 
+use std::io::{IsTerminal, Write};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -118,6 +123,99 @@ impl ModelBar {
             model_done_line(&self.label, stats.bytes, stats.elapsed)
         );
         stats
+    }
+}
+
+/// Indicador ligero de progreso por fase para operaciones locales de larga
+/// duración. Todo va a stderr, nunca a stdout. En TTY imprime una única
+/// línea actualizada con `\r`; en no-TTY imprime una línea por fase sin
+/// `\r` ni secuencias ANSI. `AVI_NO_PROGRESS=1` (o cualquier valor no
+/// vacío) silencia toda salida de progreso.
+pub struct PhaseProgress {
+    start: Instant,
+    tty: bool,
+    enabled: bool,
+    current: Option<(&'static str, String)>,
+}
+
+impl PhaseProgress {
+    /// Crea el indicador: captura el reloj de inicio y decide TTY/silenciado
+    /// una sola vez, para que cada `phase`/`tick` sea barato.
+    pub fn new() -> Self {
+        let disabled = std::env::var("AVI_NO_PROGRESS")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        Self {
+            start: Instant::now(),
+            tty: std::io::stderr().is_terminal(),
+            enabled: !disabled,
+            current: None,
+        }
+    }
+
+    /// Cambia la fase actual y pinta una nueva línea de progreso. No-op si
+    /// el indicador está deshabilitado.
+    pub fn phase(&mut self, label: &'static str, msg: &str) {
+        if !self.enabled {
+            return;
+        }
+        self.current = Some((label, msg.to_string()));
+        self.render();
+    }
+
+    /// Vuelve a pintar la línea de la fase actual con el tiempo transcurrido
+    /// actualizado. Útil en bucles de espera.
+    pub fn tick(&self) {
+        if !self.enabled || self.current.is_none() {
+            return;
+        }
+        self.render_ref();
+    }
+
+    /// Cierra el indicador con una línea final de estado (éxito o fallo).
+    pub fn finish(&self, ok: bool, msg: &str) {
+        if !self.enabled {
+            return;
+        }
+        let elapsed = format_duration(self.start.elapsed());
+        let mark = if ok { "[ok]" } else { "[error]" };
+        if self.tty {
+            eprint!("\r\x1b[2K{mark} {msg} ({elapsed})\n");
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
+            )]
+            let _ = std::io::stderr().flush();
+        } else {
+            eprintln!("{mark} {msg} ({elapsed})");
+        }
+    }
+
+    fn render(&self) {
+        self.render_ref();
+    }
+
+    fn render_ref(&self) {
+        let Some((_, msg)) = &self.current else {
+            return;
+        };
+        let elapsed = format_duration(self.start.elapsed());
+        if self.tty {
+            eprint!("\r\x1b[2K… {msg} ({elapsed})");
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
+            )]
+            let _ = std::io::stderr().flush();
+        } else {
+            eprintln!("… {msg} ({elapsed})");
+        }
+    }
+}
+
+impl Default for PhaseProgress {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

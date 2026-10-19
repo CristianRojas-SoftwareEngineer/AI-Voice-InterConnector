@@ -31,6 +31,7 @@ use crate::channel::Channel;
 use crate::daemon_stop::{self, ProcessControl, StopOutcome};
 use crate::manifest;
 use crate::path_unix;
+use crate::progress::PhaseProgress;
 use crate::receipt::{self, InstallReceipt, PathIntegration, Roots};
 use crate::transaction;
 use crate::{confirm, privileges, quarantine, setup, target, LifecycleError};
@@ -635,26 +636,40 @@ pub async fn install(
         return Ok(Outcome::cancelled(env, mode));
     }
 
+    // El indicador nace tras la confirmación (los pasos 1–4 son rápidos y el
+    // prompt no debe intercalar con una línea de progreso) y termina antes del
+    // paso 10, donde `ProvisionView` toma el relevo.
+    let mut progress = PhaseProgress::new();
+    progress.phase("stopping", "Deteniendo daemon…");
+
     // ── Paso 5. Parar el daemon; si no se detiene, nada modificado ─────────────
     let daemon = daemon_stop::stop(&env.data_dir, &env.daemon_addr, control).await;
-    daemon_stop::require_stopped(&daemon)?;
+    daemon_stop::require_stopped(&daemon).inspect_err(|_| {
+        progress.finish(false, "Instalación fallida.");
+    })?;
 
     // ── Paso 6. Reemplazo transaccional ───────────────────────────────────────
     // En reparación **no se copia nada**: se reaplican integración, permisos,
     // cuarentena y recibo sobre lo que ya está.
     let mut parked_leftovers = Vec::new();
     if mode == Mode::Install {
+        progress.phase("replacing", "Reemplazando el programa…");
         // El reemplazo parte siempre de un staging propio junto al programa, para
         // cumplir sus precondiciones; la copia que se haga se borra al salir de
         // este bloque, haya salido bien o mal.
-        let staged = OwnStaging::prepare(&env.program_dir, &bundle, &files)?;
-        let outcome = transaction::replace(&env.program_dir, staged.dir())?;
+        let staged = OwnStaging::prepare(&env.program_dir, &bundle, &files).inspect_err(|_| {
+            progress.finish(false, "Instalación fallida.");
+        })?;
+        let outcome = transaction::replace(&env.program_dir, staged.dir()).inspect_err(|_| {
+            progress.finish(false, "Instalación fallida.");
+        })?;
         parked_leftovers = outcome.leftovers;
     }
 
     // ── Paso 7. Cuarentena, en macOS ──────────────────────────────────────────
     // No es un fallo de la instalación: la cuarentena que no se quita degrada el
-    // arranque, y el resumen lo informa.
+    // arranque, y el resumen lo informa. Es rápida y no fatal, así que no abre
+    // fase propia.
     let quarantine = quarantine::strip(&env.program_dir);
     for (path, reason) in &quarantine.failed {
         eprintln!(
@@ -665,11 +680,16 @@ pub async fn install(
 
     // ── Paso 8. Integración del PATH ─────────────────────────────────────────
     crate::faults::trip(crate::faults::FaultPoint::BeforePathIntegration)?;
+    progress.phase("path", "Integrando en el PATH…");
     let program_exe = env.program_dir.join(&executable);
-    let (path_integration, path_rewritten) = apply_path(env, options, &program_exe)?;
+    let (path_integration, path_rewritten) =
+        apply_path(env, options, &program_exe).inspect_err(|_| {
+            progress.finish(false, "Instalación fallida.");
+        })?;
 
     // ── Paso 9. Recibo atómico ───────────────────────────────────────────────
     crate::faults::trip(crate::faults::FaultPoint::BeforeReceipt)?;
+    progress.phase("receipt", "Escribiendo el recibo…");
     let receipt = InstallReceipt::new(
         &env.version,
         &env.target,
@@ -682,7 +702,10 @@ pub async fn install(
             cache_dir: env.cache_dir.clone(),
         },
     );
-    receipt::write_to(&receipt, &env.program_dir)?;
+    receipt::write_to(&receipt, &env.program_dir).inspect_err(|_| {
+        progress.finish(false, "Instalación fallida.");
+    })?;
+    progress.finish(true, "Programa instalado.");
 
     // ── Paso 10. `setup` en el mismo proceso, salvo `--no-setup` ──────────────
     // El bloqueo exclusivo se retiene hasta aquí: `setup` descarga y purga modelos, y
