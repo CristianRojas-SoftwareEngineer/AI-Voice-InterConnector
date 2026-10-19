@@ -1,13 +1,13 @@
 # Disponibilidad del código fuente (MPL-2.0 §3.2)
 
-**AI Voice InterConnector 0.33.1** se distribuye bajo la licencia
+**AI Voice InterConnector 0.34.0** se distribuye bajo la licencia
 **MPL-2.0** (ver `LICENSE`). Conforme a la sección 3.2 de la MPL-2.0,
 el código fuente correspondiente a esta versión exacta está disponible en:
 
 - **Código fuente (tarball del tag):**
-  <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/v0.33.1.tar.gz>
-- **Release v0.33.1 (artefactos y notas):**
-  <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.33.1>
+  <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/v0.34.0.tar.gz>
+- **Release v0.34.0 (artefactos y notas):**
+  <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/v0.34.0>
 - **Repositorio:** <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector>
 
 Las atribuciones de las dependencias redistribuidas están en
