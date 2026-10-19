@@ -116,6 +116,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+`self install`, `self uninstall`, `daemon stop` y `speech play` carecían de indicador de progreso, y el tiempo transcurrido de `daemon start/restart` no se refrescaba durante la espera de readiness. Además, `PhaseProgress` vivía solo en `src/main.rs`, por lo que el motor no podía usarlo sin duplicar la implementación. Se migra `PhaseProgress` a `avi-lifecycle` como tipo `pub`, se instrumentan `install` y `uninstall` en el motor, se añade el tick periódico en `launch_daemon`/`await_daemon_ready` y se envuelven `daemon stop` y `speech play` con fases: cobertura de progreso de toda la CLI sin alterar stdout, el envelope JSON ni los códigos de salida.
+
+### Añadido
+
+- Indicadores de fase y tiempo transcurrido en `self install`, `self uninstall`, `daemon stop` y `speech play` por stderr, con cierre de progreso antes de `setup` y sin líneas huérfanas en cancelación o `--dry-run`.
+- Tick periódico en `launch_daemon` y `await_daemon_ready` para que el tiempo transcurrido se actualice en cada iteración de sondeo durante el arranque y reinicio del daemon.
+- `PhaseProgress` migrado a `crates/avi-lifecycle/src/progress.rs` como tipo `pub` con `impl Default`, importado por la CLI.
+
 ### Corregido
 
 - El doblaje y la transcripción por micrófono rechazan el audio vacío (0 muestras PCM) con `reason: "empty_audio"` y código de salida `InvalidInput`, en vez de abortar con el error interno de ONNX Runtime `Pad node … Input shape:{1,0}` de Parakeet STT. La validación rige en la captura (`crates/avi-audio`), la CLI (`src/main.rs`) y el daemon (`crates/avi-daemon`, endpoints `/dub` y `/transcribe`).
