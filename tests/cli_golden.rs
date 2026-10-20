@@ -2148,17 +2148,11 @@ fn cleanup_dry_run_matches_fixture() {
 fn cleanup_dry_run_emits_the_phase_on_stderr_and_nothing_on_stdout() {
     let (_sandbox, envs) = contract_sandbox("progress-baseline");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let (code, stdout, stderr) = run_capture(
-        &["--json", "cleanup", "--all", "--dry-run"],
-        &envs,
-    );
+    let (code, stdout, stderr) = run_capture(&["--json", "cleanup", "--all", "--dry-run"], &envs);
     assert_eq!(code, 0, "el simulacro de cleanup sale 0");
 
     // stderr: la fase, con el texto y el elapsed, y solo por stderr.
-    let fases: Vec<&str> = stderr
-        .lines()
-        .filter(|l| l.starts_with("… "))
-        .collect();
+    let fases: Vec<&str> = stderr.lines().filter(|l| l.starts_with("… ")).collect();
     assert_eq!(
         fases.len(),
         2,
@@ -2193,10 +2187,7 @@ fn no_progress_silences_the_phase_and_keeps_the_envelope() {
     let (_sandbox, envs) = contract_sandbox("progress-silenced");
     let mut envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     envs.push(("AVI_NO_PROGRESS", "1"));
-    let (code, stdout, stderr) = run_capture(
-        &["--json", "cleanup", "--all", "--dry-run"],
-        &envs,
-    );
+    let (code, stdout, stderr) = run_capture(&["--json", "cleanup", "--all", "--dry-run"], &envs);
     assert_eq!(code, 0, "el simulacro de cleanup sale 0");
     assert!(
         !stderr.contains("… Limpiando datos…"),

@@ -442,8 +442,14 @@ mod tests {
     /// por `format_duration`.
     #[test]
     fn phase_line_is_the_message_with_its_elapsed() {
-        assert_eq!(phase_line("Limpiando datos…", Duration::from_secs(0)), "… Limpiando datos… (0 s)");
-        assert_eq!(phase_line("Traduciendo texto…", Duration::from_secs(7)), "… Traduciendo texto… (7 s)");
+        assert_eq!(
+            phase_line("Limpiando datos…", Duration::from_secs(0)),
+            "… Limpiando datos… (0 s)"
+        );
+        assert_eq!(
+            phase_line("Traduciendo texto…", Duration::from_secs(7)),
+            "… Traduciendo texto… (7 s)"
+        );
         assert_eq!(
             phase_line("Traduciendo texto…", Duration::from_secs(119)),
             "… Traduciendo texto… (1 min 59 s)"
@@ -454,7 +460,10 @@ mod tests {
     /// formato de elapsed.
     #[test]
     fn finish_line_marks_success_and_failure() {
-        assert_eq!(finish_line(true, "Limpieza completada.", Duration::from_secs(0)), "[ok] Limpieza completada. (0 s)");
+        assert_eq!(
+            finish_line(true, "Limpieza completada.", Duration::from_secs(0)),
+            "[ok] Limpieza completada. (0 s)"
+        );
         assert_eq!(
             finish_line(false, "Limpieza fallida.", Duration::from_secs(3)),
             "[error] Limpieza fallida. (3 s)"
@@ -467,7 +476,11 @@ mod tests {
         let mut progress = PhaseProgress::for_test(None, false);
         progress.phase("cleaning", "Limpiando datos…");
         assert_eq!(progress.renders(), 1, "una fase, una línea");
-        assert_eq!(progress.closing_lines(), 0, "una fase no cierra el indicador");
+        assert_eq!(
+            progress.closing_lines(),
+            0,
+            "una fase no cierra el indicador"
+        );
     }
 
     /// `phase()` seguido de `tick()` en no-TTY emite DOS líneas: la fase y la
@@ -512,7 +525,11 @@ mod tests {
         progress.tick();
         progress.finish(true, "Limpieza completada.");
         assert_eq!(progress.renders(), 0, "el indicador silenciado no pinta");
-        assert_eq!(progress.closing_lines(), 0, "el indicador silenciado no cierra");
+        assert_eq!(
+            progress.closing_lines(),
+            0,
+            "el indicador silenciado no cierra"
+        );
     }
 
     /// El valor vacío de `AVI_NO_PROGRESS` no silencia: solo el valor no

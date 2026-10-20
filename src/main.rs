@@ -1657,28 +1657,154 @@ async fn acquire_pcm(
     })
 }
 
-/// Bucle interactivo `--play`: reproduce la toma en memoria y ofrece 4 opciones
-/// a stderr — 1) mantener (reproducir de nuevo, sin re-síntesis), 2) guardar
-/// (recomprobando colisión de label al guardar), 3) repetir con una síntesis
-/// nueva y reproducir, 4) descartar. EOF o error de lectura de stdin también
-/// descartan; una opción inválida avisa y repite el menú. Devuelve la ruta
-/// guardada si el usuario eligió la 2, o `None` si descartó (exit 0 en ambos
-/// casos). Lo usan la ruta directa y la del daemon; el menú y los prompts van
-/// a stderr, nunca a stdout. No introduce exit codes nuevos.
-async fn synthesize_play_loop<F, Fut>(
+/// Decisión que toma el menú interactivo `--play` y que resuelve su llamador.
+///
+/// El menú no conoce el motor de síntesis: la opción 3 (repetir con una
+/// síntesis nueva) se devuelve como `Resynthesize` y es el llamador quien
+/// re-sintetiza y vuelve a entrar al menú.
+#[derive(Debug, PartialEq)]
+enum PlayDecision {
+    /// El usuario eligió guardar (opción 2): la locución quedó persistida en
+    /// esta ruta.
+    Saved(PathBuf),
+    /// El usuario descartó (opción 4) o se agotó la entrada estándar.
+    Discarded,
+    /// El usuario pidió una síntesis nueva (opción 3): el llamador re-sintetiza
+    /// y reentra al menú.
+    Resynthesize,
+}
+
+/// Envelope de locución descartada en el menú `--play`: el mismo texto y el
+/// mismo envelope JSON que emite la ruta directa y la del daemon.
+const PLAY_DISCARDED_TEXT: &str = "Descartado.";
+
+/// Envelope JSON de la locución descartada en el menú `--play`.
+fn play_discarded_envelope(voice: &str) -> Value {
+    json!({ "status": "discarded", "voice": voice })
+}
+
+/// Emite el descarte del menú `--play`: envelope JSON o texto, según el modo.
+fn emit_play_discarded(json_mode: bool, voice: &str) {
+    if json_mode {
+        emit_raw_json(play_discarded_envelope(voice));
+    } else {
+        println!("{}", PLAY_DISCARDED_TEXT);
+    }
+}
+
+/// Fuente de las opciones del menú `--play`: lee una línea de la entrada
+/// estándar. Es inyectable para poder ejercitar el menú sin TTY.
+fn menu_stdin() -> impl FnMut(&mut String) -> std::io::Result<usize> {
+    |line: &mut String| std::io::stdin().read_line(line)
+}
+
+/// Re-síntesis del menú `--play`: la ejecuta el llamador, nunca el menú. Cada
+/// implementación vuelve a sintetizar la locución sobre el mismo temporal.
+///
+/// El menú devuelve `PlayDecision::Resynthesize` y el llamador la resuelve con
+/// esta pieza; así el menú no conoce ni el motor local ni el daemon, y ningún
+/// futuro de re-síntesis captura el indicador de progreso.
+trait PlayResynthesizer {
+    /// Vuelve a sintetizar la locución sobre el temporal del menú.
+    fn resynthesize(&mut self) -> impl std::future::Future<Output = Result<(), CliError>>;
+}
+
+/// Re-síntesis directa: vuelve a sintetizar con el motor local sobre el mismo
+/// temporal.
+struct LocalResynthesizer<'a> {
+    engine: &'a Qwen3TtsEngine,
+    voice_store: &'a VoiceStore,
+    final_text: &'a str,
+    voice: &'a str,
+    temperature: Option<f32>,
+    target_language: &'a str,
+    tmp_wav: &'a PathBuf,
+}
+
+impl PlayResynthesizer for LocalResynthesizer<'_> {
+    async fn resynthesize(&mut self) -> Result<(), CliError> {
+        synthesize_voice_directly(
+            self.engine,
+            self.voice_store,
+            self.final_text,
+            self.voice,
+            self.temperature,
+            self.target_language,
+            self.tmp_wav,
+        )?;
+        Ok(())
+    }
+}
+
+/// Re-síntesis por daemon: vuelve a despachar la síntesis por la misma vía y
+/// deja el WAV nuevo en el mismo temporal.
+struct DaemonResynthesizer<'a> {
+    client: &'a reqwest::Client,
+    text: &'a str,
+    voice: &'a str,
+    source_language: &'a str,
+    target_language: &'a str,
+    temperature: Option<f32>,
+    tmp_wav: &'a PathBuf,
+}
+
+impl PlayResynthesizer for DaemonResynthesizer<'_> {
+    async fn resynthesize(&mut self) -> Result<(), CliError> {
+        let wav = daemon_synthesize_wav(
+            self.client,
+            self.text,
+            self.voice,
+            self.source_language,
+            self.target_language,
+            self.temperature,
+        )
+        .await?;
+        std::fs::write(self.tmp_wav, &wav)
+            .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
+    }
+}
+
+/// Bucle del llamador del menú `--play`: ofrece el menú y, ante
+/// `Resynthesize`, ejecuta la re-síntesis y reentra al menú con el mismo
+/// temporal. Termina con la ruta guardada (`Some`) o con `None` si el usuario
+/// descartó. El bucle vive en el llamador porque el menú no conoce el motor
+/// de síntesis.
+// Firma ancha deliberada: cada argumento mapea 1:1 a un dato del menú.
+#[allow(clippy::too_many_arguments)]
+async fn play_menu_loop<R: PlayResynthesizer>(
     voice: &str,
     label: &str,
     force: bool,
     speech_store: &SpeechStore,
     final_text: &str,
-    mut tmp_wav: PathBuf,
-    mut resynthesize: F,
-) -> Result<Option<PathBuf>, CliError>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<PathBuf, CliError>>,
-{
-    let play_back = |wav: &PathBuf| -> Result<(), CliError> {
+    wav: &std::path::Path,
+    reader: &mut dyn FnMut(&mut String) -> std::io::Result<usize>,
+    playback: &mut dyn FnMut(&std::path::Path) -> Result<(), CliError>,
+    resynthesizer: &mut R,
+) -> Result<Option<PathBuf>, CliError> {
+    loop {
+        match synthesize_play_loop(
+            voice,
+            label,
+            force,
+            speech_store,
+            final_text,
+            wav,
+            reader,
+            playback,
+        )? {
+            PlayDecision::Saved(saved) => return Ok(Some(saved)),
+            PlayDecision::Discarded => return Ok(None),
+            PlayDecision::Resynthesize => resynthesizer.resynthesize().await?,
+        }
+    }
+}
+
+/// Reproducción del WAV en el menú `--play`, con el servicio de audio real. Es
+/// inyectable para que las pruebas no dependan de la placa de sonido.
+fn menu_playback(label: &str) -> impl FnMut(&std::path::Path) -> Result<(), CliError> {
+    let label = label.to_string();
+    move |wav: &std::path::Path| {
         audio::AudioService::new().play_wav(wav).map_err(|e| {
             CliError::new(
                 ExitCode::Error,
@@ -1686,10 +1812,33 @@ where
                 format!("Fallo al reproducir la locución '{}': {}", label, e),
             )
         })
-    };
+    }
+}
 
-    // Reproducir al entrar al bucle.
-    play_back(&tmp_wav)?;
+/// Menú interactivo `--play`: reproduce la toma y ofrece 4 opciones a stderr —
+/// 1) mantener (reproducir de nuevo, sin re-síntesis), 2) guardar
+///    (recomprobando colisión de label al guardar), 3) repetir con una síntesis
+///    nueva, 4) descartar. EOF o error de lectura de stdin también descartan;
+///    una opción inválida avisa y repite el menú.
+///
+/// La opción 1 se resuelve dentro del menú porque no necesita volver a
+/// sintetizar; la 3 se devuelve al llamador como `Resynthesize`, que re-sintetiza
+/// y reentra al menú. El menú y los prompts van a stderr, nunca a stdout. No
+/// introduce exit codes nuevos.
+// Firma ancha deliberada: cada argumento mapea 1:1 a un dato del menú.
+#[allow(clippy::too_many_arguments)]
+fn synthesize_play_loop(
+    voice: &str,
+    label: &str,
+    force: bool,
+    speech_store: &SpeechStore,
+    final_text: &str,
+    wav: &std::path::Path,
+    reader: &mut dyn FnMut(&mut String) -> std::io::Result<usize>,
+    playback: &mut dyn FnMut(&std::path::Path) -> Result<(), CliError>,
+) -> Result<PlayDecision, CliError> {
+    // Reproducir al entrar al menú.
+    playback(wav)?;
 
     loop {
         eprintln!(
@@ -1703,14 +1852,14 @@ where
         let _ = std::io::stderr().flush();
 
         let mut line = String::new();
-        let choice = match std::io::stdin().read_line(&mut line) {
-            Ok(0) | Err(_) => return Ok(None), // EOF o error de lectura → descartar
+        let choice = match reader(&mut line) {
+            Ok(0) | Err(_) => return Ok(PlayDecision::Discarded), // EOF o error de lectura → descartar
             Ok(_) => line.trim().to_string(),
         };
 
         match choice.as_str() {
             "1" => {
-                play_back(&tmp_wav)?;
+                playback(wav)?;
             }
             "2" => {
                 // La colisión se recomprueba en el instante de guardar, no
@@ -1731,17 +1880,14 @@ where
                     ));
                 }
                 let saved = speech_store
-                    .save(voice, label, final_text, &tmp_wav)
+                    .save(voice, label, final_text, wav)
                     .map_err(|e| {
                         CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
                     })?;
-                return Ok(Some(saved));
+                return Ok(PlayDecision::Saved(saved));
             }
-            "3" => {
-                tmp_wav = resynthesize().await?;
-                play_back(&tmp_wav)?;
-            }
-            "4" => return Ok(None),
+            "3" => return Ok(PlayDecision::Resynthesize),
+            "4" => return Ok(PlayDecision::Discarded),
             _ => eprintln!("Opción inválida."),
         }
     }
@@ -2091,37 +2237,37 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
 
             let saved = if play {
                 // Bucle interactivo, reemplaza la reproducción y el guardado
-                // incondicionales. Solo alcanzable en TTY.
-                let outcome = synthesize_play_loop(
+                // incondicionales. Solo alcanzable en TTY. El bucle vive aquí:
+                // el menú solo devuelve la decisión y la re-síntesis la ejecuta
+                // esta rama, sobre el mismo temporal.
+                let mut reader = menu_stdin();
+                let mut playback = menu_playback(&label);
+                let mut resynthesizer = LocalResynthesizer {
+                    engine: &engine,
+                    voice_store: &voice_store,
+                    final_text: &final_text,
+                    voice: &voice,
+                    temperature,
+                    target_language: &target_language,
+                    tmp_wav: &tmp_wav,
+                };
+                let outcome = play_menu_loop(
                     &voice,
                     &label,
                     force,
                     &speech_store,
                     &final_text,
-                    tmp_wav.clone(),
-                    || async {
-                        synthesize_voice_directly(
-                            &engine,
-                            &voice_store,
-                            &final_text,
-                            &voice,
-                            temperature,
-                            &target_language,
-                            &tmp_wav,
-                        )?;
-                        Ok(tmp_wav.clone())
-                    },
+                    &tmp_wav,
+                    &mut reader,
+                    &mut playback,
+                    &mut resynthesizer,
                 )
                 .await?;
                 match outcome {
                     Some(saved) => saved,
                     None => {
                         // Opción 4 / EOF: descartado, exit 0.
-                        if json_mode {
-                            emit_raw_json(json!({ "status": "discarded", "voice": voice }));
-                        } else {
-                            println!("Descartado.");
-                        }
+                        emit_play_discarded(json_mode, &voice);
                         return Ok(());
                     }
                 }
@@ -4732,40 +4878,36 @@ async fn synthesize_via_daemon(
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
 
     let saved = if play {
-        // Bucle interactivo en el cliente; la opción 3 re-despacha la síntesis
-        // por la misma vía daemon.
-        let outcome = synthesize_play_loop(
+        // Bucle interactivo en el cliente; el bucle vive en el llamador y la
+        // opción 3 re-despacha la síntesis por la misma vía daemon.
+        let mut reader = menu_stdin();
+        let mut playback = menu_playback(&label_lower);
+        let mut resynthesizer = DaemonResynthesizer {
+            client,
+            text,
+            voice,
+            source_language,
+            target_language,
+            temperature,
+            tmp_wav: &tmp,
+        };
+        let outcome = play_menu_loop(
             voice,
             &label_lower,
             force,
             &speech_store,
             text,
-            tmp.clone(),
-            || async {
-                let wav = daemon_synthesize_wav(
-                    client,
-                    text,
-                    voice,
-                    source_language,
-                    target_language,
-                    temperature,
-                )
-                .await?;
-                std::fs::write(&tmp, &wav)
-                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-                Ok(tmp.clone())
-            },
+            &tmp,
+            &mut reader,
+            &mut playback,
+            &mut resynthesizer,
         )
         .await?;
         match outcome {
             Some(saved) => saved,
             None => {
                 // Opción 4 / EOF: descartado, exit 0.
-                if json_mode {
-                    emit_raw_json(json!({ "status": "discarded", "voice": voice }));
-                } else {
-                    println!("Descartado.");
-                }
+                emit_play_discarded(json_mode, voice);
                 return Ok(());
             }
         }
@@ -5646,5 +5788,397 @@ mod tests {
             .expect_err("el truncado debe fallar");
         assert_eq!(e.code, ExitCode::Error);
         assert_eq!(e.reason, "daemon_error");
+    }
+
+    /// Escribe un WAV válido (mono 16 kHz) en `path`, para que el almacén de
+    /// locuciones pueda leer su duración al guardar.
+    fn write_test_wav(path: &std::path::Path) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 16_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).expect("crear el WAV de prueba");
+        for sample in 0i16..64 {
+            writer
+                .write_sample(sample)
+                .expect("escribir la muestra del WAV de prueba");
+        }
+        writer.finalize().expect("cerrar el WAV de prueba");
+    }
+
+    /// Lector de opciones del menú `--play` con las respuestas programadas: cada
+    /// respuesta se consume una vez; al agotarse, la lectura devuelve EOF.
+    fn scripted_reader(
+        responses: Vec<&'static str>,
+    ) -> impl FnMut(&mut String) -> std::io::Result<usize> {
+        let mut responses = responses.into_iter();
+        move |line: &mut String| {
+            match responses.next() {
+                Some(response) => {
+                    line.push_str(response);
+                    line.push('\n');
+                    Ok(response.len() + 1)
+                }
+                // Sin más respuestas: EOF.
+                None => Ok(0),
+            }
+        }
+    }
+
+    /// Reproducción de mentira del menú `--play`: cuenta las reproducciones y
+    /// no toca la placa de sonido.
+    fn fake_playback(
+        counter: &std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> impl FnMut(&std::path::Path) -> Result<(), CliError> {
+        let counter = counter.clone();
+        move |_wav: &std::path::Path| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// Prepara un almacén de locuciones aislado y un WAV temporal válido, y
+    /// devuelve los tres con el directorio temporal que los respalda.
+    fn menu_fixture() -> (tempfile::TempDir, SpeechStore, PathBuf) {
+        let dir = tempfile::tempdir().expect("directorio temporal de prueba");
+        let store = SpeechStore::at(dir.path().join("speech"));
+        let wav = dir.path().join("toma.wav");
+        write_test_wav(&wav);
+        (dir, store, wav)
+    }
+
+    /// La opción 1 reproduce de nuevo el WAV y vuelve a ofrecer el menú; la 2
+    /// guarda la locución y devuelve la ruta persistida.
+    #[test]
+    fn play_menu_option_one_replays_and_option_two_saves() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = scripted_reader(vec!["1", "2"]);
+        let mut playback = fake_playback(&plays);
+
+        let decision = synthesize_play_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+        )
+        .expect("el menú no debe fallar");
+
+        // Reproducción inicial + la de la opción 1.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 2);
+        match decision {
+            PlayDecision::Saved(saved) => {
+                // La ruta guardada es la del almacén, no la del temporal.
+                assert_eq!(saved, store.audio_path("voz", "etiqueta"));
+                assert!(saved.is_file(), "la locución guardada debe existir");
+            }
+            other => panic!("se esperaba guardar, no: {other:?}"),
+        }
+        // El texto de la locución guardada es el texto final, no el de la WAV.
+        let entry = store
+            .find("voz", "etiqueta")
+            .expect("buscar la locución guardada")
+            .expect("la locución debe existir");
+        assert_eq!(entry.metadata.expect("sidecar").text, "texto final");
+    }
+
+    /// La opción 4 descarta: no persiste nada y devuelve `Discarded`.
+    #[test]
+    fn play_menu_option_four_discards_without_saving() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = scripted_reader(vec!["4"]);
+        let mut playback = fake_playback(&plays);
+
+        let decision = synthesize_play_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+        )
+        .expect("el menú no debe fallar");
+
+        assert_eq!(decision, PlayDecision::Discarded);
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            store
+                .find("voz", "etiqueta")
+                .expect("buscar la locución")
+                .is_none(),
+            "descartar no debe persistir la locución"
+        );
+    }
+
+    /// La opción 3 no se resuelve en el menú: se devuelve `Resynthesize` para
+    /// que la ejecute el llamador.
+    #[test]
+    fn play_menu_option_three_returns_resynthesize_to_caller() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = scripted_reader(vec!["3"]);
+        let mut playback = fake_playback(&plays);
+
+        let decision = synthesize_play_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+        )
+        .expect("el menú no debe fallar");
+
+        assert_eq!(decision, PlayDecision::Resynthesize);
+        // El menú solo reproduce al entrar: la re-síntesis es del llamador.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(
+            store
+                .find("voz", "etiqueta")
+                .expect("buscar la locución")
+                .is_none(),
+            "re-sintetizar no debe persistir nada"
+        );
+    }
+
+    /// El fin de la entrada estándar descarta: el menú se ofrece, la lectura
+    /// devuelve EOF y la locución no se persiste.
+    #[test]
+    fn play_menu_end_of_input_discards() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = scripted_reader(vec![]);
+        let mut playback = fake_playback(&plays);
+
+        let decision = synthesize_play_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+        )
+        .expect("el menú no debe fallar");
+
+        assert_eq!(decision, PlayDecision::Discarded);
+        assert!(
+            store
+                .find("voz", "etiqueta")
+                .expect("buscar la locución")
+                .is_none(),
+            "el fin de la entrada no debe persistir la locución"
+        );
+    }
+
+    /// Una opción inválida avisa y repite el menú; la siguiente opción válida
+    /// se atiende con normalidad.
+    #[test]
+    fn play_menu_invalid_option_repeats_menu() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = scripted_reader(vec!["9", "2"]);
+        let mut playback = fake_playback(&plays);
+
+        let decision = synthesize_play_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+        )
+        .expect("el menú no debe fallar");
+
+        assert!(matches!(decision, PlayDecision::Saved(_)));
+        // Solo una reproducción: la opción inválida no reproduce.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// La colisión de etiqueta se recomprueba al guardar (opción 2) y falla con
+    /// `label_exists` (exit 6) si la locución ya existe y no hay `--force`.
+    #[test]
+    fn play_menu_option_two_detects_label_collision() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut playback = fake_playback(&plays);
+        // La locución ya existe en el almacén cuando se ofrece el menú.
+        store
+            .save("voz", "etiqueta", "texto previo", &wav)
+            .expect("guardar la locución previa");
+
+        let mut reader = scripted_reader(vec!["2"]);
+        let e = synthesize_play_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+        )
+        .expect_err("la colisión debe fallar");
+        assert_eq!(e.code, ExitCode::StateConflict);
+        assert_eq!(e.reason, "label_exists");
+    }
+
+    /// Con `--force` la colisión no impide guardar: la locución previa se
+    /// sustituye por la nueva.
+    #[test]
+    fn play_menu_option_two_saves_over_existing_label_with_force() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut playback = fake_playback(&plays);
+        store
+            .save("voz", "etiqueta", "texto previo", &wav)
+            .expect("guardar la locución previa");
+
+        let mut reader = scripted_reader(vec!["2"]);
+        let decision = synthesize_play_loop(
+            "voz",
+            "etiqueta",
+            true,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+        )
+        .expect("con --force no debe fallar");
+
+        assert!(matches!(decision, PlayDecision::Saved(_)));
+        let entry = store
+            .find("voz", "etiqueta")
+            .expect("buscar la locución guardada")
+            .expect("la locución debe existir");
+        assert_eq!(entry.metadata.expect("sidecar").text, "texto final");
+    }
+
+    /// Re-síntesis de mentira: cuenta las re-síntesis y no toca el motor.
+    struct CountingResynthesizer {
+        counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl PlayResynthesizer for CountingResynthesizer {
+        async fn resynthesize(&mut self) -> Result<(), CliError> {
+            self.counter
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// El bucle del llamador: ante `Resynthesize` re-sintetiza y vuelve a
+    /// ofrecer el menú; la locución final se persiste con la etiqueta correcta.
+    #[tokio::test]
+    async fn play_menu_loop_resynthesizes_and_offers_menu_again() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resyntheses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = scripted_reader(vec!["3", "2"]);
+        let mut playback = fake_playback(&plays);
+        let mut resynthesizer = CountingResynthesizer {
+            counter: resyntheses.clone(),
+        };
+
+        let outcome = play_menu_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+            &mut resynthesizer,
+        )
+        .await
+        .expect("el bucle no debe fallar");
+
+        assert_eq!(resyntheses.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Reproducción inicial + la de la vuelta tras re-sintetizar.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let saved = outcome.expect("la locución debe quedar guardada");
+        assert_eq!(saved, store.audio_path("voz", "etiqueta"));
+        let entry = store
+            .find("voz", "etiqueta")
+            .expect("buscar la locución guardada")
+            .expect("la locución debe existir");
+        assert_eq!(entry.metadata.expect("sidecar").text, "texto final");
+    }
+
+    /// El bucle del llamador termina en descarte cuando el usuario elige la 4
+    /// tras re-sintetizar.
+    #[tokio::test]
+    async fn play_menu_loop_ends_on_discard_after_resynthesis() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = scripted_reader(vec!["3", "4"]);
+        let mut playback = fake_playback(&plays);
+        let mut resynthesizer = CountingResynthesizer {
+            counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        };
+
+        let outcome = play_menu_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+            &mut resynthesizer,
+        )
+        .await
+        .expect("el bucle no debe fallar");
+
+        assert!(outcome.is_none(), "descartar no debe guardar nada");
+        assert!(
+            store
+                .find("voz", "etiqueta")
+                .expect("buscar la locución")
+                .is_none(),
+            "descartar no debe persistir la locución"
+        );
+    }
+
+    /// El envelope de descarte del menú `--play` no cambia: mismo `status` y
+    /// misma clave `voice`, y el estampado de `schema_version` de la CLI.
+    #[test]
+    fn play_discarded_envelope_keeps_its_shape() {
+        assert_eq!(
+            play_discarded_envelope("voz"),
+            json!({ "status": "discarded", "voice": "voz" })
+        );
+        let stamped = avi_core::json_emitter::with_schema_version(
+            match play_discarded_envelope("voz") {
+                Value::Object(map) => map,
+                other => panic!("el envelope debe ser un objeto, no: {other}"),
+            },
+            avi_core::json_emitter::CLI_SCHEMA_VERSION,
+        );
+        assert_eq!(
+            stamped,
+            json!({
+                "status": "discarded",
+                "voice": "voz",
+                "schema_version": avi_core::json_emitter::CLI_SCHEMA_VERSION,
+            })
+        );
     }
 }
