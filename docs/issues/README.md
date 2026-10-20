@@ -112,7 +112,7 @@ Otros defectos, reglas del contrato o cambios del CHANGELOG vinculados.
 
 ## Defectos
 
-Indicadores de progreso (`PhaseProgress` y los eventos del daemon), detectados el 2026-10-19 sobre la 0.34.0. **Los cinco están resueltos**: cada documento conserva sus hechos, sus reproducciones y su contenido histórico, y añade al principio su estado, la fecha de la resolución, la prueba de regresión que lo cubre y el documento canónico que describe la corrección.
+Indicadores de progreso (`PhaseProgress` y los eventos del daemon), detectados el 2026-10-19 sobre la 0.34.0 y resueltos el 2026-10-20. **Los cinco están resueltos**: cada documento conserva sus hechos, sus reproducciones y su contenido histórico, y añade al principio su estado, la fecha de la resolución, la prueba de regresión que lo cubre y el documento canónico que describe la corrección.
 
 | Documento | Severidad | Estado | Causa raíz en una frase |
 |---|---|---|---|

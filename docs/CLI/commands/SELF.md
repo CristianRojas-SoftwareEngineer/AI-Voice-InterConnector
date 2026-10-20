@@ -208,7 +208,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `externally_managed` | 12 | `homebrew`: la copia la gestiona Homebrew (`self uninstall` y `self update`) |
 | `confirmation_required` | 2 | Destructiva sin terminal y sin `--yes` |
 | `setup_failed` | 11 | `self install` terminó con el programa instalado y la provisión sin completar; `self update` propaga el mismo parcial del binario nuevo |
-| `already_up_to_date` | 0 | `self update` sin descarga: ya se está en la versión objetivo (éxito) |
+| `already_up_to_date` | 0 | — (es el `status` del envelope, no un `reason`): `self update` sin descarga, ya se está en la versión objetivo (éxito) |
 | `not_installed` | 3 | `self update` sin instalación registrada, con el one-liner |
 | `unsupported_platform` | 18 | Target no soportado, antes de tocar la red |
 | `binary_incompatible` | 19 | El binario descargado no arranca o no informa la versión objetivo, con diagnóstico |
@@ -226,7 +226,7 @@ El **resultado** —el resumen o el envelope `--json`— va por stdout y lo dice
 
 ```text
 # self update
-stdout: AI Voice Interconnector actualizado: 0.34.0 → 0.35.0 (12 s).
+stdout: ai-voice-interconnector actualizado: 0.34.0 → 0.35.0 (12 s).
 stderr: … Buscando actualizaciones… (0 s)
         … Descargando versión 0.35.0… (1 s)
         … Verificando la versión descargada… (8 s)

@@ -2134,7 +2134,7 @@ fn cleanup_dry_run_matches_fixture() {
 // comando con indicador, para que un cambio posterior pueda distinguir «lo
 // que cambió a propósito» de «lo que cambió por descuido». El texto exacto de
 // la línea lo fijan las funciones puras de `avi_lifecycle::progress`
-// (`phase_line` y `finish_line`); aquí se fija el reparto entre stdout y
+// (`phase_line`); aquí se fija el reparto entre stdout y
 // stderr, que es la parte que el harness sí puede observar.
 
 /// `cleanup --all --dry-run` emite la fase por **stderr** y nada por
@@ -2202,9 +2202,11 @@ fn no_progress_silences_the_phase_and_keeps_the_envelope() {
 ///
 /// El error es inyectado —un texto de síntesis vacío, que el contrato rechaza
 /// con exit 2 `empty_text` antes de tocar el disco— y lo que se comprueba es
-/// que stderr **no** lleva una línea de fase abierta al final, que el mensaje
-/// de error va una sola vez, y que el mensaje final del handler aparece **una
-/// sola vez** cuando el comando sale bien.
+/// que stderr **no** lleva una línea de fase abierta al final, y que el mensaje
+/// de error va una sola vez.
+///
+/// El camino feliz —el mensaje final del handler, una sola vez y con su
+/// duración— lo fija `the_final_message_is_said_once_by_stdout_with_its_duration`.
 #[test]
 fn a_path_that_fails_with_question_mark_leaves_no_open_phase() {
     let (_sandbox, envs) = contract_sandbox("progress-error-path");
@@ -2223,8 +2225,8 @@ fn a_path_that_fails_with_question_mark_leaves_no_open_phase() {
     );
     assert_eq!(code, 2, "el texto vacío se rechaza con exit 2: {stderr}");
 
-    // La fase se pintó, pero **no** quedó abierta: la última línea de stderr no
-    // es la fase, y la fase no comparte línea con nada.
+    // La fase se pintó, y cada línea de stderr es una línea propia: en no-TTY
+    // la fase no comparte línea con nada, así que no puede quedar pegada.
     let fases: Vec<&str> = stderr.lines().filter(|l| l.starts_with("… ")).collect();
     assert_eq!(fases.len(), 1, "una fase, una línea: {stderr}");
     for fase in &fases {
@@ -2256,6 +2258,43 @@ fn a_path_that_fails_with_question_mark_leaves_no_open_phase() {
         "el estado del fallo se dice una sola vez: {stdout}"
     );
     // El indicador no imprime estado: no hay ningún cierre `[ok]`/`[error]`.
+    assert!(
+        !stderr.contains("[ok]") && !stderr.contains("[error]"),
+        "el indicador no imprime estado: {stderr}"
+    );
+}
+
+/// El mensaje final lo dice **una sola vez**, por stdout, y con la duración.
+///
+/// Es la propiedad central del protocolo: el indicador no dice cómo terminó,
+/// así que el estado lo dice el dueño —el handler— y lo dice una vez. El
+/// comando es `daemon stop` sin daemon en marcha: es un camino de éxito que
+/// no necesita motor, y su desenlace tiene un mensaje propio («No había
+/// daemon que detener (N s).») en vez de repetir un estado genérico.
+#[test]
+fn the_final_message_is_said_once_by_stdout_with_its_duration() {
+    let (_sandbox, envs) = contract_sandbox("progress-final-message");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, stdout, stderr) = run_capture(&["daemon", "stop"], &envs);
+    assert_eq!(code, 0, "daemon stop sin daemon sale 0: {stderr}");
+
+    // El mensaje final aparece **una sola vez**.
+    assert_eq!(
+        stdout.matches("No había daemon que detener").count(),
+        1,
+        "el estado lo dice su dueño, y lo dice una vez: {stdout}"
+    );
+    // Y con la duración del reloj del indicador, no con otro.
+    assert!(
+        stdout.contains("No había daemon que detener (") && stdout.contains(" s)."),
+        "el mensaje final lleva la duración de la operación: {stdout}"
+    );
+    // El mensaje final no va por stderr: stderr lleva el progreso.
+    assert!(
+        !stderr.contains("No había daemon que detener"),
+        "el resultado no se dice por stderr: {stderr}"
+    );
+    // Y el indicador no dice el estado por su cuenta.
     assert!(
         !stderr.contains("[ok]") && !stderr.contains("[error]"),
         "el indicador no imprime estado: {stderr}"

@@ -12,6 +12,7 @@ Defectos menores sueltos de la misma familia que los documentos de este director
 | Plataforma | todas |
 | Reproducibilidad | siempre, salvo la observación 10, que es probable y depende de la terminal |
 | Detectado en | inspección de código y pruebas manuales del indicador de progreso, 2026-10-19 |
+| Prueba de regresión | `crates/avi-lifecycle/src/progress.rs`: `close_line_is_idempotent_and_writes_nothing_in_no_tty`, `phase_line_is_the_message_with_its_elapsed`; `crates/avi-tts/src/lib.rs`: `cwd_vendor_warning_is_emitted_only_once_per_process`; `tests/cli_golden.rs`: `no_progress_silences_the_phase_and_keeps_the_envelope`, `a_path_that_fails_with_question_mark_leaves_no_open_phase` |
 | Documento canónico | [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando), [`USAGE.md`](../../USAGE.md) —variables `AVI_*`— y [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) |
 
 | # | Síntoma | Severidad | Confianza | Estado |

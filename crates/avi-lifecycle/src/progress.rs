@@ -659,8 +659,11 @@ mod tests {
         );
     }
 
-    /// `close_line` es idempotente: ceder una línea ya cedida no hace nada, y
-    /// en no-TTY no hay línea que ceder.
+    /// `close_line` es idempotente: ceder una línea ya cedida no hace nada.
+    ///
+    /// La idempotencia se mide en TTY, que es la única rama que cede de
+    /// verdad: en no-TTY no hay línea que ceder, así que el contador no se
+    /// movería nunca y la aserción no distinguiría nada.
     #[test]
     fn close_line_is_idempotent_and_writes_nothing_in_no_tty() {
         let mut progress = PhaseProgress::for_test(None, false);
@@ -673,6 +676,22 @@ mod tests {
             "en no-TTY no hay línea que ceder"
         );
         assert_eq!(progress.renders(), 1, "ceder la línea no repinta la fase");
+    }
+
+    /// Ceder la línea dos veces cede una sola: la segunda no hace nada.
+    ///
+    /// Es la idempotencia medida, en la rama que cede de verdad.
+    #[test]
+    fn close_line_in_tty_is_idempotent() {
+        let mut progress = PhaseProgress::for_test(None, true);
+        progress.phase("cleaning", "Limpiando datos…");
+        progress.close_line();
+        progress.close_line();
+        assert_eq!(
+            progress.closing_lines(),
+            1,
+            "ceder la línea ya cedida no la cede otra vez"
+        );
     }
 
     /// Tras ceder la línea, `repaint` vuelve a pintar la fase vigente.
@@ -693,9 +712,13 @@ mod tests {
 
     /// `AVI_NO_PROGRESS` con cualquier valor no vacío silencia toda salida:
     /// ni fases, ni actividad, ni cesión.
+    ///
+    /// La medida es en TTY, la única rama que escribe y que cuenta: en no-TTY
+    /// el indicador nunca pintaría ni cedería, así que allí la aserción no
+    /// distinguiría «silenciado» de «no-TTY».
     #[test]
     fn no_progress_silences_everything() {
-        let mut progress = PhaseProgress::for_test(Some("1"), false);
+        let mut progress = PhaseProgress::for_test(Some("1"), true);
         let renders = Arc::clone(&progress.renders);
         let closing_lines = Arc::clone(&progress.closing_lines);
         progress.phase("cleaning", "Limpiando datos…");

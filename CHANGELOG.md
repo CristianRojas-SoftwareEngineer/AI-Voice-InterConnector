@@ -143,6 +143,7 @@ El indicador de progreso de fases decía el estado dos veces —una por stderr, 
 - `Cancelado.` ya no aparece dos veces: lo escribe solo el motor de confirmación, por stderr.
 - El modo no-TTY ya no acumula una línea por latido del daemon: la actividad repetida dentro de la misma fase no abre línea nueva.
 - La parada del daemon ya no dice «Daemon detenido.» cuando no había ningún daemon en marcha.
+- El mensaje de `doctor --repair` ya no sale por stderr: es el resultado del comando, y el resultado va por stdout, como el de cualquier otro comando. Quien leyera ese texto por stderr debe leerlo ahora por stdout.
 - La muerte de un proceso en Windows ya no depende de un ejecutable externo que, bajo saturación, puede no encontrar un proceso que el sistema ve vivo: `taskkill` se sigue intentando primero —para alcanzar la descendencia— y la vía directa de la API es el último recurso.
 
 ## [0.34.0] — 2026-10-19

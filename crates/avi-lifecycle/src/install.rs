@@ -735,7 +735,7 @@ pub async fn install(
     // ── Paso 11. Resumen final ────────────────────────────────────────────────
     // El mensaje final lo compone el propio flujo de la librería —aquí no hay
     // handler que pueda hacerlo— y lleva la duración que devolvió el cierre
-    // del indicador, que es el mismo reloj que showed las fases.
+    // del indicador, que es el mismo reloj que mostró las fases.
     let summary = final_summary(
         env,
         mode,

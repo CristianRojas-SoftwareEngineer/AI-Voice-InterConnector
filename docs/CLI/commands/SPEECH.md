@@ -494,6 +494,9 @@ stderr: … Validando texto y voz… (0 s)
 
 # speech say
 stdout: Reproduciendo (4 s).
+stderr: … Validando texto y voz… (0 s)
+        … Sintetizando voz… (3 s)
+        … Reproduciendo… (4 s)
 
 # speech transcribe
 stdout: <el texto transcrito>
@@ -501,9 +504,15 @@ stderr: … Transcribiendo audio… (0 s)
 
 # speech dub
 stdout: Doblaje reproducido (9 s).
+stderr: … Leyendo archivo de audio… (0 s)
+        … Transcribiendo audio… (2 s)
+        … Traduciendo texto transcrito… (5 s)
+        … Sintetizando voz doblada… (6 s)
+        … Reproduciendo… (9 s)
 
 # speech play
 stdout: Reproduciendo locución 'saludo' de la voz 'default' (2 s).
+stderr: … Reproduciendo locución… (0 s)
 ```
 
 Con `--json`, stdout lleva **solo** el envelope —`{"status": "success", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`— y el resultado en texto no sale. El progreso por stderr es el mismo.

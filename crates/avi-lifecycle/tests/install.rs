@@ -219,24 +219,40 @@ async fn install_twice_is_idempotent() {
     );
 }
 
-/// Sondea el reloj hasta que `measured` tenga al menos `RESOLUTION` de antigüedad
-/// (1 s es el peor caso conocido de resolución de `mtime`), con `deadline` como
-/// límite duro: agotado el plazo, falla con `panic!` en vez de seguir y
 /// Quita del final de una línea la duración que el resumen añade.
 ///
 /// El resumen de una instalación termina con el tiempo que tardó, entre
-/// paréntesis: «AI Voice Interconnector instalado: 0.34.0 (1 s)». Ese tiempo
+/// paréntesis: «ai-voice-interconnector instalado: 0.34.0 (1 s)». Ese tiempo
 /// es el reloj de una ejecución, no el estado que deja, y dos ejecuciones del
 /// mismo estado no tardan lo mismo. La línea sin ese paréntesis es la que
 /// afirma el estado.
+///
+/// El helper va anclado al formato de la duración, no a «cualquier paréntesis
+/// final»: una línea del resumen que acabara en `)` por otro motivo no debe
+/// mutilarse en silencio.
 fn without_trailing_duration(line: &str) -> String {
     let trimmed = line.trim_end();
-    match trimmed.rfind(" (") {
-        Some(pos) if trimmed.ends_with(')') => trimmed[..pos].to_string(),
-        _ => line.to_string(),
+    // `format_duration` escribe «7 s», «1 min 59 s» o «1 h 02 min».
+    let Some(pos) = trimmed.rfind(" (") else {
+        return line.to_string();
+    };
+    let duration = &trimmed[pos + 2..trimmed.len() - 1];
+    let looks_like_duration = duration.ends_with(" s")
+        || duration.ends_with(" min")
+        || duration.ends_with(" h")
+        || duration
+            .split_once(" min ")
+            .is_some_and(|(_, rest)| rest.ends_with(" s"));
+    if trimmed.ends_with(')') && looks_like_duration {
+        trimmed[..pos].to_string()
+    } else {
+        line.to_string()
     }
 }
 
+/// Sondea el reloj hasta que `measured` tenga al menos `RESOLUTION` de antigüedad
+/// (1 s es el peor caso conocido de resolución de `mtime`), con `deadline` como
+/// límite duro: agotado el plazo, falla con `panic!` en vez de seguir y
 /// comparar marcas que aún no se distinguen.
 ///
 /// El hecho que espera es «la marca medida ya está fuera del tick del reloj», no

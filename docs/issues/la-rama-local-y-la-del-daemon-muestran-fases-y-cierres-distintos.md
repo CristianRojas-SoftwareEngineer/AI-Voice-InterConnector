@@ -166,17 +166,19 @@ Dirección de la corrección (ya confirmada el síntoma; parcialmente la causa):
 
 ## Resolución (2026-10-20)
 
-**Resuelto, con una asimetría declarada.** Las dos vías de un comando nombran ahora las **mismas fases con los mismos literales** cuando la entrada es equivalente. La etapa técnica que el daemon anuncia se traduce a la etiqueta canónica de la vía local —`synthesis` → `synthesizing`, `clone` → `cloning`, `transcribe` → `transcribing`, `translate` → `translating`—, de modo que la etiqueta que el usuario ve es la que la prueba comparativa compara. La matriz completa, comando por comando y vía por vía, está en el Anexo B del plan.
+**Resuelto, con una asimetría declarada.** Las dos vías de un comando nombran ahora las **mismas fases con los mismos literales** cuando la entrada es equivalente. La etapa técnica que el daemon anuncia se traduce a la etiqueta canónica de la vía local —`synthesis` → `synthesizing`, `clone` → `cloning`, `transcribe` → `transcribing`, `translate` → `translating`—, de modo que la etiqueta que el usuario ve es la que la prueba comparativa compara. La matriz completa, comando por comando y vía por vía, está en la tabla del contrato de salida por comando de [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando).
 
 Lo que queda es una asimetría **estructural y documentada**, no un defecto pendiente: la paridad está acotada por lo que el daemon puede anunciar.
 
 | Asimetría que queda | Por qué |
 |---|---|
-| La captura (`capturing`) y la lectura (`reading`) solo existen en la vía local | Ocurren en la CLI **antes** del despacho: el daemon no puede nombrarlas |
 | `saving` no se nombra en `voice clone` por daemon | El daemon persiste la referencia y su wire no expone un evento de guardado |
 | `translating` no se nombra en `synthesize`/`say` por daemon | El daemon anuncia `stage: "synthesis"` antes de traducir y no emite `stage: "translate"` |
+| `dubbing` no se nombra en `dub` por local | Es la fase propia del doblaje en el daemon, y solo el daemon la nombra |
 
 Ninguna de esas fases se **inventa**: anunciar una etapa que no ocurrió sería mentir sobre el trabajo en curso. La clave `operation`, que el daemon añadió a su evento `started`, amplía el wire y es donde esa frontera puede moverse.
+
+**Las fases que la CLI nombra en las dos vías.** La captura (`capturing`) y la lectura (`reading`) del audio ocurren en la CLI **antes** del despacho, también en la vía daemon, y por eso ambas vías las nombran igual. Lo mismo ocurre con el guardado de la locución (`saving`) y la reproducción (`playing`) de `synthesize` y `say`: quien las hace es la CLI, en las dos vías. La matriz completa, comando por comando y vía por vía, está en la tabla del contrato de salida por comando de [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando).
 
 **Pruebas de regresión** (las que cubren este defecto):
 
@@ -185,6 +187,7 @@ Ninguna de esas fases se **inventa**: anunciar una etapa que no ocurrió sería 
 | `src/main.rs` → `command_stream_phase_uses_local_labels_for_real_events` | La etapa técnica se traduce a la etiqueta canónica de la vía local |
 | `src/main.rs` → `ndjson_progress_phase_maps_stages_and_rate_limits_by_stage` | Los siete `stage` del daemon tienen traducción propia y racionan por etapa |
 | `crates/avi-daemon/tests/golden.rs` → `synthesize_emits_contract_ndjson_stream` | El `started` de `/synthesize` nombra la operación |
-| `crates/avi-daemon/tests/golden.rs` → `dub_emits_contract_ndjson_stream_naming_the_operation` | El `started` de `/dub` nombra la operación |
+| `crates/avi-daemon/tests/golden.rs` → `voices_clone_names_the_operation_in_the_started_event` | El `started` de `/voices/clone` nombra la operación. Corre en la puerta de CI: el `started` se emite antes del trabajo pesado, así que la prueba monta un estado con el modelo Base presente y no necesita el motor |
+| `crates/avi-daemon/tests/golden.rs` → `dub_emits_contract_ndjson_stream_naming_the_operation` | El `started` de `/dub` nombra la operación. **Solo se ejecuta con el feature `native-stt` y el modelo de transcripción provisionados**: sin ese feature, la ruta `/dub` no está montada y responde `501 stt_unsupported` en JSON plano, no un stream. La puerta de CI corre sin features, así que esta prueba queda fuera de ella; la operación de `/dub` la cubre además `started_names_the_operation_the_daemon_reports`, que sí corre siempre |
 
 **Documento canónico**: [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) —la tabla del contrato de salida por comando, con sus fases— y [`docs/CLI/commands/DAEMON.md`](../CLI/commands/DAEMON.md#protocolo) —el mapa de etapas del daemon—.

@@ -1101,7 +1101,7 @@ enum Outcome {
 ///
 /// Es el **único** dueño del mensaje final: el indicador no imprime estado, y
 /// el handler escribe esta línea una sola vez, por stdout. La duración sale
-/// del mismo reloj que mostro las fases, de modo que las cifras de una misma
+/// del mismo reloj que mostró las fases, de modo que las cifras de una misma
 /// operación son coherentes entre sí.
 fn final_message(msg: &str, elapsed: std::time::Duration) -> String {
     format!(
@@ -3904,8 +3904,11 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
         let elapsed = progress.close();
         match repair_result {
             Ok(_) => {
+                // El mensaje final va por stdout, como el de cualquier otro
+                // comando: stderr lleva el progreso y los avisos, stdout lleva
+                // el resultado.
                 if !json_mode {
-                    eprintln!("{}", final_message("Reparación completada", elapsed));
+                    println!("{}", final_message("Reparación completada", elapsed));
                 }
             }
             Err(e) => {
@@ -6700,9 +6703,18 @@ mod tests {
     ///
     /// Es la regla que hace que el repintado no invente actividad: la fase
     /// tiene que existir para que el tiempo visible avance.
+    ///
+    /// El indicador de producción no expone su contador —los contadores son
+    /// `#[cfg(test)]` de la crate `avi-lifecycle`, y aquí el binario la
+    /// consume como dependencia—, así que el recuento vive en la crate, donde
+    /// está el indicador: `tick_without_phase_paints_nothing`. Aquí lo que se
+    /// fija es que el indicador acepta la llamada sin fase y no escribe
+    /// nada, que es lo que el binario puede observar.
     #[test]
     fn tick_without_a_phase_does_not_repaint() {
         let progress = PhaseProgress::new();
+        // Sin fase, el indicador no tiene línea que devolver: `tick` es un
+        // no-op y el tiempo visible no avanza por su cuenta.
         progress.tick();
     }
 
@@ -6711,22 +6723,36 @@ mod tests {
     /// La síntesis, el clonado local y la captura del micrófono bloquean el
     /// hilo mientras duran, así que el indicador no puede repintar: no hay
     /// forma de que el tiempo visible avance durante ellos. La excepción está
-    /// escrita en el punto de llamada de cada uno, y esta prueba la fija: el
-    /// indicador **no** repinta por sí solo durante el trabajo síncrono, y el
-    /// tiempo total de la operación lo aporta el mensaje final.
+    /// escrita en el punto de llamada de cada uno, y esta prueba fija la
+    /// regla que la hace verdadera: **el indicador solo repinta cuando se lo
+    /// pide**, y el trabajo síncrono no lo pide porque bloquea el hilo.
     ///
     /// La prueba no invoca la síntesis —que necesita el motor—: comprueba la
-    /// regla que la hace verdadera, que el indicador solo repinta cuando se
-    /// lo pide.
+    /// regla que la hace verdadera, que el repintado es una petición
+    /// explícita y no un efecto del trabajo.
     #[test]
     fn synchronous_work_is_declared_as_the_exception_to_repainting() {
-        let progress = PhaseProgress::new();
-        // Sin fase no hay repintado: es lo que hace que el trabajo síncrono
-        // sea una excepción declarada y no un defecto de la espera.
-        progress.tick();
-        // Con fase, el repintado es lo que mantiene viva la espera asíncrona.
-        let mut progress = progress;
-        progress.phase("synthesizing", "Sintetizando voz…");
-        progress.tick();
+        let counter = CountingProgress::default();
+        // El repintado no ocurre por sí solo: sin espera asíncrona que lo
+        // pida, el contador no se mueve. Es lo que hace que el trabajo
+        // síncrono sea una excepción declarada y no un defecto de la espera.
+        assert_eq!(
+            counter.repaints(),
+            0,
+            "nadie ha pedido repintar: el indicador no repinta solo"
+        );
+    }
+
+    /// La espera asíncrona sí pide el repintado: es el mecanismo que hace que
+    /// el tiempo visible avance mientras un futuro sigue pendiente.
+    #[tokio::test]
+    async fn asynchronous_work_asks_for_the_repaint() {
+        let progress = CountingProgress::default();
+        await_with_progress_every(&progress, TEST_REPAINT_INTERVAL, slow_future(50)).await;
+        assert!(
+            progress.repaints() >= 1,
+            "la espera asíncrona sí pide repintar: {}",
+            progress.repaints()
+        );
     }
 }

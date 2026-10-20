@@ -325,7 +325,8 @@ ai-voice-interconnector doctor --json
 
 ```
 Diagnóstico: todo correcto.
-Cache HF: C:\Users\<tu-usuario>\.cache\huggingface\hub
+  ✓ install_receipt: recibo válido en <directorio-de-programa>
+  ✓ models_provisioned: 5 modelo(s) provisionados
 ```
 
 Los chequeos que ejecuta `doctor` están en
@@ -351,8 +352,8 @@ ai-voice-interconnector devices --json
 
 ```
 Dispositivos de salida de audio:
-  [0] Altavoces (Realtek High Definition Audio) (latency: 10.0ms)
-  [1] Auriculares (latency: 8.0ms)
+  [0] Altavoces (Realtek High Definition Audio) (latencia: 10.0ms)
+  [1] Auriculares (latencia: 8.0ms)
 ```
 
 ---
@@ -544,12 +545,13 @@ ai-voice-interconnector --json speech list --voice mi_voz
 **Qué esperar:**
 
 ```
-[default] saludo: Bienvenido
-[mi_voz] despedida: Hasta luego, gracias por tu visita a nuestra tien...
+Habla sintética albergada:
+  - [default] saludo (3.2s) — «Bienvenido»
+  - [mi_voz] despedida (4.0s) — «Hasta luego, gracias por tu visita»
 ```
 
-El texto se muestra truncado a 60 caracteres en la salida humana; el payload
-`--json` (`{"speech": [...]}`) lleva el texto completo. Una locución
+El texto se muestra completo en la salida humana; el payload
+`--json` (`{"speech": [...]}`) lo lleva también completo. Una locución
 sin sidecar de metadatos se muestra como `(sin metadatos)`. Un sidecar ilegible
 o corrupto hace fallar `speech list` y `speech play` con exit **1** (`io_error`);
 el mensaje nombra el fichero y remite a `speech remove`, que borra la locución
@@ -1051,12 +1053,12 @@ ai-voice-interconnector speech say --text "Hola, esto es una prueba" --voice mi_
 
 # 5. O genera un archivo
 ai-voice-interconnector speech synthesize --text "Hola, esto es una prueba" --label prueba --voice mi_voz
-# → Locución 'prueba' guardada (voz 'mi_voz').
+# → Síntesis completada: <ruta del WAV persistido> (N s).
 ```
 
 Lo que queda en disco es **un único artefacto por voz**, `voices/<nombre>/reference.qvoice`:
 se genera a partir de la referencia de habla y no se guarda ninguna copia del
-WAV de referencia. `voice clone` escribe `Voz '<nombre>' clonada.` por stdout, o con
+WAV de referencia. `voice clone` escribe `Voz '<nombre>' clonada (N s).` por stdout, o con
 `--json` el envelope de arriba, cuyo `speech` es esa ruta y cuyo `precomputed` es `false` en la
 vía directa (el motor es efímero por proceso): solo la vía del daemon lo deja en `true`.
 

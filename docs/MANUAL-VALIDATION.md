@@ -484,12 +484,14 @@ segundo «Cancelado.» por stdout.
 ### 12.4 Una fase, una línea en no-TTY
 
 ```bash
-ai-voice-interconnector daemon start 2> salida.txt
+ai-voice-interconnector self update 2> salida.txt
 ```
 
-**Esperado**: el fichero `salida.txt` no acumula líneas de calentamiento
-repetidas: la fase se anuncia una vez y la actividad posterior no abre
-líneas nuevas. Lo mismo con cualquier comando largo redirigido.
+**Esperado**: el fichero `salida.txt` no acumula líneas de la fase repetidas:
+la fase se anuncia una vez y la actividad posterior no abre líneas nuevas.
+Vale cualquier comando con una espera larga, porque el racionado es por fase:
+también `translate --daemon` o `speech transcribe --daemon` con la salida
+redirigida.
 
 ### 12.5 El tiempo visible avanza durante una espera real
 

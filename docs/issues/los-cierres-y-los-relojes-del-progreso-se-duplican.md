@@ -10,7 +10,7 @@
 | Plataforma | todas (los relojes y los mensajes no dependen de la terminal) |
 | Reproducibilidad | siempre |
 | Detectado en | inspección de código y pruebas manuales del indicador de progreso, 2026-10-19 |
-| Prueba de regresión | `crates/avi-lifecycle/src/progress.rs`: `close_does_not_paint_a_closing_line`; `tests/cli_golden.rs`: `a_path_that_fails_with_question_mark_leaves_no_open_phase`; `src/main.rs`: `started_names_the_operation_the_daemon_reports` |
+| Prueba de regresión | `crates/avi-lifecycle/src/progress.rs`: `close_does_not_paint_a_closing_line`; `tests/cli_golden.rs`: `a_path_that_fails_with_question_mark_leaves_no_open_phase`, `the_final_message_is_said_once_by_stdout_with_its_duration`; `src/main.rs`: `started_names_the_operation_the_daemon_reports` |
 | Documento canónico | [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) y [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) |
 
 ## Resumen
@@ -170,6 +170,7 @@ Dirección de la corrección (ya confirmada la causa):
 |---|---|
 | `crates/avi-lifecycle/src/progress.rs` → `close_does_not_paint_a_closing_line` | El cierre no imprime estado: el indicador no dice cómo terminó |
 | `tests/cli_golden.rs` → `a_path_that_fails_with_question_mark_leaves_no_open_phase` | El error se dice **una sola vez** y no queda cierre en stderr |
+| `tests/cli_golden.rs` → `the_final_message_is_said_once_by_stdout_with_its_duration` | El mensaje final lo dice **una sola vez**, por stdout, y con la duración de la operación |
 | `src/main.rs` → `started_names_the_operation_the_daemon_reports` | El mensaje nombra la operación concreta, no una genérica |
 
 **Documento canónico**: [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) —la tabla del contrato de salida por comando, con su columna de mensaje final— y [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) —«Salida en terminal», que fija el dueño único del mensaje final y el reloj común—.

@@ -633,6 +633,99 @@ async fn voices_clone_reference_over_limit_is_audio_too_long() {
     assert_eq!(actual["reason"], "audio_too_long");
 }
 
+/// El `started` de `/voices/clone` nombra la operación con la clave
+/// `operation`, que es lo que permite al cliente anunciar «Iniciando
+/// clonación…».
+///
+/// La emisión del `started` ocurre **antes** del trabajo pesado, así que la
+/// prueba no necesita el motor: monta un estado con un modelo Base presente
+/// —su contenido no se usa, porque el clonado acabará fallando— y lee el
+/// primer evento del stream. Es la cobertura que falta para que la clave
+/// `operation` de esta ruta esté verificada fuera de la puerta que exige el
+/// modelo provisioned.
+#[tokio::test]
+async fn voices_clone_names_the_operation_in_the_started_event() {
+    let tmp = tempfile::Builder::new()
+        .prefix("avi_daemon_clone_operation_")
+        .tempdir()
+        .expect("directorio temporal del estado");
+    let mut state = DaemonState::with_stores(
+        VoiceStore::at(tmp.path().join("voices")),
+        SpeechStore::at(tmp.path().join("speech")),
+    )
+    .expect("daemon state");
+    // El modelo Base solo tiene que estar *presente*: el handler lo comprueba
+    // antes de abrir el stream y, con el clonado fallando después, el
+    // `started` ya salió.
+    state.tts_engine.base_model_dir = Some(tmp.path().join("base-model"));
+    let state = Arc::new(state);
+
+    // Un WAV mínimo y válido: la cabecera se lee antes del modelo.
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(minimal_wav());
+    let (status, bytes) = send_to(
+        state,
+        post_json(
+            "/voices/clone",
+            serde_json::json!({
+                "name": "viva_clonacion",
+                "force": true,
+                "audio_b64": audio_b64,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "el handler abre el stream");
+
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let events: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect();
+    assert!(!events.is_empty(), "debe haber al menos un evento");
+    let started = &events[0];
+    assert_eq!(
+        started["event"],
+        Value::String("started".to_string()),
+        "el stream debe comenzar con `started`"
+    );
+    assert_eq!(
+        started["operation"],
+        Value::String("clonación".to_string()),
+        "`started` nombra la operación"
+    );
+    assert_eq!(
+        started["name"],
+        Value::String("viva_clonacion".to_string()),
+        "`started` nombra la voz"
+    );
+}
+
+/// Un WAV de un segundo de silencio: la cabecera que el handler mide antes
+/// de buscar el modelo.
+fn minimal_wav() -> Vec<u8> {
+    let muestras: Vec<i16> = vec![0; 16_000];
+    let samples = muestras
+        .iter()
+        .flat_map(|s| s.to_le_bytes())
+        .collect::<Vec<u8>>();
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + samples.len() as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&16_000u32.to_le_bytes()); // frecuencia
+    wav.extend_from_slice(&32_000u32.to_le_bytes()); // bytes por segundo
+    wav.extend_from_slice(&2u16.to_le_bytes()); // alineación
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits por muestra
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(samples.len() as u32).to_le_bytes());
+    wav.extend_from_slice(&samples);
+    wav
+}
+
 /// Warm-on-clone: `POST /voices/clone` por daemon sirve un stream
 /// NDJSON (`started` → latidos → `result`), y el evento final conserva
 /// `precomputed: true` («precarga en caliente iniciada»; la completitud se
