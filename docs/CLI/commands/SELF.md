@@ -82,6 +82,12 @@ El orden es el de [`self update`](../../specs/LIFECYCLE.md#84-self-update) y est
 
 ---
 
+## El progreso por stderr
+
+Los tres comandos de este grupo pintan la fase del trabajo por stderr —`self install` con las fases del motor (`stopping`, `replacing`, `path`, `receipt`), `self update` con una por paso (`checking`, `downloading`, `verifying`, `stopping`, `replacing`) y `self uninstall` con las suyas (`stopping`, `state`, `path`, `program`, `locks`)— y ceden la línea antes de que el producto escriba la confirmación. El **resultado** —el resumen o el envelope `--json`— va por stdout, y lo dice **una sola vez**, con la duración de la operación.
+
+`AVI_NO_PROGRESS=1` silencia todo el progreso por stderr, y nada más: el resumen por stdout, el envelope `--json` y los códigos de salida no cambian.
+
 ## `setup_failed`: el único desenlace que no es ni éxito ni error
 
 Si la provisión de `self install` (la misma de `setup`) falla, **la instalación no falla**. Las [reglas transversales](../../specs/LIFECYCLE.md#81-reglas-transversales) lo declaran éxito parcial, y el código lo modela así:
@@ -123,7 +129,7 @@ Los pasos de [`self uninstall`](../../specs/LIFECYCLE.md#85-self-uninstall), en 
 1. **El canal decide si se puede actuar**: `homebrew` → `externally_managed` (12) con el comando de Homebrew en el mensaje. Sin instalación, sin estado y sin directorio de programa → **`not_installed` y salida 0**.
 2. **`--dry-run`**: imprime el plan, después una sola vez `Simulación: no se ha modificado nada.`, y termina **sin tomar el bloqueo**: tomar el bloqueo crea el archivo, y una simulación que deja un archivo detrás no es una simulación.
 3. **Plan**, el mismo en la simulación y en la ejecución (`uninstall::plan_lines`): cada ruta una sola vez, con su categoría en español cuando la tiene (`datos de usuario` para la raíz de datos entera) y su tamaño; las reversiones del `PATH` que el recibo registra, una línea por cada una con lo que se retira (`se revertirá el PATH: …`), que son acciones del plan y no recursos conservados; y la lista de lo que **no** se tocará y por qué.
-4. **Confirmación destructiva** `Esto eliminará lo indicado. ¿Continuar? [s/N] `. Sin terminal y sin `--yes` → `confirmation_required` (2) y nada borrado. Al terminar, el texto dice `Desinstalación completada (N s).`, con la duración de la operación; el `status` es del envelope `--json`.
+4. **Confirmación destructiva** `Esto eliminará lo indicado. ¿Continuar? [s/N] `. Sin terminal y sin `--yes` → `confirmation_required` (2) y nada borrado. Al terminar, el texto dice `Desinstalación completada. (N s).`, con la duración de la operación; el `status` es del envelope `--json`.
 5. **Parar el daemon**: va **después** de la confirmación, para que un `daemon_stop_failed` no deje nada a medias.
 6. **Borrar el estado.**
 7. **Revertir el `PATH`** exactamente según el recibo: el enlace solo si apunta al directorio de programa, los bloques delimitados de los perfiles, y en Windows la entrada del registro con comparación canónica conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`. Un resto que no se pueda revertir se informa en `failed`.
@@ -211,3 +217,26 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `program_dir_kept` | 22 | `self uninstall`: el resto se completó, pero el directorio de programa no se pudo borrar ni programar su borrado |
 
 Los `reason` del empaquetado salen con el **1** genérico: ningún `reason` nuevo de esa superficie tiene entero propio.
+
+---
+
+## Muestras de salida
+
+El **resultado** —el resumen o el envelope `--json`— va por stdout y lo dice una sola vez, con la duración de la operación. El progreso —las fases— va por stderr, con la forma `… <mensaje> (<tiempo>)`.
+
+```text
+# self update
+stdout: AI Voice Interconnector actualizado: 0.34.0 → 0.35.0 (12 s).
+stderr: … Buscando actualizaciones… (0 s)
+        … Descargando versión 0.35.0… (1 s)
+        … Verificando la versión descargada… (8 s)
+        … Deteniendo daemon… (9 s)
+        … Reemplazando el programa… (10 s)
+
+# self uninstall
+stdout: Desinstalación completada. (12 s).
+stderr: … Deteniendo daemon… (0 s)
+        … Borrando el estado… (1 s)
+```
+
+Cancelar la confirmación imprime `Cancelado.` **por stderr y una sola vez** y sale con 0. Con `--json`, stdout lleva **solo** el envelope y el resumen en texto no sale.

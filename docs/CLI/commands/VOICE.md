@@ -259,6 +259,12 @@ copia).
 
 ---
 
+## El progreso por stderr
+
+`voice clone` y `voice remove` pintan la fase del trabajo por stderr (`validating`, `cloning`, `saving`, `removing`) y ceden la línea antes de que el producto escriba la confirmación. El **resultado** va por stdout, y lo dice **una sola vez**, con la duración de la operación.
+
+`AVI_NO_PROGRESS=1` silencia todo el progreso por stderr, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.
+
 ## Errores
 
 | Condición | Subcomando | Exit code | `reason` |
@@ -294,3 +300,23 @@ ai-voice-interconnector voice clone --no-daemon -n locutor -s ref.wav  # fuerza 
 ai-voice-interconnector voice remove --name locutor
 ai-voice-interconnector voice remove --name locutor --yes   # sin preguntar, también las locuciones de la voz
 ```
+
+---
+
+## Muestras de salida
+
+El **resultado** va por stdout y lo dice una sola vez, con la duración de la operación. El progreso —la fase— va por stderr, con la forma `… <mensaje> (<tiempo>)`.
+
+```text
+# voice clone (ruta local)
+stdout: Voz 'mi_voz' clonada (24 s).
+stderr: … Validando referencia y nombre… (0 s)
+        … Clonando voz… (puede tardar varios minutos) (1 s)
+        … Guardando referencia de voz… (24 s)
+
+# voice remove
+stdout: Voz 'mi_voz' eliminada (1 s).
+stderr: … Eliminando voz y locuciones… (0 s)
+```
+
+Cancelar la confirmación de `voice remove` imprime `Cancelado.` **por stderr y una sola vez** —solo lo escribe el motor de confirmación— y sale con 0. Con `--json`, stdout lleva **solo** el envelope —`{"name", "speech", "precomputed"}`, `{"status": "removed", "voice", "removed_speech"}`— y el resultado en texto no sale.

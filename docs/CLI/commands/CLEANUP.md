@@ -57,6 +57,8 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 **El progreso empieza tras la confirmación.** La fase `cleaning` se pinta cuando la operación empieza de verdad, no antes: la confirmación ocurre dentro del motor y, hasta que el usuario la acepta, no hay nada que progreso. La línea se cede antes de cada aviso de ruta, de modo que ningún aviso queda pegado a la fase. El resultado —«Limpieza completada: N ruta(s), M barrido(s).»— lo dice el handler, por stdout, y es la única vez que se dice el estado.
 
+**Silenciar el progreso.** `AVI_NO_PROGRESS=1` silencia toda la salida de progreso por stderr —la fase y los avisos de ruta—, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.
+
 ---
 
 ## Confirmación: la tabla de las reglas transversales, y solo su parte destructiva
@@ -138,3 +140,22 @@ ai-voice-interconnector cleanup --all --dry-run       # lista el plan, no borra 
 ai-voice-interconnector cleanup --voices --yes        # omite la confirmación ( -y alias )
 ai-voice-interconnector --json cleanup --model --dry-run
 ```
+
+---
+
+## Muestras de salida
+
+El **resultado** va por stdout y lo dice una sola vez. El progreso —la fase— va por stderr, con la forma `… <mensaje> (<tiempo>)`, y **empieza tras la confirmación**.
+
+```text
+# cleanup --voices --yes
+stdout: Limpieza completada: 3 ruta(s), 1 barrido(s).
+stderr: … Limpiando datos… (0 s)
+        no se pudo borrar <ruta>: <motivo>
+
+# cleanup --all --dry-run
+stdout: Se borrarán 6 ruta(s), 5,9 GB en total:
+        … (el plan, una línea por destino)
+```
+
+Cancelar la confirmación imprime `Cancelado.` **por stderr y una sola vez** y sale con 0. Con `--json`, stdout lleva **solo** el envelope —`{"status", "reason", "removed", "planned", "unreadable"}`— y el resultado en texto no sale.

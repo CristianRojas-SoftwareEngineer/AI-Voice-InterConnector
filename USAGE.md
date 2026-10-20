@@ -408,7 +408,7 @@ ai-voice-interconnector speech synthesize --text "Bienvenido" --label saludo --v
 abajo) y, al terminar:
 
 ```
-Síntesis completada: <ruta del WAV persistido>
+Síntesis completada: <ruta del WAV persistido> (N s).
 ```
 
 **Opciones:**
@@ -472,7 +472,7 @@ con Qwen3-TTS y el audio suena por los altavoces. Con el daemon activo, el CLI
 delega vía HTTP y el modelo ya está caliente en memoria. Salida típica (stdout):
 
 ```
-Reproduciendo.
+Reproduciendo (N s).
 ```
 
 El WAV va a un temporal autogestionado que se borra al terminar, así que el texto
@@ -722,7 +722,7 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.w
 `avi_tts::clone_voice` con el modelo Base, y confirma (error `model_missing` → `setup`):
 
 ```
-Voz 'mi_voz' clonada.
+Voz 'mi_voz' clonada (N s).
 ```
 
 La única referencia de habla produce un `reference.qvoice` (bajo
@@ -794,7 +794,7 @@ ai-voice-interconnector voice remove --name mi_voz --yes
 **Qué esperar:**
 
 ```
-Voz 'mi_voz' eliminada.
+Voz 'mi_voz' eliminada (N s).
 ```
 
 Si la voz tiene locuciones, el comando muestra la voz y sus locuciones y pide
@@ -975,7 +975,7 @@ ai-voice-interconnector daemon serve --auto-restart --max-retries 3
 
 **Qué esperar:** `daemon start` verifica que los modelos estén provisionados, lanza el servidor en segundo plano
 y espera hasta `10s` el resultado de su arranque: listo (el daemon publica su dirección real, que se confirma por `/health`), un fallo con su causa (puerto ocupado, voz inexistente) o la muerte del proceso. Si arranca, escribe el PID file `data_dir()/daemon.pid` (con `resident_pid` y la dirección real) y confirma con
-`Daemon iniciado correctamente (pid ...)`. Si falla, sale con un código que nombra la causa y no deja proceso ni PID file. Luego `daemon status` muestra estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
+`Daemon iniciado correctamente (pid ..., N s).` Si falla, sale con un código que nombra la causa y no deja proceso ni PID file. Luego `daemon status` muestra estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
 
 Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^(retries-1)` (0,5 s, 1 s, 2 s…) capado a `4s` y protección por watchdog de supervisión contra bucles de reinicio rápidos; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Tampoco se reintentan los fallos previos a que el daemon esté listo (puerto ocupado, voz inexistente): son de configuración y salen al instante con su código. Sin `--auto-restart`, el daemon es `fail-stop`.
 
@@ -985,7 +985,7 @@ Trazas y logs: `RUST_LOG` (sintaxis de `tracing`) fija el nivel de traza de la C
 
 Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
 
-`daemon stop` responde `Señal de apagado enviada al daemon en <addr>.` (parada unificada de daemon y residente con verificación y borrado de `daemon.pid` y `daemon.ready`; si el residente registrado sigue vivo, la parada no se da por completa y sale por veredicto con `still_running` y exit 5, sin borrar la pista) y `daemon restart` hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo.
+`daemon stop` responde `Señal de apagado enviada al daemon en <addr> (N s).` —o `No había daemon que detener (N s).` si no había ninguno en marcha, porque decir que se detuvo algo que no corría sería mentir— (parada unificada de daemon y residente con verificación y borrado de `daemon.pid` y `daemon.ready`; si el residente registrado sigue vivo, la parada no se da por completa y sale por veredicto con `still_running` y exit 5, sin borrar la pista) y `daemon restart` hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo.
 
 ### Uso con daemon
 
@@ -1017,7 +1017,7 @@ el cliente no muestra progreso intermedio. Al terminar la reproducción imprime 
 mismo que en modo directo, sin ruta:
 
 ```
-Reproduciendo.
+Reproduciendo (N s).
 ```
 
 Con `--json`, en lugar de esa línea emite el payload
@@ -1035,7 +1035,7 @@ De principio a fin, desde grabar tu voz hasta escucharla sintetizada:
 
 # 2. Clona la voz
 ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav
-# → Voz 'mi_voz' clonada.
+# → Voz 'mi_voz' clonada (N s).
 
 # 2b. Con --json, el único artefacto que se guarda
 ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav --json

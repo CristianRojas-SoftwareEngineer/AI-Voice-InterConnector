@@ -425,6 +425,14 @@ rechaza un `source_language`/`target_language` distinto de `es` y `en` con `usag
 
 ---
 
+## El progreso por stderr
+
+Los subcomandos de este grupo pintan la fase del trabajo por stderr, con la forma `… <mensaje> (<tiempo>)`, y ceden la línea antes de que el producto escriba el aviso de captura del micrófono o el menú de `--play`. El **resultado** —el texto o el envelope `--json`— va por stdout, y lo dice **una sola vez**, con la duración de la operación.
+
+`AVI_NO_PROGRESS=1` silencia todo el progreso por stderr —la fase y la actividad—, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.
+
+---
+
 ## Errores
 
 | Reason | Exit | Origen |
@@ -470,3 +478,32 @@ ai-voice-interconnector speech remove --label saludo
 ai-voice-interconnector --json speech list
 ai-voice-interconnector --json speech list --voice mi_voz
 ```
+
+---
+
+## Muestras de salida
+
+El **resultado** va por stdout y lo dice una sola vez, con la duración de la operación. El progreso —la fase y la actividad— va por stderr, con la forma `… <mensaje> (<tiempo>)`.
+
+```text
+# speech synthesize (ruta local)
+stdout: Síntesis completada: <ruta del WAV persistido> (3 s).
+stderr: … Validando texto y voz… (0 s)
+        … Sintetizando voz… (1 s)
+        … Guardando locución… (3 s)
+
+# speech say
+stdout: Reproduciendo (4 s).
+
+# speech transcribe
+stdout: <el texto transcrito>
+stderr: … Transcribiendo audio… (0 s)
+
+# speech dub
+stdout: Doblaje reproducido (9 s).
+
+# speech play
+stdout: Reproduciendo locución 'saludo' de la voz 'default' (2 s).
+```
+
+Con `--json`, stdout lleva **solo** el envelope —`{"status": "success", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`— y el resultado en texto no sale. El progreso por stderr es el mismo.
