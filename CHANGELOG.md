@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.35.0 — 2026-10-20](#0350--2026-10-20)
 - [0.34.0 — 2026-10-19](#0340--2026-10-19)
 - [0.33.1 — 2026-10-18](#0331--2026-10-18)
@@ -114,6 +115,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Corregido
+
+- El mensaje final de `cleanup` ya lleva la duración de la operación. El indicador de `cleanup` lo cierra la librería —la confirmación ocurre dentro del motor, y por eso el indicador nace después de ella—, y la duración se descartaba en el cierre: el desenlace la devuelve ahora y el handler la añade a su mensaje, como hacen los demás comandos. Antes, `cleanup` era el único mensaje final sin reloj.
+- `self uninstall` sobre un sistema sin instalación ya no imprime una **línea en blanco** por stdout. El desenlace `not_installed` salía con un mensaje vacío, y el handler —que es su dueño— lo imprimía tal cual: una línea vacía que no dice nada y parece un fallo de salida. Ahora dice «No había nada que desinstalar.», que es lo que pasó.
+- Los mensajes finales tienen **una sola forma**: `texto (N s).` —la duración entre paréntesis y el punto al final—. Convivían tres convenciones según el comando: la de la CLI con el punto, la de `self install` y `self uninstall` sin él, y la de `doctor --repair` con el punto antes del paréntesis. Quien leía la salida tenía que saber de qué comando salía para saber dónde estaba la frase. La forma la decide ahora un solo sitio en cada capa.
+- La fila de `self update` de la tabla del contrato ya no afirma un mensaje sin duración: el código emite «ai-voice-interconnector actualizado: A → B (N s).» desde que el indicador pasó a devolver el reloj del cierre.
 
 ## [0.35.0] — 2026-10-20
 

@@ -2197,6 +2197,29 @@ fn no_progress_silences_the_phase_and_keeps_the_envelope() {
     assert_eq!(envelope["status"], Value::String("planned".to_string()));
 }
 
+/// El mensaje final de `cleanup` lleva la duración de la operación.
+///
+/// El indicador de `cleanup` lo cierra la librería —la confirmación ocurre
+/// dentro del motor, y por eso el indicador nace después de ella—, así que la
+/// duración tiene que volver al handler por el desenlace. Sin eso, el mensaje
+/// final sería el único sin reloj, contra la regla del protocolo: el dueño del
+/// mensaje final le añade la duración de la operación.
+#[test]
+fn the_cleanup_final_message_carries_the_duration_of_the_sweep() {
+    let (_sandbox, envs) = contract_sandbox("progress-cleanup-duration");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, stdout, stderr) = run_capture(&["cleanup", "--all", "--yes"], &envs);
+    assert_eq!(code, 0, "cleanup sale 0: {stderr}");
+    assert!(
+        stdout.contains("Limpieza completada:"),
+        "el mensaje final de cleanup lo dice el handler: {stdout}"
+    );
+    assert!(
+        stdout.contains(" s)."),
+        "el mensaje final lleva la duración de la operación: {stdout}"
+    );
+}
+
 /// El camino que sale por `?` **cierra el indicador**: la fase queda cedida y
 /// no queda pegada a la salida.
 ///
@@ -2298,6 +2321,71 @@ fn the_final_message_is_said_once_by_stdout_with_its_duration() {
     assert!(
         !stderr.contains("[ok]") && !stderr.contains("[error]"),
         "el indicador no imprime estado: {stderr}"
+    );
+}
+
+/// `self uninstall` sobre un sistema sin instalación dice lo que pasó, y no
+/// dice nada en blanco.
+///
+/// El desenlace es `not_installed`: no hay recibo, ni estado, ni directorio de
+/// programa. Es un **éxito** —el desenlace lo clasifica así—, y su texto es
+/// propio: no dice que desinstaló algo que no había, ni repite un estado
+/// genérico. Y stdout no lleva una línea vacía: un mensaje final vacío se
+/// imprimiría como una línea en blanco, que no dice nada y parece un fallo de
+/// salida.
+#[test]
+fn uninstall_without_installation_says_so_instead_of_printing_a_blank_line() {
+    // El sandbox se crea **sin** las raíces que el desenlace mira: sin datos,
+    // sin directorio de programa y sin la hoja de modelos. Es el estado «nada
+    // instalado»: el directorio de programa no se crea a propósito, porque su
+    // existencia es una de las tres condiciones del desenlace `not_installed`.
+    let sandbox = tempfile::Builder::new()
+        .prefix("golden-sandbox_uninstall-empty_")
+        .tempdir()
+        .expect("crear sandbox de estado");
+    let dir = sandbox.path().to_path_buf();
+    let install = dir.join("install");
+    let cache = dir.join("cache");
+    let hf = dir.join("hf");
+    // Solo la caché y la de Hugging Face existen: la hoja de modelos —dentro de
+    // la caché— no, y con ella no hay estado que conservar.
+    for d in [&cache, &hf] {
+        std::fs::create_dir_all(d).expect("crear raíces del sandbox");
+    }
+    let data = dir.join("data");
+    let envs: Vec<(String, String)> = vec![
+        (
+            "AVI_DATA_DIR".to_string(),
+            data.to_string_lossy().to_string(),
+        ),
+        (
+            "AVI_INSTALL_DIR".to_string(),
+            install.to_string_lossy().to_string(),
+        ),
+        (
+            "AVI_CACHE_DIR".to_string(),
+            cache.to_string_lossy().to_string(),
+        ),
+        ("HF_HUB_CACHE".to_string(), hf.to_string_lossy().to_string()),
+        ("HF_HOME".to_string(), hf.to_string_lossy().to_string()),
+    ];
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, stdout, stderr) = run_capture(&["self", "uninstall", "--yes"], &envs);
+    assert_eq!(code, 0, "desinstalar sin instalación es un éxito: {stderr}");
+
+    // stdout no lleva una línea en blanco: el mensaje final dice algo.
+    assert!(
+        !stdout.trim().is_empty(),
+        "el mensaje final no puede ser una línea en blanco: {stdout}"
+    );
+    assert!(
+        stdout.contains("No había nada que desinstalar"),
+        "el desenlace dice que no había nada que desinstalar: {stdout}"
+    );
+    // Y no dice que desinstaló algo, que sería mentira.
+    assert!(
+        !stdout.contains("Desinstalación completada"),
+        "sin instalación no se desinstaló nada: {stdout}"
     );
 }
 

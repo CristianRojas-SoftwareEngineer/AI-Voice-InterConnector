@@ -222,10 +222,10 @@ async fn install_twice_is_idempotent() {
 /// Quita del final de una línea la duración que el resumen añade.
 ///
 /// El resumen de una instalación termina con el tiempo que tardó, entre
-/// paréntesis: «ai-voice-interconnector instalado: 0.34.0 (1 s)». Ese tiempo
-/// es el reloj de una ejecución, no el estado que deja, y dos ejecuciones del
-/// mismo estado no tardan lo mismo. La línea sin ese paréntesis es la que
-/// afirma el estado.
+/// paréntesis, y con el punto que cierra la frase: «ai-voice-interconnector
+/// instalado: 0.34.0 (1 s).» Ese tiempo es el reloj de una ejecución, no el
+/// estado que deja, y dos ejecuciones del mismo estado no tardan lo mismo. La
+/// línea sin ese paréntesis es la que afirma el estado.
 ///
 /// El helper va anclado al formato de la duración, no a «cualquier paréntesis
 /// final»: una línea del resumen que acabara en `)` por otro motivo no debe
@@ -233,18 +233,20 @@ async fn install_twice_is_idempotent() {
 fn without_trailing_duration(line: &str) -> String {
     let trimmed = line.trim_end();
     // `format_duration` escribe «7 s», «1 min 59 s» o «1 h 02 min».
-    let Some(pos) = trimmed.rfind(" (") else {
+    // La duración va entre paréntesis y el punto cierra la frase.
+    let body = trimmed.strip_suffix('.').unwrap_or(trimmed);
+    let Some(pos) = body.rfind(" (") else {
         return line.to_string();
     };
-    let duration = &trimmed[pos + 2..trimmed.len() - 1];
+    let duration = &body[pos + 2..body.len() - 1];
     let looks_like_duration = duration.ends_with(" s")
         || duration.ends_with(" min")
         || duration.ends_with(" h")
         || duration
             .split_once(" min ")
             .is_some_and(|(_, rest)| rest.ends_with(" s"));
-    if trimmed.ends_with(')') && looks_like_duration {
-        trimmed[..pos].to_string()
+    if body.ends_with(')') && looks_like_duration {
+        body[..pos].to_string()
     } else {
         line.to_string()
     }

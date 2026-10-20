@@ -659,6 +659,10 @@ pub struct Outcome {
     pub daemon_was_running: bool,
     /// Destinos del plan que fallaron al borrarse.
     pub failed: Vec<String>,
+    /// Duración del barrido, la del reloj que mostró las fases. La anuncia el
+    /// handler en su mensaje final; en la simulación y en la cancelación es
+    /// cero, porque no hubo barrido que medir.
+    pub elapsed: std::time::Duration,
 }
 
 /// Ejecuta `cleanup`.
@@ -800,11 +804,14 @@ pub async fn run_with_progress(
         .map(|p| p.display().to_string())
         .collect();
     // El cierre no imprime estado: el mensaje final lo compone quien cierra.
-    if let Some(indicator) = indicator {
-        indicator.close();
-    }
+    // La duración que devuelve es la del barrido, y la anuncia el handler.
+    let elapsed = match indicator {
+        Some(indicator) => indicator.close(),
+        None => std::time::Duration::ZERO,
+    };
     Ok(Outcome {
         status: "cleanup_complete",
+        elapsed,
         removed,
         planned,
         swept: recovery
@@ -878,6 +885,8 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
         dry_run: true,
         daemon_was_running: false,
         failed: Vec::new(),
+        // La simulación no barre: no hay duración que anunciar.
+        elapsed: std::time::Duration::ZERO,
     }
 }
 

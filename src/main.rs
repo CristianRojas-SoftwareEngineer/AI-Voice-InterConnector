@@ -1103,9 +1103,14 @@ enum Outcome {
 /// el handler escribe esta línea una sola vez, por stdout. La duración sale
 /// del mismo reloj que mostró las fases, de modo que las cifras de una misma
 /// operación son coherentes entre sí.
+///
+/// La forma es la de todos los mensajes finales de la CLI: `texto (N s).` —
+/// la duración entre paréntesis y el punto al final. El texto que se le pasa
+/// no lleva punto: lo pone esta función, para que el cierre sea el único que
+/// decide dónde acaba la frase.
 fn final_message(msg: &str, elapsed: std::time::Duration) -> String {
     format!(
-        "{msg} ({})",
+        "{msg} ({}).",
         avi_lifecycle::progress::format_duration(elapsed)
     )
 }
@@ -3240,10 +3245,13 @@ async fn handle_cleanup(
         // `confirm::confirm` ya escribió «Cancelado.» por stderr: el handler no
         // lo repite, porque el literal es del motor de confirmación.
     } else if !outcome.dry_run {
+        // El mensaje final lleva la duración, como los demás: la compone el
+        // handler, que es su dueño, con el reloj que mostró las fases.
         println!(
-            "Limpieza completada: {} ruta(s), {} barrido(s).",
+            "Limpieza completada: {} ruta(s), {} barrido(s) ({}).",
             outcome.removed.len(),
-            outcome.swept.len()
+            outcome.swept.len(),
+            avi_lifecycle::progress::format_duration(outcome.elapsed)
         );
     }
     Ok(())

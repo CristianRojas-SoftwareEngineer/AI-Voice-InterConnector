@@ -305,6 +305,11 @@ pub async fn run(
     if receipt.is_none() && !state_exists(roots) && !program_dir.is_dir() {
         return Ok(Outcome {
             status: "not_installed",
+            // El mensaje final lo compone el flujo de la librería, y aquí no hay
+            // operación que narrar: no hubo indicador ni hubo nada que borrar.
+            // Un mensaje vacío haría que el handler imprimiera una línea en
+            // blanco por stdout, que no dice nada y parece un fallo de salida.
+            message: "No había nada que desinstalar.".to_string(),
             ..Outcome::default()
         });
     }
@@ -765,13 +770,17 @@ pub fn simulate(
 /// Lo compone el propio flujo de la librería —el indicador es interno y no hay
 /// handler que lo cierre— y lo publica quien lo emite, por stdout. El estado
 /// final lo decide `failed`: los pasos 6–9 no abortan, solo recogen.
+///
+/// La forma es la de todos los mensajes finales de la CLI: `texto (N s).` —la
+/// duración entre paréntesis y el punto al final—, para que el lector no
+/// encuentre dos convenciones según el comando.
 fn uninstall_message(failed: &[String], elapsed: std::time::Duration) -> String {
     let base = if failed.is_empty() {
-        "Desinstalación completada."
+        "Desinstalación completada"
     } else {
-        "Quedaron restos sin borrar."
+        "Quedaron restos sin borrar"
     };
-    format!("{base} ({})", crate::progress::format_duration(elapsed))
+    format!("{base} ({}).", crate::progress::format_duration(elapsed))
 }
 
 /// Plan legible: la única composición del plan de `self uninstall`, que imprimen

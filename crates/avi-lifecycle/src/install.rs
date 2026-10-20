@@ -1077,7 +1077,7 @@ fn final_summary(
 ) -> Vec<String> {
     let mut out = vec![
         format!(
-            "{} {}: {} ({})",
+            "{} {}: {} ({}).",
             crate::APP_NAME,
             match mode {
                 Mode::Install => "instalado",
