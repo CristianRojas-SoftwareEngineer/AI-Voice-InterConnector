@@ -546,7 +546,7 @@ El exit 2 es, en Unix y en `clap`, el código del error de invocación, y aquí 
 Dos pruebas de que la convención es la correcta:
 
 1. **La tabla la honra en otro punto**: `ExitCode::Interrupted = 130` es exactamente `128 + SIGINT`. Respetar 128+n y no respetar 2 sería incoherente dentro de la misma tabla.
-2. **El proyecto hermano aplica la misma convención**: `claude-voice-interconnector` usa **2 = uso incorrecto** en sus tres casos —valor fuera de dominio, argumento vacío y comando desconocido— con **1 = error genérico**.
+2. **El proyecto hermano aplica la misma convención**: `agent-voice-interconnector` usa **2 = uso incorrecto** en sus tres casos —valor fuera de dominio, argumento vacío y comando desconocido— con **1 = error genérico**.
 
 ### Dónde viven las constantes, y por qué eso es parte del contrato
 
@@ -787,7 +787,7 @@ envelope `usage_error` por stdout, ver
 
 El integrador que quiera además conservar el audio usa `speech synthesize --text "<msg>" --label L`, que no reproduce.
 
-El integrador es **claude-voice-interconnector**, un plugin de [Claude Code](https://code.claude.com) que narra por voz la actividad de la sesión: al final de cada turno y en avisos relevantes el usuario escucha una locución corta en español. Se dispara por hooks (`Stop`, `Notification`; `SessionStart` verifica el entorno y deja el daemon caliente), nunca bloquea ni retrasa el turno y falla en silencio si el motor no está disponible. El resto de sus propiedades de diseño vive en su repositorio, que es su fuente de verdad; su contraparte de este contrato está en su [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/claude-voice-interconnector/blob/main/docs/INTEGRATION.md).
+El integrador es **Agent Voice InterConnector**, un plugin de [Claude Code](https://code.claude.com) que narra por voz la actividad de la sesión: al final de cada turno y en avisos relevantes el usuario escucha una locución corta en español. Se dispara por hooks (`Stop`, `Notification`; `SessionStart` verifica el entorno y deja el daemon caliente), nunca bloquea ni retrasa el turno y falla en silencio si el motor no está disponible. El resto de sus propiedades de diseño vive en su repositorio, que es su fuente de verdad; su contraparte de este contrato está en su [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/Agent-Voice-InterConnector/blob/main/docs/INTEGRATION.md).
 
 **Dependencia unidireccional.** El plugin consume a AI-Voice-InterConnector; este repositorio no conoce, importa ni depende del plugin, y ningún código, test ni build de aquí sabe de su existencia. A efectos del motor, el plugin es un consumidor externo más de la CLI pública (`ai-voice-interconnector` en `PATH`), como un script de usuario.
 
@@ -820,12 +820,12 @@ Cambiar cualquiera de estos nombres, flags, campos o exit codes rompe la narraci
 **Instalación.** Desde el lado del motor no hay nada que instalar para el plugin: basta con que `ai-voice-interconnector` esté en el `PATH` y los modelos estén en caché (`ai-voice-interconnector setup`). El repositorio del plugin dobla como su propio marketplace:
 
 ```
-/plugin marketplace add CristianRojas-SoftwareEngineer/claude-voice-interconnector
-/plugin install claude-voice-interconnector@claude-voice-interconnector
-/claude-voice-interconnector:install
+/plugin marketplace add CristianRojas-SoftwareEngineer/Agent-Voice-InterConnector
+/plugin install agent-voice-interconnector@Agent-Voice-InterConnector
+/agent-voice-interconnector:install
 ```
 
-`/claude-voice-interconnector:install` guía la instalación del binario, la descarga de los modelos y la activación de la narración.
+`/agent-voice-interconnector:install` guía la instalación del binario, la descarga de los modelos y la activación de la narración.
 
 ### La frontera del daemon
 
