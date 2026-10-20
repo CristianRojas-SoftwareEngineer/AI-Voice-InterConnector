@@ -96,6 +96,32 @@ git push origin main --tags           # sin --tags el tag no dispara build-all
      `ORT_DYLIB_PATH`, de modo que las pruebas de STT usan el mismo runtime que
      se distribuye y no otra `onnxruntime.dll` del sistema. Si falla, aborta
      antes del bump sin modificar nada.
+
+   **El entorno de esa puerta no es opcional.** La gate lo establece ella misma
+   antes de lanzarla, y hay que reproducirlo tal cual si se ejecuta a mano:
+
+   ```bash
+   AVI_ALLOW_CWD_VENDOR=1 ORT_DYLIB_PATH=<raíz del repo>/ort-bundle/onnxruntime.dll \
+     cargo test --workspace --features full -- --include-ignored
+   ```
+
+   - `AVI_ALLOW_CWD_VENDOR=1` habilita la capa `<cwd>/vendor`: los hijos CLI que
+     lanzan las pruebas resuelven el motor recién compilado en
+     `vendor/qwen3-tts/`, sin exigir un programa instalado. Sin este opt-in, un
+     entorno limpio falla las pruebas del motor aunque todo esté provisionado.
+   - `ORT_DYLIB_PATH` con la **ruta absoluta**. Vale tanto el fichero
+     (`<raíz>/ort-bundle/onnxruntime.dll`) como el directorio que lo contiene
+     (`<raíz>/ort-bundle`): el STT comprueba si el valor es un directorio y, si
+     lo es, le añade el nombre de la librería de su sistema. Lo que no vale es
+     una ruta **relativa**, porque `cargo test` usa la raíz de cada paquete como
+     directorio de trabajo: `ort-bundle` existe en el crate raíz —que es el
+     repo— y no existe en un crate miembro, cuyo directorio de trabajo es
+     `crates/<crate>/`. Ahí el valor no resuelve a ningún directorio, se usa
+     tal cual y la carga falla con «el fichero no existe».
+
+   Sin esas dos variables, la puerta falla por motivos de entorno y no de
+   producto: el fallo se confunde con un defecto del código y se depura donde no
+   toca. La ruta absoluta es la que la gate usa por la misma razón.
 2. **Bump.** Escribe `X.Y.Z` en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
    `tests/golden/cli_version.json` y `SOURCE-OFFER.md`. `SOURCE-OFFER.md` es el
    aviso de disponibilidad de la fuente (MPL-2.0 §3.2) que viaja dentro de los 4 artefactos.
