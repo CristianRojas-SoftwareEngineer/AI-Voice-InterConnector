@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | abierto |
+| Estado | **resuelto** el 2026-10-20 |
 | Severidad | media |
 | Tipo | funcional |
 | Componente | `avi-lifecycle` (`PhaseProgress`, `format_duration`), `src/main.rs` (`emit_ndjson_progress`, `consume_ndjson_stream`, `daemon_synthesize_wav`, `launch_daemon`, `await_daemon_ready`), `avi-daemon` (`with_heartbeats`) |
@@ -10,6 +10,8 @@
 | Plataforma | Windows 11 / PowerShell 7 (reproducido); la parte no-TTY es común a todas las plataformas por el formato del render |
 | Reproducibilidad | siempre |
 | Detectado en | inspección de código y pruebas manuales del indicador de progreso, 2026-10-19 |
+| Prueba de regresión | `crates/avi-lifecycle/src/progress.rs`: `one_phase_and_forty_ticks_paint_exactly_one_line_in_no_tty`, `phase_then_tick_paints_one_line_in_no_tty`, `repaints_are_counted_even_without_a_new_line`; `src/main.rs`: `await_with_progress_repaints_while_the_future_is_pending`, `ndjson_progress_phase_maps_stages_and_rate_limits_by_stage` |
+| Documento canónico | [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#stderr-trazas-y-logs) y [`docs/CLI/commands/DAEMON.md`](../CLI/commands/DAEMON.md#protocolo) |
 
 ## Resumen
 
@@ -206,3 +208,26 @@ Alternativa descartada: imprimir siempre en modo no-TTY con `\r` — violaría e
 - `la-rama-local-y-la-del-daemon-muestran-fases-y-cierres-distintos.md` (la asimetría de eventos entre endpoints del daemon).
 - `los-cierres-y-los-relojes-del-progreso-se-duplican.md` (el reloj desfasado entre fase y eventos).
 - `CHANGELOG.md`, 0.34.0: «progreso de fases por stderr, una sola línea por terminal».
+
+## Resolución (2026-10-20)
+
+**Resuelto.** El indicador tiene ahora un **protocolo único de actualización**: guarda qué fase ha anunciado y, en modo no-TTY, solo abre línea cuando la fase **cambia**. La actividad repetida dentro de la misma fase no abre línea nueva, de modo que los bucles de sondeo y los latidos del daemon dejan de generar spam. En TTY la fase se repinta sobre la misma línea, como antes.
+
+El tiempo visible dejó de congelarse: un ayudante de espera repinta el indicador **mientras pende un futuro**, y se aplica a las esperas asíncronas reales —las respuestas de `/transcribe` y `/translate`, la descarga y la verificación de `self update`—. La traducción de los eventos del daemon ya no tiene reloj propio: usa el del indicador, de modo que las cifras de la fase, de la actividad y del mensaje final salen del mismo origen. Y `/synthesize` consume su stream por trozos, como `/voices/clone` y `/dub`, de modo que la actividad aparece mientras ocurre y no al final.
+
+La **excepción** queda declarada en el código, no como una omisión: la síntesis, el clonado local y la captura del micrófono son trabajo síncrono que bloquea el hilo, así que el indicador no puede repintar durante ellos y su tiempo total lo aporta el mensaje final.
+
+**Pruebas de regresión** (las que cubren este defecto):
+
+| Prueba | Qué fija |
+|---|---|
+| `crates/avi-lifecycle/src/progress.rs` → `one_phase_and_forty_ticks_paint_exactly_one_line_in_no_tty` | Una fase con cuarenta actividades emite **exactamente una** línea en no-TTY |
+| `crates/avi-lifecycle/src/progress.rs` → `phase_then_tick_paints_one_line_in_no_tty` | La actividad repetida no abre una segunda línea |
+| `crates/avi-lifecycle/src/progress.rs` → `a_new_phase_is_announced_again_in_no_tty` | El racionado es por fase, no un tope global |
+| `crates/avi-lifecycle/src/progress.rs` → `repaints_are_counted_even_without_a_new_line` | El repintado se cuenta aunque no abra línea |
+| `src/main.rs` → `await_with_progress_repaints_while_the_future_is_pending` | El indicador se repinta mientras el futuro sigue pendiente |
+| `src/main.rs` → `ndjson_progress_phase_maps_stages_and_rate_limits_by_stage` | Los siete `stage` del daemon tienen traducción propia y se racionan por etapa |
+
+**Documento canónico**: [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#stderr-trazas-y-logs) —la sección «stderr, trazas y logs»— y [`docs/CLI/commands/DAEMON.md`](../CLI/commands/DAEMON.md#protocolo) —el mapa de etapas y el racionado—.
+
+**Comprobación manual pendiente**: que el tiempo visible avance de verdad durante una espera larga se comprueba en una terminal real, con los pasos de [`docs/MANUAL-VALIDATION.md`](../MANUAL-VALIDATION.md#12-protocolo-del-indicador-de-progreso) §12.5.

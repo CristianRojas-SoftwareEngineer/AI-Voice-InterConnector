@@ -2,18 +2,30 @@
 
 Defectos menores sueltos de la misma familia que los documentos de este directorio. Se recogen aquí hasta que crezcan lo bastante para tener documento propio (ver `README.md`, «Convenciones»).
 
-| # | Síntoma | Severidad | Confianza |
-|---|---|---|---|
-| 1 | `AVI_NO_PROGRESS` está implementado pero no documentado | baja | confirmada |
-| 2 | Varios comandos no emiten ninguna fase de progreso | baja | confirmada |
-| 3 | `daemon restart` y `start` con daemon degradado tardan en mostrar progreso | baja | confirmada |
-| 4 | `self update` muestra la etiqueta «Descargando…» durante fases que no son la descarga | baja | confirmada |
-| 5 | `speech say` y `speech play` anuncian la reproducción cuando ya ha terminado | baja | confirmada |
-| 6 | El aviso del binario del motor se emite dos veces por invocación | baja | confirmada |
-| 7 | `PhaseProgress` no abre bloque con la línea en blanco que exige el diseño | baja | confirmada |
-| 8 | `speech transcribe` local no cierra la fase si el motor STT no se puede inicializar | media | confirmada |
-| 9 | `faults::trip` puede dejar una fase abierta (solo con el feature `faults`) | baja | confirmada |
-| 10 | La línea en blanco tras el aviso del push-to-talk procede del eco del Enter | baja | probable |
+| Campo | Valor |
+|---|---|
+| Estado | **resuelto** el 2026-10-20 |
+| Severidad | baja / media |
+| Tipo | funcional |
+| Componente | `avi-lifecycle` (`progress.rs`, `install.rs`, `uninstall.rs`, `cleanup.rs`), `src/main.rs`, `avi-tts` (`resolve_binary`) |
+| Versión detectada | 0.34.0 |
+| Plataforma | todas |
+| Reproducibilidad | siempre, salvo la observación 10, que es probable y depende de la terminal |
+| Detectado en | inspección de código y pruebas manuales del indicador de progreso, 2026-10-19 |
+| Documento canónico | [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando), [`USAGE.md`](../../USAGE.md) —variables `AVI_*`— y [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) |
+
+| # | Síntoma | Severidad | Confianza | Estado |
+|---|---|---|---|---|
+| 1 | `AVI_NO_PROGRESS` está implementado pero no documentado | baja | confirmada | resuelto |
+| 2 | Varios comandos no emiten ninguna fase de progreso | baja | confirmada | resuelto |
+| 3 | `daemon restart` y `start` con daemon degradado tardan en mostrar progreso | baja | confirmada | resuelto |
+| 4 | `self update` muestra la etiqueta «Descargando…» durante fases que no son la descarga | baja | confirmada | resuelto |
+| 5 | `speech say` y `speech play` anuncian la reproducción cuando ya ha terminado | baja | confirmada | resuelto |
+| 6 | El aviso del binario del motor se emite dos veces por invocación | baja | confirmada | resuelto |
+| 7 | `PhaseProgress` no abre bloque con la línea en blanco que exige el diseño | baja | confirmada | resuelto |
+| 8 | `speech transcribe` local no cierra la fase si el motor STT no se puede inicializar | media | confirmada | resuelto |
+| 9 | `faults::trip` puede dejar una fase abierta (solo con el feature `faults`) | baja | confirmada | resuelto |
+| 10 | La línea en blanco tras el aviso del push-to-talk procede del eco del Enter | baja | probable | resuelto |
 
 ---
 
@@ -82,3 +94,24 @@ En la salida observada de `speech dub --mic --daemon` hay una línea en blanco e
 Las soluciones de esta tabla se aplican con cierre explícito; las alternativas con `Drop` quedan descartadas.
 
 Relacionados: `fase-de-progreso-deja-la-linea-abierta-y-se-pega-a-lo-que-sigue.md`, `progreso-imprime-una-linea-por-evento-y-no-avanza-durante-el-trabajo.md`, `la-rama-local-y-la-del-daemon-muestran-fases-y-cierres-distintos.md`, `los-cierres-y-los-relojes-del-progreso-se-duplican.md`.
+
+## Resolución (2026-10-20)
+
+**Las diez observaciones están resueltas.** El detalle de cada una:
+
+| # | Cómo se resolvió | Prueba o documento que lo fija |
+|---|---|---|
+| 1 | `AVI_NO_PROGRESS` queda documentada en `USAGE.md` (sección de variables `AVI_*`) y en el contrato, con su alcance: silencia solo stderr, no cambia el envelope `--json` ni los códigos de salida | `USAGE.md`; `docs/CLI/CONTRACT.md` § «stderr, trazas y logs»; `tests/cli_golden.rs` → `no_progress_silences_the_phase_and_keeps_the_envelope` |
+| 2 | Los comandos que no emiten fase se decide de forma explícita: los instantáneos no la necesitan, y los que pueden tardar (`daemon status`, `setup`) emiten la suya o no la necesitan. La decisión queda escrita, no es una omisión | `docs/CLI/CONTRACT.md` § «El contrato de salida por comando» |
+| 3 | `daemon start` y `daemon restart` crean el indicador **antes** de parar el daemon, con la fase `stopping` reutilizada: no hay segundos de silencio antes de la primera fase | `src/main.rs` —`DaemonCommands::Start` y `DaemonCommands::Restart` |
+| 4 | `self update` nombra cada paso por separado: `downloading`, `verifying`, `stopping` y `replacing` | `src/main.rs` —`SelfCommands::Update`; `docs/CLI/CONTRACT.md` § «El contrato de salida por comando» |
+| 5 | Los mensajes de resultado van **en pasado** y con la duración: «Reproduciendo (N s).», «Doblaje reproducido (N s).» | `src/main.rs` —`SpeechCommands::Say`, `SpeechCommands::Play` y `SpeechCommands::Dub` |
+| 6 | El aviso del binario del motor sale **una sola vez por proceso**. La resolución se recalcula cada vez; solo el mensaje deja de repetirse | `crates/avi-tts/src/lib.rs` → `cwd_vendor_warning_is_emitted_only_once_per_process` |
+| 7 | El primer `phase` de un indicador abre el bloque con una línea en blanco, como la vista de la provisión | `crates/avi-lifecycle/src/progress.rs` → `PhaseProgress::phase`; `docs/DESIGN.md` § «Salida en terminal» |
+| 8 | La rama local de `speech transcribe` cierra la fase también cuando el motor STT no se puede inicializar: el cierre es explícito en todos los caminos de salida | `src/main.rs` —`SpeechCommands::Transcribe`; `tests/cli_golden.rs` → `a_path_that_fails_with_question_mark_leaves_no_open_phase` |
+| 9 | Los puntos de fallo inyectado de `install` (`BeforePathIntegration`, `BeforeReceipt`) cierran la fase antes de retornar: el trabajo que puede fallar vive en un bloque y el cierre se hace fuera, sobre el resultado ya obtenido | `crates/avi-lifecycle/src/install.rs` |
+| 10 | La línea en blanco tras el aviso del push-to-talk procede del eco del Enter, no de un defecto del indicador. La cesión de línea antes del aviso elimina cualquier pegado real, y la comprobación en terminal real queda en la guía manual | `docs/MANUAL-VALIDATION.md` § 12.1; `crates/avi-lifecycle/src/progress.rs` → `close_line_is_idempotent_and_writes_nothing_in_no_tty` |
+
+**Documento canónico**: [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) —la tabla del contrato de salida por comando—, [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) —«Salida en terminal»— y [`USAGE.md`](../../USAGE.md) —las variables `AVI_*`—.
+
+**Comprobación manual pendiente**: las observaciones que dependen de una terminal real —la línea en blanco del push-to-talk y el no-pegado del aviso— se comprueban en los pasos de [`docs/MANUAL-VALIDATION.md`](../MANUAL-VALIDATION.md#12-protocolo-del-indicador-de-progreso) §12.

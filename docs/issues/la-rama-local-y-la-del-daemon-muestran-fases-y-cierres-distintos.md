@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | abierto |
+| Estado | **resuelto** el 2026-10-20 |
 | Severidad | media |
 | Tipo | funcional |
 | Componente | `src/main.rs` (handlers `SpeechCommands::*`, `VoiceCommands::Clone`, `emit_ndjson_progress`), `avi-daemon` (`synthesize_handler`, `transcribe_handler`, `translate_handler`, `voices_clone_handler`, `dub_handler`) |
@@ -10,6 +10,8 @@
 | Plataforma | todas (la diferencia está en el código, no en la terminal) |
 | Reproducibilidad | siempre |
 | Detectado en | inspección de código y comparación de salidas, 2026-10-19 |
+| Prueba de regresión | `src/main.rs`: `command_stream_phase_uses_local_labels_for_real_events`, `ndjson_progress_phase_maps_stages_and_rate_limits_by_stage`; `crates/avi-daemon/tests/golden.rs`: `synthesize_emits_contract_ndjson_stream`, `dub_emits_contract_ndjson_stream_naming_the_operation` |
+| Documento canónico | [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) y [`docs/CLI/commands/DAEMON.md`](../CLI/commands/DAEMON.md#protocolo) |
 
 ## Resumen
 
@@ -161,3 +163,28 @@ Dirección de la corrección (ya confirmada el síntoma; parcialmente la causa):
 - `los-cierres-y-los-relojes-del-progreso-se-duplican.md` (los cierres duplicados que se ven en ambas vías).
 - `fase-de-progreso-deja-la-linea-abierta-y-se-pega-a-lo-que-sigue.md` (la ficha E de este documento es también un caso de fase sin cerrar).
 - `CHANGELOG.md`, 0.34.0: «progreso de fases por stderr, una sola línea por terminal».
+
+## Resolución (2026-10-20)
+
+**Resuelto, con una asimetría declarada.** Las dos vías de un comando nombran ahora las **mismas fases con los mismos literales** cuando la entrada es equivalente. La etapa técnica que el daemon anuncia se traduce a la etiqueta canónica de la vía local —`synthesis` → `synthesizing`, `clone` → `cloning`, `transcribe` → `transcribing`, `translate` → `translating`—, de modo que la etiqueta que el usuario ve es la que la prueba comparativa compara. La matriz completa, comando por comando y vía por vía, está en el Anexo B del plan.
+
+Lo que queda es una asimetría **estructural y documentada**, no un defecto pendiente: la paridad está acotada por lo que el daemon puede anunciar.
+
+| Asimetría que queda | Por qué |
+|---|---|
+| La captura (`capturing`) y la lectura (`reading`) solo existen en la vía local | Ocurren en la CLI **antes** del despacho: el daemon no puede nombrarlas |
+| `saving` no se nombra en `voice clone` por daemon | El daemon persiste la referencia y su wire no expone un evento de guardado |
+| `translating` no se nombra en `synthesize`/`say` por daemon | El daemon anuncia `stage: "synthesis"` antes de traducir y no emite `stage: "translate"` |
+
+Ninguna de esas fases se **inventa**: anunciar una etapa que no ocurrió sería mentir sobre el trabajo en curso. La clave `operation`, que el daemon añadió a su evento `started`, amplía el wire y es donde esa frontera puede moverse.
+
+**Pruebas de regresión** (las que cubren este defecto):
+
+| Prueba | Qué fija |
+|---|---|
+| `src/main.rs` → `command_stream_phase_uses_local_labels_for_real_events` | La etapa técnica se traduce a la etiqueta canónica de la vía local |
+| `src/main.rs` → `ndjson_progress_phase_maps_stages_and_rate_limits_by_stage` | Los siete `stage` del daemon tienen traducción propia y racionan por etapa |
+| `crates/avi-daemon/tests/golden.rs` → `synthesize_emits_contract_ndjson_stream` | El `started` de `/synthesize` nombra la operación |
+| `crates/avi-daemon/tests/golden.rs` → `dub_emits_contract_ndjson_stream_naming_the_operation` | El `started` de `/dub` nombra la operación |
+
+**Documento canónico**: [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) —la tabla del contrato de salida por comando, con sus fases— y [`docs/CLI/commands/DAEMON.md`](../CLI/commands/DAEMON.md#protocolo) —el mapa de etapas del daemon—.

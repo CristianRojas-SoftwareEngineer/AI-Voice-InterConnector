@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | abierto |
+| Estado | **resuelto** el 2026-10-20 |
 | Severidad | alta |
 | Tipo | funcional |
 | Componente | `avi-lifecycle` (`PhaseProgress`, `cleanup::run`, `confirm::confirm`, `install::install`, `uninstall::run`), `src/main.rs` (todos los handlers con indicador), `avi-audio` (`capture_16k_mono_pcm_until_enter`), `avi-tts` (`resolve_binary`) |
@@ -10,6 +10,8 @@
 | Plataforma | Windows 11 / PowerShell 7 (reproducido); por diseño afecta a todas las plataformas porque el pintado `\r` no termina la línea en ninguna de ellas |
 | Reproducibilidad | siempre |
 | Detectado en | inspección de código y pruebas manuales del indicador de progreso, 2026-10-19 |
+| Prueba de regresión | `crates/avi-lifecycle/src/progress.rs`: `close_line_is_idempotent_and_writes_nothing_in_no_tty`, `repaint_after_close_line_paints_the_phase_again`, `close_does_not_paint_a_closing_line`; `tests/cli_golden.rs`: `a_path_that_fails_with_question_mark_leaves_no_open_phase` |
+| Documento canónico | [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#stderr-trazas-y-logs) y [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) |
 
 ## Resumen
 
@@ -264,3 +266,20 @@ Alternativa descartada por ahora: imprimir la fase con `\n` siempre (perdería e
 - `los-cierres-y-los-relojes-del-progreso-se-duplican.md` (los cierres duplicados que se ven en la rama 1).
 - `CHANGELOG.md`, 0.34.0: «progreso de fases por stderr, una sola línea por terminal» — la corrección de este defecto debe convivir con esa entrada.
 - `docs/MANUAL-VALIDATION.md` §9 «Rutas interactivas de audio, push-to-talk y `--play`».
+
+## Resolución (2026-10-20)
+
+**Resuelto.** El indicador de progreso es ahora el **único escritor de la línea**: tiene un API para cederla (`close_line`) y otro para volver a tomarla (`repaint`), y el producto cede la línea antes de escribir cualquier cosa que no sea suyo —el aviso de captura del micrófono, el prompt de confirmación, el menú de `--play`—. Todos los caminos de salida cierran el indicador de forma explícita, incluidos los que salen por `?` y los retornos tempranos, y el cierre ya no imprime estado: el mensaje final lo dice el handler, por stdout, una sola vez y con la duración de la operación.
+
+**Pruebas de regresión** (las que cubren este defecto):
+
+| Prueba | Qué fija |
+|---|---|
+| `crates/avi-lifecycle/src/progress.rs` → `close_line_is_idempotent_and_writes_nothing_in_no_tty` | Cesar la línea es idempotente y, sin terminal, no escribe nada |
+| `crates/avi-lifecycle/src/progress.rs` → `repaint_after_close_line_paints_the_phase_again` | Tras ceder la línea, `repaint` vuelve a pintar la fase |
+| `crates/avi-lifecycle/src/progress.rs` → `close_does_not_paint_a_closing_line` | El cierre no imprime estado |
+| `tests/cli_golden.rs` → `a_path_that_fails_with_question_mark_leaves_no_open_phase` | Un camino que sale por `?` no deja la fase abierta y dice el error una sola vez |
+
+**Documento canónico**: [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#stderr-trazas-y-logs) —la sección «stderr, trazas y logs»— y [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) —«Salida en terminal»—, que describen la propiedad de la línea y el dueño único del mensaje final.
+
+**Comprobación manual pendiente**: el no-pegado en TTY y la línea en blanco del push-to-talk se comprueban en una terminal real, con los pasos de [`docs/MANUAL-VALIDATION.md`](../MANUAL-VALIDATION.md#12-protocolo-del-indicador-de-progreso) §12. El harness automatizado no puede verificarlo: sin terminal no hay línea que ceder ni secuencia de control que ver.

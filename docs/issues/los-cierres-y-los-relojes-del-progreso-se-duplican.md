@@ -2,7 +2,7 @@
 
 | Campo | Valor |
 |---|---|
-| Estado | abierto |
+| Estado | **resuelto** el 2026-10-20 |
 | Severidad | baja |
 | Tipo | funcional |
 | Componente | `src/main.rs` (todos los handlers con indicador y sus mensajes de resultado), `avi-lifecycle` (`progress.rs`, `confirm.rs`) |
@@ -10,6 +10,8 @@
 | Plataforma | todas (los relojes y los mensajes no dependen de la terminal) |
 | Reproducibilidad | siempre |
 | Detectado en | inspección de código y pruebas manuales del indicador de progreso, 2026-10-19 |
+| Prueba de regresión | `crates/avi-lifecycle/src/progress.rs`: `close_does_not_paint_a_closing_line`; `tests/cli_golden.rs`: `a_path_that_fails_with_question_mark_leaves_no_open_phase`; `src/main.rs`: `started_names_the_operation_the_daemon_reports` |
+| Documento canónico | [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) y [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) |
 
 ## Resumen
 
@@ -152,3 +154,24 @@ Dirección de la corrección (ya confirmada la causa):
 - `progreso-imprime-una-linea-por-evento-y-no-avanza-durante-el-trabajo.md` (el reloj de los eventos del daemon).
 - `la-rama-local-y-la-del-daemon-muestran-fases-y-cierres-distintos.md` (el recorrido distinto entre vías).
 - `CHANGELOG.md`, 0.34.0: «progreso de fases por stderr, una sola línea por terminal».
+
+## Resolución (2026-10-20)
+
+**Resuelto.** Hay **un solo dueño del mensaje de resultado** y **un solo reloj**.
+
+- El indicador **no imprime estado**: el cierre `[ok]`/`[error]` desapareció. El mensaje final lo emite el handler —o el flujo de la librería en `self install` y `self uninstall`—, por stdout, **una sola vez** y con la duración de la operación. Se dice el estado una vez, y lo dice quien cierra.
+- El reloj es **único**: el del indicador. La fase, la actividad del daemon y el mensaje final salen del mismo origen, de modo que sus cifras son monótonas y coherentes entre sí. La traducción de los eventos ya no tiene reloj propio.
+- `Cancelado.` lo dice **solo** el motor de confirmación, por stderr. Los handlers ya no lo repiten.
+- `daemon stop` ya no dice «Daemon detenido.» cuando no había ningún daemon en marcha: dice «No había daemon que detener (N s).».
+
+**Pruebas de regresión** (las que cubren este defecto):
+
+| Prueba | Qué fija |
+|---|---|
+| `crates/avi-lifecycle/src/progress.rs` → `close_does_not_paint_a_closing_line` | El cierre no imprime estado: el indicador no dice cómo terminó |
+| `tests/cli_golden.rs` → `a_path_that_fails_with_question_mark_leaves_no_open_phase` | El error se dice **una sola vez** y no queda cierre en stderr |
+| `src/main.rs` → `started_names_the_operation_the_daemon_reports` | El mensaje nombra la operación concreta, no una genérica |
+
+**Documento canónico**: [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) —la tabla del contrato de salida por comando, con su columna de mensaje final— y [`docs/DESIGN.md`](../DESIGN.md#salida-en-terminal) —«Salida en terminal», que fija el dueño único del mensaje final y el reloj común—.
+
+**Nota sobre el alcance**: el cambio es **visible para quien lea logs**: el cierre `[ok] … (N s)` desaparece de stderr y el mensaje final lleva ahora la duración. El envelope `--json`, los códigos de salida y los `reason` no cambian.
