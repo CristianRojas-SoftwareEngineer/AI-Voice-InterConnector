@@ -453,9 +453,17 @@ fn wait_bounded(
     }
 }
 
+/// El recurso directo solo procede si `taskkill` falló y el PID aún vive.
+#[cfg(windows)]
+fn should_terminate_after_failed_taskkill(taskkill_ok: bool, alive: bool) -> bool {
+    !taskkill_ok && alive
+}
+
 /// Mata el árbol preciso por PID. Windows: `taskkill /F /T /PID` (mata el
 /// árbol; es exacto por PID), invocado por su ruta fija
-/// `%SystemRoot%\System32\taskkill.exe` y con plazo de 2 s. Unix:
+/// `%SystemRoot%\System32\taskkill.exe` y con plazo de 2 s. Si falla y
+/// el PID sigue vivo, termina ese proceso por API: en el daemon, el residente
+/// supervisado recibe fin de fichero en su entrada y también termina. Unix:
 /// `libc::kill(-pid, SIGKILL)` al grupo (el daemon es líder de sesión por
 /// `setsid`) y luego `libc::kill(pid, SIGKILL)`, sin lanzar el ejecutable
 /// `kill` externo. No verifica: el llamante combina con `pid_alive_exact` y
@@ -478,13 +486,34 @@ pub fn kill_tree_by_pid_exact(pid: u32) -> bool {
         .join("taskkill.exe");
     // Sin consola propia, un invocador sin consola vería abrirse y cerrarse una
     // ventana por cada `taskkill`.
-    run_bounded(
+    let taskkill_ok = run_bounded(
         std::process::Command::new(taskkill)
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .creation_flags(CREATE_NO_WINDOW),
         EXTERNAL_TOOL_DEADLINE,
     )
-    .is_some_and(|out| out.status.success())
+    .is_some_and(|out| out.status.success());
+    if taskkill_ok {
+        return true;
+    }
+    // Bajo carga, `taskkill` puede no encontrar un PID que sigue vivo. Primero
+    // se intentó reclamar el árbol; solo entonces se termina el PID exacto.
+    if !should_terminate_after_failed_taskkill(taskkill_ok, pid_alive_exact(pid)) {
+        return false;
+    }
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+    // SAFETY: se abre el PID vivo solo con permiso de terminación; el handle
+    // se cierra tanto si la terminación funciona como si falla.
+    unsafe {
+        let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+        if handle == 0 {
+            return false;
+        }
+        let terminated = TerminateProcess(handle, 1) != 0;
+        CloseHandle(handle);
+        terminated
+    }
 }
 
 /// Mata el árbol preciso por PID: `libc::kill(-pid, SIGKILL)` al grupo (el
@@ -555,6 +584,34 @@ mod tests {
         let pid = u32::MAX - 1;
         assert!(!pid_alive_exact(pid));
         assert!(!kill_tree_by_pid_exact(pid));
+    }
+
+    /// El recurso por API no se intenta si la herramienta ya mató el árbol
+    /// ni si el proceso desapareció; solo cubre su fallo con el PID vivo.
+    #[cfg(windows)]
+    #[test]
+    fn fallback_requires_failed_taskkill_and_live_pid() {
+        assert!(!should_terminate_after_failed_taskkill(true, true));
+        assert!(!should_terminate_after_failed_taskkill(true, false));
+        assert!(!should_terminate_after_failed_taskkill(false, false));
+        assert!(should_terminate_after_failed_taskkill(false, true));
+    }
+
+    /// Un hijo vivo queda terminado por su PID exacto; el handle que conserva
+    /// la prueba permite verificar su muerte sin depender de la tabla de procesos.
+    #[cfg(windows)]
+    #[test]
+    fn kill_tree_terminates_live_child() {
+        let mut child = std::process::Command::new("ping")
+            .args(["-n", "30", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("se lanza un hijo vivo");
+        let pid = child.id();
+        assert!(pid_alive_exact(pid), "el hijo vive al comenzar");
+        assert!(kill_tree_by_pid_exact(pid), "se reclama el proceso");
+        assert!(!pid_alive_exact(pid), "el hijo ya no vive");
+        child.wait().expect("se recolecta al hijo");
     }
 
     /// Un hijo muerto y recolectado deja de estar vivo: la viveza es del PID
