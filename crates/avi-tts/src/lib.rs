@@ -2299,10 +2299,8 @@ mod tests {
     /// y sale; si vio `eof` no sale por sí mismo (duerme 60 s). Sin `hold`
     /// sale tras el sondeo.
     fn write_engine_double(name: &str, hold: bool) -> (PathBuf, tempfile::TempDir) {
-        // Las pruebas de resolución vacían el `PATH` para neutralizar la capa
-        // de búsqueda, y el doble se compila con el `rustc` del `PATH`. El
-        // candado compartido serializa ambas: sin él, una compilación puede
-        // encontrarse sin `rustc` por culpa de otra prueba.
+        // Las pruebas de resolución cambian el CWD y variables del motor;
+        // el candado compartido evita que interfieran con este doble.
         let _guard = RESOLUTION_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2964,7 +2962,7 @@ fn main() {
                 ],
             )
         } else {
-            (PathBuf::from("sleep"), vec![String::from("30")])
+            (PathBuf::from("/bin/sleep"), vec![String::from("30")])
         };
         let request = avi_process::RestrictedSpawnRequest {
             program,
@@ -2990,7 +2988,7 @@ fn main() {
             )
         } else {
             (
-                PathBuf::from("sh"),
+                PathBuf::from("/bin/sh"),
                 vec![String::from("-c"), String::from("exit 1")],
             )
         };
@@ -3144,7 +3142,7 @@ fn main() {
         let _guard = RESOLUTION_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN", "AVI_ALLOW_CWD_VENDOR", "PATH"]);
+        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN", "AVI_ALLOW_CWD_VENDOR"]);
         let work = tempfile::tempdir().expect("debe crear el CWD de prueba");
         let rel = cwd_vendor_bin();
         let abs = work.path().join(&rel);
@@ -3152,7 +3150,6 @@ fn main() {
         std::fs::write(&abs, b"falso").expect("debe escribir el señuelo");
         std::env::set_current_dir(work.path()).expect("debe cambiar el CWD");
         std::env::remove_var("QWEN3_TTS_BIN");
-        std::env::set_var("PATH", work.path().join("vacio"));
         std::env::remove_var("AVI_ALLOW_CWD_VENDOR");
         let denied = resolve_binary().expect("la resolución no debe fallar");
         assert_ne!(
@@ -3213,7 +3210,7 @@ fn main() {
         let _guard = RESOLUTION_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN", "AVI_ALLOW_CWD_VENDOR", "PATH"]);
+        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN", "AVI_ALLOW_CWD_VENDOR"]);
         let work = tempfile::tempdir().expect("debe crear el CWD de prueba");
         let rel = cwd_vendor_bin();
         let abs = work.path().join(&rel);
@@ -3221,7 +3218,6 @@ fn main() {
         std::fs::write(&abs, b"falso").expect("debe escribir el señuelo");
         std::env::set_current_dir(work.path()).expect("debe cambiar el CWD");
         std::env::remove_var("QWEN3_TTS_BIN");
-        std::env::set_var("PATH", work.path().join("vacio"));
         std::env::remove_var("AVI_ALLOW_CWD_VENDOR");
 
         let before = CWD_VENDOR_WARNING_COUNT.load(Ordering::Relaxed);
