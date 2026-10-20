@@ -1,4 +1,4 @@
-# Guía de uso de AI Voice InterConnector
+# Guía de uso de AI Voice-InterConnector
 
 ## Tabla de contenidos
 
@@ -43,7 +43,7 @@
   - [Sin audio de salida](#sin-audio-de-salida)
   - [El sistema bloquea el primer arranque (binarios sin firmar)](#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar)
 
-AI Voice InterConnector es un sintetizador de voz (TTS) 100 % local con clonación de voz en
+AI Voice-InterConnector es un sintetizador de voz (TTS) 100 % local con clonación de voz en
 español. Esta guía recorre cada caso de uso desde la perspectiva
 del usuario: qué comando ejecutar, qué ocurre y qué salida esperar.
 

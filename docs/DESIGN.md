@@ -1,4 +1,4 @@
-# Diseño del sistema AI Voice InterConnector (Rust + Qwen3-TTS)
+# Diseño del sistema AI Voice-InterConnector (Rust + Qwen3-TTS)
 
 ## Tabla de contenidos
 
@@ -20,7 +20,7 @@
 
 ## Resumen ejecutivo
 
-AI Voice InterConnector es un motor de síntesis de voz (TTS) **100% local** que usa **Qwen3-TTS 0.6B CustomVoice** para clonación de voz en español. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
+AI Voice-InterConnector es un motor de síntesis de voz (TTS) **100% local** que usa **Qwen3-TTS 0.6B CustomVoice** para clonación de voz en español. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
 
 - **Licencia**: MPL-2.0 (código del proyecto, copyleft a nivel de archivo); modelo y dependencias conservan sus licencias (MIT/BSD/Apache), salvo traducción `opus-mt` (CC-BY-4.0)
 - **Idiomas**: los 10 que soporta Qwen3-TTS, entre ellos Español (es)

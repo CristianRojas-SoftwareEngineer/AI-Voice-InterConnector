@@ -1,6 +1,6 @@
 # Guía de contribución
 
-Gracias por tu interés en contribuir a AI Voice InterConnector. Este documento describe el
+Gracias por tu interés en contribuir a AI Voice-InterConnector. Este documento describe el
 flujo de desarrollo, los estándares del proyecto y cómo proponer cambios.
 
 ## Tabla de contenidos

@@ -1,6 +1,6 @@
 # Disponibilidad del código fuente (MPL-2.0 §3.2)
 
-**AI Voice InterConnector 0.35.0** se distribuye bajo la licencia
+**AI Voice-InterConnector 0.35.0** se distribuye bajo la licencia
 **MPL-2.0** (ver `LICENSE`). Conforme a la sección 3.2 de la MPL-2.0,
 el código fuente correspondiente a esta versión exacta está disponible en:
 

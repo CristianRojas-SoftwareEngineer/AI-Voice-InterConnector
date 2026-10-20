@@ -1,6 +1,6 @@
 # Licencias de terceros (Third-Party Licenses)
 
-AI Voice InterConnector se distribuye bajo **MPL-2.0** (ver `LICENSE` y `NOTICE`). El binario
+AI Voice-InterConnector se distribuye bajo **MPL-2.0** (ver `LICENSE` y `NOTICE`). El binario
 Rust y su archivo de release empaquetan software de terceros bajo sus propias
 licencias. Este documento reúne los avisos de copyright y las licencias correspondientes,
 cuya preservación exigen dichas licencias al redistribuir el software.

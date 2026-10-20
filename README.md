@@ -1,4 +1,4 @@
-# AI Voice InterConnector
+# AI Voice-InterConnector
 
 Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **español**, sobre el motor Qwen3-TTS 0.6B (12 Hz, multilingüe; [QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)). Se distribuye como un único archivo por plataforma que trae el binario, el motor TTS y ONNX Runtime.
 
@@ -46,7 +46,7 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 
 ## Uso ético y responsable
 
-AI Voice InterConnector clona voces arbitrarias y **el audio que genera no lleva marca de
+AI Voice-InterConnector clona voces arbitrarias y **el audio que genera no lleva marca de
 agua** (el motor Qwen3-TTS no incorpora watermarker), por lo que no es distinguible
 por medios técnicos de una grabación real. Esto exige un uso responsable:
 
@@ -72,7 +72,7 @@ la responsabilidad del uso legítimo recae en quien lo emplea.
 | Linux | [Requisitos en Linux](#requisitos-en-linux) | [Instalar en Linux](#instalar-en-linux) | [Descarga manual en Linux](#descarga-manual-en-linux) | — |
 | macOS | [Requisitos en macOS](#requisitos-en-macos) | [Instalar en macOS](#instalar-en-macos) | [Descarga manual en macOS](#descarga-manual-en-macos) | [Primer arranque en macOS](#primer-arranque-en-macos) |
 
-AI Voice InterConnector se distribuye por **canal nativo** (archivos comprimidos Rust, ver [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)). La instalación es de **una línea**, sin privilegios de administrador y con verificación de checksum.
+AI Voice-InterConnector se distribuye por **canal nativo** (archivos comprimidos Rust, ver [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)). La instalación es de **una línea**, sin privilegios de administrador y con verificación de checksum.
 
 ### Requisitos
 

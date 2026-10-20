@@ -16,7 +16,7 @@
 
 ## Versiones soportadas
 
-AI Voice InterConnector está en desarrollo activo pre-1.0. Solo la última versión publicada
+AI Voice-InterConnector está en desarrollo activo pre-1.0. Solo la última versión publicada
 recibe correcciones de seguridad.
 
 | Versión | Soportada |
@@ -41,7 +41,7 @@ públicamente el problema hasta que exista una corrección disponible.
 
 ## Modelo de amenaza
 
-AI Voice InterConnector es una herramienta **local y offline**. Su superficie de ataque es
+AI Voice-InterConnector es una herramienta **local y offline**. Su superficie de ataque es
 limitada, pero conviene explicitar sus supuestos:
 
 ### Daemon local (modo daemon)

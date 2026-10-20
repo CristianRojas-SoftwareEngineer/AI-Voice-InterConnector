@@ -32,7 +32,7 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
   sha256 "{cask_sha256}"
 
   url "https://github.com/{repo}/releases/download/v#{version}/ai-voice-interconnector-#{version}-arm64-macos.tar.gz"
-  name "AI Voice InterConnector"
+  name "AI Voice-InterConnector"
   desc "Motor de síntesis de voz (TTS) offline con clonación de voz en español latinoamericano"
   homepage "https://github.com/{repo}"
 
@@ -66,7 +66,7 @@ end
 
 const SOURCE_OFFER_TEMPLATE: &str = r#"# Disponibilidad del código fuente (MPL-2.0 §3.2)
 
-**AI Voice InterConnector {version}** se distribuye bajo la licencia
+**AI Voice-InterConnector {version}** se distribuye bajo la licencia
 **MPL-2.0** (ver `LICENSE`). Conforme a la sección 3.2 de la MPL-2.0,
 el código fuente correspondiente a esta versión exacta está disponible en:
 

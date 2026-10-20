@@ -1,6 +1,6 @@
 # Changelog
 
-Todos los cambios notables de AI Voice InterConnector se documentan en este archivo.
+Todos los cambios notables de AI Voice-InterConnector se documentan en este archivo.
 
 El formato se basa en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/)
 y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
@@ -117,6 +117,10 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
 ## [No publicado]
+
+### Cambiado
+
+- La marca del proyecto es ahora **AI Voice-InterConnector** en toda la prosa, y la del proyecto hermano, **Agent Voice-InterConnector**. Antes convivían tres formas: «AI Voice InterConnector» sin guion en la prosa, «AI-Voice-InterConnector» con guion en ella, y la forma correcta. Las variantes en minúscula o con guion no se tocan: son la adaptación al formato que exige cada contexto —el slug del repositorio, el nombre del binario, la clave de registro en Windows y el identificador del plugin son identificadores técnicos, no marca—.
 
 ### Corregido
 

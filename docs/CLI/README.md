@@ -1,6 +1,6 @@
-# Documentación de la CLI de AI-Voice-InterConnector
+# Documentación de la CLI de AI Voice-InterConnector
 
-Referencia completa de la interfaz de línea de comandos de AI-Voice-InterConnector. Este directorio contiene el contrato normativo de la CLI y la documentación por comando.
+Referencia completa de la interfaz de línea de comandos de AI Voice-InterConnector. Este directorio contiene el contrato normativo de la CLI y la documentación por comando.
 
 ## Estructura
 

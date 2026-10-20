@@ -787,9 +787,9 @@ envelope `usage_error` por stdout, ver
 
 El integrador que quiera además conservar el audio usa `speech synthesize --text "<msg>" --label L`, que no reproduce.
 
-El integrador es **Agent Voice InterConnector**, un plugin de [Claude Code](https://code.claude.com) que narra por voz la actividad de la sesión: al final de cada turno y en avisos relevantes el usuario escucha una locución corta en español. Se dispara por hooks (`Stop`, `Notification`; `SessionStart` verifica el entorno y deja el daemon caliente), nunca bloquea ni retrasa el turno y falla en silencio si el motor no está disponible. El resto de sus propiedades de diseño vive en su repositorio, que es su fuente de verdad; su contraparte de este contrato está en su [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/Agent-Voice-InterConnector/blob/main/docs/INTEGRATION.md).
+El integrador es **Agent Voice-InterConnector**, un plugin de [Claude Code](https://code.claude.com) que narra por voz la actividad de la sesión: al final de cada turno y en avisos relevantes el usuario escucha una locución corta en español. Se dispara por hooks (`Stop`, `Notification`; `SessionStart` verifica el entorno y deja el daemon caliente), nunca bloquea ni retrasa el turno y falla en silencio si el motor no está disponible. El resto de sus propiedades de diseño vive en su repositorio, que es su fuente de verdad; su contraparte de este contrato está en su [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/Agent-Voice-InterConnector/blob/main/docs/INTEGRATION.md).
 
-**Dependencia unidireccional.** El plugin consume a AI-Voice-InterConnector; este repositorio no conoce, importa ni depende del plugin, y ningún código, test ni build de aquí sabe de su existencia. A efectos del motor, el plugin es un consumidor externo más de la CLI pública (`ai-voice-interconnector` en `PATH`), como un script de usuario.
+**Dependencia unidireccional.** El plugin consume a AI Voice-InterConnector; este repositorio no conoce, importa ni depende del plugin, y ningún código, test ni build de aquí sabe de su existencia. A efectos del motor, el plugin es un consumidor externo más de la CLI pública (`ai-voice-interconnector` en `PATH`), como un script de usuario.
 
 **Superficies que consume y su compromiso de estabilidad.** El único acoplamiento es la CLI pública:
 
