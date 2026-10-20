@@ -674,6 +674,22 @@ pub async fn run(
     options: &Options,
     control: &dyn ProcessControl,
 ) -> anyhow::Result<Outcome> {
+    run_with_progress(roots, options, control, false).await
+}
+
+/// Igual que [`run`], pero con la frontera del indicador.
+///
+/// `progress` dice si la CLI quiere un indicador de fase. La librería lo abre
+/// **después** de la confirmación interna —la frontera está entre `plan` y el
+/// barrido—, de modo que el prompt de la confirmación nunca comparte línea con
+/// una fase. Si el usuario cancela, el indicador nunca se abrió y por eso la
+/// librería no lo cierra; si confirma, lo cierra al terminar el barrido.
+pub async fn run_with_progress(
+    roots: &Roots,
+    options: &Options,
+    control: &dyn ProcessControl,
+    progress: bool,
+) -> anyhow::Result<Outcome> {
     // Sin categoría, `usage_error` sin borrar nada. Antes de
     // cualquier otra cosa, incluido el bloqueo.
     if !options.any_category() {
@@ -691,7 +707,21 @@ pub async fn run(
     }
 
     if options.dry_run {
-        return Ok(simulate(roots, options));
+        // El simulacro también anuncia la fase: la confirmación no ocurre —el
+        // simulacro no pregunta nada—, así que el indicador puede abrirse sin
+        // que un prompt quede pegado a él.
+        let mut indicator = progress.then(crate::progress::PhaseProgress::new);
+        if let Some(indicator) = indicator.as_mut() {
+            indicator.phase("cleaning", "Limpiando datos…");
+            // La línea se cede antes del plan: el plan se imprime por stderr y
+            // no puede quedar pegado a la fase.
+            indicator.close_line();
+        }
+        let outcome = simulate(roots, options);
+        if let Some(indicator) = indicator {
+            indicator.close();
+        }
+        return Ok(outcome);
     }
 
     // Recuperación y bloqueo. El barrido transversal va aquí dentro,
@@ -719,22 +749,43 @@ pub async fn run(
         });
     }
 
+    // La frontera: el indicador nace **después** de la confirmación, porque el
+    // prompt no puede quedar pegado a una fase. La cancelación ya salió, así que
+    // desde aquí el barrido siempre ocurre.
+    let mut indicator = progress.then(crate::progress::PhaseProgress::new);
+    if let Some(indicator) = indicator.as_mut() {
+        indicator.phase("cleaning", "Limpiando datos…");
+    }
+
     // Antes de borrar recursos que el daemon usa, se detiene el daemon. Si no
     // se detiene, `daemon_stop_failed` y nada del plan se borra.
     let daemon = daemon_stop::stop(&roots.data_dir, &daemon_stop::default_addr(), control).await;
-    daemon_stop::require_stopped(&daemon)?;
+    if let Err(failure) = daemon_stop::require_stopped(&daemon) {
+        if let Some(indicator) = indicator.as_mut() {
+            indicator.close_line();
+        }
+        return Err(failure.into());
+    }
 
     let report = ownership::execute(&roots.ownership_tree(), &plan.ownership);
     let mut removed = Vec::new();
     let mut failed = Vec::new();
     for path in &report.removed {
         if let Some(target) = plan.targets.iter().find(|t| &t.path == path) {
+            // La línea se cede antes del aviso de ruta: el aviso es del producto
+            // y no puede quedar pegado a la fase.
+            if let Some(indicator) = indicator.as_mut() {
+                indicator.close_line();
+            }
             eprintln!("  {}: {}", target.category.describe(), path.display());
         }
         removed.push(path.display().to_string());
     }
     removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
     for (path, e) in &report.failed {
+        if let Some(indicator) = indicator.as_mut() {
+            indicator.close_line();
+        }
         eprintln!("  no se pudo borrar {}: {e}", path.display());
         failed.push(path.display().to_string());
     }
@@ -748,6 +799,10 @@ pub async fn run(
         .iter()
         .map(|p| p.display().to_string())
         .collect();
+    // El cierre no imprime estado: el mensaje final lo compone quien cierra.
+    if let Some(indicator) = indicator {
+        indicator.close();
+    }
     Ok(Outcome {
         status: "cleanup_complete",
         removed,

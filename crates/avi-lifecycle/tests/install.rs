@@ -156,11 +156,16 @@ async fn install_twice_is_idempotent() {
     // El resumen **final** no es idéntico entre las dos pasadas, y no debería: la
     // segunda no reescribe el `PATH` y decirlo sería mentir. Lo que tiene que ser
     // igual es el estado, que es lo que la idempotencia afirma.
+    //
+    // La duración que acompaña al resumen tampoco es estado: es el tiempo que
+    // tardó cada pasada, y las dos no tardan lo mismo. Se quitan las duraciones
+    // del final de la línea para que la aserción afirme lo que afirma —el
+    // estado— y no el reloj de dos ejecuciones.
     let state_lines = |summary: &[String]| -> Vec<String> {
         summary
             .iter()
             .filter(|l| !l.trim_start().starts_with("PATH:"))
-            .cloned()
+            .map(|l| without_trailing_duration(l))
             .collect()
     };
     assert_eq!(
@@ -217,6 +222,21 @@ async fn install_twice_is_idempotent() {
 /// Sondea el reloj hasta que `measured` tenga al menos `RESOLUTION` de antigüedad
 /// (1 s es el peor caso conocido de resolución de `mtime`), con `deadline` como
 /// límite duro: agotado el plazo, falla con `panic!` en vez de seguir y
+/// Quita del final de una línea la duración que el resumen añade.
+///
+/// El resumen de una instalación termina con el tiempo que tardó, entre
+/// paréntesis: «AI Voice Interconnector instalado: 0.34.0 (1 s)». Ese tiempo
+/// es el reloj de una ejecución, no el estado que deja, y dos ejecuciones del
+/// mismo estado no tardan lo mismo. La línea sin ese paréntesis es la que
+/// afirma el estado.
+fn without_trailing_duration(line: &str) -> String {
+    let trimmed = line.trim_end();
+    match trimmed.rfind(" (") {
+        Some(pos) if trimmed.ends_with(')') => trimmed[..pos].to_string(),
+        _ => line.to_string(),
+    }
+}
+
 /// comparar marcas que aún no se distinguen.
 ///
 /// El hecho que espera es «la marca medida ya está fuera del tick del reloj», no

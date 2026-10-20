@@ -639,73 +639,88 @@ pub async fn install(
     // El indicador nace tras la confirmación (los pasos 1–4 son rápidos y el
     // prompt no debe intercalar con una línea de progreso) y termina antes del
     // paso 10, donde `ProvisionView` toma el relevo.
+    //
+    // El cierre es **explícito** y vive fuera del bloque de trabajo: `close`
+    // consume el indicador, así que cerrarlo dentro de un `map_err` lo
+    // consumiría en una rama que puede no ejecutarse, y dejaría al resto del
+    // flujo sin poder usarlo. El patrón es el del plan: el trabajo que puede
+    // fallar en un bloque, y el cierre fuera, sobre el resultado ya obtenido.
     let mut progress = PhaseProgress::new();
-    progress.phase("stopping", "Deteniendo daemon…");
+    let work: anyhow::Result<_> = async {
+        progress.phase("stopping", "Deteniendo daemon…");
 
-    // ── Paso 5. Parar el daemon; si no se detiene, nada modificado ─────────────
-    let daemon = daemon_stop::stop(&env.data_dir, &env.daemon_addr, control).await;
-    daemon_stop::require_stopped(&daemon).inspect_err(|_| {
-        progress.finish(false, "Instalación fallida.");
-    })?;
+        // ── Paso 5. Parar el daemon; si no se detiene, nada modificado ─────────
+        // La línea se cede antes de la parada: el motor emite avisos internos
+        // que no pueden quedar pegados a la fase.
+        progress.close_line();
+        let daemon = daemon_stop::stop(&env.data_dir, &env.daemon_addr, control).await;
+        daemon_stop::require_stopped(&daemon)?;
+        progress.repaint();
 
-    // ── Paso 6. Reemplazo transaccional ───────────────────────────────────────
-    // En reparación **no se copia nada**: se reaplican integración, permisos,
-    // cuarentena y recibo sobre lo que ya está.
-    let mut parked_leftovers = Vec::new();
-    if mode == Mode::Install {
-        progress.phase("replacing", "Reemplazando el programa…");
-        // El reemplazo parte siempre de un staging propio junto al programa, para
-        // cumplir sus precondiciones; la copia que se haga se borra al salir de
-        // este bloque, haya salido bien o mal.
-        let staged = OwnStaging::prepare(&env.program_dir, &bundle, &files).inspect_err(|_| {
-            progress.finish(false, "Instalación fallida.");
-        })?;
-        let outcome = transaction::replace(&env.program_dir, staged.dir()).inspect_err(|_| {
-            progress.finish(false, "Instalación fallida.");
-        })?;
-        parked_leftovers = outcome.leftovers;
-    }
+        // ── Paso 6. Reemplazo transaccional ───────────────────────────────────
+        // En reparación **no se copia nada**: se reaplican integración, permisos,
+        // cuarentena y recibo sobre lo que ya está.
+        let mut parked_leftovers = Vec::new();
+        if mode == Mode::Install {
+            progress.phase("replacing", "Reemplazando el programa…");
+            // El reemplazo parte siempre de un staging propio junto al programa, para
+            // cumplir sus precondiciones; la copia que se haga se borra al salir de
+            // este bloque, haya salido bien o mal.
+            let staged = OwnStaging::prepare(&env.program_dir, &bundle, &files)?;
+            let outcome = transaction::replace(&env.program_dir, staged.dir())?;
+            parked_leftovers = outcome.leftovers;
+        }
 
-    // ── Paso 7. Cuarentena, en macOS ──────────────────────────────────────────
-    // No es un fallo de la instalación: la cuarentena que no se quita degrada el
-    // arranque, y el resumen lo informa. Es rápida y no fatal, así que no abre
-    // fase propia.
-    let quarantine = quarantine::strip(&env.program_dir);
-    for (path, reason) in &quarantine.failed {
-        eprintln!(
-            "  no se pudo limpiar la cuarentena de {}: {reason}",
-            path.display()
+        // ── Paso 7. Cuarentena, en macOS ──────────────────────────────────────
+        // No es un fallo de la instalación: la cuarentena que no se quita degrada el
+        // arranque, y el resumen lo informa. Es rápida y no fatal, así que no abre
+        // fase propia.
+        let quarantine = quarantine::strip(&env.program_dir);
+        if !quarantine.failed.is_empty() {
+            progress.close_line();
+        }
+        for (path, reason) in &quarantine.failed {
+            eprintln!(
+                "  no se pudo limpiar la cuarentena de {}: {reason}",
+                path.display()
+            );
+        }
+
+        // ── Paso 8. Integración del PATH ───────────────────────────────────────
+        crate::faults::trip(crate::faults::FaultPoint::BeforePathIntegration)?;
+        progress.phase("path", "Integrando en el PATH…");
+        let program_exe = env.program_dir.join(&executable);
+        let (path_integration, path_rewritten) = apply_path(env, options, &program_exe)?;
+
+        // ── Paso 9. Recibo atómico ─────────────────────────────────────────────
+        crate::faults::trip(crate::faults::FaultPoint::BeforeReceipt)?;
+        progress.phase("receipt", "Escribiendo el recibo…");
+        let receipt = InstallReceipt::new(
+            &env.version,
+            &env.target,
+            previous.as_ref().map_or(Channel::Script, |r| r.channel),
+            &env.program_dir,
+            files,
+            path_integration.clone(),
+            Roots {
+                data_dir: env.data_dir.clone(),
+                cache_dir: env.cache_dir.clone(),
+            },
         );
+        receipt::write_to(&receipt, &env.program_dir)?;
+        Ok((
+            daemon,
+            parked_leftovers,
+            quarantine,
+            path_integration,
+            path_rewritten,
+            receipt,
+        ))
     }
-
-    // ── Paso 8. Integración del PATH ─────────────────────────────────────────
-    crate::faults::trip(crate::faults::FaultPoint::BeforePathIntegration)?;
-    progress.phase("path", "Integrando en el PATH…");
-    let program_exe = env.program_dir.join(&executable);
-    let (path_integration, path_rewritten) =
-        apply_path(env, options, &program_exe).inspect_err(|_| {
-            progress.finish(false, "Instalación fallida.");
-        })?;
-
-    // ── Paso 9. Recibo atómico ───────────────────────────────────────────────
-    crate::faults::trip(crate::faults::FaultPoint::BeforeReceipt)?;
-    progress.phase("receipt", "Escribiendo el recibo…");
-    let receipt = InstallReceipt::new(
-        &env.version,
-        &env.target,
-        previous.as_ref().map_or(Channel::Script, |r| r.channel),
-        &env.program_dir,
-        files,
-        path_integration.clone(),
-        Roots {
-            data_dir: env.data_dir.clone(),
-            cache_dir: env.cache_dir.clone(),
-        },
-    );
-    receipt::write_to(&receipt, &env.program_dir).inspect_err(|_| {
-        progress.finish(false, "Instalación fallida.");
-    })?;
-    progress.finish(true, "Programa instalado.");
+    .await;
+    // El cierre no imprime estado: el mensaje final lo compone el propio flujo.
+    let elapsed = progress.close();
+    let (daemon, parked_leftovers, quarantine, path_integration, path_rewritten, receipt) = work?;
 
     // ── Paso 10. `setup` en el mismo proceso, salvo `--no-setup` ──────────────
     // El bloqueo exclusivo se retiene hasta aquí: `setup` descarga y purga modelos, y
@@ -718,6 +733,9 @@ pub async fn install(
     drop(lock);
 
     // ── Paso 11. Resumen final ────────────────────────────────────────────────
+    // El mensaje final lo compone el propio flujo de la librería —aquí no hay
+    // handler que pueda hacerlo— y lleva la duración que devolvió el cierre
+    // del indicador, que es el mismo reloj que showed las fases.
     let summary = final_summary(
         env,
         mode,
@@ -729,6 +747,7 @@ pub async fn install(
         foreign_in_path.as_ref(),
         &recovery.kept,
         !quarantine.failed.is_empty(),
+        elapsed,
     );
 
     Ok(Outcome {
@@ -1054,16 +1073,18 @@ fn final_summary(
     foreign: Option<&PathBuf>,
     recovery_kept: &[PathBuf],
     incomplete_quarantine: bool,
+    elapsed: std::time::Duration,
 ) -> Vec<String> {
     let mut out = vec![
         format!(
-            "{} {}: {}",
+            "{} {}: {} ({})",
             crate::APP_NAME,
             match mode {
                 Mode::Install => "instalado",
                 Mode::Repair => "reparado",
             },
-            env.version
+            env.version,
+            crate::progress::format_duration(elapsed)
         ),
         format!("  Programa:  {}", env.program_dir.display()),
         format!("  Comando:   {}", command_path(env).display()),

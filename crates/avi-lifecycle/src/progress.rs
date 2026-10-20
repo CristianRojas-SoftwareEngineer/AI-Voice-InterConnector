@@ -22,7 +22,9 @@
 //! Los textos salen de funciones puras para poder fijarlos en pruebas.
 
 use std::io::{IsTerminal, Write};
-use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -127,25 +129,42 @@ impl ModelBar {
 }
 
 /// Indicador ligero de progreso por fase para operaciones locales de larga
-/// duración. Todo va a stderr, nunca a stdout. En TTY imprime una única
-/// línea actualizada con `\r`; en no-TTY imprime una línea por fase sin
-/// `\r` ni secuencias ANSI. `AVI_NO_PROGRESS=1` (o cualquier valor no
-/// vacío) silencia toda salida de progreso.
+/// duración. Todo va a stderr, nunca a stdout. En TTY mantiene una única
+/// línea actualizada con `\r`; en no-TTY anuncia cada fase nueva con una
+/// línea propia, sin `\r` ni secuencias ANSI, y **raciona** la actividad
+/// repetida dentro de la misma fase: no abre una línea nueva. `AVI_NO_PROGRESS=1`
+/// (o cualquier valor no vacío) silencia toda salida de progreso.
+///
+/// El indicador **no imprime estado**: ni un cierre `[ok]` ni `[error]`. El
+/// mensaje final lo emite quien lo usa —el handler de la CLI o el flujo de la
+/// librería—, por stdout, con la duración que devuelve [`PhaseProgress::close`].
 pub struct PhaseProgress {
     start: Instant,
     tty: bool,
     enabled: bool,
     current: Option<(&'static str, String)>,
+    /// Fase ya anunciada en modo no-TTY. Es el estado del racionado: una fase
+    /// nueva se anuncia siempre, y una repetición de la misma fase no abre
+    /// línea nueva.
+    announced: Option<&'static str>,
+    /// ¿Hay una línea pintada en la terminal que otro escritor pueda pisar?
+    /// Un `AtomicBool` porque `tick` solo consulta el indicador y aun así
+    /// tiene que dejar constancia de que la línea quedó abierta.
+    line_open: AtomicBool,
+    /// ¿Se abrió ya el bloque (la línea en blanco inicial)? Solo el primer
+    /// `phase` la escribe.
+    block_opened: bool,
     /// Líneas de fase o actividad pintadas. En modo no-TTY cada una es una
     /// línea de stderr; el contador permite comprobarlo sin capturar stderr,
     /// que no es portable en un test unitario. Solo existe en las pruebas:
-    /// en producción no hay nada que contar.
+    /// en producción no hay nada que contar. Es un `Arc` para que una prueba
+    /// pueda inspectarlo después de que `close` consuma el indicador.
     #[cfg(test)]
-    renders: std::cell::Cell<usize>,
-    /// Líneas de cierre pintadas. En modo no-TTY cada una es una línea de
-    /// stderr, como las de fase.
+    renders: Arc<AtomicUsize>,
+    /// Líneas cedidas: veces que `close_line` devolvió la línea al producto.
+    /// En modo no-TTY no hay línea que ceder, así que no cuenta ninguna.
     #[cfg(test)]
-    closing_lines: std::cell::Cell<usize>,
+    closing_lines: Arc<AtomicUsize>,
 }
 
 impl PhaseProgress {
@@ -158,10 +177,13 @@ impl PhaseProgress {
             tty: std::io::stderr().is_terminal(),
             enabled: !disabled,
             current: None,
+            announced: None,
+            line_open: AtomicBool::new(false),
+            block_opened: false,
             #[cfg(test)]
-            renders: std::cell::Cell::new(0),
+            renders: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
-            closing_lines: std::cell::Cell::new(0),
+            closing_lines: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -175,8 +197,11 @@ impl PhaseProgress {
             tty,
             enabled: !silenced_by(no_progress_value),
             current: None,
-            renders: std::cell::Cell::new(0),
-            closing_lines: std::cell::Cell::new(0),
+            announced: None,
+            line_open: AtomicBool::new(false),
+            block_opened: false,
+            renders: Arc::new(AtomicUsize::new(0)),
+            closing_lines: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -184,68 +209,117 @@ impl PhaseProgress {
     /// una es una línea de stderr.
     #[cfg(test)]
     pub fn renders(&self) -> usize {
-        self.renders.get()
+        self.renders.load(Ordering::Relaxed)
     }
 
-    /// Líneas de cierre pintadas hasta ahora. En modo no-TTY, cada una es una
-    /// línea de stderr.
+    /// Líneas cedidas hasta ahora: veces que la línea se devolvió al producto.
     #[cfg(test)]
     pub fn closing_lines(&self) -> usize {
-        self.closing_lines.get()
+        self.closing_lines.load(Ordering::Relaxed)
     }
 
-    /// Cambia la fase actual y pinta una nueva línea de progreso. No-op si
-    /// el indicador está deshabilitado.
+    /// Cambia la fase actual.
+    ///
+    /// El primer `phase` de un indicador abre el bloque con una línea en
+    /// blanco, como hace `ProvisionView::start`. En TTY la fase se repinta
+    /// sobre la misma línea; en no-TTY se anuncia con una línea propia, y una
+    /// repetición de la misma fase dentro del bloque no abre línea nueva.
+    /// No-op si el indicador está deshabilitado.
     pub fn phase(&mut self, label: &'static str, msg: &str) {
         if !self.enabled {
             return;
         }
+        if !self.block_opened {
+            self.block_opened = true;
+            eprintln!();
+        }
         self.current = Some((label, msg.to_string()));
-        self.render();
+        if self.tty {
+            self.paint();
+            return;
+        }
+        // Racionado: solo la fase nueva se anuncia.
+        if self.announced != Some(label) {
+            self.announced = Some(label);
+            self.paint();
+        }
     }
 
-    /// Vuelve a pintar la línea de la fase actual con el tiempo transcurrido
+    /// Actualiza la línea de la fase actual con el tiempo transcurrido
     /// actualizado. Útil en bucles de espera.
+    ///
+    /// En TTY repinta sobre la misma línea. En no-TTY no abre línea nueva: la
+    /// actividad repetida dentro de la misma fase se raciona.
     pub fn tick(&self) {
         if !self.enabled || self.current.is_none() {
             return;
         }
-        self.render_ref();
+        if !self.tty {
+            return;
+        }
+        self.paint();
     }
 
-    /// Cierra el indicador con una línea final de estado (éxito o fallo).
-    pub fn finish(&self, ok: bool, msg: &str) {
+    /// Cede la línea: la devuelve al producto para que nada quede pegado a
+    /// lo que se escriba después.
+    ///
+    /// En TTY borra la línea de la fase y deja el cursor al principio; en
+    /// no-TTY no hay línea que ceder y no escribe nada. Es idempotente: ceder
+    /// una línea ya cedida no hace nada.
+    pub fn close_line(&mut self) {
         if !self.enabled {
             return;
         }
-        let line = finish_line(ok, msg, self.start.elapsed());
+        if !self.line_open.swap(false, Ordering::Relaxed) {
+            return;
+        }
         #[cfg(test)]
-        self.closing_lines.set(self.closing_lines.get() + 1);
+        self.closing_lines.fetch_add(1, Ordering::Relaxed);
         if self.tty {
-            eprint!("\r\x1b[2K{line}\n");
+            eprint!("\r\x1b[2K");
             #[expect(
                 clippy::let_underscore_must_use,
                 reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
             )]
             let _ = std::io::stderr().flush();
-        } else {
-            eprintln!("{line}");
         }
     }
 
-    fn render(&self) {
-        self.render_ref();
+    /// Vuelve a pintar la fase actual sobre la línea, si la había.
+    ///
+    /// Es la operación complementaria de [`PhaseProgress::close_line`]: tras
+    /// ceder la línea, `repaint` la devuelve a la fase vigente. En no-TTY no
+    /// hay línea que repintar y no escribe nada.
+    pub fn repaint(&mut self) {
+        if !self.enabled || !self.tty || self.current.is_none() {
+            return;
+        }
+        self.paint();
     }
 
-    fn render_ref(&self) {
+    /// Cierra el indicador y devuelve la duración total.
+    ///
+    /// No imprime mensaje de estado: el estado lo dice quien cierra, con la
+    /// duración que este cierre devuelve. Si la línea estaba abierta, la cede
+    /// antes de terminar, para que nada quede pegado a la salida.
+    pub fn close(mut self) -> Duration {
+        let elapsed = self.start.elapsed();
+        self.close_line();
+        elapsed
+    }
+
+    /// Pinta la fase actual. En TTY la repinta sobre la misma línea y deja la
+    /// línea abierta; en no-TTY escribe una línea propia.
+    fn paint(&self) {
         let Some((_, msg)) = &self.current else {
             return;
         };
         let line = phase_line(msg, self.start.elapsed());
         #[cfg(test)]
-        self.renders.set(self.renders.get() + 1);
+        self.renders.fetch_add(1, Ordering::Relaxed);
         if self.tty {
             eprint!("\r\x1b[2K{line}");
+            self.line_open.store(true, Ordering::Relaxed);
             #[expect(
                 clippy::let_underscore_must_use,
                 reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
@@ -278,16 +352,6 @@ fn silenced_by(value: Option<&str>) -> bool {
 /// byte a byte la que esta función devuelve.
 pub fn phase_line(msg: &str, elapsed: Duration) -> String {
     format!("… {msg} ({})", format_duration(elapsed))
-}
-
-/// Línea de cierre, sin los controles de línea: `[ok] <msg> (<elapsed>)` o
-/// `[error] <msg> (<elapsed>)`.
-///
-/// Es la contrapartida pura de `phase_line`, con la misma razón: el texto
-/// exacto del cierre se comprueba sin capturar stderr.
-pub fn finish_line(ok: bool, msg: &str, elapsed: Duration) -> String {
-    let mark = if ok { "[ok]" } else { "[error]" };
-    format!("{mark} {msg} ({})", format_duration(elapsed))
 }
 
 /// Plantilla de la barra activa. Los tamaños, la velocidad y los tiempos usan
@@ -428,15 +492,14 @@ mod tests {
         );
     }
 
-    // ─── Línea base del indicador de fase ───────────────────────────────────
+    // ─── Comportamiento del indicador de fase ───────────────────────────────
     //
-    // Estas pruebas fijan el comportamiento ACTUAL de `PhaseProgress` en modo
-    // no-TTY, para que un cambio posterior pueda distinguir «lo que cambió a
-    // propósito» de «lo que cambió por descuido». La salida por stderr no es
-    // capturable de forma portable en un test unitario, así que se comprueba
-    // por dos vías: el texto exacto con las funciones puras (`phase_line` y
-    // `finish_line`) y el número de líneas emitidas con el contador que el
-    // indicador lleva para las pruebas.
+    // Estas pruebas fijan el comportamiento vigente de `PhaseProgress` en modo
+    // no-TTY, que es la forma en que un script lee la salida. La salida por
+    // stderr no es capturable de forma portable en un test unitario, así que se
+    // comprueba por dos vías: el texto exacto con la función pura `phase_line` y
+    // el número de líneas emitidas con el contador que el indicador lleva para
+    // las pruebas.
 
     /// La línea de una fase es `… <msg> (<elapsed>)`, con el elapsed formateado
     /// por `format_duration`.
@@ -456,20 +519,6 @@ mod tests {
         );
     }
 
-    /// El cierreSuccessful lleva `[ok]` y el fallido `[error]`, con el mismo
-    /// formato de elapsed.
-    #[test]
-    fn finish_line_marks_success_and_failure() {
-        assert_eq!(
-            finish_line(true, "Limpieza completada.", Duration::from_secs(0)),
-            "[ok] Limpieza completada. (0 s)"
-        );
-        assert_eq!(
-            finish_line(false, "Limpieza fallida.", Duration::from_secs(3)),
-            "[error] Limpieza fallida. (3 s)"
-        );
-    }
-
     /// Una fase nueva en no-TTY emite exactamente una línea.
     #[test]
     fn phase_paints_one_line_in_no_tty() {
@@ -483,18 +532,49 @@ mod tests {
         );
     }
 
-    /// `phase()` seguido de `tick()` en no-TTY emite DOS líneas: la fase y la
-    /// actividad repetida. Es el comportamiento actual —el defecto que
-    /// corrige el Hito 3— y la línea base lo deja escrito a propósito.
+    /// La actividad repetida dentro de la misma fase **no** abre línea nueva
+    /// en no-TTY: es el racionado del indicador.
     #[test]
-    fn phase_then_tick_paints_two_lines_in_no_tty() {
+    fn phase_then_tick_paints_one_line_in_no_tty() {
         let mut progress = PhaseProgress::for_test(None, false);
         progress.phase("cleaning", "Limpiando datos…");
         progress.tick();
         assert_eq!(
             progress.renders(),
+            1,
+            "la actividad repetida no abre una segunda línea en no-TTY"
+        );
+    }
+
+    /// Una fase nueva tras otra sí se anuncia: el racionado es por fase, no un
+    /// tope global de líneas.
+    #[test]
+    fn a_new_phase_is_announced_again_in_no_tty() {
+        let mut progress = PhaseProgress::for_test(None, false);
+        progress.phase("cleaning", "Limpiando datos…");
+        progress.tick();
+        progress.phase("stopping", "Deteniendo daemon…");
+        progress.tick();
+        assert_eq!(
+            progress.renders(),
             2,
-            "la actividad repetida abre hoy una segunda línea en no-TTY"
+            "cada fase nueva se anuncia una vez: el racionado es por fase"
+        );
+    }
+
+    /// Una fase con cuarenta actividad dentro **emite exactamente una línea**:
+    /// es el criterio de aceptación del informe de la línea por evento.
+    #[test]
+    fn one_phase_and_forty_ticks_paint_exactly_one_line_in_no_tty() {
+        let mut progress = PhaseProgress::for_test(None, false);
+        progress.phase("cleaning", "Limpiando datos…");
+        for _ in 0..40 {
+            progress.tick();
+        }
+        assert_eq!(
+            progress.renders(),
+            1,
+            "la actividad repetida dentro de la misma fase no abre línea nueva"
         );
     }
 
@@ -506,27 +586,81 @@ mod tests {
         assert_eq!(progress.renders(), 0);
     }
 
-    /// El cierre emite su línea y no cuenta como línea de fase.
+    /// `close` no imprime mensaje de estado: el indicador no dice cómo terminó
+    /// la operación, solo cuánto duró.
     #[test]
-    fn finish_paints_one_closing_line() {
+    fn close_does_not_paint_a_closing_line() {
         let mut progress = PhaseProgress::for_test(None, false);
         progress.phase("cleaning", "Limpiando datos…");
-        progress.finish(true, "Limpieza completada.");
-        assert_eq!(progress.renders(), 1, "el cierre no es una línea de fase");
-        assert_eq!(progress.closing_lines(), 1);
+        let renders = Arc::clone(&progress.renders);
+        let closing_lines = Arc::clone(&progress.closing_lines);
+        let elapsed = progress.close();
+        assert_eq!(
+            renders.load(Ordering::Relaxed),
+            1,
+            "el cierre no es una línea de fase"
+        );
+        assert_eq!(
+            closing_lines.load(Ordering::Relaxed),
+            0,
+            "el cierre no imprime estado: lo dice quien cierra"
+        );
+        assert!(
+            elapsed.as_secs() < 60,
+            "la duración sale del reloj del indicador"
+        );
+    }
+
+    /// `close_line` es idempotente: ceder una línea ya cedida no hace nada, y
+    /// en no-TTY no hay línea que ceder.
+    #[test]
+    fn close_line_is_idempotent_and_writes_nothing_in_no_tty() {
+        let mut progress = PhaseProgress::for_test(None, false);
+        progress.phase("cleaning", "Limpiando datos…");
+        progress.close_line();
+        progress.close_line();
+        assert_eq!(
+            progress.closing_lines(),
+            0,
+            "en no-TTY no hay línea que ceder"
+        );
+        assert_eq!(progress.renders(), 1, "ceder la línea no repinta la fase");
+    }
+
+    /// Tras ceder la línea, `repaint` vuelve a pintar la fase vigente.
+    #[test]
+    fn repaint_after_close_line_paints_the_phase_again() {
+        let mut progress = PhaseProgress::for_test(None, true);
+        progress.phase("cleaning", "Limpiando datos…");
+        assert_eq!(progress.renders(), 1, "la fase se pinta al abrirla");
+        progress.close_line();
+        assert_eq!(
+            progress.closing_lines(),
+            1,
+            "ceder la línea se cuenta una vez"
+        );
+        progress.repaint();
+        assert_eq!(progress.renders(), 2, "tras ceder la línea, se repinta");
     }
 
     /// `AVI_NO_PROGRESS` con cualquier valor no vacío silencia toda salida:
-    /// ni fases, ni actividad, ni cierre.
+    /// ni fases, ni actividad, ni cesión.
     #[test]
     fn no_progress_silences_everything() {
         let mut progress = PhaseProgress::for_test(Some("1"), false);
+        let renders = Arc::clone(&progress.renders);
+        let closing_lines = Arc::clone(&progress.closing_lines);
         progress.phase("cleaning", "Limpiando datos…");
         progress.tick();
-        progress.finish(true, "Limpieza completada.");
-        assert_eq!(progress.renders(), 0, "el indicador silenciado no pinta");
+        progress.close_line();
+        let _ = progress.close();
         assert_eq!(
-            progress.closing_lines(),
+            renders.load(Ordering::Relaxed),
+            0,
+            "el indicador silenciado no pinta"
+        );
+        assert_eq!(
+            closing_lines.load(Ordering::Relaxed),
             0,
             "el indicador silenciado no cierra"
         );

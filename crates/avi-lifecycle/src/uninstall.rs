@@ -245,6 +245,13 @@ pub struct Outcome {
     pub dry_run: bool,
     pub daemon_was_running: bool,
     pub failed: Vec<String>,
+    /// Mensaje final de la desinstalación, con la duración que devolvió el
+    /// cierre del indicador.
+    ///
+    /// Aquí no hay handler que pueda componerlo —el indicador es interno de la
+    /// librería—, así que el flujo lo compone y quien lo emite lo publica por
+    /// stdout. Es el **único** mensaje final de la operación.
+    pub message: String,
 }
 
 impl Outcome {
@@ -341,114 +348,136 @@ pub async fn run(
 
     // El indicador nace tras la confirmación destructiva: ni `--dry-run` (paso 3)
     // ni la cancelación emiten progreso.
+    //
+    // El cierre es **explícito** y vive fuera del bloque de trabajo: `close`
+    // consume el indicador, así que cerrarlo dentro de un `map_err` lo
+    // consumiría en una rama que puede no ejecutarse.
     let mut progress = PhaseProgress::new();
-    progress.phase("stopping", "Deteniendo daemon…");
+    let work: anyhow::Result<_> = async {
+        progress.phase("stopping", "Deteniendo daemon…");
 
-    // ── Paso 5. Parar el daemon; si falla, `daemon_stop_failed` sin borrar nada ──
-    let daemon = daemon_stop::stop(&roots.data_dir, &env.daemon_addr, control).await;
-    daemon_stop::require_stopped(&daemon).inspect_err(|_| {
-        progress.finish(false, "Desinstalación fallida.");
-    })?;
+        // ── Paso 5. Parar el daemon; si falla, `daemon_stop_failed` sin borrar nada ──
+        // La línea se cede antes de la parada: el motor emite avisos internos
+        // que no pueden quedar pegados a la fase.
+        progress.close_line();
+        let daemon = daemon_stop::stop(&roots.data_dir, &env.daemon_addr, control).await;
+        daemon_stop::require_stopped(&daemon)?;
+        progress.repaint();
 
-    let mut removed = Vec::new();
-    let mut failed = Vec::new();
+        let mut removed = Vec::new();
+        let mut failed = Vec::new();
 
-    // ── Paso 6. Borrar el estado: la raíz de datos entera salvo `--keep-data` ─────
-    progress.phase("state", "Borrando el estado…");
-    let report = ownership::execute(&roots.ownership_tree(), &plan.state.ownership);
-    removed.extend(report.removed.iter().map(|p| p.display().to_string()));
-    removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
-    for (path, e) in &report.failed {
-        eprintln!("  no se pudo borrar {}: {e}", path.display());
-        failed.push(path.display().to_string());
-    }
-
-    // ── Paso 7. Revertir el `PATH` exactamente según el recibo ───────────────────
-    // El valor que se publica sale del mismo predicado que usa el simulacro, y se
-    // consulta **antes** de revertir: después no quedaría nada que prever, y la
-    // reversión —que sí se hace, y siempre— es la que decide qué se tocó.
-    progress.phase("path", "Revirtiendo el PATH…");
-    let path_pending = path_would_be_reverted(receipt, &env.home);
-    let revert_report = revert_path(receipt, &env.home);
-    for failure in &revert_report.failures {
-        eprintln!("  no se pudo revertir el PATH: {failure}");
-        failed.push(failure.clone());
-    }
-    let path_reverted = revert_report.touched && path_pending;
-
-    // ── Paso 8. Borrar el directorio de programa según la regla de borrado ───────
-    // La decisión no se vuelve a tomar aquí: sale del plan, que ya la aplicó al
-    // componerse. `program_dir` solo es destino si la regla del directorio de
-    // programa lo permite, y esa regla exige recibo o ejecutable **dentro** del
-    // directorio, así que ser destino implica que el directorio existe.
-    // Los contenedores del árbol que solo retienen el programa y sus archivos de
-    // bloqueo se planifican aquí, sobre el disco ya sin estado: el estado se borró en el
-    // paso 6 y no pudo podarlos porque el programa seguía dentro.
-    progress.phase("program", "Borrando el directorio de programa…");
-    let tree = roots.ownership_tree();
-    let tail = if plan.program_dir.is_some() {
-        ownership::plan(&tree, &program_departing(&program_dir))
-    } else {
-        ownership::Plan::default()
-    };
-    let mut program_dir_kept = None;
-    let (program_dir_removed, status) = if plan.program_dir.is_some() {
-        match remove_program_dir(remover, &program_dir, &tail) {
-            Ok(Removal::Now) => {
-                removed.push(program_dir.display().to_string());
-                (true, "uninstalled")
-            }
-            Ok(Removal::Scheduled) => (false, "removal_scheduled"),
-            Err(e) => {
-                eprintln!("  no se pudo borrar {}: {e}", program_dir.display());
-                failed.push(program_dir.display().to_string());
-                program_dir_kept = Some(format!("{}: {e}", program_dir.display()));
-                (false, "uninstalled")
-            }
-        }
-    } else {
-        // Sin destino propio: o la regla lo conserva, y el plan ya lo anunció una vez
-        // como `preserved`, o un destino del plan se lo lleva y el destino que lo hace
-        // ya está en `removed` si lo consiguió.
-        (false, "uninstalled")
-    };
-
-    // ── Paso 9. Borrar el archivo de bloqueo y la compuerta ───────────────────────
-    // Viven en el hermano del directorio de programa, así que se borran también cuando
-    // ese quedó programado: el bloqueo es del ciclo de vida, no del directorio.
-    // Es el último paso con efectos y se hace con el bloqueo aún tomado. En Unix la
-    // verificación de inodo de cada toma hace seguro el borrado: quien abrió el
-    // fichero antes de desvincularlo y lo bloquea después ve que su inodo ya no es
-    // el de la ruta y falla. En Windows los ficheros se abren sin permitir su
-    // borrado, así que `remove_files` suelta primero los descriptores propios; si otro
-    // proceso los abrió en ese instante, el borrado falla y el fichero se queda, sin
-    // consecuencias (su dueño bloquea el fichero que está en la ruta). Un fallo se
-    // informa como cualquier otro resto que no se pudo borrar.
-    progress.phase("locks", "Borrando los ficheros de bloqueo…");
-    for (path, error) in lock.remove_files() {
-        eprintln!("  no se pudo borrar {}: {error}", path.display());
-        failed.push(path.display().to_string());
-    }
-
-    // Con el programa ya retirado y sin archivos de bloqueo, se podan los contenedores
-    // que solo los retenían. En el borrado diferido el programa sigue en disco y los
-    // poda el limpiador, que recibió el contenedor más externo como destino.
-    if program_dir_removed {
-        let report = ownership::execute(&tree, &tail);
+        // ── Paso 6. Borrar el estado: la raíz de datos entera salvo `--keep-data` ─
+        progress.phase("state", "Borrando el estado…");
+        let report = ownership::execute(&roots.ownership_tree(), &plan.state.ownership);
+        removed.extend(report.removed.iter().map(|p| p.display().to_string()));
         removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
         for (path, e) in &report.failed {
+            progress.close_line();
             eprintln!("  no se pudo borrar {}: {e}", path.display());
             failed.push(path.display().to_string());
         }
-    }
 
-    // El estado final refleja `failed`: los pasos 6–9 no abortan, solo recogen.
-    if failed.is_empty() {
-        progress.finish(true, "Desinstalación completada.");
-    } else {
-        progress.finish(false, "Quedaron restos sin borrar.");
-    }
+        // ── Paso 7. Revertir el `PATH` exactamente según el recibo ───────────────
+        // El valor que se publica sale del mismo predicado que usa el simulacro, y se
+        // consulta **antes** de revertir: después no quedaría nada que prever, y la
+        // reversión —que sí se hace, y siempre— es la que decide qué se tocó.
+        progress.phase("path", "Revirtiendo el PATH…");
+        let path_pending = path_would_be_reverted(receipt, &env.home);
+        let revert_report = revert_path(receipt, &env.home);
+        for failure in &revert_report.failures {
+            progress.close_line();
+            eprintln!("  no se pudo revertir el PATH: {failure}");
+            failed.push(failure.clone());
+        }
+        let path_reverted = revert_report.touched && path_pending;
 
+        // ── Paso 8. Borrar el directorio de programa según la regla de borrado ───
+        // La decisión no se vuelve a tomar aquí: sale del plan, que ya la aplicó al
+        // componerse. `program_dir` solo es destino si la regla del directorio de
+        // programa lo permite, y esa regla exige recibo o ejecutable **dentro** del
+        // directorio, así que ser destino implica que el directorio existe.
+        // Los contenedores del árbol que solo retienen el programa y sus archivos de
+        // bloqueo se planifican aquí, sobre el disco ya sin estado: el estado se borró en el
+        // paso 6 y no pudo podarlos porque el programa seguía dentro.
+        progress.phase("program", "Borrando el directorio de programa…");
+        let tree = roots.ownership_tree();
+        let tail = if plan.program_dir.is_some() {
+            ownership::plan(&tree, &program_departing(&program_dir))
+        } else {
+            ownership::Plan::default()
+        };
+        let mut program_dir_kept = None;
+        let (program_dir_removed, status) = if plan.program_dir.is_some() {
+            match remove_program_dir(remover, &program_dir, &tail) {
+                Ok(Removal::Now) => {
+                    removed.push(program_dir.display().to_string());
+                    (true, "uninstalled")
+                }
+                Ok(Removal::Scheduled) => (false, "removal_scheduled"),
+                Err(e) => {
+                    progress.close_line();
+                    eprintln!("  no se pudo borrar {}: {e}", program_dir.display());
+                    failed.push(program_dir.display().to_string());
+                    program_dir_kept = Some(format!("{}: {e}", program_dir.display()));
+                    (false, "uninstalled")
+                }
+            }
+        } else {
+            // Sin destino propio: o la regla lo conserva, y el plan ya lo anunció una vez
+            // como `preserved`, o un destino del plan se lo lleva y el destino que lo hace
+            // ya está en `removed` si lo consiguió.
+            (false, "uninstalled")
+        };
+
+        // ── Paso 9. Borrar el archivo de bloqueo y la compuerta ───────────────────
+        // Viven en el hermano del directorio de programa, así que se borran también cuando
+        // ese quedó programado: el bloqueo es del ciclo de vida, no del directorio.
+        // Es el último paso con efectos y se hace con el bloqueo aún tomado. En Unix la
+        // verificación de inodo de cada toma hace seguro el borrado: quien abrió el
+        // fichero antes de desvincularlo y lo bloquea después ve que su inodo ya no es
+        // el de la ruta y falla. En Windows los ficheros se abren sin permitir su
+        // borrado, así que `remove_files` suelta primero los descriptores propios; si otro
+        // proceso los abrió en ese instante, el borrado falla y el fichero se queda, sin
+        // consecuencias (su dueño bloquea el fichero que está en la ruta). Un fallo se
+        // informa como cualquier otro resto que no se pudo borrar.
+        progress.phase("locks", "Borrando los ficheros de bloqueo…");
+        for (path, error) in lock.remove_files() {
+            progress.close_line();
+            eprintln!("  no se pudo borrar {}: {error}", path.display());
+            failed.push(path.display().to_string());
+        }
+
+        // Con el programa ya retirado y sin archivos de bloqueo, se podan los contenedores
+        // que solo los retenían. En el borrado diferido el programa sigue en disco y los
+        // poda el limpiador, que recibió el contenedor más externo como destino.
+        if program_dir_removed {
+            let report = ownership::execute(&tree, &tail);
+            removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
+            for (path, e) in &report.failed {
+                progress.close_line();
+                eprintln!("  no se pudo borrar {}: {e}", path.display());
+                failed.push(path.display().to_string());
+            }
+        }
+
+        Ok((
+            daemon,
+            removed,
+            failed,
+            status,
+            path_reverted,
+            program_dir_removed,
+            program_dir_kept,
+        ))
+    }
+    .await;
+    // El cierre no imprime estado: el mensaje final lo compone el propio flujo.
+    let elapsed = progress.close();
+    let (daemon, removed, failed, status, path_reverted, program_dir_removed, program_dir_kept) =
+        work?;
+
+    let message = uninstall_message(&failed, elapsed);
     Ok(Outcome {
         status,
         removed,
@@ -470,6 +499,7 @@ pub async fn run(
         dry_run: false,
         daemon_was_running: daemon.was_running,
         failed,
+        message,
     })
 }
 
@@ -726,7 +756,22 @@ pub fn simulate(
         dry_run: true,
         daemon_was_running: false,
         failed: Vec::new(),
+        message: String::new(),
     }
+}
+
+/// Mensaje final de la desinstalación.
+///
+/// Lo compone el propio flujo de la librería —el indicador es interno y no hay
+/// handler que lo cierre— y lo publica quien lo emite, por stdout. El estado
+/// final lo decide `failed`: los pasos 6–9 no abortan, solo recogen.
+fn uninstall_message(failed: &[String], elapsed: std::time::Duration) -> String {
+    let base = if failed.is_empty() {
+        "Desinstalación completada."
+    } else {
+        "Quedaron restos sin borrar."
+    };
+    format!("{base} ({})", crate::progress::format_duration(elapsed))
 }
 
 /// Plan legible: la única composición del plan de `self uninstall`, que imprimen

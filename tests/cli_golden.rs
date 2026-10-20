@@ -2140,10 +2140,9 @@ fn cleanup_dry_run_matches_fixture() {
 /// `cleanup --all --dry-run` emite la fase por **stderr** y nada por
 /// stdout: `stdout` es el envelope JSON y el progreso nunca lo contamina.
 ///
-/// La línea base de hoy emite **dos** líneas de fase —la fase y la actividad
-/// (`tick`) que la acompaña—, porque el indicador no raciona la actividad
-/// repetida dentro de la misma fase. Es el defecto que corrige el Hito 3, y
-/// esta prueba lo documenta como línea base a propósito.
+/// La fase se emite **una** línea: el indicador raciona la actividad repetida
+/// dentro de la misma fase, de modo que la fase y su `tick` no abren dos
+/// líneas en no-TTY.
 #[test]
 fn cleanup_dry_run_emits_the_phase_on_stderr_and_nothing_on_stdout() {
     let (_sandbox, envs) = contract_sandbox("progress-baseline");
@@ -2155,8 +2154,8 @@ fn cleanup_dry_run_emits_the_phase_on_stderr_and_nothing_on_stdout() {
     let fases: Vec<&str> = stderr.lines().filter(|l| l.starts_with("… ")).collect();
     assert_eq!(
         fases.len(),
-        2,
-        "la línea base emite la fase y su actividad repetida: {stderr}"
+        1,
+        "la actividad repetida dentro de la misma fase no abre línea nueva: {stderr}"
     );
     for fase in &fases {
         assert!(
@@ -2196,6 +2195,71 @@ fn no_progress_silences_the_phase_and_keeps_the_envelope() {
     let envelope: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
     assert_eq!(envelope["status"], Value::String("planned".to_string()));
+}
+
+/// El camino que sale por `?` **cierra el indicador**: la fase queda cedida y
+/// no queda pegada a la salida.
+///
+/// El error es inyectado —un texto de síntesis vacío, que el contrato rechaza
+/// con exit 2 `empty_text` antes de tocar el disco— y lo que se comprueba es
+/// que stderr **no** lleva una línea de fase abierta al final, que el mensaje
+/// de error va una sola vez, y que el mensaje final del handler aparece **una
+/// sola vez** cuando el comando sale bien.
+#[test]
+fn a_path_that_fails_with_question_mark_leaves_no_open_phase() {
+    let (_sandbox, envs) = contract_sandbox("progress-error-path");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, stdout, stderr) = run_capture(
+        &[
+            "--json",
+            "speech",
+            "synthesize",
+            "--text",
+            "",
+            "--label",
+            "prueba",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 2, "el texto vacío se rechaza con exit 2: {stderr}");
+
+    // La fase se pintó, pero **no** quedó abierta: la última línea de stderr no
+    // es la fase, y la fase no comparte línea con nada.
+    let fases: Vec<&str> = stderr.lines().filter(|l| l.starts_with("… ")).collect();
+    assert_eq!(fases.len(), 1, "una fase, una línea: {stderr}");
+    for fase in &fases {
+        assert!(
+            fase.ends_with(")"),
+            "la fase cierra con el tiempo transcurrido: {fase}"
+        );
+    }
+    // La línea de la fase no comparte línea con el mensaje de error: en no-TTY
+    // cada línea es una línea.
+    assert!(
+        stderr
+            .lines()
+            .all(|l| !l.starts_with("… ") || l.ends_with(")")),
+        "ninguna línea queda pegada a la fase: {stderr}"
+    );
+
+    // El mensaje de error va **una sola vez**, por stdout, en el envelope.
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
+    assert_eq!(
+        envelope["error"],
+        Value::String("El texto a sintetizar no puede estar vacío".to_string())
+    );
+    assert_eq!(envelope["reason"], Value::String("empty_text".to_string()));
+    assert_eq!(
+        stdout.matches("empty_text").count(),
+        1,
+        "el estado del fallo se dice una sola vez: {stdout}"
+    );
+    // El indicador no imprime estado: no hay ningún cierre `[ok]`/`[error]`.
+    assert!(
+        !stderr.contains("[ok]") && !stderr.contains("[error]"),
+        "el indicador no imprime estado: {stderr}"
+    );
 }
 
 /// `cleanup --model` de punta a punta, en las **dos** formas que puede tomar la raíz de
