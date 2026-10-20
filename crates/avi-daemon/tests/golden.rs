@@ -453,6 +453,15 @@ async fn synthesize_emits_contract_ndjson_stream() {
         "el stream NDJSON debe comenzar con `started`"
     );
 
+    // Invariante: `started` nombra la operación con la clave `operation`, que
+    // es lo que permite al cliente anunciar «Iniciando síntesis…» en vez de
+    // una operación genérica.
+    assert_eq!(
+        events.first().unwrap()["operation"],
+        Value::String("síntesis".to_string()),
+        "`started` nombra la operación"
+    );
+
     // Invariante: evento final `error` por falta de motor.
     // El estado de contrato no tiene binario del motor, así que el evento final
     // es `error` con `reason` `model_missing`. La síntesis real con audio
@@ -689,6 +698,13 @@ async fn voices_clone_daemon_precomputed_true() {
         events.first().unwrap()["event"],
         Value::String("started".to_string()),
         "el stream debe comenzar con `started`"
+    );
+    // `started` nombra la operación con la clave `operation`, que es lo que
+    // permite al cliente anunciar «Iniciando clonación…».
+    assert_eq!(
+        events.first().unwrap()["operation"],
+        Value::String("clonación".to_string()),
+        "`started` nombra la operación"
     );
     assert_eq!(events.first().unwrap()["name"], Value::String(name.clone()));
     // Evento final `result` con la forma contractual actual (`precomputed: true`).
@@ -1112,6 +1128,67 @@ async fn dub_invalid_fields_return_usage_error() {
             "cuerpo: {body}"
         );
     }
+}
+
+/// `/dub` emite un stream NDJSON cuyo primer evento nombra la operación con
+/// la clave `operation`.
+///
+/// El caso es el mismo que el de `/synthesize` y `/voices/clone`: la clave
+/// es lo que permite al cliente decir «Iniciando doblaje…» en vez de
+/// anunciar una operación genérica. Sin motor, el stream termina con un
+/// evento `error`, pero el `started` se emite antes de llegar al trabajo.
+///
+/// La ruta de doblaje necesita el soporte de transcripción, así que el stream
+/// solo existe con el feature `native-stt`: sin él, la ruta no está montada
+/// y la prueba lo dice en vez de fingir.
+#[cfg(feature = "native-stt")]
+#[tokio::test]
+async fn dub_emits_contract_ndjson_stream_naming_the_operation() {
+    let pcm: Vec<u8> = vec![0i16; 16_000]
+        .iter()
+        .flat_map(|s| s.to_le_bytes())
+        .collect();
+    let (status, bytes) = send(post_json(
+        "/dub",
+        serde_json::json!({
+            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&pcm),
+            "source_language": "es",
+            "target_language": "es",
+            "voice": "default",
+        }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let events: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect();
+    assert!(!events.is_empty(), "debe haber al menos un evento");
+
+    // Invariante de envelope: schema_version=5 en todo evento.
+    for e in &events {
+        assert_eq!(
+            e["schema_version"],
+            Value::String("5".to_string()),
+            "todo evento NDJSON lleva schema_version"
+        );
+    }
+
+    // Invariante: el primer evento es `started` y nombra la operación.
+    let first = events.first().expect("debe haber un primer evento");
+    assert_eq!(
+        first["event"],
+        Value::String("started".to_string()),
+        "el stream NDJSON debe comenzar con `started`"
+    );
+    assert_eq!(
+        first["operation"],
+        Value::String("doblaje".to_string()),
+        "`started` nombra la operación"
+    );
 }
 
 /// `/voices/clone` rechaza con `usage_error` un `force` que no es booleano.

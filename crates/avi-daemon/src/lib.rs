@@ -546,6 +546,7 @@ async fn synthesize_handler(
             &tx,
             json!({
                 "event": "started",
+                "operation": "síntesis",
                 "voice": voice_owned,
                 "text_length": text_owned.chars().count(),
             }),
@@ -1248,7 +1249,11 @@ async fn voices_clone_handler(
     // «precarga en caliente iniciada»). Sin almacén de trabajos ni expiración.
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
     tokio::spawn(async move {
-        emit_ndjson(&tx, json!({ "event": "started", "name": name })).await;
+        emit_ndjson(
+            &tx,
+            json!({ "event": "started", "operation": "clonación", "name": name }),
+        )
+        .await;
         let event_name = name.clone();
         let clone_qvoice = tmp_qvoice.clone();
         let clone_work = tokio::task::spawn_blocking(move || {
@@ -1554,7 +1559,11 @@ async fn dub_handler(
         // contractual actual (`status: "dubbed"`). Sin almacén de trabajos.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
         tokio::spawn(async move {
-            emit_ndjson(&tx, json!({ "event": "started", "voice": voice })).await;
+            emit_ndjson(
+                &tx,
+                json!({ "event": "started", "operation": "doblaje", "voice": voice }),
+            )
+            .await;
             // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
             // sobre el audio completo).
             let stt_state = state.clone();
@@ -3330,6 +3339,10 @@ mod tests {
     /// El evento `started` de `/synthesize` mide `text_length` en caracteres: «canción»
     /// tiene 7 caracteres y 8 bytes. La temperatura fuera de rango cierra el stream
     /// sin llegar al motor.
+    ///
+    /// El evento nombra además la operación con la clave `operation`, que es
+    /// lo que permite al cliente decir «Iniciando síntesis…» en vez de
+    /// anunciar una operación genérica.
     #[tokio::test]
     async fn synthesize_start_event_counts_chars() {
         let (_, bytes) = post_json(
@@ -3347,6 +3360,7 @@ mod tests {
             .find(|ev| ev["event"] == "started")
             .expect("el stream emite el evento started");
         assert_eq!(start["text_length"], 7);
+        assert_eq!(start["operation"], "síntesis");
     }
 
     /// Ningún mensaje del daemon lleva el prefijo que el cliente ya añade al
