@@ -33,7 +33,7 @@ use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-const VERSION: &str = "0.34.0";
+const VERSION: &str = "0.35.0";
 const APP_NAME: &str = "ai-voice-interconnector";
 
 /// Resuelve la dirección de escucha del daemon. Delega en la fuente única del
