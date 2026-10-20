@@ -556,6 +556,58 @@ fn run_json_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, Value) {
     (code, json)
 }
 
+/// Ejecuta el binario capturando `stdout` y `stderr` **por separado** y
+/// devuelve las tres cosas que una prueba necesita: el código de salida, el
+/// `stdout` completo y el `stderr` completo.
+///
+/// Es el complemento de [`run_json_env`]: aquel parsea `stdout` como JSON e
+/// imprime `stderr` sin devolverlo, que es lo que necesitan las pruebas del
+/// envelope. Este devuelve los dos crudos, que es lo que necesitan las
+/// pruebas del contrato de salida por comando (§ «línea base del indicador»).
+///
+/// **Lo que no puede comprobar:** que la fase no quede *pegada* a la línea
+/// siguiente. Eso es un comportamiento de terminal —el repintado con `\r` y
+/// `\x1b[2K` solo existe cuando stderr es una terminal— y el harness no
+/// puede simular una: sin TTY el indicador escribe una línea por fase y no
+/// queda nada a lo que pegarse. Comprobarlo exige una terminal real (PTY o
+/// doble TTY), que es una comprobación manual de `docs/MANUAL-VALIDATION.md`.
+fn run_capture(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
+    let mut out_file = tempfile::tempfile().expect("crear el archivo anónimo de stdout");
+    let mut err_file = tempfile::tempfile().expect("crear el archivo anónimo de stderr");
+    let mut cmd = bin_command();
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(
+            out_file
+                .try_clone()
+                .expect("duplicar el handle de stdout para el hijo"),
+        )
+        .stderr(
+            err_file
+                .try_clone()
+                .expect("duplicar el handle de stderr para el hijo"),
+        );
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("el binario debe ejecutarse");
+    let status = child.wait().expect("el proceso debe terminar");
+    let mut stdout = String::new();
+    out_file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| out_file.read_to_string(&mut stdout))
+        .unwrap_or_else(|e| panic!("no se pudo leer el stdout capturado: {e}"));
+    let mut stderr = String::new();
+    err_file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| err_file.read_to_string(&mut stderr))
+        .unwrap_or_else(|e| panic!("no se pudo leer el stderr capturado: {e}"));
+    let code = status
+        .code()
+        .expect("el proceso debe terminar con un código");
+    (code, stdout, stderr)
+}
+
 /// Crea un sandbox de contrato nuevo y único: datos, caché de modelos y
 /// programa propios, sin modelos y con un `daemon.pid` señuelo para que el
 /// binario no consulte 127.0.0.1:8765 ni barra los `qwen_tts` de la máquina.
@@ -2075,6 +2127,86 @@ fn cleanup_dry_run_matches_fixture() {
     assert_eq!(actual["schema_version"], expected["schema_version"]);
     assert!(expected.get("dry_run").is_none());
 }
+
+// ─── Línea base del indicador de progreso (Hito 1) ─────────────────────────
+//
+// Estas pruebas fijan el comportamiento ACTUAL de la salida por stderr de un
+// comando con indicador, para que un cambio posterior pueda distinguir «lo
+// que cambió a propósito» de «lo que cambió por descuido». El texto exacto de
+// la línea lo fijan las funciones puras de `avi_lifecycle::progress`
+// (`phase_line` y `finish_line`); aquí se fija el reparto entre stdout y
+// stderr, que es la parte que el harness sí puede observar.
+
+/// `cleanup --all --dry-run` emite la fase por **stderr** y nada por
+/// stdout: `stdout` es el envelope JSON y el progreso nunca lo contamina.
+///
+/// La línea base de hoy emite **dos** líneas de fase —la fase y la actividad
+/// (`tick`) que la acompaña—, porque el indicador no raciona la actividad
+/// repetida dentro de la misma fase. Es el defecto que corrige el Hito 3, y
+/// esta prueba lo documenta como línea base a propósito.
+#[test]
+fn cleanup_dry_run_emits_the_phase_on_stderr_and_nothing_on_stdout() {
+    let (_sandbox, envs) = contract_sandbox("progress-baseline");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, stdout, stderr) = run_capture(
+        &["--json", "cleanup", "--all", "--dry-run"],
+        &envs,
+    );
+    assert_eq!(code, 0, "el simulacro de cleanup sale 0");
+
+    // stderr: la fase, con el texto y el elapsed, y solo por stderr.
+    let fases: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.starts_with("… "))
+        .collect();
+    assert_eq!(
+        fases.len(),
+        2,
+        "la línea base emite la fase y su actividad repetida: {stderr}"
+    );
+    for fase in &fases {
+        assert!(
+            fase.starts_with("… Limpiando datos… ("),
+            "la fase de cleanup es la que el indicador nombra: {fase}"
+        );
+        assert!(
+            fase.ends_with(")"),
+            "la fase cierra con el tiempo transcurrido: {fase}"
+        );
+    }
+
+    // stdout: solo el envelope, sin una sola línea de progreso.
+    assert!(
+        !stdout.contains("… "),
+        "el progreso no puede aparecer en stdout: {stdout}"
+    );
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
+    assert_eq!(envelope["schema_version"], Value::String("5".to_string()));
+    assert_eq!(envelope["status"], Value::String("planned".to_string()));
+}
+
+/// `AVI_NO_PROGRESS` con valor no vacío silencia la fase: stderr se queda sin
+/// la línea de progreso y stdout conserva el envelope.
+#[test]
+fn no_progress_silences_the_phase_and_keeps_the_envelope() {
+    let (_sandbox, envs) = contract_sandbox("progress-silenced");
+    let mut envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    envs.push(("AVI_NO_PROGRESS", "1"));
+    let (code, stdout, stderr) = run_capture(
+        &["--json", "cleanup", "--all", "--dry-run"],
+        &envs,
+    );
+    assert_eq!(code, 0, "el simulacro de cleanup sale 0");
+    assert!(
+        !stderr.contains("… Limpiando datos…"),
+        "con AVI_NO_PROGRESS la fase no se emite: {stderr}"
+    );
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
+    assert_eq!(envelope["status"], Value::String("planned".to_string()));
+}
+
 /// `cleanup --model` de punta a punta, en las **dos** formas que puede tomar la raíz de
 /// modelos de la tabla de rutas.
 ///
