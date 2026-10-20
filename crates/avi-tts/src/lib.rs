@@ -301,11 +301,42 @@ fn cwd_vendor_allowed() -> bool {
     std::env::var(CWD_VENDOR_OPT_IN).as_deref() == Ok("1")
 }
 
+/// Avisa una sola vez por proceso que se ignoró el binario del directorio de
+/// trabajo.
+///
+/// La resolución se recalcula en cada llamada —el entorno puede cambiar—,
+/// pero el aviso no se repite: se emite el primero y los siguientes callan.
+/// Sin esta marca, un comando que resuelve el binario dos veces —al crear el
+/// motor y al arrancar el residente— avisa dos veces de lo mismo.
+static CWD_VENDOR_WARNING_EMITTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Número de avisos emitidos, para que una prueba pueda contarlos sin
+/// capturar stderr.
+#[cfg(test)]
+static CWD_VENDOR_WARNING_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Avisa, una sola vez por proceso, que se ignoró el binario del directorio de
+/// trabajo.
+fn warn_cwd_vendor_ignored(vendored: &Path) {
+    if CWD_VENDOR_WARNING_EMITTED.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    #[cfg(test)]
+    CWD_VENDOR_WARNING_COUNT.fetch_add(1, Ordering::Relaxed);
+    eprintln!(
+        "Aviso: se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
+        vendored.display(),
+        CWD_VENDOR_OPT_IN
+    );
+}
+
 /// Resolución del binario del motor por capas:
 /// 1. `QWEN3_TTS_BIN` (si está definida debe ser un archivo existente);
 ///    2. `<directorio real del programa>/vendor/qwen3-tts/qwen_tts(.exe)`; 3. `<cwd>/vendor/qwen3-tts/qwen_tts(.exe)`
 ///    (solo con `AVI_ALLOW_CWD_VENDOR=1`; si habría resuelto, avisa qué se
-///    ignoró y cómo habilitarlo);
+///    ignoró y cómo habilitarlo, una sola vez por proceso);
 ///    4. búsqueda en `PATH`. `Ok(None)` indica que ninguna capa lo halló.
 fn resolve_binary() -> Result<Option<PathBuf>> {
     if let Some(bin) = validated_env_path("QWEN3_TTS_BIN", std::env::var_os("QWEN3_TTS_BIN"), true)?
@@ -331,11 +362,7 @@ fn resolve_binary() -> Result<Option<PathBuf>> {
         if cwd_vendor_allowed() {
             return Ok(Some(vendored));
         }
-        eprintln!(
-            "Aviso: se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
-            vendored.display(),
-            CWD_VENDOR_OPT_IN
-        );
+        warn_cwd_vendor_ignored(&vendored);
     }
     let name = RESIDENT_IMAGE_NAME;
     if let Some(path) = std::env::var_os("PATH") {
@@ -2272,6 +2299,13 @@ mod tests {
     /// y sale; si vio `eof` no sale por sí mismo (duerme 60 s). Sin `hold`
     /// sale tras el sondeo.
     fn write_engine_double(name: &str, hold: bool) -> (PathBuf, tempfile::TempDir) {
+        // Las pruebas de resolución vacían el `PATH` para neutralizar la capa
+        // de búsqueda, y el doble se compila con el `rustc` del `PATH`. El
+        // candado compartido serializa ambas: sin él, una compilación puede
+        // encontrarse sin `rustc` por culpa de otra prueba.
+        let _guard = RESOLUTION_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::Builder::new()
             .prefix(&format!("avi-tts-double-{name}-"))
             .tempdir()
@@ -3161,6 +3195,43 @@ fn main() {
             allowed,
             Some(rel),
             "con opt-in el CWD debe resolver como antes"
+        );
+    }
+
+    /// El aviso del binario del directorio de trabajo sale **una sola vez por
+    /// proceso**, aunque la resolución se repita.
+    ///
+    /// Un comando local resuelve el binario dos veces: al crear el motor y al
+    /// arrancar el residente. La decisión se recalcula cada vez —el entorno
+    /// puede cambiar— y por eso la prueba sigue resolviendo de verdad; lo que
+    /// no se repite es el aviso.
+    ///
+    /// El contador permite comprobarlo sin capturar stderr, que no es portable
+    /// en un test unitario.
+    #[test]
+    fn cwd_vendor_warning_is_emitted_only_once_per_process() {
+        let _guard = RESOLUTION_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN", "AVI_ALLOW_CWD_VENDOR", "PATH"]);
+        let work = tempfile::tempdir().expect("debe crear el CWD de prueba");
+        let rel = cwd_vendor_bin();
+        let abs = work.path().join(&rel);
+        std::fs::create_dir_all(abs.parent().unwrap()).expect("debe crear vendor");
+        std::fs::write(&abs, b"falso").expect("debe escribir el señuelo");
+        std::env::set_current_dir(work.path()).expect("debe cambiar el CWD");
+        std::env::remove_var("QWEN3_TTS_BIN");
+        std::env::set_var("PATH", work.path().join("vacio"));
+        std::env::remove_var("AVI_ALLOW_CWD_VENDOR");
+
+        let before = CWD_VENDOR_WARNING_COUNT.load(Ordering::Relaxed);
+        // Dos resoluciones: la segunda es la que hacía duplicar el aviso.
+        let _first = resolve_binary().expect("la resolución no debe fallar");
+        let _second = resolve_binary().expect("la resolución no debe fallar");
+        let emitted = CWD_VENDOR_WARNING_COUNT.load(Ordering::Relaxed) - before;
+        assert!(
+            emitted <= 1,
+            "el aviso sale como mucho una vez por proceso: {emitted}"
         );
     }
 }
