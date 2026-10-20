@@ -546,7 +546,7 @@ El exit 2 es, en Unix y en `clap`, el código del error de invocación, y aquí 
 Dos pruebas de que la convención es la correcta:
 
 1. **La tabla la honra en otro punto**: `ExitCode::Interrupted = 130` es exactamente `128 + SIGINT`. Respetar 128+n y no respetar 2 sería incoherente dentro de la misma tabla.
-2. **El proyecto hermano aplica la misma convención**: `tts-sidecar-narrator` usa **2 = uso incorrecto** en sus tres casos —valor fuera de dominio, argumento vacío y comando desconocido— con **1 = error genérico**.
+2. **El proyecto hermano aplica la misma convención**: `claude-voice-interconnector` usa **2 = uso incorrecto** en sus tres casos —valor fuera de dominio, argumento vacío y comando desconocido— con **1 = error genérico**.
 
 ### Dónde viven las constantes, y por qué eso es parte del contrato
 
@@ -667,9 +667,9 @@ Esta sección es el **contrato de salida** de cada comando: qué escribe por std
 | `daemon serve` | — (no acepta `--json`) | — | el log del daemon y sus avisos | — | — | 0; 1 `daemon_error`, `startup_failed` |
 | `setup` | «Setup completado: N modelo(s) disponibles.» | `{ "status": "completed", "models_provisioned" }` | el bloque de descarga de modelos (§ «stderr, trazas y logs») | — | el cierre del bloque de provisión | 0; 1 `voice_store_init_failed`, `io_error`; 11 `setup_failed`; 20 `network_error` |
 | `cleanup` | «Limpieza completada: N ruta(s), M barrido(s).» o «Cancelado.» | `{ "status", "reason", "removed", "planned", "unreadable" }` | la fase, el plan de borrado y los avisos de ruta | `cleaning` | «Limpieza completada: N ruta(s), M barrido(s).» | 0; 1 `io_error`; 2 `usage_error`, `confirmation_required`; 16 `daemon_stop_failed` |
-| `self install` | el resumen de la instalación | `{ "status", "reason", "install_dir", "version", "channel", "path_integrated", "models" }` | las fases del motor y el resumen por stderr | `stopping`, `replacing`, `path`, `receipt` | el resumen de la instalación, con su duración | 0; 1 `self_install_failed`, `io_error`; 2 `usage_error`, `confirmation_required`; 11 `setup_failed`; 13 `rolled_back`; 14 `path_conflict`; 15 `bundle_invalid`; 16 `daemon_stop_failed`; 17 `lifecycle_locked`; 18 `unsupported_platform`; 19 `binary_incompatible`; 20 `network_error`; 21 `checksum_mismatch` |
+| `self install` | «ai-voice-interconnector instalado: \<versión\> (N s)» o «ai-voice-interconnector reparado: \<versión\> (N s)», y el resumen con el programa, el comando, el `PATH` y los modelos | `{ "status", "reason", "install_dir", "version", "channel", "path_integrated", "models" }` | las fases del motor y el resumen por stderr | `stopping`, `replacing`, `path`, `receipt` | «ai-voice-interconnector instalado: \<versión\> (N s)» o «ai-voice-interconnector reparado: \<versión\> (N s)» | 0; 1 `self_install_failed`, `io_error`; 2 `usage_error`, `confirmation_required`; 11 `setup_failed`; 13 `rolled_back`; 14 `path_conflict`; 15 `bundle_invalid`; 16 `daemon_stop_failed`; 17 `lifecycle_locked`; 18 `unsupported_platform`; 19 `binary_incompatible`; 20 `network_error`; 21 `checksum_mismatch` |
 | `self update` | «ai-voice-interconnector actualizado: A → B.» | `{ "status", "reason", "previous_version", "version", "channel" }` | las fases del indicador y los avisos de la recuperación | `checking`, `downloading`, `verifying`, `stopping`, `replacing` | «ai-voice-interconnector actualizado: A → B.» | 0; 1 `self_update_failed`; 2 `usage_error`, `confirmation_required`; 3 `not_installed`; 11 `setup_failed`; 12 `externally_managed`; 13 `rolled_back`; 16 `daemon_stop_failed`; 17 `lifecycle_locked`; 18 `unsupported_platform`; 19 `binary_incompatible`; 20 `network_error`; 21 `checksum_mismatch` |
-| `self uninstall` | «Desinstalación completada.» o «Quedaron restos sin borrar.» o «Cancelado.» | `{ "status", "reason", "removed", "planned", "path_reverted" }` | las fases del motor y el plan de borrado | `stopping`, `state`, `path`, `program`, `locks` | «Desinstalación completada. (N s).» o «Quedaron restos sin borrar. (N s).» | 0; 1 `self_uninstall_failed`, `io_error`; 2 `usage_error`, `confirmation_required`; 17 `lifecycle_locked`; 22 `program_dir_kept` (veredicto, sin objeto `error`) |
+| `self uninstall` | «Desinstalación completada.» o «Quedaron restos sin borrar.» o «Cancelado.» | `{ "status", "reason", "removed", "planned", "path_reverted" }` | las fases del motor y el plan de borrado | `stopping`, `state`, `path`, `program`, `locks` | «Desinstalación completada. (N s)» o «Quedaron restos sin borrar. (N s)» | 0; 1 `self_uninstall_failed`, `io_error`; 2 `usage_error`, `confirmation_required`; 17 `lifecycle_locked`; 22 `program_dir_kept` (veredicto, sin objeto `error`) |
 | `doctor` | «Diagnóstico: todo correcto.» y la lista de chequeos con `✓` | el reporte (`checks`, `failed`, …) | los chequeos fallidos con `✗`, la línea de veredicto «Diagnóstico: N comprobación(es) fallan.» y la pista de reparación | `repairing` (solo con `--repair`) | «Reparación completada (N s)» | 0; 1 `doctor_failed`; 1 (veredicto, sin objeto `error`) cuando hay comprobaciones fallidas |
 | `devices` | «Dispositivos de salida de audio:» y la lista | `{ "devices": [...] }` | — | — | — | 0; 1 `audio_enumeration_failed` |
 | `--version` | «ai-voice-interconnector X.Y.Z» | `{ "name", "version" }` | — | — | — | 0 |
@@ -787,7 +787,7 @@ envelope `usage_error` por stdout, ver
 
 El integrador que quiera además conservar el audio usa `speech synthesize --text "<msg>" --label L`, que no reproduce.
 
-El integrador es **tts-sidecar-narrator**, un plugin de [Claude Code](https://code.claude.com) que narra por voz la actividad de la sesión: al final de cada turno y en avisos relevantes el usuario escucha una locución corta en español. Se dispara por hooks (`Stop`, `Notification`; `SessionStart` verifica el entorno y deja el daemon caliente), nunca bloquea ni retrasa el turno y falla en silencio si el motor no está disponible. El resto de sus propiedades de diseño vive en su repositorio, que es su fuente de verdad; su contraparte de este contrato está en su [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/tts-sidecar-narrator/blob/main/docs/INTEGRATION.md).
+El integrador es **claude-voice-interconnector**, un plugin de [Claude Code](https://code.claude.com) que narra por voz la actividad de la sesión: al final de cada turno y en avisos relevantes el usuario escucha una locución corta en español. Se dispara por hooks (`Stop`, `Notification`; `SessionStart` verifica el entorno y deja el daemon caliente), nunca bloquea ni retrasa el turno y falla en silencio si el motor no está disponible. El resto de sus propiedades de diseño vive en su repositorio, que es su fuente de verdad; su contraparte de este contrato está en su [documento de integración](https://github.com/CristianRojas-SoftwareEngineer/claude-voice-interconnector/blob/main/docs/INTEGRATION.md).
 
 **Dependencia unidireccional.** El plugin consume a AI-Voice-InterConnector; este repositorio no conoce, importa ni depende del plugin, y ningún código, test ni build de aquí sabe de su existencia. A efectos del motor, el plugin es un consumidor externo más de la CLI pública (`ai-voice-interconnector` en `PATH`), como un script de usuario.
 
@@ -820,12 +820,12 @@ Cambiar cualquiera de estos nombres, flags, campos o exit codes rompe la narraci
 **Instalación.** Desde el lado del motor no hay nada que instalar para el plugin: basta con que `ai-voice-interconnector` esté en el `PATH` y los modelos estén en caché (`ai-voice-interconnector setup`). El repositorio del plugin dobla como su propio marketplace:
 
 ```
-/plugin marketplace add CristianRojas-SoftwareEngineer/tts-sidecar-narrator
-/plugin install tts-sidecar-narrator@tts-sidecar-narrator
-/tts-sidecar-narrator:install
+/plugin marketplace add CristianRojas-SoftwareEngineer/claude-voice-interconnector
+/plugin install claude-voice-interconnector@claude-voice-interconnector
+/claude-voice-interconnector:install
 ```
 
-`/tts-sidecar-narrator:install` guía la instalación del binario, la descarga de los modelos y la activación de la narración.
+`/claude-voice-interconnector:install` guía la instalación del binario, la descarga de los modelos y la activación de la narración.
 
 ### La frontera del daemon
 
