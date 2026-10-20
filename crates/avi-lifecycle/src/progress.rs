@@ -586,8 +586,9 @@ mod tests {
         );
     }
 
-    /// Una fase con cuarenta actividad dentro **emite exactamente una línea**:
-    /// es el criterio de aceptación del informe de la línea por evento.
+    /// Una fase con cuarenta actividades dentro **emite exactamente una
+    /// línea**: la actividad repetida no abre línea nueva, y el racionado es
+    /// por fase, no un tope global.
     #[test]
     fn one_phase_and_forty_ticks_paint_exactly_one_line_in_no_tty() {
         let mut progress = PhaseProgress::for_test(None, false);

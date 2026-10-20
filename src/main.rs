@@ -6091,10 +6091,9 @@ mod tests {
 
     /// El evento `started` nombra la operación cuando el daemon manda la clave.
     ///
-    /// Es el otro lado del criterio de aceptación: el daemon envía `operation`
-    /// en sus tres emisoras, así que la CLI anuncia «Iniciando síntesis…»,
-    /// «Iniciando clonación…» o «Iniciando doblaje…» en vez de una operación
-    /// genérica.
+    /// El daemon envía `operation` en sus tres emisoras, así que la CLI
+    /// anuncia «Iniciando síntesis…», «Iniciando clonación…» o «Iniciando
+    /// doblaje…» en vez de una operación genérica.
     #[test]
     fn started_names_the_operation_the_daemon_reports() {
         for operation in ["síntesis", "clonación", "doblaje"] {
