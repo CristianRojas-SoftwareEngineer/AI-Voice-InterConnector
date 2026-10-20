@@ -1357,7 +1357,15 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     let client = daemon_client();
                     if route_to_daemon(routing.mode(), &client).await? {
                         progress.phase("cloning", "Clonando voz (daemon)…");
-                        clone_via_daemon(json_mode, &client, &name, &speech_reference, force).await?;
+                        clone_via_daemon(
+                            json_mode,
+                            &client,
+                            &name,
+                            &speech_reference,
+                            force,
+                            &mut progress,
+                        )
+                        .await?;
                         return Ok(None);
                     }
                 }
@@ -1783,11 +1791,13 @@ struct DaemonResynthesizer<'a> {
     target_language: &'a str,
     temperature: Option<f32>,
     tmp_wav: &'a PathBuf,
+    progress: &'a mut PhaseProgress,
 }
 
 impl PlayResynthesizer for DaemonResynthesizer<'_> {
     async fn resynthesize(&mut self) -> Result<(), CliError> {
         let wav = daemon_synthesize_wav(
+            self.progress,
             self.client,
             self.text,
             self.voice,
@@ -2210,6 +2220,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 if route_to_daemon(routing.mode(), &client).await? {
                     progress.phase("synthesizing", "Sintetizando voz (daemon)…");
                     synthesize_via_daemon(
+                        &mut progress,
                         json_mode,
                         &client,
                         &text,
@@ -2371,6 +2382,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 if route_to_daemon(routing.mode(), &client).await? {
                     progress.phase("synthesizing", "Sintetizando voz (daemon)…");
                     say_via_daemon(
+                        &mut progress,
                         json_mode,
                         &client,
                         &text,
@@ -2488,6 +2500,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     let mut progress = PhaseProgress::new();
                     progress.phase("dubbing", "Doblando audio (daemon)…");
                     let result = dub_via_daemon(
+                        &mut progress,
                         json_mode,
                         &client,
                         audio.as_deref(),
@@ -4634,6 +4647,7 @@ async fn translate_via_daemon(
 /// POST /synthesize al daemon, consume el stream NDJSON y decodifica `audio_b64`
 /// del evento `result`, devolviendo los bytes WAV del motor (24 kHz s16le mono).
 async fn daemon_synthesize_wav(
+    progress: &mut PhaseProgress,
     client: &reqwest::Client,
     text: &str,
     voice: &str,
@@ -4647,7 +4661,6 @@ async fn daemon_synthesize_wav(
     }
     // El POST apunta a la dirección descubierta.
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
-    let started = std::time::Instant::now();
     let resp = client
         .post(format!("http://{}/synthesize", client_addr))
         .json(&payload)
@@ -4663,62 +4676,23 @@ async fn daemon_synthesize_wav(
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
-    let bytes = resp.bytes().await.map_err(|e| {
-        CliError::new(
-            ExitCode::Error,
-            "daemon_error",
-            format!("Error leyendo la respuesta del daemon: {}", e),
-        )
-    })?;
-    let body = String::from_utf8_lossy(&bytes);
-    let mut wav: Option<Vec<u8>> = None;
-    for line in body.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let ev: Value = serde_json::from_str(line).map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "daemon_error",
-                format!("NDJSON inválido del daemon: {}", e),
-            )
-        })?;
-        // Re-emite eventos intermedios (started/progress/heartbeat) a stderr
-        // sin tocar process_stream_line; result/error los gestiona el match.
-        emit_ndjson_progress(&ev, started)?;
-        match ev["event"].as_str() {
-            Some("result") => {
-                let b64 = ev["audio_b64"].as_str().ok_or_else(|| {
-                    CliError::new(
-                        ExitCode::Error,
-                        "synthesis_failed",
-                        "El daemon devolvió result sin audio_b64.",
-                    )
-                })?;
-                wav = Some(
-                    base64::engine::general_purpose::STANDARD
-                        .decode(b64)
-                        .map_err(|e| {
-                            CliError::new(
-                                ExitCode::Error,
-                                "synthesis_failed",
-                                format!("audio_b64 del daemon no decodable: {}", e),
-                            )
-                        })?,
-                );
-            }
-            Some("error") => return Err(stream_error_event(&ev)),
-            _ => {}
-        }
-    }
-    wav.ok_or_else(|| {
+    let val = consume_ndjson_stream(resp, StreamResult::Synthesize, progress).await?;
+    let b64 = val["audio_b64"].as_str().ok_or_else(|| {
         CliError::new(
             ExitCode::Error,
             "synthesis_failed",
-            "El daemon no devolvió audio_b64.".to_string(),
+            "El daemon devolvió result sin audio_b64.",
         )
-    })
+    })?;
+    base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| {
+            CliError::new(
+                ExitCode::Error,
+                "synthesis_failed",
+                format!("audio_b64 del daemon no decodable: {}", e),
+            )
+        })
 }
 
 /// Timeout de inactividad entre eventos de un stream NDJSON: 1500 ms.
@@ -4730,6 +4704,25 @@ const STREAM_INACTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// red de seguridad documentada, no presupuesto.
 const STREAM_TOTAL_DEADLINE: std::time::Duration = avi_core::REQUEST_FAILSAFE;
 
+/// Ruta esperada por el consumidor NDJSON; cada llamador extrae su dato del
+/// evento final sin alterar la forma contractual de las otras rutas.
+#[derive(Clone, Copy)]
+enum StreamResult {
+    Synthesize,
+    Clone,
+    Dub,
+}
+
+impl StreamResult {
+    fn stage(self) -> &'static str {
+        match self {
+            Self::Synthesize => "synthesize",
+            Self::Clone => "clone",
+            Self::Dub => "dub",
+        }
+    }
+}
+
 /// Consume un stream NDJSON del daemon (`started` → latidos → `result`/`error`)
 /// con timeout de inactividad + failsafe total. Retorna el evento final
 /// `result`; el evento `error` se mapea a `CliError` con la tabla única.
@@ -4737,14 +4730,16 @@ const STREAM_TOTAL_DEADLINE: std::time::Duration = avi_core::REQUEST_FAILSAFE;
 /// fallo es ruidoso: nunca se reemite un éxito parcial.
 async fn consume_ndjson_stream(
     mut resp: reqwest::Response,
-    stage: &str,
+    expected: StreamResult,
+    progress: &mut PhaseProgress,
 ) -> Result<Value, CliError> {
-    let start = std::time::Instant::now();
+    let deadline = tokio::time::Instant::now() + STREAM_TOTAL_DEADLINE;
+    let stage = expected.stage();
     let mut rest = String::new();
     // Los diagnósticos nombran la dirección descubierta.
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
     loop {
-        if start.elapsed() >= STREAM_TOTAL_DEADLINE {
+        let Some(remaining) = deadline.checked_duration_since(tokio::time::Instant::now()) else {
             return Err(CliError::new(
                 ExitCode::DaemonUnreachable,
                 "daemon_unreachable",
@@ -4755,11 +4750,8 @@ async fn consume_ndjson_stream(
                     stage
                 ),
             ));
-        }
-        let wait = std::cmp::min(
-            STREAM_INACTIVITY_TIMEOUT,
-            STREAM_TOTAL_DEADLINE - start.elapsed(),
-        );
+        };
+        let wait = std::cmp::min(STREAM_INACTIVITY_TIMEOUT, remaining);
         let chunk = tokio::time::timeout(wait, resp.chunk())
             .await
             .map_err(|_| {
@@ -4782,7 +4774,7 @@ async fn consume_ndjson_stream(
         let bytes = match chunk {
             Some(b) => b,
             None => {
-                // Fin de stream: procesar el resto buffered (línea sin `\n`
+                // Fin de stream: procesar el resto acumulado (línea sin `\n`
                 // final) y exigir el evento final.
                 let line = std::mem::take(&mut rest);
                 if !line.trim().is_empty() {
@@ -4807,9 +4799,9 @@ async fn consume_ndjson_stream(
             if trimmed.is_empty() {
                 continue;
             }
-            // Parse una sola vez: emite progreso intermedio y clasifica
-            // result/error con la misma lógica que process_stream_line
-            // (que permanece pura y con su test).
+            // Se analiza una sola vez: emite progreso intermedio y clasifica
+            // result/error con la misma lógica de process_stream_line,
+            // que permanece pura y conserva su prueba.
             let ev: Value = serde_json::from_str(trimmed).map_err(|e| {
                 CliError::new(
                     ExitCode::Error,
@@ -4817,7 +4809,7 @@ async fn consume_ndjson_stream(
                     format!("NDJSON inválido del daemon: {}", e),
                 )
             })?;
-            emit_ndjson_progress(&ev, start)?;
+            emit_ndjson_progress(&ev, progress);
             match ev.get("event").and_then(|v| v.as_str()) {
                 Some("result") => return Ok(ev),
                 Some("error") => return Err(stream_error_event(&ev)),
@@ -4918,51 +4910,45 @@ fn process_stream_line(line: &str) -> Result<Option<Value>, CliError> {
     }
 }
 
-/// Re-emite un evento intermedio del daemon (`started`, `progress`,
-/// `heartbeat`) a stderr en español, para que el usuario vea actividad
-/// durante el trabajo remoto. `process_stream_line` permanece pura; esta
-/// función es un side-effect separado que solo escribe a stderr y respeta
-/// `AVI_NO_PROGRESS=1`. `started` debe capturarse en el call site antes del
-/// `.send()` HTTP o del bucle de stream. Los eventos finales
-/// (`result`/`error`) no se imprimen aquí: los gestiona el `match` del
-/// call site.
-fn emit_ndjson_progress(ev: &Value, started: std::time::Instant) -> Result<(), CliError> {
-    if std::env::var("AVI_NO_PROGRESS")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-    {
-        return Ok(());
-    }
-    let event = match ev.get("event").and_then(|v| v.as_str()) {
-        Some(e) => e,
-        None => return Ok(()),
-    };
-    let stage = ev.get("stage").and_then(|v| v.as_str()).unwrap_or("");
-    let elapsed = lifecycle::progress::format_duration(started.elapsed());
-    match event {
-        "started" => {
+/// Decide la etiqueta de racionado y el texto de un evento intermedio, sin
+/// escribir ni consultar el reloj. Los eventos desconocidos no anuncian fase.
+fn ndjson_progress_phase(ev: &Value) -> Option<(&'static str, String)> {
+    match ev.get("event").and_then(Value::as_str) {
+        Some("started") => {
             let op = ev
                 .get("operation")
-                .and_then(|v| v.as_str())
+                .and_then(Value::as_str)
                 .unwrap_or("operación");
-            eprintln!("Iniciando {op}… ({elapsed})");
+            Some(("started", format!("Iniciando {op}…")))
         }
-        "progress" => {
-            eprintln!("Procesando… ({elapsed})");
-        }
-        "heartbeat" => {
-            let msg = match stage {
-                "warming" => "Calentando motor de síntesis…",
-                "queued" => "En cola de síntesis…",
-                "synthesis" => "Sintetizando voz…",
-                "clone" => "Clonando voz… (puede tardar varios minutos)",
-                _ => "Procesando…",
+        Some(event @ ("progress" | "heartbeat")) => {
+            let (label, msg) = match ev.get("stage").and_then(Value::as_str) {
+                Some("warming") => ("warming", "Calentando motor de síntesis…"),
+                Some("queued") => ("queued", "En cola de síntesis…"),
+                Some("synthesis") => ("synthesis", "Sintetizando voz…"),
+                Some("warmup") => ("warmup", "Iniciando precarga en caliente…"),
+                Some("clone") => ("clone", "Clonando voz… (puede tardar varios minutos)"),
+                Some("transcribe") => ("transcribe", "Transcribiendo audio…"),
+                Some("translate") => ("translate", "Traduciendo texto…"),
+                _ => return None,
             };
-            eprintln!("{msg} ({elapsed})");
+            let msg = if event == "progress" {
+                ev.get("message").and_then(Value::as_str).unwrap_or(msg)
+            } else {
+                msg
+            };
+            Some((label, msg.to_string()))
         }
-        _ => {}
+        _ => None,
     }
-    Ok(())
+}
+
+/// Traduce los eventos intermedios con el reloj y el racionado del indicador.
+/// Los eventos finales no se imprimen aquí.
+fn emit_ndjson_progress(ev: &Value, progress: &mut PhaseProgress) {
+    if let Some((label, msg)) = ndjson_progress_phase(ev) {
+        progress.phase(label, &msg);
+    }
 }
 
 /// `synthesize` vía daemon: persiste el WAV en `SpeechStore` y respeta
@@ -4971,6 +4957,7 @@ fn emit_ndjson_progress(ev: &Value, started: std::time::Instant) -> Result<(), C
 // Firma ancha deliberada: cada argumento mapea 1:1 a un flag de `speech synthesize`.
 #[allow(clippy::too_many_arguments)]
 async fn synthesize_via_daemon(
+    progress: &mut PhaseProgress,
     json_mode: bool,
     client: &reqwest::Client,
     text: &str,
@@ -5001,6 +4988,7 @@ async fn synthesize_via_daemon(
         ));
     }
     let wav = daemon_synthesize_wav(
+        progress,
         client,
         text,
         voice,
@@ -5029,6 +5017,7 @@ async fn synthesize_via_daemon(
             target_language,
             temperature,
             tmp_wav: &tmp,
+            progress,
         };
         let outcome = play_menu_loop(
             voice,
@@ -5068,7 +5057,10 @@ async fn synthesize_via_daemon(
 }
 
 /// `say` vía daemon: reproduce el WAV decodificado y expone una copia efímera.
+// Cada argumento representa un dato de la orden y el indicador pertenece al llamador.
+#[allow(clippy::too_many_arguments)]
 async fn say_via_daemon(
+    progress: &mut PhaseProgress,
     json_mode: bool,
     client: &reqwest::Client,
     text: &str,
@@ -5078,6 +5070,7 @@ async fn say_via_daemon(
     temperature: Option<f32>,
 ) -> Result<(), CliError> {
     let wav = daemon_synthesize_wav(
+        progress,
         client,
         text,
         voice,
@@ -5117,6 +5110,7 @@ async fn clone_via_daemon(
     name: &str,
     speech_reference: &str,
     force: bool,
+    progress: &mut PhaseProgress,
 ) -> Result<(), CliError> {
     let speech_bytes = std::fs::read(speech_reference).map_err(|e| {
         CliError::new(
@@ -5162,7 +5156,7 @@ async fn clone_via_daemon(
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
-    let val: Value = consume_ndjson_stream(resp, "clone").await?;
+    let val: Value = consume_ndjson_stream(resp, StreamResult::Clone, progress).await?;
     let cloned_name = val["name"].as_str().ok_or_else(|| {
         CliError::new(
             ExitCode::Error,
@@ -5199,6 +5193,7 @@ async fn clone_via_daemon(
 // Firma ancha deliberada: cada argumento mapea 1:1 a un flag de `speech dub`.
 #[allow(clippy::too_many_arguments)]
 async fn dub_via_daemon(
+    progress: &mut PhaseProgress,
     json_mode: bool,
     client: &reqwest::Client,
     audio: Option<&str>,
@@ -5264,7 +5259,7 @@ async fn dub_via_daemon(
     // El evento final del stream trae la forma contractual
     // {status:"dubbed", text, translated, audio_b64, voice}; los eventos `error`
     // del stream se traducen con la misma tabla única.
-    let val: Value = consume_ndjson_stream(resp, "dub").await?;
+    let val: Value = consume_ndjson_stream(resp, StreamResult::Dub, progress).await?;
     // Respuesta esperada {status:"dubbed", text, translated, audio_b64}
     let audio_b64_resp = val["audio_b64"].as_str().ok_or_else(|| {
         CliError::new(
@@ -5672,8 +5667,9 @@ mod tests {
     /// ejercitar `consume_ndjson_stream` sin daemon (doble determinista).
     /// `hold_secs`: si es `Some`, tras escribir `lines` la conexión se
     /// retiene abierta ese tiempo (caso de atasco); si es `None`, se cierra
-    /// (éxito, fallo o truncado según `lines`). Sin `content-length`: cuerpo
-    /// hasta cierre de conexión.
+    /// (éxito, fallo o truncado según `lines`). Emite cada línea por separado
+    /// para permitir comprobar la lectura incremental. Sin `content-length`:
+    /// cuerpo hasta cierre de conexión.
     async fn serve_programmed_sequence(lines: Vec<String>, hold_secs: Option<u64>) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -5696,13 +5692,22 @@ mod tests {
                     break;
                 }
             }
-            let body: String = lines.iter().map(|l| format!("{}\n", l)).collect();
             let header = "HTTP/1.1 200 OK\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
             if sock.write_all(header.as_bytes()).await.is_err() {
                 return;
             }
-            if sock.write_all(body.as_bytes()).await.is_err() {
-                return;
+            for line in lines {
+                if sock
+                    .write_all(format!("{line}\n").as_bytes())
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+                if sock.flush().await.is_err() {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(75)).await;
             }
             if let Some(s) = hold_secs {
                 tokio::time::sleep(std::time::Duration::from_secs(s)).await;
@@ -5840,12 +5845,102 @@ mod tests {
             .send()
             .await
             .expect("el doble debe responder");
-        let val = consume_ndjson_stream(resp, "clone")
+        let mut progress = PhaseProgress::new();
+        let val = consume_ndjson_stream(resp, StreamResult::Clone, &mut progress)
             .await
             .expect("la secuencia de éxito entrega el final");
         assert_eq!(val["event"], "result");
         assert_eq!(val["name"], "v");
         assert_eq!(val["precomputed"], true);
+    }
+
+    /// La síntesis lee los eventos mientras la respuesta sigue abierta; el WAV
+    /// solo se entrega cuando llega el evento final.
+    #[tokio::test]
+    async fn consume_ndjson_stream_synthesis_returns_audio_after_intermediate_events() {
+        let addr = serve_programmed_sequence(
+            vec![
+                r#"{"event":"started","voice":"v"}"#.to_string(),
+                r#"{"event":"heartbeat","stage":"warming"}"#.to_string(),
+                r#"{"event":"heartbeat","stage":"warming"}"#.to_string(),
+                r#"{"event":"progress","stage":"synthesis","message":"Síntesis en curso."}"#
+                    .to_string(),
+                r#"{"event":"heartbeat","stage":"synthesis"}"#.to_string(),
+                r#"{"event":"result","audio_b64":"UklGRg=="}"#.to_string(),
+            ],
+            None,
+        )
+        .await;
+        let client = daemon_client();
+        let resp = client
+            .post(format!("http://{addr}/synthesize"))
+            .send()
+            .await
+            .expect("el doble debe responder");
+        let mut progress = PhaseProgress::new();
+        let mut stream = Box::pin(consume_ndjson_stream(
+            resp,
+            StreamResult::Synthesize,
+            &mut progress,
+        ));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(320), &mut stream)
+                .await
+                .is_err(),
+            "el resultado debe seguir pendiente tras los eventos intermedios"
+        );
+        let val = stream.await.expect("el stream termina con audio_b64");
+        assert_eq!(val["audio_b64"], "UklGRg==");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(val["audio_b64"].as_str().unwrap())
+                .unwrap(),
+            b"RIFF"
+        );
+        let _elapsed = progress.close();
+    }
+
+    /// La traducción pura fija la etiqueta y el mensaje de cada etapa; los
+    /// eventos de avance conservan su mensaje y los latidos usan el de la CLI.
+    #[test]
+    fn ndjson_progress_phase_maps_stages_and_rate_limits_by_stage() {
+        let cases = [
+            ("warming", "Calentando motor de síntesis…"),
+            ("queued", "En cola de síntesis…"),
+            ("synthesis", "Sintetizando voz…"),
+            ("warmup", "Iniciando precarga en caliente…"),
+            ("clone", "Clonando voz… (puede tardar varios minutos)"),
+            ("transcribe", "Transcribiendo audio…"),
+            ("translate", "Traduciendo texto…"),
+        ];
+        for (stage, msg) in cases {
+            let heartbeat = json!({ "event": "heartbeat", "stage": stage });
+            let progress_event =
+                json!({ "event": "progress", "stage": stage, "message": "avance" });
+            let (label, text) = ndjson_progress_phase(&heartbeat).expect("etapa conocida");
+            let (progress_label, progress_text) =
+                ndjson_progress_phase(&progress_event).expect("avance conocido");
+            assert_eq!(label, stage);
+            assert_eq!(text, msg);
+            assert_eq!(progress_label, label, "ambos eventos racionan por etapa");
+            assert_eq!(progress_text, "avance", "se conserva el mensaje del daemon");
+        }
+        assert!(
+            ndjson_progress_phase(&json!({ "event": "heartbeat", "stage": "unknown" })).is_none()
+        );
+        assert!(ndjson_progress_phase(
+            &json!({ "event": "progress", "stage": "unknown", "message": "x" })
+        )
+        .is_none());
+        assert!(ndjson_progress_phase(&json!({ "event": "result" })).is_none());
+        assert_eq!(
+            ndjson_progress_phase(&json!({ "event": "started" })),
+            Some(("started", "Iniciando operación…".to_string()))
+        );
+        assert_eq!(
+            ndjson_progress_phase(&json!({ "event": "started", "operation": "doblaje" })),
+            Some(("started", "Iniciando doblaje…".to_string()))
+        );
     }
 
     /// El evento de fallo del stream se mapea por reason (doble con
@@ -5867,7 +5962,8 @@ mod tests {
             .await
             .expect("el doble debe responder");
         let start = std::time::Instant::now();
-        let e = consume_ndjson_stream(resp, "clone")
+        let mut progress = PhaseProgress::new();
+        let e = consume_ndjson_stream(resp, StreamResult::Clone, &mut progress)
             .await
             .expect_err("el evento de fallo debe fallar");
         assert_eq!(e.code, ExitCode::StateConflict);
@@ -5891,7 +5987,8 @@ mod tests {
             .await
             .expect("el doble debe responder cabeceras");
         let start = std::time::Instant::now();
-        let e = consume_ndjson_stream(resp, "clone")
+        let mut progress = PhaseProgress::new();
+        let e = consume_ndjson_stream(resp, StreamResult::Clone, &mut progress)
             .await
             .expect_err("el atasco debe fallar");
         assert_eq!(e.code, ExitCode::DaemonUnreachable);
@@ -5922,7 +6019,8 @@ mod tests {
             .send()
             .await
             .expect("el doble debe responder");
-        let e = consume_ndjson_stream(resp, "clone")
+        let mut progress = PhaseProgress::new();
+        let e = consume_ndjson_stream(resp, StreamResult::Clone, &mut progress)
             .await
             .expect_err("el truncado debe fallar");
         assert_eq!(e.code, ExitCode::Error);
