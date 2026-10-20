@@ -31,6 +31,7 @@
 - [Clonación de voz: recorrido completo](#clonación-de-voz-recorrido-completo)
 - [Experiencia unificada entre sistemas operativos](#experiencia-unificada-entre-sistemas-operativos)
 - [Formato de audio](#formato-de-audio)
+- [Variables de entorno (`AVI_*`)](#variables-de-entorno-avi_)
 - [Solución de problemas](#solución-de-problemas)
   - ["El modelo … no está provisionado. Ejecuta 'setup' primero." (exit 4)](#el-modelo--no-está-provisionado-ejecuta-setup-primero-exit-4)
   - ["GLIBC_2.28 not found" (o similar) al ejecutar el binario en Linux](#glibc_228-not-found-o-similar-al-ejecutar-el-binario-en-linux)
@@ -1115,6 +1116,19 @@ de `HF_HUB_CACHE` y `HF_HOME`), y la del directorio del programa, en la
 
 - **Generación**: 24000 Hz, Mono
 - **Exportación WAV**: 16-bit PCM, 24000 Hz, Mono
+
+## Variables de entorno (`AVI_*`)
+
+Estas variables ajustan el comportamiento de la CLI. Todas son opcionales.
+
+| Variable | Efecto |
+|---|---|
+| `AVI_NO_PROGRESS` | Silencia **todo** el progreso por stderr: las fases, la actividad y la cesión de línea. Cualquier valor no vacío la activa; el valor vacío no hace nada. **Solo afecta a stderr**: el envelope `--json`, el texto del resultado y los códigos de salida no cambian. Útil en un pipeline o en un log donde el progreso estorba. |
+| `AVI_PUSH_TO_TALK_MAX_SECS` | Techo de seguridad de la grabación push-to-talk, en segundos (default 300). Al alcanzarlo, la grabación se detiene y se devuelve lo grabado con exit 0. |
+| `AVI_DAEMON_PORT` | Puerto en el que escucha el daemon. `0` elige un puerto efímero. |
+| `AVI_DATA_DIR` | Directorio de datos de la instancia, para aislar varios equipos en la misma máquina. |
+| `AVI_ALLOW_CWD_VENDOR` | Con `=1`, habilita el binario del motor que está en el directorio de trabajo. Sin ella, el binario se ignora y se avisa **una sola vez por proceso**. |
+| `RUST_LOG` | Filtro de trazas (`info`, `debug`, …). Sin ella, la CLI muestra `warn` y superiores. |
 
 ## Solución de problemas
 

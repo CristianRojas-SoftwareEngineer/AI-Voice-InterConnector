@@ -64,6 +64,7 @@ puede ejercitar y el núcleo de esta validación.
   - [9.3 Progreso de la instalación interactiva](#93-progreso-de-la-instalación-interactiva)
 - [10. Daemon](#10-daemon)
 - [11. Casos de error por exit code canónico](#11-casos-de-error-por-exit-code-canónico)
+- [12. Protocolo del indicador de progreso](#12-protocolo-del-indicador-de-progreso)
 
 ## 1. Entorno y versión
 
@@ -440,3 +441,67 @@ ai-voice-interconnector speech play --label etiqueta_que_no_existe ; echo "exit=
 ```
 
 **Esperado**: cada sonda sale con el exit code de su fila y un mensaje en español a stderr; ninguna produce panic ni backtrace.
+
+## 12. Protocolo del indicador de progreso
+
+El indicador escribe por stderr y es el **único dueño de su línea**: cuando el producto necesita escribir, cede la línea y la vuelve a tomar. Estas comprobaciones exigen una **terminal real** (no vale redirigir stderr a un fichero: sin terminal no hay línea que ceder ni línea que se pegue).
+
+### 12.1 La fase no queda pegada a la línea siguiente
+
+Con un comando que capture el micrófono, en una terminal de verdad:
+
+```bash
+ai-voice-interconnector speech transcribe --mic --source-language es
+```
+
+**Esperado**: el aviso «Grabando… pulsa Enter para detener.» aparece en su
+**propia línea**, y la fase «… Transcribiendo audio…» no queda pegada a
+ninguna otra. Lo mismo con el menú de `speech synthesize --play`: las
+opciones se leen en su propia línea, y la fase no las arrastra.
+
+### 12.2 El mensaje final aparece una sola vez
+
+```bash
+ai-voice-interconnector speech say --text "Prueba." --voice default --no-daemon
+```
+
+**Esperado**: el resultado «Reproduciendo (N s).» aparece **una vez**, por
+stdout, y **no** hay ninguna línea `[ok]` ni `[error]` por stderr: el
+indicador no dice cómo terminó, lo dice el resultado. El estado se dice una
+sola vez.
+
+### 12.3 La cancelación se dice una sola vez
+
+```bash
+ai-voice-interconnector voice remove --name una_voz_que_exista
+```
+
+y responde `n` a la confirmación.
+
+**Esperado**: «Cancelado.» aparece **una sola vez**, por stderr. No hay un
+segundo «Cancelado.» por stdout.
+
+### 12.4 Una fase, una línea en no-TTY
+
+```bash
+ai-voice-interconnector daemon start 2> salida.txt
+```
+
+**Esperado**: el fichero `salida.txt` no acumula líneas de calentamiento
+repetidas: la fase se anuncia una vez y la actividad posterior no abre
+líneas nuevas. Lo mismo con cualquier comando largo redirigido.
+
+### 12.5 El tiempo visible avanza durante una espera real
+
+```bash
+ai-voice-interconnector self update
+```
+
+**Esperado**: durante la descarga, el tiempo de la fase **avanza** —los
+segundos suben en la terminal— y no se queda congelado en `(0 s)`. Es la
+comprobación que distingue una espera viva de una congelada.
+
+**Excepción declarada**: durante la síntesis, el clonado local y la
+captura del micrófono, el trabajo bloquea el hilo y la fase **no** puede
+repintar: el tiempo se queda congelado hasta que el trabajo acaba, y el
+tiempo total lo da el mensaje final. Eso no es un defecto.

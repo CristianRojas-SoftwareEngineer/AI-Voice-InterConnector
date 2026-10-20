@@ -128,7 +128,7 @@ La referencia dura como máximo `MAX_CLONE_REFERENCE_SECS` ([`limits.rs`](../../
 2. `!force && voice_store.exists(name)` → `409` `voice_exists`.
 3. Falta `audio_b64` → `400` `usage_error`; no decodifica base64 → `400` `invalid_audio`; la referencia supera `MAX_CLONE_REFERENCE_SECS` (medida por su cabecera WAV) → `400` `audio_too_long`.
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
-5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "name": "..."}`.
+5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "operation": "clonación", "name": "..."}`. La clave `operation` nombra el trabajo, de modo que el cliente anuncia «Iniciando clonación…» en vez de una operación genérica.
 6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `with_heartbeats`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) con la cadencia de `STREAM_HEARTBEAT` (`crates/avi-daemon/src/lib.rs`). Si el cliente se desconecta, el daemon descarta el resultado; el clonado termina en segundo plano. Si la referencia no se puede cargar, el clonado se interrumpe y emite `{"event":"error", "reason":"invalid_audio", "message": "..."}` (WAV inválido o truncado) o `{"event":"error", "reason":"io_error", "message": "..."}` (fallo de lectura); si falla el propio clonado o el guardado, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
 7. Al completar el clonado, `voice_store.save_reference(name, tmp_qvoice)` persiste `reference.qvoice` (único archivo que el motor consulta; sin copia de los WAV de entrada).
 8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "precomputed": true}` + `schema_version`. El calentamiento (acotado por el arranque del residente más el presupuesto del testigo) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada».
@@ -183,7 +183,8 @@ Siempre local: no declara `--daemon` ni `--no-daemon`. Flujo
    plan (la voz y sus locuciones, con rutas y tamaños) y, con terminal, pregunta
    `[s/N]` (por defecto, no). Sin terminal exige `--yes`; sin él sale con
    exit 2 `confirmation_required` y no borra nada. Responder que no sale con
-   exit 0, imprime `Cancelado.` y con `--json` emite `status: "cancelled"`. Una
+   exit 0, imprime `Cancelado.` —por stderr, una sola vez, y solo el motor de
+   confirmación lo escribe— y con `--json` emite `status: "cancelled"`. Una
    voz sin locuciones se borra sin preguntar.
 5. `avi_store::remove_voice` (`crates/avi-store/src/lib.rs`) borra primero el
    namespace de habla de la voz y después su directorio del registro, de modo

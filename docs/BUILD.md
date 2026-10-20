@@ -294,9 +294,11 @@ Al ejecutar desde la raíz del repo (`cargo run`, pruebas sin instalar), el
 motor `qwen_tts` y sus modelos viven en `vendor/qwen3-tts/`, que el producto
 resuelve por la capa `<cwd>/vendor`. Esa capa está denegada por defecto: sin
 `AVI_ALLOW_CWD_VENDOR=1`, el directorio de trabajo no aporta binario ni
-modelos y la resolución avisa qué ignoró. Para desarrollar desde el repo,
-define `AVI_ALLOW_CWD_VENDOR=1` (solo desarrollo local; el producto instalado
-y CI no la necesitan).
+modelos y la resolución avisa qué ignoró. El aviso sale **una sola vez por
+proceso**, aunque la resolución se repita: la decisión se recalcula cada vez
+—el entorno puede cambiar— y solo el mensaje deja de repetirse. Para
+desarrollar desde el repo, define `AVI_ALLOW_CWD_VENDOR=1` (solo desarrollo
+local; el producto instalado y CI no la necesitan).
 
 #### Empaquetado de ONNX Runtime en los artefactos de release
 

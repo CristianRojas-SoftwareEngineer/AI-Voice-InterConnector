@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.34.0 — 2026-10-19](#0340--2026-10-19)
 - [0.33.1 — 2026-10-18](#0331--2026-10-18)
 - [0.33.0 — 2026-10-18](#0330--2026-10-18)
@@ -113,6 +114,36 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+El indicador de progreso de fases decía el estado dos veces —una por stderr, con un cierre `[ok]`/`[error]`, y otra por stdout, con el mensaje del handler—, dejaba la fase pegada a cualquier línea que se escribiera después, abría una línea por cada latido del daemon en modo no-TTY y congelaba el reloj durante las esperas largas. Este cambio reorganiza ese protocolo sin alterar el contrato de la CLI: **el indicador no dice cómo terminó, lo dice el resultado, y solo una vez**.
+
+### Cambiado
+
+- **El indicador ya no imprime estado.** `PhaseProgress` expone `phase`, `tick`, `close_line`, `repaint` y `close(self) -> Duration`; el cierre `[ok]`/`[error]` desaparece. El mensaje final lo emite el handler —o el flujo de la librería en `self install` y `self uninstall`—, por stdout, **una sola vez** y con la duración de la operación. Quien leía el estado por stderr debe leer el resultado por stdout.
+- **La línea tiene un dueño.** El indicador cede la línea antes de que el producto escriba (el aviso de captura del micrófono, el prompt de confirmación, el menú de `--play`) y la vuelve a tomar al continuar. Ninguna fase queda pegada a la línea siguiente.
+- **Una fase, una línea.** En modo no-TTY, una fase nueva se anuncia y la actividad repetida dentro de ella no abre línea nueva; en TTY, la fase se repinta sobre la misma línea.
+- **El tiempo visible avanza.** El indicador se repinta durante las esperas asíncronas reales —las respuestas de `/transcribe` y `/translate`, la descarga y la verificación de `self update`—, de modo que el tiempo de la fase ya no se queda congelado. La síntesis, el clonado local y la captura del micrófono son trabajo síncrono que bloquea el hilo: son una excepción declarada, y su tiempo total lo da el mensaje final.
+- **Las dos vías de un comando nombran las mismas fases** cuando la entrada es equivalente. La paridad está acotada por lo que el daemon puede anunciar: su wire expone un conjunto de etapas, y las que la vía local nombra y el daemon no anuncia quedan como asimetría declarada.
+- **`speech synthesize --daemon` muestra la actividad mientras ocurre.** El stream de `/synthesize` se consume por trozos, como los de `/voices/clone` y `/dub`, y los eventos usan el reloj del indicador en vez de uno propio.
+- **`self update` nombra cada paso por separado** (`downloading`, `verifying`, `stopping`, `replacing`) en vez de rotular «Descargando» durante toda la operación.
+- El aviso del binario del motor del directorio de trabajo sale **una sola vez por proceso**, en vez de una por cada resolución.
+
+### Añadido
+
+- El daemon nombra su trabajo en el evento `started` con la clave `operation` («síntesis», «clonación», «doblaje»), de modo que la CLI anuncia la operación concreta en vez de una genérica. La clave es aditiva: las demás claves del evento no cambian y una CLI anterior la ignora.
+- `AVI_NO_PROGRESS` queda documentada en `USAGE.md` y en el contrato: silencia todo el progreso por stderr, y no cambia el envelope `--json` ni los códigos de salida.
+- El contrato de la CLI incluye ahora una tabla del **contrato de salida por comando** —qué escribe cada uno por stdout, qué escribe por stderr, con qué código y con qué `reason`— y la sección de validación manual incluye las comprobaciones del protocolo del indicador.
+
+### Corregido
+
+- La fase ya no queda pegada a la línea siguiente: el indicador cede la línea antes de los avisos y los prompts del producto.
+- El estado ya no se dice dos veces: el cierre del indicador y el mensaje del handler competían por el mismo hecho, con dos redacciones y dos relojes distintos.
+- `Cancelado.` ya no aparece dos veces: lo escribe solo el motor de confirmación, por stderr.
+- El modo no-TTY ya no acumula una línea por latido del daemon: la actividad repetida dentro de la misma fase no abre línea nueva.
+- La parada del daemon ya no dice «Daemon detenido.» cuando no había ningún daemon en marcha.
+- La muerte de un proceso en Windows ya no depende de un ejecutable externo que, bajo saturación, puede no encontrar un proceso que el sistema ve vivo: `taskkill` se sigue intentando primero —para alcanzar la descendencia— y la vía directa de la API es el último recurso.
 
 ## [0.34.0] — 2026-10-19
 

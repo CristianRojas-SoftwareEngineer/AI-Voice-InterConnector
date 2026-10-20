@@ -55,6 +55,8 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 **Lo que no se pudo borrar no es un fallo de la operación**: cada destino que falla se avisa por stderr (`no se pudo borrar <ruta>: <motivo>`) y el borrado sigue con el resto del plan, sin tumbar la operación. Ese destino no entra en `removed` pero sí sigue en `planned`, así que con `--json` se detecta comparando las dos listas; el envelope no tiene una clave propia para él.
 
+**El progreso empieza tras la confirmación.** La fase `cleaning` se pinta cuando la operación empieza de verdad, no antes: la confirmación ocurre dentro del motor y, hasta que el usuario la acepta, no hay nada que progreso. La línea se cede antes de cada aviso de ruta, de modo que ningún aviso queda pegado a la fase. El resultado —«Limpieza completada: N ruta(s), M barrido(s).»— lo dice el handler, por stdout, y es la única vez que se dice el estado.
+
 ---
 
 ## Confirmación: la tabla de las reglas transversales, y solo su parte destructiva

@@ -250,8 +250,9 @@ Despacho: `say_via_daemon` si aplica, o rama directa con
 (`TempWav`, `crates/avi-shared/src/temp_wav.rs`), que lo borra al salir de
 ámbito: al terminar la reproducción, pero también si la reproducción falla, que
 era el camino por el que el fichero se quedaba. El texto humano dice
-«Reproduciendo.» sin ruta. Quien quiera el fichero en disco usa
-`speech synthesize`, que sí lo persiste y sí devuelve su `audio_path`.
+«Reproduciendo (N s).» —con la duración de la operación— y sin ruta. Quien
+quiera el fichero en disco usa `speech synthesize`, que sí lo persiste y sí
+devuelve su `audio_path`.
 `say` es humo de punta a punta, sin puerta de calidad sobre lo que sonó; la
 paridad de inteligibilidad la cubre `synthesize`.
 
@@ -327,7 +328,7 @@ Handler `dub_handler`. Acepta
 (todos obligatorios salvo `temperature`, todos `es`/`en` en idiomas).
 Tras validar barato en JSON
 plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
-(`application/x-ndjson`) emitiendo `{"event":"started", "voice":"..."}`.
+(`application/x-ndjson`) emitiendo `{"event":"started", "operation": "doblaje", "voice":"..."}`. La clave `operation` nombra el trabajo, de modo que el cliente anuncia «Iniciando doblaje…» en vez de una operación genérica.
 
 Pipeline interno con latidos (`with_heartbeats`, periodo `STREAM_HEARTBEAT` entre `heartbeat`; ante desconexión,
 `AbortHandle` descarta el resultado de la transcripción y la traducción, que terminan en segundo

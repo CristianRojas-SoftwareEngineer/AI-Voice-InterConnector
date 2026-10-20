@@ -37,6 +37,13 @@ Sin `--daemon`/`--no-daemon` el modo es `Auto` (`DaemonMode::Auto`,
 `src/main.rs`) y, si responde, se delega al
 daemon; si no, se ejecuta local.
 
+**La fase `translating` se repinta mientras espera.** El endpoint `/translate`
+devuelve JSON plano y no emite eventos, así que sin repintado la fase
+quedaría congelada mientras el motor traduce. El indicador se repinta con su
+propio reloj durante la espera, de modo que el tiempo visible avanza. El
+timeout de 1500 ms del endpoint no cambia: lo que cambia es lo que se ve
+mientras espera.
+
 ---
 
 ## Flujo en dos carriles: parser primero, handler como defensa
