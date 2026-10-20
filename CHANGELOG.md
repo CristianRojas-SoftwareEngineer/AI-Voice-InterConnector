@@ -145,6 +145,8 @@ El indicador de progreso de fases decía el estado dos veces —una por stderr, 
 - La parada del daemon ya no dice «Daemon detenido.» cuando no había ningún daemon en marcha.
 - El mensaje de `doctor --repair` ya no sale por stderr: es el resultado del comando, y el resultado va por stdout, como el de cualquier otro comando. Quien leyera ese texto por stderr debe leerlo ahora por stdout.
 - La muerte de un proceso en Windows ya no depende de un ejecutable externo que, bajo saturación, puede no encontrar un proceso que el sistema ve vivo: `taskkill` se sigue intentando primero —para alcanzar la descendencia— y la vía directa de la API es el último recurso.
+- La documentación del corte ya no da la puerta de pruebas con recursos sin el entorno que la gate establece: `docs/RELEASING.md` § 1 dice ahora que esa puerta la comprueba `cargo xtask release` —no se repite a mano— y documenta las dos variables que exige (`AVI_ALLOW_CWD_VENDOR=1` y `ORT_DYLIB_PATH` con ruta absoluta), con la razón por la que la ruta tiene que ser absoluta: `cargo test` usa la raíz de cada paquete como directorio de trabajo, de modo que una ruta relativa existe en el crate raíz y no en un crate miembro. Sin esas variables, la puerta fallaba por motivos de entorno y no de producto, y el fallo se confundía con un defecto del código.
+- La golden del stream de `/dub` ya no falla con un 404: montaba un estado de prueba sin motor ni voz, y el handler valida ambos antes de abrir el stream. Ahora monta un estado con rutas ficticias y la voz de fábrica, de modo que verifica la clave `operation` sin lanzar el motor real.
 
 ## [0.34.0] — 2026-10-19
 

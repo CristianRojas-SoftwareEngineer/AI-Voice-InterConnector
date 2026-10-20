@@ -1226,32 +1226,54 @@ async fn dub_invalid_fields_return_usage_error() {
 /// `/dub` emite un stream NDJSON cuyo primer evento nombra la operación con
 /// la clave `operation`.
 ///
-/// El caso es el mismo que el de `/synthesize` y `/voices/clone`: la clave
-/// es lo que permite al cliente decir «Iniciando doblaje…» en vez de
-/// anunciar una operación genérica. Sin motor, el stream termina con un
-/// evento `error`, pero el `started` se emite antes de llegar al trabajo.
+/// La clave permite al cliente decir «Iniciando doblaje…» en vez de
+/// anunciar una operación genérica. El motor TTS y la voz deben figurar como
+/// presentes para que `/dub` abra el stream; sus rutas ficticias impiden lanzar
+/// el motor real si la transcripción llega a la síntesis.
 ///
-/// La ruta de doblaje necesita el soporte de transcripción, así que el stream
-/// solo existe con el feature `native-stt`: sin él, la ruta no está montada
-/// y la prueba lo dice en vez de fingir.
+/// Sin `native-stt`, `/dub` responde `stt_unsupported` en JSON plano antes de
+/// abrir el stream: esta prueba solo entra en la puerta de recursos con ese
+/// feature, no en la puerta de CI sin features. No requiere el modelo real.
 #[cfg(feature = "native-stt")]
 #[tokio::test]
 async fn dub_emits_contract_ndjson_stream_naming_the_operation() {
+    let tmp = tempfile::tempdir().expect("directorio temporal del estado");
+    let mut state = contract_state(tmp.path());
+    let missing_engine = tmp.path().join("motor-inexistente");
+    state.tts_engine.binary_path = Some(missing_engine.clone());
+    state.tts_engine.model_dir = Some(missing_engine);
+    let voice = "default";
+    assert!(
+        state
+            .voice_store
+            .exists(voice)
+            .expect("inicializar las voces de fábrica"),
+        "la voz predeterminada debe existir"
+    );
+
     let pcm: Vec<u8> = vec![0i16; 16_000]
         .iter()
         .flat_map(|s| s.to_le_bytes())
         .collect();
-    let (status, bytes) = send(post_json(
-        "/dub",
-        serde_json::json!({
-            "audio_b64": base64::engine::general_purpose::STANDARD.encode(&pcm),
-            "source_language": "es",
-            "target_language": "es",
-            "voice": "default",
-        }),
-    ))
+    let (status, bytes) = send_to(
+        Arc::new(state),
+        post_json(
+            "/dub",
+            serde_json::json!({
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&pcm),
+                "source_language": "es",
+                "target_language": "es",
+                "voice": voice,
+            }),
+        ),
+    )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "cuerpo: {}",
+        String::from_utf8_lossy(&bytes)
+    );
 
     let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
     let events: Vec<Value> = text
