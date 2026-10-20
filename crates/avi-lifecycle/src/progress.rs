@@ -165,6 +165,11 @@ pub struct PhaseProgress {
     /// En modo no-TTY no hay línea que ceder, así que no cuenta ninguna.
     #[cfg(test)]
     closing_lines: Arc<AtomicUsize>,
+    /// Repintados: veces que la fase se volvió a pintar sobre su línea sin que
+    /// la fase cambiara. En no-TTY no abren línea nueva, así que se cuentan
+    /// aparte de las líneas.
+    #[cfg(test)]
+    repaints: Arc<AtomicUsize>,
 }
 
 impl PhaseProgress {
@@ -184,6 +189,8 @@ impl PhaseProgress {
             renders: Arc::new(AtomicUsize::new(0)),
             #[cfg(test)]
             closing_lines: Arc::new(AtomicUsize::new(0)),
+            #[cfg(test)]
+            repaints: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -202,6 +209,7 @@ impl PhaseProgress {
             block_opened: false,
             renders: Arc::new(AtomicUsize::new(0)),
             closing_lines: Arc::new(AtomicUsize::new(0)),
+            repaints: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -216,6 +224,18 @@ impl PhaseProgress {
     #[cfg(test)]
     pub fn closing_lines(&self) -> usize {
         self.closing_lines.load(Ordering::Relaxed)
+    }
+
+    /// Repintados hasta ahora: veces que la fase se volvió a pintar sobre su
+    /// línea sin que la fase cambiara.
+    ///
+    /// Es distinto de `renders`, que cuenta líneas: en no-TTY la actividad
+    /// repetida dentro de la misma fase no abre línea nueva, así que un
+    /// repintado puede no producir ninguna línea. Por eso tiene su propio
+    /// contador.
+    #[cfg(test)]
+    pub fn repaints(&self) -> usize {
+        self.repaints.load(Ordering::Relaxed)
     }
 
     /// Cambia la fase actual.
@@ -249,11 +269,15 @@ impl PhaseProgress {
     /// actualizado. Útil en bucles de espera.
     ///
     /// En TTY repinta sobre la misma línea. En no-TTY no abre línea nueva: la
-    /// actividad repetida dentro de la misma fase se raciona.
+    /// actividad repetida dentro de la misma fase se raciona. El repintado se
+    /// cuenta en cualquier modo, porque es el trabajo que el indicador hace
+    /// aunque en no-TTY no produzca línea.
     pub fn tick(&self) {
         if !self.enabled || self.current.is_none() {
             return;
         }
+        #[cfg(test)]
+        self.repaints.fetch_add(1, Ordering::Relaxed);
         if !self.tty {
             return;
         }
@@ -584,6 +608,29 @@ mod tests {
         let progress = PhaseProgress::for_test(None, false);
         progress.tick();
         assert_eq!(progress.renders(), 0);
+    }
+
+    /// El repintado se cuenta aunque no abra línea nueva: es el trabajo que
+    /// hace el indicador para que el tiempo visible avance durante una
+    /// espera, y en no-TTY no produce ninguna línea.
+    ///
+    /// Sin fase no hay nada que repintar, así que el contador no se mueve.
+    #[test]
+    fn repaints_are_counted_even_without_a_new_line() {
+        let mut progress = PhaseProgress::for_test(None, false);
+        progress.phase("cleaning", "Limpiando datos…");
+        progress.tick();
+        progress.tick();
+        assert_eq!(
+            progress.repaints(),
+            2,
+            "la actividad repetida repinta aunque no abra línea"
+        );
+        assert_eq!(
+            progress.renders(),
+            1,
+            "y la línea sigue siendo una: el racionado no cede"
+        );
     }
 
     /// `close` no imprime mensaje de estado: el indicador no dice cómo terminó

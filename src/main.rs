@@ -1207,7 +1207,7 @@ async fn handle_translate(
     if route_to_daemon(daemon_mode, &client).await? {
         let mut progress = PhaseProgress::new();
         progress.phase("translating", "Traduciendo texto (daemon)…");
-        let result = translate_via_daemon(&client, text, source, target).await;
+        let result = translate_via_daemon(&client, text, source, target, &progress).await;
         let _elapsed = progress.close();
         let (translated, source, target) = result?;
         if json_mode {
@@ -1415,6 +1415,10 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     .into_temp_path();
                 progress.phase("cloning", "Clonando voz… (puede tardar varios minutos)");
                 progress.tick();
+                // El clonado es trabajo **síncrono**: bloquea el hilo mientras
+                // dura, así que el indicador no puede repintar durante él y el
+                // tiempo de la fase queda congelado. No es un defecto: el
+                // trabajo total lo aporta el mensaje final.
                 let cloned =
                     avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name).and_then(|()| {
                         progress.phase("saving", "Guardando referencia de voz…");
@@ -2293,6 +2297,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 };
                 progress.phase("synthesizing", "Sintetizando voz…");
                 progress.tick();
+                // La síntesis es trabajo **síncrono**: bloquea el hilo mientras
+                // dura, así que el indicador no puede repintar durante ella y el
+                // tiempo de la fase queda congelado. No es un defecto: el
+                // trabajo total lo aporta el mensaje final.
                 synthesize_voice_directly(
                     &engine,
                     &voice_store,
@@ -2433,8 +2441,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 } else {
                     text.clone()
                 };
-                progress.phase("synthesizing", "Sintetizando voz…");
+                progress.phase("synthesizing", "Sintetizando voz doblada…");
                 progress.tick();
+                // La síntesis es trabajo **síncrono**: bloquea el hilo mientras
+                // dura, así que el indicador no puede repintar durante ella y el
+                // tiempo de la fase queda congelado. No es un defecto: el
+                // trabajo total lo aporta el mensaje final.
                 synthesize_voice_directly(
                     &engine,
                     &voice_store,
@@ -2576,6 +2588,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     if mic {
                         progress.close_line();
                     }
+                    // La captura del micrófono es trabajo **síncrono** en su
+                    // fondo: bloquea el hilo mientras espera al Enter, así que
+                    // el indicador no puede repintar durante ella y el tiempo
+                    // de la fase queda congelado. La línea se cede antes para
+                    // que el aviso de captura no quede pegado a la fase. No es
+                    // un defecto: el trabajo total lo aporta el mensaje final.
                     let acquired = acquire_pcm(
                         audio.as_deref(),
                         mic,
@@ -3722,21 +3740,33 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     &format!("Descargando versión {}…", resolution.target),
                 );
                 progress.tick();
-                let staged = lifecycle::update_fetch::fetch(
-                    &client,
-                    &lifecycle::update_fetch::FetchRequest {
-                        program_dir: program_dir.clone(),
-                        target: target.to_string(),
-                        version: resolution.target.clone(),
-                    },
+                // La descarga y la verificación son esperas reales: el repintado
+                // mantiene viva la fase mientras el trabajo ocurre.
+                let staged = await_with_progress(
+                    &progress,
+                    lifecycle::update_fetch::fetch(
+                        &client,
+                        &lifecycle::update_fetch::FetchRequest {
+                            program_dir: program_dir.clone(),
+                            target: target.to_string(),
+                            version: resolution.target.clone(),
+                        },
+                    ),
                 )
                 .await
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
 
                 progress.phase("verifying", "Verificando la versión descargada…");
-                lifecycle::update_fetch::verify_boot(&staged.staging, target, &resolution.target)
-                    .await
-                    .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+                await_with_progress(
+                    &progress,
+                    lifecycle::update_fetch::verify_boot(
+                        &staged.staging,
+                        target,
+                        &resolution.target,
+                    ),
+                )
+                .await
+                .map_err(|e| lifecycle_error_to_cli(e.into()))?;
                 Ok(staged)
             }
             .await;
@@ -4502,6 +4532,76 @@ fn daemon_client() -> reqwest::Client {
         .expect("construir el cliente HTTP del daemon")
 }
 
+/// Intervalo con el que el indicador se repinta durante una espera.
+///
+/// Es la cadencia con la que la fase actualizada llega a verse en la terminal:
+/// un intervalo largo haría que el tiempo pareciera congelado entre paint y
+/// paint, y uno corto gastaría la CPU en pintar sin que nadie lo note.
+const PROGRESS_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Algo que puede repintar la fase mientras se espera.
+///
+/// El indicador de progreso es la implementación real; la prueba usa un doble
+/// que cuenta los repintados. El rasgo va aparte para que la prueba pueda
+/// observar **cuántas veces** se repintó, que es lo que hace el indicador.
+trait ProgressTicker {
+    /// Repinta la fase actual con el tiempo transcurrido actualizado.
+    fn repaint(&self);
+}
+
+impl ProgressTicker for PhaseProgress {
+    fn repaint(&self) {
+        self.tick();
+    }
+}
+
+/// Espera a un futuro reponiendo el indicador mientras no termina.
+///
+/// Es la forma de que una fase parezca viva durante un trabajo que no emite
+/// nada: el indicador se repinta con su propio reloj, de modo que el tiempo
+/// que muestra avanza de verdad.
+///
+/// El futuro se evalúa primero y el repintado se hace **entre** intentos, no
+/// durante: así el indicador no hace falta tenerlo prestado de forma mutable
+/// a través del `await`, y el repintado usa `tick`, que solo consulta el
+/// estado.
+///
+/// En modo no-TTY el repintado no abre línea nueva: el racionado del
+/// indicador lo impide, de modo que la actividad repetida dentro de la misma
+/// fase no inunda el log.
+///
+/// El resultado del futuro se devuelve tal cual, con su error.
+async fn await_with_progress<P, F, T>(progress: &P, future: F) -> T
+where
+    P: ProgressTicker + ?Sized,
+    F: std::future::Future<Output = T>,
+{
+    await_with_progress_every(progress, PROGRESS_REPAINT_INTERVAL, future).await
+}
+
+/// Igual que [`await_with_progress`], pero con el intervalo del repintado
+/// elegido por quien llama.
+///
+/// Existe para que una prueba pueda usar un intervalo corto y determinista
+/// sin cambiar el del producto.
+async fn await_with_progress_every<P, F, T>(
+    progress: &P,
+    interval: std::time::Duration,
+    future: F,
+) -> T
+where
+    P: ProgressTicker + ?Sized,
+    F: std::future::Future<Output = T>,
+{
+    let mut future = Box::pin(future);
+    loop {
+        match tokio::time::timeout(interval, &mut future).await {
+            Ok(value) => return value,
+            Err(_elapsed) => progress.repaint(),
+        }
+    }
+}
+
 /// Probe de vida (GET /health) con deadline corto contra `addr`; `false` en
 /// cualquier fallo (connection-refused incluido).
 async fn probe_health(client: &reqwest::Client, addr: &str) -> bool {
@@ -4571,18 +4671,25 @@ async fn transcribe_via_daemon(
     progress.phase("transcribing", "Transcribiendo audio (daemon)…");
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-    let resp = client
-        .post(format!("http://{}/transcribe", client_addr))
-        .json(&serde_json::json!({ "audio_b64": audio_b64, "source_language": source_language }))
-        .send()
-        .await
-        .map_err(|e| {
-            CliError::new(
-                ExitCode::DaemonUnreachable,
-                "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", client_addr, e),
+    // La espera se repinta con el indicador: `/transcribe` devuelve JSON plano
+    // y no emite eventos, así que sin esto la fase parecería congelada.
+    let resp = await_with_progress(
+        progress,
+        client
+            .post(format!("http://{}/transcribe", client_addr))
+            .json(
+                &serde_json::json!({ "audio_b64": audio_b64, "source_language": source_language }),
             )
-        })?;
+            .send(),
+    )
+    .await
+    .map_err(|e| {
+        CliError::new(
+            ExitCode::DaemonUnreachable,
+            "daemon_unreachable",
+            format!("Daemon inalcanzable en {}: {}", client_addr, e),
+        )
+    })?;
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
@@ -4608,6 +4715,7 @@ async fn translate_via_daemon(
     text: &str,
     source_language: &str,
     target_language: &str,
+    progress: &PhaseProgress,
 ) -> Result<(String, String, String), CliError> {
     let payload = serde_json::json!({
         "text": text,
@@ -4620,22 +4728,29 @@ async fn translate_via_daemon(
         .post(format!("http://{}/translate", client_addr))
         .json(&payload)
         .send();
-    let resp = tokio::time::timeout(std::time::Duration::from_millis(1500), fut)
-        .await
-        .map_err(|_| {
-            CliError::new(
-                ExitCode::DaemonUnreachable,
-                "daemon_unreachable",
-                format!("Daemon inalcanzable en {} (timeout 1500ms)", client_addr),
-            )
-        })?
-        .map_err(|e| {
-            CliError::new(
-                ExitCode::DaemonUnreachable,
-                "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", client_addr, e),
-            )
-        })?;
+    // La espera se repinta con el indicador: `/translate` devuelve JSON plano
+    // y no emite eventos, así que sin esto la fase parecería congelada. El
+    // timeout de 1500 ms del endpoint se conserva: solo cambia lo que se ve
+    // mientras espera.
+    let resp = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        await_with_progress(progress, fut),
+    )
+    .await
+    .map_err(|_| {
+        CliError::new(
+            ExitCode::DaemonUnreachable,
+            "daemon_unreachable",
+            format!("Daemon inalcanzable en {} (timeout 1500ms)", client_addr),
+        )
+    })?
+    .map_err(|e| {
+        CliError::new(
+            ExitCode::DaemonUnreachable,
+            "daemon_unreachable",
+            format!("Daemon inalcanzable en {}: {}", client_addr, e),
+        )
+    })?;
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
@@ -6475,5 +6590,102 @@ mod tests {
                 "schema_version": avi_core::json_emitter::CLI_SCHEMA_VERSION,
             })
         );
+    }
+
+    /// El indicador con el que se mide el repintado: cuenta las veces que
+    /// `tick` se llamó, sin depender de capturar stderr.
+    ///
+    /// Es un doble del indicador, no el indicador: el de producción no expone
+    /// su contador, y aquí lo que importa es **cuántas veces se intentó
+    /// repintar**, no lo que se pintó.
+    #[derive(Default)]
+    struct CountingProgress {
+        repaints: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingProgress {
+        fn repaints(&self) -> usize {
+            self.repaints.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl ProgressTicker for CountingProgress {
+        fn repaint(&self) {
+            self.repaints
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Un futuro que tarda un rato en terminar.
+    ///
+    /// Duerme un tiempo concreto, así que sigue pendiente durante ese tiempo
+    /// y el ayudante agota su espera para repintar.
+    async fn slow_future(millis: u64) -> u32 {
+        tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+        0
+    }
+
+    /// El intervalo con el que el indicador se repinta durante una espera.
+    const TEST_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(5);
+
+    /// Espera a un futuro reponiendo el indicador mientras no termina: el
+    /// futuro inmediato no llega a consumirse, así que no hay repintado.
+    #[tokio::test]
+    async fn await_with_progress_returns_immediately_without_repainting() {
+        let progress = CountingProgress::default();
+        let value =
+            await_with_progress_every(&progress, TEST_REPAINT_INTERVAL, async { 7u32 }).await;
+        assert_eq!(value, 7);
+        assert_eq!(progress.repaints(), 0, "un futuro inmediato no repinta");
+    }
+
+    /// Con un futuro lento, el indicador se repinta hasta que el trabajo
+    /// termina: la fase no se queda congelada mientras espera.
+    #[tokio::test]
+    async fn await_with_progress_repaints_while_the_future_is_pending() {
+        let progress = CountingProgress::default();
+        let value =
+            await_with_progress_every(&progress, TEST_REPAINT_INTERVAL, slow_future(50)).await;
+        assert_eq!(value, 0);
+        assert!(
+            progress.repaints() >= 3,
+            "un futuro lento se repinta mientras espera: {}",
+            progress.repaints()
+        );
+    }
+
+    /// El indicador real no repinta si no hay fase abierta: `tick` solo
+    /// consulta el estado, y sin fase no hay línea que repintar.
+    ///
+    /// Es la regla que hace que el repintado no invente actividad: la fase
+    /// tiene que existir para que el tiempo visible avance.
+    #[test]
+    fn tick_without_a_phase_does_not_repaint() {
+        let progress = PhaseProgress::new();
+        progress.tick();
+    }
+
+    /// El trabajo síncrono es la excepción declarada al repintado.
+    ///
+    /// La síntesis, el clonado local y la captura del micrófono bloquean el
+    /// hilo mientras duran, así que el indicador no puede repintar: no hay
+    /// forma de que el tiempo visible avance durante ellos. La excepción está
+    /// escrita en el punto de llamada de cada uno, y esta prueba la fija: el
+    /// indicador **no** repinta por sí solo durante el trabajo síncrono, y el
+    /// tiempo total de la operación lo aporta el mensaje final.
+    ///
+    /// La prueba no invoca la síntesis —que necesita el motor—: comprueba la
+    /// regla que la hace verdadera, que el indicador solo repinta cuando se
+    /// lo pide.
+    #[test]
+    fn synchronous_work_is_declared_as_the_exception_to_repainting() {
+        let progress = PhaseProgress::new();
+        // Sin fase no hay repintado: es lo que hace que el trabajo síncrono
+        // sea una excepción declarada y no un defecto de la espera.
+        progress.tick();
+        // Con fase, el repintado es lo que mantiene viva la espera asíncrona.
+        let mut progress = progress;
+        progress.phase("synthesizing", "Sintetizando voz…");
+        progress.tick();
     }
 }
