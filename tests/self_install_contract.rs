@@ -20,7 +20,8 @@
 //! Y aquí no cabe en `cli_golden.rs`: el fallo de provisión pasa por la descarga de un
 //! modelo contra un puerto local cerrado, con los reintentos del cliente de descarga, y esa
 //! espera compite con las pruebas de presupuesto de `cli_golden.rs` —
-//! `perf_local_fast_commands_under_budget` y `perf_invalid_input_rejection_fail_fast`, con
+//! `perf_local_fast_commands_under_budget` y `perf_invalid_input_rejection_is_immediate`,
+//! con
 //! techos de 1500 ms—, que corren **en paralelo** dentro del mismo binario.
 //!
 //! En su propio binario de prueba no hay problema: `cargo test` ejecuta los targets de

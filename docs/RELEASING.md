@@ -166,7 +166,7 @@ Con el tag pusheado, ejecuta sin intervención:
       voz `default`;
     - compila el motor TTS y ejecuta su `--self-test`;
     - empaqueta su artefacto con `cargo xtask package
-      --expect-version "${CIRCLE_TAG#v}"` (fail-fast si el tag difiere de
+      --expect-version "${CIRCLE_TAG#v}"` (falla de inmediato si el tag difiere de
       `VERSION`; repite `version` y `voice list`, descarga ONNX Runtime
       verificando el SHA-256 fijado en `packaging/pins.json`, monta el bundle y
       audita que ningún binario importe nada fuera del sistema base del target,

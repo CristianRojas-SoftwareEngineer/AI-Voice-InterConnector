@@ -47,7 +47,7 @@ const MIN_SEGMENT: usize = 4;
 /// `test_..._with_leftover_todo`). Si el marcador pasa a español, entra en la lista.
 ///
 /// `total` tampoco entra, por la misma regla: es inglés válido y el árbol lo usa
-/// como tal (`total_bytes`, `wer_total`, `total_samples`, `total_steps`,
+/// como tal (`total_bytes`, `word_error_rate_total`, `total_samples`, `total_steps`,
 /// `total_cmp`, `STREAM_TOTAL_DEADLINE`, `t_total` y un `total` acumulador).
 /// Igual que `variable`, es inglés bien puesto y por eso no es deuda.
 ///

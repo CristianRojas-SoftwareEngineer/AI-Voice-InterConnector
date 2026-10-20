@@ -712,7 +712,7 @@ fn setup_failure_keeps_install() {
     );
 
     // El camino de éxito no se ha tocado: un `setup` que no tiene nada que hacer no produce
-    // `reason` de contrato, y por eso el cableado sale por `Hecho` y con código 0. La
+    // `reason` de contrato, y por eso el cableado sale por `Done` y con código 0. La
     // prueba de al lado lo demuestra con la provisión entera, sin atajos.
 
     // El resumen en texto dice lo mismo que el envelope.
@@ -764,7 +764,7 @@ fn setup_failure_keeps_install() {
 /// El camino de éxito no lleva `reason`, y se demuestra con el estado que el motor
 /// devuelve cuando no hay nada que provisionar:
 /// `AlreadyProvisioned`, sin `reason` de contrato, que es lo que hace que el cableado salga
-/// por `Hecho` con código 0 en vez de por veredicto.
+/// por `Done` con código 0 en vez de por veredicto.
 ///
 /// El sandbox tiene los repos de la selección ya provisionados, así que no queda nada que
 /// descargar.

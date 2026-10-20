@@ -16,7 +16,7 @@ El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Q
 
 `start`/`serve` aceptan `--auto-restart`/`--max-retries`/`--warm-voice`; `start`/`stop`/`restart`/`status` aceptan `--json` ( `serve` sin `--json`). `start`/`restart` exigen modelo provisionado (`require_model_provisioned`), `stop`/`status` no.
 
-**`--warm-voice <nombre>` (default `default`):** selecciona qué voz precalienta el daemon al arranque en vez de forzar `default` (el residente TTS es de una sola voz). `start` lo propaga al `serve` que respawnea (`spawn_background` anexa `--warm-voice`); `restart` calienta siempre `default`. Validación *fail-fast*: el arranque valida la voz y enlaza el puerto **antes de cargar los modelos**. Si la voz no existe sale con exit 3 `voice_not_found` (no degrada en silencio ni cae a `default`); si el puerto está ocupado sale con exit 6 `port_in_use`; en ambos casos al instante, sin esperar el deadline de arranque.
+**`--warm-voice <nombre>` (default `default`):** selecciona qué voz precalienta el daemon al arranque en vez de forzar `default` (el residente TTS es de una sola voz). `start` lo propaga al `serve` que respawnea (`spawn_background` anexa `--warm-voice`); `restart` calienta siempre `default`. Validación *temprana*: el arranque valida la voz y enlaza el puerto **antes de cargar los modelos**. Si la voz no existe sale con exit 3 `voice_not_found` (no degrada en silencio ni cae a `default`); si el puerto está ocupado sale con exit 6 `port_in_use`; en ambos casos al instante, sin esperar el deadline de arranque.
 
 ## Despacho del handler
 

@@ -7,7 +7,7 @@
 //! `self install`: instalar, reparar y rechazar por bundle incompleto.
 //!
 //! Son los tres modos de la operación, distinguidos por la posición del ejecutable que
-//! se invoca, y los doce pasos de su flujo en orden. La operación sabe qué debe haber
+//! se invoca, y los once pasos de su flujo en orden. La operación sabe qué debe haber
 //! alrededor del binario, registra qué se integró en el `PATH`, deja recibo, repara una
 //! instalación existente y distingue ejecutar desde un bundle extraído a mano de
 //! ejecutar desde la propia instalación.

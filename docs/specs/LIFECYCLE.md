@@ -791,7 +791,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `USAGE.md` | Guía de uso con el programa ya instalado: comandos y `--json`, modelos, ciclo de vida completo (`self`), daemon, clonación y solución de problemas; remite al README para instalar |
 | `docs/CLI/README.md` | **Índice** de `docs/CLI/`: el árbol de documentos, la tabla de comandos de nivel superior (con `self` y **sin** `uninstall`) y la tabla de códigos de salida, incluidos los del ciclo de vida |
 | `docs/CLI/CONTRACT.md` | Contrato normativo de toda la CLI: superficie, despacho al daemon, validación, códigos de salida, canal de error, envelope `--json` y las dos versiones de esquema; incluye el contrato con el plugin de narración |
-| `docs/CLI/commands/SELF.md` | Documento del grupo `self`: los tres modos de `self install`, sus doce pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
+| `docs/CLI/commands/SELF.md` | Documento del grupo `self`: los tres modos de `self install`, sus once pasos, `setup_failed` como éxito parcial y el alcance real de `self uninstall` sobre el estado |
 | `docs/CLI/commands/CLEANUP.md` | Documento de `cleanup` **contra el módulo `cleanup` de `avi-lifecycle`**: el planificador único, las reglas R1 y R3 que aplica `cleanup`, el gate de categoría y la confirmación destructiva |
 | `docs/CLI/commands/SETUP.md` | Documento de `setup` **contra el módulo `setup` de `avi-lifecycle`**: selección, idempotencia, caché exclusiva de modelos y la poda que usa `self update` |
 | `docs/CLI/commands/DOCTOR.md` | Documento de `doctor` **contra el módulo `doctor` de `avi-lifecycle`**: las nueve claves del envelope, los chequeos y el veredicto de un solo objeto |
@@ -800,7 +800,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/CI.md` | Análisis de por qué el pipeline de CI tiene la forma que tiene y cómo se comportan sus cachés; la definición ejecutable es la configuración del pipeline |
 | `.github/PULL_REQUEST_TEMPLATE.md` | Plantilla de descripción de los pull requests: problema, verificación y comprobaciones previas |
 | `docs/DISTRIBUTION.md` | Canales (script, Cask), antivirus y runbook de reporte a Microsoft; absorbe lo vigente de `SELF-HOSTED-INSTALL.md` |
-| `docs/SELF-HOSTED-INSTALL.md` | Retirado: no existe en el arbol. Su contenido vigente esta en `docs/DISTRIBUTION.md` |
+| `docs/SELF-HOSTED-INSTALL.md` | Retirado: no existe en el árbol. Su contenido vigente está en `docs/DISTRIBUTION.md` |
 | `docs/DESIGN.md` | Arquitectura, motor TTS, estructura del proyecto, comandos y UX de audio interactivo; su árbol describe las piezas vigentes, de modo que la ausencia de los cinco scripts de la raíz es un hecho comprobable y no un olvido |
 | `docs/GOAL.md` | Especificación ideal del producto y clasificación de specs, con la firma de código en el goal a largo plazo |
 | `docs/MANUAL-VALIDATION.md` | Procedimiento operativo de la validación end-to-end manual: la matriz de la CLI que CI no puede ejercitar, con la caché de modelos y la integración de `PATH` vigentes |

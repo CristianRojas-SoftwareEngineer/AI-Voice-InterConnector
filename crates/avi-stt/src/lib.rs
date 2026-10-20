@@ -148,13 +148,14 @@ mod tests {
     /// mono, la tasa que exige Parakeet), con su transcripción de referencia
     /// verificada manualmente como ground truth. La comparación normaliza ambos
     /// lados a minúsculas sin diacríticos ni puntuación (insensible a acentos y
-    /// signos), y acepta WER ≤ 0.25 sobre el texto normalizado.
+    /// signos), y acepta una tasa de error de palabras ≤ 0.25 sobre el texto normalizado.
     ///
     /// `parakeet_sample_16k` es un saludo corto
     /// (2.96 s) que Parakeet emite en **inglés** ("Hello, how are you?"): el
     /// TDT 0.6B v3 auto-detecta idioma y un saludo breve es fonéticamente
     /// ambiguo. Por eso los corpus en español (`corpus_watermark`,
-    /// `corpus_synthesis`, `corpus_responses`) validan WER ≤ 0.25 (el modelo
+    /// `corpus_synthesis`, `corpus_responses`) validan una tasa de error de palabras
+    /// ≤ 0.25 (el modelo
     /// real alcanza 0.08–0.21) y `parakeet_sample` solo exige una
     /// transcripción no vacía.
     #[cfg(feature = "native-stt")]
@@ -167,7 +168,7 @@ mod tests {
         // El directorio `tests/assets/` de este crate. `parakeet_sample_16k`
         // es un saludo breve que el modelo emite en inglés y solo exige una
         // transcripción no vacía; los corpus restantes son español estable y
-        // validan paridad por WER.
+        // validan paridad por la tasa de error de palabras.
         let sample = engine
             .transcribe(
                 &avi_audio::load_wav_16k_mono_pcm(
@@ -220,7 +221,8 @@ mod tests {
                 .to_string();
 
             // Ambos lados normalizados: minúsculas, sin diacríticos ni
-            // puntuación (el WER no debe penalizar acentos ni signos).
+            // puntuación (la tasa de error de palabras no debe penalizar acentos
+            // ni signos).
             let expected_normalized = normalize_text(&expected);
             let actual_normalized = normalize_text(&actual);
             let ref_words: Vec<&str> = expected_normalized.split_whitespace().collect();
@@ -230,21 +232,21 @@ mod tests {
                 continue;
             }
 
-            // Igualdad normalizada no se cumple: umbral de paridad por WER a
-            // nivel de palabra (distancia de Levenshtein entre secuencias).
+            // Igualdad normalizada no se cumple: umbral de paridad por la tasa de
+            // error de palabras (distancia de Levenshtein entre secuencias).
             let distance = levenshtein_words(&ref_words, &hyp_words);
-            let wer_value = distance as f64 / ref_words.len().max(1) as f64;
+            let word_error_rate = distance as f64 / ref_words.len().max(1) as f64;
 
             // el modelo Parakeet-TDT 0.6B int8 (export istupakov) alcanza
-            // RTF ~0.10 pero WER real ~0.08–0.21 sobre fixtures de voz
-            // sintética. Se valida paridad con WER ≤ 0.25, que abarca
-            // el WER observado (0.083 watermark incluido el "jejeje" inicial no
+            // RTF ~0.10 pero una tasa de error de palabras real de ~0.08–0.21 sobre
+            // fixtures de voz sintética. Se valida paridad con ≤ 0.25, que abarca
+            // el valor observado (0.083 watermark incluido el "jejeje" inicial no
             // reflejado en el fixture, 0.214 sintesis, 0.111 respuestas).
             let threshold = 0.25;
             assert!(
-                wer_value <= threshold,
-                "WER {:.4} supera el umbral de paridad {} en {} (esperado: {:?}, obtenido: {:?})",
-                wer_value,
+                word_error_rate <= threshold,
+                "la tasa de error de palabras {:.4} supera el umbral de paridad {} en {} (esperado: {:?}, obtenido: {:?})",
+                word_error_rate,
                 threshold,
                 wav,
                 expected_normalized,
@@ -254,7 +256,8 @@ mod tests {
     }
 
     /// Distancia de Levenshtein a nivel de palabra entre `reference` e
-    /// `hypothesis`, usada para calcular el WER de la prueba de paridad.
+    /// `hypothesis`, usada para calcular la tasa de error de palabras de la prueba
+    /// de paridad.
     #[cfg(feature = "native-stt")]
     fn levenshtein_words(reference: &[&str], hypothesis: &[&str]) -> usize {
         let n = reference.len();

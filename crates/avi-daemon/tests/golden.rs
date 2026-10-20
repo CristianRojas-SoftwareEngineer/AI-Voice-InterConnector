@@ -878,8 +878,8 @@ async fn voices_clone_truncated_wav_emits_invalid_audio() {
 /// usa la guarda (`exists(...)`): arrancar el servidor real
 /// con voz válida bloquearía sirviendo, así que no se invoca.
 #[tokio::test]
-async fn warm_voice_fail_fast_and_acceptance() {
-    // Fail-fast: voz inexistente → Err antes del bind.
+async fn warm_voice_rejected_before_bind_and_acceptance() {
+    // Guarda de arranque: voz inexistente → Err antes del bind.
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
     let nonexistent_voice = format!("warm_nonexistent_{}", std::process::id());
     let dir = tempfile::tempdir().expect("directorio temporal");
@@ -901,7 +901,7 @@ async fn warm_voice_fail_fast_and_acceptance() {
     );
     assert!(
         err.to_string().contains("--warm-voice"),
-        "el error fail-fast debe mencionar --warm-voice: {err}"
+        "el error de arranque debe mencionar --warm-voice: {err}"
     );
 
     // Aceptación: una voz existente satisface el predicado de la guarda.

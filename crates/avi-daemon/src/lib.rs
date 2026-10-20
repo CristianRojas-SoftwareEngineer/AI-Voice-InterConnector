@@ -2176,7 +2176,7 @@ async fn prepare_server(
             message: format!("No se pudo inicializar el almacén de voces: {}", e),
         })?;
 
-    // Fail-fast: una `--warm-voice` inexistente aborta el arranque antes de
+    // Guarda de arranque: una `--warm-voice` inexistente aborta el arranque antes de
     // enlazar y de cargar modelos, sin degradar en silencio ni caer a `default`.
     // Existe tanto una voz clonada como un preset del motor (`ryan`, `vivian`),
     // que no tiene referencia `.qvoice`.

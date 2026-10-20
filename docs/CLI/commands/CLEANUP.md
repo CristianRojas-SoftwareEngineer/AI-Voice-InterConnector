@@ -26,7 +26,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 ## El planificador: una sola fuente de la lista
 
-`cleanup::plan(roots, options)` construye la lista de destinos con sus tamaños aplicando **R1 y R3**, y la usan **las tres cosas que la necesitan**: el resumen de la confirmación, la salida de `--dry-run` y la ejecución. No puede haber divergencia entre lo que se anuncia y lo que ocurre porque no hay dos implementaciones: el plan de `--dry-run` y la lista de borrado salen de la misma llamada, como comprueba `plan_and_execution_agree_under_shared_root`.
+`cleanup::plan(roots, options)` construye la lista de destinos con sus tamaños aplicando **R1 y R3**, y la usan **las tres cosas que la necesitan**: el resumen de la confirmación, la salida de `--dry-run` y la ejecución. No puede haber divergencia entre lo que se anuncia y lo que ocurre porque no hay dos implementaciones: el plan de `--dry-run` y la lista de borrado salen de la misma llamada, como comprueba `shared_hf_cache_keeps_foreign_entries`.
 
 ### R1 y R3, en una frase cada una
 

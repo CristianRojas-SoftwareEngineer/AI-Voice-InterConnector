@@ -742,7 +742,7 @@ enum DaemonCommands {
         /// Número máximo de reintentos con reinicio automático (default 3)
         #[arg(long, default_value_t = 3)]
         max_retries: u32,
-        /// Voz a precalentar al arranque (fail-fast si no existe)
+        /// Voz a precalentar al arranque (falla de inmediato si no existe)
         #[arg(long, default_value = "default")]
         warm_voice: String,
     },
@@ -760,7 +760,7 @@ enum DaemonCommands {
         /// Número máximo de reintentos con reinicio automático (default 3)
         #[arg(long, default_value_t = 3)]
         max_retries: u32,
-        /// Voz a precalentar al arranque (fail-fast si no existe)
+        /// Voz a precalentar al arranque (falla de inmediato si no existe)
         #[arg(long, default_value = "default")]
         warm_voice: String,
         /// Fichero donde el hijo publica el resultado de su arranque: su `addr`
@@ -2461,7 +2461,6 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     &target_language,
                     tmp_wav.path(),
                 )?;
-                // Divergencia 5 corregida: `say` reproduce de verdad.
                 progress.phase("playing", "Reproduciendo…");
                 audio::AudioService::new()
                     .play_wav(tmp_wav.path())
@@ -3438,7 +3437,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // `setup_failed` es un **éxito parcial** —el programa está instalado y
             // lo único que falta es la provisión—, con código propio. No es un `CliError`:
             // el resumen final y el envelope se emiten igual, y lo único que cambia es
-            // el `reason` y el código de salida. `Salida::Veredicto` es el mecanismo que ya
+            // el `reason` y el código de salida. `Outcome::Verdict` es el mecanismo que ya
             // existe para eso —el comando emitió su payload y solo queda fijar el código—,
             // y es el mismo que usa `doctor` para su envelope único.
             let partial = outcome.lifecycle_error();

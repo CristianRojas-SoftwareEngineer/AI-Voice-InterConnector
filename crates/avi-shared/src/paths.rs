@@ -266,8 +266,8 @@ pub const MODELS_XET_SUBDIR: &str = "xet";
 
 /// Patrones de descarga por modelo (`snapshot_download` con `allow_patterns`).
 /// Vacío = snapshot completo (repos pequeños/cohesivos). Para `parakeet-tdt-v3`
-/// se acota a los 4 artefactos que consume `ParakeetEngine`
-/// (`DEFAULT_PARAKEET_MODEL_DIR`); sin esto se bajarían ~40 GB de formatos no usados.
+/// se acota a los 4 artefactos que consume `ParakeetEngine`; sin esto se bajarían
+/// ~40 GB de formatos no usados.
 /// Los modelos de traducción se acotan a los cinco ficheros del modelo CTranslate2
 /// y excluyen el README y `.gitattributes` del repo.
 pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[

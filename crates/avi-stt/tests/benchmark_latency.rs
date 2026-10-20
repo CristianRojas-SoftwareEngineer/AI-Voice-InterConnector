@@ -17,8 +17,8 @@ use avi_core::engine::SttEngine;
 /// vía ort, greedy, hilos físicos) sobre los WAVs del repo.
 ///
 /// Mide: tiempo de carga del modelo, latencia por transcripción (min/mediana/
-/// max sobre 5 medidas tras 2 warmups), RTF vs duración del audio y WER
-/// normalizado contra el texto correcto verificado.
+/// max sobre 5 medidas tras 2 warmups), RTF vs duración del audio y tasa de error
+/// de palabras normalizada contra el texto correcto verificado.
 ///
 /// Ejecutar con: `cargo test -p avi-stt --test benchmark_latency -- --ignored --nocapture`
 #[test]
@@ -82,12 +82,12 @@ fn benchmark_latency_quality() {
         samples_ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let (min, med, max) = (samples_ms[0], samples_ms[2], samples_ms[4]);
         let rtf = med / 1000.0 / duration_s;
-        let w = wer_text(expected, &text);
+        let word_error_rate = word_error_rate_text(expected, &text);
         let has_diacritics = text.contains(['á', 'é', 'í', 'ó', 'ú', 'ü', 'ñ']);
         let punctuation = text.chars().any(|c| "¿¡,.;:!?()\"'".contains(c));
 
         println!(
-            "{name}|DUR={duration_s:.2}s|MIN={min:.1}ms|MED={med:.1}ms|MAX={max:.1}ms|RTF={rtf:.2}|WER={w:.4}|TILDES={has_diacritics}|PUNTUACION={punctuation}"
+            "{name}|DUR={duration_s:.2}s|MIN={min:.1}ms|MED={med:.1}ms|MAX={max:.1}ms|RTF={rtf:.2}|TASA_ERROR_PALABRAS={word_error_rate:.4}|TILDES={has_diacritics}|PUNTUACION={punctuation}"
         );
         println!("  TEXTO={text:?}");
     }
@@ -115,7 +115,7 @@ fn levenshtein_words(reference: &[&str], hypothesis: &[&str]) -> usize {
     dp[n][m]
 }
 
-fn wer_text(reference: &str, hypothesis: &str) -> f64 {
+fn word_error_rate_text(reference: &str, hypothesis: &str) -> f64 {
     let ref_normalized = avi_stt::normalize_text(reference);
     let hyp_normalized = avi_stt::normalize_text(hypothesis);
     let r: Vec<&str> = ref_normalized.split_whitespace().collect();

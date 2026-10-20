@@ -298,11 +298,12 @@ mod tests {
     /// eficiencia, no reproducir literalmente cada hipótesis. El corpus se usa
     /// como referencia de CALIDAD, no como verdad esperada: sobre estos textos
     /// la varianza de paráfrasis entre dos hipótesis igualmente válidas
-    /// alcanza WER 0.19 de media (p. ej. «Don't» vs «Do not», «a watermark»
+    /// alcanza una tasa de error de palabras de 0.19 de media (p. ej. «Don't» vs «Do not», «a watermark»
     /// vs «any watermark», «Optimizar para la claridad externa» vs la forma
     /// conjugada de la referencia). Por eso
     /// los umbrales separan «variación válida» de «motor roto» (modelo
-    /// equivocado, tokenización rota o salida degradada dispararían el WER
+    /// equivocado, tokenización rota o salida degradada dispararían la tasa de
+    /// error de palabras
     /// medio muy por encima de 0.35), y se complementan con checks
     /// funcionales: salida no vacía, sin `</s>` ni `<unk>`.
     #[cfg(feature = "native-translation")]
@@ -321,7 +322,7 @@ mod tests {
             ("opus-mt-en-es", "translate_en_es.reference.json"),
         ];
 
-        let mut wer_total = 0.0;
+        let mut word_error_rate_total = 0.0;
         let mut n_items = 0usize;
 
         for (model, fixture) in corpus {
@@ -370,32 +371,32 @@ mod tests {
                 let ref_words: Vec<&str> = expected.split_whitespace().collect();
                 let hyp_words: Vec<&str> = actual.split_whitespace().collect();
                 let distance = levenshtein_words(&ref_words, &hyp_words);
-                let wer = distance as f64 / ref_words.len().max(1) as f64;
+                let word_error_rate = distance as f64 / ref_words.len().max(1) as f64;
 
                 assert!(
-                    wer <= 0.6,
-                    "WER por ítem {:.4} supera el tope 0.6 en {} ({:?}): esperado {:?}, obtenido {:?}",
-                    wer,
+                    word_error_rate <= 0.6,
+                    "la tasa de error de palabras por ítem {:.4} supera el tope 0.6 en {} ({:?}): esperado {:?}, obtenido {:?}",
+                    word_error_rate,
                     model,
                     reference_pair.input,
                     expected,
                     actual
                 );
 
-                wer_total += wer;
+                word_error_rate_total += word_error_rate;
                 n_items += 1;
                 eprintln!(
-                    "[corpus] {} | WER {:.4} | {:?} -> {:?}",
-                    model, wer, reference_pair.input, actual
+                    "[corpus] {} | TASA_ERROR_PALABRAS {:.4} | {:?} -> {:?}",
+                    model, word_error_rate, reference_pair.input, actual
                 );
             }
         }
 
-        let average_wer = wer_total / n_items.max(1) as f64;
+        let average_word_error_rate = word_error_rate_total / n_items.max(1) as f64;
         assert!(
-            average_wer <= 0.35,
-            "WER medio de corpus {:.4} supera el umbral 0.35 (motor degradado)",
-            average_wer
+            average_word_error_rate <= 0.35,
+            "la tasa de error de palabras media del corpus {:.4} supera el umbral 0.35 (motor degradado)",
+            average_word_error_rate
         );
     }
 
@@ -409,7 +410,8 @@ mod tests {
     }
 
     /// Distancia de Levenshtein a nivel de palabra entre `reference` e
-    /// `hypothesis`, usada para calcular el WER de la prueba de conformidad.
+    /// `hypothesis`, usada para calcular la tasa de error de palabras de la prueba de
+    /// conformidad.
     #[cfg(feature = "native-translation")]
     fn levenshtein_words(reference: &[&str], hypothesis: &[&str]) -> usize {
         let n = reference.len();

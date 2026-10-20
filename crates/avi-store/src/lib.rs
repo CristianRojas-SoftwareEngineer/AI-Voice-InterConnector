@@ -19,8 +19,9 @@ use avi_shared::paths::{
 /// Voces de fábrica: `ryan`/`vivian` son presets del motor (modelo CustomVoice)
 /// sin audio; `default` es voz clonada de fábrica (`.qvoice` con solo la huella
 /// de timbre, x-vector, que se sintetiza con el modelo Base y `--graft`) para
-/// garantizar `WER ≤0.25` en texto corto. La distinción preset/clonada vive
-/// en `avi-tts::resolve_voice_engine` (presencia de `reference.qvoice`).
+/// garantizar una tasa de error de palabras ≤ 0.25 en texto corto. La distinción
+/// preset/clonada vive en `avi-tts::resolve_voice_engine` (presencia de
+/// `reference.qvoice`).
 pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 
 /// Asset embebido: `.qvoice` de fábrica para `default`, una voz clonada con solo

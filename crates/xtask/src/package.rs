@@ -108,7 +108,7 @@ fn release_asset_name(triple: &str, version: &str) -> Result<String> {
     ))
 }
 
-/// Puerta tag-versión: fail-fast si la versión del CLI no es la
+/// Puerta tag-versión: falla de inmediato si la versión del CLI no es la
 /// esperada por quien invoca (en CI, `${CIRCLE_TAG#v}`).
 fn check_expect_version(actual: &str, expect: Option<&str>) -> Result<()> {
     if let Some(want) = expect {

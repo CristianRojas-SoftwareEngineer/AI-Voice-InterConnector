@@ -62,7 +62,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 Este es el punto donde el contrato es más estricto y donde el comportamiento se decidió a propósito:
 
 - Con `--json`, `doctor` emite **un único objeto**: el reporte, con el veredicto dentro (`checks` y `failed`).
-- Si algún chequeo falla, el código de salida es **1** y **no se adjunta el objeto `error` detrás**. Es una **salida por veredicto** (`Salida::Veredicto`), no un error: el comando corrió sin error y su resultado es negativo.
+- Si algún chequeo falla, el código de salida es **1** y **no se adjunta el objeto `error` detrás**. Es una **salida por veredicto** (`Outcome::Verdict`), no un error: el comando corrió sin error y su resultado es negativo.
 - Devolver `Err(CliError)` desde aquí haría que `main` escribiera un segundo objeto `error` detrás del reporte y el envelope sería ilegible, que es exactamente el defecto que «cada invocación emite exactamente un objeto JSON» prohíbe.
 
 Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea de veredicto detrás; si entre ellos está `pending_artifacts`, se añade la pista de recoger los restos con `doctor --repair`. Si todo pasa, la lista completa con `✓` va a stdout.

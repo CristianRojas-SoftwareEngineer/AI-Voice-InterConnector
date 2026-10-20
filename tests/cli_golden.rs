@@ -2128,7 +2128,7 @@ fn cleanup_dry_run_matches_fixture() {
     assert!(expected.get("dry_run").is_none());
 }
 
-// ─── Línea base del indicador de progreso (Hito 1) ─────────────────────────
+// ─── Línea base del indicador de progreso ───────────────────────────────────
 //
 // Estas pruebas fijan el comportamiento ACTUAL de la salida por stderr de un
 // comando con indicador, para que un cambio posterior pueda distinguir «lo
@@ -2924,7 +2924,8 @@ fn speech_es_latam_rejected_by_parser_exits_2() {
 
 mod tts {
     use super::*;
-    // El trait STT solo se necesita para el cálculo de WER real (native-stt).
+    // El trait STT solo se necesita para el cálculo de la tasa de error de
+    // palabras real (native-stt).
     #[cfg(feature = "native-stt")]
     use avi_core::engine::SttEngine;
     use std::path::Path;
@@ -3131,7 +3132,8 @@ mod tts {
     }
 
     /// El WAV producido debe ser PCM s16le mono 24 kHz con muestras (spec del motor).
-    /// Solo lo usan los E2E de síntesis que verifican WER real (native-stt).
+    /// Solo lo usan los E2E de síntesis que verifican la tasa de error de
+    /// palabras real (native-stt).
     #[cfg(feature = "native-stt")]
     fn valid_wav_24k(path: &Path) {
         let reader = hound::WavReader::open(path)
@@ -3143,17 +3145,17 @@ mod tts {
         assert!(reader.duration() > 0, "no puede estar vacío");
     }
 
-    /// WER (por palabras normalizadas, Levenshtein) del WAV frente al texto
-    /// fuente, vía Parakeet TDT v3 (ort/ONNX Runtime).
+    /// Tasa de error de palabras (por palabras normalizadas, Levenshtein) del
+    /// WAV frente al texto fuente, vía Parakeet TDT v3 (ort/ONNX Runtime).
     #[cfg(feature = "native-stt")]
-    fn wer_vs_text(path: &Path, text: &str) -> f64 {
-        wer_and_transcript(path, text).0
+    fn word_error_rate_vs_text(path: &Path, text: &str) -> f64 {
+        word_error_rate_and_transcript(path, text).0
     }
 
-    /// WER del WAV frente al texto fuente junto con la transcripción obtenida;
-    /// Parakeet autodetecta el idioma del audio.
+    /// Tasa de error de palabras del WAV frente al texto fuente junto con la
+    /// transcripción obtenida; Parakeet autodetecta el idioma del audio.
     #[cfg(feature = "native-stt")]
-    fn wer_and_transcript(path: &Path, text: &str) -> (f64, String) {
+    fn word_error_rate_and_transcript(path: &Path, text: &str) -> (f64, String) {
         let pcm = avi_audio::load_wav_16k_mono_pcm(path.to_string_lossy().as_ref())
             .unwrap_or_else(|e| panic!("no se pudo cargar {} a 16k: {}", path.display(), e));
         let snapshot = avi_store::ModelStore::new()
@@ -3238,7 +3240,8 @@ mod tts {
     // ─── synthesize ─────────────────────────────────────────────────────
 
     /// Éxito con `--label`: exit 0, WAV persistido en `speech/`, envelope y
-    /// WER ≤ 0.25 frente al texto fuente. La verificación de WER exige el motor
+    /// una tasa de error de palabras ≤ 0.25 frente al texto fuente. La
+    /// verificación exige el motor
     /// Parakeet (native-stt); sin el feature no se compila (en CI featureless los
     /// modelos tampoco están, así que no se pierde cobertura).
     #[cfg(feature = "native-stt")]
@@ -3291,28 +3294,35 @@ mod tts {
             "el WAV debe estar persistido en el almacén"
         );
         valid_wav_24k(audio_path);
-        let wer = wer_vs_text(
+        let word_error_rate = word_error_rate_vs_text(
             audio_path,
             "Hola, este es un mensaje de prueba para la verificación.",
         );
-        assert!(wer <= 0.25, "WER {} debe ser ≤ 0.25", wer);
+        assert!(
+            word_error_rate <= 0.25,
+            "la tasa de error de palabras {} debe ser ≤ 0.25",
+            word_error_rate
+        );
         let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
         stop_instance(&inst, "synthesize_ok_with_label");
         hit_end("tts::synthesize_ok_with_label");
     }
 
-    /// Gate WER texto corto — verifica que síntesis breve (2-4 palabras) con voz `default` logra WER ≤ 0.25 vía Parakeet.
+    /// Gate de tasa de error de palabras en texto corto — verifica que síntesis
+    /// breve (2-4 palabras) con voz `default` logra ≤ 0.25 vía Parakeet.
     ///
     /// Cubre el caso que la E2E `test-windows-e2e` sintetizaba sin veredicto:
     /// texto de 2-4 palabras (`"Hola mundo"`) con voz `default` (preset ryan).
-    /// Verifica `WAV 24kHz mono 16-bit` y `WER ≤ 0.25` vía Parakeet (`native-stt`),
+    /// Verifica `WAV 24kHz mono 16-bit` y una tasa de error de palabras ≤ 0.25
+    /// vía Parakeet (`native-stt`),
     /// mismo patrón que `synthesize_ok_with_label` (11 palabras): requiere
     /// el modelo TTS, el binario y `require_parakeet()`, usa
-    /// `valid_wav_24k` y `wer_vs_text`, falla la E2E/gate si `WER > 0.25`.
+    /// `valid_wav_24k` y `word_error_rate_vs_text`, falla la E2E/gate si la tasa
+    /// supera 0.25.
     #[cfg(feature = "native-stt")]
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y el modelo Parakeet"]
-    fn synthesize_short_text_wer_gate() {
+    fn synthesize_short_text_word_error_rate_gate() {
         require_tts_model();
         require_tts_binary();
         require_parakeet();
@@ -3321,7 +3331,7 @@ mod tts {
         // compartido; el file-lock exclusivo del SO (`lock_tts()`) actúa como
         // semáforo de inferencia (un solo residente de ~2.7 GB vivo a la vez).
         let _guard = lock_tts();
-        let inst = IsolatedInstance::new("wer_gate");
+        let inst = IsolatedInstance::new("word_error_rate_gate");
         avi_store::VoiceStore::at(inst.dir.join("voices"))
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
@@ -3330,7 +3340,7 @@ mod tts {
         let label = unique_label("golden_short");
         // Testigo en directo de `synthesize` (ruta local, sin daemon): ruta local fijada con
         // `--no-daemon` para que ningún daemon en ejecución lo reenrute en
-        // silencio. Es el más barato con gate WER.
+        // silencio. Es el más barato con este gate.
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -3358,28 +3368,29 @@ mod tts {
             "el WAV debe estar persistido en el almacén"
         );
         valid_wav_24k(audio_path);
-        let wer = wer_vs_text(audio_path, short_text);
+        let word_error_rate = word_error_rate_vs_text(audio_path, short_text);
         assert!(
-            wer <= 0.25,
-            "WER texto corto '{}' = {} debe ser ≤ 0.25",
+            word_error_rate <= 0.25,
+            "la tasa de error de palabras del texto corto '{}' = {} debe ser ≤ 0.25",
             short_text,
-            wer
+            word_error_rate
         );
         let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
     }
 
-    /// Medición de una síntesis: duración del WAV, WER frente al texto y la
-    /// transcripción obtenida.
+    /// Medición de una síntesis: duración del WAV, tasa de error de palabras
+    /// frente al texto y la transcripción obtenida.
     #[cfg(feature = "native-stt")]
     struct Measured {
         secs: f64,
-        wer: f64,
+        word_error_rate: f64,
         transcript: String,
     }
 
     /// Sintetiza `text` con `voice` por la vía directa de la instancia, en
     /// `language` (`es` o `en`) tanto de origen como de destino para no
-    /// traducir, y mide duración y WER transcribiendo en el mismo idioma.
+    /// traducir, y mide duración y la tasa de error de palabras transcribiendo
+    /// en el mismo idioma.
     #[cfg(feature = "native-stt")]
     fn synthesize_measured(
         inst: &IsolatedInstance,
@@ -3419,14 +3430,14 @@ mod tts {
         valid_wav_24k(audio_path);
         let reader = hound::WavReader::open(audio_path).expect("WAV legible");
         let secs = f64::from(reader.duration()) / f64::from(reader.spec().sample_rate);
-        let (wer, transcript) = wer_and_transcript(audio_path, text);
+        let (word_error_rate, transcript) = word_error_rate_and_transcript(audio_path, text);
         eprintln!(
-            "[matriz] voz={voice} idioma={language} duración={secs:.2}s WER={wer:.3} \
+            "[matriz] voz={voice} idioma={language} duración={secs:.2}s TASA_ERROR_PALABRAS={word_error_rate:.3} \
              transcripción={transcript:?}"
         );
         Measured {
             secs,
-            wer,
+            word_error_rate,
             transcript,
         }
     }
@@ -3442,7 +3453,8 @@ mod tts {
         "Tomorrow afternoon we will walk to the market to buy fresh fruit and vegetables for dinner.";
 
     /// Celda de la matriz voz × idioma: la síntesis debe ser inteligible
-    /// (WER ≤ 0.25) y su duración debe caer entre `min_secs` (un truncado la
+    /// (tasa de error de palabras ≤ 0.25) y su duración debe caer entre `min_secs`
+    /// (un truncado la
     /// bajaba a ~0.6 s) y 12 s (una salida desbocada la excede).
     #[cfg(feature = "native-stt")]
     fn assert_matrix_cell(voice: &str, language: &str) {
@@ -3462,9 +3474,9 @@ mod tts {
             .expect("voces de fábrica inicializadas");
         let m = synthesize_measured(&inst, voice, language, text);
         assert!(
-            m.wer <= 0.25,
-            "WER de '{voice}' en {language} = {} debe ser ≤ 0.25 (transcripción: {:?})",
-            m.wer,
+            m.word_error_rate <= 0.25,
+            "la tasa de error de palabras de '{voice}' en {language} = {} debe ser ≤ 0.25 (transcripción: {:?})",
+            m.word_error_rate,
             m.transcript
         );
         assert!(
@@ -4022,7 +4034,8 @@ mod tts {
 
     // ─── say ───────────────────────────────────────────────────────────
 
-    // Verifica WER real vía Parakeet (native-stt); sin el feature no se compila.
+    // Verifica la tasa de error de palabras real vía Parakeet (native-stt); sin el
+    // feature no se compila.
     #[cfg(feature = "native-stt")]
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
@@ -4037,7 +4050,8 @@ mod tts {
         // rompería la verificación sobre archivo.
         // Humo único de audio: esta es la ÚNICA reproducción real de
         // la suite, acotada a un texto corto ("Hola mundo", <2 s); la
-        // verificación es sobre el archivo (WAV válido + WER), no sobre el
+        // verificación es sobre el archivo (WAV válido + tasa de error de
+        // palabras), no sobre el
         // altavoz. Gate de dispositivo como hoy (sin mezclador no hay humo).
         let inst = IsolatedInstance::new("say_plays");
         avi_store::VoiceStore::at(inst.dir.join("voices"))
@@ -4059,7 +4073,8 @@ mod tts {
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("reproduced".to_string()));
         // el envelope no lleva `audio_path` y el temporal se borra al
-        // reproducir, así que la verificación sobre archivo (WAV válido + WER)
+        // reproducir, así que la verificación sobre archivo (WAV válido + tasa
+        // de error de palabras)
         // es imposible; el testigo queda en humo de punta a punta.
         assert!(
             actual.get("audio_path").is_none(),
@@ -4076,7 +4091,8 @@ mod tts {
 
     // ─── dub ───────────────────────────────────────────────────────────
 
-    /// Passthrough es→es con `--audio`: exit 0, WAV válido y WER ≤ 0.25 frente
+    /// Passthrough es→es con `--audio`: exit 0, WAV válido y tasa de error de
+    /// palabras ≤ 0.25 frente
     /// al texto transcrito (el pipeline devuelve `text`). El dub arranca por STT,
     /// así que exige `native-stt`; sin el feature no se compila.
     #[cfg(feature = "native-stt")]
@@ -4090,7 +4106,7 @@ mod tts {
         let _guard = lock_tts();
         // Testigo en directo de `dub`: ruta local fijada con
         // `--no-daemon` para que la sesión en ejecución no lo reenrute.
-        // Verificación solo-archivo: WAV válido + WER sobre el
+        // Verificación solo-archivo: WAV válido + tasa de error de palabras sobre el
         // archivo producido. El gate de audio se conserva porque `dub`
         // reproduce siempre en ambas rutas, directo y por el daemon, en passthrough
         // y en traducción: sin
@@ -4118,7 +4134,8 @@ mod tts {
         assert_eq!(code, 0);
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
         // sin `audio_path` ni temporal, la verificación sobre archivo
-        // (WAV válido + WER) es imposible; queda el texto transcrito.
+        // (WAV válido + tasa de error de palabras) es imposible; queda el texto
+        // transcrito.
         assert!(
             actual.get("audio_path").is_none(),
             "el envelope del dub no debe llevar audio_path: {actual}"
@@ -4321,9 +4338,9 @@ mod tts {
         assert_timbre_only_qvoice(Path::new(speech), &name);
         let m = synthesize_measured(&inst, &name, "es", MATRIX_TEXT_ES);
         assert!(
-            m.wer <= 0.25,
-            "WER de la voz clonada = {} debe ser ≤ 0.25 (transcripción: {:?})",
-            m.wer,
+            m.word_error_rate <= 0.25,
+            "la tasa de error de palabras de la voz clonada = {} debe ser ≤ 0.25 (transcripción: {:?})",
+            m.word_error_rate,
             m.transcript
         );
         let _ = avi_store::remove_voice(
@@ -7107,7 +7124,7 @@ fn perf_local_fast_commands_under_budget() {
 }
 
 #[test]
-fn perf_invalid_input_rejection_fail_fast() {
+fn perf_invalid_input_rejection_is_immediate() {
     // Validaciones baratas deben fallar inmediatamente sin pagar cold-start de inferencia.
     let t0 = Instant::now();
     let (code_say, _) = run_json(&["--json", "speech", "say", "--text", ""]);
@@ -7115,7 +7132,7 @@ fn perf_invalid_input_rejection_fail_fast() {
     assert_eq!(code_say, 2);
     assert!(
         d_say < Duration::from_millis(1500),
-        "say con texto vacío tardó {:?} (fail-fast expected < 1500 ms)",
+        "say con texto vacío tardó {:?} (se esperaba < 1500 ms)",
         d_say
     );
 
@@ -7134,7 +7151,7 @@ fn perf_invalid_input_rejection_fail_fast() {
     assert_eq!(code_play, 2);
     assert!(
         d_play < Duration::from_millis(1500),
-        "synthesize --play --json tardó {:?} (fail-fast expected < 1500 ms)",
+        "synthesize --play --json tardó {:?} (se esperaba < 1500 ms)",
         d_play
     );
 }

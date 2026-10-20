@@ -423,7 +423,7 @@ clave de versión (determinismo de release). El log del bootstrap captura
 `pacman -Q` + `gcc --version` como evidencia de la **GCC Runtime Library
 Exception** (libgfortran/libquadmath/libgcc estáticos en el `.exe`). Si la
 versión instalada difiere del pin, el bootstrap registra `[WARN]` y continúa
-usando la instalada como evidencia (`log on drift`, no `fail-fast`).
+usando la instalada como evidencia (`log on drift`, sin fallar de inmediato).
 
 | Plataforma | `ARCH_FLAGS` | `CFLAGS_BASE` | `LDLIBS` / BLAS | Shims |
 |---|---|---|---|---|

@@ -2638,12 +2638,12 @@ mod tests {
             }
 
             // Diagnóstico de CMake solo en modo sonda.
-            let diag = lines
+            let probe_step = lines
                 .iter()
                 .position(|l| l.trim() == "- cmake_probe_diagnostics")
                 .unwrap_or_else(|| panic!("{job} debe invocar cmake_probe_diagnostics"));
             assert_eq!(
-                guard_of(&lines, diag),
+                guard_of(&lines, probe_step),
                 Some(probe.clone()),
                 "{job}: cmake_probe_diagnostics debe ir bajo when: << parameters.probe >>"
             );
