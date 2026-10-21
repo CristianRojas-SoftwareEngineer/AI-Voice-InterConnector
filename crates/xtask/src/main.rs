@@ -384,8 +384,9 @@ enum Commands {
         /// Ambas capas: aplicación y después repositorio
         #[arg(long)]
         all: bool,
-        /// Poda fina de la capa repo: solo cachés, cruces ajenos y PDBs
-        /// viejos, sin tocar la compilación vigente (el defecto no cambia)
+        /// Poda fina de la capa repo: solo cachés, cruces ajenos, PDBs viejos
+        /// y sandboxes de prueba huérfanos, sin tocar la compilación vigente
+        /// (el defecto no cambia)
         #[arg(long)]
         prune: bool,
         /// Capa global, nunca incluida en --all: cachés regenerables de Cargo

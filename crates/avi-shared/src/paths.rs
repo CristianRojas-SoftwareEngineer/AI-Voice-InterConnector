@@ -74,6 +74,33 @@ fn cache_home() -> io::Result<PathBuf> {
     }
 }
 
+/// Raíz del temporal del sistema: la que el sistema usa cuando nadie la
+/// reubica.
+///
+/// No es `std::env::temp_dir()`, porque la configuración de Cargo fija `TMP`,
+/// `TEMP` y `TMPDIR` a `target/`: dentro de un proceso lanzado por Cargo el
+/// temporal del sistema queda fuera del alcance y solo se ve el confinado.
+/// Esta función devuelve el del sistema, que es donde se acumulan los
+/// residuos de las corridas que se interrumpen.
+///
+/// En Windows es la carpeta `Temp` de la Known Folder de la aplicación local,
+/// que no depende de la variable `LOCALAPPDATA` —una prueba puede
+/// reubicarla—; en Unix, `/tmp`.
+pub fn system_temp_dir() -> io::Result<PathBuf> {
+    if cfg!(windows) {
+        directories::BaseDirs::new()
+            .map(|b| b.data_local_dir().join("Temp"))
+            .ok_or_else(|| {
+                unresolved(
+                    "la Known Folder de la aplicación local",
+                    "inicia sesión en un usuario del sistema",
+                )
+            })
+    } else {
+        Ok(PathBuf::from("/tmp"))
+    }
+}
+
 /// Raíz de datos de usuario y estado: voces, habla sintetizada, configuración,
 /// `daemon.pid`; los logs viven en `logs_dir()`.
 ///
@@ -257,6 +284,36 @@ pub const PARKED_DIR_PREFIX: &str = ".old-";
 /// Subdirectorio de `xet` dentro de la raíz de modelos exclusiva. Lo fija
 /// `ModelStore::new()` en `HF_XET_CACHE`.
 pub const MODELS_XET_SUBDIR: &str = "xet";
+
+/// Prefijos de los sandboxes que crean las pruebas del motor con `tempfile`:
+/// cada uno nombra su directorio temporal como `<prefijo><etiqueta de la
+/// prueba>_<aleatorio>`.
+///
+/// La lista vive aquí —y no en el crate que limpia— porque las dos puntas la
+/// necesitan: las pruebas la usan para nombrar el directorio que crean, y
+/// `xtask clean --prune` la usa para reconocer los que dejan las corridas
+/// interrumpidas. Duplicarla en ambos lados la desincronizaría en silencio.
+///
+/// Cada prefijo lleva el nombre del motor dentro (`golden`, `cleanup`,
+/// `contract`), de modo que no puede colisionar con el temporal de otro
+/// proyecto: el prefijo completo es específico del motor, no una palabra
+/// común.
+pub const GOLDEN_SANDBOX_PREFIX: &str = "golden-sandbox_";
+pub const CLEANUP_SANDBOX_PREFIX: &str = "cleanup_sandbox_";
+pub const CONTRACT_SANDBOX_PREFIX: &str = "contract-sandbox_";
+
+/// Los prefijos de sandbox de prueba que la poda fina reconoce.
+pub const TEST_SANDBOX_PREFIXES: &[&str] = &[
+    GOLDEN_SANDBOX_PREFIX,
+    CLEANUP_SANDBOX_PREFIX,
+    CONTRACT_SANDBOX_PREFIX,
+];
+
+/// Raíz de los sandboxes de prueba del daemon: cada proceso de pruebas tiene
+/// una carpeta llamada con su PID dentro. El propio harness la barre —borra
+/// las de PID muerto y respeta las de PID vivo—, así que la poda fina no la
+/// toca.
+pub const GOLDEN_DAEMON_DIR_NAME: &str = "golden-avi-daemon";
 
 // Las constantes de nombres y prefijos de arriba son la fuente única de los recursos que la
 // aplicación crea: todo recurso nuevo se declara aquí, en la tabla de rutas y en

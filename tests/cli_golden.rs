@@ -655,7 +655,10 @@ fn run_json(args: &[&str]) -> (i32, Value) {
 /// que ningún barrido sale del sandbox.
 fn sandbox_unique_state(tag: &str) -> (TempDir, Vec<(String, String)>) {
     let sandbox = tempfile::Builder::new()
-        .prefix(&format!("golden-sandbox_{tag}_"))
+        .prefix(&format!(
+            "{}{tag}_",
+            avi_shared::paths::GOLDEN_SANDBOX_PREFIX
+        ))
         .tempdir()
         .expect("crear sandbox de estado");
     let dir = sandbox.path().to_path_buf();
@@ -2340,7 +2343,10 @@ fn uninstall_without_installation_says_so_instead_of_printing_a_blank_line() {
     // instalado»: el directorio de programa no se crea a propósito, porque su
     // existencia es una de las tres condiciones del desenlace `not_installed`.
     let sandbox = tempfile::Builder::new()
-        .prefix("golden-sandbox_uninstall-empty_")
+        .prefix(&format!(
+            "{}uninstall-empty_",
+            avi_shared::paths::GOLDEN_SANDBOX_PREFIX
+        ))
         .tempdir()
         .expect("crear sandbox de estado");
     let dir = sandbox.path().to_path_buf();
@@ -2402,7 +2408,7 @@ fn uninstall_without_installation_says_so_instead_of_printing_a_blank_line() {
 #[test]
 fn cleanup_model_real_run_reports_paths() {
     let sandbox_guard = tempfile::Builder::new()
-        .prefix("cleanup_sandbox_")
+        .prefix(avi_shared::paths::CLEANUP_SANDBOX_PREFIX)
         .tempdir()
         .expect("crear el sandbox de la prueba");
     let sandbox = sandbox_guard.path();

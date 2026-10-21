@@ -118,6 +118,10 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+### Añadido
+
+- `cargo xtask clean --prune` retira ahora los **sandboxes de prueba huérfanos** que las corridas interrumpidas dejan en el temporal del sistema. Cada prueba crea su sandbox con `tempfile`, que lo borra al soltarse; pero si la corrida se corta —un `Ctrl-C`, un pánico no capturado, un cierre de sesión— el `Drop` no corre y el directorio sobrevive, ocupando cientos de MB. La poda los reconoce por su prefijo (`golden-sandbox_`, `cleanup_sandbox_`, `contract-sandbox_`) y los retira solo cuando son más viejos que un día, de modo que el sandbox de una corrida viva nunca se toca: su nombre no lleva PID, así que la antigüedad es lo único que lo distingue del residuo. Los sandboxes que caen en `target/` —donde Cargo confina el temporal de las pruebas— se purgan con la misma regla. La lista de prefijos vive en `avi-shared`, que es la fuente única de rutas, y la usan tanto las pruebas al nombrar sus directorios como la poda al reconocerlos.
+
 ### Cambiado
 
 - La marca del proyecto es ahora **AI Voice-InterConnector** en toda la prosa, y la del proyecto hermano, **Agent Voice-InterConnector**. Antes convivían tres formas: «AI Voice InterConnector» sin guion en la prosa, «AI-Voice-InterConnector» con guion en ella, y la forma correcta. Las variantes en minúscula o con guion no se tocan: son la adaptación al formato que exige cada contexto —el slug del repositorio, el nombre del binario, la clave de registro en Windows y el identificador del plugin son identificadores técnicos, no marca—.

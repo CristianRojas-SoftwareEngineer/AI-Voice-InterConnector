@@ -56,7 +56,7 @@ fn process_root() -> &'static std::path::Path {
     ROOT.get_or_init(|| {
         // Prueba: raíz propia bajo el temporal del sistema, ajena al scratch del producto.
         #[allow(clippy::disallowed_methods)]
-        let parent = std::env::temp_dir().join("golden-avi-daemon");
+        let parent = std::env::temp_dir().join(avi_shared::paths::GOLDEN_DAEMON_DIR_NAME);
         sweep_dead_process_dirs(&parent);
         let root = parent.join(std::process::id().to_string());
         std::fs::create_dir_all(&root).expect("crear la raíz temporal del proceso");

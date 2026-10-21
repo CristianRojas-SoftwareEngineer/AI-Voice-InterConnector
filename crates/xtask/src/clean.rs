@@ -14,9 +14,15 @@
 //! | Ambas | `--all` | Aplicación y después repositorio | Ídem |
 //!
 //! Con `--prune`, la capa repo se modera: poda solo `incremental/`, cachés
-//! efímeras, targets cruzados ajenos al host y `.pdb` viejos de `deps/`, y
-//! conserva la compilación vigente para que el siguiente build siga siendo
-//! incremental en vez de frío.
+//! efímeras, targets cruzados ajenos al host, `.pdb` viejos de `deps/` y los
+//! sandboxes de prueba huérfanos, y conserva la compilación vigente para que
+//! el siguiente build siga siendo incremental en vez de frío.
+//!
+//! Los sandboxes de prueba son los directorios que las pruebas crean con
+//! `tempfile`: se borran al soltarse, pero quedan ahí cuando la corrida se
+//! interrumpe. La poda los reconoce por su prefijo y los retira solo cuando
+//! son más viejos que un día, porque su nombre no lleva PID y la antigüedad es
+//! lo único que distingue el residuo del sandbox de una corrida viva.
 //!
 //! La capa global (`--global`) es explícita y nunca entra en `--all`: borra
 //! solo lo que Cargo documenta como regenerable bajo `CARGO_HOME`
@@ -100,6 +106,16 @@ const REPO_ENTRIES: &[&str] = &[
 /// regenera al recompilar.
 pub(crate) const PRUNE_PDB_MAX_AGE_DAYS: u64 = 7;
 
+/// Antigüedad a partir de la cual un sandbox de prueba del temporal del
+/// sistema cuenta como residuo: una corrida viva no puede tener esa edad, y
+/// al día siguiente el directorio ya no lo sostiene nadie.
+///
+/// Un día basta porque el daño de un sandbox huérfano es el espacio que ocupa
+/// —cientos de MB en las pruebas que instalan modelos— y ese espacio se
+/// recupera al día siguiente. Subir el umbral dejaría el disco ocupado
+/// semanas; bajarlo rozaría una corrida larga.
+pub(crate) const PRUNE_SANDBOX_MAX_AGE_DAYS: u64 = 1;
+
 /// Triple del host deducido de la compilación en curso: la poda fina
 /// conserva el perfil nativo y retira los cruces ajenos a este equipo.
 pub(crate) fn host_triple() -> &'static str {
@@ -147,6 +163,99 @@ fn prune_old_pdbs(deps: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Sandboxes de prueba del temporal del sistema más antiguos que el umbral.
+///
+/// El nombre de un sandbox de `tempfile` es `<prefijo><etiqueta de la
+/// prueba>_<aleatorio>`: no lleva PID, así que la única forma de saber si
+/// alguien lo sostiene es su antigüedad. Un sandbox cuya modificación es más
+/// vieja que el umbral no lo sostiene ninguna corrida viva, porque una
+/// corrida en marcha acaba de escribir en él.
+///
+/// La raíz que se recorre es la del temporal del **sistema**, no la que
+/// Cargo confina en `target/`: los sandboxes que se acumulan son los de las
+/// corridas que no pasaron por Cargo.
+fn prune_old_test_sandboxes(temp_root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(temp_root) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !avi_shared::paths::TEST_SANDBOX_PREFIXES
+            .iter()
+            .any(|prefix| name.starts_with(prefix))
+        {
+            continue;
+        }
+        let old = path
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|d| d.as_secs() > PRUNE_SANDBOX_MAX_AGE_DAYS * 86400);
+        if old {
+            out.push(path);
+        }
+    }
+}
+
+/// Carpetas de un proceso de pruebas muerto dentro de una raíz
+/// `golden-avi-daemon`.
+///
+/// El nombre de cada carpeta es el PID del proceso que la creó. Se borra solo
+/// la de un PID sin vida: la de un PID reutilizado por un proceso vivo se
+/// respeta, porque ese proceso sigue usándola.
+fn prune_dead_process_dirs(parent: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(pid) = name.parse::<u32>() else {
+            continue;
+        };
+        if !avi_process::pid_alive_exact(pid) {
+            out.push(entry.path());
+        }
+    }
+}
+
+/// Residuos de las pruebas del motor en el temporal del sistema.
+///
+/// Son sandboxes que `tempfile` borra al soltarse, pero que quedan ahí cuando
+/// la corrida se interrumpe: un `Ctrl-C`, un pánico no capturado o un cierre
+/// de sesión cortan el proceso antes de que el `Drop` corra.
+///
+/// La configuración de Cargo confina el temporal de las pruebas en `target/`,
+/// así que la raíz que se recorre es la del **sistema**: los residuos de las
+/// corridas que no pasaron por Cargo.
+///
+/// Solo se purgan los que son más viejos que el umbral, porque el nombre de
+/// un sandbox no lleva PID y la antigüedad es lo único que distingue el
+/// residuo del sandbox de una corrida viva.
+pub(crate) fn prune_system_temp_sandboxes() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let Ok(temp_root) = avi_shared::paths::system_temp_dir() else {
+        return out;
+    };
+    prune_old_test_sandboxes(&temp_root, &mut out);
+    // La raíz de las pruebas golden se barre por PID, no por antigüedad: la
+    // carpeta de un proceso vivo se respeta aunque sea vieja.
+    prune_dead_process_dirs(
+        &temp_root.join(avi_shared::paths::GOLDEN_DAEMON_DIR_NAME),
+        &mut out,
+    );
+    out
+}
+
 /// Entradas de la poda fina (`--prune`): cachés regenerables y artefactos
 /// obsoletos de `target/`. Nunca incluye fuentes ni la compilación vigente
 /// de dependencias, que es lo que mantiene rápido el siguiente build.
@@ -158,6 +267,10 @@ pub(crate) fn prune_targets(root: &Path) -> Vec<PathBuf> {
         push_dir(&mut out, dir.join("incremental"));
         prune_old_pdbs(&dir.join("deps"), &mut out);
     }
+    // Los sandboxes de prueba caen aquí cuando la corrida la lanza Cargo, que
+    // confina el temporal en `target/`. Los borra la poda por antigüedad, igual
+    // que los del temporal del sistema.
+    prune_old_test_sandboxes(&target, &mut out);
     let Ok(entries) = std::fs::read_dir(&target) else {
         return out;
     };
@@ -168,13 +281,9 @@ pub(crate) fn prune_targets(root: &Path) -> Vec<PathBuf> {
         }
         let name = entry.file_name().to_string_lossy().into_owned();
         // Cachés efímeras de editores y compilaciones a medias, y temporales
-        // confinados en `target/` (directorios `.tmp*` de `tempfile` y la raíz
-        // de las pruebas golden) que dejan las pruebas abortadas.
-        if name.starts_with("flycheck")
-            || name.starts_with(".tmp")
-            || name == "tmp"
-            || name == "golden-avi-daemon"
-        {
+        // confinados en `target/` (directorios `.tmp*` de `tempfile`) que dejan
+        // las pruebas abortadas.
+        if name.starts_with("flycheck") || name.starts_with(".tmp") || name == "tmp" {
             out.push(path);
         // Directorio de target ajeno al host: otro triple no sirve a este
         // equipo. Los marcadores de Cargo distinguen un target real de un
@@ -185,6 +294,12 @@ pub(crate) fn prune_targets(root: &Path) -> Vec<PathBuf> {
             out.push(path);
         }
     }
+    // La raíz de las pruebas golden se barre por PID y no por antigüedad: la
+    // carpeta de un proceso vivo se respeta aunque sea vieja.
+    prune_dead_process_dirs(
+        &target.join(avi_shared::paths::GOLDEN_DAEMON_DIR_NAME),
+        &mut out,
+    );
     out
 }
 
@@ -596,6 +711,17 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
     } else {
         Vec::new()
     };
+    // Los sandboxes del temporal del sistema son residuos de construir y probar
+    // el repo, así que van en la capa repo. Solo la poda fina los retira: la
+    // capa completa borra el repo entero y no necesita de ellos.
+    let mut sandbox_paths = if layer.wants_repo() && prune {
+        prune_system_temp_sandboxes()
+    } else {
+        Vec::new()
+    };
+    // Las dos raíces pueden coincidir —si el temporal del sistema es el del
+    // repo—, y una ruta repetida se borraría dos veces.
+    sandbox_paths.retain(|p| !repo_paths.contains(p));
     let homebrew = if layer.wants_app() {
         installed_copy_is_homebrew()
     } else {
@@ -643,6 +769,15 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
         }
         println!("Total global: {}", total.text());
     }
+    if !sandbox_paths.is_empty() {
+        println!("Sandboxes de prueba huérfanos (temporal del sistema):");
+        let mut total = Size::ZERO;
+        for (label, size) in summarize(&sandbox_paths) {
+            total = total.plus(size);
+            println!("  {:>10}  {}", size.text(), label);
+        }
+        println!("Total sandboxes: {}", total.text());
+    }
     if layer.wants_app() {
         println!(
             "  (la capa app la ejecuta el binario del repositorio: {} {})",
@@ -658,6 +793,12 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
         "Nunca se toca: CARGO_HOME/bin, rustup, la caché de sccache ni la instalación de MSYS2. \
          Solo `--global` limpia las cachés regenerables de Cargo (registry, git) y de pacman."
     );
+    if !sandbox_paths.is_empty() {
+        println!(
+            "Del temporal del sistema solo se retiran sandboxes de prueba huérfanos: \
+             directorios con el prefijo del motor y más antiguos que el umbral de la poda."
+        );
+    }
     if dry_run {
         if layer.wants_app() {
             let repo_bin = repo_product_bin(&root).ok_or_else(|| {
@@ -670,7 +811,11 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
         println!("Dry-run: no se borró nada.");
         return Ok(());
     }
-    if !layer.wants_app() && repo_paths.is_empty() && global_paths.is_empty() {
+    if !layer.wants_app()
+        && repo_paths.is_empty()
+        && global_paths.is_empty()
+        && sandbox_paths.is_empty()
+    {
         // Un registro obsoleto se retira aunque no quede nada más que borrar.
         if layer.wants_repo() {
             report_removal_log(&root, true)?;
@@ -731,7 +876,7 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
     let target_dir = root.join("target");
     let mut failed: Vec<(PathBuf, String)> = Vec::new();
     let mut deferred_target = false;
-    for p in repo_paths.iter().chain(&global_paths) {
+    for p in repo_paths.iter().chain(&global_paths).chain(&sandbox_paths) {
         if p.symlink_metadata().is_err() {
             continue;
         }
@@ -1040,6 +1185,75 @@ mod tests {
         ] {
             assert!(!got.contains(&keep), "no debe borrar {}", keep.display());
         }
+    }
+
+    /// La poda de sandboxes retira solo los viejos: un sandbox de una corrida
+    /// viva se conserva, y uno de otro nombre tampoco se toca.
+    #[test]
+    fn prune_old_test_sandboxes_selects_by_age() {
+        let root_guard = tempfile::Builder::new()
+            .prefix("xtask_clean_sandbox_")
+            .tempdir()
+            .unwrap();
+        let root = root_guard.path();
+
+        // Un sandbox de cada prefijo reconocido: uno viejo y uno joven.
+        let mut old_sandboxes = Vec::new();
+        let mut fresh_sandboxes = Vec::new();
+        for prefix in avi_shared::paths::TEST_SANDBOX_PREFIXES {
+            let old = root.join(format!("{prefix}caso_AbCd12"));
+            let fresh = root.join(format!("{prefix}caso_ZzYy34"));
+            std::fs::create_dir_all(&old).unwrap();
+            std::fs::create_dir_all(&fresh).unwrap();
+            let old_time = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400);
+            filetime::set_file_mtime(&old, filetime::FileTime::from_system_time(old_time)).unwrap();
+            old_sandboxes.push(old);
+            fresh_sandboxes.push(fresh);
+        }
+        // Un directorio con otro nombre: no es del motor y no se toca.
+        let foreign = root.join("otro-proyecto");
+        std::fs::create_dir_all(&foreign).unwrap();
+        let foreign_time =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(30 * 86400);
+        filetime::set_file_mtime(&foreign, filetime::FileTime::from_system_time(foreign_time))
+            .unwrap();
+
+        let mut got = Vec::new();
+        prune_old_test_sandboxes(root, &mut got);
+
+        for gone in &old_sandboxes {
+            assert!(got.contains(gone), "falta {}", gone.display());
+        }
+        for keep in fresh_sandboxes.iter().chain([&foreign]) {
+            assert!(!got.contains(keep), "no debe borrar {}", keep.display());
+        }
+    }
+
+    /// La poda por PID de la raíz de las pruebas golden borra la carpeta de un
+    /// proceso muerto y respeta la de un proceso vivo.
+    #[test]
+    fn prune_dead_process_dirs_respects_live_pids() {
+        let root_guard = tempfile::Builder::new()
+            .prefix("xtask_clean_pid_")
+            .tempdir()
+            .unwrap();
+        let root = root_guard.path();
+        let alive = root.join(std::process::id().to_string());
+        let dead = root.join("4294967000");
+        let other = root.join("no-es-un-pid");
+        for dir in [&alive, &dead, &other] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+
+        let mut got = Vec::new();
+        prune_dead_process_dirs(root, &mut got);
+
+        assert!(got.contains(&dead), "falta la carpeta del PID muerto");
+        assert!(!got.contains(&alive), "no debe borrar la de un PID vivo");
+        assert!(
+            !got.contains(&other),
+            "no debe borrar un nombre que no es un PID"
+        );
     }
 
     /// Una ruta inexistente pesa cero y una ilegible marca el tamaño como

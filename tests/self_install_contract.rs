@@ -189,7 +189,10 @@ struct Sandbox {
 impl Sandbox {
     fn new(tag: &str) -> Self {
         let guard = tempfile::Builder::new()
-            .prefix(&format!("contract-sandbox_{tag}_"))
+            .prefix(&format!(
+                "{}{tag}_",
+                avi_shared::paths::CONTRACT_SANDBOX_PREFIX
+            ))
             .tempdir()
             .expect("crear el directorio del sandbox");
         let root = guard.path().to_path_buf();

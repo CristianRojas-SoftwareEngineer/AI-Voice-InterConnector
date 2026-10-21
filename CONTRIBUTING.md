@@ -80,6 +80,8 @@ Cada worktree lleva su propia rama transitoria y resuelve su propia raíz con `g
 
 Los temporales de todo lo que lanza Cargo (pruebas, `cargo run`, `cargo xtask`) quedan confinados dentro de `target/`: `.cargo/config.toml` fija `TMP`, `TEMP` y `TMPDIR` a `target`, de modo que una prueba abortada no deja restos en el directorio temporal del sistema y `cargo clean` o `cargo xtask clean` los retiran con el resto. Los temporales de `xtask` llevan el prefijo `xtask-`. Si usas un intermediario del compilador (`RUSTC_WRAPPER`, como sccache), crea `target/` antes del primer comando de cargo en un checkout limpio o tras `cargo clean`: cargo lo invoca antes de crear `target/` y el intermediario aborta al no encontrar su temporal.
 
+Los sandboxes que las pruebas crean con `tempfile` (los directorios `golden-sandbox_*`, `cleanup_sandbox_*` y `contract-sandbox_*`) se borran solos al terminar la prueba, pero sobreviven si la corrida se interrumpe. La poda fina los retira del temporal del sistema y de `target/` cuando son más viejos que un día: su nombre no lleva PID, así que la antigüedad es lo único que distingue el residuo del sandbox de una corrida en marcha, y por eso el umbral nunca es cero.
+
 Las cachés globales de Cargo (`registry` y `git` bajo `CARGO_HOME`) y la caché de paquetes de pacman en Windows no forman parte de `--repo` ni de `--all`: se limpian solo con `cargo xtask clean --global` (usa `--dry-run` para verlas antes). `--global` nunca toca `CARGO_HOME/bin`, rustup, sccache ni la instalación de MSYS2. Si el borrado diferido de `target/` falla, deja `target.removal-failed.log` en la raíz del repositorio (ignorado por git); `cargo xtask clean` lo retira cuando `target/` ya no existe.
 
 ## Tests

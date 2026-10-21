@@ -30,3 +30,9 @@ avi-core = { path = "../avi-core" }
 # (`xtask deps`): librerías importadas, versiones de símbolos y versión mínima
 # de macOS, igual en local que en la CI. Solo lectura, sin escritura de objetos.
 object = { version = "0.40", default-features = false, features = ["read_core", "elf", "macho", "pe", "std"] }
+
+[dev-dependencies]
+# Envejecer un directorio para probar el discriminante de antigüedad de la
+# poda fina. Es la misma versión que ya usa `tar` en el lockfile, así que el
+# inventario de licencias no cambia.
+filetime = "0.2"
