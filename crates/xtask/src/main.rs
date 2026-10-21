@@ -2472,123 +2472,25 @@ mod tests {
             .next()
             .unwrap_or("");
         assert!(
-            build_all.contains("not: << pipeline.parameters.native_cache_probe >>"),
+            build_all.contains("when:\n      not: << pipeline.parameters.native_cache_probe >>"),
             "build-all debe excluirse cuando native_cache_probe es verdadero"
-        );
-        assert!(
-            build_all.contains("not: << pipeline.parameters.daemon_diag >>"),
-            "build-all debe excluirse cuando daemon_diag es verdadero"
         );
         assert!(
             cfg.contains("  native_cache_probe:\n    type: boolean\n    default: false"),
             "native_cache_probe debe ser booleano con default false"
         );
-        assert!(
-            cfg.contains("  daemon_diag:\n    type: boolean\n    default: false"),
-            "daemon_diag debe ser booleano con default false"
-        );
     }
 
-    /// Workflow de diagnóstico del arranque: ejecuta SOLO `test-windows` y no
-    /// contiene ningún `publish-*`, ningún `context` ni ningún `requires`: un
-    /// diagnóstico que publica una release desde una rama sería un accidente
-    /// con consecuencias públicas.
+    /// La traza de diagnóstico del arranque es permanente y vive en el job
+    /// ordinario `test-windows`: el volcado debe correr SIEMPRE (pase o falle
+    /// el caso), porque cuando el defecto no se reproduce la cronología de la
+    /// fase lenta es el dato que explica por qué. Y la traza debe caer en el
+    /// directorio del job, no en el sandbox de la prueba: el sandbox se borra
+    /// al terminar el caso, y con ella la evidencia.
     #[test]
-    fn test_daemon_diag_workflow_never_publishes() {
-        let cfg = read_ci_config();
-        let lines: Vec<&str> = cfg.lines().collect();
-        let start = lines
-            .iter()
-            .position(|l| *l == "  daemon-diag:")
-            .expect("debe existir el workflow daemon-diag");
-        let end = (start + 1..lines.len())
-            .find(|&i| is_structural(lines[i]) && indent(lines[i]) <= 2)
-            .unwrap_or(lines.len());
-        let workflow = lines[start..end].join("\n");
-        for forbidden in [
-            "publish-release",
-            "publish-metadata",
-            "context:",
-            "requires:",
-            "filters:",
-        ] {
-            assert!(
-                !workflow.contains(forbidden),
-                "el workflow daemon-diag no debe contener `{forbidden}`:\n{workflow}"
-            );
-        }
-        assert!(
-            workflow.contains("when: << pipeline.parameters.daemon_diag >>"),
-            "daemon-diag debe activarse solo con daemon_diag"
-        );
-        let jobs: Vec<&str> = lines[start..end]
-            .iter()
-            .filter_map(|l| l.trim().strip_prefix("- "))
-            .collect();
-        assert_eq!(
-            jobs,
-            vec!["test-windows"],
-            "daemon-diag debe contener exactamente el job test-windows"
-        );
-    }
-
-    /// El modo diagnóstico ejecuta la MISMA corrida que la de producción:
-    /// `cargo nextest run --all` sin filtros ni flags que cambien la
-    /// selección o la concurrencia. Un diagnóstico que acota los casos
-    /// cambia la condición en que se dio el defecto y puede no reproducirlo:
-    /// su valor entonces es nulo.
-    #[test]
-    fn test_daemon_diag_runs_the_full_suite_unfiltered() {
+    fn test_daemon_start_trace_is_dumped_always_in_test_windows() {
         let cfg = read_ci_config();
         let windows = build_section(&cfg, "test-windows");
-        let step = windows
-            .split("name: Ejecutar suite con nextest (cargo nextest run --all)")
-            .nth(1)
-            .expect("test-windows debe tener el paso de la suite")
-            .split("\n      - ")
-            .next()
-            .unwrap_or("");
-        // La invocación de la suite completa debe aparecer tal cual: sin `-E`,
-        // sin `--no-capture` y sin `-- <filtro>`.
-        assert!(
-            step.contains("cargo nextest run --all\n"),
-            "el modo diagnóstico debe ejecutar `cargo nextest run --all` sin filtros:\n{step}"
-        );
-        assert!(
-            !step.contains("cargo nextest run --all -"),
-            "el modo diagnóstico no debe añadir flags a la corrida completa:\n{step}"
-        );
-        assert!(
-            !step.contains("cargo nextest run --all --no-capture"),
-            "el modo diagnóstico no debe alterar la captura de la salida:\n{step}"
-        );
-        assert!(
-            !step.contains("-E \"test("),
-            "el modo diagnóstico no debe filtrar por caso: cambiaría la condición del fallo:\n{step}"
-        );
-        // PowerShell parsea una variable seguida de `:` como una referencia con
-        // unidad de disco: el script entero no compila y el step muere antes
-        // de ejecutar nada. Es lo que pasó en el pipeline de diagnóstico: el
-        // job falló por el parseo, no por el defecto que se iba a medir. Una
-        // variable seguida de `:` va entre llaves. La comprobación mira la
-        // línea del mensaje de cada corrida, que es donde la variable aparece
-        // interpolada, y no cualquier aparición del carácter.
-        let run_line = step
-            .lines()
-            .find(|l| l.contains("Corrida") && l.contains("exit $code"))
-            .unwrap_or("");
-        assert!(
-            !run_line.contains("$i:"),
-            "una variable seguida de `:` debe ir entre llaves: \
-             PowerShell no compila el script y el step muere antes de medir:\n{run_line}"
-        );
-        assert!(
-            run_line.contains("${i}"),
-            "el mensaje de cada corrida debe usar la variable entre llaves:\n{run_line}"
-        );
-        // El volcado de la traza debe existir y correr siempre: si el defecto
-        // no se reproduce, la cronología de la fase lenta es el dato que
-        // explica por qué no se reprodujo.
         assert!(
             windows.contains("Volcar la traza de diagnóstico del arranque"),
             "test-windows debe tener el paso que vuelca la traza"
@@ -2597,28 +2499,20 @@ mod tests {
             windows.contains("when: always"),
             "el volcado de la traza debe correr siempre (pase o falle el caso)"
         );
-    }
-
-    /// La traza del diagnóstico debe caer SIEMPRE en el directorio de trabajo
-    /// del job. `CIRCLE_WORKING_DIRECTORY` vale lo que el job declare en
-    /// `working_directory`, y `test-windows` no lo declara: la variable puede
-    /// no existir o apuntar a otro sitio, y entonces la traza se escribiría
-    /// fuera del directorio de trabajo y el volcado final no la recogería.
-    /// La resolución debe caer al directorio de trabajo actual y comprobar que
-    /// el directorio existe antes de usarlo.
-    #[test]
-    fn test_daemon_diag_trace_dir_resolves_to_the_working_directory() {
-        let cfg = read_ci_config();
-        let windows = build_section(&cfg, "test-windows");
-        // `test-windows` no declara `working_directory`: si lo declarara, la
-        // comprobación de la variable dejaría de ser necesaria.
+        assert!(
+            windows.contains("AVI_DIAG_TRACE_DIR"),
+            "la traza debe fijarse en un directorio que sobreviva al sandbox"
+        );
+        // La traza vive en el directorio de trabajo del job. `CIRCLE_WORKING_DIRECTORY`
+        // vale lo que el job declare en `working_directory`, y `test-windows` no lo
+        // declara: la variable puede no existir o apuntar a otro sitio, y entonces
+        // la traza se escribiría fuera del directorio de trabajo y el volcado
+        // final no la recogería. La resolución debe caer al directorio de
+        // trabajo actual y comprobar que el directorio existe antes de usarlo.
         assert!(
             !windows.contains("working_directory:"),
-            "test-windows no debe declarar working_directory: la resolución\
-             de la traza asume que el directorio de trabajo es el actual"
+            "test-windows no debe declarar working_directory: la resolución de la traza asume que el directorio de trabajo es el actual"
         );
-        // La resolución con respaldo al directorio actual debe estar en los
-        // dos pasos: el que escribe la traza y el que la vuelca.
         assert!(
             windows.contains("(Get-Location).Path"),
             "la traza debe resolverse al directorio de trabajo actual como respaldo"
@@ -2627,10 +2521,44 @@ mod tests {
             windows.contains("Test-Path -PathType Container $env:CIRCLE_WORKING_DIRECTORY"),
             "CIRCLE_WORKING_DIRECTORY solo se usa si existe de verdad"
         );
+        // La corrida de la suite no puede cambiar: el defecto depende de la
+        // condición de la corrida completa.
         assert!(
-            windows.contains("AVI_DIAG_TRACE_DIR"),
-            "el paso de la suite debe fijar AVI_DIAG_TRACE_DIR para las pruebas"
+            windows.contains("cargo nextest run --all\n"),
+            "la corrida de la suite debe ser la de producción, sin filtros:\n{windows}"
         );
+    }
+
+    /// La instrumentación de diagnóstico es permanente y acotada: solo cuatro
+    /// casos de `daemon start` la activan, y el resto de la suite no escribe
+    /// traza. Un caso de más añade coste a cada corrida de CI.
+    #[test]
+    fn test_daemon_start_trace_is_enabled_only_in_the_four_focused_cases() {
+        let tests = std::fs::read_to_string("../../tests/cli_golden.rs")
+            .or_else(|_| {
+                std::fs::read_to_string(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("../../tests/cli_golden.rs"),
+                )
+            })
+            .expect("no se pudo leer tests/cli_golden.rs");
+        let calls = tests.matches(".enable_diag_trace(").count();
+        assert_eq!(
+            calls, 4,
+            "solo los cuatro casos de `daemon start` afectados activan la traza: \
+             se encontraron {calls} llamadas"
+        );
+        for tag in [
+            "start_port_in_use",
+            "start_failure_log",
+            "start_missing_warm_voice",
+            "start_reclaims_unresponsive",
+        ] {
+            assert!(
+                tests.contains(&format!("enable_diag_trace(\"{tag}\")")),
+                "el caso `{tag}` debe activar la traza del arranque"
+            );
+        }
     }
 
     /// Modo sonda de los build-*: no restaura ni guarda la clave inmutable de

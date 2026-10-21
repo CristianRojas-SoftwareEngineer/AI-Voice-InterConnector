@@ -4,13 +4,14 @@
 // Copyright (c) 2026 Cristián Rojas Arredondo.
 // SPDX-License-Identifier: MPL-2.0
 
-//! Instrumentación **temporal** de diagnóstico del arranque del daemon.
+//! Instrumentación de diagnóstico del arranque del daemon.
 //!
-//! No forma parte del producto: existe solo para localizar en qué fase se va
-//! el tiempo de un arranque fallido en el ejecutor de CI, y se retira al
-//! terminar el diagnóstico. Es inocua por construcción: sin la variable
-//! `AVI_DIAG_TRACE_FILE` en el entorno no hace nada, no escribe en stdout, no
-//! toca el protocolo y no cambia ningún plazo.
+//! Registra marcas de fase del lanzador (`daemon start`) y de su hijo
+//! (`daemon serve`) para caracterizar en qué tramo se va el tiempo cuando un
+//! arranque falla o tarda más de lo previsto. Es permanente y acotado: sin la
+//! variable `AVI_DIAG_TRACE_FILE` en el entorno no hace nada, no escribe en
+//! stdout, no toca el protocolo y no altera ningún plazo, código de salida ni
+//! `reason`.
 //!
 //! Cada marca lleva dos relojes: uno monotónico relativo al inicio del
 //! proceso (`mono_ms`), que mide duración de fase dentro de un mismo proceso,
@@ -47,19 +48,68 @@ pub fn mark(phase: &str) {
     if path.is_empty() {
         return;
     }
+    let tag = std::env::var(TRACE_TAG_ENV).unwrap_or_default();
+    append_line(&path, phase, &tag);
+}
+
+/// Añade una marca al fichero indicado. Es la forma comprobable de la
+/// escritura: no depende del entorno y por eso se puede probar en aislamiento.
+fn append_line(path: &str, phase: &str, tag: &str) {
     let epoch_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
     let mono_ms = origin().elapsed().as_millis();
     let pid = std::process::id();
-    let tag = std::env::var(TRACE_TAG_ENV).unwrap_or_default();
     let line = format!("epoch_ms={epoch_ms} mono_ms={mono_ms} pid={pid} tag={tag} phase={phase}\n");
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(&path)
+        .open(path)
     {
-        let _ = file.write_all(line.as_bytes());
+        // El fallo de escritura se ignora a propósito: una traza que no se
+        // pudo escribir no puede alterar el desenlace de la operación
+        // observada.
+        file.write_all(line.as_bytes()).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_line;
+
+    /// Una marca escribe una línea con sus dos relojes, su PID y su etiqueta:
+    /// es lo que permite ordenar en una cronología las marcas de procesos
+    /// distintos.
+    #[test]
+    fn append_line_writes_the_phase_with_both_clocks() {
+        let file = tempfile::NamedTempFile::new().expect("fichero temporal");
+        append_line(
+            file.path().to_str().unwrap(),
+            "launch_daemon.enter",
+            "tag_a",
+        );
+        let content = std::fs::read_to_string(file.path()).expect("leer la traza");
+        let line = content.lines().next().expect("una línea de traza");
+        assert!(line.contains("phase=launch_daemon.enter"), "{line}");
+        assert!(line.contains("tag=tag_a"), "{line}");
+        assert!(line.contains("mono_ms="), "{line}");
+        assert!(line.contains("epoch_ms="), "{line}");
+    }
+
+    /// Varias marcas en el mismo fichero se acumulan en orden: el fichero es
+    /// el registro compartido entre el lanzador y su hijo.
+    #[test]
+    fn append_line_accumulates_marks_in_order() {
+        let file = tempfile::NamedTempFile::new().expect("fichero temporal");
+        let path = file.path().to_str().unwrap();
+        append_line(path, "start.enter", "tag_b");
+        append_line(path, "child.port_bound", "tag_b");
+        let content = std::fs::read_to_string(file.path()).expect("leer la traza");
+        let marks: Vec<&str> = content
+            .lines()
+            .filter_map(|l| l.split("phase=").nth(1))
+            .collect();
+        assert_eq!(marks, vec!["start.enter", "child.port_bound"]);
     }
 }

@@ -69,23 +69,6 @@ parameters:
     type: boolean
     default: false
     description: Activa el workflow de sonda native-cache-probe (solo por API; nunca publica).
-  # Diagnóstico del arranque del daemon en el ejecutor de Windows: solo se
-  # activa por API (POST /pipeline con `daemon_diag: true`). Ejecuta SOLO el
-  # job `test-windows` y excluye `build-all`, así que NUNCA construye ni
-  # publica. Es instrumentación temporal de diagnóstico; ver workflow
-  # `daemon-diag`.
-  daemon_diag:
-    type: boolean
-    default: false
-    description: Activa el workflow de diagnóstico daemon-diag (solo test-windows; nunca publica).
-  # Número de corridas COMPLETAS de la suite que hace el modo diagnóstico.
-  # La corrida completa es la que reproduce el defecto: filtrar los casos
-  # cambiaría la condición en que se dio. Con 1 basta para observar; con más
-  # se discrimina entre regresión de código y latencia del ejecutor.
-  daemon_diag_repeats:
-    type: integer
-    default: 1
-    description: Corridas completas de la suite que ejecuta el workflow daemon-diag.
   ninja_pin:
     type: string
     default: "1.13.2"
@@ -1018,54 +1001,32 @@ jobs:
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
-            # Diagnóstico del arranque (parametro `daemon_diag`): la corrida es
-            # la MISMA que la de produccion —`cargo nextest run --all`, sin
-            # filtros ni flags que cambien la seleccion o la concurrencia—,
-            # porque el fallo depende de la condicion de la corrida completa.
-            # Lo unico que cambia es que las dos pruebas instrumentadas
-            # escriben su traza en un directorio que sobrevive al sandbox, y
-            # que se puede repetir la corrida completa para discriminar entre
-            # regresion de codigo y latencia del ejecutor. El pipeline
-            # diagnostico excluye `build-all`, asi que esto nunca gobierna un
-            # release.
-            if ("<< pipeline.parameters.daemon_diag >>" -eq "true") {
-              # Directorio de la traza: el de trabajo del job. NO se usa
-              # `$env:CIRCLE_WORKING_DIRECTORY` a ciegas: esa variable vale lo
-              # que el job declare en `working_directory`, y `test-windows` no
-              # lo declara, asi que puede no existir. Se resuelve por orden de
-              # garantia decreciente y se comprueba que el resultado existe
-              # ANTES de usarlo: una traza escrita en un sitio que no es el
-              # directorio de trabajo no la recoge el volcado final.
-              $dir = $null
-              if ($env:CIRCLE_WORKING_DIRECTORY -and (Test-Path -PathType Container $env:CIRCLE_WORKING_DIRECTORY)) {
-                $dir = $env:CIRCLE_WORKING_DIRECTORY
-              } else {
-                $dir = (Get-Location).Path
-              }
-              $env:AVI_DIAG_TRACE_DIR = Join-Path $dir "diag-traces"
-              if (-not (Test-Path -PathType Container $env:AVI_DIAG_TRACE_DIR)) {
-                New-Item -ItemType Directory -Force -Path $env:AVI_DIAG_TRACE_DIR | Out-Null
-              }
-              if (-not (Test-Path -PathType Container $env:AVI_DIAG_TRACE_DIR)) {
-                throw "no se pudo crear el directorio de traza $($env:AVI_DIAG_TRACE_DIR)"
-              }
-              Write-Host "[DIAG] Modo diagnostico: suite completa, repeticiones = << pipeline.parameters.daemon_diag_repeats >>"
-              Write-Host "[DIAG] Directorio de traza: $($env:AVI_DIAG_TRACE_DIR)"
-              $reps = [int]"<< pipeline.parameters.daemon_diag_repeats >>"
-              if ($reps -lt 1) { $reps = 1 }
-              $fallo = $false
-              for ($i = 1; $i -le $reps; $i++) {
-                Write-Host "[DIAG] Corrida completa $i de $reps"
-                cargo nextest run --all
-                $code = $LASTEXITCODE
-                # `${i}` con llaves: `$i:` se parsea como referencia de variable
-                # conQualifier de unidad de disco y el script entero no compila.
-                Write-Host "[DIAG] Corrida ${i}: exit $code (la serie continua aunque una falle)"
-                if ($code -ne 0) { $fallo = $true }
-              }
-              Write-Host "[STEP] Ejecutar suite con nextest - FIN"
-              if ($fallo) { exit 1 }
-              exit 0
+            # La corrida es la MISMA que la de producción: `cargo nextest run
+            # --all`, sin filtros ni flags que cambien la seleccion o la
+            # concurrencia. Lo unico que cambia es que las pruebas
+            # instrumentadas escriben su traza en el directorio del job, que
+            # sobrevive al sandbox de cada prueba.
+            # La traza cae FUERA del sandbox: así se puede recuperar aunque el
+            # caso pase, que es justo cuando hace falta saber por qué no se
+            # reprodujo.
+            # El directorio es el de trabajo del job. NO se usa
+            # `$env:CIRCLE_WORKING_DIRECTORY` a ciegas: esa variable vale lo
+            # que el job declare en `working_directory`, y `test-windows` no lo
+            # declara, así que puede no existir. Se resuelve por orden de
+            # garantía decreciente y se comprueba que el resultado existe
+            # ANTES de usarlo.
+            $dir = $null
+            if ($env:CIRCLE_WORKING_DIRECTORY -and (Test-Path -PathType Container $env:CIRCLE_WORKING_DIRECTORY)) {
+              $dir = $env:CIRCLE_WORKING_DIRECTORY
+            } else {
+              $dir = (Get-Location).Path
+            }
+            $env:AVI_DIAG_TRACE_DIR = Join-Path $dir "diag-traces"
+            if (-not (Test-Path -PathType Container $env:AVI_DIAG_TRACE_DIR)) {
+              New-Item -ItemType Directory -Force -Path $env:AVI_DIAG_TRACE_DIR | Out-Null
+            }
+            if (-not (Test-Path -PathType Container $env:AVI_DIAG_TRACE_DIR)) {
+              throw "no se pudo crear el directorio de traza $($env:AVI_DIAG_TRACE_DIR)"
             }
             cargo nextest run --all
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -1073,18 +1034,13 @@ jobs:
       - run:
           name: Volcar la traza de diagnóstico del arranque
           # Corre siempre (pase o falle el caso) y decide dentro si hay algo
-          # que volcar: el `when` de un step no admite combinar la condición
+          # que volcar: el `when` de un step no admite combinar la condicion
           # del pipeline con `always`. Si el defecto no se reproduce, la
-          # cronología de la fase lenta es justamente el dato que explica por
+          # cronologia de la fase lenta es justamente el dato que explica por
           # que no se reprodujo.
           when: always
           command: |
             Write-Host "[STEP] Volcar traza de diagnóstico - INICIO"
-            if ("<< pipeline.parameters.daemon_diag >>" -ne "true") {
-              Write-Host "[DIAG-TRACE-FILE] fuera del modo diagnóstico: nada que volcar"
-              Write-Host "[STEP] Volcar traza de diagnóstico - FIN"
-              exit 0
-            }
             # Misma resolucion que el paso que creo la traza: se busca por
             # `AVI_DIAG_TRACE_DIR` si el entorno lo trae, y si no, en el
             # directorio de trabajo del job (`CIRCLE_WORKING_DIRECTORY` solo
@@ -2495,12 +2451,9 @@ workflows:
     # por toda la cadena (tests/gates → builds → publish-*).
     # Todos los jobs declaran además `branches: ignore /.*/`: esta pipeline corre
     # SOLO en tags `v*`, nunca en pushes de rama.
-    # Excluido explícitamente cuando se dispara la sonda (native_cache_probe)
-    # o el diagnóstico del arranque (daemon_diag).
+    # Excluido explícitamente cuando se dispara la sonda (native_cache_probe).
     when:
-      and:
-        - not: << pipeline.parameters.native_cache_probe >>
-        - not: << pipeline.parameters.daemon_diag >>
+      not: << pipeline.parameters.native_cache_probe >>
     jobs:
       # ── Triple suite (gate) + cobertura + instaladores + licencias ──
       # Los 4 builds requieren estos 9 gates verdes en la misma pipeline.
@@ -2697,15 +2650,3 @@ workflows:
           probe: true
       - build-darwin-arm64:
           probe: true
-
-  # ── Diagnóstico del arranque del daemon en Windows (nunca publica) ──
-  # Solo por API: POST /api/v2/project/gh/<org>/<repo>/pipeline con
-  # {"branch":"<rama-diagnostica>","parameters":{"daemon_diag":true}}.
-  # Ejecuta SOLO `test-windows` (la suite de Windows, con la instrumentación
-  # temporal de traza del arranque) y excluye `build-all`, así que NO compila
-  # artefactos, NO etiqueta nada y NO publica una release. Sin `requires` ni
-  # filtros de tags: corre en la rama indicada.
-  daemon-diag:
-    when: << pipeline.parameters.daemon_diag >>
-    jobs:
-      - test-windows

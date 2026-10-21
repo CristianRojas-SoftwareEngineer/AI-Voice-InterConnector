@@ -864,20 +864,43 @@ impl IsolatedInstance {
             .collect()
     }
 
+    /// `addr` publicada en el pidfile de la instancia (None si aún no hay).
+    fn published_addr(&self) -> Option<String> {
+        let content = std::fs::read_to_string(self.dir.join("daemon.pid")).ok()?;
+        let v: Value = serde_json::from_str(&content).ok()?;
+        v.get("addr")?.as_str().map(|s| s.to_string())
+    }
+
+    /// Puerto de la instancia (efímero descubierto) o 8765 si aún no hay pista.
+    fn port(&self) -> u16 {
+        self.published_addr()
+            .and_then(|a| a.rsplit(':').next()?.parse().ok())
+            .unwrap_or(8765)
+    }
+
+    /// Lee el PID de `daemon.pid` de la instancia aislada.
+    fn read_daemon_pid(&self) -> Option<u32> {
+        read_daemon_pid_dir(&self.dir)
+    }
+
+    /// Lee el PID del residente de `daemon.pid` de la instancia aislada.
+    fn read_resident_pid(&self) -> u32 {
+        read_resident_pid_dir(&self.dir)
+    }
+
     /// Activa la traza de diagnóstico del arranque para esta instancia: el
     /// fichero de traza y la etiqueta correlacionan las marcas del lanzador y
-    /// de su hijo. Es instrumentación temporal de diagnóstico, no parte del
-    /// contrato.
+    /// de su hijo.
     ///
     /// El fichero vive en `AVI_DIAG_TRACE_DIR` cuando el entorno lo fija (el
-    /// modo diagnóstico de CI): así sobrevive al borrado del sandbox y se
-    /// puede recuperar aunque el caso **pase**, que es justo cuando hace
-    /// falta saber por qué no se reprodujo. Sin esa variable, el fichero cae
-    /// dentro del sandbox y solo se conserva mientras dura la prueba.
+    /// job de CI): así sobrevive al borrado del sandbox y se puede recuperar
+    /// aunque el caso **pase**, que es justo cuando hace falta saber por qué
+    /// no se reprodujo. Sin esa variable, el fichero cae dentro del sandbox y
+    /// solo se conserva mientras dura la prueba.
     fn enable_diag_trace(&mut self, tag: &str) -> PathBuf {
-        // El milisegundo discrimina una corrida de otra: el modo diagnóstico
-        // repite la suite completa y cada corrida debe tener su propio
-        // fichero de traza, no acumularse en el mismo.
+        // El milisegundo discrimina una corrida de otra: cada invocación del
+        // caso debe tener su propio fichero de traza, no acumularse en el
+        // mismo.
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis())
@@ -893,8 +916,10 @@ impl IsolatedInstance {
                 .path()
                 .join(format!("diag_trace_{tag}_{stamp}.log")),
         };
-        self.envs
-            .push(("AVI_DIAG_TRACE_FILE".to_string(), path.to_string_lossy().to_string()));
+        self.envs.push((
+            "AVI_DIAG_TRACE_FILE".to_string(),
+            path.to_string_lossy().to_string(),
+        ));
         self.envs
             .push(("AVI_DIAG_TRACE_TAG".to_string(), tag.to_string()));
         path
@@ -930,30 +955,6 @@ impl IsolatedInstance {
         let content = std::fs::read_to_string(path).unwrap_or_default();
         eprintln!("[diag-trace]\n{content}");
         let _ = std::io::stderr().flush();
-    }
-
-    /// `addr` publicada en el pidfile de la instancia (None si aún no hay).
-    fn published_addr(&self) -> Option<String> {
-        let content = std::fs::read_to_string(self.dir.join("daemon.pid")).ok()?;
-        let v: Value = serde_json::from_str(&content).ok()?;
-        v.get("addr")?.as_str().map(|s| s.to_string())
-    }
-
-    /// Puerto de la instancia (efímero descubierto) o 8765 si aún no hay pista.
-    fn port(&self) -> u16 {
-        self.published_addr()
-            .and_then(|a| a.rsplit(':').next()?.parse().ok())
-            .unwrap_or(8765)
-    }
-
-    /// Lee el PID de `daemon.pid` de la instancia aislada.
-    fn read_daemon_pid(&self) -> Option<u32> {
-        read_daemon_pid_dir(&self.dir)
-    }
-
-    /// Lee el PID del residente de `daemon.pid` de la instancia aislada.
-    fn read_resident_pid(&self) -> u32 {
-        read_resident_pid_dir(&self.dir)
     }
 }
 
@@ -5260,6 +5261,19 @@ mod tts {
         holder
     }
 
+    /// Vuelca la traza del arranque por stderr cuando la invocación tardó más
+    /// de 5 s: ese es el plazo que los propios casos instrumentalizados usan
+    /// como límite, así que superarlo es exactamente el desenlace que hay que
+    /// diagnosticar. Volcarla siempre añadiría E/S entre invocaciones y la
+    /// corrida dejaría de parecerse a la real.
+    fn dump_trace_if_slow(inst: &IsolatedInstance, elapsed: Duration) {
+        if elapsed >= Duration::from_secs(5) {
+            if let Some(path) = inst.diag_trace_path() {
+                inst.dump_diag_trace(&path);
+            }
+        }
+    }
+
     /// Afirma el fallo por puerto ocupado de `daemon start`: exit 6
     /// `port_in_use` con el puerto y `AVI_DAEMON_PORT` en el mensaje, en menos
     /// de 5 s (la regresión esperaría 10 s), sin `daemon.ready` y sin tocar el
@@ -5271,16 +5285,7 @@ mod tts {
         let t0 = Instant::now();
         let (code, actual) = run_json_env(&args, &inst.contract_args());
         let elapsed = t0.elapsed();
-        // La traza se vuelca **solo si el plazo se incumplió**, que es el
-        // único desenlace que hace falta diagnosticar: volcarla siempre
-        // añadiría E/S entre las dos invocaciones de esta prueba y la
-        // corrida dejaría de ser la de producción. Cuando el caso pasa, la
-        // traza completa la recoge el volcado del job, al final.
-        if elapsed >= Duration::from_secs(5) {
-            if let Some(path) = inst.diag_trace_path() {
-                inst.dump_diag_trace(&path);
-            }
-        }
+        dump_trace_if_slow(inst, elapsed);
         assert_eq!(code, 6, "puerto ocupado debe salir con exit 6: {}", actual);
         assert_eq!(actual["reason"], "port_in_use", "{}", actual);
         let error = actual["error"].as_str().unwrap_or_default();
@@ -5371,6 +5376,9 @@ mod tts {
     #[test]
     fn daemon_start_port_in_use_fails_fast_with_state_conflict() {
         let mut inst = IsolatedInstance::new("start_port_in_use");
+        // Traza de diagnóstico del arranque: el fichero y la etiqueta
+        // correlacionan las marcas del lanzador y de su hijo. Cada invocación
+        // lleva su propia etiqueta, para que el volcado separe una de otra.
         inst.enable_diag_trace("start_port_in_use");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
@@ -5394,11 +5402,16 @@ mod tts {
     #[test]
     fn daemon_start_failure_is_written_to_daemon_log() {
         let mut inst = IsolatedInstance::new("start_failure_log");
+        // Traza de diagnóstico del arranque (mismo motivo que en el caso
+        // contiguo: el arranque tardó más de lo previsto en el ejecutor de CI).
+        inst.enable_diag_trace("start_failure_log");
         seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
+        let t0 = Instant::now();
         let (code, actual) = run_json_env(&["--json", "daemon", "start"], &inst.contract_args());
+        dump_trace_if_slow(&inst, t0.elapsed());
         assert_eq!(code, 6, "{actual}");
         let logs: Vec<PathBuf> = std::fs::read_dir(inst.dir.join("logs"))
             .map(|d| {
@@ -5459,6 +5472,8 @@ mod tts {
     #[test]
     fn daemon_start_missing_warm_voice_exits_not_found() {
         let mut inst = IsolatedInstance::new("start_missing_warm_voice");
+        // Traza de diagnóstico del arranque: el fichero y la etiqueta
+        // correlacionan las marcas del lanzador y de su hijo.
         let trace = inst.enable_diag_trace("start_missing_warm_voice");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
@@ -5784,13 +5799,19 @@ mod tts {
     #[test]
     fn daemon_start_reclaims_unresponsive_registered_daemon() {
         let mut inst = IsolatedInstance::new("start_reclaims_unresponsive");
+        // Traza de diagnóstico del arranque: el caso tardó más de lo previsto
+        // en el ejecutor de CI, y el reclamo del residual es una fase del
+        // arranque que hay que cronometrar.
+        inst.enable_diag_trace("start_reclaims_unresponsive");
         seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         let mut daemon = ForeignProcess::spawn();
         let closed = DecoyPort::reserve();
         seed_pidfile_as_ours(&inst.dir, &daemon, &format!("127.0.0.1:{}", closed.port));
         let _holder = occupy_instance_port(&mut inst);
 
+        let t0 = Instant::now();
         let (code, actual) = run_json_env(&["--json", "daemon", "start"], &inst.contract_args());
+        dump_trace_if_slow(&inst, t0.elapsed());
         assert_eq!(
             code, 6,
             "tras el reclamo el lanzamiento choca con el puerto: {actual}"
