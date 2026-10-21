@@ -2566,6 +2566,26 @@ mod tests {
             !step.contains("-E \"test("),
             "el modo diagnóstico no debe filtrar por caso: cambiaría la condición del fallo:\n{step}"
         );
+        // PowerShell parsea una variable seguida de `:` como una referencia con
+        // unidad de disco: el script entero no compila y el step muere antes
+        // de ejecutar nada. Es lo que pasó en el pipeline de diagnóstico: el
+        // job falló por el parseo, no por el defecto que se iba a medir. Una
+        // variable seguida de `:` va entre llaves. La comprobación mira la
+        // línea del mensaje de cada corrida, que es donde la variable aparece
+        // interpolada, y no cualquier aparición del carácter.
+        let run_line = step
+            .lines()
+            .find(|l| l.contains("Corrida") && l.contains("exit $code"))
+            .unwrap_or("");
+        assert!(
+            !run_line.contains("$i:"),
+            "una variable seguida de `:` debe ir entre llaves: \
+             PowerShell no compila el script y el step muere antes de medir:\n{run_line}"
+        );
+        assert!(
+            run_line.contains("${i}"),
+            "el mensaje de cada corrida debe usar la variable entre llaves:\n{run_line}"
+        );
         // El volcado de la traza debe existir y correr siempre: si el defecto
         // no se reproduce, la cronología de la fase lenta es el dato que
         // explica por qué no se reprodujo.

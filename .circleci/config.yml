@@ -1058,7 +1058,9 @@ jobs:
                 Write-Host "[DIAG] Corrida completa $i de $reps"
                 cargo nextest run --all
                 $code = $LASTEXITCODE
-                Write-Host "[DIAG] Corrida $i: exit $code (la serie continua aunque una falle)"
+                # `${i}` con llaves: `$i:` se parsea como referencia de variable
+                # conQualifier de unidad de disco y el script entero no compila.
+                Write-Host "[DIAG] Corrida ${i}: exit $code (la serie continua aunque una falle)"
                 if ($code -ne 0) { $fallo = $true }
               }
               Write-Host "[STEP] Ejecutar suite con nextest - FIN"
