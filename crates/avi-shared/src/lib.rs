@@ -16,6 +16,7 @@
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
 pub mod console;
+pub mod diag_trace;
 pub mod logs;
 pub mod manifest;
 pub mod owner;

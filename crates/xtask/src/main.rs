@@ -2472,12 +2472,144 @@ mod tests {
             .next()
             .unwrap_or("");
         assert!(
-            build_all.contains("when:\n      not: << pipeline.parameters.native_cache_probe >>"),
+            build_all.contains("not: << pipeline.parameters.native_cache_probe >>"),
             "build-all debe excluirse cuando native_cache_probe es verdadero"
+        );
+        assert!(
+            build_all.contains("not: << pipeline.parameters.daemon_diag >>"),
+            "build-all debe excluirse cuando daemon_diag es verdadero"
         );
         assert!(
             cfg.contains("  native_cache_probe:\n    type: boolean\n    default: false"),
             "native_cache_probe debe ser booleano con default false"
+        );
+        assert!(
+            cfg.contains("  daemon_diag:\n    type: boolean\n    default: false"),
+            "daemon_diag debe ser booleano con default false"
+        );
+    }
+
+    /// Workflow de diagnóstico del arranque: ejecuta SOLO `test-windows` y no
+    /// contiene ningún `publish-*`, ningún `context` ni ningún `requires`: un
+    /// diagnóstico que publica una release desde una rama sería un accidente
+    /// con consecuencias públicas.
+    #[test]
+    fn test_daemon_diag_workflow_never_publishes() {
+        let cfg = read_ci_config();
+        let lines: Vec<&str> = cfg.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| *l == "  daemon-diag:")
+            .expect("debe existir el workflow daemon-diag");
+        let end = (start + 1..lines.len())
+            .find(|&i| is_structural(lines[i]) && indent(lines[i]) <= 2)
+            .unwrap_or(lines.len());
+        let workflow = lines[start..end].join("\n");
+        for forbidden in [
+            "publish-release",
+            "publish-metadata",
+            "context:",
+            "requires:",
+            "filters:",
+        ] {
+            assert!(
+                !workflow.contains(forbidden),
+                "el workflow daemon-diag no debe contener `{forbidden}`:\n{workflow}"
+            );
+        }
+        assert!(
+            workflow.contains("when: << pipeline.parameters.daemon_diag >>"),
+            "daemon-diag debe activarse solo con daemon_diag"
+        );
+        let jobs: Vec<&str> = lines[start..end]
+            .iter()
+            .filter_map(|l| l.trim().strip_prefix("- "))
+            .collect();
+        assert_eq!(
+            jobs,
+            vec!["test-windows"],
+            "daemon-diag debe contener exactamente el job test-windows"
+        );
+    }
+
+    /// El modo diagnóstico ejecuta la MISMA corrida que la de producción:
+    /// `cargo nextest run --all` sin filtros ni flags que cambien la
+    /// selección o la concurrencia. Un diagnóstico que acota los casos
+    /// cambia la condición en que se dio el defecto y puede no reproducirlo:
+    /// su valor entonces es nulo.
+    #[test]
+    fn test_daemon_diag_runs_the_full_suite_unfiltered() {
+        let cfg = read_ci_config();
+        let windows = build_section(&cfg, "test-windows");
+        let step = windows
+            .split("name: Ejecutar suite con nextest (cargo nextest run --all)")
+            .nth(1)
+            .expect("test-windows debe tener el paso de la suite")
+            .split("\n      - ")
+            .next()
+            .unwrap_or("");
+        // La invocación de la suite completa debe aparecer tal cual: sin `-E`,
+        // sin `--no-capture` y sin `-- <filtro>`.
+        assert!(
+            step.contains("cargo nextest run --all\n"),
+            "el modo diagnóstico debe ejecutar `cargo nextest run --all` sin filtros:\n{step}"
+        );
+        assert!(
+            !step.contains("cargo nextest run --all -"),
+            "el modo diagnóstico no debe añadir flags a la corrida completa:\n{step}"
+        );
+        assert!(
+            !step.contains("cargo nextest run --all --no-capture"),
+            "el modo diagnóstico no debe alterar la captura de la salida:\n{step}"
+        );
+        assert!(
+            !step.contains("-E \"test("),
+            "el modo diagnóstico no debe filtrar por caso: cambiaría la condición del fallo:\n{step}"
+        );
+        // El volcado de la traza debe existir y correr siempre: si el defecto
+        // no se reproduce, la cronología de la fase lenta es el dato que
+        // explica por qué no se reprodujo.
+        assert!(
+            windows.contains("Volcar la traza de diagnóstico del arranque"),
+            "test-windows debe tener el paso que vuelca la traza"
+        );
+        assert!(
+            windows.contains("when: always"),
+            "el volcado de la traza debe correr siempre (pase o falle el caso)"
+        );
+    }
+
+    /// La traza del diagnóstico debe caer SIEMPRE en el directorio de trabajo
+    /// del job. `CIRCLE_WORKING_DIRECTORY` vale lo que el job declare en
+    /// `working_directory`, y `test-windows` no lo declara: la variable puede
+    /// no existir o apuntar a otro sitio, y entonces la traza se escribiría
+    /// fuera del directorio de trabajo y el volcado final no la recogería.
+    /// La resolución debe caer al directorio de trabajo actual y comprobar que
+    /// el directorio existe antes de usarlo.
+    #[test]
+    fn test_daemon_diag_trace_dir_resolves_to_the_working_directory() {
+        let cfg = read_ci_config();
+        let windows = build_section(&cfg, "test-windows");
+        // `test-windows` no declara `working_directory`: si lo declarara, la
+        // comprobación de la variable dejaría de ser necesaria.
+        assert!(
+            !windows.contains("working_directory:"),
+            "test-windows no debe declarar working_directory: la resolución\
+             de la traza asume que el directorio de trabajo es el actual"
+        );
+        // La resolución con respaldo al directorio actual debe estar en los
+        // dos pasos: el que escribe la traza y el que la vuelca.
+        assert!(
+            windows.contains("(Get-Location).Path"),
+            "la traza debe resolverse al directorio de trabajo actual como respaldo"
+        );
+        assert!(
+            windows.contains("Test-Path -PathType Container $env:CIRCLE_WORKING_DIRECTORY"),
+            "CIRCLE_WORKING_DIRECTORY solo se usa si existe de verdad"
+        );
+        assert!(
+            windows.contains("AVI_DIAG_TRACE_DIR"),
+            "el paso de la suite debe fijar AVI_DIAG_TRACE_DIR para las pruebas"
         );
     }
 

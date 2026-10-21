@@ -2832,6 +2832,7 @@ async fn handle_daemon(
             warm_voice,
             ready_file,
         } => {
+            avi_shared::diag_trace::mark("child.serve_enter");
             // La dirección la resuelve el protocolo (`AVI_DAEMON_PORT` con
             // reserva en la dirección por defecto); aquí solo se pasa al servidor.
             let addr: SocketAddr = resolve_daemon_addr();
@@ -2895,7 +2896,9 @@ async fn handle_daemon(
             max_retries,
             warm_voice,
         } => {
+            avi_shared::diag_trace::mark("start.enter");
             require_model_provisioned()?;
+            avi_shared::diag_trace::mark("start.model_provisioned");
             let client = daemon_client();
             // Revalidación con reclamo matar-y-rearrancar: la vida del
             // residual se comprueba por PID vivo más probe, no por probe solo ni
@@ -2904,10 +2907,12 @@ async fn handle_daemon(
             let data_dir = effective_data_dir()?;
             let client_addr = lifecycle::daemon_stop::resolve_client_addr(&data_dir);
             let responds = probe_health(&client, &client_addr).await;
+            avi_shared::diag_trace::mark("start.health_probe_done");
             // El indicador nace **antes** de la parada del daemon residual: así
             // no hay segundos de silencio antes de la primera fase, y el mismo
             // indicador sirve para `start`, `stop` y `restart`.
             let mut progress = PhaseProgress::new();
+            avi_shared::diag_trace::mark("start.observe_begin");
             match lifecycle::daemon_stop::observe(&data_dir, &ProductProcesses, responds) {
                 lifecycle::daemon_stop::DaemonState::Running { pid } => {
                     if json_mode {
@@ -2940,6 +2945,7 @@ async fn handle_daemon(
                 }
                 lifecycle::daemon_stop::DaemonState::Stopped => {}
             }
+            avi_shared::diag_trace::mark("start.observe_done");
             progress.phase("starting", "Iniciando daemon…");
             // Mientras launch_daemon espera el ready del hijo, el usuario ve
             // la fase de calentamiento (el warmup TTS corre en segundo plano
@@ -4248,6 +4254,7 @@ async fn launch_daemon(
     progress: Option<&PhaseProgress>,
 ) -> Result<u32, CliError> {
     let start = std::time::Instant::now();
+    avi_shared::diag_trace::mark("launch_daemon.enter");
     // El hijo publica su registro en el fichero ready de la instancia (ruta
     // absoluta bajo el `data_dir` vigente).
     let ready_path = ready_file_path()?;
@@ -4277,6 +4284,7 @@ async fn launch_daemon(
             ))
         }
     }
+    avi_shared::diag_trace::mark("launch_daemon.ready_path_prepared");
     let logs_dir = avi_shared::paths::logs_dir()
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
     let launcher_token = avi_process::current_owner_token()
@@ -4294,6 +4302,7 @@ async fn launch_daemon(
             format!("No se pudo crear el log del daemon: {}", e),
         )
     })?;
+    avi_shared::diag_trace::mark("launch_daemon.log_created");
     let mut child = match daemon::spawn_background(
         auto_restart,
         max_retries,
@@ -4315,6 +4324,7 @@ async fn launch_daemon(
         }
     };
     let pid = child.id();
+    avi_shared::diag_trace::mark("launch_daemon.child_spawned");
     // El log nació con el token del lanzador porque su handle se entrega al
     // spawn; ya conocido el hijo, el nombre pasa a identificar al proceso que
     // escribe, y la poda puede reconocer por su token el log de un daemon vivo.
@@ -4344,6 +4354,7 @@ async fn launch_daemon(
             return Err(err);
         }
     };
+    avi_shared::diag_trace::mark("launch_daemon.log_renamed");
     let with_log = |mut e: CliError| {
         e.message = format!("{}\nLog del daemon: {}", e.message, log_path.display());
         e
@@ -4354,8 +4365,12 @@ async fn launch_daemon(
 
     let addr = loop {
         match daemon::read_ready_signal(&ready_path) {
-            Some(daemon::ReadySignal::Ready { addr, .. }) => break addr,
+            Some(daemon::ReadySignal::Ready { addr, .. }) => {
+                avi_shared::diag_trace::mark("launch_daemon.ready_signal_read");
+                break addr;
+            }
             Some(daemon::ReadySignal::Failed(e)) => {
+                avi_shared::diag_trace::mark("launch_daemon.failed_signal_read");
                 abort_launch(&mut child, &ready_path).await;
                 return Err(with_log(startup_error_to_cli(&e)));
             }
@@ -4364,9 +4379,11 @@ async fn launch_daemon(
         if let Ok(Some(status)) = child.try_wait() {
             // El hijo pudo publicar su fallo justo antes de morir.
             if let Some(daemon::ReadySignal::Failed(e)) = daemon::read_ready_signal(&ready_path) {
+                avi_shared::diag_trace::mark("launch_daemon.failed_signal_read_after_child_exit");
                 abort_launch(&mut child, &ready_path).await;
                 return Err(with_log(startup_error_to_cli(&e)));
             }
+            avi_shared::diag_trace::mark("launch_daemon.child_exited_without_signal");
             abort_launch(&mut child, &ready_path).await;
             return Err(with_log(CliError::new(
                 ExitCode::Error,
@@ -4375,6 +4392,7 @@ async fn launch_daemon(
             )));
         }
         if start.elapsed() >= deadline {
+            avi_shared::diag_trace::mark("launch_daemon.ready_deadline_expired");
             abort_launch(&mut child, &ready_path).await;
             return Err(with_log(CliError::new(
                 ExitCode::DaemonUnreachable,
@@ -4391,6 +4409,7 @@ async fn launch_daemon(
         }
     };
 
+    avi_shared::diag_trace::mark("launch_daemon.health_probe_begin");
     if let Err(e) = await_daemon_ready(
         client,
         &addr,
@@ -4400,6 +4419,7 @@ async fn launch_daemon(
     )
     .await
     {
+        avi_shared::diag_trace::mark("launch_daemon.health_probe_failed");
         abort_launch(&mut child, &ready_path).await;
         return Err(with_log(CliError::new(
             ExitCode::DaemonUnreachable,
@@ -4407,6 +4427,7 @@ async fn launch_daemon(
             format!("el daemon publicó {} pero {}.", addr, e),
         )));
     }
+    avi_shared::diag_trace::mark("launch_daemon.health_probe_ok");
     Ok(pid)
 }
 
@@ -4417,7 +4438,9 @@ async fn launch_daemon(
 /// si ya había terminado no se mata nada (en el arranque aún no existe el
 /// residente TTS, que solo lanza el warmup posterior a estar listo).
 async fn abort_launch(child: &mut avi_process::RestrictedChild, ready_path: &std::path::Path) {
+    avi_shared::diag_trace::mark("abort_launch.enter");
     if let Ok(None) = child.try_wait() {
+        avi_shared::diag_trace::mark("abort_launch.killing_child_tree");
         daemon::kill_tree_by_pid(child.id());
         let start = std::time::Instant::now();
         while start.elapsed() < DAEMON_LAUNCH_CLEANUP_DEADLINE {
@@ -4437,6 +4460,7 @@ async fn abort_launch(child: &mut avi_process::RestrictedChild, ready_path: &std
         }
     }
     IN_MEMORY_PID.store(0, std::sync::atomic::Ordering::Relaxed);
+    avi_shared::diag_trace::mark("abort_launch.done");
 }
 
 /// Sondeo acotado de `/health` tras la publicación de la dirección: con el

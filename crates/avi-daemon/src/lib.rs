@@ -2236,11 +2236,13 @@ async fn prepare_server(
     // (sandbox de estado por instancia vía `AVI_DATA_DIR`) rechazaría
     // `--warm-voice default` porque `default` aún no existe en disco. Tras
     // esto, una voz inexistente se rechaza igual (no es de fábrica).
+    avi_shared::diag_trace::mark("child.prepare_server.enter");
     voices
         .ensure_initialized()
         .map_err(|e| StartupError::Failed {
             message: format!("No se pudo inicializar el almacén de voces: {}", e),
         })?;
+    avi_shared::diag_trace::mark("child.voices_initialized");
 
     // Guarda de arranque: una `--warm-voice` inexistente aborta el arranque antes de
     // enlazar y de cargar modelos, sin degradar en silencio ni caer a `default`.
@@ -2252,10 +2254,12 @@ async fn prepare_server(
             message: format!("No se pudo inicializar el almacén de voces: {}", e),
         })?;
     if !warm_exists {
+        avi_shared::diag_trace::mark("child.warm_voice_missing");
         return Err(StartupError::WarmVoiceMissing {
             voice: warm_voice.to_string(),
         });
     }
+    avi_shared::diag_trace::mark("child.warm_voice_validated");
 
     // El puerto se enlaza antes de cargar los modelos: un puerto ocupado falla
     // en milisegundos y el puerto queda reservado durante la carga. Mientras
@@ -2268,13 +2272,16 @@ async fn prepare_server(
     let listener = TcpListener::bind(addr).await.map_err(|e| {
         let reserved = cfg!(windows) && e.raw_os_error() == Some(10013);
         if e.kind() == std::io::ErrorKind::AddrInUse || reserved {
+            avi_shared::diag_trace::mark("child.bind_failed_port_in_use");
             StartupError::PortInUse { port: addr.port() }
         } else {
+            avi_shared::diag_trace::mark("child.bind_failed_other");
             StartupError::Failed {
                 message: format!("No se pudo enlazar {}: {}", addr, e),
             }
         }
     })?;
+    avi_shared::diag_trace::mark("child.port_bound");
     // Puerto efímero por instancia: publicar la dirección REALMENTE enlazada
     // (con `:0` el SO asigna, nunca el literal pedido).
     let bound = listener.local_addr().map_err(|e| StartupError::Failed {
@@ -2283,15 +2290,18 @@ async fn prepare_server(
 
     let state = DaemonState::with_stores(voices, speech).map_err(|e| {
         if e.downcast_ref::<MissingModel>().is_some() {
+            avi_shared::diag_trace::mark("child.state_model_missing");
             StartupError::ModelMissing {
                 message: e.to_string(),
             }
         } else {
+            avi_shared::diag_trace::mark("child.state_failed");
             StartupError::Failed {
                 message: format!("No se pudo inicializar el estado del daemon: {}", e),
             }
         }
     })?;
+    avi_shared::diag_trace::mark("child.state_built");
     Ok((listener, bound, Arc::new(state)))
 }
 
@@ -2319,6 +2329,7 @@ pub async fn run_daemon_server(
     let (listener, bound, state) = prepare_server(addr, &warm_voice, voices, speech)
         .await
         .map_err(anyhow::Error::new)?;
+    avi_shared::diag_trace::mark("child.prepare_server.done");
     // El daemon se registra a sí mismo con la dirección real, antes de publicar
     // `daemon.ready` y de cualquier warmup: desde que alguien puede verlo listo,
     // `daemon.pid` ya lo nombra. Sin identidad observable o con otro daemon vivo
@@ -2456,6 +2467,7 @@ fn publish_startup_failure(err: &anyhow::Error) {
             eprintln!("aviso: {e}");
         }
     }
+    avi_shared::diag_trace::mark("child.failure_published");
 }
 
 /// Ejecuta el daemon con supervisión configurable de reinicios.

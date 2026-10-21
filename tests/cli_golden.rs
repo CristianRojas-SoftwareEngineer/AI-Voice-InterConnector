@@ -864,6 +864,74 @@ impl IsolatedInstance {
             .collect()
     }
 
+    /// Activa la traza de diagnóstico del arranque para esta instancia: el
+    /// fichero de traza y la etiqueta correlacionan las marcas del lanzador y
+    /// de su hijo. Es instrumentación temporal de diagnóstico, no parte del
+    /// contrato.
+    ///
+    /// El fichero vive en `AVI_DIAG_TRACE_DIR` cuando el entorno lo fija (el
+    /// modo diagnóstico de CI): así sobrevive al borrado del sandbox y se
+    /// puede recuperar aunque el caso **pase**, que es justo cuando hace
+    /// falta saber por qué no se reprodujo. Sin esa variable, el fichero cae
+    /// dentro del sandbox y solo se conserva mientras dura la prueba.
+    fn enable_diag_trace(&mut self, tag: &str) -> PathBuf {
+        // El milisegundo discrimina una corrida de otra: el modo diagnóstico
+        // repite la suite completa y cada corrida debe tener su propio
+        // fichero de traza, no acumularse en el mismo.
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0);
+        let path = match std::env::var("AVI_DIAG_TRACE_DIR") {
+            Ok(dir) if !dir.is_empty() => {
+                let dir = PathBuf::from(dir);
+                let _ = std::fs::create_dir_all(&dir);
+                dir.join(format!("{tag}_{stamp}.log"))
+            }
+            _ => self
+                ._sandbox
+                .path()
+                .join(format!("diag_trace_{tag}_{stamp}.log")),
+        };
+        self.envs
+            .push(("AVI_DIAG_TRACE_FILE".to_string(), path.to_string_lossy().to_string()));
+        self.envs
+            .push(("AVI_DIAG_TRACE_TAG".to_string(), tag.to_string()));
+        path
+    }
+
+    /// Cambia la etiqueta de la traza, para separar en el volcado las marcas de
+    /// una invocación de las de la anterior.
+    fn set_diag_trace_tag(&mut self, tag: &str) {
+        for (k, v) in self.envs.iter_mut() {
+            if k == "AVI_DIAG_TRACE_TAG" {
+                *v = tag.to_string();
+            }
+        }
+    }
+
+    /// Ruta del fichero de traza de la instancia, si la traza está activa.
+    fn diag_trace_path(&self) -> Option<PathBuf> {
+        self.envs
+            .iter()
+            .find(|(k, _)| k == "AVI_DIAG_TRACE_FILE")
+            .map(|(_, v)| PathBuf::from(v))
+    }
+
+    /// Vuelca la traza del arranque por stderr, para que quede en el log del
+    /// caso cuando este falla (nextest solo muestra la salida de un caso que
+    /// falla).
+    ///
+    /// No espera a ninguna marca: leer el fichero no puede añadir demora a la
+    /// corrida, que debe seguir siendo la de producción. Si al leer falta la
+    /// última marca del hijo —que escribe justo antes de morir— no pasa nada:
+    /// el volcado del job, al final, lee el fichero ya completo.
+    fn dump_diag_trace(&self, path: &std::path::Path) {
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        eprintln!("[diag-trace]\n{content}");
+        let _ = std::io::stderr().flush();
+    }
+
     /// `addr` publicada en el pidfile de la instancia (None si aún no hay).
     fn published_addr(&self) -> Option<String> {
         let content = std::fs::read_to_string(self.dir.join("daemon.pid")).ok()?;
@@ -5203,6 +5271,16 @@ mod tts {
         let t0 = Instant::now();
         let (code, actual) = run_json_env(&args, &inst.contract_args());
         let elapsed = t0.elapsed();
+        // La traza se vuelca **solo si el plazo se incumplió**, que es el
+        // único desenlace que hace falta diagnosticar: volcarla siempre
+        // añadiría E/S entre las dos invocaciones de esta prueba y la
+        // corrida dejaría de ser la de producción. Cuando el caso pasa, la
+        // traza completa la recoge el volcado del job, al final.
+        if elapsed >= Duration::from_secs(5) {
+            if let Some(path) = inst.diag_trace_path() {
+                inst.dump_diag_trace(&path);
+            }
+        }
         assert_eq!(code, 6, "puerto ocupado debe salir con exit 6: {}", actual);
         assert_eq!(actual["reason"], "port_in_use", "{}", actual);
         let error = actual["error"].as_str().unwrap_or_default();
@@ -5293,13 +5371,16 @@ mod tts {
     #[test]
     fn daemon_start_port_in_use_fails_fast_with_state_conflict() {
         let mut inst = IsolatedInstance::new("start_port_in_use");
+        inst.enable_diag_trace("start_port_in_use");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
         seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
+        inst.set_diag_trace_tag("start_port_in_use#1");
         assert_start_port_in_use(&inst, port, &[]);
+        inst.set_diag_trace_tag("start_port_in_use#2");
         assert_start_port_in_use(&inst, port, &["--auto-restart"]);
         let pidfile_seed = std::fs::read(inst.dir.join("daemon.pid")).ok();
         let logs_seed = snapshot_daemon_logs(&inst);
@@ -5377,7 +5458,8 @@ mod tts {
     /// (exit 3) sin cargar modelos y sin tocar el `daemon.pid` previo.
     #[test]
     fn daemon_start_missing_warm_voice_exits_not_found() {
-        let inst = IsolatedInstance::new("start_missing_warm_voice");
+        let mut inst = IsolatedInstance::new("start_missing_warm_voice");
+        let trace = inst.enable_diag_trace("start_missing_warm_voice");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
         seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
@@ -5390,6 +5472,12 @@ mod tts {
             &inst.contract_args(),
         );
         let elapsed = t0.elapsed();
+        // El volcado en stderr ocurre solo si el plazo se incumplió (el
+        // desenlace que hay que diagnosticar); el volcado del job, al final,
+        // recoge la traza completa aunque el caso pase.
+        if elapsed >= Duration::from_secs(5) {
+            inst.dump_diag_trace(&trace);
+        }
         assert_eq!(code, 3, "voz inexistente debe salir con exit 3: {}", actual);
         assert_eq!(actual["reason"], "voice_not_found", "{}", actual);
         assert!(
