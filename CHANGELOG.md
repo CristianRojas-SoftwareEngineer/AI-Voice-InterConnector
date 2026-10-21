@@ -118,6 +118,8 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+Este ciclo endurece las dos fronteras del producto: lo que el daemon exige para arrancar y lo que la máquina deja sucio al terminar una prueba. El daemon pasa a exigir los cinco modelos fijados en vez de arrancar con alguno en falta, y la poda de sandboxes distingue a los que tienen un dueño muerto de los que solo son viejos. De paso, la marca del proyecto queda normalizada en toda la prosa y el `daemon.pid` deja de perder la identidad de su daemon.
+
 ### Añadido
 
 - `cargo xtask clean --prune` retira los **sandboxes de prueba huérfanos** que las corridas interrumpidas dejan en el temporal del sistema o en `target/`. Los reconoce por los prefijos del motor y de `xtask` declarados en `avi-shared`: la familia de ciclo de vida se borra si su PID ya murió, aunque sea reciente, y se respeta si sigue vivo; las familias sin PID se retiran cuando tienen más de un día. La raíz `golden-avi-daemon` se barre por PID. Antes de guardar la caché de `target/`, la CI retira también los residuos recientes de esas familias y los temporales `.tmp*`; `cargo xtask pins --check` impide que la lista de la CI quede desfasada.
@@ -137,6 +139,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - `self uninstall` sobre un sistema sin instalación ya no imprime una **línea en blanco** por stdout. El desenlace `not_installed` salía con un mensaje vacío, y el handler —que es su dueño— lo imprimía tal cual: una línea vacía que no dice nada y parece un fallo de salida. Ahora dice «No había nada que desinstalar.», que es lo que pasó.
 - Los mensajes finales tienen **una sola forma**: `texto (N s).` —la duración entre paréntesis y el punto al final—. Convivían tres convenciones según el comando: la de la CLI con el punto, la de `self install` y `self uninstall` sin él, y la de `doctor --repair` con el punto antes del paréntesis. Quien leía la salida tenía que saber de qué comando salía para saber dónde estaba la frase. La forma la decide ahora un solo sitio en cada capa.
 - La fila de `self update` de la tabla del contrato ya no afirma un mensaje sin duración: el código emite «ai-voice-interconnector actualizado: A → B (N s).» desde que el indicador pasó a devolver el reloj del cierre.
+- `daemon status` vuelve a reconocer el daemon como propio. Al separar la carga de motores del ensamblaje del estado, el registro que escribe `daemon.pid` quedó partido en dos instancias: la que anotaba al residente TTS guardaba su propia copia y escribía el fichero entero, de modo que pisaba la dirección y la identidad del daemon con nulos. El daemon arrancaba y respondía, pero su estado no lo reconocía y la parada no podía distinguirlo de un PID reasignado. Ahora hay un solo registro en memoria, y el estado de contrato ancla el suyo bajo su propio árbol para que una prueba nunca alcance el `daemon.pid` de la instalación del usuario.
 
 ## [0.35.0] — 2026-10-20
 
