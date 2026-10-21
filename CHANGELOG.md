@@ -120,7 +120,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Añadido
 
-- `cargo xtask clean --prune` retira ahora los **sandboxes de prueba huérfanos** que las corridas interrumpidas dejan en el temporal del sistema. Cada prueba crea su sandbox con `tempfile`, que lo borra al soltarse; pero si la corrida se corta —un `Ctrl-C`, un pánico no capturado, un cierre de sesión— el `Drop` no corre y el directorio sobrevive, ocupando cientos de MB. La poda los reconoce por su prefijo (`golden-sandbox_`, `cleanup_sandbox_`, `contract-sandbox_`) y los retira solo cuando son más viejos que un día, de modo que el sandbox de una corrida viva nunca se toca: su nombre no lleva PID, así que la antigüedad es lo único que lo distingue del residuo. Los sandboxes que caen en `target/` —donde Cargo confina el temporal de las pruebas— se purgan con la misma regla. La lista de prefijos vive en `avi-shared`, que es la fuente única de rutas, y la usan tanto las pruebas al nombrar sus directorios como la poda al reconocerlos.
+- `cargo xtask clean --prune` retira los **sandboxes de prueba huérfanos** que las corridas interrumpidas dejan en el temporal del sistema o en `target/`. Los reconoce por los prefijos del motor y de `xtask` declarados en `avi-shared`: la familia de ciclo de vida se borra si su PID ya murió, aunque sea reciente, y se respeta si sigue vivo; las familias sin PID se retiran cuando tienen más de un día. La raíz `golden-avi-daemon` se barre por PID. Antes de guardar la caché de `target/`, la CI retira también los residuos recientes de esas familias y los temporales `.tmp*`; `cargo xtask pins --check` impide que la lista de la CI quede desfasada.
 
 ### Cambiado
 

@@ -19,15 +19,19 @@
 //! aquí y en ningún otro sitio. `ort_sha256` no es una versión sino la tabla de
 //! hashes que verifica `xtask package`, y ningún paso de la CI la interpola.
 //!
-//! La misma puerta compara el otro literal de la CI que espeja un valor del
+//! La misma puerta compara los literales de la CI que espejan valores del
 //! código: la `schema_version` que el humo de `build-windows-x64` exige a
-//! `version --json` debe ser `CLI_SCHEMA_VERSION`, de modo que subir la versión
-//! del envelope sin tocar el humo falla aquí y no al publicar un tag.
+//! `version --json` debe ser `CLI_SCHEMA_VERSION`, y la limpieza anterior a
+//! guardar `target/` debe cubrir todos los prefijos de prueba declarados en
+//! `avi-shared`, además de los temporales por defecto y la raíz del daemon.
 //!
 //! Sin dependencias nuevas: basta con leer ficheros y comparar cadenas.
 
 use anyhow::{anyhow, Result};
-use avi_shared::pins::{self, Pins};
+use avi_shared::{
+    paths,
+    pins::{self, Pins},
+};
 use std::path::{Path, PathBuf};
 
 /// Sufijo que marca un parámetro del pipeline como pin versionado.
@@ -39,6 +43,9 @@ const TOOLCHAIN_REL: &str = "rust-toolchain.toml";
 /// Prefijos que preceden, en el humo de la CI, al literal de `schema_version`
 /// que se exige a `version --json`: la comparación y su mensaje de error.
 const SCHEMA_SMOKE_MARKERS: [&str; 2] = ["$j.schema_version -ne '", "campo 'schema_version' != '"];
+
+/// Inicio del comando que retira temporales antes de guardar la caché de `target/`.
+const CACHE_CLEANUP_MARKER: &str = "          command: >-\n            rm -rf -- ";
 
 /// Ejecuta el subcomando: `--check` verifica y `--sync` regenera el canal.
 pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
@@ -67,7 +74,7 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
         let errors = check_text(&pins, &cfg, &toolchain);
         if errors.is_empty() {
             println!(
-                "pines en sincronía: parámetros, canal de Rust, instaladores y schema_version del humo"
+                "pines en sincronía: parámetros, canal de Rust, instaladores, schema_version del humo y limpieza de la caché"
             );
             return Ok(());
         }
@@ -212,6 +219,38 @@ fn check_text(pins: &Pins, cfg: &str, toolchain: &str) -> Vec<String> {
         cfg,
         avi_core::json_emitter::CLI_SCHEMA_VERSION,
     ));
+    errors.extend(cache_cleanup_errors(cfg));
+    errors
+}
+
+/// Exige que la orden anterior a `save_cache` retire las familias de prueba,
+/// los temporales por defecto y la raíz del daemon, sin borrar todo `target/`.
+fn cache_cleanup_errors(cfg: &str) -> Vec<String> {
+    let Some((_, command)) = cfg.split_once(CACHE_CLEANUP_MARKER) else {
+        return vec!["falta la limpieza de target/ en cargo_save_target: restaura `rm -rf --` antes de save_cache y enumera los prefijos de TEST_SANDBOX_PREFIXES".to_string()];
+    };
+    let Some((command, _)) = command.split_once("\n      - save_cache:") else {
+        return vec!["la limpieza de target/ no precede a save_cache en cargo_save_target: mueve el comando antes de guardar la caché".to_string()];
+    };
+    let paths: Vec<&str> = command.split_whitespace().collect();
+    let mut errors = Vec::new();
+    for pattern in std::iter::once("target/.tmp*".to_string())
+        .chain(std::iter::once(format!(
+            "target/{}",
+            paths::GOLDEN_DAEMON_DIR_NAME
+        )))
+        .chain(
+            paths::TEST_SANDBOX_PREFIXES
+                .iter()
+                .map(|prefix| format!("target/{prefix}*")),
+        )
+    {
+        if !paths.contains(&pattern.as_str()) {
+            errors.push(format!(
+                "la limpieza de la caché no cubre {pattern}: añade ese patrón a `rm -rf --` en cargo_save_target antes de save_cache"
+            ));
+        }
+    }
     errors
 }
 
@@ -277,8 +316,8 @@ mod tests {
         }
     }
 
-    /// CI de fixture con los once parámetros esperados, sin literales de
-    /// versión y con el humo de `schema_version` en la versión vigente.
+    /// CI de fixture con los once parámetros esperados, el humo de
+    /// `schema_version` y la limpieza de caché vigentes.
     fn fixture_config() -> String {
         let pins = fixture_pins();
         let mut cfg = String::from("parameters:\n");
@@ -293,6 +332,14 @@ mod tests {
         cfg.push_str(&fixture_schema_smoke(
             avi_core::json_emitter::CLI_SCHEMA_VERSION,
         ));
+        cfg.push_str("  cargo_save_target:\n    steps:\n      - run:\n");
+        cfg.push_str(CACHE_CLEANUP_MARKER);
+        cfg.push_str("target/.tmp* ");
+        cfg.push_str(&format!("target/{} ", paths::GOLDEN_DAEMON_DIR_NAME));
+        for prefix in paths::TEST_SANDBOX_PREFIXES {
+            cfg.push_str(&format!("target/{prefix}* "));
+        }
+        cfg.push_str("\n      - save_cache:\n");
         cfg
     }
 
@@ -418,6 +465,37 @@ mod tests {
     fn real_pipeline_smoke_matches_cli_schema_version() {
         let cfg = include_str!("../../../.circleci/config.yml");
         let errors = schema_smoke_errors(cfg, avi_core::json_emitter::CLI_SCHEMA_VERSION);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    /// La cobertura debe fallar si falta un prefijo, el temporal por defecto,
+    /// la raíz del daemon o la propia orden de limpieza.
+    #[test]
+    fn stale_cache_cleanup_is_rejected() {
+        let cfg = fixture_config();
+        for pattern in [
+            "target/ai-voice-interconnector-menu-*",
+            "target/.tmp*",
+            "target/golden-avi-daemon",
+        ] {
+            let stale = cfg.replace(pattern, "");
+            let errors = cache_cleanup_errors(&stale);
+            assert!(
+                errors
+                    .iter()
+                    .any(|e| e.contains(pattern) && e.contains("añade")),
+                "{errors:?}"
+            );
+        }
+        let missing = cfg.replace(CACHE_CLEANUP_MARKER, "");
+        assert!(cache_cleanup_errors(&missing)[0].contains("restaura"));
+    }
+
+    /// El comando real debe cubrir los prefijos compartidos antes de guardar `target/`.
+    #[test]
+    fn real_pipeline_cache_cleanup_covers_test_sandboxes() {
+        let cfg = include_str!("../../../.circleci/config.yml");
+        let errors = cache_cleanup_errors(cfg);
         assert!(errors.is_empty(), "{errors:?}");
     }
 
