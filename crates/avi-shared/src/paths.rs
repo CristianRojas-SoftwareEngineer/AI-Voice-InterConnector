@@ -285,28 +285,44 @@ pub const PARKED_DIR_PREFIX: &str = ".old-";
 /// `ModelStore::new()` en `HF_XET_CACHE`.
 pub const MODELS_XET_SUBDIR: &str = "xet";
 
-/// Prefijos de los sandboxes que crean las pruebas del motor con `tempfile`:
-/// cada uno nombra su directorio temporal como `<prefijo><etiqueta de la
-/// prueba>_<aleatorio>`.
+/// Prefijos de los directorios temporales que crean las pruebas del motor.
 ///
 /// La lista vive aquí —y no en el crate que limpia— porque las dos puntas la
 /// necesitan: las pruebas la usan para nombrar el directorio que crean, y
 /// `xtask clean --prune` la usa para reconocer los que dejan las corridas
 /// interrumpidas. Duplicarla en ambos lados la desincronizaría en silencio.
 ///
-/// Cada prefijo lleva el nombre del motor dentro (`golden`, `cleanup`,
-/// `contract`), de modo que no puede colisionar con el temporal de otro
-/// proyecto: el prefijo completo es específico del motor, no una palabra
-/// común.
+/// Cada prefijo identifica una familia de pruebas del motor; el sandbox de
+/// ciclo de vida incluye además etiqueta, PID y nanosegundos en su nombre.
 pub const GOLDEN_SANDBOX_PREFIX: &str = "golden-sandbox_";
 pub const CLEANUP_SANDBOX_PREFIX: &str = "cleanup_sandbox_";
 pub const CONTRACT_SANDBOX_PREFIX: &str = "contract-sandbox_";
+pub const LIFECYCLE_SANDBOX_PREFIX: &str = "ai-voice-interconnector-sandbox-";
+pub const MENU_SANDBOX_PREFIX: &str = "ai-voice-interconnector-menu-";
 
-/// Los prefijos de sandbox de prueba que la poda fina reconoce.
+/// Prefijos de directorios de prueba que reconoce la poda fina.
 pub const TEST_SANDBOX_PREFIXES: &[&str] = &[
     GOLDEN_SANDBOX_PREFIX,
     CLEANUP_SANDBOX_PREFIX,
     CONTRACT_SANDBOX_PREFIX,
+    LIFECYCLE_SANDBOX_PREFIX,
+    MENU_SANDBOX_PREFIX,
+    "avi_store_test_",
+    "avi_daemon_test_state_",
+    "avi-tts-double-",
+    "avi_ct2_broken_",
+    "avi_store_path_entry_",
+    "avi_store_hf_layout_",
+    "avi_daemon_clone_operation_",
+    "lifecycle-test-",
+    "xtask_clean_",
+    "xtask-comments-",
+    "xtask-language-",
+    "xtask_doctor_",
+    "xtask_install_",
+    "xtask_package_",
+    "xtask-package-",
+    "xtask_pins_",
 ];
 
 /// Raíz de los sandboxes de prueba del daemon: cada proceso de pruebas tiene

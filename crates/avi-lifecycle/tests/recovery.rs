@@ -646,7 +646,7 @@ fn sweep_never_touches_a_foreign_sandbox() {
     support::write(&own.join("clip.wav"), "scratch de este proceso");
     // Sandboxes de pruebas junto al scratch y con la forma de un token fuera de él, y
     // nombres antiguos con PID dentro de él: nada de eso es de este modelo.
-    let golden = sandbox.root.join("golden-sandbox_invariant_12345_0");
+    let golden = sandbox.root.join("other-project-sandbox-invariant-12345-0");
     let outside = sandbox.root.join("elsewhere").join("4294967000-1");
     let legacy = sandbox.scratch_root.join("avi-orphan-4294967000.tmp");
     let legacy_dir = sandbox.scratch_root.join("avi_clone_x_1");

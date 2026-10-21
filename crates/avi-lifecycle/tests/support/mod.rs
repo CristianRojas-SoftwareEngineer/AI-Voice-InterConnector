@@ -38,9 +38,8 @@
 //! `shared_models_dir` sobre una ruta que la regla de recursos compartidos nunca
 //! protege.
 //!
-//! El prefijo del directorio del sandbox es deliberadamente neutro: el barrido de
-//! temporales solo toca entradas con los prefijos propios (`avi-`, `avi_`), y un sandbox
-//! llamado `avi-…` se confundiría con un temporal del producto.
+//! El sandbox de pruebas lleva un prefijo propio del motor para que la poda de
+//! temporales lo identifique sin confundirlo con directorios de otros proyectos.
 
 #![allow(clippy::disallowed_methods)]
 
@@ -136,7 +135,11 @@ impl Sandbox {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos())
             .unwrap_or_default();
-        std::env::temp_dir().join(format!("sandbox-{tag}-{}-{n}", std::process::id()))
+        std::env::temp_dir().join(format!(
+            "{}{tag}-{}-{n}",
+            avi_shared::paths::LIFECYCLE_SANDBOX_PREFIX,
+            std::process::id()
+        ))
     }
 
     /// Sandbox sobre una raíz dada, sin crear nada en disco. Deriva todas las rutas de

@@ -6298,7 +6298,10 @@ mod tests {
     /// Prepara un almacén de locuciones aislado y un WAV temporal válido, y
     /// devuelve los tres con el directorio temporal que los respalda.
     fn menu_fixture() -> (tempfile::TempDir, SpeechStore, PathBuf) {
-        let dir = tempfile::tempdir().expect("directorio temporal de prueba");
+        let dir = tempfile::Builder::new()
+            .prefix(avi_shared::paths::MENU_SANDBOX_PREFIX)
+            .tempdir()
+            .expect("directorio temporal de prueba");
         let store = SpeechStore::at(dir.path().join("speech"));
         let wav = dir.path().join("toma.wav");
         write_test_wav(&wav);

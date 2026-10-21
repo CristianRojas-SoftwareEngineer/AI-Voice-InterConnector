@@ -18,11 +18,9 @@
 //! sandboxes de prueba huérfanos, y conserva la compilación vigente para que
 //! el siguiente build siga siendo incremental en vez de frío.
 //!
-//! Los sandboxes de prueba son los directorios que las pruebas crean con
-//! `tempfile`: se borran al soltarse, pero quedan ahí cuando la corrida se
-//! interrumpe. La poda los reconoce por su prefijo y los retira solo cuando
-//! son más viejos que un día, porque su nombre no lleva PID y la antigüedad es
-//! lo único que distingue el residuo del sandbox de una corrida viva.
+//! La poda reconoce por nombre los directorios temporales de las pruebas.
+//! Los que no llevan PID se retiran tras un día; los sandboxes de ciclo de
+//! vida se retiran solo si su PID ya no está vivo.
 //!
 //! La capa global (`--global`) es explícita y nunca entra en `--all`: borra
 //! solo lo que Cargo documenta como regenerable bajo `CARGO_HOME`
@@ -163,17 +161,33 @@ fn prune_old_pdbs(deps: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Sandboxes de prueba del temporal del sistema más antiguos que el umbral.
-///
-/// El nombre de un sandbox de `tempfile` es `<prefijo><etiqueta de la
-/// prueba>_<aleatorio>`: no lleva PID, así que la única forma de saber si
-/// alguien lo sostiene es su antigüedad. Un sandbox cuya modificación es más
-/// vieja que el umbral no lo sostiene ninguna corrida viva, porque una
-/// corrida en marcha acaba de escribir en él.
-///
-/// La raíz que se recorre es la del temporal del **sistema**, no la que
-/// Cargo confina en `target/`: los sandboxes que se acumulan son los de las
-/// corridas que no pasaron por Cargo.
+/// PID de un sandbox de ciclo de vida con nombre completo y válido.
+/// La etiqueta admite guiones pero no dígitos como único componente; PID y
+/// nanosegundos son decimales no vacíos, y el PID debe caber en `u32`.
+fn lifecycle_sandbox_pid(name: &str) -> Option<u32> {
+    let suffix = name.strip_prefix(avi_shared::paths::LIFECYCLE_SANDBOX_PREFIX)?;
+    let (tag_and_pid, nanos) = suffix.rsplit_once('-')?;
+    let (tag, pid) = tag_and_pid.rsplit_once('-')?;
+    if tag.is_empty()
+        || !tag.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                && !part.bytes().all(|b| b.is_ascii_digit())
+        })
+        || nanos.is_empty()
+        || !nanos.bytes().all(|b| b.is_ascii_digit())
+        || pid.is_empty()
+        || !pid.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Selecciona sandboxes reconocidos en una raíz temporal: la familia con PID
+/// se decide solo por proceso vivo; las demás familias, solo por antigüedad.
 fn prune_old_test_sandboxes(temp_root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(temp_root) else {
         return;
@@ -185,6 +199,12 @@ fn prune_old_test_sandboxes(temp_root: &Path, out: &mut Vec<PathBuf>) {
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with(avi_shared::paths::LIFECYCLE_SANDBOX_PREFIX) {
+            if lifecycle_sandbox_pid(&name).is_some_and(|pid| !avi_process::pid_alive_exact(pid)) {
+                out.push(path);
+            }
+            continue;
+        }
         if !avi_shared::paths::TEST_SANDBOX_PREFIXES
             .iter()
             .any(|prefix| name.starts_with(prefix))
@@ -230,17 +250,14 @@ fn prune_dead_process_dirs(parent: &Path, out: &mut Vec<PathBuf>) {
 
 /// Residuos de las pruebas del motor en el temporal del sistema.
 ///
-/// Son sandboxes que `tempfile` borra al soltarse, pero que quedan ahí cuando
-/// la corrida se interrumpe: un `Ctrl-C`, un pánico no capturado o un cierre
-/// de sesión cortan el proceso antes de que el `Drop` corra.
+/// Son directorios de pruebas que sobreviven cuando la corrida se interrumpe
+/// antes de que sus dueños los borren.
 ///
 /// La configuración de Cargo confina el temporal de las pruebas en `target/`,
 /// así que la raíz que se recorre es la del **sistema**: los residuos de las
 /// corridas que no pasaron por Cargo.
 ///
-/// Solo se purgan los que son más viejos que el umbral, porque el nombre de
-/// un sandbox no lleva PID y la antigüedad es lo único que distingue el
-/// residuo del sandbox de una corrida viva.
+/// La familia de ciclo de vida se decide por PID; las demás, por antigüedad.
 pub(crate) fn prune_system_temp_sandboxes() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(temp_root) = avi_shared::paths::system_temp_dir() else {
@@ -267,9 +284,8 @@ pub(crate) fn prune_targets(root: &Path) -> Vec<PathBuf> {
         push_dir(&mut out, dir.join("incremental"));
         prune_old_pdbs(&dir.join("deps"), &mut out);
     }
-    // Los sandboxes de prueba caen aquí cuando la corrida la lanza Cargo, que
-    // confina el temporal en `target/`. Los borra la poda por antigüedad, igual
-    // que los del temporal del sistema.
+    // Cargo confina aquí los sandboxes de prueba; se aplica el mismo criterio
+    // por PID o antigüedad que en el temporal del sistema.
     prune_old_test_sandboxes(&target, &mut out);
     let Ok(entries) = std::fs::read_dir(&target) else {
         return out;
@@ -795,8 +811,8 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
     );
     if !sandbox_paths.is_empty() {
         println!(
-            "Del temporal del sistema solo se retiran sandboxes de prueba huérfanos: \
-             directorios con el prefijo del motor y más antiguos que el umbral de la poda."
+            "Del temporal del sistema solo se retiran directorios de prueba reconocidos: \
+             los de ciclo de vida con PID muerto y los demás más antiguos que el umbral."
         );
     }
     if dry_run {
@@ -1200,7 +1216,10 @@ mod tests {
         // Un sandbox de cada prefijo reconocido: uno viejo y uno joven.
         let mut old_sandboxes = Vec::new();
         let mut fresh_sandboxes = Vec::new();
-        for prefix in avi_shared::paths::TEST_SANDBOX_PREFIXES {
+        for prefix in avi_shared::paths::TEST_SANDBOX_PREFIXES
+            .iter()
+            .filter(|prefix| **prefix != avi_shared::paths::LIFECYCLE_SANDBOX_PREFIX)
+        {
             let old = root.join(format!("{prefix}caso_AbCd12"));
             let fresh = root.join(format!("{prefix}caso_ZzYy34"));
             std::fs::create_dir_all(&old).unwrap();
@@ -1226,6 +1245,39 @@ mod tests {
         }
         for keep in fresh_sandboxes.iter().chain([&foreign]) {
             assert!(!got.contains(keep), "no debe borrar {}", keep.display());
+        }
+    }
+
+    /// Los sandboxes de ciclo de vida se deciden por PID y forma completa,
+    /// nunca por antigüedad; los nombres incompletos se conservan.
+    #[test]
+    fn prune_lifecycle_sandboxes_by_pid_and_complete_name() {
+        let guard = tempfile::Builder::new()
+            .prefix("xtask_clean_pid_")
+            .tempdir()
+            .unwrap();
+        let root = guard.path();
+        let prefix = avi_shared::paths::LIFECYCLE_SANDBOX_PREFIX;
+        let dead = root.join(format!("{prefix}daemon-stop-4294967000-1"));
+        let alive = root.join(format!("{prefix}daemon-stop-{}-2", std::process::id()));
+        let invalid = root.join(format!("{prefix}daemon-stop-4294967000-extra"));
+        let missing_tag = root.join(format!("{prefix}4294967000-1"));
+        let foreign = root.join("other-project-sandbox-daemon-stop-4294967000-1");
+        for path in [&dead, &alive, &invalid, &missing_tag, &foreign] {
+            std::fs::create_dir(path).unwrap();
+        }
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 86400);
+        for path in [&alive, &invalid, &missing_tag, &foreign] {
+            filetime::set_file_mtime(path, filetime::FileTime::from_system_time(old)).unwrap();
+        }
+        let mut got = Vec::new();
+        prune_old_test_sandboxes(root, &mut got);
+        assert!(
+            got.contains(&dead),
+            "un PID muerto se retira aunque sea reciente"
+        );
+        for path in [&alive, &invalid, &missing_tag, &foreign] {
+            assert!(!got.contains(path), "no debe borrar {}", path.display());
         }
     }
 
