@@ -128,7 +128,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 22, BSD 3, CDLA-Permissive-
 | `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | MIT |
 | `ahash` | 0.8.12 | MIT OR Apache-2.0 | MIT |
 | `aho-corasick` | 1.1.5 | Unlicense OR MIT | MIT |
-| `ai-voice-interconnector` | 0.35.0 | MPL-2.0 | MPL-2.0 |
+| `ai-voice-interconnector` | 0.36.0 | MPL-2.0 | MPL-2.0 |
 | `alsa` | 0.11.0 | Apache-2.0/MIT | MIT |
 | `alsa-sys` | 0.4.0 | MIT | MIT |
 | `android_system_properties` | 0.1.6 | MIT OR Apache-2.0 | MIT |

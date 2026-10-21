@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.36.0 — 2026-10-21](#0360--2026-10-21)
 - [0.35.0 — 2026-10-20](#0350--2026-10-20)
 - [0.34.0 — 2026-10-19](#0340--2026-10-19)
 - [0.33.1 — 2026-10-18](#0331--2026-10-18)
@@ -116,7 +116,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.36.0] — 2026-10-21
 
 Este ciclo endurece las dos fronteras del producto: lo que el daemon exige para arrancar y lo que la máquina deja sucio al terminar una prueba. El daemon pasa a exigir los cinco modelos fijados en vez de arrancar con alguno en falta, y la poda de sandboxes distingue a los que tienen un dueño muerto de los que solo son viejos. De paso, la marca del proyecto queda normalizada en toda la prosa y el `daemon.pid` deja de perder la identidad de su daemon.
 
@@ -3543,3 +3543,4 @@ estado con el que nace el producto.
 [0.33.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.33.0...v0.33.1
 [0.34.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.33.2...v0.34.0
 [0.35.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.34.0...v0.35.0
+[0.36.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.35.0...v0.36.0
