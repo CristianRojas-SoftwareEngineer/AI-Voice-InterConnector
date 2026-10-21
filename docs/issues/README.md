@@ -132,8 +132,9 @@ Este directorio también guarda, aparte del registro de defectos, los trabajos q
 quedaron **pendientes de analizar o de corregir** al implementar una capacidad ya
 entregada. No son defectos: no hay un síntoma que reproducir ni un veredicto que
 emitir, sino decisiones que quedan por tomar con su motivo y con lo que habría que
-decidir para cerrarlas.
+decidir para cerrarlas. Cuando se cierran, el documento se conserva con su
+descripción original y con el cierre de cada punto, igual que los defectos.
 
 | Documento | Asunto | Estado |
 |---|---|---|
-| [`pending.md`](pending.md) | Lo que quedó fuera del alcance de la poda de sandboxes huérfanos de `cargo xtask clean --prune`: los prefijos de sandbox que la poda no reconoce, el criterio de borrado que les corresponde y la diferencia de cobertura entre las dos raíces que poda | abierto |
+| [`pending.md`](pending.md) | Lo que quedó fuera del alcance de la poda de sandboxes huérfanos de `cargo xtask clean --prune`: los prefijos de sandbox que la poda no reconocía, el criterio de borrado que les corresponde y la diferencia de cobertura entre las dos raíces que la poda recorre | cerrado |
