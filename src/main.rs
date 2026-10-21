@@ -4157,11 +4157,12 @@ fn require_model_provisioned() -> Result<(), CliError> {
 /// Traduce un fallo de arranque del daemon a código de salida y `reason`. Es el
 /// único punto de traducción, compartido por `start`, `restart` y `serve`, para
 /// que la misma causa dé el mismo código en los tres: conflicto de puerto (6),
-/// recurso inexistente (3) o error no clasificado (1).
+/// recurso inexistente (3), modelo ausente (4) o error no clasificado (1).
 fn startup_error_to_cli(err: &daemon::StartupError) -> CliError {
     let reason = match err {
         daemon::StartupError::PortInUse { .. } => "port_in_use",
         daemon::StartupError::WarmVoiceMissing { .. } => "voice_not_found",
+        daemon::StartupError::ModelMissing { .. } => "model_missing",
         daemon::StartupError::Failed { .. } => "daemon_error",
     };
     CliError::new(ExitCode::from_reason(reason), reason, err.to_string())
@@ -5691,6 +5692,13 @@ mod tests {
         assert_eq!(voice.code, ExitCode::NotFound);
         assert_eq!(voice.reason, "voice_not_found");
         assert!(voice.message.contains("nadie"), "{}", voice.message);
+
+        let model = startup_error_to_cli(&daemon::StartupError::ModelMissing {
+            message: "falta opus-mt-es-en: ejecuta setup".to_string(),
+        });
+        assert_eq!(model.code, ExitCode::ModelMissing);
+        assert_eq!(model.reason, "model_missing");
+        assert!(model.message.contains("setup"));
 
         let failed = startup_error_to_cli(&daemon::StartupError::Failed {
             message: "motor caído".to_string(),

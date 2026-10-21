@@ -124,6 +124,8 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Cambiado
 
+- El daemon exige al arrancar los cinco modelos fijados para síntesis, clonado, traducción y transcripción. Si falta alguno, no publica el estado listo y devuelve `model_missing` (salida 4) con una indicación de ejecutar `setup`; así CT2 ya no deja el servidor funcionando sin alguno de sus pares, igual que STT y TTS. Las peticiones de traducción usan exclusivamente los motores CT2 residentes: ya no cargan el modelo bajo demanda cuando falta el motor en el estado.
+
 - La marca del proyecto es ahora **AI Voice-InterConnector** en toda la prosa, y la del proyecto hermano, **Agent Voice-InterConnector**. Antes convivían tres formas: «AI Voice InterConnector» sin guion en la prosa, «AI-Voice-InterConnector» con guion en ella, y la forma correcta. Las variantes en minúscula o con guion no se tocan: son la adaptación al formato que exige cada contexto —el slug del repositorio, el nombre del binario, la clave de registro en Windows y el identificador del plugin son identificadores técnicos, no marca—.
 
 ### Corregido

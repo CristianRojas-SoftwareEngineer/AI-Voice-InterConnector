@@ -10,7 +10,7 @@
 | Plataforma | todas (la diferencia está en el código, no en la terminal) |
 | Reproducibilidad | siempre |
 | Detectado en | inspección de código y comparación de salidas, 2026-10-19 |
-| Prueba de regresión | `src/main.rs`: `command_stream_phase_uses_local_labels_for_real_events`, `ndjson_progress_phase_maps_stages_and_rate_limits_by_stage`; `crates/avi-daemon/tests/golden.rs`: `synthesize_emits_contract_ndjson_stream`, `dub_emits_contract_ndjson_stream_naming_the_operation` |
+| Prueba de regresión | `src/main.rs`: `command_stream_phase_uses_local_labels_for_real_events`, `ndjson_progress_phase_maps_stages_and_rate_limits_by_stage`, `started_names_the_operation_the_daemon_reports`; `crates/avi-daemon/tests/golden.rs`: `synthesize_emits_contract_ndjson_stream` |
 | Documento canónico | [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) y [`docs/CLI/commands/DAEMON.md`](../CLI/commands/DAEMON.md#protocolo) |
 
 ## Resumen
@@ -188,6 +188,6 @@ Ninguna de esas fases se **inventa**: anunciar una etapa que no ocurrió sería 
 | `src/main.rs` → `ndjson_progress_phase_maps_stages_and_rate_limits_by_stage` | Los siete `stage` del daemon tienen traducción propia y racionan por etapa |
 | `crates/avi-daemon/tests/golden.rs` → `synthesize_emits_contract_ndjson_stream` | El `started` de `/synthesize` nombra la operación |
 | `crates/avi-daemon/tests/golden.rs` → `voices_clone_names_the_operation_in_the_started_event` | El `started` de `/voices/clone` nombra la operación. Corre en la puerta de CI: el `started` se emite antes del trabajo pesado, así que la prueba monta un estado con el modelo Base presente y no necesita el motor |
-| `crates/avi-daemon/tests/golden.rs` → `dub_emits_contract_ndjson_stream_naming_the_operation` | El `started` de `/dub` nombra la operación. **Solo se ejecuta con el feature `native-stt`**: sin él, la ruta `/dub` no está montada y responde `501 stt_unsupported` en JSON plano, no un stream, así que la puerta de CI —que corre sin features— no la puede ejecutar. Con el feature sí, y no necesita el modelo real: el estado de prueba monta un motor y una voz con rutas ficticias, que impiden lanzar el motor real si la transcripción llega a la síntesis. La operación de `/dub` la cubre además `started_names_the_operation_the_daemon_reports`, que sí corre siempre |
+| `src/main.rs` → `started_names_the_operation_the_daemon_reports` | Comprueba siempre los nombres de operación «síntesis», «clonación» y «doblaje». La golden local `dub_emits_contract_ndjson_stream_naming_the_operation` comprueba además el `started` real de `/dub` sin cargar Parakeet, pero solo compila con `native-stt` y no corre en la CI sin features |
 
 **Documento canónico**: [`docs/CLI/CONTRACT.md`](../CLI/CONTRACT.md#el-contrato-de-salida-por-comando) —la tabla del contrato de salida por comando, con sus fases— y [`docs/CLI/commands/DAEMON.md`](../CLI/commands/DAEMON.md#protocolo) —el mapa de etapas del daemon—.

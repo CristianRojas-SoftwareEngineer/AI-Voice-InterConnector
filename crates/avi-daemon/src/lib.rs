@@ -72,7 +72,9 @@ impl WarmState {
     }
 }
 
-/// Estado compartido del daemon
+/// Estado compartido del daemon. El servidor solo lo construye mediante el
+/// constructor que comprueba modelos y carga motores; el harness de contrato
+/// puede ensamblarlo sin inferencia para comprobar respuestas previas a ella.
 pub struct DaemonState {
     /// Lock de serialización de síntesis (una a la vez)
     pub synthesis_lock: Mutex<()>,
@@ -86,16 +88,10 @@ pub struct DaemonState {
     /// Motor STT nativo (Parakeet TDT v3 int8 vía ort). Parakeet no necesita
     /// chunking VAD: su RTF (~0.11 en audio largo) es lineal y no degrada con
     /// la duración, por lo que `transcribe_handler` transcribe de una sola vez.
-    #[cfg(feature = "native-stt")]
-    pub stt_engine: ParakeetEngine,
-    /// Motores CT2 residentes para traducción `es↔en` (uno por dirección).
-    /// Se precargan en `DaemonState::new` para cada par cuyo snapshot `opus-mt-<par>`
-    /// está provisionado; `None` significa que ningún par lo está, y la petición
-    /// responde `model_missing`.
-    /// El warmup CT2 no duplica `warm_voice_engine`: la primera petición paga frío si
-    /// el residente no estaba; documentado sin warmup separado.
-    #[cfg(feature = "native-translation")]
-    pub ct2_engine: Option<std::collections::HashMap<String, Ct2TranslationEngine>>,
+    /// Los motores de inferencia están presentes juntos en producción y ausentes
+    /// juntos en los estados usados para probar validaciones sin inferencia.
+    #[cfg(any(feature = "native-stt", feature = "native-translation"))]
+    inference_engines: Option<InferenceEngines>,
     /// Estado de warmup del motor TTS, con interior mutability seguro entre hilos:
     /// el warmup corre en un `spawn_blocking` de segundo plano y actualiza este
     /// campo; `/health` lo lee. Inicializa en `Warming`.
@@ -111,60 +107,124 @@ pub struct DaemonState {
     pub registry: Arc<registry::DaemonRegistry>,
 }
 
+#[derive(Debug)]
+struct MissingModel(&'static str);
+
+impl std::fmt::Display for MissingModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "El modelo '{}' no está provisionado. Ejecuta 'setup' primero.",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for MissingModel {}
+
+#[cfg(any(feature = "native-stt", feature = "native-translation"))]
+struct InferenceEngines {
+    #[cfg(feature = "native-stt")]
+    stt_engine: ParakeetEngine,
+    #[cfg(feature = "native-translation")]
+    ct2_engines: [Ct2TranslationEngine; 2],
+}
+
+struct DaemonEngines {
+    tts_engine: Qwen3TtsEngine,
+    #[cfg(any(feature = "native-stt", feature = "native-translation"))]
+    inference_engines: Option<InferenceEngines>,
+}
+
 impl DaemonState {
-    /// Constructor de producción. Las rutas de modelo son relativas al cwd del
-    /// workspace, correcto cuando `daemon serve` se lanza desde la raíz del repo.
-    /// Devuelve error si el motor STT no puede inicializarse (modelo inexistente).
+    /// Constructor de producción: exige los modelos antes de publicar el daemon.
     pub fn new() -> anyhow::Result<Self> {
         Self::with_stores(VoiceStore::new()?, SpeechStore::new()?)
     }
 
-    /// Constructor con los almacenes de voces y de habla ya anclados, para que
-    /// pruebas y sandboxes no dependan del directorio de datos del usuario.
+    /// Constructor de producción con almacenes anclados: carga todos los motores
+    /// antes de crear un estado que pueda llegar al servidor.
     pub fn with_stores(voice_store: VoiceStore, speech_store: SpeechStore) -> anyhow::Result<Self> {
         let model_store = ModelStore::new()?;
-        #[cfg(feature = "native-stt")]
-        let stt_dir = model_store.model_dir("parakeet-tdt-v3");
-        #[cfg(feature = "native-stt")]
-        // El daemon es de vida larga y su parada es por kill del árbol, así que
-        // conserva construcción directa: el titular de vida-de-proceso es para
-        // procesos de vida corta que salen tras transcribir.
-        let stt_engine = ParakeetEngine::new(&stt_dir).map_err(|e| {
-            anyhow::anyhow!("fallo al cargar el modelo STT {}: {e}", stt_dir.display())
-        })?;
-        // Los hilos lógicos del equipo del usuario dimensionan el paralelismo de
-        // ONNX Runtime (heredado de `avi-stt::parakeet`); el runtime del daemon
-        // serializa síntesis y STT fuera de esta construcción.
-        #[cfg(feature = "native-translation")]
-        let ct2_engine = {
-            let mut map = std::collections::HashMap::new();
-            for pair in &["es-en", "en-es"] {
-                let name = format!("opus-mt-{pair}");
-                if model_store.is_provisioned(&name) {
-                    if let Ok(engine) = Ct2TranslationEngine::new(model_store.model_dir(&name)) {
-                        map.insert(pair.to_string(), engine);
-                    }
-                }
+        let engines = Self::load_engines(&model_store)?;
+        Self::assemble(voice_store, speech_store, model_store, engines)
+    }
+
+    /// Carga los motores de producción. Toda ausencia de un modelo fijado exige
+    /// ejecutar `setup`, aunque el motor no cargue sus pesos hasta la primera petición.
+    fn load_engines(model_store: &ModelStore) -> anyhow::Result<DaemonEngines> {
+        for pin in avi_shared::paths::MODEL_REVISIONS {
+            if !model_store.is_provisioned(pin.name) {
+                return Err(MissingModel(pin.name).into());
             }
-            if map.is_empty() {
-                None
-            } else {
-                Some(map)
-            }
+        }
+        #[cfg(feature = "native-stt")]
+        let stt_engine = {
+            let stt_dir = model_store.model_dir("parakeet-tdt-v3");
+            // El daemon vive hasta cerrar el servidor; carga Parakeet directamente.
+            ParakeetEngine::new(&stt_dir).map_err(|e| {
+                anyhow::anyhow!("fallo al cargar el modelo STT {}: {e}", stt_dir.display())
+            })?
         };
-        // El mismo registro que escribe `daemon.pid` anota al residente del
-        // motor desde que nace.
+        #[cfg(feature = "native-translation")]
+        let load_ct2 = |pair| {
+            let dir = model_store.model_dir(&format!("opus-mt-{pair}"));
+            Ct2TranslationEngine::new(&dir).map_err(|e| {
+                anyhow::anyhow!(
+                    "fallo al cargar el modelo de traducción {}: {e}",
+                    dir.display()
+                )
+            })
+        };
+        #[cfg(feature = "native-translation")]
+        let ct2_engines = [load_ct2("es-en")?, load_ct2("en-es")?];
+        let registry = Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir()?));
+        let tts_engine = Qwen3TtsEngine::new(Some(registry))?;
+        Ok(DaemonEngines {
+            tts_engine,
+            #[cfg(any(feature = "native-stt", feature = "native-translation"))]
+            inference_engines: Some(InferenceEngines {
+                #[cfg(feature = "native-stt")]
+                stt_engine,
+                #[cfg(feature = "native-translation")]
+                ct2_engines,
+            }),
+        })
+    }
+
+    /// Estado de contrato sin motores de inferencia: solo se usa para ejercitar
+    /// validaciones, respuestas y eventos emitidos antes de la inferencia.
+    /// No se debe pasar a `run_daemon_server`: ese camino construye su propio
+    /// estado y exige todos los modelos antes de publicar el servicio.
+    #[doc(hidden)]
+    pub fn for_contract_tests(
+        voice_store: VoiceStore,
+        speech_store: SpeechStore,
+    ) -> anyhow::Result<Self> {
+        let model_store = ModelStore::new()?;
+        let engines = DaemonEngines {
+            tts_engine: Qwen3TtsEngine::new(None)?,
+            #[cfg(any(feature = "native-stt", feature = "native-translation"))]
+            inference_engines: None,
+        };
+        Self::assemble(voice_store, speech_store, model_store, engines)
+    }
+
+    fn assemble(
+        voice_store: VoiceStore,
+        speech_store: SpeechStore,
+        model_store: ModelStore,
+        engines: DaemonEngines,
+    ) -> anyhow::Result<Self> {
         let registry = Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir()?));
         Ok(Self {
             synthesis_lock: Mutex::new(()),
             voice_store,
             speech_store,
             model_store,
-            tts_engine: Qwen3TtsEngine::new(Some(registry.clone()))?,
-            #[cfg(feature = "native-stt")]
-            stt_engine,
-            #[cfg(feature = "native-translation")]
-            ct2_engine,
+            tts_engine: engines.tts_engine,
+            #[cfg(any(feature = "native-stt", feature = "native-translation"))]
+            inference_engines: engines.inference_engines,
             warm: std::sync::RwLock::new(WarmState::Warming),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             registry,
@@ -458,7 +518,7 @@ fn enrich_health_body(body: Value, _state: &DaemonState) -> Value {
     }
     #[cfg(feature = "native-translation")]
     {
-        if _state.ct2_engine.is_some() {
+        if _state.inference_engines.is_some() {
             body["ct2"] = Value::String("warm".into());
         }
     }
@@ -610,6 +670,8 @@ async fn synthesize_handler(
             let pair = translation_pair_for(&source_iso);
             let model_name = format!("opus-mt-{pair}");
             let ct2_dir = state.model_store.model_dir(&model_name);
+            // El modelo puede borrarse del disco después del arranque; detectar
+            // esa pérdida evita informar una traducción exitosa con recursos ausentes.
             if !state.model_store.is_provisioned(&model_name) {
                 emit_ndjson(
                     &tx,
@@ -637,16 +699,13 @@ async fn synthesize_handler(
             }
             #[cfg(feature = "native-translation")]
             {
-                let translated = if let Some(map) = state.ct2_engine.as_ref() {
-                    if let Some(engine) = map.get(pair) {
-                        use avi_core::engine::TranslationEngine;
-                        engine.translate(&text_owned)
-                    } else {
-                        avi_translation::translate(&text_owned, &ct2_dir)
-                    }
-                } else {
-                    avi_translation::translate(&text_owned, &ct2_dir)
+                let Some(engines) = state.inference_engines.as_ref() else {
+                    emit_ndjson(&tx, json!({"event": "error", "reason": "daemon_error", "message": "El estado de contrato no puede traducir."})).await;
+                    return;
                 };
+                use avi_core::engine::TranslationEngine;
+                let translated =
+                    engines.ct2_engines[usize::from(pair == "en-es")].translate(&text_owned);
                 match translated {
                     Ok(t) => t,
                     Err(e) => {
@@ -843,7 +902,12 @@ async fn transcribe_handler(
 
     // Parakeet no necesita chunking VAD (no degrada con la duración de audio);
     // se transcribe de una sola pasada.
-    let result = state.stt_engine.transcribe(&pcm);
+    let Some(engines) = state.inference_engines.as_ref() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(with_sv(json!({
+            "status": "error", "reason": "daemon_error", "message": "El estado de contrato no puede transcribir."
+        })))).into_response();
+    };
+    let result = engines.stt_engine.transcribe(&pcm);
     match result {
         Ok(text) => {
             let body = with_sv(json!({ "text": text }));
@@ -1025,6 +1089,8 @@ async fn translate_handler(
     let pair = translation_pair_for(&source);
     let model_name = format!("opus-mt-{pair}");
     let ct2_dir = state.model_store.model_dir(&model_name);
+    // El snapshot puede borrarse tras cargar el residente; la petición informa
+    // la pérdida del recurso sin reconstruir el motor bajo demanda.
     if !state.model_store.is_provisioned(&model_name) {
         return (
             StatusCode::NOT_FOUND,
@@ -1036,36 +1102,13 @@ async fn translate_handler(
         )
             .into_response();
     }
-    // Intentar residente si está precargado
-    if let Some(map) = state.ct2_engine.as_ref() {
-        if let Some(engine) = map.get(pair) {
-            use avi_core::engine::TranslationEngine;
-            match engine.translate(&text) {
-                Ok(translated) => {
-                    return Json(with_sv(json!({
-                        "translated": translated,
-                        "source_language": source,
-                        "target_language": target,
-                    })))
-                    .into_response();
-                }
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(with_sv(json!({
-                            "error": "translation_failed",
-                            "reason": "translation_failed",
-                            "message": e.to_string(),
-                        }))),
-                    )
-                        .into_response();
-                }
-            }
-        }
-    }
-    // Sin motor residente para el par (no se precargó al arrancar), se carga
-    // bajo demanda para esta petición: mismo resultado, más lento.
-    match avi_translation::translate(&text, &ct2_dir) {
+    let Some(engines) = state.inference_engines.as_ref() else {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(with_sv(json!({
+            "error": "daemon_error", "reason": "daemon_error", "message": "El estado de contrato no puede traducir."
+        })))).into_response();
+    };
+    use avi_core::engine::TranslationEngine;
+    match engines.ct2_engines[usize::from(pair == "en-es")].translate(&text) {
         Ok(translated) => Json(with_sv(json!({
             "translated": translated,
             "source_language": source,
@@ -1489,6 +1532,8 @@ async fn dub_handler(
     if let Some(pair) = translation_pair.as_deref() {
         let model_name = format!("opus-mt-{pair}");
         let ct2_dir = state.model_store.model_dir(&model_name);
+        // El snapshot puede borrarse después del arranque; la comprobación
+        // informa `model_missing` sin intentar cargar motores bajo demanda.
         if !state.model_store.is_provisioned(&model_name) {
             return (
                 StatusCode::NOT_FOUND,
@@ -1567,12 +1612,20 @@ async fn dub_handler(
             // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
             // sobre el audio completo).
             let stt_state = state.clone();
-            let stt_work =
-                tokio::task::spawn_blocking(move || stt_state.stt_engine.transcribe(&pcm));
+            let stt_work = tokio::task::spawn_blocking(move || {
+                stt_state
+                    .inference_engines
+                    .as_ref()
+                    .map(|engines| engines.stt_engine.transcribe(&pcm))
+            });
             let transcribed = match with_heartbeats(&tx, "transcribe", stt_work).await {
                 None => return,
-                Some(Ok(Ok(t))) => t,
-                Some(Ok(Err(e))) => {
+                Some(Ok(Some(Ok(t)))) => t,
+                Some(Ok(None)) => {
+                    emit_ndjson(&tx, json!({"event": "error", "reason": "daemon_error", "message": "El estado de contrato no puede transcribir."})).await;
+                    return;
+                }
+                Some(Ok(Some(Err(e)))) => {
                     emit_ndjson(
                         &tx,
                         json!({
@@ -1634,25 +1687,22 @@ async fn dub_handler(
                     let pair = translation_pair
                         .clone()
                         .expect("la validación barata garantizó el par");
-                    let dir = state.model_store.model_dir(&format!("opus-mt-{pair}"));
                     let ct2_state = state.clone();
                     let text = transcribed.clone();
                     let translation_work = tokio::task::spawn_blocking(move || {
-                        if let Some(map) = ct2_state.ct2_engine.as_ref() {
-                            if let Some(engine) = map.get(&pair) {
-                                use avi_core::engine::TranslationEngine;
-                                engine.translate(&text)
-                            } else {
-                                avi_translation::translate(&text, &dir)
-                            }
-                        } else {
-                            avi_translation::translate(&text, &dir)
-                        }
+                        use avi_core::engine::TranslationEngine;
+                        ct2_state.inference_engines.as_ref().map(|engines| {
+                            engines.ct2_engines[usize::from(pair == "en-es")].translate(&text)
+                        })
                     });
                     match with_heartbeats(&tx, "translate", translation_work).await {
                         None => return,
-                        Some(Ok(Ok(t))) => t,
-                        Some(Ok(Err(e))) => {
+                        Some(Ok(Some(Ok(t)))) => t,
+                        Some(Ok(None)) => {
+                            emit_ndjson(&tx, json!({"event": "error", "reason": "daemon_error", "message": "El estado de contrato no puede traducir."})).await;
+                            return;
+                        }
+                        Some(Ok(Some(Err(e)))) => {
                             emit_ndjson(
                                 &tx,
                                 json!({
@@ -1931,8 +1981,8 @@ pub fn build_router() -> Router {
 ///
 /// CT2: evaluado no duplicar `warm_voice_engine` para traducción — el motor CT2 INT8
 /// (`ct2rs::Translator`) carga `model.bin` en `DaemonState::new` y no requiere
-/// warmup sintético; la primera traducción paga frío si el residente no estaba
-/// provisionado, sin impacto en `warm` (`Warming`→`Warm` solo refleja TTS).
+/// warmup sintético; los dos pares se cargan antes de servir peticiones y
+/// `warm` (`Warming`→`Warm`) solo refleja TTS.
 pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()> {
     let qvoice_path = match state.voice_store.find_reference(voice) {
         Ok(path) => path,
@@ -1995,6 +2045,8 @@ pub enum StartupError {
     PortInUse { port: u16 },
     /// La voz de `--warm-voice` no existe en el almacén de voces.
     WarmVoiceMissing { voice: String },
+    /// Falta un modelo exigido antes de servir.
+    ModelMissing { message: String },
     /// Cualquier otro fallo previo a estar listo, con su causa legible.
     Failed { message: String },
 }
@@ -2012,7 +2064,9 @@ impl std::fmt::Display for StartupError {
                 "La voz de warmup '{}' no existe: clónala o elige otra con --warm-voice.",
                 voice
             ),
-            StartupError::Failed { message } => f.write_str(message),
+            StartupError::ModelMissing { message } | StartupError::Failed { message } => {
+                f.write_str(message)
+            }
         }
     }
 }
@@ -2034,8 +2088,8 @@ pub enum ReadySignal {
 
 // El fichero ready admite dos registros, ambos `clave=valor` por línea:
 // - éxito: `addr=<dirección real>`, `warm=<estado>` y `pid=<pid del daemon>`;
-// - fallo: `error=port_in_use` + `port=`, `error=warm_voice_missing` + `voice=`
-//   o `error=startup_failed` + `message=`.
+// - fallo: `error=port_in_use` + `port=`, `error=warm_voice_missing` + `voice=`,
+//   `error=model_missing` + `message=` o `error=startup_failed` + `message=`.
 // El registro de fallo nunca lleva `addr=`: los lectores toman `addr=` como
 // señal de listo, y uno que no conozca `error=` debe seguir viendo aún-no-listo.
 
@@ -2103,6 +2157,10 @@ fn write_ready_failure(path: &std::path::Path, err: &StartupError) -> anyhow::Re
         StartupError::WarmVoiceMissing { voice } => {
             format!("error=warm_voice_missing\nvoice={}\n", voice)
         }
+        StartupError::ModelMissing { message } => format!(
+            "error=model_missing\nmessage={}\n",
+            message.replace(['\r', '\n'], " ")
+        ),
         // El formato es de una línea por clave: los saltos del mensaje se
         // aplanan para que no corten el registro.
         StartupError::Failed { message } => format!(
@@ -2133,6 +2191,10 @@ pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
             "warm_voice_missing" => match field("voice") {
                 Some(voice) => StartupError::WarmVoiceMissing { voice },
                 None => malformed("sin 'voice='"),
+            },
+            "model_missing" => match field("message") {
+                Some(message) => StartupError::ModelMissing { message },
+                None => malformed("sin 'message='"),
             },
             "startup_failed" => match field("message") {
                 Some(message) => StartupError::Failed { message },
@@ -2215,8 +2277,16 @@ async fn prepare_server(
         message: format!("No se pudo leer la dirección enlazada: {}", e),
     })?;
 
-    let state = DaemonState::with_stores(voices, speech).map_err(|e| StartupError::Failed {
-        message: format!("No se pudo inicializar el estado del daemon: {}", e),
+    let state = DaemonState::with_stores(voices, speech).map_err(|e| {
+        if e.downcast_ref::<MissingModel>().is_some() {
+            StartupError::ModelMissing {
+                message: e.to_string(),
+            }
+        } else {
+            StartupError::Failed {
+                message: format!("No se pudo inicializar el estado del daemon: {}", e),
+            }
+        }
     })?;
     Ok((listener, bound, Arc::new(state)))
 }
@@ -2522,17 +2592,11 @@ pub async fn run_supervised(
 
 /// Pruebas unitarias del daemon.
 ///
-/// REGLA DE CLASES: el contrato corre en toda combinación de features; solo una
-/// prueba que ejercite el motor lleva `#[ignore = "requiere …"]` y, al
-/// ejecutarse, falla con el mensaje de aprovisionamiento si el recurso falta.
-/// Ninguna se omite por activar un feature: no hay
-/// `#[cfg_attr(feature = …, ignore = …)]` en este módulo, para que la clase de
-/// contrato no se invierta con `full`.
-///
-/// Estas pruebas construyen el estado con `test_state`, que con `native-stt`
-/// carga Parakeet (un daemon sin STT no es un estado del producto), así que
-/// `test_state` lo exige y su ausencia hace fallar la prueba de contrato con el
-/// mensaje de aprovisionamiento en vez de ocultarla.
+/// Las pruebas de contrato usan un estado sin motores y validan entradas antes
+/// de inferencia; las pruebas de recursos usan un constructor que comprueba
+/// Parakeet antes de cargar el estado de producción, que exige los cinco modelos.
+/// Las pruebas con recursos externos declaran `#[ignore = "requiere …"]`.
+/// Activar un feature no convierte una prueba de contrato en prueba de recursos.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2667,6 +2731,7 @@ mod tests {
                 "error=warm_voice_missing\n",
                 "warm_voice_missing sin 'voice='",
             ),
+            ("error=model_missing\n", "model_missing sin 'message='"),
             ("error=startup_failed\n", "startup_failed sin 'message='"),
         ];
         for (content, expected) in cases {
@@ -2680,38 +2745,16 @@ mod tests {
         }
     }
 
-    /// Exige `nemo128.onnx` del snapshot de Parakeet, que el estado del daemon
-    /// carga con `native-stt`: la raíz de modelos vive fuera del repo y la
-    /// provisiona `ai-voice-interconnector setup`. El mensaje lleva el marcador
-    /// `requiere` porque nombra la dependencia de recurso que el estado carga con
-    /// ese feature: sin el modelo, la prueba que lo exige falla aquí en vez de
-    /// omitirse.
-    #[cfg(feature = "native-stt")]
-    fn require_parakeet() {
-        let preprocessor = avi_store::ModelStore::new()
-            .expect("la raíz de modelos debe resolverse")
-            .model_snapshot_path("parakeet-tdt-v3")
-            .expect("el modelo parakeet-tdt-v3 debe tener un pin de revisión")
-            .join("nemo128.onnx");
-        assert!(
-            preprocessor.is_file(),
-            "requiere Parakeet: falta {}: provisiona Parakeet con `ai-voice-interconnector setup`",
-            preprocessor.display()
-        );
-    }
-
     /// Estado del daemon con los almacenes anclados en un directorio temporal
     /// único por llamada, sin tocar el directorio de datos real. Devuelve también
     /// el directorio con dueño: el llamante lo retiene mientras use el estado y
     /// se borra al soltarse.
     fn test_state() -> (DaemonState, tempfile::TempDir) {
-        #[cfg(feature = "native-stt")]
-        require_parakeet();
         let tmp = tempfile::Builder::new()
             .prefix("avi_daemon_test_state_")
             .tempdir()
             .expect("directorio temporal del estado");
-        let state = DaemonState::with_stores(
+        let state = DaemonState::for_contract_tests(
             VoiceStore::at(tmp.path().join("voices")),
             SpeechStore::at(tmp.path().join("speech")),
         )
@@ -3286,15 +3329,13 @@ mod tests {
         assert_eq!(bad.err().map(|e| e.reason), Some("usage_error"));
     }
 
-    /// `with_stores` ancla los almacenes bajo el directorio recibido: la raíz se
-    /// afirma antes de inicializar para no escribir nunca en la instalación real.
+    /// El estado de contrato ancla los almacenes bajo el directorio recibido:
+    /// la raíz se afirma antes de inicializar para no escribir en la instalación real.
     #[test]
-    fn with_stores_anchors_stores_under_given_dir() {
-        #[cfg(feature = "native-stt")]
-        require_parakeet();
+    fn contract_state_anchors_stores_under_given_dir() {
         let dir = tempfile::tempdir().expect("directorio temporal");
         let tmp = dir.path().to_path_buf();
-        let state = DaemonState::with_stores(
+        let state = DaemonState::for_contract_tests(
             VoiceStore::at(tmp.join("voices")),
             SpeechStore::at(tmp.join("speech")),
         )
@@ -3431,6 +3472,9 @@ mod tests {
             StartupError::PortInUse { port: 8765 },
             StartupError::WarmVoiceMissing {
                 voice: "nadie".to_string(),
+            },
+            StartupError::ModelMissing {
+                message: "falta Parakeet: ejecuta setup".to_string(),
             },
             StartupError::Failed {
                 message: "motor caído".to_string(),

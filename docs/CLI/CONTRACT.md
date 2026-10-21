@@ -533,7 +533,7 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 | `10` | `transcription_failed` |
 | `11` a `22` | `setup_failed`, `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`, `daemon_stop_failed`, `lifecycle_locked`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `program_dir_kept`, en ese orden |
 
-`warm_voice_missing` y `startup_failed` viajan en la línea `error=<reason>` del fichero ready del daemon; la CLI traduce el primero a `voice_not_found` (3) y el segundo a `daemon_error` (1).
+`warm_voice_missing`, `model_missing` y `startup_failed` viajan en la línea `error=<reason>` del fichero ready del daemon; la CLI traduce el primero a `voice_not_found` (3), conserva `model_missing` (4) y traduce el tercero a `daemon_error` (1).
 
 **El 6 tiene un solo dueño.** «Puerto ya en uso» y «la voz ya existe» son el mismo hecho y llevan el mismo código; no hay una constante aparte para el conflicto del daemon.
 

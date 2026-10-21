@@ -140,17 +140,17 @@ ningún modelo (`src/main.rs`).
 a `ExitCode::DaemonUnreachable` (`daemon_unreachable`). El endpoint
 `translate_handler` (`crates/avi-daemon/src/lib.rs`) replica la misma
 validación (`empty_text` → 400,
-`model_missing` → 404 si `is_provisioned` falla) y, si el motor CT2 del
-par ya está precargado en `DaemonState::ct2_engine`, traduce con el residente;
-si no, cae a carga bajo demanda con `avi_translation::translate` (misma
-función que la rama local). El CLI mapea el `reason` del cuerpo de error del
+`model_missing` → 404 si el modelo se borra tras arrancar) y traduce con el
+motor CT2 residente del par, cargado obligatoriamente antes de servir peticiones.
+Un estado de contrato sin motores responde `daemon_error`, nunca carga modelos
+bajo demanda. El CLI mapea el `reason` del cuerpo de error del
 daemon al mismo `ExitCode` que produciría la ruta local
 (`empty_text` → `InvalidInput`, `model_missing` →
 `ModelMissing`, `translation_failed` → `TranslationFailed`), preservando un
 contrato de salida idéntico entre ambas rutas.
 
 Ver `docs/CLI/commands/DAEMON.md` para el ciclo de vida del daemon y el detalle
-de `DaemonState::ct2_engine`.
+de los motores residentes de inferencia.
 
 ---
 

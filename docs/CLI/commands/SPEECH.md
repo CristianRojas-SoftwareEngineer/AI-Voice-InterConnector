@@ -333,8 +333,8 @@ plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
 Pipeline interno con latidos (`with_heartbeats`, periodo `STREAM_HEARTBEAT` entre `heartbeat`; ante desconexión,
 `AbortHandle` descarta el resultado de la transcripción y la traducción, que terminan en segundo
 plano; la cancelación del trabajo en el motor solo aplica a la síntesis):
-1. Transcribe en `spawn_blocking` con `state.stt_engine` (fase `"transcribe"`).
-2. Si `source != target`, traduce en `spawn_blocking` con el CT2 residente (`state.ct2_engine`) o `avi_translation::translate` (fase `"translate"`).
+1. Transcribe en `spawn_blocking` con el motor STT residente del estado de inferencia (fase `"transcribe"`).
+2. Si `source != target`, traduce en `spawn_blocking` con el motor CT2 residente del par; nunca carga modelos bajo demanda (fase `"translate"`).
 3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` sobre `spawn_blocking` (fase `"synthesis"`). Mientras espera el lock emite latidos `warming` (el daemon aún calienta el motor) o `queued` (otra síntesis retiene el lock). El plazo es el presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) del texto traducido, más un margen interno; si vence, emite evento `error` con `synthesis_timeout` y cancela el trabajo en el motor TTS residente, que queda caliente para la siguiente petición. Si el cliente se desconecta durante la síntesis, el trabajo se cancela igual.
 
 Antes del stream, un audio que supera `MAX_DUB_AUDIO_SECS` se rechaza con HTTP 400 `audio_too_long`; un texto traducido que supera `MAX_TEXT_LENGTH` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) emite un evento `error` `text_too_long`.
