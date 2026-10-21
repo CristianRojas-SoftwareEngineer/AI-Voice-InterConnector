@@ -136,4 +136,4 @@ decidir para cerrarlas.
 
 | Documento | Asunto | Estado |
 |---|---|---|
-| [`pending.md`](pending.md) | Lo que quedó fuera del alcance de la poda de sandboxes huérfanos de `cargo xtask clean --prune`: los prefijos de sandbox que la poda no reconoce y el criterio de borrado que les corresponde | abierto |
+| [`pending.md`](pending.md) | Lo que quedó fuera del alcance de la poda de sandboxes huérfanos de `cargo xtask clean --prune`: los prefijos de sandbox que la poda no reconoce, el criterio de borrado que les corresponde y la diferencia de cobertura entre las dos raíces que poda | abierto |

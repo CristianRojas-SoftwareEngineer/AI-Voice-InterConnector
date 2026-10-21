@@ -32,6 +32,12 @@ El código que lo hace está repartido así:
   antigüedad), `prune_dead_process_dirs` (descarta por PID muerto) y
   `prune_system_temp_sandboxes`, que las combina sobre la raíz del temporal.
 
+**Las dos raíces no se tratan igual.** La poda de `target/` reconoce tres clases
+de directorio —los que empiezan por `.tmp`, el que se llama `tmp` y los de la
+lista de prefijos—, pero la poda del temporal del sistema reconoce **solo** la
+lista de prefijos y la raíz `golden-avi-daemon`. La diferencia importa, y es el
+pendiente 4.
+
 ## Pendiente 1 — Los prefijos del motor que quedan fuera de la purga
 
 **Estado:** abierto.
@@ -166,10 +172,11 @@ como `LOCALAPPDATA`, `HOME` y `XDG_*` apuntando dentro de ella.
 Ese directorio se llama `avi-paths-default`, `avi-paths-cache`, `avi-paths-data`
 o `avi-paths-hf`, según la prueba, y cuelga de `std::env::temp_dir()`.
 
-**Comprobado:** tras ejecutar la suite de `avi-shared` completa, no queda ningún
-directorio `avi-paths-*` en `target/` ni en el temporal del sistema, porque las
-pruebas no crean contenido bajo esa base: la guarda solo fija variables de
-entorno y las aserciones comparan rutas, sin escribir dentro.
+**Comprobado:** tras ejecutar la suite de `avi-shared` —39 pruebas, las que viven
+dentro del módulo `paths`—, no queda ningún directorio `avi-paths-*` en `target/`
+ni en el temporal del sistema, porque las pruebas no crean contenido bajo esa
+base: la guarda solo fija variables de entorno y las aserciones comparan rutas,
+sin escribir dentro.
 
 **Por qué no debería entrar en la purga:** no hay nada que purgar. No es un
 residuo de una corrida interrumpida, sino una ruta que las pruebas nombran y no
@@ -181,6 +188,51 @@ directorio del motor sino una base vacía.
 garantía de limpieza, para que el directorio que sus aserciones nombran no
 dependa de que ninguna prueba escriba dentro. Es un cambio local a `avi-shared` y
 no afecta a la poda.
+
+## Pendiente 4 — El prefijo `.tmp` se purga en `target/` y no en el temporal del sistema
+
+**Estado:** abierto.
+**Tipo:** cobertura incompleta de una capacidad ya existente.
+
+Las dos raíces de la poda no aplican los mismos criterios, y hay una clase de
+directorio que una cubre y la otra no.
+
+**Lo que cubre cada raíz.** La poda de `target/` recorre sus entradas y
+selecciona las que cumplen una de estas condiciones:
+
+- el nombre empieza por `.tmp`;
+- el nombre es `tmp`;
+- el nombre empieza por uno de los prefijos de `TEST_SANDBOX_PREFIXES`.
+
+La poda del temporal del sistema, en cambio, solo aplica las dos últimas: la
+lista de prefijos y el barrido por PID sobre la raíz `golden-avi-daemon`. **El
+criterio `.tmp` no está en ella.**
+
+**Por qué importa.** `tempfile` usa `.tmp` como prefijo por defecto cuando el
+constructor no recibe uno —comprobado: un `tempfile::tempdir()` se llama
+`.tmpXXXXXX`—. En el repositorio hay al menos un caso de ese tipo: `src/main.rs`,
+en el helper `menu_fixture`, crea el directorio temporal del test del menú con
+`tempfile::tempdir()`, sin prefijo explícito. Ese directorio hoy:
+- si cae en `target/`, lo retira la regla `starts_with(".tmp")` de la poda de
+  `target/`;
+- si cae en el temporal del sistema, **no lo retira nadie**: no está en
+  `TEST_SANDBOX_PREFIXES` y la regla `.tmp` no se aplica a esa raíz.
+
+**Lo que hay que decidir:** si la poda del temporal del sistema debe reconocer
+también el prefijo `.tmp` —y con qué criterio de antigüedad—, o si conviene
+nombrar el directorio del test del menú con un prefijo explícito del motor, que
+es lo que hacen los demás sandboxes y encaja con la lista.
+
+**La segunda opción tiene una ventaja que conviene pesar:** un prefijo
+explícito hace el directorio identificable y lo mete en la lista, de modo que
+una sola regla lo cubre en las dos raíces. La primera deja la excepción en el
+código de la poda y obliga a mantener sincronizadas dos listas de criterios que
+hoy ya difieren.
+
+**Nota sobre el alcance:** esto solo afecta a lo que caiga en el temporal del
+sistema. Con el confine de `TMP` a `target/` de `.cargo/config.toml`, un
+`cargo test` no deja nada ahí; el hueco se manifiesta con corridas que no pasan
+por Cargo, que es el mismo escenario que motiva la purga entera.
 
 ## Comprobación del estado actual
 
@@ -208,6 +260,10 @@ prefijos que quedan fuera de esa lista no los reconoce ninguna de las dos reglas
 de modo que sus residuos en `target/` no los retira nadie. Ampliar la lista es, por
 tanto, lo que cierra ese hueco también.
 
+Lo mismo vale para el prefijo `.tmp` del pendiente 4, con la diferencia de que
+ese lo cubre la regla general de `target/` y no la del temporal del sistema: hay
+que resolverlo en las dos raíces o cambiar el nombre del directorio que lo origina.
+
 ## Cómo cerrar cada pendiente
 
 - **Pendiente 1:** ampliar `TEST_SANDBOX_PREFIXES` en
@@ -224,3 +280,7 @@ tanto, lo que cierra ese hueco también.
   ejemplo de «ajeno».
 - **Pendiente 3:** dejar `avi-paths-` fuera de la purga y, si se desea, hacer que
   `EnvSandbox` borre su base al soltarse.
+- **Pendiente 4:** decidir si la poda del temporal del sistema reconoce el
+  prefijo `.tmp` —con qué criterio de antigüedad—, o si el directorio del test
+  del menú nombra su temporal con un prefijo explícito del motor, que es lo que
+  hacen los demás sandboxes.
