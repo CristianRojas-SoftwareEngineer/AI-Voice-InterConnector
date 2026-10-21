@@ -125,3 +125,15 @@ Indicadores de progreso (`PhaseProgress` y los eventos del daemon), detectados e
 Este registro conserva también los documentos ya resueltos, con su estado «resuelto»
 y la evidencia que los cierra. Su cuenta actual es de cuatro documentos temáticos más
 `observaciones-menores.md`.
+
+## Pendientes de trabajo
+
+Este directorio también guarda, aparte del registro de defectos, los trabajos que
+quedaron **pendientes de analizar o de corregir** al implementar una capacidad ya
+entregada. No son defectos: no hay un síntoma que reproducir ni un veredicto que
+emitir, sino decisiones que quedan por tomar con su motivo y con lo que habría que
+decidir para cerrarlas.
+
+| Documento | Asunto | Estado |
+|---|---|---|
+| [`pending.md`](pending.md) | Lo que quedó fuera del alcance de la poda de sandboxes huérfanos de `cargo xtask clean --prune`: los prefijos de sandbox que la poda no reconoce y el criterio de borrado que les corresponde | abierto |
