@@ -132,6 +132,7 @@ struct InferenceEngines {
 
 struct DaemonEngines {
     tts_engine: Qwen3TtsEngine,
+    registry: Arc<registry::DaemonRegistry>,
     #[cfg(any(feature = "native-stt", feature = "native-translation"))]
     inference_engines: Option<InferenceEngines>,
 }
@@ -179,9 +180,10 @@ impl DaemonState {
         #[cfg(feature = "native-translation")]
         let ct2_engines = [load_ct2("es-en")?, load_ct2("en-es")?];
         let registry = Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir()?));
-        let tts_engine = Qwen3TtsEngine::new(Some(registry))?;
+        let tts_engine = Qwen3TtsEngine::new(Some(registry.clone()))?;
         Ok(DaemonEngines {
             tts_engine,
+            registry,
             #[cfg(any(feature = "native-stt", feature = "native-translation"))]
             inference_engines: Some(InferenceEngines {
                 #[cfg(feature = "native-stt")]
@@ -204,6 +206,9 @@ impl DaemonState {
         let model_store = ModelStore::new()?;
         let engines = DaemonEngines {
             tts_engine: Qwen3TtsEngine::new(None)?,
+            registry: Arc::new(registry::DaemonRegistry::new(
+                voice_store.root().join("contract-daemon"),
+            )),
             #[cfg(any(feature = "native-stt", feature = "native-translation"))]
             inference_engines: None,
         };
@@ -216,7 +221,6 @@ impl DaemonState {
         model_store: ModelStore,
         engines: DaemonEngines,
     ) -> anyhow::Result<Self> {
-        let registry = Arc::new(registry::DaemonRegistry::new(avi_shared::paths::data_dir()?));
         Ok(Self {
             synthesis_lock: Mutex::new(()),
             voice_store,
@@ -227,7 +231,7 @@ impl DaemonState {
             inference_engines: engines.inference_engines,
             warm: std::sync::RwLock::new(WarmState::Warming),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
-            registry,
+            registry: engines.registry,
         })
     }
 
@@ -3329,6 +3333,47 @@ mod tests {
         assert_eq!(bad.err().map(|e| e.reason), Some("usage_error"));
     }
 
+    /// El motor y el estado comparten el registro: anotar un residente no borra
+    /// la identidad ni la dirección del daemon del pidfile.
+    #[test]
+    fn engine_and_state_share_daemon_registry() {
+        use avi_process::registry::{observe_pid_file, PidFileObservation};
+        use avi_tts::ResidentRegistry;
+
+        let dir = tempfile::tempdir().unwrap();
+        let registry = Arc::new(registry::DaemonRegistry::new(dir.path().to_path_buf()));
+        let engines = DaemonEngines {
+            tts_engine: Qwen3TtsEngine::new(Some(registry.clone())).unwrap(),
+            registry: registry.clone(),
+            #[cfg(any(feature = "native-stt", feature = "native-translation"))]
+            inference_engines: None,
+        };
+        let state = DaemonState::assemble(
+            VoiceStore::at(dir.path().join("voices")),
+            SpeechStore::at(dir.path().join("speech")),
+            ModelStore::new().unwrap(),
+            engines,
+        )
+        .unwrap();
+        assert!(Arc::ptr_eq(&registry, &state.registry));
+        state
+            .registry
+            .register_daemon(&"127.0.0.1:7001".parse().unwrap())
+            .unwrap();
+        let resident = avi_process::ProcessIdentity {
+            start: "1".to_string(),
+            image: "qwen_tts.exe".to_string(),
+        };
+        registry.register(4321, &resident, 40_000).unwrap();
+        let PidFileObservation::Present(file) = observe_pid_file(dir.path()) else {
+            panic!("el pidfile debe existir y ser legible");
+        };
+        assert_eq!(file.addr.as_deref(), Some("127.0.0.1:7001"));
+        assert!(file.identity.is_some());
+        assert!(file.started_at.is_some());
+        assert_eq!(file.resident_identity, Some(resident));
+    }
+
     /// El estado de contrato ancla los almacenes bajo el directorio recibido:
     /// la raíz se afirma antes de inicializar para no escribir en la instalación real.
     #[test]
@@ -3355,6 +3400,12 @@ mod tests {
             .ensure_initialized()
             .expect("inicializar voces");
         assert!(tmp.join("voices").join("default").is_dir());
+        state
+            .registry
+            .register_daemon(&"127.0.0.1:7001".parse().unwrap())
+            .unwrap();
+        assert!(tmp.join("voices/contract-daemon/daemon.pid").exists());
+        assert!(!tmp.join("daemon.pid").exists());
     }
 
     /// Envía un POST JSON al router y devuelve el estado y el cuerpo completo.
