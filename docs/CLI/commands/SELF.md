@@ -183,7 +183,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 |---|---|
 | `self install` | `status` · `reason` · `install_dir` · `version` · `channel` · `path_integrated` · `models` · `models_cause` (solo si `models` es `failed`) |
 | `self update` | `status` (`updated` o `already_up_to_date` o `check` o `cancelled`) · `reason` (`setup_failed` en el parcial) · `previous_version` · `version`/`latest` · `channel` · `current`/`update_available` (en `--check`, `already_up_to_date` y `cancelled`; `cancelled` lleva `status`, `reason` nulo, `current`, `latest` y `channel`) · `models_cause` (solo en el parcial) |
-| `self uninstall` | `status` · `reason` (`null`) · `removed` · `planned` · `path_reverted` |
+| `self uninstall` | `status` · `reason` (`null` normalmente; `program_dir_kept` si el directorio de programa no se pudo borrar ni programar su borrado) · `removed` · `planned` · `path_reverted` |
 
 `status` toma los valores `installed` / `repaired` en `self install`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` / `planned` en `self uninstall`. `schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**; el protocolo del daemon es otro contrato con su propia versión ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)).
 

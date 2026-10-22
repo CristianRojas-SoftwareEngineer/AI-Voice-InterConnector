@@ -121,7 +121,7 @@ consulta de versión; con el binario instalado se usa `self update --check`):
   nada, detecta el target
   del host (`unsupported_platform` antes de descargar), crea un staging hermano
   solo para el usuario, verifica el hash, comprueba que el binario arranca
-  (`binary_incompatible` con diagnóstico de glibc ≥ 2.35 o de librerías del
+  (`binary_incompatible` con diagnóstico de glibc ≥ 2.28 o de librerías del
   sistema ausentes en Linux, sin tocar lo
   instalado) y delega en `self install` (que integra el PATH, limpia la
   cuarentena en macOS y encadena `setup`).

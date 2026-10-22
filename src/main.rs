@@ -2864,8 +2864,8 @@ async fn handle_daemon(
             // El handler SIGINT ya quedó instalado en `main` para todos los modos;
             // la escucha de señales del servidor cierra por la misma ruta que
             // POST `/shutdown`. En Unix `serve` cierra por esa misma ruta
-            // sin pidfile ni auto-muerte del CLI (la guarda `pid != own_pid`
-            // protege al `serve` en foreground).
+            // sin auto-muerte del CLI (la guarda `pid != own_pid` protege
+            // al `serve` en foreground).
             // Un fallo previo a estar listo sale con el código de su causa; el
             // de un servidor que ya servía sale con exit 1 `daemon_error`, como
             // cualquier otro `daemon_error`.
@@ -5035,7 +5035,7 @@ async fn daemon_error_from_response(resp: reqwest::Response) -> CliError {
     let Some(reason) = reason else {
         let msg = if status == reqwest::StatusCode::NOT_FOUND {
             "El daemon no expone esta ruta (HTTP 404): reinícialo con el binario actual \
-             ejecutando `avi daemon restart`, o usa un build que incluya la función."
+             ejecutando `ai-voice-interconnector daemon restart`, o usa un build que incluya la función."
                 .to_string()
         } else if parsed.is_err() {
             // Cuerpo que no es JSON: se muestra su inicio para diagnosticarlo.
@@ -5984,7 +5984,7 @@ mod tests {
         assert_eq!(err.code.code(), 1);
         assert_eq!(err.reason, "daemon_error");
         assert!(
-            err.message.contains("daemon restart"),
+            err.message.contains("ai-voice-interconnector daemon restart"),
             "mensaje sin la indicación de reinicio: {}",
             err.message
         );

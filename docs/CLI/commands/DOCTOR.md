@@ -127,7 +127,7 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
 | Algún chequeo falló | **1** | — (no hay `reason`: el veredicto va en `checks`/`failed`) |
 | No se pudo resolver el ejecutable en ejecución | 1 | `doctor_failed` |
 
-**`doctor` no tiene `reason` de contrato propios.** Un fallo de chequeo no es un error de la operación: es el dictamen que el comando existe para dar. La única excepción es `doctor_failed`, que es un fallo real del comando (no se pudo resolver `current_exe`, el recibo de la instalación registrada es ilegible —el mensaje nombra el fichero— o no se pudo serializar el reporte) y sale por el canal de error normal. `--repair` no añade códigos ni `reason`: tras barrer, el informe se reevalúa y el exit sigue al veredicto (0 si todo quedó limpio, 1 si algo sigue fallando).
+**`doctor` no tiene `reason` de contrato propios.** Un fallo de chequeo no es un error de la operación: es el dictamen que el comando existe para dar. Un recibo ilegible se informa como `install_receipt` fallido (el detalle nombra el fichero) y el veredicto sale con exit 1. La única excepción es `doctor_failed`, que es un fallo real del comando (no se pudo resolver `current_exe` o no se pudo serializar el reporte) y sale por el canal de error normal. `--repair` no añade códigos ni `reason`: tras barrer, el informe se reevalúa y el exit sigue al veredicto (0 si todo quedó limpio, 1 si algo sigue fallando).
 
 ---
 

@@ -145,7 +145,7 @@ ai-voice-interconnector --json cleanup --model --dry-run
 
 ## Muestras de salida
 
-El **resultado** va por stdout y lo dice una sola vez. El progreso —la fase— va por stderr, con la forma `… <mensaje> (<tiempo>)`, y **empieza tras la confirmación**.
+En la ejecución real, el **resultado** va por stdout y lo dice una sola vez. En `--dry-run`, el plan y el aviso de simulación van por stderr. El progreso —la fase— va por stderr, con la forma `… <mensaje> (<tiempo>)`, y **empieza tras la confirmación**.
 
 ```text
 # cleanup --voices --yes
@@ -154,7 +154,7 @@ stderr: … Limpiando datos… (0 s)
         no se pudo borrar <ruta>: <motivo>
 
 # cleanup --all --dry-run
-stdout: Se borrarán 6 ruta(s), 5,9 GB en total:
+stderr: Se borrarán 6 ruta(s), 5,9 GB en total:
         … (el plan, una línea por destino)
 ```
 

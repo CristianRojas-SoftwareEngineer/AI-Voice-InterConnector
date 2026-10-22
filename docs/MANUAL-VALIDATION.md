@@ -12,12 +12,15 @@ pipeline y por qué la matriz de comandos de abajo queda fuera de CI está en
 interactivas exigen además un micrófono y una terminal con una persona pulsando
 teclas.
 
-La secuencia está en orden lógico: cada paso asume que el anterior pasó. Ejecutar
-tras instalar el artefacto del release descomprimido y con `setup` ejecutado, o bien desde una terminal nueva: la integración
-del `PATH` es persistente —bloque delimitado en los perfiles de shell en Linux y macOS,
-valor `Path` de `HKCU\Environment` en Windows— y por eso una terminal ya abierta no la
-ve. Solo la sesión que ejecutó el bootstrap recibe el `PATH` en el acto; con
-`--no-modify-path` no se integra nada y hay que invocar el binario por su ruta completa.
+La secuencia está en orden lógico: cada paso asume que el anterior pasó. Se puede
+partir de una instalación con modelos provisionados o de una instalación con
+`--no-setup` o `setup_failed`, cuyos modelos se provisionan en el paso 3.
+Ejecutar desde la sesión que instaló el programa o desde una terminal nueva:
+la integración del `PATH` es persistente —bloque delimitado en los perfiles de
+shell en Linux y macOS, valor `Path` de `HKCU\Environment` en Windows— y por eso
+una terminal ya abierta no la ve. Solo la sesión que ejecutó el bootstrap
+recibe el `PATH` en el acto; con `--no-modify-path` no se integra nada y hay que
+invocar el binario por su ruta completa.
 
 ## Cómo leer esta guía
 
@@ -43,9 +46,10 @@ comando, léelo según tu shell:
 | 🖥️ | Terminal interactiva **real** (TTY) — no una tubería ni `< archivo` |
 | 🗣️ | Un archivo de audio de referencia (muestra de voz o clip a transcribir/doblar) |
 
-Las secciones **1-4** no necesitan modelos; a partir de **5** asume 🧠. Las
-rutas de **§8 (transcripción/doblaje)** y **§9 (interactivas)** son las que CI no
-puede ejercitar y el núcleo de esta validación.
+Las secciones **1-4** permiten detectar y resolver la falta de modelos; a partir
+de **5** deben estar provisionados (🧠). Las rutas de **§8 (transcripción/doblaje)**
+y **§9 (interactivas)** son las que CI no puede ejercitar y el núcleo de esta
+validación.
 
 ## Tabla de contenidos
 
@@ -91,19 +95,33 @@ ai-voice-interconnector doctor
 ai-voice-interconnector doctor --json
 ```
 
-**Esperado**: informe de audio/modelo/dispositivos a stdout, **exit 0** si el entorno está sano: tras una instalación correcta sin clonado de voz, `doctor` debe salir con 0. Si algún chequeo falla, el veredicto es **exit 1**.
+**Esperado**: `doctor --json` emite el informe por stdout; sin `--json`, los
+chequeos fallidos y el veredicto van por stderr. Con los modelos provisionados
+y los demás chequeos correctos, `doctor` termina con **exit 0**. Si faltan
+modelos, termina con **exit 1** y `doctor --json` incluye `models_provisioned`
+en `failed`, con los modelos ausentes en `models.missing`: es el diagnóstico
+previo al paso 3, no un fallo de esta validación. Cualquier otro chequeo
+fallido también produce **exit 1** y debe resolverse por separado; no
+atribuirlo a la falta de modelos.
 
 ## 3. Provisión del modelo
 
-🧠 (esta sección la genera) — hace falta si la instalación se hizo con `--no-setup` o
-si terminó en `setup_failed`, que deja el programa instalado pero sin modelos.
+🧠 (esta sección la genera) — ejecutar `setup` si faltan modelos tras
+`--no-setup` o `setup_failed`; con los modelos ya provisionados, también permite
+comprobar la idempotencia.
 
 ```bash
-  # Descarga los 5 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
+# Descarga los 5 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
 ai-voice-interconnector setup
+
+# Confirmar que el entorno quedó sano antes de continuar
+ai-voice-interconnector doctor --json
 ```
 
-**Esperado**: descarga (o confirma en caché) los modelos; **exit 0**. Es idempotente: una segunda ejecución no vuelve a descargar.
+**Esperado**: `setup` descarga (o confirma en caché) los modelos y termina con
+**exit 0**; una segunda ejecución no vuelve a descargar. Después,
+`doctor --json` debe terminar con **exit 0**. Si falla algún chequeo, resolverlo
+antes de continuar al paso 4.
 
 ## 4. Dispositivos de audio
 

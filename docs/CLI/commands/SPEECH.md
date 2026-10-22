@@ -137,7 +137,7 @@ Despacho:
  codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
  envelope que la rama local. Un error HTTP del daemon se traduce por su
  `reason` con la tabla única; un 404 sin `reason` ni `error` sale con exit 1
- `daemon_error` y el mensaje de reiniciar el daemon con `avi daemon restart`.
+ `daemon_error` y el mensaje de reiniciar el daemon con `ai-voice-interconnector daemon restart`.
 2. Rama directa: verifica que `parakeet-tdt-v3/nemo128.onnx` exista (si no,
  exit 4 `model_missing` antes de instanciar nada); si el binario se compiló
  sin el feature `native-stt`, exit 1 `stt_unsupported`; si el feature está
@@ -308,7 +308,7 @@ Todo error de la ruta (404 incluido) se traduce por su `reason` con la tabla
 única, sin degradar a otra vía: 404 `voice_not_found` sale con exit 3 y 404
 `model_missing` con exit 4. Un 404 sin `reason` ni `error` sale con exit 1
 `daemon_error` y el mensaje «El daemon no expone esta ruta (HTTP 404):
-reinícialo con el binario actual ejecutando `avi daemon restart`, o usa un
+reinícialo con el binario actual ejecutando `ai-voice-interconnector daemon restart`, o usa un
 build que incluya la función.»
 
 Rama directa (requiere feature `native-stt`; sin

@@ -2396,10 +2396,10 @@ pub async fn run_daemon_server(
     // termina cerrando los `Drop` del `Arc<DaemonState>` compartido → cierre
     // limpio sin `process::exit` (que no termina fiablemente el proceso en
     // Windows cuando el runtime está dentro de `axum::serve`).
-    // `serve` en Unix cierra por esta misma ruta sin pidfile ni
-    // auto-muerte del CLI (la guarda `pid != propio` del handler CLI protege al
-    // `serve` en foreground; la carrera con el handler CLI se resuelve porque
-    // ambos convergen en `tts_engine.shutdown()` + salida, sin pidfile).
+    // `serve` en Unix cierra por esta misma ruta sin auto-muerte del CLI
+    // (la guarda `pid != propio` del handler CLI protege al `serve` en foreground;
+    // la carrera con el handler CLI se resuelve porque ambos convergen en
+    // `tts_engine.shutdown()` + salida).
     let closing_state = state.clone();
     let shutdown = async move {
         #[cfg(unix)]

@@ -129,7 +129,7 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 # 6. Síntesis a través del daemon (añade -v mi_voz para usar la voz clonada)
 ./ai-voice-interconnector speech say --text "Hola mundo" [-v mi_voz]                    # Reproducir
 ./ai-voice-interconnector speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION  # Sintetiza y guarda la locución en el almacén
-./ai-voice-interconnector speech synthesize --text "Hola mundo" --label LOCUCION --play  # Sintetiza, guarda y reproduce
+./ai-voice-interconnector speech synthesize --text "Hola mundo" --label LOCUCION --play  # Sintetiza y reproduce; solo guarda al elegir 2 (4 descarta)
 
 # 6b. Síntesis cross-lingual opcional: el usuario escribe en su idioma y obtiene
 # audio en el idioma destino con su propia voz clonada, en un solo comando
