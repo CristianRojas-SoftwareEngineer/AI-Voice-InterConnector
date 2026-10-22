@@ -5984,7 +5984,8 @@ mod tests {
         assert_eq!(err.code.code(), 1);
         assert_eq!(err.reason, "daemon_error");
         assert!(
-            err.message.contains("ai-voice-interconnector daemon restart"),
+            err.message
+                .contains("ai-voice-interconnector daemon restart"),
             "mensaje sin la indicación de reinicio: {}",
             err.message
         );
