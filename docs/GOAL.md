@@ -1,8 +1,10 @@
-# Goal: Sistema TTS local con clonación de voz (Qwen3-TTS)
+# Goal: Sistema de voz local — TTS, STT, traducción y doblaje
 
 ## Introducción
 
-Este documento es la **especificación ideal** de `ai-voice-interconnector`: describe el producto meta que guía todo el desarrollo — un sistema de síntesis de voz **100% local**, con clonación de voz en **español latinoamericano**, consumible por línea de comandos desde cualquier lenguaje, y con una experiencia de usuario **equivalente en Windows, Linux y macOS**.
+Este documento es la **especificación ideal** de `ai-voice-interconnector`: describe el producto meta que guía todo el desarrollo — un sistema de voz **100% local** que cubre síntesis con clonación en **español latinoamericano**, transcripción de audio a texto, traducción `es↔en` y doblaje voz→voz, consumible por línea de comandos desde cualquier lenguaje, y con una experiencia de usuario **equivalente en Windows, Linux y macOS**.
+
+El alcance se amplió durante el desarrollo: el producto nació como un sistema TTS y hoy cubre también STT, traducción y doblaje. Este documento describe el ideal **vigente**; el historial de cuándo se incorporó cada superficie está en [`CHANGELOG.md`](../CHANGELOG.md).
 
 Es la fuente de verdad contra la que se evalúa cualquier cambio: si una propuesta acerca el proyecto a lo aquí especificado, avanza el goal; si no, queda fuera de alcance. Para mantener esa función sin frenar el desarrollo, el documento se declara en **dos partes**:
 
@@ -53,11 +55,11 @@ Si la spec **no cumple ninguno** de los tres, va al **goal inmediato** y se trab
 
 ### Objetivo
 
-Obtener un sistema TTS **100% local** con audio nativo por sistema operativo, para transformar texto a audio en **español latino** de la mejor calidad disponible, distribuido bajo **licencia MPL-2.0** (con dependencias y modelo bajo licencias compatibles).
+Obtener un sistema de voz **100% local** con audio nativo por sistema operativo, que cubra las cuatro superficies del producto —síntesis TTS con clonación, transcripción STT, traducción `es↔en` y doblaje voz→voz— en **español latino** de la mejor calidad disponible, distribuido bajo **licencia MPL-2.0** (con dependencias y modelos bajo licencias compatibles).
 
-Motor TTS: **Qwen3-TTS 0.6B CustomVoice** - multilingüe, clonación de voz; licencia MIT/Apache-2.0.
+Motor TTS: **Qwen3-TTS 0.6B CustomVoice** —multilingüe, clonación de voz; licencia MIT/Apache-2.0— y **Qwen3-TTS 0.6B Base** para las voces clonadas. STT: **Parakeet TDT v3 int8** sobre ONNX Runtime. Traducción: **opus-mt** `es↔en` sobre CTranslate2 int8.
 
-Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre CTranslate2, modelos ya convertidos que `setup` descarga siempre) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido. El eslabón de entrada de ese bucle (audio→texto) lo cubre `speech transcribe` (Parakeet TDT v3 int8 vía `ort` `load-dynamic`, incluido por defecto en `setup` base).
+Un subsistema de **traducción cross-lingual local `es↔en`** (`opus-mt` sobre CTranslate2, modelos ya convertidos que `setup` descarga siempre) cierra el bucle de la clonación de voz: el usuario escribe en su idioma nativo y obtiene audio en el idioma destino con su propia voz clonada, en un solo comando (`speech say`/`synthesize --source-language ... --target-language ...`) o vía el comando `translate` cuando solo necesita el texto traducido. El eslabón de entrada de ese bucle (audio→texto) lo cubre `speech transcribe` (Parakeet TDT v3 int8 vía `ort` `load-dynamic`, incluido por defecto en `setup` base). El doblaje voz→voz compone las tres fases —transcribir, traducir si hace falta y sintetizar— en un solo comando (`speech dub`).
 
 **El sistema debe ser consumible via línea de comandos** para que cualquier aplicación en cualquier lenguaje de programación pueda invocarlo (JavaScript/Node, Rust, Go, Java, C#, etc.)
 
@@ -65,11 +67,12 @@ Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre 
 
 ### Alcance
 
-Implementar y validar la síntesis en español latinoamericano con voz propia del usuario usando Qwen3-TTS 0.6B, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las brechas de **código** del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) es parte del alcance del goal inmediato; las brechas de **experiencia** que dependen de un tercero o del canal de instalación quedan en el [goal a largo plazo](#goal-a-largo-plazo) con su condición de entrada.
+Implementar y validar la **superficie de voz completa** —síntesis en español latinoamericano con voz propia del usuario sobre Qwen3-TTS 0.6B, transcripción STT, traducción `es↔en` y doblaje voz→voz—, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las brechas de **código** del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) es parte del alcance del goal inmediato; las brechas de **experiencia** que dependen de un tercero o del canal de instalación quedan en el [goal a largo plazo](#goal-a-largo-plazo) con su condición de entrada.
 
 ### Restricciones
 
-- **100% local**: Sin APIs externas ni conexiones a internet para síntesis
+- **100% local**: Sin APIs externas ni conexiones a internet para la inferencia (síntesis, transcripción, traducción y doblaje)
+- **CPU, sin GPU**: toda la inferencia corre en CPU; el motor TTS usa BLAS (Accelerate en macOS, OpenBLAS en Linux y Windows) y la GPU no es un requisito
 - **Instalador único por SO (canal nativo)**: Un archivo comprimido por plataforma (`tar.gz`/`.zip` con binario Rust); ver [docs/DISTRIBUTION.md](DISTRIBUTION.md)
 - **Ninguna instalación adicional (canal nativo)**: solo el sistema base de cada plataforma; el archivo aporta todo lo demás. Los mínimos por plataforma están en [Requisitos del README](../README.md#requisitos)
 - **Licencia**: El código propio se distribuye bajo MPL-2.0; todas las dependencias y los modelos usados deben tener licencias compatibles con MPL-2.0 (permisivas — MIT/BSD/Apache/ISC/PSF — o copyleft compatible a nivel de archivo o librería, como MPL-2.0/LGPL-2.1+). El par de traducción `opus-mt` (derivados int8 de Helsinki-NLP/opus-mt, ya convertidos a CTranslate2 y publicados) se distribuye bajo CC-BY-4.0, con atribución registrada en [THIRD-PARTY-LICENSES.md](../THIRD-PARTY-LICENSES.md)
@@ -185,7 +188,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 <!-- Los criterios 2, 3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado (versión contra el tag, `voice list`, `--self-test` del motor y `self install` en sandbox; ver docs/BUILD.md «Verificación post-build»), más una verificación en sala limpia del artefacto de Linux (los cuatro jobs `verify-portability`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
-1. [x] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo) — validado sobre `v0.36.0` en Windows 11 x64 (`10.0.26200`): instalación por el one-liner `irm | iex` con checksum verificado, provisión de los cinco modelos, ciclo de vida del daemon, clonación de voz, síntesis con `WER ≤ 0.25` y superficie `store`/`transcribe`/`translate`/`dub`, sin instalar nada más allá del sistema base. La versión mínima declarada (Windows 10 1903) no se ejercitó en sí misma: el binario es el mismo, pero el suelo declarado queda sin probar en esa máquina concreta
+1. [x] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo) — validado sobre `v0.36.2` en Windows 11 x64 (`10.0.26200`): instalación por el one-liner `irm | iex` con checksum verificado, provisión de los cinco modelos (5,85 GB), ciclo de vida del daemon, clonación de voz, síntesis con `WER = 0.0` en el gate de texto corto (`"Hola mundo"`, voz `default` y voz clonada) y superficie `store`/`transcribe`/`translate`/`dub`, sin instalar nada más allá del sistema base. La versión mínima declarada (Windows 10 1903) no se ejercitó en sí misma: el binario es el mismo, pero el suelo declarado queda sin probar en esa máquina concreta
 2. [ ] El artefacto de Linux (`ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`) funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
 3. [ ] El artefacto de macOS (`ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`) funciona en el mínimo declarado en el manifiesto del bundle (`min_os`, ver [versión mínima de macOS](BUILD.md#versión-mínima-de-macos) y los [requisitos](../README.md#requisitos)) (Apple Silicon; Mac Intel no soportado) (validación E2E por SO, ver "Validación E2E" más abajo)
 4. [x] `ai-voice-interconnector speech say --text "Hola mundo"` reproduce audio en español
@@ -195,16 +198,18 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
 10. [ ] **Equivalencia funcional completa entre los 3 SO**: las brechas de **código** del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner con el bootstrap `install.sh` POSIX compartido más `install.ps1` para Windows, `zap` del Cask completo, README con las tres plataformas y desinstalación en un comando con `self uninstall`). Quedan dos brechas de **experiencia**, ambas diferidas por diseño al [goal a largo plazo](#goal-a-largo-plazo) y ninguna bloqueante por sí sola: la *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) y la *provisión de modelos en los canales que no invocan `self install`* (el Cask de Homebrew y la descarga manual, donde `setup` se ofrece en vez de encadenarse). La marca de este criterio queda pendiente de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
+11. [x] La transcripción STT, la traducción `es↔en` y el doblaje voz→voz funcionan de punta a punta en local — validado sobre `v0.36.2` en Windows 11 x64 (transcripción y traducción vía daemon; doblaje vía daemon y vía directa)
+12. [x] Toda la inferencia está implementada para CPU y no requiere GPU
 
 #### Validación E2E
 
-La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de los modelos que fija [`setup`](CLI/commands/SETUP.md) + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo: la versión del binario contra el tag (`--version`; en Windows además `version --json`), `voice list` con la voz `default`, el `--self-test` de los kernels del motor TTS (sin pesos), y la instalación del archivo empaquetado con `self install --no-setup --no-modify-path` en un sandbox, seguida de `--version` del binario instalado.
+La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → `speech transcribe`/`translate`/`speech dub` → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de los modelos que fija [`setup`](CLI/commands/SETUP.md) + síntesis real con audio + transcripción y traducción locales) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo: la versión del binario contra el tag (`--version`; en Windows además `version --json`), `voice list` con la voz `default`, el `--self-test` de los kernels del motor TTS (sin pesos), y la instalación del archivo empaquetado con `self install --no-setup --no-modify-path` en un sandbox, seguida de `--version` del binario instalado.
 
 Además, los cuatro jobs **`verify-portability`** abren el artefacto de Linux ya publicado en una **sala limpia** —AlmaLinux 8 (el suelo de glibc 2.28) y Debian stable-slim, en x64 y arm64, sin paquetes de desarrollo, sin ALSA, sin libgomp y sin procps— y comprueban que el binario arranca, que `voice list` responde, que `self install --no-setup --yes` deja el comando disponible a través del enlace instalado y que la comprobación `onnx_runtime` de `doctor` carga la librería ONNX Runtime empaquetada. Es una puerta E2E parcial automatizada, y parcial en dos sentidos: solo corre sobre Linux, y no paga el coste del modelo (no hay `setup`, ni síntesis, ni descarga).
 
 Fuera del pipeline, la validación se reparte así:
 
-- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → desinstalar, y registrando el resultado. El resultado de la validación de `v0.36.0` está en el [criterio 1](#criterios-de-aceptación).
+- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → `speech transcribe`/`translate`/`speech dub` → desinstalar, y registrando el resultado. El resultado de la validación de `v0.36.2` está en el [criterio 1](#criterios-de-aceptación).
 - **Linux y macOS**: dependen de **feedback de usuarios reales** que prueben la instalación y ejecución en sus equipos. Ese feedback (positivo o negativo) es la entrada de issues que cierra el circuito y guía correcciones específicas por plataforma.
 
 El recorrido concreto —la secuencia ordenada de comandos que ejercita toda la superficie de la CLI en este proceso manual— está en [docs/MANUAL-VALIDATION.md](MANUAL-VALIDATION.md).
@@ -219,6 +224,8 @@ La implementación está completa únicamente cuando:
 - [x] La clonación de voz funciona con una muestra de ~10 segundos
 - [x] El audio generado preserva las características de la voz original
 - [x] El español latinoamericano suena natural
+- [x] La transcripción STT, la traducción `es↔en` y el doblaje voz→voz están implementados y funcionan en local
+- [x] Toda la inferencia corre en CPU, sin requerir GPU
 - [x] El pipeline de CI produce el artefacto de cada SO (Windows, Linux, macOS) y publica los dos bootstrap del one-liner (`install.sh` e `install.ps1`) como assets del release; en la raíz del repositorio no queda ningún script de ciclo de vida, y los que se ejecutan antes del binario viven en `packaging/bootstrap/`
 - [ ] Los instaladores funcionan sin ninguna dependencia externa (validación E2E por SO, ver "Validación E2E" arriba: smoke test automatizado en CI + validación manual Windows del propietario + feedback de usuarios reales en Linux y macOS)
 - [ ] La experiencia de instalación, uso, actualización y desinstalación es equivalente en los 3 SO: las [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) no incluyen ninguna **de código** abierta (las de *firma de código* y *provisión en los canales sin `self install`* permanecen registradas como diferidas al goal a largo plazo y no bloquean esta condición)
