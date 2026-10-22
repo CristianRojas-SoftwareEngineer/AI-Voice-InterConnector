@@ -738,21 +738,24 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Actualizar | `ai-voice-interconnector self update` | Ídem | Ídem | Ídem (Cask: `brew upgrade --cask`) |
 | Desinstalar | `ai-voice-interconnector self uninstall` | Ídem | Ídem | Ídem (Cask: `brew uninstall --cask --zap`) |
 | Limpiar estado | `ai-voice-interconnector cleanup …` | Ídem | Ídem | Ídem |
+| Provisión de modelos | `setup` encadenado por `self install` | Ídem | Ídem | `setup` **ofrecido** (Cask): paso explícito, no encadenado |
 | Entorno de desarrollo | `cargo xtask bootstrap` (Build Tools + MSYS2) | `cargo xtask bootstrap` (apt/dnf/pacman/zypper) | Ídem | `cargo xtask bootstrap` (Xcode CLT, Homebrew) |
 
 Las diferencias entre columnas son mecanismos idiomáticos de cada SO. La experiencia (comandos, confirmaciones, resultados y residuo) es la misma.
 
 El uso de la aplicación (CLI, daemon, voces de fábrica y de usuario, esquemas `--json` y códigos de salida) tampoco varía entre SO; solo cambia el backend de audio, una tecnología equivalente y no una diferencia de experiencia.
 
+La provisión es la única fase cuyo **mecanismo** difiere: los canales que invocan `self install` la encadenan, y los que no (el Cask de Homebrew y la descarga manual) la ofrecen como paso explícito. La experiencia buscada —el modelo disponible al terminar de instalar, o con un paso explícito y visible que el usuario puede lanzar cuando quiera— se mantiene en los tres sistemas.
+
 ### Brechas conocidas
 
-Son las únicas asimetrías de experiencia entre targets que permanecen abiertas, por decisión y no por olvido:
+Son las únicas asimetrías que permanecen abiertas, por decisión y no por olvido. Cada una se clasifica según el [criterio de clasificación del goal](../GOAL.md#clasificación-de-specs): las de **código** se cierran en el goal inmediato; las de **experiencia** que dependen de un tercero o del canal de instalación quedan diferidas al [goal a largo plazo](../GOAL.md#goal-a-largo-plazo).
 
 | Brecha | Targets | Situación |
 |---|---|---|
 | **Firma de código** | Windows y macOS | Los binarios no van firmados ni notarizados. Los one-liners descargan por CLI (sin Mark-of-the-Web) y `self install` limpia la cuarentena de macOS, y el Cask hace lo propio; un archivo descargado por navegador sí dispara SmartScreen o Gatekeeper. Es cross-SO y está diferida al goal a largo plazo porque depende de terceros (SignPath OSS, Apple Developer). Ver [§11](#11-seguridad) y [SECURITY.md](../../SECURITY.md#artefactos-sin-firmar) |
 | **Cobertura de arquitecturas** | Todos | Solo los cuatro targets de [§3](#3-targets-soportados); no hay Windows ARM64 ni macOS Intel. Es una limitación de toolchain aceptada |
-| **Provisión de modelos en el Cask** | macOS (Homebrew) | Homebrew no admite un post-install arbitrario, así que el Cask no ejecuta `setup`: imprime un *caveat* que remite a `ai-voice-interconnector setup`. Además exige tener Homebrew, un prerrequisito que el one-liner no tiene |
+| **Provisión de modelos en los canales que no invocan `self install`** | macOS (Homebrew) y descarga manual | Estos canales no encadenan la provisión: el `setup` queda como paso explícito que el canal ofrece (el `caveat` del Cask remite a `ai-voice-interconnector setup`; el README, en la descarga manual). La diferencia es de mecanismo y la paridad ideal la tolera («`setup` encadenado u ofrecido»). El Cask no la encadena porque un hook de post-instalación congelaría `brew install` durante los 5,85 GB de la descarga, sin barra de progreso propia, sin timeout y sin estado reanudable. Además, el canal Cask exige tener Homebrew, un prerrequisito que el one-liner no tiene: eso es un prerrequisito de canal, no una diferencia de experiencia. Diferida al [goal a largo plazo](../GOAL.md#goal-a-largo-plazo) |
 
 Al abrir o cerrar una brecha se actualiza esta tabla. El historial de las ya cerradas queda en `CHANGELOG.md`.
 

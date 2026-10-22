@@ -136,8 +136,10 @@ mismo resultado, así que el reintento es seguro en cualquier momento.
 binario en el prefix (`/opt/homebrew/bin`, ya en el PATH) sin `sudo` y elimina el
 atributo de cuarentena, con lo que mitiga Gatekeeper. Toda la integración de `PATH`,
 la desinstalación (`brew uninstall --cask --zap`) y la limpieza de cuarentena las
-resuelve Homebrew; solo el modelo queda pendiente, porque el Cask no puede correr
-post-install: sus `caveats` remiten a `setup` y a la licencia MPL-2.0.
+resuelve Homebrew; solo el modelo queda pendiente, porque el Cask no encadena la
+provisión —un hook de post-instalación congelaría `brew install` durante los 5,85 GB
+de la descarga, sin barra de progreso propia, sin timeout y sin estado reanudable—:
+sus `caveats` remiten a `setup` y a la licencia MPL-2.0.
 
 **Antivirus.** El Cask de macOS es la única vía que sí limpia la cuarentena. Los
 one-liners no eliminan por sí mismos las alertas de antivirus; evitan SmartScreen

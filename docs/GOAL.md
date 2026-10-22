@@ -29,6 +29,7 @@ El [criterio de clasificación](#clasificación-de-specs) decide a cuál de las 
   - [Condición de finalización](#condición-de-finalización)
 - [Goal a largo plazo](#goal-a-largo-plazo)
   - [Firma de código y notarización](#firma-de-código-y-notarización)
+  - [Provisión de modelos en los canales sin `self install`](#provisión-de-modelos-en-los-canales-sin-self-install)
 
 ---
 
@@ -64,7 +65,7 @@ Un subsistema de **traducción cross-lingual local `es<->en`** (`opus-mt` sobre 
 
 ### Alcance
 
-Implementar y validar la síntesis en español latinoamericano con voz propia del usuario usando Qwen3-TTS 0.6B, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) es parte del alcance del goal inmediato.
+Implementar y validar la síntesis en español latinoamericano con voz propia del usuario usando Qwen3-TTS 0.6B, distribuida con **equivalencia funcional completa** entre Windows, Linux y macOS: el cierre de las brechas de **código** del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) es parte del alcance del goal inmediato; las brechas de **experiencia** que dependen de un tercero o del canal de instalación quedan en el [goal a largo plazo](#goal-a-largo-plazo) con su condición de entrada.
 
 ### Restricciones
 
@@ -95,7 +96,7 @@ El ideal de paridad que persigue el goal inmediato, por fase del ciclo de vida (
 |---|---|
 | Instalación | Una línea, sin prerrequisitos de terceros, sin privilegios de admin, checksum verificado |
 | Primer arranque | Sin advertencias de reputación en la vía de una línea |
-| Provisión | Modelo descargado al terminar la instalación (`setup` encadenado u ofrecido) |
+| Provisión | Modelo descargado al terminar la instalación (`setup` encadenado u ofrecido: en los canales que invocan `self install` se encadena; en los que no, la instalación ofrece el paso explícito) |
 | Uso | CLI, daemon, voces y contratos `--json` idénticos |
 | Actualización | Reemplaza la versión anterior sin residuo ni pasos-trampa |
 | Desinstalación | Estado con `cleanup --all` ( granular, sin tocar el programa) y programa+PATH+estado con `self uninstall`, con residuo cero |
@@ -111,11 +112,13 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 # 2. Diagnóstico del sistema (no depende de nada)
 ./ai-voice-interconnector version              # Versión instalada
 ./ai-voice-interconnector doctor               # Chequeo de entorno y modelo
+./ai-voice-interconnector doctor --repair      # Recoge restos pendientes y vuelve a evaluar
 ./ai-voice-interconnector devices              # Dispositivos de audio disponibles
 
 # 3. Arrancar el daemon (camino principal: carga el modelo en memoria una vez)
 ./ai-voice-interconnector daemon start         # Iniciar daemon
 ./ai-voice-interconnector daemon status        # Verificar que está activo
+./ai-voice-interconnector daemon restart       # Reiniciar (reemplaza al activo)
 
 # 4. Clonación de voz (requiere --speech-reference: un único audio, ~10 s recomendados, máximo 30 s)
 ./ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
@@ -126,6 +129,7 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 # 6. Síntesis a través del daemon (añade -v mi_voz para usar la voz clonada)
 ./ai-voice-interconnector speech say --text "Hola mundo" [-v mi_voz]                    # Reproducir
 ./ai-voice-interconnector speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION  # Sintetiza y guarda la locución en el almacén
+./ai-voice-interconnector speech synthesize --text "Hola mundo" --label LOCUCION --play  # Sintetiza, guarda y reproduce
 
 # 6b. Síntesis cross-lingual opcional: el usuario escribe en su idioma y obtiene
 # audio en el idioma destino con su propia voz clonada, en un solo comando
@@ -134,12 +138,34 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 # 6c. O solo el texto traducido, sin síntesis
 ./ai-voice-interconnector translate --text "Hola mundo" --source-language es --target-language en
 
-# 7. Eliminar voz clonada (limpieza)
+# 6d. Entrada de audio a texto: transcribe un WAV o el micrófono
+./ai-voice-interconnector speech transcribe --audio condicion.wav --source-language es
+./ai-voice-interconnector speech transcribe --mic --source-language es          # Push-to-talk (exige TTY)
+
+# 6e. Doblaje voz→voz: transcribe, traduce si difiere, sintetiza y reproduce
+./ai-voice-interconnector speech dub --audio condicion.wav --source-language es --target-language es -v mi_voz
+
+# 7. Locuciones guardadas: listar, reproducir y eliminar
+./ai-voice-interconnector speech list [--voice mi_voz]   # Filtrable por voz
+./ai-voice-interconnector speech play --label LOCUCION [-v mi_voz]
+./ai-voice-interconnector speech remove --label LOCUCION [-v mi_voz]
+
+# 8. Eliminar voz clonada (limpieza; se lleva sus locuciones guardadas)
 ./ai-voice-interconnector voice remove --name mi_voz
 
-# 8. Detener el daemon (cierre de la sesión, libera el modelo de memoria)
+# 9. Limpiar el estado provisionado, por categoría o completo
+./ai-voice-interconnector cleanup --voices --synthetic-speech --model   # Sin tocar el programa ni el PATH
+./ai-voice-interconnector cleanup --all                                # Unión de las tres categorías
+
+# 10. Operaciones sobre la instalación del usuario
+./ai-voice-interconnector self update            # Actualizar a la última estable
+./ai-voice-interconnector self uninstall         # Programa + PATH + estado, con residuo cero
+
+# 11. Detener el daemon (cierre de la sesión, libera el modelo de memoria)
 ./ai-voice-interconnector daemon stop
 ```
+
+Los subcomandos `speech transcribe`, `speech synthesize`, `speech say`, `speech dub` y `translate` aceptan `--daemon`/`--no-daemon` para fijar el despacho (`Auto` por defecto). `speech list`, `speech play`, `speech remove`, `voice list` y `voice remove` son locales: el daemon no los expone y el parser rechaza esos flags.
 
 #### Desinstalación en un comando
 
@@ -157,9 +183,9 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 ### Criterios de aceptación
 
-<!-- Los criterios 1-3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado (versión contra el tag, `voice list`, `--self-test` del motor y `self install` en sandbox; ver docs/BUILD.md «Verificación post-build»), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
+<!-- Los criterios 2, 3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado (versión contra el tag, `voice list`, `--self-test` del motor y `self install` en sandbox; ver docs/BUILD.md «Verificación post-build»), más una verificación en sala limpia del artefacto de Linux (los cuatro jobs `verify-portability`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
-1. [ ] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo)
+1. [x] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo) — validado sobre `v0.36.0` en Windows 11 x64 (`10.0.26200`): instalación por el one-liner `irm | iex` con checksum verificado, provisión de los cinco modelos, ciclo de vida del daemon, clonación de voz, síntesis con `WER ≤ 0.25` y superficie `store`/`transcribe`/`translate`/`dub`, sin instalar nada más allá del sistema base. La versión mínima declarada (Windows 10 1903) no se ejercitó en sí misma: el binario es el mismo, pero el suelo declarado queda sin probar en esa máquina concreta
 2. [ ] El artefacto de Linux (`ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`) funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
 3. [ ] El artefacto de macOS (`ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`) funciona en el mínimo declarado en el manifiesto del bundle (`min_os`, ver [versión mínima de macOS](BUILD.md#versión-mínima-de-macos) y los [requisitos](../README.md#requisitos)) (Apple Silicon; Mac Intel no soportado) (validación E2E por SO, ver "Validación E2E" más abajo)
 4. [x] `ai-voice-interconnector speech say --text "Hola mundo"` reproduce audio en español
@@ -168,20 +194,22 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 7. [x] El español latinoamericano suena natural y con buena prosodia
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
-10. [ ] **Equivalencia funcional completa entre los 3 SO**: todas las brechas accionables del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner con el bootstrap `install.sh` POSIX compartido más `install.ps1` para Windows, `zap` del Cask completo, README con las tres plataformas y desinstalación en un comando con `self uninstall`). Solo la brecha de *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) permanece diferida por diseño al goal a largo plazo. Con ello **todas las brechas accionables están cerradas en código**; la marca de este criterio queda pendiente solo de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
+10. [ ] **Equivalencia funcional completa entre los 3 SO**: las brechas de **código** del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner con el bootstrap `install.sh` POSIX compartido más `install.ps1` para Windows, `zap` del Cask completo, README con las tres plataformas y desinstalación en un comando con `self uninstall`). Quedan dos brechas de **experiencia**, ambas diferidas por diseño al [goal a largo plazo](#goal-a-largo-plazo) y ninguna bloqueante por sí sola: la *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) y la *provisión de modelos en los canales que no invocan `self install`* (el Cask de Homebrew y la descarga manual, donde `setup` se ofrece en vez de encadenarse). La marca de este criterio queda pendiente de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
 
 #### Validación E2E
 
 La validación end-to-end de los instaladores (instalar → `setup` → `speech synthesize` real → desinstalar) **no se ejecuta dentro del pipeline de CI** por una decisión consciente de diseño: requiere cuota de runner significativa (carga de Qwen3-TTS + Parakeet + descarga de los modelos que fija [`setup`](CLI/commands/SETUP.md) + síntesis real con audio) y reproducirla en cada push no aporta señal proporcional a su coste. El pipeline sí ejecuta un **smoke test automatizado** en los cuatro jobs de build, que detecta empaquetados rotos sin pagar el coste del modelo: la versión del binario contra el tag (`--version`; en Windows además `version --json`), `voice list` con la voz `default`, el `--self-test` de los kernels del motor TTS (sin pesos), y la instalación del archivo empaquetado con `self install --no-setup --no-modify-path` en un sandbox, seguida de `--version` del binario instalado.
 
+Además, los cuatro jobs **`verify-portability`** abren el artefacto de Linux ya publicado en una **sala limpia** —AlmaLinux 8 (el suelo de glibc 2.28) y Debian stable-slim, en x64 y arm64, sin paquetes de desarrollo, sin ALSA, sin libgomp y sin procps— y comprueban que el binario arranca, que `voice list` responde, que `self install --no-setup --yes` deja el comando disponible a través del enlace instalado y que la comprobación `onnx_runtime` de `doctor` carga la librería ONNX Runtime empaquetada. Es una puerta E2E parcial automatizada, y parcial en dos sentidos: solo corre sobre Linux, y no paga el coste del modelo (no hay `setup`, ni síntesis, ni descarga).
+
 Fuera del pipeline, la validación se reparte así:
 
-- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → desinstalar, y registrando el resultado.
+- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → desinstalar, y registrando el resultado. El resultado de la validación de `v0.36.0` está en el [criterio 1](#criterios-de-aceptación).
 - **Linux y macOS**: dependen de **feedback de usuarios reales** que prueben la instalación y ejecución en sus equipos. Ese feedback (positivo o negativo) es la entrada de issues que cierra el circuito y guía correcciones específicas por plataforma.
 
 El recorrido concreto —la secuencia ordenada de comandos que ejercita toda la superficie de la CLI en este proceso manual— está en [docs/MANUAL-VALIDATION.md](MANUAL-VALIDATION.md).
 
-Por tanto, los criterios 1-3 y 9 no son "pendientes" en el sentido de tareas olvidadas: son el **borde externo** del proceso de calidad, donde el propietario más el feedback de la comunidad reemplazan a un runner de CI que no podría ejercitar la matriz de hardware/SO real. Cualquier issue reportado en estos criterios se incorpora al ciclo de desarrollo como bug prioritario y motiva fixes versionados.
+Por tanto, los criterios 2, 3 y 9 no son "pendientes" en el sentido de tareas olvidadas: son el **borde externo** del proceso de calidad, donde el propietario más el feedback de la comunidad reemplazan a un runner de CI que no podría ejercitar la matriz de hardware/SO real. Cualquier issue reportado en estos criterios se incorpora al ciclo de desarrollo como bug prioritario y motiva fixes versionados.
 
 ### Condición de finalización
 
@@ -193,7 +221,7 @@ La implementación está completa únicamente cuando:
 - [x] El español latinoamericano suena natural
 - [x] El pipeline de CI produce el artefacto de cada SO (Windows, Linux, macOS) y publica los dos bootstrap del one-liner (`install.sh` e `install.ps1`) como assets del release; en la raíz del repositorio no queda ningún script de ciclo de vida, y los que se ejecutan antes del binario viven en `packaging/bootstrap/`
 - [ ] Los instaladores funcionan sin ninguna dependencia externa (validación E2E por SO, ver "Validación E2E" arriba: smoke test automatizado en CI + validación manual Windows del propietario + feedback de usuarios reales en Linux y macOS)
-- [ ] La experiencia de instalación, uso, actualización y desinstalación es equivalente en los 3 SO: las [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) no incluyen ninguna **accionable** abierta (la de *firma de código* permanece registrada como diferida al goal a largo plazo y no bloquea esta condición)
+- [ ] La experiencia de instalación, uso, actualización y desinstalación es equivalente en los 3 SO: las [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) no incluyen ninguna **de código** abierta (las de *firma de código* y *provisión en los canales sin `self install`* permanecen registradas como diferidas al goal a largo plazo y no bloquean esta condición)
 - [x] **README.md** resume la arquitectura en un párrafo y remite a docs/DESIGN.md, su único dueño
 - [x] **docs/DESIGN.md** corresponde al estado implementado
 - [x] El daemon mode está implementado y funciona correctamente
@@ -219,8 +247,26 @@ Especificaciones **no comprometidas** para el goal inmediato. No se trabajan aho
 
 **Condiciones de entrada** (promueven esta spec al goal inmediato):
 
-- El goal inmediato está cumplido: producto cristalizado, con equivalencia funcional completa entre los 3 SO (sin [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) accionables abiertas; la única brecha restante sería esta misma, de *firma de código*).
+- El goal inmediato está cumplido: producto cristalizado, con equivalencia funcional completa entre los 3 SO (sin [brechas conocidas](specs/LIFECYCLE.md#brechas-conocidas) de **código** abiertas; las de **experiencia** restantes serían esta misma, de *firma de código*, y la de *provisión en los canales sin `self install`*).
 - Windows: aprobación del proyecto por el programa SignPath OSS.
 - macOS: alta de una cuenta Apple Developer (de pago).
 
 **Criterio de cierre**: los instaladores de Windows y macOS generados por CI arrancan sin disparar SmartScreen ni Gatekeeper en una instalación limpia, incluso descargados por navegador.
+
+### Provisión de modelos en los canales sin `self install`
+
+**Motivación**: la provisión de modelos la encadena `self install` (su paso 10), que es lo que invocan los dos one-liners (`install.sh` para Linux y macOS, `install.ps1` para Windows). Los otros dos canales documentados —el Cask de Homebrew y la descarga manual del archivo comprimido— no invocan `self install`: instalan el programa y dejan la provisión como un paso explícito que el canal ofrece. En el Cask, ese paso es el `caveat` que remite a `ai-voice-interconnector setup`; en la descarga manual, la línea final del README.
+
+**Justificación del diferimiento**: criterio de clasificación 2 —condición de madurez del producto. La provisión es hoy la fase más larga y más pesada de toda la experiencia (5,85 GB), y encadenarla dentro de `brew install` congelaría el instalador de Homebrew durante la descarga: Homebrew no da a un hook de post-instalación barra de progreso propia, ni timeout, ni estado reanudable, ni aviso de «esto tardará», y una interrupción dejaría el Cask a medias. La diferencia es de **mecanismo**, no de experiencia: la paridad ideal admite `setup` «ofrecido» ([tabla de paridad](#paridad-de-experiencia)), y el `caveat` es exactamente eso — un paso explícito que el usuario ve y puede lanzar cuando quiera.
+
+**Especificación diferida**:
+
+- Los canales que no invocan `self install` ofrecen la provisión con la misma garantía que da `self install`: progreso visible, timeout, reanudación tras una interrupción y estado final verificable con `doctor --json`.
+- El mecanismo concreto (un hook de post-instalación, una descarga con progreso gestionada por el canal o una reanudación del propio gestor de modelos) se decide cuando la condición de entrada se cumpla; hoy la elección está abierta y no se prejuzga.
+
+**Condiciones de entrada** (promueven esta spec al goal inmediato):
+
+- El canal ofrece descarga de modelos con progreso visible y estado reanudable: hoy el indicador se silencia con `AVI_NO_PROGRESS=1` y la descarga no es reanudable.
+- Existe feedback de usuarios reales de esos canales que justifique el trabajo: el tap de Homebrew no tiene todavía ninguna instalación registrada.
+
+**Criterio de cierre**: tras instalar por cualquiera de los canales, `doctor --json` informa los cinco modelos provisionados sin un paso manual adicional.
