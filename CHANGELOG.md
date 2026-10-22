@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.36.1 — 2026-10-22](#0361--2026-10-22)
 - [0.36.0 — 2026-10-21](#0360--2026-10-21)
 - [0.35.0 — 2026-10-20](#0350--2026-10-20)
@@ -116,6 +117,18 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Eliminado
+
+- Se retira el workflow de sonda `native-cache-probe` y el parámetro de pipeline
+  `native_cache_probe`: la CI vuelve a un único workflow de release
+  (`build-all`, solo en tags `v*`). Desaparecen con él el modo `probe` de los 4
+  `build-*` (la variante de restauración de `target/`, el diagnóstico de CMake y
+  el log de errores de `sccache` que solo usaba la sonda), el parámetro `target`
+  de `cargo_restore_caches` y las pruebas de `xtask` que custodiaban esas
+  invariantes.
 
 ## [0.36.1] — 2026-10-22
 

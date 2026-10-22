@@ -6,8 +6,6 @@
 # (CircleCI no encadena pipelines distintas). Empaquetado + publicación tras
 # los gates + `coverage` + instaladores + licencias/changelog.
 # El trabajo diario vive en `main` (trunk-based); sus commits no disparan CI.
-# Segundo punto de entrada, solo por API: el workflow `native-cache-probe`
-# (parámetro `native_cache_probe`) mide los 4 build-* sin publicar nunca.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
 # licencia, versionados vía `persist_to_workspace` → `publish-release`.
 # Pines reproducibles: `rust_pin` + `ort_pin` + digest de `cimg/rust`.
@@ -61,14 +59,6 @@ parameters:
     type: string
     default: "1.28.0"
     description: Versión de ONNX Runtime (pareja de ort 2.0.0-rc.13) empaquetada en los 4 builds. Al subirla, `ort_sha256` de packaging/pins.json lleva los SHA-256 de los 4 assets de la versión nueva.
-  # Sonda de builds nativos: solo se activa por API (POST /pipeline con
-  # `native_cache_probe: true`). Ejecuta únicamente los 4 build-* en modo
-  # `probe` (sin target-*, sin empaquetado) y excluye `build-all`, así que
-  # NUNCA publica. Ver workflow `native-cache-probe`.
-  native_cache_probe:
-    type: boolean
-    default: false
-    description: Activa el workflow de sonda native-cache-probe (solo por API; nunca publica).
   ninja_pin:
     type: string
     default: "1.13.2"
@@ -184,10 +174,6 @@ commands:
     # hash se toma con `git rev-parse` y no con `find | sort`: en Windows el PATH
     # resuelve `sort` al sort.exe de System32, que no entiende las opciones POSIX.
     # `/usr/bin/find` se usa por la misma razón (el find.exe de Windows).
-    #
-    # `target: false` (modo sonda de los build-*) omite la restauración de
-    # la caché de `target/` y la fijación de mtime: cada corrida de sonda compila con
-    # target/ frío y nunca depende de una clave de producción.
     parameters:
       variant:
         type: string
@@ -195,9 +181,6 @@ commands:
       os:
         type: string
         default: "linux"
-      target:
-        type: boolean
-        default: true
     steps:
       - cargo_lock_cachekey
       - run:
@@ -222,25 +205,22 @@ commands:
           keys:
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
             - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-
-      - when:
-          condition: << parameters.target >>
-          steps:
-            - restore_cache:
-                keys:
-                  - target-v6-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
-            - run:
-                name: Fijar mtime de los parches vendorizados (evita cascada Dirty)
-                shell: bash
-                command: |
-                  set -euo pipefail
-                  while read -r dir; do
-                    /usr/bin/find "$dir" -exec touch -t 200001010000 {} +
-                  done < .vendor-patches.list
-                  if [ -d target ]; then
-                    echo "target/ restaurado por clave exacta: parches vendorizados Fresh esperados"
-                  else
-                    echo "target/ vacío (sin acierto): compilación en frío"
-                  fi
+      - restore_cache:
+          keys:
+            - target-v6-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
+      - run:
+          name: Fijar mtime de los parches vendorizados (evita cascada Dirty)
+          shell: bash
+          command: |
+            set -euo pipefail
+            while read -r dir; do
+              /usr/bin/find "$dir" -exec touch -t 200001010000 {} +
+            done < .vendor-patches.list
+            if [ -d target ]; then
+              echo "target/ restaurado por clave exacta: parches vendorizados Fresh esperados"
+            else
+              echo "target/ vacío (sin acierto): compilación en frío"
+            fi
   cargo_save_registry:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
     steps:
@@ -516,57 +496,6 @@ commands:
             if ($Got -ne $NinjaVersion) { throw "ninja --version ($Got) != pin ($NinjaVersion)" }
             Write-Host "Ninja $Got en $Dir"
             Write-Host "[STEP] Instalar Ninja - FIN"
-
-  # Diagnóstico del modo sonda de los build-*: herramientas del executor y, por
-  # cada proyecto CMake compilado bajo target/release/build/*/out, el generador,
-  # compilador, launcher, tipo de build, runtime MSVC y flags efectivos, más una
-  # línea de flags de compilación real (build.ninja, flags.make o .vcxproj) y
-  # cuántos ficheros de build invocan sccache. Responde qué crates usan CMake
-  # (p. ej. aws-lc-sys) y si el launcher quedó aplicado. `when: always`: si la
-  # compilación falla, el diagnóstico sigue saliendo al log. Sin tuberías hacia
-  # consumidores que salgan antes (se capturan listas en variables).
-  cmake_probe_diagnostics:
-    description: Imprime el diagnóstico de los builds CMake (solo modo sonda)
-    steps:
-      - run:
-          name: Diagnóstico de builds CMake (sonda)
-          shell: bash
-          when: always
-          command: |
-            set -uo pipefail
-            echo "[STEP] Diagnóstico de builds CMake (sonda) - INICIO"
-            cmake --version
-            # En Windows, Ninja vive en $env:TEMP\ninja (solo en el PATH del paso de compilación).
-            if command -v ninja >/dev/null 2>&1; then echo "ninja $(ninja --version)"
-            elif [ -x "${TEMP:-/tmp}/ninja/ninja.exe" ]; then echo "ninja $("${TEMP:-/tmp}/ninja/ninja.exe" --version) (${TEMP:-/tmp}/ninja)"
-            else echo "ninja: no disponible"; fi
-            echo "CPU: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-?}")"
-            caches="$(/usr/bin/find target/release/build -path '*/out/*' -name CMakeCache.txt 2>/dev/null)"
-            if [ -z "$caches" ]; then echo "Sin CMakeCache.txt bajo target/release/build"; fi
-            vars='^(CMAKE_GENERATOR|CMAKE_C_COMPILER|CMAKE_CXX_COMPILER|CMAKE_C_COMPILER_LAUNCHER|CMAKE_CXX_COMPILER_LAUNCHER|CMAKE_BUILD_TYPE|CMAKE_MSVC_RUNTIME_LIBRARY|CMAKE_CXX_FLAGS|CMAKE_CXX_FLAGS_RELEASE)(:[A-Z]+)?='
-            printf '%s\n' "$caches" | while IFS= read -r cache; do
-              [ -n "$cache" ] || continue
-              dir="$(dirname "$cache")"
-              echo "=== ${dir#target/release/build/} ==="
-              grep -E "$vars" "$cache" || true
-              if [ -f "$dir/build.ninja" ]; then
-                echo "-- flags de compilación (build.ninja):"
-                grep -m2 -E '^ +FLAGS = ' "$dir/build.ninja" || true
-              else
-                makes="$(/usr/bin/find "$dir" -name flags.make 2>/dev/null)"
-                vcx="$(/usr/bin/find "$dir" -name '*.vcxproj' ! -name 'ALL_BUILD*' ! -name 'ZERO_CHECK*' ! -name 'INSTALL*' 2>/dev/null)"
-                if [ -n "$makes" ]; then
-                  echo "-- flags de compilación (${makes%%$'\n'*}):"
-                  grep -m2 -E '^(C|CXX)_FLAGS = ' "${makes%%$'\n'*}" || true
-                elif [ -n "$vcx" ]; then
-                  echo "-- propiedades de compilación (${vcx%%$'\n'*}):"
-                  grep -m12 -E '<(Optimization|InlineFunctionExpansion|RuntimeLibrary|DebugInformationFormat|PreprocessorDefinitions|AdditionalOptions)>' "${vcx%%$'\n'*}" || true
-                fi
-              fi
-              launched="$(grep -rlE 'sccache' "$dir" --include=build.ninja --include=build.make --include='*.vcxproj' 2>/dev/null)"
-              echo "-- ficheros de build que invocan sccache: $(printf '%s' "$launched" | grep -c . || true)"
-            done
-            echo "[STEP] Diagnóstico de builds CMake (sonda) - FIN"
 
   # Fuente única de pines: `packaging/pins.json` es la única tabla de versiones;
   # los parámetros del pipeline la espejan. Este paso invoca al validador único
@@ -1398,12 +1327,6 @@ jobs:
   # antes de persistirlo al workspace para publish-release. Requieren triple
   # puerta + coverage + bootstrap (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
-  # Parámetro `probe` (los 4 build-*): modo sonda del workflow
-  # `native-cache-probe`. Sin restaurar ni guardar la caché de target/ (target/ frío en
-  # cada corrida), sin empaquetado (package, SHA-256, persist_to_workspace:
-  # exigen CIRCLE_TAG == const VERSION) y con el diagnóstico de CMake. Sigue
-  # ejecutando smoke test y motor TTS, y guarda sccache en la variante `full`
-  # (caché por contenido: sembrarla no contamina producción).
   build-windows-x64:
     # Windows x64: binario + smoke test nativo. No usa Inno Setup aún.
     executor: win/server-2022
@@ -1413,10 +1336,6 @@ jobs:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
-    parameters:
-      probe:
-        type: boolean
-        default: false
     steps:
       - checkout
       - toolchain_restore_cache:
@@ -1486,20 +1405,9 @@ jobs:
             }
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - FIN"
       - msys2_save_cache
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_restore_caches:
-                os: windows
-                variant: full
-                target: true
-      - when:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_restore_caches:
-                os: windows
-                variant: full
-                target: false
+      - cargo_restore_caches:
+          os: windows
+          variant: full
       - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
@@ -1533,13 +1441,6 @@ jobs:
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
-            # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
-            # con la primera compilación de este step, registra sus errores en un
-            # log publicado como artefacto (cargo oculta la salida de los build scripts).
-            if ("<< parameters.probe >>" -eq "true") {
-              $env:SCCACHE_ERROR_LOG = "$PWD\sccache-error.log"
-              $env:SCCACHE_LOG = "debug"
-            }
             # Launcher sccache para CMake: exige el generador Ninja (el de
             # Visual Studio ignora los launchers). Ver native_sccache_setup_windows.
             $env:CMAKE_GENERATOR = "Ninja"
@@ -1564,13 +1465,6 @@ jobs:
       - store_artifacts:
           path: target/cargo-timings
           destination: cargo-timings
-      - when:
-          condition: << parameters.probe >>
-          steps:
-            - cmake_probe_diagnostics
-            - store_artifacts:
-                path: sccache-error.log
-                destination: sccache-error-log
       - run:
           name: Smoke test del binario (version + voces de fábrica)
           command: |
@@ -1607,13 +1501,10 @@ jobs:
       - sccache_save_cache:
           os: windows
           variant: full
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_save_target:
-                os: windows
-                variant: full
-                when: on_success
+      - cargo_save_target:
+          os: windows
+          variant: full
+          when: on_success
       - tts_engine_cachekey
       - restore_cache:
           keys:
@@ -1645,74 +1536,71 @@ jobs:
           paths:
             - vendor/qwen3-tts/qwen_tts.exe
           when: on_success
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            # `ort-bundle/` (ONNX Runtime oficial más las cinco DLL app-local de
-            # VC++: vcruntime140, vcruntime140_1, msvcp140, msvcp140_1 y vcomp140) lo arma y lo
-            # verifica `xtask package`, el único descargador: comprueba el SHA-256
-            # fijado en packaging/pins.json y copia las DLL de System32. La caché
-            # solo evita repetir la descarga; `xtask package` reutiliza lo
-            # restaurado solo si trae todas las librerías y el marcador de la
-            # versión fijada, y si no lo vuelve a descargar.
-            - restore_cache:
-                keys:
-                  - ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
-            - run:
-                # Empaquetado canónico: `xtask package` monta el bundle desde
-                # packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`), aborta si VERSION != tag y audita que ningún
-                # binario del bundle importe nada fuera del sistema base que
-                # declara el manifiesto para el target.
-                name: Empaquetar bundle con xtask package
-                command: |
-                  Write-Host "[STEP] Empaquetar bundle con xtask package - INICIO"
-                  $ErrorActionPreference = "Stop"
-                  $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-                  $TagVersion = $env:CIRCLE_TAG -replace '^v',''
-                  cargo xtask package --expect-version "$TagVersion"
-                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                  Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
-            - save_cache:
-                key: ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
-                paths:
-                  - ort-bundle
-                when: on_success
-            - run:
-                # Humo de instalación: instala el artefacto empaquetado en un
-                # sandbox con las cuatro raíces reubicadas y comprueba que el
-                # binario instalado arranca.
-                name: Humo de instalación en sandbox (self install)
-                command: |
-                  Write-Host "[STEP] Humo de instalación en sandbox - INICIO"
-                  $ErrorActionPreference = "Stop"
-                  $Sandbox = Join-Path $env:TEMP ("avi-smoke-" + [guid]::NewGuid().ToString("N"))
-                  $env:AVI_INSTALL_DIR = Join-Path $Sandbox "program"
-                  $env:AVI_BIN_DIR = Join-Path $Sandbox "bin"
-                  $env:AVI_DATA_DIR = Join-Path $Sandbox "data"
-                  $env:AVI_CACHE_DIR = Join-Path $Sandbox "cache"
-                  New-Item -ItemType Directory -Force -Path $env:AVI_INSTALL_DIR, $env:AVI_BIN_DIR, $env:AVI_DATA_DIR, $env:AVI_CACHE_DIR | Out-Null
-                  $StageSmoke = Join-Path $Sandbox "stage"
-                  New-Item -ItemType Directory -Force -Path $StageSmoke | Out-Null
-                  $Zip = Get-Item artifacts\\ai-voice-interconnector-*-x86_64-windows.zip
-                  Expand-Archive -Path $Zip.FullName -DestinationPath $StageSmoke -Force
-                  & "$StageSmoke\\ai-voice-interconnector.exe" self install --no-setup --no-modify-path --yes
-                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                  & "$env:AVI_INSTALL_DIR\\ai-voice-interconnector.exe" --version
-                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                  Remove-Item -Recurse -Force $Sandbox
-                  Write-Host "[STEP] Humo de instalación en sandbox - FIN"
-            - run:
-                name: Emitir SHA-256 del artefacto
-                command: |
-                  Write-Host "[STEP] Emitir SHA-256 del artefacto - INICIO"
-                  Get-FileHash artifacts\ai-voice-interconnector-*-x86_64-windows.zip -Algorithm SHA256
-                  if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-                  Write-Host "[STEP] Emitir SHA-256 del artefacto - FIN"
-            - persist_to_workspace:
-                root: artifacts
-                paths:
-                  - ai-voice-interconnector-*-x86_64-windows.zip
+      # `ort-bundle/` (ONNX Runtime oficial más las cinco DLL app-local de
+      # VC++: vcruntime140, vcruntime140_1, msvcp140, msvcp140_1 y vcomp140) lo arma y lo
+      # verifica `xtask package`, el único descargador: comprueba el SHA-256
+      # fijado en packaging/pins.json y copia las DLL de System32. La caché
+      # solo evita repetir la descarga; `xtask package` reutiliza lo
+      # restaurado solo si trae todas las librerías y el marcador de la
+      # versión fijada, y si no lo vuelve a descargar.
+      - restore_cache:
+          keys:
+            - ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
+      - run:
+          # Empaquetado canónico: `xtask package` monta el bundle desde
+          # packaging/bundle-manifest.json (la misma lista que valida
+          # `self install`), aborta si VERSION != tag y audita que ningún
+          # binario del bundle importe nada fuera del sistema base que
+          # declara el manifiesto para el target.
+          name: Empaquetar bundle con xtask package
+          command: |
+            Write-Host "[STEP] Empaquetar bundle con xtask package - INICIO"
+            $ErrorActionPreference = "Stop"
+            $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
+            $TagVersion = $env:CIRCLE_TAG -replace '^v',''
+            cargo xtask package --expect-version "$TagVersion"
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
+      - save_cache:
+          key: ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
+          paths:
+            - ort-bundle
+          when: on_success
+      - run:
+          # Humo de instalación: instala el artefacto empaquetado en un
+          # sandbox con las cuatro raíces reubicadas y comprueba que el
+          # binario instalado arranca.
+          name: Humo de instalación en sandbox (self install)
+          command: |
+            Write-Host "[STEP] Humo de instalación en sandbox - INICIO"
+            $ErrorActionPreference = "Stop"
+            $Sandbox = Join-Path $env:TEMP ("avi-smoke-" + [guid]::NewGuid().ToString("N"))
+            $env:AVI_INSTALL_DIR = Join-Path $Sandbox "program"
+            $env:AVI_BIN_DIR = Join-Path $Sandbox "bin"
+            $env:AVI_DATA_DIR = Join-Path $Sandbox "data"
+            $env:AVI_CACHE_DIR = Join-Path $Sandbox "cache"
+            New-Item -ItemType Directory -Force -Path $env:AVI_INSTALL_DIR, $env:AVI_BIN_DIR, $env:AVI_DATA_DIR, $env:AVI_CACHE_DIR | Out-Null
+            $StageSmoke = Join-Path $Sandbox "stage"
+            New-Item -ItemType Directory -Force -Path $StageSmoke | Out-Null
+            $Zip = Get-Item artifacts\\ai-voice-interconnector-*-x86_64-windows.zip
+            Expand-Archive -Path $Zip.FullName -DestinationPath $StageSmoke -Force
+            & "$StageSmoke\\ai-voice-interconnector.exe" self install --no-setup --no-modify-path --yes
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & "$env:AVI_INSTALL_DIR\\ai-voice-interconnector.exe" --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Remove-Item -Recurse -Force $Sandbox
+            Write-Host "[STEP] Humo de instalación en sandbox - FIN"
+      - run:
+          name: Emitir SHA-256 del artefacto
+          command: |
+            Write-Host "[STEP] Emitir SHA-256 del artefacto - INICIO"
+            Get-FileHash artifacts\ai-voice-interconnector-*-x86_64-windows.zip -Algorithm SHA256
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host "[STEP] Emitir SHA-256 del artefacto - FIN"
+      - persist_to_workspace:
+          root: artifacts
+          paths:
+            - ai-voice-interconnector-*-x86_64-windows.zip
 
   build-linux-x64:
     # Linux x64: el más barato/rápido para la suite, pero el build necesita
@@ -1729,28 +1617,13 @@ jobs:
     environment:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
-    parameters:
-      probe:
-        type: boolean
-        default: false
     steps:
       - install_manylinux_ssh
       - checkout
       - install_manylinux_build_deps
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_restore_caches:
-                os: linux-el8
-                variant: full
-                target: true
-      - when:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_restore_caches:
-                os: linux-el8
-                variant: full
-                target: false
+      - cargo_restore_caches:
+          os: linux-el8
+          variant: full
       - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
@@ -1765,25 +1638,12 @@ jobs:
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
-            # con la primera compilación de este step, registra sus errores en un
-            # log publicado como artefacto (cargo oculta la salida de los build scripts).
-            if [ "<< parameters.probe >>" = "true" ]; then
-              export SCCACHE_ERROR_LOG="$PWD/sccache-error.log" SCCACHE_LOG=debug
-            fi
             # --timings: desglose por crate en target/cargo-timings (artefacto).
             cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
       - store_artifacts:
           path: target/cargo-timings
           destination: cargo-timings
-      - when:
-          condition: << parameters.probe >>
-          steps:
-            - cmake_probe_diagnostics
-            - store_artifacts:
-                path: sccache-error.log
-                destination: sccache-error-log
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
@@ -1816,54 +1676,48 @@ jobs:
           paths:
             - vendor/qwen3-tts/qwen_tts
           when: on_success
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_save_target:
-                os: linux-el8
-                variant: full
-                when: on_success
+      - cargo_save_target:
+          os: linux-el8
+          variant: full
+          when: on_success
       - sccache_save_cache:
           os: linux-el8
           variant: full
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
-            # pins.json + marcador `.ort-version`): la caché solo evita repetir la
-            # descarga; sin acierto se vuelve a descargar.
-            - restore_cache:
-                keys:
-                  - ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
-            - run:
-                # Empaquetado canónico: `xtask package` monta el bundle desde
-                # packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`), aborta si VERSION != tag y audita que ningún
-                # binario del bundle importe nada fuera del sistema base que
-                # declara el manifiesto para el target.
-                name: Empaquetar bundle con xtask package
-                command: |
-                  echo "[STEP] Empaquetar bundle con xtask package - INICIO"
-                  set -euo pipefail
-                  cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-                  echo "[STEP] Empaquetar bundle con xtask package - FIN"
-            - save_cache:
-                key: ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
-                paths:
-                  - ort-bundle
-                when: on_success
-            - sandbox_install_unix:
-                artifact_glob: "ai-voice-interconnector-*-x86_64-linux.tar.gz"
-            - run:
-                name: Emitir SHA-256 del artefacto
-                command: |
-                  echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-                  sha256sum artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz
-                  echo "[STEP] Emitir SHA-256 del artefacto - FIN"
-            - persist_to_workspace:
-                root: artifacts
-                paths:
-                  - ai-voice-interconnector-*-x86_64-linux.tar.gz
+      # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
+      # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+      # descarga; sin acierto se vuelve a descargar.
+      - restore_cache:
+          keys:
+            - ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
+      - run:
+          # Empaquetado canónico: `xtask package` monta el bundle desde
+          # packaging/bundle-manifest.json (la misma lista que valida
+          # `self install`), aborta si VERSION != tag y audita que ningún
+          # binario del bundle importe nada fuera del sistema base que
+          # declara el manifiesto para el target.
+          name: Empaquetar bundle con xtask package
+          command: |
+            echo "[STEP] Empaquetar bundle con xtask package - INICIO"
+            set -euo pipefail
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            echo "[STEP] Empaquetar bundle con xtask package - FIN"
+      - save_cache:
+          key: ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
+          paths:
+            - ort-bundle
+          when: on_success
+      - sandbox_install_unix:
+          artifact_glob: "ai-voice-interconnector-*-x86_64-linux.tar.gz"
+      - run:
+          name: Emitir SHA-256 del artefacto
+          command: |
+            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+            sha256sum artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz
+            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
+      - persist_to_workspace:
+          root: artifacts
+          paths:
+            - ai-voice-interconnector-*-x86_64-linux.tar.gz
 
   build-linux-arm64:
     # Linux ARM64 nativo (no cross-compile): Docker arm.medium ejecuta
@@ -1878,28 +1732,13 @@ jobs:
     environment:
       # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
       CARGO_INCREMENTAL: "0"
-    parameters:
-      probe:
-        type: boolean
-        default: false
     steps:
       - install_manylinux_ssh
       - checkout
       - install_manylinux_build_deps
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_restore_caches:
-                os: linux-el8
-                variant: full
-                target: true
-      - when:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_restore_caches:
-                os: linux-el8
-                variant: full
-                target: false
+      - cargo_restore_caches:
+          os: linux-el8
+          variant: full
       - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
@@ -1914,25 +1753,12 @@ jobs:
           no_output_timeout: 25m
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
-            # con la primera compilación de este step, registra sus errores en un
-            # log publicado como artefacto (cargo oculta la salida de los build scripts).
-            if [ "<< parameters.probe >>" = "true" ]; then
-              export SCCACHE_ERROR_LOG="$PWD/sccache-error.log" SCCACHE_LOG=debug
-            fi
             # --timings: desglose por crate en target/cargo-timings (artefacto).
             cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
       - store_artifacts:
           path: target/cargo-timings
           destination: cargo-timings
-      - when:
-          condition: << parameters.probe >>
-          steps:
-            - cmake_probe_diagnostics
-            - store_artifacts:
-                path: sccache-error.log
-                destination: sccache-error-log
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
@@ -1967,54 +1793,48 @@ jobs:
           paths:
             - vendor/qwen3-tts/qwen_tts
           when: on_success
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_save_target:
-                os: linux-el8
-                variant: full
-                when: on_success
+      - cargo_save_target:
+          os: linux-el8
+          variant: full
+          when: on_success
       - sccache_save_cache:
           os: linux-el8
           variant: full
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
-            # pins.json + marcador `.ort-version`): la caché solo evita repetir la
-            # descarga; sin acierto se vuelve a descargar.
-            - restore_cache:
-                keys:
-                  - ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
-            - run:
-                # Empaquetado canónico: `xtask package` monta el bundle desde
-                # packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`), aborta si VERSION != tag y audita que ningún
-                # binario del bundle importe nada fuera del sistema base que
-                # declara el manifiesto para el target.
-                name: Empaquetar bundle con xtask package
-                command: |
-                  echo "[STEP] Empaquetar bundle con xtask package - INICIO"
-                  set -euo pipefail
-                  cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-                  echo "[STEP] Empaquetar bundle con xtask package - FIN"
-            - save_cache:
-                key: ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
-                paths:
-                  - ort-bundle
-                when: on_success
-            - sandbox_install_unix:
-                artifact_glob: "ai-voice-interconnector-*-arm64-linux.tar.gz"
-            - run:
-                name: Emitir SHA-256 del artefacto
-                command: |
-                  echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-                  sha256sum artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz
-                  echo "[STEP] Emitir SHA-256 del artefacto - FIN"
-            - persist_to_workspace:
-                root: artifacts
-                paths:
-                  - ai-voice-interconnector-*-arm64-linux.tar.gz
+      # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
+      # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+      # descarga; sin acierto se vuelve a descargar.
+      - restore_cache:
+          keys:
+            - ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
+      - run:
+          # Empaquetado canónico: `xtask package` monta el bundle desde
+          # packaging/bundle-manifest.json (la misma lista que valida
+          # `self install`), aborta si VERSION != tag y audita que ningún
+          # binario del bundle importe nada fuera del sistema base que
+          # declara el manifiesto para el target.
+          name: Empaquetar bundle con xtask package
+          command: |
+            echo "[STEP] Empaquetar bundle con xtask package - INICIO"
+            set -euo pipefail
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            echo "[STEP] Empaquetar bundle con xtask package - FIN"
+      - save_cache:
+          key: ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
+          paths:
+            - ort-bundle
+          when: on_success
+      - sandbox_install_unix:
+          artifact_glob: "ai-voice-interconnector-*-arm64-linux.tar.gz"
+      - run:
+          name: Emitir SHA-256 del artefacto
+          command: |
+            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+            sha256sum artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz
+            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
+      - persist_to_workspace:
+          root: artifacts
+          paths:
+            - ai-voice-interconnector-*-arm64-linux.tar.gz
 
   build-darwin-arm64:
     # macOS ARM64 (Apple Silicon, Xcode 26.4.0): clang nativo, sin cross.
@@ -2032,10 +1852,6 @@ jobs:
       # todo lo que se compila aquí declara ese mínimo; sin ella cada pieza
       # tomaría su propio valor por defecto (el del SDK o el de rustc).
       MACOSX_DEPLOYMENT_TARGET: "26.0"
-    parameters:
-      probe:
-        type: boolean
-        default: false
     steps:
       - checkout
       - toolchain_restore_cache:
@@ -2060,20 +1876,9 @@ jobs:
       # usa OPENMP_RUNTIME=NONE en macOS (features por target en
       # avi-translation/Cargo.toml): Apple clang no trae libomp y
       # find_package(OpenMP REQUIRED) fallaba (#2/#4).
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_restore_caches:
-                os: macos
-                variant: full
-                target: true
-      - when:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_restore_caches:
-                os: macos
-                variant: full
-                target: false
+      - cargo_restore_caches:
+          os: macos
+          variant: full
       - cargo_fetch
       - cargo_save_registry
       - sccache_restore_cache:
@@ -2089,25 +1894,12 @@ jobs:
           command: |
             echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
             export PATH="$HOME/.cargo/bin:$PATH"
-            # Solo en modo sonda (target/ frío): el servidor sccache, que arranca
-            # con la primera compilación de este step, registra sus errores en un
-            # log publicado como artefacto (cargo oculta la salida de los build scripts).
-            if [ "<< parameters.probe >>" = "true" ]; then
-              export SCCACHE_ERROR_LOG="$PWD/sccache-error.log" SCCACHE_LOG=debug
-            fi
             # --timings: desglose por crate en target/cargo-timings (artefacto).
             cargo build --release --features full --verbose --timings
             echo "[STEP] Compilar binario release (cargo build --release) - FIN"
       - store_artifacts:
           path: target/cargo-timings
           destination: cargo-timings
-      - when:
-          condition: << parameters.probe >>
-          steps:
-            - cmake_probe_diagnostics
-            - store_artifacts:
-                path: sccache-error.log
-                destination: sccache-error-log
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: |
@@ -2143,55 +1935,49 @@ jobs:
           paths:
             - vendor/qwen3-tts/qwen_tts
           when: on_success
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            - cargo_save_target:
-                os: macos
-                variant: full
-                when: on_success
+      - cargo_save_target:
+          os: macos
+          variant: full
+          when: on_success
       - sccache_save_cache:
           os: macos
           variant: full
-      - unless:
-          condition: << parameters.probe >>
-          steps:
-            # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
-            # pins.json + marcador `.ort-version`): la caché solo evita repetir la
-            # descarga; sin acierto se vuelve a descargar.
-            - restore_cache:
-                keys:
-                  - ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
-            - run:
-                # Empaquetado canónico: `xtask package` monta el bundle desde
-                # packaging/bundle-manifest.json (la misma lista que valida
-                # `self install`), aborta si VERSION != tag y audita que ningún
-                # binario del bundle declare un `minos` por encima del `min_os`
-                # del manifiesto ni importe nada fuera de libSystem, /usr/lib y
-                # los frameworks de /System.
-                name: Empaquetar bundle con xtask package
-                command: |
-                  echo "[STEP] Empaquetar bundle con xtask package - INICIO"
-                  set -euo pipefail
-                  cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-                  echo "[STEP] Empaquetar bundle con xtask package - FIN"
-            - save_cache:
-                key: ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
-                paths:
-                  - ort-bundle
-                when: on_success
-            - sandbox_install_unix:
-                artifact_glob: "ai-voice-interconnector-*-arm64-macos.tar.gz"
-            - run:
-                name: Emitir SHA-256 del artefacto
-                command: |
-                  echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
-                  shasum -a 256 artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz
-                  echo "[STEP] Emitir SHA-256 del artefacto - FIN"
-            - persist_to_workspace:
-                root: artifacts
-                paths:
-                  - ai-voice-interconnector-*-arm64-macos.tar.gz
+      # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
+      # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+      # descarga; sin acierto se vuelve a descargar.
+      - restore_cache:
+          keys:
+            - ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
+      - run:
+          # Empaquetado canónico: `xtask package` monta el bundle desde
+          # packaging/bundle-manifest.json (la misma lista que valida
+          # `self install`), aborta si VERSION != tag y audita que ningún
+          # binario del bundle declare un `minos` por encima del `min_os`
+          # del manifiesto ni importe nada fuera de libSystem, /usr/lib y
+          # los frameworks de /System.
+          name: Empaquetar bundle con xtask package
+          command: |
+            echo "[STEP] Empaquetar bundle con xtask package - INICIO"
+            set -euo pipefail
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            echo "[STEP] Empaquetar bundle con xtask package - FIN"
+      - save_cache:
+          key: ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
+          paths:
+            - ort-bundle
+          when: on_success
+      - sandbox_install_unix:
+          artifact_glob: "ai-voice-interconnector-*-arm64-macos.tar.gz"
+      - run:
+          name: Emitir SHA-256 del artefacto
+          command: |
+            echo "[STEP] Emitir SHA-256 del artefacto - INICIO"
+            shasum -a 256 artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz
+            echo "[STEP] Emitir SHA-256 del artefacto - FIN"
+      - persist_to_workspace:
+          root: artifacts
+          paths:
+            - ai-voice-interconnector-*-arm64-macos.tar.gz
 
   # ──────────────────────────────────────────────────────────────
   # CD — publicación del GitHub Release (Rust nativo, 4 binarios)
@@ -2451,9 +2237,6 @@ workflows:
     # por toda la cadena (tests/gates → builds → publish-*).
     # Todos los jobs declaran además `branches: ignore /.*/`: esta pipeline corre
     # SOLO en tags `v*`, nunca en pushes de rama.
-    # Excluido explícitamente cuando se dispara la sonda (native_cache_probe).
-    when:
-      not: << pipeline.parameters.native_cache_probe >>
     jobs:
       # ── Triple suite (gate) + cobertura + instaladores + licencias ──
       # Los 4 builds requieren estos 9 gates verdes en la misma pipeline.
@@ -2633,20 +2416,3 @@ workflows:
           requires:
             - publish-release
 
-  # ── Sonda de builds nativos (herramienta de diagnóstico, nunca publica) ──
-  # Solo por API: POST /api/v2/project/gh/<org>/<repo>/pipeline con
-  # {"branch":"main","parameters":{"native_cache_probe":true}}. Ejecuta los 4 build-* en modo `probe`: sin puertas,
-  # sin publish-*, sin restaurar ni guardar target-*, sin empaquetado; con
-  # --timings y el diagnóstico de CMake. Guarda sccache (por contenido). Sin
-  # `requires` ni filtros de tags: corre en la rama indicada.
-  native-cache-probe:
-    when: << pipeline.parameters.native_cache_probe >>
-    jobs:
-      - build-windows-x64:
-          probe: true
-      - build-linux-x64:
-          probe: true
-      - build-linux-arm64:
-          probe: true
-      - build-darwin-arm64:
-          probe: true
