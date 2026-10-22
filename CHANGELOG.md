@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.36.0 — 2026-10-21](#0360--2026-10-21)
 - [0.35.0 — 2026-10-20](#0350--2026-10-20)
 - [0.34.0 — 2026-10-19](#0340--2026-10-19)
@@ -115,6 +116,47 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Ciclo de consolidación tras `v0.36.0`: la instrumentación que diagnosticaba la
+latencia intermitente de `daemon start` en CI Windows queda formalizada en la
+suite ordinaria para capturar la próxima aparición, los informes transitorios
+vuelven a evacuarse del árbol con su estado abierto registrado fuera del
+versionado, y la prosa se alinea con los canales de instalación, las páginas de
+comandos y el comportamiento vigente de la CLI.
+
+### Añadido
+
+- La suite Rust recoge **trazas de arranque del daemon por fase**: las marcas que
+  `avi_shared::diag_trace` escribe (`start.*`, `launch_daemon.*`, `child.*`) con
+  `AVI_DIAG_TRACE_FILE`/`AVI_DIAG_TRACE_TAG` caen en `diag-traces/` durante
+  `test-windows`, y un volcado `when: always` las imprime en el registro del job
+  aunque el caso pase o falle, para tener la evidencia si la latencia intermitente
+  de `daemon start` reaparece sin volver a instrumentar nada a mano.
+
+### Cambiado
+
+- La documentación aclara la **paridad de los canales de instalación** para que
+  lo que exige el one-liner y lo que comparte con Homebrew/Cask se enuncie igual
+  en `README.md`, `docs/DISTRIBUTION.md`, `docs/GOAL.md` y `docs/specs/LIFECYCLE.md`.
+- El registro de defectos (`docs/issues/`) vuelve a quedar **sin informes en el
+  árbol** y su README ya no declara el estado abierto: los pendientes (causa de
+  la latencia sin determinar, comprobaciones visuales §12 del indicador) se
+  siguen en continuaciones de sesión, fuera del árbol versionado.
+
+### Corregido
+
+- Las páginas de comandos y los mensajes reales coinciden: el recibo ilegible se
+  informa en `DOCTOR.md` como fallo del chequeo `install_receipt` (no como
+  `doctor_failed`), `SELF.md` describe `program_dir_kept` al desinstalar, el plan
+  del dry-run de `cleanup` sale por stderr como declara `CLEANUP.md`, `DAEMON.md`
+  describe el pidfile que escribe `serve` y `SPEECH.md` cita el nombre completo
+  del ejecutable en el mensaje de reinicio; los mensajes de `cleanup` y el aviso
+  de reinicio de `speech` se dejaron idénticos a lo que esas páginas declaran.
+- El índice raíz y la tabla de documentos de `docs/specs/LIFECYCLE.md` ya no
+  describen `docs/issues/README.md` como «registro de defectos abiertos», sino
+  como registro transitorio de defectos en investigación.
 
 ## [0.36.0] — 2026-10-21
 

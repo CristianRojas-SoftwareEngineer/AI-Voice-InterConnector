@@ -333,7 +333,7 @@ mantiene los motores calientes entre invocaciones. Detalle en
 - [AGENTS.md](AGENTS.md) — guías para agentes de código.
 - [SOURCE-OFFER.md](SOURCE-OFFER.md) — disponibilidad de la fuente (MPL-2.0 §3.2).
 - [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) — inventario de licencias de terceros.
-- [docs/issues/README.md](docs/issues/README.md) — registro de defectos abiertos.
+- [docs/issues/README.md](docs/issues/README.md) — registro transitorio de defectos en investigación.
 
 ## Licencia
 
