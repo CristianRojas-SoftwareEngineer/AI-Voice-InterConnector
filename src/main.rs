@@ -3978,7 +3978,7 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
 /// falla con la ruta buscada si no carga.
 #[cfg(feature = "native-stt")]
 fn with_onnx_runtime_check(mut report: lifecycle::doctor::Report) -> lifecycle::doctor::Report {
-    match avi_stt::parakeet::ensure_onnx_runtime() {
+    match avi_shared::onnx_runtime::ensure_onnx_runtime() {
         Ok(path) => report.push_check(
             "onnx_runtime",
             true,

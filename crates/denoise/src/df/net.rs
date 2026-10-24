@@ -54,6 +54,14 @@ pub struct DpdfNetSession {
 impl DpdfNetSession {
     /// Carga la sesión ONNX desde la ruta del modelo y lee su contrato de metadatos.
     pub fn load(models: &ModelPaths) -> Result<Self, E> {
+        // ONNX Runtime se carga una sola vez por proceso y de forma explícita:
+        // si `ort` la buscara por su cuenta no encontraría la librería del
+        // bundle y terminaría el proceso sin devolver error. Debe ocurrir antes
+        // de crear la sesión. La autoridad única es el módulo compartido de
+        // `avi-shared`, el mismo que usa el motor STT.
+        avi_shared::onnx_runtime::ensure_onnx_runtime()
+            .map_err(|e| E::EOnnxRuntimeUnavailable(e.to_string()))?;
+
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)

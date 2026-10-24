@@ -292,6 +292,7 @@ name = "avi-shared"
 version = "0.1.0"
 dependencies = [
  "directories",
+ "ort",
  "serde",
  "serde_json",
  "tempfile",
@@ -1107,6 +1108,7 @@ name = "denoise"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "avi-shared",
  "clap",
  "ctrlc",
  "home",
