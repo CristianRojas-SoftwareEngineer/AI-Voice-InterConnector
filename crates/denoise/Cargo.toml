@@ -1,0 +1,56 @@
+[package]
+name = "denoise"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.88"
+# Crate trasplantado desde el repositorio Denoise (MIT), que sigue siendo su
+# fuente de verdad mientras dure la migración. El aviso Apache-2.0 del modelo
+# DPDFNet vive en `src/models.rs`.
+license = "MIT"
+description = "Limpieza de ruido DPDFNet ONNX para la pista de audio de audio y vídeo (trasplante de Denoise 1.0.0)."
+
+[lib]
+name = "denoise"
+path = "src/lib.rs"
+
+# Binario transitorio: oráculo de paridad frente al Denoise original. El
+# entrypoint público del destino es `ai-voice-interconnector denoise` (Fase 3).
+[[bin]]
+name = "denoise"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+# Adaptación de trasplante: el origen enlaza ORT estático
+# (`copy-dylibs`/`download-binaries`), que exige el CRT dinámico y no enlaza en
+# este workspace (Windows compila con `+crt-static` por CTranslate2). Se usa la
+# configuración de ORT del workspace: la librería se carga en ejecución desde
+# `ORT_DYLIB_PATH`, que la resuelve el bundle de AVI. La fase siguiente sustituye
+# esta carga implícita por el módulo compartido `avi-shared::onnx_runtime`, que
+# es quien debe resolver directorio a fichero y cargar la librería una sola vez
+# por proceso.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "preload-dylibs"] }
+rustfft = "6"
+hound = "3"
+indicatif = "0.17"
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls-webpki-roots"] }
+sha2 = "0.10"
+home = "0.5"
+which = "4"
+ctrlc = "3"
+sysinfo = "0.30"
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+regex = "1"
+
+# Adaptación de trasplante: la CLI trasplantada sale con `std::process::exit` y
+# sus tests escriben en el temporal del sistema. Factorizar esa salida para que
+# el programa termine al soltar los recursos, y conectar la cancelación de
+# Ctrl+C al mecanismo de la CLI de AVI, es alcance de la integración del
+# subcomando; hasta entonces el crate conserva el comportamiento del origen y
+# queda exento de las dos reglas de `clippy.toml`. Retirar esta sección al
+# integrar el subcomando en la CLI raíz.
+[lints.clippy]
+disallowed_methods = "allow"
