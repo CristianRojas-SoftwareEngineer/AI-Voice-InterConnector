@@ -16,33 +16,30 @@ use crate::df::filter::{apply_highpass, HIGHPASS_CUTOFF_HZ};
 use crate::df::net::{DpdfNetSession, ORT_CACHE};
 use crate::df::stft::{StftHelper, SR};
 use crate::errors::E;
-use crate::models::{default_model_dir, DefaultModelsProvider, ModelsProvider};
+use crate::models::{AviModelsProvider, ModelsProvider};
 use hound::{WavReader, WavSpec, WavWriter};
 use std::f32::consts::PI;
 use std::path::Path;
 
 /// Procesa un archivo WAV mono 48kHz PCM16 eliminando ruido con DPDFNet.
 pub fn denoise_wav(in_wav: &Path, out_wav: &Path, progress_cb: impl Fn(f64, f64)) -> Result<(), E> {
-    let model_dir = default_model_dir();
-    let provider = DefaultModelsProvider::new();
-    denoise_wav_with_provider(in_wav, out_wav, &model_dir, &provider, &progress_cb)
+    let provider = AviModelsProvider;
+    denoise_wav_with_provider(in_wav, out_wav, &provider, &progress_cb)
 }
 
 /// Constante canónica de atenuación de pausas en dB (-25 dB).
 pub const GATE_CRUSH_DB: f64 = -25.0;
 
-/// Procesa un archivo WAV con un proveedor de modelos específico (permite tests/custom model-dir).
+/// Procesa un archivo WAV con un proveedor de modelos inyectado (tests).
 pub fn denoise_wav_with_provider(
     in_wav: &Path,
     out_wav: &Path,
-    model_dir: &Path,
     provider: &dyn ModelsProvider,
     progress_cb: &dyn Fn(f64, f64),
 ) -> Result<(), E> {
     denoise_wav_with_params(
         in_wav,
         out_wav,
-        model_dir,
         provider,
         0.0,
         GATE_CRUSH_DB,
@@ -55,7 +52,6 @@ pub fn denoise_wav_with_provider(
 pub fn denoise_wav_with_provider_and_blend(
     in_wav: &Path,
     out_wav: &Path,
-    model_dir: &Path,
     provider: &dyn ModelsProvider,
     dry_blend: f32,
     progress_cb: &dyn Fn(f64, f64),
@@ -63,7 +59,6 @@ pub fn denoise_wav_with_provider_and_blend(
     denoise_wav_with_params(
         in_wav,
         out_wav,
-        model_dir,
         provider,
         dry_blend,
         GATE_CRUSH_DB,
@@ -78,7 +73,6 @@ pub fn denoise_wav_with_provider_and_blend(
 pub fn denoise_wav_with_params(
     in_wav: &Path,
     out_wav: &Path,
-    model_dir: &Path,
     provider: &dyn ModelsProvider,
     dry_blend: f32,
     pause_gate_db: f64,
@@ -86,7 +80,7 @@ pub fn denoise_wav_with_params(
     progress_cb: &dyn Fn(f64, f64),
 ) -> Result<(), E> {
     // 1. Cargar y verificar modelos
-    let model_paths = provider.ensure_models(model_dir, progress_cb)?;
+    let model_paths = provider.ensure_models()?;
 
     // 2. Leer audio de entrada con hound
     let mut reader = WavReader::open(in_wav)

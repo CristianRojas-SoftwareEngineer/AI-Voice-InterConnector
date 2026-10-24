@@ -1,10 +1,10 @@
 //! Test E2E `#[ignore]` — pipeline completo sobre un archivo de audio real.
 //!
-//! Requiere `ffmpeg 6+` y el modelo DPDFNet (se descarga en la primera corrida).
+//! Requiere `ffmpeg 6+` y el modelo DPDFNet provisionado por `setup`.
 //! Ejecutar con `cargo test --release --test test_audio_pipeline -- --ignored`.
 
 use denoise::ffmpeg_io::{find_ffmpeg, probe, verify_output_lightweight, StreamKind};
-use denoise::models::{default_model_dir, DefaultModelsProvider};
+use denoise::models::AviModelsProvider;
 use denoise::pipeline::{clean_file, PipelineParams, ProcessStatus};
 use hound::WavReader;
 use std::cell::RefCell;
@@ -31,8 +31,7 @@ fn test_audio_wav_pipeline_e2e() {
     assert!(probe_in.has_audio);
     assert_eq!(probe_in.stream_kind, StreamKind::Audio);
 
-    let model_dir = default_model_dir();
-    let provider = DefaultModelsProvider::new();
+    let provider = AviModelsProvider;
     let params = PipelineParams {
         ffmpeg: &ffmpeg,
         input,
@@ -43,7 +42,6 @@ fn test_audio_wav_pipeline_e2e() {
         highpass: false,
         stereo: false,
         target_lufs: None,
-        model_dir: &model_dir,
         models_provider: &provider,
         overwrite: true,
         skip_existing: false,

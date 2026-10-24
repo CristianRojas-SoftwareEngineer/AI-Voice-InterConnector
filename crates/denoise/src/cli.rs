@@ -22,7 +22,7 @@ pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "aac", "flac", "ogg
     name = "denoise",
     version = env!("CARGO_PKG_VERSION"),
  about = "CLI autocontenido denoise v1 — elimina ruido de audio y video con DPDFNet ONNX",
-    override_usage = "denoise INPUT... [--output-name NAME] [--output-dir DIR] [--prefix STR] [--suffix STR]\n  [--recursive] [--overwrite | --skip-existing]\n  [--audio-bitrate KBPS] [--model-dir DIR] [--ffmpeg-path PATH]\n  [--dry-run] [--json] [--verbose] [--version]",
+    override_usage = "denoise INPUT... [--output-name NAME] [--output-dir DIR] [--prefix STR] [--suffix STR]\n  [--recursive] [--overwrite | --skip-existing]\n  [--audio-bitrate KBPS] [--ffmpeg-path PATH]\n  [--dry-run] [--json] [--verbose] [--version]",
     disable_version_flag = true
 )]
 pub struct Cli {
@@ -91,10 +91,6 @@ pub struct Cli {
     /// Preservar audio estéreo de 2 canales procesando cada canal independientemente
     #[arg(long = "stereo")]
     pub stereo: bool,
-
-    /// Directorio para almacenar/buscar modelos ONNX (defecto: ~/.cache/denoise/models)
-    #[arg(long = "model-dir")]
-    pub model_dir: Option<PathBuf>,
 
     /// Ruta explícita al binario de ffmpeg
     #[arg(long = "ffmpeg-path")]
@@ -726,15 +722,10 @@ pub fn run() -> anyhow::Result<()> {
         std::process::exit(e.exit_code());
     }
 
-    let model_dir = cli
-        .model_dir
-        .clone()
-        .unwrap_or_else(crate::models::default_model_dir);
-    let models_provider = crate::models::DefaultModelsProvider::new();
+    let models_provider = crate::models::AviModelsProvider;
 
     let params = BatchParams {
         ffmpeg: &ffmpeg_bin,
-        model_dir: &model_dir,
         models_provider: &models_provider,
         audio_bitrate: egress.audio_bitrate,
         dry_blend: egress.dry_blend,
@@ -811,7 +802,6 @@ pub fn resolve_egress_params(cli: &Cli) -> EgressParams {
 /// Parámetros de ejecución para el procesamiento de lotes.
 pub struct BatchParams<'a> {
     pub ffmpeg: &'a Path,
-    pub model_dir: &'a Path,
     pub models_provider: &'a dyn crate::models::ModelsProvider,
     pub audio_bitrate: u32,
     pub dry_blend: f32,
@@ -872,7 +862,6 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> i32 {
             highpass: params.highpass,
             stereo: params.stereo,
             target_lufs: params.target_lufs,
-            model_dir: params.model_dir,
             models_provider: params.models_provider,
             overwrite: params.overwrite,
             skip_existing: params.skip_existing,

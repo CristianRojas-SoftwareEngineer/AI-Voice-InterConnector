@@ -6,7 +6,7 @@
 //!
 //! Uso:
 //! ```text
-//! cargo run --release --example process_wav -- <pares.txt> [model_dir] [flags...]
+//! cargo run --release --example process_wav -- <pares.txt> [flags...]
 //! ```
 //!
 //! `<pares.txt>` tiene una línea por clip, `entrada<TAB>salida`. Se leen todos
@@ -29,18 +29,17 @@ use std::process::ExitCode;
 use std::time::Instant;
 
 use denoise::df::{denoise_wav_with_params, GATE_CRUSH_DB};
-use denoise::models::{default_model_dir, DefaultModelsProvider};
+use denoise::models::AviModelsProvider;
 
 /// Parámetros parseados de la línea de comandos.
 struct HarnessArgs {
     pairs_path: PathBuf,
-    model_dir: PathBuf,
     highpass: bool,
     dry_blend: f32,
     pause_gate_db: f64,
 }
 
-/// Parsea argumentos posicionales (`pares.txt`, `model_dir`) y flags opcionales
+/// Parsea el argumento posicional (`pares.txt`) y flags opcionales
 /// (`--highpass`, `--dry-blend`, `--pause-gate-db`). No usa `clap` para evitar
 /// dependencias extra en el example.
 fn parse_args(args: &[String]) -> Result<HarnessArgs, String> {
@@ -86,14 +85,9 @@ fn parse_args(args: &[String]) -> Result<HarnessArgs, String> {
     }
 
     let pairs_path = PathBuf::from(positionals[0]);
-    let model_dir = positionals
-        .get(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(default_model_dir);
 
     Ok(HarnessArgs {
         pairs_path,
-        model_dir,
         highpass,
         dry_blend,
         pause_gate_db,
@@ -116,7 +110,9 @@ fn main() -> ExitCode {
         Ok(h) => h,
         Err(msg) => {
             eprintln!("error: {msg}");
-            eprintln!("uso: process_wav <pares.txt> [model_dir] [--highpass] [--dry-blend F] [--pause-gate-db F]");
+            eprintln!(
+                "uso: process_wav <pares.txt> [--highpass] [--dry-blend F] [--pause-gate-db F]"
+            );
             eprintln!("  pares.txt: una línea por clip, `entrada<TAB>salida`");
             return ExitCode::from(2);
         }
@@ -128,7 +124,7 @@ fn main() -> ExitCode {
         harness.highpass, harness.dry_blend, harness.pause_gate_db
     );
 
-    let provider = DefaultModelsProvider::new();
+    let provider = AviModelsProvider;
 
     let spec = match std::fs::read_to_string(&harness.pairs_path) {
         Ok(s) => s,
@@ -163,7 +159,6 @@ fn main() -> ExitCode {
         match denoise_wav_with_params(
             &input_path,
             &output_path,
-            &harness.model_dir,
             &provider,
             harness.dry_blend,
             harness.pause_gate_db,

@@ -141,9 +141,8 @@ fn test_ffmpeg_not_found() {
 
 #[test]
 fn test_model_missing() {
-    let tmp_dir = std::env::temp_dir().join("denoise_fake_model_missing");
     let provider = FakeProvider::failing_missing();
-    let res = provider.ensure_models(&tmp_dir, &|_, _| {});
+    let res = provider.ensure_models();
     assert!(res.is_err());
     let err = res.unwrap_err();
     assert_eq!(err.exit_code(), 1);
@@ -289,9 +288,8 @@ fn test_output_name_self_reference_error() {
 
 #[test]
 fn test_io_error() {
-    let tmp_dir = std::env::temp_dir().join("denoise_fake_io_err");
     let provider = FakeProvider::failing_io();
-    let res = provider.ensure_models(&tmp_dir, &|_, _| {});
+    let res = provider.ensure_models();
     assert!(res.is_err());
     let err = res.unwrap_err();
     assert_eq!(err.exit_code(), 1);

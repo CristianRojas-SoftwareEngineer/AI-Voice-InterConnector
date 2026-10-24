@@ -602,7 +602,7 @@ fn models(roots: &cleanup::Roots) -> Models {
     let mut provisioned = Vec::new();
     let mut missing = Vec::new();
     for pin in avi_shared::paths::MODEL_REVISIONS {
-        if store.is_provisioned(pin.name) {
+        if store.is_provisioned(pin.name) && store.verify_artifact(pin.name).is_ok() {
             provisioned.push(pin.name.to_string());
         } else {
             missing.push(pin.name.to_string());
