@@ -91,5 +91,74 @@ proceso** (no hay aún un fixture que los combine; lo ejercitarán los pasos 8 y
 10 al integrar el preprocesamiento), y la resolución en Linux/macOS, que exige
 entorno nativo.
 
-**Estado del árbol:** cambios del paso 6 sin commitear; el commit queda a la
-espera de autorización explícita del usuario.
+**Estado del árbol:** cambios del paso 6 commiteados en `62015764`.
+
+## 6. Paso 7 — DPDFNet en el catálogo, integridad y resolvedor único
+
+### 6.1 Decisiones aplicadas
+
+| Decisión | Implementación | Motivo verificado |
+|---|---|---|
+| Pin inmutable | `Ceva-IP/DPDFNet` @ `dd6818d00f50c836fed43a6243ebe49116de5964`; `onnx/dpdfnet8_48khz_hr.onnx`; 14 857 107 B; SHA256 `7b3afbb2…5631` | La API de HF devolvió ese `sha` para `main`; el árbol de la revisión confirmó `lfs.oid` y `size`, y el archivo local coincide |
+| Dos campos nuevos en `ModelPin` | `artifact_sha256: Option<&str>` y `startup_optional: bool` | El hash es opcional porque los repos multiarchivo ya se validan por revisión/LFS; el arranque opcional es una propiedad del pin, no del daemon |
+| DPDFNet opcional al arrancar | `startup_optional: true`; `load_engines` lo omite; `setup` lo provisiona igual | El daemon debe servir STT/TTS sin DPDFNet; solo las operaciones opt-in de limpieza lo exigen |
+| Integridad sin cambiar `is_provisioned` | `ModelStore::verify_artifact` hashea el único artefacto; se usa tras descargar, antes de inferir y en `doctor` | `is_provisioned` sigue siendo estructural para no romper los sandboxes que siembran snapshots falsos; el hash se exige donde importa |
+| Reparación sin caché privada | `ensure_downloaded` borra el repo completo si el hash no coincide; el resolvedor de denoise solo lee el almacén canónico | Una corrupción del mismo tamaño no puede pasar; no hay descarga silenciosa durante el procesamiento |
+| Resolvedor único | `AviModelsProvider` en `denoise` usa `avi_store::ModelStore`; se retiraron `DefaultModelsProvider`, `~/.cache/denoise`, `reqwest`, `home` y `sysinfo` | El modelo se resuelve por `setup`/`doctor`; `--model-dir` deja de existir en la CLI transitoria |
+
+### 6.2 Verificación ejecutada
+
+Entorno: Windows x64; raíz canónica
+`%LOCALAPPDATA%\ai-voice-interconnector\cache\models`; FFmpeg 9.0.1 en
+`PATH`; `ort-bundle/onnxruntime.dll` 1.28.0.
+
+| Comando / prueba | Resultado |
+|---|---|
+| `cargo test -p avi-store` | V 28 tests de lib + 1 de layout HF; incluye SHA256 conocido de `abc` y rechazo de corrupción del mismo tamaño |
+| `cargo test -p denoise` | V **56 passed / 6 ignored / 0 failed** |
+| `cargo test --release -p denoise -- --ignored` | V **6 passed**: golden 2, E2E WAV 1, remux 3 |
+| `cargo test -p avi-shared --features native-ort` | V 44 passed |
+| `cargo test -p avi-lifecycle` | V 183 + 20 + 2 + 25 + 8 + 10 + 6 + 11 + 5, 0 failed |
+| `cargo test -p avi-daemon` | V 50 + 20 (6 ignored), 0 failed |
+| `cargo test --test self_install_contract` | V 3 passed |
+| `cargo test --test cli_golden` | V 132 passed / 21 ignored |
+| `cargo check --workspace --all-targets` | V |
+| `cargo clippy --workspace --features full --all-targets -- -D warnings` | V 0 avisos |
+| `cargo xtask language/comments/pins/features --check` | V 0 hallazgos en las cuatro puertas |
+| `setup --json` con DPDFNet ausente | V descargó 1 modelo (14,9 MB en 7 s) y publicó `dpdfnet8` entre los provisionados |
+| `doctor --json` con DPDFNet sano | V `models_provisioned: true`; `missing: []`; `size_bytes: 5 865 044 386` |
+| `denoise` con raíz vacía | V código 1, «El modelo dpdfnet8 no está provisionado; ejecuta `ai-voice-interconnector setup`…», sin crear directorios de modelo |
+| `denoise` con DPDFNet corrupto del mismo tamaño | V código 1, SHA256 esperado/obtenido y `setup --force-update` como reparación |
+| `denoise` con `HF_ENDPOINT` muerto y `HF_HUB_OFFLINE=1` | V código 0, salida de **288 078 B** (sin red en inferencia) |
+| Paridad de inferencia | V `voz_noisy.wav` → 288 078 B, SHA256 `465777a96c44b11d098b861ccf8e50c43b038decef8408bbab7a84ffd4d491f4`; tamaño idéntico a la referencia de Fase 1 (la diferencia de bytes frente al origen ya documentada es del build de ORT, no del proveedor de modelo) |
+| Daemon sin DPDFNet | V con el repo apartado, `daemon serve` publicó `addr`, `/health` dio `status: ready` y `warm: warm`; `POST /shutdown` terminó con código 0 |
+| `cleanup --model --yes --json` con DPDFNet sembrado | V borró la raíz de modelos del sandbox, DPDFNet incluido |
+| `setup --json` con `HF_ENDPOINT` muerto | V código 20, `reason: network_error`, error `dpdfnet8: HTTP request error…` |
+| `doctor --json` con DPDFNet corrupto | V `dpdfnet8` en `missing` aunque el snapshot existe estructuralmente |
+| `denoise --model-dir …` | V código 2; `--model-dir` ya no aparece en la ayuda ni se acepta |
+
+### 6.3 Adaptaciones de pruebas
+
+| Archivo | Cambio | Causa |
+|---|---|---|
+| `crates/avi-lifecycle/src/setup.rs` | total fijado 5 865 044 386 B y resumen de 6 modelos | El pin nuevo entra en la selección |
+| `tests/self_install_contract.rs`, `tests/cli_golden.rs` | los sembradores crean el directorio padre de cada patrón | DPDFNet declara `onnx/dpdfnet8_48khz_hr.onnx`, que no es un archivo raíz |
+| `crates/denoise/tests/test_audio_pipeline.rs`, `examples/process_wav.rs` | usan `AviModelsProvider` y ya no pasan `model_dir` | El modelo se resuelve por el almacén canónico |
+| `crates/denoise/Cargo.toml` | `avi-store`; fuera `reqwest`, `home`, `sysinfo`; `sha2` a dev-dependencies | El crate no descarga ni mantiene caché propia; `sha2` solo lo usa `test_remux` |
+
+### 6.4 Puerta del paso 7
+
+**Cubierta:** el artefacto DPDFNet está fijado por revisión inmutable y SHA256;
+`setup` lo descarga y valida, `doctor` lo verifica, `cleanup` lo barre y el
+daemon arranca sin él. La CLI y el resolvedor de denoise leen únicamente el
+almacén canónico: no hay descarga silenciosa ni caché privada, y una corrupción
+del mismo tamaño se detecta antes de inferir. La inferencia offline conserva el
+tamaño de la referencia.
+
+**No verificado todavía:** Linux/macOS (requiere entorno nativo); el anidado
+`models_cause` de `self install`/`self update` con DPDFNet en concreto (el
+contrato existente lo ejerce con `opus-mt-es-en`, y el camino de provisión es el
+mismo); STT y DPDFNet infiriendo a la vez en un proceso (pasos 8 y 10).
+
+**Estado del árbol:** cambios del paso 7 sin commitear; el commit se crea a
+continuación.

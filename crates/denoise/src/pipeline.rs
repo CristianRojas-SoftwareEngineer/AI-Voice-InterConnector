@@ -29,7 +29,6 @@ pub struct PipelineParams<'a> {
     pub highpass: bool,
     pub stereo: bool,
     pub target_lufs: Option<f64>,
-    pub model_dir: &'a Path,
     pub models_provider: &'a dyn ModelsProvider,
     pub overwrite: bool,
     pub skip_existing: bool,
@@ -126,9 +125,7 @@ where
     }
 
     // Asegurar modelos listos
-    let _ = params
-        .models_provider
-        .ensure_models(params.model_dir, &|_, _| {})?;
+    let _ = params.models_provider.ensure_models()?;
 
     // Rutas de temporales junto a la salida; el parcial conserva stem y extensión finales.
     let out_file_name = params
@@ -183,7 +180,6 @@ where
     denoise_wav_with_params(
         &tmp_in_wav,
         &tmp_out_wav,
-        params.model_dir,
         params.models_provider,
         params.dry_blend,
         params.pause_gate_db,

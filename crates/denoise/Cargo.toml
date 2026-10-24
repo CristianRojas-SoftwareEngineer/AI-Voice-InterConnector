@@ -35,20 +35,22 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "
 # solo inicializador por proceso en vez de cada crate resolver la librería por
 # su cuenta.
 avi-shared = { path = "../avi-shared", features = ["native-ort"] }
+# Caché y verificación únicas del artefacto provisionado por `setup`: el crate
+# no descarga ni mantiene un directorio de modelos propio.
+avi-store = { path = "../avi-store" }
 rustfft = "6"
 hound = "3"
 indicatif = "0.17"
-reqwest = { version = "0.12", features = ["blocking", "rustls-tls-webpki-roots"] }
-sha2 = "0.10"
-home = "0.5"
 which = "4"
 ctrlc = "3"
-sysinfo = "0.30"
 anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
+
+[dev-dependencies]
+sha2 = "0.10"
 
 # Adaptación de trasplante: la CLI trasplantada sale con `std::process::exit` y
 # sus tests escriben en el temporal del sistema. Factorizar esa salida para que

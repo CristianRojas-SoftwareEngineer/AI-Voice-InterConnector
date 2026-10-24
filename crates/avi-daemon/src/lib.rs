@@ -152,9 +152,13 @@ impl DaemonState {
     }
 
     /// Carga los motores de producción. Toda ausencia de un modelo fijado exige
-    /// ejecutar `setup`, aunque el motor no cargue sus pesos hasta la primera petición.
+    /// ejecutar `setup`, salvo los pines `startup_optional`: sus operaciones
+    /// fallan si faltan y el resto del servicio sigue disponible.
     fn load_engines(model_store: &ModelStore) -> anyhow::Result<DaemonEngines> {
         for pin in avi_shared::paths::MODEL_REVISIONS {
+            if pin.startup_optional {
+                continue;
+            }
             if !model_store.is_provisioned(pin.name) {
                 return Err(MissingModel(pin.name).into());
             }

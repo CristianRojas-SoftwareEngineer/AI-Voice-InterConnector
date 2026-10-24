@@ -198,6 +198,12 @@ pub fn bin_dir() -> io::Result<PathBuf> {
 /// tabla de pines, `setup` lo provisiona siempre.
 pub const CLONING_MODEL: &str = "qwen3-tts-0.6b-base";
 
+/// Nombre lógico del modelo de limpieza DPDFNet y del único artefacto que
+/// consume. El artefacto vive bajo `onnx/` en el snapshot, de modo que el
+/// patrón de descarga y el resolvedor de inferencia comparten esta ruta.
+pub const DPDFNET_MODEL: &str = "dpdfnet8";
+pub const DPDFNET_MODEL_FILE: &str = "onnx/dpdfnet8_48khz_hr.onnx";
+
 /// Pin de un modelo: nombre lógico, repo de HuggingFace, revisión y tamaño.
 ///
 /// La revisión es un **commit hash** de HuggingFace: mismo binario → mismos
@@ -208,12 +214,22 @@ pub const CLONING_MODEL: &str = "qwen3-tts-0.6b-base";
 /// la revisión fijada: la suma de los archivos del repo, o solo la de los que
 /// casan con `MODEL_FILE_PATTERNS` cuando el modelo los tiene. Hay que
 /// actualizarlo al cambiar la revisión.
+///
+/// `artifact_sha256` fija el hash del único artefacto de los modelos que lo
+/// declaran; los repos multiarchivo lo dejan en `None` y su integridad la
+/// garantizan la revisión y el hash LFS que verifica `hf-hub`.
+///
+/// `startup_optional` marca los modelos que no bloquean el arranque del
+/// daemon: `setup` los provisiona igual, pero las operaciones que los usan
+/// fallan si faltan y el resto del servicio sigue disponible.
 #[derive(Debug, Clone, Copy)]
 pub struct ModelPin {
     pub name: &'static str,
     pub repo: &'static str,
     pub revision: &'static str,
     pub approx_bytes: u64,
+    pub artifact_sha256: Option<&'static str>,
+    pub startup_optional: bool,
 }
 
 /// Pines de los modelos que provisiona la aplicación.
@@ -224,6 +240,8 @@ pub const MODEL_REVISIONS: &[ModelPin] = &[
         repo: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
         revision: "85e237c12c027371202489a0ec509ded67b5e4b5",
         approx_bytes: 2_498_388_392,
+        artifact_sha256: None,
+        startup_optional: false,
     },
     // Traducción es→en / en→es: Helsinki-NLP/opus-mt (CC-BY 4.0) convertido una
     // sola vez a CTranslate2 int8 y publicado en repos propios; el motor lo lee
@@ -233,12 +251,16 @@ pub const MODEL_REVISIONS: &[ModelPin] = &[
         repo: "CristianRojaas/opus-mt-es-en-ct2-int8",
         revision: "6eabf2f7d9f92dd52e38fe95c9da29f219613c19",
         approx_bytes: 82_536_565,
+        artifact_sha256: None,
+        startup_optional: false,
     },
     ModelPin {
         name: "opus-mt-en-es",
         repo: "CristianRojaas/opus-mt-en-es-ct2-int8",
         revision: "452971fec59e5a4093f8630e55022909dc5beceb",
         approx_bytes: 82_536_565,
+        artifact_sha256: None,
+        startup_optional: false,
     },
     // STT Parakeet TDT 0.6B v3 int8 (export istupakov/onnx-asr; 4 artefactos
     // canónicos — el repo upstream completo pesa decenas de GB)
@@ -247,6 +269,19 @@ pub const MODEL_REVISIONS: &[ModelPin] = &[
         repo: "istupakov/parakeet-tdt-0.6b-v3-onnx",
         revision: "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
         approx_bytes: 670_619_706,
+        artifact_sha256: None,
+        startup_optional: false,
+    },
+    // Limpieza DPDFNet 48 kHz HR (8 bloques, Apache-2.0). La revisión es el
+    // commit que publicó el ONNX; el SHA256 es el hash LFS de ese artefacto en
+    // la revisión, comprobado contra el archivo de `Denoise/src/models.rs`.
+    ModelPin {
+        name: DPDFNET_MODEL,
+        repo: "Ceva-IP/DPDFNet",
+        revision: "dd6818d00f50c836fed43a6243ebe49116de5964",
+        approx_bytes: 14_857_107,
+        artifact_sha256: Some("7b3afbb260a08fe9af3d16e3bda992971be1e7e951d1dee7c2d235f5c43f5631"),
+        startup_optional: true,
     },
     // Modelo Base Qwen3-TTS 0.6B para clonado de voz (speaker encoder) — snapshot
     // completo. Repo público Qwen/Qwen3-TTS-12Hz-0.6B-Base verificado por dry-run:
@@ -257,6 +292,8 @@ pub const MODEL_REVISIONS: &[ModelPin] = &[
         repo: "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         revision: "5d83992436eae1d760afd27aff78a71d676296fc",
         approx_bytes: 2_516_106_051,
+        artifact_sha256: None,
+        startup_optional: false,
     },
 ];
 
@@ -353,6 +390,9 @@ pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[
             "vocab.txt",
         ],
     ),
+    // Un único grafo: el patrón y el resolvedor de inferencia comparten la
+    // constante, de modo que no puede haber dos rutas para el mismo artefacto.
+    (DPDFNET_MODEL, &[DPDFNET_MODEL_FILE]),
     (
         "opus-mt-es-en",
         &[

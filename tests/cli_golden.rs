@@ -1216,7 +1216,11 @@ fn seed_pinned_models(models_root: &std::path::Path, names: &[&str]) {
             .map(|(_, patterns)| patterns.to_vec())
             .unwrap_or_else(|| vec!["config.json"]);
         for file in files {
-            std::fs::write(snapshot.join(file), b"marker").expect("sembrar fichero");
+            let path = snapshot.join(file);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("crear subdirectorio del pin");
+            }
+            std::fs::write(path, b"marker").expect("sembrar fichero");
         }
     }
 }
