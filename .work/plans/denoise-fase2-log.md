@@ -160,8 +160,8 @@ tamaño de la referencia.
 contrato existente lo ejerce con `opus-mt-es-en`, y el camino de provisión es el
 mismo); STT y DPDFNet infiriendo a la vez en un proceso (pasos 8 y 10).
 
-**Estado del árbol:** cambios del paso 7 commiteados en `5989ede7`; cambios del
-paso 8-audio se commitean a continuación en un tramo separado.
+**Estado del árbol:** cambios del paso 8-audio commiteados en `f9817021`; el
+paso 7 sigue en `5989ede7`.
 
 ## 7. Paso 8 - Remuestreo antialias de los flujos internos
 
