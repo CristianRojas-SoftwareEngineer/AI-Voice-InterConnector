@@ -1,7 +1,7 @@
 //! Módulo `errors.rs` — enum `E_*` + `exit_code()`, testeable puro sin I/O.
 //! Cada variante nombra la clase de fallo y fija su código de salida: 2 para
-//! entrada, destino o ausencia de audio; 1 para ffmpeg, modelo o E/S; 3 para
-//! cancelación; 0 solo cuando no hubo fallo.
+//! entrada, destino o ausencia de audio; 1 para ffmpeg, modelo, runtime ONNX o
+//! E/S; 3 para cancelación; 0 solo cuando no hubo fallo.
 
 use thiserror::Error;
 
@@ -17,6 +17,8 @@ pub enum E {
     EFfmpegNotFound(String),
     #[error("Modelo faltante: {0}")]
     EModelMissing(String),
+    #[error("{0}")]
+    EOnnxRuntimeUnavailable(String),
     #[error("ffmpeg falló: {0}")]
     EFfmpegFailed(String),
     #[error("Error de E/S: {0}")]
@@ -29,12 +31,16 @@ impl E {
     /// Código de salida asociado al error.
     /// ECancelled → 3
     /// EInvalidInput / EOutputExists / ENoAudio → 2
-    /// EFfmpegNotFound / EModelMissing / EFfmpegFailed / EIo → 1
+    /// EFfmpegNotFound / EModelMissing / EOnnxRuntimeUnavailable / EFfmpegFailed / EIo → 1
     pub fn exit_code(&self) -> i32 {
         match self {
             E::ECancelled => 3,
             E::EInvalidInput(_) | E::EOutputExists(_) | E::ENoAudio => 2,
-            E::EFfmpegNotFound(_) | E::EModelMissing(_) | E::EFfmpegFailed(_) | E::EIo(_) => 1,
+            E::EFfmpegNotFound(_)
+            | E::EModelMissing(_)
+            | E::EOnnxRuntimeUnavailable(_)
+            | E::EFfmpegFailed(_)
+            | E::EIo(_) => 1,
         }
     }
 }

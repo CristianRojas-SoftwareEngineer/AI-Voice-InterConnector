@@ -43,7 +43,9 @@ anyhow = "1.0"
 # Features de workspace (todos off por defecto): encadenan los features nativos
 # de cada crate. `cargo test`/`cargo llvm-cov` corren lisos (sin C++); los builds
 # de distribución activan `full` para conservar STT + traducción.
-native-stt = ["avi-stt/native-stt", "avi-daemon/native-stt"]
+# `native-stt` arrastra también el módulo compartido de carga de ONNX Runtime
+# (`avi_shared::onnx_runtime`), que el chequeo `onnx_runtime` de `doctor` usa.
+native-stt = ["avi-stt/native-stt", "avi-daemon/native-stt", "avi-shared/native-ort"]
 native-translation = ["avi-translation/native-translation", "avi-daemon/native-translation"]
 full = ["native-stt", "native-translation"]
 

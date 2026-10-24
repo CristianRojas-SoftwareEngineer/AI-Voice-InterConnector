@@ -10,8 +10,11 @@
 //! canónicos del producto con sus revisiones de modelos, lectura de
 //! `packaging/pins.json` y el formateador de tamaños. Sin red ni TLS a
 //! propósito, de modo que `xtask` puede depender de él sin arrastrar el árbol
-//! de `hf-hub` que impide usar `avi-store` desde el tooling. Única excepción:
-//! el arranque de consola (`console`) usa la API del sistema solo en Windows.
+//! de `hf-hub` que impide usar `avi-store` desde el tooling. Excepciones a esa
+//! pureza, ambas acotadas: el arranque de consola (`console`) usa la API del
+//! sistema solo en Windows, y el módulo opcional `onnx_runtime` carga ONNX
+//! Runtime en ejecución (sin red ni enlace en build-time) solo cuando alguien
+//! activa su feature.
 
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
@@ -19,6 +22,8 @@ pub mod console;
 pub mod diag_trace;
 pub mod logs;
 pub mod manifest;
+#[cfg(feature = "native-ort")]
+pub mod onnx_runtime;
 pub mod owner;
 pub mod paths;
 pub mod pins;

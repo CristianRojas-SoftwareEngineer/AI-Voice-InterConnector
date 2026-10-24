@@ -30,6 +30,11 @@ clap = { version = "4", features = ["derive"] }
 # es quien debe resolver directorio a fichero y cargar la librería una sola vez
 # por proceso.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["std", "load-dynamic", "preload-dylibs"] }
+# Carga única de ONNX Runtime (`avi_shared::onnx_runtime`): la sesión DPDFNet la
+# invoca antes de `Session::builder()`, de modo que STT y DPDFNet comparten un
+# solo inicializador por proceso en vez de cada crate resolver la librería por
+# su cuenta.
+avi-shared = { path = "../avi-shared", features = ["native-ort"] }
 rustfft = "6"
 hound = "3"
 indicatif = "0.17"
