@@ -160,5 +160,58 @@ tamaño de la referencia.
 contrato existente lo ejerce con `opus-mt-es-en`, y el camino de provisión es el
 mismo); STT y DPDFNet infiriendo a la vez en un proceso (pasos 8 y 10).
 
-**Estado del árbol:** cambios del paso 7 sin commitear; el commit se crea a
-continuación.
+**Estado del árbol:** cambios del paso 7 commiteados en `5989ede7`; cambios del
+paso 8-audio se commitean a continuación en un tramo separado.
+
+## 7. Paso 8 - Remuestreo antialias de los flujos internos
+
+### 7.1 Decisión aplicada
+
+`avi_audio::resample_antialias` sustituye a la ruta específica de 24 kHz y
+generaliza la autoridad de conversión PCM interna a 16, 24 y 48 kHz. La usan la
+carga WAV→16 kHz de STT, la referencia WAV→24 kHz del clonado y el
+post-procesado de captura de micrófono; la reproducción por dispositivo
+conserva su interpolación lineal porque no alimenta STT ni clonado y cambiar su
+contrato de latencia exige una medición aparte.
+
+Propiedades conservadas por las pruebas: longitud exacta
+`round(muestras × destino / origen)`, retardo entero del filtro FFT
+compensado con un residuo submuestra, identidad cuando origen y destino
+coinciden, y rechazo explícito de ratios no construibles (sin degradar a
+lineal).
+
+### 7.2 Verificación ejecutada
+
+Entorno: Windows x64; `ort-bundle/onnxruntime.dll` 1.28.0; Parakeet v3
+provisionado; FFmpeg 9.0.1 en `PATH` para la comprobación externa.
+
+| Comando / prueba | Resultado |
+|---|---|
+| `cargo test -p avi-audio` | V 33 passed, 0 failed; incluye longitud exacta en 9 combinaciones, retardo en 16/24/48, identidad y aliasing |
+| `cargo test -p avi-stt` | V 0 tests (el crate no declara unitarios; el contrato se ejerce desde la CLI) |
+| `cargo test -p avi-daemon` | V 50 + 20 (6 ignored), 0 failed |
+| STT con `voz_noisy.wav` (48→16 nuevo) | V «Bien, me envió correos electrónicos recientemente.» (idéntico al lineal anterior) |
+| STT con `voz_clean.wav` (48→16 nuevo) | V «Bien me envió correos electrónicos recientemente» (idéntico) |
+| STT con 7 clips limpios del EvalSet | V 6 transcripciones idénticas al lineal; `car_snr0` gana puntuación final; `train_snr5` deja de alucinar «me gustaría escuchar» y conserva el resto |
+| `voz_3s_48k.wav` | ! el antialias omite «me»; FFmpeg `swr` a 16 kHz reproduce la misma omisión, así que procede de la señal bandlimited y no de la implementación |
+| Latencia STT (frío, proceso local) | ~3,3-5,4 s dominada por la carga del modelo; sin señal de regresión atribuible al remuestreo |
+
+La comparación con el camino lineal se hizo generando WAV de 16 kHz con
+interpolación lineal en un temporal externo al repositorio y transcribiéndolos
+por la ruta identidad; no se añadieron fixtures ni artefactos.
+
+### 7.3 Puerta del paso 8 (audio)
+
+**Cubierta:** todas las solicitudes WAV y de micrófono que alimentan STT o
+clonado pasan por la misma autoridad antialias; la longitud y el retardo se
+conservan, el aliasing se atenúa y las transcripciones del corpus no empeoran
+de forma atribuible al cambio.
+
+**No verificado todavía:** el tramo 16→48→16 con denoise activado (paso 10);
+la reproducción por dispositivo sigue con interpolación lineal por contrato
+propio.
+
+**Pendiente de ffmpeg:** por decisión del usuario, la localización, errores,
+licencia y empaquetado de FFmpeg se cierran en el paso 9 (Fase 3); el paso 8 no
+añade `pins.json` ni bundle. La puerta de Fase 2 no se declara completa hasta
+entonces.
