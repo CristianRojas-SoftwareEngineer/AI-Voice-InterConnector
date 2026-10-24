@@ -48,3 +48,4 @@ vendor/qwen3-tts/.engine-cachekey
 ort-bundle/
 # Informe NUnit que Pester escribe en el directorio actual con `-CI`
 testResults.xml
+.work/release-and-E2E.md
