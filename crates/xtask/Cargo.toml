@@ -30,6 +30,7 @@ avi-core = { path = "../avi-core" }
 # (`xtask deps`): librerías importadas, versiones de símbolos y versión mínima
 # de macOS, igual en local que en la CI. Solo lectura, sin escritura de objetos.
 object = { version = "0.40", default-features = false, features = ["read_core", "elf", "macho", "pe", "std"] }
+lzma-rs = "0.3"
 
 [dev-dependencies]
 # Envejecer un directorio para probar el discriminante de antigüedad de la

@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)]
+
 //! Test E2E `#[ignore]` — pipeline completo sobre un archivo de audio real.
 //!
 //! Requiere `ffmpeg 6+` y el modelo DPDFNet provisionado por `setup`.
@@ -6,15 +8,16 @@
 use denoise::ffmpeg_io::{find_ffmpeg, probe, verify_output_lightweight, StreamKind};
 use denoise::models::AviModelsProvider;
 use denoise::pipeline::{clean_file, PipelineParams, ProcessStatus};
+use denoise::preset::AudioBitrate;
 use hound::WavReader;
 use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
 
 #[test]
-#[ignore]
+#[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
 fn test_audio_wav_pipeline_e2e() {
-    let ffmpeg = find_ffmpeg(None).expect("ffmpeg 6+ debe estar instalado");
+    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
     let input = Path::new("tests/data/voz_noisy.wav");
     assert!(
         input.exists(),
@@ -36,7 +39,7 @@ fn test_audio_wav_pipeline_e2e() {
         ffmpeg: &ffmpeg,
         input,
         output: &output,
-        audio_bitrate: 192,
+        audio_bitrate: AudioBitrate::Legacy,
         dry_blend: 0.0,
         pause_gate_db: -25.0,
         highpass: false,
@@ -91,8 +94,9 @@ fn test_audio_wav_pipeline_e2e() {
         .expect("Leer muestras PCM16 de la salida");
     assert!(!samples.is_empty(), "La salida no puede tener 0 muestras");
 
-    let verified = verify_output_lightweight(&ffmpeg, &output, probe_in.duration, StreamKind::Audio)
-        .expect("Verificación ligera de audio");
+    let verified =
+        verify_output_lightweight(&ffmpeg, &output, probe_in.duration, StreamKind::Audio)
+            .expect("Verificación ligera de audio");
     assert!(
         verified,
         "La salida de audio debe pasar la verificación ligera"

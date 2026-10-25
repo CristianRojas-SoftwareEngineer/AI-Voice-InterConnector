@@ -11,5 +11,11 @@ de la MPL-2.0 con el aviso de copyright; no elimines ni alteres esos avisos
 - Licencia: MPL-2.0 — <https://mozilla.org/MPL/2.0/>
 - Los avisos de copyright y licencias de las dependencias redistribuidas
   figuran en `THIRD-PARTY-LICENSES.md`.
+- FFmpeg 9.0.2 se distribuye como ejecutable independiente (la aplicación lo
+  invoca como proceso, no lo enlaza) bajo GPL-3.0-or-later. Su código fuente y
+  los scripts de cada build están en <https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz>,
+  <https://github.com/BtbN/FFmpeg-Builds>, <https://www.gyan.dev/ffmpeg/builds/>
+  y <https://ffmpeg.martin-riedl.de/>; los detalles y la oferta de fuentes
+  figuran en `SOURCE-OFFER.md` y `THIRD-PARTY-LICENSES.md`.
 - Los pesos de los modelos no se empaquetan en el binario y conservan sus
   propias licencias (ver `THIRD-PARTY-LICENSES.md`).

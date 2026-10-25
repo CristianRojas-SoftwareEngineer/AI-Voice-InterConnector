@@ -7,6 +7,13 @@
     "aarch64-unknown-linux-gnu": "e15ff8b5d85afe6c144d97c6fd432254bf76a219daaf17658087d6ecb3e8f0bb",
     "aarch64-apple-darwin": "1268b359718099bde2cedb55787f182a130067bc4f31e8c88478c445b850d3d8"
   },
+  "ffmpeg": "9.0.2",
+  "ffmpeg_sha256": {
+    "x86_64-pc-windows-msvc": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+    "x86_64-unknown-linux-gnu": "ddffcf6e3d537dd9e0039f0635261be40dd9bfdafb2ea85970173e928e024e50",
+    "aarch64-unknown-linux-gnu": "710ac178fffa266d6b197a9e3cca4d2c62f35bed70d5cf99762d40aa8a5791f9",
+    "aarch64-apple-darwin": "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924"
+  },
   "sccache": "0.8.2",
   "msys2_base": "2026-06-11",
   "msys2_gcc": "16.2.0",

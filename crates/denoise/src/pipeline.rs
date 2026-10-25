@@ -3,9 +3,11 @@
 use crate::df::denoise_wav_with_params;
 use crate::errors::E;
 use crate::ffmpeg_io::{
-    egress_file, extract_audio48k, probe, verify_output_lightweight, StreamKind,
+    egress_file, extract_audio48k, probe, resolve_audio_bitrate, verify_output_lightweight,
+    StreamKind,
 };
 use crate::models::ModelsProvider;
+use crate::preset::AudioBitrate;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +25,7 @@ pub struct PipelineParams<'a> {
     pub ffmpeg: &'a Path,
     pub input: &'a Path,
     pub output: &'a Path,
-    pub audio_bitrate: u32,
+    pub audio_bitrate: AudioBitrate,
     pub dry_blend: f32,
     pub pause_gate_db: f64,
     pub highpass: bool,
@@ -117,6 +119,14 @@ where
     }
 
     progress_cb(0, "iniciando");
+
+    // El bitrate se valida contra el códec de salida antes de ejecutar ffmpeg.
+    let output_ext = params
+        .output
+        .extension()
+        .map(|f| f.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    resolve_audio_bitrate(&output_ext, params.audio_bitrate)?;
 
     // Pre-chequeo: probe del contenedor
     let probe_res = probe(params.ffmpeg, params.input)?;

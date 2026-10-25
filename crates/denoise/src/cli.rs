@@ -1,9 +1,8 @@
 //! Módulo `cli.rs` — parseo clap, expansión de entradas, resolución de salidas y reporte.
 
 use crate::errors::E;
-use crate::ffmpeg_io::{find_ffmpeg, verify_ffmpeg};
-use crate::preset::{EgressParams, Preset, DEFAULT_PARAMS};
-use clap::Parser;
+use crate::ffmpeg_io::{resolve_audio_bitrate, verify_ffmpeg};
+use crate::preset::{AudioBitrate, EgressParams, Preset, DEFAULT_PARAMS};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::io::Write;
@@ -17,14 +16,7 @@ pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "mkv", "webm", "avi"];
 /// Extensiones de audio soportadas (case-insensitive).
 pub const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "m4a", "aac", "flac", "ogg", "opus"];
 
-#[derive(Parser, Debug, Clone)]
-#[command(
-    name = "denoise",
-    version = env!("CARGO_PKG_VERSION"),
- about = "CLI autocontenido denoise v1 — elimina ruido de audio y video con DPDFNet ONNX",
-    override_usage = "denoise INPUT... [--output-name NAME] [--output-dir DIR] [--prefix STR] [--suffix STR]\n  [--recursive] [--overwrite | --skip-existing]\n  [--audio-bitrate KBPS] [--ffmpeg-path PATH]\n  [--dry-run] [--json] [--verbose] [--version]",
-    disable_version_flag = true
-)]
+#[derive(clap::Args, Debug, Clone)]
 pub struct Cli {
     /// Rutas de entrada (archivos o directorios)
     #[arg(required_unless_present = "version", num_args = 1..)]
@@ -64,7 +56,7 @@ pub struct Cli {
     #[arg(long = "preset", value_enum)]
     pub preset: Option<Preset>,
 
-    /// Bitrate del audio de salida en kbps (64-320, defecto: 192); AAC en video, códec con pérdida en audio
+    /// Bitrate del audio de salida en kbps (64-320); si se omite, el preset decide por códec y los formatos sin pérdida lo ignoran
     #[arg(long = "audio-bitrate")]
     pub audio_bitrate: Option<u32>,
 
@@ -92,16 +84,12 @@ pub struct Cli {
     #[arg(long = "stereo")]
     pub stereo: bool,
 
-    /// Ruta explícita al binario de ffmpeg
-    #[arg(long = "ffmpeg-path")]
-    pub ffmpeg_path: Option<PathBuf>,
-
     /// Simular procesamiento sin modificar disco ni ejecutar IA
     #[arg(long = "dry-run")]
     pub dry_run: bool,
 
-    /// Formato JSON Lines (JSONL) para scripting
-    #[arg(long = "json")]
+    /// Emitir JSON Lines (JSONL) para scripting; en AVI lo activa el `--json` global
+    #[arg(skip)]
     pub json: bool,
 
     /// Salida detallada de depuración a stderr
@@ -593,31 +581,44 @@ pub fn print_version(ffmpeg_version: Option<&str>) {
     println!("denoise {} + modelo DPDFNet + {}", pkg_ver, ff_str);
 }
 
-/// Punto de entrada principal CLI.
-pub fn run() -> anyhow::Result<()> {
-    let cli = Cli::parse();
-
-    // Imprimir versión según RF-10 si se pasa --version o -V
+/// Ejecuta la CLI de archivos y devuelve el código de salida. El llamador
+/// decide cómo resolver ffmpeg; el subcomando de AVI solo usa el ejecutable
+/// integrado. `studio_default` activa la receta `studio` cuando no se pasa
+/// `--preset` (contrato del subcomando AVI); `cancel_flag` conecta la
+/// cancelación con el handler del llamador, que la CLI raíz ya instaló y la
+/// biblioteca no debe duplicar.
+pub fn execute<F>(
+    cli: Cli,
+    json_mode: bool,
+    studio_default: bool,
+    resolve_ffmpeg: F,
+    cancel_flag: Option<Arc<AtomicBool>>,
+) -> i32
+where
+    F: Fn() -> Result<PathBuf, E>,
+{
+    // Imprimir versión según RF-10 si se pasa --version o -V.
     if cli.version {
-        let ff_ver = find_ffmpeg(cli.ffmpeg_path.as_deref())
+        let ff_ver = resolve_ffmpeg()
             .ok()
             .and_then(|bin| verify_ffmpeg(&bin).ok());
         print_version(ff_ver.as_deref());
-        std::process::exit(0);
+        return 0;
     }
 
     // Resolver parámetros de empaquetado/post-procesamiento con precedencia:
     // defaults → preset → flags individuales.
-    let egress = resolve_egress_params(&cli);
+    let egress = resolve_egress_params_with(&cli, studio_default);
 
-    // Validar bitrate estructuralmente (64-320)
-    if !(64..=320).contains(&egress.audio_bitrate) {
-        let err = E::EInvalidInput(format!(
-            "El bitrate de audio {} kbps está fuera del rango permitido (64-320)",
-            egress.audio_bitrate
-        ));
-        eprintln!("Error: {}", err);
-        std::process::exit(err.exit_code());
+    // Validar bitrate explícito estructuralmente (64-320)
+    if let AudioBitrate::Explicit(bitrate) = egress.audio_bitrate {
+        if !(64..=320).contains(&bitrate) {
+            let err = E::EInvalidInput(format!(
+                "El bitrate de audio {bitrate} kbps está fuera del rango permitido (64-320)"
+            ));
+            eprintln!("Error: {}", err);
+            return err.exit_code();
+        }
     }
 
     // Validar dry-blend (0.0 a 1.0)
@@ -627,7 +628,7 @@ pub fn run() -> anyhow::Result<()> {
             egress.dry_blend
         ));
         eprintln!("Error: {}", err);
-        std::process::exit(err.exit_code());
+        return err.exit_code();
     }
 
     // Validar pause-gate-db (-40.0 a 0.0)
@@ -637,7 +638,7 @@ pub fn run() -> anyhow::Result<()> {
             egress.pause_gate_db
         ));
         eprintln!("Error: {}", err);
-        std::process::exit(err.exit_code());
+        return err.exit_code();
     }
 
     // Validar target-lufs (-36.0 a -12.0) si está presente.
@@ -648,7 +649,7 @@ pub fn run() -> anyhow::Result<()> {
                 lufs
             ));
             eprintln!("Error: {}", err);
-            std::process::exit(err.exit_code());
+            return err.exit_code();
         }
     }
 
@@ -666,7 +667,7 @@ pub fn run() -> anyhow::Result<()> {
         Ok(exp) => exp,
         Err(e) => {
             eprintln!("Error: {}", e);
-            std::process::exit(e.exit_code());
+            return e.exit_code();
         }
     };
 
@@ -684,42 +685,47 @@ pub fn run() -> anyhow::Result<()> {
         Ok(res) => res,
         Err(e) => {
             eprintln!("Error: {}", e);
-            std::process::exit(e.exit_code());
+            return e.exit_code();
         }
     };
 
-    // Dry run
-    if cli.dry_run {
-        if let Err(e) = run_dry_run(&resolved, cli.overwrite, cli.skip_existing, cli.json) {
+    // El bitrate se valida contra el códec de cada salida antes del dry-run y
+    // de ejecutar ffmpeg; un override incompatible no se ajusta en silencio.
+    for item in &resolved {
+        let ext = item
+            .output
+            .extension()
+            .map(|f| f.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        if let Err(e) = resolve_audio_bitrate(&ext, egress.audio_bitrate) {
             eprintln!("Error: {}", e);
-            std::process::exit(e.exit_code());
+            return e.exit_code();
         }
-        std::process::exit(0);
     }
 
-    // Configurar signal handler (Ctrl+C)
-    let cancel_flag = Arc::new(AtomicBool::new(false));
-    let flag_clone = cancel_flag.clone();
-    let _ = ctrlc::set_handler(move || {
-        if flag_clone.load(Ordering::SeqCst) {
-            std::process::exit(3);
-        }
-        flag_clone.store(true, Ordering::SeqCst);
-        eprintln!("\n[aviso] Cancelación solicitada (Ctrl+C), limpiando temporales...");
-    });
+    // Dry run
+    if cli.dry_run {
+        return match run_dry_run(&resolved, cli.overwrite, cli.skip_existing, json_mode) {
+            Ok(()) => 0,
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                e.exit_code()
+            }
+        };
+    }
 
     // Localizar y verificar ffmpeg
-    let ffmpeg_bin = match find_ffmpeg(cli.ffmpeg_path.as_deref()) {
+    let ffmpeg_bin = match resolve_ffmpeg() {
         Ok(bin) => bin,
         Err(e) => {
             eprintln!("Error: {}", e);
-            std::process::exit(e.exit_code());
+            return e.exit_code();
         }
     };
 
     if let Err(e) = verify_ffmpeg(&ffmpeg_bin) {
         eprintln!("Error: {}", e);
-        std::process::exit(e.exit_code());
+        return e.exit_code();
     }
 
     let models_provider = crate::models::AviModelsProvider;
@@ -735,21 +741,27 @@ pub fn run() -> anyhow::Result<()> {
         target_lufs: egress.target_lufs,
         overwrite: cli.overwrite,
         skip_existing: cli.skip_existing,
-        json_mode: cli.json,
+        json_mode,
         verbose: cli.verbose,
-        cancel_flag: Some(cancel_flag),
+        cancel_flag,
     };
 
-    let exit_code = process_batch(&resolved, &params);
-    std::process::exit(exit_code);
+    process_batch(&resolved, &params)
+}
+
+/// Resuelve los parámetros con el comportamiento del origen (sin preset =
+/// defaults originales).
+pub fn resolve_egress_params(cli: &Cli) -> EgressParams {
+    resolve_egress_params_with(cli, false)
 }
 
 /// Resuelve los parámetros de empaquetado y post-procesamiento (egress)
 /// con la precedencia: **defaults → preset → flags individuales**.
 ///
-/// Cuando `--preset` está ausente y no se pasan flags individuales,
-/// se devuelven los valores por defecto canónicos (`DEFAULT_PARAMS`).
-pub fn resolve_egress_params(cli: &Cli) -> EgressParams {
+/// Con `studio_default`, la ausencia de `--preset` equivale a `studio`, que es
+/// el contrato del subcomando de archivos de AVI. `--preset default` sigue
+/// recuperando los valores originales.
+pub fn resolve_egress_params_with(cli: &Cli, studio_default: bool) -> EgressParams {
     // 1. Valores por defecto.
     let mut p = EgressParams {
         audio_bitrate: DEFAULT_PARAMS.audio_bitrate,
@@ -760,8 +772,9 @@ pub fn resolve_egress_params(cli: &Cli) -> EgressParams {
         stereo: DEFAULT_PARAMS.stereo,
     };
 
-    // 2. Valores del preset (si --preset se pasa).
-    if let Some(preset) = cli.preset {
+    // 2. Valores del preset (explícito o `studio` por omisión en AVI).
+    let preset = cli.preset.or(studio_default.then_some(Preset::Studio));
+    if let Some(preset) = preset {
         let pp = preset.egress_params();
         p.audio_bitrate = pp.audio_bitrate;
         p.highpass = pp.highpass;
@@ -775,7 +788,7 @@ pub fn resolve_egress_params(cli: &Cli) -> EgressParams {
     // Los booleans se combinan con OR ya que no hay forma limpia de anular
     // un booleano del preset en v1 (limitación documentada).
     if let Some(v) = cli.audio_bitrate {
-        p.audio_bitrate = v;
+        p.audio_bitrate = AudioBitrate::Explicit(v);
     }
     if let Some(v) = cli.dry_blend {
         p.dry_blend = v;
@@ -803,7 +816,7 @@ pub fn resolve_egress_params(cli: &Cli) -> EgressParams {
 pub struct BatchParams<'a> {
     pub ffmpeg: &'a Path,
     pub models_provider: &'a dyn crate::models::ModelsProvider,
-    pub audio_bitrate: u32,
+    pub audio_bitrate: AudioBitrate,
     pub dry_blend: f32,
     pub pause_gate_db: f64,
     pub highpass: bool,

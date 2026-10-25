@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)]
+
 //! Test suite para CLI y nombrado de salidas.
 //!
 //! Todos estos tests son puros (sin ffmpeg ni red ni modelo ONNX).

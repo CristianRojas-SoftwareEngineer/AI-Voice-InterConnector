@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)]
+
 //! Test rápido de egresión de audio (sin modelo ONNX).
 //!
 //! Verifica la matriz de códecs de `encode_audio` y la verificación ligera
@@ -5,6 +7,7 @@
 //! matriz (`libmp3lame`, `aac`, `flac`, `libvorbis`, `libopus`).
 
 use denoise::ffmpeg_io::{encode_audio, find_ffmpeg, probe, verify_output_lightweight, StreamKind};
+use denoise::preset::AudioBitrate;
 use hound::{WavSpec, WavWriter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -41,6 +44,25 @@ fn audio_codec_tag(ffmpeg: &Path, path: &Path) -> String {
         .unwrap_or_default()
 }
 
+fn audio_sample_rate(ffmpeg: &Path, path: &Path) -> u32 {
+    let output = Command::new(ffmpeg)
+        .arg("-hide_banner")
+        .arg("-i")
+        .arg(path)
+        .output()
+        .expect("Ejecutar ffmpeg para leer la tasa");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    stderr
+        .lines()
+        .find(|line| line.contains("Audio:"))
+        .and_then(|line| {
+            line.split_once(" Hz,")
+                .and_then(|(before, _)| before.split(|c: char| !c.is_ascii_digit()).next_back())
+        })
+        .and_then(|rate| rate.parse().ok())
+        .unwrap_or(0)
+}
+
 fn assert_decodable(ffmpeg: &Path, path: &Path) {
     let status = Command::new(ffmpeg)
         .arg("-v")
@@ -61,7 +83,7 @@ fn assert_decodable(ffmpeg: &Path, path: &Path) {
 
 #[test]
 fn test_encode_audio_codec_matrix() {
-    let ffmpeg = find_ffmpeg(None).expect("ffmpeg 6+ debe estar instalado");
+    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
     let tmp_dir = std::env::temp_dir().join("denoise_audio_egress");
     let _ = fs::remove_dir_all(&tmp_dir);
     fs::create_dir_all(&tmp_dir).expect("Crear directorio temporal del test");
@@ -82,8 +104,15 @@ fn test_encode_audio_codec_matrix() {
 
     for (ext, expected_codec) in cases {
         let out_part: PathBuf = tmp_dir.join(format!("audio.part.{}", ext));
-        encode_audio(&ffmpeg, &clean_wav, &clean_wav, &out_part, 128, None)
-            .unwrap_or_else(|e| panic!("encode_audio falló para .{}: {:?}", ext, e));
+        encode_audio(
+            &ffmpeg,
+            &clean_wav,
+            &clean_wav,
+            &out_part,
+            AudioBitrate::Legacy,
+            None,
+        )
+        .unwrap_or_else(|e| panic!("encode_audio falló para .{}: {:?}", ext, e));
 
         let meta = fs::metadata(&out_part).expect("La salida de audio debe existir");
         assert!(meta.len() > 0, "La salida .{} está vacía", ext);
@@ -116,6 +145,41 @@ fn test_encode_audio_codec_matrix() {
             "La salida .{} no pasó la verificación ligera",
             ext
         );
+    }
+
+    let _ = fs::remove_dir_all(&tmp_dir);
+}
+
+#[test]
+fn test_studio_loudnorm_forces_48k_lossy() {
+    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
+    let tmp_dir = std::env::temp_dir().join("denoise_audio_egress_studio");
+    let _ = fs::remove_dir_all(&tmp_dir);
+    fs::create_dir_all(&tmp_dir).expect("Crear directorio temporal del test");
+
+    let clean_wav = tmp_dir.join("clean.wav");
+    write_clean_wav(&clean_wav, 1);
+
+    // `.ogg` falla si loudnorm deja la señal a 192 kHz y AAC pierde bitrate
+    // efectivo a 96 kHz; ambos deben salir normalizados a 48 kHz.
+    for ext in ["m4a", "ogg"] {
+        let out_part = tmp_dir.join(format!("studio.part.{ext}"));
+        encode_audio(
+            &ffmpeg,
+            &clean_wav,
+            &clean_wav,
+            &out_part,
+            AudioBitrate::Auto,
+            Some(-16.0),
+        )
+        .unwrap_or_else(|e| panic!("encode_audio falló para .{}: {:?}", ext, e));
+
+        assert_eq!(
+            audio_sample_rate(&ffmpeg, &out_part),
+            48_000,
+            "La salida .{ext} normalizada debe quedar a 48 kHz"
+        );
+        assert_decodable(&ffmpeg, &out_part);
     }
 
     let _ = fs::remove_dir_all(&tmp_dir);

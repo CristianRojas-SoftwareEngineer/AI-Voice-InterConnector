@@ -81,6 +81,24 @@ Las atribuciones de las dependencias redistribuidas están en
 empaquetan en el binario: se descargan con `setup` y conservan sus licencias
 (Qwen3-TTS MIT/Apache-2.0, opus-mt CC-BY-4.0).
 
+El paquete incluye **FFmpeg 9.0.2** como ejecutable independiente: la aplicación
+lo invoca como proceso y no lo enlaza con el binario principal. Los builds
+distribuidos son GPL-3.0-or-later. Su código fuente correspondiente está
+disponible en:
+
+- **FFmpeg 9.0.2 (fuente upstream):**
+  <https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz>
+- **Builds Linux (BtbN) y scripts de compilación:**
+  <https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-24-13-02>
+  (build `n9.0.2-35-g9a9b70bb8c`)
+- **Build Windows (Gyan):** <https://www.gyan.dev/ffmpeg/builds/>
+- **Build macOS (Martin Riedl):** <https://ffmpeg.martin-riedl.de/>
+
+Si necesitas el árbol de fuentes exacto de un build, incluidas las bibliotecas
+que enlaza, solicítalo abriendo un issue en el repositorio o contactando al
+mantenedor. La oferta se mantiene durante al menos tres años desde la entrega
+del binario.
+
 Si recibiste este binario sin acceso a las URLs anteriores, puedes solicitar
 el código fuente abriendo un issue en el repositorio o contactando al
 mantenedor del proyecto, Cristián Rojas Arredondo.
