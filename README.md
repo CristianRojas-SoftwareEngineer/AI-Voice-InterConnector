@@ -6,6 +6,7 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 - **Clonación de voz**: usa tu propia voz como referencia con ~10 s de audio.
 - **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés.
 - **Transcripción**: voz a texto con Parakeet TDT 0.6B v3.
+- **Limpieza de archivos**: `speech denoise` procesa audio y limpia la pista de audio de vídeo sin alterar su imagen; usa el preset `studio` por omisión.
 - **Traducción**: es↔en con opus-mt.
 - **Daemon opcional**: mantiene los motores calientes entre invocaciones.
 - **100% offline** tras descargar los modelos con `setup`.
@@ -35,6 +36,7 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 - [Primeros pasos](#primeros-pasos)
   - [Síntesis](#síntesis)
   - [Clonación de voz](#clonación-de-voz)
+- [Limpieza de archivos de audio y vídeo](#limpieza-de-archivos-de-audio-y-vídeo)
   - [Invocación desde cualquier lenguaje](#invocación-desde-cualquier-lenguaje)
 - [Actualizar y desinstalar](#actualizar-y-desinstalar)
 - [Arquitectura](#arquitectura)
@@ -260,6 +262,17 @@ ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo
 ```
 
 Sin `--voice` se usa la voz de fábrica `default`, que viene embebida en el binario. `speech say` reproduce sin guardar; `speech synthesize` guarda el WAV en el almacén `(voz, etiqueta)` y muestra su ruta; con `--json`, la ruta llega en el campo `audio_path`.
+
+### Limpieza de archivos de audio y vídeo
+
+El subcomando `speech denoise` limpia archivos de audio o la pista de audio de un vídeo; conserva la imagen del vídeo sin procesarla. Usa `studio` por omisión y permite seleccionar el perfil original con `--preset default`:
+
+```bash
+ai-voice-interconnector speech denoise entrevista.mp4
+ai-voice-interconnector speech denoise voz.wav --preset default --json
+```
+
+El modelo DPDFNet debe estar provisionado con `setup`. La opción global `--json` produce JSONL. Consulta las [opciones y contratos de `speech denoise`](docs/CLI/commands/SPEECH.md#speech-denoise) y el [diseño técnico](docs/DESIGN.md#limpieza-de-audio-y-vídeo-por-cli).
 
 ### Clonación de voz
 

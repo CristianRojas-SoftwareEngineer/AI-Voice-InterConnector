@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.36.2 — 2026-10-22](#0362--2026-10-22)
 - [0.36.1 — 2026-10-22](#0361--2026-10-22)
 - [0.36.0 — 2026-10-21](#0360--2026-10-21)
@@ -117,6 +118,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Añadido
+
+- Se incorpora `ai-voice-interconnector speech denoise` como ruta única local para limpiar archivos de audio y la pista de audio de vídeo, conservando la imagen. El comando usa `studio` por omisión, ofrece `--preset default` y JSONL, y requiere `native-denoise`, DPDFNet provisionado y FFmpeg integrado.
 
 ## [0.36.2] — 2026-10-22
 

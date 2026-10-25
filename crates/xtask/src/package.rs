@@ -711,9 +711,13 @@ fn locate_sources(root: &Path) -> Result<Sources> {
     Ok(Sources { binary, engine })
 }
 
-/// Humo del binario ya compilado: `version` y `voice list`, como el smoke de CI.
+/// Humo del binario ya compilado: versión, voces y contrato de `speech denoise`.
 fn smoke_binary(binary: &Path) -> Result<()> {
-    for args in [vec!["version"], vec!["voice", "list"]] {
+    for args in [
+        vec!["version"],
+        vec!["voice", "list"],
+        vec!["speech", "denoise", "--help"],
+    ] {
         let status = std::process::Command::new(binary)
             .args(&args)
             .status()
@@ -726,6 +730,17 @@ fn smoke_binary(binary: &Path) -> Result<()> {
                 status.code()
             );
         }
+    }
+    let status = std::process::Command::new(binary)
+        .arg("denoise")
+        .arg("--help")
+        .status()
+        .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {}: {e}", binary.display()))?;
+    if status.success() {
+        bail!(
+            "el humo falló: {} aceptó el comando raíz `denoise`",
+            binary.display()
+        );
     }
     Ok(())
 }
