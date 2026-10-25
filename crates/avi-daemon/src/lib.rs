@@ -20,8 +20,12 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+#[cfg(feature = "native-denoise")]
+mod denoise_adapter;
 pub mod registry;
 pub mod spawn;
+#[cfg(feature = "native-denoise")]
+use denoise_adapter::{DenoiseGate, GateBegin, DENOISE_QUEUE_TIMEOUT};
 /// Familia de los logs por arranque del daemon (`daemon_<pid>_<ms>.log`).
 pub const DAEMON_LOG_FAMILY: &str = "daemon";
 pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_death};
@@ -105,6 +109,10 @@ pub struct DaemonState {
     /// Registro en disco del daemon y de su residente: el daemon es el único
     /// escritor de `daemon.pid`. Se ancla en la raíz de datos vigente.
     pub registry: Arc<registry::DaemonRegistry>,
+    /// Admisión del preprocesamiento DPDFNet: una inferencia activa y a lo
+    /// sumo una solicitud esperando 30 s. Solo existe con `native-denoise`.
+    #[cfg(feature = "native-denoise")]
+    denoise_gate: Arc<DenoiseGate>,
 }
 
 #[derive(Debug)]
@@ -236,6 +244,8 @@ impl DaemonState {
             warm: std::sync::RwLock::new(WarmState::Warming),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             registry: engines.registry,
+            #[cfg(feature = "native-denoise")]
+            denoise_gate: DenoiseGate::new(),
         })
     }
 
@@ -908,6 +918,15 @@ async fn transcribe_handler(
             .into_response();
     }
 
+    let denoise = match optional_denoise(&payload) {
+        Ok(denoise) => denoise,
+        Err(e) => return input_error_response(e.reason, e.message),
+    };
+    #[cfg(not(feature = "native-denoise"))]
+    if denoise {
+        return denoise_unsupported_response();
+    }
+
     // Parakeet no necesita chunking VAD (no degrada con la duración de audio);
     // se transcribe de una sola pasada.
     let Some(engines) = state.inference_engines.as_ref() else {
@@ -915,6 +934,64 @@ async fn transcribe_handler(
             "status": "error", "reason": "daemon_error", "message": "El estado de contrato no puede transcribir."
         })))).into_response();
     };
+
+    #[cfg(feature = "native-denoise")]
+    let pcm = if denoise {
+        // Turno antes de convertir a 48 kHz y de reservar buffers grandes.
+        let permit = match state.denoise_gate.begin() {
+            GateBegin::Acquired(permit) => permit,
+            GateBegin::Waiting(waiter) => match waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await {
+                Ok(permit) => permit,
+                Err(_) => return denoise_busy_response(),
+            },
+            GateBegin::Busy => return denoise_busy_response(),
+        };
+        let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i16>> {
+            let dir = avi_process::scratch::tempdir("avi_daemon_stt_denoise_")?;
+            let models = denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
+            let cleaned = models
+                .denoise_pcm16_mono(
+                    &pcm,
+                    16_000,
+                    denoise::service::DenoiseUseCase::Stt,
+                    dir.path(),
+                )
+                .map_err(anyhow::Error::from)?;
+            drop(permit);
+            Ok(cleaned)
+        });
+        match work.await {
+            Ok(Ok(cleaned)) => cleaned,
+            Ok(Err(e)) => {
+                if let Some(e) = e.downcast_ref::<denoise::errors::E>() {
+                    return denoise_error_response(e);
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(with_sv(json!({
+                        "status": "error",
+                        "reason": "io_error",
+                        "message": e.to_string(),
+                    }))),
+                )
+                    .into_response();
+            }
+            Err(join_err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(with_sv(json!({
+                        "status": "error",
+                        "reason": "denoise_failed",
+                        "message": format!("El hilo de limpieza falló: {}", join_err),
+                    }))),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        pcm
+    };
+
     let result = engines.stt_engine.transcribe(&pcm);
     match result {
         Ok(text) => {
@@ -947,6 +1024,92 @@ impl InputError {
             reason: "usage_error",
             message,
         }
+    }
+}
+
+/// Campo opcional `denoise`: ausente equivale a `false`; cualquier valor que no
+/// sea booleano es error de entrada, nunca una conversión implícita.
+fn optional_denoise(body: &Value) -> Result<bool, InputError> {
+    match body.get("denoise") {
+        None => Ok(false),
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| InputError::usage("El campo 'denoise' debe ser booleano.".into())),
+    }
+}
+
+/// Respuesta de un build sin `native-denoise` ante `denoise: true`: no se omite
+/// la limpieza en silencio.
+fn denoise_unsupported_response() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(with_sv(json!({
+            "status": "error",
+            "reason": "denoise_unsupported",
+            "message": "Este binario se compiló sin soporte de limpieza de ruido (feature 'native-denoise').",
+        }))),
+    )
+        .into_response()
+}
+
+/// Respuesta de saturación de la admisión DPDFNet, sin iniciar DSP ni publicar
+/// resultado.
+fn denoise_busy_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(with_sv(json!({
+            "status": "error",
+            "reason": "denoise_busy",
+            "message": "La limpieza de ruido está ocupada; reintenta cuando termine la solicitud en curso.",
+        }))),
+    )
+        .into_response()
+}
+
+/// Traduce un error del motor DSP a `reason` y estado HTTP del contrato.
+#[cfg(feature = "native-denoise")]
+fn denoise_failure(e: &denoise::errors::E) -> (&'static str, StatusCode) {
+    match e {
+        denoise::errors::E::EModelMissing(_) => ("model_missing", StatusCode::NOT_FOUND),
+        denoise::errors::E::EInvalidInput(_) => ("invalid_audio", StatusCode::BAD_REQUEST),
+        denoise::errors::E::EIo(_) => ("io_error", StatusCode::INTERNAL_SERVER_ERROR),
+        _ => ("denoise_failed", StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[cfg(feature = "native-denoise")]
+fn denoise_error_response(e: &denoise::errors::E) -> Response {
+    let (reason, status) = denoise_failure(e);
+    (
+        status,
+        Json(with_sv(json!({
+            "status": "error",
+            "reason": reason,
+            "message": e.to_string(),
+        }))),
+    )
+        .into_response()
+}
+
+/// Clasifica un `anyhow::Error` procedente del hilo de clonado: si su mensaje
+/// coincide con un fallo de DPDFNet (modelo ausente, audio inv�lido, E/S) usa
+/// su `reason` propio; si envuelve un `avi_audio::WavLoadError`, lo traduce
+/// igual que en transcripci�n; en cualquier otro caso es `voice_clone_failed`.
+fn classify_denoise_or_wav_error(e: &anyhow::Error) -> &'static str {
+    let msg = e.to_string();
+    if msg.contains("Modelo faltante") || msg.contains("no está provisionado") {
+        return "model_missing";
+    }
+    if msg.contains("Entrada inválida") {
+        return "invalid_audio";
+    }
+    if msg.contains("Error de E/S") {
+        return "io_error";
+    }
+    match e.downcast_ref::<avi_audio::WavLoadError>() {
+        Some(avi_audio::WavLoadError::Invalid(_)) => "invalid_audio",
+        Some(avi_audio::WavLoadError::Io(_)) => "io_error",
+        _ => "voice_clone_failed",
     }
 }
 
@@ -1179,6 +1342,25 @@ async fn voices_clone_handler(
             }
         },
     };
+    // `denoise` es opcional (ausente = sin limpiar); si viene, debe ser booleano.
+    let denoise = match optional_denoise(&payload) {
+        Ok(denoise) => denoise,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "error": "usage_error",
+                    "reason": e.reason,
+                    "message": e.message,
+                }))),
+            )
+                .into_response();
+        }
+    };
+    #[cfg(not(feature = "native-denoise"))]
+    if denoise {
+        return denoise_unsupported_response();
+    }
     let voice_exists = match state.voice_store.exists(&name) {
         Ok(found) => found,
         Err(e) => {
@@ -1264,6 +1446,18 @@ async fn voices_clone_handler(
                 .into_response();
         }
     };
+    // Admisión DPDFNet antes de crear el WAV de referencia o cualquier buffer
+    // grande. Un turno libre pasa directo; el único esperador espera como
+    // máximo 30 s; el resto recibe 503 sin iniciar DSP.
+    #[cfg(feature = "native-denoise")]
+    let denoise_admission = if denoise {
+        match state.denoise_gate.begin() {
+            GateBegin::Busy => return denoise_busy_response(),
+            other => Some(other),
+        }
+    } else {
+        None
+    };
     // Directorio de trabajo con dueño: contiene el WAV de referencia y el
     // `.qvoice` parcial, y se borra al soltarse por cualquier camino de salida.
     // Cuelga del scratch del daemon, cuyo barrido recoge el residuo si el proceso muere.
@@ -1282,17 +1476,6 @@ async fn voices_clone_handler(
         }
     };
     let tmp_wav = work_dir.path().join("reference.wav");
-    if std::fs::write(&tmp_wav, &audio_bytes).is_err() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(with_sv(json!({
-                "error": "io_error",
-                "reason": "io_error",
-                "message": "No se pudo escribir el audio temporal.",
-            }))),
-        )
-            .into_response();
-    }
     let tmp_qvoice = work_dir.path().join("voice.qvoice");
     // Stream NDJSON: las validaciones baratas ya pasaron en JSON plano;
     // `started` inmediato antes del trabajo pesado, latidos cada ~500 ms y
@@ -1305,10 +1488,76 @@ async fn voices_clone_handler(
             json!({ "event": "started", "operation": "clonación", "name": name }),
         )
         .await;
+        #[cfg(feature = "native-denoise")]
+        let mut permit = match denoise_admission {
+            None => None,
+            Some(GateBegin::Acquired(permit)) => Some(permit),
+            Some(GateBegin::Waiting(waiter)) => {
+                let wait =
+                    tokio::spawn(async move { waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await });
+                match with_heartbeats(&tx, "denoise_queue", wait).await {
+                    None => return,
+                    Some(Ok(Ok(permit))) => Some(permit),
+                    Some(Ok(Err(_))) | Some(Err(_)) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "name": name,
+                                "reason": "denoise_busy",
+                                "message": "La limpieza de ruido está ocupada; reintenta cuando termine la solicitud en curso.",
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+            Some(GateBegin::Busy) => unreachable!("la saturación se respondió antes del stream"),
+        };
+        // El WAV de referencia se escribe solo con el turno tomado: la espera
+        // en cola no reserva audio ni temporales de 48 kHz.
+        if let Err(e) = std::fs::write(&tmp_wav, &audio_bytes) {
+            emit_ndjson(
+                &tx,
+                json!({
+                    "event": "error",
+                    "name": name,
+                    "reason": "io_error",
+                    "message": format!("No se pudo escribir el audio temporal: {}", e),
+                }),
+            )
+            .await;
+            return;
+        }
         let event_name = name.clone();
         let clone_qvoice = tmp_qvoice.clone();
         let clone_work = tokio::task::spawn_blocking(move || {
-            avi_tts::clone_voice(&base_model_dir, &tmp_wav, &clone_qvoice, &name)
+            #[cfg(feature = "native-denoise")]
+            let source = if let Some(permit) = permit.take() {
+                // Modelo resuelto y verificado antes de convertir: un fallo de
+                // modelo no deja audio sin limpiar ni lanza el clonado.
+                let clean = work_dir.path().join("reference_clean.wav");
+                let models =
+                    denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
+                models
+                    .denoise_wav_file(
+                        &tmp_wav,
+                        &clean,
+                        denoise::service::DenoiseUseCase::Clone,
+                        work_dir.path(),
+                    )
+                    .map_err(anyhow::Error::from)?;
+                // El turno cubre solo la inferencia DSP; el clonado TTS puede
+                // durar minutos y no debe bloquear la limpieza de otras rutas.
+                drop(permit);
+                clean
+            } else {
+                tmp_wav.clone()
+            };
+            #[cfg(not(feature = "native-denoise"))]
+            let source = tmp_wav.clone();
+            avi_tts::clone_voice(&base_model_dir, &source, &clone_qvoice, &name)
                 .map(|()| (work_dir, name))
         });
         // `_work_dir` mantiene vivo el directorio hasta el final de la tarea.
@@ -1320,12 +1569,10 @@ async fn voices_clone_handler(
             }
             Some(Ok(Ok(v))) => v,
             Some(Ok(Err(e))) => {
-                // Una referencia ilegible se clasifica igual que en transcripción.
-                let reason = match e.downcast_ref::<avi_audio::WavLoadError>() {
-                    Some(avi_audio::WavLoadError::Invalid(_)) => "invalid_audio",
-                    Some(avi_audio::WavLoadError::Io(_)) => "io_error",
-                    _ => "voice_clone_failed",
-                };
+                // Un fallo de DPDFNet (modelo ausente, audio inválido, E/S) se
+                // clasifica con su propio reason; una referencia ilegible se
+                // clasifica igual que en transcripción.
+                let reason = classify_denoise_or_wav_error(&e);
                 emit_ndjson(
                     &tx,
                     json!({
@@ -1507,7 +1754,17 @@ async fn dub_handler(
         Ok(fields) => fields,
         Err(e) => return input_error_response(e.reason, e.message),
     };
-    // Validaciones baratas ANTES del stream (JSON plano con los códigos de
+    // `denoise` es opcional (ausente = sin limpiar); si viene, debe ser booleano.
+    #[cfg(feature = "native-stt")]
+    let denoise = match optional_denoise(&payload) {
+        Ok(denoise) => denoise,
+        Err(e) => return input_error_response(e.reason, e.message),
+    };
+    #[cfg(all(feature = "native-stt", not(feature = "native-denoise")))]
+    if denoise {
+        return denoise_unsupported_response();
+    }
+    // Validaciones baratas ANTES del stream (JSON plano con los c�digos de
     // siempre; `started` solo se emite cuando el trabajo pesado va a arrancar).
     // Los chequeos por parámetros (par, CT2, feature, modelo, voz) corren antes
     // de transcribir: con varios fallos a la vez gana el más barato de detectar,
@@ -1617,8 +1874,102 @@ async fn dub_handler(
                 json!({ "event": "started", "operation": "doblaje", "voice": voice }),
             )
             .await;
-            // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
-            // sobre el audio completo).
+            // Limpieza de ruido DPDFNet (opt-in) antes de STT: toma de turno,
+            // conversi�n a 48 kHz, inferencia y vuelta a 16 kHz. El turno cubre
+            // solo la inferencia DSP; se suelta antes de transcribir.
+            #[cfg(feature = "native-denoise")]
+            let pcm = if denoise {
+                let permit = match state.denoise_gate.begin() {
+                    GateBegin::Acquired(permit) => permit,
+                    GateBegin::Waiting(waiter) => {
+                        match waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                emit_ndjson(
+                                &tx,
+                                json!({
+                                    "event": "error",
+                                    "reason": "denoise_busy",
+                                    "message": "La limpieza de ruido est� ocupada; reintenta cuando termine la solicitud en curso.",
+                                }),
+                            )
+                            .await;
+                                return;
+                            }
+                        }
+                    }
+                    GateBegin::Busy => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "denoise_busy",
+                                "message": "La limpieza de ruido est� ocupada; reintenta cuando termine la solicitud en curso.",
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i16>> {
+                    let dir = avi_process::scratch::tempdir("avi_daemon_dub_denoise_")?;
+                    let models =
+                        denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
+                    let cleaned = models
+                        .denoise_pcm16_mono(
+                            &pcm,
+                            16_000,
+                            denoise::service::DenoiseUseCase::Stt,
+                            dir.path(),
+                        )
+                        .map_err(anyhow::Error::from)?;
+                    drop(permit);
+                    Ok(cleaned)
+                });
+                match work.await {
+                    Ok(Ok(cleaned)) => cleaned,
+                    Ok(Err(e)) => {
+                        if let Some(e) = e.downcast_ref::<denoise::errors::E>() {
+                            emit_ndjson(
+                                &tx,
+                                json!({
+                                    "event": "error",
+                                    "reason": denoise_failure(e).0,
+                                    "message": e.to_string(),
+                                }),
+                            )
+                            .await;
+                            return;
+                        }
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "io_error",
+                                "message": e.to_string(),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                    Err(join_err) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "denoise_failed",
+                                "message": format!("El hilo de limpieza fall�: {}", join_err),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            } else {
+                pcm
+            };
+            // Transcripci�n en `spawn_blocking` con latidos (fase pesada: STT
+            // sobre el audio completo, ya limpio si se pidi� denoise).
             let stt_state = state.clone();
             let stt_work = tokio::task::spawn_blocking(move || {
                 stt_state

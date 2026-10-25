@@ -32,6 +32,9 @@ avi-shared = { path = "../avi-shared", features = ["native-ort"] }
 # Caché y verificación únicas del artefacto provisionado por `setup`: el crate
 # no descarga ni mantiene un directorio de modelos propio.
 avi-store = { path = "../avi-store" }
+# Autoridad antialias de conversión PCM interna (16/24/48 kHz) para el
+# adaptador de servicio; DPDFNet exige 48 kHz y STT 16 kHz.
+avi-audio = { path = "../avi-audio" }
 rustfft = "6"
 hound = "3"
 indicatif = "0.17"

@@ -6,6 +6,7 @@ pub mod ffmpeg_io;
 pub mod models;
 pub mod pipeline;
 pub mod preset;
+pub mod service;
 
 // Re-exporta la abstracción canónica de medios.
 pub use ffmpeg_io::{ProbeResult, StreamKind};

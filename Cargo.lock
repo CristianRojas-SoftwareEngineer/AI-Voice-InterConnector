@@ -242,6 +242,7 @@ dependencies = [
  "avi-tts",
  "axum",
  "base64 0.22.1",
+ "denoise",
  "http-body-util",
  "libc",
  "serde_json",
@@ -1131,6 +1132,7 @@ name = "denoise"
 version = "1.0.0"
 dependencies = [
  "anyhow",
+ "avi-audio",
  "avi-shared",
  "avi-store",
  "clap",
