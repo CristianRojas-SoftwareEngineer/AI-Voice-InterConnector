@@ -540,12 +540,6 @@ enum Commands {
         #[arg(long)]
         repair: bool,
     },
-    /// Limpieza de ruido de archivos de audio y vídeo (DPDFNet + FFmpeg)
-    #[cfg(feature = "native-denoise")]
-    Denoise {
-        #[command(flatten)]
-        args: denoise::cli::Cli,
-    },
 }
 
 /// Subcomandos de self. Se llama SelfSub y no SelfComandos por dos razones:
@@ -635,6 +629,12 @@ enum VoiceCommands {
 
 #[derive(Subcommand)]
 enum SpeechCommands {
+    /// Limpia el ruido de la pista de voz en archivos de audio y vídeo (DPDFNet + FFmpeg)
+    #[cfg(feature = "native-denoise")]
+    Denoise {
+        #[command(flatten)]
+        args: denoise::cli::Cli,
+    },
     /// Listar habla sintética persistida
     List {
         /// Filtrar por voz (ausente = todas las voces)
@@ -1030,6 +1030,10 @@ async fn main() {
         )
         .await),
         Some(Commands::Voice { action }) => ok(handle_voice(json_mode, action).await),
+        #[cfg(feature = "native-denoise")]
+        Some(Commands::Speech {
+            action: SpeechCommands::Denoise { args },
+        }) => Ok(handle_denoise(json_mode, args)),
         Some(Commands::Speech { action }) => ok(handle_speech(json_mode, action).await),
         Some(Commands::Daemon { action }) => {
             handle_daemon(json_mode, action, usage_lock.take()).await
@@ -1056,8 +1060,6 @@ async fn main() {
         .await),
         Some(Commands::SelfCmd { action }) => handle_self(json_mode, action).await,
         Some(Commands::Doctor { repair }) => handle_doctor(json_mode, repair),
-        #[cfg(feature = "native-denoise")]
-        Some(Commands::Denoise { args }) => Ok(handle_denoise(json_mode, args)),
         None => {
             // Mismo nombre de binario que deriva clap de `argv[0]`, para que el
             // texto coincida byte a byte con el de `--help`.
@@ -1118,8 +1120,6 @@ fn takes_usage_lock(command: &Option<Commands>) -> bool {
             action,
             DaemonCommands::Start { .. } | DaemonCommands::Restart | DaemonCommands::Serve { .. }
         ),
-        #[cfg(feature = "native-denoise")]
-        Some(Commands::Denoise { .. }) => true,
         _ => false,
     }
 }
@@ -1181,7 +1181,7 @@ fn emit_help(json_mode: bool, text: &str) {
     }
 }
 
-/// Subcomando `denoise`: la CLI de archivos comparte parser, pipeline y
+/// Subcomando `speech denoise`: la CLI de archivos comparte parser, pipeline y
 /// reporting con la biblioteca migrada. El FFmpeg se resuelve solo desde el
 /// paquete instalado y la receta por defecto es `studio`.
 #[cfg(feature = "native-denoise")]
@@ -2988,6 +2988,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             }
             Ok(())
         }
+        #[cfg(feature = "native-denoise")]
+        SpeechCommands::Denoise { .. } => unreachable!("speech denoise se despacha en main"),
     }
 }
 

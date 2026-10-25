@@ -734,7 +734,12 @@ commands:
             # intermitente (visto en v0.20.9, build-linux-x64).
             voice_list_out="$(target/release/ai-voice-interconnector voice list)"
             printf '%s\n' "$voice_list_out" | grep -q '^  - default'
-            echo "Binario << parameters.label >> OK: version + voice list + versión del tag"
+            target/release/ai-voice-interconnector speech denoise --help
+            if target/release/ai-voice-interconnector denoise --help; then
+              echo "el binario release aceptó el comando raíz denoise" >&2
+              exit 1
+            fi
+            echo "Binario << parameters.label >> OK: version + voice list + speech denoise + rechazo denoise raíz"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
   # Humo de instalación en sandbox con las cuatro raíces reubicadas. Extraído de
   # los 3 builds Unix (idénticos salvo el tarball, parametrizado como
@@ -759,7 +764,13 @@ commands:
             STAGE_SMOKE="$(mktemp -d)"
             tar -xzf artifacts/<< parameters.artifact_glob >> -C "$STAGE_SMOKE"
             "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
-            "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
+            INSTALLED="$AVI_INSTALL_DIR/ai-voice-interconnector"
+            "$INSTALLED" --version
+            "$INSTALLED" speech denoise --help
+            if "$INSTALLED" denoise --help; then
+              echo "el binario instalado aceptó el comando raíz denoise" >&2
+              exit 1
+            fi
             rm -rf "$SANDBOX" "$STAGE_SMOKE"
             echo "[STEP] Humo de instalación en sandbox - FIN"
 
@@ -1496,7 +1507,11 @@ jobs:
             $voiceList = & $Exe voice list
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if (-not ($voiceList | Where-Object { $_ -like '  - default*' })) { throw "La voz de fábrica 'default' no está registrada" }
-            Write-Host "Binario Windows OK: version + voice list + version --json"
+            & $Exe speech denoise --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $Exe denoise --help
+            if ($LASTEXITCODE -eq 0) { throw "El binario release aceptó el comando raíz denoise" }
+            Write-Host "Binario Windows OK: version + voice list + version --json + speech denoise + rechazo denoise raíz"
             Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - FIN"
       - sccache_save_cache:
           os: windows
@@ -1586,8 +1601,13 @@ jobs:
             Expand-Archive -Path $Zip.FullName -DestinationPath $StageSmoke -Force
             & "$StageSmoke\\ai-voice-interconnector.exe" self install --no-setup --no-modify-path --yes
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & "$env:AVI_INSTALL_DIR\\ai-voice-interconnector.exe" --version
+            $Installed = "$env:AVI_INSTALL_DIR\\ai-voice-interconnector.exe"
+            & $Installed --version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $Installed speech denoise --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $Installed denoise --help
+            if ($LASTEXITCODE -eq 0) { throw "El binario instalado aceptó el comando raíz denoise" }
             Remove-Item -Recurse -Force $Sandbox
             Write-Host "[STEP] Humo de instalación en sandbox - FIN"
       - run:
