@@ -1039,7 +1039,8 @@ fn optional_denoise(body: &Value) -> Result<bool, InputError> {
 }
 
 /// Respuesta de un build sin `native-denoise` ante `denoise: true`: no se omite
-/// la limpieza en silencio.
+/// la limpieza en silencio. Con la feature activa no hay ruta que la use.
+#[cfg(not(feature = "native-denoise"))]
 fn denoise_unsupported_response() -> Response {
     (
         StatusCode::NOT_IMPLEMENTED,
@@ -1053,7 +1054,8 @@ fn denoise_unsupported_response() -> Response {
 }
 
 /// Respuesta de saturación de la admisión DPDFNet, sin iniciar DSP ni publicar
-/// resultado.
+/// resultado. Solo tiene ruta con la feature activa.
+#[cfg(feature = "native-denoise")]
 fn denoise_busy_response() -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
@@ -1068,6 +1070,7 @@ fn denoise_busy_response() -> Response {
 
 /// Traduce un error del motor DSP a `reason` y estado HTTP del contrato.
 #[cfg(feature = "native-denoise")]
+#[cfg(all(feature = "native-denoise", feature = "native-stt"))]
 fn denoise_failure(e: &denoise::errors::E) -> (&'static str, StatusCode) {
     match e {
         denoise::errors::E::EModelMissing(_) => ("model_missing", StatusCode::NOT_FOUND),
@@ -1078,6 +1081,7 @@ fn denoise_failure(e: &denoise::errors::E) -> (&'static str, StatusCode) {
 }
 
 #[cfg(feature = "native-denoise")]
+#[cfg(all(feature = "native-denoise", feature = "native-stt"))]
 fn denoise_error_response(e: &denoise::errors::E) -> Response {
     let (reason, status) = denoise_failure(e);
     (

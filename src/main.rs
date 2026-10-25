@@ -1193,10 +1193,12 @@ fn handle_denoise(json_mode: bool, args: denoise::cli::Cli) -> Outcome {
         json_mode,
         true,
         denoise::ffmpeg_io::find_bundled_ffmpeg,
-        Some(cancel_flag),
+        Some(cancel_flag.clone()),
     );
     if code == 0 {
         Outcome::Done
+    } else if code == 3 && cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+        Outcome::Verdict(ExitCode::Interrupted.code())
     } else {
         Outcome::Verdict(code)
     }
@@ -1479,9 +1481,12 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 // Limpieza de ruido de referencia (opt-in) antes del clonado
                 // directo. Resuelve el modelo y verifica integridad antes de
                 // convertir a 48 kHz; un modelo ausente falla con `model_missing`.
-                let mut speech_path = speech_path.to_path_buf();
+                let speech_path = speech_path.to_path_buf();
+                // El WAV limpio vive en este directorio temporal, así que debe
+                // sobrevivir hasta que termine el clonado: si se suelta al salir
+                // del bloque, la ruta queda apuntando a un archivo borrado.
                 #[cfg(feature = "native-denoise")]
-                if denoise {
+                let (_denoise_scratch, speech_path) = if denoise {
                     let work_dir = avi_process::scratch::tempdir("avi_clone_denoise_")
                         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
                     let cleaned_path = work_dir.path().join("reference_clean.wav");
@@ -1508,8 +1513,10 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                             };
                             CliError::new(ExitCode::Error, reason, e.to_string())
                         })?;
-                    speech_path = cleaned_path;
-                }
+                    (Some(work_dir), cleaned_path)
+                } else {
+                    (None, speech_path)
+                };
 
                 progress.close_line();
                 let engine_result = direct_tts_engine();
@@ -4897,9 +4904,7 @@ async fn transcribe_via_daemon(
         progress,
         client
             .post(format!("http://{}/transcribe", client_addr))
-            .json(
-                &serde_json::json!({ "audio_b64": audio_b64, "source_language": source_language }),
-            )
+            .json(&payload)
             .send(),
     )
     .await

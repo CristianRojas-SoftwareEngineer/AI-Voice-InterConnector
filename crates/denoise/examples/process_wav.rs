@@ -166,6 +166,7 @@ fn main() -> ExitCode {
             &|cur, tot| {
                 eprint!("\r[{}] {cur:.1}/{tot:.1}s", input_path.display());
             },
+            None,
         ) {
             Ok(()) => {
                 eprintln!(

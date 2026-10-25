@@ -5,6 +5,7 @@
 //! Requiere `ffmpeg 6+` y el modelo DPDFNet provisionado por `setup`.
 //! Ejecutar con `cargo test --release --test test_audio_pipeline -- --ignored`.
 
+use denoise::errors::E;
 use denoise::ffmpeg_io::{find_ffmpeg, probe, verify_output_lightweight, StreamKind};
 use denoise::models::AviModelsProvider;
 use denoise::pipeline::{clean_file, PipelineParams, ProcessStatus};
@@ -13,6 +14,8 @@ use hound::WavReader;
 use std::cell::RefCell;
 use std::fs;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 #[test]
 #[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
@@ -115,4 +118,66 @@ fn test_audio_wav_pipeline_e2e() {
     );
 
     let _ = fs::remove_dir_all(&tmp_dir);
+}
+
+/// Cancela tras el primer progreso real de inferencia, no entre etapas.
+#[test]
+#[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
+fn test_audio_wav_cancel_during_dsp_preserves_output() {
+    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
+    let input = Path::new("tests/data/voz_noisy.wav");
+    assert!(input.exists(), "falta tests/data/voz_noisy.wav");
+    let tmp_dir = std::env::temp_dir().join(format!("denoise_cancel_e2e_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp_dir);
+    fs::create_dir_all(&tmp_dir).expect("crear directorio temporal");
+    let output = tmp_dir.join("voz_denoised.wav");
+    let original = b"salida anterior";
+    fs::write(&output, original).expect("crear salida preexistente");
+    let flag = Arc::new(AtomicBool::new(false));
+    let provider = AviModelsProvider;
+    let params = PipelineParams {
+        ffmpeg: &ffmpeg,
+        input,
+        output: &output,
+        audio_bitrate: AudioBitrate::Legacy,
+        dry_blend: 0.0,
+        pause_gate_db: -25.0,
+        highpass: false,
+        stereo: false,
+        target_lufs: None,
+        models_provider: &provider,
+        overwrite: true,
+        skip_existing: false,
+        verbose: false,
+        cancel_flag: Some(flag.clone()),
+    };
+    let saw_dsp_progress = std::cell::Cell::new(false);
+    let result = clean_file(&params, |pct, msg| {
+        if msg == "procesando DSP" && pct > 6 {
+            saw_dsp_progress.set(true);
+            flag.store(true, Ordering::SeqCst);
+        }
+    });
+    assert!(
+        saw_dsp_progress.get(),
+        "la señal debe activarse durante la inferencia"
+    );
+    assert!(
+        matches!(result, Err(E::ECancelled)),
+        "el DSP debe cancelarse: {result:?}"
+    );
+    assert_eq!(fs::read(&output).expect("leer salida"), original);
+    let leftovers: Vec<_> = fs::read_dir(&tmp_dir)
+        .expect("listar temporales")
+        .map(|entry| {
+            entry
+                .expect("leer entrada")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.contains(".part.") || name.contains(".tmp."))
+        .collect();
+    assert!(leftovers.is_empty(), "temporales residuales: {leftovers:?}");
+    fs::remove_dir_all(&tmp_dir).expect("eliminar directorio temporal");
 }

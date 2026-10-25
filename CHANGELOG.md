@@ -124,6 +124,17 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 ### Añadido
 
 - Se incorpora `ai-voice-interconnector speech denoise` como ruta única local para limpiar archivos de audio y la pista de audio de vídeo, conservando la imagen. El comando usa `studio` por omisión, ofrece `--preset default` y JSONL, y requiere `native-denoise`, DPDFNet provisionado y FFmpeg integrado.
+- Se publica el recorrido de la migración en [`docs/denoise-migration-walkthrough.md`](docs/denoise-migration-walkthrough.md), con la matriz de aceptación, la evidencia ejecutada y las puertas que siguen abiertas.
+
+### Corregido
+
+- `voice clone --denoise` en la ruta local fallaba siempre con `voice_clone_failed`: el directorio temporal del audio limpio se liberaba antes de que el motor clonara. El temporal vive ahora hasta el final del clonado.
+- `speech transcribe --daemon --denoise` omitía la limpieza en silencio porque el cuerpo enviado al daemon se reconstruía sin el campo `denoise`. La orden envía ahora el cuerpo que declara la limpieza.
+- El contrato no nombraba los `reason` de la limpieza (`denoise_unsupported`, `denoise_busy`, `denoise_failed`) y la página de `speech denoise` describía códigos de salida que no coincidían con la paridad del motor de origen.
+
+### Pendiente
+
+- La cancelación con `Ctrl+C` de `speech denoise` devuelve 130 después de completar y publicar el archivo; la señal no interrumpe el DSP en curso. Queda abierta, junto con los smokes nativos de Linux y macOS, según el recorrido de la migración.
 
 ## [0.36.2] — 2026-10-22
 

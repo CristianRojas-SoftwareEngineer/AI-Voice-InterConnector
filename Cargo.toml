@@ -32,8 +32,8 @@ avi-lifecycle = { path = "crates/avi-lifecycle" }
 # Arranque de consola en UTF-8 compartido con `xtask` (`force_utf8_console`).
 avi-shared = { path = "crates/avi-shared" }
 # Limpieza de ruido DPDFNet para archivos de audio y vídeo. Opt-in: el
-# subcomando `denoise` solo existe con `native-denoise`, que el paquete de
-# producto activa mediante `full`.
+# subcomando `speech denoise` solo existe con `native-denoise`, que el paquete
+# de producto activa mediante `full`.
 denoise = { path = "crates/denoise", optional = true }
 tempfile = "3"
 # Cliente HTTP async del CLI para el dispatch 3-modos contra el daemon.
