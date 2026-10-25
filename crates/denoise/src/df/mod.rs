@@ -20,6 +20,8 @@ use crate::models::{AviModelsProvider, ModelsProvider};
 use hound::{WavReader, WavSpec, WavWriter};
 use std::f32::consts::PI;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Procesa un archivo WAV mono 48kHz PCM16 eliminando ruido con DPDFNet.
 pub fn denoise_wav(in_wav: &Path, out_wav: &Path, progress_cb: impl Fn(f64, f64)) -> Result<(), E> {
@@ -45,6 +47,7 @@ pub fn denoise_wav_with_provider(
         GATE_CRUSH_DB,
         false,
         progress_cb,
+        None,
     )
 }
 
@@ -64,6 +67,7 @@ pub fn denoise_wav_with_provider_and_blend(
         GATE_CRUSH_DB,
         false,
         progress_cb,
+        None,
     )
 }
 
@@ -78,6 +82,7 @@ pub fn denoise_wav_with_params(
     pause_gate_db: f64,
     highpass: bool,
     progress_cb: &dyn Fn(f64, f64),
+    cancel_flag: Option<Arc<AtomicBool>>,
 ) -> Result<(), E> {
     // 1. Cargar y verificar modelos
     let model_paths = provider.ensure_models()?;
@@ -127,6 +132,7 @@ pub fn denoise_wav_with_params(
             dry_blend,
             total_duration_secs,
             progress_cb,
+            cancel_flag.clone(),
         )?;
 
         // Escribir WAV mono PCM16
@@ -175,6 +181,7 @@ pub fn denoise_wav_with_params(
             dry_blend,
             total_duration_secs,
             &cb_l,
+            cancel_flag.clone(),
         )?;
 
         // Progreso canal R (50% a 100%)
@@ -190,6 +197,7 @@ pub fn denoise_wav_with_params(
             dry_blend,
             total_duration_secs,
             &cb_r,
+            cancel_flag.clone(),
         )?;
 
         // Escribir WAV estéreo PCM16 intercalado
@@ -233,6 +241,7 @@ fn process_channel_samples(
     dry_blend: f32,
     total_duration_secs: f64,
     progress_cb: &dyn Fn(f64, f64),
+    cancel_flag: Option<Arc<AtomicBool>>,
 ) -> Result<Vec<f32>, E> {
     let total_samples = samples_f32.len();
     let padded = stft_helper.pad_signal(samples_f32);
@@ -258,9 +267,16 @@ fn process_channel_samples(
         },
         |frames_done, total_f| {
             if frames_done % step == 0 || frames_done == total_f {
+                if cancel_flag
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(Ordering::SeqCst))
+                {
+                    return Err(E::ECancelled);
+                }
                 let done_secs = frames_done as f64 / total_f as f64 * total_duration_secs;
                 progress_cb(done_secs, total_duration_secs);
             }
+            Ok(())
         },
     )?;
 

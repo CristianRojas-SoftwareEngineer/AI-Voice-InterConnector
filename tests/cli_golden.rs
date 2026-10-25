@@ -4294,6 +4294,52 @@ mod tts {
         );
     }
 
+    /// Regresión: `voice clone --denoise` mantiene vivo el WAV limpio mientras
+    /// el motor clona. Si el directorio temporal se libera antes, el motor
+    /// recibe una ruta inexistente y la orden falla con `voice_clone_failed`.
+    #[cfg(feature = "native-denoise")]
+    #[test]
+    #[ignore = "requiere el modelo Base de Qwen3-TTS, el binario del motor y DPDFNet"]
+    fn voice_clone_with_denoise_ok() {
+        require_tts_base_model();
+        require_tts_binary();
+        let store = avi_store::ModelStore::new().expect("la raíz de modelos debe resolverse");
+        assert!(
+            store.is_provisioned(avi_shared::paths::DPDFNET_MODEL),
+            "falta {}: aprovisiona el modelo de limpieza con `setup`",
+            avi_shared::paths::DPDFNET_MODEL
+        );
+        let _guard = lock_tts();
+        let name = unique_label("clone_denoise");
+        let inst = IsolatedInstance::new("clone_denoise");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "voice",
+                "clone",
+                "--no-daemon",
+                "--denoise",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &inst.args(),
+        );
+        assert_eq!(code, 0, "{actual}");
+        assert_clone_envelope_keys(&actual);
+        let speech = actual["speech"].as_str().expect("speech debe existir");
+        assert!(
+            Path::new(speech).is_file(),
+            "reference.qvoice debe existir tras limpiar y clonar"
+        );
+        let _ = avi_store::remove_voice(
+            &avi_store::VoiceStore::at(inst.dir.join("voices")),
+            &avi_store::SpeechStore::at(inst.dir.join("speech")),
+            &name,
+        );
+    }
+
     /// El envelope de `voice clone` es idéntico en la vía local y en la del
     /// daemon: exactamente `name`, `speech`, `precomputed` y `schema_version`.
     fn assert_clone_envelope_keys(actual: &Value) {

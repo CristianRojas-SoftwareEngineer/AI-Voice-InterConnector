@@ -536,17 +536,19 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 
 | Código | `reason` |
 |---|---|
-| `1` | `io_error`, `voice_clone_failed`, `synthesis_failed`, `synthesis_timeout`, `stt_unsupported`, `translation_unsupported`, `playback_failed`, `audio_enumeration_failed`, `speech_list_failed`, `voice_list_failed`, `voice_store_init_failed`, `daemon_error`, `startup_failed`, `sudo_not_supported`, `lifecycle_failed`, `doctor_failed`, `self_install_failed`, `self_uninstall_failed`, `self_update_failed` |
+| `1` | `io_error`, `voice_clone_failed`, `synthesis_failed`, `synthesis_timeout`, `stt_unsupported`, `translation_unsupported`, `denoise_unsupported`, `denoise_failed`, `playback_failed`, `audio_enumeration_failed`, `speech_list_failed`, `voice_list_failed`, `voice_store_init_failed`, `daemon_error`, `startup_failed`, `sudo_not_supported`, `lifecycle_failed`, `doctor_failed`, `self_install_failed`, `self_uninstall_failed`, `self_update_failed` |
 | `2` | `confirmation_required`, `usage_error`, `empty_text`, `text_too_long`, `invalid_voice_name`, `invalid_identifier`, `cannot_remove_default`, `invalid_audio`, `empty_audio`, `audio_too_long` |
 | `3` | `voice_not_found`, `warm_voice_missing`, `audio_not_found`, `speech_not_found`, `not_installed` |
 | `4` | `model_missing` |
 | `5` | `daemon_unreachable` |
-| `6` | `voice_exists`, `label_exists`, `port_in_use` |
+| `6` | `voice_exists`, `label_exists`, `port_in_use`, `denoise_busy` |
 | `9` | `translation_failed` |
 | `10` | `transcription_failed` |
 | `11` a `22` | `setup_failed`, `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`, `daemon_stop_failed`, `lifecycle_locked`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `program_dir_kept`, en ese orden |
 
 `warm_voice_missing`, `model_missing` y `startup_failed` viajan en la línea `error=<reason>` del fichero ready del daemon; la CLI traduce el primero a `voice_not_found` (3), conserva `model_missing` (4) y traduce el tercero a `daemon_error` (1).
+
+**Los tres `reason` de la limpieza de ruido** distinguen tres hechos que el consumidor trata distinto: `denoise_unsupported` (1) significa que el binario se compiló sin `native-denoise` y la limpieza no existe en esa instalación; `denoise_busy` (6) significa que hay una inferencia DPDFNet activa y otra solicitud esperando, así que la limpieza no se inició y conviene reintentar cuando termine la solicitud en curso; `denoise_failed` (1) significa que el modelo estaba provisionado y la inferencia o el DSP fallaron. En los tres casos la solicitud **no** devuelve audio sin limpiar: `model_missing` (4) es la precondición de modelo y se comprueba antes de reservar buffers o crear temporales.
 
 **El 6 tiene un solo dueño.** «Puerto ya en uso» y «la voz ya existe» son el mismo hecho y llevan el mismo código; no hay una constante aparte para el conflicto del daemon.
 

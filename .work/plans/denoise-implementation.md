@@ -16,6 +16,7 @@
 - [6. Matriz de aceptación funcional](#6-matriz-de-aceptación-funcional)
 - [7. Riesgos, transición y reversibilidad](#7-riesgos-transición-y-reversibilidad)
 - [8. Decisiones de producto y límites posteriores](#8-decisiones-de-producto-y-límites-posteriores)
+- [9. Seguimiento de la ejecución del cierre](#9-seguimiento-de-la-ejecución-del-cierre)
 
 ## 1. Objetivo, resultado y fronteras
 
@@ -156,3 +157,74 @@ Reversión por fase: mantener origen como oráculo sin modificarlo; tras traspla
 - **Objetivo a largo plazo:** añadir limpieza de archivos de audio y vídeo mediante el daemon, aprovechando el motor migrado y la gestión compartida de modelo, concurrencia y progreso. Diseñar antes el contrato de archivos grandes, autorización, límites, temporales, cancelación y resultados; su ausencia no impide cerrar esta migración. También quedan para versiones posteriores el doblaje de vídeo, las videoconferencias con doblaje automático, streaming y sincronización labial. Conservar el pipeline de vídeo ya probado para esos usos futuros.
 
 Las decisiones técnicas (features, ruta ORT, provisión del modelo, remuestreo, CLI real) se resuelven inspeccionando AVI y mediante pruebas. No ampliar el alcance con rediseño especulativo ni reducirlo por la falta de consumidores de vídeo actuales.
+
+## 9. Seguimiento de la ejecución del cierre
+
+Registro abierto el 2026-10-25 sobre la rama `feat/denoise-migration` en `964970d5`, antes de ejecutar las tareas del plan de cierre. Fija el inventario de criterios de los pasos 1–15 y de §6 para que ninguna puerta se declare aprobada por la declaración de una bitácora. No reescribe resultados históricos: los clasifica y remite a su evidencia. Los estados describen el árbol de ese commit; una corrida nueva del cierre debe reemplazar el estado, no la cita histórica.
+
+Estados: **probado** (evidencia ejecutada y localizable), **parcial** (parte del criterio tiene evidencia y parte no), **implementado sin evidencia de cierre** (el código o la prueba existe, falta la corrida que acredita el criterio), **pendiente** (sin ejecución alguna).
+
+### 9.1 Pasos 1–15
+
+| Paso | Estado | Evidencia y alcance | Trabajo de cierre |
+|---|---|---|---|
+| 1 lectura y matriz de origen | probado | `denoise-fase0-matrix.md` §1–§10 | — |
+| 2 DoD del origen y captura del punto de partida | implementado sin evidencia de cierre | Captura de fase 0 registrada; no hay corrida vigente contra la revisión actual del árbol | Tarea 3 |
+| 3 inspección de AVI, features y ORT | probado | `denoise-fase0-matrix.md` §7.1 (runtime aprovisionado y carga real verificada) | — |
+| 4 trasplante del crate | probado | `denoise-fase1-log.md` §1–§4 | — |
+| 5 compilación y puerta de fase 1 | probado (Windows x64) | `denoise-fase1-log.md` §6; bundle instalado y Linux/macOS delegados por escrito a fases posteriores | — |
+| 6 autoridad única de ORT | probado (Windows x64) | `denoise-fase2-log.md` §5; STT y DPDFNet en el mismo proceso lo ejerce después el paso 10 | Natividad Linux/macOS (Tarea 5) |
+| 7 DPDFNet en el catálogo | probado (Windows x64) | `denoise-fase2-log.md` §6.2–§6.4 | Natividad Linux/macOS (Tarea 5) |
+| 8 remuestreo antialias 16/24/48 kHz | probado (Windows x64) | `denoise-fase2-log.md` §7.2–§7.3; el tramo 16→48→16 con limpieza se cubre en el paso 10 | — |
+| 9 FFmpeg integrado y `speech denoise` | probado (Windows x64) | `denoise-fase2-log.md` §8.2–§8.4; commit `964970d5` deja la ruta pública única | Natividad Linux/macOS (Tarea 5) |
+| 10 tres consumidores opt-in | probado (Windows x64) | `denoise-fase3-log.md` §1–§2 | — |
+| 11 paridad y beneficio en flujos | parcial | `denoise-fase3-log.md` §3: latencias por ruta, 1 activa + 1 esperando y HTTP 503, texto idéntico en audio limpio | Tarea 2 |
+| 12 DoD, benchmarks y pruebas migradas | pendiente | — | Tarea 3 |
+| 13 estrategia de distribución y checks de release | implementado sin evidencia de cierre | `crates/xtask/src/package.rs:714-742` y `.circleci/config.yml:737-771,1510-1610` verifican `speech denoise --help` y rechazan la raíz `denoise`; sin corrida nativa de los cuatro targets | Tareas 4–5 |
+| 14 revisión de `git status`/`diff`/`log` en ambos repos | pendiente | — | Tarea 8 |
+| 15 walkthrough y puerta final | pendiente | `docs/denoise-migration-walkthrough.md` no existe | Tarea 9 |
+
+### 9.2 Filas de la matriz §6
+
+| Caso | Estado | Evidencia y alcance | Falta |
+|---|---|---|---|
+| DSP y tres perfiles | parcial | Diferencial medido con el origen: `default` con 1 LSB en 33 de 144 000 muestras (SI-SDR 101,94 dB) y `studio` 84,10 dB tras remuestrear el origen a 48 kHz (`denoise-fase2-log.md` §8.3); los 6 tests ignorados pasan con modelo y FFmpeg del bundle (§8.2) | Corrida vigente de los tres perfiles contra las baselines canónicas sin actualizarlas (Tarea 3); `hq_speech` y `aggressive` no tienen cifra de cierre citada |
+| `studio` y overrides | probado en Windows empaquetado | Salida normalizada fijada a 48 kHz, bitrate por códec y rechazo de bitrate incompatible con código 2 antes de ffmpeg (§8.2–§8.3) | E2E sobre paquete **instalado** (Tarea 6) |
+| Audio por archivos | probado en Windows empaquetado | WAV, `.ogg`, `.m4a` y `.flac` con el FFmpeg del bundle; verificación antes de publicar y `--dry-run` (§8.2) | Colisiones, overwrite, cancelación y fallo de verificación en el sandbox instalado (Tarea 6) |
+| Vídeo por archivos | implementado sin evidencia de cierre | `test_remux` 3/3 en verde con el FFmpeg integrado (§8.2) | Vídeo real sobre el paquete instalado: `-c:v copy`, AAC, sincronía ±0,5 s y comparación del stream de imagen (Tarea 6) |
+| Lotes/CLI | parcial | `tests/cli_golden.rs` 132 pasadas y 21 ignoradas (§6.2); ayuda y rechazo de la raíz comprobados en binario release e instalado | `Ctrl+C` observado en ejecución, bloqueo de uso compartido, FFmpeg inválido y modelo corrupto en el instalado |
+| Provisión y distribución | parcial | `setup`, `doctor` y `cleanup` cubren DPDFNet (§6.2); tag inmutable de BtbN (`crates/xtask/src/package.rs:44-49`) y avisos/oferta de fuente materializados (`NOTICE`, `THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`) | Smokes nativos de los cuatro targets (Tareas 4–5) |
+| Clonado, `/dub` y `/transcribe` | parcial | `denoise-fase3-log.md` §1–§3: tres pruebas de contrato y E2E de audio limpio con modelo; `denoise_unsupported` sin feature y `model_missing` sin modelo | Comparación ruido/limpio, WER, identidad, naturalidad, memoria, límites 30/300/40 s, cancelación y desconexión (Tarea 2) |
+
+### 9.3 Criterio de cierre macOS (normativo)
+
+La firma y la notarización **no** son condición de cierre de esta migración: siguen diferidas al goal a largo plazo mientras el producto no esté cristalizado (`docs/GOAL.md:244-261`) y la política vigente resuelve la instalación por el canal soportado (`docs/DISTRIBUTION.md:94-104`), sin que la descarga por navegador evite Gatekeeper. La única prescripción que exigía firmar/notarizar el paquete vive en `denoise-fase0-matrix.md` §10.5.4 y §11.2, que son registros históricos y se conservan sin editar.
+
+Puerta macOS de cierre: ejecución del paquete **sin firmar** en el runner nativo, inventario de dependencias con `otool -L` junto a arquitectura y versión, comprobación de encoders, decoders y muxers requeridos por la matriz de egresión, y registro explícito de la firma diferida con su fuente. Un target sin E2E con modelo queda «no verificado funcionalmente» aunque su smoke pase; la ejecución de CI no acredita notarización.
+
+**Reversión:** si se revoca este ajuste normativo, restaurar conjuntamente la exigencia de firma/notarización y este criterio antes de cualquier declaración de completitud; no dejar el criterio de cierre sin fuente.
+
+### 9.4 Pendientes heredados de las bitácoras
+
+Extraídos sin modificar sus archivos de origen; se distingue lo que evidencia posterior ya resolvió de lo que sigue abierto.
+
+- `denoise-fase0-matrix.md` §11:
+  1. Smoke del FFmpeg empaquetado en Linux x64 y macOS arm64 — **abierto** (Windows x64 cerrado en §10.4).
+  2. macOS: ejecución del paquete y `otool -L` — **abierto**; firma/notarización **resuelta como diferida** por §9.3.
+  3. Cancelación con `Ctrl+C` observada en ejecución — **abierto**: solo hay lectura de código.
+  4. Licencias GPL, avisos y oferta de fuente — **resuelto después**: `NOTICE`, `THIRD-PARTY-LICENSES.md` y `SOURCE-OFFER.md` existen y los cubre la puerta `cargo xtask source-offer --check`.
+  5. Reproducibilidad del pin Linux (alias `latest` de BtbN) — **resuelto después**: el tag `autobuild-2026-10-24-13-02` es inmutable y su URL está sujeta a prueba (`crates/xtask/src/package.rs:44-49,1178`).
+- `denoise-fase1-log.md` §6: bundle instalado y corrección en Linux/macOS delegados a fases posteriores — **bundle cerrado en Windows** (paso 9), **nativo abierto**.
+- `denoise-fase2-log.md`: STT y DPDFNet infiriendo a la vez (§5, §6.4) — **resuelto** por el paso 10; `16→48→16` con limpieza (§7.3) — **resuelto** por el paso 10; anidado `models_cause` con DPDFNet (§6.4) — **abierto** como observación, el camino de provisión es común; Linux/macOS y firma (§8.4) — **abierto** según §9.3.
+- `denoise-fase3-log.md` §3 y §5: el veredicto declara cerrada la fase 3, no el paso 11; el apartado 6 de esa bitácora añade después la comparación ruido/limpio, la memoria y la concurrencia, y deja sin medir WER numérico e identidad clonada.
+
+### 9.5 Resultado de la ejecución del cierre (2026-10-25)
+
+Ejecutado en Windows x64; los estados de §9.1 y §9.2 se leen con este apartado. El detalle, con comandos y cifras, está en `docs/denoise-migration-walkthrough.md`.
+
+- **Paso 11:** ampliado con la comparación limpia/ruidosa en transcripción, clonación y doblaje, memoria (pico +225 MB sobre una inferencia activa) y concurrencia (1 activa, 1 esperando, 2 con 503). El efecto de la limpieza sobre el texto ruidoso es mixto: corrige una palabra en un clip y pierde una frase en otros dos. Sigue sin WER numérico ni identidad/naturalidad de la voz clonada.
+- **Paso 12:** ejecutado. Origen: build, clippy, tests y 6 pruebas ignoradas en verde, benchmark de los tres perfiles sin regresiones de baseline. AVI: `fmt`, `clippy -D warnings` y `cargo test --release` en las cinco combinaciones de features.
+- **Paso 13:** sigue parcial. Checks permanentes de `speech denoise` presentes y verificados en binario release e instalado, pero sin corrida de los cuatro targets nativos.
+- **Paso 15:** walkthrough creado, enlazado desde `README.md` y `docs/CLI/README.md`, y anotado en `[No publicado]`. Su veredicto es **no completada**.
+- **Puertas abiertas:** cancelación (Ctrl+C devuelve 130 después de completar y publicar el archivo), smokes nativos de Linux x64, Linux arm64 y macOS arm64, y la CI transitoria de rama (tareas 4 y 5 sin ejecutar por falta de autorización de push).
+- **Corregido al ejecutar las puertas:** temporal del clonado liberado antes de clonar, `denoise` no propagado en la ruta del daemon de `transcribe`, avisos de código muerto bajo `-D warnings`, `reason` de limpieza ausentes del contrato y códigos de salida mal descritos en la página de `speech denoise`.

@@ -204,7 +204,7 @@ impl StftHelper {
         padded_signal: &[f32],
         target_len: usize,
         mut infer_frame: F,
-        mut progress_cb: impl FnMut(usize, usize),
+        mut progress_cb: impl FnMut(usize, usize) -> Result<(), E>,
     ) -> Result<Vec<f32>, E>
     where
         F: FnMut(&[Complex32], &mut [Complex32]) -> Result<(), E>,
@@ -248,7 +248,7 @@ impl StftHelper {
                 ola[offset + i] += inv_buffer[i].re * self.window[i] * INV_FFT_SCALE;
             }
 
-            progress_cb(t + 1, num_frames);
+            progress_cb(t + 1, num_frames)?;
         }
 
         let mut out = vec![0.0_f32; target_len];
@@ -356,6 +356,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_streaming_progress_cancellation_stops_inference() {
+        let stft = StftHelper::new();
+        let padded = stft.pad_signal(&vec![0.0; SR]);
+        let mut inferred = 0;
+        let result = stft.process_streaming(
+            &padded,
+            SR,
+            |frame, out| {
+                inferred += 1;
+                out.copy_from_slice(frame);
+                Ok(())
+            },
+            |frames_done, _| {
+                if frames_done == 3 {
+                    Err(E::ECancelled)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(matches!(result, Err(E::ECancelled)));
+        assert_eq!(inferred, 3);
+    }
+
     /// Comprueba que `process_streaming` con inferencia identidad produce exactamente
     /// el mismo resultado que la llamada encadenada `forward_stft` + `inverse_stft`.
     #[test]
@@ -383,7 +408,7 @@ mod tests {
                     out.copy_from_slice(frame);
                     Ok(())
                 },
-                |_, _| {},
+                |_, _| Ok(()),
             )
             .expect("streaming ok");
 

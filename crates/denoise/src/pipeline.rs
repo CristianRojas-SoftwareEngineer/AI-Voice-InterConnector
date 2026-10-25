@@ -201,6 +201,7 @@ where
                 progress_cb(pct, "procesando DSP");
             }
         },
+        params.cancel_flag.clone(),
     )?;
     progress_cb(80, "ruido eliminado");
 

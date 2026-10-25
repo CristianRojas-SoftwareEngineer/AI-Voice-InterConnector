@@ -137,6 +137,7 @@ impl ServiceModels {
             pause_gate_db,
             highpass,
             &|_, _| {},
+            None,
         );
         let _ = std::fs::remove_file(&in_wav);
         result
