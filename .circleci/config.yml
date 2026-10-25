@@ -2353,7 +2353,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run:
           name: Estadísticas de sccache
-          command: sccache --show-stats || true
+          command: |
+            sccache --show-stats
+            if ($LASTEXITCODE -ne 0) { Write-Warning "No se pudieron mostrar las estadísticas de sccache" }
 
   denoise-validation-linux-x64:
     docker:
