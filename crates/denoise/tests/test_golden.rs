@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_methods)]
+
 //! Test golden `#[ignore]` — verificación SI-SDR con vectores PCM16 deterministas.
 //!
 //! Requiere modelo DPDFNet descargado + `tests/data/*.wav` generados.
@@ -20,7 +22,7 @@ fn read_wav_f32(path: &Path) -> Vec<f32> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
 fn test_golden_3s() {
     let data_dir = Path::new("tests/data");
     let voz_path = data_dir.join("voz_clean.wav");
@@ -80,7 +82,7 @@ fn test_golden_3s() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
 fn test_golden_65s() {
     let data_dir = Path::new("tests/data");
     let voz_path = data_dir.join("voz65s_clean.wav");

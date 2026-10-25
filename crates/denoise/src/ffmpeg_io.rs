@@ -1,6 +1,7 @@
 //! Módulo `ffmpeg_io.rs` — localización de ffmpeg, probe, extract, egresión de medios y verificación ligera.
 
 use crate::errors::E;
+use crate::preset::AudioBitrate;
 use regex::Regex;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -22,24 +23,41 @@ pub struct ProbeResult {
     pub stream_kind: StreamKind,
 }
 
-/// Encuentra `ffmpeg` en `--ffmpeg-path` o en PATH (usando `PATHEXT` en Windows).
-pub fn find_ffmpeg(ffmpeg_path: Option<&Path>) -> Result<PathBuf, E> {
-    if let Some(p) = ffmpeg_path {
-        if p.exists() {
-            return Ok(p.to_path_buf());
-        } else {
-            return Err(E::EFfmpegNotFound(format!(
-                "La ruta de ffmpeg especificada no existe: {}",
-                p.display()
-            )));
-        }
-    }
-
+/// Encuentra `ffmpeg` en `PATH` (usando `PATHEXT` en Windows). Solo lo usan los
+/// tests de integración; la CLI de AVI resuelve exclusivamente el ejecutable
+/// integrado.
+pub fn find_ffmpeg() -> Result<PathBuf, E> {
     match which::which("ffmpeg") {
         Ok(path) => Ok(path),
         Err(_) => Err(E::EFfmpegNotFound(
-            "ffmpeg no encontrado en PATH. Instálalo con 'winget install Gyan.FFmpeg' (Win), 'brew install ffmpeg' (macOS) o 'apt install ffmpeg' (Linux)".to_string(),
+            "ffmpeg no encontrado en PATH. Para la CLI de AVI, reinstala el paquete con el FFmpeg integrado."
+                .to_string(),
         )),
+    }
+}
+
+/// Resuelve el FFmpeg integrado en el mismo directorio que el ejecutable de
+/// AVI. No consulta `PATH` ni acepta una ruta alternativa: si falta, la
+/// capacidad de archivos no está disponible y hay que reinstalar.
+pub fn find_bundled_ffmpeg() -> Result<PathBuf, E> {
+    let dir = avi_shared::paths::program_dir().map_err(|e| {
+        E::EFfmpegNotFound(format!(
+            "No se pudo determinar el directorio del programa para localizar FFmpeg: {e}"
+        ))
+    })?;
+    let name = if cfg!(windows) {
+        "ffmpeg.exe"
+    } else {
+        "ffmpeg"
+    };
+    let path = dir.join(name);
+    if path.is_file() {
+        Ok(path)
+    } else {
+        Err(E::EFfmpegNotFound(format!(
+            "FFmpeg integrado no encontrado en {}. Reinstala ai-voice-interconnector para recuperar el paquete completo.",
+            path.display()
+        )))
     }
 }
 
@@ -259,12 +277,17 @@ pub fn remux_video(
     input_video: &Path,
     clean_wav: &Path,
     out_part: &Path,
-    bitrate_kbps: u32,
+    bitrate: AudioBitrate,
     dur_video: f64,
     target_lufs: Option<f64>,
 ) -> Result<(), E> {
     let dur_str = format!("{:.3}", dur_video);
-    let bitrate_str = format!("{}k", bitrate_kbps);
+    let ext = out_part
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    let resolved_bitrate = resolve_audio_bitrate(&ext, bitrate)?;
 
     let mut cmd = Command::new(ffmpeg);
     cmd.arg("-y").arg("-v").arg("error");
@@ -283,8 +306,12 @@ pub fn remux_video(
         .arg("copy")
         .arg("-c:a")
         .arg("aac")
-        .arg("-b:a")
-        .arg(&bitrate_str);
+        .arg("-ar")
+        .arg("48000");
+
+    if let Some(kbps) = resolved_bitrate {
+        cmd.arg("-b:a").arg(format!("{}k", kbps));
+    }
 
     if let Some(lufs) = target_lufs {
         cmd.arg("-af")
@@ -308,7 +335,7 @@ pub fn remux_video(
 }
 
 /// Devuelve el códec de audio de egresión según la extensión del archivo de salida.
-fn audio_codec_for(ext: &str) -> Option<&'static str> {
+pub(crate) fn audio_codec_for(ext: &str) -> Option<&'static str> {
     match ext {
         "wav" => Some("pcm_s16le"),
         "mp3" => Some("libmp3lame"),
@@ -320,6 +347,37 @@ fn audio_codec_for(ext: &str) -> Option<&'static str> {
     }
 }
 
+/// Resuelve el bitrate efectivo antes de invocar ffmpeg. Los formatos sin
+/// pérdida lo ignoran; los perfiles automáticos eligen por códec y un override
+/// explícito incompatible se rechaza en vez de ajustarse en silencio.
+pub(crate) fn resolve_audio_bitrate(ext: &str, requested: AudioBitrate) -> Result<Option<u32>, E> {
+    let codec = audio_codec_for(ext).ok_or_else(|| {
+        E::EInvalidInput(format!(
+            "Extensión de salida de audio no soportada: '{ext}'"
+        ))
+    })?;
+    let (auto, max) = match codec {
+        "pcm_s16le" | "flac" => (None, None),
+        "libmp3lame" | "aac" => (Some(320), Some(320)),
+        "libvorbis" => (Some(192), Some(192)),
+        "libopus" => (Some(256), Some(256)),
+        _ => (None, None),
+    };
+    match requested {
+        AudioBitrate::Legacy => Ok(auto.map(|_| 192)),
+        AudioBitrate::Auto => Ok(auto),
+        AudioBitrate::Explicit(kbps) => match max {
+            None => Err(E::EInvalidInput(format!(
+                "El formato .{ext} ({codec}) no admite --audio-bitrate: usa un códec con pérdida."
+            ))),
+            Some(limit) if kbps > limit => Err(E::EInvalidInput(format!(
+                "El códec {codec} (.{ext}) admite como máximo {limit} kbps; se pidió {kbps}."
+            ))),
+            Some(_) => Ok(Some(kbps)),
+        },
+    }
+}
+
 /// Empaqueta el audio limpio preservando el contenedor pedido por la extensión
 /// de `out_part`, con metadatos del medio original cuando el contenedor lo permite.
 pub fn encode_audio(
@@ -327,7 +385,7 @@ pub fn encode_audio(
     input: &Path,
     clean_wav: &Path,
     out_part: &Path,
-    bitrate_kbps: u32,
+    bitrate: AudioBitrate,
     target_lufs: Option<f64>,
 ) -> Result<(), E> {
     let ext = out_part
@@ -335,6 +393,8 @@ pub fn encode_audio(
         .and_then(|s| s.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+
+    let resolved_bitrate = resolve_audio_bitrate(&ext, bitrate)?;
 
     let codec = audio_codec_for(&ext).ok_or_else(|| {
         E::EInvalidInput(format!(
@@ -367,11 +427,15 @@ pub fn encode_audio(
     cmd.arg("-c:a").arg(codec);
 
     // Bitrate solo aplica a códecs con pérdida; PCM16 y FLAC son sin pérdida.
-    if matches!(
-        ext.as_str(),
-        "mp3" | "m4a" | "aac" | "mp4" | "mov" | "ogg" | "opus"
-    ) {
-        cmd.arg("-b:a").arg(format!("{}k", bitrate_kbps));
+    if let Some(kbps) = resolved_bitrate {
+        cmd.arg("-b:a").arg(format!("{}k", kbps));
+    }
+
+    // `loudnorm` trabaja a 192 kHz: se fija la salida normalizada a 48 kHz en
+    // todos los formatos para no alterar la tasa del WAV de trabajo ni romper
+    // códecs que no admiten esa tasa (Vorbis) o degradan el bitrate (AAC).
+    if target_lufs.is_some() {
+        cmd.arg("-ar").arg("48000");
     }
 
     if let Some(lufs) = target_lufs {
@@ -403,7 +467,7 @@ pub fn egress_file(
     input: &Path,
     clean_wav: &Path,
     out_part: &Path,
-    bitrate_kbps: u32,
+    bitrate: AudioBitrate,
     duration: f64,
     target_lufs: Option<f64>,
 ) -> Result<(), E> {
@@ -413,18 +477,11 @@ pub fn egress_file(
             input,
             clean_wav,
             out_part,
-            bitrate_kbps,
+            bitrate,
             duration,
             target_lufs,
         ),
-        StreamKind::Audio => encode_audio(
-            ffmpeg,
-            input,
-            clean_wav,
-            out_part,
-            bitrate_kbps,
-            target_lufs,
-        ),
+        StreamKind::Audio => encode_audio(ffmpeg, input, clean_wav, out_part, bitrate, target_lufs),
     }
 }
 
@@ -482,7 +539,70 @@ pub fn verify_output_lightweight(
 
 #[cfg(test)]
 mod tests {
-    use super::has_real_video_stream;
+    use super::{has_real_video_stream, resolve_audio_bitrate};
+    use crate::preset::AudioBitrate;
+
+    #[test]
+    fn test_resolve_audio_bitrate_legacy() {
+        for ext in ["mp3", "m4a", "aac", "ogg", "opus"] {
+            assert_eq!(
+                resolve_audio_bitrate(ext, AudioBitrate::Legacy).unwrap(),
+                Some(192),
+                "Legacy debe conservar 192 kbps en .{ext}"
+            );
+        }
+        for ext in ["wav", "flac"] {
+            assert_eq!(
+                resolve_audio_bitrate(ext, AudioBitrate::Legacy).unwrap(),
+                None,
+                "{ext} es sin pérdida y no lleva bitrate"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_audio_bitrate_auto_by_codec() {
+        for ext in ["mp3", "m4a", "aac"] {
+            assert_eq!(
+                resolve_audio_bitrate(ext, AudioBitrate::Auto).unwrap(),
+                Some(320),
+                "Auto debe elegir 320 kbps para .{ext}"
+            );
+        }
+        assert_eq!(
+            resolve_audio_bitrate("ogg", AudioBitrate::Auto).unwrap(),
+            Some(192)
+        );
+        assert_eq!(
+            resolve_audio_bitrate("opus", AudioBitrate::Auto).unwrap(),
+            Some(256)
+        );
+        assert_eq!(
+            resolve_audio_bitrate("wav", AudioBitrate::Auto).unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_audio_bitrate("flac", AudioBitrate::Auto).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_resolve_audio_bitrate_explicit_validates_codec() {
+        assert_eq!(
+            resolve_audio_bitrate("mp3", AudioBitrate::Explicit(128)).unwrap(),
+            Some(128)
+        );
+        assert_eq!(
+            resolve_audio_bitrate("opus", AudioBitrate::Explicit(256)).unwrap(),
+            Some(256)
+        );
+        assert!(resolve_audio_bitrate("ogg", AudioBitrate::Explicit(256)).is_err());
+        assert!(resolve_audio_bitrate("opus", AudioBitrate::Explicit(320)).is_err());
+        assert!(resolve_audio_bitrate("wav", AudioBitrate::Explicit(128)).is_err());
+        assert!(resolve_audio_bitrate("flac", AudioBitrate::Explicit(128)).is_err());
+        assert!(resolve_audio_bitrate("desconocido", AudioBitrate::Auto).is_err());
+    }
 
     #[test]
     fn test_attached_picture_is_not_a_video_stream() {

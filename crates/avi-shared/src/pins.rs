@@ -29,6 +29,12 @@ pub struct Pins {
     /// de la versión `ort`, indexado por triple de Rust. Una descarga cuyo hash
     /// no coincide, o un triple sin entrada, es un error.
     pub ort_sha256: BTreeMap<String, String>,
+    /// Versión de FFmpeg que `xtask package` integra junto al ejecutable.
+    pub ffmpeg: String,
+    /// SHA-256 del artefacto de FFmpeg de la versión `ffmpeg`, indexado por
+    /// triple de Rust. Una descarga cuyo hash no coincide, o un triple sin
+    /// entrada, es un error.
+    pub ffmpeg_sha256: BTreeMap<String, String>,
     pub sccache: String,
     pub msys2_base: String,
     pub msys2_gcc: String,

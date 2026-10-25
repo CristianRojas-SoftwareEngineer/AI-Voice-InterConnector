@@ -13,12 +13,6 @@ description = "Limpieza de ruido DPDFNet ONNX para la pista de audio de audio y 
 name = "denoise"
 path = "src/lib.rs"
 
-# Binario transitorio: oráculo de paridad frente al Denoise original. El
-# entrypoint público del destino es `ai-voice-interconnector denoise` (Fase 3).
-[[bin]]
-name = "denoise"
-path = "src/main.rs"
-
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 # Adaptación de trasplante: el origen enlaza ORT estático
@@ -42,22 +36,11 @@ rustfft = "6"
 hound = "3"
 indicatif = "0.17"
 which = "4"
-ctrlc = "3"
-anyhow = "1"
 thiserror = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 regex = "1"
 
 [dev-dependencies]
+anyhow = "1"
 sha2 = "0.10"
-
-# Adaptación de trasplante: la CLI trasplantada sale con `std::process::exit` y
-# sus tests escriben en el temporal del sistema. Factorizar esa salida para que
-# el programa termine al soltar los recursos, y conectar la cancelación de
-# Ctrl+C al mecanismo de la CLI de AVI, es alcance de la integración del
-# subcomando; hasta entonces el crate conserva el comportamiento del origen y
-# queda exento de las dos reglas de `clippy.toml`. Retirar esta sección al
-# integrar el subcomando en la CLI raíz.
-[lints.clippy]
-disallowed_methods = "allow"

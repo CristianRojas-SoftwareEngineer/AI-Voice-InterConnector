@@ -215,3 +215,86 @@ propio.
 licencia y empaquetado de FFmpeg se cierran en el paso 9 (Fase 3); el paso 8 no
 añade `pins.json` ni bundle. La puerta de Fase 2 no se declara completa hasta
 entonces.
+
+## 8. Paso 9 - FFmpeg integrado y subcomando `denoise`
+
+### 8.1 Alcance aplicado
+
+FFmpeg 9.0.2 queda fijado por target en `packaging/pins.json` con SHA-256
+inmutable y se integra en el bundle junto al ejecutable. `cargo xtask package`
+descarga, verifica el hash, extrae el binario correcto (zip en Windows/macOS,
+`.tar.xz` en Linux), comprueba `-version` y lo monta en la raíz del paquete.
+`find_ffmpeg` de `crates/denoise` resuelve exclusivamente el binario del
+directorio del programa; no hay búsqueda en `PATH` ni `--ffmpeg-path` en la CLI
+final.
+
+El subcomando `ai-voice-interconnector denoise` reutiliza el parser y el
+pipeline de la biblioteca migrada. La CLI conserva lotes, naming, dry-run,
+JSONL, progreso, códigos de salida y Ctrl+C, con `studio` como preset
+predeterminado y `--preset default` para el comportamiento del origen. Se
+eliminó el binario transitorio `crates/denoise/src/main.rs`, su `[[bin]]`, sus
+dependencias `ctrlc`/`anyhow` y la exención local de `clippy`; `anyhow` queda
+solo en `dev-dependencies` para el generador de vectores.
+
+El bitrate de audio se resuelve por códec antes de ejecutar FFmpeg y también
+antes de un `--dry-run`: Legacy conserva 192 kbps en formatos con pérdida; Auto
+usa MP3/AAC 320, Vorbis 192 y Opus 256; WAV/FLAC no llevan bitrate. Un valor
+explícito incompatible falla con código 2 en vez de ajustarse en silencio. La
+salida normalizada con `loudnorm` se fija a 48 kHz en todos los formatos, porque
+el filtro entrega 192 kHz y Vorbis no podía configurarse a esa tasa.
+
+### 8.2 Verificación ejecutada
+
+Entorno: Windows x64; FFmpeg empaquetado 9.0.2; DPDFNet aprovisionado en el
+almacén canónico; `voz_noisy.wav` como clip de referencia.
+
+| Comando / prueba | Resultado |
+|---|---|
+| `cargo check --workspace --all-targets --features full` | OK, sin avisos |
+| `cargo clippy --workspace --features full --all-targets -- -D warnings` | OK, sin avisos |
+| `cargo test --workspace --features full` | OK, toda la suite sin fallos |
+| `cargo test -p denoise --test test_remux --test test_audio_pipeline --test test_golden -- --ignored` | OK 6/6 con el FFmpeg del bundle |
+| `cargo xtask language/comments/features/licenses/source-offer/pins --check` | OK en las seis puertas |
+| `rustfmt --check` sobre los archivos modificados | OK |
+| `cargo build --release --features full` | OK en 1m13s |
+| `cargo xtask package --no-compress --flat` | OK; bundle con `ffmpeg.exe`, ORT, documentos y avisos |
+| `ai-voice-interconnector denoise --version` empaquetado | `denoise 1.0.0 + modelo DPDFNet + ffmpeg version 9.0.2-essentials_build-www.gyan.dev` |
+| E2E empaquetado con `PATH` sin FFmpeg del sistema | OK; `out.wav` de 288 078 B, 48 kHz, mono, PCM16, SHA256 `bdb445de…7288cf65` |
+| E2E empaquetado `.ogg` / `.m4a` / `.flac` | OK; Vorbis 48 kHz/192 kbps, AAC 48 kHz/163 kbps efectivos (tope mono del codificador nativo), FLAC 48 kHz/24 bit |
+| `--dry-run --audio-bitrate 128` sobre `.flac` | OK: código 2, «no admite --audio-bitrate» |
+| `--dry-run --audio-bitrate 256` sobre `.ogg` | OK: código 2, máximo 192 kbps |
+
+### 8.3 Paridad diferencial y hallazgos de egress
+
+Oráculo: `Denoise/target/release/denoise.exe` con su modelo y FFmpeg del
+sistema. La inferencia DSP conserva paridad: con el preset `default` ambos
+producen 48 kHz y la diferencia máxima es 1 LSB en 33 de 144 000 muestras
+(SI-SDR 101,94 dB). Con `studio`, el origen entrega WAV de 192 kHz y AVI de
+48 kHz conforme al contrato del plan; tras remuestrear el origen a 48 kHz,
+SI-SDR 84,10 dB, correlación 0,999999998, pico 27574 idéntico y RMS casi
+idéntico. La diferencia restante es del remuestreador, no del motor.
+
+El análisis de formatos descubrió que `loudnorm` eleva la salida a 192 kHz:
+`.m4a` quedaba en 96 kHz/224 kbps y `.ogg` fallaba con
+`[libvorbis] encoder setup failed`. Se corrigió `encode_audio` para fijar
+48 kHz siempre que haya normalización. El AAC mono nativo de FFmpeg limita la
+tasa efectiva a ~163 kbps aunque se soliciten 320; se conserva el objetivo 320
+y se documenta la limitación.
+
+### 8.4 Puerta del paso 9
+
+**Cubierta:** FFmpeg 9.0.2 fijado, verificado y empaquetado por target; la CLI
+final resuelve solo el binario incluido y falla explícitamente si falta; el
+subcomando `denoise` funciona en el paquete sin FFmpeg del sistema; la paridad
+DSP con el origen está medida; la matriz de egress y la validación de bitrate
+están cubiertas por pruebas y E2E empaquetado.
+
+**No verificado todavía:** smoke nativo del binario FFmpeg en Linux x64 y macOS
+arm64 (solo se auditaron dependencias y hashes); firma/notarización macOS;
+ejecución real de los jobs Linux/macOS contra las URLs inmutables nuevas. El
+paso 10 (STT + DPDFNet en el mismo proceso y `16→48→16` con denoise activo)
+sigue pendiente.
+
+**Estado del árbol:** cambios del paso 9 listos para commit; el bundle de prueba
+y los artefactos E2E viven en `C:\Users\Cristian\AppData\Local\Temp\opencode`,
+fuera del repositorio.

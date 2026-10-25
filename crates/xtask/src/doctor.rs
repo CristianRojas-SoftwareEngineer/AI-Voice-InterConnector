@@ -1239,6 +1239,8 @@ mod tests {
             rust: "1.96.0".to_string(),
             ort: "1.28.0".to_string(),
             ort_sha256: std::collections::BTreeMap::new(),
+            ffmpeg: "9.0.2".to_string(),
+            ffmpeg_sha256: std::collections::BTreeMap::new(),
             sccache: "0.8.2".to_string(),
             msys2_base: "2026-06-11".to_string(),
             msys2_gcc: "16.2.0".to_string(),

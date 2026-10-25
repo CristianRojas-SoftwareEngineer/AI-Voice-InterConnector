@@ -83,6 +83,12 @@ const CTRL_C_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration::from_s
 /// `spawn_background` y lo pone a 0 al abortar un arranque fallido.
 static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Flag de cancelación del lote `denoise` en curso, para que el handler global
+/// de Ctrl+C lo active en vez de terminar de inmediato y dejar temporales.
+#[cfg(feature = "native-denoise")]
+static DENOISE_CANCEL: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+    std::sync::OnceLock::new();
+
 /// Titular del motor de transcripción para la vida del proceso: lo crea una
 /// sola vez y lo conserva sin destruirlo hasta la salida, de modo que ningún
 /// destructor de ONNX Runtime corre durante la salida. El sistema operativo
@@ -175,6 +181,7 @@ fn validate_temperature(temperature: Option<f32>) -> Result<(), CliError> {
 #[derive(Parser)]
 #[command(name = APP_NAME, version = VERSION, about = "AI Voice Interconnector CLI")]
 struct Cli {
+    /// Emitir la salida como JSON
     #[arg(long, global = true)]
     json: bool,
 
@@ -533,6 +540,12 @@ enum Commands {
         #[arg(long)]
         repair: bool,
     },
+    /// Limpieza de ruido de archivos de audio y vídeo (DPDFNet + FFmpeg)
+    #[cfg(feature = "native-denoise")]
+    Denoise {
+        #[command(flatten)]
+        args: denoise::cli::Cli,
+    },
 }
 
 /// Subcomandos de self. Se llama SelfSub y no SelfComandos por dos razones:
@@ -787,6 +800,18 @@ enum DaemonCommands {
 /// Instalado en `main` antes del despacho: cubre todos los modos.
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
+        // Un lote `denoise` en curso cancela de forma cooperativa: la primera
+        // pulsación activa su flag y deja que limpie temporales; la segunda
+        // termina el proceso.
+        #[cfg(feature = "native-denoise")]
+        if let Some(flag) = DENOISE_CANCEL.get() {
+            if flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("\nInterrumpido por el usuario.");
+                avi_process::scratch::terminate(ExitCode::Interrupted.code());
+            }
+            eprintln!("\n[aviso] Cancelación solicitada (Ctrl+C), limpiando temporales...");
+            return;
+        }
         // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
         // El PID del pidfile solo se mata si su identidad coincide con la
         // registrada; el PID en memoria es de un hijo recién lanzado por este
@@ -1019,6 +1044,8 @@ async fn main() {
         .await),
         Some(Commands::SelfCmd { action }) => handle_self(json_mode, action).await,
         Some(Commands::Doctor { repair }) => handle_doctor(json_mode, repair),
+        #[cfg(feature = "native-denoise")]
+        Some(Commands::Denoise { args }) => Ok(handle_denoise(json_mode, args)),
         None => {
             // Mismo nombre de binario que deriva clap de `argv[0]`, para que el
             // texto coincida byte a byte con el de `--help`.
@@ -1079,6 +1106,8 @@ fn takes_usage_lock(command: &Option<Commands>) -> bool {
             action,
             DaemonCommands::Start { .. } | DaemonCommands::Restart | DaemonCommands::Serve { .. }
         ),
+        #[cfg(feature = "native-denoise")]
+        Some(Commands::Denoise { .. }) => true,
         _ => false,
     }
 }
@@ -1137,6 +1166,27 @@ fn emit_help(json_mode: bool, text: &str) {
         emit_raw_json(json!({ "help": text }));
     } else {
         println!("{text}");
+    }
+}
+
+/// Subcomando `denoise`: la CLI de archivos comparte parser, pipeline y
+/// reporting con la biblioteca migrada. El FFmpeg se resuelve solo desde el
+/// paquete instalado y la receta por defecto es `studio`.
+#[cfg(feature = "native-denoise")]
+fn handle_denoise(json_mode: bool, args: denoise::cli::Cli) -> Outcome {
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    drop(DENOISE_CANCEL.set(cancel_flag.clone()));
+    let code = denoise::cli::execute(
+        args,
+        json_mode,
+        true,
+        denoise::ffmpeg_io::find_bundled_ffmpeg,
+        Some(cancel_flag),
+    );
+    if code == 0 {
+        Outcome::Done
+    } else {
+        Outcome::Verdict(code)
     }
 }
 

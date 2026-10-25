@@ -1,8 +1,11 @@
+#![allow(clippy::disallowed_methods)]
+
 //! Test de errores y taxonomía de salidas.
 //!
 //! Requiere `ffmpeg 6+` real (para probe), `FakeProvider` sin red/modelo.
 
-use denoise::cli::{expand_inputs, resolve_outputs, run_dry_run, ResolvedItem};
+use clap::Parser;
+use denoise::cli::{expand_inputs, resolve_outputs, run_dry_run, Cli, ResolvedItem};
 use denoise::errors::E;
 use denoise::ffmpeg_io::{find_ffmpeg, probe, StreamKind};
 use denoise::models::{FakeProvider, ModelsProvider};
@@ -11,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn get_real_ffmpeg() -> PathBuf {
-    find_ffmpeg(None).expect("ffmpeg 6+ debe estar instalado")
+    find_ffmpeg().expect("ffmpeg 6+ debe estar instalado")
 }
 
 #[test]
@@ -125,18 +128,17 @@ fn test_audio_only_input_accepted() {
 }
 
 #[test]
-fn test_ffmpeg_not_found() {
-    let bad_path = PathBuf::from("C:\\no_such_dir_12345\\ffmpeg_non_existent.exe");
-    let res = find_ffmpeg(Some(&bad_path));
-    assert!(res.is_err());
-    let err = res.unwrap_err();
-    assert_eq!(err.exit_code(), 1);
-    match err {
-        E::EFfmpegNotFound(msg) => {
-            assert!(msg.contains("no existe"));
-        }
-        _ => panic!("Esperado EFfmpegNotFound"),
+fn test_ffmpeg_path_rejected() {
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        _cli: Cli,
     }
+
+    let mut args = vec!["denoise", "in.wav"];
+    args.extend(["--ffmpeg-path", "C:\\otro\\ffmpeg.exe"]);
+    let res = TestCli::try_parse_from(args);
+    assert!(res.is_err(), "la CLI de AVI no acepta --ffmpeg-path");
 }
 
 #[test]

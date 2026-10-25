@@ -8,12 +8,7 @@ pub mod pipeline;
 pub mod preset;
 
 // Re-exporta la abstracción canónica de medios.
-pub use ffmpeg_io::{StreamKind, ProbeResult};
+pub use ffmpeg_io::{ProbeResult, StreamKind};
 
 // Re-exporta los tipos canónicos de presets de calidad.
 pub use preset::{EgressParams, Preset};
-
-// Re-exporta el binario principal para `cargo run -- --help` equivalente.
-pub fn run() -> anyhow::Result<()> {
-    cli::run()
-}

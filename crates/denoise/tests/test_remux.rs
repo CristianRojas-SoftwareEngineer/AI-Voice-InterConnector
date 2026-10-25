@@ -1,8 +1,11 @@
+#![allow(clippy::disallowed_methods)]
+
 //! Test remux `#[ignore]` — verifica que el remux preserva video sin re-encode.
 //!
 //! Ejecutar con `cargo test -- --ignored`.
 
 use denoise::ffmpeg_io::{find_ffmpeg, probe, remux_video, verify_output_lightweight, StreamKind};
+use denoise::preset::AudioBitrate;
 use hound::{WavSpec, WavWriter};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -82,9 +85,9 @@ fn extract_video_stream_hash(ffmpeg: &Path, video_path: &Path) -> Vec<u8> {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requiere ffmpeg"]
 fn test_remux_video_copy() {
-    let ffmpeg = find_ffmpeg(None).expect("ffmpeg disponible");
+    let ffmpeg = find_ffmpeg().expect("ffmpeg disponible");
     let temp_dir = std::env::temp_dir();
     let fixture_path = temp_dir.join("test_remux_in.mp4");
     let clean_wav_path = temp_dir.join("test_remux_clean.wav");
@@ -104,7 +107,7 @@ fn test_remux_video_copy() {
         &fixture_path,
         &clean_wav_path,
         &out_path,
-        192,
+        AudioBitrate::Legacy,
         probe_in.duration,
         None,
     )
@@ -130,9 +133,9 @@ fn test_remux_video_copy() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requiere ffmpeg"]
 fn test_remux_duracion_contenedor() {
-    let ffmpeg = find_ffmpeg(None).expect("ffmpeg disponible");
+    let ffmpeg = find_ffmpeg().expect("ffmpeg disponible");
     let temp_dir = std::env::temp_dir();
     let fixture_path = temp_dir.join("test_remux_dur_in.mp4");
     let clean_wav_path = temp_dir.join("test_remux_dur_clean.wav");
@@ -153,7 +156,7 @@ fn test_remux_duracion_contenedor() {
         &fixture_path,
         &clean_wav_path,
         &out_path,
-        192,
+        AudioBitrate::Legacy,
         probe_in.duration,
         None,
     )
@@ -171,9 +174,9 @@ fn test_remux_duracion_contenedor() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "requiere ffmpeg"]
 fn test_remux_mov_mp4_editlist_sync() {
-    let ffmpeg = find_ffmpeg(None).expect("ffmpeg disponible");
+    let ffmpeg = find_ffmpeg().expect("ffmpeg disponible");
     let temp_dir = std::env::temp_dir();
     let fixture_path = temp_dir.join("test_remux_elst_in.mp4");
     let clean_wav_path = temp_dir.join("test_remux_elst_clean.wav");
@@ -194,7 +197,7 @@ fn test_remux_mov_mp4_editlist_sync() {
         &fixture_path,
         &clean_wav_path,
         &out_path,
-        192,
+        AudioBitrate::Legacy,
         probe_in.duration,
         None,
     )

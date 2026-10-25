@@ -9,7 +9,7 @@
 //!
 //! | Capa | Flag | Contenido | Mecanismo |
 //! |---|---|---|---|
-//! | Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, salidas de `package`, binario y objetos del motor y cobertura | `xtask` |
+//! | Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, `ffmpeg-bundle/`, salidas de `package`, binario y objetos del motor y cobertura | `xtask` |
 //! | Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew`), ejecutado con el binario del repositorio |
 //! | Ambas | `--all` | Aplicación y después repositorio | Ídem |
 //!
@@ -88,6 +88,7 @@ impl Layer {
 const REPO_ENTRIES: &[&str] = &[
     "target",
     "ort-bundle",
+    "ffmpeg-bundle",
     "artifacts",
     ".coverage",
     "coverage.json",
