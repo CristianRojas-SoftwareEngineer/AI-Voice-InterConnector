@@ -836,6 +836,7 @@ fn sorted_entries(stage: &Path) -> Result<Vec<String>> {
 /// fijos (0755 ejecutables, 0644 resto) y marca temporal fija.
 fn compress_zip(stage: &Path, dest: &Path, section: &BundleTarget) -> Result<()> {
     let engine_rel = format!("vendor/qwen3-tts/qwen_tts{}", std::env::consts::EXE_SUFFIX);
+    let ffmpeg_rel = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     let file = std::fs::File::create(dest)?;
     let mut zip = zip::ZipWriter::new(file);
     let stamp = zip::DateTime::from_date_and_time(2020, 1, 1, 0, 0, 0)
@@ -848,11 +849,12 @@ fn compress_zip(stage: &Path, dest: &Path, section: &BundleTarget) -> Result<()>
                 dirs.push(parent);
             }
         }
-        let mode = if relative == section.executable || relative == engine_rel {
-            0o755
-        } else {
-            0o644
-        };
+        let mode =
+            if relative == section.executable || relative == engine_rel || relative == ffmpeg_rel {
+                0o755
+            } else {
+                0o644
+            };
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(mode)
@@ -875,6 +877,7 @@ fn compress_zip(stage: &Path, dest: &Path, section: &BundleTarget) -> Result<()>
 /// fijas (uid/gid 0, mtime fija, modos 0755/0644).
 fn compress_tar_gz(stage: &Path, dest: &Path, section: Option<&BundleTarget>) -> Result<()> {
     let engine_rel = format!("vendor/qwen3-tts/qwen_tts{}", std::env::consts::EXE_SUFFIX);
+    let ffmpeg_rel = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     let file = std::fs::File::create(dest)?;
     let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
     let mut tar = tar::Builder::new(gz);
@@ -882,8 +885,9 @@ fn compress_tar_gz(stage: &Path, dest: &Path, section: Option<&BundleTarget>) ->
     for relative in sorted_entries(stage)? {
         let src = relative_path(stage, &relative);
         let meta = std::fs::metadata(&src)?;
-        let executable =
-            section.is_some_and(|s| relative == s.executable || relative == engine_rel);
+        let executable = section
+            .is_some_and(|s| relative == s.executable || relative == engine_rel)
+            || relative == ffmpeg_rel;
         let mut header = tar::Header::new_gnu();
         header.set_size(meta.len());
         header.set_mtime(ARCHIVE_MTIME);
