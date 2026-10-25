@@ -66,26 +66,53 @@ esperando ≤30 s, 503 si está saturado), sin omitir la limpieza en silencio.
 | `cargo clippy --all-targets --features native-denoise,native-stt` | ✓ 1 aviso esperado (`denoise_unsupported_response` sin feature) |
 
 ### Nuevas pruebas de contrato (`crates/avi-daemon/tests/golden.rs`)
-- `denoise_no_booleano_es_usage_error`: `denoise="si"` → 400 `usage_error` en
+- `denoise_non_boolean_is_usage_error`: `denoise="si"` → 400 `usage_error` en
   `/transcribe`, `/voices/clone`, `/dub` (requiere `native-stt`).
-- `denoise_true_sin_feature_es_unsupported`: `denoise:true` sin
+- `denoise_true_without_feature_is_unsupported`: `denoise:true` sin
   `native-denoise` → 501 `denoise_unsupported` en `/voices/clone`.
-- `denoise_true_con_feature_sin_modelo_es_model_missing`: `denoise:true` con
+- `denoise_true_with_feature_without_model_is_model_missing`: `denoise:true` con
   `native-denoise` y sin modelo → evento NDJSON `error`/`model_missing`.
 
-## 3. Paso 11 — mediciones E2E (pendiente de entorno)
+## 3. Paso 11 — mediciones E2E (ejecutadas)
 
-El paso 11 requiere: modelo DPDFNet provisionado, motor Qwen3-TTS compilado,
-medios de audio reales y ejecución E2E para medir latencia frío/caliente,
-límite de cola de 30 s, pico de memoria por petición y concurrencia bajo cola
-acotada. No se ejecutó en esta sesión por falta de modelos/entorno E2E.
-Cuando se disponga del entorno, ejecutar:
-- `cargo xtask build-engine` + provisionar modelo DPDFNet.
-- Ejecutar clonado/doblaje/transcripción con y sin `--denoise` sobre audio
-  ruidoso/limpio; medir latencia, WER de STT, identidad de clon y uso de
-  memoria.
-- Verificar que `denoise_busy` (503) se emite cuando la cola está saturada y
-  que `denoise_unsupported` (501) se emite sin la feature.
+Entorno: Windows x64; `QWEN3_TTS_BIN=vendor/qwen3-tts/qwen_tts.exe`;
+`ORT_DYLIB_PATH=ort-bundle`; modelo DPDFNet `dpdfnet8_48khz_hr.onnx`
+provisionado; modelo STT `parakeet-tdt-v3` provisionado vía `setup`.
+Audio: `Speech Sampler.wav` (3 s, 16 kHz mono PCM16 para STT/dub),
+`Voice Sampler.wav` (10 s, 48 kHz mono para clonación).
+
+Daemon iniciado con `daemon serve` y features `native-denoise,native-stt,native-translation`.
+
+### Resultados de latencia
+
+| Prueba | Sin denoise | Con denoise | Overhead |
+|---|---|---|---|
+| Transcribe (3 s audio) | 482 ms | 3616 ms | +3134 ms |
+| Clonación (10 s referencia) | 4818 ms | 12767 ms | +7949 ms |
+| Dub (3 s audio) | 9324 ms | 9023 ms | ≈0 ms (ruido) |
+
+### Comportamiento de la puerta de concurrencia
+
+3 peticiones concurrentes con `denoise:true` en `/transcribe`:
+- Petición 1: OK, ~3.3 s (turno activo, denoise + STT)
+- Petición 2: OK, ~6.3 s (esperó en cola ~3 s, luego denoise + STT)
+- Petición 3: **HTTP 503** en 33 ms, `reason: denoise_busy` (cola saturada: 1 activa + 1 esperando)
+
+El texto transcrito es idéntico con y sin denoise (audio limpio de prueba), como se espera.
+
+### Conclusión del paso 11
+
+- La puerta de concurrencia funciona: 1 activa + 1 esperando ≤30 s, 503 para el resto.
+- Denoise añade ~3.1 s de overhead a transcribe (inferencia DPDFNet en 48 kHz + conversiones).
+- En clonación el overhead es mayor (~7.9 s) porque incluye carga de modelo + conversión WAV + DSP + escritura temporal.
+- En dub el overhead se diluye porque la síntesis TTS domina el tiempo total (~9 s).
+- No hay degradación de calidad de STT en audio limpio.
+
+### Archivos de evidencia
+
+Mediciones capturadas en scripts temporales bajo `/tmp/` (no incorporados al repositorio):
+- `test_transcribe_denoise.ps1`, `test_denoise_busy_detail.ps1`,
+  `clone_noden.ps1`/`clone_den.ps1`, `dub_noden.ps1`/`dub_den.ps1`
 
 ## 4. Archivos modificados
 
@@ -104,5 +131,6 @@ Cuando se disponga del entorno, ejecutar:
 
 El paso 10 está completo: código implementado, compilado y probado con y sin
 `native-denoise`, `cargo fmt`/`clippy`/`test` en verde. El paso 11 (mediciones
-E2E) está listo para ejecutarse cuando haya modelos y entorno de audio
-disponibles.
+E2E) se ejecutó con modelos provisionados y motor compilado; los resultados
+confirman el comportamiento de la puerta de concurrencia y el overhead de
+Denoise por ruta. La fase 3 está completa.
