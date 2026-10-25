@@ -19,6 +19,10 @@ avi-store = { path = "../avi-store" }
 avi-stt = { path = "../avi-stt" }
 avi-tts = { path = "../avi-tts" }
 avi-translation = { path = "../avi-translation", optional = true }
+# Limpieza de ruido DPDFNet para clonado, `dub` y `transcribe`; opt-in por
+# petición (`denoise: true`). Sin el feature, `denoise: true` devuelve 501
+# `denoise_unsupported` y nunca se omite en silencio.
+denoise = { path = "../denoise", optional = true }
 base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
@@ -29,6 +33,10 @@ libc = "0.2"
 native-stt = ["avi-stt/native-stt"]
 # Activa la superficie de traducción CT2 residente; encadena el motor Ct2 de avi-translation.
 native-translation = ["avi-translation/native-translation"]
+# Activa la superficie de limpieza de ruido DPDFNet del daemon; encadena el
+# crate `denoise` y expone la puerta de concurrencia para clonado, `dub` y
+# `transcribe`.
+native-denoise = ["denoise"]
 
 [dev-dependencies]
 # Solo para el harness de tests dorados: permite ejercitar el Router de Axum

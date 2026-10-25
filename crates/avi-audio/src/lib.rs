@@ -679,15 +679,7 @@ fn ensure_nonzero_sample_rate(spec: &hound::WavSpec) -> Result<(), WavLoadError>
 /// válido o soportado (incluido un WAV truncado, cuyas muestras declaradas no están
 /// en el archivo) e `Io` para el resto de fallos de lectura.
 pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
-    let reader = hound::WavReader::open(path)?;
-    let spec = reader.spec();
-    ensure_nonzero_sample_rate(&spec)?;
-
-    let samples = read_normalized_samples(reader)?;
-
-    let mono = to_mono(&samples, spec.channels as usize);
-    let resampled = resample_antialias(&mono, spec.sample_rate, 16_000)?;
-    Ok(f32_to_i16(&resampled))
+    load_wav_mono_pcm_at(path, 16_000)
 }
 
 /// Lee todas las muestras de un WAV normalizadas a `f32` en [-1, 1]. Las enteras
@@ -714,6 +706,21 @@ fn read_normalized_samples<R: std::io::Read>(
 /// devuelven como `WavLoadError` con la misma clasificación: un WAV truncado o que
 /// no es un WAV válido es `Invalid`.
 pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
+    load_wav_mono_pcm_at(path, 24_000)
+}
+
+/// Carga un WAV arbitrario y lo normaliza a PCM `i16` mono a 48 kHz, la tasa
+/// que exige DPDFNet. Es la entrada del preprocesamiento de referencias de
+/// clonado: `avi-tts` vuelve a convertir después el resultado a 24 kHz.
+pub fn load_wav_48k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
+    load_wav_mono_pcm_at(path, 48_000)
+}
+
+/// Carga un WAV arbitrario y lo normaliza a PCM `i16` mono a `to_rate`.
+/// Comparte la clasificación de errores de los loaders públicos: un WAV
+/// truncado o no soportado es `Invalid`, un fichero ausente es `NotFound` y el
+/// resto de fallos de lectura son `Io`.
+fn load_wav_mono_pcm_at(path: impl AsRef<Path>, to_rate: u32) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
     ensure_nonzero_sample_rate(&spec)?;
@@ -721,7 +728,7 @@ pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoad
     let samples = read_normalized_samples(reader)?;
 
     let mono = to_mono(&samples, spec.channels as usize);
-    let resampled = resample_antialias(&mono, spec.sample_rate, 24_000)?;
+    let resampled = resample_antialias(&mono, spec.sample_rate, to_rate)?;
     Ok(f32_to_i16(&resampled))
 }
 
@@ -737,7 +744,7 @@ pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoad
 /// recorta el relleno de ceros del último bloque.
 /// Un fallo del remuestreador (ratio no construible o error de proceso) es un
 /// `WavLoadError::Invalid`: no hay degradación a otro método.
-fn resample_antialias(
+pub fn resample_antialias(
     mono: &[f32],
     from_rate: u32,
     to_rate: u32,

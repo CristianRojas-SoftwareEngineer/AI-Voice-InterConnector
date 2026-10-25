@@ -51,7 +51,7 @@ anyhow = "1.0"
 # (`avi_shared::onnx_runtime`), que el chequeo `onnx_runtime` de `doctor` usa.
 native-stt = ["avi-stt/native-stt", "avi-daemon/native-stt", "avi-shared/native-ort"]
 native-translation = ["avi-translation/native-translation", "avi-daemon/native-translation"]
-native-denoise = ["dep:denoise"]
+native-denoise = ["dep:denoise", "avi-daemon/native-denoise"]
 full = ["native-stt", "native-translation", "native-denoise"]
 
 [target.'cfg(unix)'.dependencies]

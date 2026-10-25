@@ -396,5 +396,4 @@ mod tests {
         assert_eq!(argmax(&[0.1, 0.9, 0.3]), Some(1));
         assert_eq!(argmax(&[]), None);
     }
-
 }
