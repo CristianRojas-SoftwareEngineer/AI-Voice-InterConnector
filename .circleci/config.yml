@@ -2347,7 +2347,7 @@ jobs:
 
   denoise-validation-linux-x64:
     docker:
-      - image: ubuntu:22.04@sha256:59986b7a1e4f5d7a3e1a3e5c7f9b2c1d8e6a4b3f0c7a2e1d9b4c6f8a0e5d7c3b # ubuntu 22.04, glibc 2.35 (supera el techo GLIBC_2.28 de manylinux_2_28)
+      - image: ubuntu:22.04 # ubuntu 22.04, glibc 2.35 (supera el techo GLIBC_2.28 de manylinux_2_28)
     resource_class: large
     steps:
       - run:
@@ -2411,7 +2411,7 @@ jobs:
 
   denoise-validation-linux-arm64:
     docker:
-      - image: ubuntu:22.04@sha256:59986b7a1e4f5d7a3e1a3e5c7f9b2c1d8e6a4b3f0c7a2e1d9b4c6f8a0e5d7c3b # ubuntu 22.04, glibc 2.35
+      - image: ubuntu:22.04 # ubuntu 22.04, glibc 2.35
     resource_class: arm.medium
     steps:
       - run:
