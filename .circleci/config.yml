@@ -845,25 +845,10 @@ jobs:
             # Exportar PATH EN EL SHELL ACTUAL (no solo BASH_ENV) para que ffmpeg esté disponible ya
             export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
-            echo "[DEBUG] PATH actual: $PATH"
-            echo "[DEBUG] Verificando ffmpeg en /tmp/avi-ffmpeg/bin/ffmpeg:"
-            ls -la /tmp/avi-ffmpeg/bin/ffmpeg
-            echo "[DEBUG] Probando ffmpeg -version:"
-            /tmp/avi-ffmpeg/bin/ffmpeg -version 2>&1 | head -3
-            echo "[DEBUG] Probando ffmpeg -encoders:"
-            /tmp/avi-ffmpeg/bin/ffmpeg -hide_banner -encoders 2>&1 | head -20
-            # Verificar usando ruta absoluta
-            /tmp/avi-ffmpeg/bin/ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
-            encoders="$(\"/tmp/avi-ffmpeg/bin/ffmpeg\" -hide_banner -encoders)"
-            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
-            done
-            echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
-            export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
             encoders="$(ffmpeg -hide_banner -encoders)"
             for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || exit 1
+              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
             done
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
@@ -1173,10 +1158,12 @@ jobs:
             ffmpeg -version | head -3
             echo "[DEBUG] Verificando encoders..."
             encoders="$(ffmpeg -hide_banner -encoders)"
-            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
+            # Codecs disponibles en ffmpeg Homebrew (macOS): libmp3lame, libopus, aac, flac, pcm_s16le
+            # libvorbis NO está en fórmula básica Homebrew
+            for codec in libmp3lame libopus aac flac pcm_s16le; do
               printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
             done
-            echo "[DEBUG] Todos los codecs OK"
+            echo "[DEBUG] Todos los codecs OK (macOS Homebrew ffmpeg)"
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -1272,25 +1259,10 @@ jobs:
             # Exportar PATH EN EL SHELL ACTUAL (no solo BASH_ENV) para que ffmpeg esté disponible ya
             export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
-            echo "[DEBUG] PATH actual: $PATH"
-            echo "[DEBUG] Verificando ffmpeg en /tmp/avi-ffmpeg/bin/ffmpeg:"
-            ls -la /tmp/avi-ffmpeg/bin/ffmpeg
-            echo "[DEBUG] Probando ffmpeg -version:"
-            /tmp/avi-ffmpeg/bin/ffmpeg -version 2>&1 | head -3
-            echo "[DEBUG] Probando ffmpeg -encoders:"
-            /tmp/avi-ffmpeg/bin/ffmpeg -hide_banner -encoders 2>&1 | head -20
-            # Verificar usando ruta absoluta
-            /tmp/avi-ffmpeg/bin/ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
-            encoders="$(\"/tmp/avi-ffmpeg/bin/ffmpeg\" -hide_banner -encoders)"
-            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
-            done
-            echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
-            export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
             encoders="$(ffmpeg -hide_banner -encoders)"
             for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || exit 1
+              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
             done
       - run:
           name: Ejecutar suite con cobertura (cargo llvm-cov)
