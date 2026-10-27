@@ -14,6 +14,8 @@ use thiserror::Error;
 /// - 0 al 6, 9 y 10: los comandos de uso (éxito, error genérico, entrada inválida,
 ///   recurso ausente, modelo ausente, daemon inalcanzable, conflicto de estado, y
 ///   fallo de traducción y de transcripción).
+/// - `denoise_busy` se traduce a `StateConflict` (6): conflicto transitorio de
+///   recurso, no fallo del DSP.
 /// - 11 al 17: el ciclo de vida (`setup`, `self install`, `self update`,
 ///   `self uninstall`, `cleanup`), una variante por `reason`: `setup_failed`,
 ///   `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`,
@@ -119,6 +121,7 @@ pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("voice_exists", ExitCode::StateConflict),
     ("label_exists", ExitCode::StateConflict),
     ("port_in_use", ExitCode::StateConflict),
+    ("denoise_busy", ExitCode::StateConflict),
     ("translation_failed", ExitCode::TranslationFailed),
     ("transcription_failed", ExitCode::TranscriptionFailed),
     ("setup_failed", ExitCode::SetupFailed),
@@ -139,6 +142,8 @@ pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("synthesis_timeout", ExitCode::Error),
     ("stt_unsupported", ExitCode::Error),
     ("translation_unsupported", ExitCode::Error),
+    ("denoise_unsupported", ExitCode::Error),
+    ("denoise_failed", ExitCode::Error),
     ("playback_failed", ExitCode::Error),
     ("audio_enumeration_failed", ExitCode::Error),
     ("speech_list_failed", ExitCode::Error),
@@ -200,6 +205,7 @@ mod tests {
         ("voice_exists", 6),
         ("label_exists", 6),
         ("port_in_use", 6),
+        ("denoise_busy", 6),
         ("translation_failed", 9),
         ("transcription_failed", 10),
         ("setup_failed", 11),
@@ -220,6 +226,8 @@ mod tests {
         ("synthesis_timeout", 1),
         ("stt_unsupported", 1),
         ("translation_unsupported", 1),
+        ("denoise_unsupported", 1),
+        ("denoise_failed", 1),
         ("playback_failed", 1),
         ("audio_enumeration_failed", 1),
         ("speech_list_failed", 1),

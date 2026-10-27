@@ -219,6 +219,34 @@ async fn install_twice_is_idempotent() {
     );
 }
 
+/// La instalación conserva el permiso de ejecución de FFmpeg incluido en el bundle.
+#[cfg(unix)]
+#[tokio::test]
+async fn install_sets_bundled_ffmpeg_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sandbox = Sandbox::new("ffmpeg-mode");
+    let exe = sandbox.write_bundle(&sandbox.staging());
+    let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
+        .expect("el target del host tiene sección en el manifiesto");
+    assert!(section.required.iter().any(|relative| relative == "ffmpeg"));
+
+    install::install(
+        &sandbox.install_env(&exe),
+        &Sandbox::install_options(),
+        &Inert,
+    )
+    .await
+    .expect("la instalación se completa");
+
+    let mode = std::fs::metadata(place(&sandbox.program_dir, "ffmpeg"))
+        .expect("FFmpeg está instalado")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o755, "FFmpeg instalado debe ser ejecutable");
+}
+
 /// Quita del final de una línea la duración que el resumen añade.
 ///
 /// El resumen de una instalación termina con el tiempo que tardó, entre

@@ -83,6 +83,12 @@ const CTRL_C_CLEANUP_DEADLINE: std::time::Duration = std::time::Duration::from_s
 /// `spawn_background` y lo pone a 0 al abortar un arranque fallido.
 static IN_MEMORY_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Flag de cancelación del lote `denoise` en curso, para que el handler global
+/// de Ctrl+C lo active en vez de terminar de inmediato y dejar temporales.
+#[cfg(feature = "native-denoise")]
+static DENOISE_CANCEL: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+    std::sync::OnceLock::new();
+
 /// Titular del motor de transcripción para la vida del proceso: lo crea una
 /// sola vez y lo conserva sin destruirlo hasta la salida, de modo que ningún
 /// destructor de ONNX Runtime corre durante la salida. El sistema operativo
@@ -175,6 +181,7 @@ fn validate_temperature(temperature: Option<f32>) -> Result<(), CliError> {
 #[derive(Parser)]
 #[command(name = APP_NAME, version = VERSION, about = "AI Voice Interconnector CLI")]
 struct Cli {
+    /// Emitir la salida como JSON
     #[arg(long, global = true)]
     json: bool,
 
@@ -603,6 +610,10 @@ enum VoiceCommands {
         /// Sobrescribir una voz existente con el mismo nombre
         #[arg(short, long)]
         force: bool,
+        /// Limpiar ruido de fondo en la referencia antes de clonar (solo con `native-denoise`).
+        #[cfg(feature = "native-denoise")]
+        #[arg(long)]
+        denoise: bool,
         #[command(flatten)]
         routing: Routing,
     },
@@ -618,6 +629,12 @@ enum VoiceCommands {
 
 #[derive(Subcommand)]
 enum SpeechCommands {
+    /// Limpia el ruido de la pista de voz en archivos de audio y vídeo (DPDFNet + FFmpeg)
+    #[cfg(feature = "native-denoise")]
+    Denoise {
+        #[command(flatten)]
+        args: denoise::cli::Cli,
+    },
     /// Listar habla sintética persistida
     List {
         /// Filtrar por voz (ausente = todas las voces)
@@ -641,6 +658,10 @@ enum SpeechCommands {
         /// Idioma hablado en el audio
         #[arg(long, value_parser = ["es", "en"])]
         source_language: String,
+        /// Limpiar ruido de fondo antes de transcribir (solo con `native-denoise`).
+        #[cfg(feature = "native-denoise")]
+        #[arg(long)]
+        denoise: bool,
         #[command(flatten)]
         routing: Routing,
     },
@@ -707,6 +728,10 @@ enum SpeechCommands {
         /// Override del muestreo (por defecto la temperatura de producción; 0 < t <= 2.0)
         #[arg(long)]
         temperature: Option<f32>,
+        /// Limpiar ruido de fondo antes de doblar (solo con `native-denoise`).
+        #[cfg(feature = "native-denoise")]
+        #[arg(long)]
+        denoise: bool,
         /// Capturar desde el micrófono (mutuamente excluyente con --audio)
         #[arg(long)]
         mic: bool,
@@ -787,6 +812,18 @@ enum DaemonCommands {
 /// Instalado en `main` antes del despacho: cubre todos los modos.
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
+        // Un lote `denoise` en curso cancela de forma cooperativa: la primera
+        // pulsación activa su flag y deja que limpie temporales; la segunda
+        // termina el proceso.
+        #[cfg(feature = "native-denoise")]
+        if let Some(flag) = DENOISE_CANCEL.get() {
+            if flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                eprintln!("\nInterrumpido por el usuario.");
+                avi_process::scratch::terminate(ExitCode::Interrupted.code());
+            }
+            eprintln!("\n[aviso] Cancelación solicitada (Ctrl+C), limpiando temporales...");
+            return;
+        }
         // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
         // El PID del pidfile solo se mata si su identidad coincide con la
         // registrada; el PID en memoria es de un hijo recién lanzado por este
@@ -993,6 +1030,10 @@ async fn main() {
         )
         .await),
         Some(Commands::Voice { action }) => ok(handle_voice(json_mode, action).await),
+        #[cfg(feature = "native-denoise")]
+        Some(Commands::Speech {
+            action: SpeechCommands::Denoise { args },
+        }) => Ok(handle_denoise(json_mode, args)),
         Some(Commands::Speech { action }) => ok(handle_speech(json_mode, action).await),
         Some(Commands::Daemon { action }) => {
             handle_daemon(json_mode, action, usage_lock.take()).await
@@ -1137,6 +1178,29 @@ fn emit_help(json_mode: bool, text: &str) {
         emit_raw_json(json!({ "help": text }));
     } else {
         println!("{text}");
+    }
+}
+
+/// Subcomando `speech denoise`: la CLI de archivos comparte parser, pipeline y
+/// reporting con la biblioteca migrada. El FFmpeg se resuelve solo desde el
+/// paquete instalado y la receta por defecto es `studio`.
+#[cfg(feature = "native-denoise")]
+fn handle_denoise(json_mode: bool, args: denoise::cli::Cli) -> Outcome {
+    let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    drop(DENOISE_CANCEL.set(cancel_flag.clone()));
+    let code = denoise::cli::execute(
+        args,
+        json_mode,
+        true,
+        denoise::ffmpeg_io::find_bundled_ffmpeg,
+        Some(cancel_flag.clone()),
+    );
+    if code == 0 {
+        Outcome::Done
+    } else if code == 3 && cancel_flag.load(std::sync::atomic::Ordering::SeqCst) {
+        Outcome::Verdict(ExitCode::Interrupted.code())
+    } else {
+        Outcome::Verdict(code)
     }
 }
 
@@ -1344,8 +1408,20 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             name,
             speech_reference,
             force,
+            #[cfg(feature = "native-denoise")]
+            denoise,
             routing,
         } => {
+            let denoise = {
+                #[cfg(feature = "native-denoise")]
+                {
+                    denoise
+                }
+                #[cfg(not(feature = "native-denoise"))]
+                {
+                    false
+                }
+            };
             // El indicador nace antes de las validaciones, y el patrón de
             // bloque externo garantiza que se cierra en cualquier camino de
             // salida: éxito, error o cancelación.
@@ -1372,6 +1448,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                             &name,
                             &speech_reference,
                             force,
+                            denoise,
                             &mut progress,
                         )
                         .await?;
@@ -1401,6 +1478,45 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                         ),
                     ));
                 }
+                // Limpieza de ruido de referencia (opt-in) antes del clonado
+                // directo. Resuelve el modelo y verifica integridad antes de
+                // convertir a 48 kHz; un modelo ausente falla con `model_missing`.
+                let speech_path = speech_path.to_path_buf();
+                // El WAV limpio vive en este directorio temporal, así que debe
+                // sobrevivir hasta que termine el clonado: si se suelta al salir
+                // del bloque, la ruta queda apuntando a un archivo borrado.
+                #[cfg(feature = "native-denoise")]
+                let (_denoise_scratch, speech_path) = if denoise {
+                    let work_dir = avi_process::scratch::tempdir("avi_clone_denoise_")
+                        .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
+                    let cleaned_path = work_dir.path().join("reference_clean.wav");
+                    denoise::service::ServiceModels::resolve()
+                        .map_err(|e| {
+                            CliError::new(
+                                ExitCode::ModelMissing,
+                                "model_missing",
+                                format!("Modelo de limpieza no provisionado: {e}"),
+                            )
+                        })?
+                        .denoise_wav_file(
+                            speech_path.as_path(),
+                            &cleaned_path,
+                            denoise::service::DenoiseUseCase::Clone,
+                            work_dir.path(),
+                        )
+                        .map_err(|e| {
+                            let reason = match e {
+                                denoise::errors::E::EModelMissing(_) => "model_missing",
+                                denoise::errors::E::EInvalidInput(_) => "invalid_audio",
+                                denoise::errors::E::EIo(_) => "io_error",
+                                _ => "denoise_failed",
+                            };
+                            CliError::new(ExitCode::Error, reason, e.to_string())
+                        })?;
+                    (Some(work_dir), cleaned_path)
+                } else {
+                    (None, speech_path)
+                };
 
                 progress.close_line();
                 let engine_result = direct_tts_engine();
@@ -1425,7 +1541,8 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 // tiempo de la fase queda congelado. No es un defecto: el
                 // trabajo total lo aporta el mensaje final.
                 let cloned =
-                    avi_tts::clone_voice(model_dir, speech_path, &tmp_qvoice, &name).and_then(|()| {
+                    avi_tts::clone_voice(model_dir, speech_path.as_path(), &tmp_qvoice, &name)
+                        .and_then(|()| {
                         progress.phase("saving", "Guardando referencia de voz…");
                         voice_store.save_reference(&name, &tmp_qvoice)
                     });
@@ -2048,8 +2165,20 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             mic,
             duration,
             source_language,
+            #[cfg(feature = "native-denoise")]
+            denoise,
             routing,
         } => {
+            let denoise = {
+                #[cfg(feature = "native-denoise")]
+                {
+                    denoise
+                }
+                #[cfg(not(feature = "native-denoise"))]
+                {
+                    false
+                }
+            };
             // Tope de duración antes de grabar: la captura pedida es `--duration` o,
             // sin ella, el techo de push-to-talk.
             if mic {
@@ -2095,6 +2224,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     mic,
                     duration,
                     &source_language,
+                    denoise,
                     &mut progress,
                 )
                 .await;
@@ -2175,7 +2305,48 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     });
                     progress.repaint();
                     let engine = engine_result?;
-                    let text = engine.transcribe(&pcm).map_err(|e| {
+                    // Limpieza de ruido (opt-in) antes de STT: toma de turno,
+                    // 48 kHz, inferencia y vuelta a 16 kHz. El modelo se resuelve
+                    // y verifica antes del trabajo pesado; fallo de modelo es
+                    // `model_missing`, fallo de audio es `invalid_audio`.
+                    let pcm_for_stt = {
+                        #[cfg(feature = "native-denoise")]
+                        let denoised = if denoise {
+                            let work_dir = avi_process::scratch::tempdir("avi_transcribe_denoise_")
+                                .map_err(|e| {
+                                    CliError::new(ExitCode::Error, "io_error", format!("{e:#}"))
+                                })?;
+                            denoise::service::ServiceModels::resolve()
+                                .map_err(|e| {
+                                    CliError::new(
+                                        ExitCode::ModelMissing,
+                                        "model_missing",
+                                        format!("Modelo de limpieza no provisionado: {e}"),
+                                    )
+                                })?
+                                .denoise_pcm16_mono(
+                                    &pcm,
+                                    16_000,
+                                    denoise::service::DenoiseUseCase::Stt,
+                                    work_dir.path(),
+                                )
+                                .map_err(|e| {
+                                    let reason = match e {
+                                        denoise::errors::E::EModelMissing(_) => "model_missing",
+                                        denoise::errors::E::EInvalidInput(_) => "invalid_audio",
+                                        denoise::errors::E::EIo(_) => "io_error",
+                                        _ => "denoise_failed",
+                                    };
+                                    CliError::new(ExitCode::Error, reason, e.to_string())
+                                })?
+                        } else {
+                            pcm.clone()
+                        };
+                        #[cfg(not(feature = "native-denoise"))]
+                        let denoised = pcm;
+                        denoised
+                    };
+                    let text = engine.transcribe(&pcm_for_stt).map_err(|e| {
                         CliError::new(
                             ExitCode::TranscriptionFailed,
                             "transcription_failed",
@@ -2497,8 +2668,20 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             source_language,
             target_language,
             temperature,
+            #[cfg(feature = "native-denoise")]
+            denoise,
             routing,
         } => {
+            let denoise = {
+                #[cfg(feature = "native-denoise")]
+                {
+                    denoise
+                }
+                #[cfg(not(feature = "native-denoise"))]
+                {
+                    false
+                }
+            };
             validate_temperature(temperature)?;
             // Validaciones puras del contrato, antes del despacho:
             if mic && duration.is_none() && !std::io::stdin().is_terminal() {
@@ -2538,6 +2721,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &source_language,
                         &target_language,
                         temperature,
+                        denoise,
                         &voice,
                     )
                     .await;
@@ -2811,6 +2995,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             }
             Ok(())
         }
+        #[cfg(feature = "native-denoise")]
+        SpeechCommands::Denoise { .. } => unreachable!("speech denoise se despacha en main"),
     }
 }
 
@@ -3978,7 +4164,7 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
 /// falla con la ruta buscada si no carga.
 #[cfg(feature = "native-stt")]
 fn with_onnx_runtime_check(mut report: lifecycle::doctor::Report) -> lifecycle::doctor::Report {
-    match avi_stt::parakeet::ensure_onnx_runtime() {
+    match avi_shared::onnx_runtime::ensure_onnx_runtime() {
         Ok(path) => report.push_check(
             "onnx_runtime",
             true,
@@ -4677,6 +4863,7 @@ async fn transcribe_via_daemon(
     mic: bool,
     duration: Option<u64>,
     source_language: &str,
+    denoise: bool,
     progress: &mut PhaseProgress,
 ) -> Result<String, CliError> {
     // El POST apunta a la dirección descubierta (fallback idéntico sin
@@ -4706,15 +4893,18 @@ async fn transcribe_via_daemon(
     progress.phase("transcribing", "Transcribiendo audio (daemon)…");
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let mut payload =
+        serde_json::json!({ "audio_b64": audio_b64, "source_language": source_language });
+    if denoise {
+        payload["denoise"] = serde_json::json!(true);
+    }
     // La espera se repinta con el indicador: `/transcribe` devuelve JSON plano
     // y no emite eventos, así que sin esto la fase parecería congelada.
     let resp = await_with_progress(
         progress,
         client
             .post(format!("http://{}/transcribe", client_addr))
-            .json(
-                &serde_json::json!({ "audio_b64": audio_b64, "source_language": source_language }),
-            )
+            .json(&payload)
             .send(),
     )
     .await
@@ -5287,9 +5477,10 @@ async fn clone_via_daemon(
     name: &str,
     speech_reference: &str,
     force: bool,
+    denoise: bool,
     progress: &mut PhaseProgress,
 ) -> Result<(String, String, bool), CliError> {
-    progress.phase("cloning", "Clonando voz (daemon)…");
+    progress.phase("cloning", "Clonando voz (daemon).");
     let speech_bytes = std::fs::read(speech_reference).map_err(|e| {
         CliError::new(
             ExitCode::NotFound,
@@ -5301,11 +5492,14 @@ async fn clone_via_daemon(
         )
     })?;
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&speech_bytes);
-    let payload = serde_json::json!({
+    let mut payload = serde_json::json!({
         "name": name,
         "audio_b64": audio_b64,
         "force": force,
     });
+    if denoise {
+        payload["denoise"] = serde_json::json!(true);
+    }
     // El envío solo espera las cabeceras (el daemon valida barato y
     // responde 200 de inmediato); el trabajo pesado se consume como stream con
     // inactividad 1500 ms + failsafe `REQUEST_FAILSAFE` hasta el evento final.
@@ -5374,6 +5568,7 @@ async fn dub_via_daemon(
     source_language: &str,
     target_language: &str,
     temperature: Option<f32>,
+    denoise: bool,
     voice: &str,
 ) -> Result<String, CliError> {
     // Captura/lectura PCM y encode a base64 para POST /dub
@@ -5412,6 +5607,9 @@ async fn dub_via_daemon(
     });
     if let Some(t) = temperature {
         payload["temperature"] = serde_json::json!(t);
+    }
+    if denoise {
+        payload["denoise"] = serde_json::json!(true);
     }
     // El envío espera las cabeceras (respuesta 200 inmediata tras
     // validar barato); el pipeline se consume como stream con inactividad

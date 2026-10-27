@@ -509,7 +509,7 @@ impl AudioService {
         drop(stream);
 
         let raw_samples = acquire_lock(&recorded_samples, "buffer de grabación").clone();
-        Ok(finish(raw_samples, channels, sample_rate))
+        finish(raw_samples, channels, sample_rate)
     }
 
     /// Capturar audio del micrófono en modo push-to-talk: graba hasta que el
@@ -577,7 +577,7 @@ impl AudioService {
 
         let raw_samples = acquire_lock(&recorded_samples, "buffer de grabación").clone();
         let raw_samples = ensure_captured_samples_non_empty(raw_samples)?;
-        Ok(finish(raw_samples, channels, sample_rate))
+        finish(raw_samples, channels, sample_rate)
     }
 }
 
@@ -595,13 +595,14 @@ fn ensure_captured_samples_non_empty(raw_samples: Vec<f32>) -> Result<Vec<f32>> 
     Ok(raw_samples)
 }
 
-/// Post-procesado compartido de captura de micrófono: mono → resample a
-/// 16 kHz → int16. Usado por `capture_16k_mono_pcm` y
+/// Post-procesado compartido de captura de micrófono: mono → resample antialias
+/// a 16 kHz → int16. Usado por `capture_16k_mono_pcm` y
 /// `capture_16k_mono_pcm_until_enter` para no duplicar el pipeline.
-fn finish(recorded: Vec<f32>, channels: usize, sample_rate: u32) -> Vec<i16> {
+fn finish(recorded: Vec<f32>, channels: usize, sample_rate: u32) -> Result<Vec<i16>> {
     let mono_samples = to_mono(&recorded, channels);
-    let resampled = resample_linear(&mono_samples, sample_rate, 16000);
-    f32_to_i16(&resampled)
+    let resampled = resample_antialias(&mono_samples, sample_rate, 16_000)
+        .map_err(|e| anyhow!(e.to_string()))?;
+    Ok(f32_to_i16(&resampled))
 }
 
 /// Error tipado de la carga de un WAV, para que quien llama distinga la causa
@@ -678,15 +679,7 @@ fn ensure_nonzero_sample_rate(spec: &hound::WavSpec) -> Result<(), WavLoadError>
 /// válido o soportado (incluido un WAV truncado, cuyas muestras declaradas no están
 /// en el archivo) e `Io` para el resto de fallos de lectura.
 pub fn load_wav_16k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
-    let reader = hound::WavReader::open(path)?;
-    let spec = reader.spec();
-    ensure_nonzero_sample_rate(&spec)?;
-
-    let samples = read_normalized_samples(reader)?;
-
-    let mono = to_mono(&samples, spec.channels as usize);
-    let resampled = resample_linear(&mono, spec.sample_rate, 16_000);
-    Ok(f32_to_i16(&resampled))
+    load_wav_mono_pcm_at(path, 16_000)
 }
 
 /// Lee todas las muestras de un WAV normalizadas a `f32` en [-1, 1]. Las enteras
@@ -713,6 +706,21 @@ fn read_normalized_samples<R: std::io::Read>(
 /// devuelven como `WavLoadError` con la misma clasificación: un WAV truncado o que
 /// no es un WAV válido es `Invalid`.
 pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
+    load_wav_mono_pcm_at(path, 24_000)
+}
+
+/// Carga un WAV arbitrario y lo normaliza a PCM `i16` mono a 48 kHz, la tasa
+/// que exige DPDFNet. Es la entrada del preprocesamiento de referencias de
+/// clonado: `avi-tts` vuelve a convertir después el resultado a 24 kHz.
+pub fn load_wav_48k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoadError> {
+    load_wav_mono_pcm_at(path, 48_000)
+}
+
+/// Carga un WAV arbitrario y lo normaliza a PCM `i16` mono a `to_rate`.
+/// Comparte la clasificación de errores de los loaders públicos: un WAV
+/// truncado o no soportado es `Invalid`, un fichero ausente es `NotFound` y el
+/// resto de fallos de lectura son `Io`.
+fn load_wav_mono_pcm_at(path: impl AsRef<Path>, to_rate: u32) -> Result<Vec<i16>, WavLoadError> {
     let reader = hound::WavReader::open(path)?;
     let spec = reader.spec();
     ensure_nonzero_sample_rate(&spec)?;
@@ -720,34 +728,39 @@ pub fn load_wav_24k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoad
     let samples = read_normalized_samples(reader)?;
 
     let mono = to_mono(&samples, spec.channels as usize);
-    let resampled = resample_24k_antialias(&mono, spec.sample_rate)?;
+    let resampled = resample_antialias(&mono, spec.sample_rate, to_rate)?;
     Ok(f32_to_i16(&resampled))
 }
 
-/// Resamplea `mono` a 24 kHz con `rubato::FftFixedIn` (FFT polyphase con filtro
-/// anti-alias). Se usa en la ruta de clonado porque la interpolación lineal no
-/// filtra al decimar (p. ej. 48→24 kHz), contamina el espectro y degrada el
-/// x-vector (timbre).
-/// No-op cuando ya está a 24 kHz (preserva el paso intacto de una referencia ya
-/// normalizada). Procesa en chunks fijos y vacía el remanente con `process_partial`.
-/// La salida mide exactamente `round(len * 24000 / from_rate)` muestras: se
-/// descarta el retardo propio del filtro (`output_delay`) para que el audio no
-/// quede desplazado, y se recorta el relleno de ceros del último bloque.
+/// Resamplea `mono` a `to_rate` con `rubato::FftFixedIn` (FFT polyphase con
+/// filtro anti-alias). Es la autoridad de conversión PCM interna para 16, 24 y
+/// 48 kHz: la interpolación lineal no filtra al decimar (p. ej. 48→16 kHz) y
+/// pliega el espectro sobre la banda de voz.
+/// No-op cuando ya está en la tasa destino (preserva el paso intacto de una
+/// referencia ya normalizada). Procesa en chunks fijos y vacía el remanente con
+/// `process_partial`. La salida mide exactamente
+/// `round(len * to_rate / from_rate)` muestras: se descarta el retardo propio
+/// del filtro (`output_delay`) para que el audio no quede desplazado, y se
+/// recorta el relleno de ceros del último bloque.
 /// Un fallo del remuestreador (ratio no construible o error de proceso) es un
 /// `WavLoadError::Invalid`: no hay degradación a otro método.
-fn resample_24k_antialias(mono: &[f32], from_rate: u32) -> Result<Vec<f32>, WavLoadError> {
+pub fn resample_antialias(
+    mono: &[f32],
+    from_rate: u32,
+    to_rate: u32,
+) -> Result<Vec<f32>, WavLoadError> {
     use rubato::{FftFixedIn, Resampler};
-    if from_rate == 24_000 || mono.is_empty() {
+    if from_rate == to_rate || mono.is_empty() {
         return Ok(mono.to_vec());
     }
     let fail = |e: &dyn std::fmt::Display| {
         WavLoadError::Invalid(format!(
-            "no se pudo remuestrear de {from_rate} Hz a 24000 Hz: {e}"
+            "no se pudo remuestrear de {from_rate} Hz a {to_rate} Hz: {e}"
         ))
     };
     const CHUNK: usize = 1024;
-    let mut resampler =
-        FftFixedIn::<f32>::new(from_rate as usize, 24_000, CHUNK, 2, 1).map_err(|e| fail(&e))?;
+    let mut resampler = FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, CHUNK, 2, 1)
+        .map_err(|e| fail(&e))?;
     let mut out = Vec::new();
     let mut pos = 0;
     while pos + CHUNK <= mono.len() {
@@ -765,8 +778,8 @@ fn resample_24k_antialias(mono: &[f32], from_rate: u32) -> Result<Vec<f32>, WavL
         .map_err(|e| fail(&e))?;
     out.extend_from_slice(&w[0]);
     // Longitud exacta de la salida y retardo del filtro a compensar.
-    let expected =
-        ((mono.len() as u128 * 24_000 + from_rate as u128 / 2) / from_rate as u128) as usize;
+    let expected = ((mono.len() as u128 * to_rate as u128 + from_rate as u128 / 2)
+        / from_rate as u128) as usize;
     let delay = resampler.output_delay();
     // Si el último bloque no alcanzó, se sigue vaciando el filtro con ceros.
     while out.len() < delay + expected {
@@ -1159,7 +1172,7 @@ mod tests {
             .collect();
 
         let mono = crate::to_mono(&input, 2);
-        let resampled = crate::resample_linear(&mono, 48000, 16000);
+        let resampled = crate::resample_antialias(&mono, 48000, 16000).unwrap();
         let pcm = crate::f32_to_i16(&resampled);
 
         // 300 muestras estéreo -> 150 mono @48kHz -> 50 @16kHz.
@@ -1219,65 +1232,110 @@ mod tests {
     /// Un ratio que el remuestreador no puede construir es `Invalid`, sin
     /// degradar a interpolación lineal.
     #[test]
-    fn test_resample_24k_unbuildable_ratio_is_invalid() {
-        let err = crate::resample_24k_antialias(&[0.1; 2048], 0).unwrap_err();
+    fn test_resample_antialias_unbuildable_ratio_is_invalid() {
+        let err = crate::resample_antialias(&[0.1; 2048], 0, 16_000).unwrap_err();
         assert!(
             matches!(err, crate::WavLoadError::Invalid(_)),
             "obtenido: {err:?}"
         );
     }
 
-    /// La salida mide exactamente `round(len * 24000 / from_rate)`, para tamaños
-    /// menores que un bloque, exactos y no múltiplos, en 16, 44,1 y 48 kHz.
+    /// La salida mide exactamente `round(len * to_rate / from_rate)` para las
+    /// tasas internas 16/24/48 kHz, también con remanentes y ratios no enteros.
     #[test]
-    fn test_resample_24k_output_length_is_exact() {
-        // (frecuencia, muestras de entrada, muestras de salida esperadas)
-        let cases: [(u32, usize, usize); 12] = [
-            (16_000, 100, 150),
-            (16_000, 1024, 1536),
-            (16_000, 2500, 3750),
-            (16_000, 3000, 4500),
-            (44_100, 100, 54),
-            (44_100, 1024, 557),
-            (44_100, 2500, 1361),
-            (44_100, 4410, 2400),
-            (48_000, 100, 50),
-            (48_000, 1024, 512),
-            (48_000, 2500, 1250),
-            (48_000, 4800, 2400),
+    fn test_resample_antialias_output_length_is_exact() {
+        // (origen, destino, muestras de entrada, muestras de salida esperadas)
+        let cases: [(u32, u32, usize, usize); 9] = [
+            (16_000, 16_000, 100, 100),
+            (16_000, 24_000, 100, 150),
+            (16_000, 48_000, 1024, 3072),
+            (24_000, 16_000, 1000, 667),
+            (24_000, 48_000, 2500, 5000),
+            (44_100, 48_000, 1024, 1115),
+            (48_000, 16_000, 100, 33),
+            (48_000, 16_000, 2500, 833),
+            (48_000, 24_000, 4800, 2400),
         ];
-        for (rate, len, expected) in cases {
-            let out = crate::resample_24k_antialias(&vec![0.1; len], rate).unwrap();
-            assert_eq!(out.len(), expected, "{len} muestras a {rate} Hz");
+        for (from, to, len, expected) in cases {
+            let out = crate::resample_antialias(&vec![0.1; len], from, to).unwrap();
+            assert_eq!(out.len(), expected, "{len} muestras de {from} a {to} Hz");
         }
     }
 
-    /// El retardo del filtro se compensa: una senoide remuestreada coincide con la
-    /// senoide ideal a 24 kHz, sin desplazamiento.
+    /// El retardo del filtro se compensa en todas las conversiones internas:
+    /// una senoide remuestreada coincide con la ideal de la tasa destino.
     #[test]
-    fn test_resample_24k_does_not_shift_the_signal() {
-        let sine =
-            |rate: f32, n: usize| (2.0 * std::f32::consts::PI * 440.0 * n as f32 / rate).sin();
-        for rate in [16_000u32, 48_000] {
-            let input: Vec<f32> = (0..4000).map(|n| sine(rate as f32, n)).collect();
-            let out = crate::resample_24k_antialias(&input, rate).unwrap();
-            for (n, &sample) in out.iter().enumerate().skip(200).take(out.len() - 400) {
-                let ideal = sine(24_000.0, n);
+    fn test_resample_antialias_does_not_shift_the_signal() {
+        let sine = |rate: u32, n: usize| {
+            (2.0 * std::f32::consts::PI * 440.0 * n as f32 / rate as f32).sin()
+        };
+        for from in [16_000u32, 44_100, 48_000] {
+            for to in [16_000u32, 24_000, 48_000] {
+                if from == to {
+                    continue;
+                }
+                let input: Vec<f32> = (0..4000).map(|n| sine(from, n)).collect();
+                let out = crate::resample_antialias(&input, from, to).unwrap();
+                // Se omite el transitorio inicial del filtro FFT, ya sin retardo.
+                let mut max_error = 0.0f32;
+                for (n, &sample) in out.iter().enumerate().skip(600).take(out.len() - 800) {
+                    let ideal = sine(to, n);
+                    max_error = max_error.max((sample - ideal).abs());
+                }
+                // El retardo se compensa de forma entera: queda un residuo
+                // submuestra del filtro FFT (< 0,08 de amplitud a 440 Hz).
                 assert!(
-                    (sample - ideal).abs() < 0.05,
-                    "desfase en la muestra {n} a {rate} Hz: {sample} vs {ideal}"
+                    max_error < 0.08,
+                    "error máximo {max_error} de {from} a {to} Hz"
                 );
             }
         }
     }
 
+    /// Una tasa que ya coincide con la destino no se toca.
     #[test]
-    fn test_resample_24k_same_rate_is_identity() {
+    fn test_resample_antialias_same_rate_is_identity() {
         let input = vec![0.25, -0.5, 0.75];
-        assert_eq!(
-            crate::resample_24k_antialias(&input, 24_000).unwrap(),
-            input
-        );
+        for rate in [16_000u32, 24_000, 48_000] {
+            assert_eq!(
+                crate::resample_antialias(&input, rate, rate).unwrap(),
+                input,
+                "{rate} Hz"
+            );
+        }
+    }
+
+    /// Al decimar, el filtro atenúa un tono por encima de Nyquist que la
+    /// interpolación lineal plegaría sobre la banda de voz.
+    #[test]
+    fn test_resample_antialias_rejects_aliasing() {
+        let rms = |samples: &[f32]| {
+            (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+        };
+        for (from, to, tone) in [
+            (48_000u32, 16_000u32, 12_000.0f32),
+            (48_000, 24_000, 15_000.0),
+        ] {
+            let input: Vec<f32> = (0..4800)
+                .map(|n| (2.0 * std::f32::consts::PI * tone * n as f32 / from as f32).sin())
+                .collect();
+            let filtered = crate::resample_antialias(&input, from, to).unwrap();
+            let linear = crate::resample_linear(&input, from, to);
+            let filtered_rms = rms(&filtered);
+            let linear_rms = rms(&linear);
+            assert!(
+                filtered_rms * 10.0 < linear_rms,
+                "el antialias no atenuó {tone} Hz de {from} a {to}: {filtered_rms} vs {linear_rms}"
+            );
+        }
+    }
+
+    /// La captura de micrófono usa la misma autoridad y conserva la longitud
+    /// exacta esperada a 16 kHz.
+    #[test]
+    fn test_finish_capture_resamples_to_16k_exactly() {
+        let pcm = crate::finish(vec![0.1; 4800], 1, 48_000).unwrap();
+        assert_eq!(pcm.len(), 1600);
     }
 
     #[test]

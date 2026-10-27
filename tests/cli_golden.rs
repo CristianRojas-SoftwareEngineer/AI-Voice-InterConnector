@@ -1216,7 +1216,11 @@ fn seed_pinned_models(models_root: &std::path::Path, names: &[&str]) {
             .map(|(_, patterns)| patterns.to_vec())
             .unwrap_or_else(|| vec!["config.json"]);
         for file in files {
-            std::fs::write(snapshot.join(file), b"marker").expect("sembrar fichero");
+            let path = snapshot.join(file);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("crear subdirectorio del pin");
+            }
+            std::fs::write(path, b"marker").expect("sembrar fichero");
         }
     }
 }
@@ -4290,6 +4294,52 @@ mod tts {
         );
     }
 
+    /// Regresión: `voice clone --denoise` mantiene vivo el WAV limpio mientras
+    /// el motor clona. Si el directorio temporal se libera antes, el motor
+    /// recibe una ruta inexistente y la orden falla con `voice_clone_failed`.
+    #[cfg(feature = "native-denoise")]
+    #[test]
+    #[ignore = "requiere el modelo Base de Qwen3-TTS, el binario del motor y DPDFNet"]
+    fn voice_clone_with_denoise_ok() {
+        require_tts_base_model();
+        require_tts_binary();
+        let store = avi_store::ModelStore::new().expect("la raíz de modelos debe resolverse");
+        assert!(
+            store.is_provisioned(avi_shared::paths::DPDFNET_MODEL),
+            "falta {}: aprovisiona el modelo de limpieza con `setup`",
+            avi_shared::paths::DPDFNET_MODEL
+        );
+        let _guard = lock_tts();
+        let name = unique_label("clone_denoise");
+        let inst = IsolatedInstance::new("clone_denoise");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "voice",
+                "clone",
+                "--no-daemon",
+                "--denoise",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &inst.args(),
+        );
+        assert_eq!(code, 0, "{actual}");
+        assert_clone_envelope_keys(&actual);
+        let speech = actual["speech"].as_str().expect("speech debe existir");
+        assert!(
+            Path::new(speech).is_file(),
+            "reference.qvoice debe existir tras limpiar y clonar"
+        );
+        let _ = avi_store::remove_voice(
+            &avi_store::VoiceStore::at(inst.dir.join("voices")),
+            &avi_store::SpeechStore::at(inst.dir.join("speech")),
+            &name,
+        );
+    }
+
     /// El envelope de `voice clone` es idéntico en la vía local y en la del
     /// daemon: exactamente `name`, `speech`, `precomputed` y `schema_version`.
     fn assert_clone_envelope_keys(actual: &Value) {
@@ -6497,6 +6547,73 @@ fn run_text(args: &[&str]) -> (i32, String) {
     (code, stdout)
 }
 
+/// `speech denoise` existe solo con `native-denoise`; el comando raíz no lo expone.
+#[test]
+fn speech_denoise_route_matches_feature_and_rejects_root_alias() {
+    let (code, speech_help) = run_text(&["speech", "--help"]);
+    assert_eq!(code, 0);
+    let (root_code, root_help) = run_text(&["--help"]);
+    assert_eq!(root_code, 0);
+    let (root_alias_code, _) = run_text(&["denoise", "--help"]);
+    assert_eq!(root_alias_code, 2);
+    let (root_alias_code, root_alias_error) = run_json(&["--json", "denoise", "--help"]);
+    assert_eq!(root_alias_code, 2);
+    assert_eq!(root_alias_error["reason"], "usage_error");
+    assert!(
+        !root_help
+            .lines()
+            .any(|line| line.trim_start().starts_with("denoise ")),
+        "{root_help}"
+    );
+
+    #[cfg(feature = "native-denoise")]
+    {
+        assert!(speech_help.contains("denoise"), "{speech_help}");
+        let (code, help) = run_text(&["speech", "denoise", "--help"]);
+        assert_eq!(code, 0);
+        assert!(help.contains("--dry-run"), "{help}");
+    }
+
+    #[cfg(not(feature = "native-denoise"))]
+    {
+        assert!(!speech_help.contains("denoise"), "{speech_help}");
+        let (code, value) = run_json(&["--json", "speech", "denoise", "--help"]);
+        assert_eq!(code, 2);
+        assert_eq!(value["reason"], "usage_error");
+    }
+}
+
+/// La simulación JSON de `speech denoise` emite JSONL sin envelope global y no requiere modelos.
+#[cfg(feature = "native-denoise")]
+#[test]
+fn speech_denoise_dry_run_emits_jsonl_without_model() {
+    let (sandbox, envs) = contract_sandbox("speech_denoise_jsonl");
+    let input = sandbox.path().join("voz.wav");
+    std::fs::write(&input, b"sin necesidad de un WAV valido en dry-run").expect("crear entrada");
+    let input = input.to_string_lossy().into_owned();
+    let args = ["--json", "speech", "denoise", input.as_str(), "--dry-run"];
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, stdout, stderr) = run_capture(&args, &envs);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let lines: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("cada línea debe ser JSON"))
+        .collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert_eq!(lines[0]["status"], "dry-run");
+    assert!(
+        lines[0].get("schema_version").is_none(),
+        "la línea de item no lleva envelope: {}",
+        lines[0]
+    );
+    assert!(
+        lines[1]["summary"].is_object(),
+        "la última línea es el resumen: {}",
+        lines[1]
+    );
+}
+
 /// Ayuda de `synthesize`/`say`/`dub`: expone los flags de idioma y
 /// temperatura, sin parámetros sin efecto.
 #[test]
@@ -7063,7 +7180,7 @@ fn help_subcommand_is_disabled() {
 /// El programa sin subcomando muestra la ayuda de la raíz: exit 0 y stdout
 /// idéntico al de `--help`.
 #[test]
-fn no_subcommand_shows_root_help() {
+fn no_subcommand_showsroot_help() {
     let (code, bare, _) = run_text_with_stderr(&[]);
     let (help_code, help, _) = run_text_with_stderr(&["--help"]);
     assert_eq!(code, 0, "sin subcomando debe salir 0");
@@ -7075,7 +7192,7 @@ fn no_subcommand_shows_root_help() {
 /// Con `--json`, la ayuda de la raíz (sin subcomando, `--help` o `-h`) sale
 /// como un único objeto `{"help"}` idéntico entre invocaciones.
 #[test]
-fn json_root_help_is_payload() {
+fn jsonroot_help_is_payload() {
     let (code, bare) = run_json(&["--json"]);
     assert_eq!(code, 0);
     assert_eq!(bare["schema_version"], "5");

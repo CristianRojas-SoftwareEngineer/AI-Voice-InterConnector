@@ -1,0 +1,183 @@
+#![allow(clippy::disallowed_methods)]
+
+//! Test E2E `#[ignore]` — pipeline completo sobre un archivo de audio real.
+//!
+//! Requiere `ffmpeg 6+` y el modelo DPDFNet provisionado por `setup`.
+//! Ejecutar con `cargo test --release --test test_audio_pipeline -- --ignored`.
+
+use denoise::errors::E;
+use denoise::ffmpeg_io::{find_ffmpeg, probe, verify_output_lightweight, StreamKind};
+use denoise::models::AviModelsProvider;
+use denoise::pipeline::{clean_file, PipelineParams, ProcessStatus};
+use denoise::preset::AudioBitrate;
+use hound::WavReader;
+use std::cell::RefCell;
+use std::fs;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+#[test]
+#[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
+fn test_audio_wav_pipeline_e2e() {
+    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
+    let input = Path::new("tests/data/voz_noisy.wav");
+    assert!(
+        input.exists(),
+        "tests/data/voz_noisy.wav debe existir (ver tests/data/README.md)"
+    );
+
+    let tmp_dir = std::env::temp_dir().join("denoise_audio_e2e");
+    let _ = fs::remove_dir_all(&tmp_dir);
+    fs::create_dir_all(&tmp_dir).expect("Crear directorio temporal del test");
+    let output = tmp_dir.join("voz_denoised.wav");
+
+    let probe_in = probe(&ffmpeg, input).expect("Probe del WAV de entrada");
+    assert!(!probe_in.has_video);
+    assert!(probe_in.has_audio);
+    assert_eq!(probe_in.stream_kind, StreamKind::Audio);
+
+    let provider = AviModelsProvider;
+    let params = PipelineParams {
+        ffmpeg: &ffmpeg,
+        input,
+        output: &output,
+        audio_bitrate: AudioBitrate::Legacy,
+        dry_blend: 0.0,
+        pause_gate_db: -25.0,
+        highpass: false,
+        stereo: false,
+        target_lufs: None,
+        models_provider: &provider,
+        overwrite: true,
+        skip_existing: false,
+        verbose: false,
+        cancel_flag: None,
+    };
+
+    // `clean_file` recibe un `Fn`: la telemetría del test usa interior mutabilidad.
+    let progress = RefCell::new((0u32, Vec::<String>::new()));
+    let status = clean_file(&params, |pct, msg| {
+        let mut state = progress.borrow_mut();
+        state.0 = pct;
+        state.1.push(msg.to_string());
+    })
+    .expect("El pipeline de audio debe completarse");
+    let (last_pct, messages) = progress.into_inner();
+
+    assert_eq!(status, ProcessStatus::Ok);
+    assert_eq!(last_pct, 100, "El progreso debe alcanzar 100%");
+    assert!(
+        messages.iter().any(|m| m == "empaquetando audio"),
+        "El pipeline de audio debe reportar la fase de empaquetado: {:?}",
+        messages
+    );
+
+    // Salida WAV válida, reproducible y con la duración esperada
+    let meta = fs::metadata(&output).expect("La salida WAV debe existir");
+    assert!(meta.len() > 0, "La salida WAV no puede estar vacía");
+
+    let mut reader = WavReader::open(&output).expect("La salida debe ser un WAV legible por hound");
+    let spec = reader.spec();
+    assert_eq!(spec.channels, 1);
+    assert_eq!(spec.sample_rate, 48_000);
+    assert_eq!(spec.bits_per_sample, 16);
+
+    let out_duration = reader.duration() as f64 / spec.sample_rate as f64;
+    assert!(
+        (out_duration - probe_in.duration).abs() <= 0.5,
+        "Duración de salida {:.3}s debe coincidir con la entrada {:.3}s (±0.5s)",
+        out_duration,
+        probe_in.duration
+    );
+
+    let samples: Vec<i16> = reader
+        .samples::<i16>()
+        .collect::<Result<Vec<_>, _>>()
+        .expect("Leer muestras PCM16 de la salida");
+    assert!(!samples.is_empty(), "La salida no puede tener 0 muestras");
+
+    let verified =
+        verify_output_lightweight(&ffmpeg, &output, probe_in.duration, StreamKind::Audio)
+            .expect("Verificación ligera de audio");
+    assert!(
+        verified,
+        "La salida de audio debe pasar la verificación ligera"
+    );
+
+    // Sin temporales ni parciales huérfanos junto a la salida
+    let leftovers: Vec<String> = fs::read_dir(&tmp_dir)
+        .expect("Listar directorio de salida")
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.contains(".part.") || name.contains(".tmp."))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "No deben quedar temporales ni parciales: {:?}",
+        leftovers
+    );
+
+    let _ = fs::remove_dir_all(&tmp_dir);
+}
+
+/// Cancela tras el primer progreso real de inferencia, no entre etapas.
+#[test]
+#[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
+fn test_audio_wav_cancel_during_dsp_preserves_output() {
+    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
+    let input = Path::new("tests/data/voz_noisy.wav");
+    assert!(input.exists(), "falta tests/data/voz_noisy.wav");
+    let tmp_dir = std::env::temp_dir().join(format!("denoise_cancel_e2e_{}", std::process::id()));
+    let _ = fs::remove_dir_all(&tmp_dir);
+    fs::create_dir_all(&tmp_dir).expect("crear directorio temporal");
+    let output = tmp_dir.join("voz_denoised.wav");
+    let original = b"salida anterior";
+    fs::write(&output, original).expect("crear salida preexistente");
+    let flag = Arc::new(AtomicBool::new(false));
+    let provider = AviModelsProvider;
+    let params = PipelineParams {
+        ffmpeg: &ffmpeg,
+        input,
+        output: &output,
+        audio_bitrate: AudioBitrate::Legacy,
+        dry_blend: 0.0,
+        pause_gate_db: -25.0,
+        highpass: false,
+        stereo: false,
+        target_lufs: None,
+        models_provider: &provider,
+        overwrite: true,
+        skip_existing: false,
+        verbose: false,
+        cancel_flag: Some(flag.clone()),
+    };
+    let saw_dsp_progress = std::cell::Cell::new(false);
+    let result = clean_file(&params, |pct, msg| {
+        if msg == "procesando DSP" && pct > 6 {
+            saw_dsp_progress.set(true);
+            flag.store(true, Ordering::SeqCst);
+        }
+    });
+    assert!(
+        saw_dsp_progress.get(),
+        "la señal debe activarse durante la inferencia"
+    );
+    assert!(
+        matches!(result, Err(E::ECancelled)),
+        "el DSP debe cancelarse: {result:?}"
+    );
+    assert_eq!(fs::read(&output).expect("leer salida"), original);
+    let leftovers: Vec<_> = fs::read_dir(&tmp_dir)
+        .expect("listar temporales")
+        .map(|entry| {
+            entry
+                .expect("leer entrada")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .filter(|name| name.contains(".part.") || name.contains(".tmp."))
+        .collect();
+    assert!(leftovers.is_empty(), "temporales residuales: {leftovers:?}");
+    fs::remove_dir_all(&tmp_dir).expect("eliminar directorio temporal");
+}

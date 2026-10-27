@@ -21,6 +21,7 @@ Este documento es la descripción normativa del contrato público de la CLI —c
 - [3. El grupo `speech`](#3-el-grupo-speech)
   - [Reparto de responsabilidades](#reparto-de-responsabilidades)
   - [Parámetros](#parámetros)
+  - [`speech denoise`: limpieza local de archivos](#speech-denoise-limpieza-local-de-archivos)
 - [4. Síntesis y el bucle de `--play`](#4-síntesis-y-el-bucle-de---play)
   - [Qué hace cada gemelo](#qué-hace-cada-gemelo)
   - [El bucle de `--play`: cuatro opciones](#el-bucle-de---play-cuatro-opciones)
@@ -146,7 +147,7 @@ La lista de comandos y subcomandos vigente, con su propósito, está en [`README
 
 | Comando | Sub-acciones | Propósito |
 |---|---|---|
-| `speech` | `synthesize`, `say`, `play`, `list`, `remove`, `transcribe`, `dub` | Síntesis de habla, gestión del almacén, transcripción de audio a texto y composición voz→voz |
+| `speech` | `synthesize`, `say`, `play`, `list`, `remove`, `transcribe`, `dub`, `denoise` | Síntesis de habla, gestión del almacén, transcripción, composición voz→voz y limpieza local de archivos de audio/vídeo |
 | `voice` | `list`, `clone`, `remove` | Gestión del registro de voces |
 | `translate` | — | Traducción de texto `es↔en`, aislada de la síntesis |
 | `devices` | — | Lista dispositivos de audio |
@@ -224,6 +225,11 @@ En disco los dos sentidos quedan separados por nombre y no por posición:
 | `speech play` | Reproduce una locución guardada | no | **no** |
 | `speech list` | Lista las locuciones guardadas | no | no |
 | `speech remove` | Borra una locución guardada | no | no |
+| `speech transcribe` | Transcribe audio a texto | no | sí |
+| `speech dub` | Compone voz→voz | no | sí |
+| `speech denoise` | Limpia archivos de audio o la pista de audio de vídeo | no | sí, `native-denoise` |
+
+`speech denoise` es local-only: procesa archivos directamente y no envía rutas al daemon. Acepta entradas de audio y vídeo; para vídeo conserva la imagen y limpia únicamente la pista de audio. Su perfil de archivos predeterminado es `studio`; `--preset default` selecciona el perfil original sin normalización. Requiere `native-denoise`, incluido en `full`; DPDFNet debe estar provisionado con `setup` y FFmpeg se resuelve desde el paquete de AVI, sin fallback al `PATH`; el binario integrado debe declarar versión 6 o superior, con o sin el prefijo de `git describe` que anteponen los builds de Linux, y una versión anterior o indescifrable se rechaza nombrando lo encontrado. La limpieza de archivos no se expone como endpoint del daemon.
 
 `synthesize` y `say` son gemelos: misma síntesis, distinto destino —disco o parlantes—. `play`, `list` y `remove` son la gestión del almacén. **`say` es la única sub-acción que genera sin persistir, y junto con `synthesize` la única que puede exigir provisión del modelo**; esa es la contrapartida de que `play`, `list` y `remove` no lo necesiten.
 
@@ -246,6 +252,13 @@ El almacén etiquetado es un recurso, y el repo tiene gramática para gestionar 
 | `speech play` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
 | `speech list` | `--voice/-v` · `--json` |
 | `speech remove` | `--label/-l` **requerido** · `--voice/-v` · `--json` |
+| `speech denoise` | `<entrada>...` · `--output-dir` · `--output-name` · `--prefix` · `--suffix` · `--recursive` · `--overwrite` · `--skip-existing` · `--dry-run` · `--json` global (JSONL) · `--verbose` · `--preset studio|default` · `--audio-bitrate` · `--highpass` · `--normalize` · `--target-lufs` · `--pause-gate-db` · `--dry-blend` · `--stereo` · `--help` |
+
+### `speech denoise`: limpieza local de archivos
+
+**`speech denoise` es una operación local de archivos**: el parser único del subcomando reutiliza el pipeline migrado. Las rutas `--model-dir` y `--ffmpeg-path` no forman parte de la CLI AVI y deben rechazarse como flags desconocidos; el modelo procede de `setup`/`doctor` y FFmpeg del paquete, sujeto a la misma comprobación de versión. `--json` global emite líneas JSONL de progreso y resultados sin envolverlas en otro objeto. Los flags opt-in `--denoise` de transcripción, doblaje y clonado son rutas independientes; la evaluación humana de preservación de identidad vocal en clonado no se considera validada. Para los contratos completos de opciones, entradas múltiples, nombres, colisiones, dry-run y resultados, véase [`commands/SPEECH.md`](commands/SPEECH.md#speech-denoise).
+
+`studio` es el perfil por omisión de este subcomando de archivos, con normalización de una pasada hacia −16 LUFS (objetivo, no garantía exacta), highpass, gate −25 dB, mezcla seca 0 y mono salvo `--stereo`. Los bitrates predeterminados son MP3/AAC 320, Vorbis 192 y Opus 256 kbps; WAV/FLAC no usan bitrate. El bitrate explícito incompatible con el códec se rechaza, sin ajuste automático. `--preset default` elige el perfil original (192 kbps, highpass desactivado, sin normalización, gate −25 dB, mezcla seca 0 y mono). Se conserva la precedencia defaults → preset → flags individuales; los flags positivos no desactivan booleanos activados por el preset.
 
 **`--voice/-v` es opcional en las cinco que lo aceptan** (`synthesize`, `say`, `play`, `list`, `remove`). En `synthesize`, `say`, `play` y `remove`, si falta, usa la voz de fábrica `default`; en `list`, sin `--voice` recorre todas las voces. La voz `default` es una voz clonada de fábrica con solo la huella de timbre ( `crates/avi-store/assets/default/reference.qvoice`, `crates/avi-store/src/lib.rs` `FACTORY_VOICES`). El catálogo de voces de fábrica es `default` (clonada), `ryan` y `vivian` (presets del motor `qwen_tts.c:spk_table`): todas entradas del registro `VoiceStore`, y el almacén garantiza las tres en cada consulta, incluida una raíz de datos recién creada. La distinción interna preset/clonada (`avi-tts/src/lib.rs` `resolve_voice_engine`, presencia de `reference.qvoice`) es detalle no-normativo; para el contrato toda voz es una entrada del registro. Las tres voces de fábrica sintetizan texto corto (2-4 palabras, p. ej. `Hola mundo`) con una tasa de error de palabras ≤ 0.25.
 
@@ -523,17 +536,19 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 
 | Código | `reason` |
 |---|---|
-| `1` | `io_error`, `voice_clone_failed`, `synthesis_failed`, `synthesis_timeout`, `stt_unsupported`, `translation_unsupported`, `playback_failed`, `audio_enumeration_failed`, `speech_list_failed`, `voice_list_failed`, `voice_store_init_failed`, `daemon_error`, `startup_failed`, `sudo_not_supported`, `lifecycle_failed`, `doctor_failed`, `self_install_failed`, `self_uninstall_failed`, `self_update_failed` |
+| `1` | `io_error`, `voice_clone_failed`, `synthesis_failed`, `synthesis_timeout`, `stt_unsupported`, `translation_unsupported`, `denoise_unsupported`, `denoise_failed`, `playback_failed`, `audio_enumeration_failed`, `speech_list_failed`, `voice_list_failed`, `voice_store_init_failed`, `daemon_error`, `startup_failed`, `sudo_not_supported`, `lifecycle_failed`, `doctor_failed`, `self_install_failed`, `self_uninstall_failed`, `self_update_failed` |
 | `2` | `confirmation_required`, `usage_error`, `empty_text`, `text_too_long`, `invalid_voice_name`, `invalid_identifier`, `cannot_remove_default`, `invalid_audio`, `empty_audio`, `audio_too_long` |
 | `3` | `voice_not_found`, `warm_voice_missing`, `audio_not_found`, `speech_not_found`, `not_installed` |
 | `4` | `model_missing` |
 | `5` | `daemon_unreachable` |
-| `6` | `voice_exists`, `label_exists`, `port_in_use` |
+| `6` | `voice_exists`, `label_exists`, `port_in_use`, `denoise_busy` |
 | `9` | `translation_failed` |
 | `10` | `transcription_failed` |
 | `11` a `22` | `setup_failed`, `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`, `daemon_stop_failed`, `lifecycle_locked`, `unsupported_platform`, `binary_incompatible`, `network_error`, `checksum_mismatch`, `program_dir_kept`, en ese orden |
 
 `warm_voice_missing`, `model_missing` y `startup_failed` viajan en la línea `error=<reason>` del fichero ready del daemon; la CLI traduce el primero a `voice_not_found` (3), conserva `model_missing` (4) y traduce el tercero a `daemon_error` (1).
+
+**Los tres `reason` de la limpieza de ruido** distinguen tres hechos que el consumidor trata distinto: `denoise_unsupported` (1) significa que el binario se compiló sin `native-denoise` y la limpieza no existe en esa instalación; `denoise_busy` (6) significa que hay una inferencia DPDFNet activa y otra solicitud esperando, así que la limpieza no se inició y conviene reintentar cuando termine la solicitud en curso; `denoise_failed` (1) significa que el modelo estaba provisionado y la inferencia o el DSP fallaron. En los tres casos la solicitud **no** devuelve audio sin limpiar: `model_missing` (4) es la precondición de modelo y se comprueba antes de reservar buffers o crear temporales.
 
 **El 6 tiene un solo dueño.** «Puerto ya en uso» y «la voz ya existe» son el mismo hecho y llevan el mismo código; no hay una constante aparte para el conflicto del daemon.
 
@@ -572,9 +587,9 @@ La reexportación desde `src/main.rs` crea dos sitios donde *parecen* vivir las 
 
 ### La invariante del canal
 
-**Bajo `--json`, toda salida no-cero emite el payload de error, salvo la salida por veredicto.** `error` (el mensaje) y `reason` son obligatorios en el payload; el código **no viaja en el envelope**, lo transporta el estado de salida del proceso, y por eso un consumidor tiene que leer las dos cosas.
+**Bajo `--json`, toda salida no-cero emite el payload de error, salvo la salida por veredicto y los resultados JSONL propios de `speech denoise`.** `error` (el mensaje) y `reason` son obligatorios en el payload; el código **no viaja en el envelope**, lo transporta el estado de salida del proceso, y por eso un consumidor tiene que leer las dos cosas.
 
-El canal tiene **tres formatos**, y cada invocación emite **exactamente un objeto JSON**:
+Los demás comandos tienen **tres formatos** y emiten **exactamente un objeto JSON** por invocación. `speech denoise` conserva su contrato JSONL: emite una línea JSON por archivo y un resumen final, sin segundo envelope al devolver un veredicto:
 
 1. **Éxito**: el payload propio del comando, vía `emit_raw_json()`, con salida 0. La ayuda (`--help`, `-h` y la raíz sin subcomando) emite `{"help"}` y `--version`/`-V` el payload de `version`, de modo que bajo `--json` no queda ninguna salida en texto.
 2. **Error**: el objeto `{"error": …, "reason": …}`, vía `CliError` traducido por `main()`, con salida ≠ 0.
@@ -634,9 +649,11 @@ Esta sección es el **contrato de salida** de cada comando: qué escribe por std
 
 **Las tres reglas que la gobiernan.**
 
-1. **stdout es el contrato y stderr es la explicación.** Bajo `--json`, stdout lleva exactamente un objeto JSON (§10) y stderr lleva el progreso, los avisos y el mensaje de error. Sin `--json`, stdout lleva el texto del resultado y stderr lleva el progreso y los avisos. En ningún caso el progreso —fase o actividad— llega a stdout: por eso el indicador escribe siempre por stderr.
+1. **stdout es el contrato y stderr es la explicación.** Bajo `--json`, stdout lleva un objeto JSON (§10), salvo los registros JSONL de `speech denoise`; stderr lleva el progreso, los avisos y el mensaje de error. Sin `--json`, stdout lleva el texto del resultado y stderr lleva el progreso y los avisos. En ningún caso el progreso —fase o actividad— llega a stdout: por eso el indicador escribe siempre por stderr.
 2. **La fase es un mensaje de stderr, y su forma es `… <mensaje> (<tiempo>)`.** El indicador **no imprime estado**: no hay cierre `[ok]` ni `[error]`. El estado lo dice **quien cierra** —el handler de la CLI, o el flujo de la librería en `install` y `uninstall`—, por stdout y **una sola vez**, con la duración de la operación. En no-TTY (la forma en que un script lee la salida) cada fase es una línea propia y la actividad repetida dentro de la misma fase no abre línea nueva; en TTY la fase se repinta sobre la misma línea.
 3. **El `reason` solo viaja en la salida no-cero**, y solo en el payload de error (§10). En el éxito es `null` o está ausente; en el veredicto (§10) el `reason` propio del comando viaja dentro del payload del comando, no en un objeto `error` aparte.
+
+**Excepción de salida para `speech denoise`.** El flag global `--json` de este comando selecciona JSONL: stdout contiene cero o más objetos JSON independientes, uno por evento de progreso/resultado, no un único envelope `schema_version`; cada registro mantiene su forma definida por el reporte del pipeline. Los errores de ejecución se expresan como registros JSONL y por el código de salida; el texto de ayuda/parseo sigue el canal general de errores de CLI. Sin `--json`, mensajes y progreso son texto humano según el comando. Esta excepción se limita a la interfaz del pipeline de archivos y no cambia el envelope `--json` ni el protocolo NDJSON del daemon para otros comandos.
 
 **La tabla.** «Fase» son los literales de fase que el comando nombra; «Mensaje final» es el estado que dice el dueño, por stdout, con su duración. Un guion significa que el comando no emite esa clase de salida.
 

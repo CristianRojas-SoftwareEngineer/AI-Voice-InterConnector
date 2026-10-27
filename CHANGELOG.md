@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.36.2 — 2026-10-22](#0362--2026-10-22)
 - [0.36.1 — 2026-10-22](#0361--2026-10-22)
 - [0.36.0 — 2026-10-21](#0360--2026-10-21)
@@ -117,6 +118,25 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Añadido
+
+- Se incorpora `ai-voice-interconnector speech denoise` como ruta única local para limpiar archivos de audio y la pista de audio de vídeo, conservando la imagen. El comando usa `studio` por omisión, ofrece `--preset default` y JSONL, y requiere `native-denoise`, DPDFNet provisionado y FFmpeg integrado. Los flujos de transcripción, doblaje y clonado aceptan limpieza optativa; la verificación de esta rama no acredita preservación de identidad vocal para clonado.
+- Se trasladan a los jobs permanentes los smokes nativos de distribución de `speech denoise` y FFmpeg instalado en cuatro targets; CircleCI #485 validó build, paquete e instalación en `2e24b86f`, sin ejecutar inferencia E2E. La CI de preintegración fue validada posteriormente por CircleCI #505 sobre `0f0e5c1e`: los nueve gates y los cuatro builds terminaron en verde. Ninguno de esos smokes equivale a inferencia E2E del modelo.
+- Se incorpora `cargo xtask ffmpeg`, que aprovisiona el FFmpeg fijado en `packaging/pins.json` para el target del host: verifica el SHA-256 del artefacto, extrae el ejecutable, le pasa el humo de versión y de los seis codificadores de la matriz de egresión e informa la ruta del binario resultante. Es lo que usan las pruebas locales y los cuatro jobs de prueba de la CI, por el mismo camino que `cargo xtask package`, de modo que ninguna versión, URL ni hash declarado en el pipeline puede divergir del manifiesto. La descarga del artefacto de Windows pasa al release que su autor publica en GitHub, que sirve el mismo fichero que su sitio de paquetes a velocidad de CDN, y `download_https` reintenta los errores transitorios y aborta la transferencia si el origen deja de enviar, en lugar de esperar indefinidamente.
+
+### Corregido
+
+- `voice clone --denoise` en la ruta local fallaba siempre con `voice_clone_failed`: el directorio temporal del audio limpio se liberaba antes de que el motor clonara. El temporal vive ahora hasta el final del clonado.
+- `speech transcribe --daemon --denoise` omitía la limpieza en silencio porque el cuerpo enviado al daemon se reconstruía sin el campo `denoise`. La orden envía ahora el cuerpo que declara la limpieza.
+- El contrato no nombraba los `reason` de la limpieza (`denoise_unsupported`, `denoise_busy`, `denoise_failed`) y la página de `speech denoise` describía códigos de salida que no coincidían con la paridad del motor de origen.
+- El reconocimiento del FFmpeg integrado rechazaba el binario que el paquete distribuye en Linux: ese build declara su versión con el prefijo de `git describe` (`ffmpeg version n9.0.2-…`), que la comprobación no admitía, así que `speech denoise` abortaba antes de procesar y `speech denoise --version` informaba `ffmpeg missing` pese a que el ejecutable viajaba en el paquete. El reconocimiento acepta el número de release con o sin ese prefijo y mantiene el rechazo de las versiones anteriores a 6 nombrando la que encontró.
+
+### Estado y límites verificados
+
+- El cribado STT A/B/C del corpus adverso se conserva como diagnóstico; sus diferencias WER no atribuyen causalidad al Denoise ni bloquean beta. No se abrirá una investigación ni issue automatizada por clip. En seis clips tutoriales de una persona, la campaña CLI A/B × tres repeticiones fue reproducible; WER B superior al 10% genera un warning no bloqueante. La paridad `/transcribe` CLI/daemon se comprobó para esos clips. `/dub` daemon con Denoise se verificó con heartbeat, resultado y WAV decodificable. La captura de micrófono comparó CLI y daemon con los mismos bytes. La evaluación de identidad vocal para clonado sigue sin realizarse: faltan referencias consentidas y protocolo humano. CircleCI #505 validó los nueve gates y los cuatro builds en `0f0e5c1e`; esta evidencia de CI no acredita por sí sola identidad vocal ni generalización acústica.
 
 ## [0.36.2] — 2026-10-22
 

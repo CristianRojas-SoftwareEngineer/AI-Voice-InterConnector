@@ -650,6 +650,11 @@ static int run_batch(qwen_tts_ctx_t *ctx, const char *text, int target_words, in
     }
 
     /* Milestone A fallback: sequential synth + concat via render_spans. */
+    if (nc <= 0) {
+        for (int i = 0; i < nc; i++) free(chunks[i]);
+        free(chunks);
+        return -1;
+    }
     cspan_t *spans = (cspan_t *)calloc((size_t)nc, sizeof(cspan_t));
     if (!spans) { for (int i = 0; i < nc; i++) free(chunks[i]); free(chunks); return -1; }
     for (int i = 0; i < nc; i++) {

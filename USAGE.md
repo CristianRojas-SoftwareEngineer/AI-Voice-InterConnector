@@ -16,6 +16,7 @@
     - [`speech remove`](#speech-remove)
     - [`speech transcribe`](#speech-transcribe)
     - [`speech dub`](#speech-dub)
+    - [`speech denoise`](#speech-denoise)
   - [El grupo `voice`](#el-grupo-voice)
     - [`voice clone`](#voice-clone)
     - [`voice list`](#voice-list)
@@ -360,7 +361,7 @@ Dispositivos de salida de audio:
 
 ### El grupo `speech`
 
-Siete sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`), tres que gestionan el almacén de locuciones guardadas (`play`, `list`, `remove`), una que transcribe audio a texto (`transcribe`) y una que compone el bucle voz→voz (`dub`). Cada una tiene una sola responsabilidad, y el nombre declara su costo: sintetizar paga una inferencia pesada (CPU + RAM) y puede exigir el modelo provisionado; gestionar el almacén no.
+Ocho sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`), tres que gestionan el almacén de locuciones guardadas (`play`, `list`, `remove`), una que transcribe audio a texto (`transcribe`), una que compone el bucle voz→voz (`dub`) y una que limpia archivos de audio/vídeo (`denoise`). Cada una tiene una sola responsabilidad y el nombre declara su propósito.
 
 | Sub-acción | Qué hace | Persiste | Necesita el modelo |
 |---|---|---|---|
@@ -368,6 +369,7 @@ Siete sub-acciones sobre el habla: dos que sintetizan (`synthesize`, `say`), tre
 | `speech say` | Sintetiza y reproduce, no guarda | no | sí |
 | `speech transcribe` | Transcribe audio a texto | no | sí |
 | `speech dub` | Composición voz→voz: transcribe, traduce si procede, sintetiza y reproduce | no | sí |
+| `speech denoise` | Limpia archivos de audio y la pista de audio de vídeo; no procesa imagen | no | sí, `native-denoise` |
 | `speech play` | Reproduce una locución guardada | no | no |
 | `speech list` | Lista las locuciones guardadas | no | no |
 | `speech remove` | Borra una locución guardada | no | no |
@@ -652,6 +654,19 @@ transcripción no está provisionado, falla remitiendo a
 el modelo ya cargado, sale con exit **10**. En la ruta daemon, un fallo de
 comunicación con el daemon (inactivo o inalcanzable) sale con
 exit **5**.
+
+---
+
+#### `speech denoise`
+
+Limpia archivos de audio o solo la pista de audio de vídeo. La imagen se conserva sin procesamiento.
+
+```bash
+ai-voice-interconnector speech denoise entrada.mp4
+ai-voice-interconnector speech denoise voz.wav --preset default --json
+```
+
+`studio` es el preset por omisión; `--preset default` selecciona el perfil sin normalización. El modelo DPDFNet debe estar provisionado con `setup`; FFmpeg se resuelve desde el paquete de AVI, sin fallback a `PATH`: el binario integrado debe declarar versión 6 o superior, con o sin el prefijo de `git describe` de los builds de Linux. El flag global `--json` produce JSONL de eventos y resultados. Para opciones de lote, colisiones, formatos y límites, consulta la [referencia completa](docs/CLI/commands/SPEECH.md#speech-denoise).
 
 ---
 

@@ -15,14 +15,15 @@ license = "MPL-2.0"
 # para conservar el motor real.
 ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"], optional = true }
 avi-core = { path = "../avi-core" }
-# Directorio real del programa, donde el bundle trae la librería de ONNX
-# Runtime aunque la app se invoque desde su symlink.
+# Módulo compartido `avi_shared::onnx_runtime`, la carga única de ONNX Runtime
+# que precede a crear cualquier sesión; su feature `native-ort` se activa con
+# `native-stt` de abajo.
 avi-shared = { path = "../avi-shared" }
 anyhow = "1.0"
 
 [features]
 # Activa el motor STT real (ort → onnxruntime dinámico vía `load-dynamic`).
-native-stt = ["dep:ort"]
+native-stt = ["dep:ort", "avi-shared/native-ort"]
 
 [dev-dependencies]
 # Normalización de WAV a PCM 16 kHz mono, reutilizado por el test de paridad

@@ -303,6 +303,8 @@ mod tests {
             rust: "1.96.0".to_string(),
             ort: "1.28.0".to_string(),
             ort_sha256: std::collections::BTreeMap::new(),
+            ffmpeg: "9.0.2".to_string(),
+            ffmpeg_sha256: std::collections::BTreeMap::new(),
             sccache: "0.8.2".to_string(),
             msys2_base: "2026-06-11".to_string(),
             msys2_gcc: "16.2.0".to_string(),
@@ -507,7 +509,7 @@ mod tests {
         std::fs::write(
             dir.join("packaging/pins.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "sccache": "0.8.2",
+                "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "sccache": "0.8.2",
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
@@ -530,7 +532,7 @@ mod tests {
         std::fs::write(
             dir.join("packaging/pins.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "sccache": "0.8.2",
+                "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "sccache": "0.8.2",
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",

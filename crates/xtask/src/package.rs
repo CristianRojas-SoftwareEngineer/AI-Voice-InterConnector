@@ -11,18 +11,21 @@
 //! Runtime reutilizando `ort-bundle/` si está fresco para la versión fijada
 //! en `packaging/pins.json` (fuente única, espejo del parámetro `ort_pin` de
 //! la CI), o descargándolo si no: el archivo descargado debe tener el SHA-256
-//! que fija `pins.json` para el target y traer la librería esperada. Valida
-//! `--expect-version` (la puerta tag-versión vive aquí, ningún paso YAML la
-//! duplica), pasa el humo (`version` y `voice list`) y comprime de forma
+//! que fija `pins.json` para el target y traer la librería esperada. Resuelve
+//! FFmpeg del mismo modo con `ffmpeg-bundle/`, verifica su SHA-256, exige los
+//! códecs de la matriz de egressión y ejecuta `-version` antes de montarlo.
+//! Valida `--expect-version` (la puerta tag-versión vive aquí, ningún paso YAML
+//! la duplica), pasa el humo (`version` y `voice list`) y comprime de forma
 //! determinista con el nombre de `release_asset_name`.
 //!
-//! Sin red en los tests: la descarga vive en `ensure_ort_bundle` y todo lo demás
-//! (manifiesto, nombres, puerta de versión, hash, montaje, compresión) es puro
-//! o solo toca temporales.
+//! Sin red en los tests: las descargas viven en `ensure_ort_bundle` y
+//! `ensure_ffmpeg_bundle`; todo lo demás (manifiesto, nombres, puerta de
+//! versión, hash, montaje, compresión) es puro o solo toca temporales.
 
 use anyhow::{bail, Result};
 use avi_shared::manifest::{parse_manifest_text, BundleTarget};
 use avi_shared::pins::{self, Pins};
+use std::io::Seek;
 use std::path::{Path, PathBuf};
 
 /// Manifiesto canónico, relativo a la raíz del repositorio.
@@ -30,6 +33,20 @@ pub(crate) const MANIFEST_REL: &str = "packaging/bundle-manifest.json";
 
 /// Caché local del bundle de ONNX Runtime, relativa a la raíz.
 const ORT_BUNDLE_REL: &str = "ort-bundle";
+
+/// Caché local del binario de FFmpeg, relativa a la raíz.
+const FFMPEG_BUNDLE_REL: &str = "ffmpeg-bundle";
+
+/// Marcador del SHA-256 del artefacto dentro de `ffmpeg-bundle/`: un cambio de
+/// pin invalida el bundle aunque la versión nominal no cambie.
+const FFMPEG_MARKER: &str = ".ffmpeg-sha256";
+
+/// Release inmutable de BtbN del que salen los binarios Linux: el tag
+/// `latest` se mueve, así que la URL y el hash fijados apuntan aquí.
+const FFMPEG_BTBN_TAG: &str = "autobuild-2026-10-24-13-02";
+
+/// Build concreto de FFmpeg dentro de [`FFMPEG_BTBN_TAG`].
+const FFMPEG_BTBN_BUILD: &str = "n9.0.2-35-g9a9b70bb8c";
 
 /// Marcador de versión dentro de `ort-bundle/`: lo escribe una descarga de este
 /// comando y el job de CI que arma el bundle. Un bundle sin marcador tiene una
@@ -139,17 +156,87 @@ fn ort_download(triple: &str, ort_version: &str) -> Result<(String, String)> {
 /// dígitos hexadecimales en minúsculas. Un triple sin entrada o un valor mal
 /// formado es un error, nunca una descarga sin verificar.
 fn pinned_ort_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&'a str> {
-    let Some(hash) = pins.ort_sha256.get(triple) else {
-        bail!("packaging/pins.json no fija el SHA-256 de ONNX Runtime para {triple} (clave `ort_sha256`)");
+    pinned_sha256(&pins.ort_sha256, "ONNX Runtime", triple)
+}
+
+/// SHA-256 fijado en `pins.json` para el artefacto de FFmpeg del triple.
+fn pinned_ffmpeg_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&'a str> {
+    pinned_sha256(&pins.ffmpeg_sha256, "FFmpeg", triple)
+}
+
+/// Valida que `pins.json` fije un SHA-256 bien formado para el target: 64
+/// dígitos hexadecimales en minúsculas. Un triple sin entrada o un valor mal
+/// formado es un error, nunca una descarga sin verificar.
+fn pinned_sha256<'a>(
+    hashes: &'a std::collections::BTreeMap<String, String>,
+    artifact: &str,
+    triple: &str,
+) -> Result<&'a str> {
+    let Some(hash) = hashes.get(triple) else {
+        bail!("packaging/pins.json no fija el SHA-256 de {artifact} para {triple}");
     };
     if hash.len() != 64
         || !hash
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
-        bail!("el SHA-256 de ONNX Runtime para {triple} en packaging/pins.json no son 64 dígitos hexadecimales en minúsculas: {hash:?}");
+        bail!("el SHA-256 de {artifact} para {triple} en packaging/pins.json no son 64 dígitos hexadecimales en minúsculas: {hash:?}");
     }
     Ok(hash)
+}
+
+/// Archivo y URL de descarga de FFmpeg para el triple. Linux usa un release
+/// inmutable de los builds GPL de BtbN y macOS el build de Martin Riedl;
+/// Windows, el essentials de Gyan. El pin de versión manda en todos los casos.
+///
+/// Windows se descarga del release que el propio autor del build publica en
+/// GitHub, no de su sitio de paquetes: ese sitio degrada las transferencias
+/// sostenidas hasta volver inútil bajar 110 MB, mientras que el release los
+/// sirve a velocidad de CDN. Los dos orígenes publican el mismo fichero, y
+/// quien lo decide no es la URL sino el SHA-256 fijado, que se verifica sobre
+/// el archivo descargado antes de extraer nada: un origen que sirviera otro
+/// binario no llegaría al bundle.
+fn ffmpeg_download(triple: &str, version: &str) -> Result<(String, String)> {
+    let major: String = version.split('.').take(2).collect::<Vec<_>>().join(".");
+    let (file, url) = match triple {
+        "x86_64-pc-windows-msvc" => (
+            format!("ffmpeg-{version}-essentials_build.zip"),
+            format!(
+                "https://github.com/GyanD/codexffmpeg/releases/download/{version}/ffmpeg-{version}-essentials_build.zip"
+            ),
+        ),
+        "x86_64-unknown-linux-gnu" => {
+            let file = format!("ffmpeg-{FFMPEG_BTBN_BUILD}-linux64-gpl-{major}.tar.xz");
+            let url = format!(
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/{FFMPEG_BTBN_TAG}/{file}"
+            );
+            (file, url)
+        }
+        "aarch64-unknown-linux-gnu" => {
+            let file = format!("ffmpeg-{FFMPEG_BTBN_BUILD}-linuxarm64-gpl-{major}.tar.xz");
+            let url = format!(
+                "https://github.com/BtbN/FFmpeg-Builds/releases/download/{FFMPEG_BTBN_TAG}/{file}"
+            );
+            (file, url)
+        }
+        "aarch64-apple-darwin" => (
+            "ffmpeg.zip".to_string(),
+            format!("https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_{version}/ffmpeg.zip"),
+        ),
+        other => bail!("triple no soportado: {other}"),
+    };
+    Ok((file, url))
+}
+
+/// Nombre del ejecutable de FFmpeg dentro del bundle para el triple.
+fn ffmpeg_binary_name(triple: &str) -> Result<&'static str> {
+    if triple.contains("-windows-") {
+        Ok("ffmpeg.exe")
+    } else if triple.contains("-linux-") || triple.contains("-apple-") {
+        Ok("ffmpeg")
+    } else {
+        bail!("triple no soportado: {triple}")
+    }
 }
 
 /// SHA-256 en hexadecimal minúsculo de unos bytes.
@@ -234,6 +321,16 @@ fn powershell_single_quoted(text: &str) -> String {
 /// Descarga un archivo por HTTPS con `curl`, como los bootstrap: TLS ≥ 1.2 y
 /// fallo ante HTTP erróneo. Solo en Windows y solo si `curl` no existe se usa
 /// `Invoke-WebRequest`; cualquier otro fallo de `curl` se propaga.
+///
+/// Estos artefactos pesan más de 100 MB, así que la transferencia no puede
+/// quedarse esperando a un origen que deja de enviar sin cerrar la conexión:
+/// eso dejaría el paso colgado hasta el límite del job, sin mensaje que lo
+/// explique. De ahí el detector de estancamiento —aborta si la velocidad cae
+/// por debajo de 1 KB/s durante un minuto— y los reintentos ante error de
+/// conexión o de transferencia. Un reintento vuelve a bajar el archivo desde el
+/// principio; el SHA-256 fijado se verifica después sobre el fichero completo,
+/// así que reescribirlo no compromete nada: o coincide con el pin, o el
+/// empaquetado falla.
 fn download_https(url: &str, dest: &Path) -> Result<()> {
     let curl = std::process::Command::new("curl")
         .args([
@@ -241,6 +338,19 @@ fn download_https(url: &str, dest: &Path) -> Result<()> {
             "=https",
             "--tlsv1.2",
             "-fsSL",
+            "--connect-timeout",
+            "15",
+            "--retry",
+            "3",
+            "--retry-delay",
+            "2",
+            "--retry-connrefused",
+            "--speed-limit",
+            "1024",
+            "--speed-time",
+            "60",
+            "--max-time",
+            "600",
             "-o",
             &dest.to_string_lossy(),
             url,
@@ -430,6 +540,190 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Resul
     Ok(bundle)
 }
 
+/// `true` si `ffmpeg-bundle/` ya sirve para el triple: el ejecutable presente
+/// con tamaño mayor que cero y el marcador con el SHA-256 del artefacto fijado.
+fn ffmpeg_bundle_is_fresh(bundle: &Path, triple: &str, expected_sha256: &str) -> Result<bool> {
+    let binary = bundle.join(ffmpeg_binary_name(triple)?);
+    let marker = bundle.join(FFMPEG_MARKER);
+    if !binary.is_file() || !marker.is_file() {
+        return Ok(false);
+    }
+    let size = std::fs::metadata(&binary)?.len();
+    if size == 0 {
+        return Ok(false);
+    }
+    Ok(std::fs::read_to_string(marker)?.trim() == expected_sha256)
+}
+
+/// Extrae el ejecutable de FFmpeg del archivo descargado. En zip se busca por
+/// nombre; en `.tar.xz` se descomprime a un temporal y se recorre el tar. Falla
+/// si no aparece el ejecutable esperado.
+fn extract_ffmpeg_binary(archive: &Path, triple: &str) -> Result<Vec<u8>> {
+    let wanted = ffmpeg_binary_name(triple)?;
+    let name = archive.to_string_lossy();
+    if name.ends_with(".zip") {
+        let file = std::fs::File::open(archive)?;
+        let mut zip = zip::ZipArchive::new(file)?;
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i)?;
+            if entry.is_dir() {
+                continue;
+            }
+            let entry_name = entry.name().rsplit('/').next().unwrap_or("");
+            if entry_name == wanted {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+                return Ok(bytes);
+            }
+        }
+    } else if name.ends_with(".tar.xz") {
+        let file = std::fs::File::open(archive)?;
+        let mut reader = std::io::BufReader::new(file);
+        let mut tar_file = tempfile::Builder::new()
+            .prefix("xtask-ffmpeg-")
+            .tempfile()?;
+        lzma_rs::xz_decompress(&mut reader, tar_file.as_file_mut())?;
+        tar_file.as_file_mut().seek(std::io::SeekFrom::Start(0))?;
+        let mut tar = tar::Archive::new(tar_file.as_file_mut());
+        for entry in tar.entries()? {
+            let mut entry = entry?;
+            let path = entry.path()?.to_string_lossy().to_string();
+            let entry_name = path.rsplit('/').next().unwrap_or("");
+            if entry_name == wanted {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+                return Ok(bytes);
+            }
+        }
+    } else {
+        bail!(
+            "formato de archivo FFmpeg no soportado: {}",
+            archive.display()
+        );
+    }
+    bail!(
+        "el archivo de FFmpeg no trae el ejecutable {wanted}: {}",
+        archive.display()
+    )
+}
+
+/// Directorio canónico del bundle de FFmpeg dentro del repositorio.
+fn ffmpeg_bundle_dir(root: &Path) -> PathBuf {
+    root.join(FFMPEG_BUNDLE_REL)
+}
+
+/// Punto de entrada de `xtask ffmpeg`: aprovisiona en `dest` el FFmpeg fijado
+/// en `packaging/pins.json` para el target del host —la misma operación que
+/// `xtask package` hace antes de montar el bundle, con la misma verificación de
+/// SHA-256 y el mismo humo— y publica en la salida estándar la ruta del
+/// ejecutable resultante, para que quien invoque el subcomando no tenga que
+/// adivinar dónde quedó.
+pub fn run_ffmpeg(dest: Option<&Path>) -> Result<()> {
+    let root = std::env::current_dir()?;
+    let pins = pins::load_from_root(&root).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let triple = host_triple()?;
+    let bundle = match dest {
+        Some(dir) => dir.to_path_buf(),
+        None => ffmpeg_bundle_dir(&root),
+    };
+    let bundle = ensure_ffmpeg_bundle(&bundle, triple, &pins)?;
+    println!("{}", bundle.join(ffmpeg_binary_name(triple)?).display());
+    Ok(())
+}
+
+/// Asegura el bundle de FFmpeg en `bundle` para el triple: reutiliza el binario
+/// si está fresco o lo reconstruye desde la URL fijada, verificando el SHA-256
+/// antes de extraerlo. El humo `-version` corre sobre el binario extraído y el
+/// marcador solo se escribe después, así que un bundle fresco procede de una
+/// descarga verificada y ejecutable.
+fn ensure_ffmpeg_bundle(bundle: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
+    let version = pins.ffmpeg.as_str();
+    let expected_sha256 = pinned_ffmpeg_sha256(pins, triple)?;
+    if bundle.is_dir() && ffmpeg_bundle_is_fresh(bundle, triple, expected_sha256)? {
+        let binary = bundle.join(ffmpeg_binary_name(triple)?);
+        if smoke_ffmpeg(&binary).is_ok() {
+            eprintln!("Bundle FFmpeg reutilizado de {}", bundle.display());
+            return Ok(bundle.to_path_buf());
+        }
+        eprintln!("El bundle FFmpeg en caché no supera el humo; se reconstruye");
+    }
+    if bundle.is_dir() {
+        std::fs::remove_dir_all(bundle)?;
+    }
+    std::fs::create_dir_all(bundle)?;
+    let (file, url) = ffmpeg_download(triple, version)?;
+    let dest = tempfile::Builder::new()
+        .prefix(&format!("xtask-ffmpeg-{version}-"))
+        .suffix(&format!("-{file}"))
+        .tempfile()?
+        .into_temp_path();
+    eprintln!("Descargando FFmpeg {version}: {url}");
+    download_https(&url, &dest)?;
+    verify_sha256(&dest, expected_sha256)?;
+    let bytes = extract_ffmpeg_binary(&dest, triple)?;
+    if bytes.is_empty() {
+        bail!("el ejecutable de FFmpeg extraído está vacío");
+    }
+    let binary = bundle.join(ffmpeg_binary_name(triple)?);
+    std::fs::write(&binary, &bytes)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))?;
+    }
+    smoke_ffmpeg(&binary)?;
+    std::fs::write(bundle.join(FFMPEG_MARKER), expected_sha256)?;
+    if !ffmpeg_bundle_is_fresh(bundle, triple, expected_sha256)? {
+        bail!("el bundle de FFmpeg quedó incompleto tras la descarga");
+    }
+    Ok(bundle.to_path_buf())
+}
+
+/// Humo mínimo del FFmpeg extraído: debe ejecutarse, reportar su versión y
+/// anunciar los codificadores que exige la matriz de egresión.
+fn smoke_ffmpeg(binary: &Path) -> Result<()> {
+    let version = std::process::Command::new(binary)
+        .arg("-version")
+        .output()
+        .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {}: {e}", binary.display()))?;
+    let stdout = String::from_utf8_lossy(&version.stdout);
+    if !version.status.success() || !stdout.contains("ffmpeg version") {
+        bail!(
+            "el humo de FFmpeg falló: {} -version (exit {:?})",
+            binary.display(),
+            version.status.code()
+        );
+    }
+    let encoders = std::process::Command::new(binary)
+        .args(["-hide_banner", "-encoders"])
+        .output()
+        .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {} -encoders: {e}", binary.display()))?;
+    let listed = String::from_utf8_lossy(&encoders.stdout);
+    if !encoders.status.success() {
+        bail!(
+            "el humo de FFmpeg falló: {} -encoders (exit {:?})",
+            binary.display(),
+            encoders.status.code()
+        );
+    }
+    for codec in [
+        "libmp3lame",
+        "libvorbis",
+        "libopus",
+        "aac",
+        "flac",
+        "pcm_s16le",
+    ] {
+        if !listed.contains(codec) {
+            bail!(
+                "el FFmpeg de {} no incluye el codificador {codec}",
+                binary.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Orígenes en disco de cada entrada del manifiesto.
 struct Sources {
     binary: PathBuf,
@@ -473,9 +767,13 @@ fn locate_sources(root: &Path) -> Result<Sources> {
     Ok(Sources { binary, engine })
 }
 
-/// Humo del binario ya compilado: `version` y `voice list`, como el smoke de CI.
+/// Humo del binario ya compilado: versión, voces y contrato de `speech denoise`.
 fn smoke_binary(binary: &Path) -> Result<()> {
-    for args in [vec!["version"], vec!["voice", "list"]] {
+    for args in [
+        vec!["version"],
+        vec!["voice", "list"],
+        vec!["speech", "denoise", "--help"],
+    ] {
         let status = std::process::Command::new(binary)
             .args(&args)
             .status()
@@ -489,6 +787,17 @@ fn smoke_binary(binary: &Path) -> Result<()> {
             );
         }
     }
+    let status = std::process::Command::new(binary)
+        .arg("denoise")
+        .arg("--help")
+        .status()
+        .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {}: {e}", binary.display()))?;
+    if status.success() {
+        bail!(
+            "el humo falló: {} aceptó el comando raíz `denoise`",
+            binary.display()
+        );
+    }
     Ok(())
 }
 
@@ -499,9 +808,11 @@ fn stage_bundle(
     sources: &Sources,
     root: &Path,
     bundle: &Path,
+    ffmpeg: &Path,
     stage: &Path,
 ) -> Result<()> {
     let engine_rel = format!("vendor/qwen3-tts/qwen_tts{}", std::env::consts::EXE_SUFFIX);
+    let ffmpeg_rel = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     for relative in &section.required {
         let dest = relative_path(stage, relative);
         if let Some(parent) = dest.parent() {
@@ -511,6 +822,8 @@ fn stage_bundle(
             sources.binary.clone()
         } else if *relative == engine_rel {
             sources.engine.clone()
+        } else if *relative == ffmpeg_rel {
+            ffmpeg.to_path_buf()
         } else if root.join(relative).is_file() {
             root.join(relative)
         } else {
@@ -526,7 +839,9 @@ fn stage_bundle(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let executable = *relative == section.executable || *relative == engine_rel;
+            let executable = *relative == section.executable
+                || *relative == engine_rel
+                || *relative == ffmpeg_rel;
             let mode = if executable { 0o755 } else { 0o644 };
             std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(mode))?;
         }
@@ -577,6 +892,7 @@ fn sorted_entries(stage: &Path) -> Result<Vec<String>> {
 /// fijos (0755 ejecutables, 0644 resto) y marca temporal fija.
 fn compress_zip(stage: &Path, dest: &Path, section: &BundleTarget) -> Result<()> {
     let engine_rel = format!("vendor/qwen3-tts/qwen_tts{}", std::env::consts::EXE_SUFFIX);
+    let ffmpeg_rel = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     let file = std::fs::File::create(dest)?;
     let mut zip = zip::ZipWriter::new(file);
     let stamp = zip::DateTime::from_date_and_time(2020, 1, 1, 0, 0, 0)
@@ -589,11 +905,12 @@ fn compress_zip(stage: &Path, dest: &Path, section: &BundleTarget) -> Result<()>
                 dirs.push(parent);
             }
         }
-        let mode = if relative == section.executable || relative == engine_rel {
-            0o755
-        } else {
-            0o644
-        };
+        let mode =
+            if relative == section.executable || relative == engine_rel || relative == ffmpeg_rel {
+                0o755
+            } else {
+                0o644
+            };
         let options = zip::write::SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(mode)
@@ -616,6 +933,7 @@ fn compress_zip(stage: &Path, dest: &Path, section: &BundleTarget) -> Result<()>
 /// fijas (uid/gid 0, mtime fija, modos 0755/0644).
 fn compress_tar_gz(stage: &Path, dest: &Path, section: Option<&BundleTarget>) -> Result<()> {
     let engine_rel = format!("vendor/qwen3-tts/qwen_tts{}", std::env::consts::EXE_SUFFIX);
+    let ffmpeg_rel = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     let file = std::fs::File::create(dest)?;
     let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
     let mut tar = tar::Builder::new(gz);
@@ -623,8 +941,9 @@ fn compress_tar_gz(stage: &Path, dest: &Path, section: Option<&BundleTarget>) ->
     for relative in sorted_entries(stage)? {
         let src = relative_path(stage, &relative);
         let meta = std::fs::metadata(&src)?;
-        let executable =
-            section.is_some_and(|s| relative == s.executable || relative == engine_rel);
+        let executable = section
+            .is_some_and(|s| relative == s.executable || relative == engine_rel)
+            || relative == ffmpeg_rel;
         let mut header = tar::Header::new_gnu();
         header.set_size(meta.len());
         header.set_mtime(ARCHIVE_MTIME);
@@ -685,12 +1004,20 @@ pub fn run(
             bail!("librería no encontrada en {}: {lib}", bundle.display());
         }
     }
+    let ffmpeg_bundle = ensure_ffmpeg_bundle(&ffmpeg_bundle_dir(&root), triple, &pins)?;
+    let ffmpeg_binary = ffmpeg_bundle.join(ffmpeg_binary_name(triple)?);
+    if !ffmpeg_binary.is_file() {
+        bail!(
+            "ejecutable de FFmpeg no encontrado en {}",
+            ffmpeg_binary.display()
+        );
+    }
     // Directorio de montaje con dueño: se borra al salir por cualquier camino.
     let stage_guard = tempfile::Builder::new()
         .prefix(&format!("xtask-package-{triple}-"))
         .tempdir()?;
     let stage = stage_guard.path().to_path_buf();
-    stage_bundle(section, &sources, &root, &bundle, &stage)?;
+    stage_bundle(section, &sources, &root, &bundle, &ffmpeg_binary, &stage)?;
     // Ningún binario del bundle puede depender de algo que el sistema del
     // usuario no trae: se audita antes de publicar nada.
     super::deps::check_tree(&stage, section)?;
@@ -747,11 +1074,11 @@ mod tests {
         "targets": {
             "x86_64-pc-windows-msvc": {
                 "executable": "ai-voice-interconnector.exe",
-                "required": ["ai-voice-interconnector.exe", "LICENSE", "onnxruntime.dll"]
+                "required": ["ai-voice-interconnector.exe", "LICENSE", "onnxruntime.dll", "ffmpeg.exe"]
             },
             "x86_64-unknown-linux-gnu": {
                 "executable": "ai-voice-interconnector",
-                "required": ["ai-voice-interconnector", "LICENSE", "libonnxruntime.so"]
+                "required": ["ai-voice-interconnector", "LICENSE", "libonnxruntime.so", "ffmpeg"]
             }
         }
     }"#;
@@ -813,13 +1140,15 @@ mod tests {
             "libonnxruntime.so"
         };
         std::fs::write(src.join(lib), b"ort").unwrap();
+        let ffmpeg = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(src.join(&ffmpeg), b"ffmpeg").unwrap();
         let sources = Sources {
             binary: src.join(&section.executable),
             engine: src.join(&section.executable),
         };
         // Orígenes de fixture en `src/`, documentos simulados en la raíz.
         let root = src.clone();
-        stage_bundle(section, &sources, &root, &src, &stage).unwrap();
+        stage_bundle(section, &sources, &root, &src, &src.join(&ffmpeg), &stage).unwrap();
         let mut staged = Vec::new();
         collect_relative(&stage, &stage, &mut staged).unwrap();
         staged.sort();
@@ -895,6 +1224,76 @@ mod tests {
         assert!(ort_expected_libs("x86_64-unknown-linux-gnu")
             .unwrap()
             .contains(&"libonnxruntime.so"));
+    }
+
+    /// La descarga de FFmpeg apunta a los archivos oficiales por triple.
+    #[test]
+    fn ffmpeg_download_per_target() {
+        let version = test_ffmpeg_version();
+        let (file, url) = ffmpeg_download("x86_64-pc-windows-msvc", &version).unwrap();
+        assert_eq!(file, format!("ffmpeg-{version}-essentials_build.zip"));
+        assert!(url.ends_with(&file) && url.contains(&version));
+        // Windows baja del release del build en GitHub y no del sitio de
+        // paquetes del mismo autor, que degrada las transferencias sostenidas.
+        assert!(url.starts_with("https://github.com/GyanD/codexffmpeg/releases/download/"));
+        let (file, url) = ffmpeg_download("x86_64-unknown-linux-gnu", &version).unwrap();
+        assert_eq!(file, "ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz");
+        assert!(url.ends_with(&file) && url.contains(FFMPEG_BTBN_TAG));
+        let (file, _) = ffmpeg_download("aarch64-unknown-linux-gnu", &version).unwrap();
+        assert_eq!(
+            file,
+            "ffmpeg-n9.0.2-35-g9a9b70bb8c-linuxarm64-gpl-9.0.tar.xz"
+        );
+        let (file, url) = ffmpeg_download("aarch64-apple-darwin", &version).unwrap();
+        assert_eq!(file, "ffmpeg.zip");
+        assert!(url.contains(&version));
+    }
+
+    /// El bundle se aprovisiona en el directorio que recibe —no en una ruta
+    /// fija bajo la raíz— y el marcador con el SHA-256 fijado es lo que decide
+    /// entre reutilizarlo y reconstruirlo: un marcador coincidente lo declara
+    /// fresco y uno divergente lo invalida.
+    #[test]
+    fn ffmpeg_bundle_freshness_is_decided_in_the_given_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("bundle-explicito");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+        std::fs::write(bundle.join(ffmpeg_binary_name(triple).unwrap()), b"ffmpeg").unwrap();
+        let pinned = "a".repeat(64);
+        std::fs::write(bundle.join(FFMPEG_MARKER), &pinned).unwrap();
+        assert!(ffmpeg_bundle_is_fresh(&bundle, triple, &pinned).unwrap());
+        assert!(!ffmpeg_bundle_is_fresh(&bundle, triple, &"b".repeat(64)).unwrap());
+    }
+
+    /// Cada target del manifiesto exige el ejecutable de FFmpeg y fija su
+    /// SHA-256, también en `pins.json`.
+    #[test]
+    fn manifest_targets_require_ffmpeg() {
+        let pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido");
+        let sections =
+            parse_manifest_text(include_str!("../../../packaging/bundle-manifest.json")).unwrap();
+        for (triple, section) in &sections {
+            pinned_ffmpeg_sha256(&pins, triple).unwrap();
+            let name = ffmpeg_binary_name(triple).unwrap();
+            assert!(
+                section.required.iter().any(|r| r == name),
+                "el manifiesto de {triple} debe exigir {name}"
+            );
+        }
+        assert_eq!(
+            pins.ffmpeg_sha256.len(),
+            sections.len(),
+            "un hash por target, sin sobrantes"
+        );
+    }
+
+    /// Versión de FFmpeg fijada en `pins.json`.
+    fn test_ffmpeg_version() -> String {
+        pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido")
+            .ffmpeg
     }
 
     /// Cada target del manifiesto canónico tiene su SHA-256 de ONNX Runtime

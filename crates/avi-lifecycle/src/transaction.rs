@@ -335,14 +335,14 @@ fn fix_permissions(program_dir: &Path, placed: &[String]) -> anyhow::Result<()> 
     use crate::{manifest, target};
     use anyhow::Context;
     use std::os::unix::fs::PermissionsExt;
-    let executable = manifest::target_section(target::host_triple())
-        .context("no se pudo leer la sección del manifiesto para ajustar permisos")?
-        .executable;
+    let section = manifest::target_section(target::host_triple())
+        .context("no se pudo leer la sección del manifiesto para ajustar permisos")?;
     for relative in placed {
         let path = program_dir.join(to_platform_path(relative));
-        // `relative` es `&String` y `executable` es `String`: hay que desreferenciar
-        // para que `PartialEq` se resuelva.
-        let permissions = if *relative == executable || relative.starts_with("vendor/") {
+        let permissions = if *relative == section.executable
+            || (relative == "ffmpeg" && section.required.contains(relative))
+            || relative.starts_with("vendor/")
+        {
             0o755
         } else {
             0o644

@@ -22,8 +22,7 @@
 //!   `output_states_1` / `output_states_2` (hay un `prednet_lengths` intermedio
 //!   que se ignora).
 
-use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 use ort::inputs;
@@ -37,102 +36,6 @@ const PRED_LAYERS: i64 = 2;
 const PRED_HIDDEN: i64 = 640;
 /// Tope de tokens emitidos por frame antes de avanzar (max_tokens_per_step de NeMo).
 const MAX_TOKENS_PER_STEP: usize = 10;
-
-/// Nombre de la librería de ONNX Runtime que el bundle trae junto al
-/// ejecutable en cada sistema.
-const ORT_LIBRARY: &str = if cfg!(windows) {
-    "onnxruntime.dll"
-} else if cfg!(target_os = "macos") {
-    "libonnxruntime.dylib"
-} else {
-    "libonnxruntime.so"
-};
-
-/// ONNX Runtime no se pudo cargar: la librería falta o no es válida. Lleva la
-/// ruta buscada para que el mensaje diga dónde se esperaba.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnnxRuntimeUnavailable {
-    /// Ruta de la librería que se intentó cargar.
-    pub path: PathBuf,
-    /// Motivo del fallo.
-    pub reason: String,
-}
-
-impl std::fmt::Display for OnnxRuntimeUnavailable {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "no se pudo cargar ONNX Runtime desde {}: {}",
-            self.path.display(),
-            self.reason
-        )
-    }
-}
-
-impl std::error::Error for OnnxRuntimeUnavailable {}
-
-/// Ruta de la librería de ONNX Runtime: la de `ORT_DYLIB_PATH` si está
-/// definida y no vacía, que puede nombrar el fichero de la librería o el
-/// directorio que la contiene, o la que el bundle trae en el directorio real
-/// del programa, que sigue siendo el correcto cuando la app se invoca desde su
-/// symlink.
-pub fn onnx_runtime_path() -> Result<PathBuf, OnnxRuntimeUnavailable> {
-    if let Some(value) = std::env::var_os("ORT_DYLIB_PATH").filter(|p| !p.is_empty()) {
-        return Ok(resolve_ort_path(&value));
-    }
-    avi_shared::paths::program_dir()
-        .map(|dir| dir.join(ORT_LIBRARY))
-        .map_err(|e| OnnxRuntimeUnavailable {
-            path: PathBuf::from(ORT_LIBRARY),
-            reason: format!("no se pudo resolver el directorio del programa: {e}"),
-        })
-}
-
-/// Ruta de la librería según el valor de `ORT_DYLIB_PATH`: si nombra un
-/// directorio existente, la librería de ONNX Runtime de este sistema dentro de
-/// él; si no, la ruta tal cual.
-fn resolve_ort_path(value: &OsStr) -> PathBuf {
-    let path = PathBuf::from(value);
-    if path.is_dir() {
-        path.join(ORT_LIBRARY)
-    } else {
-        path
-    }
-}
-
-/// Carga ONNX Runtime una sola vez por proceso y devuelve la ruta cargada;
-/// las llamadas siguientes repiten el mismo resultado sin reintentar. Debe
-/// preceder a cualquier otro uso de `ort`, que sin ella buscaría la librería
-/// por su cuenta y abortaría si no la encuentra.
-pub fn ensure_onnx_runtime() -> Result<PathBuf, OnnxRuntimeUnavailable> {
-    static LOADED: std::sync::OnceLock<Result<PathBuf, OnnxRuntimeUnavailable>> =
-        std::sync::OnceLock::new();
-    LOADED
-        .get_or_init(|| {
-            let path = onnx_runtime_path()?;
-            load_onnx_runtime(&path)?;
-            Ok(path)
-        })
-        .clone()
-}
-
-/// Carga la librería de ONNX Runtime de `path` en `ort`. Un fichero
-/// inexistente se rechaza antes de llamar a `ort`, de modo que el error no
-/// depende de lo que el proceso haya cargado antes.
-fn load_onnx_runtime(path: &Path) -> Result<(), OnnxRuntimeUnavailable> {
-    let unavailable = |reason: String| OnnxRuntimeUnavailable {
-        path: path.to_path_buf(),
-        reason,
-    };
-    if !path.is_file() {
-        return Err(unavailable("el fichero no existe".to_string()));
-    }
-    let builder = ort::init_from(path).map_err(|e| unavailable(e.to_string()))?;
-    // `commit` devuelve `false` si el entorno ya estaba configurado; la
-    // librería cargada es la misma, así que no es un fallo.
-    builder.commit();
-    Ok(())
-}
 
 /// Motor STT real sobre el export ONNX int8 de Parakeet TDT 0.6B v3.
 ///
@@ -160,7 +63,10 @@ impl ParakeetEngine {
     /// Carga los 4 artefactos del modelo Parakeet desde `model_dir`.
     pub fn new(model_dir: impl AsRef<Path>) -> anyhow::Result<Self> {
         let base = model_dir.as_ref();
-        ensure_onnx_runtime()?;
+        // La carga única de ONNX Runtime vive en el módulo compartido: hay
+        // que inicializarla antes de crear la primera sesión, o `ort` buscaría
+        // la librería por su cuenta y abortaría el proceso.
+        avi_shared::onnx_runtime::ensure_onnx_runtime()?;
 
         let pre = session(base.join("nemo128.onnx"))
             .context("fallo al cargar sesión de features nemo128")?;
@@ -489,38 +395,5 @@ mod tests {
     fn argmax_returns_index_of_max_and_none_when_empty() {
         assert_eq!(argmax(&[0.1, 0.9, 0.3]), Some(1));
         assert_eq!(argmax(&[]), None);
-    }
-
-    /// Una librería inexistente es un error con la ruta buscada, no un pánico.
-    #[test]
-    fn missing_onnx_runtime_is_typed_error() {
-        // Prueba: ruta inexistente bajo el temporal del sistema, sin crear nada.
-        #[allow(clippy::disallowed_methods)]
-        let path = std::env::temp_dir()
-            .join("avi-ort-inexistente")
-            .join(ORT_LIBRARY);
-        let err = load_onnx_runtime(&path).expect_err("la librería no existe");
-        assert_eq!(err.path, path);
-        assert!(
-            err.to_string().contains(&path.display().to_string()),
-            "{err}"
-        );
-    }
-
-    /// Un directorio en `ORT_DYLIB_PATH` apunta a la librería de este sistema
-    /// dentro de él.
-    #[test]
-    fn ort_path_directory_appends_library_name() {
-        // Prueba: solo necesita un directorio existente, no escribe en él.
-        #[allow(clippy::disallowed_methods)]
-        let dir = std::env::temp_dir();
-        assert_eq!(resolve_ort_path(dir.as_os_str()), dir.join(ORT_LIBRARY));
-    }
-
-    /// Una ruta que no es un directorio se usa tal cual.
-    #[test]
-    fn ort_path_file_is_used_as_is() {
-        let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        assert_eq!(resolve_ort_path(file.as_os_str()), file);
     }
 }

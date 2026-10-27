@@ -8,6 +8,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -860,6 +861,20 @@ impl ModelStore {
         Ok(false)
     }
 
+    /// Verifica el SHA256 fijado del artefacto único de un modelo, cuando el
+    /// pin lo declara. La presencia del snapshot no basta: un archivo del
+    /// tamaño correcto pero con otro contenido no se usa para inferir. Los
+    /// modelos sin hash declarado pasan sin leer el disco.
+    pub fn verify_artifact(&self, model_name: &str) -> Result<()> {
+        let snapshot = self.model_snapshot_path(model_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Modelo desconocido (sin pin en MODEL_REVISIONS): {}",
+                model_name
+            )
+        })?;
+        verify_pinned_artifact(&snapshot, model_name)
+    }
+
     /// Descarga nativa de un modelo pinneado vía HuggingFace Hub.
     ///
     /// Usa `hf-hub` (`snapshot_download` con revisión de `MODEL_REVISIONS`): cache
@@ -982,6 +997,22 @@ impl ModelStore {
                 revision
             );
         }
+        // Integridad del artefacto fijado: si el contenido no es el revisado,
+        // se descarta el repo completo (snapshot y blobs) para que el siguiente
+        // intento descargue de nuevo en vez de reutilizar la corrupción.
+        if let Err(cause) = verify_pinned_artifact(&snapshot, model_name) {
+            let repo_dir =
+                models_cache_dir()?.join(format!("models--{}", repo_id.replace('/', "--")));
+            if repo_dir.is_dir() {
+                std::fs::remove_dir_all(&repo_dir).with_context(|| {
+                    format!(
+                        "No se pudo borrar el snapshot corrupto '{}'",
+                        repo_dir.display()
+                    )
+                })?;
+            }
+            return Err(cause);
+        }
         tracing::info!(
             "Snapshot {}@{} listo en {}",
             repo_id,
@@ -990,6 +1021,69 @@ impl ModelStore {
         );
         Ok(snapshot)
     }
+}
+
+/// SHA256 de un archivo, leído por bloques para no cargarlo entero.
+fn sha256_file(path: &Path) -> Result<String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)
+        .with_context(|| format!("No se pudo abrir '{}'", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .with_context(|| format!("No se pudo leer '{}'", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// Comprueba el SHA256 declarado por el pin contra el único artefacto del
+/// snapshot. Un pin sin hash no exige lectura; uno con hash y sin un patrón
+/// único es un error de catálogo, no una verificación superada.
+fn verify_pinned_artifact(snapshot: &Path, model_name: &str) -> Result<()> {
+    let pin = MODEL_REVISIONS
+        .iter()
+        .find(|pin| pin.name == model_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Modelo desconocido (sin pin en MODEL_REVISIONS): {}",
+                model_name
+            )
+        })?;
+    let Some(expected) = pin.artifact_sha256 else {
+        return Ok(());
+    };
+    let (_, patterns) = MODEL_FILE_PATTERNS
+        .iter()
+        .find(|(name, _)| *name == model_name)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "El pin de {} declara SHA256 pero no un patrón de artefacto",
+                model_name
+            )
+        })?;
+    if patterns.len() != 1 {
+        anyhow::bail!(
+            "El pin de {} declara SHA256 pero su patrón no identifica un único artefacto",
+            model_name
+        );
+    }
+    let artifact = snapshot.join(patterns[0]);
+    let actual = sha256_file(&artifact)?;
+    if !actual.eq_ignore_ascii_case(expected) {
+        anyhow::bail!(
+            "SHA256 de '{}' no coincide: esperado {}, obtenido {}",
+            artifact.display(),
+            expected,
+            actual
+        );
+    }
+    Ok(())
 }
 
 /// Destinatario del progreso de una descarga: recibe los bytes completados y el
@@ -2043,5 +2137,42 @@ mod tests {
         let resolved = store.model_snapshot_path("qwen3-tts-0.6b-base").unwrap();
         assert!(resolved.is_dir());
         env_restore(saved);
+    }
+
+    /// El cálculo de SHA256 coincide con el digest conocido de `abc`.
+    #[test]
+    fn sha256_file_matches_known_digest() {
+        let dir = temp_dir("sha256_known");
+        let file = dir.join("abc.bin");
+        std::fs::write(&file, b"abc").unwrap();
+        assert_eq!(
+            sha256_file(&file).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    /// Un artefacto del tamaño fijado pero con otro contenido no supera la
+    /// verificación: la presencia y el tamaño del snapshot no bastan.
+    #[test]
+    fn verify_pinned_artifact_rejects_same_size_corruption() {
+        let dir = temp_dir("sha_corrupt");
+        let pin = MODEL_REVISIONS
+            .iter()
+            .find(|pin| pin.name == avi_shared::paths::DPDFNET_MODEL)
+            .expect("el pin de DPDFNet existe");
+        let snapshot = dir.join("snapshot");
+        let artifact = snapshot.join(avi_shared::paths::DPDFNET_MODEL_FILE);
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        let file = std::fs::File::create(&artifact).unwrap();
+        file.set_len(pin.approx_bytes).unwrap();
+
+        let err = verify_pinned_artifact(&snapshot, avi_shared::paths::DPDFNET_MODEL).unwrap_err();
+        assert!(err.to_string().contains("SHA256"), "{err}");
+    }
+
+    /// Un pin sin SHA256 declarado no exige leer el snapshot.
+    #[test]
+    fn verify_pinned_artifact_skips_models_without_hash() {
+        assert!(verify_pinned_artifact(Path::new("no-existe"), "parakeet-tdt-v3").is_ok());
     }
 }

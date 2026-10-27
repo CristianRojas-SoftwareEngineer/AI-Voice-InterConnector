@@ -631,6 +631,58 @@ commands:
             cargo --version
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+  # Aprovisionamiento del FFmpeg fijado, compartido por los jobs de prueba Unix
+  # (test-linux, coverage y test-macos). `cargo xtask ffmpeg` lee versión, URL y
+  # SHA-256 de packaging/pins.json —fuente única—, verifica el hash, extrae el
+  # ejecutable y le pasa el humo de versión y de los seis codificadores de la
+  # matriz de egresión. El pipeline no declara nada propio de FFmpeg: no puede
+  # divergir del manifiesto de pines.
+  provision_ffmpeg_unix:
+    description: Aprovisiona el FFmpeg fijado y lo antepone al PATH
+    steps:
+      - run:
+          name: Aprovisionar FFmpeg fijado (packaging/pins.json)
+          command: |
+            echo "[STEP] Aprovisionar FFmpeg - INICIO"
+            set -euo pipefail
+            export PATH="$HOME/.cargo/bin:$PATH"
+            ffmpeg_bin="$(cargo xtask ffmpeg --dest "$(pwd)/ffmpeg-bundle")"
+            ffmpeg_dir="$(dirname "$ffmpeg_bin")"
+            echo "FFmpeg aprovisionado: $ffmpeg_bin"
+            echo "SHA-256 fijado y verificado: $(cat "$ffmpeg_dir/.ffmpeg-sha256")"
+            # En el shell en curso para la comprobación de este paso, y en
+            # BASH_ENV con el valor ya expandido para los pasos siguientes: ese
+            # fichero se sourcea donde `ffmpeg_dir` no existe.
+            export PATH="$ffmpeg_dir:$PATH"
+            printf 'export PATH="%s:$PATH"\n' "$ffmpeg_dir" >> "$BASH_ENV"
+            ffmpeg_version="$(ffmpeg -version)"
+            printf '%s\n' "$ffmpeg_version" | head -1
+            echo "[STEP] Aprovisionar FFmpeg - FIN"
+  # Aprovisionamiento del FFmpeg fijado en Windows. No hay $BASH_ENV: el PATH
+  # publicado vale para este paso, y el paso de la suite de test-windows
+  # recompone el suyo. `xtask` solo compila Rust puro (ningún crate con C), así
+  # que basta anteponer `~\.cargo\bin` para que `cargo` resuelva el toolchain
+  # MSVC que fija `rust_pin`: rustc localiza el `link.exe` del MSVC instalado sin
+  # importar `vcvars64`.
+  provision_ffmpeg_windows:
+    description: Aprovisiona el FFmpeg fijado y lo antepone al PATH del paso
+    steps:
+      - run:
+          name: Aprovisionar FFmpeg fijado (packaging/pins.json)
+          command: |
+            Write-Host "[STEP] Aprovisionar FFmpeg - INICIO"
+            $ErrorActionPreference = "Stop"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            $ffmpegBin = & cargo xtask ffmpeg --dest "$((Get-Location).Path)\ffmpeg-bundle" | Select-Object -Last 1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $ffmpegDir = Split-Path -Parent $ffmpegBin
+            Write-Host "FFmpeg aprovisionado: $ffmpegBin"
+            Write-Host "SHA-256 fijado y verificado: $(Get-Content (Join-Path $ffmpegDir '.ffmpeg-sha256'))"
+            $env:PATH = "$ffmpegDir;$env:PATH"
+            $version = (& ffmpeg -version)[0]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host $version
+            Write-Host "[STEP] Aprovisionar FFmpeg - FIN"
   # Precarga de dependencias al registry (todos los SO): `shell: bash` existe en
   # los tres executors (nativo Linux/macOS, Git-bash en Windows) y `validate_pins`
   # ya lo usa en Windows, así que un solo command cubre los 8 usos.
@@ -720,9 +772,12 @@ commands:
             export PATH="$HOME/.cargo/bin:$PATH"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # La versión del binario release debe coincidir con el tag; el
-            # contrato JSON de `version --json` lo cubre el golden de la CLI.
-            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
+            # En jobs de release la versión del binario debe coincidir con el
+            # tag. La preintegración de rama no tiene CIRCLE_TAG: allí el smoke
+            # verifica que el binario arranque y deja la comparación al job de tag.
+            if [ -n "${CIRCLE_TAG:-}" ]; then
+              test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
+            fi
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
@@ -734,7 +789,12 @@ commands:
             # intermitente (visto en v0.20.9, build-linux-x64).
             voice_list_out="$(target/release/ai-voice-interconnector voice list)"
             printf '%s\n' "$voice_list_out" | grep -q '^  - default'
-            echo "Binario << parameters.label >> OK: version + voice list + versión del tag"
+            target/release/ai-voice-interconnector speech denoise --help
+            if target/release/ai-voice-interconnector denoise --help; then
+              echo "el binario release aceptó el comando raíz denoise" >&2
+              exit 1
+            fi
+            echo "Binario << parameters.label >> OK: version + voice list + speech denoise + rechazo denoise raíz"
             echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
   # Humo de instalación en sandbox con las cuatro raíces reubicadas. Extraído de
   # los 3 builds Unix (idénticos salvo el tarball, parametrizado como
@@ -759,7 +819,14 @@ commands:
             STAGE_SMOKE="$(mktemp -d)"
             tar -xzf artifacts/<< parameters.artifact_glob >> -C "$STAGE_SMOKE"
             "$STAGE_SMOKE/ai-voice-interconnector" self install --no-setup --no-modify-path --yes
-            "$AVI_INSTALL_DIR/ai-voice-interconnector" --version
+            INSTALLED="$AVI_INSTALL_DIR/ai-voice-interconnector"
+            "$INSTALLED" --version
+            "$INSTALLED" speech denoise --help
+            if "$INSTALLED" denoise --help; then
+              echo "el binario instalado aceptó el comando raíz denoise" >&2
+              exit 1
+            fi
+            "$AVI_INSTALL_DIR/ffmpeg" -hide_banner -version
             rm -rf "$SANDBOX" "$STAGE_SMOKE"
             echo "[STEP] Humo de instalación en sandbox - FIN"
 
@@ -813,6 +880,7 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
+      - provision_ffmpeg_unix
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -863,6 +931,10 @@ jobs:
     # test-linux/macos: valida código específico de Windows (lanzamiento con
     # lista explícita de handles, limpiador diferido, PATH en HKCU, WASAPI y
     # consola UTF-8) antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
+    # Corre sobre el target MSVC que el paquete distribuye
+    # (x86_64-pc-windows-msvc): el orden del PATH —FFmpeg aprovisionado,
+    # rustup, heredado— es un invariante y no un detalle, porque el cargo GNU de
+    # Chocolatey que viaja en lo heredado compila otro target.
     # Caché: registry + target/ + sccache autoconsistente (cargo_restore_caches
     # os: windows variant: test; sccache os: windows variant: test). La caché de
     # target/ tiene coste de I/O NTFS significativo en restore/save, pero sin ella
@@ -910,6 +982,7 @@ jobs:
       - sccache_setup_windows
       - validate_pins
       - validate_features
+      - provision_ffmpeg_windows
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -924,9 +997,35 @@ jobs:
             Write-Host "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - FIN"
       - run:
           name: Ejecutar suite con nextest (cargo nextest run --all)
+          # La primera compilación fría de la workspace con MSVC (aws-lc-sys y el
+          # resto de dependencias con C) puede pasar de los 10 min de silencio
+          # por defecto; build-windows-x64 usa el mismo margen.
+          no_output_timeout: 25m
           command: |
             Write-Host "[STEP] Ejecutar suite con nextest - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # Entorno MSVC (vcvars64) importado ANTES de anteponer directorios:
+            # vcvars fija INCLUDE/LIB y la ruta de cl.exe/link.exe, y un prepend
+            # posterior no los desplaza.
+            $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $VsPath) { throw "vswhere no encontró una instalación con MSVC x64" }
+            $VcVars = "$VsPath\VC\Auxiliary\Build\vcvars64.bat"
+            cmd /c "call `"$VcVars`" >nul 2>&1 && set" | ForEach-Object {
+              if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
+            }
+            # CC/CXX = ruta absoluta de cl.exe: solo así el crate `cc` usa
+            # RUSTC_WRAPPER=sccache como wrapper en MSVC.
+            $Cl = (Get-Command cl.exe -ErrorAction Stop).Source
+            $env:CC = $Cl
+            $env:CXX = $Cl
+            Write-Host "cl: $Cl"
+            # Orden del PATH, que es un invariante y no un detalle: primero el
+            # FFmpeg aprovisionado (la matriz de egressión ejecuta sus
+            # codificadores), después `~\.cargo\bin` (el toolchain MSVC que fija
+            # rust_pin) y solo luego lo heredado, donde
+            # `$env:ChocolateyInstall\bin` trae un cargo GNU —target
+            # x86_64-pc-windows-gnu— que compilaría aws-lc-sys buscando gcc.exe.
+            $env:PATH = "$((Get-Location).Path)\ffmpeg-bundle;$env:USERPROFILE\.cargo\bin;$env:PATH"
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
@@ -1054,6 +1153,7 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
+      - provision_ffmpeg_unix
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -1129,6 +1229,7 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
+      - provision_ffmpeg_unix
       - run:
           name: Ejecutar suite con cobertura (cargo llvm-cov)
           command: |
@@ -1496,7 +1597,11 @@ jobs:
             $voiceList = & $Exe voice list
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             if (-not ($voiceList | Where-Object { $_ -like '  - default*' })) { throw "La voz de fábrica 'default' no está registrada" }
-            Write-Host "Binario Windows OK: version + voice list + version --json"
+            & $Exe speech denoise --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $Exe denoise --help
+            if ($LASTEXITCODE -eq 0) { throw "El binario release aceptó el comando raíz denoise" }
+            Write-Host "Binario Windows OK: version + voice list + version --json + speech denoise + rechazo denoise raíz"
             Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - FIN"
       - sccache_save_cache:
           os: windows
@@ -1557,8 +1662,12 @@ jobs:
             Write-Host "[STEP] Empaquetar bundle con xtask package - INICIO"
             $ErrorActionPreference = "Stop"
             $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-            $TagVersion = $env:CIRCLE_TAG -replace '^v',''
-            cargo xtask package --expect-version "$TagVersion"
+            if ($env:CIRCLE_TAG) {
+              $TagVersion = $env:CIRCLE_TAG -replace '^v',''
+              cargo xtask package --expect-version "$TagVersion"
+            } else {
+              cargo xtask package
+            }
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
@@ -1586,7 +1695,14 @@ jobs:
             Expand-Archive -Path $Zip.FullName -DestinationPath $StageSmoke -Force
             & "$StageSmoke\\ai-voice-interconnector.exe" self install --no-setup --no-modify-path --yes
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & "$env:AVI_INSTALL_DIR\\ai-voice-interconnector.exe" --version
+            $Installed = "$env:AVI_INSTALL_DIR\\ai-voice-interconnector.exe"
+            & $Installed --version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $Installed speech denoise --help
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & $Installed denoise --help
+            if ($LASTEXITCODE -eq 0) { throw "El binario instalado aceptó el comando raíz denoise" }
+            & "$env:AVI_INSTALL_DIR\ffmpeg.exe" -hide_banner -version
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Remove-Item -Recurse -Force $Sandbox
             Write-Host "[STEP] Humo de instalación en sandbox - FIN"
@@ -1699,7 +1815,11 @@ jobs:
           command: |
             echo "[STEP] Empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            if [ -n "${CIRCLE_TAG:-}" ]; then
+              cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            else
+              cargo xtask package
+            fi
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
           key: ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
@@ -1816,7 +1936,11 @@ jobs:
           command: |
             echo "[STEP] Empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            if [ -n "${CIRCLE_TAG:-}" ]; then
+              cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            else
+              cargo xtask package
+            fi
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
           key: ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
@@ -1959,7 +2083,11 @@ jobs:
           command: |
             echo "[STEP] Empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            if [ -n "${CIRCLE_TAG:-}" ]; then
+              cargo xtask package --expect-version "${CIRCLE_TAG#v}"
+            else
+              cargo xtask package
+            fi
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
           key: ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
@@ -2220,16 +2348,107 @@ jobs:
 #   encadenar pipelines distintas, de modo que la única garantía mecánica es
 #   tener los tests en el grafo de dependencias del release.
 #
-#   Se descartó el pipeline de rama `validate`: al empujar commit+tag juntos
-#   disparaba una segunda pipeline que re-ejecutaba la MISMA triple suite sobre
-#   el mismo commit en paralelo (duplicación sin cobertura única). El feedback
-#   pre-release vive en local sobre `main` (trunk-based) y en este gate al
-#   taggear: si los tests fallan, los builds no corren y nada se publica.
+#   El workflow denoise-preintegration reutiliza los gates y builds nativos
+#   seleccionados para rama/PR, sin ejecutar jobs de publicación. El release
+#   conserva sus propios gates en la misma pipeline que publica.
 #
 #   `coverage`, instaladores y licencias/changelog completan los gates de los 4
 #   builds nativos, que compilan las 4 plataformas en modo release.
 # ══════════════════════════════════════════════════════════════════════
 workflows:
+  # Validación preintegración en rama/PR; solo jobs de prueba y compilación.
+  # Ningún job declara versión, URL ni hash de FFmpeg: los cuatro jobs de prueba
+  # lo aprovisionan con `cargo xtask ffmpeg` desde packaging/pins.json, y los
+  # build-* lo hacen por el mismo camino dentro de `xtask package`, así que las
+  # pruebas y los cuatro targets distribuidos ejercitan el mismo artefacto
+  # fijado y verificado por su SHA-256.
+  denoise-preintegration:
+    jobs:
+      - test-linux:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-windows:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-macos:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-bootstrap-linux:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-bootstrap-windows:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-bootstrap-macos:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - coverage:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - validate-licenses:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - build-windows-x64:
+          requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - coverage
+            - validate-licenses
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - build-linux-x64:
+          requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - coverage
+            - validate-licenses
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - build-linux-arm64:
+          requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - coverage
+            - validate-licenses
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - build-darwin-arm64:
+          requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - coverage
+            - validate-licenses
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+
   # ── Pipeline de RELEASE: tests (gate) + empaquetado + publicación en tags `v*` ──
   build-all:
     # CircleCI NO ejecuta un job en un tag salvo que el job Y todas sus
@@ -2312,7 +2531,6 @@ workflows:
             - test-bootstrap-macos
             - coverage
             - validate-licenses
-            - validate-changelog
       - build-linux-x64:
           filters:
             tags:
