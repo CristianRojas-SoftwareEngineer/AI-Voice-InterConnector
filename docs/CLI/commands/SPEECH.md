@@ -127,7 +127,7 @@ Con Ctrl+C el proceso termina con el código de interrupción 130; el pipeline e
 ## `speech transcribe`
 
 ```
-ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en> [--daemon|--no-daemon]
+ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en> [--denoise] [--daemon|--no-daemon]
 ```
 
 | Flag | Tipo | Default | Descripción |
@@ -136,6 +136,7 @@ ai-voice-interconnector speech transcribe (--audio <archivo.wav> | --mic) [--dur
 | `--mic` | flag | `false` | Captura desde el micrófono en vez de leer un archivo |
 | `--duration` | u64 | — | Duración fija de grabación en segundos. Solo válido con `--mic` (el parser lo declara incompatible con `--audio`): con `--audio` sale con exit 2 `usage_error` |
 | `--source-language` | `es`\|`en` | — | Obligatorio. Idioma hablado en el audio |
+| `--denoise` | flag | `false` | Limpia el audio antes de transcribir; requiere `native-denoise` y el modelo DPDFNet provisionado |
 | `--daemon` / `--no-daemon` | flag | — | Despacho tri-modal; mutuamente excluyentes |
 
 El parser exige exactamente uno de `--audio` o `--mic` y rechaza
@@ -297,7 +298,7 @@ paridad de inteligibilidad la cubre `synthesize`.
 ## `speech dub`
 
 ```
-ai-voice-interconnector speech dub (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en> [--target-language <es|en>] [--voice <nombre>] [--temperature <0<t<=2.0>] [--daemon|--no-daemon]
+ai-voice-interconnector speech dub (--audio <archivo.wav> | --mic) [--duration <segs>] --source-language <es|en> [--target-language <es|en>] [--voice <nombre>] [--temperature <0<t<=2.0>] [--denoise] [--daemon|--no-daemon]
 ```
 
 Pipeline voz→voz: transcribe → traduce (si `source != target`) → sintetiza →
@@ -312,6 +313,7 @@ reproduce.
 | `--temperature` | f32 | producción (`0.35`) | Override de muestreo |
 | `--mic` | flag | `false` | Captura desde micrófono. Mutuamente excluyente con `--audio` |
 | `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` (el parser lo declara incompatible con `--audio`) |
+| `--denoise` | flag | `false` | Limpia el audio antes de doblar; requiere `native-denoise` y el modelo DPDFNet provisionado |
 | `--daemon` / `--no-daemon` | flag | — | Despacho tri-modal; mutuamente excluyentes |
 
 El parser exige exactamente uno de `--audio` o `--mic` y rechaza
