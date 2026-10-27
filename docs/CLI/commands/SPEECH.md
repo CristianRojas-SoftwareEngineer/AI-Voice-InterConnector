@@ -31,7 +31,7 @@ subcomandos delegables (`transcribe`, `synthesize`, `say` y `dub`), no de
 | `speech remove` | No | Sí |
 | `speech denoise` | No | Sí; archivos locales de audio/vídeo |
 
-`denoise` solo está disponible con `native-denoise`, incluido en `full`. Usa DPDFNet provisionado por `setup` y FFmpeg incluido en el paquete; no llama al daemon ni procesa la imagen del vídeo. `--json` global genera JSONL de progreso y resultados. No se aceptan `--model-dir` ni `--ffmpeg-path`: el modelo y FFmpeg tienen resolución única de AVI.
+`denoise` solo está disponible con `native-denoise`, incluido en `full`. Usa DPDFNet provisionado por `setup` y FFmpeg incluido en el paquete; no llama al daemon ni procesa la imagen del vídeo. `--json` global genera JSONL de progreso y resultados. No se aceptan `--model-dir` ni `--ffmpeg-path`: el modelo y FFmpeg tienen resolución única de AVI. Los flags opt-in `--denoise` de transcripción, doblaje y clonado son rutas separadas de este pipeline de archivos; la evaluación humana de preservación de identidad vocal del clonado sigue pendiente.
 
 `list`/`play`/`remove` son operaciones sobre `SpeechStore`, que el daemon no
 expone por HTTP: no declaran `--daemon` ni `--no-daemon` y, si se les pasa

@@ -21,6 +21,10 @@ use std::path::Path;
 /// del origen (`dry_blend=0`, `pause_gate_db=-25`, `highpass=false`) y
 /// evolucionan por separado solo tras medir identidad de clonado o precisión
 /// STT. No se exponen por CLI ni por API.
+///
+/// `Clone` usa `pause_gate_db=-25.0` para preservar timbre; `Stt` usa
+/// `pause_gate_db=0.0` (gate desactivado) para evitar atenuar fonemas de
+/// baja energía en transcripción.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DenoiseUseCase {
     /// Referencia de clonado: conserva el timbre, sin filtros añadidos.
@@ -32,7 +36,8 @@ pub enum DenoiseUseCase {
 impl DenoiseUseCase {
     fn params(self) -> (f32, f64, bool) {
         match self {
-            Self::Clone | Self::Stt => (0.0, -25.0, false),
+            Self::Clone => (0.0, -25.0, false),
+            Self::Stt => (0.0, 0.0, false),
         }
     }
 }

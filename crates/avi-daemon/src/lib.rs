@@ -1175,6 +1175,14 @@ pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
             message: format!("audio_b64 no decodificable como base64: {}", e),
         })?;
 
+    if audio_bytes.len() % 2 != 0 {
+        return Err(InputError {
+            reason: "invalid_audio",
+            message: "El audio PCM16 debe tener longitud par (bytes impares no válidos)"
+                .to_string(),
+        });
+    }
+
     if audio_bytes.len() / 2 > avi_core::MAX_TRANSCRIBE_AUDIO_SECS as usize * 16_000 {
         return Err(InputError {
             reason: "audio_too_long",
@@ -1418,23 +1426,26 @@ async fn voices_clone_handler(
                 .into_response();
         }
     };
-    // La duración se mide por la cabecera, antes de buscar el modelo; un audio que
-    // no es WAV no tiene cabecera que medir y lo rechaza después el clonado.
-    if avi_audio::wav_bytes_duration_secs(&audio_bytes)
-        .is_some_and(|secs| secs > avi_core::MAX_CLONE_REFERENCE_SECS as f64)
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "error": "audio_too_long",
-                "reason": "audio_too_long",
-                "message": format!(
-                    "La referencia de clonado no puede superar {} segundos.",
-                    avi_core::MAX_CLONE_REFERENCE_SECS
-                ),
-            }))),
-        )
-            .into_response();
+    // Validar que es un WAV legible y que su duración no supera el tope, ANTES de
+    // crear el directorio temporal ni tocar el modelo. Un WAV ilegible se rechaza
+    // aquí con `invalid_audio` en lugar de dejarlo fallar tarde en el clonado.
+    let wav_duration = match avi_audio::wav_bytes_duration_secs(&audio_bytes) {
+        Some(d) => d,
+        None => {
+            return input_error_response(
+                "invalid_audio",
+                "El audio de referencia no es un WAV válido o legible".to_string(),
+            );
+        }
+    };
+    if wav_duration > avi_core::MAX_CLONE_REFERENCE_SECS as f64 {
+        return input_error_response(
+            "audio_too_long",
+            format!(
+                "La referencia de clonado no puede superar {} segundos.",
+                avi_core::MAX_CLONE_REFERENCE_SECS
+            ),
+        );
     }
     let base_model_dir = match state.tts_engine.base_model_dir.as_ref() {
         Some(d) => d.clone(),
@@ -1697,6 +1708,13 @@ fn dub_pcm(payload: &Value) -> Result<Vec<i16>, InputError> {
             reason: "invalid_audio",
             message: format!("audio_b64 no decodificable: {}", e),
         })?;
+    if audio_bytes.len() % 2 != 0 {
+        return Err(InputError {
+            reason: "invalid_audio",
+            message: "El audio PCM16 debe tener longitud par (bytes impares no válidos)"
+                .to_string(),
+        });
+    }
     let pcm = audio_bytes
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
@@ -1880,7 +1898,8 @@ async fn dub_handler(
             .await;
             // Limpieza de ruido DPDFNet (opt-in) antes de STT: toma de turno,
             // conversi�n a 48 kHz, inferencia y vuelta a 16 kHz. El turno cubre
-            // solo la inferencia DSP; se suelta antes de transcribir.
+            // solo la inferencia DSP; se suelta antes de transcribir. Esta fase
+            // emite heartbeats para que el cliente no la confunda con un atasco.
             #[cfg(feature = "native-denoise")]
             let pcm = if denoise {
                 let permit = match state.denoise_gate.begin() {
@@ -1930,9 +1949,10 @@ async fn dub_handler(
                     drop(permit);
                     Ok(cleaned)
                 });
-                match work.await {
-                    Ok(Ok(cleaned)) => cleaned,
-                    Ok(Err(e)) => {
+                match with_heartbeats(&tx, "denoise", work).await {
+                    None => return,
+                    Some(Ok(Ok(cleaned))) => cleaned,
+                    Some(Ok(Err(e))) => {
                         if let Some(e) = e.downcast_ref::<denoise::errors::E>() {
                             emit_ndjson(
                                 &tx,
@@ -1956,7 +1976,7 @@ async fn dub_handler(
                         .await;
                         return;
                     }
-                    Err(join_err) => {
+                    Some(Err(join_err)) => {
                         emit_ndjson(
                             &tx,
                             json!({
@@ -2293,7 +2313,13 @@ pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
                 CLONE_REFERENCE_BYTES_PER_SEC,
             ))),
         )
-        .route("/dub", post(dub_handler))
+        .route(
+            "/dub",
+            post(dub_handler).layer(DefaultBodyLimit::max(avi_core::body_limit_for(
+                avi_core::MAX_DUB_AUDIO_SECS,
+                32_000,
+            ))),
+        )
         .route("/synthesize", post(synthesize_handler))
         .route("/shutdown", post(shutdown_handler));
     // `/transcribe` solo existe con el motor STT compilado (`native-stt`); sin el
@@ -3983,5 +4009,137 @@ mod tests {
                 message: "línea uno  línea dos línea tres".to_string(),
             }))
         );
+    }
+
+    /// D1: rechaza PCM16 de longitud impar antes de chunks_exact(2).
+    #[test]
+    fn validate_transcribe_rejects_odd_pcm() {
+        for b64 in ["AQ==", "AQID"] {
+            let payload = json!({ "audio_b64": b64 });
+            let result = validate_transcribe_input(&payload);
+            assert!(
+                matches!(result, Err(InputError { reason, .. }) if reason == "invalid_audio"),
+                "audio impar {b64:?} debe rechazarse con invalid_audio"
+            );
+        }
+    }
+
+    /// D1: acepta PCM16 de longitud par y preserva el orden de las muestras.
+    #[test]
+    fn validate_transcribe_accepts_even_pcm_preserves_order() {
+        let pcm = validate_transcribe_input(&json!({ "audio_b64": "AQA=" })).unwrap();
+        assert_eq!(pcm, vec![1i16]);
+
+        let pcm = validate_transcribe_input(&json!({ "audio_b64": "AQACAA==" })).unwrap();
+        assert_eq!(pcm, vec![1i16, 2i16]);
+    }
+
+    /// D2: dub rechaza PCM16 de longitud impar.
+    #[tokio::test]
+    async fn dub_rejects_odd_pcm() {
+        let (status, _) = post_json(
+            "/dub",
+            json!({ "audio_b64": "AQ==", "voice": "v", "source_language": "es", "target_language": "en" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// D2: dub rechaza cuerpo que supera el límite de 40 s (DefaultBodyLimit del router).
+    #[tokio::test]
+    async fn dub_rejects_body_over_limit() {
+        use base64::Engine;
+        let pcm = vec![0u8; 100 * 32_000]; // 100 s supera el tope de 40 s con holgura
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&pcm);
+        let (status, _) = post_json(
+            "/dub",
+            json!({ "audio_b64": audio_b64, "voice": "v", "source_language": "es", "target_language": "en" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// D2: dub acepta un audio válido de 40 s sin que el body limit lo rechace.
+    #[tokio::test]
+    async fn dub_accepts_valid_40s() {
+        use base64::Engine;
+        let pcm = vec![0u8; 40 * 32_000]; // 40 s, dentro del tope
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&pcm);
+        let (status, _) = post_json(
+            "/dub",
+            json!({ "audio_b64": audio_b64, "voice": "v", "source_language": "es", "target_language": "en" }),
+        )
+        .await;
+        // Sin `native-stt` el handler llega a `not_implemented` tras pasar las
+        // validaciones de entrada; lo importante es que el body limit no lo rechace.
+        assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Helper: construye un WAV PCM 16-bit mono de silencio a 16 kHz.
+    fn wav_bytes_silence_16k(duration_secs: u64) -> Vec<u8> {
+        let sample_rate: u32 = 16_000;
+        let block_align: u16 = 2;
+        let data_len = (duration_secs as u32) * sample_rate * block_align as u32;
+        let chunk_size = 36 + data_len;
+        let mut wav = Vec::with_capacity(4 + 4 + 4 + 8 + 16 + 8 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&chunk_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // audio_format PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // channels mono
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * block_align as u32).to_le_bytes()); // byte_rate
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits_per_sample
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.resize(wav.len() + data_len as usize, 0);
+        wav
+    }
+
+    /// D3: clone rechaza WAV inválido antes de crear el directorio temporal.
+    #[tokio::test]
+    async fn clone_rejects_invalid_wav_before_temp() {
+        use base64::Engine;
+        let (status, body) = post_json(
+            "/voices/clone",
+            json!({ "audio_b64": base64::engine::general_purpose::STANDARD.encode(b"esto no es un wav"), "name": "test" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "invalid_audio");
+    }
+
+    /// D3: clone rechaza WAV que supera 30 s de referencia.
+    #[tokio::test]
+    async fn clone_rejects_wav_over_30s() {
+        use base64::Engine;
+        let wav = wav_bytes_silence_16k(31);
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&wav);
+        let (status, body) = post_json(
+            "/voices/clone",
+            json!({ "audio_b64": audio_b64, "name": "test" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "audio_too_long");
+    }
+
+    /// D3: clone acepta WAV válido por debajo del límite (no es 400).
+    #[tokio::test]
+    async fn clone_accepts_valid_wav_under_limit() {
+        use base64::Engine;
+        let wav = wav_bytes_silence_16k(10);
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&wav);
+        let (status, _) = post_json(
+            "/voices/clone",
+            json!({ "audio_b64": audio_b64, "name": "test_voice" }),
+        )
+        .await;
+        assert_ne!(status, StatusCode::BAD_REQUEST);
     }
 }

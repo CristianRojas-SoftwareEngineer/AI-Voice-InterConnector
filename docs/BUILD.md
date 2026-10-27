@@ -341,9 +341,15 @@ antes de publicar el artefacto, ejecuta en este orden:
    [Auditoría de dependencias](#auditoría-de-dependencias)).
 4. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
    archivo empaquetado en un sandbox con las cuatro raíces reubicadas, y
-   `--version` del binario instalado.
+   `--version` del binario instalado. Los jobs permanentes comprueban además
+   `speech denoise --help`, el rechazo del alias raíz `denoise` y que el FFmpeg
+   instalado arranque (`-version` en Unix y Windows).
 5. En Linux, la verificación de portabilidad del artefacto en salas limpias, de
    la que depende la publicación; ver [RELEASING.md](RELEASING.md#2-automático-lo-que-hace-el-ci).
+
+La matriz temporal de cuatro targets se retiró tras transferir estos smokes a
+los jobs permanentes. La última corrida de cuatro targets fue CircleCI #485
+sobre `2e24b86f`; no acredita cambios posteriores ni ejecuta inferencia Denoise.
 
 `version` y `voice list` **no cargan el modelo** (las voces de fábrica viajan
 embebidas en el binario vía `crates/avi-store/assets/`), así que el chequeo es

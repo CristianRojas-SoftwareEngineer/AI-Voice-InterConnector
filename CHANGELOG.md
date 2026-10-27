@@ -123,8 +123,8 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Añadido
 
-- Se incorpora `ai-voice-interconnector speech denoise` como ruta única local para limpiar archivos de audio y la pista de audio de vídeo, conservando la imagen. El comando usa `studio` por omisión, ofrece `--preset default` y JSONL, y requiere `native-denoise`, DPDFNet provisionado y FFmpeg integrado.
-- Se publica el recorrido de la migración en [`docs/denoise-migration-walkthrough.md`](docs/denoise-migration-walkthrough.md), con la matriz de aceptación, la evidencia ejecutada y las puertas que siguen abiertas.
+- Se incorpora `ai-voice-interconnector speech denoise` como ruta única local para limpiar archivos de audio y la pista de audio de vídeo, conservando la imagen. El comando usa `studio` por omisión, ofrece `--preset default` y JSONL, y requiere `native-denoise`, DPDFNet provisionado y FFmpeg integrado. Los flujos de transcripción, doblaje y clonado aceptan limpieza optativa; la verificación de esta rama no acredita preservación de identidad vocal para clonado.
+- Se trasladan a los jobs permanentes los smokes nativos de distribución de `speech denoise` y FFmpeg instalado en cuatro targets; CircleCI #485 validó build, paquete e instalación en `2e24b86f`, sin ejecutar inferencia E2E. El workflow temporal de validación de rama fue retirado localmente; estas ediciones posteriores de CI aún no se han vuelto a ejecutar en los cuatro targets.
 
 ### Corregido
 
@@ -134,7 +134,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ### Pendiente
 
-- La cancelación con `Ctrl+C` de `speech denoise` devuelve 130 después de completar y publicar el archivo; la señal no interrumpe el DSP en curso. Queda abierta, junto con los smokes nativos de Linux y macOS, según el recorrido de la migración.
+- El cribado STT A/B/C del corpus adverso se conserva como diagnóstico y no se usa como prueba causal de regresión en el objetivo de habla normal con ruido mecánico/ambiental. En seis clips tutoriales de una persona, la campaña CLI A/B × tres repeticiones fue reproducible; WER B superior al 10% genera una alerta no bloqueante de observabilidad, no una prueba automática de regresión causal. La paridad `/transcribe` CLI/daemon se comprobó para esos seis clips. `/dub` daemon con Denoise se verificó con heartbeat, resultado y WAV decodificable. La captura de micrófono comparó CLI y daemon con los mismos bytes. La evaluación de identidad vocal para clonado sigue bloqueada: faltan referencias consentidas y protocolo humano. CircleCI #485 valida cuatro targets en `2e24b86f`; las ediciones posteriores de CI no se han vuelto a ejecutar en esos targets.
 
 ## [0.36.2] — 2026-10-22
 
