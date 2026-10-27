@@ -847,6 +847,15 @@ jobs:
             [ -n "$ffmpeg_src" ] && cp "$ffmpeg_src" /tmp/avi-ffmpeg/bin/ffmpeg
             echo "[DEBUG] Copiado a /tmp/avi-ffmpeg/bin/ffmpeg"
             [ -x /tmp/avi-ffmpeg/bin/ffmpeg ] || { echo "ffmpeg no extraído correctamente"; exit 1; }
+            echo "[DEBUG] Verificando ffmpeg -version"
+            ffmpeg -version 2>&1 | head -3
+            echo "[DEBUG] Verificando encoders"
+            encoders="$(ffmpeg -hide_banner -encoders 2>&1)"
+            echo "[DEBUG] Encoders obtenidos, verificando codecs..."
+            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
+              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
+            done
+            echo "[DEBUG] Todos los codecs encontrados OK"
             echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
             export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
@@ -1253,6 +1262,15 @@ jobs:
             [ -n "$ffmpeg_src" ] && cp "$ffmpeg_src" /tmp/avi-ffmpeg/bin/ffmpeg
             echo "[DEBUG] Copiado a /tmp/avi-ffmpeg/bin/ffmpeg"
             [ -x /tmp/avi-ffmpeg/bin/ffmpeg ] || { echo "ffmpeg no extraído correctamente"; exit 1; }
+            echo "[DEBUG] Verificando ffmpeg -version"
+            ffmpeg -version 2>&1 | head -3
+            echo "[DEBUG] Verificando encoders"
+            encoders="$(ffmpeg -hide_banner -encoders 2>&1)"
+            echo "[DEBUG] Encoders obtenidos, verificando codecs..."
+            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
+              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
+            done
+            echo "[DEBUG] Todos los codecs encontrados OK"
             echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
             export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
