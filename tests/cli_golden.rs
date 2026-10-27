@@ -4244,6 +4244,116 @@ mod tts {
     // ─── voice clone ───────────────────────────────────────────────────
 
     #[test]
+    fn voice_clone_mic_parser_requires_one_source_and_rejects_conflicts() {
+        for args in [
+            vec!["--json", "voice", "clone", "--name", "mic_parser"],
+            vec![
+                "--json",
+                "voice",
+                "clone",
+                "--name",
+                "mic_parser",
+                "--speech-reference",
+                "ref.wav",
+                "--mic",
+            ],
+            vec![
+                "--json",
+                "voice",
+                "clone",
+                "--name",
+                "mic_parser",
+                "--speech-reference",
+                "ref.wav",
+                "--duration",
+                "1",
+            ],
+        ] {
+            let output = bin_command().args(&args).output().expect("ejecutar CLI");
+            assert_eq!(output.status.code(), Some(2), "{args:?}");
+            let actual: Value = serde_json::from_slice(&output.stdout).expect("envelope JSON");
+            assert_eq!(actual["reason"], "usage_error", "{args:?}: {actual}");
+            assert_eq!(actual["schema_version"], "5", "{args:?}: {actual}");
+        }
+    }
+
+    #[test]
+    fn voice_clone_mic_guards_precede_daemon_probe_and_capture() {
+        for (mode, duration, expected_reason) in [
+            ("--daemon", None, "usage_error"),
+            ("--no-daemon", None, "usage_error"),
+            ("--daemon", Some("0"), "usage_error"),
+            ("--no-daemon", Some("0"), "usage_error"),
+            ("--daemon", Some("31"), "audio_too_long"),
+            ("--no-daemon", Some("31"), "audio_too_long"),
+        ] {
+            let mut args = vec![
+                "--json",
+                "voice",
+                "clone",
+                mode,
+                "--name",
+                "mic_guard",
+                "--mic",
+            ];
+            if let Some(duration) = duration {
+                args.extend(["--duration", duration]);
+            }
+            let (sandbox, envs) = sandbox_unique_state("clone_mic_guard");
+            let envs: Vec<(&str, &str)> = envs
+                .iter()
+                .map(|(key, value)| (key.as_str(), value.as_str()))
+                .collect();
+            let output = bin_command()
+                .args(&args)
+                .envs(envs)
+                .output()
+                .expect("ejecutar CLI");
+            drop(sandbox);
+            let code = output.status.code().expect("código de salida");
+            let actual: Value = serde_json::from_slice(&output.stdout).expect("envelope JSON");
+            assert_eq!(code, 2, "{args:?}: {actual}");
+            assert_eq!(actual["reason"], expected_reason, "{args:?}: {actual}");
+            assert_eq!(actual["schema_version"], "5", "{args:?}: {actual}");
+        }
+    }
+
+    #[test]
+    fn voice_clone_mic_duplicate_is_rejected_before_capture() {
+        let (sandbox, envs) = sandbox_unique_state("clone_mic_duplicate");
+        let data_dir = envs
+            .iter()
+            .find(|(key, _)| key == "AVI_DATA_DIR")
+            .expect("AVI_DATA_DIR");
+        let store = avi_store::VoiceStore::at(std::path::Path::new(&data_dir.1).join("voices"));
+        store.ensure_initialized().expect("inicializar store");
+        let name = "mic_duplicate";
+        let reference = sandbox.path().join("reference.qvoice");
+        std::fs::write(&reference, b"voice").expect("crear referencia");
+        store
+            .save_reference(name, &reference)
+            .expect("guardar voz de prueba");
+        let output = bin_command()
+            .args([
+                "--json",
+                "voice",
+                "clone",
+                "--no-daemon",
+                "--name",
+                name,
+                "--mic",
+                "--duration",
+                "1",
+            ])
+            .envs(envs.iter().map(|(key, value)| (key, value)))
+            .output()
+            .expect("ejecutar CLI");
+        let actual: Value = serde_json::from_slice(&output.stdout).expect("envelope JSON");
+        assert_eq!(output.status.code(), Some(6), "{actual}");
+        assert_eq!(actual["reason"], "voice_exists", "{actual}");
+    }
+
+    #[test]
     #[ignore = "requiere el modelo Base de Qwen3-TTS, el binario del motor"]
     fn voice_clone_ok() {
         require_tts_base_model();

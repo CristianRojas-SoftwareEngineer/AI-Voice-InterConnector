@@ -19,7 +19,7 @@ contra `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`).
 
 ```
 ai-voice-interconnector voice list
-ai-voice-interconnector voice clone --name NAME --speech-reference FILE [--force] [--daemon|--no-daemon]
+ai-voice-interconnector voice clone --name NAME (--speech-reference FILE | --mic [--duration SECONDS]) [--force] [--denoise] [--daemon|--no-daemon]
 ai-voice-interconnector voice remove --name NAME [--yes]
 ```
 
@@ -32,7 +32,9 @@ ai-voice-interconnector voice remove --name NAME [--yes]
 | Flag | Tipo | Requerido | Descripción |
 |---|---|---|---|
 | `--name, -n` | string | sí | Nombre de la voz; se normaliza a minúsculas y se valida contra `VoiceStore::validate_name` |
-| `--speech-reference, -s` | string (ruta) | sí | Audio de referencia de habla, obligatorio en toda ruta (local y daemon) |
+| `--speech-reference, -s` | string (ruta) | una fuente | WAV de referencia; se conserva intacto y no se reempaqueta en CLI |
+| `--mic` | flag | una fuente | Captura PCM a 16 kHz mono int16 desde el micrófono |
+| `--duration` | segundos | no | Solo con `--mic`; 1–30 segundos. Sin duración requiere TTY y usa push-to-talk; `AVI_PUSH_TO_TALK_MAX_SECS` inválido produce `usage_error` y mayor de 30 produce `audio_too_long` |
 | `--denoise` | flag | no | Limpia la referencia antes de extraer la huella vocal; requiere `native-denoise` y el modelo DPDFNet provisionado. La opción no garantiza por sí misma preservación de identidad vocal; esa calidad no ha sido evaluada en una prueba humana controlada |
 | `--force, -f` | flag | no | Sobrescribe una voz existente con el mismo nombre |
 | `--daemon` / `--no-daemon` | flag | no | Despacho tri-modal; mutuamente excluyentes |
@@ -58,44 +60,38 @@ más abajo).
 handle_voice (Clone)
     │
     ▼
-name.to_lowercase() + VoiceStore::validate_name(name)   ← exit 2 "invalid_voice_name" si falla
+Validar nombre y la fuente según su origen
+    │
+    ├─ Archivo: conservar WAV/ruta; mantener el orden actual de validación
+    │
+    └─ Micrófono: validar duración (0 → usage_error; >30 → audio_too_long),
+                  TTY y AVI_PUSH_TO_TALK_MAX_SECS antes del dispositivo
     │
     ▼
-route_to_daemon(daemon_mode, client)?
+Resolver destino una vez
     │
-    ├─ Sí ──► clone_via_daemon
-    │           (previo al POST: referencia > MAX_CLONE_REFERENCE_SECS → exit 2 "audio_too_long")
-    │           lee speech a base64 → POST /voices/clone (cabeceras con timeout)
-    │           timeout o conexión fallida → exit 5 "daemon_unreachable"
-    │           HTTP no-2xx → mapea `reason` del body a exit code (ver tabla de errores)
-    │           stream NDJSON: started → latidos / warmup → result {name, speech, precomputed:true}
-    │           inactividad (`STREAM_INACTIVITY_TIMEOUT`) o corte sin final → exit 5 "daemon_unreachable" / exit 1 "daemon_error"
-    │           result → reemite con schema_version
+    ├─ Mic + local + !force: VoiceStore::exists antes de capturar
+    └─ Daemon: no consultar store del cliente; colisión tras POST
     │
-    └─ No ──► require_model_provisioned()                ← exit 4 "model_missing" si falta qwen3-tts-0.6b
-                │
-                ▼
-              validar existencia de speech_reference  ← exit 3 "audio_not_found"
-                │
-                ▼
-              !force && voice_store.exists(name)          ← exit 6 "voice_exists"
-                │
-                ▼
-              Qwen3TtsEngine::new(None).base_model_dir     ← exit 4 "model_missing" si el Base de clonado no está provisionado
-                │
-                ▼
-              avi_tts::clone_voice(model_dir, speech_path, tmp_qvoice, name)
-                ← el motor se lanza con --xvector-only: guarda solo la huella de timbre;
-                  sin transcripción ni idioma, y sin depender del STT (funciona igual con o sin native-stt)
-                │
-                ▼
-              voice_store.save_reference(name, tmp_qvoice) → <voces>/<name>/reference.qvoice
-                │
-                ▼
-              emitir {name, speech, precomputed:false}
+    ▼
+Capturar PCM (mic), recortar sobre 480000 muestras y codificar WAV 16 kHz mono int16
+    │
+    ├─ Daemon ─► bytes WAV en memoria / archivo original → base64 → POST /voices/clone
+    │               denoise: true cuando aplica; sin fallback a local
+    │               HTTP/NDJSON y errores conservan el contrato existente
+    │               resultado {name, speech, precomputed:true}
+    │
+    └─ Local ──► mic: avi_process::scratch::temp_wav con guard RAII
+                  archivo: ruta WAV original
+                  denoise CLI una vez, si se solicitó
+                  require_model_provisioned() → avi_tts::clone_voice
+                  voice_store.save_reference → reference.qvoice
+                  resultado {name, speech, precomputed:false}
 ```
 
 **La salida del motor no se vuelca en la terminal**, ni en la ruta directa ni en la del daemon: el motor de clonado escribe en `data/logs/qwen3-tts_<token>_<ms>.log` (`<token>` identifica al proceso que lo crea: la CLI en la ruta directa, el daemon en la otra), con retención de los 10 más recientes. Cuando el clonado falla, el error `voice_clone_failed` termina con `Log del motor: <ruta>`.
+
+La duración `0` y `--mic` sin duración fuera de TTY producen exit 2 `usage_error`; más de 30 s produce exit 2 `audio_too_long`. En local, una colisión del `VoiceStore` se detecta antes de capturar si no se usa `--force`; en daemon la comprobación autoritativa sucede después de la captura. `--denoise` se aplica en CLI para local y en el servidor para daemon, una sola vez.
 
 `route_to_daemon` (`src/main.rs`): `ForceDaemon` siempre delega (el POST
 falla con `daemon_unreachable` si no hay daemon corriendo); `ForceDirect`
@@ -115,13 +111,13 @@ clonado: el daemon no expone ninguna ruta aparte para precargar voces.
 
 ## Ruta daemon: `POST /voices/clone`
 
-`clone_via_daemon` (`src/main.rs`) codifica la referencia a base64 y envía:
+`clone_via_daemon` (`src/main.rs`) codifica a base64 los bytes WAV originales del archivo o los bytes WAV 16 kHz/mono/int16 producidos en memoria desde el PCM capturado, y envía:
 
 ```json
 { "name": "...", "audio_b64": "...", "force": false }
 ```
 
-La referencia dura como máximo `MAX_CLONE_REFERENCE_SECS` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)), solo se admiten WAV, y la CLI lo comprueba, midiendo la cabecera y luego el PCM decodificado, antes de contactar con el daemon y antes de comprobar el modelo; un exceso sale con exit 2 `audio_too_long`, igual en la vía local. El cuerpo de la petición admite hasta el tope que calcula `body_limit_for` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) a partir de esa duración: un WAV más pesado recibe 413 aunque dure menos.
+La referencia dura como máximo `MAX_CLONE_REFERENCE_SECS` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)). En ruta daemon la CLI conserva el WAV de archivo intacto y envía el WAV generado desde PCM de micrófono en memoria; el daemon valida duración por cabecera WAV y el límite de cuerpo con `body_limit_for` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)), y un exceso de cuerpo recibe 413 aunque dure menos. La ruta de archivo conserva su orden de validaciones actual; la duración del micrófono se valida antes de resolver destino y capturar.
 
 `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`):
 
@@ -297,6 +293,8 @@ ai-voice-interconnector --json voice list
 ai-voice-interconnector voice clone --name locutor --speech-reference ref.wav
 ai-voice-interconnector voice clone -n locutor -s ref.wav --force
 ai-voice-interconnector voice clone --daemon -n locutor -s ref.wav   # exige daemon vivo; exit 5 si no responde
+ai-voice-interconnector voice clone -n locutor --mic --duration 10 --no-daemon
+ai-voice-interconnector voice clone -n locutor --mic                 # push-to-talk en TTY
 ai-voice-interconnector voice clone --no-daemon -n locutor -s ref.wav  # fuerza ruta local, sin sondear el daemon
 ai-voice-interconnector voice remove --name locutor
 ai-voice-interconnector voice remove --name locutor --yes   # sin preguntar, también las locuciones de la voz
