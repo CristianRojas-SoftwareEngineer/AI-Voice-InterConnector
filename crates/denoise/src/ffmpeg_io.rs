@@ -61,7 +61,46 @@ pub fn find_bundled_ffmpeg() -> Result<PathBuf, E> {
     }
 }
 
-/// Verifica que `ffmpeg` sea versión 6+ mediante `ffmpeg -version`.
+/// Versión mayor mínima de FFmpeg que el producto admite: por debajo de ella
+/// faltan filtros y codificadores de la matriz de egresión.
+const MIN_FFMPEG_MAJOR: u32 = 6;
+
+/// Devuelve la versión mayor que declara la primera línea de `ffmpeg -version`,
+/// o `None` si esa línea no declara ninguna versión reconocible.
+///
+/// Acepta las formas que imprimen los artefactos que el paquete distribuye:
+///
+/// - **Número de release desnudo**, como `ffmpeg version 9.0.2` (macOS) y
+///   `ffmpeg version 9.0.2-full_build-www.gyan.dev` (Windows).
+/// - **Prefijo de `git describe`**, como
+///   `ffmpeg version n9.0.2-35-g9a9b70bb8c-20261024` (Linux). El build de BtbN
+///   nombra su versión con la salida de `git describe` sobre el tag de release:
+///   la `n` precede al número, y el resto cuenta los commits desde ese tag y
+///   resume el compromiso. El número de release sigue siendo el que abre la
+///   cadena, así que la `n` es el único añadido que hay que admitir.
+/// - **Build sin release**, `N-<n>` o `git-<fecha>-<commit>`: no declara número
+///   porque sale de un commit intermedio, y se acepta como build reciente
+///   devolviendo [`MIN_FFMPEG_MAJOR`].
+fn version_major(first_line: &str) -> Option<u32> {
+    let re_ver = Regex::new(r"ffmpeg version n?(\d+)\.").unwrap();
+    if let Some(major) = re_ver
+        .captures(first_line)
+        .and_then(|caps| caps.get(1))
+        .and_then(|major_str| major_str.as_str().parse::<u32>().ok())
+    {
+        return Some(major);
+    }
+    // Los builds nightly no declaran número de release y solo salen de commits
+    // posteriores a la versión mínima que el producto admite.
+    if first_line.contains("ffmpeg version N-") || first_line.contains("ffmpeg version git-") {
+        return Some(MIN_FFMPEG_MAJOR);
+    }
+    None
+}
+
+/// Verifica que `ffmpeg` sea versión 6+ mediante `ffmpeg -version`. Acepta los
+/// artefactos que el paquete distribuye en las tres plataformas, cuya línea de
+/// versión reconoce [`version_major`].
 pub fn verify_ffmpeg(ffmpeg: &Path) -> Result<String, E> {
     let output = Command::new(ffmpeg)
         .arg("-version")
@@ -71,31 +110,17 @@ pub fn verify_ffmpeg(ffmpeg: &Path) -> Result<String, E> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let first_line = stdout.lines().next().unwrap_or("");
 
-    let re_ver = Regex::new(r"ffmpeg version (\d+)\.").unwrap();
-    if let Some(caps) = re_ver.captures(first_line) {
-        if let Some(major_str) = caps.get(1) {
-            if let Ok(major) = major_str.as_str().parse::<u32>() {
-                if major >= 6 {
-                    return Ok(first_line.to_string());
-                } else {
-                    return Err(E::EFfmpegNotFound(format!(
-                        "ffmpeg versión {} no soportada (se requiere versión 6+). Instala ffmpeg 6+ vía winget/brew/apt.",
-                        major
-                    )));
-                }
-            }
-        }
+    match version_major(first_line) {
+        Some(major) if major >= MIN_FFMPEG_MAJOR => Ok(first_line.to_string()),
+        Some(major) => Err(E::EFfmpegNotFound(format!(
+            "ffmpeg versión {} no soportada (se requiere versión 6+). Instala ffmpeg 6+ vía winget/brew/apt.",
+            major
+        ))),
+        None => Err(E::EFfmpegNotFound(format!(
+            "No se pudo determinar versión de ffmpeg (se requiere 6+): {}. Instala ffmpeg 6+ vía winget/brew/apt.",
+            first_line
+        ))),
     }
-
-    // fallback a build git 'N-' (BtbN/gyan, nightly/master >= 6)
-    if first_line.contains("ffmpeg version N-") || first_line.contains("ffmpeg version git-") {
-        return Ok(first_line.to_string());
-    }
-
-    Err(E::EFfmpegNotFound(format!(
-        "No se pudo determinar versión de ffmpeg (se requiere 6+): {}. Instala ffmpeg 6+ vía winget/brew/apt.",
-        first_line
-    )))
 }
 
 /// Detecta un stream de video real: ignora las carátulas adjuntas (`attached pic`),
@@ -539,8 +564,57 @@ pub fn verify_output_lightweight(
 
 #[cfg(test)]
 mod tests {
-    use super::{has_real_video_stream, resolve_audio_bitrate};
+    use super::{has_real_video_stream, resolve_audio_bitrate, version_major, MIN_FFMPEG_MAJOR};
     use crate::preset::AudioBitrate;
+
+    #[test]
+    fn test_version_major_recognizes_every_bundled_artifact() {
+        // Windows: release desnudo con el sufijo del build de Gyan.
+        assert_eq!(
+            version_major(
+                "ffmpeg version 9.0.2-essentials_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers"
+            ),
+            Some(9)
+        );
+        // Linux: el build de BtbN publica la salida de `git describe` del tag.
+        assert_eq!(
+            version_major(
+                "ffmpeg version n9.0.2-35-g9a9b70bb8c-20261024 Copyright (c) 2000-2026 the FFmpeg developers"
+            ),
+            Some(9)
+        );
+        // macOS: release desnudo.
+        assert_eq!(
+            version_major("ffmpeg version 9.0.2 Copyright (c) 2000-2026 the FFmpeg developers"),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn test_version_major_accepts_builds_without_release() {
+        assert_eq!(
+            version_major(
+                "ffmpeg version git-2020-01-01-abc1234 Copyright (c) 2000-2020 the FFmpeg developers"
+            ),
+            Some(MIN_FFMPEG_MAJOR)
+        );
+    }
+
+    #[test]
+    fn test_version_major_reports_outdated_version_to_reject_it() {
+        // Por debajo del mínimo se reconoce el número para poder rechazarlo
+        // nombrándolo, en vez de responder que la versión es indescifrable.
+        assert_eq!(
+            version_major("ffmpeg version 5.1.4 Copyright (c) 2000-2023 the FFmpeg developers"),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn test_version_major_ignores_unrecognizable_line() {
+        assert_eq!(version_major("FFmpeg developers"), None);
+        assert_eq!(version_major(""), None);
+    }
 
     #[test]
     fn test_resolve_audio_bitrate_legacy() {

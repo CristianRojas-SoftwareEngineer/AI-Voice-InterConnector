@@ -631,6 +631,58 @@ commands:
             cargo --version
             rustc --version
             echo "[STEP] Instalar Rust << pipeline.parameters.rust_pin >> vía rustup - FIN"
+  # Aprovisionamiento del FFmpeg fijado, compartido por los jobs de prueba Unix
+  # (test-linux, coverage y test-macos). `cargo xtask ffmpeg` lee versión, URL y
+  # SHA-256 de packaging/pins.json —fuente única—, verifica el hash, extrae el
+  # ejecutable y le pasa el humo de versión y de los seis codificadores de la
+  # matriz de egresión. El pipeline no declara nada propio de FFmpeg: no puede
+  # divergir del manifiesto de pines.
+  provision_ffmpeg_unix:
+    description: Aprovisiona el FFmpeg fijado y lo antepone al PATH
+    steps:
+      - run:
+          name: Aprovisionar FFmpeg fijado (packaging/pins.json)
+          command: |
+            echo "[STEP] Aprovisionar FFmpeg - INICIO"
+            set -euo pipefail
+            export PATH="$HOME/.cargo/bin:$PATH"
+            ffmpeg_bin="$(cargo xtask ffmpeg --dest "$(pwd)/ffmpeg-bundle")"
+            ffmpeg_dir="$(dirname "$ffmpeg_bin")"
+            echo "FFmpeg aprovisionado: $ffmpeg_bin"
+            echo "SHA-256 fijado y verificado: $(cat "$ffmpeg_dir/.ffmpeg-sha256")"
+            # En el shell en curso para la comprobación de este paso, y en
+            # BASH_ENV con el valor ya expandido para los pasos siguientes: ese
+            # fichero se sourcea donde `ffmpeg_dir` no existe.
+            export PATH="$ffmpeg_dir:$PATH"
+            printf 'export PATH="%s:$PATH"\n' "$ffmpeg_dir" >> "$BASH_ENV"
+            ffmpeg_version="$(ffmpeg -version)"
+            printf '%s\n' "$ffmpeg_version" | head -1
+            echo "[STEP] Aprovisionar FFmpeg - FIN"
+  # Aprovisionamiento del FFmpeg fijado en Windows. No hay $BASH_ENV: el PATH
+  # publicado vale para este paso, y el paso de la suite de test-windows
+  # recompone el suyo. `xtask` solo compila Rust puro (ningún crate con C), así
+  # que basta anteponer `~\.cargo\bin` para que `cargo` resuelva el toolchain
+  # MSVC que fija `rust_pin`: rustc localiza el `link.exe` del MSVC instalado sin
+  # importar `vcvars64`.
+  provision_ffmpeg_windows:
+    description: Aprovisiona el FFmpeg fijado y lo antepone al PATH del paso
+    steps:
+      - run:
+          name: Aprovisionar FFmpeg fijado (packaging/pins.json)
+          command: |
+            Write-Host "[STEP] Aprovisionar FFmpeg - INICIO"
+            $ErrorActionPreference = "Stop"
+            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            $ffmpegBin = & cargo xtask ffmpeg --dest "$((Get-Location).Path)\ffmpeg-bundle" | Select-Object -Last 1
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $ffmpegDir = Split-Path -Parent $ffmpegBin
+            Write-Host "FFmpeg aprovisionado: $ffmpegBin"
+            Write-Host "SHA-256 fijado y verificado: $(Get-Content (Join-Path $ffmpegDir '.ffmpeg-sha256'))"
+            $env:PATH = "$ffmpegDir;$env:PATH"
+            $version = (& ffmpeg -version)[0]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            Write-Host $version
+            Write-Host "[STEP] Aprovisionar FFmpeg - FIN"
   # Precarga de dependencias al registry (todos los SO): `shell: bash` existe en
   # los tres executors (nativo Linux/macOS, Git-bash en Windows) y `validate_pins`
   # ya lo usa en Windows, así que un solo command cubre los 8 usos.
@@ -825,31 +877,7 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
-      - run:
-          name: Instalar FFmpeg para pruebas de audio
-          command: |
-            set -euo pipefail
-            archive=/tmp/ffmpeg-9.0.2-linux64.tar.xz
-            curl -fL --retry 3 -o "$archive" "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-24-13-02/ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz"
-            printf '%s  %s\n' 'ddffcf6e3d537dd9e0039f0635261be40dd9bfdafb2ea85970173e928e024e50' "$archive" | sha256sum -c -
-            mkdir -p /tmp/avi-ffmpeg/bin
-            # Extraer a directorio temporal para evitar conflicto cp same file
-            # (el archive BtbN tiene estructura ffmpeg-*/bin/ffmpeg)
-            extract_dir="/tmp/avi-ffmpeg-extract"
-            rm -rf "$extract_dir"
-            mkdir -p "$extract_dir"
-            tar -xJf "$archive" -C "$extract_dir"
-            ffmpeg_src="$(find "$extract_dir" -name ffmpeg -type f | head -1)"
-            [ -n "$ffmpeg_src" ] && cp "$ffmpeg_src" /tmp/avi-ffmpeg/bin/ffmpeg
-            [ -x /tmp/avi-ffmpeg/bin/ffmpeg ] || { echo "ffmpeg no extraído correctamente"; exit 1; }
-            # Exportar PATH EN EL SHELL ACTUAL (no solo BASH_ENV) para que ffmpeg esté disponible ya
-            export PATH="/tmp/avi-ffmpeg/bin:$PATH"
-            echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
-            ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
-            encoders="$(ffmpeg -hide_banner -encoders)"
-            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
-            done
+      - provision_ffmpeg_unix
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -900,6 +928,10 @@ jobs:
     # test-linux/macos: valida código específico de Windows (lanzamiento con
     # lista explícita de handles, limpiador diferido, PATH en HKCU, WASAPI y
     # consola UTF-8) antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
+    # Corre sobre el target MSVC que el paquete distribuye
+    # (x86_64-pc-windows-msvc): el orden del PATH —FFmpeg aprovisionado,
+    # rustup, heredado— es un invariante y no un detalle, porque el cargo GNU de
+    # Chocolatey que viaja en lo heredado compila otro target.
     # Caché: registry + target/ + sccache autoconsistente (cargo_restore_caches
     # os: windows variant: test; sccache os: windows variant: test). La caché de
     # target/ tiene coste de I/O NTFS significativo en restore/save, pero sin ella
@@ -936,32 +968,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "rust_pin parámetro: << pipeline.parameters.rust_pin >>"
             Write-Host "[STEP] Verificar toolchain Rust - FIN"
-      # MSYS2/mingw-w64 para dlltool (requerido por rust-lld en Windows)
-      - run:
-          name: Instalar MSYS2 UCRT64 (mingw-w64 para dlltool)
-          command: |
-            Write-Host "[STEP] Instalar MSYS2 UCRT64 - INICIO"
-            $ErrorActionPreference = "Stop"
-            $Root = "C:\msys64"
-            if (-not (Test-Path "$Root\ucrt64\bin\dlltool.exe")) {
-              $Release = "<< pipeline.parameters.msys2_base_pin >>"
-              $ChocoVer = ($Release -replace '-', '') + ".0.0"
-              Write-Host "[STEP] Instalar base MSYS2 via Chocolatey ($ChocoVer) - INICIO"
-              choco install msys2 --version=$ChocoVer -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-              if (-not (Test-Path "$Root\usr\bin\bash.exe")) { throw "MSYS2 no quedó en $Root tras choco" }
-              Write-Host "[STEP] Instalar base MSYS2 via Chocolatey - FIN"
-              $Bash = "$Root\usr\bin\bash.exe"
-              Write-Host "[STEP] Sincronizar toolchain (pacman -S mingw-w64-ucrt-x86_64-binutils) - INICIO"
-              & $Bash -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-binutils"
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-              Write-Host "[STEP] Sincronizar toolchain - FIN"
-            } else {
-              Write-Host "MSYS2 ya presente con dlltool; se omite instalación"
-            }
-            # Verificar dlltool disponible
-            & "$Root\ucrt64\bin\dlltool.exe" --version
-            Write-Host "[STEP] Instalar MSYS2 UCRT64 - FIN"
       - cargo_restore_caches:
           os: windows
           variant: test
@@ -973,21 +979,7 @@ jobs:
       - sccache_setup_windows
       - validate_pins
       - validate_features
-      - run:
-          name: Instalar FFmpeg para pruebas de audio
-          command: |
-            $ErrorActionPreference = "Stop"
-            choco install ffmpeg -y --no-progress
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $env:PATH = "$env:ChocolateyInstall\bin;$env:PATH"
-            $version = (& ffmpeg -version)[0]
-            if ($LASTEXITCODE -ne 0 -or $version -notmatch '^ffmpeg version ([6-9]|[1-9][0-9])\.') { throw "FFmpeg 6+ requerido: $version" }
-            $encoders = ffmpeg -hide_banner -encoders
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $encoderList = $encoders -join "`n"
-            foreach ($codec in @('libmp3lame', 'libvorbis', 'libopus', 'aac', 'flac', 'pcm_s16le')) {
-              if ($encoderList -notmatch $codec) { throw "Falta codificador FFmpeg: $codec" }
-            }
+      - provision_ffmpeg_windows
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -1002,10 +994,35 @@ jobs:
             Write-Host "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - FIN"
       - run:
           name: Ejecutar suite con nextest (cargo nextest run --all)
+          # La primera compilación fría de la workspace con MSVC (aws-lc-sys y el
+          # resto de dependencias con C) puede pasar de los 10 min de silencio
+          # por defecto; build-windows-x64 usa el mismo margen.
+          no_output_timeout: 25m
           command: |
             Write-Host "[STEP] Ejecutar suite con nextest - INICIO"
-            # MSYS2 ucrt64/bin para dlltool (requerido por rust-lld)
-            $env:PATH = "C:\msys64\ucrt64\bin;$env:ChocolateyInstall\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # Entorno MSVC (vcvars64) importado ANTES de anteponer directorios:
+            # vcvars fija INCLUDE/LIB y la ruta de cl.exe/link.exe, y un prepend
+            # posterior no los desplaza.
+            $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+            $VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+            if (-not $VsPath) { throw "vswhere no encontró una instalación con MSVC x64" }
+            $VcVars = "$VsPath\VC\Auxiliary\Build\vcvars64.bat"
+            cmd /c "call `"$VcVars`" >nul 2>&1 && set" | ForEach-Object {
+              if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
+            }
+            # CC/CXX = ruta absoluta de cl.exe: solo así el crate `cc` usa
+            # RUSTC_WRAPPER=sccache como wrapper en MSVC.
+            $Cl = (Get-Command cl.exe -ErrorAction Stop).Source
+            $env:CC = $Cl
+            $env:CXX = $Cl
+            Write-Host "cl: $Cl"
+            # Orden del PATH, que es un invariante y no un detalle: primero el
+            # FFmpeg aprovisionado (la matriz de egressión ejecuta sus
+            # codificadores), después `~\.cargo\bin` (el toolchain MSVC que fija
+            # rust_pin) y solo luego lo heredado, donde
+            # `$env:ChocolateyInstall\bin` trae un cargo GNU —target
+            # x86_64-pc-windows-gnu— que compilaría aws-lc-sys buscando gcc.exe.
+            $env:PATH = "$((Get-Location).Path)\ffmpeg-bundle;$env:USERPROFILE\.cargo\bin;$env:PATH"
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
@@ -1133,37 +1150,7 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
-      - run:
-          name: Instalar FFmpeg para pruebas de audio
-          command: |
-            set -euo pipefail
-            echo "[DEBUG] Verificando si ffmpeg ya existe:"
-            command -v ffmpeg && ffmpeg -version | head -1 || echo "ffmpeg no encontrado"
-            if ! command -v ffmpeg >/dev/null 2>&1; then
-              echo "[DEBUG] Instalando ffmpeg con brew..."
-              # Redirigir stderr a /dev/null para evitar warnings postinstall que fallan con set -euo pipefail
-              HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
-                brew install ffmpeg 2>/dev/null || true
-            fi
-            echo "[DEBUG] Verificando command -v ffmpeg:"
-            command -v ffmpeg || echo "command -v ffmpeg falló"
-            echo "[DEBUG] Verificando /opt/homebrew/bin/ffmpeg:"
-            ls -la /opt/homebrew/bin/ffmpeg 2>/dev/null || echo "No existe /opt/homebrew/bin/ffmpeg"
-            echo "[DEBUG] PATH actual: $PATH"
-            # Verificar que ffmpeg esté instalado y funcional (lo importante)
-            command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg no encontrado tras instalación"; exit 1; }
-            echo 'export PATH="/opt/homebrew/bin:$PATH"' >> "$BASH_ENV"
-            export PATH="/opt/homebrew/bin:$PATH"
-            echo "[DEBUG] ffmpeg version:"
-            ffmpeg -version | head -3
-            echo "[DEBUG] Verificando encoders..."
-            encoders="$(ffmpeg -hide_banner -encoders)"
-            # Codecs disponibles en ffmpeg Homebrew (macOS): libmp3lame, libopus, aac, flac, pcm_s16le
-            # libvorbis NO está en fórmula básica Homebrew
-            for codec in libmp3lame libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
-            done
-            echo "[DEBUG] Todos los codecs OK (macOS Homebrew ffmpeg)"
+      - provision_ffmpeg_unix
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -1239,31 +1226,7 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
-      - run:
-          name: Instalar FFmpeg para pruebas de audio
-          command: |
-            set -euo pipefail
-            archive=/tmp/ffmpeg-9.0.2-linux64.tar.xz
-            curl -fL --retry 3 -o "$archive" "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-24-13-02/ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz"
-            printf '%s  %s\n' 'ddffcf6e3d537dd9e0039f0635261be40dd9bfdafb2ea85970173e928e024e50' "$archive" | sha256sum -c -
-            mkdir -p /tmp/avi-ffmpeg/bin
-            # Extraer a directorio temporal para evitar conflicto cp same file
-            # (el archive BtbN tiene estructura ffmpeg-*/bin/ffmpeg)
-            extract_dir="/tmp/avi-ffmpeg-extract"
-            rm -rf "$extract_dir"
-            mkdir -p "$extract_dir"
-            tar -xJf "$archive" -C "$extract_dir"
-            ffmpeg_src="$(find "$extract_dir" -name ffmpeg -type f | head -1)"
-            [ -n "$ffmpeg_src" ] && cp "$ffmpeg_src" /tmp/avi-ffmpeg/bin/ffmpeg
-            [ -x /tmp/avi-ffmpeg/bin/ffmpeg ] || { echo "ffmpeg no extraído correctamente"; exit 1; }
-            # Exportar PATH EN EL SHELL ACTUAL (no solo BASH_ENV) para que ffmpeg esté disponible ya
-            export PATH="/tmp/avi-ffmpeg/bin:$PATH"
-            echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
-            ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
-            encoders="$(ffmpeg -hide_banner -encoders)"
-            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
-            done
+      - provision_ffmpeg_unix
       - run:
           name: Ejecutar suite con cobertura (cargo llvm-cov)
           command: |
@@ -2391,6 +2354,11 @@ jobs:
 # ══════════════════════════════════════════════════════════════════════
 workflows:
   # Validación preintegración en rama/PR; solo jobs de prueba y compilación.
+  # Ningún job declara versión, URL ni hash de FFmpeg: los cuatro jobs de prueba
+  # lo aprovisionan con `cargo xtask ffmpeg` desde packaging/pins.json, y los
+  # build-* lo hacen por el mismo camino dentro de `xtask package`, así que las
+  # pruebas y los cuatro targets distribuidos ejercitan el mismo artefacto
+  # fijado y verificado por su SHA-256.
   denoise-preintegration:
     jobs:
       - test-linux:

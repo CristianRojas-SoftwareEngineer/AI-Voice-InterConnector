@@ -96,7 +96,7 @@ Limpia archivos locales de audio o la pista de audio de archivos de vídeo; la i
 ai-voice-interconnector [--json] speech denoise <entrada>... [opciones]
 ```
 
-Requiere el feature `native-denoise` (incluido en `full`), el modelo DPDFNet provisionado con `ai-voice-interconnector setup` y el FFmpeg verificado del paquete AVI. No busca FFmpeg en `PATH`.
+Requiere el feature `native-denoise` (incluido en `full`), el modelo DPDFNet provisionado con `ai-voice-interconnector setup` y el FFmpeg verificado del paquete AVI. No busca FFmpeg en `PATH`. El binario integrado debe declarar versión 6 o superior en la primera línea de `ffmpeg -version`, con o sin el prefijo de `git describe` que anteponen los builds de Linux; una versión anterior, o una línea que no declare ninguna, se rechaza con un error que nombra lo que encontró, y `--version` añade la línea de FFmpeg cuando esta se reconoce e informa `ffmpeg missing` cuando no.
 
 | Opción | Función |
 |---|---|

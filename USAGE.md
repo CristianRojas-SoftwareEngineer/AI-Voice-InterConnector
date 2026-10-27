@@ -666,7 +666,7 @@ ai-voice-interconnector speech denoise entrada.mp4
 ai-voice-interconnector speech denoise voz.wav --preset default --json
 ```
 
-`studio` es el preset por omisión; `--preset default` selecciona el perfil sin normalización. El modelo DPDFNet debe estar provisionado con `setup`; FFmpeg se resuelve desde el paquete de AVI, sin fallback a `PATH`. El flag global `--json` produce JSONL de eventos y resultados. Para opciones de lote, colisiones, formatos y límites, consulta la [referencia completa](docs/CLI/commands/SPEECH.md#speech-denoise).
+`studio` es el preset por omisión; `--preset default` selecciona el perfil sin normalización. El modelo DPDFNet debe estar provisionado con `setup`; FFmpeg se resuelve desde el paquete de AVI, sin fallback a `PATH`: el binario integrado debe declarar versión 6 o superior, con o sin el prefijo de `git describe` de los builds de Linux. El flag global `--json` produce JSONL de eventos y resultados. Para opciones de lote, colisiones, formatos y límites, consulta la [referencia completa](docs/CLI/commands/SPEECH.md#speech-denoise).
 
 ---
 

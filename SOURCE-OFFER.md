@@ -25,7 +25,9 @@ disponible en:
 - **Builds Linux (BtbN) y scripts de compilación:**
   <https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-24-13-02>
   (build `n9.0.2-35-g9a9b70bb8c`)
-- **Build Windows (Gyan):** <https://www.gyan.dev/ffmpeg/builds/>
+- **Build Windows (Gyan):**
+  <https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2>
+  (el mismo binario se publica en <https://www.gyan.dev/ffmpeg/builds/>)
 - **Build macOS (Martin Riedl):** <https://ffmpeg.martin-riedl.de/>
 
 Si necesitas el árbol de fuentes exacto de un build, incluidas las bibliotecas
