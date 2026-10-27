@@ -188,12 +188,22 @@ fn pinned_sha256<'a>(
 /// Archivo y URL de descarga de FFmpeg para el triple. Linux usa un release
 /// inmutable de los builds GPL de BtbN y macOS el build de Martin Riedl;
 /// Windows, el essentials de Gyan. El pin de versión manda en todos los casos.
+///
+/// Windows se descarga del release que el propio autor del build publica en
+/// GitHub, no de su sitio de paquetes: ese sitio degrada las transferencias
+/// sostenidas hasta volver inútil bajar 110 MB, mientras que el release los
+/// sirve a velocidad de CDN. Los dos orígenes publican el mismo fichero, y
+/// quien lo decide no es la URL sino el SHA-256 fijado, que se verifica sobre
+/// el archivo descargado antes de extraer nada: un origen que sirviera otro
+/// binario no llegaría al bundle.
 fn ffmpeg_download(triple: &str, version: &str) -> Result<(String, String)> {
     let major: String = version.split('.').take(2).collect::<Vec<_>>().join(".");
     let (file, url) = match triple {
         "x86_64-pc-windows-msvc" => (
             format!("ffmpeg-{version}-essentials_build.zip"),
-            format!("https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-{version}-essentials_build.zip"),
+            format!(
+                "https://github.com/GyanD/codexffmpeg/releases/download/{version}/ffmpeg-{version}-essentials_build.zip"
+            ),
         ),
         "x86_64-unknown-linux-gnu" => {
             let file = format!("ffmpeg-{FFMPEG_BTBN_BUILD}-linux64-gpl-{major}.tar.xz");
@@ -311,6 +321,16 @@ fn powershell_single_quoted(text: &str) -> String {
 /// Descarga un archivo por HTTPS con `curl`, como los bootstrap: TLS ≥ 1.2 y
 /// fallo ante HTTP erróneo. Solo en Windows y solo si `curl` no existe se usa
 /// `Invoke-WebRequest`; cualquier otro fallo de `curl` se propaga.
+///
+/// Estos artefactos pesan más de 100 MB, así que la transferencia no puede
+/// quedarse esperando a un origen que deja de enviar sin cerrar la conexión:
+/// eso dejaría el paso colgado hasta el límite del job, sin mensaje que lo
+/// explique. De ahí el detector de estancamiento —aborta si la velocidad cae
+/// por debajo de 1 KB/s durante un minuto— y los reintentos ante error de
+/// conexión o de transferencia. Un reintento vuelve a bajar el archivo desde el
+/// principio; el SHA-256 fijado se verifica después sobre el fichero completo,
+/// así que reescribirlo no compromete nada: o coincide con el pin, o el
+/// empaquetado falla.
 fn download_https(url: &str, dest: &Path) -> Result<()> {
     let curl = std::process::Command::new("curl")
         .args([
@@ -318,6 +338,18 @@ fn download_https(url: &str, dest: &Path) -> Result<()> {
             "=https",
             "--tlsv1.2",
             "-fsSL",
+            "--connect-timeout",
+            "15",
+            "--retry",
+            "3",
+            "--retry-delay",
+            "2",
+            "--retry-connrefused",
+            "--retry-all-errors",
+            "--speed-limit",
+            "1024",
+            "--speed-time",
+            "60",
             "-o",
             &dest.to_string_lossy(),
             url,
@@ -574,27 +606,50 @@ fn extract_ffmpeg_binary(archive: &Path, triple: &str) -> Result<Vec<u8>> {
     )
 }
 
-/// Asegura `ffmpeg-bundle/` para el triple: reutiliza el binario si está fresco
-/// o lo reconstruye desde la URL fijada, verificando el SHA-256 antes de
-/// extraerlo. El humo `-version` corre sobre el binario extraído y el marcador
-/// solo se escribe después, así que un bundle fresco procede de una descarga
-/// verificada y ejecutable.
-fn ensure_ffmpeg_bundle(root: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
+/// Directorio canónico del bundle de FFmpeg dentro del repositorio.
+fn ffmpeg_bundle_dir(root: &Path) -> PathBuf {
+    root.join(FFMPEG_BUNDLE_REL)
+}
+
+/// Punto de entrada de `xtask ffmpeg`: aprovisiona en `dest` el FFmpeg fijado
+/// en `packaging/pins.json` para el target del host —la misma operación que
+/// `xtask package` hace antes de montar el bundle, con la misma verificación de
+/// SHA-256 y el mismo humo— y publica en la salida estándar la ruta del
+/// ejecutable resultante, para que quien invoque el subcomando no tenga que
+/// adivinar dónde quedó.
+pub fn run_ffmpeg(dest: Option<&Path>) -> Result<()> {
+    let root = std::env::current_dir()?;
+    let pins = pins::load_from_root(&root).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let triple = host_triple()?;
+    let bundle = match dest {
+        Some(dir) => dir.to_path_buf(),
+        None => ffmpeg_bundle_dir(&root),
+    };
+    let bundle = ensure_ffmpeg_bundle(&bundle, triple, &pins)?;
+    println!("{}", bundle.join(ffmpeg_binary_name(triple)?).display());
+    Ok(())
+}
+
+/// Asegura el bundle de FFmpeg en `bundle` para el triple: reutiliza el binario
+/// si está fresco o lo reconstruye desde la URL fijada, verificando el SHA-256
+/// antes de extraerlo. El humo `-version` corre sobre el binario extraído y el
+/// marcador solo se escribe después, así que un bundle fresco procede de una
+/// descarga verificada y ejecutable.
+fn ensure_ffmpeg_bundle(bundle: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
     let version = pins.ffmpeg.as_str();
     let expected_sha256 = pinned_ffmpeg_sha256(pins, triple)?;
-    let bundle = root.join(FFMPEG_BUNDLE_REL);
-    if bundle.is_dir() && ffmpeg_bundle_is_fresh(&bundle, triple, expected_sha256)? {
+    if bundle.is_dir() && ffmpeg_bundle_is_fresh(bundle, triple, expected_sha256)? {
         let binary = bundle.join(ffmpeg_binary_name(triple)?);
         if smoke_ffmpeg(&binary).is_ok() {
-            eprintln!("Bundle FFmpeg reutilizado de {FFMPEG_BUNDLE_REL}");
-            return Ok(bundle);
+            eprintln!("Bundle FFmpeg reutilizado de {}", bundle.display());
+            return Ok(bundle.to_path_buf());
         }
         eprintln!("El bundle FFmpeg en caché no supera el humo; se reconstruye");
     }
     if bundle.is_dir() {
-        std::fs::remove_dir_all(&bundle)?;
+        std::fs::remove_dir_all(bundle)?;
     }
-    std::fs::create_dir_all(&bundle)?;
+    std::fs::create_dir_all(bundle)?;
     let (file, url) = ffmpeg_download(triple, version)?;
     let dest = tempfile::Builder::new()
         .prefix(&format!("xtask-ffmpeg-{version}-"))
@@ -617,10 +672,10 @@ fn ensure_ffmpeg_bundle(root: &Path, triple: &str, pins: &Pins) -> Result<PathBu
     }
     smoke_ffmpeg(&binary)?;
     std::fs::write(bundle.join(FFMPEG_MARKER), expected_sha256)?;
-    if !ffmpeg_bundle_is_fresh(&bundle, triple, expected_sha256)? {
+    if !ffmpeg_bundle_is_fresh(bundle, triple, expected_sha256)? {
         bail!("el bundle de FFmpeg quedó incompleto tras la descarga");
     }
-    Ok(bundle)
+    Ok(bundle.to_path_buf())
 }
 
 /// Humo mínimo del FFmpeg extraído: debe ejecutarse, reportar su versión y
@@ -948,7 +1003,7 @@ pub fn run(
             bail!("librería no encontrada en {}: {lib}", bundle.display());
         }
     }
-    let ffmpeg_bundle = ensure_ffmpeg_bundle(&root, triple, &pins)?;
+    let ffmpeg_bundle = ensure_ffmpeg_bundle(&ffmpeg_bundle_dir(&root), triple, &pins)?;
     let ffmpeg_binary = ffmpeg_bundle.join(ffmpeg_binary_name(triple)?);
     if !ffmpeg_binary.is_file() {
         bail!(
@@ -1177,6 +1232,9 @@ mod tests {
         let (file, url) = ffmpeg_download("x86_64-pc-windows-msvc", &version).unwrap();
         assert_eq!(file, format!("ffmpeg-{version}-essentials_build.zip"));
         assert!(url.ends_with(&file) && url.contains(&version));
+        // Windows baja del release del build en GitHub y no del sitio de
+        // paquetes del mismo autor, que degrada las transferencias sostenidas.
+        assert!(url.starts_with("https://github.com/GyanD/codexffmpeg/releases/download/"));
         let (file, url) = ffmpeg_download("x86_64-unknown-linux-gnu", &version).unwrap();
         assert_eq!(file, "ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz");
         assert!(url.ends_with(&file) && url.contains(FFMPEG_BTBN_TAG));
@@ -1188,6 +1246,23 @@ mod tests {
         let (file, url) = ffmpeg_download("aarch64-apple-darwin", &version).unwrap();
         assert_eq!(file, "ffmpeg.zip");
         assert!(url.contains(&version));
+    }
+
+    /// El bundle se aprovisiona en el directorio que recibe —no en una ruta
+    /// fija bajo la raíz— y el marcador con el SHA-256 fijado es lo que decide
+    /// entre reutilizarlo y reconstruirlo: un marcador coincidente lo declara
+    /// fresco y uno divergente lo invalida.
+    #[test]
+    fn ffmpeg_bundle_freshness_is_decided_in_the_given_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let bundle = dir.path().join("bundle-explicito");
+        std::fs::create_dir_all(&bundle).unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+        std::fs::write(bundle.join(ffmpeg_binary_name(triple).unwrap()), b"ffmpeg").unwrap();
+        let pinned = "a".repeat(64);
+        std::fs::write(bundle.join(FFMPEG_MARKER), &pinned).unwrap();
+        assert!(ffmpeg_bundle_is_fresh(&bundle, triple, &pinned).unwrap());
+        assert!(!ffmpeg_bundle_is_fresh(&bundle, triple, &"b".repeat(64)).unwrap());
     }
 
     /// Cada target del manifiesto exige el ejecutable de FFmpeg y fija su

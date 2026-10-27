@@ -147,7 +147,7 @@ Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio�
 
 La única ruta pública de limpieza de archivos es `ai-voice-interconnector speech denoise`. El subcomando local reutiliza el pipeline DPDFNet migrado para archivos de audio y para extraer, limpiar y remuxar la pista de audio de vídeo; copia el primer stream de vídeo sin procesar la imagen. No crea un endpoint del daemon ni un binario raíz paralelo.
 
-El feature `native-denoise` contiene esta capacidad y forma parte de `full`. El modelo DPDFNet se provisiona con `setup`; FFmpeg se localiza desde el paquete verificado de AVI, nunca mediante una búsqueda de `PATH`. La limpieza de archivos usa `studio` por omisión y admite `--preset default` para el perfil original; los parámetros de egresión no se aplican al preprocesamiento opt-in de clonado, STT o doblaje.
+El feature `native-denoise` contiene esta capacidad y forma parte de `full`. El modelo DPDFNet se provisiona con `setup`; FFmpeg se localiza desde el paquete verificado de AVI, nunca mediante una búsqueda de `PATH`: el ejecutable integrado debe declarar versión 6 o superior, con o sin el prefijo de `git describe` de los builds de Linux. La limpieza de archivos usa `studio` por omisión y admite `--preset default` para el perfil original; los parámetros de egresión no se aplican al preprocesamiento opt-in de clonado, STT o doblaje.
 
 El `--json` global emite JSONL, una línea por evento, y conserva progreso y resultados aptos para scripting. La referencia de opciones, compatibilidad, errores y ejemplos está en [`docs/CLI/commands/SPEECH.md`](CLI/commands/SPEECH.md#speech-denoise) y el contrato normativo en [`docs/CLI/CONTRACT.md`](CLI/CONTRACT.md#speech-denoise-limpieza-local-de-archivos).
 
