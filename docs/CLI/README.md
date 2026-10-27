@@ -36,7 +36,7 @@ docs/CLI/
 | [commands/DAEMON.md](commands/DAEMON.md) | Comportamiento e implementación de `daemon`: ciclo de vida, endpoints Axum, protocolo IPC |
 | [commands/VERSION.md](commands/VERSION.md) | Comportamiento e implementación de `version`: fuente de versión y payload |
 | [commands/TRANSLATE.md](commands/TRANSLATE.md) | Comportamiento e implementación de `translate`: validación en dos carriles (parser y handler), passthrough, motor CT2 local y despacho al daemon |
-| [../denoise-migration-walkthrough.md](../denoise-migration-walkthrough.md) | Evidencia de la migración Denoise y puertas abiertas; el contrato de uso vigente lo fija [CONTRACT.md](CONTRACT.md) |
+| [../denoise-migration-walkthrough.md](../denoise-migration-walkthrough.md) | Evidencia de la migración Denoise y sus límites declarados; el contrato de uso vigente lo fija [CONTRACT.md](CONTRACT.md) |
 
 ## Resumen de comandos
 
