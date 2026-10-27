@@ -1137,9 +1137,10 @@ jobs:
           command: |
             set -euo pipefail
             if ! command -v ffmpeg >/dev/null 2>&1; then
-              # Ignorar warnings de postinstall de brew (salen en stderr pero exit code 0)
-              # HOMEBREW_NO_ENV_HINTS=1 reduce ruido; 2>/dev/null silencia warnings postinstall
-              HOMEBREW_NO_ENV_HINTS=1 brew install ffmpeg 2>/dev/null || true
+              # Instalar silenciosamente: redirigir TODO el output a /dev/null
+              # brew warnings postinstall salen en stdout, no stderr
+              HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
+                brew install ffmpeg >/dev/null 2>&1 || true
             fi
             # Verificar que ffmpeg esté instalado y funcional (lo importante)
             command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg no encontrado tras instalación"; exit 1; }
