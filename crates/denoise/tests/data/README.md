@@ -35,6 +35,8 @@ se atenúan −25 dB tras la síntesis. Ambos dorados en verde — 67,77 dB y
 
 ## Archivos
 
+- `tutorial_toma_{01,02,03,19,30,32}.wav` - audio extraído de las seis tomas tutoriales elegibles del usuario (≤10 s), WAV PCM16LE estéreo sin modificar; corpus normal de transcripción T5 con referencias humanas fijadas en `.work/plans/denoise-closure-plan.md`. No representa cobertura de hablantes o condiciones acústicas generales.
+- `pub_snr0_{clean,noisy}.wav`, `car_snr{0,5}_{clean,noisy}.wav`, `office_snr0_{clean,noisy}.wav`, `train_snr5_{clean,noisy}.wav` y `restaurant_snr0_{clean,noisy}.wav` - ventanas de 15s del EvalSet descritas arriba, añadidas para el cribado adverso de transcripción; no son referencias golden congeladas.
 - `voz_clean.wav` - voz real 3s, SR 48k, mono PCM16 (ventana de máxima energía)
 - `voz_noisy.wav` - `voz_clean.wav` + ruido a SNR 0 dB
 - `referencia_dpdfnet.wav` - salida de DPDFNet sobre `voz_noisy.wav`, congelada
