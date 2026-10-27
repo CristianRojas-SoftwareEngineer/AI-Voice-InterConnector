@@ -49,4 +49,5 @@ ort-bundle/
 ffmpeg-bundle/
 # Informe NUnit que Pester escribe en el directorio actual con `-CI`
 testResults.xml
-.work/release-and-E2E.md
+# Planes, bitácoras y artefactos locales de trabajo; no se versionan.
+.work/
