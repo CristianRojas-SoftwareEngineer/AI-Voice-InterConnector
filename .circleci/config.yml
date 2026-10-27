@@ -826,6 +826,16 @@ jobs:
       - validate_pins
       - validate_features
       - run:
+          name: Instalar FFmpeg para pruebas de audio
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+            ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
+            encoders="$(ffmpeg -hide_banner -encoders)"
+            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
+              printf '%s\n' "$encoders" | grep -q "$codec" || exit 1
+            done
+      - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
             echo "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - INICIO"
@@ -923,6 +933,21 @@ jobs:
       - validate_pins
       - validate_features
       - run:
+          name: Instalar FFmpeg para pruebas de audio
+          command: |
+            $ErrorActionPreference = "Stop"
+            choco install ffmpeg -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $env:PATH = "$env:ChocolateyInstall\bin;$env:PATH"
+            $version = (& ffmpeg -version)[0]
+            if ($LASTEXITCODE -ne 0 -or $version -notmatch '^ffmpeg version ([6-9]|[1-9][0-9])\.') { throw "FFmpeg 6+ requerido: $version" }
+            $encoders = ffmpeg -hide_banner -encoders
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $encoderList = $encoders -join "`n"
+            foreach ($codec in @('libmp3lame', 'libvorbis', 'libopus', 'aac', 'flac', 'pcm_s16le')) {
+              if ($encoderList -notmatch $codec) { throw "Falta codificador FFmpeg: $codec" }
+            }
+      - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
             Write-Host "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - INICIO"
@@ -938,7 +963,7 @@ jobs:
           name: Ejecutar suite con nextest (cargo nextest run --all)
           command: |
             Write-Host "[STEP] Ejecutar suite con nextest - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+            $env:PATH = "$env:ChocolateyInstall\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
@@ -1067,6 +1092,15 @@ jobs:
       - validate_pins
       - validate_features
       - run:
+          name: Instalar FFmpeg para pruebas de audio
+          command: |
+            brew install ffmpeg
+            ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
+            encoders="$(ffmpeg -hide_banner -encoders)"
+            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
+              printf '%s\n' "$encoders" | grep -q "$codec" || exit 1
+            done
+      - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
             echo "[STEP] Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>) - INICIO"
@@ -1141,6 +1175,16 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
+      - run:
+          name: Instalar FFmpeg para pruebas de audio
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+            ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
+            encoders="$(ffmpeg -hide_banner -encoders)"
+            for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
+              printf '%s\n' "$encoders" | grep -q "$codec" || exit 1
+            done
       - run:
           name: Ejecutar suite con cobertura (cargo llvm-cov)
           command: |
