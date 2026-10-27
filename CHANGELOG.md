@@ -121,6 +121,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+La limpieza de ruido deja de ser una capacidad periférica y pasa a ser un comando
+propio: `speech denoise` limpia archivos de audio y la pista de audio de vídeo, y
+los flujos de transcripción, doblaje y clonado la aceptan como opción. El clonado
+por micrófono completa la simetría con los comandos que ya lo admitían. El ciclo
+cierra con el aprovisionamiento reproducible del FFmpeg que viaja en los
+paquetes y con las correcciones que la validación en la CI nativa puso de
+manifiesto.
+
 ### Añadido
 
 - `voice clone` admite `--mic` con duración fija de 1 a 30 segundos o push-to-talk en TTY, con límite de 30 segundos y convergencia en las rutas local y daemon.
@@ -134,6 +142,16 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - `speech transcribe --daemon --denoise` omitía la limpieza en silencio porque el cuerpo enviado al daemon se reconstruía sin el campo `denoise`. La orden envía ahora el cuerpo que declara la limpieza.
 - El contrato no nombraba los `reason` de la limpieza (`denoise_unsupported`, `denoise_busy`, `denoise_failed`) y la página de `speech denoise` describía códigos de salida que no coincidían con la paridad del motor de origen.
 - El reconocimiento del FFmpeg integrado rechazaba el binario que el paquete distribuye en Linux: ese build declara su versión con el prefijo de `git describe` (`ffmpeg version n9.0.2-…`), que la comprobación no admitía, así que `speech denoise` abortaba antes de procesar y `speech denoise --version` informaba `ffmpeg missing` pese a que el ejecutable viajaba en el paquete. El reconocimiento acepta el número de release con o sin ese prefijo y mantiene el rechazo de las versiones anteriores a 6 nombrando la que encontró.
+
+### Cambiado
+
+- El modelo de limpieza DPDFNet entra en los pines que provisiona `setup`. No bloquea el arranque del daemon: el servicio queda disponible sin él y solo fallan las operaciones de limpieza, que lo informan como `model_missing`.
+- FFmpeg viaja dentro de los cuatro artefactos distribuidos y `packaging/bundle-manifest.json` lo declara por target, junto con las bibliotecas de sistema que Windows necesita. `speech denoise` lo resuelve desde la propia instalación en lugar de buscarlo en el `PATH`.
+- La feature de workspace `native-denoise` compila el subsistema de limpieza y queda incluida en `full`. `native-stt` pasa a arrastrar `avi-shared/native-ort`, de modo que el chequeo `onnx_runtime` de `doctor` informa del runtime que comparten el reconocimiento de voz y la limpieza.
+
+### Notas de release
+
+- **Incompatible**: la limpieza deja de existir como ruta raíz `denoise` y se expone solo como `speech denoise`. La ruptura es interna al ciclo no publicado: `v0.36.2` no exponía ningún comando `denoise`, así que ninguna instalación publicada se ve afectada.
 
 ### Estado y límites verificados
 
