@@ -838,24 +838,18 @@ jobs:
             extract_dir="/tmp/avi-ffmpeg-extract"
             rm -rf "$extract_dir"
             mkdir -p "$extract_dir"
-            echo "[DEBUG] Extrayendo archive a $extract_dir"
-            tar -xJf "$archive" -C "$extract_dir" 2>&1 | head -20
-            echo "[DEBUG] Listando contenido extraído:"
-            find "$extract_dir" -type f -name "ffmpeg" 2>/dev/null | head -5
+            tar -xJf "$archive" -C "$extract_dir"
             ffmpeg_src="$(find "$extract_dir" -name ffmpeg -type f | head -1)"
-            echo "[DEBUG] ffmpeg_src='$ffmpeg_src'"
             [ -n "$ffmpeg_src" ] && cp "$ffmpeg_src" /tmp/avi-ffmpeg/bin/ffmpeg
-            echo "[DEBUG] Copiado a /tmp/avi-ffmpeg/bin/ffmpeg"
             [ -x /tmp/avi-ffmpeg/bin/ffmpeg ] || { echo "ffmpeg no extraído correctamente"; exit 1; }
-            echo "[DEBUG] Verificando ffmpeg -version"
-            ffmpeg -version 2>&1 | head -3
-            echo "[DEBUG] Verificando encoders"
-            encoders="$(ffmpeg -hide_banner -encoders 2>&1)"
-            echo "[DEBUG] Encoders obtenidos, verificando codecs..."
+            # Exportar PATH EN EL SHELL ACTUAL (no solo BASH_ENV) para que ffmpeg esté disponible ya
+            export PATH="/tmp/avi-ffmpeg/bin:$PATH"
+            echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
+            ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
+            encoders="$(ffmpeg -hide_banner -encoders)"
             for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
+              printf '%s\n' "$encoders" | grep -q "$codec" || exit 1
             done
-            echo "[DEBUG] Todos los codecs encontrados OK"
             echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
             export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
@@ -1253,24 +1247,18 @@ jobs:
             extract_dir="/tmp/avi-ffmpeg-extract"
             rm -rf "$extract_dir"
             mkdir -p "$extract_dir"
-            echo "[DEBUG] Extrayendo archive a $extract_dir"
-            tar -xJf "$archive" -C "$extract_dir" 2>&1 | head -20
-            echo "[DEBUG] Listando contenido extraído:"
-            find "$extract_dir" -type f -name "ffmpeg" 2>/dev/null | head -5
+            tar -xJf "$archive" -C "$extract_dir"
             ffmpeg_src="$(find "$extract_dir" -name ffmpeg -type f | head -1)"
-            echo "[DEBUG] ffmpeg_src='$ffmpeg_src'"
             [ -n "$ffmpeg_src" ] && cp "$ffmpeg_src" /tmp/avi-ffmpeg/bin/ffmpeg
-            echo "[DEBUG] Copiado a /tmp/avi-ffmpeg/bin/ffmpeg"
             [ -x /tmp/avi-ffmpeg/bin/ffmpeg ] || { echo "ffmpeg no extraído correctamente"; exit 1; }
-            echo "[DEBUG] Verificando ffmpeg -version"
-            ffmpeg -version 2>&1 | head -3
-            echo "[DEBUG] Verificando encoders"
-            encoders="$(ffmpeg -hide_banner -encoders 2>&1)"
-            echo "[DEBUG] Encoders obtenidos, verificando codecs..."
+            # Exportar PATH EN EL SHELL ACTUAL (no solo BASH_ENV) para que ffmpeg esté disponible ya
+            export PATH="/tmp/avi-ffmpeg/bin:$PATH"
+            echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
+            ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
+            encoders="$(ffmpeg -hide_banner -encoders)"
             for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
-              printf '%s\n' "$encoders" | grep -q "$codec" || { echo "Falta codec: $codec"; exit 1; }
+              printf '%s\n' "$encoders" | grep -q "$codec" || exit 1
             done
-            echo "[DEBUG] Todos los codecs encontrados OK"
             echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
             export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
