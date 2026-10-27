@@ -173,17 +173,15 @@ qwen_tts_manifest.o: qwen_tts_manifest.rc qwen_tts.exe.manifest
 INGOT_DIR := third_party/ingot
 INGOT_LIB := $(INGOT_DIR)/libingot.a
 MINGW_SHIM_DIR := third_party/ingot/mingw_shim
-# Absoluto (estilo Windows C:/...) para el sub-make del ingot, que cambia de
-# directorio a third_party/ingot/ y romperia los paths relativos. cygpath -m:
-# el mismo patron que UCRT64_INC usa para el cblas.h root-cause.
-MINGW_SHIM_DIR_ABS := $(shell cygpath -m "$(CURDIR)/$(MINGW_SHIM_DIR)")
 ifeq ($(UNAME_S),Darwin)
 	INGOT_SHIM_FLAGS :=
 else ifneq (,$(filter Linux,$(UNAME_S)))
 	INGOT_SHIM_FLAGS :=
 else
-	# MinGW-w64/UCRT64: same POSIX shims the main build uses (-O2 re-stated so
-	# the override doesn't drop the ingot's optimization).
+	# Ruta absoluta para el sub-make de ingot; cygpath solo existe en MSYS2.
+	MINGW_SHIM_DIR_ABS := $(shell cygpath -m "$(CURDIR)/$(MINGW_SHIM_DIR)")
+	# MinGW-w64/UCRT64: aplica los mismos shims POSIX (-O2 conserva la
+	# optimización del sub-make).
 	INGOT_SHIM_FLAGS := CFLAGS="-O2 -I$(MINGW_SHIM_DIR_ABS) -include $(MINGW_SHIM_DIR_ABS)/unistd.h -include $(MINGW_SHIM_DIR_ABS)/sys/mman.h" INCLUDE="-Iinclude -I$(MINGW_SHIM_DIR_ABS)"
 endif
 $(INGOT_LIB):

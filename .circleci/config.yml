@@ -771,6 +771,7 @@ commands:
               echo "el binario instalado aceptó el comando raíz denoise" >&2
               exit 1
             fi
+            "$AVI_INSTALL_DIR/ffmpeg" -hide_banner -version
             rm -rf "$SANDBOX" "$STAGE_SMOKE"
             echo "[STEP] Humo de instalación en sandbox - FIN"
 
@@ -1612,6 +1613,8 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & $Installed denoise --help
             if ($LASTEXITCODE -eq 0) { throw "El binario instalado aceptó el comando raíz denoise" }
+            & "$env:AVI_INSTALL_DIR\ffmpeg.exe" -hide_banner -version
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Remove-Item -Recurse -Force $Sandbox
             Write-Host "[STEP] Humo de instalación en sandbox - FIN"
       - run:
@@ -2256,267 +2259,102 @@ jobs:
 #   encadenar pipelines distintas, de modo que la única garantía mecánica es
 #   tener los tests en el grafo de dependencias del release.
 #
-#   Se descartó el pipeline de rama `validate`: al empujar commit+tag juntos
-#   disparaba una segunda pipeline que re-ejecutaba la MISMA triple suite sobre
-#   el mismo commit en paralelo (duplicación sin cobertura única). El feedback
-#   pre-release vive en local sobre `main` (trunk-based) y en este gate al
-#   taggear: si los tests fallan, los builds no corren y nada se publica.
+#   El workflow denoise-preintegration reutiliza los gates y builds nativos
+#   seleccionados para rama/PR, sin ejecutar jobs de publicación. El release
+#   conserva sus propios gates en la misma pipeline que publica.
 #
 #   `coverage`, instaladores y licencias/changelog completan los gates de los 4
 #   builds nativos, que compilan las 4 plataformas en modo release.
 # ══════════════════════════════════════════════════════════════════════
-  # Validación transitoria de Denoise: compila y comprueba el CLI sin modelo.
-  denoise-validation-windows-x64:
-    executor: win/server-2022
-    environment:
-      CARGO_INCREMENTAL: "0"
-      SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
-    steps:
-      - checkout
-      - toolchain_restore_cache:
-          os: windows
-      - install_rust_windows
-      - toolchain_save_cache:
-          os: windows
-      - cargo_restore_caches:
-          os: windows
-          variant: full
-      - cargo_fetch
-      - cargo_save_registry
-      - sccache_restore_cache:
-          os: windows
-          variant: full
-      - sccache_setup_windows
-      - native_sccache_setup_windows
-      - validate_pins
-      - validate_features
-      - msys2_restore_cache
-      - run:
-          name: Preparar motor TTS en MSYS2 UCRT64
-          command: |
-            $Root = "C:\msys64"
-            if (-not (Test-Path "$Root\ucrt64\bin\gcc.exe")) {
-              $Release = "<< pipeline.parameters.msys2_base_pin >>"
-              $ChocoVer = ($Release -replace '-', '') + ".0.0"
-              choco install msys2 --version=$ChocoVer -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-              & "$Root\usr\bin\bash.exe" -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            }
-      - msys2_save_cache
-      - run:
-          name: Compilar full y comprobar Denoise en Windows
-          no_output_timeout: 25m
-          command: |
-            $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            $VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if (-not $VsPath) { throw "MSVC x64 no encontrado" }
-            $VcVars = "$VsPath\VC\Auxiliary\Build\vcvars64.bat"
-            cmd /c "call `"$VcVars`" >nul 2>&1 && set" | ForEach-Object {
-              if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
-            }
-            $Cl = (Get-Command cl.exe -ErrorAction Stop).Source
-            $env:CC = $Cl
-            $env:CXX = $Cl
-            $env:PATH = "$env:TEMP\ninja;$env:USERPROFILE\.cargo\bin;$env:PATH"
-            $env:RUSTC_WRAPPER = "sccache"
-            $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
-            $env:CMAKE_GENERATOR = "Ninja"
-            $env:CMAKE_C_COMPILER_LAUNCHER = "sccache"
-            $env:CMAKE_CXX_COMPILER_LAUNCHER = "sccache"
-            cargo build --release --features full
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $Exe = "target\release\ai-voice-interconnector.exe"
-            & $Exe speech denoise --help
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & $Exe denoise --help
-            if ($LASTEXITCODE -eq 0) { throw "denoise raíz aceptado" }
-            & $Exe version --json
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            cargo xtask build-engine --self-test
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            cargo xtask package
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            $Zip = Get-Item artifacts\ai-voice-interconnector-*-x86_64-windows.zip
-            Get-FileHash $Zip.FullName -Algorithm SHA256
-            $Stage = Join-Path $env:TEMP ([guid]::NewGuid().ToString("N"))
-            Expand-Archive $Zip.FullName -DestinationPath $Stage
-            $env:AVI_INSTALL_DIR = Join-Path $Stage "program"
-            $env:AVI_BIN_DIR = Join-Path $Stage "bin"
-            $env:AVI_DATA_DIR = Join-Path $Stage "data"
-            $env:AVI_CACHE_DIR = Join-Path $Stage "cache"
-            & "$Stage\ai-voice-interconnector.exe" self install --no-setup --no-modify-path --yes
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & "$env:AVI_INSTALL_DIR\ai-voice-interconnector.exe" speech denoise --help
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & "$env:AVI_INSTALL_DIR\ffmpeg.exe" -hide_banner -encoders -decoders -muxers
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - run:
-          name: Estadísticas de sccache
-          command: |
-            sccache --show-stats
-            if ($LASTEXITCODE -ne 0) { Write-Warning "No se pudieron mostrar las estadísticas de sccache" }
-
-  denoise-validation-linux-x64:
-    docker:
-      - image: quay.io/pypa/manylinux_2_28_x86_64@sha256:4131ddd7acb9c6c966af02fe7e71edc51e078c2d41f475966697676430bfa2ae
-    resource_class: large
-    environment:
-      CARGO_INCREMENTAL: "0"
-    steps:
-      - install_manylinux_ssh
-      - checkout
-      - install_manylinux_build_deps
-      - cargo_restore_caches:
-          os: linux-el8
-          variant: full
-      - cargo_fetch
-      - cargo_save_registry
-      - sccache_restore_cache:
-          os: linux-el8
-          variant: full
-      - sccache_setup_unix
-      - native_sccache_setup_unix
-      - validate_pins
-      - validate_features
-      - run:
-          name: Compilar full y comprobar Denoise en Linux x64
-          no_output_timeout: 25m
-          command: |
-            set -euo pipefail
-            cargo build --release --features full
-            target/release/ai-voice-interconnector speech denoise --help
-            if target/release/ai-voice-interconnector denoise --help; then exit 1; fi
-            target/release/ai-voice-interconnector version --json
-            ldd target/release/ai-voice-interconnector
-            cargo xtask build-engine --self-test
-            cargo xtask package
-            sha256sum artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz
-            stage="$(mktemp -d)"
-            tar -xzf artifacts/ai-voice-interconnector-*-x86_64-linux.tar.gz -C "$stage"
-            export AVI_INSTALL_DIR="$stage/program" AVI_BIN_DIR="$stage/bin" AVI_DATA_DIR="$stage/data" AVI_CACHE_DIR="$stage/cache"
-            "$stage/ai-voice-interconnector" self install --no-setup --yes
-            "$AVI_INSTALL_DIR/ai-voice-interconnector" speech denoise --help
-            "$AVI_INSTALL_DIR/ffmpeg" -hide_banner -encoders -decoders -muxers
-      - run:
-          name: Estadísticas de sccache
-          command: sccache --show-stats || true
-
-  denoise-validation-linux-arm64:
-    docker:
-      - image: quay.io/pypa/manylinux_2_28_aarch64@sha256:abd1230aa9e4058a74b89d27cd14ba18c0db036d7bfe6e6f219a29ea63c24eb6
-    resource_class: arm.medium
-    environment:
-      CARGO_INCREMENTAL: "0"
-    steps:
-      - install_manylinux_ssh
-      - checkout
-      - install_manylinux_build_deps
-      - cargo_restore_caches:
-          os: linux-el8
-          variant: full
-      - cargo_fetch
-      - cargo_save_registry
-      - sccache_restore_cache:
-          os: linux-el8
-          variant: full
-      - sccache_setup_unix
-      - native_sccache_setup_unix
-      - validate_pins
-      - validate_features
-      - run:
-          name: Compilar full y comprobar Denoise en Linux ARM64
-          no_output_timeout: 25m
-          command: |
-            set -euo pipefail
-            cargo build --release --features full
-            target/release/ai-voice-interconnector speech denoise --help
-            if target/release/ai-voice-interconnector denoise --help; then exit 1; fi
-            target/release/ai-voice-interconnector version --json
-            ldd target/release/ai-voice-interconnector
-            cargo xtask build-engine --self-test
-            cargo xtask package
-            sha256sum artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz
-            stage="$(mktemp -d)"
-            tar -xzf artifacts/ai-voice-interconnector-*-arm64-linux.tar.gz -C "$stage"
-            export AVI_INSTALL_DIR="$stage/program" AVI_BIN_DIR="$stage/bin" AVI_DATA_DIR="$stage/data" AVI_CACHE_DIR="$stage/cache"
-            "$stage/ai-voice-interconnector" self install --no-setup --yes
-            "$AVI_INSTALL_DIR/ai-voice-interconnector" speech denoise --help
-            "$AVI_INSTALL_DIR/ffmpeg" -hide_banner -encoders -decoders -muxers
-      - run:
-          name: Estadísticas de sccache
-          command: sccache --show-stats || true
-
-  denoise-validation-darwin-arm64:
-    macos:
-      xcode: "26.4.0"
-    resource_class: m4pro.medium
-    environment:
-      CARGO_INCREMENTAL: "0"
-      MACOSX_DEPLOYMENT_TARGET: "26.0"
-    steps:
-      - checkout
-      - install_rust_macos
-      - run:
-          name: Instalar dependencias de compilación
-          command: |
-            if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
-      - cargo_restore_caches:
-          os: macos
-          variant: full
-      - cargo_fetch
-      - cargo_save_registry
-      - sccache_restore_cache:
-          os: macos
-          variant: full
-      - sccache_setup_unix
-      - native_sccache_setup_unix
-      - validate_pins
-      - validate_features
-      - run:
-          name: Compilar full y comprobar Denoise en macOS ARM64
-          no_output_timeout: 25m
-          command: |
-            set -euo pipefail
-            cargo build --release --features full
-            target/release/ai-voice-interconnector speech denoise --help
-            if target/release/ai-voice-interconnector denoise --help; then exit 1; fi
-            target/release/ai-voice-interconnector version --json
-            otool -L target/release/ai-voice-interconnector
-            cargo xtask build-engine --self-test
-            cargo xtask package
-            shasum -a 256 artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz
-            stage="$(mktemp -d)"
-            tar -xzf artifacts/ai-voice-interconnector-*-arm64-macos.tar.gz -C "$stage"
-            export AVI_INSTALL_DIR="$stage/program" AVI_BIN_DIR="$stage/bin" AVI_DATA_DIR="$stage/data" AVI_CACHE_DIR="$stage/cache"
-            "$stage/ai-voice-interconnector" self install --no-setup --yes
-            "$AVI_INSTALL_DIR/ai-voice-interconnector" speech denoise --help
-            otool -L "$AVI_INSTALL_DIR/ai-voice-interconnector"
-            "$AVI_INSTALL_DIR/ffmpeg" -hide_banner -encoders -decoders -muxers
-      - run:
-          name: Estadísticas de sccache
-          command: sccache --show-stats || true
-
 workflows:
-  # Validación nativa transitoria de la rama: no publica artefactos ni requiere tag.
-  denoise-migration-validation:
+  # Validación preintegración en rama/PR; solo jobs de prueba y compilación.
+  denoise-preintegration:
     jobs:
-      - denoise-validation-windows-x64:
+      - test-linux:
           filters:
             branches:
-              only: /feat\/denoise-migration.*/
-      - denoise-validation-linux-x64:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-windows:
           filters:
             branches:
-              only: /feat\/denoise-migration.*/
-      - denoise-validation-linux-arm64:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-macos:
           filters:
             branches:
-              only: /feat\/denoise-migration.*/
-      - denoise-validation-darwin-arm64:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-bootstrap-linux:
           filters:
             branches:
-              only: /feat\/denoise-migration.*/
+              only: /^(main|feat\/denoise-migration)$/
+      - test-bootstrap-windows:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - test-bootstrap-macos:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - coverage:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - validate-licenses:
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - build-windows-x64:
+          requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - coverage
+            - validate-licenses
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - build-linux-x64:
+          requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - coverage
+            - validate-licenses
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - build-linux-arm64:
+          requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - coverage
+            - validate-licenses
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+      - build-darwin-arm64:
+          requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - coverage
+            - validate-licenses
+          filters:
+            branches:
+              only: /^(main|feat\/denoise-migration)$/
+
   # ── Pipeline de RELEASE: tests (gate) + empaquetado + publicación en tags `v*` ──
   build-all:
     # CircleCI NO ejecuta un job en un tag salvo que el job Y todas sus
@@ -2599,7 +2437,6 @@ workflows:
             - test-bootstrap-macos
             - coverage
             - validate-licenses
-            - validate-changelog
       - build-linux-x64:
           filters:
             tags:
