@@ -835,7 +835,9 @@ jobs:
             mkdir -p /tmp/avi-ffmpeg/bin
             # Extraer ffmpeg sin --wildcards (no portable); buscar el binario tras extraer todo
             tar -xJf "$archive" -C /tmp/avi-ffmpeg --strip-components=1
-            find /tmp/avi-ffmpeg -name ffmpeg -type f -exec cp {} /tmp/avi-ffmpeg/bin/ \;
+            # Usar head -1 para evitar error si hay múltiples matches (cp: same file)
+            ffmpeg_src="$(find /tmp/avi-ffmpeg -name ffmpeg -type f | head -1)"
+            [ -n "$ffmpeg_src" ] && cp "$ffmpeg_src" /tmp/avi-ffmpeg/bin/ffmpeg
             [ -x /tmp/avi-ffmpeg/bin/ffmpeg ] || { echo "ffmpeg no extraído correctamente"; exit 1; }
             echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
             export PATH="/tmp/avi-ffmpeg/bin:$PATH"
@@ -1229,7 +1231,9 @@ jobs:
             mkdir -p /tmp/avi-ffmpeg/bin
             # Extraer ffmpeg sin --wildcards (no portable); buscar el binario tras extraer todo
             tar -xJf "$archive" -C /tmp/avi-ffmpeg --strip-components=1
-            find /tmp/avi-ffmpeg -name ffmpeg -type f -exec cp {} /tmp/avi-ffmpeg/bin/ \;
+            # Usar head -1 para evitar error si hay múltiples matches (cp: same file)
+            ffmpeg_src="$(find /tmp/avi-ffmpeg -name ffmpeg -type f | head -1)"
+            [ -n "$ffmpeg_src" ] && cp "$ffmpeg_src" /tmp/avi-ffmpeg/bin/ffmpeg
             [ -x /tmp/avi-ffmpeg/bin/ffmpeg ] || { echo "ffmpeg no extraído correctamente"; exit 1; }
             echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
             export PATH="/tmp/avi-ffmpeg/bin:$PATH"
