@@ -2348,106 +2348,15 @@ jobs:
 #   encadenar pipelines distintas, de modo que la única garantía mecánica es
 #   tener los tests en el grafo de dependencias del release.
 #
-#   El workflow denoise-preintegration reutiliza los gates y builds nativos
-#   seleccionados para rama/PR, sin ejecutar jobs de publicación. El release
-#   conserva sus propios gates en la misma pipeline que publica.
-#
 #   `coverage`, instaladores y licencias/changelog completan los gates de los 4
 #   builds nativos, que compilan las 4 plataformas en modo release.
 # ══════════════════════════════════════════════════════════════════════
 workflows:
-  # Validación preintegración en rama/PR; solo jobs de prueba y compilación.
   # Ningún job declara versión, URL ni hash de FFmpeg: los cuatro jobs de prueba
   # lo aprovisionan con `cargo xtask ffmpeg` desde packaging/pins.json, y los
   # build-* lo hacen por el mismo camino dentro de `xtask package`, así que las
   # pruebas y los cuatro targets distribuidos ejercitan el mismo artefacto
   # fijado y verificado por su SHA-256.
-  denoise-preintegration:
-    jobs:
-      - test-linux:
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - test-windows:
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - test-macos:
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - test-bootstrap-linux:
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - test-bootstrap-windows:
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - test-bootstrap-macos:
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - coverage:
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - validate-licenses:
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - build-windows-x64:
-          requires:
-            - test-linux
-            - test-windows
-            - test-macos
-            - test-bootstrap-linux
-            - test-bootstrap-windows
-            - test-bootstrap-macos
-            - coverage
-            - validate-licenses
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - build-linux-x64:
-          requires:
-            - test-linux
-            - test-windows
-            - test-macos
-            - test-bootstrap-linux
-            - test-bootstrap-windows
-            - test-bootstrap-macos
-            - coverage
-            - validate-licenses
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - build-linux-arm64:
-          requires:
-            - test-linux
-            - test-windows
-            - test-macos
-            - test-bootstrap-linux
-            - test-bootstrap-windows
-            - test-bootstrap-macos
-            - coverage
-            - validate-licenses
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
-      - build-darwin-arm64:
-          requires:
-            - test-linux
-            - test-windows
-            - test-macos
-            - test-bootstrap-linux
-            - test-bootstrap-windows
-            - test-bootstrap-macos
-            - coverage
-            - validate-licenses
-          filters:
-            branches:
-              only: /^(main|feat\/denoise-migration)$/
 
   # ── Pipeline de RELEASE: tests (gate) + empaquetado + publicación en tags `v*` ──
   build-all:

@@ -30,12 +30,11 @@ validar el gate de pausa, regenerándola con este mismo port sobre
 contra sherpa-onnx (1 LSB PCM16) en el pipeline pre-gate: con el gate activo la
 voz sigue bit-idéntica (×1.0), pero la salida completa ya no, porque las pausas
 se atenúan −25 dB tras la síntesis. Ambos dorados en verde — 67,77 dB y
-100,00 dB — sin relajar el umbral ≥60 dB (ver
-[docs/design.md](../../docs/design.md) §6).
+100,00 dB — sin relajar el umbral ≥60 dB.
 
 ## Archivos
 
-- `tutorial_toma_{01,02,03,19,30,32}.wav` - audio extraído de las seis tomas tutoriales elegibles del usuario (≤10 s), WAV PCM16LE estéreo sin modificar; corpus normal de transcripción T5 con referencias humanas fijadas en `.work/plans/denoise-closure-plan.md`. No representa cobertura de hablantes o condiciones acústicas generales.
+- `tutorial_toma_{01,02,03,19,30,32}.wav` - audio extraído de las seis tomas tutoriales elegibles del usuario (≤10 s), WAV PCM16LE estéreo sin modificar; corpus normal de transcripción con referencias humanas fijadas y verificadas contra sus hashes. No representa cobertura de hablantes o condiciones acústicas generales.
 - `pub_snr0_{clean,noisy}.wav`, `car_snr{0,5}_{clean,noisy}.wav`, `office_snr0_{clean,noisy}.wav`, `train_snr5_{clean,noisy}.wav` y `restaurant_snr0_{clean,noisy}.wav` - ventanas de 15s del EvalSet descritas arriba, añadidas para el cribado adverso de transcripción; no son referencias golden congeladas.
 - `voz_clean.wav` - voz real 3s, SR 48k, mono PCM16 (ventana de máxima energía)
 - `voz_noisy.wav` - `voz_clean.wav` + ruido a SNR 0 dB
@@ -46,11 +45,6 @@ se atenúan −25 dB tras la síntesis. Ambos dorados en verde — 67,77 dB y
 - `<escena>_snr<N>_clean.wav` / `<escena>_snr<N>_noisy.wav` - ventanas de 15s
   con >=40% de voz activa, cortadas de clips largos del EvalSet
   (`pub`/`car`/`office`/`train`/`restaurant` a SNR 0/5 dB) y remuestreadas de
-  16kHz a 48kHz. Solo para el benchmark (sin referencia congelada: la salida
-  la genera `run` en cada corrida).
+  16kHz a 48kHz. No tienen referencia congelada.
 
 > **Nota:** Estos archivos son deterministas y se mantienen congelados. Para regenerar el par heredado se usa `cargo run --release --example gen_vectors -- <dir_eval>` (requiere las fuentes `spanish_street_*`/`spanish_subway_*`, hoy no disponibles en esta máquina); además, esa ruta recongelaría las referencias **con** el gate activo, así que la referencia del par 3 s pre-gate ya no se puede reproducir por ese camino. La referencia del par 65 s puede re-congelarse sin EvalSet con `examples/process_wav.rs` sobre `voz65s_noisy.wav` (mismo camino `denoise_wav`).
-
-## Benchmark de calidad
-
-El par (`voz_clean.wav`, `voz_noisy.wav`) es además parte del set `tests_data` del benchmark (`tools/quality/clips.json`): las salidas del DSP sobre estos mismos archivos se puntúan contra la voz limpia. Ver [docs/metrics.md](../../docs/metrics.md) y [docs/benchmark.md](../../docs/benchmark.md). El par de 65 s salió del set el 2026-10-03 (ver `docs/benchmark.md` §8) y queda solo como fixture de `test_golden_65s`. Si se regeneran o sustituyen los vectores, hay que re-ejecutar el benchmark y actualizar las líneas base `tools/quality/baseline_{perfil}.json`.
