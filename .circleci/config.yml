@@ -1159,6 +1159,11 @@ jobs:
               HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
                 brew install ffmpeg 2>&1 | tail -20
             fi
+            echo "[DEBUG] Verificando command -v ffmpeg:"
+            command -v ffmpeg || echo "command -v ffmpeg falló"
+            echo "[DEBUG] Verificando /opt/homebrew/bin/ffmpeg:"
+            ls -la /opt/homebrew/bin/ffmpeg 2>/dev/null || echo "No existe /opt/homebrew/bin/ffmpeg"
+            echo "[DEBUG] PATH actual: $PATH"
             # Verificar que ffmpeg esté instalado y funcional (lo importante)
             command -v ffmpeg >/dev/null 2>&1 || { echo "ffmpeg no encontrado tras instalación"; exit 1; }
             echo 'export PATH="/opt/homebrew/bin:$PATH"' >> "$BASH_ENV"
