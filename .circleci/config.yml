@@ -828,8 +828,14 @@ jobs:
       - run:
           name: Instalar FFmpeg para pruebas de audio
           command: |
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
+            set -euo pipefail
+            archive=/tmp/ffmpeg-9.0.2-linux64.tar.xz
+            curl -fL --retry 3 -o "$archive" "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-24-13-02/ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz"
+            printf '%s  %s\n' 'ddffcf6e3d537dd9e0039f0635261be40dd9bfdafb2ea85970173e928e024e50' "$archive" | sha256sum -c -
+            mkdir -p /tmp/avi-ffmpeg/bin
+            tar -xJf "$archive" --wildcards --strip-components=2 -C /tmp/avi-ffmpeg/bin '*/bin/ffmpeg'
+            echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
+            export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
             encoders="$(ffmpeg -hide_banner -encoders)"
             for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
@@ -921,6 +927,32 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "rust_pin parámetro: << pipeline.parameters.rust_pin >>"
             Write-Host "[STEP] Verificar toolchain Rust - FIN"
+      # MSYS2/mingw-w64 para dlltool (requerido por rust-lld en Windows)
+      - run:
+          name: Instalar MSYS2 UCRT64 (mingw-w64 para dlltool)
+          command: |
+            Write-Host "[STEP] Instalar MSYS2 UCRT64 - INICIO"
+            $ErrorActionPreference = "Stop"
+            $Root = "C:\msys64"
+            if (-not (Test-Path "$Root\ucrt64\bin\dlltool.exe")) {
+              $Release = "<< pipeline.parameters.msys2_base_pin >>"
+              $ChocoVer = ($Release -replace '-', '') + ".0.0"
+              Write-Host "[STEP] Instalar base MSYS2 via Chocolatey ($ChocoVer) - INICIO"
+              choco install msys2 --version=$ChocoVer -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              if (-not (Test-Path "$Root\usr\bin\bash.exe")) { throw "MSYS2 no quedó en $Root tras choco" }
+              Write-Host "[STEP] Instalar base MSYS2 via Chocolatey - FIN"
+              $Bash = "$Root\usr\bin\bash.exe"
+              Write-Host "[STEP] Sincronizar toolchain (pacman -S mingw-w64-ucrt-x86_64-binutils) - INICIO"
+              & $Bash -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-binutils"
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              Write-Host "[STEP] Sincronizar toolchain - FIN"
+            } else {
+              Write-Host "MSYS2 ya presente con dlltool; se omite instalación"
+            }
+            # Verificar dlltool disponible
+            & "$Root\ucrt64\bin\dlltool.exe" --version
+            Write-Host "[STEP] Instalar MSYS2 UCRT64 - FIN"
       - cargo_restore_caches:
           os: windows
           variant: test
@@ -963,7 +995,8 @@ jobs:
           name: Ejecutar suite con nextest (cargo nextest run --all)
           command: |
             Write-Host "[STEP] Ejecutar suite con nextest - INICIO"
-            $env:PATH = "$env:ChocolateyInstall\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
+            # MSYS2 ucrt64/bin para dlltool (requerido por rust-lld)
+            $env:PATH = "C:\msys64\ucrt64\bin;$env:ChocolateyInstall\bin;$env:USERPROFILE\.cargo\bin;$env:PATH"
             # PowerShell no tiene $BASH_ENV: activar sccache inline para este step.
             $env:RUSTC_WRAPPER = "sccache"
             $env:SCCACHE_DIR = "$env:USERPROFILE\.cache\sccache"
@@ -1094,7 +1127,12 @@ jobs:
       - run:
           name: Instalar FFmpeg para pruebas de audio
           command: |
-            brew install ffmpeg
+            set -euo pipefail
+            if ! command -v ffmpeg >/dev/null 2>&1; then
+              brew install ffmpeg
+            fi
+            echo 'export PATH="/opt/homebrew/bin:$PATH"' >> "$BASH_ENV"
+            export PATH="/opt/homebrew/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
             encoders="$(ffmpeg -hide_banner -encoders)"
             for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
@@ -1178,8 +1216,14 @@ jobs:
       - run:
           name: Instalar FFmpeg para pruebas de audio
           command: |
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
+            set -euo pipefail
+            archive=/tmp/ffmpeg-9.0.2-linux64.tar.xz
+            curl -fL --retry 3 -o "$archive" "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-24-13-02/ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz"
+            printf '%s  %s\n' 'ddffcf6e3d537dd9e0039f0635261be40dd9bfdafb2ea85970173e928e024e50' "$archive" | sha256sum -c -
+            mkdir -p /tmp/avi-ffmpeg/bin
+            tar -xJf "$archive" --wildcards --strip-components=2 -C /tmp/avi-ffmpeg/bin '*/bin/ffmpeg'
+            echo 'export PATH="/tmp/avi-ffmpeg/bin:$PATH"' >> "$BASH_ENV"
+            export PATH="/tmp/avi-ffmpeg/bin:$PATH"
             ffmpeg -version | grep -Eq 'ffmpeg version ([6-9]|[1-9][0-9])\.'
             encoders="$(ffmpeg -hide_banner -encoders)"
             for codec in libmp3lame libvorbis libopus aac flac pcm_s16le; do
