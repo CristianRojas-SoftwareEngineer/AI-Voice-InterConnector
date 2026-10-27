@@ -772,9 +772,12 @@ commands:
             export PATH="$HOME/.cargo/bin:$PATH"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # La versión del binario release debe coincidir con el tag; el
-            # contrato JSON de `version --json` lo cubre el golden de la CLI.
-            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
+            # En jobs de release la versión del binario debe coincidir con el
+            # tag. La preintegración de rama no tiene CIRCLE_TAG: allí el smoke
+            # verifica que el binario arranque y deja la comparación al job de tag.
+            if [ -n "${CIRCLE_TAG:-}" ]; then
+              test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
+            fi
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
