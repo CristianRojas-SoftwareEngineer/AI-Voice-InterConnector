@@ -1,12 +1,9 @@
 # `speech`
 
-Síntesis, transcripción y doblaje voz→voz, más el CRUD de las locuciones
-persistidas. Es el comando más grande de la CLI: reúne varios subcomandos y los
-tres motores nativos (`avi-tts`, `avi-stt`, `avi-translation`); sus
-subcomandos de síntesis, transcripción y doblaje admiten el
+Síntesis, transcripción, doblaje voz→voz y limpieza local de archivos de audio y vídeo, más el CRUD de las locuciones persistidas. Es el comando más grande de la CLI: reúne varios subcomandos y los motores de voz (`avi-tts`, `avi-stt`, `avi-translation`, `denoise`); sus subcomandos de síntesis, transcripción y doblaje admiten el
 [despacho al daemon](../CONTRACT.md#5-el-despacho-al-daemon).
 
-Implementación: `handle_speech`, enum `SpeechCommands`. Helpers de despacho al daemon: `route_to_daemon`, `transcribe_via_daemon`,
+Implementación: enum `SpeechCommands`, `handle_speech` para las demás acciones y `handle_denoise` desde `main` para el veredicto de archivos. Helpers de despacho al daemon: `route_to_daemon`, `transcribe_via_daemon`,
 `daemon_synthesize_wav`, `synthesize_via_daemon`, `say_via_daemon`, `dub_via_daemon`.
 
 ---
@@ -32,6 +29,9 @@ subcomandos delegables (`transcribe`, `synthesize`, `say` y `dub`), no de
 | `speech dub` | Sí | — |
 | `speech play` | No | Sí |
 | `speech remove` | No | Sí |
+| `speech denoise` | No | Sí; archivos locales de audio/vídeo |
+
+`denoise` solo está disponible con `native-denoise`, incluido en `full`. Usa DPDFNet provisionado por `setup` y FFmpeg incluido en el paquete; no llama al daemon ni procesa la imagen del vídeo. `--json` global genera JSONL de progreso y resultados. No se aceptan `--model-dir` ni `--ffmpeg-path`: el modelo y FFmpeg tienen resolución única de AVI. Los flags opt-in `--denoise` de transcripción, doblaje y clonado son rutas separadas de este pipeline de archivos; la evaluación humana de preservación de identidad vocal del clonado sigue pendiente.
 
 `list`/`play`/`remove` son operaciones sobre `SpeechStore`, que el daemon no
 expone por HTTP: no declaran `--daemon` ni `--no-daemon` y, si se les pasa
@@ -85,6 +85,42 @@ cuando la locución no tiene sidecar.
 El WAV es el registro: `list` enumera los WAV, y el sidecar `.json` aporta los
 metadatos opcionales. Un sidecar ilegible o corrupto hace fallar el comando con
 exit 1 `io_error`; el mensaje nombra el fichero y remite a `speech remove`.
+
+---
+
+## `speech denoise`
+
+Limpia archivos locales de audio o la pista de audio de archivos de vídeo; la imagen del vídeo se conserva y no se procesa. Es una operación local-only: no envía rutas al daemon ni expone un endpoint genérico de limpieza.
+
+```text
+ai-voice-interconnector [--json] speech denoise <entrada>... [opciones]
+```
+
+Requiere el feature `native-denoise` (incluido en `full`), el modelo DPDFNet provisionado con `ai-voice-interconnector setup` y el FFmpeg verificado del paquete AVI. No busca FFmpeg en `PATH`. El binario integrado debe declarar versión 6 o superior en la primera línea de `ffmpeg -version`, con o sin el prefijo de `git describe` que anteponen los builds de Linux; una versión anterior, o una línea que no declare ninguna, se rechaza con un error que nombra lo que encontró, y `--version` añade la línea de FFmpeg cuando esta se reconoce e informa `ffmpeg missing` cuando no.
+
+| Opción | Función |
+|---|---|
+| `<entrada>...` | Uno o más archivos o directorios de entrada |
+| `--output-dir <directorio>` | Directorio de salida |
+| `--output-name <nombre>` | Nombre explícito para una entrada |
+| `--prefix <texto>` / `--suffix <texto>` | Ajusta nombres de salida |
+| `--recursive` | Recorre directorios de forma recursiva |
+| `--overwrite` / `--skip-existing` | Política de colisión de salidas |
+| `--dry-run` | Muestra el plan sin procesar archivos |
+| `--preset studio|default` | `studio` por omisión; `default` selecciona el perfil sin normalización |
+| `--audio-bitrate <kbps>` | Bitrate de audio, sujeto a compatibilidad con el códec de salida |
+| `--highpass` | Activa el filtro pasa-altos del DSP |
+| `--normalize` / `--target-lufs <LUFS>` | Normaliza la egresión al objetivo de sonoridad |
+| `--pause-gate-db <dB>` / `--dry-blend <0..1>` | Ajusta el gate de pausas o la mezcla de señal seca |
+| `--stereo` | Conserva/procesa salida estéreo |
+| `--verbose` | Aumenta el detalle de progreso |
+| `--json` global | Emite registros JSONL de progreso y resumen directamente, sin envelope adicional |
+
+El orden de resolución es defaults → preset → flags individuales. `studio` aplica solo a exportación de archivos; no altera audio de entrada de transcripción, doblaje o clonado. Para vídeo, se produce MP4 con el primer stream de vídeo copiado y audio limpio AAC; los formatos de audio siguen la matriz admitida por el pipeline migrado. No se amplía la matriz de contenedores ni códecs.
+
+Con Ctrl+C el proceso termina con el código de interrupción 130; el pipeline elimina temporales y no publica una salida parcial. **Límite verificado:** la señal se atiende al cerrar, no interrumpe el DSP en curso: en las corridas medidas con el paquete instalado el archivo se completó y publicó antes de salir con 130. Los códigos de fallo conservan la paridad con el motor de origen: entrada inválida, destino ya existente o entrada sin audio devuelven 2; modelo DPDFNet ausente, ORT no disponible, FFmpeg ausente o fallido y error de E/S devuelven 1; entrada ausente devuelve 3. La cancelación pedida por la biblioteca devuelve 3. En lotes, los resultados individuales conservan los estados `ok`/`skipped`/`failed`; el código final refleja si el lote completó o tuvo fallos.
+
+`--model-dir` y `--ffmpeg-path` no forman parte de esta interfaz y se rechazan como flags desconocidos: provisiona el modelo con `setup` y usa el FFmpeg integrado. El único comando público para limpiar archivos es `speech denoise`.
 
 ---
 

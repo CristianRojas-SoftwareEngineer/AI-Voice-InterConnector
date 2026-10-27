@@ -46,5 +46,7 @@ vendor/qwen3-tts/compile_commands.json
 Cargo.lock.cachekey
 vendor/qwen3-tts/.engine-cachekey
 ort-bundle/
+ffmpeg-bundle/
 # Informe NUnit que Pester escribe en el directorio actual con `-CI`
 testResults.xml
+.work/release-and-E2E.md

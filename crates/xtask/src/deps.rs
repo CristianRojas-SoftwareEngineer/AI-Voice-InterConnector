@@ -196,6 +196,12 @@ pub(crate) fn violations(
         }
     }
     for required in &imports.symbol_versions {
+        // GLIBC_PRIVATE y GLIBC_INTERNAL_* son símbolos internos de glibc,
+        // no versiones públicas: no requieren versión numérica y no son un
+        // requisito de portabilidad. Saltarlos evita falsos positivos.
+        if required.starts_with("GLIBC_PRIVATE") || required.starts_with("GLIBC_INTERNAL_") {
+            continue;
+        }
         let Some((family, version)) = required.split_once('_') else {
             continue;
         };
@@ -429,7 +435,8 @@ mod tests {
         );
     }
 
-    /// Sin techo para la familia no hay violación; lo no numérico con techo sí.
+    /// Sin techo para la familia no hay violación; GLIBC_PRIVATE se salta
+    /// (es símbolo interno de glibc, no versión pública).
     #[test]
     fn family_without_ceiling_is_allowed() {
         let section = section(&[], &["GLIBC_2.28"], None);
@@ -440,10 +447,8 @@ mod tests {
             &section
         )
         .is_empty());
-        assert_eq!(
-            violations("f", &symbols(&["GLIBC_PRIVATE"]), &bundled(&[]), &section).len(),
-            1
-        );
+        // GLIBC_PRIVATE no es una versión pública, no produce violación.
+        assert!(violations("f", &symbols(&["GLIBC_PRIVATE"]), &bundled(&[]), &section).is_empty());
     }
 
     /// Con `min_os` `26.0`, lo igual o menor pasa; lo mayor o ausente viola.

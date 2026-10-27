@@ -33,6 +33,7 @@ ai-voice-interconnector voice remove --name NAME [--yes]
 |---|---|---|---|
 | `--name, -n` | string | sí | Nombre de la voz; se normaliza a minúsculas y se valida contra `VoiceStore::validate_name` |
 | `--speech-reference, -s` | string (ruta) | sí | Audio de referencia de habla, obligatorio en toda ruta (local y daemon) |
+| `--denoise` | flag | no | Limpia la referencia antes de extraer la huella vocal; requiere `native-denoise` y el modelo DPDFNet provisionado. La opción no garantiza por sí misma preservación de identidad vocal; esa calidad no ha sido evaluada en una prueba humana controlada |
 | `--force, -f` | flag | no | Sobrescribe una voz existente con el mismo nombre |
 | `--daemon` / `--no-daemon` | flag | no | Despacho tri-modal; mutuamente excluyentes |
 

@@ -280,6 +280,17 @@ librería para su gate de pruebas con recursos, junto con
 `AVI_ALLOW_CWD_VENDOR=1` para que los hijos CLI resuelvan el motor recién
 compilado sin exigir un programa instalado.
 
+Las pruebas que codifican, remuestrean o analizan medios resuelven `ffmpeg` por
+`PATH` (`find_ffmpeg`), así que desde el repositorio hay que aprovisionar el
+binario fijado y anteponerlo: `cargo xtask ffmpeg --dest ffmpeg-bundle` baja el
+artefacto que [`packaging/pins.json`](../packaging/pins.json) fija para el
+target del host, verifica su SHA-256, extrae el ejecutable, le pasa el humo de
+versión y de los seis codificadores de la matriz de egresión e imprime la ruta
+del ejecutable resultante, que es lo que se pone por delante en `PATH` antes de
+`cargo test`. Es el mismo camino que usa `cargo xtask package` y el que usan los
+jobs de prueba de la CI, así que local y CI no pueden ejercitar artefactos
+distintos.
+
 La batería completa con `--include-ignored` se ejecuta con `-j2` y
 `--test-threads=2` y sin otra carga en la máquina, por ejemplo
 `cargo test --workspace --features full -j2 -- --include-ignored --test-threads=2`.
@@ -341,9 +352,18 @@ antes de publicar el artefacto, ejecuta en este orden:
    [Auditoría de dependencias](#auditoría-de-dependencias)).
 4. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
    archivo empaquetado en un sandbox con las cuatro raíces reubicadas, y
-   `--version` del binario instalado.
+   `--version` del binario instalado. Los jobs permanentes comprueban además
+   `speech denoise --help`, el rechazo del alias raíz `denoise` y que el FFmpeg
+   instalado arranque (`-version` en Unix y Windows).
 5. En Linux, la verificación de portabilidad del artefacto en salas limpias, de
    la que depende la publicación; ver [RELEASING.md](RELEASING.md#2-automático-lo-que-hace-el-ci).
+
+Los cuatro jobs de prueba aprovisionan ese mismo FFmpeg antes de su suite, con
+`cargo xtask ffmpeg`: el pipeline no declara versión, URL ni hash, así que no
+puede divergir de `packaging/pins.json`, y `test-windows` ejecuta la suite sobre
+el target MSVC que el paquete distribuye. `ffmpeg-bundle/` no se cachea: la
+descarga del artefacto fijado es de segundos y repetirla es la comprobación de
+que la URL fijada sigue sirviendo el binario esperado.
 
 `version` y `voice list` **no cargan el modelo** (las voces de fábrica viajan
 embebidas en el binario vía `crates/avi-store/assets/`), así que el chequeo es

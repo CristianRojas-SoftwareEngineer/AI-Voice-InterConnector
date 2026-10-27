@@ -11,6 +11,17 @@ serde_json = "1.0"
 directories = "5.0"
 # Nombre aleatorio del WAV temporal (`temp_wav`).
 tempfile = "3"
+# ONNX Runtime para el módulo compartido `onnx_runtime`: opcional y sin
+# `default-features` para que este micro-crate siga siendo puro por defecto.
+# `load-dynamic` no enlaza nada en build-time, solo permite fijar la librería
+# en ejecución; se activa con la feature `native-ort`.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"], optional = true }
+
+[features]
+# Carga única de ONNX Runtime (`avi_shared::onnx_runtime`), compartida por el
+# motor STT y por la sesión DPDFNet del crate `denoise`: quien crea una sesión
+# `ort` activa esta feature para que ambas cargas partan de un solo inicializador.
+native-ort = ["dep:ort"]
 
 [target.'cfg(windows)'.dependencies]
 # Arranque de consola en UTF-8 (`console`): solo Windows, Unix sigue puro.

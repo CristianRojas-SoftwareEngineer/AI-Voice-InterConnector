@@ -1335,77 +1335,71 @@ async fn voices_clone_non_boolean_force_returns_usage_error() {
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
 }
 
-/// `/dub` no deja su WAV temporal en ninguna salida, tampoco si la
-/// lectura del fichero sintetizado falla.
-///
-/// La rama de error no se puede provocar sin motor (la síntesis escribe el
-/// fichero que luego se lee), así que este test fija el invariante de punta a
-/// punta con el motor cuando hay recursos: tras `/dub` no queda ningún
-/// `avi_daemon_dub_*.wav`, salga el doblaje o un error. La rama `Err` queda
-/// cubierta por construcción: el WAV tiene un tipo dueño que lo borra al
-/// soltarse.
+/// `/dub` procesa el mismo PCM ruidoso con y sin Denoise, transcribe, traduce
+/// y devuelve un WAV en ambos casos sin dejar temporales de síntesis.
+/// Usa el router con motores reales, no un proceso daemon HTTP independiente.
+#[cfg(all(
+    feature = "native-stt",
+    feature = "native-translation",
+    feature = "native-denoise"
+))]
 #[tokio::test]
-#[ignore = "requiere Parakeet y el binario del motor Qwen3-TTS"]
-async fn dub_leaves_no_temporary_on_any_outcome() {
+#[ignore = "requiere Parakeet, DPDFNet y el binario del motor Qwen3-TTS"]
+async fn dub_control_and_denoise_deliver_wav_without_temporary() {
     let _temporaries = lock_temporaries().await;
     let _registry = lock_registry().await;
-    #[cfg(feature = "native-stt")]
-    let state = resource_state();
     require_clone_binary();
-    let pcm: Vec<u8> = vec![0i16; 16_000]
-        .iter()
-        .flat_map(|s| s.to_le_bytes())
-        .collect();
-    let (status, bytes) = send_to(
-        #[cfg(feature = "native-stt")]
-        state,
-        #[cfg(not(feature = "native-stt"))]
-        clone_state(),
-        post_json(
-            "/dub",
-            serde_json::json!({
-                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&pcm),
-                "source_language": "es",
-                "target_language": "es",
-                "voice": "default",
-            }),
-        ),
-    )
-    .await;
-    if status == StatusCode::OK {
-        let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
-        let events: Vec<Value> = text
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
-            .collect();
-        let final_event = events.last().expect("debe haber al menos un evento");
-        assert!(
-            final_event.get("event").and_then(|v| v.as_str()) == Some("result")
-                || final_event.get("event").and_then(|v| v.as_str()) == Some("error"),
-            "el evento final es result o error: {final_event:?}"
+    let state = resource_state();
+    let input =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../denoise/tests/data/voz_noisy.wav");
+    let pcm = avi_audio::load_wav_16k_mono_pcm(input).expect("WAV ruidoso válido");
+    let audio: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    for denoise in [false, true] {
+        let (status, bytes) = send_to(
+            state.clone(),
+            post_json(
+                "/dub",
+                serde_json::json!({
+                    "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio),
+                    "source_language": "es",
+                    "target_language": "en",
+                    "voice": "default",
+                    "denoise": denoise,
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "respuesta: {}",
+            String::from_utf8_lossy(&bytes)
         );
-    } else {
-        let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+        let events = ndjson_events(&bytes);
+        let result = events.last().expect("debe haber evento final");
+        assert_eq!(result["event"], "result", "evento final: {result:?}");
+        assert_eq!(result["status"], "dubbed");
+        assert!(!result["text"].as_str().unwrap_or("").is_empty());
+        assert!(!result["translated"].as_str().unwrap_or("").is_empty());
+        if denoise {
+            assert!(
+                events
+                    .iter()
+                    .any(|event| { event["event"] == "heartbeat" && event["stage"] == "denoise" }),
+                "Denoise prolongado debe mantener vivo el stream"
+            );
+        }
+        let wav = result_audio(&events);
+        let output = tempfile::NamedTempFile::new().expect("WAV temporal de verificación");
+        std::fs::write(output.path(), &wav).expect("guardar WAV para validarlo");
+        let decoded = avi_audio::load_wav_24k_mono_pcm(output.path())
+            .expect("el doblaje debe devolver un WAV decodificable");
+        assert!(!decoded.is_empty(), "el doblaje no debe estar vacío");
         assert!(
-            actual.get("reason").and_then(|v| v.as_str()).is_some(),
-            "el error lleva reason: {actual:?}"
+            temp_wavs("avi_daemon_dub_").is_empty(),
+            "quedó un WAV temporal"
         );
     }
-    let residue: Vec<String> = std::fs::read_dir(avi_process::scratch::dir().expect("scratch"))
-        .expect("el scratch debe poder leerse")
-        .map(|e| {
-            e.expect("entrada del directorio temporal")
-                .file_name()
-                .to_string_lossy()
-                .to_string()
-        })
-        .filter(|n| n.starts_with("avi_daemon_dub_") && n.ends_with(".wav"))
-        .collect();
-    assert!(
-        residue.is_empty(),
-        "tras /dub no debe quedar temporal: {residue:?}"
-    );
 }
 
 // ─── barrido de temporales del daemon ───────────────────────────────────
@@ -1702,4 +1696,97 @@ async fn synthesize_without_engine_is_model_missing() {
         .expect("cada línea debe ser JSON");
     assert_eq!(last["event"], "error", "evento final: {last:?}");
     assert_eq!(last["reason"], "model_missing", "evento final: {last:?}");
+}
+
+/// `denoise` debe ser booleano: cualquier otro valor es `usage_error` (400)
+/// en `/transcribe`, `/voices/clone` y `/dub`, con o sin `native-denoise`.
+#[cfg(feature = "native-stt")]
+#[tokio::test]
+async fn denoise_non_boolean_is_usage_error() {
+    for (path, body) in [
+        (
+            "/transcribe",
+            serde_json::json!({
+                "audio_b64": "AQACAA==",
+                "source_language": "es",
+                "denoise": "si",
+            }),
+        ),
+        (
+            "/voices/clone",
+            serde_json::json!({ "name": "v", "audio_b64": "AAAA", "denoise": "si" }),
+        ),
+        (
+            "/dub",
+            serde_json::json!({
+                "audio_b64": "AQACAA==",
+                "source_language": "es",
+                "target_language": "es",
+                "voice": "v",
+                "denoise": "si",
+            }),
+        ),
+    ] {
+        let (status, bytes) = send(post_json(path, body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "path: {path}");
+        let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+        assert_eq!(actual["reason"], "usage_error", "path: {path}");
+    }
+}
+
+/// Sin `native-denoise`, `denoise: true` en `/voices/clone` responde 501
+/// `denoise_unsupported` y nunca omite la limpieza en silencio.
+#[cfg(not(feature = "native-denoise"))]
+#[tokio::test]
+async fn denoise_true_without_feature_is_unsupported() {
+    let (status, bytes) = send(post_json(
+        "/voices/clone",
+        serde_json::json!({ "name": "v", "audio_b64": "AAAA", "denoise": true }),
+    ))
+    .await;
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual["reason"], "denoise_unsupported");
+}
+
+/// Con `native-denoise`, `denoise: true` en `/voices/clone` y sin modelo
+/// provisionado responde con evento NDJSON `error` / `model_missing` antes de
+/// iniciar el DSP.
+#[cfg(all(feature = "native-denoise", feature = "native-stt"))]
+#[tokio::test]
+async fn denoise_true_with_feature_without_model_is_model_missing() {
+    let tmp = tempfile::Builder::new()
+        .prefix("avi_daemon_denoise_model_")
+        .tempdir()
+        .expect("directorio temporal del estado");
+    let mut state = DaemonState::for_contract_tests(
+        VoiceStore::at(tmp.path().join("voices")),
+        SpeechStore::at(tmp.path().join("speech")),
+    )
+    .expect("daemon state");
+    state.tts_engine.base_model_dir = Some(tmp.path().join("base-model"));
+    let state = Arc::new(state);
+
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(minimal_wav());
+    let (status, bytes) = send_to(
+        state,
+        post_json(
+            "/voices/clone",
+            serde_json::json!({ "name": "v", "force": true, "audio_b64": audio_b64, "denoise": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "el handler abre el stream NDJSON");
+
+    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
+    let events: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
+        .collect();
+    let error_event = events
+        .iter()
+        .find(|e| e.get("event").and_then(|v| v.as_str()) == Some("error"))
+        .expect("debe haber un evento error");
+    assert_eq!(error_event["reason"], "model_missing");
 }

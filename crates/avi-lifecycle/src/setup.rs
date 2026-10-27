@@ -553,17 +553,17 @@ pub(crate) mod tests {
     }
 
     /// La confirmación anuncia la suma de los tamaños fijados en la tabla de
-    /// pines, en escala decimal: 5 850 187 279 bytes los 5 modelos de la selección,
-    /// el Base de clonado incluido.
+    /// pines, en escala decimal: 5 865 044 386 bytes los 6 modelos de la
+    /// selección, el Base de clonado y DPDFNet incluidos.
     #[test]
     fn confirmation_announces_the_pinned_sizes() {
         let all = Pending {
             models: selection().into_iter().map(String::from).collect(),
         };
-        assert_eq!(all.estimated_bytes(), 5_850_187_279);
+        assert_eq!(all.estimated_bytes(), 5_865_044_386);
         assert_eq!(
             download_summary(&all),
-            "Se descargarán 5 modelo(s), unos 5,9 GB."
+            "Se descargarán 6 modelo(s), unos 5,9 GB."
         );
     }
 

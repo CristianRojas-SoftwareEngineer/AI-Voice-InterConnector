@@ -245,8 +245,11 @@ impl Sandbox {
             {
                 Some((_, patterns)) => {
                     for pattern in *patterns {
-                        std::fs::create_dir_all(&snapshot).expect("crear snapshot del repo");
-                        std::fs::write(snapshot.join(pattern), "pesos").expect("escribir el pin");
+                        let file = snapshot.join(pattern);
+                        if let Some(parent) = file.parent() {
+                            std::fs::create_dir_all(parent).expect("crear subdirectorio del pin");
+                        }
+                        std::fs::write(file, "pesos").expect("escribir el pin");
                     }
                 }
                 None => {

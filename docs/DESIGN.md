@@ -9,6 +9,7 @@
 - [Motor Qwen3-TTS 0.6B (Rust)](#motor-qwen3-tts-06b-rust)
 - [Traducción cross-lingual (opus-mt / CTranslate2)](#traducción-cross-lingual-opus-mt--ctranslate2)
 - [Transcripción STT (Parakeet TDT v3 int8 / ort)](#transcripción-stt-parakeet-tdt-v3-int8--ort)
+- [Limpieza de audio y vídeo por CLI](#limpieza-de-audio-y-vídeo-por-cli)
 - [Flujo de síntesis](#flujo-de-síntesis)
 - [UX de audio interactivo](#ux-de-audio-interactivo)
 - [Salida en terminal](#salida-en-terminal)
@@ -141,6 +142,14 @@ Subsistema `crates/avi-translation` que traduce `es<->en` antes de la síntesis 
 ## Transcripción STT (Parakeet TDT v3 int8 / ort)
 
 Subsistema `crates/avi-stt` que transcribe WAV vía `speech transcribe` (audio→texto). Usa `ParakeetEngine` vía `ort` `load-dynamic` (ONNX Runtime 1.28.0) con 4 artefactos acotados (`encoder-model.int8.onnx`, `decoder_joint-model.int8.onnx`, `nemo128.onnx`, `vocab.txt`), incluido por defecto (setup base).
+
+## Limpieza de audio y vídeo por CLI
+
+La única ruta pública de limpieza de archivos es `ai-voice-interconnector speech denoise`. El subcomando local reutiliza el pipeline DPDFNet migrado para archivos de audio y para extraer, limpiar y remuxar la pista de audio de vídeo; copia el primer stream de vídeo sin procesar la imagen. No crea un endpoint del daemon ni un binario raíz paralelo.
+
+El feature `native-denoise` contiene esta capacidad y forma parte de `full`. El modelo DPDFNet se provisiona con `setup`; FFmpeg se localiza desde el paquete verificado de AVI, nunca mediante una búsqueda de `PATH`: el ejecutable integrado debe declarar versión 6 o superior, con o sin el prefijo de `git describe` de los builds de Linux. La limpieza de archivos usa `studio` por omisión y admite `--preset default` para el perfil original; los parámetros de egresión no se aplican al preprocesamiento opt-in de clonado, STT o doblaje.
+
+El `--json` global emite JSONL, una línea por evento, y conserva progreso y resultados aptos para scripting. La referencia de opciones, compatibilidad, errores y ejemplos está en [`docs/CLI/commands/SPEECH.md`](CLI/commands/SPEECH.md#speech-denoise) y el contrato normativo en [`docs/CLI/CONTRACT.md`](CLI/CONTRACT.md#speech-denoise-limpieza-local-de-archivos).
 
 ## Flujo de síntesis
 

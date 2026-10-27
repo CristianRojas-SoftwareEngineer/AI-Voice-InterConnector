@@ -20,8 +20,12 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
+#[cfg(feature = "native-denoise")]
+mod denoise_adapter;
 pub mod registry;
 pub mod spawn;
+#[cfg(feature = "native-denoise")]
+use denoise_adapter::{DenoiseGate, GateBegin, DENOISE_QUEUE_TIMEOUT};
 /// Familia de los logs por arranque del daemon (`daemon_<pid>_<ms>.log`).
 pub const DAEMON_LOG_FAMILY: &str = "daemon";
 pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_death};
@@ -105,6 +109,10 @@ pub struct DaemonState {
     /// Registro en disco del daemon y de su residente: el daemon es el único
     /// escritor de `daemon.pid`. Se ancla en la raíz de datos vigente.
     pub registry: Arc<registry::DaemonRegistry>,
+    /// Admisión del preprocesamiento DPDFNet: una inferencia activa y a lo
+    /// sumo una solicitud esperando 30 s. Solo existe con `native-denoise`.
+    #[cfg(feature = "native-denoise")]
+    denoise_gate: Arc<DenoiseGate>,
 }
 
 #[derive(Debug)]
@@ -152,9 +160,13 @@ impl DaemonState {
     }
 
     /// Carga los motores de producción. Toda ausencia de un modelo fijado exige
-    /// ejecutar `setup`, aunque el motor no cargue sus pesos hasta la primera petición.
+    /// ejecutar `setup`, salvo los pines `startup_optional`: sus operaciones
+    /// fallan si faltan y el resto del servicio sigue disponible.
     fn load_engines(model_store: &ModelStore) -> anyhow::Result<DaemonEngines> {
         for pin in avi_shared::paths::MODEL_REVISIONS {
+            if pin.startup_optional {
+                continue;
+            }
             if !model_store.is_provisioned(pin.name) {
                 return Err(MissingModel(pin.name).into());
             }
@@ -232,6 +244,8 @@ impl DaemonState {
             warm: std::sync::RwLock::new(WarmState::Warming),
             shutdown_notify: Arc::new(tokio::sync::Notify::new()),
             registry: engines.registry,
+            #[cfg(feature = "native-denoise")]
+            denoise_gate: DenoiseGate::new(),
         })
     }
 
@@ -904,6 +918,15 @@ async fn transcribe_handler(
             .into_response();
     }
 
+    let denoise = match optional_denoise(&payload) {
+        Ok(denoise) => denoise,
+        Err(e) => return input_error_response(e.reason, e.message),
+    };
+    #[cfg(not(feature = "native-denoise"))]
+    if denoise {
+        return denoise_unsupported_response();
+    }
+
     // Parakeet no necesita chunking VAD (no degrada con la duración de audio);
     // se transcribe de una sola pasada.
     let Some(engines) = state.inference_engines.as_ref() else {
@@ -911,6 +934,64 @@ async fn transcribe_handler(
             "status": "error", "reason": "daemon_error", "message": "El estado de contrato no puede transcribir."
         })))).into_response();
     };
+
+    #[cfg(feature = "native-denoise")]
+    let pcm = if denoise {
+        // Turno antes de convertir a 48 kHz y de reservar buffers grandes.
+        let permit = match state.denoise_gate.begin() {
+            GateBegin::Acquired(permit) => permit,
+            GateBegin::Waiting(waiter) => match waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await {
+                Ok(permit) => permit,
+                Err(_) => return denoise_busy_response(),
+            },
+            GateBegin::Busy => return denoise_busy_response(),
+        };
+        let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i16>> {
+            let dir = avi_process::scratch::tempdir("avi_daemon_stt_denoise_")?;
+            let models = denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
+            let cleaned = models
+                .denoise_pcm16_mono(
+                    &pcm,
+                    16_000,
+                    denoise::service::DenoiseUseCase::Stt,
+                    dir.path(),
+                )
+                .map_err(anyhow::Error::from)?;
+            drop(permit);
+            Ok(cleaned)
+        });
+        match work.await {
+            Ok(Ok(cleaned)) => cleaned,
+            Ok(Err(e)) => {
+                if let Some(e) = e.downcast_ref::<denoise::errors::E>() {
+                    return denoise_error_response(e);
+                }
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(with_sv(json!({
+                        "status": "error",
+                        "reason": "io_error",
+                        "message": e.to_string(),
+                    }))),
+                )
+                    .into_response();
+            }
+            Err(join_err) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(with_sv(json!({
+                        "status": "error",
+                        "reason": "denoise_failed",
+                        "message": format!("El hilo de limpieza falló: {}", join_err),
+                    }))),
+                )
+                    .into_response();
+            }
+        }
+    } else {
+        pcm
+    };
+
     let result = engines.stt_engine.transcribe(&pcm);
     match result {
         Ok(text) => {
@@ -943,6 +1024,96 @@ impl InputError {
             reason: "usage_error",
             message,
         }
+    }
+}
+
+/// Campo opcional `denoise`: ausente equivale a `false`; cualquier valor que no
+/// sea booleano es error de entrada, nunca una conversión implícita.
+fn optional_denoise(body: &Value) -> Result<bool, InputError> {
+    match body.get("denoise") {
+        None => Ok(false),
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| InputError::usage("El campo 'denoise' debe ser booleano.".into())),
+    }
+}
+
+/// Respuesta de un build sin `native-denoise` ante `denoise: true`: no se omite
+/// la limpieza en silencio. Con la feature activa no hay ruta que la use.
+#[cfg(not(feature = "native-denoise"))]
+fn denoise_unsupported_response() -> Response {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        Json(with_sv(json!({
+            "status": "error",
+            "reason": "denoise_unsupported",
+            "message": "Este binario se compiló sin soporte de limpieza de ruido (feature 'native-denoise').",
+        }))),
+    )
+        .into_response()
+}
+
+/// Respuesta de saturación de la admisión DPDFNet, sin iniciar DSP ni publicar
+/// resultado. Solo tiene ruta con la feature activa.
+#[cfg(feature = "native-denoise")]
+fn denoise_busy_response() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(with_sv(json!({
+            "status": "error",
+            "reason": "denoise_busy",
+            "message": "La limpieza de ruido está ocupada; reintenta cuando termine la solicitud en curso.",
+        }))),
+    )
+        .into_response()
+}
+
+/// Traduce un error del motor DSP a `reason` y estado HTTP del contrato.
+#[cfg(feature = "native-denoise")]
+#[cfg(all(feature = "native-denoise", feature = "native-stt"))]
+fn denoise_failure(e: &denoise::errors::E) -> (&'static str, StatusCode) {
+    match e {
+        denoise::errors::E::EModelMissing(_) => ("model_missing", StatusCode::NOT_FOUND),
+        denoise::errors::E::EInvalidInput(_) => ("invalid_audio", StatusCode::BAD_REQUEST),
+        denoise::errors::E::EIo(_) => ("io_error", StatusCode::INTERNAL_SERVER_ERROR),
+        _ => ("denoise_failed", StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+#[cfg(feature = "native-denoise")]
+#[cfg(all(feature = "native-denoise", feature = "native-stt"))]
+fn denoise_error_response(e: &denoise::errors::E) -> Response {
+    let (reason, status) = denoise_failure(e);
+    (
+        status,
+        Json(with_sv(json!({
+            "status": "error",
+            "reason": reason,
+            "message": e.to_string(),
+        }))),
+    )
+        .into_response()
+}
+
+/// Clasifica un `anyhow::Error` procedente del hilo de clonado: si su mensaje
+/// coincide con un fallo de DPDFNet (modelo ausente, audio inv�lido, E/S) usa
+/// su `reason` propio; si envuelve un `avi_audio::WavLoadError`, lo traduce
+/// igual que en transcripci�n; en cualquier otro caso es `voice_clone_failed`.
+fn classify_denoise_or_wav_error(e: &anyhow::Error) -> &'static str {
+    let msg = e.to_string();
+    if msg.contains("Modelo faltante") || msg.contains("no está provisionado") {
+        return "model_missing";
+    }
+    if msg.contains("Entrada inválida") {
+        return "invalid_audio";
+    }
+    if msg.contains("Error de E/S") {
+        return "io_error";
+    }
+    match e.downcast_ref::<avi_audio::WavLoadError>() {
+        Some(avi_audio::WavLoadError::Invalid(_)) => "invalid_audio",
+        Some(avi_audio::WavLoadError::Io(_)) => "io_error",
+        _ => "voice_clone_failed",
     }
 }
 
@@ -1003,6 +1174,14 @@ pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
             reason: "invalid_audio",
             message: format!("audio_b64 no decodificable como base64: {}", e),
         })?;
+
+    if audio_bytes.len() % 2 != 0 {
+        return Err(InputError {
+            reason: "invalid_audio",
+            message: "El audio PCM16 debe tener longitud par (bytes impares no válidos)"
+                .to_string(),
+        });
+    }
 
     if audio_bytes.len() / 2 > avi_core::MAX_TRANSCRIBE_AUDIO_SECS as usize * 16_000 {
         return Err(InputError {
@@ -1175,6 +1354,25 @@ async fn voices_clone_handler(
             }
         },
     };
+    // `denoise` es opcional (ausente = sin limpiar); si viene, debe ser booleano.
+    let denoise = match optional_denoise(&payload) {
+        Ok(denoise) => denoise,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "error": "usage_error",
+                    "reason": e.reason,
+                    "message": e.message,
+                }))),
+            )
+                .into_response();
+        }
+    };
+    #[cfg(not(feature = "native-denoise"))]
+    if denoise {
+        return denoise_unsupported_response();
+    }
     let voice_exists = match state.voice_store.exists(&name) {
         Ok(found) => found,
         Err(e) => {
@@ -1228,23 +1426,26 @@ async fn voices_clone_handler(
                 .into_response();
         }
     };
-    // La duración se mide por la cabecera, antes de buscar el modelo; un audio que
-    // no es WAV no tiene cabecera que medir y lo rechaza después el clonado.
-    if avi_audio::wav_bytes_duration_secs(&audio_bytes)
-        .is_some_and(|secs| secs > avi_core::MAX_CLONE_REFERENCE_SECS as f64)
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "error": "audio_too_long",
-                "reason": "audio_too_long",
-                "message": format!(
-                    "La referencia de clonado no puede superar {} segundos.",
-                    avi_core::MAX_CLONE_REFERENCE_SECS
-                ),
-            }))),
-        )
-            .into_response();
+    // Validar que es un WAV legible y que su duración no supera el tope, ANTES de
+    // crear el directorio temporal ni tocar el modelo. Un WAV ilegible se rechaza
+    // aquí con `invalid_audio` en lugar de dejarlo fallar tarde en el clonado.
+    let wav_duration = match avi_audio::wav_bytes_duration_secs(&audio_bytes) {
+        Some(d) => d,
+        None => {
+            return input_error_response(
+                "invalid_audio",
+                "El audio de referencia no es un WAV válido o legible".to_string(),
+            );
+        }
+    };
+    if wav_duration > avi_core::MAX_CLONE_REFERENCE_SECS as f64 {
+        return input_error_response(
+            "audio_too_long",
+            format!(
+                "La referencia de clonado no puede superar {} segundos.",
+                avi_core::MAX_CLONE_REFERENCE_SECS
+            ),
+        );
     }
     let base_model_dir = match state.tts_engine.base_model_dir.as_ref() {
         Some(d) => d.clone(),
@@ -1259,6 +1460,18 @@ async fn voices_clone_handler(
             )
                 .into_response();
         }
+    };
+    // Admisión DPDFNet antes de crear el WAV de referencia o cualquier buffer
+    // grande. Un turno libre pasa directo; el único esperador espera como
+    // máximo 30 s; el resto recibe 503 sin iniciar DSP.
+    #[cfg(feature = "native-denoise")]
+    let denoise_admission = if denoise {
+        match state.denoise_gate.begin() {
+            GateBegin::Busy => return denoise_busy_response(),
+            other => Some(other),
+        }
+    } else {
+        None
     };
     // Directorio de trabajo con dueño: contiene el WAV de referencia y el
     // `.qvoice` parcial, y se borra al soltarse por cualquier camino de salida.
@@ -1278,17 +1491,6 @@ async fn voices_clone_handler(
         }
     };
     let tmp_wav = work_dir.path().join("reference.wav");
-    if std::fs::write(&tmp_wav, &audio_bytes).is_err() {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(with_sv(json!({
-                "error": "io_error",
-                "reason": "io_error",
-                "message": "No se pudo escribir el audio temporal.",
-            }))),
-        )
-            .into_response();
-    }
     let tmp_qvoice = work_dir.path().join("voice.qvoice");
     // Stream NDJSON: las validaciones baratas ya pasaron en JSON plano;
     // `started` inmediato antes del trabajo pesado, latidos cada ~500 ms y
@@ -1301,10 +1503,76 @@ async fn voices_clone_handler(
             json!({ "event": "started", "operation": "clonación", "name": name }),
         )
         .await;
+        #[cfg(feature = "native-denoise")]
+        let mut permit = match denoise_admission {
+            None => None,
+            Some(GateBegin::Acquired(permit)) => Some(permit),
+            Some(GateBegin::Waiting(waiter)) => {
+                let wait =
+                    tokio::spawn(async move { waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await });
+                match with_heartbeats(&tx, "denoise_queue", wait).await {
+                    None => return,
+                    Some(Ok(Ok(permit))) => Some(permit),
+                    Some(Ok(Err(_))) | Some(Err(_)) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "name": name,
+                                "reason": "denoise_busy",
+                                "message": "La limpieza de ruido está ocupada; reintenta cuando termine la solicitud en curso.",
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
+            Some(GateBegin::Busy) => unreachable!("la saturación se respondió antes del stream"),
+        };
+        // El WAV de referencia se escribe solo con el turno tomado: la espera
+        // en cola no reserva audio ni temporales de 48 kHz.
+        if let Err(e) = std::fs::write(&tmp_wav, &audio_bytes) {
+            emit_ndjson(
+                &tx,
+                json!({
+                    "event": "error",
+                    "name": name,
+                    "reason": "io_error",
+                    "message": format!("No se pudo escribir el audio temporal: {}", e),
+                }),
+            )
+            .await;
+            return;
+        }
         let event_name = name.clone();
         let clone_qvoice = tmp_qvoice.clone();
         let clone_work = tokio::task::spawn_blocking(move || {
-            avi_tts::clone_voice(&base_model_dir, &tmp_wav, &clone_qvoice, &name)
+            #[cfg(feature = "native-denoise")]
+            let source = if let Some(permit) = permit.take() {
+                // Modelo resuelto y verificado antes de convertir: un fallo de
+                // modelo no deja audio sin limpiar ni lanza el clonado.
+                let clean = work_dir.path().join("reference_clean.wav");
+                let models =
+                    denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
+                models
+                    .denoise_wav_file(
+                        &tmp_wav,
+                        &clean,
+                        denoise::service::DenoiseUseCase::Clone,
+                        work_dir.path(),
+                    )
+                    .map_err(anyhow::Error::from)?;
+                // El turno cubre solo la inferencia DSP; el clonado TTS puede
+                // durar minutos y no debe bloquear la limpieza de otras rutas.
+                drop(permit);
+                clean
+            } else {
+                tmp_wav.clone()
+            };
+            #[cfg(not(feature = "native-denoise"))]
+            let source = tmp_wav.clone();
+            avi_tts::clone_voice(&base_model_dir, &source, &clone_qvoice, &name)
                 .map(|()| (work_dir, name))
         });
         // `_work_dir` mantiene vivo el directorio hasta el final de la tarea.
@@ -1316,12 +1584,10 @@ async fn voices_clone_handler(
             }
             Some(Ok(Ok(v))) => v,
             Some(Ok(Err(e))) => {
-                // Una referencia ilegible se clasifica igual que en transcripción.
-                let reason = match e.downcast_ref::<avi_audio::WavLoadError>() {
-                    Some(avi_audio::WavLoadError::Invalid(_)) => "invalid_audio",
-                    Some(avi_audio::WavLoadError::Io(_)) => "io_error",
-                    _ => "voice_clone_failed",
-                };
+                // Un fallo de DPDFNet (modelo ausente, audio inválido, E/S) se
+                // clasifica con su propio reason; una referencia ilegible se
+                // clasifica igual que en transcripción.
+                let reason = classify_denoise_or_wav_error(&e);
                 emit_ndjson(
                     &tx,
                     json!({
@@ -1442,6 +1708,13 @@ fn dub_pcm(payload: &Value) -> Result<Vec<i16>, InputError> {
             reason: "invalid_audio",
             message: format!("audio_b64 no decodificable: {}", e),
         })?;
+    if audio_bytes.len() % 2 != 0 {
+        return Err(InputError {
+            reason: "invalid_audio",
+            message: "El audio PCM16 debe tener longitud par (bytes impares no válidos)"
+                .to_string(),
+        });
+    }
     let pcm = audio_bytes
         .chunks_exact(2)
         .map(|c| i16::from_le_bytes([c[0], c[1]]))
@@ -1503,7 +1776,17 @@ async fn dub_handler(
         Ok(fields) => fields,
         Err(e) => return input_error_response(e.reason, e.message),
     };
-    // Validaciones baratas ANTES del stream (JSON plano con los códigos de
+    // `denoise` es opcional (ausente = sin limpiar); si viene, debe ser booleano.
+    #[cfg(feature = "native-stt")]
+    let denoise = match optional_denoise(&payload) {
+        Ok(denoise) => denoise,
+        Err(e) => return input_error_response(e.reason, e.message),
+    };
+    #[cfg(all(feature = "native-stt", not(feature = "native-denoise")))]
+    if denoise {
+        return denoise_unsupported_response();
+    }
+    // Validaciones baratas ANTES del stream (JSON plano con los c�digos de
     // siempre; `started` solo se emite cuando el trabajo pesado va a arrancar).
     // Los chequeos por parámetros (par, CT2, feature, modelo, voz) corren antes
     // de transcribir: con varios fallos a la vez gana el más barato de detectar,
@@ -1613,8 +1896,104 @@ async fn dub_handler(
                 json!({ "event": "started", "operation": "doblaje", "voice": voice }),
             )
             .await;
-            // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
-            // sobre el audio completo).
+            // Limpieza de ruido DPDFNet (opt-in) antes de STT: toma de turno,
+            // conversi�n a 48 kHz, inferencia y vuelta a 16 kHz. El turno cubre
+            // solo la inferencia DSP; se suelta antes de transcribir. Esta fase
+            // emite heartbeats para que el cliente no la confunda con un atasco.
+            #[cfg(feature = "native-denoise")]
+            let pcm = if denoise {
+                let permit = match state.denoise_gate.begin() {
+                    GateBegin::Acquired(permit) => permit,
+                    GateBegin::Waiting(waiter) => {
+                        match waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                emit_ndjson(
+                                &tx,
+                                json!({
+                                    "event": "error",
+                                    "reason": "denoise_busy",
+                                    "message": "La limpieza de ruido est� ocupada; reintenta cuando termine la solicitud en curso.",
+                                }),
+                            )
+                            .await;
+                                return;
+                            }
+                        }
+                    }
+                    GateBegin::Busy => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "denoise_busy",
+                                "message": "La limpieza de ruido est� ocupada; reintenta cuando termine la solicitud en curso.",
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                };
+                let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i16>> {
+                    let dir = avi_process::scratch::tempdir("avi_daemon_dub_denoise_")?;
+                    let models =
+                        denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
+                    let cleaned = models
+                        .denoise_pcm16_mono(
+                            &pcm,
+                            16_000,
+                            denoise::service::DenoiseUseCase::Stt,
+                            dir.path(),
+                        )
+                        .map_err(anyhow::Error::from)?;
+                    drop(permit);
+                    Ok(cleaned)
+                });
+                match with_heartbeats(&tx, "denoise", work).await {
+                    None => return,
+                    Some(Ok(Ok(cleaned))) => cleaned,
+                    Some(Ok(Err(e))) => {
+                        if let Some(e) = e.downcast_ref::<denoise::errors::E>() {
+                            emit_ndjson(
+                                &tx,
+                                json!({
+                                    "event": "error",
+                                    "reason": denoise_failure(e).0,
+                                    "message": e.to_string(),
+                                }),
+                            )
+                            .await;
+                            return;
+                        }
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "io_error",
+                                "message": e.to_string(),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                    Some(Err(join_err)) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "denoise_failed",
+                                "message": format!("El hilo de limpieza fall�: {}", join_err),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            } else {
+                pcm
+            };
+            // Transcripci�n en `spawn_blocking` con latidos (fase pesada: STT
+            // sobre el audio completo, ya limpio si se pidi� denoise).
             let stt_state = state.clone();
             let stt_work = tokio::task::spawn_blocking(move || {
                 stt_state
@@ -1934,7 +2313,13 @@ pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
                 CLONE_REFERENCE_BYTES_PER_SEC,
             ))),
         )
-        .route("/dub", post(dub_handler))
+        .route(
+            "/dub",
+            post(dub_handler).layer(DefaultBodyLimit::max(avi_core::body_limit_for(
+                avi_core::MAX_DUB_AUDIO_SECS,
+                32_000,
+            ))),
+        )
         .route("/synthesize", post(synthesize_handler))
         .route("/shutdown", post(shutdown_handler));
     // `/transcribe` solo existe con el motor STT compilado (`native-stt`); sin el
@@ -3624,5 +4009,137 @@ mod tests {
                 message: "línea uno  línea dos línea tres".to_string(),
             }))
         );
+    }
+
+    /// D1: rechaza PCM16 de longitud impar antes de chunks_exact(2).
+    #[test]
+    fn validate_transcribe_rejects_odd_pcm() {
+        for b64 in ["AQ==", "AQID"] {
+            let payload = json!({ "audio_b64": b64 });
+            let result = validate_transcribe_input(&payload);
+            assert!(
+                matches!(result, Err(InputError { reason, .. }) if reason == "invalid_audio"),
+                "audio impar {b64:?} debe rechazarse con invalid_audio"
+            );
+        }
+    }
+
+    /// D1: acepta PCM16 de longitud par y preserva el orden de las muestras.
+    #[test]
+    fn validate_transcribe_accepts_even_pcm_preserves_order() {
+        let pcm = validate_transcribe_input(&json!({ "audio_b64": "AQA=" })).unwrap();
+        assert_eq!(pcm, vec![1i16]);
+
+        let pcm = validate_transcribe_input(&json!({ "audio_b64": "AQACAA==" })).unwrap();
+        assert_eq!(pcm, vec![1i16, 2i16]);
+    }
+
+    /// D2: dub rechaza PCM16 de longitud impar.
+    #[tokio::test]
+    async fn dub_rejects_odd_pcm() {
+        let (status, _) = post_json(
+            "/dub",
+            json!({ "audio_b64": "AQ==", "voice": "v", "source_language": "es", "target_language": "en" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// D2: dub rechaza cuerpo que supera el límite de 40 s (DefaultBodyLimit del router).
+    #[tokio::test]
+    async fn dub_rejects_body_over_limit() {
+        use base64::Engine;
+        let pcm = vec![0u8; 100 * 32_000]; // 100 s supera el tope de 40 s con holgura
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&pcm);
+        let (status, _) = post_json(
+            "/dub",
+            json!({ "audio_b64": audio_b64, "voice": "v", "source_language": "es", "target_language": "en" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// D2: dub acepta un audio válido de 40 s sin que el body limit lo rechace.
+    #[tokio::test]
+    async fn dub_accepts_valid_40s() {
+        use base64::Engine;
+        let pcm = vec![0u8; 40 * 32_000]; // 40 s, dentro del tope
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&pcm);
+        let (status, _) = post_json(
+            "/dub",
+            json!({ "audio_b64": audio_b64, "voice": "v", "source_language": "es", "target_language": "en" }),
+        )
+        .await;
+        // Sin `native-stt` el handler llega a `not_implemented` tras pasar las
+        // validaciones de entrada; lo importante es que el body limit no lo rechace.
+        assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// Helper: construye un WAV PCM 16-bit mono de silencio a 16 kHz.
+    fn wav_bytes_silence_16k(duration_secs: u64) -> Vec<u8> {
+        let sample_rate: u32 = 16_000;
+        let block_align: u16 = 2;
+        let data_len = (duration_secs as u32) * sample_rate * block_align as u32;
+        let chunk_size = 36 + data_len;
+        let mut wav = Vec::with_capacity(4 + 4 + 4 + 8 + 16 + 8 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&chunk_size.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes()); // audio_format PCM
+        wav.extend_from_slice(&1u16.to_le_bytes()); // channels mono
+        wav.extend_from_slice(&sample_rate.to_le_bytes());
+        wav.extend_from_slice(&(sample_rate * block_align as u32).to_le_bytes()); // byte_rate
+        wav.extend_from_slice(&block_align.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes()); // bits_per_sample
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.resize(wav.len() + data_len as usize, 0);
+        wav
+    }
+
+    /// D3: clone rechaza WAV inválido antes de crear el directorio temporal.
+    #[tokio::test]
+    async fn clone_rejects_invalid_wav_before_temp() {
+        use base64::Engine;
+        let (status, body) = post_json(
+            "/voices/clone",
+            json!({ "audio_b64": base64::engine::general_purpose::STANDARD.encode(b"esto no es un wav"), "name": "test" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "invalid_audio");
+    }
+
+    /// D3: clone rechaza WAV que supera 30 s de referencia.
+    #[tokio::test]
+    async fn clone_rejects_wav_over_30s() {
+        use base64::Engine;
+        let wav = wav_bytes_silence_16k(31);
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&wav);
+        let (status, body) = post_json(
+            "/voices/clone",
+            json!({ "audio_b64": audio_b64, "name": "test" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["reason"], "audio_too_long");
+    }
+
+    /// D3: clone acepta WAV válido por debajo del límite (no es 400).
+    #[tokio::test]
+    async fn clone_accepts_valid_wav_under_limit() {
+        use base64::Engine;
+        let wav = wav_bytes_silence_16k(10);
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&wav);
+        let (status, _) = post_json(
+            "/voices/clone",
+            json!({ "audio_b64": audio_b64, "name": "test_voice" }),
+        )
+        .await;
+        assert_ne!(status, StatusCode::BAD_REQUEST);
     }
 }
