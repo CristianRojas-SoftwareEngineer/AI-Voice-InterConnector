@@ -3,7 +3,7 @@
 Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **español**, sobre el motor Qwen3-TTS 0.6B (12 Hz, multilingüe; [QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)). Se distribuye como un único archivo por plataforma que trae el binario, el motor TTS y ONNX Runtime.
 
 - **Síntesis local**: texto a voz sin APIs externas.
-- **Clonación de voz**: usa tu propia voz como referencia con ~10 s de audio.
+- **Clonación de voz**: usa un WAV o captura tu voz con `voice clone --mic`; duración fija de 1 a 30 s o push-to-talk en TTY.
 - **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés.
 - **Transcripción**: voz a texto con Parakeet TDT 0.6B v3.
 - **Limpieza de archivos**: `speech denoise` procesa audio y limpia la pista de audio de vídeo sin alterar su imagen; usa el preset `studio` por omisión.
@@ -278,11 +278,13 @@ El modelo DPDFNet debe estar provisionado con `setup`. La opción global `--json
 
 ```bash
 ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
+ai-voice-interconnector voice clone --name mi_voz --mic --duration 10
+ai-voice-interconnector voice clone --name mi_voz --mic  # push-to-talk en TTY
 ai-voice-interconnector speech say --text "Hola mundo" -v mi_voz
 ai-voice-interconnector speech synthesize --text "Hola mundo" -v mi_voz --label saludo
 ```
 
-La referencia es un único audio de ~10 segundos de habla limpia.
+La referencia recomendada es un único audio de ~10 segundos de habla limpia. Puede ser WAV o captura de micrófono; `--duration` fija un objetivo de 1 a 30 segundos y, si se omite, se requiere TTY para push-to-talk.
 
 ### Invocación desde cualquier lenguaje
 

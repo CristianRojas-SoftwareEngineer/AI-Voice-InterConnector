@@ -600,13 +600,27 @@ enum SelfSub {
 enum VoiceCommands {
     /// Listar voces registradas
     List,
-    /// Clonar una voz desde audio de referencia
+    /// Clonar una voz desde audio de referencia o micrófono
+    #[command(
+        group(
+            clap::ArgGroup::new("clone_input")
+                .required(true)
+                .multiple(false)
+                .args(["speech_reference", "mic"])
+        )
+    )]
     Clone {
         #[arg(short, long)]
         name: String,
-        /// Audio de referencia de habla (obligatorio)
-        #[arg(short = 's', long)]
-        speech_reference: String,
+        /// Audio de referencia de habla (archivo WAV; mutuamente excluyente con --mic)
+        #[arg(short = 's', long, group = "clone_input")]
+        speech_reference: Option<String>,
+        /// Capturar audio de referencia desde el micrófono
+        #[arg(long, group = "clone_input")]
+        mic: bool,
+        /// Duración fija en segundos (1–30); solo con --mic
+        #[arg(long, conflicts_with = "speech_reference")]
+        duration: Option<u64>,
         /// Sobrescribir una voz existente con el mismo nombre
         #[arg(short, long)]
         force: bool,
@@ -1407,6 +1421,8 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
         VoiceCommands::Clone {
             name,
             speech_reference,
+            mic,
+            duration,
             force,
             #[cfg(feature = "native-denoise")]
             denoise,
@@ -1436,35 +1452,69 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 let name = name.to_lowercase();
                 VoiceStore::validate_name(&name)
                     .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
-                // El tope de la referencia se comprueba antes de contactar con el daemon
-                // o de cargar el modelo, igual en las dos vías.
-                ensure_clone_reference_within_limit(std::path::Path::new(&speech_reference))?;
-                // Despacho 3 modos para Clone vía POST /voices/clone
-                {
-                    let client = daemon_client();
-                    if route_to_daemon(routing.mode(), &client).await? {
-                        let (cloned_name, cloned_speech, precomputed) = clone_via_daemon(
-                            &client,
-                            &name,
-                            &speech_reference,
-                            force,
-                            denoise,
-                            &mut progress,
-                        )
-                        .await?;
-                        return Ok((cloned_name, PathBuf::from(cloned_speech), precomputed));
+                // El archivo conserva el orden de validación vigente; el PCM de micrófono
+                // se limita tras la captura antes de codificarlo.
+                if !mic {
+                    if let Some(reference) = speech_reference.as_deref() {
+                        ensure_clone_reference_within_limit(std::path::Path::new(reference))?;
                     }
                 }
-                require_model_provisioned()?;
-                let speech_path = std::path::Path::new(&speech_reference);
-                if !speech_path.is_file() {
-                    return Err(CliError::new(
-                        ExitCode::NotFound,
-                        "audio_not_found",
-                        format!("El audio de referencia '{}' no existe.", speech_reference),
-                    ));
+                if mic {
+                    if duration == Some(0) {
+                        return Err(CliError::new(ExitCode::InvalidInput, "usage_error", "--duration debe ser mayor que cero."));
+                    }
+                    if duration.is_some_and(|secs| secs > avi_core::MAX_CLONE_REFERENCE_SECS) {
+                        return Err(CliError::new(ExitCode::InvalidInput, "audio_too_long", "La duración de grabación supera el límite máximo de clonado (30 s)."));
+                    }
+                    if duration.is_none() {
+                        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                            return Err(CliError::new(ExitCode::InvalidInput, "usage_error", "--mic requiere --duration en entornos no interactivos."));
+                        }
+                        let ptt_limit = push_to_talk_max_secs()?;
+                        validate_clone_push_to_talk_limit(ptt_limit)?;
+                    }
                 }
-                if !force
+                let client = daemon_client();
+                let use_daemon = route_to_daemon(routing.mode(), &client).await?;
+                let (speech_path, daemon_audio, mic_scratch) = if mic {
+                    if !use_daemon && !force && voice_store.exists(&name).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))? {
+                        return Err(CliError::new(ExitCode::StateConflict, "voice_exists", format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name)));
+                    }
+                    progress.phase("capturing", "Capturando audio del micrófono…");
+                    progress.close_line();
+                    let mut pcm = capture_mic_pcm(duration, avi_core::MAX_CLONE_REFERENCE_SECS).await?;
+                    truncate_clone_pcm(&mut pcm);
+                    let wav = avi_audio::encode_pcm_16k_mono_wav(&pcm).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+                    if use_daemon {
+                        (None, Some(wav), None)
+                    } else {
+                        let guard = avi_process::scratch::temp_wav("avi_clone_mic_").map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+                        std::fs::write(guard.path(), wav).map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{}: {e}", guard.path().display())))?;
+                        (Some(guard.path().clone()), None, Some(guard))
+                    }
+                } else {
+                    let reference = speech_reference.as_deref().expect("clap exige una fuente");
+                    (Some(PathBuf::from(reference)), None, None)
+                };
+                if use_daemon {
+                    let audio_bytes = match daemon_audio {
+                        Some(bytes) => bytes,
+                        None => {
+                            let reference = speech_reference.as_deref().expect("fuente WAV");
+                            std::fs::read(reference).map_err(|e| CliError::new(ExitCode::NotFound, "audio_not_found", format!("El audio de referencia '{}' no existe: {}", reference, e)))?
+                        }
+                    };
+                    let (cloned_name, cloned_speech, precomputed) = clone_via_daemon(&client, &name, &audio_bytes, force, denoise, &mut progress).await?;
+                    return Ok((cloned_name, PathBuf::from(cloned_speech), precomputed));
+                }
+                let _mic_scratch = mic_scratch;
+                let speech_path = speech_path.expect("ruta local");
+                if !mic && !speech_path.is_file() {
+                    return Err(CliError::new(ExitCode::NotFound, "audio_not_found", format!("El audio de referencia '{}' no existe.", speech_path.display())));
+                }
+                if !mic
+                    && !use_daemon
+                    && !force
                     && voice_store
                         .exists(&name)
                         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
@@ -1701,7 +1751,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
 /// captura por N segundos; `None` (solo alcanzable en TTY, ver guardas de
 /// `--duration`) dispara push-to-talk hasta Enter (`capture_16k_mono_pcm_until_enter`).
 /// `max_secs` es el techo de duración del push-to-talk (se combina con el
-/// techo de entorno). Solo lo usa `acquire_pcm`.
+/// techo de entorno).
 async fn capture_mic_pcm(duration: Option<u64>, max_secs: u64) -> Result<Vec<i16>, CliError> {
     if duration.is_none() {
         // Valida la variable antes de abrir el micrófono, para que una variable
@@ -1786,10 +1836,42 @@ fn ensure_pcm_within_limit(pcm: &[i16], operation: &str, max_secs: u64) -> Resul
     Ok(())
 }
 
-/// Rechaza la referencia de clonado de más de `MAX_CLONE_REFERENCE_SECS`: primero
-/// por la cabecera y, si es legible, por el PCM decodificado. Un WAV inválido
-/// (p. ej. con frecuencia de muestreo nula) se rechaza aquí con `invalid_audio`,
-/// igual en las dos vías.
+/// Limita el PCM del micrófono a 30 segundos sin rellenar las capturas cortas.
+fn truncate_clone_pcm(pcm: &mut Vec<i16>) {
+    pcm.truncate((avi_core::MAX_CLONE_REFERENCE_SECS * 16_000) as usize);
+}
+
+fn validate_clone_push_to_talk_limit(limit: u64) -> Result<(), CliError> {
+    if limit > avi_core::MAX_CLONE_REFERENCE_SECS {
+        return Err(CliError::new(
+            ExitCode::InvalidInput,
+            "audio_too_long",
+            format!(
+                "AVI_PUSH_TO_TALK_MAX_SECS ({limit}) supera el límite máximo de clonado ({} s).",
+                avi_core::MAX_CLONE_REFERENCE_SECS
+            ),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod clone_push_to_talk_tests {
+    #[test]
+    fn ptt_limit_above_clone_max_is_audio_too_long() {
+        let error = super::validate_clone_push_to_talk_limit(31)
+            .expect_err("debe rechazar un techo superior al máximo de clonación");
+        assert_eq!(error.reason, "audio_too_long");
+    }
+
+    #[test]
+    fn ptt_limit_at_or_below_clone_max_is_accepted() {
+        for limit in [1, 30] {
+            super::validate_clone_push_to_talk_limit(limit).expect("techo válido");
+        }
+    }
+}
+
 fn ensure_clone_reference_within_limit(path: &std::path::Path) -> Result<(), CliError> {
     const OPERATION: &str = "La referencia de clonado";
     ensure_wav_within_limit(path, OPERATION, avi_core::MAX_CLONE_REFERENCE_SECS)?;
@@ -5475,23 +5557,13 @@ async fn say_via_daemon(
 async fn clone_via_daemon(
     client: &reqwest::Client,
     name: &str,
-    speech_reference: &str,
+    audio_bytes: &[u8],
     force: bool,
     denoise: bool,
     progress: &mut PhaseProgress,
 ) -> Result<(String, String, bool), CliError> {
     progress.phase("cloning", "Clonando voz (daemon).");
-    let speech_bytes = std::fs::read(speech_reference).map_err(|e| {
-        CliError::new(
-            ExitCode::NotFound,
-            "audio_not_found",
-            format!(
-                "El audio de referencia '{}' no existe: {}",
-                speech_reference, e
-            ),
-        )
-    })?;
-    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&speech_bytes);
+    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
     let mut payload = serde_json::json!({
         "name": name,
         "audio_b64": audio_b64,
@@ -5689,6 +5761,57 @@ async fn dub_via_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clone_pcm_truncates_at_thirty_seconds_without_padding() {
+        let limit = (avi_core::MAX_CLONE_REFERENCE_SECS * 16_000) as usize;
+        let mut over = vec![7; limit + 1];
+        super::truncate_clone_pcm(&mut over);
+        assert_eq!(over.len(), limit);
+
+        let mut exact = vec![7; limit];
+        super::truncate_clone_pcm(&mut exact);
+        assert_eq!(exact.len(), limit);
+
+        let mut short = vec![7; limit - 1];
+        super::truncate_clone_pcm(&mut short);
+        assert_eq!(short.len(), limit - 1);
+    }
+
+    #[test]
+    fn clone_pcm_wav_base64_round_trip_preserves_known_samples() {
+        let samples = [0, 1_234, -2_345, i16::MAX, i16::MIN];
+        let wav = avi_audio::encode_pcm_16k_mono_wav(&samples).expect("codificar WAV");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&wav);
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("decodificar base64");
+        let mut reader = hound::WavReader::new(std::io::Cursor::new(decoded)).expect("leer WAV");
+        assert_eq!(reader.spec().sample_rate, 16_000);
+        assert_eq!(reader.spec().channels, 1);
+        assert_eq!(reader.spec().bits_per_sample, 16);
+        assert_eq!(
+            reader
+                .samples::<i16>()
+                .map(Result::unwrap)
+                .collect::<Vec<_>>(),
+            samples
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark informativo; ejecutar explícitamente para medir este host"]
+    fn benchmark_clone_mic_wav_base64() {
+        let samples = vec![123; 16_000 * 30];
+        let started = std::time::Instant::now();
+        let wav = avi_audio::encode_pcm_16k_mono_wav(&samples).expect("codificar WAV");
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&wav);
+        eprintln!(
+            "PCM→WAV→base64 (30 s): {:?}; {} bytes",
+            started.elapsed(),
+            encoded.len()
+        );
+    }
 
     /// El envelope de `self update` cancelado lleva `status: "cancelled"`,
     /// `reason` nulo y las mismas claves que `already_up_to_date`, sin claves de más.
