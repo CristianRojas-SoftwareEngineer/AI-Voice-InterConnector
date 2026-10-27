@@ -2,8 +2,8 @@
 
 ## Estado de ejecución
 
-- **T1–T6 ejecutadas y verificadas en local** (2026-10-27), sin tocar el remoto.
-- **T7 pendiente de autorización explícita**: confirmar y publicar el commit, disparar el workflow y extraer evidencia por job.
+- **T1–T6 ejecutadas y verificadas en local** (2026-10-27).
+- **T7 ejecutada y verificada**: commits publicados `2c429308`, `6bb8c9e8` y `0f0e5c1e`; CircleCI #505 sobre `0f0e5c1e` terminó con los nueve gates y los cuatro builds en verde. La evidencia de jobs y artefactos cierra el objetivo CI de este subplan.
 - **Enmienda aplicada durante T2 con autorización del usuario**: la descarga del artefacto de Windows pasa del sitio de paquetes del autor (`gyan.dev`, que degradaba la transferencia sostenida a ~50 KB/s hasta hacerla inútil para 110 MB) al release que ese mismo autor publica en GitHub, y `download_https` gana reintentos, límite de conexión y detector de estancamiento. El fichero es el mismo en ambos orígenes: 114.768.076 bytes y SHA-256 `60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba`, que es el valor fijado. Se aplica en el producto, así que vale para local y para los cuatro jobs de CI.
 - **Corrección de un literal del plan**: la línea de versión del artefacto real de Windows es `ffmpeg version 9.0.2-essentials_build-www.gyan.dev`, no `9.0.2-full_build-www.gyan.dev`; la prueba de T1 usa el literal verificado.
 
@@ -121,8 +121,8 @@ Los otros cuatro gates (`validate-licenses`, `test-bootstrap-linux|windows|macos
 ## Verificación
 
 1. **Local**: `cargo xtask ffmpeg --dest <directorio>` (imprime la ruta del binario, verifica el SHA-256 fijado y pasa el humo de versión y codificadores); después, con ese directorio en el PATH, la suite de `denoise` pasa la matriz de codificadores, incluido el caso `.ogg`; `cargo test -p xtask`; `cargo xtask pins --check`; `cargo fmt --all --check` y lints.
-2. **End-to-end**: una corrida autorizada del workflow `denoise-preintegration` sobre el commit. Criterio de éxito: los nueve gates en verde y los cuatro `build-*` (`build-windows-x64`, `build-linux-x64`, `build-linux-arm64`, `build-darwin-arm64`) en verde, con el artefacto por target, el humo de instalación y el `ffmpeg` instalado ejecutándose.
-3. **Evidencia por job**: URL, SHA-256 y versión del FFmpeg aprovisionado; resumen de la suite; nombre y hash del artefacto por target. Se registra en `.work/plans/denoise-closure-plan.md`.
+2. **End-to-end**: satisfecho por CircleCI #505 sobre `0f0e5c1e`: los nueve gates y los cuatro `build-*` (`build-windows-x64`, `build-linux-x64`, `build-linux-arm64`, `build-darwin-arm64`) terminaron en verde. El resultado valida ese SHA, pero no certifica la calidad acústica de Puerta C ni completa T12/T13.
+3. **Evidencia por job**: URL, SHA-256 y versión del FFmpeg aprovisionado; resumen de la suite; nombre y hash del artefacto por target. La evidencia de #505 queda registrada en los logs del pipeline y resumida en la Puerta B de `.work/plans/denoise-closure-plan.md`.
 
 ## Autorizaciones
 
