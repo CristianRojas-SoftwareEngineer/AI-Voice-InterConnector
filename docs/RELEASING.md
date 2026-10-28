@@ -18,6 +18,7 @@ la integridad se verifica cotejando los checksums SHA-256.
 - [Prerrequisitos](#prerrequisitos)
   - [Configuración única](#configuración-única)
   - [Antes de cada corte](#antes-de-cada-corte)
+  - [Aprovisionamiento de los recursos antes de cortar](#aprovisionamiento-de-los-recursos-antes-de-cortar)
 - [1. Corte: crear y publicar el tag](#1-corte-crear-y-publicar-el-tag)
 - [2. Automático: lo que hace el CI](#2-automático-lo-que-hace-el-ci)
 - [3. Verificación post-publicación](#3-verificación-post-publicación)
@@ -61,6 +62,55 @@ la integridad se verifica cotejando los checksums SHA-256.
 - **La publicación es irreversible.** El Release se publica directamente sobre
   el tag. La versión y el CHANGELOG deben estar correctos **antes** de crear el
   tag, porque corregirlos después exige borrar un Release público.
+
+### Aprovisionamiento de los recursos antes de cortar
+
+La puerta de pruebas con recursos exige tres cosas en la máquina: el FFmpeg del
+pin, el ONNX Runtime del pin y el motor TTS compilado. Se aprovisionan con las
+órdenes del repositorio, nunca a mano:
+
+```bash
+cargo xtask ffmpeg                     # FFmpeg del pin, verificado por SHA-256
+cargo xtask bootstrap --models --yes   # ONNX Runtime, motor y los seis modelos
+```
+
+La descarga de modelos acota el silencio por dos vías, y las dos existen por un
+cuelgue real: un flujo HTTP medio abierto no entrega datos **ni** error, así que
+sin plazo la descarga espera para siempre. La primera vía corta la lectura tras
+sesenta segundos sin un byte; la segunda es el vigilante de `bootstrap`, que mata
+el `setup` si la raíz de modelos deja de crecer durante diez minutos.
+
+**Nunca esperes a un `setup` que «parece lento».** La selección completa son
+5,9 GB y a 30-60 MB/s se completa en minutos: un `setup` que se alarga está
+colgado, no descargando.
+
+**Cómo se mide el avance, si hay que mirarlo.** El tamaño del directorio de la
+caché **no** sirve como señal: `hf-hub` extiende cada fichero en bloques
+pre-reservados y el total se queda plano durante minutos con la transferencia
+viva. Las señales fiables son los bytes escritos por el proceso
+(`(Get-CimInstance Win32_Process -Filter 'ProcessId=<pid>').WriteTransferCount`
+en Windows) y el tamaño y la fecha de cada `blobs/*.incomplete`. Una sola muestra
+no concluye nada: se compara el mismo valor dos veces, separadas por varios
+minutos.
+
+**Después de cualquier interrupción, verifica antes de darlo por bueno.** El
+resumen que imprime `setup` no acredita que los snapshots estén completos; la
+verificación es independiente del propio proceso:
+
+```bash
+cargo run -q -- doctor --json   # "missing" vacío: cada pin cumple su contrato de ficheros
+find <raíz de modelos> -name '*.incomplete' | wc -l   # 0
+```
+
+Si el estado es dudoso o quedan restos, la reparación la hace el propio binario:
+
+```bash
+cargo run -q -- setup --force-update --yes   # purga snapshots y caché xet, y re-descarga
+```
+
+Un `setup` normal ya repara un snapshot al que le faltan ficheros del contrato —un
+pin sin sus pesos no cuenta como provisionado—, pero `--force-update` es la vía
+cuando hay que partir de cero.
 
 ## 1. Corte: crear y publicar el tag
 

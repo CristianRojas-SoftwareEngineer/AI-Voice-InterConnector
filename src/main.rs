@@ -5800,7 +5800,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "benchmark informativo; ejecutar explícitamente para medir este host"]
+    #[ignore = "requiere ejecución explícita: benchmark informativo que mide este host"]
     fn benchmark_clone_mic_wav_base64() {
         let samples = vec![123; 16_000 * 30];
         let started = std::time::Instant::now();

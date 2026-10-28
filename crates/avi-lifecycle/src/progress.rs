@@ -13,7 +13,10 @@
 //! la duración y la velocidad del modelo: así no queda en pantalla una línea
 //! rellenada con espacios ni texto pegado a ella, y lo que se copia de la
 //! terminal es legible. Sin terminal, `indicatif` no dibuja las barras, pero el
-//! encabezado, las líneas por modelo y el cierre salen igual.
+//! encabezado, una línea de avance cada quince segundos por modelo, las líneas
+//! de los modelos terminados y el cierre salen igual: el avance sigue siendo
+//! visible en el log, que es lo que distingue una descarga larga de un flujo
+//! mudo.
 //!
 //! Aloja además `PhaseProgress`, el indicador de fase que la CLI y el propio
 //! motor (install, uninstall) usan en operaciones largas: una sola definición
@@ -73,12 +76,18 @@ impl ProvisionView {
         let bar = ProgressBar::new(0)
             .with_style(bar_style())
             .with_prefix(label.clone());
+        // Sin terminal, `indicatif` no dibuja la barra: el aviso periódico por
+        // bytes es la única señal de que la descarga sigue escribiendo.
+        let beat = (!std::io::stderr().is_terminal()
+            && !silenced_by(std::env::var("AVI_NO_PROGRESS").ok().as_deref()))
+        .then(|| AtomicU64::new(0));
         ModelBar {
             bar,
             label,
             started: Instant::now(),
             completed: AtomicU64::new(0),
             provision_bytes: Arc::clone(&self.bytes),
+            beat,
         }
     }
 
@@ -100,6 +109,11 @@ pub struct ModelBar {
     started: Instant,
     completed: AtomicU64,
     provision_bytes: Arc<AtomicU64>,
+    /// Instante del último aviso de avance, en milisegundos desde `started`.
+    /// `Some` solo cuando toca avisar: sin terminal no hay barra que mirar, y una
+    /// línea periódica es lo único que distingue una descarga larga de un flujo
+    /// que se quedó mudo.
+    beat: Option<AtomicU64>,
 }
 
 impl TransferObserver for ModelBar {
@@ -107,6 +121,21 @@ impl TransferObserver for ModelBar {
         self.bar.set_length(total);
         self.bar.set_position(completed);
         self.completed.store(completed, Ordering::Relaxed);
+        let Some(beat) = &self.beat else {
+            return;
+        };
+        let now = self.started.elapsed().as_millis() as u64;
+        let last = beat.load(Ordering::Relaxed);
+        if now.saturating_sub(last) >= NO_TTY_HEARTBEAT.as_millis() as u64
+            && beat
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            eprintln!(
+                "{}",
+                transfer_line(&self.label, completed, total, self.started.elapsed())
+            );
+        }
     }
 }
 
@@ -439,6 +468,26 @@ pub fn model_done_line(label: &str, bytes: u64, elapsed: Duration) -> String {
     )
 }
 
+/// Cada cuánto deja una línea de avance un modelo cuando no hay terminal.
+const NO_TTY_HEARTBEAT: Duration = Duration::from_secs(15);
+
+/// Línea periódica de avance de un modelo sin terminal:
+/// `  … [i/N] nombre  1,2 GB de 2,5 GB (0:12)`.
+///
+/// Función pura, como el resto de las líneas del módulo, para que el texto
+/// exacto sea comprobable sin capturar stderr.
+pub fn transfer_line(label: &str, completed: u64, total: u64, elapsed: Duration) -> String {
+    let elapsed_text = clock(elapsed);
+    if total == 0 {
+        return format!("  … {label}  {} ({elapsed_text})", human_bytes(completed));
+    }
+    format!(
+        "  … {label}  {} de {} ({elapsed_text})",
+        human_bytes(completed),
+        human_bytes(total)
+    )
+}
+
 /// Cierre del bloque de progreso.
 pub fn total_line(bytes: u64, elapsed: Duration) -> String {
     format!(
@@ -481,6 +530,24 @@ mod tests {
     fn clock_pads_the_seconds() {
         assert_eq!(clock(Duration::from_secs(4)), "0:04");
         assert_eq!(clock(Duration::from_secs(183)), "3:03");
+    }
+
+    #[test]
+    fn transfer_line_shows_progress_and_elapsed() {
+        assert_eq!(
+            transfer_line(
+                "[1/5] qwen3-tts-0.6b",
+                1_200_000_000,
+                2_500_000_000,
+                Duration::from_secs(12)
+            ),
+            "  … [1/5] qwen3-tts-0.6b  1,2 GB de 2,5 GB (0:12)"
+        );
+        assert_eq!(
+            transfer_line("[1/1] m", 1024, 0, Duration::from_secs(0)),
+            "  … [1/1] m  1,0 KB (0:00)",
+            "un total desconocido no inventa denominador"
+        );
     }
 
     #[test]

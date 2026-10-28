@@ -530,10 +530,10 @@ pub(crate) mod tests {
 
     /// Crea un snapshot falso del repo `repo` en la revisión fijada.
     ///
-    /// Lleva `config.json`, que es lo que `is_provisioned` exige para un repo sin
-    /// `MODEL_FILE_PATTERNS` —"algún fichero con tamaño > 0"—, y los ficheros que el
-    /// gate de parakeet exige. Deliberadamente **no** se crea
-    /// `model.safetensors` ni `pytorch_model.bin`.
+    /// Lleva `config.json` y **todos** los ficheros que declara cualquier entrada de
+    /// `MODEL_FILE_PATTERNS`, de modo que el snapshot satisface el contrato del repo
+    /// que se simule. No crea artefactos que ningún pin declare
+    /// —`pytorch_model.bin`, por ejemplo—.
     pub(crate) fn fake_snapshot(repo: &str, revision: &str) -> PathBuf {
         let dir = crate::models_cache_dir()
             .unwrap()

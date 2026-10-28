@@ -682,6 +682,40 @@ pub struct ModelStore {
     base_dir: PathBuf,
 }
 
+/// Tiempo máximo de silencio tolerado **entre lecturas** del cuerpo de una
+/// descarga; no es un plazo total, así que una descarga lenta pero viva no se
+/// toca.
+///
+/// Acota el caso que `connect_timeout` no cubre: una conexión que se queda medio
+/// abierta —tras las cabeceras, o después de entregar el cuerpo sin cerrar el
+/// flujo— no entrega datos ni error, y `hf-hub` consume el cuerpo con
+/// `stream.next().await` sin timeout propio. Sin este plazo la descarga espera
+/// indefinidamente, sin log ni código de salida, y el silencio es
+/// indistinguible de una lentitud real.
+pub const DOWNLOAD_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Plazo para establecer la conexión. Sin él, una red agujereada cuelga cada
+/// intento hasta el timeout TCP del sistema (~76 s en macOS; con los 6 intentos
+/// de `hf-hub` son ~7,6 min por archivo antes del `network_error`).
+const DOWNLOAD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Cliente HTTP de las descargas de modelos, con los dos acotamientos que evitan
+/// un cuelgue mudo: el establecimiento de la conexión y el silencio entre
+/// lecturas. Los reintentos de `hf-hub` siguen aplicándose encima.
+pub fn download_http_client() -> Result<reqwest::Client> {
+    download_http_client_with(DOWNLOAD_READ_TIMEOUT)
+}
+
+/// Igual que [`download_http_client`], con el plazo de silencio explícito: es el
+/// punto por el que las pruebas comprueban el acotamiento sin esperar el minuto
+/// real.
+pub fn download_http_client_with(read_timeout: std::time::Duration) -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .read_timeout(read_timeout)
+        .build()?)
+}
+
 impl ModelStore {
     /// Ancla el almacén en `models_cache_dir()`, nunca en `data_dir()/models`:
     /// los modelos son caché regenerable de propiedad exclusiva y no estado de
@@ -901,15 +935,10 @@ impl ModelStore {
             observer,
         });
         // Cache explícita: la resolución de la app (models_cache_dir) manda sobre el
-        // fallback roto de hf-hub (HOME→/tmp); lectura y escritura convergen.
-        // Cliente propio con `connect_timeout`: sin él, una red agujereada cuelga
-        // cada intento hasta el timeout TCP del SO (~76 s en macOS; con los 6
-        // intentos de `hf-hub` son ~7,6 min por archivo antes del `network_error`).
-        // Solo acota el apretón de manos; las descargas lentas pero vivas no se
-        // tocan. Los reintentos de `hf-hub` siguen aplicándose encima.
-        let http = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(30))
-            .build()?;
+        // fallback roto de hf-hub (HOME→/tmp); lectura y escritura convergen. El
+        // cliente —establecimiento de conexión y silencio de lectura, ambos
+        // acotados— lo construye `download_http_client`.
+        let http = download_http_client()?;
         let client = hf_hub::HFClient::builder()
             .cache_dir(models_cache_dir()?)
             .client(http)
@@ -2125,7 +2154,9 @@ mod tests {
         std::env::remove_var("HF_HOME");
         let store = ModelStore::new().unwrap();
         assert_eq!(models_cache_dir().unwrap(), tmp.join("models"));
-        // Crear snapshot vacío con al menos un fichero para que is_provisioned sea true
+        // Un snapshot con solo los configs —el estado que deja una descarga
+        // interrumpida, con los ficheros pequeños escritos y los pesos ausentes—
+        // no acredita provisión: el contrato del pin exige sus pesos.
         let (repo2, rev2) = ModelStore::revision_of("qwen3-tts-0.6b-base").unwrap();
         let repo_dir = models_cache_dir()
             .unwrap()
@@ -2133,6 +2164,22 @@ mod tests {
         let snap = repo_dir.join("snapshots").join(rev2);
         std::fs::create_dir_all(&snap).unwrap();
         std::fs::write(snap.join("config.json"), br#"{"tts_model_type":"base"}"#).unwrap();
+        assert!(
+            !store.is_provisioned("qwen3-tts-0.6b-base"),
+            "sin los pesos del contrato, el snapshot no está provisionado"
+        );
+        // Con todos los ficheros del contrato, sí lo está.
+        let (_, patterns) = MODEL_FILE_PATTERNS
+            .iter()
+            .find(|(n, _)| *n == "qwen3-tts-0.6b-base")
+            .expect("los dos pines Qwen declaran su contrato de ficheros");
+        for pattern in *patterns {
+            let target = snap.join(pattern);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&target, b"artefacto").unwrap();
+        }
         assert!(store.is_provisioned("qwen3-tts-0.6b-base"));
         let resolved = store.model_snapshot_path("qwen3-tts-0.6b-base").unwrap();
         assert!(resolved.is_dir());
