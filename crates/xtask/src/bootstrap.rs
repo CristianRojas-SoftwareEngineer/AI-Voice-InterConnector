@@ -241,9 +241,16 @@ const SETUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 /// El binario se ejecuta directamente, no por `cargo run`: así el proceso que se
 /// acota y se mata es el propio `setup`, y no un `cargo` intermedio cuyo hijo
 /// seguiría descargando después del `kill`.
+///
+/// La compilación previa se acota al paquete del producto, y no se deja en un
+/// `cargo build` pelado: `default-members` incluye todos los miembros del
+/// workspace, así que una compilación sin `--package` reenlaza `xtask.exe`, que es
+/// el proceso que la está pidiendo. Windows no deja reemplazar un ejecutable en
+/// uso y el paso muere con «Acceso denegado», de modo que el aprovisionamiento
+/// nunca llegaba a descargar.
 fn run_setup_with_watchdog(root: &std::path::Path) -> Result<()> {
     let build = std::process::Command::new("cargo")
-        .args(["build", "--quiet"])
+        .args(["build", "--quiet", "--package", "ai-voice-interconnector"])
         .current_dir(root)
         .status()?;
     if !build.success() {
