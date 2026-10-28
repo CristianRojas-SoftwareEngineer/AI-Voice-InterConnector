@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.37.0 — 2026-10-28](#0370--2026-10-28)
 - [0.36.2 — 2026-10-22](#0362--2026-10-22)
 - [0.36.1 — 2026-10-22](#0361--2026-10-22)
 - [0.36.0 — 2026-10-21](#0360--2026-10-21)
@@ -119,7 +119,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.37.0] — 2026-10-28
 
 La limpieza de ruido deja de ser una capacidad periférica y pasa a ser un comando
 propio: `speech denoise` limpia archivos de audio y la pista de audio de vídeo, y
@@ -3644,3 +3644,4 @@ estado con el que nace el producto.
 [0.36.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.35.0...v0.36.0
 [0.36.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.36.0...v0.36.1
 [0.36.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.36.1...v0.36.2
+[0.37.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.36.2...v0.37.0
