@@ -252,6 +252,14 @@ impl Sandbox {
                         std::fs::write(file, "pesos").expect("escribir el pin");
                     }
                 }
+                None if pin.name == avi_shared::paths::DPDFNET_MODEL => {
+                    let path = snapshot.join(avi_shared::paths::DPDFNET_MODEL_FILE);
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::File::create(&path)
+                        .expect("crear fixture disperso DPDFNet")
+                        .set_len(pin.approx_bytes)
+                        .expect("reservar tamaño fijado del fixture");
+                }
                 None => {
                     std::fs::create_dir_all(&snapshot).expect("crear snapshot del repo");
                     std::fs::write(snapshot.join("model.safetensors"), "pesos")

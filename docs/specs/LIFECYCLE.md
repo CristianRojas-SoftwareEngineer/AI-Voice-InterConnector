@@ -602,7 +602,7 @@ Actúa sobre la instalación registrada, sea cual sea la copia del binario que l
 8. **Borrar el directorio de programa** (con la regla R2). En Unix, directamente. En Windows, si el ejecutable en uso está dentro, se programa el borrado diferido → `removal_scheduled`: el Windows PowerShell del sistema, desacoplado, espera por identidad a que termine este proceso y borra el destino con reintentos acotados, sin copiar ningún ejecutable. El destino es el contenedor más externo que, retirados el programa y sus archivos de bloqueo, quedaría vacío (o el propio directorio de programa si no hay ninguno). Un borrado correcto no deja registro alguno; si fallan todos los reintentos, deja `<destino>.removal-failed.log` junto al destino. Cuando el borrado es directo (Unix, o Windows con el ejecutable en uso fuera del directorio), una vez retirados el programa y sus archivos de bloqueo se podan los contenedores que solo los retenían. Si el directorio no se puede borrar ni programar → `program_dir_kept`, sin borrado parcial.
 9. **Borrar el archivo de bloqueo y la compuerta**, como último paso con efectos. En Unix se borran con el bloqueo aún tomado; en Windows se sueltan primero los descriptores propios, porque los ficheros se abren sin permitir su borrado. Si otro proceso los tiene abiertos en ese instante, el borrado falla, el fichero se queda (sin consecuencias) y se informa en `failed` como cualquier otro resto no borrado.
 
-**Idempotencia:** sin instalación ni estado, termina con éxito y `not_installed`. **Residuo:** cero dentro de las raíces de propiedad exclusiva. Lo compartido que no se borra se informa explícitamente.
+**Idempotencia:** sin recibo de instalación, termina con éxito y `not_installed` sin adoptar ni borrar raíces convencionales, aunque contengan estado. Con recibo válido, desinstala esa instalación registrada y retira sus raíces según propiedad. **Residuo:** cero dentro de las raíces de propiedad exclusiva. Lo compartido que no se borra se informa explícitamente.
 
 ### 8.6 `cleanup`
 
@@ -635,7 +635,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 
 ### 8.8 `doctor`
 
-`doctor` añade una sección de ciclo de vida (claves JSON entre paréntesis):
+`doctor` es el diagnóstico integral de la instalación y añade una sección de ciclo de vida (claves JSON entre paréntesis). Cada comprobación fallida entra en `failed` y determina exit 1 sin excepción por canal; en `unmanaged`, receipt ausente o PATH que no resuelve también fallan. No es una gate parcial de recursos para bootstrap.
 
 | Dato | Contenido |
 |---|---|

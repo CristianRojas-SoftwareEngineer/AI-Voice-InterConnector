@@ -112,9 +112,9 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 # 1. Provisión (primera vez - chequeos + descarga el modelo si falta)
 ./ai-voice-interconnector setup
 
-# 2. Diagnóstico del sistema (no depende de nada)
+# 2. Diagnóstico integral de la instalación y el ciclo de vida
 ./ai-voice-interconnector version              # Versión instalada
-./ai-voice-interconnector doctor               # Chequeo de entorno y modelo
+./ai-voice-interconnector doctor               # Receipt, PATH, residuos y recursos; exit 1 si falla cualquier check
 ./ai-voice-interconnector doctor --repair      # Recoge restos pendientes y vuelve a evaluar
 ./ai-voice-interconnector devices              # Dispositivos de audio disponibles
 

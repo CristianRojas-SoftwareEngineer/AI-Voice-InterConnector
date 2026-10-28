@@ -427,6 +427,12 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Verifica recursos completos del bootstrap, sin validar instalación de usuario
+    VerifyResources {
+        /// Salida en JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Prepara o pone al día el entorno de desarrollo (convergente)
     Bootstrap {
         /// Ejecuta los gestores del sistema (única vía con sudo/UAC)
@@ -632,6 +638,7 @@ fn main() -> Result<()> {
             clean::run(layer, global, dry_run, yes, prune)?
         }
         Commands::Doctor { json } => doctor::run(json)?,
+        Commands::VerifyResources { json } => doctor::verify_resources(json)?,
         Commands::Bootstrap {
             system,
             models,

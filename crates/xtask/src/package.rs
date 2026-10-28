@@ -289,7 +289,7 @@ pub(crate) fn ort_dylib_path(bundle: &Path, triple: &str) -> Result<PathBuf> {
 /// presentes y marcador existente cuya versión coincide con la de los pines.
 /// Un marcador o una librería ausentes dejan el bundle sin servir; un fichero
 /// que existe pero no se puede leer es un error.
-fn ort_bundle_is_fresh(bundle: &Path, triple: &str, ort_version: &str) -> Result<bool> {
+pub(crate) fn ort_bundle_is_fresh(bundle: &Path, triple: &str, ort_version: &str) -> Result<bool> {
     for lib in ort_expected_libs(triple)? {
         // Existencia y tamaño: un archivo ausente o vacío (descarga truncada)
         // no es fresco y fuerza la reconstrucción; cualquier otro error de
@@ -542,7 +542,11 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Resul
 
 /// `true` si `ffmpeg-bundle/` ya sirve para el triple: el ejecutable presente
 /// con tamaño mayor que cero y el marcador con el SHA-256 del artefacto fijado.
-fn ffmpeg_bundle_is_fresh(bundle: &Path, triple: &str, expected_sha256: &str) -> Result<bool> {
+pub(crate) fn ffmpeg_bundle_is_fresh(
+    bundle: &Path,
+    triple: &str,
+    expected_sha256: &str,
+) -> Result<bool> {
     let binary = bundle.join(ffmpeg_binary_name(triple)?);
     let marker = bundle.join(FFMPEG_MARKER);
     if !binary.is_file() || !marker.is_file() {
@@ -1264,6 +1268,8 @@ mod tests {
         std::fs::write(bundle.join(FFMPEG_MARKER), &pinned).unwrap();
         assert!(ffmpeg_bundle_is_fresh(&bundle, triple, &pinned).unwrap());
         assert!(!ffmpeg_bundle_is_fresh(&bundle, triple, &"b".repeat(64)).unwrap());
+        std::fs::write(bundle.join(ffmpeg_binary_name(triple).unwrap()), b"").unwrap();
+        assert!(!ffmpeg_bundle_is_fresh(&bundle, triple, &pinned).unwrap());
     }
 
     /// Cada target del manifiesto exige el ejecutable de FFmpeg y fija su

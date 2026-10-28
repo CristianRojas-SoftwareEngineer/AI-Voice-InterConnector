@@ -763,80 +763,90 @@ impl ModelStore {
     ///
     /// La revisión pinneada puede ser un ref (`main`) o un commit hash. hf-hub
     /// materializa el snapshot bajo `snapshots/<commit-hash>` y deja la
-    /// resolución del ref en `refs/<revision>` (archivo con el hash). Aquí se
-    /// replica esa resolución: `snapshots/<rev>` directo si existe, si no se
-    /// lee `refs/<rev>`.
+    /// resolución del ref en `refs/<revision>` (archivo con el hash).
     pub fn model_snapshot_path(&self, model_name: &str) -> Option<PathBuf> {
-        let (repo, rev) = ModelStore::revision_of(model_name)?;
+        self.model_snapshot_status(model_name).unwrap_or(None)
+    }
+
+    /// Resuelve el snapshot HF y propaga errores al leer el ref.
+    pub fn model_snapshot_status(&self, model_name: &str) -> Result<Option<PathBuf>> {
+        let Some((repo, rev)) = ModelStore::revision_of(model_name) else {
+            return Ok(None);
+        };
         let repo_dir = self
             .base_dir
             .join(format!("models--{}", repo.replace('/', "--")));
         let direct = repo_dir.join("snapshots").join(rev);
-        if direct.is_dir() {
-            return Some(direct);
+        match std::fs::metadata(&direct) {
+            Ok(metadata) if metadata.is_dir() => return Ok(Some(direct)),
+            Ok(_) => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
-        // Resolver ref → commit hash (layout estándar de HF hub)
         let ref_file = repo_dir.join("refs").join(rev);
-        if let Ok(hash) = std::fs::read_to_string(&ref_file) {
-            let hash = hash.trim();
-            if !hash.is_empty() {
-                let resolved = repo_dir.join("snapshots").join(hash);
-                if resolved.is_dir() {
-                    return Some(resolved);
-                }
-            }
+        let hash = match std::fs::read_to_string(&ref_file) {
+            Ok(hash) => hash,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Some(direct)),
+            Err(error) => return Err(error.into()),
+        };
+        let hash = hash.trim();
+        if hash.is_empty() {
+            return Ok(Some(direct));
         }
-        Some(direct)
+        let resolved = repo_dir.join("snapshots").join(hash);
+        match std::fs::metadata(&resolved) {
+            Ok(metadata) if metadata.is_dir() => Ok(Some(resolved)),
+            Ok(_) => Ok(Some(direct)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Some(direct)),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Verificar si un modelo está provisionado: snapshot HF presente con
     /// integridad mínima (ficheros críticos con `size>0`). Sin pin en
     /// `MODEL_REVISIONS` no hay snapshot resoluble → no provisionado.
     pub fn is_provisioned(&self, model_name: &str) -> bool {
-        match self.model_snapshot_path(model_name) {
-            Some(snapshot) => {
-                if !snapshot.is_dir() {
-                    return false;
-                }
-                // Para modelos con `allow_patterns` (parakeet), exigir todos los ficheros críticos
-                if let Some((_, patterns)) =
-                    MODEL_FILE_PATTERNS.iter().find(|(n, _)| *n == model_name)
-                {
-                    for pat in *patterns {
-                        let p = snapshot.join(pat);
-                        if !p.is_file() {
-                            return false;
-                        }
-                        if let Ok(md) = std::fs::metadata(&p) {
-                            if md.len() == 0 {
-                                return false;
-                            }
-                        } else {
-                            return false;
-                        }
-                    }
-                    return true;
-                }
-                // Modelos sin patrones: al menos un fichero con tamaño >0
-                match std::fs::read_dir(&snapshot) {
-                    Ok(mut entries) => {
-                        for e in entries.by_ref().flatten() {
-                            let path = e.path();
-                            if path.is_file() {
-                                if let Ok(md) = std::fs::metadata(&path) {
-                                    if md.len() > 0 {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                        false
-                    }
-                    Err(_) => false,
+        self.provisioning_status(model_name).unwrap_or(false)
+    }
+
+    /// Comprueba la integridad mínima del snapshot y propaga errores de lectura.
+    pub fn provisioning_status(&self, model_name: &str) -> Result<bool> {
+        let Some(snapshot) = self.model_snapshot_status(model_name)? else {
+            return Ok(false);
+        };
+        let metadata = match std::fs::metadata(&snapshot) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.into()),
+        };
+        if !metadata.is_dir() {
+            return Ok(false);
+        }
+        if let Some((_, patterns)) = MODEL_FILE_PATTERNS
+            .iter()
+            .find(|(name, _)| *name == model_name)
+        {
+            for pattern in *patterns {
+                let path = snapshot.join(pattern);
+                let metadata = match std::fs::metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                    Err(error) => return Err(error.into()),
+                };
+                if !metadata.is_file() || metadata.len() == 0 {
+                    return Ok(false);
                 }
             }
-            None => false,
+            return Ok(true);
         }
+        for entry in std::fs::read_dir(&snapshot)? {
+            let entry = entry?;
+            let metadata = entry.metadata()?;
+            if metadata.is_file() && metadata.len() > 0 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Directorio de un modelo: snapshot HF pinneado; si no resuelve, cae al
@@ -1053,7 +1063,7 @@ impl ModelStore {
 }
 
 /// SHA256 de un archivo, leído por bloques para no cargarlo entero.
-fn sha256_file(path: &Path) -> Result<String> {
+pub fn sha256_file(path: &Path) -> Result<String> {
     use std::io::Read;
     let mut file = std::fs::File::open(path)
         .with_context(|| format!("No se pudo abrir '{}'", path.display()))?;
@@ -1075,6 +1085,14 @@ fn sha256_file(path: &Path) -> Result<String> {
 /// snapshot. Un pin sin hash no exige lectura; uno con hash y sin un patrón
 /// único es un error de catálogo, no una verificación superada.
 fn verify_pinned_artifact(snapshot: &Path, model_name: &str) -> Result<()> {
+    verify_pinned_artifact_with(snapshot, model_name, sha256_file)
+}
+
+fn verify_pinned_artifact_with(
+    snapshot: &Path,
+    model_name: &str,
+    digest_file: impl Fn(&Path) -> Result<String>,
+) -> Result<()> {
     let pin = MODEL_REVISIONS
         .iter()
         .find(|pin| pin.name == model_name)
@@ -1103,7 +1121,7 @@ fn verify_pinned_artifact(snapshot: &Path, model_name: &str) -> Result<()> {
         );
     }
     let artifact = snapshot.join(patterns[0]);
-    let actual = sha256_file(&artifact)?;
+    let actual = digest_file(&artifact)?;
     if !actual.eq_ignore_ascii_case(expected) {
         anyhow::bail!(
             "SHA256 de '{}' no coincide: esperado {}, obtenido {}",
@@ -2194,6 +2212,7 @@ mod tests {
             !store.is_provisioned("qwen3-tts-0.6b-base"),
             "sin los pesos del contrato, el snapshot no está provisionado"
         );
+        assert!(!store.provisioning_status("qwen3-tts-0.6b-base").unwrap());
         // Con todos los ficheros del contrato, sí lo está.
         let (_, patterns) = MODEL_FILE_PATTERNS
             .iter()
@@ -2207,6 +2226,7 @@ mod tests {
             std::fs::write(&target, b"artefacto").unwrap();
         }
         assert!(store.is_provisioned("qwen3-tts-0.6b-base"));
+        assert!(store.provisioning_status("qwen3-tts-0.6b-base").unwrap());
         let resolved = store.model_snapshot_path("qwen3-tts-0.6b-base").unwrap();
         assert!(resolved.is_dir());
         env_restore(saved);
@@ -2247,5 +2267,30 @@ mod tests {
     #[test]
     fn verify_pinned_artifact_skips_models_without_hash() {
         assert!(verify_pinned_artifact(Path::new("no-existe"), "parakeet-tdt-v3").is_ok());
+    }
+
+    #[test]
+    fn pinned_artifact_verifier_uses_injected_digest_function() {
+        let dir = tempfile::tempdir().unwrap();
+        let pin = MODEL_REVISIONS
+            .iter()
+            .find(|pin| pin.name == avi_shared::paths::DPDFNET_MODEL)
+            .unwrap();
+        let file = dir.path().join(avi_shared::paths::DPDFNET_MODEL_FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"arbitrary tiny fixture").unwrap();
+        assert!(
+            verify_pinned_artifact_with(dir.path(), avi_shared::paths::DPDFNET_MODEL, |_| Ok(pin
+                .artifact_sha256
+                .unwrap()
+                .to_string()),)
+            .is_ok()
+        );
+        assert!(
+            verify_pinned_artifact_with(dir.path(), avi_shared::paths::DPDFNET_MODEL, |_| Ok(
+                "0".repeat(64)
+            ),)
+            .is_err()
+        );
     }
 }

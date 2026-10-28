@@ -2710,12 +2710,21 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
         Value::String("5".to_string()),
         "el envelope de la CLI sube a \"5\""
     );
-    // Y el código de salida es el del veredicto: 1 si falló, 0 si no.
-    let failed = value["failed"].as_array().is_some_and(|f| !f.is_empty());
+    // Unmanaged carece de receipt e integración PATH: doctor integral debe fallar.
+    assert_eq!(value["channel"], "unmanaged");
+    assert!(value["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name == "install_receipt"));
+    assert!(value["failed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|name| name == "path_resolves"));
     assert_eq!(
-        code,
-        if failed { 1 } else { 0 },
-        "el código de salida es el del veredicto, sin objeto `error` detrás: {value}"
+        code, 1,
+        "unmanaged no convierte doctor en gate parcial: {value}"
     );
 }
 
@@ -3018,11 +3027,13 @@ mod tts {
                 return Some(p);
             }
         }
-        let vendored = PathBuf::from("vendor/qwen3-tts/qwen_tts.exe");
-        if vendored.is_file() {
-            return Some(vendored);
-        }
-        None
+        [
+            PathBuf::from("vendor/qwen3-tts/qwen_tts.exe"),
+            PathBuf::from("target/release/vendor/qwen3-tts/qwen_tts.exe"),
+            PathBuf::from("target/release/qwen_tts.exe"),
+        ]
+        .into_iter()
+        .find(|path| path.is_file())
     }
 
     /// Exige el snapshot del modelo CustomVoice `qwen3-tts-0.6b` (su
@@ -3066,10 +3077,25 @@ mod tts {
     /// `vendor/qwen3-tts/qwen_tts.exe`). Los pesos no se exigen aparte: el motor
     /// usa el snapshot de la raíz de modelos que exige `require_tts_model()`.
     fn require_tts_binary() {
-        let binary = tts_binary().expect(
-            "falta el binario del motor (QWEN3_TTS_BIN o vendor/qwen3-tts/qwen_tts.exe): \
-             constrúyelo con `cargo xtask build-engine`",
-        );
+        let binary = std::env::var_os("QWEN3_TTS_BIN")
+            .map(PathBuf::from)
+            .filter(|path| !path.as_os_str().is_empty())
+            .or_else(|| {
+                let vendored = PathBuf::from("vendor/qwen3-tts/qwen_tts.exe");
+                vendored.is_file().then_some(vendored)
+            })
+            .or_else(|| {
+                let packaged = PathBuf::from("target/release/vendor/qwen3-tts/qwen_tts.exe");
+                packaged.is_file().then_some(packaged)
+            })
+            .or_else(|| {
+                let packaged = PathBuf::from("target/release/qwen_tts.exe");
+                packaged.is_file().then_some(packaged)
+            })
+            .expect(
+                "falta el binario del motor (QWEN3_TTS_BIN o bundle full): \
+                 constrúyelo con `cargo xtask build-engine`",
+            );
         assert!(
             binary.is_file(),
             "falta {}: constrúyelo con `cargo xtask build-engine`",
@@ -6303,10 +6329,29 @@ mod tts {
         let inst = IsolatedInstance::new("uninstall_hot");
         start_instance(&inst, &[]);
         let (resident, _) = wait_for_live_resident(&inst);
-        let (code, actual) = run_json_env(
-            &["--json", "self", "uninstall", "--yes"],
-            &inst.contract_args(),
+        let program_dir = PathBuf::from(
+            inst.args()
+                .into_iter()
+                .find(|(key, _)| *key == "AVI_INSTALL_DIR")
+                .expect("la instancia fija AVI_INSTALL_DIR")
+                .1,
         );
+        let receipt = avi_lifecycle::receipt::InstallReceipt::new(
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::ARCH,
+            avi_lifecycle::channel::Channel::Script,
+            &program_dir,
+            vec!["ai-voice-interconnector.exe".to_string()],
+            avi_lifecycle::receipt::PathIntegration::none(),
+            avi_lifecycle::receipt::Roots {
+                data_dir: inst.dir.clone(),
+                cache_dir: PathBuf::from(&inst.contract_cache),
+            },
+        );
+        avi_lifecycle::receipt::write_to(&receipt, &program_dir)
+            .expect("el fixture registra la instalación antes de desinstalar");
+        let envs = inst.args();
+        let (code, actual) = run_json_env(&["--json", "self", "uninstall", "--yes"], &envs);
         assert_eq!(code, 0, "self uninstall debe salir 0: {actual}");
         assert_eq!(actual["status"], Value::String("uninstalled".to_string()));
         assert!(
@@ -7777,56 +7822,56 @@ fn cleanup_dry_run_reports_planned() {
     );
 }
 
-/// El simulacro de `self uninstall` es un plan (`planned` con el
-/// recibo de `removed` y `path_reverted`) y no lleva `dry_run`.
+/// Sin receipt, el simulacro de `self uninstall` conserva el resultado
+/// idempotente `not_installed` y no inspecciona las raíces convencionales.
 #[test]
-fn uninstall_dry_run_reports_planned() {
+fn uninstall_dry_run_without_receipt_is_not_installed() {
     let (code, actual) = run_json(&["--json", "self", "uninstall", "--dry-run"]);
     assert_eq!(code, 0, "self uninstall --dry-run debe salir 0: {actual}");
-    assert_eq!(
-        actual["status"],
-        Value::String("planned".to_string()),
-        "el simulacro debe leerse como un plan: {actual}"
-    );
-    assert!(
-        actual.get("planned").and_then(|v| v.as_array()).is_some(),
-        "el simulacro debe traer el plan con el recibo de removed: {actual}"
-    );
-    assert!(
-        actual.get("dry_run").is_none(),
-        "con status planned la clave dry_run es redundante: {actual}"
-    );
+    assert_eq!(actual["status"], "not_installed");
+    assert_eq!(actual["planned"], serde_json::json!([]));
+    assert_eq!(actual["removed"], serde_json::json!([]));
+    assert_eq!(actual["path_reverted"], false);
+    assert!(actual.get("dry_run").is_none());
 }
 
-/// El simulacro de `self uninstall` aislado coincide con su fixture: compara las
-/// claves estables contra `tests/golden/cli_uninstall_dry_run.json`.
-///
-/// `planned` y `removed` llevan rutas del sandbox y por eso no se comparan contra
-/// la fixture (que las deja vacías): se afirma en vivo que son arrays y que el
-/// plan y el recibo coinciden.
+/// Lista recursivamente rutas relativas y longitudes para comprobar que un estado ajeno no cambia.
+fn filesystem_snapshot(root: &std::path::Path) -> Vec<(String, u64)> {
+    let mut entries = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .into_owned();
+            if entry.file_type().unwrap().is_dir() {
+                stack.push(path);
+            } else {
+                entries.push((relative, entry.metadata().unwrap().len()));
+            }
+        }
+    }
+    entries.sort();
+    entries
+}
+
+/// Sin receipt, el simulacro en sandbox tampoco adopta el estado convencional.
 #[test]
-fn uninstall_dry_run_matches_fixture() {
-    let (_sandbox, envs) = contract_sandbox("uninstall-dry-fixture");
+fn uninstall_dry_run_without_receipt_preserves_unregistered_state() {
+    let (sandbox, envs) = contract_sandbox("uninstall-dry-unregistered");
+    let data = sandbox.path().join("data");
+    let before = filesystem_snapshot(&data);
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "self", "uninstall", "--dry-run"], &envs);
     assert_eq!(code, 0, "self uninstall --dry-run debe salir 0: {actual}");
-    let expected = fixture("cli_uninstall_dry_run.json");
-    assert_eq!(actual["status"], expected["status"]);
-    assert_eq!(actual["reason"], expected["reason"]);
-    assert_eq!(actual["path_reverted"], expected["path_reverted"]);
-    assert_eq!(actual["schema_version"], expected["schema_version"]);
-    assert!(
-        actual.get("planned").and_then(|v| v.as_array()).is_some(),
-        "el simulacro debe traer el plan: {actual}"
-    );
-    assert_eq!(
-        actual["planned"], actual["removed"],
-        "el plan y el recibo coinciden: {actual}"
-    );
-    assert!(
-        actual.get("dry_run").is_none(),
-        "con status planned la clave dry_run es redundante: {actual}"
-    );
+    assert_eq!(actual["status"], "not_installed");
+    assert_eq!(actual["planned"], serde_json::json!([]));
+    assert_eq!(actual["removed"], serde_json::json!([]));
+    assert_eq!(filesystem_snapshot(&data), before);
 }
 
 /// Con `--json`, un rechazo de clap emite el envelope `usage_error` por

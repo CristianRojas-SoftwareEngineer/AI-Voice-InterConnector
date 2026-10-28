@@ -585,13 +585,15 @@ fn uninstall_recovers_before_it_plans() {
     let _guard = process_env::exclusively();
     let sandbox = Sandbox::new("recover-uninstall");
     sandbox.seed_env();
-    let _parked = interrupt_at(&sandbox, JournalState::Placed);
     sandbox.seed_state();
+    let _parked = interrupt_at(&sandbox, JournalState::Placed);
+    let receipt = previous_receipt(&sandbox);
+    receipt::write_to(&receipt, &sandbox.program_dir).expect("se registra la instalación anterior");
 
     let runtime = runtime::runtime();
     let outcome = runtime
         .block_on(uninstall::run(
-            &sandbox.env_uninstall(None, Channel::Unmanaged),
+            &sandbox.env_uninstall(Some(&receipt), Channel::Script),
             &uninstall::Options {
                 assume_yes: true,
                 ..Default::default()

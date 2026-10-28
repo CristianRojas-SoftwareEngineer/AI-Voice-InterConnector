@@ -111,7 +111,7 @@ previo al paso 3, no un fallo de esta validación. Cualquier otro chequeo
 fallido también produce **exit 1** y debe resolverse por separado; no
 atribuirlo a la falta de modelos.
 
-## 3. Provisión del modelo
+## 3. Provisión de recursos
 
 🧠 (esta sección la genera) — ejecutar `setup` si faltan modelos tras
 `--no-setup` o `setup_failed`; con los modelos ya provisionados, también permite
@@ -129,12 +129,11 @@ ai-voice-interconnector doctor --json
 con **exit 0**; una segunda ejecución no vuelve a descargar. El sexto,
 `dpdfnet8`, es opcional para el arranque del daemon, pero se provisiona con el
 resto y lo requieren las rutas de limpieza de ruido (`--denoise` y
-`speech denoise`). Después,
-`doctor --json` debe terminar con **exit 0** en una instalación normal. En una
-instalación `unmanaged` desde el repositorio, `install_receipt` y `path_resolves`
-pueden fallar porque no hay instalación registrada; acepta ese canal solo si
-`models_provisioned` y `pending_artifacts` están correctos y `models.missing` es
-`[]`. Cualquier otro chequeo fallido debe resolverse antes de continuar al paso 4.
+`speech denoise`). `doctor` es integral y no admite excepciones por canal: en
+`unmanaged`, la ausencia de receipt y la falta de resolución PATH producen exit
+1. Para validar recursos del bootstrap usa `cargo xtask verify-resources --json`;
+para validar `doctor` con exit 0, usa una instalación registrada y un PATH que la
+resuelva.
 
 ## 4. Dispositivos de audio
 

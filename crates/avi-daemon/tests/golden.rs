@@ -6,7 +6,8 @@
 
 //! Harness de tests dorados del daemon.
 //!
-//! CLASE DECLARADA: contrato puro paralelizable sin restricción.
+//! CLASE DECLARADA: contratos y recursos reales de solo lectura, con estado global
+//! por proceso y cerrojos específicos para barridos de recursos compartidos.
 //! Levanta el `Router` de Axum vía [`avi_daemon::build_router_with_state`] y lo
 //! ejerce con `tower::ServiceExt::oneshot` (sin abrir socket TCP real), comparando
 //! cada respuesta contra fixtures fijas en `tests/golden/` de la raíz del repo.
@@ -19,6 +20,10 @@
 //! Ninguna prueba se omite por activar un feature: no existe
 //! `#[cfg_attr(feature = …, ignore = …)]` en este fichero, porque activando
 //! `full` la clase de contrato no se invierte.
+//!
+//! Las pruebas de recursos consultan la caché heredada en solo lectura; los
+//! casos que requieren ausencia de modelos viven en un target de integración
+//! separado con una caché temporal propia. `AVI_CACHE_DIR` no se cambia aquí.
 //!
 //! Las pruebas de contrato usan `DaemonState::for_contract_tests`: arma el
 //! estado común sin cargar inferencia STT ni CT2. El constructor de producción
@@ -1431,9 +1436,8 @@ fn require_custom_voice_model() {
     });
 }
 
-/// Temporales del daemon con el prefijo dado que hay en el scratch de este
-/// proceso: el scratch es propio, así que el filtro no mezcla los de otros
-/// procesos.
+/// Temporales del daemon con el prefijo dado en el scratch resuelto para
+/// este proceso.
 fn temp_wavs(prefix: &str) -> Vec<PathBuf> {
     std::fs::read_dir(avi_process::scratch::dir().expect("scratch"))
         .expect("el scratch debe poder leerse")
@@ -1747,46 +1751,4 @@ async fn denoise_true_without_feature_is_unsupported() {
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
     let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
     assert_eq!(actual["reason"], "denoise_unsupported");
-}
-
-/// Con `native-denoise`, `denoise: true` en `/voices/clone` y sin modelo
-/// provisionado responde con evento NDJSON `error` / `model_missing` antes de
-/// iniciar el DSP.
-#[cfg(all(feature = "native-denoise", feature = "native-stt"))]
-#[tokio::test]
-async fn denoise_true_with_feature_without_model_is_model_missing() {
-    let tmp = tempfile::Builder::new()
-        .prefix("avi_daemon_denoise_model_")
-        .tempdir()
-        .expect("directorio temporal del estado");
-    let mut state = DaemonState::for_contract_tests(
-        VoiceStore::at(tmp.path().join("voices")),
-        SpeechStore::at(tmp.path().join("speech")),
-    )
-    .expect("daemon state");
-    state.tts_engine.base_model_dir = Some(tmp.path().join("base-model"));
-    let state = Arc::new(state);
-
-    let audio_b64 = base64::engine::general_purpose::STANDARD.encode(minimal_wav());
-    let (status, bytes) = send_to(
-        state,
-        post_json(
-            "/voices/clone",
-            serde_json::json!({ "name": "v", "force": true, "audio_b64": audio_b64, "denoise": true }),
-        ),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "el handler abre el stream NDJSON");
-
-    let text = String::from_utf8(bytes).expect("NDJSON debe ser UTF-8");
-    let events: Vec<Value> = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).expect("cada línea debe ser JSON"))
-        .collect();
-    let error_event = events
-        .iter()
-        .find(|e| e.get("event").and_then(|v| v.as_str()) == Some("error"))
-        .expect("debe haber un evento error");
-    assert_eq!(error_event["reason"], "model_missing");
 }

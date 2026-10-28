@@ -1,6 +1,6 @@
 # `doctor`
 
-Diagnóstico del sistema y del estado del ciclo de vida, **sin efectos secundarios salvo `--repair`**: sin flags no descarga, no instala, no borra y no inicia procesos. Es la única operación del ciclo de vida que el usuario puede ejecutar sin riesgo (en su modo sin flags), y por eso es donde el estado de la instalación tiene que ser legible: versión y target, canal, instalación y recibo, `PATH` con duplicados y precedencia, pendientes de una operación anterior y modelos.
+Diagnóstico integral del sistema y del estado del ciclo de vida, **sin efectos secundarios salvo `--repair`**: sin flags no descarga, no instala, no borra y no inicia procesos. No es un checker de recursos para bootstrap: incluye precondiciones de instalación, receipt, `PATH`, residuos y modelos, también en canal `unmanaged`. Por eso, en ese canal, los fallos de receipt/PATH son parte del veredicto y producen exit 1; la gate de bootstrap debe validar recursos por separado.
 
 Emite un **veredicto** —texto o JSON— y termina con exit code **1** si algún chequeo falla.
 
@@ -48,7 +48,7 @@ ai-voice-interconnector doctor [--repair] [--json]
 | `path_resolves` | La **primera** entrada del `PATH` que apunta a una instalación no es la registrada | Orden de precedencia |
 | `path_duplicates` | Más de una entrada del `PATH` apunta a una instalación | Coexistencia (Cask + `script`) |
 | `pending_artifacts` | Hay diario de transacción, o alguna lista de `pending` no está vacía (residuos de dueño muerto, de dueño no observable, borrados diferidos sin completar o directorios sin poder listar) | Transacción interrumpida y residuos por identidad |
-| `models_provisioned` | Falta algún repo de la selección, el modelo Base de clonado incluido | Solo presencia de snapshot, con los ficheros críticos |
+| `models_provisioned` | Falta algún repo de la selección, el modelo Base de clonado incluido | Integridad mínima definida por `avi_store::ModelStore`, incluidos los ficheros críticos del pin |
 | `onnx_runtime` | La librería de ONNX Runtime del directorio real del programa (o la de `ORT_DYLIB_PATH`) no existe o no carga; el detalle nombra la ruta buscada | Solo en binarios con STT (`native-stt`): carga la librería, sin modelos |
 
 **El modelo Base de clonado no tiene un chequeo propio.** `qwen3-tts-0.6b-base` es un modelo obligatorio como los demás: su ausencia aparece en `models.missing` y hace fallar `models_provisioned`.
