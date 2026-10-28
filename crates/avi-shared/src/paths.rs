@@ -380,6 +380,24 @@ pub const GOLDEN_DAEMON_DIR_NAME: &str = "golden-avi-daemon";
 /// ~40 GB de formatos no usados.
 /// Los modelos de traducción se acotan a los cinco ficheros del modelo CTranslate2
 /// y excluyen el README y `.gitattributes` del repo.
+/// Ficheros que se descargan y se exigen del snapshot de un modelo Qwen3-TTS:
+/// los dos pesos —modelo y codificador de habla— y los contratos de tokenizer y
+/// configuración que el motor lee. La documentación del repositorio
+/// (`README.md`, `.gitattributes`) queda fuera a propósito.
+const QWEN3_TTS_SNAPSHOT_FILES: &[&str] = &[
+    "config.json",
+    "generation_config.json",
+    "merges.txt",
+    "model.safetensors",
+    "preprocessor_config.json",
+    "speech_tokenizer/config.json",
+    "speech_tokenizer/configuration.json",
+    "speech_tokenizer/model.safetensors",
+    "speech_tokenizer/preprocessor_config.json",
+    "tokenizer_config.json",
+    "vocab.json",
+];
+
 pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[
     (
         "parakeet-tdt-v3",
@@ -413,6 +431,13 @@ pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[
             "target.spm",
         ],
     ),
+    // Los dos pines Qwen3-TTS comparten contrato de ficheros. Sin esta entrada,
+    // `is_provisioned` aceptaba «algún fichero con tamaño > 0», y como los
+    // configs y el tokenizer se escriben al principio de la descarga, un
+    // snapshot interrumpido —configs presentes, `model.safetensors` ausente—
+    // contaba como provisionado: ni `setup` lo reparaba ni `doctor` lo veía.
+    ("qwen3-tts-0.6b", QWEN3_TTS_SNAPSHOT_FILES),
+    ("qwen3-tts-0.6b-base", QWEN3_TTS_SNAPSHOT_FILES),
 ];
 
 /// Raíz de la caché de HuggingFace que el usuario eligió compartir, si la

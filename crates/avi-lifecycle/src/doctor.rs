@@ -783,9 +783,10 @@ mod tests {
             .join(format!("models--{}", repo.replace('/', "--")))
             .join("snapshots")
             .join(revision);
-        std::fs::create_dir_all(&snapshot).expect("se crea el snapshot");
-        std::fs::write(snapshot.join("model.safetensors"), b"pesos")
-            .expect("se escribe un peso no vacío");
+        // El snapshot se escribe con el contrato completo del pin: solo con el peso
+        // del modelo no acreditaría provisión, porque el contrato incluye también
+        // el codificador de habla.
+        write_pinned_snapshot(&snapshot, avi_shared::paths::CLONING_MODEL);
 
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
 
@@ -800,6 +801,23 @@ mod tests {
 
     /// Escribe en la raíz del sandbox los snapshots pinneados de todos los modelos
     /// salvo el Base de clonado, con los archivos que el producto exige.
+    /// Escribe en `snapshot` los ficheros que el contrato del pin `name` exige:
+    /// los patrones de `MODEL_FILE_PATTERNS` cuando el pin los declara —que es lo
+    /// que `is_provisioned` comprueba— y el peso del modelo cuando no.
+    fn write_pinned_snapshot(snapshot: &std::path::Path, name: &str) {
+        match avi_shared::paths::MODEL_FILE_PATTERNS
+            .iter()
+            .find(|(n, _)| *n == name)
+        {
+            Some((_, patterns)) => {
+                for pattern in *patterns {
+                    write_file(&snapshot.join(pattern), "artefacto");
+                }
+            }
+            None => write_file(&snapshot.join("model.safetensors"), "pesos"),
+        }
+    }
+
     fn set_required_models(env: &Env) {
         for pin in avi_shared::paths::MODEL_REVISIONS {
             if pin.name == avi_shared::paths::CLONING_MODEL {
@@ -811,17 +829,7 @@ mod tests {
                 .join(format!("models--{}", pin.repo.replace('/', "--")))
                 .join("snapshots")
                 .join(pin.revision);
-            match avi_shared::paths::MODEL_FILE_PATTERNS
-                .iter()
-                .find(|(n, _)| *n == pin.name)
-            {
-                Some((_, patterns)) => {
-                    for pattern in *patterns {
-                        write_file(&snapshot.join(pattern), "artefacto");
-                    }
-                }
-                None => write_file(&snapshot.join("model.safetensors"), "pesos"),
-            }
+            write_pinned_snapshot(&snapshot, pin.name);
         }
     }
 
