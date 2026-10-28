@@ -292,22 +292,23 @@ fn watch_child(
         for line in std::io::BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
             if let Some(payload) = line.strip_prefix("AVI_SETUP_HEARTBEAT ") {
-                let _ = sender.send(payload.to_owned());
+                if sender.send(payload.to_owned()).is_err() {
+                    break;
+                }
             } else {
-                let _ = std::io::stderr().write_all(line.as_bytes());
-                let _ = std::io::stderr().write_all(b"\n");
+                if std::io::stderr().write_all(line.as_bytes()).is_err()
+                    || std::io::stderr().write_all(b"\n").is_err()
+                {
+                    break;
+                }
             }
         }
     });
 
     let mut last_progress = std::time::Instant::now();
     loop {
-        loop {
-            match receiver.try_recv() {
-                Ok(_) => last_progress = std::time::Instant::now(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
-                | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
-            }
+        while receiver.try_recv().is_ok() {
+            last_progress = std::time::Instant::now();
         }
         if let Some(status) = child.try_wait()? {
             if !status.success() {

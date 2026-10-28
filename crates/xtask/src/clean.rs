@@ -532,9 +532,7 @@ fn installed_copy_is_homebrew() -> bool {
     super::doctor::find_on_path(&name).is_some_and(|p| path_has_caskroom(&p))
 }
 
-/// Argumentos de la delegación de la capa app con el binario del repositorio:
-/// `self uninstall --yes`, o `cleanup --all --yes` en canal `homebrew`; con
-/// `dry_run`, la variante de solo lectura. Puros, fijados por test.
+/// Argumentos de la delegación de la capa app con el binario del repositorio.
 pub(crate) fn delegate_app_args(homebrew: bool, dry_run: bool) -> Vec<String> {
     let mut args: Vec<String> = if homebrew {
         ["cleanup", "--all"]
@@ -550,13 +548,38 @@ pub(crate) fn delegate_app_args(homebrew: bool, dry_run: bool) -> Vec<String> {
     if dry_run {
         args.push("--dry-run".to_string());
     }
-    args.push("--yes".to_string());
+    args.extend(["--yes".to_string(), "--json".to_string()]);
     args
 }
 
-/// Delega la capa app en el binario del repositorio (hereda stdio para que la
-/// confirmación y el progreso del producto queden visibles) y propaga su
-/// código de salida.
+/// Resultado estructurado de la delegación de limpieza de la capa app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AppCleanupResult {
+    Uninstalled,
+    NotInstalled,
+    CleanupComplete,
+    Planned,
+}
+
+fn parse_app_cleanup_result(
+    homebrew: bool,
+    payload: &serde_json::Value,
+) -> Result<AppCleanupResult> {
+    let status = payload
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("la delegación de limpieza no emitió `status` JSON"))?;
+    match (homebrew, status) {
+        (false, "uninstalled" | "removal_scheduled") => Ok(AppCleanupResult::Uninstalled),
+        (false, "not_installed") => Ok(AppCleanupResult::NotInstalled),
+        (false, "planned") => Ok(AppCleanupResult::Planned),
+        (true, "cleanup_complete") => Ok(AppCleanupResult::CleanupComplete),
+        (true, "planned") => Ok(AppCleanupResult::Planned),
+        _ => bail!("la delegación de limpieza devolvió un estado inesperado: {status}"),
+    }
+}
+
+/// Delega la limpieza en el binario del producto y conserva el desenlace estructurado.
 fn delegate_app_layer(repo_bin: &Path, homebrew: bool, dry_run: bool) -> Result<()> {
     let args = delegate_app_args(homebrew, dry_run);
     println!(
@@ -564,15 +587,32 @@ fn delegate_app_layer(repo_bin: &Path, homebrew: bool, dry_run: bool) -> Result<
         repo_bin.display(),
         args.join(" ")
     );
-    let status = std::process::Command::new(repo_bin)
+    let output = std::process::Command::new(repo_bin)
         .args(&args)
-        .status()
+        .output()
         .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {}: {e}", repo_bin.display()))?;
-    if !status.success() {
-        bail!(
-            "la limpieza de la capa app falló (exit {:?})",
-            status.code()
-        );
+    delegation_status(output.status.success(), output.status.code())?;
+    print!("{}", String::from_utf8_lossy(&output.stdout));
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    let payload: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .map_err(|e| anyhow::anyhow!("la salida de limpieza no es un objeto JSON válido: {e}"))?;
+    let result = parse_app_cleanup_result(homebrew, &payload)?;
+    match result {
+        AppCleanupResult::Uninstalled => {
+            println!("Capa app: `uninstalled` (instalación retirada).")
+        }
+        AppCleanupResult::NotInstalled => {
+            println!("Capa app: `not_installed` (éxito idempotente; no acredita uninstall).")
+        }
+        AppCleanupResult::CleanupComplete => println!("Capa app: `cleanup_complete`."),
+        AppCleanupResult::Planned => println!("Capa app: `planned` (simulación)."),
+    }
+    Ok(())
+}
+
+fn delegation_status(success: bool, code: Option<i32>) -> Result<()> {
+    if !success {
+        bail!("la limpieza de la capa app falló (exit {code:?})");
     }
     Ok(())
 }
@@ -1072,20 +1112,38 @@ mod tests {
     fn delegation_args_per_channel() {
         assert_eq!(
             delegate_app_args(false, false),
-            ["self", "uninstall", "--yes"]
+            ["self", "uninstall", "--yes", "--json"]
         );
         assert_eq!(
             delegate_app_args(false, true),
-            ["self", "uninstall", "--dry-run", "--yes"]
+            ["self", "uninstall", "--dry-run", "--yes", "--json"]
         );
         assert_eq!(
             delegate_app_args(true, false),
-            ["cleanup", "--all", "--yes"]
+            ["cleanup", "--all", "--yes", "--json"]
         );
         assert_eq!(
             delegate_app_args(true, true),
-            ["cleanup", "--all", "--dry-run", "--yes"]
+            ["cleanup", "--all", "--dry-run", "--yes", "--json"]
         );
+        assert!(delegation_status(true, Some(0)).is_ok());
+        assert!(delegation_status(false, Some(1)).is_err());
+        assert!(delegation_status(false, None).is_err());
+        assert_eq!(
+            parse_app_cleanup_result(false, &serde_json::json!({"status":"uninstalled"})).unwrap(),
+            AppCleanupResult::Uninstalled
+        );
+        assert_eq!(
+            parse_app_cleanup_result(false, &serde_json::json!({"status":"not_installed"}))
+                .unwrap(),
+            AppCleanupResult::NotInstalled
+        );
+        assert_eq!(
+            parse_app_cleanup_result(true, &serde_json::json!({"status":"cleanup_complete"}))
+                .unwrap(),
+            AppCleanupResult::CleanupComplete
+        );
+        assert!(parse_app_cleanup_result(false, &serde_json::json!({"status":"broken"})).is_err());
     }
 
     /// El canal `homebrew` se reconoce por componente (`Caskroom`), no por
@@ -1336,18 +1394,16 @@ mod tests {
         assert_eq!(size_of(guard.path()).bytes, 4);
     }
 
-    /// Sin réplicas: la capa app la ejecuta el binario del repositorio, así
-    /// que `xtask` no necesita ni las rutas del producto (`avi-store`, con
-    /// su árbol TLS) ni `directories`. Este test lo fija sobre el manifiesto.
+    /// La capa app la ejecuta el binario del repositorio; `xtask` solo depende
+    /// de `avi-store` para consultar el contrato canónico de modelos, no rutas de
+    /// instalación ni `directories`.
     #[test]
     fn no_product_path_dependencies() {
         let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let text = std::fs::read_to_string(&manifest).unwrap();
-        for dep in ["avi-store", "directories"] {
-            assert!(
-                !text.contains(dep),
-                "xtask/Cargo.toml no debe depender de `{dep}` (fin de la réplica)"
-            );
-        }
+        assert!(
+            !text.contains("directories"),
+            "xtask/Cargo.toml no debe depender de `directories`"
+        );
     }
 }

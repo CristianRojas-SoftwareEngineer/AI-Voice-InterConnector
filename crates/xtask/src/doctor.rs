@@ -1050,38 +1050,40 @@ fn probe_onnx_drift(root: &Path, pins: &Pins) -> Option<String> {
     }
 }
 
-/// `true` si los modelos ya están provisionados (convergencia de
-/// `bootstrap` con `--models`). Solo lectura sobre la caché.
+/// `true` si los modelos ya están provisionados según la integridad mínima
+/// que exige `avi_store::ModelStore`.
 pub(crate) fn models_are_provisioned() -> bool {
-    probe_models_drift().is_empty()
+    models_drift().is_empty()
 }
 
-/// Deriva de modelos obligatorios: snapshots ausentes. Solo lectura sobre la caché.
-fn probe_models_drift() -> Vec<String> {
-    let mut out = Vec::new();
+/// Deriva de modelos obligatorios, validando snapshots y ficheros requeridos.
+fn models_drift() -> Vec<String> {
     let models = match avi_shared::paths::models_cache_dir() {
-        Ok(dir) => dir,
-        Err(e) => {
-            out.push(format!("no se pudo resolver la caché de modelos: {e}"));
-            return out;
-        }
+        Ok(models) => models,
+        Err(e) => return vec![format!("no se pudo resolver la caché de modelos: {e}")],
     };
-    for pin in avi_shared::paths::MODEL_REVISIONS {
-        let snapshot = models
-            .join(format!("models--{}", pin.repo.replace('/', "--")))
-            .join("snapshots")
-            .join(pin.revision);
-        if !snapshot.is_dir() {
-            out.push(format!(
-                "modelo {} sin provisionar (ejecuta `cargo xtask bootstrap --models`)",
-                pin.name
-            ));
-        }
-    }
-    out
+    let store = avi_store::ModelStore::at(models);
+    model_drift_for_store(&store)
 }
 
-/// Ejecuta todas las sondas sobre `root` (raíz del repositorio).
+fn model_drift_for_store(store: &avi_store::ModelStore) -> Vec<String> {
+    avi_shared::paths::MODEL_REVISIONS
+        .iter()
+        .filter_map(|pin| match store.provisioning_status(pin.name) {
+            Ok(true) => None,
+            Ok(false) => Some(format!(
+                "modelo {} incompleto o sin provisionar (ejecuta `cargo xtask bootstrap --models`)",
+                pin.name
+            )),
+            Err(error) => Some(format!(
+                "no se pudo comprobar el modelo {}: {error}",
+                pin.name
+            )),
+        })
+        .collect()
+}
+
+/// Ejecuta las sondas integrales del entorno de desarrollo sobre `root`.
 pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
     let rows = vec![
         check_rust(pins),
@@ -1110,7 +1112,7 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         engine_drift,
         probe_errors,
         onnx_drift: probe_onnx_drift(root, pins),
-        models_drift: probe_models_drift(),
+        models_drift: models_drift(),
     }
 }
 
@@ -1143,6 +1145,160 @@ pub fn run(json: bool) -> Result<()> {
     } else {
         anyhow::bail!("faltan requisitos obligatorios (ver arriba el comando exacto para cada uno)")
     }
+}
+
+/// Verifica que los recursos usados por bootstrap estén completos, sin checks de lifecycle.
+pub fn verify_resources(json: bool) -> Result<()> {
+    use serde_json::json;
+
+    let root = std::env::current_dir()?;
+    let pins = load_pins(&root)?;
+    let triple = super::package::host_triple()?;
+    let models = models_drift();
+    let ort = super::package::ort_bundle_is_fresh(&root.join("ort-bundle"), triple, &pins.ort);
+    let ffmpeg = pins
+        .ffmpeg_sha256
+        .get(triple)
+        .ok_or_else(|| anyhow::anyhow!("falta pin SHA-256 de FFmpeg para {triple}"))
+        .and_then(|sha| {
+            super::package::ffmpeg_bundle_is_fresh(&root.join("ffmpeg-bundle"), triple, sha)
+        });
+    let incomplete = find_incomplete_files(&models_cache_root()?);
+    let pending = find_pending_resources(&root);
+    let mut errors = Vec::new();
+    let ort_ok = match ort {
+        Ok(ok) => ok,
+        Err(error) => {
+            errors.push(format!("ONNX Runtime: {error}"));
+            false
+        }
+    };
+    let ffmpeg_ok = match ffmpeg {
+        Ok(ok) => ok,
+        Err(error) => {
+            errors.push(format!("FFmpeg: {error}"));
+            false
+        }
+    };
+    let incomplete = match incomplete {
+        Ok(paths) => paths,
+        Err(error) => {
+            errors.push(format!(
+                "no se pudieron comprobar archivos incompletos: {error}"
+            ));
+            Vec::new()
+        }
+    };
+    let pending = match pending {
+        Ok(paths) => paths,
+        Err(error) => {
+            errors.push(format!("no se pudieron comprobar residuos: {error}"));
+            Vec::new()
+        }
+    };
+    let ok = models.is_empty()
+        && ort_ok
+        && ffmpeg_ok
+        && incomplete.is_empty()
+        && pending.is_empty()
+        && errors.is_empty();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "ok": ok,
+                "target": triple,
+                "models": { "ok": models.is_empty(), "missing": models },
+                "onnx_runtime": { "ok": ort_ok, "version": pins.ort },
+                "ffmpeg": { "ok": ffmpeg_ok, "version": pins.ffmpeg },
+                "incomplete": incomplete,
+                "pending": pending,
+                "errors": errors,
+            }))?
+        );
+    } else {
+        println!("Recursos: {}", if ok { "completos" } else { "incompletos" });
+        for model in models {
+            println!("  - {model}");
+        }
+        println!(
+            "  ONNX Runtime: {}",
+            if ort_ok {
+                "correcto"
+            } else {
+                "falta o está incompleto"
+            }
+        );
+        println!(
+            "  FFmpeg: {}",
+            if ffmpeg_ok {
+                "correcto"
+            } else {
+                "falta o está incompleto"
+            }
+        );
+        println!("  Archivos .incomplete: {}", incomplete.len());
+        println!("  Residuos pendientes: {}", pending.len());
+        for error in &errors {
+            println!("  Error de lectura: {error}");
+        }
+    }
+    if ok {
+        Ok(())
+    } else {
+        anyhow::bail!("faltan recursos requeridos; consulta el informe")
+    }
+}
+
+fn find_pending_resources(root: &Path) -> Result<Vec<String>> {
+    let mut pending = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().ends_with(".removal-failed.log"))
+        {
+            pending.push(path.display().to_string());
+        }
+    }
+    pending.sort();
+    Ok(pending)
+}
+
+fn models_cache_root() -> Result<PathBuf> {
+    Ok(avi_shared::paths::models_cache_dir()?)
+}
+
+fn find_incomplete_files(root: &Path) -> Result<Vec<String>> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(anyhow::anyhow!(
+                    "no se pudo leer {}: {error}",
+                    dir.display()
+                ))
+            }
+        };
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            if entry.file_type()?.is_dir() {
+                stack.push(path);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().ends_with(".incomplete"))
+            {
+                found.push(path.display().to_string());
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 fn print_human(report: &Report) {
@@ -1533,5 +1689,72 @@ mod tests {
         assert!(newest_engine_source(root.path()).is_err());
         let empty = tempfile::tempdir().unwrap();
         assert_eq!(newest_engine_source(empty.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn model_drift_uses_store_integrity_contract() {
+        let root = tempfile::tempdir().unwrap();
+        let store = avi_store::ModelStore::at(root.path().to_path_buf());
+        assert_eq!(
+            model_drift_for_store(&store).len(),
+            avi_shared::paths::MODEL_REVISIONS.len()
+        );
+    }
+
+    #[test]
+    fn resource_gate_components_reject_truncated_bundles_and_report_missing_models() {
+        let root = tempfile::tempdir().unwrap();
+        let triple = if cfg!(windows) {
+            "x86_64-pc-windows-msvc"
+        } else if cfg!(target_os = "macos") {
+            "aarch64-apple-darwin"
+        } else {
+            "x86_64-unknown-linux-gnu"
+        };
+        let pins = fixture_pins();
+        let models = avi_store::ModelStore::at(root.path().to_path_buf());
+        assert_eq!(
+            model_drift_for_store(&models).len(),
+            avi_shared::paths::MODEL_REVISIONS.len()
+        );
+
+        let ort = root.path().join("ort");
+        std::fs::create_dir_all(&ort).unwrap();
+        let ort_lib = if triple.contains("windows") {
+            "onnxruntime.dll"
+        } else if triple.contains("apple") {
+            "libonnxruntime.dylib"
+        } else {
+            "libonnxruntime.so"
+        };
+        std::fs::write(ort.join(ort_lib), b"").unwrap();
+        assert!(!super::super::package::ort_bundle_is_fresh(&ort, triple, &pins.ort).unwrap());
+
+        let ffmpeg = root.path().join("ffmpeg");
+        std::fs::create_dir_all(&ffmpeg).unwrap();
+        std::fs::write(
+            ffmpeg.join(if triple.contains("windows") {
+                "ffmpeg.exe"
+            } else {
+                "ffmpeg"
+            }),
+            b"",
+        )
+        .unwrap();
+        assert!(
+            !super::super::package::ffmpeg_bundle_is_fresh(&ffmpeg, triple, &"a".repeat(64))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn incomplete_scanner_finds_nested_files_and_propagates_access_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("models--repo").join("blobs");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("weight.incomplete"), b"partial").unwrap();
+        assert_eq!(find_incomplete_files(root.path()).unwrap().len(), 1);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        assert!(find_incomplete_files(file.path()).is_err());
     }
 }

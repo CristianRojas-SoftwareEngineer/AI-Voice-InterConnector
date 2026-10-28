@@ -1070,7 +1070,6 @@ fn denoise_busy_response() -> Response {
 
 /// Traduce un error del motor DSP a `reason` y estado HTTP del contrato.
 #[cfg(feature = "native-denoise")]
-#[cfg(all(feature = "native-denoise", feature = "native-stt"))]
 fn denoise_failure(e: &denoise::errors::E) -> (&'static str, StatusCode) {
     match e {
         denoise::errors::E::EModelMissing(_) => ("model_missing", StatusCode::NOT_FOUND),
@@ -1080,7 +1079,6 @@ fn denoise_failure(e: &denoise::errors::E) -> (&'static str, StatusCode) {
     }
 }
 
-#[cfg(feature = "native-denoise")]
 #[cfg(all(feature = "native-denoise", feature = "native-stt"))]
 fn denoise_error_response(e: &denoise::errors::E) -> Response {
     let (reason, status) = denoise_failure(e);
@@ -1095,21 +1093,13 @@ fn denoise_error_response(e: &denoise::errors::E) -> Response {
         .into_response()
 }
 
-/// Clasifica un `anyhow::Error` procedente del hilo de clonado: si su mensaje
-/// coincide con un fallo de DPDFNet (modelo ausente, audio inv�lido, E/S) usa
-/// su `reason` propio; si envuelve un `avi_audio::WavLoadError`, lo traduce
-/// igual que en transcripci�n; en cualquier otro caso es `voice_clone_failed`.
+/// Clasifica errores tipados de Denoise y WAV; los demás fallos usan el contrato genérico.
 fn classify_denoise_or_wav_error(e: &anyhow::Error) -> &'static str {
-    let msg = e.to_string();
-    if msg.contains("Modelo faltante") || msg.contains("no está provisionado") {
-        return "model_missing";
+    #[cfg(feature = "native-denoise")]
+    if let Some(denoise_error) = e.downcast_ref::<denoise::errors::E>() {
+        return denoise_failure(denoise_error).0;
     }
-    if msg.contains("Entrada inválida") {
-        return "invalid_audio";
-    }
-    if msg.contains("Error de E/S") {
-        return "io_error";
-    }
+
     match e.downcast_ref::<avi_audio::WavLoadError>() {
         Some(avi_audio::WavLoadError::Invalid(_)) => "invalid_audio",
         Some(avi_audio::WavLoadError::Io(_)) => "io_error",
@@ -1553,8 +1543,7 @@ async fn voices_clone_handler(
                 // Modelo resuelto y verificado antes de convertir: un fallo de
                 // modelo no deja audio sin limpiar ni lanza el clonado.
                 let clean = work_dir.path().join("reference_clean.wav");
-                let models =
-                    denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
+                let models = denoise::service::ServiceModels::resolve()?;
                 models
                     .denoise_wav_file(
                         &tmp_wav,

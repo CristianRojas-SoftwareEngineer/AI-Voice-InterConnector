@@ -1460,6 +1460,8 @@ fn uninstall_is_idempotent() {
     let clean = Sandbox::new("idempotent-clean");
     clean.seed_env();
     assert!(!inspect::exists(&clean.program_dir));
+    clean.seed_state();
+    let before_unregistered_state = clean.snapshot();
     let uninstalled = runtime
         .block_on(uninstall::run(
             &clean.env_uninstall(None, Channel::Unmanaged),
@@ -1477,6 +1479,11 @@ fn uninstall_is_idempotent() {
     );
     assert!(uninstalled.removed.is_empty());
     assert!(!uninstalled.program_dir_removed);
+    assert_eq!(
+        clean.snapshot(),
+        before_unregistered_state,
+        "sin recibo no adopta ni borra estado en raíces convencionales"
+    );
 }
 
 // ─── Categorías de `cleanup` ──────────────────────────────────────────────────────

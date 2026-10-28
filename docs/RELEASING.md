@@ -81,7 +81,7 @@ cargo xtask clean --repo --dry-run             # revisar artefactos del reposito
 cargo xtask clean --repo --yes                 # primera limpieza; no necesita binario de producto
 cargo build --package ai-voice-interconnector  # semilla para self uninstall
 cargo xtask clean --app --dry-run              # revisar el plan de desinstalación
-cargo xtask clean --app --yes                  # desinstalar el estado con el binario del repo
+cargo xtask clean --app --yes                  # exigir resultado `uninstalled`, no aceptar `not_installed` como prueba
 cargo xtask clean --repo --dry-run             # retirar también la semilla compilada
 cargo xtask clean --repo --yes                 # deja target/ y bundles fuera para el cold start
 cargo xtask ffmpeg                             # FFmpeg del pin, verificado por SHA-256
@@ -98,7 +98,10 @@ recompilarse para ejecutar cada orden Cargo que lo invoque. Cierra
 repo. Al pedir `clean --repo --yes`, el propio `xtask.exe` puede quedar en un
 borrado diferido hasta que el comando salga. En Windows, no continúes mientras
 exista `target/` o `target.removal-failed.log`; identifica el proceso que retiene
-el DLL y comprueba que la retirada terminó. Si `--app` o el borrado diferido fallan,
+el DLL y comprueba que la retirada terminó. En las pruebas de este plan, la
+sesión del editor mantuvo `async_trait-*.dll` abierto a través de `rust-analyzer`:
+cierra el editor, verifica que `target/` desapareció y vuelve a abrir la terminal
+antes de seguir. Si `--app` o el borrado diferido fallan,
 detente el procedimiento y resuelve la causa. Ninguno de estos comandos toca
 `CARGO_HOME`, rustup, MSYS2 ni `CARGO_HOME/bin`.
 
@@ -127,25 +130,25 @@ en Windows) y el tamaño y la fecha de cada `blobs/*.incomplete`. Una sola muest
 no concluye nada: compara el mismo valor en dos muestras separadas por varios
 minutos.
 
-**Después de cualquier interrupción, verifica independientemente el resultado.**
-El resumen que imprime `setup` no acredita que todos los snapshots estén
-completos:
+**Después de cualquier interrupción, verifica independientemente los recursos.**
+`doctor` es el diagnóstico integral de una instalación y no la gate de recursos
+de un bootstrap local. Ejecuta la comprobación específica de recursos:
 
 ```bash
-cargo run -q -- doctor --json
+cargo xtask verify-resources --json
 ```
 
-En Windows, desde Git Bash, comprueba que no queden cuerpos incompletos:
+Exige exit code 0 y un único objeto JSON con `ok: true`, los seis modelos
+íntegros, bundles FFmpeg/ONNX Runtime verificados y sin artefactos incompletos.
+En Windows, desde Git Bash, comprueba además que no queden cuerpos `.incomplete`:
 
 ```bash
 find "$(cygpath -u "$LOCALAPPDATA")/ai-voice-interconnector/cache/models" -name '*.incomplete' | wc -l  # debe dar 0
 ```
 
-En otra shell, sustituye esa ruta por `models.root` del JSON. `models.missing`
-debe ser `[]`, `pending_artifacts` debe estar correcto y el conteo debe ser cero.
-En un canal `unmanaged`, `install_receipt` y `path_resolves` pueden fallar porque
-no hay instalación registrada; los chequeos aplicables al canal deben estar
-correctos y `doctor` debe terminar con código 0.
+Usa la raíz de modelos que informa la propia gate. Para validar la integración
+real del usuario final, ejecuta después el recorrido de instalación publicada
+y exige que `doctor` integral termine con exit code 0 desde una terminal nueva.
 
 Si el estado es dudoso o quedan restos, repara mediante el producto:
 
@@ -192,7 +195,10 @@ promovido.
 5. Pasa `cargo test --workspace --features full -- --include-ignored`, la
    puerta más lenta: incluye pruebas con modelos, motor e instalación real.
    Requiere recursos aprovisionados con `cargo xtask ffmpeg` y
-   `cargo xtask bootstrap --models --yes`. La gate asegura
+   `cargo xtask bootstrap --models --yes`. Las pruebas de recursos de
+   `avi-daemon/tests/golden.rs` consultan esa caché heredada en solo lectura;
+   el caso HTTP que exige DPDFNet ausente corre en un target de integración con
+   una caché temporal privada. La gate asegura
    `ort-bundle/` en la versión fijada y la impone con `ORT_DYLIB_PATH`, para que
    STT use el runtime incluido. Un fallo aborta antes del bump.
 

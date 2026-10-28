@@ -122,6 +122,9 @@ El motor ya cuenta con los componentes necesarios:
    - Recibe `{ "name": String, "audio_b64": String, "force": bool, "denoise": bool }`.
    - Ya opera sobre bytes codificados en base64; no depende de rutas locales del
      cliente.
+   - Con `denoise: true`, un DPDFNet ausente produce el evento final
+     `error/model_missing`; los errores tipados del DSP conservan `invalid_audio`,
+     `io_error` o `denoise_failed` sin clasificar por el texto del mensaje.
 
 ---
 

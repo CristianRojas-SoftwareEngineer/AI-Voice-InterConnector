@@ -34,7 +34,8 @@
 //! que la ejecución real conservaría, así que cuando la regla lo rechaza entra como
 //! `preserved`.
 //!
-//! **Idempotencia**: sin instalación ni estado, éxito con `not_installed`.
+//! **Idempotencia**: sin recibo de instalación, éxito con `not_installed` y sin
+//! adoptar ni modificar las raíces convencionales del perfil.
 //! **Residuo**: cero dentro de las raíces de propiedad exclusiva, y
 //! lo compartido que no se borra se informa.
 
@@ -301,8 +302,9 @@ pub async fn run(
     let roots = &env.roots;
     let program_dir = env.program_dir.clone();
 
-    // Sin instalación ni estado: la operación es éxito con `not_installed`.
-    if receipt.is_none() && !state_exists(roots) && !program_dir.is_dir() {
+    // Sin recibo, esta copia no está registrada: no se adoptan ni borran las raíces
+    // convencionales del usuario, aunque contengan datos de otra instalación.
+    if receipt.is_none() {
         return Ok(Outcome {
             status: "not_installed",
             // El mensaje final lo compone el flujo de la librería, y aquí no hay
@@ -1169,16 +1171,6 @@ fn remove_program_dir(
     }
     remover.remove_now(program_dir)?;
     Ok(Removal::Now)
-}
-
-/// `true` si hay estado de usuario que conservar o borrar.
-fn state_exists(roots: &Roots) -> bool {
-    roots.data_dir.is_dir()
-        || roots.models_dir.is_dir()
-        || roots
-            .shared_models_dir
-            .as_ref()
-            .is_some_and(|shared| shared.is_dir())
 }
 
 /// `true` si `key` es `ancestor` o cuelga de él, sobre claves canónicas.

@@ -233,7 +233,8 @@ pub struct Report {
 }
 
 impl Report {
-    /// Veredicto del contrato: `true` si alguna comprobación falló.
+    /// Veredicto integral: `true` si falla cualquier comprobación aplicable,
+    /// incluidas receipt, PATH, residuos y recursos, sin excepciones por canal.
     pub fn is_failure(&self) -> bool {
         !self.failed.is_empty()
     }
@@ -274,7 +275,38 @@ pub fn report(env: &Env, exe: &Path, product_version: &str) -> Report {
     let pending = pending(env);
     let path = path_state(env, receipt.as_ref());
     let models = models(roots);
+    report_from_state(
+        product_version,
+        roots,
+        ReportState {
+            channel,
+            receipt,
+            receipt_error,
+            pending,
+            path,
+            models,
+        },
+    )
+}
 
+struct ReportState {
+    channel: Channel,
+    receipt: Option<InstallReceipt>,
+    receipt_error: Option<String>,
+    pending: Pending,
+    path: PathState,
+    models: Models,
+}
+
+fn report_from_state(product_version: &str, roots: &cleanup::Roots, state: ReportState) -> Report {
+    let ReportState {
+        channel,
+        receipt,
+        receipt_error,
+        pending,
+        path,
+        models,
+    } = state;
     let install = Install {
         // El directorio de programa es el del **entorno**, que ya es el de la
         // instalación registrada cuando hay recibo: `Env::from_receipt` lo toma de ahí.
@@ -593,21 +625,48 @@ fn installs_in_path(
 fn models(roots: &cleanup::Roots) -> Models {
     // El almacén se ancla en la raíz que describe el reporte, no en la del
     // usuario: la fila `root` y los indicadores de provisión tienen que hablar
-    // del mismo árbol. Con la raíz global, un sandbox vacío informaría del
-    // estado de la caché real y el reporte mentiría sobre lo que está
-    // mirando.
+    // del mismo árbol.
     let store = avi_store::ModelStore::at(roots.effective_models_dir().to_path_buf());
-    // Todos los pines forman parte de la selección: el que no esté provisionado
-    // es un faltante.
+    models_with(roots, &store, |snapshot, name| {
+        if name == avi_shared::paths::DPDFNET_MODEL {
+            store.verify_artifact(name)?;
+        } else if let Some(expected) = avi_shared::paths::MODEL_REVISIONS
+            .iter()
+            .find(|pin| pin.name == name)
+            .and_then(|pin| pin.artifact_sha256)
+        {
+            let actual =
+                avi_store::sha256_file(&snapshot.join(avi_shared::paths::DPDFNET_MODEL_FILE))?;
+            if actual != expected {
+                anyhow::bail!("SHA-256 de {name} no coincide con el pin");
+            }
+        }
+        Ok(())
+    })
+}
+
+fn models_with(
+    roots: &cleanup::Roots,
+    store: &avi_store::ModelStore,
+    verify: impl Fn(&Path, &str) -> anyhow::Result<()>,
+) -> Models {
     let mut provisioned = Vec::new();
     let mut missing = Vec::new();
     for pin in avi_shared::paths::MODEL_REVISIONS {
-        if store.is_provisioned(pin.name) && store.verify_artifact(pin.name).is_ok() {
+        if store.is_provisioned(pin.name) && verify(&store.model_dir(pin.name), pin.name).is_ok() {
             provisioned.push(pin.name.to_string());
         } else {
             missing.push(pin.name.to_string());
         }
     }
+    models_from_names(roots, provisioned, missing)
+}
+
+fn models_from_names(
+    roots: &cleanup::Roots,
+    provisioned: Vec<String>,
+    missing: Vec<String>,
+) -> Models {
     Models {
         root: roots.effective_models_dir().to_path_buf(),
         shared_root: roots.shared_models_dir.is_some(),
@@ -634,7 +693,7 @@ mod tests {
             data_dir: root.join("data"),
             cache_container: root.join("cache"),
             app_container: None,
-            models_dir: root.join("models"),
+            models_dir: root.join("cache/models"),
             scratch_root: root.join("tmp"),
             bin_dir: root.join("bin"),
             home: root.join("home/ana"),
@@ -733,8 +792,87 @@ mod tests {
         assert_eq!(report.checks.len(), 5, "cinco comprobaciones");
         assert!(
             report.is_failure(),
-            "sin nada instalado, el veredicto es negativo"
+            "el canal unmanaged no exime de receipt/PATH en el veredicto integral"
         );
+        assert!(report.failed.iter().any(|name| name == "install_receipt"));
+        assert!(report.failed.iter().any(|name| name == "path_resolves"));
+        assert_integral_failure(report);
+    }
+
+    fn assert_integral_failure(report: Report) {
+        assert!(report.is_failure());
+        assert!(report.failed.iter().any(|name| name == "install_receipt"));
+        assert!(report.failed.iter().any(|name| name == "path_resolves"));
+        let failed_checks: Vec<&str> = report
+            .checks
+            .iter()
+            .filter(|check| !check.ok)
+            .map(|check| check.name.as_str())
+            .collect();
+        let failed_names: Vec<&str> = report.failed.iter().map(String::as_str).collect();
+        assert_eq!(failed_checks, failed_names);
+    }
+
+    /// Un reporte instalado solo pasa cuando receipt, PATH, residuos y modelos pasan.
+    #[test]
+    fn doctor_passes_only_for_a_complete_registered_install() {
+        let (_scratch, mut env) = env("complete-install");
+        let executable = env.roots.program_dir.join(exe_name());
+        write_file(&executable, "binario");
+        env.path_env = env.roots.program_dir.to_string_lossy().to_string();
+        env.roots.models_dir = env.roots.cache_container.join(crate::MODELS_SUBDIR);
+        let receipt = InstallReceipt::new(
+            "0.24.0",
+            crate::target::host_triple(),
+            Channel::Script,
+            &env.roots.program_dir,
+            vec![exe_name()],
+            PathIntegration::none(),
+            receipt::Roots {
+                data_dir: env.roots.data_dir.clone(),
+                cache_dir: env.roots.cache_container.clone(),
+            },
+        );
+        receipt::write_to(&receipt, &env.roots.program_dir).expect("recibo válido en fixture");
+
+        let receipt_for_report = receipt.clone();
+        let report = report_from_state(
+            "0.24.0",
+            &env.roots,
+            ReportState {
+                channel: Channel::Script,
+                receipt: Some(receipt_for_report),
+                receipt_error: None,
+                pending: Pending::default(),
+                path: PathState {
+                    resolves_to_this_install: true,
+                    duplicate_entries: Vec::new(),
+                    integration: "not_modified",
+                    coexisting: Vec::new(),
+                },
+                models: Models {
+                    root: env.roots.models_dir.clone(),
+                    shared_root: false,
+                    provisioned: avi_shared::paths::MODEL_REVISIONS
+                        .iter()
+                        .map(|pin| pin.name.to_string())
+                        .collect(),
+                    missing: Vec::new(),
+                    size_bytes: 0,
+                },
+            },
+        );
+
+        assert_eq!(report.channel, Channel::Script);
+        assert_eq!(report.install.receipt, "valid");
+        assert!(
+            report.failed.is_empty(),
+            "fallos inesperados: {:?}; modelos faltantes: {:?}; detalle: {:?}",
+            report.failed,
+            report.models.missing,
+            models_check(&report).detail
+        );
+        assert!(!report.is_failure());
     }
 
     /// Un recibo ilegible no se informa como ausente: el estado es `invalid` y la
@@ -800,29 +938,30 @@ mod tests {
     }
 
     /// Escribe en la raíz del sandbox los snapshots pinneados de todos los modelos
-    /// salvo el Base de clonado, con los archivos que el producto exige.
+    /// con los archivos que el producto exige.
     /// Escribe en `snapshot` los ficheros que el contrato del pin `name` exige:
     /// los patrones de `MODEL_FILE_PATTERNS` cuando el pin los declara —que es lo
     /// que `is_provisioned` comprueba— y el peso del modelo cuando no.
     fn write_pinned_snapshot(snapshot: &std::path::Path, name: &str) {
-        match avi_shared::paths::MODEL_FILE_PATTERNS
+        if name == avi_shared::paths::DPDFNET_MODEL {
+            let path = snapshot.join(avi_shared::paths::DPDFNET_MODEL_FILE);
+            write_file(&path, "fixture DPDFNet");
+            return;
+        }
+        if let Some((_, patterns)) = avi_shared::paths::MODEL_FILE_PATTERNS
             .iter()
-            .find(|(n, _)| *n == name)
+            .find(|(pattern_name, _)| *pattern_name == name)
         {
-            Some((_, patterns)) => {
-                for pattern in *patterns {
-                    write_file(&snapshot.join(pattern), "artefacto");
-                }
+            for pattern in *patterns {
+                write_file(&snapshot.join(pattern), "artefacto");
             }
-            None => write_file(&snapshot.join("model.safetensors"), "pesos"),
+        } else {
+            write_file(&snapshot.join("model.safetensors"), "pesos");
         }
     }
 
-    fn set_required_models(env: &Env) {
+    fn set_all_models(env: &Env) {
         for pin in avi_shared::paths::MODEL_REVISIONS {
-            if pin.name == avi_shared::paths::CLONING_MODEL {
-                continue;
-            }
             let snapshot = env
                 .roots
                 .models_dir
@@ -847,7 +986,7 @@ mod tests {
     #[test]
     fn translation_models_have_no_derived_check() {
         let (_scratch, env) = env("translation-without-derived");
-        set_required_models(&env);
+        set_all_models(&env);
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(
             report.checks.iter().all(|c| c.name != "models_ct2"),
@@ -866,14 +1005,48 @@ mod tests {
     /// selección como cualquier otro modelo.
     #[test]
     fn models_provisioned_fails_when_base_absent() {
-        let (_scratch, env) = env("models-cloning");
-        set_required_models(&env);
+        let (_scratch, mut env) = env("models-cloning");
+        env.roots.models_dir = env.roots.cache_container.join(crate::MODELS_SUBDIR);
+        set_all_models(&env);
+        let base = avi_shared::paths::MODEL_REVISIONS
+            .iter()
+            .find(|pin| pin.name == avi_shared::paths::CLONING_MODEL)
+            .unwrap();
+        let base_repo = env
+            .roots
+            .models_dir
+            .join(format!("models--{}", base.repo.replace('/', "--")));
+        std::fs::remove_dir_all(base_repo).unwrap();
         let report = report(&env, &env.roots.program_dir.join(exe_name()), "0.24.0");
         assert!(!models_check(&report).ok);
         assert!(report
             .models
             .missing
             .contains(&avi_shared::paths::CLONING_MODEL.to_string()));
+    }
+
+    /// Un error de verificación del artefacto fijado impide declarar el modelo provisionado.
+    #[test]
+    fn model_check_rejects_bad_pinned_artifact() {
+        let (_scratch, env) = env("bad-pinned-model");
+        let store = avi_store::ModelStore::at(env.roots.effective_models_dir().to_path_buf());
+        let pin = avi_shared::paths::MODEL_REVISIONS
+            .iter()
+            .find(|pin| pin.name == avi_shared::paths::DPDFNET_MODEL)
+            .unwrap();
+        let snapshot = store
+            .model_snapshot_status(pin.name)
+            .unwrap()
+            .expect("snapshot con artefacto inválido");
+        write_file(
+            &snapshot.join(avi_shared::paths::DPDFNET_MODEL_FILE),
+            "corrupto",
+        );
+
+        let models = models_with(&env.roots, &store, |_, name| store.verify_artifact(name));
+
+        assert!(models.missing.contains(&pin.name.to_string()));
+        assert!(!models.provisioned.contains(&pin.name.to_string()));
     }
 
     /// Sin nada en la raíz que describe el reporte, la fila de modelos dice que

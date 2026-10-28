@@ -5069,6 +5069,7 @@ dependencies = [
  "avi-core",
  "avi-process",
  "avi-shared",
+ "avi-store",
  "clap",
  "filetime",
  "flate2",
