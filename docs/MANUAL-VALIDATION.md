@@ -14,7 +14,10 @@ teclas.
 
 La secuencia está en orden lógico: cada paso asume que el anterior pasó. Se puede
 partir de una instalación con modelos provisionados o de una instalación con
-`--no-setup` o `setup_failed`, cuyos modelos se provisionan en el paso 3.
+`--no-setup` o `setup_failed`, cuyos modelos se provisionan en el paso 3. Esta
+guía valida el artefacto instalado de usuario final; el ciclo de limpieza,
+aprovisionamiento y puerta de release desde el repositorio está en
+[Aprovisionamiento de los recursos antes de cortar](RELEASING.md#aprovisionamiento-de-los-recursos-antes-de-cortar).
 Ejecutar desde la sesión que instaló el programa o desde una terminal nueva:
 la integración del `PATH` es persistente —bloque delimitado en los perfiles de
 shell en Linux y macOS, valor `Path` de `HKCU\Environment` en Windows— y por eso
@@ -35,6 +38,10 @@ comando, léelo según tu shell:
 
 > Los comandos se muestran para una shell POSIX. En Windows (`cmd`/PowerShell)
 > son equivalentes salvo `which ai-voice-interconnector`, que allí es `where ai-voice-interconnector`.
+
+La prueba del bootstrap desde el repositorio no forma parte del recorrido del
+artefacto instalado descrito aquí; sigue la secuencia de limpieza y
+aprovisionamiento indicada en [RELEASING.md](RELEASING.md#aprovisionamiento-de-los-recursos-antes-de-cortar).
 
 **Prerrequisitos por escenario** — los iconos al inicio de cada sección o ficha indican qué hace falta además del binario instalado:
 
@@ -111,17 +118,23 @@ atribuirlo a la falta de modelos.
 comprobar la idempotencia.
 
 ```bash
-# Descarga los 5 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
+# Descarga los 6 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
 ai-voice-interconnector setup
 
 # Confirmar que el entorno quedó sano antes de continuar
 ai-voice-interconnector doctor --json
 ```
 
-**Esperado**: `setup` descarga (o confirma en caché) los modelos y termina con
-**exit 0**; una segunda ejecución no vuelve a descargar. Después,
-`doctor --json` debe terminar con **exit 0**. Si falla algún chequeo, resolverlo
-antes de continuar al paso 4.
+**Esperado**: `setup` descarga (o confirma en caché) los seis modelos y termina
+con **exit 0**; una segunda ejecución no vuelve a descargar. El sexto,
+`dpdfnet8`, es opcional para el arranque del daemon, pero se provisiona con el
+resto y lo requieren las rutas de limpieza de ruido (`--denoise` y
+`speech denoise`). Después,
+`doctor --json` debe terminar con **exit 0** en una instalación normal. En una
+instalación `unmanaged` desde el repositorio, `install_receipt` y `path_resolves`
+pueden fallar porque no hay instalación registrada; acepta ese canal solo si
+`models_provisioned` y `pending_artifacts` están correctos y `models.missing` es
+`[]`. Cualquier otro chequeo fallido debe resolverse antes de continuar al paso 4.
 
 ## 4. Dispositivos de audio
 
@@ -158,7 +171,7 @@ ai-voice-interconnector speech say --text "Modo directo." --no-daemon
 
 ## 6. Gestión de voces
 
-🧠 · el clonado requiere 🗣️ (una muestra de habla ≥10 s)
+🧠 · el clonado requiere 🗣️ (una muestra de habla ≥10 s); `--denoise` añade el requisito de `dpdfnet8`
 
 ```bash
 # Listar voces disponibles (debe aparecer 'default' de fábrica)
@@ -237,11 +250,53 @@ ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --ta
 
 **Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`), **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce, **exit 0**. Un `--audio` inexistente sale con **exit 3**; un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
 
+### Limpieza de ruido (`--denoise`)
+
+Opt-in, disponible en `transcribe`, `dub` y `voice clone`. Exige el feature
+`native-denoise` (incluido en `full`, que es el de los artefactos) y el modelo
+`dpdfnet8` provisionado.
+
+```bash
+# Transcribir y doblar sobre el audio limpio
+ai-voice-interconnector speech transcribe --audio clip.wav --source-language es --denoise
+ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --target-language es --voice mi_voz --denoise
+```
+
+**Esperado**: el mismo resultado y los mismos códigos que sin el flag, sobre la
+señal limpia. Sin `dpdfnet8` provisionado la ruta falla con **exit 4**
+(`model_missing`), igual en `voice clone --denoise`.
+
+### Limpieza de archivos (`speech denoise`)
+
+Es el subcomando de limpieza, local y sin daemon. Exige el mismo feature y el
+mismo modelo, y usa el FFmpeg incluido en el paquete: no lo busca en `PATH`.
+
+```bash
+# Limpiar un archivo y dejarlo en un directorio propio
+ai-voice-interconnector speech denoise clip.wav --output-dir limpio
+
+# Ver el plan sin procesar nada
+ai-voice-interconnector --json speech denoise clip.wav --dry-run
+```
+
+**Esperado**: escribe la versión limpia en el directorio indicado y sale con
+**exit 0**; `--dry-run` muestra el plan sin escribir. Una entrada inexistente
+sale con **exit 3**; una entrada sin audio o un destino ya existente sin
+`--overwrite`, con **exit 2**; modelo ausente, FFmpeg ausente o error de E/S,
+con **exit 1**.
+
 ## 9. Rutas interactivas de audio (push-to-talk y `--play`)
 
 🖥️ 🎤 🔊 🧠 · **no ejercitables por CI**: exigen una terminal real y una persona
-pulsando teclas. Son el motivo principal de esta validación manual. El
-diseño y los principios están en [UX de audio interactivo](DESIGN.md#ux-de-audio-interactivo).
+pulsando teclas. Son el motivo principal de esta validación manual.
+
+Para cubrir `voice clone --denoise`, repite el clonado de §6 con una referencia
+≥10 s y el flag `--denoise`; en la ruta `--mic`, el flag se admite junto con
+`--duration`. **Esperado**: clona con la referencia limpia y termina con exit 0;
+la falta del modelo `dpdfnet8` falla explícitamente con exit 4, sin degradar al
+audio original.
+
+El diseño y los principios están en [UX de audio interactivo](DESIGN.md#ux-de-audio-interactivo).
 
 ### 9.1 Push-to-talk (`speech transcribe --mic` / `speech dub --mic` sin `--duration`)
 
@@ -317,7 +372,14 @@ ai-voice-interconnector speech synthesize --text "Otra toma." --label demo_loop 
 
 ### 9.3 Progreso de la instalación interactiva
 
-🖥️ · conexión para descargar los cinco modelos · Windows PowerShell en una ventana nueva y sin redirigir la salida. Antes de empezar, la instalación anterior debe haberse desinstalado con **su propio binario** y la caché de modelos debe estar vacía. Si existe una instalación 0.31.x, `self update` no puede leer su recibo desde la 0.32.0: usa el binario 0.31.x para desinstalar y después el one-liner de la nueva versión.
+🖥️ · conexión para descargar los seis modelos · Windows PowerShell en una ventana nueva y sin redirigir la salida. Antes de empezar, la instalación anterior debe haberse desinstalado con **su propio binario** y la caché de modelos debe estar vacía. Si existe una instalación 0.31.x, `self update` no puede leer su recibo desde la 0.32.0: usa el binario 0.31.x para desinstalar y después el one-liner de la nueva versión.
+
+Para validar el procedimiento de release desde cero en la máquina de desarrollo
+(sin instalar el artefacto publicado), sigue el apartado
+[Aprovisionamiento de los recursos antes de cortar](RELEASING.md#aprovisionamiento-de-los-recursos-antes-de-cortar).
+Este escenario usa la secuencia de limpieza por capas, semilla de producto y
+aprovisionamiento que detalla el apartado vinculado; no debe confundirse con
+esta prueba de instalación del usuario final mediante el bootstrap publicado.
 
 ```powershell
 # Si aún hay una instalación, desinstálala con su binario actual.
@@ -329,7 +391,7 @@ ai-voice-interconnector self uninstall --dry-run
 ai-voice-interconnector cleanup --all --dry-run
 ```
 
-**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `5,9 GB` y el prompt `¿Continuar? [S/n] ` deja un espacio antes de la respuesta. La provisión abre otro bloque con `Descargando 5 modelo(s):`; cada barra está etiquetada `[i/5] nombre`, muestra el total real del modelo (no el de un archivo pequeño), velocidad, `transcurrido` y `quedan`. Al completarse cada modelo queda una línea permanente `✓ [i/5]` con tamaño, duración y velocidad. Cierra con `Modelos descargados: <tamaño> en <duración>.`, deja una línea en blanco y después aparece el resumen final, con `Comando:` terminado en `.exe`, el estado del PATH y los modelos con tamaño y tiempo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones muestran cada ruta una vez, su categoría en español, tamaños con coma y un único `Simulación: no se ha modificado nada.` al final del plan; no modifican el disco.
+**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `5,9 GB` y el prompt `¿Continuar? [S/n] ` deja un espacio antes de la respuesta. La provisión abre otro bloque con `Descargando 6 modelo(s):`; cada barra está etiquetada `[i/6] nombre`, muestra el total real del modelo (no el de un archivo pequeño), velocidad, `transcurrido` y `quedan`. Al completarse cada modelo queda una línea permanente `✓ [i/6]` con tamaño, duración y velocidad. Sin TTY no hay barras, pero aparecen las líneas de avance `… nombre  <completado> de <total> (<transcurrido>)` cada 15 s. Cierra con `Modelos descargados: <tamaño> en <duración>.`, deja una línea en blanco y después aparece el resumen final, con `Comando:` terminado en `.exe`, el estado del PATH y los modelos con tamaño y tiempo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones muestran cada ruta una vez, su categoría en español, tamaños con coma y un único `Simulación: no se ha modificado nada.` al final del plan; no modifican el disco.
 
 ## 10. Daemon
 

@@ -486,6 +486,7 @@ pub(crate) mod tests {
                 .iter()
                 .map(|(_, size)| size)
                 .sum();
+            observer.heartbeat(written, written);
             observer.update(written, written);
             Ok(())
         }
