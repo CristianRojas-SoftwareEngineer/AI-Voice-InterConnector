@@ -18,6 +18,7 @@
 //! las decisiones son funciones puras sobre fixtures.
 
 use anyhow::{bail, Result};
+use std::io::{BufRead, Write};
 
 /// Componentes de Rust que aseguran las puertas (`fmt --check`, clippy). La
 /// versión ya la aplica `rust-toolchain.toml`.
@@ -227,10 +228,8 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
 
 /// Silencio máximo tolerado del `setup` hijo antes de abortarlo.
 ///
-/// Es un plazo **sin progreso**, no un plazo total: en un enlace lento la
-/// descarga puede durar horas y sigue viva mientras escriba. Con los 5,9 GB de la
-/// selección, diez minutos sin un byte nuevo en la raíz de modelos solo ocurren
-/// cuando el flujo se quedó mudo.
+/// Es un plazo **sin progreso**, no un plazo total: una transferencia lenta puede
+/// durar horas y sigue viva mientras hf-hub emita latidos con bytes completados.
 const SETUP_SILENCE_LIMIT: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// Cada cuánto se mira el rastro en disco del `setup` hijo.
@@ -242,16 +241,14 @@ const SETUP_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(
 /// acota y se mata es el propio `setup`, y no un `cargo` intermedio cuyo hijo
 /// seguiría descargando después del `kill`.
 ///
-/// La compilación previa se acota al paquete del producto, y no se deja en un
-/// `cargo build` pelado: `default-members` incluye todos los miembros del
-/// workspace, así que una compilación sin `--package` reenlaza `xtask.exe`, que es
-/// el proceso que la está pidiendo. Windows no deja reemplazar un ejecutable en
-/// uso y el paso muere con «Acceso denegado», de modo que el aprovisionamiento
-/// nunca llegaba a descargar.
+/// La compilación previa se acota al paquete del producto porque `default-members`
+/// incluye todo el workspace; sin `--package`, Cargo intentaría reenlazar
+/// `xtask.exe` mientras está en uso. En Windows eso falla con «Acceso denegado».
 fn run_setup_with_watchdog(root: &std::path::Path) -> Result<()> {
     let build = std::process::Command::new("cargo")
         .args(["build", "--quiet", "--package", "ai-voice-interconnector"])
         .current_dir(root)
+        .stderr(std::process::Stdio::null())
         .status()?;
     if !build.success() {
         bail!(
@@ -267,49 +264,65 @@ fn run_setup_with_watchdog(root: &std::path::Path) -> Result<()> {
     let mut child = std::process::Command::new(&exe)
         .arg("setup")
         .current_dir(root)
+        .env("AVI_SETUP_WATCHDOG", "1")
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| anyhow::anyhow!("no se pudo lanzar '{}': {e}", exe.display()))?;
-    let models_root = avi_shared::paths::models_cache_dir()?;
-    watch_child(
-        &mut child,
-        &models_root,
-        SETUP_SILENCE_LIMIT,
-        SETUP_POLL_INTERVAL,
-    )
+    watch_child(&mut child, SETUP_SILENCE_LIMIT, SETUP_POLL_INTERVAL)
 }
 
-/// Espera a `child` mientras su rastro en `models_root` avance.
+/// Espera a `child` mientras el `setup` emita latidos por el canal reservado.
 ///
-/// Aborta el proceso si pasan `silence_limit` sin que cambie el tamaño del árbol
-/// —la descarga dejó de escribir— y propaga el fallo si el hijo termina mal. Los
-/// plazos entran por parámetro para que las pruebas no esperen los diez minutos
-/// reales.
+/// La longitud de los blobs no es una señal fiable: hf-hub puede preextenderlos
+/// antes de transferir y seguir escribiendo con el tamaño de árbol estable. El
+/// hijo comunica progreso agregado de bytes por stderr; cualquier otra salida se
+/// conserva como diagnóstico normal. Los plazos entran por parámetro para que las
+/// pruebas no esperen los diez minutos reales.
 fn watch_child(
     child: &mut std::process::Child,
-    models_root: &std::path::Path,
     silence_limit: std::time::Duration,
     poll_interval: std::time::Duration,
 ) -> Result<()> {
-    let mut last_size = dir_size(models_root);
-    let mut silent_for = std::time::Duration::ZERO;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("`setup` se lanzó sin canal stderr"))?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr).lines() {
+            let Ok(line) = line else { break };
+            if let Some(payload) = line.strip_prefix("AVI_SETUP_HEARTBEAT ") {
+                let _ = sender.send(payload.to_owned());
+            } else {
+                let _ = std::io::stderr().write_all(line.as_bytes());
+                let _ = std::io::stderr().write_all(b"\n");
+            }
+        }
+    });
+
+    let mut last_progress = std::time::Instant::now();
     loop {
+        loop {
+            match receiver.try_recv() {
+                Ok(_) => last_progress = std::time::Instant::now(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
         if let Some(status) = child.try_wait()? {
             if !status.success() {
                 bail!("`setup` falló (exit {:?})", status.code());
             }
             return Ok(());
         }
-        std::thread::sleep(poll_interval);
-        let size = dir_size(models_root);
-        if size != last_size {
-            last_size = size;
-            silent_for = std::time::Duration::ZERO;
-            continue;
+        match receiver.recv_timeout(poll_interval) {
+            Ok(_) => last_progress = std::time::Instant::now(),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(poll_interval);
+            }
         }
-        silent_for += poll_interval;
-        if silent_for >= silence_limit {
-            // El hijo pudo morir entre la comprobación y el `kill`: el fallo de esa
-            // carrera no cambia el veredicto, que es el silencio, pero se avisa.
+        if last_progress.elapsed() >= silence_limit {
             if let Err(error) = child.kill() {
                 eprintln!("aviso: no se pudo matar el `setup` colgado: {error}");
             }
@@ -317,31 +330,11 @@ fn watch_child(
                 eprintln!("aviso: no se pudo recoger el `setup` abortado: {error}");
             }
             bail!(
-                "`setup` no escribió nada en '{}' durante {:?}: se abortó para no esperar indefinidamente a un flujo mudo; `setup --force-update --yes` repara el estado parcial",
-                models_root.display(),
+                "`setup` no informó avance de bytes durante {:?}: se abortó para no esperar indefinidamente a un flujo mudo; `setup --force-update --yes` repara el estado parcial",
                 silence_limit
             );
         }
     }
-}
-
-/// Tamaño total en bytes de un árbol de directorios; 0 si no se puede leer.
-fn dir_size(path: &std::path::Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(path) else {
-        return 0;
-    };
-    let mut total = 0;
-    for entry in entries.flatten() {
-        let Ok(meta) = std::fs::metadata(entry.path()) else {
-            continue;
-        };
-        if meta.is_dir() {
-            total += dir_size(&entry.path());
-        } else {
-            total += meta.len();
-        }
-    }
-    total
 }
 
 /// Salida de `rustup component list --installed`; `None` si no hay `rustup`.
@@ -363,7 +356,7 @@ mod tests {
     use super::*;
     use crate::doctor::{Report, Row, Status};
 
-    /// Hijo que tarda mucho y no escribe nada: el vigilante tiene que abortarlo.
+    /// Hijo que tarda mucho y no informa latidos: el vigilante tiene que abortarlo.
     /// Se lanza el binario directo, sin `cmd /C`, para que el `kill` alcance al
     /// proceso que se mide y no quede un huérfano.
     fn slow_silent_child() -> std::process::Child {
@@ -378,26 +371,24 @@ mod tests {
         };
         command
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("se lanza el hijo lento de la prueba")
     }
 
-    /// Un hijo que deja de escribir en la raíz de modelos se aborta, y queda
-    /// terminado: el vigilante no espera indefinidamente a un flujo mudo.
+    /// Un hijo sin latidos de progreso se aborta y queda terminado: el vigilante
+    /// no espera indefinidamente a un flujo mudo.
     #[test]
-    fn watchdog_aborts_a_child_that_stops_writing() {
-        let dir = tempfile::tempdir().expect("directorio temporal de la raíz");
+    fn watchdog_aborts_a_child_without_progress_heartbeats() {
         let mut child = slow_silent_child();
         let error = watch_child(
             &mut child,
-            dir.path(),
             std::time::Duration::from_millis(200),
             std::time::Duration::from_millis(20),
         )
-        .expect_err("un hijo que no escribe se aborta");
+        .expect_err("un hijo que no informa progreso se aborta");
         assert!(
-            error.to_string().contains("no escribió nada"),
+            error.to_string().contains("no informó avance de bytes"),
             "el error nombra el silencio, no otra causa: {error}"
         );
         assert!(
@@ -424,7 +415,7 @@ mod tests {
         }
         command
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("se lanza el hijo de la prueba")
     }
@@ -433,33 +424,62 @@ mod tests {
     /// propaga con su código.
     #[test]
     fn watchdog_reports_child_exit_status() {
-        let dir = tempfile::tempdir().expect("directorio temporal de la raíz");
         let limits = (
             std::time::Duration::from_secs(5),
             std::time::Duration::from_millis(20),
         );
         let mut ok = spawn_exit_child(0);
-        assert!(watch_child(&mut ok, dir.path(), limits.0, limits.1).is_ok());
+        assert!(watch_child(&mut ok, limits.0, limits.1).is_ok());
 
         let mut failing = spawn_exit_child(3);
-        assert!(watch_child(&mut failing, dir.path(), limits.0, limits.1).is_err());
+        assert!(watch_child(&mut failing, limits.0, limits.1).is_err());
     }
 
-    /// El rastro que mide el vigilante suma los ficheros de los subdirectorios,
-    /// que es donde `hf-hub` escribe los blobs mientras descarga.
+    /// Hijo que emite latidos aunque mantenga igual el tamaño de un archivo.
+    fn heartbeat_child(duration_ms: u64) -> std::process::Child {
+        let exe = std::env::current_exe().expect("se resuelve el binario de prueba");
+        std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "bootstrap::tests::heartbeat_child_process",
+                "--nocapture",
+            ])
+            .env("AVI_SETUP_HEARTBEAT_CHILD", duration_ms.to_string())
+            .stderr(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("se lanza el hijo de latidos de prueba")
+    }
+
     #[test]
-    fn dir_size_walks_subdirectories() {
-        let dir = tempfile::tempdir().expect("directorio temporal de la raíz");
-        std::fs::create_dir_all(dir.path().join("sub")).expect("se crea el subdirectorio");
-        std::fs::write(dir.path().join("a.bin"), [0u8; 3]).expect("se escribe el primer fichero");
-        std::fs::write(dir.path().join("sub").join("b.bin"), [0u8; 5])
-            .expect("se escribe el fichero anidado");
-        assert_eq!(dir_size(dir.path()), 8);
-        assert_eq!(
-            dir_size(&dir.path().join("no_existe")),
-            0,
-            "una raíz ausente mide cero, no falla"
-        );
+    fn heartbeat_child_process() {
+        let Ok(duration) = std::env::var("AVI_SETUP_HEARTBEAT_CHILD") else {
+            return;
+        };
+        let duration = duration.parse::<u64>().expect("duración entera");
+        let dir = tempfile::tempdir().expect("directorio temporal del archivo preextendido");
+        let path = dir.path().join("blob.incomplete");
+        let file = std::fs::File::create(path).expect("se crea el blob");
+        file.set_len(1024 * 1024).expect("se preextiende el blob");
+        let end = std::time::Instant::now() + std::time::Duration::from_millis(duration);
+        let mut completed = 0;
+        while std::time::Instant::now() < end {
+            completed += 1;
+            eprintln!("AVI_SETUP_HEARTBEAT {completed} 1000000");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// Una transferencia válida no se aborta aunque no se mueva el tamaño del árbol.
+    #[test]
+    fn watchdog_keeps_child_alive_on_byte_heartbeats() {
+        let mut child = heartbeat_child(350);
+        watch_child(
+            &mut child,
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_millis(20),
+        )
+        .expect("los latidos mantienen vivo el setup aunque el tamaño no cambie");
     }
 
     /// Informe de fixture: una fila ejecutable, una manual y una correcta.

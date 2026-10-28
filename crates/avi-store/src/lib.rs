@@ -1116,10 +1116,14 @@ fn verify_pinned_artifact(snapshot: &Path, model_name: &str) -> Result<()> {
 }
 
 /// Destinatario del progreso de una descarga: recibe los bytes completados y el
-/// total del modelo cada vez que cambian. Lo implementa quien dibuja, que es quien
-/// conoce el contexto (qué modelo es y cuántos hay); este crate solo calcula.
+/// total del modelo cada vez que cambian. Lo implementa quien dibuja o vigila la
+/// descarga, que es quien conoce el contexto; este crate solo calcula.
 pub trait TransferObserver: Send + Sync {
     fn update(&self, completed: u64, total: u64);
+
+    /// Recibe las mismas muestras que `update` sin afectar la salida visible.
+    /// Implementaciones que vigilan el proceso pueden usarlo como latido de bytes.
+    fn heartbeat(&self, _completed: u64, _total: u64) {}
 }
 
 /// Cálculo del progreso de un modelo a partir de los eventos de `hf-hub`.
@@ -1127,12 +1131,12 @@ pub trait TransferObserver: Send + Sync {
 /// `hf-hub` emite por el mismo canal el `Start` del snapshot (suma de tamaños de
 /// todos los archivos, tras sus HEAD) y después un `Start` por cada archivo que
 /// no va por xet; los `Progress` traen bytes absolutos por archivo, y
-/// `AggregateProgress` repite en bloque lo que el lote xet ya informa por
-/// archivo. Por eso: el total es el del primer `Start` (o, si llega a 0, la suma
-/// de los totales por archivo), lo completado es la suma del último
-/// `bytes_completed` de cada archivo **que realmente se transfirió**, y
-/// `AggregateProgress` se ignora. Un archivo que llega ya en caché (`Complete`
-/// sin un `Started`/`InProgress` previo) no cuenta como transferido.
+/// `AggregateProgress` trae bytes de red para el lote xet. Por eso el total se
+/// toma del primer `Start` (o, si llega a 0, de la suma por archivo), lo
+/// completado visible es la suma del último `bytes_completed` por archivo
+/// transferido y los eventos agregados se reservan como latidos del watchdog.
+/// Un archivo en caché (`Complete` sin `Started`/`InProgress`) no cuenta como
+/// transferido.
 #[derive(Default)]
 struct TransferTracker {
     snapshot_total: Option<u64>,
@@ -1179,7 +1183,8 @@ impl TransferTracker {
 }
 
 /// Handler de `hf-hub` que pasa cada evento por el `TransferTracker` y avisa
-/// al observador cuando el progreso cambia.
+/// al observador cuando el progreso cambia. Los eventos agregados de xet también
+/// generan latidos aunque el avance por archivo no cambie.
 struct TrackerHandler {
     tracker: std::sync::Mutex<TransferTracker>,
     observer: Arc<dyn TransferObserver>,
@@ -1196,7 +1201,28 @@ impl hf_hub::progress::ProgressHandler for TrackerHandler {
         if let Some((completed, total)) = tracker.apply(event) {
             // Mantener el orden del cálculo y de la notificación: los eventos
             // pueden llegar desde tareas distintas y la barra no debe retroceder.
+            self.observer.heartbeat(completed, total);
             self.observer.update(completed, total);
+        }
+        match event {
+            hf_hub::progress::ProgressEvent::Download(
+                hf_hub::progress::DownloadEvent::AggregateProgress {
+                    bytes_completed,
+                    total_bytes,
+                    ..
+                },
+            ) => self.observer.heartbeat(*bytes_completed, *total_bytes),
+            hf_hub::progress::ProgressEvent::Download(
+                hf_hub::progress::DownloadEvent::Progress { files },
+            ) => {
+                for file in files {
+                    if file.status != hf_hub::progress::FileStatus::Complete {
+                        self.observer
+                            .heartbeat(file.bytes_completed, file.total_bytes);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

@@ -45,17 +45,18 @@ la integridad se verifica cotejando los checksums SHA-256.
   mientras avanza el desarrollo (Keep a Changelog) y no conserva marcadores
   `TODO: curar`. El corte no genera contenido: **promueve** esa sección a la
   versión que se publica.
-- **Árbol de trabajo limpio y al menos un commit desde el último tag.** La
-  curación del CHANGELOG también debe estar commiteada; `xtask release` aborta
-  en cualquier otro caso.
+- **Árbol de trabajo limpio y al menos un commit desde el último tag.** Los
+  cambios previos al bump —incluida la curación del CHANGELOG— deben estar
+  commiteados antes de invocar `xtask release`; el comando aborta si no se cumple.
 - **`THIRD-PARTY-LICENSES.md` en sincronía con `Cargo.lock`.** Cada vez que
   cambia `Cargo.lock`, hay que regenerar el inventario con
   `cargo xtask licenses` y revisar el diff. La comprobación
   `cargo xtask licenses --check` compara el inventario completo:
-  nombre, versión, licencia y familia de cada fila, y los totales.
-- **Revisiones de los modelos auditadas.** Los modelos Qwen3-TTS y opus-mt se
-  descargan con `ai-voice-interconnector setup` y no se empaquetan. Para
-  incorporar una revisión nueva de alguno:
+  nombre, versión, licencia, familia y totales.
+- **Revisiones de los modelos auditadas.** Los seis modelos fijados (Qwen3-TTS,
+  dos pares opus-mt, Parakeet y DPDFNet) se descargan con
+  `ai-voice-interconnector setup` y no se empaquetan. Para incorporar una
+  revisión nueva de alguno:
   1. consultar el `sha` vigente en `https://huggingface.co/api/models/<repo>`;
   2. auditar el diff de esa revisión en HuggingFace;
   3. verificarla con `setup` y `doctor`.
@@ -65,202 +66,196 @@ la integridad se verifica cotejando los checksums SHA-256.
 
 ### Aprovisionamiento de los recursos antes de cortar
 
-La puerta de pruebas con recursos exige tres cosas en la máquina: el FFmpeg del
-pin, el ONNX Runtime del pin y el motor TTS compilado. Se aprovisionan con las
-órdenes del repositorio, nunca a mano:
+La puerta de pruebas con recursos exige FFmpeg y ONNX Runtime de los pines,
+el motor TTS compilado y los seis modelos completos. Los cinco modelos
+obligatorios bloquean el arranque del daemon; `dpdfnet8` es el sexto pin y es
+opcional para el arranque, pero requerido por las superficies `--denoise` y
+`speech denoise`.
+
+**Ensayo del bootstrap desde cero.** `clean --all` no arranca sin binario del
+producto: su capa app delega en `self uninstall`. Usa la siguiente secuencia para
+probar la desinstalación y, después, arrancar el bootstrap realmente en frío:
 
 ```bash
-cargo xtask ffmpeg                     # FFmpeg del pin, verificado por SHA-256
-cargo xtask bootstrap --models --yes   # ONNX Runtime, motor y los seis modelos
+cargo xtask clean --repo --dry-run             # revisar artefactos del repositorio
+cargo xtask clean --repo --yes                 # primera limpieza; no necesita binario de producto
+cargo build --package ai-voice-interconnector  # semilla para self uninstall
+cargo xtask clean --app --dry-run              # revisar el plan de desinstalación
+cargo xtask clean --app --yes                  # desinstalar el estado con el binario del repo
+cargo xtask clean --repo --dry-run             # retirar también la semilla compilada
+cargo xtask clean --repo --yes                 # deja target/ y bundles fuera para el cold start
+cargo xtask ffmpeg                             # FFmpeg del pin, verificado por SHA-256
+cargo xtask bootstrap --models --yes           # ORT, motor y seis modelos
 ```
 
-La descarga de modelos acota el silencio por dos vías, y las dos existen por un
-cuelgue real: un flujo HTTP medio abierto no entrega datos **ni** error, así que
-sin plazo la descarga espera para siempre. La primera vía corta la lectura tras
-sesenta segundos sin un byte; la segunda es el vigilante de `bootstrap`, que mata
-el `setup` si la raíz de modelos deja de crecer durante diez minutos.
+La primera capa `--repo` puede compilar `xtask` para ejecutar el limpiador; su
+propio ejecutable se retira al terminar. La compilación semilla posterior crea
+el binario que necesita `--app`; la segunda capa `--repo` elimina los artefactos
+del producto antes del aprovisionamiento. Así `ffmpeg` y `bootstrap` arrancan sin
+el binario del producto, bundles nativos ni binario del motor. `xtask` deberá
+recompilarse para ejecutar cada orden Cargo que lo invoque. Cierra
+`rust-analyzer` y procesos del producto o de `xtask` antes de cada borrado de
+repo. Al pedir `clean --repo --yes`, el propio `xtask.exe` puede quedar en un
+borrado diferido hasta que el comando salga. En Windows, no continúes mientras
+exista `target/` o `target.removal-failed.log`; identifica el proceso que retiene
+el DLL y comprueba que la retirada terminó. Si `--app` o el borrado diferido fallan,
+detente el procedimiento y resuelve la causa. Ninguno de estos comandos toca
+`CARGO_HOME`, rustup, MSYS2 ni `CARGO_HOME/bin`.
+
+**Preparación normal del gate.** Si no se ensaya desde cero, conserva recursos
+ya verificados; ejecuta `cargo xtask ffmpeg` y
+`cargo xtask bootstrap --models --yes` cuando falte o esté dañado algún requisito.
+
+La descarga acota el silencio por dos vías: el cliente corta la lectura tras
+sesenta segundos sin bytes y el vigilante de `bootstrap` aborta `setup` tras diez
+minutos sin recibir el latido de bytes de `TransferObserver`. El latido viene del
+progreso de archivo HTTP y de los eventos agregados de xet; no depende del tamaño
+del árbol, que puede quedar estable porque hf-hub preextiende los blobs. El plazo
+es sin progreso, no total: una transferencia lenta puede durar más de diez
+minutos si sigue informando bytes.
 
 **Nunca esperes a un `setup` que «parece lento».** La selección completa son
-5,9 GB y a 30-60 MB/s se completa en minutos: un `setup` que se alarga está
-colgado, no descargando.
+5,9 GB y a 30-60 MB/s se completa en minutos. Si el progreso queda mudo durante
+el límite, el proceso falla explícitamente en vez de seguir esperando.
 
 **Cómo se mide el avance, si hay que mirarlo.** El tamaño del directorio de la
-caché **no** sirve como señal: `hf-hub` extiende cada fichero en bloques
-pre-reservados y el total se queda plano durante minutos con la transferencia
-viva. Las señales fiables son los bytes escritos por el proceso
+caché **no** sirve como señal: `hf-hub` preextiende algunos ficheros y el total
+puede quedarse plano durante minutos con la transferencia viva. Las señales
+fiables son los bytes escritos por el proceso
 (`(Get-CimInstance Win32_Process -Filter 'ProcessId=<pid>').WriteTransferCount`
 en Windows) y el tamaño y la fecha de cada `blobs/*.incomplete`. Una sola muestra
-no concluye nada: se compara el mismo valor dos veces, separadas por varios
+no concluye nada: compara el mismo valor en dos muestras separadas por varios
 minutos.
 
-**Después de cualquier interrupción, verifica antes de darlo por bueno.** El
-resumen que imprime `setup` no acredita que los snapshots estén completos; la
-verificación es independiente del propio proceso:
+**Después de cualquier interrupción, verifica independientemente el resultado.**
+El resumen que imprime `setup` no acredita que todos los snapshots estén
+completos:
 
 ```bash
-cargo run -q -- doctor --json   # "missing" vacío: cada pin cumple su contrato de ficheros
-find <raíz de modelos> -name '*.incomplete' | wc -l   # 0
+cargo run -q -- doctor --json
 ```
 
-Si el estado es dudoso o quedan restos, la reparación la hace el propio binario:
+En Windows, desde Git Bash, comprueba que no queden cuerpos incompletos:
+
+```bash
+find "$(cygpath -u "$LOCALAPPDATA")/ai-voice-interconnector/cache/models" -name '*.incomplete' | wc -l  # debe dar 0
+```
+
+En otra shell, sustituye esa ruta por `models.root` del JSON. `models.missing`
+debe ser `[]`, `pending_artifacts` debe estar correcto y el conteo debe ser cero.
+En un canal `unmanaged`, `install_receipt` y `path_resolves` pueden fallar porque
+no hay instalación registrada; los chequeos aplicables al canal deben estar
+correctos y `doctor` debe terminar con código 0.
+
+Si el estado es dudoso o quedan restos, repara mediante el producto:
 
 ```bash
 cargo run -q -- setup --force-update --yes   # purga snapshots y caché xet, y re-descarga
 ```
 
-Un `setup` normal ya repara un snapshot al que le faltan ficheros del contrato —un
-pin sin sus pesos no cuenta como provisionado—, pero `--force-update` es la vía
-cuando hay que partir de cero.
+Un `setup` normal repara un snapshot al que le faltan ficheros del contrato —un
+pin sin sus pesos no cuenta como provisionado—; `--force-update` es la opción
+para descartar todo el estado de modelos y empezar de nuevo.
+
+`bootstrap --models` puede informar que falta `sccache` en el paso `doctor`; sin
+`--system`, es una recomendación informativa. La condición de éxito es código 0
+y que las verificaciones independientes confirmen todos los recursos.
 
 ## 1. Corte: crear y publicar el tag
 
-El repo es **trunk-based sobre `main`**. El trabajo diario y el corte ocurren en
-`main`, y el tag `v*` se crea sobre `main`. El push del tag es el único
-disparador de CI.
+El repo es **trunk-based sobre `main`**. Los cambios previos al bump se
+commitean primero; `cargo xtask release` exige árbol limpio y commits desde el
+último tag, luego modifica los portadores. El commit del bump es posterior.
 
 ```bash
-cargo xtask release X.Y.Z   # o /release X.Y.Z (skill orquestadora)
+cargo xtask release X.Y.Z   # puertas + bump de portadores; todavía no crea commit/tag
 git add -A
 git commit -m "release: vX.Y.Z"      # conventional-commits
 git tag -a vX.Y.Z -m "vX.Y.Z"
 git push origin main --tags           # sin --tags el tag no dispara build-all
 ```
 
-`cargo xtask release X.Y.Z` hace el corte completo:
+Antes del commit/tag, revisa el diff, en especial el CHANGELOG. La fecha debe
+aparecer en `## [X.Y.Z] — AAAA-MM-DD`; el índice debe apuntar al ancla de GitHub
+y debe existir el enlace de comparación con el tag anterior. Después de
+`cargo test --all`, no repitas `cargo xtask changelog --check` en los fuentes
+locales: esa comprobación exige que `[No publicado]` haya desaparecido y se
+reserva para el tag. El gate local `cargo xtask release` ya validó el CHANGELOG
+promovido.
 
-1. **Pre-validación.** Aborta sin tocar archivos si alguna de estas condiciones
-   falla:
-   - la versión tiene formato `X.Y.Z`;
-   - `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock`;
-   - el código pasa `cargo fmt --all --check`;
-   - `cargo clippy --all-targets -- -D warnings` no reporta avisos;
-   - el árbol está limpio;
-   - hay commits desde el último tag;
-   - `cargo test --workspace --features full -- --include-ignored` pasa. Es la
-     última puerta de solo lectura y la más lenta: ejecuta las pruebas de
-     contrato y las que requieren recursos locales (modelos, motor, instalación
-     real), así que exige tenerlos aprovisionados en la máquina
-     (`ai-voice-interconnector setup` y
-     `cargo xtask build-engine`). Antes de lanzarla, la gate asegura
-     `ort-bundle/` en la versión fijada de ONNX Runtime y la impone con
-     `ORT_DYLIB_PATH`, de modo que las pruebas de STT usan el mismo runtime que
-     se distribuye y no otra `onnxruntime.dll` del sistema. Si falla, aborta
-     antes del bump sin modificar nada.
+`cargo xtask release X.Y.Z` ejecuta estas puertas antes de mutar archivos:
 
-   **El entorno de esa puerta no es opcional.** La gate lo establece ella misma
-   antes de lanzarla, y hay que reproducirlo tal cual si se ejecuta a mano:
+1. La versión tiene formato `X.Y.Z`.
+2. `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock`.
+3. `cargo fmt --all --check` y `cargo clippy --all-targets -- -D warnings` pasan.
+4. El árbol está limpio y hay commits desde el último tag.
+5. Pasa `cargo test --workspace --features full -- --include-ignored`, la
+   puerta más lenta: incluye pruebas con modelos, motor e instalación real.
+   Requiere recursos aprovisionados con `cargo xtask ffmpeg` y
+   `cargo xtask bootstrap --models --yes`. La gate asegura
+   `ort-bundle/` en la versión fijada y la impone con `ORT_DYLIB_PATH`, para que
+   STT use el runtime incluido. Un fallo aborta antes del bump.
 
-   ```bash
-   AVI_ALLOW_CWD_VENDOR=1 ORT_DYLIB_PATH=<raíz del repo>/ort-bundle/onnxruntime.dll \
-     cargo test --workspace --features full -- --include-ignored
-   ```
+En el commit local del bump, `cargo test --all` usa el fixture de versión que el
+propio `cargo xtask release` actualizó. La comprobación estricta
+`cargo xtask changelog --check` corre en CI contra el commit del tag, cuya versión
+`Cargo.toml` ya es la nueva y cuyo CHANGELOG promovido debe haber eliminado
+`[No publicado]`.
 
-   - `AVI_ALLOW_CWD_VENDOR=1` habilita la capa `<cwd>/vendor`: los hijos CLI que
-     lanzan las pruebas resuelven el motor recién compilado en
-     `vendor/qwen3-tts/`, sin exigir un programa instalado. Sin este opt-in, un
-     entorno limpio falla las pruebas del motor aunque todo esté provisionado.
-   - `ORT_DYLIB_PATH` con la **ruta absoluta**. Vale tanto el fichero
-     (`<raíz>/ort-bundle/onnxruntime.dll`) como el directorio que lo contiene
-     (`<raíz>/ort-bundle`): el STT comprueba si el valor es un directorio y, si
-     lo es, le añade el nombre de la librería de su sistema. Lo que no vale es
-     una ruta **relativa**, porque `cargo test` usa la raíz de cada paquete como
-     directorio de trabajo: `ort-bundle` existe en el crate raíz —que es el
-     repo— y no existe en un crate miembro, cuyo directorio de trabajo es
-     `crates/<crate>/`. Ahí el valor no resuelve a ningún directorio, se usa
-     tal cual y la carga falla con «el fichero no existe».
+Si se reproduce la puerta a mano, el entorno es obligatorio:
 
-   Sin esas dos variables, la puerta falla por motivos de entorno y no de
-   producto: el fallo se confunde con un defecto del código y se depura donde no
-   toca. La ruta absoluta es la que la gate usa por la misma razón.
-2. **Bump.** Escribe `X.Y.Z` en `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
-   `tests/golden/cli_version.json` y `SOURCE-OFFER.md`. `SOURCE-OFFER.md` es el
-   aviso de disponibilidad de la fuente (MPL-2.0 §3.2) que viaja dentro de los 4 artefactos.
-   Después regenera el inventario de `THIRD-PARTY-LICENSES.md`, que incluye la
-   versión del propio crate.
-3. **Promoción.** Convierte `## [No publicado]` de `CHANGELOG.md` en
-   `## [X.Y.Z] — AAAA-MM-DD` y reemplaza su entrada del índice por una que apunta
-   al ancla que GitHub asigna a la cabecera. También agrega la definición del
-   enlace de comparación con el tag anterior. Falla si no existe
-   `## [No publicado]`, si quedan marcadores `TODO: curar` o si `## [X.Y.Z]` ya
-   existe.
-4. **Post-comprobación.** Verifica `THIRD-PARTY-LICENSES.md`, `SOURCE-OFFER.md`
-   y el CHANGELOG completo con las mismas funciones que usan las puertas de CI. Si algo falla en este paso,
-   los archivos ya quedaron modificados: corrígelos a mano o revierte con
-   `git checkout .` y reintenta.
+```bash
+AVI_ALLOW_CWD_VENDOR=1 ORT_DYLIB_PATH=<ruta absoluta del repo>/ort-bundle/onnxruntime.dll \
+  cargo test --workspace --features full -- --include-ignored
+```
 
-Antes de commitear, revisa el diff, en especial la sección promovida del
-CHANGELOG.
+`AVI_ALLOW_CWD_VENDOR=1` permite a los hijos CLI resolver el motor en
+`vendor/qwen3-tts/` sin una instalación. `ORT_DYLIB_PATH` debe ser absoluto:
+los tests corren desde directorios de paquetes miembros donde una ruta relativa
+a `ort-bundle/` no resuelve.
+
+El bump versiona `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
+`tests/golden/cli_version.json` y `SOURCE-OFFER.md`; regenera
+`THIRD-PARTY-LICENSES.md` y promueve `## [No publicado]` a la sección de versión
+fechada. Las post-comprobaciones verifican licencias, `SOURCE-OFFER.md` y
+CHANGELOG. Si una post-comprobación falla, los archivos ya se modificaron:
+corrígelos de forma explícita o revierte únicamente esos cambios y vuelve a
+validar. No avances al tag hasta que todas las comprobaciones pasen.
 
 ## 2. Automático: lo que hace el CI
 
-El pipeline `build-all` corre solo en tags `v*` (`branches: ignore: /.*/`). La
-justificación del diseño y de las cachés está en [docs/CI.md](CI.md), y la
-definición ejecutable en `.circleci/config.yml`.
-Con el tag pusheado, ejecuta sin intervención:
+`build-all` corre solo en tags `v*` (`branches: ignore: /.*/`). La justificación
+del diseño y las cachés está en [docs/CI.md](CI.md), y la definición ejecutable
+en `.circleci/config.yml`. Con el tag publicado, ejecuta sin intervención:
 
-1. **Puertas.** Todas son `requires:` de los builds. Si una falla, no
-   se compila ni se publica nada.
+1. **Puertas.** Todas son requisito de los builds; si alguna falla, no se compila
+   ni se publica.
 
    | Puerta | Qué comprueba |
    |---|---|
-    | `test-linux`, `test-windows`, `test-macos` | `cargo nextest run --all` en cada SO nativo |
+   | `test-linux`, `test-windows`, `test-macos` | `cargo nextest run --all` en cada SO nativo |
    | `coverage` | Cobertura de la suite |
-    | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de los bootstrap (`tests/bootstrap/`, bats contra `openssl s_server`, Pester contra `Serve.ps1`) |
-   | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render para la versión del tag (`source-offer --check`) y `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock` (`licenses --check`) |
-   | `validate-changelog` | La promoción está completa (`changelog --check`): cabecera `[X.Y.Z]`, entrada del índice con el ancla de GitHub, enlace de comparación, sin `TODO: curar` y sin `[No publicado]` |
+   | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de `tests/bootstrap/`: bats contra `openssl s_server` y Pester contra `Serve.ps1` |
+   | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render y el inventario de terceros con `Cargo.lock` |
+   | `validate-changelog` | Sección `[X.Y.Z]`, entrada del índice/ancla, enlace de comparación, sin `TODO: curar` ni `[No publicado]` |
 
-2. **Builds.** Son `build-windows-x64`, `build-linux-x64`, `build-linux-arm64`
-    y `build-darwin-arm64`. Cada uno:
-    - comprueba el binario recién compilado: su versión contra el tag
-      (`--version`; en Windows además `version --json`) y `voice list` con la
-      voz `default`;
-    - compila el motor TTS y ejecuta su `--self-test`;
-    - empaqueta su artefacto con `cargo xtask package
-      --expect-version "${CIRCLE_TAG#v}"` (falla de inmediato si el tag difiere de
-      `VERSION`; repite `version` y `voice list`, descarga ONNX Runtime
-      verificando el SHA-256 fijado en `packaging/pins.json`, monta el bundle y
-      audita que ningún binario importe nada fuera del sistema base del target,
-      ni exija símbolos por encima de `GLIBC_2.28`/`GLIBCXX_3.4.21` en Linux ni
-      un `minos` mayor que 26.0 en macOS);
-    - ejecuta el humo de instalación (`self install --no-setup --no-modify-path`
-      en sandbox con raíces reubicadas, y después `--version` del binario
-      instalado);
-    - emite su SHA-256 en el log, en el step «Emitir SHA-256 del artefacto»;
-    - en Linux, sus artefactos pasan la verificación de portabilidad (`verify-portability`): sin
-      compilar nada, en `almalinux:8` y `debian:stable-slim`, `--version`,
-      `voice list`, `self install`, `--version` por el symlink y la
-      comprobación `onnx_runtime` de `doctor`; `publish-release` la exige;
-    - lo persiste en el workspace compartido.
+2. **Builds.** `build-windows-x64`, `build-linux-x64`, `build-linux-arm64` y
+   `build-darwin-arm64`:
+   - verifican versión del binario contra el tag y `voice list` con `default`;
+   - compilan el motor TTS y ejecutan `--self-test`;
+   - empaquetan con `cargo xtask package --expect-version ...`, descargan ORT
+     validando SHA-256 y auditan dependencias/ABI del target;
+   - ejecutan el smoke de instalación `self install --no-setup --no-modify-path`
+     en sandbox y persisten el artefacto en el workspace.
 
-    Los artefactos son:
-    - `ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`
-    - `ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`
-    - `ai-voice-interconnector-X.Y.Z-arm64-linux.tar.gz`
-    - `ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`
+   Los cuatro artefactos son Windows x64, Linux x64, Linux arm64 y macOS arm64.
+   Se añaden `install.sh`, `install.ps1` y `SHA256SUMS.txt` al Release.
 
-    más los dos bootstrap estampados (`install.sh`, `install.ps1`), que
-    `publish-release` suma al release.
-3. **`publish-release`** (después de los builds):
-    - Estampa la versión del tag en el marcador `__AVI_STAMPED_VERSION__` de
-      ambos bootstrap (`packaging/bootstrap/install.sh` e `install.ps1`), con
-      exactamente una sustitución verificada por fichero.
-    - Toma los artefactos del workspace. El binario que se adjunta es el
-      mismo que pasó las puertas.
-    - Genera `SHA256SUMS.txt` sobre los artefactos y los dos bootstrap.
-    - Extrae de `CHANGELOG.md` la sección `[X.Y.Z]` como notas. Si no la
-      encuentra, falla.
-    - Agrega a las notas un pie con la disponibilidad de la fuente (MPL-2.0 §3.2): el
-      tarball del tag (`archive/refs/tags/vX.Y.Z.tar.gz`) y el enlace al tag.
-    - Publica el GitHub Release sobre `vX.Y.Z` con los artefactos, los dos
-      bootstrap y `SHA256SUMS.txt`, y las notas. Si el tag ya tiene un Release,
-      `gh release create` falla.
-4. **`publish-metadata`** (después de `publish-release`):
-   - Descarga `SHA256SUMS.txt` del Release publicado.
-   - Genera `Casks/ai-voice-interconnector.rb` con la versión del tag y el
-     sha256 del `tar.gz` de macOS (`cargo xtask cask`).
-   - Lo empuja al tap `homebrew-ai-voice-interconnector`.
-
-   Si el Cask no cambia, no empuja nada, así que se puede reintentar sin riesgo.
+3. **`publish-release`** estampa la versión en ambos bootstrap, genera los
+   checksums y publica las notas extraídas del CHANGELOG con los enlaces de la
+   fuente (MPL-2.0 §3.2).
+4. **`publish-metadata`** obtiene los checksums, actualiza el Cask de Homebrew y
+   lo empuja al tap. Si el Cask no cambió, no empuja nada.
 
 ## 3. Verificación post-publicación
 
@@ -268,40 +263,39 @@ Con el tag pusheado, ejecuta sin intervención:
 gh release view vX.Y.Z --json tagName,assets
 ```
 
-En la pestaña **Releases** aparece `vX.Y.Z` ya público y marcado como *latest*.
-Verifica:
+Verifica que el Release `vX.Y.Z` esté publicado y marcado como *latest*:
 
-- Los **7 assets** están presentes (4 artefactos, 2 bootstrap y `SHA256SUMS.txt`).
-- Las **notas** corresponden a la sección `[X.Y.Z]` del `CHANGELOG.md` e
-  incluyen el pie de disponibilidad de la fuente (MPL-2.0 §3.2) con el enlace al tarball
-  (`.../archive/refs/tags/vX.Y.Z.tar.gz`).
-- Opcional: los hashes de `SHA256SUMS.txt` coinciden con los que cada build
-  emitió en el log del pipeline.
+- Tiene los **7 assets**: cuatro artefactos, dos bootstrap y
+  `SHA256SUMS.txt`.
+- Las notas coinciden con la sección `[X.Y.Z]` del CHANGELOG e incluyen el
+  enlace al tarball fuente `archive/refs/tags/vX.Y.Z.tar.gz`.
+- Opcionalmente, compara los hashes con los emitidos por los builds.
 
 **Recuperación ante fallas:**
 
-- **Falla una puerta o un build.** No se publicó nada. Borra el tag
-  (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`), corrige y vuelve a
-  crear el tag sobre el commit corregido.
-- **El Release publicado tiene un defecto.** Borra el Release
-  (`gh release delete vX.Y.Z --yes`) y el tag, corrige y vuelve a crear el tag.
+- Si falla una puerta/build y no hubo publicación, borra el tag local y remoto,
+  corrige y vuelve a crear el tag sobre el commit corregido:
+  `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`.
+- Si el Release publicado tiene un defecto, elimina también el Release con
+  `gh release delete vX.Y.Z --yes` antes de borrar el tag y republicar.
 
-**Cierre:** con el Release verificado, y con el daemon y rust-analyzer cerrados
-(en Windows `cargo clean` falla si algún proceso tiene archivos abiertos en
-`target/`), vacía `target/`:
+**Cierre:** después de verificar el Release, cierra daemon, `rust-analyzer` y
+otros procesos que retengan archivos. Revisa y ejecuta la capa repo oficial:
 
 ```bash
-cargo clean
+cargo xtask clean --repo --dry-run
+cargo xtask clean --repo --yes
 ```
 
-El corte es un commit directo en `main`, así que no dispara el hook
-`post-merge`, y la poda fina conserva los artefactos de hashes obsoletos. Vaciar
-`target/` al cerrar cada release acota su crecimiento a un ciclo de trabajo.
+Comprueba que `target/` desapareció y que no queda
+`target.removal-failed.log`. El corte es un commit directo en `main`, así que no
+dispara `post-merge`; esta limpieza limita los artefactos acumulados al ciclo
+entre releases.
 
 ## 4. Verificación del usuario final
 
-El usuario final verifica la integridad de su descarga contra el
-`SHA256SUMS.txt` publicado en el Release, con los comandos de
+El usuario final verifica la integridad de su descarga contra
+`SHA256SUMS.txt`, publicado en el Release, con los comandos de
 [Descargar binario pre-compilado](../README.md#descargar-binario-pre-compilado).
 El modelo de amenaza y la nota sobre binarios sin firmar están en
 [SECURITY.md](../SECURITY.md).

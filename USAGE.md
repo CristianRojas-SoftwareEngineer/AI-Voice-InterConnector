@@ -58,7 +58,7 @@ Para instalar, ver [Instalación en el README](README.md#instalación). Si traba
 
 ## Modelos (`setup`)
 
-`setup` descarga **los 5 modelos** desde HuggingFace Hub de forma nativa
+`setup` descarga **los 6 modelos** desde HuggingFace Hub de forma nativa
 (crate `hf-hub`, TLS rustls) a la **caché exclusiva de la aplicación**
 (rutas por SO y efecto de `HF_HUB_CACHE`/`HF_HOME` en
 [Ubicaciones en disco por SO](docs/BUILD.md#ubicaciones-en-disco-por-so)):
@@ -66,15 +66,17 @@ Para instalar, ver [Instalación en el README](README.md#instalación). Si traba
 | Modelo | Repo HF | Uso |
 |---|---|---|
 | `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
-| `opus-mt-es-en` / `opus-mt-en-es` | `CristianRojaas/opus-mt-es-en-ct2-int8` / `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción es↔en (derivados int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertidos a CTranslate2) |
+| `opus-mt-es-en` | `CristianRojaas/opus-mt-es-en-ct2-int8` | Traducción español → inglés (derivado int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertido a CTranslate2) |
+| `opus-mt-en-es` | `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción inglés → español (derivado int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertido a CTranslate2) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (ONNX int8) |
+| `dpdfnet8` | `Ceva-IP/DPDFNet` | Limpieza de ruido (`--denoise` y `speech denoise`); no bloquea el arranque del daemon |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Clonado de voz y síntesis de las voces clonadas (Base) |
 
 Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
 (`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. Tamaño de la descarga y detalle de cada modelo en [`setup`](docs/CLI/commands/SETUP.md); el espacio en disco, en [Requisitos del README](README.md#requisitos). Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
 
 ```bash
-ai-voice-interconnector setup                        # descarga los 5 modelos (idempotente)
+ai-voice-interconnector setup                        # descarga los 6 modelos (idempotente)
 ai-voice-interconnector setup --force-update         # purga los snapshots pinneados + xet y re-descarga
 ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva
 ```
@@ -230,7 +232,7 @@ una respuesta válida y sale como payload, no como texto.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `status` | string | `"completed"` |
-| `models_provisioned` | array de strings | Los 5 modelos (`qwen3-tts-0.6b`, `opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`) |
+| `models_provisioned` | array de strings | Los 6 modelos (`qwen3-tts-0.6b`, `opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`, `dpdfnet8`) |
 
 **`cleanup --json` / `self uninstall --json`**
 
@@ -327,7 +329,7 @@ ai-voice-interconnector doctor --json
 ```
 Diagnóstico: todo correcto.
   ✓ install_receipt: recibo válido en <directorio-de-programa>
-  ✓ models_provisioned: 5 modelo(s) provisionados
+  ✓ models_provisioned: 6 modelo(s) provisionados
 ```
 
 Los chequeos que ejecuta `doctor` están en

@@ -16,7 +16,9 @@
 //! encabezado, una línea de avance cada quince segundos por modelo, las líneas
 //! de los modelos terminados y el cierre salen igual: el avance sigue siendo
 //! visible en el log, que es lo que distingue una descarga larga de un flujo
-//! mudo.
+//! mudo. Cuando `AVI_SETUP_WATCHDOG` está definido, envía además al padre un
+//! latido interno de bytes cada cinco segundos, aunque se haya silenciado el
+//! progreso visible.
 //!
 //! Aloja además `PhaseProgress`, el indicador de fase que la CLI y el propio
 //! motor (install, uninstall) usan en operaciones largas: una sola definición
@@ -88,6 +90,7 @@ impl ProvisionView {
             completed: AtomicU64::new(0),
             provision_bytes: Arc::clone(&self.bytes),
             beat,
+            watchdog_beat: std::env::var_os("AVI_SETUP_WATCHDOG").map(|_| AtomicU64::new(0)),
         }
     }
 
@@ -114,9 +117,26 @@ pub struct ModelBar {
     /// línea periódica es lo único que distingue una descarga larga de un flujo
     /// que se quedó mudo.
     beat: Option<AtomicU64>,
+    /// Último latido entregado al watchdog, para no emitir una línea por chunk.
+    watchdog_beat: Option<AtomicU64>,
 }
 
 impl TransferObserver for ModelBar {
+    fn heartbeat(&self, completed: u64, total: u64) {
+        let Some(last) = &self.watchdog_beat else {
+            return;
+        };
+        let now = self.started.elapsed().as_millis() as u64;
+        let previous = last.load(Ordering::Relaxed);
+        if now.saturating_sub(previous) >= WATCHDOG_HEARTBEAT.as_millis() as u64
+            && last
+                .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            eprintln!("AVI_SETUP_HEARTBEAT {completed} {total}");
+        }
+    }
+
     fn update(&self, completed: u64, total: u64) {
         self.bar.set_length(total);
         self.bar.set_position(completed);
@@ -470,6 +490,8 @@ pub fn model_done_line(label: &str, bytes: u64, elapsed: Duration) -> String {
 
 /// Cada cuánto deja una línea de avance un modelo cuando no hay terminal.
 const NO_TTY_HEARTBEAT: Duration = Duration::from_secs(15);
+/// Cadencia del latido interno para que el padre vigile descargas largas.
+const WATCHDOG_HEARTBEAT: Duration = Duration::from_secs(5);
 
 /// Línea periódica de avance de un modelo sin terminal:
 /// `  … [i/N] nombre  1,2 GB de 2,5 GB (0:12)`.
