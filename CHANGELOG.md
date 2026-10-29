@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.37.1 — 2026-10-29](#0371--2026-10-29)
 - [0.37.0 — 2026-10-28](#0370--2026-10-28)
 - [0.36.2 — 2026-10-22](#0362--2026-10-22)
@@ -119,6 +120,27 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Añadido
+
+- Los envelopes `--json` de `cleanup` y `self uninstall` exponen `preserved`,
+  el array de objetos `{"path", "reason"}` con lo que el plan conserva a
+  propósito: siempre presente y `[]` cuando nada queda conservado. Cambio
+  aditivo: el esquema CLI sigue en `"5"`.
+
+### Corregido
+
+- El pipeline de release exige `validate-changelog` como puerta de los cuatro
+  builds nativos: un CHANGELOG inválido ya no permite alcanzar los builds ni la
+  publicación.
+
+### Cambiado
+
+- El executor de la prueba final de Windows presenta destinos y preservados por
+  operación, revalida planes y tamaños antes de cada operación destructiva y
+  admite el estado contractual `cleanup_complete`.
 
 ## [0.37.1] — 2026-10-29
 

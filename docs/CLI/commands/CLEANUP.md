@@ -18,7 +18,7 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 | `--all` | `bool` | datos | Las tres categorías **más** configuración, logs (`data/logs/`, con las familias `daemon_*` y `qwen3-tts_*`), estado del daemon y la hoja de temporales (categoría `scratch`, el directorio `tmp` del contenedor de caché entero). La retención de 10 logs por familia no es una opción de `cleanup`: se aplica sola al crear cada log |
 | `--dry-run` | `bool` | — | Lista el plan sin borrar nada y **sin tomar el bloqueo** |
 | `--yes`, `-y` | `bool` | — | Omite la confirmación interactiva |
-| `--json` | `bool` | — | Global (`Cli::json`); con `cleanup` emite `status` + `reason` + `removed` + `planned` + `unreadable` (el plan como recibo, en ejecución y en `--dry-run`) |
+| `--json` | `bool` | — | Global (`Cli::json`); con `cleanup` emite `status` + `reason` + `removed` + `planned` + `preserved` + `unreadable` (el plan como recibo, en ejecución y en `--dry-run`) |
 
 **Gate `sin categoría → 2`.** Sin ninguna de las cuatro categorías, `cleanup` sale con `usage_error` (**2**) y **no borra nada**: la comprobación es la primera de `cleanup::run`, antes incluso de mirar privilegios o el bloqueo, de modo que una invocación mal formada no deja ni el archivo de bloqueo detrás.
 
@@ -88,11 +88,14 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
   "reason": null,
   "removed": ["…/data/voices/mi_voz", "…/speech/mi_voz"],
   "planned": ["…/data/voices/mi_voz", "…/speech/mi_voz"],
+  "preserved": [],
   "unreadable": []
 }
 ```
 
 `unreadable` lista los directorios del barrido transversal que existen y no se pudieron listar (lo que contienen queda sin recoger); en texto, la ejecución real y `--dry-run` los avisan por stderr, una línea por ruta.
+
+`preserved` está **siempre presente** y lista, como objetos `{"path", "reason"}`, lo que el plan deja intacto a propósito: el directorio de programa (que es de `self uninstall`), los contenedores con entradas ajenas y, si rige una caché HF compartida, su raíz y su `.locks`/`xet`. Un contenedor preservado puede contener descendientes que el propio plan sí borra —en la caché compartida la raíz queda y solo se retiran los repos fijados y sus locks—, así que la lista nombra rutas que quedan, no subárboles completos. Es una lista **por operación**: lo que `cleanup` conserva puede borrarlo `self uninstall` después, y `preserved` de este envelope no dice nada de la otra operación. En texto, cada entrada se narra cuando el plan se imprime (`no se tocará <ruta>: <motivo>`); en `--dry-run` la lista es la del plan, y en la ejecución real la misma, como el resto del recibo.
 
 `status` toma `cleanup_complete`, `planned` o `cancelled`. `planned` es el recibo de `plan()`: lo que la operación iba a borrar, y en `--dry-run` lo único que dice, porque no borra nada. `removed` son las rutas del plan con lo que la operación borró de verdad, y con `--dry-run` copia `planned`, que es lo que permite comparar el simulacro con la ejecución real. **Los dos salen de la misma llamada al planificador**, así que no pueden divergir. Exactamente un objeto JSON por invocación, incluso cuando falla: sin categoría con `--json` sale el objeto de error de §10 del contrato (`error` + `reason`), y nada más.
 
@@ -156,6 +159,7 @@ stderr: … Limpiando datos… (0 s)
 # cleanup --all --dry-run
 stderr: Se borrarán 6 ruta(s), 5,9 GB en total:
         … (el plan, una línea por destino)
+        no se tocará …/Programs/ai-voice-interconnector: el programa y la integración de PATH son de `self uninstall`
 ```
 
-Cancelar la confirmación imprime `Cancelado.` **por stderr y una sola vez** y sale con 0. Con `--json`, stdout lleva **solo** el envelope —`{"status", "reason", "removed", "planned", "unreadable"}`— y el resultado en texto no sale.
+Cancelar la confirmación imprime `Cancelado.` **por stderr y una sola vez** y sale con 0. Con `--json`, stdout lleva **solo** el envelope —`{"status", "reason", "removed", "planned", "preserved", "unreadable"}`— y el resultado en texto no sale.

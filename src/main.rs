@@ -3554,6 +3554,10 @@ async fn handle_cleanup(
             "reason": Value::Null,
             "removed": outcome.removed,
             "planned": outcome.planned,
+            "preserved": outcome.preserved.iter().map(|entry| json!({
+                "path": entry.path.display().to_string(),
+                "reason": entry.reason,
+            })).collect::<Vec<_>>(),
             "unreadable": outcome.unreadable
         }));
     } else if outcome.status == "cancelled" {
@@ -3849,6 +3853,10 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     },
                     "removed": outcome.removed,
                     "planned": outcome.planned,
+                    "preserved": outcome.preserved.iter().map(|entry| json!({
+                        "path": entry.path.display().to_string(),
+                        "reason": entry.reason,
+                    })).collect::<Vec<_>>(),
                     "path_reverted": outcome.path_reverted
                 }));
             } else if outcome.status == "cancelled" {

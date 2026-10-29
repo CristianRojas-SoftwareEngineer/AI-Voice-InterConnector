@@ -2192,8 +2192,10 @@ fn cleanup_all_dry_run_reports_planned() {
 /// La **única** prueba de `cleanup` que carga una fixture real: compara contra `tests/golden/cli_cleanup_dry_run.json`.
 #[test]
 fn cleanup_dry_run_matches_fixture() {
-    // --voices + --dry-run es el caso canónico del simulacro; valida fixture dedicada
-    let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
+    let (sandbox, envs) = contract_sandbox("cleanup-fixture");
+    std::fs::remove_dir(sandbox.path().join("install")).unwrap();
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "cleanup", "--voices", "--dry-run"], &envs);
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert!(actual.get("dry_run").is_none());
@@ -2204,8 +2206,28 @@ fn cleanup_dry_run_matches_fixture() {
     assert_eq!(actual["planned"], expected["planned"]);
     assert_eq!(actual["removed"], expected["removed"]);
     assert_eq!(actual["unreadable"], expected["unreadable"]);
+    assert_eq!(actual["preserved"], expected["preserved"]);
     assert_eq!(actual["schema_version"], expected["schema_version"]);
     assert!(expected.get("dry_run").is_none());
+}
+
+#[test]
+fn cleanup_dry_run_reports_preserved_program() {
+    let (sandbox, envs) = contract_sandbox("cleanup-preserved");
+    let program = sandbox.path().join("install");
+    let before = filesystem_snapshot(sandbox.path());
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "cleanup", "--voices", "--dry-run"], &envs);
+    assert_eq!(code, 0, "{actual}");
+    assert_eq!(actual["schema_version"], "5");
+    assert!(
+        actual["preserved"].as_array().unwrap().iter().any(|entry| {
+            entry["path"] == program.display().to_string()
+                && entry["reason"] == "el programa y la integración de PATH son de `self uninstall`"
+        }),
+        "{actual}"
+    );
+    assert_eq!(filesystem_snapshot(sandbox.path()), before);
 }
 
 // ─── Línea base del indicador de progreso ───────────────────────────────────
@@ -8040,7 +8062,49 @@ fn uninstall_dry_run_without_receipt_preserves_unregistered_state() {
     assert_eq!(actual["status"], "not_installed");
     assert_eq!(actual["planned"], serde_json::json!([]));
     assert_eq!(actual["removed"], serde_json::json!([]));
+    assert_eq!(
+        actual["preserved"],
+        fixture("cli_uninstall_dry_run.json")["preserved"]
+    );
     assert_eq!(filesystem_snapshot(&data), before);
+}
+
+#[test]
+fn uninstall_dry_run_keep_data_reports_preserved_models() {
+    use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
+    let (sandbox, envs) = contract_sandbox("uninstall-preserved");
+    let dir = sandbox.path();
+    let program = dir.join("install");
+    let models = dir.join("cache").join(avi_shared::paths::MODELS_SUBDIR);
+    let receipt = InstallReceipt::new(
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::ARCH,
+        avi_lifecycle::channel::Channel::Script,
+        &program,
+        vec![avi_lifecycle::uninstall::executable_name_default()],
+        PathIntegration::none(),
+        receipt::Roots {
+            data_dir: dir.join("data"),
+            cache_dir: dir.join("cache"),
+        },
+    );
+    receipt::write_to(&receipt, &program).unwrap();
+    let before = filesystem_snapshot(dir);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &["--json", "self", "uninstall", "--keep-data", "--dry-run"],
+        &envs,
+    );
+    assert_eq!(code, 0, "{actual}");
+    assert_eq!(actual["schema_version"], "5");
+    assert!(
+        actual["preserved"].as_array().unwrap().iter().any(|entry| {
+            entry["path"] == models.display().to_string()
+                && entry["reason"] == "`--keep-data` conserva los modelos"
+        }),
+        "{actual}"
+    );
+    assert_eq!(filesystem_snapshot(dir), before);
 }
 
 /// Con `--json`, un rechazo de clap emite el envelope `usage_error` por
