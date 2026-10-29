@@ -102,7 +102,7 @@ function Set-Step {
         if($existing.Count -eq 0){$script:Results.Add([pscustomobject]@{step=$Step;status='PENDING';detail='';command='';exit_code=$null;payload=$null;evidence=@();reason='';utc=[DateTime]::UtcNow.ToString('o')})}
         $entry=@($script:Results|Where-Object step -eq $Step|Select-Object -Last 1)[0];$entry.status='RUNNING';$entry.detail=$Detail;$entry.utc=[DateTime]::UtcNow.ToString('o')
     }elseif($existing.Count){$entry=$existing[-1];$entry.status=$Status;$entry.detail=$Detail;$entry.utc=[DateTime]::UtcNow.ToString('o')}
-    else{$script:Results.Add([pscustomobject]@{step=$Step;status='PENDING';detail='';command='';exit_code=$null;payload=$null;evidence=@();reason='';utc=[DateTime]::UtcNow.ToString('o')});$script:Results.Add([pscustomobject]@{step=$Step;status=$Status;detail=$Detail;command='';exit_code=$null;payload=$null;evidence=@();reason='';utc=[DateTime]::UtcNow.ToString('o')})}
+    else{$script:Results.Add([pscustomobject]@{step=$Step;status=$Status;detail=$Detail;command='';exit_code=$null;payload=$null;evidence=@();reason='';utc=[DateTime]::UtcNow.ToString('o')})}
     $entry=@($script:Results|Where-Object step -eq $Step|Select-Object -Last 1)[0];$entry.command=$Command;$entry.exit_code=$ExitCode;$entry.payload=$Payload;$entry.evidence=@($Evidence);$entry.reason=$Reason
     $record = [pscustomobject]@{ step=$Step; status=$Status; detail=$Detail; command=$Command; exit_code=$ExitCode; payload=$Payload; evidence=@($Evidence); reason=$Reason; utc=[DateTime]::UtcNow.ToString('o') }
     Save-Event @{ type='step'; step=$Step; status=$Status; detail=$Detail; command=$Command; exit_code=$ExitCode; evidence=@($Evidence); reason=$Reason; utc=$record.utc }
@@ -152,7 +152,6 @@ function Invoke-LoggedProcess {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $FilePath
-    $psi.Arguments = (($ArgumentList | ForEach-Object { ConvertTo-NativeArgument ([string]$_) }) -join ' ')
     if ($PSVersionTable.PSVersion.Major -ge 7 -and $psi.PSObject.Properties['ArgumentList']) { $psi.ArgumentList.Clear(); foreach($argument in $ArgumentList){$psi.ArgumentList.Add([string]$argument)} } else { $psi.Arguments = (($ArgumentList | ForEach-Object { ConvertTo-NativeArgument ([string]$_) }) -join ' ') }
     $psi.WorkingDirectory = $WorkingDirectory
     $psi.UseShellExecute = $false
@@ -182,8 +181,8 @@ function Invoke-LoggedProcess {
             else { throw "Timeout ${TimeoutMs}ms en $Name (PID $($process.Id)); no se terminó porque no es un proceso de propiedad exclusiva." }
             $process.WaitForExit()
         }
-        $outTask.GetAwaiter().GetResult()
-        $errTask.GetAwaiter().GetResult()
+        $null = $outTask.GetAwaiter().GetResult()
+        $null = $errTask.GetAwaiter().GetResult()
         $outStream.Dispose(); $errStream.Dispose()
         $stdout = [IO.File]::ReadAllText($stdoutPath)
         $stderr = [IO.File]::ReadAllText($stderrPath)
@@ -209,7 +208,7 @@ function ConvertFrom-JsonStrict {
 }
 
 function Invoke-Cli {
-    param([Parameter(Mandatory)][string[]]$Arguments, [Parameter(Mandatory)][string]$Name, [int]$TimeoutMs=120000, [int[]]$ExpectedExit=@(0), [bool]$Json=$true, [switch]$PersistedPath, [hashtable]$Environment=@{}, [switch]$KillOnTimeout, [bool]$SanitizeOutput=$true)
+    param([Parameter(Mandatory)][string[]]$Arguments, [Parameter(Mandatory)][string]$Name, [int]$TimeoutMs=120000, [int[]]$ExpectedExit=@(0), [switch]$Json=$true, [switch]$PersistedPath, [hashtable]$Environment=@{}, [switch]$KillOnTimeout, [bool]$SanitizeOutput=$true)
     if (!(Test-Path -LiteralPath $script:Bin -PathType Leaf)) { throw "CLI instalada ausente: $script:Bin" }
     $args = @($Arguments)
     if ($Json -and $args -notcontains '--json') { $args += '--json' }
@@ -289,8 +288,8 @@ function Assert-OutputHardware {
 
 function Invoke-WhereCheck {
     param([Parameter(Mandatory)][bool]$ExpectPresent)
-    $powershell = Join-Path $PSHOME 'powershell.exe'
-    $scriptText = if ($ExpectPresent) { '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; & ''{0}'' doctor --json; exit $LASTEXITCODE' -f $script:Bin } else { 'where.exe ai-voice-interconnector *> $null; if ($LASTEXITCODE -eq 1) {{ exit 0 }} else {{ exit 11 }}' }
+    $powershell = Join-Path $PSHOME $(if ($PSVersionTable.PSVersion.Major -ge 6) { 'pwsh.exe' } else { 'powershell.exe' })
+    $scriptText = if ($ExpectPresent) { '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''5'') {{ exit 12 }}; & ''{0}'' doctor --json; exit $LASTEXITCODE' -f $script:Bin.Replace("'", "''"),$script:Version } else { 'where.exe ai-voice-interconnector *> $null; if ($LASTEXITCODE -eq 1) { exit 0 } else { exit 11 }' }
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($scriptText))
     $result = Invoke-LoggedProcess -FilePath $powershell -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -Name ('where-' + [guid]::NewGuid().ToString('N')) -TimeoutMs 30000 -PersistedPath
     if ($ExpectPresent -and $result.ExitCode -eq 0) {
@@ -339,13 +338,27 @@ function Get-DryRunTargets {
     $cleanup = Invoke-Cli @('cleanup','--all','--dry-run') 'cleanup-dry-run' -Json
     $uninstall = Invoke-Cli @('self','uninstall','--dry-run') 'uninstall-dry-run' -Json
     foreach($pair in @(@{payload=$cleanup.Payload;kind='cleanup'},@{payload=$uninstall.Payload;kind='uninstall'})){
+        Assert-PayloadSchema $pair.payload
+        foreach($name in @('planned','preserved')){
+            $property=$pair.payload.PSObject.Properties[$name]
+            if(!$property -or $property.Value -isnot [array]){throw ('BLOCKED: {0} --dry-run no expone {1} como array.' -f $pair.kind,$name)}
+        }
+        foreach($entry in $pair.payload.preserved){
+            if($entry -isnot [pscustomobject] -or !$entry.PSObject.Properties['path'] -or !$entry.PSObject.Properties['reason'] -or $entry.path -isnot [string] -or $entry.reason -isnot [string] -or [string]::IsNullOrWhiteSpace($entry.path) -or ![IO.Path]::IsPathRooted($entry.path) -or [string]::IsNullOrWhiteSpace($entry.reason)){throw ('BLOCKED: {0} --dry-run contiene un preservado inválido.' -f $pair.kind)}
+        }
         foreach($path in @($pair.payload.planned)){
-            if([string]::IsNullOrWhiteSpace([string]$path)){throw 'Dry-run contiene una ruta vacía.'}
+            if($path -isnot [string] -or [string]::IsNullOrWhiteSpace($path) -or ![IO.Path]::IsPathRooted($path)){throw 'BLOCKED: dry-run contiene una ruta inválida.'}
             $full=[IO.Path]::GetFullPath([string]$path)
             $allowed=@($script:ProgramDir,$script:DataDir,$script:CacheDir)|Where-Object{$_}
             $owned=$false
             foreach($root in $allowed){$rootFull=[IO.Path]::GetFullPath([string]$root).TrimEnd('\');if($full.Equals($rootFull,[StringComparison]::OrdinalIgnoreCase)-or $full.StartsWith($rootFull+'\',[StringComparison]::OrdinalIgnoreCase)){$owned=$true;break}}
+            $container=[IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector')).TrimEnd('\')
+            if(!$owned -and $full.Equals($container,[StringComparison]::OrdinalIgnoreCase) -and @($script:DataDir,$script:CacheDir|Where-Object{[IO.Path]::GetFullPath($_).StartsWith($container+'\',[StringComparison]::OrdinalIgnoreCase)}).Count -eq 2){$owned=$true}
             if(!$owned){throw ('BLOCKED: dry-run anunció destino fuera de raíces de propiedad: {0}' -f $full)}
+        }
+        foreach($entry in $pair.payload.preserved){
+            $preserved=[IO.Path]::GetFullPath($entry.path).TrimEnd('\')
+            foreach($path in $pair.payload.planned){$target=[IO.Path]::GetFullPath($path).TrimEnd('\');if($preserved.Equals($target,[StringComparison]::OrdinalIgnoreCase) -or $preserved.StartsWith($target+'\',[StringComparison]::OrdinalIgnoreCase)){throw ('BLOCKED: {0} anuncia preservado dentro de un destino: {1}' -f $pair.kind,$preserved)}}
         }
     }
     return [pscustomobject]@{ Cleanup=$cleanup.Payload; Uninstall=$uninstall.Payload; CleanupArguments=$cleanup.Arguments; UninstallArguments=$uninstall.Arguments; CleanupExitCode=$cleanup.ExitCode; UninstallExitCode=$uninstall.ExitCode; CleanupStdoutPath=$cleanup.StdoutPath; UninstallStdoutPath=$uninstall.StdoutPath; CleanupStderrPath=$cleanup.StderrPath; UninstallStderrPath=$uninstall.StderrPath }
@@ -364,11 +377,23 @@ function Assert-TargetSetsEqual {
     if($difference.Count){throw ('BLOCKED: el dry-run {0} cambió tras aprobarse; no se ejecuta. Aprobado=[{1}] Actual=[{2}]' -f $Operation,($approvedSet -join '; '),($currentSet -join '; '))}
 }
 
+function Assert-PreservedSetsEqual {
+    param([string]$Operation,[object[]]$Approved,[object[]]$Current)
+    $before=@($Approved|ForEach-Object{[IO.Path]::GetFullPath($_.path).TrimEnd('\')+'|'+$_.reason}|Sort-Object)
+    $after=@($Current|ForEach-Object{[IO.Path]::GetFullPath($_.path).TrimEnd('\')+'|'+$_.reason}|Sort-Object)
+    if((ConvertTo-Json -InputObject $before -Compress) -cne (ConvertTo-Json -InputObject $after -Compress)){throw ('BLOCKED: los preservados de {0} cambiaron tras aprobarse.' -f $Operation)}
+}
+
+function Assert-ApprovedSizes {
+    param([object[]]$Specs)
+    foreach($spec in $Specs){$current=Get-DirectorySize $spec.path;if($current -gt $spec.bytes){throw ('BLOCKED: el tamaño de {0} aumentó tras aprobarse ({1} > {2}).' -f $spec.path,$current,$spec.bytes)}}
+}
+
 function Get-DirectorySize {
     param([string]$Path)
     if (!(Test-Path -LiteralPath $Path)) { return [long]0 }
     $files = @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction Stop)
-    if(@($files|Where-Object{$_.Length -le 0}).Count){throw ('BLOCKED: no se pudo medir correctamente el tamaño de {0}.' -f $Path)}
+    if (!$files.Count) { return [long]0 }
     $sum = ($files | Measure-Object -Property Length -Sum).Sum
     if($null -eq $sum){return [long]0}
     return [long]$sum
@@ -520,7 +545,7 @@ function Run-E2E {
         $programDir=Split-Path -Parent $script:Bin
         $dataDir=Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector\data'; $cacheRoot=Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector\cache'
         foreach($variable in @('AVI_DATA_DIR','AVI_CACHE_DIR','HF_HUB_CACHE','HF_HOME')){if([Environment]::GetEnvironmentVariable($variable)){throw ('BLOCKED: {0} modifica el alcance de las raíces del receipt; no se continuará con rutas ambiguas.' -f $variable)}}
-        if($registered){$programDir=[string]$registered.install_dir;$dataDir=[string]$registered.roots.data_dir;$cacheRoot=[string]$registered.roots.cache_dir}
+        if($registered){$programDir=[string]$registered.install_dir;$dataDir=[string]$registered.roots.data_dir;$cacheRoot=[string]$registered.roots.cache_dir;$script:DataDir=$dataDir;$script:CacheDir=$cacheRoot}
         $ownedPaths=@($programDir,$dataDir,$cacheRoot,(Join-Path $cacheRoot 'tmp'),(Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector\scratch'),(Join-Path $env:LOCALAPPDATA 'Programs\.ai-voice-interconnector-staging-*'),(Join-Path $programDir '.old-*'))
         $existingPaths=@()
         foreach($candidate in $ownedPaths){if($candidate.Contains('*')){$existingPaths+=@(Get-Item -Path $candidate -Force -ErrorAction SilentlyContinue|Select-Object -ExpandProperty FullName)}elseif(Test-Path -LiteralPath $candidate){$existingPaths+=$candidate}}
@@ -539,14 +564,6 @@ function Run-E2E {
             $dry=Get-DryRunTargets;$dry|ConvertTo-Json -Depth 30|Set-Content -LiteralPath (Join-Path $script:Run 'dry-runs.json') -Encoding UTF8;Write-Host ($dry|ConvertTo-Json -Depth 20)
             $script:CleanupTargetSpecs=@($dry.Cleanup.planned|ForEach-Object{[pscustomobject]@{path=[string]$_;bytes=(Get-DirectorySize ([string]$_))}})
             $script:UninstallTargetSpecs=@($dry.Uninstall.planned|ForEach-Object{[pscustomobject]@{path=[string]$_;bytes=(Get-DirectorySize ([string]$_))}})
-            $script:PreservedRoots=@()
-            foreach($payload in @($dry.Cleanup,$dry.Uninstall)){
-                $property=$payload.PSObject.Properties['preserved']
-                if($property){$script:PreservedRoots+=@($property.Value)}
-            }
-            if($dry.Cleanup.PSObject.Properties['preserved'] -and $dry.Cleanup.preserved.Count -eq 0){throw 'BLOCKED: cleanup --dry-run no expone raíces preservadas; no se puede presentar ni validar su alcance sin inferencias.'}
-            $script:PreservedRoots=@($script:PreservedRoots|Select-Object -Unique)
-            foreach($preserved in $script:PreservedRoots){$full=[IO.Path]::GetFullPath([string]$preserved);foreach($target in @($dry.Cleanup.planned+$dry.Uninstall.planned)){Assert-True (!$full.Equals([IO.Path]::GetFullPath([string]$target),[StringComparison]::OrdinalIgnoreCase)) ('Un mismo path aparece como preservado y destino de purga: {0}' -f $full)}}
             $cleanupTargets=@($script:CleanupTargetSpecs|ForEach-Object path)
             $uninstallTargets=@($script:UninstallTargetSpecs|ForEach-Object path)
             $cleanupTargets=Normalize-TargetSet $cleanupTargets
@@ -555,7 +572,8 @@ function Run-E2E {
             if($targets|Where-Object{$_ -match '(?i)huggingface|\.cache\huggingface'}){throw 'BLOCKED: el dry-run incluiría caché Hugging Face compartida.'}
             $ownershipRoots=@($registered.install_dir,$registered.roots.data_dir,$registered.roots.cache_dir)|ForEach-Object{[IO.Path]::GetFullPath([string]$_).TrimEnd('\')}
             if(!$registered.path_integration.modify_path -and $matchingPath.Count){throw 'BLOCKED: PATH contiene la ruta instalada pero el receipt no registra esa integración.'}
-            foreach($target in $targets){$full=[IO.Path]::GetFullPath($target);$owned=$false;foreach($root in $ownershipRoots){if($full.Equals($root,[StringComparison]::OrdinalIgnoreCase)-or $full.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)){$owned=$true;break}};if(!$owned){throw ('BLOCKED: dry-run anunció destino fuera de raíces registradas: {0}' -f $full)}}
+            $container=[IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector')).TrimEnd('\')
+            foreach($target in $targets){$full=[IO.Path]::GetFullPath($target);$owned=$false;foreach($root in $ownershipRoots){if($full.Equals($root,[StringComparison]::OrdinalIgnoreCase)-or $full.StartsWith($root+'\',[StringComparison]::OrdinalIgnoreCase)){$owned=$true;break}};if(!$owned -and $full.Equals($container,[StringComparison]::OrdinalIgnoreCase) -and @($dataDir,$cacheRoot|Where-Object{[IO.Path]::GetFullPath($_).StartsWith($container+'\',[StringComparison]::OrdinalIgnoreCase)}).Count -eq 2){$owned=$true};if(!$owned){throw ('BLOCKED: dry-run anunció destino fuera de raíces registradas: {0}' -f $full)}}
             if(($residue.Count -or $matchingPath.Count) -and !$targets.Count){throw 'BLOCKED: los dry-runs no enumeraron destinos; sin ejecución destructiva.'}
             foreach($path in $residue){$fullResidue=[IO.Path]::GetFullPath($path).TrimEnd('\');$covered=@($targets|Where-Object{$fullTarget=[IO.Path]::GetFullPath($_).TrimEnd('\');$fullResidue.Equals($fullTarget,[StringComparison]::OrdinalIgnoreCase)-or $fullResidue.StartsWith($fullTarget+'\',[StringComparison]::OrdinalIgnoreCase)});if(!$covered.Count){throw ('BLOCKED: residuo inventariado no cubierto por un destino oficial: {0}' -f $path)}}
             if($targets|Where-Object{$_ -match '(?i)huggingface|\.cache\huggingface'}){throw 'BLOCKED: el dry-run incluiría caché Hugging Face compartida.'}
@@ -564,7 +582,7 @@ function Run-E2E {
                 foreach($spec in @($script:CleanupTargetSpecs+$script:UninstallTargetSpecs)){$targetSizeMap[$spec.path]=$spec.bytes}
                 $targetSizes=@($targetSizeMap.GetEnumerator()|ForEach-Object{[pscustomobject]@{path=$_.Key;bytes=$_.Value}})
                 foreach($target in $targetSizes){$sizeMessage='DESTINO {0} - {1} bytes' -f $target.path,([long]$target.bytes);Write-Host $sizeMessage -ForegroundColor Yellow}
-                foreach($preserved in $script:PreservedRoots){$preservedPath=[string]$preserved;if($preserved -is [System.Management.Automation.PSObject] -and $preserved.PSObject.Properties['path']){$preservedPath=[string]$preserved.path};$preservedSize=Get-DirectorySize $preservedPath;Write-Host ('PRESERVADO {0} - {1} bytes' -f $preservedPath,$preservedSize) -ForegroundColor DarkCyan}
+                foreach($pair in @(@{kind='cleanup';payload=$dry.Cleanup},@{kind='uninstall';payload=$dry.Uninstall})){foreach($preserved in $pair.payload.preserved){$preservedSize=Get-DirectorySize $preserved.path;Write-Host ('PRESERVADO {0}: {1} - {2} bytes - {3}' -f $pair.kind,$preserved.path,$preservedSize,$preserved.reason) -ForegroundColor DarkCyan}}
                 $targetSizes|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $script:Run 'approved-target-sizes.json') -Encoding UTF8
                 $modelTargetBytes=[long]5865044386
                 $modelRoot=Join-Path $cacheRoot 'models'
@@ -573,27 +591,37 @@ function Run-E2E {
                 $cleanupSummary=@($script:CleanupTargetSpecs|ForEach-Object{$pathText=[string]$_.path;$bytes=[long]$_.bytes;('{0}: {1} bytes' -f $pathText,$bytes)}) -join '; '
                 $uninstallSummary=@($script:UninstallTargetSpecs|ForEach-Object{$pathText=[string]$_.path;$bytes=[long]$_.bytes;('{0}: {1} bytes' -f $pathText,$bytes)}) -join '; '
                 $residueSummary=$residue -join ', '
-                $preservedSummary=@($script:PreservedRoots|ForEach-Object{if($_ -is [System.Management.Automation.PSObject] -and $_.PSObject.Properties['path']){[string]$_.path}else{[string]$_}}) -join ', '
-                $cleanupImpact='Operación cleanup. Destinos: {0}. Preservados: {1}. Residuos: {2}. {3}' -f $cleanupSummary,$preservedSummary,$residueSummary,$downloadImpact
-                $uninstallImpact='Operación uninstall. Destinos: {0}. Preservados: {1}. Residuos: {2}. {3}' -f $uninstallSummary,$preservedSummary,$residueSummary,$downloadImpact
+                $cleanupPreserved=@($dry.Cleanup.preserved|ForEach-Object{'{0}: {1} bytes; {2}' -f $_.path,(Get-DirectorySize $_.path),$_.reason}) -join '; '
+                $uninstallPreserved=@($dry.Uninstall.preserved|ForEach-Object{'{0}: {1} bytes; {2}' -f $_.path,(Get-DirectorySize $_.path),$_.reason}) -join '; '
+                $cleanupImpact='Operación cleanup. Destinos: {0}. Preservados: {1}. Residuos: {2}. {3}' -f $cleanupSummary,$cleanupPreserved,$residueSummary,$downloadImpact
+                $uninstallImpact='Operación uninstall. Destinos: {0}. Preservados: {1}. Residuos: {2}. {3}' -f $uninstallSummary,$uninstallPreserved,$residueSummary,$downloadImpact
                 if($cleanupTargets.Count -and !(Confirm-FreshConsent 'cleanup inicial 0a' $cleanupTargets $cleanupImpact)){throw 'BLOCKED: consentimiento fresco para cleanup rechazado o ausente.'}
-                if($uninstallTargets.Count -and !(Confirm-FreshConsent 'uninstall inicial 0a' $uninstallTargets $uninstallImpact)){throw 'BLOCKED: consentimiento fresco para uninstall rechazado o ausente.'}
                 $daemonStatus=Invoke-Cli @('daemon','status') 'daemon-before-cleanup' -Json
                 if($daemonStatus.Payload.daemon -eq 'running'){$stop=Invoke-Cli @('daemon','stop') 'daemon-stop-before-cleanup' -TimeoutMs 30000 -Json;Assert-True ($stop.Payload.daemon_fully_stopped -eq $true) 'Stop antes de cleanup no confirmó daemon_fully_stopped.';$stopped=Invoke-Cli @('daemon','status') 'daemon-status-before-cleanup' -Json;Assert-True ($stopped.Payload.daemon -eq 'stopped') 'No se pudo verificar daemon stopped antes de cleanup.'}elseif($daemonStatus.Payload.daemon -ne 'stopped'){throw 'BLOCKED: el daemon no está stopped ni running verificable antes de cleanup.'}
-                if($cleanupTargets.Count){$cleanupPreflight=Get-DryRunTargets;Assert-TargetSetsEqual 'cleanup' $cleanupTargets @($cleanupPreflight.Cleanup.planned)}
+                if($cleanupTargets.Count){
+                $cleanupPreflight=Get-DryRunTargets;Assert-TargetSetsEqual 'cleanup' $cleanupTargets @($cleanupPreflight.Cleanup.planned);Assert-PreservedSetsEqual 'cleanup' @($dry.Cleanup.preserved) @($cleanupPreflight.Cleanup.preserved);Assert-ApprovedSizes $script:CleanupTargetSpecs
                 $cleanup=Invoke-Cli @('cleanup','--all','--yes') 'cleanup-all' -Json
                 foreach($path in @($cleanup.Payload.unreadable)){if($path){throw ('BLOCKED: cleanup dejó ruta ilegible: {0}' -f $path)}}
                 $actualPlan=@($cleanup.Payload.planned)
                 Assert-True ($actualPlan.Count -eq $cleanupTargets.Count) 'El plan cleanup efectivo difiere del dry-run aprobado; se detiene sin continuar con uninstall.'
                 foreach($path in $actualPlan){$spec=$script:CleanupTargetSpecs|Where-Object path -eq ([string]$path)|Select-Object -First 1;Assert-True ($spec) ('cleanup añadió destino no aprobado: {0}' -f $path);$actualBytes=Get-DirectorySize ([string]$path);Assert-True ($actualBytes -le $spec.bytes) ('cleanup amplió el tamaño anunciado para {0} ({1} > {2}).' -f $path,$actualBytes,$spec.bytes)}
                 Assert-TargetSetsEqual 'cleanup efectivo' $cleanupTargets $actualPlan
-                Assert-True ($cleanup.Payload.status -eq 'completed') 'cleanup --all no completó.'
+                Assert-True ($cleanup.Payload.status -eq 'cleanup_complete') 'cleanup --all no completó.'
                 if(@($cleanup.Payload.unreadable).Count){$unreadable=(@($cleanup.Payload.unreadable)-join ', ');throw ('BLOCKED: cleanup reporta rutas ilegibles: {0}' -f $unreadable)}
                 foreach($entry in @($cleanup.Payload.removed)){
                     if($entry -is [string]){$target=$entry}elseif($entry.PSObject.Properties['path']){$target=[string]$entry.path}else{continue}
                     if(Test-Path -LiteralPath $target){throw ('cleanup dejó el destino: {0}' -f $target)}
                 }
-                if($uninstallTargets.Count){$uninstallPreflight=Get-DryRunTargets;Assert-TargetSetsEqual 'uninstall' $uninstallTargets @($uninstallPreflight.Uninstall.planned)}
+                }
+                $uninstallDry=Get-DryRunTargets
+                $script:UninstallTargetSpecs=@($uninstallDry.Uninstall.planned|ForEach-Object{[pscustomobject]@{path=[string]$_;bytes=(Get-DirectorySize ([string]$_))}})
+                $uninstallTargets=@(Normalize-TargetSet @($script:UninstallTargetSpecs|ForEach-Object path))
+                if($uninstallTargets.Count){
+                $uninstallSummary=@($script:UninstallTargetSpecs|ForEach-Object{'{0}: {1} bytes' -f $_.path,$_.bytes}) -join '; '
+                $uninstallPreserved=@($uninstallDry.Uninstall.preserved|ForEach-Object{'{0}: {1} bytes; {2}' -f $_.path,(Get-DirectorySize $_.path),$_.reason}) -join '; '
+                $uninstallImpact='Operación uninstall después de cleanup. Destinos: {0}. Preservados: {1}. {2}' -f $uninstallSummary,$uninstallPreserved,$downloadImpact
+                if(!(Confirm-FreshConsent 'uninstall inicial 0a' $uninstallTargets $uninstallImpact)){throw 'BLOCKED: consentimiento fresco para uninstall rechazado o ausente.'}
+                $uninstallPreflight=Get-DryRunTargets;Assert-TargetSetsEqual 'uninstall' $uninstallTargets @($uninstallPreflight.Uninstall.planned);Assert-PreservedSetsEqual 'uninstall' @($uninstallDry.Uninstall.preserved) @($uninstallPreflight.Uninstall.preserved);Assert-ApprovedSizes $script:UninstallTargetSpecs
                 $uninstall=Invoke-Cli @('self','uninstall','--yes') 'uninstall' -Json -ExpectedExit @(0,22)
                 $uninstallPlan=@($uninstall.Payload.planned)
                 $approvedUninstall=$uninstallTargets
@@ -623,6 +651,7 @@ function Run-E2E {
                 if($uninstall.Payload.status -eq 'not_installed' -and $left.Count){$remainingText=$left -join ', ';throw ('BLOCKED: not_installed no explica destinos propios aún presentes: {0}' -f $remainingText)}
                 $remainingPath=@(Get-PathEntries|Where-Object{$_.TrimEnd('\') -ieq $programDir.TrimEnd('\')});Assert-True (!$remainingPath.Count) 'PATH no se retiró tras uninstall.'
                 $where=Invoke-WhereCheck -ExpectPresent:$false;Assert-True ($where.ExitCode -eq 0) 'where.exe aún encuentra el binario.'
+                }
             }
         }else{Set-Step '0a-clean' 'PASS' 'No había residuos, integración PATH ni binario.'}
     }
@@ -886,7 +915,7 @@ try {
 } catch {
     $message=$_.Exception.Message
     $status=if($message.StartsWith('BLOCKED:')){'BLOCKED'}else{'FAIL'}
-    if($script:Run){Set-Step 'run' $status $message -Reason $message;$resultDocument=[pscustomobject]@{run=$script:Run;overall=$status;steps=@($script:Results);subcases=@($script:SubcaseResults);events=(Join-Path $script:Run 'events.jsonl')};Set-Content -LiteralPath (Join-Path $script:Run 'result.json') -Value ($resultDocument|ConvertTo-Json -Depth 30) -Encoding UTF8}else{Write-Result 'BLOCKED' $message}
+    if($script:Run){foreach($phase in @('0a','0b','1','2','3','4','5','6','7')){if(!@($script:Results|Where-Object step -eq $phase).Count){Set-Step $phase 'BLOCKED' 'No ejecutada por la detención previa.' -Payload @{executed=$false} -Reason $message}};Set-Step 'run' $status $message -Reason $message;$resultDocument=[pscustomobject]@{run=$script:Run;overall=$status;steps=@($script:Results);subcases=@($script:SubcaseResults);events=(Join-Path $script:Run 'events.jsonl')};Set-Content -LiteralPath (Join-Path $script:Run 'result.json') -Value ($resultDocument|ConvertTo-Json -Depth 30) -Encoding UTF8}else{Write-Result 'BLOCKED' $message}
     Write-Result $status $message
     Write-Result 'INFO' 'No se ejecuta rollback automático; se preservan estado parcial y evidencias.'
     exit 1
