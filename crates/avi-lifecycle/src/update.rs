@@ -8,8 +8,9 @@
 //! de la actualización.
 //!
 //! El reemplazo lo ejecuta el binario nuevo: este módulo lanza
-//! `<staging>/ai-voice-interconnector self install --yes` heredando la consola,
-//! espera y propaga el resultado. Las preferencias del recibo mandan: si la
+//! `<staging>/ai-voice-interconnector --json self install --yes`, captura stdout
+//! estructurado y mantiene stderr separado. Valida la causa del resultado parcial
+//! y propaga el resultado. Las preferencias del recibo mandan: si la
 //! instalación registrada no tocaba el `PATH` (`modify_path: false`), el
 //! traspaso pasa `--no-modify-path`; `--no-setup` se hereda si se pidió, y
 //! `--force` se propaga cuando el `update` lo recibió.
@@ -27,7 +28,7 @@
 
 use crate::faults::{self, FaultPoint};
 use crate::LifecycleError;
-use avi_process::{spawn_with_allowlist, OwnerToken, RestrictedSpawnRequest, StdinSpec};
+use avi_process::{spawn_with_allowlist_env, OwnerToken, RestrictedSpawnRequest, StdinSpec};
 use std::path::{Path, PathBuf};
 
 /// Variable interna con el PID del `self update` que lanza el traspaso.
@@ -62,19 +63,25 @@ pub struct HandoverRequest {
 }
 
 /// Desenlace del traspaso.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandoverOutcome {
     /// El binario nuevo instaló (o reparó) y su `setup` completó.
     Installed,
-    /// El binario nuevo instaló pero su provisión falló: éxito parcial con el
-    /// mecanismo de veredicto del brazo `Install` (código 11).
-    PartialSetupFailed,
+    /// El binario nuevo instaló pero su provisión falló.
+    PartialSetupFailed { cause: ModelsCause },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct ModelsCause {
+    pub reason: String,
+    pub message: String,
 }
 
 /// Argumentos del `self install` interno, tras el ejecutable. Función pura
 /// para que la composición se pueda afirmar sin lanzar procesos.
 pub fn handover_args(request: &HandoverRequest) -> Vec<String> {
     let mut args = vec![
+        "--json".to_string(),
         "self".to_string(),
         "install".to_string(),
         "--yes".to_string(),
@@ -98,7 +105,9 @@ pub fn handover_args(request: &HandoverRequest) -> Vec<String> {
 pub fn interpret_handover_status(code: Option<i32>) -> anyhow::Result<HandoverOutcome> {
     match code {
         Some(0) => Ok(HandoverOutcome::Installed),
-        Some(SETUP_FAILED_CODE) => Ok(HandoverOutcome::PartialSetupFailed),
+        Some(SETUP_FAILED_CODE) => Err(anyhow::anyhow!(
+            "el traspaso terminó con setup_failed sin recibir el envelope del hijo"
+        )),
         Some(ROLLED_BACK_CODE) => Err(LifecycleError::rolled_back(format!(
             "el traspaso al binario nuevo falló y restauró la versión anterior \
              (código {ROLLED_BACK_CODE}): reintenta `self update`"
@@ -119,18 +128,19 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
     faults::trip(FaultPoint::BeforeHandover)?;
     let args = handover_args(request);
     let staging_exe = request.staging_exe.clone();
-    let status = tokio::task::spawn_blocking(move || {
+    let (status, mut stdout_capture) = tokio::task::spawn_blocking(move || {
         // El hijo necesita saber a quién esperar al programar los restos del
         // aparcado: este proceso, cuya imagen retiene los ficheros aparcados.
-        std::env::set_var(HANDOVER_PARENT_PID_ENV, std::process::id().to_string());
-        // stdio heredado de la consola del invocador, declarado en la
-        // allowlist: entrada por `StdinSpec::Inherit` y cada salida por el
-        // fichero que envuelve su propio extremo del padre (duplicado propio),
-        // de modo que stdout y stderr del hijo no se fusionan.
-        let stdio = inherited_stdio_file(StdioEnd::Stdout)
-            .and_then(|out| Ok((out, inherited_stdio_file(StdioEnd::Stderr)?)));
-        let launched: anyhow::Result<avi_process::RestrictedChild> = match stdio {
-            Ok((stdout_file, stderr_file)) => spawn_with_allowlist(RestrictedSpawnRequest {
+        let stdout_capture = avi_process::scratch::tempfile("avi_handover_", ".json")
+            .map_err(|e| anyhow::anyhow!("no se pudo crear la captura del traspaso: {e:#}"))?;
+        let stdout_file = stdout_capture
+            .reopen()
+            .map_err(|e| anyhow::anyhow!("no se pudo abrir la captura del traspaso: {e}"))?;
+        let stderr_file = inherited_stdio_file(StdioEnd::Stderr)
+            .map_err(|e| anyhow::anyhow!("no se pudo preparar stderr del traspaso: {e}"))?;
+        let parent_pid = std::ffi::OsString::from(std::process::id().to_string());
+        let mut child = spawn_with_allowlist_env(
+            RestrictedSpawnRequest {
                 program: staging_exe.clone(),
                 args,
                 stdin: StdinSpec::Inherit,
@@ -138,35 +148,53 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
                 stderr_file,
                 creation_flags: 0,
                 extra_allowed: Vec::new(),
-            })
-            .map_err(|e| {
+            },
+            &[(HANDOVER_PARENT_PID_ENV, parent_pid.as_os_str())],
+        )
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "no se pudo ejecutar el binario nuevo ({}): {e}",
+                staging_exe.display()
+            )
+        })?;
+        let status = child
+            .wait_timeout(std::time::Duration::from_secs(60))
+            .map_err(|e| anyhow::anyhow!("la espera del binario nuevo falló: {e}"))?
+            .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "no se pudo ejecutar el binario nuevo ({}): {e}",
-                    staging_exe.display()
-                )
-            }),
-            Err(e) => Err(anyhow::anyhow!(
-                "no se pudo preparar el stdio heredado del traspaso: {e}"
-            )),
-        };
-        std::env::remove_var(HANDOVER_PARENT_PID_ENV);
-        match launched {
-            Ok(mut child) => match child
-                .wait_timeout(std::time::Duration::from_secs(60))
-                .map_err(|e| anyhow::anyhow!("la espera del binario nuevo falló: {e}"))?
-            {
-                Some(status) => Ok(status),
-                None => Err(anyhow::anyhow!(
                     "el binario nuevo no terminó en 60 s y se terminó: la instalación \
                      anterior sigue en su sitio"
-                )),
-            },
-            Err(e) => Err(e),
-        }
+                )
+            })?;
+        Ok::<_, anyhow::Error>((status, stdout_capture))
     })
     .await
     .map_err(|e| anyhow::anyhow!("el traspaso se interrumpió: {e}"))??;
-    let outcome = interpret_handover_status(status.code())?;
+    let outcome = match status.code() {
+        Some(0) => HandoverOutcome::Installed,
+        Some(SETUP_FAILED_CODE) => {
+            use std::io::{Read, Seek, SeekFrom};
+            stdout_capture.seek(SeekFrom::Start(0))?;
+            let mut output = String::new();
+            stdout_capture.read_to_string(&mut output)?;
+            let envelope: serde_json::Value = serde_json::from_str(&output).map_err(|e| {
+                anyhow::anyhow!("el hijo terminó setup_failed con stdout JSON inválido: {e}")
+            })?;
+            if envelope.get("reason").and_then(serde_json::Value::as_str) != Some("setup_failed") {
+                anyhow::bail!("el hijo terminó con código 11 sin reason setup_failed válido");
+            }
+            let cause: ModelsCause =
+                serde_json::from_value(envelope.get("models_cause").cloned().ok_or_else(|| {
+                    anyhow::anyhow!("el hijo terminó setup_failed sin models_cause")
+                })?)
+                .map_err(|e| anyhow::anyhow!("models_cause del hijo es inválido: {e}"))?;
+            if cause.reason.is_empty() || cause.message.is_empty() {
+                anyhow::bail!("models_cause del hijo no contiene reason y message válidos");
+            }
+            HandoverOutcome::PartialSetupFailed { cause }
+        }
+        code => interpret_handover_status(code)?,
+    };
     faults::trip(FaultPoint::DuringHandover)?;
     Ok(outcome)
 }
@@ -174,14 +202,12 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
 /// Extremo de salida del padre cuyo destino hereda el traspaso.
 #[derive(Debug, Clone, Copy)]
 enum StdioEnd {
-    Stdout,
     Stderr,
 }
 
 impl StdioEnd {
     fn name(self) -> &'static str {
         match self {
-            StdioEnd::Stdout => "stdout",
             StdioEnd::Stderr => "stderr",
         }
     }
@@ -201,10 +227,7 @@ fn inherited_stdio_file(end: StdioEnd) -> anyhow::Result<std::fs::File> {
         use std::os::windows::io::{AsRawHandle, FromRawHandle};
         use windows_sys::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS};
         use windows_sys::Win32::System::Threading::GetCurrentProcess;
-        let source = match end {
-            StdioEnd::Stdout => std::io::stdout().as_raw_handle(),
-            StdioEnd::Stderr => std::io::stderr().as_raw_handle(),
-        } as isize;
+        let source = std::io::stderr().as_raw_handle() as isize;
         let mut target: isize = 0;
         // SAFETY: duplica el handle del extremo del padre; el duplicado es
         // propio y su vida queda acotada por el `File` que lo envuelve.
@@ -231,10 +254,7 @@ fn inherited_stdio_file(end: StdioEnd) -> anyhow::Result<std::fs::File> {
     #[cfg(unix)]
     {
         use std::os::unix::io::FromRawFd;
-        let source_fd = match end {
-            StdioEnd::Stdout => 1,
-            StdioEnd::Stderr => 2,
-        };
+        let source_fd = 2;
         let fd = unsafe { libc::dup(source_fd) };
         if fd < 0 {
             return Err(anyhow::anyhow!(
@@ -251,9 +271,8 @@ fn inherited_stdio_file(end: StdioEnd) -> anyhow::Result<std::fs::File> {
 /// queda actualizado y basta reintentar con `setup`.
 ///
 /// Es la contrapartida de `install::setup_failed_message` para el camino del
-/// `update`: allí la causa viaja anidada (`models_cause`), aquí el traspaso
-/// solo conoce el código 11 del hijo, así que el mensaje no nombra una causa
-/// que no vio.
+/// `update`: allí la causa viaja anidada (`models_cause`); aquí el traspaso
+/// valida y conserva la misma causa estructurada del proceso hijo.
 pub fn partial_setup_message() -> String {
     "la provisión de modelos no se completó durante el traspaso. El programa \
      queda actualizado y basta reintentar con setup"
@@ -364,7 +383,10 @@ mod tests {
             no_modify_path: false,
             force: false,
         };
-        assert_eq!(handover_args(&base), vec!["self", "install", "--yes"]);
+        assert_eq!(
+            handover_args(&base),
+            vec!["--json", "self", "install", "--yes"]
+        );
         let full = HandoverRequest {
             no_setup: true,
             no_modify_path: true,
@@ -374,6 +396,7 @@ mod tests {
         assert_eq!(
             handover_args(&full),
             vec![
+                "--json",
                 "self",
                 "install",
                 "--yes",
@@ -388,7 +411,7 @@ mod tests {
         };
         assert_eq!(
             handover_args(&partial),
-            vec!["self", "install", "--yes", "--force"]
+            vec!["--json", "self", "install", "--yes", "--force"]
         );
     }
 
@@ -400,10 +423,7 @@ mod tests {
             interpret_handover_status(Some(0)).unwrap(),
             HandoverOutcome::Installed
         );
-        assert_eq!(
-            interpret_handover_status(Some(11)).unwrap(),
-            HandoverOutcome::PartialSetupFailed
-        );
+        assert!(interpret_handover_status(Some(11)).is_err());
         let rolled = interpret_handover_status(Some(13)).unwrap_err();
         let failure = rolled
             .downcast_ref::<LifecycleError>()

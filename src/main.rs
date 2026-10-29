@@ -2880,6 +2880,48 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         "El audio del doblaje",
                         avi_core::MAX_DUB_AUDIO_SECS,
                     )?;
+                    let pcm_for_stt = {
+                        #[cfg(feature = "native-denoise")]
+                        let denoised = if denoise {
+                            let work_dir = avi_process::scratch::tempdir("avi_dub_denoise_")
+                                .map_err(|e| {
+                                    CliError::new(ExitCode::Error, "io_error", format!("{e:#}"))
+                                })?;
+                            denoise::service::ServiceModels::resolve()
+                                .map_err(|e| {
+                                    CliError::new(
+                                        ExitCode::ModelMissing,
+                                        "model_missing",
+                                        format!("Modelo de limpieza no provisionado: {e}"),
+                                    )
+                                })?
+                                .denoise_pcm16_mono(
+                                    &pcm,
+                                    16_000,
+                                    denoise::service::DenoiseUseCase::Stt,
+                                    work_dir.path(),
+                                )
+                                .map_err(|e| {
+                                    let reason = match e {
+                                        denoise::errors::E::EModelMissing(_) => "model_missing",
+                                        denoise::errors::E::EInvalidInput(_) => "invalid_audio",
+                                        denoise::errors::E::EIo(_) => "io_error",
+                                        _ => "denoise_failed",
+                                    };
+                                    CliError::new(ExitCode::Error, reason, e.to_string())
+                                })?
+                        } else {
+                            pcm.clone()
+                        };
+                        #[cfg(feature = "native-denoise")]
+                        {
+                            denoised
+                        }
+                        #[cfg(not(feature = "native-denoise"))]
+                        {
+                            pcm
+                        }
+                    };
                     progress.phase("transcribing", "Transcribiendo audio…");
                     progress.tick();
                     progress.close_line();
@@ -2892,7 +2934,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     });
                     progress.repaint();
                     let stt = stt_result?;
-                    let transcribed = stt.transcribe(&pcm).map_err(|e| {
+                    let transcribed = stt.transcribe(&pcm_for_stt).map_err(|e| {
                         CliError::new(
                             ExitCode::TranscriptionFailed,
                             "transcription_failed",
@@ -4100,8 +4142,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // relanzarlo. `setup_failed` es éxito parcial con el mecanismo de
             // veredicto del brazo `Install`.
             let partial = matches!(
-                handover,
-                lifecycle::update::HandoverOutcome::PartialSetupFailed
+                &handover,
+                lifecycle::update::HandoverOutcome::PartialSetupFailed { .. }
             );
             if json_mode {
                 let mut on = json!({
@@ -4111,10 +4153,11 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     "version": resolution.target,
                     "channel": channel.as_str(),
                 });
-                if partial {
+                if let lifecycle::update::HandoverOutcome::PartialSetupFailed { cause } = &handover
+                {
                     on["models_cause"] = json!({
-                        "reason": "setup_failed",
-                        "message": lifecycle::update::partial_setup_message(),
+                        "reason": cause.reason,
+                        "message": cause.message,
                     });
                 }
                 emit_raw_json(on);

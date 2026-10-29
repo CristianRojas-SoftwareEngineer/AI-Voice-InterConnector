@@ -114,7 +114,7 @@ Requiere el feature `native-denoise` (incluido en `full`), el modelo DPDFNet pro
 | `--pause-gate-db <dB>` / `--dry-blend <0..1>` | Ajusta el gate de pausas o la mezcla de señal seca |
 | `--stereo` | Conserva/procesa salida estéreo |
 | `--verbose` | Aumenta el detalle de progreso |
-| `--json` global | Emite registros JSONL de progreso y resumen directamente, sin envelope adicional |
+| `--json` global | Emite registros JSONL por archivo y resumen terminal directamente, sin envelope adicional; la ejecución real publica el WAV/medio indicado por `output` |
 
 El orden de resolución es defaults → preset → flags individuales. `studio` aplica solo a exportación de archivos; no altera audio de entrada de transcripción, doblaje o clonado. Para vídeo, se produce MP4 con el primer stream de vídeo copiado y audio limpio AAC; los formatos de audio siguen la matriz admitida por el pipeline migrado. No se amplía la matriz de contenedores ni códecs.
 
@@ -313,7 +313,7 @@ reproduce.
 | `--temperature` | f32 | producción (`0.35`) | Override de muestreo |
 | `--mic` | flag | `false` | Captura desde micrófono. Mutuamente excluyente con `--audio` |
 | `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` (el parser lo declara incompatible con `--audio`) |
-| `--denoise` | flag | `false` | Limpia el audio antes de doblar; requiere `native-denoise` y el modelo DPDFNet provisionado |
+| `--denoise` | flag | `false` | Limpia el audio antes de doblar; en ruta local alimenta el PCM limpio a STT, y en daemon transmite WAV limpio. Requiere `native-denoise` y DPDFNet provisionado |
 | `--daemon` / `--no-daemon` | flag | — | Despacho tri-modal; mutuamente excluyentes |
 
 El parser exige exactamente uno de `--audio` o `--mic` y rechaza

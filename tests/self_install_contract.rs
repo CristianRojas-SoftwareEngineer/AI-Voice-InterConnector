@@ -28,6 +28,9 @@
 //! prueba **uno a uno**, así que nada de esto se solapa con los presupuestos de `cli_golden`.
 //! El nombre del archivo lo dice para que nadie las meta allí dentro "para agruparlas".
 //!
+//! El caso positivo de `self update --check` vive en `cli_golden.rs`: no necesita
+//! aprovisionamiento ni la espera de fallo deliberado que justifica este target.
+//!
 //! ### Qué se afirma
 //!
 //! - Sin `--no-setup` y con la provisión fallida: **un solo objeto** en stdout, `status`
