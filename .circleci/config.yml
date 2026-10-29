@@ -2440,6 +2440,7 @@ workflows:
             - test-bootstrap-macos
             - coverage
             - validate-licenses
+            - validate-changelog
       - build-linux-x64:
           filters:
             tags:
