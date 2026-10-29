@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.37.0 — 2026-10-28](#0370--2026-10-28)
 - [0.36.2 — 2026-10-22](#0362--2026-10-22)
 - [0.36.1 — 2026-10-22](#0361--2026-10-22)
@@ -118,6 +119,32 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Las últimas validaciones de integración detectaron que algunas opciones de voz no
+llegaban al procesamiento esperado y que la actualización no conservaba la causa
+original de un fallo parcial. Se corrigen esos contratos y se refuerza la prueba
+final de Windows para hacer verificables ambos recorridos antes de publicar.
+
+### Añadido
+
+- Se documenta el recorrido de prueba final de Windows para validar el producto
+  como usuario final.
+- `self update --check` positivo y el procesamiento real de Denoise quedan
+  cubiertos mediante pruebas de proceso aisladas.
+
+### Corregido
+
+- `speech dub --no-daemon --denoise` limpia el audio antes de enviarlo a STT.
+- `self update` conserva en el resultado parcial la causa estructurada que informa
+  el proceso hijo, en vez de atribuirla al estado `setup_failed`.
+
+### Cambiado
+
+- Se ajustan los contratos y la documentación de voz y actualización a los
+  resultados observables, y se ignoran artefactos locales de la prueba final de
+  Windows.
 
 ## [0.37.0] — 2026-10-28
 
