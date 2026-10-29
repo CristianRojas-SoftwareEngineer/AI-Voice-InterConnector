@@ -74,7 +74,7 @@ El orden es el de [`self update`](../../specs/LIFECYCLE.md#84-self-update) y est
 6. **Resumen y confirmación.** Normal `[S/n]`; degradación `[s/N]` con `confirmation_required` sin terminal.
 7. **Preparar el bundle nuevo**: descarga del archivo y de `SHA256SUMS.txt` en un staging hermano con HTTPS y reintentos acotados, verificación de coincidencia exacta en `SHA256SUMS.txt` (discrepancia o línea ausente → `checksum_mismatch`, 21, con staging borrado), extracción y comprobación de arranque con coincidencia de `--version` (si no → `binary_incompatible`, 19) y validación contra el manifiesto.
 8. **Parar el daemon con el binario actual**, que conoce su protocolo y su `daemon.pid`, anotando si estaba en ejecución. Si no se detiene → `daemon_stop_failed` (16) sin tocar nada y con el staging retirado.
-9. **Traspaso**: ejecuta `<staging>/ai-voice-interconnector self install --yes` heredando la consola, con las preferencias del recibo (`--no-modify-path` si la instalación no tocaba el `PATH`), `--no-setup` si se pidió, y **`--force` propagado cuando el `update` lo recibió**. Se espera y se propaga el resultado: éxito, `setup_failed` parcial con `models_cause`, o `rolled_back`.
+9. **Traspaso**: ejecuta `<staging>/ai-voice-interconnector --json self install --yes`, manteniendo stderr separado y capturando stdout estructurado; propaga las preferencias del recibo (`--no-modify-path` si la instalación no tocaba el `PATH`), `--no-setup` si se pidió y **`--force` cuando el `update` lo recibió**. Valida la causa anidada en el parcial; stdout inválido o sin `models_cause` falla explícitamente.
 10. **Limpiar**: borra siempre el staging; los restos del aparcado que el reemplazo no pudo borrar por estar en uso (en Windows, los retiene el ejecutable del proceso que actualiza) se programan con el borrado diferido en vez de descartarse, o caen a la recuperación de la siguiente operación. En Unix no hay diferido.
 11. **Resultado**: `anterior → nueva`. Sin reinicio automático del daemon: si estaba activo, el resumen indica cómo relanzarlo con el comando habitual.
 
@@ -118,7 +118,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 
 `models_cause` **solo existe si hubo fallo**: un envelope estable es más fácil de leer que uno con nulos. Los cuatro valores de `models` son `skipped` (`--no-setup`), `already_provisioned`, `provisioned` y `failed`. Son valores del envelope; el texto del resumen nunca los imprime.
 
-Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el mismo parcial: si el `setup` del binario nuevo falla, el resultado es `updated` con `reason` `setup_failed`, salida 11 y causa anidada en `models_cause`.
+Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el parcial del binario nuevo: el resultado es `updated` con `reason` `setup_failed`, salida 11 y la causa real de provisión en `models_cause.reason`/`models_cause.message`; `reason` describe el resultado parcial, no sustituye la causa.
 
 ---
 
@@ -185,7 +185,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `self update` | `status` (`updated` o `already_up_to_date` o `check` o `cancelled`) · `reason` (`setup_failed` en el parcial) · `previous_version` · `version`/`latest` · `channel` · `current`/`update_available` (en `--check`, `already_up_to_date` y `cancelled`; `cancelled` lleva `status`, `reason` nulo, `current`, `latest` y `channel`) · `models_cause` (solo en el parcial) |
 | `self uninstall` | `status` · `reason` (`null` normalmente; `program_dir_kept` si el directorio de programa no se pudo borrar ni programar su borrado) · `removed` · `planned` · `path_reverted` |
 
-`status` toma los valores `installed` / `repaired` en `self install`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` / `planned` en `self uninstall`. `schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**; el protocolo del daemon es otro contrato con su propia versión ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)).
+`status` toma los valores `installed` / `repaired` en `self install`, `updated` / `already_up_to_date` / `check` / `cancelled` en `self update`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` / `planned` en `self uninstall`. En el parcial de `self update`, el padre valida el `models_cause` del hijo y conserva su causa concreta. `schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**; el protocolo del daemon es otro contrato con su propia versión ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)).
 
 `planned` es el recibo de `compose_plan`, el mismo que usa la ejecución real, así que `--dry-run` anuncia exactamente lo que ocurriría. Con `--dry-run` el `status` es `planned`, `removed` copia `planned` y `path_reverted` es el valor previsto; el envelope no lleva clave `dry_run`: `planned` ya dice que nada se modificó.
 

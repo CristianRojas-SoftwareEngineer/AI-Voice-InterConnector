@@ -395,7 +395,7 @@ Los dos prompts terminan con un espacio, para que la respuesta no quede pegada.
 | `sudo_not_supported` | `self install`, `self uninstall`, `cleanup` | Unix: la ejecución vino de `sudo` | Error genérico (1); nada modificado |
 | `confirmation_required` | Destructivas | Sin terminal y sin `--yes` | Error de uso (2) |
 | `usage_error` | Bootstrap, `cleanup` | Opción desconocida o versión que no es exactamente `X.Y.Z` (bootstrap); sin categoría (`cleanup`) | Error de uso (2) |
-| `setup_failed` | `self install`, `self update` | Programa instalado, pero la provisión de modelos falló | Éxito parcial (código propio), reintentable con `setup` |
+| `setup_failed` | `self install`, `self update` | Programa instalado, pero la provisión de modelos falló | Éxito parcial (código 11), reintentable con `setup`; `self update` conserva la causa original validada del hijo en `models_cause` |
 | `rolled_back` | `self install`, `self update` | Fallo durante el reemplazo; versión anterior restaurada | Error |
 | `removal_scheduled` | `self uninstall` | Windows: el directorio se borra al terminar el proceso | Éxito |
 | `program_dir_kept` | `self uninstall` | Todas: el resto se completó, pero el directorio de programa no se pudo borrar ni programar su borrado | Error con código propio (22) |
@@ -571,7 +571,9 @@ ai-voice-interconnector self update [--check] [--version X.Y.Z] [--force] [--no-
 6. **Resumen y confirmación.**
 7. **Preparar el bundle nuevo**: descargar el archivo y `SHA256SUMS.txt` en un staging hermano del programa (`.ai-voice-interconnector-staging-<token>-update-<versión>`), verificar el SHA-256 (y la firma, cuando exista, [§11](#11-seguridad)), extraer, y comprobar que el binario nuevo arranca y que `--version` coincide con la versión objetivo.
 8. **Parar el daemon con el binario actual**, que conoce su propio protocolo y la ruta de su `daemon.pid`. Se anota si estaba en ejecución.
-9. **Traspaso**: ejecutar `<staging>/ai-voice-interconnector self install --yes` heredando la consola, con las preferencias registradas en el recibo (por ejemplo, `--no-modify-path` si se usó al instalar) y `--no-setup` si se pidió. Se espera a que termine y se propaga su resultado.
+9. **Traspaso**: ejecutar `<staging>/ai-voice-interconnector --json self install --yes`, manteniendo stderr separado y capturando stdout estructurado; se propagan las preferencias registradas en el recibo y `--no-setup` si se pidió. En éxito parcial, se valida y conserva `models_cause` del hijo; stdout inválido o sin causa es un error explícito de handover.
+
+La variable interna `AVI_HANDOVER_PARENT_PID` se pasa exclusivamente al proceso hijo; no se modifica el entorno global del actualizador.
 10. **Limpiar**: borrar el staging. Los restos del aparcado que sigan en uso (en Windows, los retiene el ejecutable del proceso que actualiza) se programan con el borrado diferido (Windows), que espera por identidad a que ese proceso termine y borra con reintentos acotados. Si no se pudo programar, o el borrado falla, la recuperación de la siguiente operación lo completa.
 11. **Resultado**: `0.23.1 → 0.24.0`. Si el daemon estaba activo, el resumen indica cómo reiniciarlo.
 

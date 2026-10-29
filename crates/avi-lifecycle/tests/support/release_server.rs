@@ -98,8 +98,14 @@ impl FakeReleaseServer {
         }
     }
 
-    /// Declara `AVI_DOWNLOAD_BASE_URL` apuntando al servidor. Requiere el candado del
-    /// entorno (`exclusively`), como el resto de escrituras al entorno del arnés.
+    /// URL base del servidor para asignarla solo al proceso bajo prueba.
+    #[allow(dead_code)]
+    pub fn base_url(&self) -> &str {
+        &self.base_url
+    }
+
+    /// Declara la URL en el entorno para pruebas lifecycle serializadas.
+    #[allow(dead_code)]
     pub fn seed_download_base(&self) {
         std::env::set_var(
             avi_lifecycle::update_resolve::DOWNLOAD_BASE_ENV,
@@ -107,25 +113,36 @@ impl FakeReleaseServer {
         );
     }
 
-    /// Retira `AVI_DOWNLOAD_BASE_URL`, devolviendo la resolución al GitHub real.
+    /// Retira la URL del entorno tras la prueba lifecycle.
+    #[allow(dead_code)]
     pub fn clear_download_base() {
         std::env::remove_var(avi_lifecycle::update_resolve::DOWNLOAD_BASE_ENV);
     }
 
     /// A partir de ahora sirve el archivo manipulado con las sumas buenas: la
     /// verificación debe fallar con `checksum_mismatch`.
+    #[allow(dead_code)]
     pub fn serve_corrupt_asset(&self) {
         locked_state(&self.state).corrupt_asset = true;
     }
 
     /// Descargas del archivo servidas hasta ahora.
+    #[allow(dead_code)]
     pub fn asset_downloads(&self) -> usize {
         locked_state(&self.state).asset_downloads
     }
 
     /// Descargas de `SHA256SUMS.txt` servidas hasta ahora.
+    #[allow(dead_code)]
     pub fn sums_downloads(&self) -> usize {
         locked_state(&self.state).sums_downloads
+    }
+
+    /// Resumen de descargas para la comprobación de la CLI.
+    #[allow(dead_code)]
+    pub fn download_counts(&self) -> (usize, usize) {
+        let state = locked_state(&self.state);
+        (state.asset_downloads, state.sums_downloads)
     }
 }
 

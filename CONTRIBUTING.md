@@ -103,7 +103,7 @@ cargo xtask licenses --check
 - La suite se ejecuta en CI en **Linux**, **Windows** y **macOS** nativos (`test-linux`/`test-windows`/`test-macos`); evita supuestos de un SO.
 - Verificación rápida de sintaxis Rust: `cargo check --all`.
 - Las pruebas pesadas de inferencia TTS se serializan con el file-lock `lock_tts()` de `tests/cli_golden.rs`: cada residente ocupa varios GB de RAM, y quitar o debilitar el lock para paralelizar arriesga un OOM del runner. Que un test de esa serie parezca detenido más de 60 s es espera en cola y no un cuelgue: no se le añaden reintentos ni timeouts. El razonamiento completo está en los comentarios de `lock_tts()` en ese archivo.
-- Las pruebas con recursos (`#[ignore = "requiere …"]`) no se omiten ni aprovisionan por su cuenta: con `--include-ignored` fallan con un mensaje que nombra el comando que aprovisiona lo que falta. No descargan modelos, porque el runner de CI no tiene el motor ni los pesos locales y la descarga costaría gigabytes en cada corrida sin aportar cobertura. `cargo xtask release` las ejecuta antes del bump.
+- Las pruebas con recursos (`#[ignore = "requiere …"]`) no se omiten ni aprovisionan por su cuenta: con `--include-ignored` fallan con un mensaje que nombra el comando que aprovisiona lo que falta. La prueba de Denoise CLI requiere DPDFNet y FFmpeg incluido junto al binario; la de doblaje local con `--denoise` requiere además Parakeet y los recursos TTS. No descargan modelos, porque el runner de CI no tiene el motor ni los pesos locales y la descarga costaría gigabytes en cada corrida sin aportar cobertura. `cargo xtask release` las ejecuta antes del bump.
 
 ### Cobertura
 

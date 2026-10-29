@@ -59,6 +59,10 @@ libc = "0.2"
 
 [dev-dependencies]
 hound = "3"
+sha2 = "0.11"
+tar = "0.4"
+flate2 = "1.0"
+zip = { version = "2.4", default-features = false, features = ["deflate-flate2", "flate2"] }
 # Solo los tests de la propia crate raíz usan `tracing` (captura de logs).
 tracing = "0.1"
 # Solo para los tests: expone el generador de WAV de frecuencia nula.

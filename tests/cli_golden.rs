@@ -42,6 +42,10 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+#[path = "../crates/avi-lifecycle/tests/support/release_server.rs"]
+mod release_server;
+use release_server::FakeReleaseServer;
+
 use base64::Engine as _;
 use serde_json::Value;
 use tempfile::TempDir;
@@ -4196,6 +4200,50 @@ mod tts {
 
     // ─── dub ───────────────────────────────────────────────────────────
 
+    /// Passthrough con denoise local: el texto transcrito confirma la ruta completa.
+    #[cfg(all(feature = "native-stt", feature = "native-denoise"))]
+    #[test]
+    #[ignore = "requiere Parakeet, DPDFNet y modelos/motor Qwen3-TTS"]
+    fn dub_audio_with_local_denoise_completes() {
+        require_parakeet();
+        let store = avi_store::ModelStore::new().expect("la raíz de modelos debe resolverse");
+        assert!(
+            store.is_provisioned(avi_shared::paths::DPDFNET_MODEL),
+            "falta DPDFNet: aprovisiona con setup"
+        );
+        require_tts_model();
+        require_tts_binary();
+        require_audio_device();
+        let _guard = lock_tts();
+        let inst = IsolatedInstance::new("dub_denoise_direct");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .unwrap();
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "speech",
+                "dub",
+                "--no-daemon",
+                "--denoise",
+                "--audio",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--source-language",
+                "es",
+                "--target-language",
+                "es",
+            ],
+            &inst.args(),
+        );
+        assert_eq!(code, 0, "{actual}");
+        assert_eq!(actual["status"], "dubbed");
+        assert!(!actual["text"]
+            .as_str()
+            .unwrap_or_default()
+            .trim()
+            .is_empty());
+    }
+
     /// Passthrough es→es con `--audio`: exit 0, WAV válido y tasa de error de
     /// palabras ≤ 0.25 frente
     /// al texto transcrito (el pipeline devuelve `text`). El dub arranca por STT,
@@ -6738,6 +6786,57 @@ fn speech_denoise_route_matches_feature_and_rejects_root_alias() {
     }
 }
 
+/// `self update --check` compone el envelope de proceso sin descargar el asset.
+#[test]
+fn self_update_check_emits_positive_cli_contract_without_asset_download() {
+    use avi_lifecycle::channel::Channel;
+    use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
+
+    let server = FakeReleaseServer::serve("0.38.0");
+    let (sandbox, envs) = contract_sandbox("self_update_check_positive");
+    let install_dir = sandbox.path().join("install");
+    std::fs::create_dir_all(&install_dir).expect("crear directorio registrado");
+    let mut extra = envs;
+    let install = install_dir.to_string_lossy().into_owned();
+    extra.retain(|(key, _)| key != "AVI_INSTALL_DIR");
+    extra.push(("AVI_INSTALL_DIR".to_string(), install));
+    extra.push((
+        "AVI_DOWNLOAD_BASE_URL".to_string(),
+        server.base_url().to_string(),
+    ));
+    let receipt_value = InstallReceipt::new(
+        "0.37.0",
+        avi_lifecycle::target::host_triple(),
+        Channel::Script,
+        &install_dir,
+        vec![avi_lifecycle::uninstall::executable_name_default()],
+        PathIntegration::none(),
+        receipt::Roots {
+            data_dir: sandbox.path().join("data"),
+            cache_dir: sandbox.path().join("cache"),
+        },
+    );
+    receipt::write_to(&receipt_value, &install_dir).expect("escribir recibo sintético");
+    let before = receipt::read_from(&install_dir).unwrap().unwrap().version;
+    let envs: Vec<(&str, &str)> = extra
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let (code, stdout, stderr) = run_capture(&["--json", "self", "update", "--check"], &envs);
+    assert_eq!(code, 0, "{stderr}");
+    let result: Value = serde_json::from_str(stdout.trim()).expect("un único envelope JSON");
+    assert_eq!(result["status"], "check");
+    assert_eq!(result["current"], "0.37.0");
+    assert_eq!(result["latest"], "0.38.0");
+    assert_eq!(result["update_available"], true);
+    assert_eq!(result["channel"], "script");
+    assert_eq!(
+        receipt::read_from(&install_dir).unwrap().unwrap().version,
+        before
+    );
+    assert_eq!(server.download_counts(), (0, 0));
+}
+
 /// La simulación JSON de `speech denoise` emite JSONL sin envelope global y no requiere modelos.
 #[cfg(feature = "native-denoise")]
 #[test]
@@ -6766,6 +6865,76 @@ fn speech_denoise_dry_run_emits_jsonl_without_model() {
         lines[1]["summary"].is_object(),
         "la última línea es el resumen: {}",
         lines[1]
+    );
+}
+
+/// La ejecución real limpia el WAV de tres segundos con DPDFNet y emite JSONL.
+#[cfg(feature = "native-denoise")]
+#[test]
+#[ignore = "requiere DPDFNet provisionado y FFmpeg incluido junto al binario"]
+fn speech_denoise_processes_real_wav_and_writes_output() {
+    let store = avi_store::ModelStore::new().expect("la raíz de modelos debe resolverse");
+    assert!(
+        store.is_provisioned(avi_shared::paths::DPDFNET_MODEL),
+        "falta {}: aprovisiona con `ai-voice-interconnector setup`",
+        avi_shared::paths::DPDFNET_MODEL
+    );
+    let input =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("crates/denoise/tests/data/voz_noisy.wav");
+    assert!(
+        input.is_file(),
+        "falta el fixture de tres segundos: {}",
+        input.display()
+    );
+    let sandbox = tempfile::tempdir().expect("crear sandbox de salida");
+    let output_dir = sandbox.path().join("out");
+    std::fs::create_dir_all(&output_dir).expect("crear salida aislada");
+    let inst = IsolatedInstance::new("speech_denoise_real");
+    let input_arg = input.to_string_lossy().into_owned();
+    let output_arg = output_dir.to_string_lossy().into_owned();
+    let args = [
+        "--json",
+        "speech",
+        "denoise",
+        input_arg.as_str(),
+        "--output-dir",
+        output_arg.as_str(),
+        "--overwrite",
+    ];
+    let envs = inst.args();
+    let (code, stdout, stderr) = run_capture(&args, &envs);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let lines: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("cada línea JSONL válida"))
+        .collect();
+    let summary = lines
+        .iter()
+        .find(|line| line.get("summary").is_some())
+        .expect("debe existir línea de resumen");
+    let terminal = lines
+        .iter()
+        .rev()
+        .find(|line| line.get("status").and_then(Value::as_str) == Some("ok"))
+        .expect("debe existir registro terminal del archivo");
+    assert_eq!(summary["summary"]["ok"], 1);
+    assert_eq!(summary["summary"]["failed"], 0);
+    assert_eq!(summary["summary"]["skipped"], 0);
+    let output = PathBuf::from(
+        terminal["output"]
+            .as_str()
+            .expect("output en registro terminal"),
+    );
+    let reader = hound::WavReader::open(&output).expect("salida WAV legible");
+    let spec = reader.spec();
+    assert_eq!(spec.channels, 1);
+    assert_eq!(spec.sample_rate, 48_000);
+    assert_eq!(reader.duration(), 144_000);
+    assert_eq!(
+        std::fs::read_dir(&output_dir).unwrap().count(),
+        1,
+        "sin temporales propios"
     );
 }
 
