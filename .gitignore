@@ -5,9 +5,12 @@ target/
 # Registro que deja el borrado diferido de `target/` cuando no logra retirarlo
 # (`cargo xtask clean` lo retira cuando `target/` ya no existe).
 /*.removal-failed.log
-# Config de Claude Code: ignorar todo el contenido de .claude/ (incluido el prompt
-# de continuidad — se genera localmente y no se versiona).
+# Config local de Claude Code no versionada; solo se comparte la skill E2E de Windows.
 .claude/*
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/test-windows-e2e-as-final-user/
+!.claude/skills/test-windows-e2e-as-final-user/SKILL.md
 # Artefactos de coverage (lcov/cargo-llvm-cov), no se versionan.
 .coverage
 coverage.json
