@@ -38,11 +38,62 @@ Before executing the E2E, invoke `harness-task-tracking` and create one harness-
 
 ## Workflow
 
-The persistent user PATH value in `HKCU\Environment` and each process's inherited PATH are separate states. Inspect the registry value separately, then create a new terminal after installation to verify `where.exe` and `doctor`; never edit the session PATH to force a pass.
+The persistent user PATH value in `HKCU\Environment` and each process's inherited PATH are separate states. Inspect the registry value separately. A child launched from a stale terminal inherits its stale PATH too; `Start-Process powershell.exe` alone does not refresh it. For automated resolution checks, launch a child with PATH rebuilt from the persisted Machine and User values; never change the parent session's `$env:Path` to force a pass. The helper below supports Windows PowerShell 5.1+ and PowerShell 7+.
+
+```powershell
+function Start-ProcessWithPersistedUserPath {
+    param(
+        [Parameter(Mandatory)] [string] $FilePath,
+        [Parameter(Mandatory)] [string] $Script,
+        [Parameter(Mandatory)] [string] $StdoutPath,
+        [Parameter(Mandatory)] [string] $StderrPath
+    )
+
+    if (!(Test-Path -LiteralPath $StdoutPath -PathType Leaf) -or !(Test-Path -LiteralPath $StderrPath -PathType Leaf)) {
+        throw 'Create fresh stdout and stderr files before launching the child process.'
+    }
+    $machinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $encodedScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = "-NoProfile -EncodedCommand $encodedScript"
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.EnvironmentVariables['PATH'] = "$machinePath;$userPath"
+
+    $stdoutStream = [IO.File]::Open($StdoutPath, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $stderrStream = [IO.File]::Open($StderrPath, [IO.FileMode]::Append, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $psi
+    $process | Add-Member -NotePropertyName StdoutPath -NotePropertyValue $StdoutPath
+    $process | Add-Member -NotePropertyName StderrPath -NotePropertyValue $StderrPath
+    [void] $process.Start()
+    $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutStream)
+    $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrStream)
+    $process | Add-Member -NotePropertyName StdoutStream -NotePropertyValue $stdoutStream
+    $process | Add-Member -NotePropertyName StderrStream -NotePropertyValue $stderrStream
+    $process | Add-Member -NotePropertyName StdoutTask -NotePropertyValue $stdoutTask
+    $process | Add-Member -NotePropertyName StderrTask -NotePropertyValue $stderrTask
+    return $process
+}
+
+function Save-ProcessOutput {
+    param([Parameter(Mandatory)] [System.Diagnostics.Process] $Process)
+
+    $null = $Process.StdoutTask.GetAwaiter().GetResult()
+    $null = $Process.StderrTask.GetAwaiter().GetResult()
+    $Process.StdoutStream.Dispose()
+    $Process.StderrStream.Dispose()
+}
+```
+
+The function constructs a child environment and does not mutate the current process. Pass a PowerShell host (`powershell.exe` or `pwsh.exe`) as `FilePath` and put the checks in `Script`; it redirects both streams immediately to avoid pipe deadlocks. Wait on the returned process with a bounded timeout, call `Save-ProcessOutput`, then inspect the exit code and saved payloads. Use it for `where.exe` and `$bin doctor --json`; the CLI path itself remains the full path. In a fresh logon session, a regular new terminal is also valid.
 
 Execute in order and do not parallelize. Report `PASS/FAIL/SKIP/BLOCKED` per step with exact command, exit code, relevant payload and artifact path. `SKIP` requires an observed missing optional capability; `BLOCKED` means a precondition prevents a valid test. Do not call the E2E complete when a required step fails or is blocked.
 
-**Invoke the CLI by full path, never by name.** Set `$bin = "$env:LOCALAPPDATA\Programs\ai-voice-interconnector\ai-voice-interconnector.exe"` once for normal invocations and leave the current session `PATH` untouched. In cleanup verification, use a genuinely new process/terminal when checking command resolution. Step 0a always inspects first; never report `already clean` while any owned installation, data, cache, scratch, staging, receipt or PATH integration remains.
+**Invoke the CLI by full path, never by name.** Set `$bin = "$env:LOCALAPPDATA\Programs\ai-voice-interconnector\ai-voice-interconnector.exe"` once for normal invocations and leave the current session `PATH` untouched. Use `Start-ProcessWithPersistedUserPath` for all `where.exe` checks, including cleanup verification; never call command resolution from a child that merely inherited a stale PATH. Step 0a always inspects first; never report `already clean` while any owned installation, data, cache, scratch, staging, receipt or PATH integration remains.
 
 Steps are numbered `0a`, `0b`, `1`…`7`; a reference to "step N" always means the section `### N.` of this Workflow.
 
@@ -51,7 +102,7 @@ Steps are numbered `0a`, `0b`, `1`…`7`; a reference to "step N" always means t
 - **Inventory and consent:** inspect the installation receipt, `$bin cleanup --all --dry-run --json` and `$bin self uninstall --dry-run --json` (when the installed binary exists), HKCU PATH value and owned program/data/cache/scratch/staging/log paths. Compare the announced targets and preserved roots; show exact targets and sizes to the user. Require fresh explicit approval of those targets and the expected model re-download before any destructive command. Do not reuse prior-session consent.
 - **Stop and cleanup:** if `$bin` exists, run `$bin daemon stop --json`; accept only a payload with `daemon_fully_stopped: true`, then verify status and registered process identities are stopped. Run `$bin cleanup --all --yes --json` and `$bin self uninstall --yes --json` only after consent. `not_installed` is idempotent, not evidence of uninstall. `removal_scheduled` remains pending until target paths and failure logs disappear. Never use `cargo xtask clean --app` as proof that an installed uninstall occurred.
 - **Missing binary with residue:** if `$bin` is absent but installation, data, cache, staging, scratch, logs or PATH integration remain, mark `BLOCKED`; do not manually delete, adopt conventional directories or claim `already clean`. Resolve ownership and supported recovery explicitly before continuing.
-- **Verify zero residue:** from a newly created process check `where.exe` returns 1, and verify owned installation/data/cache/scratch/staging/receipt and PATH entry are absent; preserve foreign HF cache, unrelated program paths, and unrelated processes. Report `already clean` only when all owned paths and integration were absent before any action; otherwise report exact uninstall result plus post-clean verification.
+- **Verify zero residue:** inspect `HKCU\Environment` and confirm the install directory is absent from its PATH. Launch a child PowerShell with `Start-ProcessWithPersistedUserPath`, then require `where.exe ai-voice-interconnector` to return 1; verify owned installation/data/cache/scratch/staging/receipt are absent. Preserve foreign HF cache, unrelated program paths, and unrelated processes. Report `already clean` only when all owned paths and integration were absent before any action; otherwise report exact uninstall result plus post-clean verification.
 
 ### 0b. Resolve the current release
 
@@ -64,15 +115,15 @@ The bootstrap is the only code run before the binary exists. Its scope is **reso
 
 - Install only the binary, without chained setup: set `$env:AVI_NO_SETUP = "1"`, then run `irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex`. With `AVI_NO_SETUP=1`, the bootstrap delegates to `self install --no-setup`; step 2 runs `setup` explicitly with a bounded timeout.
 - The bootstrap resolves the version (argument/`AVI_VERSION`/stamped/`latest`), verifies the checksum against `SHA256SUMS.txt`, checks that the binary starts and delegates to `self install`. That command validates the bundle, transactionally installs into `%LOCALAPPDATA%\Programs\ai-voice-interconnector`, updates the user PATH in `HKCU\Environment`, writes the receipt and removes staging. Verify the receipt and persistent registry entry; do not treat this process's PATH as proof of persistence.
-- After installation, verify the persistent HKCU PATH entry. A `where.exe ai-voice-interconnector` launched from the current installer process may see a process-local PATH update; do not treat that as persistent PATH evidence. In step 7, use a genuinely new PowerShell process to prove inherited resolution without editing `$env:Path`.
+- After installation, verify the persistent HKCU PATH entry separately. Do not rely on the installer process or an ordinary child to prove resolution: both may retain a stale inherited PATH. Use `Start-ProcessWithPersistedUserPath` to launch the child check with the persisted Machine+User PATH, without editing `$env:Path`. Repeat the same verification in step 7.
 - `$bin version --json` `exit 0` `{"name":"ai-voice-interconnector","version":"X.Y.Z","schema_version":"5"}` (`handle_version`, `crates/avi-core/src/json_emitter.rs`)
 
 ### 2. `avi-store` — model setup and voice cloning
 
 - **Anti-hang guard:** run `$bin setup --json` through `Start-Process -PassThru`, redirect stdout/stderr to fresh per-run files, call `WaitForExit(1200000)`, then record the process exit code and parse the final JSON payload. If it times out, terminate only the exact PID returned by this invocation (and inspect its owned descendants if any); never use `taskkill /IM`. A timeout is `FAIL`, not success. Before retrying, inspect snapshots and weight files: a plain retry can accept incomplete Qwen snapshots. `setup --force-update --yes` purges pinned snapshots and app-owned xet state, so it requires a new explicit user approval after reporting that it re-downloads about 5.86 GB; do not run it automatically.
-- Invoke `$bin doctor --json` from the current process before setup and record its expected integral failure for missing models; after setup, use a newly created PowerShell process whose environment was inherited after installation. Do not mutate the current `$env:Path` to manufacture success. In the new process require `path_resolves` and `path_duplicates` checks to pass, `duplicate_entries: []`, and `resolves_to_this_install: true`. A `doctor` invocation from the old terminal may legitimately fail `path_resolves`; report it as stale inherited environment, not a product failure, and do not count it as final verification.
+- Invoke `$bin doctor --json` from the current process before setup and record its expected integral failure for missing models; after setup, invoke `where.exe ai-voice-interconnector` and `$bin doctor --json` in a child PowerShell launched by `Start-ProcessWithPersistedUserPath`. Do not mutate the current `$env:Path` to manufacture success. Require `where.exe` to resolve to this install and `doctor` to exit 0 with `path_resolves` and `path_duplicates` passing, `duplicate_entries: []`, and `resolves_to_this_install: true`. A doctor result from an ordinary child that merely inherited the stale PATH is not final verification.
 - Before setup, `$bin doctor --json` should fail its integrated verdict. In a registered install with missing models, `failed` includes `models_provisioned`; in an unmanaged install, receipt and PATH checks also fail. `doctor` is not a partial checker: any failed check yields exit 1. `model_missing` is an operation `reason` (exit 4), not a doctor check.
-- `$bin setup --json` must report `status: "completed"` and all six pinned models provisioned under `models_cache_dir()`: `qwen3-tts-0.6b` `85e237c`, `qwen3-tts-0.6b-base` `5d83992`, `parakeet-tdt-v3` `8f23f0c`, `opus-mt-es-en` `6eabf2f`, `opus-mt-en-es` `452971f`, and `dpdfnet8` `dd6818d`. Then require `doctor --json` from the new terminal to exit 0 with `failed: []`, all six models present and no pending artifacts. Do not infer model completeness from snapshot existence alone; a prior interrupted Qwen download may leave config/tokenizer files without weights. If the command fails or times out, inspect the exact payload, process and required model files and stop; any destructive repair via `--force-update --yes` requires fresh user approval.
+- `$bin setup --json` must report `status: "completed"` and all six pinned models provisioned under `models_cache_dir()`: `qwen3-tts-0.6b` `85e237c`, `qwen3-tts-0.6b-base` `5d83992`, `parakeet-tdt-v3` `8f23f0c`, `opus-mt-es-en` `6eabf2f`, `opus-mt-en-es` `452971f`, and `dpdfnet8` `dd6818d`. Then require `doctor --json` from a child launched with `Start-ProcessWithPersistedUserPath` to exit 0 with `failed: []`, all six models present and no pending artifacts. Do not infer model completeness from snapshot existence alone; a prior interrupted Qwen download may leave config/tokenizer files without weights. If the command fails or times out, inspect the exact payload, process and required model files and stop; any destructive repair via `--force-update --yes` requires fresh user approval.
 - The fixed `setup` selection also provisions `qwen3-tts-0.6b-base` (`MODEL_REVISIONS`); `Qwen3TtsEngine` resolves its `base_model_dir` via `resolve_base_model_dir` in `crates/avi-tts/src/lib.rs`.
 - `$bin devices --json` must exit 0 and return the current device list with `schema_version: "5"`; if enumeration reports an actual device error, record the payload rather than treating an empty list as proof of hardware availability.
 
@@ -123,8 +174,8 @@ Define `$sttSample = (Resolve-Path "crates/avi-stt/tests/assets/parakeet_sample_
 
 ### 7. `src/main.rs` — final installed-state verification
 
-- In a fresh PowerShell process created after install, `where.exe ai-voice-interconnector` must resolve to `%LOCALAPPDATA%\Programs\ai-voice-interconnector\ai-voice-interconnector.exe`; verify persistent HKCU PATH contains exactly one matching entry. `$bin version --json` must still match the release and schema 5.
-- In that same fresh process, `$bin doctor --json` must exit 0 with `failed: []`, `path.resolves_to_this_install: true`, `duplicate_entries: []`, valid receipt and all six models provisioned; record the installed data/model roots and sizes. The `pending` object must have empty `unknown_owner`, `pending_failures` and `unreadable` arrays.
+- Verify persistent HKCU PATH contains exactly one matching entry. Use `Start-ProcessWithPersistedUserPath` to launch a child PowerShell; `where.exe ai-voice-interconnector` must resolve to `%LOCALAPPDATA%\Programs\ai-voice-interconnector\ai-voice-interconnector.exe`. `$bin version --json` must still match the release and schema 5.
+- In that same child PowerShell, run both `where.exe ai-voice-interconnector` and `$bin doctor --json`; the latter must exit 0 with `failed: []`, `path.resolves_to_this_install: true`, `duplicate_entries: []`, valid receipt and all six models provisioned. Record the installed data/model roots and sizes. The `pending` object must have empty `unknown_owner`, `pending_failures` and `unreadable` arrays.
 - Verify the retained cloned voice's `reference.qvoice`, `$wavRetained` and at least one generated denoise output still exist and are non-empty. Confirm final daemon status and report whether it is running/warm or stopped.
 - Do not run cleanup, uninstall or `cargo xtask clean` after the E2E; leave the release installed, models provisioned and intended user data retained.
 
@@ -142,8 +193,8 @@ No mutations to `docs/`, `Cargo` or `.circleci` during E2E. Step 0a inspects eve
 ## Verification checklist
 
 - [ ] `0a` inventory, dry-run, path-specific fresh consent and post-removal verification are recorded; `not_installed` is not uninstall evidence; `removal_scheduled` is pending until absence is verified; missing binary with residue is `BLOCKED`
-- [ ] Published version and checksum, 7 Release assets, install receipt and schema 5 are verified; PATH persistence and fresh-process resolution are separate checks
-- [ ] `setup --json` exits 0 with six exact pinned models; doctor in a fresh process exits 0 with `failed: []` and no pending cleanup artifacts
+- [ ] Published version and checksum, 7 Release assets, install receipt and schema 5 are verified; PATH persistence and child resolution use separate checks, with resolution launched through `Start-ProcessWithPersistedUserPath`
+- [ ] `setup --json` exits 0 with six exact pinned models; doctor in a child PowerShell launched with persisted Machine+User PATH exits 0 with `failed: []` and no pending cleanup artifacts
 - [ ] Daemon lifecycle follows step 3 sequence, checks process/payload/health, and never kills by image name
 - [ ] `devices --json`; clone by reference direct and daemon; cloned qvoice and no copied WAV; duplicate conflict/force; clone denoise; microphone capture only when real device exists
 - [ ] Synthesis matrix uses valid full arguments across Auto/ForceDaemon/ForceDirect, factory/cloned voices, WAV PCM16 mono 24 kHz, a valid temperature and one cross-language case; short WER covers factory and newly cloned voice with transcript and reproducible calculation
