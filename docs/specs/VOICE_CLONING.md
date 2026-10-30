@@ -133,7 +133,7 @@ El motor ya cuenta con los componentes necesarios:
 | **`speech_reference`** | Archivo WAV de entrada, cuya ruta se conserva en CLI al clonar. |
 | **Push-to-talk** | Modo de grabación interactiva donde el sistema graba desde el micrófono hasta que el usuario pulsa Enter en la terminal. |
 | **`MAX_CLONE_REFERENCE_SECS`** | Límite superior estricto para el audio de referencia de clonación (constante: 30 segundos). |
-| **`AVI_PUSH_TO_TALK_MAX_SECS`** | Techo configurable (default: 300 s). Para clonado, el valor debe ser ≤30 s; un valor mayor produce `audio_too_long` antes de abrir el dispositivo. |
+| **`AVI_PUSH_TO_TALK_MAX_SECS`** | Techo configurable. Si falta, clonado usa 30 s; otras capturas conservan el default general de 300 s. En clonado, un valor explícito mayor de 30 produce `audio_too_long` antes de abrir el dispositivo. |
 | **`warm-on-clone`** | Proceso en segundo plano del daemon que precarga el modelo TTS con la voz recién clonada para eliminar la latencia de la primera síntesis. |
 | **`cpal`** | Backend de audio multiplataforma en Rust usado por `avi-audio` para interactuar con CoreAudio, ALSA o WASAPI. |
 

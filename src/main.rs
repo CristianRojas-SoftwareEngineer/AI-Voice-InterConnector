@@ -1470,8 +1470,11 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                         if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
                             return Err(CliError::new(ExitCode::InvalidInput, "usage_error", "--mic requiere --duration en entornos no interactivos."));
                         }
-                        let ptt_limit = push_to_talk_max_secs()?;
-                        validate_clone_push_to_talk_limit(ptt_limit)?;
+                        match std::env::var("AVI_PUSH_TO_TALK_MAX_SECS") {
+                            Ok(value) => { clone_push_to_talk_limit(Some(&value))?; }
+                            Err(std::env::VarError::NotPresent) => { clone_push_to_talk_limit(None)?; }
+                            Err(std::env::VarError::NotUnicode(_)) => { push_to_talk_max_secs()?; }
+                        }
                     }
                 }
                 let client = daemon_client();
@@ -1855,8 +1858,49 @@ fn validate_clone_push_to_talk_limit(limit: u64) -> Result<(), CliError> {
     Ok(())
 }
 
+fn clone_push_to_talk_limit(value: Option<&str>) -> Result<u64, CliError> {
+    let limit = match value {
+        None => avi_core::MAX_CLONE_REFERENCE_SECS,
+        Some(value) => value.trim().parse::<u64>().map_err(|_| {
+            CliError::new(ExitCode::InvalidInput, "usage_error", format!("AVI_PUSH_TO_TALK_MAX_SECS='{value}' no es válida; debe ser un entero de segundos sin signo"))
+        })?,
+    };
+    validate_clone_push_to_talk_limit(limit)?;
+    Ok(limit)
+}
+
 #[cfg(test)]
 mod clone_push_to_talk_tests {
+    #[test]
+    fn absent_ptt_limit_uses_clone_maximum() {
+        assert_eq!(
+            super::clone_push_to_talk_limit(None).expect("techo predeterminado"),
+            30
+        );
+    }
+
+    #[test]
+    fn explicit_ptt_limit_is_validated() {
+        for value in ["1", "30"] {
+            assert_eq!(
+                super::clone_push_to_talk_limit(Some(value)).expect("techo válido"),
+                value.parse::<u64>().unwrap()
+            );
+        }
+        assert_eq!(
+            super::clone_push_to_talk_limit(Some("31"))
+                .unwrap_err()
+                .reason,
+            "audio_too_long"
+        );
+        assert_eq!(
+            super::clone_push_to_talk_limit(Some("inválido"))
+                .unwrap_err()
+                .reason,
+            "usage_error"
+        );
+    }
+
     #[test]
     fn ptt_limit_above_clone_max_is_audio_too_long() {
         let error = super::validate_clone_push_to_talk_limit(31)
