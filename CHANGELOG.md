@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.37.2 — 2026-10-30](#0372--2026-10-30)
 - [0.37.1 — 2026-10-29](#0371--2026-10-29)
 - [0.37.0 — 2026-10-28](#0370--2026-10-28)
@@ -120,6 +121,20 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La supervisión del aprovisionamiento debe distinguir el avance real de las
+muestras repetidas y conservar el resultado del proceso hijo cuando termina. Se
+refuerza el watchdog para que detecte el estancamiento sin declarar timeouts
+falsos y gestione explícitamente los errores del canal y de la limpieza.
+
+### Corregido
+
+- Los latidos de bootstrap solo se renuevan por bytes nuevos, distinguiendo los
+  archivos y grupos xet concurrentes; las muestras repetidas no prolongan el plazo.
+- El watchdog vuelve a comprobar el proceso y los latidos al vencer el silencio,
+  conserva el resultado del hijo y comunica los fallos de lectura o limpieza.
 
 ## [0.37.2] — 2026-10-30
 

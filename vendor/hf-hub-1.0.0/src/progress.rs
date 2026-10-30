@@ -287,6 +287,8 @@ pub enum DownloadEvent {
     /// cumulative bytes for the entire batch with no per-file breakdown — xet
     /// reports aggregate stats only.
     AggregateProgress {
+        /// Identifica el grupo Xet que originó la muestra dentro de este proceso.
+        group_id: u64,
         /// Bytes downloaded so far across the in-flight xet batch.
         bytes_completed: u64,
         /// Total bytes for the in-flight xet batch.

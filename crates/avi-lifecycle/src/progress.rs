@@ -542,6 +542,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn watchdog_heartbeat_survives_disabled_visible_progress() {
+        const CHILD: &str = "AVI_TEST_WATCHDOG_PROGRESS_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let view = ProvisionView::start(1);
+            let mut model = view.model(1, "test");
+            model.started = Instant::now() - Duration::from_secs(6);
+            model.heartbeat(1, 10);
+            model.heartbeat(2, 10);
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "progress::tests::watchdog_heartbeat_survives_disabled_visible_progress",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("AVI_SETUP_WATCHDOG", "1")
+            .env("AVI_NO_PROGRESS", "1")
+            .output()
+            .expect("se ejecuta el hijo de la prueba");
+        assert!(output.status.success(), "{:?}", output.status);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("AVI_SETUP_HEARTBEAT 1 10"), "{stderr}");
+        assert_eq!(
+            stderr.matches("AVI_SETUP_HEARTBEAT ").count(),
+            1,
+            "{stderr}"
+        );
+    }
+
+    #[test]
     fn format_duration_uses_seconds_minutes_and_hours() {
         assert_eq!(format_duration(Duration::from_secs(7)), "7 s");
         assert_eq!(format_duration(Duration::from_secs(119)), "1 min 59 s");

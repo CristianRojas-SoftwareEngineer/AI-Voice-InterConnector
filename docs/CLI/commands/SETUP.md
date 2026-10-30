@@ -68,8 +68,10 @@ Modelos descargados: 5,9 GB en 2 min 10 s.
 Sin terminal, cada descarga activa emite una línea visible cada 15 segundos
 con los bytes completados, el total y el tiempo transcurrido; no hay barras ni
 se usa el tamaño de la caché como señal de avance. El watchdog interno de
-`cargo xtask bootstrap` recibe un latido separado de bytes cada cinco segundos,
-incluso si `AVI_NO_PROGRESS` silencia la salida visible.
+`cargo xtask bootstrap` recibe un latido separado cuando se observa avance de
+bytes, como máximo una vez cada cinco segundos por modelo; las muestras repetidas
+sin avance no renuevan el plazo. El latido sigue activo incluso si
+`AVI_NO_PROGRESS` silencia la salida visible.
 
 El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `snapshots/` como enlace simbólico en Unix y como enlace duro en Windows, así que el blob no se duplica. Si el sistema de archivos no admite enlaces duros (FAT32, exFAT o algunos recursos de red), `hf-hub` copia el blob y el espacio en disco se duplica.
 **Descarga interrumpida.** `hf-hub` no reanuda por `Range`: una descarga interrumpida se repite completa desde el primer byte del archivo afectado.

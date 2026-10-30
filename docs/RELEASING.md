@@ -112,10 +112,15 @@ ya verificados; ejecuta `cargo xtask ffmpeg` y
 La descarga acota el silencio por dos vías: el cliente corta la lectura tras
 sesenta segundos sin bytes y el vigilante de `bootstrap` aborta `setup` tras diez
 minutos sin recibir el latido de bytes de `TransferObserver`. El latido viene del
-progreso de archivo HTTP y de los eventos agregados de xet; no depende del tamaño
-del árbol, que puede quedar estable porque hf-hub preextiende los blobs. El plazo
-es sin progreso, no total: una transferencia lenta puede durar más de diez
-minutos si sigue informando bytes.
+avance de archivo HTTP y de los eventos agregados de xet: las muestras repetidas
+sin bytes nuevos no lo renuevan. El avance se compara por archivo y por grupo
+xet, sin mezclar contadores. No depende del tamaño del árbol, que puede quedar
+estable porque hf-hub preextiende los blobs. El plazo es sin progreso, no total:
+una transferencia lenta puede durar más de diez minutos si sigue informando bytes.
+Un fallo al leer el stderr del hijo interrumpe la supervisión e intenta terminar
+y recoger el proceso; si no se puede confirmar la terminación o la recogida, el
+error lo indica. Un fallo al mostrar un diagnóstico no detiene la lectura de los
+latidos.
 
 **Nunca esperes a un `setup` que «parece lento».** La selección completa son
 5,9 GB y a 30-60 MB/s se completa en minutos. Si el progreso queda mudo durante

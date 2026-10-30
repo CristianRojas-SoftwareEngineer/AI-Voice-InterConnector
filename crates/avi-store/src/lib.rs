@@ -1159,6 +1159,8 @@ pub trait TransferObserver: Send + Sync {
 struct TransferTracker {
     snapshot_total: Option<u64>,
     per_file: std::collections::HashMap<String, (u64, u64, bool)>,
+    heartbeat_files: std::collections::HashMap<String, u64>,
+    heartbeat_groups: std::collections::HashMap<u64, u64>,
     last: Option<(u64, u64)>,
 }
 
@@ -1219,25 +1221,41 @@ impl hf_hub::progress::ProgressHandler for TrackerHandler {
         if let Some((completed, total)) = tracker.apply(event) {
             // Mantener el orden del cálculo y de la notificación: los eventos
             // pueden llegar desde tareas distintas y la barra no debe retroceder.
-            self.observer.heartbeat(completed, total);
             self.observer.update(completed, total);
         }
         match event {
             hf_hub::progress::ProgressEvent::Download(
                 hf_hub::progress::DownloadEvent::AggregateProgress {
+                    group_id,
                     bytes_completed,
                     total_bytes,
                     ..
                 },
-            ) => self.observer.heartbeat(*bytes_completed, *total_bytes),
+            ) => {
+                let previous = tracker.heartbeat_groups.entry(*group_id).or_default();
+                if *bytes_completed > *previous {
+                    self.observer.heartbeat(*bytes_completed, *total_bytes);
+                }
+                *previous = *bytes_completed;
+            }
             hf_hub::progress::ProgressEvent::Download(
                 hf_hub::progress::DownloadEvent::Progress { files },
             ) => {
                 for file in files {
-                    if file.status != hf_hub::progress::FileStatus::Complete {
+                    if file.status == hf_hub::progress::FileStatus::Complete
+                        && !tracker.heartbeat_files.contains_key(&file.filename)
+                    {
+                        continue;
+                    }
+                    let previous = tracker
+                        .heartbeat_files
+                        .entry(file.filename.clone())
+                        .or_default();
+                    if file.bytes_completed > *previous {
                         self.observer
                             .heartbeat(file.bytes_completed, file.total_bytes);
                     }
+                    *previous = file.bytes_completed;
                 }
             }
             _ => {}
@@ -1272,6 +1290,141 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct RecordedTransfers {
+        heartbeats: Mutex<Vec<(u64, u64)>>,
+        updates: Mutex<Vec<(u64, u64)>>,
+    }
+
+    impl TransferObserver for RecordedTransfers {
+        fn update(&self, completed: u64, total: u64) {
+            self.updates.lock().unwrap().push((completed, total));
+        }
+
+        fn heartbeat(&self, completed: u64, total: u64) {
+            self.heartbeats.lock().unwrap().push((completed, total));
+        }
+    }
+
+    #[test]
+    fn repeated_aggregate_samples_do_not_emit_heartbeats() {
+        use hf_hub::progress::{DownloadEvent, ProgressHandler};
+        let observer = Arc::new(RecordedTransfers::default());
+        let handler = TrackerHandler {
+            tracker: Mutex::new(TransferTracker::default()),
+            observer: observer.clone(),
+        };
+        for completed in [0, 0, 100, 100, 101] {
+            handler.on_progress(&download(DownloadEvent::AggregateProgress {
+                group_id: 1,
+                bytes_completed: completed,
+                total_bytes: 200,
+                bytes_per_sec: None,
+            }));
+        }
+        assert_eq!(
+            *observer.heartbeats.lock().unwrap(),
+            [(100, 200), (101, 200)]
+        );
+        assert!(observer.updates.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn independent_sources_emit_only_new_bytes() {
+        use hf_hub::progress::{DownloadEvent, ProgressHandler};
+        let observer = Arc::new(RecordedTransfers::default());
+        let handler = TrackerHandler {
+            tracker: Mutex::new(TransferTracker::default()),
+            observer: observer.clone(),
+        };
+        for (group_id, completed) in [(1, 100), (2, 50), (1, 100), (2, 51), (1, 10), (1, 11)] {
+            handler.on_progress(&download(DownloadEvent::AggregateProgress {
+                group_id,
+                bytes_completed: completed,
+                total_bytes: 200,
+                bytes_per_sec: None,
+            }));
+        }
+        assert_eq!(
+            *observer.heartbeats.lock().unwrap(),
+            [(100, 200), (50, 200), (51, 200), (11, 200)]
+        );
+    }
+
+    #[test]
+    fn file_heartbeats_exclude_cache_and_repeated_samples() {
+        use hf_hub::progress::{DownloadEvent, FileProgress, FileStatus, ProgressHandler};
+        let observer = Arc::new(RecordedTransfers::default());
+        let handler = TrackerHandler {
+            tracker: Mutex::new(TransferTracker::default()),
+            observer: observer.clone(),
+        };
+        let sample = |name: &str, completed, status| FileProgress {
+            filename: name.to_owned(),
+            bytes_completed: completed,
+            total_bytes: 100,
+            status,
+        };
+        for files in [
+            vec![sample("cached", 100, FileStatus::Complete)],
+            vec![sample("a", 0, FileStatus::Started)],
+            vec![sample("a", 1, FileStatus::InProgress)],
+            vec![sample("a", 1, FileStatus::InProgress)],
+            vec![sample("b", 2, FileStatus::InProgress)],
+            vec![sample("a", 100, FileStatus::Complete)],
+        ] {
+            handler.on_progress(&download(DownloadEvent::Progress { files }));
+        }
+        assert_eq!(
+            *observer.heartbeats.lock().unwrap(),
+            [(1, 100), (2, 100), (100, 100)]
+        );
+    }
+
+    #[test]
+    fn nested_starts_do_not_reset_progress_sources() {
+        use hf_hub::progress::{DownloadEvent, ProgressHandler};
+        let observer = Arc::new(RecordedTransfers::default());
+        let handler = TrackerHandler {
+            tracker: Mutex::new(TransferTracker::default()),
+            observer: observer.clone(),
+        };
+        let start = || {
+            download(DownloadEvent::Start {
+                total_files: 1,
+                total_bytes: 100,
+            })
+        };
+        let group = || {
+            download(DownloadEvent::AggregateProgress {
+                group_id: 7,
+                bytes_completed: 10,
+                total_bytes: 100,
+                bytes_per_sec: None,
+            })
+        };
+        handler.on_progress(&start());
+        handler.on_progress(&group());
+        handler.on_progress(&download(DownloadEvent::Progress {
+            files: vec![file("a", 5, 100)],
+        }));
+        handler.on_progress(&start());
+        handler.on_progress(&group());
+        handler.on_progress(&download(DownloadEvent::Progress {
+            files: vec![file("a", 5, 100)],
+        }));
+        handler.on_progress(&download(DownloadEvent::Progress {
+            files: vec![file("a", 2, 100)],
+        }));
+        handler.on_progress(&download(DownloadEvent::Progress {
+            files: vec![file("a", 3, 100)],
+        }));
+        assert_eq!(
+            *observer.heartbeats.lock().unwrap(),
+            [(10, 100), (5, 100), (3, 100)]
+        );
+    }
+
     /// Secuencia real de `hf-hub` para un snapshot: `Start` del snapshot, `Start`
     /// de un archivo HTTP pequeño, `Progress` por archivo de xet y de HTTP, y
     /// `AggregateProgress` del lote xet intercalados. El total no puede tomar el
@@ -1298,6 +1451,7 @@ mod tests {
                 files: vec![file("model.safetensors", 500_000_000, WEIGHTS)],
             }),
             download(AggregateProgress {
+                group_id: 1,
                 bytes_completed: 500_000_000,
                 total_bytes: WEIGHTS,
                 bytes_per_sec: None,
@@ -1309,6 +1463,7 @@ mod tests {
                 files: vec![file("model.safetensors", WEIGHTS, WEIGHTS)],
             }),
             download(AggregateProgress {
+                group_id: 1,
                 bytes_completed: WEIGHTS,
                 total_bytes: WEIGHTS,
                 bytes_per_sec: None,
