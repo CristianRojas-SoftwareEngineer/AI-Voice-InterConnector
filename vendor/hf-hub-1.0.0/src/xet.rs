@@ -11,7 +11,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -127,12 +127,19 @@ fn emit_remaining_completes(progress: &Option<Progress>, tracked: &[TrackedDownl
 }
 
 #[cfg(not(target_family = "wasm"))]
+fn next_download_group_id() -> u64 {
+    static NEXT_GROUP_ID: AtomicU64 = AtomicU64::new(0);
+    NEXT_GROUP_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+#[cfg(not(target_family = "wasm"))]
 fn spawn_download_progress_poller(
     progress: &Option<Progress>,
     group: &xet::xet_session::XetFileDownloadGroup,
     tracked: Arc<Vec<TrackedDownload>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let handler = progress.as_ref()?.clone();
+    let group_id = next_download_group_id();
     let group = group.clone();
     Some(tokio::spawn(async move {
         loop {
@@ -140,6 +147,7 @@ fn spawn_download_progress_poller(
 
             let report = group.progress();
             handler.emit(DownloadEvent::AggregateProgress {
+                group_id,
                 bytes_completed: report.total_bytes_completed,
                 total_bytes: report.total_bytes,
                 bytes_per_sec: report.total_bytes_completion_rate,
@@ -1044,6 +1052,17 @@ mod tests {
     use xet::error::XetError;
 
     use super::*;
+
+    #[cfg(not(target_family = "wasm"))]
+    #[test]
+    fn concurrent_download_groups_have_distinct_ids() {
+        let workers: Vec<_> = (0..8).map(|_| std::thread::spawn(|| {
+            (0..128).map(|_| next_download_group_id()).collect::<Vec<_>>()
+        })).collect();
+        let ids: std::collections::HashSet<_> = workers.into_iter()
+            .flat_map(|worker| worker.join().unwrap()).collect();
+        assert_eq!(ids.len(), 8 * 128, "cada grupo conserva una identidad propia");
+    }
 
     #[test]
     fn test_session_poisoned_positive() {

@@ -18,7 +18,7 @@
 //! las decisiones son funciones puras sobre fixtures.
 
 use anyhow::{bail, Result};
-use std::io::{BufRead, Write};
+use std::io::{Read, Write};
 
 /// Componentes de Rust que aseguran las puertas (`fmt --check`, clippy). La
 /// versión ya la aplica `rust-toolchain.toml`.
@@ -278,64 +278,605 @@ fn run_setup_with_watchdog(root: &std::path::Path) -> Result<()> {
 /// hijo comunica progreso agregado de bytes por stderr; cualquier otra salida se
 /// conserva como diagnóstico normal. Los plazos entran por parámetro para que las
 /// pruebas no esperen los diez minutos reales.
+#[derive(Debug)]
+enum WatchEvent {
+    Heartbeat(std::time::Instant),
+    Eof,
+    ReadError(String),
+    ForwardError(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum WatchExit {
+    Success,
+    Failure(Option<i32>),
+}
+
+trait WatchRuntime {
+    fn now(&self) -> std::time::Instant;
+    fn event(&mut self) -> Result<Option<WatchEvent>>;
+    fn wait_event(&mut self, duration: std::time::Duration) -> Result<Option<WatchEvent>>;
+    fn child_status(&mut self) -> Result<Option<WatchExit>>;
+    fn kill(&mut self) -> Result<()>;
+    fn wait_child(&mut self) -> Result<()>;
+    fn note_forward_error(&mut self, error: String);
+}
+
+fn watch_exit(status: WatchExit) -> Result<()> {
+    match status {
+        WatchExit::Success => Ok(()),
+        WatchExit::Failure(code) => bail!("`setup` falló (exit {code:?})"),
+    }
+}
+
+enum WatchAbort {
+    Timeout(std::time::Duration),
+    ReadError(String),
+    StatusError(String),
+}
+
+fn abort_watched_child(runtime: &mut impl WatchRuntime, cause: WatchAbort) -> Result<()> {
+    let timeout = matches!(cause, WatchAbort::Timeout(_));
+    let message = match cause {
+        WatchAbort::Timeout(limit) => {
+            format!("`setup` no informó avance de bytes durante {limit:?}")
+        }
+        WatchAbort::ReadError(error) => format!("no se pudo leer stderr de `setup`: {error}"),
+        WatchAbort::StatusError(error) => {
+            format!("no se pudo comprobar el estado de `setup`: {error}")
+        }
+    };
+    if let Err(error) = runtime.kill() {
+        match runtime.child_status() {
+            Ok(Some(status)) => {
+                if timeout {
+                    return watch_exit(status);
+                }
+                bail!("{message}; el hijo terminó antes del aborto: {status:?}");
+            }
+            Ok(None) => bail!("{message}; no se pudo matar el `setup`: {error}"),
+            Err(check) => bail!("{message}; no se pudo matar el `setup`: {error}; tampoco se pudo comprobar su estado: {check}"),
+        }
+    }
+    if let Err(error) = runtime.wait_child() {
+        bail!("{message}; no se pudo recoger el `setup` abortado: {error}");
+    }
+    if timeout {
+        bail!("{message}: se abortó para no esperar indefinidamente a un flujo mudo; `setup --force-update --yes` repara el estado parcial");
+    }
+    bail!("{message}");
+}
+
+fn checked_watch_status(runtime: &mut impl WatchRuntime) -> Result<Option<WatchExit>> {
+    match runtime.child_status() {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            abort_watched_child(runtime, WatchAbort::StatusError(error.to_string()))?;
+            Ok(None)
+        }
+    }
+}
+
+fn process_watch_event(
+    runtime: &mut impl WatchRuntime,
+    event: WatchEvent,
+    last_progress: &mut std::time::Instant,
+) -> Result<()> {
+    match event {
+        WatchEvent::Heartbeat(observed) => *last_progress = (*last_progress).max(observed),
+        WatchEvent::Eof => {}
+        WatchEvent::ReadError(error) => {
+            return abort_watched_child(runtime, WatchAbort::ReadError(error));
+        }
+        WatchEvent::ForwardError(error) => {
+            runtime.note_forward_error(error);
+        }
+    }
+    Ok(())
+}
+
+fn supervise_child(
+    runtime: &mut impl WatchRuntime,
+    silence_limit: std::time::Duration,
+    poll_interval: std::time::Duration,
+) -> Result<()> {
+    let mut last_progress = runtime.now();
+    loop {
+        for _ in 0..4 {
+            let Some(event) = runtime.event()? else { break };
+            process_watch_event(runtime, event, &mut last_progress)?;
+        }
+        if let Some(status) = checked_watch_status(runtime)? {
+            return watch_exit(status);
+        }
+        let elapsed = runtime.now().saturating_duration_since(last_progress);
+        if elapsed >= silence_limit {
+            if let Some(event) = runtime.event()? {
+                process_watch_event(runtime, event, &mut last_progress)?;
+                continue;
+            }
+            if let Some(status) = checked_watch_status(runtime)? {
+                return watch_exit(status);
+            }
+            return abort_watched_child(runtime, WatchAbort::Timeout(silence_limit));
+        }
+        let remaining = silence_limit.saturating_sub(elapsed);
+        if let Some(event) = runtime.wait_event(poll_interval.min(remaining))? {
+            process_watch_event(runtime, event, &mut last_progress)?;
+        }
+    }
+}
+
+struct ChannelWatch<'a> {
+    child: &'a mut std::process::Child,
+    receiver: std::sync::mpsc::Receiver<()>,
+    signals: std::sync::Arc<std::sync::Mutex<ReaderSignals>>,
+    forward_error: Option<String>,
+    forward_reported: bool,
+    diagnostics: std::sync::mpsc::SyncSender<String>,
+}
+
+#[derive(Default)]
+struct ReaderSignals {
+    heartbeat: Option<std::time::Instant>,
+    eof: bool,
+    read_error: Option<String>,
+    forward_error: Option<String>,
+}
+
+#[derive(Clone)]
+struct ReaderNotifier {
+    signals: std::sync::Arc<std::sync::Mutex<ReaderSignals>>,
+    sender: std::sync::mpsc::SyncSender<()>,
+}
+
+impl ReaderNotifier {
+    fn send(&self, event: WatchEvent) {
+        let mut signals = self.signals.lock().unwrap_or_else(|e| e.into_inner());
+        match event {
+            WatchEvent::Heartbeat(at) => signals.heartbeat = Some(at),
+            WatchEvent::Eof => signals.eof = true,
+            WatchEvent::ReadError(error) => {
+                signals.read_error.get_or_insert(error);
+            }
+            WatchEvent::ForwardError(error) => {
+                signals.forward_error.get_or_insert(error);
+            }
+        }
+        drop(signals);
+        drop(self.sender.try_send(()).map_err(|error| error.to_string()));
+    }
+}
+
+impl ChannelWatch<'_> {
+    fn report_forward_error(&mut self) {
+        if self.forward_reported {
+            return;
+        }
+        if let Some(error) = &self.forward_error {
+            let message =
+                format!("aviso: no se pudieron mostrar todos los diagnósticos de `setup`: {error}");
+            match self.diagnostics.try_send(message) {
+                Ok(()) | Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    self.forward_reported = true
+                }
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {}
+            }
+        }
+    }
+
+    fn take_event(&mut self) -> Option<WatchEvent> {
+        let mut signals = self.signals.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(error) = signals.read_error.take() {
+            return Some(WatchEvent::ReadError(error));
+        }
+        if let Some(at) = signals.heartbeat.take() {
+            return Some(WatchEvent::Heartbeat(at));
+        }
+        if let Some(error) = signals.forward_error.take() {
+            return Some(WatchEvent::ForwardError(error));
+        }
+        if std::mem::take(&mut signals.eof) {
+            return Some(WatchEvent::Eof);
+        }
+        None
+    }
+}
+
+impl WatchRuntime for ChannelWatch<'_> {
+    fn now(&self) -> std::time::Instant {
+        std::time::Instant::now()
+    }
+
+    fn event(&mut self) -> Result<Option<WatchEvent>> {
+        self.report_forward_error();
+        Ok(self.take_event())
+    }
+
+    fn wait_event(&mut self, duration: std::time::Duration) -> Result<Option<WatchEvent>> {
+        self.report_forward_error();
+        match self.receiver.recv_timeout(duration) {
+            Ok(()) => Ok(self.take_event()),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(duration);
+                Ok(None)
+            }
+        }
+    }
+
+    fn child_status(&mut self) -> Result<Option<WatchExit>> {
+        Ok(self.child.try_wait()?.map(|status| {
+            if status.success() {
+                WatchExit::Success
+            } else {
+                WatchExit::Failure(status.code())
+            }
+        }))
+    }
+
+    fn kill(&mut self) -> Result<()> {
+        Ok(self.child.kill()?)
+    }
+
+    fn wait_child(&mut self) -> Result<()> {
+        self.child.wait()?;
+        Ok(())
+    }
+
+    fn note_forward_error(&mut self, error: String) {
+        if self.forward_error.is_none() {
+            self.forward_error = Some(error);
+        }
+        self.report_forward_error();
+    }
+}
+
+struct PipeReader {
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    done: std::sync::mpsc::Receiver<()>,
+    thread: std::thread::JoinHandle<()>,
+    #[cfg(unix)]
+    cancel: std::os::unix::net::UnixStream,
+    #[cfg(windows)]
+    cancel: std::os::windows::io::OwnedHandle,
+}
+
+fn join_finished_thread(thread: std::thread::JoinHandle<()>, name: &str) -> Result<()> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while !thread.is_finished() {
+        if std::time::Instant::now() >= deadline {
+            bail!("no se pudo confirmar la finalización de {name}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("{name} terminó con pánico"))
+}
+
+#[cfg(unix)]
+fn wait_for_pipe(
+    stderr: &std::process::ChildStderr,
+    cancel: &std::os::unix::net::UnixStream,
+) -> std::io::Result<bool> {
+    use std::os::unix::io::AsRawFd;
+    let mut fds = [
+        libc::pollfd {
+            fd: stderr.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: cancel.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    loop {
+        // Los descriptores permanecen abiertos y el arreglo cubre las dos entradas.
+        let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        if result < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if fds[1].revents != 0 {
+            return Ok(false);
+        }
+        if fds[0].revents & libc::POLLNVAL != 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "descriptor de stderr inválido",
+            ));
+        }
+        if fds[0].revents != 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn publish_line(
+    line: &[u8],
+    notifier: &ReaderNotifier,
+    diagnostics: &std::sync::mpsc::SyncSender<String>,
+) -> Result<()> {
+    let line = std::str::from_utf8(line)?.trim_end_matches('\r');
+    if line.starts_with("AVI_SETUP_HEARTBEAT ") {
+        notifier.send(WatchEvent::Heartbeat(std::time::Instant::now()));
+    } else if let Err(error) = diagnostics.try_send(line.to_owned()) {
+        notifier.send(WatchEvent::ForwardError(format!(
+            "no se pudo encolar un diagnóstico: {error}"
+        )));
+    }
+    Ok(())
+}
+
+impl PipeReader {
+    fn start(
+        stderr: std::process::ChildStderr,
+        notifier: ReaderNotifier,
+        diagnostics: std::sync::mpsc::SyncSender<String>,
+    ) -> Result<Self> {
+        let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread_stopped = stopped.clone();
+        let (done_tx, done) = std::sync::mpsc::channel();
+        #[cfg(unix)]
+        let (cancel_reader, cancel) = std::os::unix::net::UnixStream::pair()?;
+        #[cfg(windows)]
+        let (stderr, cancel) = {
+            use std::os::windows::io::OwnedHandle;
+            let owned: OwnedHandle = stderr.into();
+            let cancel = owned.try_clone()?;
+            (std::process::ChildStderr::from(owned), cancel)
+        };
+        let thread = std::thread::Builder::new()
+            .name("setup-stderr".into())
+            .spawn(move || {
+                let mut stderr = stderr;
+                let mut pending = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    if thread_stopped.load(std::sync::atomic::Ordering::Acquire) {
+                        break;
+                    }
+                    #[cfg(unix)]
+                    match wait_for_pipe(&stderr, &cancel_reader) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        Err(error) => {
+                            notifier.send(WatchEvent::ReadError(error.to_string()));
+                            break;
+                        }
+                    }
+                    match stderr.read(&mut buffer) {
+                        Ok(0) => {
+                            if !pending.is_empty() {
+                                if let Err(error) = publish_line(&pending, &notifier, &diagnostics)
+                                {
+                                    notifier.send(WatchEvent::ReadError(error.to_string()));
+                                    break;
+                                }
+                            }
+                            notifier.send(WatchEvent::Eof);
+                            break;
+                        }
+                        Ok(count) => {
+                            pending.extend_from_slice(&buffer[..count]);
+                            while let Some(end) = pending.iter().position(|byte| *byte == b'\n') {
+                                let line: Vec<u8> = pending.drain(..=end).collect();
+                                if let Err(error) =
+                                    publish_line(&line[..line.len() - 1], &notifier, &diagnostics)
+                                {
+                                    notifier.send(WatchEvent::ReadError(error.to_string()));
+                                    drop(done_tx.send(()).map_err(|error| error.to_string()));
+                                    return;
+                                }
+                            }
+                        }
+                        Err(error) if thread_stopped.load(std::sync::atomic::Ordering::Acquire) => {
+                            let _ = error;
+                            break;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(error) => {
+                            notifier.send(WatchEvent::ReadError(error.to_string()));
+                            break;
+                        }
+                    }
+                }
+                drop(done_tx.send(()).map_err(|error| error.to_string()));
+            })?;
+        Ok(Self {
+            stopped,
+            done,
+            thread,
+            cancel,
+        })
+    }
+
+    fn finish(self) -> Result<()> {
+        match self.done.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                join_finished_thread(self.thread, "el lector de stderr")?;
+                return Ok(());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        #[cfg(unix)]
+        let cancel_error = (&self.cancel).write_all(b"x").err();
+        #[cfg(windows)]
+        let mut cancel_error: Option<std::io::Error> = None;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            #[cfg(windows)]
+            {
+                use std::os::windows::io::AsRawHandle;
+                // El handle duplicado sigue abierto mientras se solicita la cancelación.
+                let result = unsafe {
+                    windows_sys::Win32::System::IO::CancelIoEx(
+                        self.cancel.as_raw_handle() as isize,
+                        std::ptr::null(),
+                    )
+                };
+                if result == 0 {
+                    let error = std::io::Error::last_os_error();
+                    if error.raw_os_error()
+                        != Some(windows_sys::Win32::Foundation::ERROR_NOT_FOUND as i32)
+                    {
+                        cancel_error.get_or_insert(error);
+                    }
+                }
+            }
+            match self.done.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    join_finished_thread(self.thread, "el lector de stderr")?;
+                    return Ok(());
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                    if std::time::Instant::now() < deadline => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if let Some(error) = cancel_error {
+                        bail!("no se pudo cancelar el lector de stderr: {error}");
+                    }
+                    bail!("no se pudo confirmar la finalización del lector de stderr");
+                }
+            }
+        }
+    }
+}
+
+fn fail_to_start_reader(child: &mut std::process::Child, cause: &str) -> anyhow::Error {
+    match child.kill() {
+        Ok(()) => match child.wait() {
+            Ok(_) => anyhow::anyhow!("{cause}; el hijo se terminó y recogió"),
+            Err(error) => anyhow::anyhow!("{cause}; no se pudo recoger el hijo: {error}"),
+        },
+        Err(error) => match child.try_wait() {
+            Ok(Some(status)) => anyhow::anyhow!("{cause}; el hijo ya terminó: {status}"),
+            Ok(None) => anyhow::anyhow!("{cause}; no se pudo terminar el hijo: {error}"),
+            Err(check) => anyhow::anyhow!("{cause}; no se pudo terminar el hijo: {error}; tampoco se pudo comprobar su estado: {check}"),
+        },
+    }
+}
+
+fn forward_diagnostics(
+    mut writer: impl Write,
+    output: std::sync::mpsc::Receiver<String>,
+    notifier: ReaderNotifier,
+) {
+    let mut can_forward = true;
+    for line in output {
+        if can_forward {
+            if let Err(error) = writeln!(writer, "{line}") {
+                can_forward = false;
+                notifier.send(WatchEvent::ForwardError(error.to_string()));
+            }
+        }
+    }
+}
+
 fn watch_child(
     child: &mut std::process::Child,
     silence_limit: std::time::Duration,
     poll_interval: std::time::Duration,
 ) -> Result<()> {
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("`setup` se lanzó sin canal stderr"))?;
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
-            if let Some(payload) = line.strip_prefix("AVI_SETUP_HEARTBEAT ") {
-                if sender.send(payload.to_owned()).is_err() {
-                    break;
-                }
-            } else {
-                if std::io::stderr().write_all(line.as_bytes()).is_err()
-                    || std::io::stderr().write_all(b"\n").is_err()
-                {
-                    break;
-                }
-            }
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            return Err(fail_to_start_reader(
+                child,
+                "`setup` se lanzó sin canal stderr",
+            ))
         }
-    });
-
-    let mut last_progress = std::time::Instant::now();
-    loop {
-        while receiver.try_recv().is_ok() {
-            last_progress = std::time::Instant::now();
+    };
+    let signals = std::sync::Arc::new(std::sync::Mutex::new(ReaderSignals::default()));
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let notifier = ReaderNotifier {
+        signals: signals.clone(),
+        sender,
+    };
+    let (diagnostics, output) = std::sync::mpsc::sync_channel::<String>(32);
+    let output_notifier = notifier.clone();
+    let (output_done_tx, output_done) = std::sync::mpsc::channel();
+    let reader = match PipeReader::start(stderr, notifier, diagnostics.clone()) {
+        Ok(reader) => reader,
+        Err(error) => {
+            return Err(fail_to_start_reader(
+                child,
+                &format!("no se pudo iniciar el lector de stderr: {error}"),
+            ))
         }
-        if let Some(status) = child.try_wait()? {
-            if !status.success() {
-                bail!("`setup` falló (exit {:?})", status.code());
-            }
-            return Ok(());
-        }
-        match receiver.recv_timeout(poll_interval) {
-            Ok(_) => last_progress = std::time::Instant::now(),
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                std::thread::sleep(poll_interval);
-            }
-        }
-        if last_progress.elapsed() >= silence_limit {
-            if let Err(error) = child.kill() {
-                eprintln!("aviso: no se pudo matar el `setup` colgado: {error}");
-            }
-            if let Err(error) = child.wait() {
-                eprintln!("aviso: no se pudo recoger el `setup` abortado: {error}");
-            }
-            bail!(
-                "`setup` no informó avance de bytes durante {:?}: se abortó para no esperar indefinidamente a un flujo mudo; `setup --force-update --yes` repara el estado parcial",
-                silence_limit
+    };
+    let output_thread = std::thread::Builder::new()
+        .name("setup-diagnostics".into())
+        .spawn(move || {
+            forward_diagnostics(std::io::stderr(), output, output_notifier);
+            drop(output_done_tx.send(()).map_err(|error| error.to_string()));
+        });
+    let output_thread = match output_thread {
+        Ok(thread) => thread,
+        Err(error) => {
+            let cause = fail_to_start_reader(
+                child,
+                &format!("no se pudo iniciar el reenviador de stderr: {error}"),
             );
+            return match reader.finish() {
+                Ok(()) => Err(cause),
+                Err(cleanup) => Err(anyhow::anyhow!("{cause}; {cleanup}")),
+            };
+        }
+    };
+    let mut runtime = ChannelWatch {
+        child,
+        receiver,
+        signals,
+        forward_error: None,
+        forward_reported: false,
+        diagnostics,
+    };
+    let result = supervise_child(&mut runtime, silence_limit, poll_interval);
+    let reader_result = reader.finish();
+    let (pending_error, pending_forward) = {
+        let mut signals = runtime.signals.lock().unwrap_or_else(|e| e.into_inner());
+        (signals.read_error.take(), signals.forward_error.take())
+    };
+    if let Some(error) = pending_forward {
+        runtime.note_forward_error(error);
+    }
+    let warning_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while runtime.forward_error.is_some()
+        && !runtime.forward_reported
+        && std::time::Instant::now() < warning_deadline
+    {
+        runtime.report_forward_error();
+        if !runtime.forward_reported {
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
+    drop(runtime);
+    let output_result = match output_done.recv_timeout(std::time::Duration::from_secs(2)) {
+        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            join_finished_thread(output_thread, "el reenviador de stderr")
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(anyhow::anyhow!(
+            "no se pudo confirmar la finalización del reenviador de stderr"
+        )),
+    };
+    if let Err(error) = reader_result {
+        bail!("resultado de setup: {result:?}; {error}");
+    }
+    if let Err(error) = output_result {
+        bail!("resultado de setup: {result:?}; {error}");
+    }
+    if let Some(error) = pending_error {
+        bail!("resultado de setup: {result:?}; no se pudo leer stderr de `setup`: {error}");
+    }
+    result
 }
 
 /// Salida de `rustup component list --installed`; `None` si no hay `rustup`.
@@ -356,6 +897,284 @@ fn rustup_installed_list() -> Result<Option<String>> {
 mod tests {
     use super::*;
     use crate::doctor::{Report, Row, Status};
+
+    struct ScriptedWatch {
+        now: std::time::Instant,
+        events: std::collections::VecDeque<Option<WatchEvent>>,
+        waits: std::collections::VecDeque<Option<WatchEvent>>,
+        statuses: std::collections::VecDeque<Option<WatchExit>>,
+        kills: usize,
+        reaps: usize,
+        kill_error: bool,
+        wait_error: bool,
+        status_error: bool,
+        forward_errors: Vec<String>,
+    }
+
+    impl ScriptedWatch {
+        fn new() -> Self {
+            Self {
+                now: std::time::Instant::now(),
+                events: Default::default(),
+                waits: Default::default(),
+                statuses: Default::default(),
+                kills: 0,
+                reaps: 0,
+                kill_error: false,
+                wait_error: false,
+                status_error: false,
+                forward_errors: Vec::new(),
+            }
+        }
+    }
+
+    impl WatchRuntime for ScriptedWatch {
+        fn now(&self) -> std::time::Instant {
+            self.now
+        }
+        fn event(&mut self) -> Result<Option<WatchEvent>> {
+            Ok(self.events.pop_front().flatten())
+        }
+        fn wait_event(&mut self, duration: std::time::Duration) -> Result<Option<WatchEvent>> {
+            self.now += duration;
+            Ok(self.waits.pop_front().flatten())
+        }
+        fn child_status(&mut self) -> Result<Option<WatchExit>> {
+            if self.status_error {
+                bail!("fallo de consulta")
+            }
+            Ok(self.statuses.pop_front().flatten())
+        }
+        fn kill(&mut self) -> Result<()> {
+            self.kills += 1;
+            if self.kill_error {
+                bail!("fallo de terminación")
+            }
+            Ok(())
+        }
+        fn wait_child(&mut self) -> Result<()> {
+            self.reaps += 1;
+            if self.wait_error {
+                bail!("fallo de recogida")
+            }
+            Ok(())
+        }
+
+        fn note_forward_error(&mut self, error: String) {
+            self.forward_errors.push(error);
+        }
+    }
+
+    #[test]
+    fn watchdog_scripted_exit_after_wait_does_not_kill() {
+        for status in [WatchExit::Success, WatchExit::Failure(Some(3))] {
+            let success = status == WatchExit::Success;
+            let mut runtime = ScriptedWatch::new();
+            runtime.statuses.extend([None, Some(status)]);
+            let result = supervise_child(
+                &mut runtime,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(1),
+            );
+            if success {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert!(result.unwrap_err().to_string().contains("exit Some(3)"));
+            }
+            assert_eq!(runtime.kills, 0);
+        }
+    }
+
+    #[test]
+    fn watchdog_scripted_timeout_kills_and_reaps() {
+        let mut runtime = ScriptedWatch::new();
+        let error = supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no informó avance de bytes"));
+        assert_eq!((runtime.kills, runtime.reaps), (1, 1));
+    }
+
+    #[test]
+    fn watchdog_scripted_read_failure_kills_and_reaps() {
+        let mut runtime = ScriptedWatch::new();
+        runtime
+            .events
+            .push_back(Some(WatchEvent::ReadError("fallo de lectura".into())));
+        let error = supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fallo de lectura"));
+        assert_eq!((runtime.kills, runtime.reaps), (1, 1));
+    }
+
+    #[test]
+    fn watchdog_scripted_failure_to_reap_is_not_reported_as_timeout() {
+        let mut runtime = ScriptedWatch::new();
+        runtime.wait_error = true;
+        let error = supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fallo de recogida"));
+        assert_eq!((runtime.kills, runtime.reaps), (1, 1));
+    }
+
+    #[test]
+    fn watchdog_scripted_eof_does_not_end_the_child() {
+        let mut runtime = ScriptedWatch::new();
+        runtime.events.extend([Some(WatchEvent::Eof), None]);
+        runtime.statuses.extend([None, Some(WatchExit::Success)]);
+        assert!(supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(1)
+        )
+        .is_ok());
+        assert_eq!(runtime.kills, 0);
+    }
+
+    #[test]
+    fn watchdog_scripted_heartbeat_extends_the_deadline() {
+        let mut runtime = ScriptedWatch::new();
+        let start = runtime.now;
+        runtime.waits.push_back(Some(WatchEvent::Heartbeat(
+            start + std::time::Duration::from_secs(1),
+        )));
+        runtime
+            .statuses
+            .extend([None, None, Some(WatchExit::Success)]);
+        assert!(supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(2),
+            std::time::Duration::from_secs(1)
+        )
+        .is_ok());
+        assert_eq!(runtime.kills, 0);
+    }
+
+    #[test]
+    fn watchdog_scripted_stale_heartbeat_does_not_extend_deadline() {
+        let mut runtime = ScriptedWatch::new();
+        runtime
+            .waits
+            .push_back(Some(WatchEvent::Heartbeat(runtime.now)));
+        let error = supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no informó avance de bytes"));
+        assert_eq!((runtime.kills, runtime.reaps), (1, 1));
+    }
+
+    #[test]
+    fn watchdog_scripted_kill_error_observes_child_exit() {
+        let mut runtime = ScriptedWatch::new();
+        runtime.kill_error = true;
+        runtime
+            .statuses
+            .extend([None, None, None, Some(WatchExit::Success)]);
+        assert!(supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1)
+        )
+        .is_ok());
+        assert_eq!((runtime.kills, runtime.reaps), (1, 0));
+    }
+
+    #[test]
+    fn watchdog_scripted_forward_failure_does_not_abort() {
+        let mut runtime = ScriptedWatch::new();
+        runtime.events.extend([
+            Some(WatchEvent::ForwardError("salida cerrada".into())),
+            None,
+        ]);
+        runtime.statuses.push_back(Some(WatchExit::Success));
+        assert!(supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(1)
+        )
+        .is_ok());
+        assert_eq!(runtime.kills, 0);
+        assert_eq!(runtime.forward_errors, ["salida cerrada"]);
+    }
+
+    #[test]
+    fn watchdog_scripted_status_error_terminates_and_reaps() {
+        let mut runtime = ScriptedWatch::new();
+        runtime.status_error = true;
+        let error = supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fallo de consulta"));
+        assert_eq!((runtime.kills, runtime.reaps), (1, 1));
+    }
+
+    #[test]
+    fn watchdog_scripted_final_heartbeat_prevents_timeout() {
+        let mut runtime = ScriptedWatch::new();
+        let observed = runtime.now + std::time::Duration::from_secs(1);
+        runtime
+            .events
+            .extend([None, None, Some(WatchEvent::Heartbeat(observed)), None]);
+        runtime
+            .statuses
+            .extend([None, None, Some(WatchExit::Success)]);
+        assert!(supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1)
+        )
+        .is_ok());
+        assert_eq!(runtime.kills, 0);
+    }
+
+    #[test]
+    fn watchdog_scripted_kill_failure_with_live_child_is_explicit() {
+        let mut runtime = ScriptedWatch::new();
+        runtime.kill_error = true;
+        let error = supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fallo de terminación"));
+        assert_eq!((runtime.kills, runtime.reaps), (1, 0));
+    }
+
+    #[test]
+    fn watchdog_scripted_read_and_kill_errors_are_preserved() {
+        let mut runtime = ScriptedWatch::new();
+        runtime.kill_error = true;
+        runtime
+            .events
+            .push_back(Some(WatchEvent::ReadError("lectura rota".into())));
+        let error = supervise_child(
+            &mut runtime,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("lectura rota"), "{message}");
+        assert!(message.contains("fallo de terminación"), "{message}");
+    }
 
     /// Hijo que tarda mucho y no informa latidos: el vigilante tiene que abortarlo.
     /// Se lanza el binario directo, sin `cmd /C`, para que el `kill` alcance al
@@ -401,6 +1220,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn watchdog_missing_stderr_terminates_and_reaps_child() {
+        let mut child = slow_silent_child();
+        drop(child.stderr.take());
+        let error = watch_child(
+            &mut child,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("sin canal stderr"), "{error}");
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "el hijo queda recogido"
+        );
+    }
+
     /// Hijo que termina de inmediato con `code`.
     fn spawn_exit_child(code: i32) -> std::process::Child {
         let script = format!("exit {code}");
@@ -433,54 +1269,360 @@ mod tests {
         assert!(watch_child(&mut ok, limits.0, limits.1).is_ok());
 
         let mut failing = spawn_exit_child(3);
-        assert!(watch_child(&mut failing, limits.0, limits.1).is_err());
+        let error = watch_child(&mut failing, limits.0, limits.1).unwrap_err();
+        assert!(
+            error.to_string().contains("falló (exit Some(3))"),
+            "{error}"
+        );
     }
 
-    /// Hijo que emite latidos aunque mantenga igual el tamaño de un archivo.
-    fn heartbeat_child(duration_ms: u64) -> std::process::Child {
-        let exe = std::env::current_exe().expect("se resuelve el binario de prueba");
-        std::process::Command::new(exe)
-            .args([
-                "--exact",
-                "bootstrap::tests::heartbeat_child_process",
-                "--nocapture",
-            ])
-            .env("AVI_SETUP_HEARTBEAT_CHILD", duration_ms.to_string())
-            .stderr(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::null())
-            .spawn()
-            .expect("se lanza el hijo de latidos de prueba")
-    }
-
+    /// El hijo recibe órdenes y confirma cada hito sin depender de retardos.
     #[test]
-    fn heartbeat_child_process() {
-        let Ok(duration) = std::env::var("AVI_SETUP_HEARTBEAT_CHILD") else {
+    fn watchdog_controlled_child_process() {
+        use std::io::BufRead;
+        if std::env::var_os("AVI_WATCHDOG_TEST_CHILD").is_none() {
             return;
-        };
-        let duration = duration.parse::<u64>().expect("duración entera");
-        let dir = tempfile::tempdir().expect("directorio temporal del archivo preextendido");
-        let path = dir.path().join("blob.incomplete");
-        let file = std::fs::File::create(path).expect("se crea el blob");
-        file.set_len(1024 * 1024).expect("se preextiende el blob");
-        let end = std::time::Instant::now() + std::time::Duration::from_millis(duration);
-        let mut completed = 0;
-        while std::time::Instant::now() < end {
-            completed += 1;
-            eprintln!("AVI_SETUP_HEARTBEAT {completed} 1000000");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        println!("AVI_TEST READY");
+        std::io::stdout().flush().unwrap();
+        for line in std::io::stdin().lock().lines() {
+            match line.unwrap().as_str() {
+                "heartbeat" => {
+                    eprintln!("AVI_SETUP_HEARTBEAT 1 10");
+                    println!("AVI_TEST HEARTBEAT");
+                }
+                "diagnostic" => {
+                    eprintln!("diagnóstico de prueba");
+                    println!("AVI_TEST DIAGNOSTIC");
+                }
+                "invalid" => {
+                    std::io::stderr().write_all(&[0xff, b'\n']).unwrap();
+                    println!("AVI_TEST INVALID");
+                }
+                "close" => {
+                    #[cfg(unix)]
+                    assert_eq!(unsafe { libc::close(2) }, 0);
+                    #[cfg(windows)]
+                    {
+                        let handle = unsafe {
+                            windows_sys::Win32::System::Console::GetStdHandle(
+                                windows_sys::Win32::System::Console::STD_ERROR_HANDLE,
+                            )
+                        };
+                        assert_ne!(
+                            unsafe { windows_sys::Win32::Foundation::CloseHandle(handle) },
+                            0
+                        );
+                    }
+                    println!("AVI_TEST CLOSED");
+                }
+                "exit" => return,
+                _ => panic!("orden desconocida"),
+            }
+            std::io::stdout().flush().unwrap();
         }
     }
 
-    /// Una transferencia válida no se aborta aunque no se mueva el tamaño del árbol.
+    struct ControlledChild {
+        child: std::process::Child,
+        input: Option<std::process::ChildStdin>,
+        output: std::sync::mpsc::Receiver<String>,
+    }
+
+    impl ControlledChild {
+        fn start() -> Self {
+            use std::io::BufRead;
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "bootstrap::tests::watchdog_controlled_child_process",
+                    "--nocapture",
+                ])
+                .env("AVI_WATCHDOG_TEST_CHILD", "1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("se lanza el hijo controlado");
+            let input = child.stdin.take().unwrap();
+            let stdout = child.stdout.take().unwrap();
+            let (sender, output) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for line in std::io::BufReader::new(stdout).lines() {
+                    let Ok(line) = line else { break };
+                    if line.starts_with("AVI_TEST ") && sender.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            let fixture = Self {
+                child,
+                input: Some(input),
+                output,
+            };
+            fixture.expect("AVI_TEST READY");
+            fixture
+        }
+
+        fn expect(&self, expected: &str) {
+            assert_eq!(
+                self.output
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .unwrap(),
+                expected
+            );
+        }
+
+        fn command(&mut self, command: &str, expected: &str) {
+            let input = self.input.as_mut().unwrap();
+            writeln!(input, "{command}").unwrap();
+            input.flush().unwrap();
+            self.expect(expected);
+        }
+
+        fn wait(&mut self) -> std::process::ExitStatus {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            loop {
+                if let Some(status) = self.child.try_wait().expect("se consulta el hijo") {
+                    return status;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "el hijo de prueba no terminó"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+
+    impl Drop for ControlledChild {
+        fn drop(&mut self) {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            if let Err(error) = self.child.kill() {
+                drop(
+                    writeln!(
+                        std::io::stderr(),
+                        "no se pudo terminar el hijo de prueba: {error}"
+                    )
+                    .map_err(|error| error.to_string()),
+                );
+                return;
+            }
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match self.child.try_wait() {
+                    Ok(Some(_)) => return,
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Ok(None) => {
+                        drop(
+                            writeln!(
+                                std::io::stderr(),
+                                "no se pudo confirmar la recogida del hijo de prueba"
+                            )
+                            .map_err(|error| error.to_string()),
+                        );
+                        return;
+                    }
+                    Err(error) => {
+                        drop(
+                            writeln!(
+                                std::io::stderr(),
+                                "no se pudo consultar el hijo de prueba: {error}"
+                            )
+                            .map_err(|error| error.to_string()),
+                        );
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
-    fn watchdog_keeps_child_alive_on_byte_heartbeats() {
-        let mut child = heartbeat_child(350);
-        watch_child(
-            &mut child,
-            std::time::Duration::from_millis(100),
-            std::time::Duration::from_millis(20),
+    fn watchdog_reader_receives_heartbeat_and_eof_while_child_is_alive() {
+        let mut fixture = ControlledChild::start();
+        let stderr = fixture.child.stderr.take().unwrap();
+        let signals = std::sync::Arc::new(std::sync::Mutex::new(ReaderSignals::default()));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let notifier = ReaderNotifier {
+            signals: signals.clone(),
+            sender,
+        };
+        let (diagnostics, _output) = std::sync::mpsc::sync_channel(32);
+        let reader = PipeReader::start(stderr, notifier, diagnostics).unwrap();
+        fixture.command("heartbeat", "AVI_TEST HEARTBEAT");
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        assert!(signals.lock().unwrap().heartbeat.take().is_some());
+        fixture.command("close", "AVI_TEST CLOSED");
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        assert!(signals.lock().unwrap().eof);
+        assert!(fixture.child.try_wait().unwrap().is_none());
+        reader.finish().expect("el lector termina después del EOF");
+        writeln!(fixture.input.as_mut().unwrap(), "exit").unwrap();
+        fixture.input.as_mut().unwrap().flush().unwrap();
+        assert!(fixture.wait().success());
+    }
+
+    #[test]
+    fn watchdog_reader_cancels_while_child_keeps_pipe_open() {
+        let mut fixture = ControlledChild::start();
+        let stderr = fixture.child.stderr.take().unwrap();
+        let signals = std::sync::Arc::new(std::sync::Mutex::new(ReaderSignals::default()));
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        let notifier = ReaderNotifier { signals, sender };
+        let (diagnostics, _output) = std::sync::mpsc::sync_channel(32);
+        let reader = PipeReader::start(stderr, notifier, diagnostics).unwrap();
+        let result = reader.finish();
+        assert!(fixture.child.try_wait().unwrap().is_none());
+        writeln!(fixture.input.as_mut().unwrap(), "exit").unwrap();
+        fixture.input.as_mut().unwrap().flush().unwrap();
+        assert!(fixture.wait().success());
+        result.expect("el lector termina aunque el hijo conserve el pipe");
+    }
+
+    #[test]
+    fn watchdog_reader_continues_after_forward_failure() {
+        let mut fixture = ControlledChild::start();
+        let stderr = fixture.child.stderr.take().unwrap();
+        let signals = std::sync::Arc::new(std::sync::Mutex::new(ReaderSignals::default()));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let notifier = ReaderNotifier {
+            signals: signals.clone(),
+            sender,
+        };
+        let (diagnostics, output) = std::sync::mpsc::sync_channel(1);
+        drop(output);
+        let reader = PipeReader::start(stderr, notifier, diagnostics).unwrap();
+        fixture.command("diagnostic", "AVI_TEST DIAGNOSTIC");
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        assert!(signals.lock().unwrap().forward_error.take().is_some());
+        fixture.command("heartbeat", "AVI_TEST HEARTBEAT");
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        assert!(signals.lock().unwrap().heartbeat.take().is_some());
+        fixture.command("close", "AVI_TEST CLOSED");
+        reader.finish().unwrap();
+        writeln!(fixture.input.as_mut().unwrap(), "exit").unwrap();
+        fixture.input.as_mut().unwrap().flush().unwrap();
+        assert!(fixture.wait().success());
+    }
+
+    #[test]
+    fn watchdog_reader_distinguishes_read_error_from_eof() {
+        let mut fixture = ControlledChild::start();
+        let stderr = fixture.child.stderr.take().unwrap();
+        let signals = std::sync::Arc::new(std::sync::Mutex::new(ReaderSignals::default()));
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let notifier = ReaderNotifier {
+            signals: signals.clone(),
+            sender,
+        };
+        let (diagnostics, _output) = std::sync::mpsc::sync_channel(1);
+        let reader = PipeReader::start(stderr, notifier, diagnostics).unwrap();
+        fixture.command("invalid", "AVI_TEST INVALID");
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        let signals = signals.lock().unwrap();
+        assert!(signals.read_error.is_some());
+        assert!(!signals.eof);
+        drop(signals);
+        reader.finish().unwrap();
+        writeln!(fixture.input.as_mut().unwrap(), "exit").unwrap();
+        fixture.input.as_mut().unwrap().flush().unwrap();
+        assert!(fixture.wait().success());
+    }
+
+    #[test]
+    fn watchdog_read_error_aborts_and_reaps_real_child() {
+        let mut fixture = ControlledChild::start();
+        fixture.command("invalid", "AVI_TEST INVALID");
+        let error = watch_child(
+            &mut fixture.child,
+            std::time::Duration::from_secs(30),
+            std::time::Duration::from_secs(1),
         )
-        .expect("los latidos mantienen vivo el setup aunque el tamaño no cambie");
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("no se pudo leer stderr"),
+            "{error}"
+        );
+        assert!(
+            fixture.child.try_wait().unwrap().is_some(),
+            "el hijo queda recogido"
+        );
+    }
+
+    #[test]
+    fn watchdog_diagnostic_writer_reports_error_and_drains() {
+        struct BrokenWriter;
+        impl Write for BrokenWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "salida cerrada",
+                ))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let signals = std::sync::Arc::new(std::sync::Mutex::new(ReaderSignals::default()));
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(1);
+        let notifier = ReaderNotifier {
+            signals: signals.clone(),
+            sender,
+        };
+        let (diagnostics, output) = std::sync::mpsc::sync_channel(2);
+        diagnostics.send("primero".into()).unwrap();
+        diagnostics.send("segundo".into()).unwrap();
+        drop(diagnostics);
+        forward_diagnostics(BrokenWriter, output, notifier);
+        assert!(signals
+            .lock()
+            .unwrap()
+            .forward_error
+            .as_deref()
+            .unwrap()
+            .contains("salida cerrada"));
+    }
+
+    #[test]
+    fn watchdog_retries_forward_warning_after_queue_is_full() {
+        let mut fixture = ControlledChild::start();
+        let signals = std::sync::Arc::new(std::sync::Mutex::new(ReaderSignals::default()));
+        let (_sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let (diagnostics, output) = std::sync::mpsc::sync_channel(1);
+        diagnostics.send("diagnóstico anterior".into()).unwrap();
+        let mut runtime = ChannelWatch {
+            child: &mut fixture.child,
+            receiver,
+            signals,
+            forward_error: None,
+            forward_reported: false,
+            diagnostics,
+        };
+        runtime.note_forward_error("cola llena".into());
+        assert!(!runtime.forward_reported);
+        assert_eq!(output.try_recv().unwrap(), "diagnóstico anterior");
+        assert!(runtime.event().unwrap().is_none());
+        assert!(output.try_recv().unwrap().contains("cola llena"));
+        assert!(runtime.forward_reported);
+        drop(runtime);
+        writeln!(fixture.input.as_mut().unwrap(), "exit").unwrap();
+        fixture.input.as_mut().unwrap().flush().unwrap();
+        assert!(fixture.wait().success());
     }
 
     /// Informe de fixture: una fila ejecutable, una manual y una correcta.

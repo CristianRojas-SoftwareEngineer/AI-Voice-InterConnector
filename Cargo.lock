@@ -5077,6 +5077,7 @@ dependencies = [
  "clap",
  "filetime",
  "flate2",
+ "libc",
  "lzma-rs",
  "object",
  "regex",
@@ -5084,6 +5085,7 @@ dependencies = [
  "sha2 0.11.0",
  "tar",
  "tempfile",
+ "windows-sys 0.52.0",
  "zip",
 ]
 

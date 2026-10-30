@@ -33,6 +33,12 @@ avi-store = { path = "../avi-store" }
 object = { version = "0.40", default-features = false, features = ["read_core", "elf", "macho", "pe", "std"] }
 lzma-rs = "0.3"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_IO"] }
+
 [dev-dependencies]
 # Envejecer un directorio para probar el discriminante de antigüedad de la
 # poda fina. Es la misma versión que ya usa `tar` en el lockfile, así que el
