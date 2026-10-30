@@ -4,7 +4,7 @@
 
 > **Directiva de no retrocompatibilidad.** El proyecto es pre-1.0 y no requiere ningún tipo de retrocompatibilidad con el ciclo de vida anterior. No hay aliases ni flags deprecados, ni adopción de instalaciones sin recibo, ni migración de datos cuando cambien las rutas, ni scripts puente en las URLs antiguas. El proyecto no está distribuido: no hay instalaciones previas, de modo que no se concede ningún mecanismo de transición.
 
-Este documento especifica cómo se **instala, actualiza, desinstala y limpia** `ai-voice-interconnector` en el entorno del usuario final, y cómo se **prepara, actualiza y limpia** el entorno del desarrollador, con el mismo comportamiento en los cuatro targets de compilación. Evalúa las alternativas de implementación y fija una arquitectura única que reemplaza a los scripts de ciclo de vida de la raíz del repositorio.
+Este documento especifica cómo se **instala, actualiza, desinstala y limpia** `ai-voice-interconnector` en el entorno del usuario final, y cómo se **prepara, actualiza y limpia** el entorno del desarrollador, con el mismo comportamiento en los cuatro targets de compilación. Fija la arquitectura y el contrato funcional del motor de ciclo de vida del proyecto.
 
 Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el contrato de la CLI y la guía de build se derivan de ella y no deben contradecirla.
 
@@ -13,7 +13,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 - [1. Alcance](#1-alcance)
 - [2. Glosario](#2-glosario)
 - [3. Targets soportados](#3-targets-soportados)
-- [4. Evaluación de alternativas](#4-evaluación-de-alternativas)
+- [4. Decisiones de arquitectura y alternativas](#4-decisiones-de-arquitectura-y-alternativas)
 - [5. Arquitectura](#5-arquitectura)
 - [6. Modelo de rutas y propiedad](#6-modelo-de-rutas-y-propiedad)
 - [7. Recibo de instalación y canales](#7-recibo-de-instalación-y-canales)
@@ -78,57 +78,29 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 
 **Compatibilidad comprobada, no inferida.** No se parsean versiones de glibc para decidir si se instala: se ejecuta el binario descargado (`--version`) y, si no arranca, el mensaje enumera las causas probables de su SO sin averiguar cuál es: en Linux, glibc insuficiente (se requiere glibc ≥ 2.28), musl o userland de 32 bits; en macOS, una versión anterior a la mínima (macOS 26). Una sola comprobación cubre todas las incompatibilidades de ABI, incluidas las que un parseo no detecta.
 
-## 4. Evaluación de alternativas
+## 4. Decisiones de arquitectura y alternativas
 
-### 4.1 Criterios
+### 4.1 Criterios de diseño
 
 | Id | Criterio |
 |---|---|
 | C1 | Una sola implementación de cada regla (sin duplicados por lenguaje ni rutas espejadas). |
 | C2 | Comportamiento idéntico en los cuatro targets. |
 | C3 | Actualizar y desinstalar sin depender de una copia del repositorio. |
-| C4 | Testeable en las tres puertas de test de la CI actual (CircleCI). |
+| C4 | Testeable en las puertas de CI (CircleCI). |
 | C5 | Superficie mínima en el repositorio y ninguna pieza de ciclo de vida en la raíz. |
-| C6 | Encaje con el bundle multiarchivo y con el pipeline existente. |
-| C7 | Coste de adopción. |
+| C6 | Encaje con el bundle multiarchivo y con el pipeline de publicación. |
+| C7 | Coste de adopción y mantenimiento. |
 
-### 4.2 Alternativas para el entorno del usuario
+### 4.2 Modelo de distribución adoptado
 
-| Criterio | A. Estado actual | B. Scripts unificados por shell | **C. Binario autogestionado + bootstrap mínimo** | D. Instalador separado | E. `cargo-dist` | F. Gestores de paquetes |
-|---|---|---|---|---|---|---|
-| C1 | ❌ 3 lenguajes | ⚠️ 2 lenguajes + Rust | ✅ Rust (bootstrap trivial) | ✅ Rust | ⚠️ scripts generados + Rust | ❌ un manifiesto por gestor |
-| C2 | ⚠️ divergencias | ⚠️ | ✅ | ✅ | ⚠️ | ❌ cobertura desigual |
-| C3 | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| C4 | ⚠️ bats + Pester | ⚠️ | ✅ | ✅ | ⚠️ | ❌ |
-| C5 | ❌ 5 archivos en la raíz | ⚠️ 2 scripts largos | ✅ 2 scripts mínimos fuera de la raíz | ⚠️ crate y artefacto extra | ⚠️ | ❌ |
-| C6 | ✅ | ✅ | ✅ | ⚠️ | ❌ | ⚠️ |
-| C7 | — | Bajo | Medio | Alto | Alto | Alto |
+El ciclo de vida implementa el patrón de binario autogestionado con bootstrap mínimo:
 
-- **A. Estado actual.** Funciona en el caso feliz, pero incumple C1, C3 y C5: el mismo flujo de instalación, actualización y desinstalación está duplicado en tres lenguajes, con divergencias no intencionadas; las rutas de instalación y de estado están replicadas a mano y exigen tests de paridad para no desincronizarse; la actualización solo funciona desde una copia del repositorio, ejecuta la copia local del instalador y reinstala aunque ya se tenga la última versión; ninguna vía detiene el daemon antes de reemplazar el programa, de modo que en Windows un ejecutable en uso aborta la instalación con el directorio a medio borrar; en Windows, reescribir el PATH de usuario aplana las entradas `%VAR%`, e `irm | iex` deja preferencias y funciones del instalador en la sesión del usuario; la confirmación es inconsistente, porque `xtask clean` exige `--yes` cuando no hay terminal y los comandos de desinstalación y limpieza del producto no; y conviven cinco piezas de ciclo de vida en la raíz del repositorio, tres frameworks de test y siete documentos que describen partes solapadas del mismo ciclo.
-- **B. Scripts unificados por familia de shell** (un `install.sh` para Linux y macOS y un `install.ps1` con instalar, actualizar y desinstalar). Reduce de cinco a dos archivos, pero la lógica sigue en dos lenguajes y duplica lo que el binario ya hace en Rust (parada del daemon, rutas, PATH en el registro). Hereda además las limitaciones de `irm | iex` (no admite parámetros y comparte ámbito con la sesión) y un testeo débil.
-- **C. Binario autogestionado + bootstrap mínimo** (patrón de `rustup` y `uv`). El producto gestiona su propio ciclo de vida con subcomandos `self`. Para la primera instalación basta un bootstrap por familia de shell, que no puede eliminarse porque en ese momento el binario todavía no existe en la máquina. El conocimiento necesario ya vive en el binario: rutas (`avi-shared`), parada unificada del daemon, acceso al registro de Windows y difusión de `WM_SETTINGCHANGE`, y un stack TLS (rustls) por la descarga de modelos. Además, la lógica que instala una versión es la de esa misma versión, así que las correcciones del instalador se aplican en cuanto se publican.
-- **D. Instalador o gestor separado** (estilo `rustup-init`). Añade un segundo ejecutable sin firmar por target, lo que duplica el problema de reputación ante SmartScreen y Defender, exige sincronizar versiones entre instalador y aplicación, y no aporta nada que el binario del producto no pueda hacer.
-- **E. `cargo-dist` (con `axoupdater`).** Genera instaladores, recibos y un actualizador, pero asume GitHub Actions como CI, y el pipeline de CircleCI tiene puertas, `sccache`, build del motor con MSYS2 y bundle de ONNX Runtime. Su modelo está orientado a binarios sueltos en un directorio `bin`, así que el bundle multiarchivo y los ganchos propios (parar el daemon, `setup`) quedarían fuera o requerirían personalización. Su actualizador reejecuta el instalador generado, con lo que la lógica vuelve a los scripts. Se adoptan sus ideas (recibo, URLs `releases/latest/download`, `irm | iex` sobre assets del release), no la herramienta.
-- **F. Gestores de paquetes nativos como vía principal.** Son complementarios, no sustitutos: exigen prerrequisitos (Homebrew, Scoop) que la audiencia sin toolchain no tiene y multiplican el mantenimiento (un manifiesto y una publicación por gestor). Se conserva el Cask; futuros canales entrarían como gestionados externamente.
+1. **Usuario final**: el binario del producto gestiona su propio ciclo de vida (`self install`, `self update`, `self uninstall`, `cleanup`, `setup`, `doctor`) a través del crate `avi-lifecycle`.
+2. **Desarrollador**: `cargo xtask` (`doctor`, `bootstrap`, `build-engine`, `package`, `install`, `clean`) centraliza las tareas de desarrollo y delega en el binario del producto cualquier operación sobre el estado del usuario, evitando duplicación de rutas.
+3. **Primer contacto**: dos scripts de bootstrap mínimos (`packaging/bootstrap/install.sh` y `install.ps1`) publicados como assets del release, cuya única responsabilidad es verificar la integridad del bundle descargado y delegar en `self install`.
 
-### 4.3 Alternativas para el entorno del desarrollador
-
-| Opción | Prerrequisito extra | Multiplataforma | Testeable | Valoración |
-|---|---|---|---|---|
-| **`xtask` (Rust)** | Ninguno (solo `cargo`) | ✅ Mismo código en los 4 targets | ✅ Tests de Rust | **Elegida**: ya adoptada (`release`, `cask`, `clean`, `build-engine`) |
-| `just` | Instalar `just` | ⚠️ Recetas en shell, divergen por SO | ⚠️ | Descartada |
-| `cargo-make` | Instalar `cargo-make` | ⚠️ DSL en TOML + scripts | ⚠️ | Descartada |
-| Makefile / scripts PowerShell | `make` en Windows | ❌ | ❌ | Descartada |
-
-### 4.4 Decisión
-
-**Un programa por audiencia y un único motor de ciclo de vida, escrito en Rust:**
-
-- **Usuario final** → el binario del producto (`ai-voice-interconnector self install | update | uninstall`, `cleanup`, `setup`, `doctor`). El motor vive en un crate propio.
-- **Desarrollador** → `cargo xtask` (`doctor`, `bootstrap`, `build-engine`, `package`, `install`, `clean`). Delega en el binario del producto todo lo que toca la instalación o el estado del usuario, y no replica rutas.
-- **Primer contacto** → dos bootstrap mínimos (POSIX sh para Linux y macOS, PowerShell para Windows), fuera de la raíz, publicados como assets del release.
-
-No se funde todo en un único ejecutable para ambas audiencias porque sus contextos son disjuntos. El usuario final no tiene el repositorio ni `cargo`, y las tareas de desarrollo (compilar, empaquetar, cortar releases) solo tienen sentido con el código fuente: incluirlas en el binario distribuido lo inflaría y expondría comandos irrelevantes. La coherencia no la da un único ejecutable, sino un único motor y una misma semántica de verbos y flags ([§8.1](#81-reglas-transversales)).
+Este esquema evita mantener instaladores externos separados, elimina duplicaciones de lógica en múltiples lenguajes de scripting y garantiza que las operaciones de instalación y actualización se ejecuten con la lógica del propio binario instalado.
 
 ## 5. Arquitectura
 

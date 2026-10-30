@@ -25,7 +25,7 @@ AI Voice-InterConnector es un motor de síntesis de voz (TTS) **100% local** que
 
 - **Licencia**: MPL-2.0 (código del proyecto, copyleft a nivel de archivo); modelo y dependencias conservan sus licencias (MIT/BSD/Apache), salvo traducción `opus-mt` (CC-BY-4.0)
 - **Idiomas**: los 10 que soporta Qwen3-TTS, entre ellos Español (es)
-- **Clonación**: un único audio de referencia, `--speech-reference` (~10 s recomendados, máximo 30 s)
+- **Clonación**: referencia de voz vía archivo (`--speech-reference`) o micrófono en vivo (`--mic`; ~10 s recomendados, máximo 30 s)
 - **Parámetros del modelo**: 0.6B (Qwen3-TTS)
 - **Hardware**: CPU con BLAS (Accelerate en macOS, OpenBLAS en Linux y Windows) — inferencia local sin APIs externas
 
@@ -88,6 +88,7 @@ AI-Voice-InterConnector/
 │   ├── avi-stt/                        # ParakeetEngine (ort, load-dynamic)
 │   ├── avi-translation/                # Ct2TranslationEngine (CTranslate2/ct2rs)
 │   ├── avi-lifecycle/                  # Motor del ciclo de vida: install, uninstall, cleanup, doctor, recibo, bloqueo, PATH; vista de progreso de la provisión (indicatif)
+│   ├── denoise/                        # Limpieza de ruido DPDFNet para archivos de audio y vídeo (native-denoise)
 │   └── xtask/                          # tooling Rust: release, cask, licenses, gates de deriva, bootstrap, package, clean
 ├── packaging/
 │   ├── bundle-manifest.json            # Lista canónica de archivos del bundle (la validan self install y cargo xtask package)
@@ -95,8 +96,13 @@ AI-Voice-InterConnector/
 │   └── bootstrap/                      # Los dos one-liners del release, únicos ejecutados antes de que exista el binario
 │       ├── install.sh                  # Linux + macOS (POSIX sh)
 │       └── install.ps1                 # Windows (PowerShell 5.1+ y 7+)
-├── vendor/
-│   └── qwen3-tts/                      # Binario y pesos Qwen3-TTS (no commiteados todos)
+├── vendor/                             # Copias vendorizadas y parches [patch.crates-io]
+│   ├── alsa-sys-0.4.0/                 # Parche dlopen para Linux sin ALSA estático
+│   ├── cmake-0.1.58/                   # Soporte CMake para builds nativos
+│   ├── ct2rs-0.10.0/                   # CTranslate2 con runtime C++/OpenMP enlazado
+│   ├── hf-hub-1.0.0/                   # Descarga HF con hardlinks en Windows
+│   ├── onednn-src-0.1.15/              # oneDNN estático
+│   └── qwen3-tts/                      # Motor nativo Qwen3-TTS
 ├── tests/
 │   ├── cli_golden.rs                   # Harness dorado del CLI
 │   ├── contract_conformance.rs         # Conformidad del contrato que se lee de docs, fixtures y código
@@ -125,7 +131,7 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Modelos** | `qwen3-tts-0.6b` (síntesis) y `qwen3-tts-0.6b-base` (clonado) |
 | **Licencia** | MIT / Apache-2.0 |
 | **Parámetros** | 0.6B |
-| **Clonación de voz** | un único audio de referencia, `--speech-reference` (~10 s recomendados, máximo 30 s); se guarda solo la huella de timbre (sin transcripción) |
+| **Clonación de voz** | referencia de voz vía archivo (`--speech-reference`) o micrófono (`--mic`; ~10 s recomendados, máximo 30 s); se guarda solo la huella de timbre (sin transcripción) |
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 |
 

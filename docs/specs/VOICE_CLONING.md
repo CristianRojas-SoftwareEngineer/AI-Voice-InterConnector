@@ -1,7 +1,7 @@
 # Especificación funcional y de diseño: clonación de voz desde archivo y micrófono en vivo
 
-> **Estado**: contrato de implementación · **Versión base del motor**: v0.36.2 ·
-> **Repositorio**: `AI-Voice-InterConnector` · **Fecha**: 2026-10-27
+> **Estado**: implementada · **Versión base del motor**: v0.37.0 ·
+> **Repositorio**: `AI-Voice-InterConnector`
 
 Este documento especifica funcional y técnicamente la extensión del comando
 `voice clone` en el motor **AI Voice-InterConnector** para admitir captura de audio
@@ -14,10 +14,10 @@ de aceptación de la funcionalidad.
 
 - [1. Propósito](#1-propósito)
 - [2. Alcance](#2-alcance)
-- [3. Contexto actual](#3-contexto-actual)
+- [3. Contexto del diseño](#3-contexto-del-diseño)
 - [4. Glosario](#4-glosario)
 - [5. Requisitos](#5-requisitos)
-- [6. Evaluación de alternativas y decisiones](#6-evaluación-de-alternativas-y-decisiones)
+- [6. Decisiones de diseño](#6-decisiones-de-diseño)
 - [7. Arquitectura y diseño técnico](#7-arquitectura-y-diseño-técnico)
 - [8. Invariantes y reglas transversales](#8-invariantes-y-reglas-transversales)
 - [9. Manejo de errores y códigos de salida](#9-manejo-de-errores-y-códigos-de-salida)
@@ -86,23 +86,19 @@ La solución debe:
 
 ---
 
-## 3. Contexto actual
+## 3. Contexto del diseño
 
-### 3.1 Asimetría en la CLI
+### 3.1 Simetría en la CLI
 
-Actualmente, el motor implementa captura por micrófono en dos de sus tres
-comandos de entrada de audio:
+El motor implementa captura por micrófono de forma homogénea en sus tres comandos de entrada de audio:
 
 | Subcomando | Flag de archivo | Flag de micrófono | Soporta `--duration` | Estado |
 | --- | --- | --- | --- | --- |
 | `speech transcribe` | `--audio <archivo>` | `--mic` | Sí (exclusivo `--mic`) | Vigente |
 | `speech dub` | `--audio <archivo>` | `--mic` | Sí (exclusivo `--mic`) | Vigente |
-| `voice clone` | `--speech-reference <archivo>` (obligatorio) | *No implementado* | *No implementado* | **Asimétrico** |
+| `voice clone` | `--speech-reference <archivo>` | `--mic` | Sí (exclusivo `--mic`) | Vigente |
 
-En `voice clone`, la falta de `--mic` obliga a los consumidores externos (como el
-plugin `Agent-Voice-InterConnector`) o a los usuarios finales a depender de
-herramientas externas de grabación para generar un archivo `.wav` antes de poder
-crear una voz.
+La simetría permite que los consumidores externos y los usuarios finales utilicen la misma convención de flags tanto para transcribir y doblar como para crear una voz a partir de micrófono o de archivo.
 
 ### 3.2 Infraestructura existente reutilizable
 
@@ -177,28 +173,19 @@ El motor ya cuenta con los componentes necesarios:
 
 ---
 
-## 6. Evaluación de alternativas y decisiones
+## 6. Decisiones de diseño
 
-### 6.1 ¿Dónde debe residir la captura de micrófono?
+### 6.1 Captura de micrófono en el cliente
 
-| Alternativa | Evaluación | Decisión |
-| --- | --- | --- |
-| **A. En el proceso CLI (Front)** | El proceso CLI tiene acceso a la TTY del usuario, variables de sesión y contexto del dispositivo de audio. Envía los bytes resultantes al daemon. | **Elegida.** Coherente con `transcribe` y `dub`. Permite que el daemon corra headless o sin acceso a TTY. |
-| **B. En el proceso Daemon (Back)** | El daemon abriría el micrófono. Falla si el daemon corre como servicio, en contenedor o sin TTY para push-to-talk. | **Descartada.** Rompe el modelo de permisos y aislamiento del daemon. |
+La captura reside en el proceso CLI (`avi-audio` con `cpal`) para acceder a la TTY del usuario y al contexto del dispositivo, enviando el audio codificado al daemon cuando aplica. Esto permite que el daemon funcione de forma desacoplada o headless sin abrir dispositivos de captura directamente.
 
 ### 6.2 Formato de paso al daemon
 
-| Alternativa | Evaluación | Decisión |
-| --- | --- | --- |
-| **A. Reutilizar `audio_b64` (WAV en memoria)** | El CLI codifica el PCM 16k mono capturado a WAV en RAM y lo envía en `audio_b64`. No altera la API REST ni el esquema del daemon. | **Elegida.** 100 % compatible con el contrato existente del daemon. |
-| **B. Endpoint nuevo `POST /voices/clone/mic`** | Obligaría a versionar el protocolo IPC (`DAEMON_SCHEMA_VERSION = 6`) sin beneficio técnico. | **Descartada.** Incurre en deuda de compatibilidad innecesaria. |
+El CLI codifica el PCM 16 kHz mono capturado a WAV en memoria y lo transmite en base64 (`audio_b64`) al endpoint existente `POST /voices/clone`. Esto preserva intacto el protocolo IPC (`DAEMON_SCHEMA_VERSION = 5`) y el contrato del daemon.
 
-### 6.3 Manejo de push-to-talk vs `--duration`
+### 6.3 Interacción push-to-talk y duración
 
-| Alternativa | Evaluación | Decisión |
-| --- | --- | --- |
-| **A. Push-to-talk interactivo con tope de 30 s + `--duration` opcional** | Idéntico a `speech transcribe` y `speech dub`. En TTY el usuario habla y presiona Enter; en scripts/no-TTY se exige `--duration`. | **Elegida.** Experiencia de usuario consistente en toda la CLI. |
-| **B. Exigir siempre `--duration`** | Elimina la comodidad de pulsar Enter al terminar de hablar. | **Descartada.** Mayor fricción para el usuario en terminal. |
+En terminales interactivas (TTY), la omisión de `--duration` activa el modo push-to-talk acotado por `MAX_CLONE_REFERENCE_SECS` (30 s). En entornos no interactivos (no-TTY), se exige `--duration` explícito (1..30 s) para evitar bloqueos desatendidos.
 
 ---
 

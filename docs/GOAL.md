@@ -123,8 +123,9 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 ./ai-voice-interconnector daemon status        # Verificar que está activo
 ./ai-voice-interconnector daemon restart       # Reiniciar (reemplaza al activo)
 
-# 4. Clonación de voz (requiere --speech-reference: un único audio, ~10 s recomendados, máximo 30 s)
+# 4. Clonación de voz (requiere fuente: audio de referencia --speech-reference o micrófono --mic; ~10 s recomendados, máximo 30 s)
 ./ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
+./ai-voice-interconnector voice clone --name mi_voz --mic [--duration 10]  # O push-to-talk en TTY sin --duration
 
 # 5. Listar voces registradas (verifica que la voz quedó registrada)
 ./ai-voice-interconnector voice list
@@ -188,7 +189,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 
 <!-- Los criterios 2, 3 y 9 son claims de ejecución por SO: el pipeline de build (CI) produce los instaladores y un smoke test automatizado (versión contra el tag, `voice list`, `--self-test` del motor y `self install` en sandbox; ver docs/BUILD.md «Verificación post-build»), más una verificación en sala limpia del artefacto de Linux (los cuatro jobs `verify-portability`), pero la validación end-to-end sobre cada SO es por diseño externa al pipeline (ver "Validación E2E" más abajo). -->
 
-1. [x] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo) — validado sobre `v0.36.2` en Windows 11 x64 (`10.0.26200`): instalación por el one-liner `irm | iex` con checksum verificado, provisión de los cinco modelos disponibles entonces (5,85 GB; antes de incorporar `dpdfnet8`), ciclo de vida del daemon, clonación de voz, síntesis con `WER = 0.0` en el gate de texto corto (`"Hola mundo"`, voz `default` y voz clonada) y superficie `store`/`transcribe`/`translate`/`dub`, sin instalar nada más allá del sistema base. La versión mínima declarada (Windows 10 1903) no se ejercitó en sí misma: el binario es el mismo, pero el suelo declarado queda sin probar en esa máquina concreta
+1. [x] El artefacto de Windows (`ai-voice-interconnector-X.Y.Z-x86_64-windows.zip`) funciona en el mínimo de Windows declarado en los [requisitos](../README.md#requisitos) sin dependencias (validación E2E por SO, ver "Validación E2E" más abajo) — validado sobre `v0.37.3` en Windows 11 x64 (`10.0.26200`): instalación por el one-liner `irm | iex` con checksum verificado, provisión de los seis modelos (5,9 GB, incluyendo `dpdfnet8`), ciclo de vida del daemon, clonación de voz (vía archivo y vía micrófono), síntesis con `WER = 0.0` en el gate de texto corto (`"Hola mundo"`, voz `default` y voz clonada), limpieza de audio (`speech denoise`) y superficie `store`/`transcribe`/`translate`/`dub`, sin instalar nada más allá del sistema base. La versión mínima declarada (Windows 10 1903) no se ejercitó en sí misma: el binario es el mismo, pero el suelo declarado queda sin probar en esa máquina concreta
 2. [ ] El artefacto de Linux (`ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz`) funciona en distribuciones principales (validación E2E por SO, ver "Validación E2E" más abajo)
 3. [ ] El artefacto de macOS (`ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz`) funciona en el mínimo declarado en el manifiesto del bundle (`min_os`, ver [versión mínima de macOS](BUILD.md#versión-mínima-de-macos) y los [requisitos](../README.md#requisitos)) (Apple Silicon; Mac Intel no soportado) (validación E2E por SO, ver "Validación E2E" más abajo)
 4. [x] `ai-voice-interconnector speech say --text "Hola mundo"` reproduce audio en español
@@ -198,7 +199,7 @@ Ver [Estructura del proyecto en DESIGN.md](DESIGN.md#estructura-del-proyecto).
 8. [x] La síntesis funciona sin conexión a internet (modelo en local)
 9. [ ] El instalador incluye todo lo necesario (no requiere instalaciones adicionales) (validación E2E por SO, ver "Validación E2E" más abajo)
 10. [ ] **Equivalencia funcional completa entre los 3 SO**: las brechas de **código** del [registro de brechas](specs/LIFECYCLE.md#brechas-conocidas) están cerradas a nivel de código/scripts/tests (one-liner con el bootstrap `install.sh` POSIX compartido más `install.ps1` para Windows, `zap` del Cask completo, README con las tres plataformas y desinstalación en un comando con `self uninstall`). Quedan dos brechas de **experiencia**, ambas diferidas por diseño al [goal a largo plazo](#goal-a-largo-plazo) y ninguna bloqueante por sí sola: la *firma de código* (SmartScreen/Gatekeeper, binarios sin firmar, cross-SO) y la *provisión de modelos en los canales que no invocan `self install`* (el Cask de Homebrew y la descarga manual, donde `setup` se ofrece en vez de encadenarse). La marca de este criterio queda pendiente de la validación por feedback de usuarios reales en Linux y macOS (ver "Validación E2E" más abajo)
-11. [x] La transcripción STT, la traducción `es↔en` y el doblaje voz→voz funcionan de punta a punta en local — validado sobre `v0.36.2` en Windows 11 x64 (transcripción y traducción vía daemon; doblaje vía daemon y vía directa)
+11. [x] La transcripción STT, la traducción `es↔en` y el doblaje voz→voz funcionan de punta a punta en local — validado sobre `v0.37.3` en Windows 11 x64 (transcripción, traducción y doblaje vía daemon y vía directa)
 12. [x] Toda la inferencia está implementada para CPU y no requiere GPU
 
 #### Validación E2E
@@ -209,7 +210,7 @@ Además, los cuatro jobs **`verify-portability`** abren el artefacto de Linux ya
 
 Fuera del pipeline, la validación se reparte así:
 
-- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → `speech transcribe`/`translate`/`speech dub` → desinstalar, y registrando el resultado. El resultado de la validación de `v0.36.2` está en el [criterio 1](#criterios-de-aceptación).
+- **Windows**: la realiza el propietario manualmente sobre su equipo local, instalando el artefacto de cada release, ejecutando el recorrido `setup` → `speech synthesize` → `speech transcribe`/`translate`/`speech dub` → desinstalar, y registrando el resultado. El resultado de la validación de `v0.37.3` está en el [criterio 1](#criterios-de-aceptación).
 - **Linux y macOS**: dependen de **feedback de usuarios reales** que prueben la instalación y ejecución en sus equipos. Ese feedback (positivo o negativo) es la entrada de issues que cierra el circuito y guía correcciones específicas por plataforma.
 
 El recorrido concreto —la secuencia ordenada de comandos que ejercita toda la superficie de la CLI en este proceso manual— está en [docs/MANUAL-VALIDATION.md](MANUAL-VALIDATION.md).
@@ -264,7 +265,7 @@ Especificaciones **no comprometidas** para el goal inmediato. No se trabajan aho
 
 **Motivación**: la provisión de modelos la encadena `self install` (su paso 10), que es lo que invocan los dos one-liners (`install.sh` para Linux y macOS, `install.ps1` para Windows). Los otros dos canales documentados —el Cask de Homebrew y la descarga manual del archivo comprimido— no invocan `self install`: instalan el programa y dejan la provisión como un paso explícito que el canal ofrece. En el Cask, ese paso es el `caveat` que remite a `ai-voice-interconnector setup`; en la descarga manual, la línea final del README.
 
-**Justificación del diferimiento**: criterio de clasificación 2 —condición de madurez del producto. La provisión es hoy la fase más larga y más pesada de toda la experiencia (aprox. 5,9 GB para los seis pines actuales; 5,85 GB antes de incorporar `dpdfnet8`), y encadenarla dentro de `brew install` congelaría el instalador de Homebrew durante la descarga: Homebrew no da a un hook de post-instalación barra de progreso propia, ni timeout, ni estado reanudable, ni aviso de «esto tardará», y una interrupción dejaría el Cask a medias. La diferencia es de **mecanismo**, no de experiencia: la paridad ideal admite `setup` «ofrecido» ([tabla de paridad](#paridad-de-experiencia)), y el `caveat` es exactamente eso — un paso explícito que el usuario ve y puede lanzar cuando quiera.
+**Justificación del diferimiento**: criterio de clasificación 2 —condición de madurez del producto. La provisión es hoy la fase más larga y más pesada de toda la experiencia (aprox. 5,9 GB para los seis modelos actuales), y encadenarla dentro de `brew install` congelaría el instalador de Homebrew durante la descarga: Homebrew no da a un hook de post-instalación barra de progreso propia, ni timeout, ni estado reanudable, ni aviso de «esto tardará», y una interrupción dejaría el Cask a medias. La diferencia es de **mecanismo**, no de experiencia: la paridad ideal admite `setup` «ofrecido» ([tabla de paridad](#paridad-de-experiencia)), y el `caveat` es exactamente eso — un paso explícito que el usuario ve y puede lanzar cuando quiera.
 
 **Especificación diferida**:
 
