@@ -122,6 +122,18 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
+## [No publicado]
+
+La captura interactiva para clonar una voz rechazaba el límite predeterminado
+compartido antes de abrir el micrófono. El clonado usa ahora su propio límite
+de 30 segundos cuando no se configura la variable, y la documentación refleja
+también los seis modelos que se provisionan.
+
+### Corregido
+
+- `voice clone --mic` en TTY sin duración usa el límite de 30 s cuando `AVI_PUSH_TO_TALK_MAX_SECS` no está definida, en lugar de rechazar el default general de 300 s. Un valor explícito mayor de 30 s sigue siendo un error.
+- La documentación de `setup` y `doctor` incluye los seis modelos provisionados, incluido `dpdfnet8`.
+
 ## [0.37.3] — 2026-10-30
 
 La supervisión del aprovisionamiento debe distinguir el avance real de las

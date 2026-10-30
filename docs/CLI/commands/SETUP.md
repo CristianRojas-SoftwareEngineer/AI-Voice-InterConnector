@@ -46,6 +46,7 @@ Cada modelo se fija por **commit hash** de HuggingFace, así que un push upstrea
 | `opus-mt-es-en` | `CristianRojaas/opus-mt-es-en-ct2-int8` | Traducción es→en (CTranslate2 int8, derivado de Helsinki-NLP/opus-mt, CC-BY-4.0) |
 | `opus-mt-en-es` | `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción en→es (CTranslate2 int8, derivado de Helsinki-NLP/opus-mt, CC-BY-4.0) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (4 artefactos int8 vía `MODEL_FILE_PATTERNS`) |
+| `dpdfnet8` | `Ceva-IP/DPDFNet` | Limpieza de ruido; opcional para arrancar el daemon, necesario para `--denoise` |
 | `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Modelo Base de clonado de voz: sintetiza las voces clonadas, la de fábrica `default` incluida |
 
 Todos los modelos se provisionan siempre: no hay selección opcional.

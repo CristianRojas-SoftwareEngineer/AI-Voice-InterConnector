@@ -103,7 +103,7 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
   "models": {
     "root": "<raíz-de-modelos>",
     "shared_root": false,
-    "provisioned": ["qwen3-tts-0.6b", "opus-mt-es-en", "opus-mt-en-es", "parakeet-tdt-v3", "qwen3-tts-0.6b-base"],
+    "provisioned": ["qwen3-tts-0.6b", "opus-mt-es-en", "opus-mt-en-es", "parakeet-tdt-v3", "dpdfnet8", "qwen3-tts-0.6b-base"],
     "missing": [],
     "size_bytes": 0
   },
