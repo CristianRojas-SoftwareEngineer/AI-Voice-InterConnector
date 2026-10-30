@@ -1,6 +1,6 @@
 [package]
 name = "ai-voice-interconnector"
-version = "0.37.2"
+version = "0.37.3"
 edition = "2021"
 license = "MPL-2.0"
 # `cargo run` sin --bin: el binario canónico es el CLI (xtask es tooling).
