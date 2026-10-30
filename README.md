@@ -331,7 +331,6 @@ mantiene los motores calientes entre invocaciones. Detalle en
 - [docs/CLI/README.md](docs/CLI/README.md) — referencia por comando de la CLI (cada comando tiene su página en `docs/CLI/commands/`) y códigos de salida.
 - [docs/CLI/CONTRACT.md](docs/CLI/CONTRACT.md) — contrato normativo de la CLI y de la salida `--json`, que es el contrato con el plugin.
 - [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) — canal de distribución nativo, Homebrew Cask y antivirus.
-- [docs/denoise-migration-walkthrough.md](docs/denoise-migration-walkthrough.md) — recorrido de la migración Denoise: qué se comprobó, con qué evidencia y qué límites se declaran.
 - [SECURITY.md](SECURITY.md) — seguridad y reporte de vulnerabilidades.
 - [CHANGELOG.md](CHANGELOG.md) — historial de cambios.
 
@@ -344,6 +343,7 @@ mantiene los motores calientes entre invocaciones. Detalle en
 - [docs/CI.md](docs/CI.md) — integración continua.
 - [docs/GOAL.md](docs/GOAL.md) — meta y criterios de aceptación.
 - [docs/specs/LIFECYCLE.md](docs/specs/LIFECYCLE.md) — especificación del ciclo de vida y paridad entre SO.
+- [docs/specs/VOICE_CLONING.md](docs/specs/VOICE_CLONING.md) — especificación funcional de clonación de voz.
 - [docs/MANUAL-VALIDATION.md](docs/MANUAL-VALIDATION.md) — validación manual de la CLI.
 - [docs/dev/CONTEXT-OPTIMIZATION.md](docs/dev/CONTEXT-OPTIMIZATION.md) — optimización de contexto para agentes de código.
 - [AGENTS.md](AGENTS.md) — guías para agentes de código.
