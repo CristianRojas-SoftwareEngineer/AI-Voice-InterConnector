@@ -31,6 +31,24 @@ $script:OutputAvailable = $false
 $script:SubcaseResults = [System.Collections.Generic.List[object]]::new()
 $script:DaemonStartedIdentities = [System.Collections.Generic.HashSet[int]]::new()
 $script:TotalStopwatch = $null
+$script:Release = $null
+# Fuente única de IDs y títulos de fase, en orden de ejecución.
+$script:Phases = @(
+    [pscustomobject]@{Id='01-release';Title='Resolución del release publicado'}
+    [pscustomobject]@{Id='02-source-gate';Title='Gate Rust del código fuente'}
+    [pscustomobject]@{Id='03-cleanup';Title='Inventario y limpieza inicial'}
+    [pscustomobject]@{Id='04-bootstrap';Title='Bootstrap publicado'}
+    [pscustomobject]@{Id='05-setup';Title='Setup de modelos'}
+    [pscustomobject]@{Id='06-daemon';Title='Daemon'}
+    [pscustomobject]@{Id='07-voices';Title='Voces'}
+    [pscustomobject]@{Id='08-synthesis';Title='Síntesis y WER'}
+    [pscustomobject]@{Id='09-store';Title='Store de locuciones y voces'}
+    [pscustomobject]@{Id='10-stt';Title='Transcripción'}
+    [pscustomobject]@{Id='11-translate';Title='Traducción'}
+    [pscustomobject]@{Id='12-dub';Title='Doblaje'}
+    [pscustomobject]@{Id='13-denoise';Title='Denoise'}
+    [pscustomobject]@{Id='14-final-state';Title='Estado final'}
+)
 
 function Format-Duration {
     param([long]$Milliseconds)
@@ -54,19 +72,21 @@ function Write-TimingSummary {
     Write-Host ("=" * 80) -ForegroundColor Cyan
     Write-Host (" RESUMEN DE TIEMPOS DE EJECUCIÓN (Total: {0})" -f $totalFormatted) -ForegroundColor Cyan
     Write-Host ("=" * 80) -ForegroundColor Cyan
-    Write-Host (" {0,-12} | {1,-8} | {2,-20} | {3}" -f "Fase", "Estado", "Duración", "Detalle") -ForegroundColor Cyan
+    Write-Host (" {0,-16} | {1,-8} | {2,-20} | {3}" -f "Fase", "Estado", "Duración", "Detalle") -ForegroundColor Cyan
     Write-Host ("-" * 80) -ForegroundColor Cyan
+    $summarySteps = @('preflight') + @($script:Phases.Id) + @('run')
     foreach ($res in $script:Results) {
-        if ($res.step -in @('preflight','0a','0b','1','2','3','4','5','6','7','run')) {
+        if ($res.step -in $summarySteps) {
             $durStr = if ($res.duration_formatted) { [string]$res.duration_formatted } else { "-" }
             $color = switch ($res.status) {
                 'PASS' { 'Green' }
                 'FAIL' { 'Red' }
                 'BLOCKED' { 'Yellow' }
                 'SKIP' { 'DarkGray' }
+                'NOT_RUN' { 'DarkYellow' }
                 default { 'White' }
             }
-            Write-Host (" {0,-12} | {1,-8} | {2,-20} | {3}" -f $res.step, $res.status, $durStr, $res.detail) -ForegroundColor $color
+            Write-Host (" {0,-16} | {1,-8} | {2,-20} | {3}" -f $res.step, $res.status, $durStr, $res.detail) -ForegroundColor $color
         }
     }
     Write-Host ("=" * 80) -ForegroundColor Cyan
@@ -138,7 +158,7 @@ function Save-Event {
 function Set-Step {
     param(
         [Parameter(Mandatory)][string]$Step,
-        [Parameter(Mandatory)][ValidateSet('PENDING','RUNNING','PASS','FAIL','SKIP','BLOCKED')][string]$Status,
+        [Parameter(Mandatory)][ValidateSet('PENDING','RUNNING','PASS','FAIL','SKIP','BLOCKED','NOT_RUN')][string]$Status,
         [string]$Detail = '',
         [string]$Command = '',
         [Nullable[int]]$ExitCode = $null,
@@ -319,12 +339,6 @@ function Set-SubcaseResult {
     Save-Event @{type='subcase';name=$Name;status=$Status;command=$Command;exit_code=$ExitCode;evidence=@($Evidence);reason=$Reason;utc=$record.utc}
 }
 
-function Assert-OutputHardware {
-    param([string]$CaseName)
-    if(!$script:OutputAvailable){Set-SubcaseResult $CaseName 'SKIP' -Reason 'devices --json válido no enumeró salida de audio.';Set-Step $CaseName 'SKIP' 'No hay dispositivo de salida observado.' -Reason 'devices --json válido no enumeró salida de audio.';return $false}
-    return $true
-}
-
 
 function Invoke-WhereCheck {
     param([Parameter(Mandatory)][bool]$ExpectPresent, [switch]$AllowPreSetup)
@@ -379,6 +393,8 @@ function Get-ReleaseInfo {
     foreach ($name in $expected) { if($names -notcontains $name){throw ('Falta asset publicado: {0}' -f $name)} }
     if($names.Count -ne 7){throw ('Se esperaban siete assets; hay {0}.' -f $names.Count)}
     Assert-True ($release.draft -eq $false -and $release.prerelease -eq $false) 'El release consultado no es estable/publicado.'
+    $installAsset = $release.assets | Where-Object name -eq 'install.ps1' | Select-Object -First 1
+    Assert-True ($installAsset.browser_download_url -match ('/releases/download/v'+[regex]::Escape($script:Version)+'/install\.ps1$')) 'La URL del bootstrap no pertenece al asset del tag verificado.'
     return $release
 }
 
@@ -445,6 +461,7 @@ function Get-DirectorySize {
 
 function Invoke-Step {
     param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][scriptblock]$Action)
+    Assert-True (@($script:Phases.Id) -contains $Id) ('Fase desconocida fuera de $script:Phases: {0}' -f $Id)
     Set-Step $Id 'RUNNING'
     $stepWatch = [System.Diagnostics.Stopwatch]::StartNew()
     try {
@@ -589,7 +606,31 @@ function Run-E2E {
     $script:Reference=(Resolve-Path -LiteralPath (Join-Path $script:Root 'assets\audios\Speech Sampler.wav')).Path
     $sttSample=(Resolve-Path -LiteralPath (Join-Path $script:Root 'crates\avi-stt\tests\assets\parakeet_sample_16k.wav')).Path
 
-    Invoke-Step '0a' {
+    Invoke-Step '01-release' {
+        $tag=(& git -C $script:Root describe --tags --abbrev=0 2>$null).Trim();if($LASTEXITCODE -ne 0){throw 'No se pudo resolver el tag más reciente.'}
+        Assert-True ($tag -eq ('v{0}' -f $script:Version)) ('Tag {0} difiere de {1}.' -f $tag,$script:Version)
+        $script:Release=Get-ReleaseInfo
+        $assets=@($script:Release.assets|ForEach-Object name)
+        $script:Release|ConvertTo-Json -Depth 15|Set-Content -LiteralPath (Join-Path $script:Run 'release.json') -Encoding UTF8
+        $checksums=$script:Release.assets|Where-Object name -eq 'SHA256SUMS.txt'|Select-Object -First 1
+        $checksumText=Invoke-RestMethod -Uri $checksums.browser_download_url -TimeoutSec 30
+        $checksumFile=Join-Path $script:Run 'SHA256SUMS.txt';Set-Content -LiteralPath $checksumFile -Value $checksumText -Encoding UTF8
+        $winAsset='ai-voice-interconnector-{0}-x86_64-windows.zip' -f $script:Version
+        $hashPattern='(?m)^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($winAsset) + '$'
+        $hashMatch=[regex]::Match([string]$checksumText,$hashPattern)
+        Assert-True ($hashMatch.Success) 'SHA256SUMS del release no contiene el asset Windows esperado.'
+        $script:ExpectedWindowsSha256=$hashMatch.Groups[1].Value.ToLowerInvariant()
+        Save-Event @{type='release';tag=$tag;assets=$assets;windows_asset=$winAsset;expected_sha256=$script:ExpectedWindowsSha256}
+    }
+
+    Invoke-Step '02-source-gate' {
+        $rustGate=Invoke-LoggedProcess -FilePath (Get-Command cargo -ErrorAction Stop).Source -ArgumentList @('test','--test','cli_golden','version_matches_fixture','--','--exact','--nocapture') -Name 'source-version-fixture-gate' -TimeoutMs 600000
+        $rustSummary=[regex]::Match(($rustGate.Stdout+$rustGate.Stderr),'(?m)^test result: (?<status>[^.]+)\. (?<passed>\d+) passed; (?<failed>\d+) failed; (?<ignored>\d+) ignored; (?<measured>\d+) measured; (?<filtered>\d+) filtered out;')
+        Assert-True ($rustGate.ExitCode -eq 0 -and $rustSummary.Success -and $rustSummary.Groups['passed'].Value -eq '1' -and $rustSummary.Groups['failed'].Value -eq '0') 'Gate Rust version_matches_fixture no pasó o no entregó resumen parseable.'
+        Save-Event @{type='source_test_gate';command='cargo test --test cli_golden version_matches_fixture -- --exact --nocapture';features=@();exit_code=$rustGate.ExitCode;passed=[int]$rustSummary.Groups['passed'].Value;failed=[int]$rustSummary.Groups['failed'].Value;ignored=[int]$rustSummary.Groups['ignored'].Value;stdout=$rustGate.StdoutPath;stderr=$rustGate.StderrPath}
+    }
+
+    Invoke-Step '03-cleanup' {
         $receiptPath=Get-ReceiptPath; $binaryExists=Test-Path -LiteralPath $script:Bin -PathType Leaf
         $registered=Get-RegisteredRoots -AllowMissing
         $programDir=Split-Path -Parent $script:Bin
@@ -701,41 +742,11 @@ function Run-E2E {
                 $where=Invoke-WhereCheck -ExpectPresent:$false;Assert-True ($where.ExitCode -eq 0) 'where.exe aún encuentra el binario.'
                 }
             }
-        }else{Set-Step '0a-clean' 'PASS' 'No había residuos, integración PATH ni binario.'}
+        }else{Set-Step '03-cleanup-empty' 'PASS' 'No había residuos, integración PATH ni binario.'}
     }
 
-    Invoke-Step '0b' {
-        $tag=(& git -C $script:Root describe --tags --abbrev=0 2>$null).Trim();if($LASTEXITCODE -ne 0){throw 'No se pudo resolver el tag más reciente.'}
-        Assert-True ($tag -eq ('v{0}' -f $script:Version)) ('Tag {0} difiere de {1}.' -f $tag,$script:Version)
-        $releaseUri='https://api.github.com/repos/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tags/v{0}' -f $script:Version
-        $release=Invoke-RestMethod -Uri $releaseUri -Headers @{'User-Agent'='avi-windows-e2e'} -TimeoutSec 30
-        $script:Release=$release
-        if($release.draft -or $release.prerelease){throw 'BLOCKED: el tag resuelve a una publicación no estable.'}
-        $expected=@(('ai-voice-interconnector-{0}-x86_64-windows.zip' -f $script:Version),('ai-voice-interconnector-{0}-x86_64-linux.tar.gz' -f $script:Version),('ai-voice-interconnector-{0}-arm64-linux.tar.gz' -f $script:Version),('ai-voice-interconnector-{0}-arm64-macos.tar.gz' -f $script:Version),'install.sh','install.ps1','SHA256SUMS.txt')
-        $assets=@($release.assets|ForEach-Object name)
-        foreach($asset in $expected){if($assets -notcontains $asset){throw ('Falta asset {0}' -f $asset)}}
-        $installAsset=$release.assets|Where-Object name -eq 'install.ps1'|Select-Object -First 1
-        Assert-True ($installAsset.browser_download_url -match ('/releases/download/v'+[regex]::Escape($script:Version)+'/install\.ps1$')) 'La URL del bootstrap no pertenece al asset del tag verificado.'
-        if($assets.Count -ne 7){throw ('Cantidad de assets inesperada: {0}.' -f $assets.Count)}
-        $release|ConvertTo-Json -Depth 15|Set-Content -LiteralPath (Join-Path $script:Run 'release.json') -Encoding UTF8
-        $checksums=$release.assets|Where-Object name -eq 'SHA256SUMS.txt'|Select-Object -First 1
-        $checksumText=Invoke-RestMethod -Uri $checksums.browser_download_url -TimeoutSec 30
-        $checksumFile=Join-Path $script:Run 'SHA256SUMS.txt';Set-Content -LiteralPath $checksumFile -Value $checksumText -Encoding UTF8
-        $winAsset='ai-voice-interconnector-{0}-x86_64-windows.zip' -f $script:Version
-        $hashPattern='(?m)^([0-9a-fA-F]{64})\s+\*?' + [regex]::Escape($winAsset) + '$'
-        $hashMatch=[regex]::Match([string]$checksumText,$hashPattern)
-        Assert-True ($hashMatch.Success) 'SHA256SUMS del release no contiene el asset Windows esperado.'
-        $script:ExpectedWindowsSha256=$hashMatch.Groups[1].Value.ToLowerInvariant()
-        $rustGate=Invoke-LoggedProcess -FilePath (Get-Command cargo -ErrorAction Stop).Source -ArgumentList @('test','--test','cli_golden','version_matches_fixture','--','--exact','--nocapture') -Name 'source-version-fixture-gate' -TimeoutMs 600000
-        $rustSummary=[regex]::Match(($rustGate.Stdout+$rustGate.Stderr),'(?m)^test result: (?<status>[^.]+)\. (?<passed>\d+) passed; (?<failed>\d+) failed; (?<ignored>\d+) ignored; (?<measured>\d+) measured; (?<filtered>\d+) filtered out;')
-        Assert-True ($rustGate.ExitCode -eq 0 -and $rustSummary.Success -and $rustSummary.Groups['passed'].Value -eq '1' -and $rustSummary.Groups['failed'].Value -eq '0') 'Gate Rust version_matches_fixture no pasó o no entregó resumen parseable.'
-        Save-Event @{type='source_test_gate';command='cargo test --test cli_golden version_matches_fixture -- --exact --nocapture';features=@();exit_code=$rustGate.ExitCode;passed=[int]$rustSummary.Groups['passed'].Value;failed=[int]$rustSummary.Groups['failed'].Value;ignored=[int]$rustSummary.Groups['ignored'].Value;stdout=$rustGate.StdoutPath;stderr=$rustGate.StderrPath}
-        Save-Event @{type='release';tag=$tag;assets=$assets;windows_asset=$winAsset;expected_sha256=$script:ExpectedWindowsSha256}
-        $release|ConvertTo-Json -Depth 15|Set-Content -LiteralPath (Join-Path $script:Run 'release.json') -Encoding UTF8
-    }
-
-    Invoke-Step '1' {
-        if(Test-Path -LiteralPath $script:Bin){throw '0a no dejó la instalación ausente; no se sobrescribe.'}
+    Invoke-Step '04-bootstrap' {
+        if(Test-Path -LiteralPath $script:Bin){throw '03-cleanup no dejó la instalación ausente; no se sobrescribe.'}
         $uri='https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v{0}/install.ps1' -f $script:Version
         $bootstrap=Invoke-RestMethod -Uri $uri -TimeoutSec 60
         $bootstrapPath = Join-Path $script:Run 'published-install.ps1'
@@ -753,19 +764,19 @@ function Run-E2E {
         $zipAsset='ai-voice-interconnector-{0}-x86_64-windows.zip' -f $script:Version
         $zipUri='https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v{0}/{1}' -f $script:Version,$zipAsset
         $zipPath=Join-Path $script:Run $zipAsset
-        $zipMetadata=$release.assets|Where-Object name -eq $zipAsset|Select-Object -First 1
+        $zipMetadata=$script:Release.assets|Where-Object name -eq $zipAsset|Select-Object -First 1
         Assert-True ($zipMetadata -and [long]$zipMetadata.size -gt 0) 'Metadata del ZIP publicado no incluye tamaño válido.'
         $zipImpact='Se descargará una copia independiente de {0} ({1} bytes) para recalcular SHA256 contra el mismo asset/versionado del release.' -f $zipAsset,$zipMetadata.size
         Save-Event @{type='impact';operation='zip-download';targets=@($zipPath);impact=$zipImpact};Write-Host ('IMPACTO: {0}' -f $zipImpact) -ForegroundColor Yellow
         Invoke-WebRequest -Uri $zipUri -OutFile $zipPath -TimeoutSec 600
         $actualHash=(Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
-        Assert-True ($actualHash -ieq $script:ExpectedWindowsSha256) 'El SHA256 calculado del bundle Windows difiere del SHA256SUMS del release 0b.'
+        Assert-True ($actualHash -ieq $script:ExpectedWindowsSha256) 'El SHA256 calculado del bundle Windows difiere del SHA256SUMS del release 01-release.'
         Assert-True ((Get-Item -LiteralPath $zipPath).Length -eq [long]$zipMetadata.size) 'El tamaño del ZIP descargado no coincide con el asset del release.'
         Save-Event @{type='checksum';tag=('v'+$script:Version);asset=$zipAsset;expected=$script:ExpectedWindowsSha256;actual=$actualHash;size=(Get-Item -LiteralPath $zipPath).Length;verified=$true}
         Save-Event @{type='bootstrap_source';path=(Join-Path $script:Run 'published-install.ps1');source='release asset';version=$script:Version}
     }
 
-    Invoke-Step '2' {
+    Invoke-Step '05-setup' {
         $before=Invoke-Cli @('doctor') 'doctor-before-setup' -Json -ExpectedExit @(1)
         Assert-True (@($before.Payload.failed) -contains 'models_provisioned') 'Doctor pre-setup no reporta modelos ausentes.'
         $missing=@($before.Payload.models.missing)
@@ -801,14 +812,14 @@ function Run-E2E {
         Save-Event @{type='setup';models=$setup.Payload.models_provisioned;model_root=$script:ModelsDir;receipt=$receipt}
     }
 
-    Invoke-Step '3' {
+    Invoke-Step '06-daemon' {
         $status=Invoke-Cli @('daemon','status') 'daemon-initial' -Json;Assert-PayloadSchema $status.Payload;Assert-True ($status.Payload.daemon -eq 'stopped') 'Daemon inicialmente debía estar stopped.'
         Start-ManagedDaemon
         $start=Invoke-Cli @('daemon','start') 'daemon-start-idempotent' -Json
         Assert-True ($start.Payload.status -eq 'already_running' -and $start.Payload.daemon -eq 'running' -and $start.Payload.pid -eq $script:DaemonPid) 'daemon start no confirma el PID recién iniciado y running.'
     }
 
-    Invoke-Step '4' {
+    Invoke-Step '07-voices' {
         $voices=Invoke-Cli @('voice','list') 'voice-list' -Json
         foreach($name in @('default','ryan','vivian')){if(@($voices.Payload.voices) -notcontains $name){throw ('Voz factory ausente: {0}' -f $name)}}
         $clone=Invoke-VoiceClone 'mi_voz';Assert-PayloadSchema $clone.Payload;Assert-True ($clone.Payload.precomputed -eq $false) 'Clone directo debía ser precomputed false.'
@@ -817,10 +828,10 @@ function Run-E2E {
         $conflict=Invoke-VoiceClone 'mi_voz' -ExpectedExit @(6);Assert-True ($conflict.Payload.reason -in @('voice_exists','state_conflict')) 'Conflicto de voz no emitió reason esperado.'
         $forced=Invoke-VoiceClone 'mi_voz' -Force;Assert-True ($forced.ExitCode -eq 0 -and $forced.Payload.name -eq 'mi_voz' -and $forced.Payload.precomputed -eq $false) 'Clone --force no devolvió el resultado esperado.'
         $denoiseClone=Invoke-VoiceClone 'mi_voz_denoise' -Denoise;Assert-True ((Get-Item -LiteralPath (Get-VoiceQvoice 'mi_voz_denoise')).Length -gt 0) 'qvoice denoise vacío.'
-        if($script:InputAvailable){$mic=Invoke-VoiceClone 'mi_voz_mic' -Mic;Assert-True ($mic.ExitCode -eq 0) 'Clone mic falló.'}else{Set-SubcaseResult '4-mic' 'SKIP' -Reason 'devices --json enumera solo salidas y la CLI no expone un probe de entrada.';Set-Step '4-mic' 'SKIP' 'No hay evidencia de dispositivo de entrada; la CLI no publica inventario de captura y no se invoca el micrófono.' -Reason 'devices --json enumera solo salidas; capability de captura no expuesta.'}
+        if($script:InputAvailable){$mic=Invoke-VoiceClone 'mi_voz_mic' -Mic;Assert-True ($mic.ExitCode -eq 0) 'Clone mic falló.'}else{Set-SubcaseResult '07-voices-mic' 'SKIP' -Reason 'devices --json enumera solo salidas y la CLI no expone un probe de entrada.';Set-Step '07-voices-mic' 'SKIP' 'No hay evidencia de dispositivo de entrada; la CLI no publica inventario de captura y no se invoca el micrófono.' -Reason 'devices --json enumera solo salidas; capability de captura no expuesta.'}
     }
 
-    Invoke-Step '5' {
+    Invoke-Step '08-synthesis' {
         $auto=Invoke-Cli @('speech','synthesize','--text','Hola mundo','--label','e2e_auto_default','--voice','default') 'synth-auto' -Json
         Assert-PayloadSchema $auto.Payload;Assert-True ($auto.Payload.status -eq 'success') 'Auto synthesis no tuvo status success.'
         $script:WavShortDefault=[IO.Path]::GetFullPath([string]$auto.Payload.audio_path);Assert-Wav $script:WavShortDefault;$script:WavRetained=$script:WavShortDefault
@@ -833,8 +844,7 @@ function Run-E2E {
         Assert-True ($cloneDaemonWav.Payload.status -eq 'success') 'Síntesis daemon de voz clonada falló.'
         $script:WavShortClone=[IO.Path]::GetFullPath([string]$cloneDaemonWav.Payload.audio_path)
         Assert-Wav $script:WavShortClone
-        $output=@($script:Devices)
-        if($script:OutputAvailable){$sayClone=Invoke-Cli @('speech','say','--text','Hola clon','--voice','mi_voz','--no-daemon') 'say-clone' -Json;Assert-True ($sayClone.Payload.status -eq 'reproduced') 'say cloned no reporta reproduced.';$sayFactory=Invoke-Cli @('speech','say','--text','Hola factory','--voice','default','--daemon') 'say-factory' -Json;Assert-True ($sayFactory.Payload.status -eq 'reproduced') 'say factory no reporta reproduced.'}else{Set-SubcaseResult '5-say' 'SKIP' -Reason 'No se enumeró salida de audio; say no se invocó.';Set-Step '5-playback' 'SKIP' 'No se observó dispositivo de salida.'}
+        if($script:OutputAvailable){$sayClone=Invoke-Cli @('speech','say','--text','Hola clon','--voice','mi_voz','--no-daemon') 'say-clone' -Json;Assert-True ($sayClone.Payload.status -eq 'reproduced') 'say cloned no reporta reproduced.';$sayFactory=Invoke-Cli @('speech','say','--text','Hola factory','--voice','default','--daemon') 'say-factory' -Json;Assert-True ($sayFactory.Payload.status -eq 'reproduced') 'say factory no reporta reproduced.'}else{Set-SubcaseResult '08-synthesis-say' 'SKIP' -Reason 'No se enumeró salida de audio; say no se invocó.';Set-Step '08-synthesis-say' 'SKIP' 'No se observó dispositivo de salida.'}
         Stop-ManagedDaemon
         $direct=Invoke-Cli @('speech','synthesize','--text','Hello world','--label','e2e_direct_en','--voice','default','--source-language','en','--target-language','en','--temperature','0.7','--no-daemon') 'synth-force-direct' -Json;Assert-True ($direct.Payload.status -eq 'success') 'ForceDirect synthesis falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$direct.Payload.audio_path))
         $directClone=Invoke-Cli @('speech','synthesize','--text','Hola clon','--label','e2e_direct_clone','--voice','mi_voz','--no-daemon') 'synth-force-direct-clone' -Json;Assert-True ($directClone.Payload.status -eq 'success') 'ForceDirect synthesis de voz clonada falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$directClone.Payload.audio_path))
@@ -846,19 +856,19 @@ function Run-E2E {
         $parakeetItem=Get-Item -LiteralPath $parakeetPath -ErrorAction SilentlyContinue
         $parakeetAvailable=($null -ne $parakeetItem -and $parakeetItem.Length -gt 0)
         if($nativeStt -and $parakeetAvailable){
-            foreach($sample in @(@{name='default';path=$script:WavShortDefault;text='Hola mundo'},@{name='clone';path=$script:WavShortClone;text='Hola mundo'})){$stt=Invoke-Cli @('speech','transcribe','--audio',$sample.path,'--source-language','es','--no-daemon') ('wer-'+$sample.name) -Json;Assert-PayloadSchema $stt.Payload;Assert-True ($stt.Payload.source_language -eq 'es' -and ![string]::IsNullOrWhiteSpace($stt.Payload.text)) 'STT WER devolvió vacío o idioma de origen incorrecto.';$wer=Get-Wer $sample.text $stt.Payload.text;$result=[pscustomobject]@{reference=$sample.text;transcript=$stt.Payload.text;wer=$wer;audio=$sample.path};$script:WerResults.Add($result);Assert-True ($wer -le 0.25) ('WER {0} supera 0.25.' -f $wer);Set-SubcaseResult ('wer-'+$sample.name) 'PASS' -Command ($script:Bin+' speech transcribe --audio '+$sample.path) -ExitCode $stt.ExitCode -Payload $result -Evidence @($stt.StdoutPath,$stt.StderrPath);Save-Event @{type='wer';reference=$sample.text;transcript=$stt.Payload.text;wer=$wer;audio=$sample.path}}
-        }else{foreach($case in @('wer-default','wer-clone')){Set-SubcaseResult $case 'SKIP' -Reason ('Capacidad ausente antes de transcribir: native-stt={0}, parakeet_model={1}.' -f $nativeStt,$parakeetAvailable);Set-Step $case 'SKIP' 'Feature o modelo Parakeet no disponible antes de WER.' -Reason ('native-stt={0}; parakeet_model={1}' -f $nativeStt,$parakeetAvailable)}}
+            foreach($sample in @(@{name='default';path=$script:WavShortDefault;text='Hola mundo'},@{name='clone';path=$script:WavShortClone;text='Hola mundo'})){$stt=Invoke-Cli @('speech','transcribe','--audio',$sample.path,'--source-language','es','--no-daemon') ('08-synthesis-wer-'+$sample.name) -Json;Assert-PayloadSchema $stt.Payload;Assert-True ($stt.Payload.source_language -eq 'es' -and ![string]::IsNullOrWhiteSpace($stt.Payload.text)) 'STT WER devolvió vacío o idioma de origen incorrecto.';$wer=Get-Wer $sample.text $stt.Payload.text;$result=[pscustomobject]@{reference=$sample.text;transcript=$stt.Payload.text;wer=$wer;audio=$sample.path};$script:WerResults.Add($result);Assert-True ($wer -le 0.25) ('WER {0} supera 0.25.' -f $wer);Set-SubcaseResult ('08-synthesis-wer-'+$sample.name) 'PASS' -Command ($script:Bin+' speech transcribe --audio '+$sample.path) -ExitCode $stt.ExitCode -Payload $result -Evidence @($stt.StdoutPath,$stt.StderrPath);Save-Event @{type='wer';reference=$sample.text;transcript=$stt.Payload.text;wer=$wer;audio=$sample.path}}
+        }else{foreach($case in @('08-synthesis-wer-default','08-synthesis-wer-clone')){Set-SubcaseResult $case 'SKIP' -Reason ('Capacidad ausente antes de transcribir: native-stt={0}, parakeet_model={1}.' -f $nativeStt,$parakeetAvailable);Set-Step $case 'SKIP' 'Feature o modelo Parakeet no disponible antes de WER.' -Reason ('native-stt={0}; parakeet_model={1}' -f $nativeStt,$parakeetAvailable)}}
     }
 
-    Invoke-Step '6' {
+    Invoke-Step '09-store' {
         $list=Invoke-Cli @('speech','list') 'speech-list' -Json;Assert-True (@($list.Payload.speech|ForEach-Object label) -contains 'e2e_auto_default') 'Speech store no contiene síntesis.'
-        foreach($label in @('e2e_auto_default','e2e_daemon_default','e2e_auto_clone','e2e_daemon_clone','e2e_direct_en','e2e_direct_clone','e2e_direct_cross')){if(@($list.Payload.speech|ForEach-Object label) -contains $label){Set-SubcaseResult ('speech-label-'+$label) 'PASS' -Command ($script:Bin+' speech list --json') -ExitCode $list.ExitCode -Payload @{label=$label;present=$true} -Evidence @($list.StdoutPath,$list.StderrPath)}else{Set-SubcaseResult ('speech-label-'+$label) 'FAIL' -Command ($script:Bin+' speech list --json') -ExitCode $list.ExitCode -Payload @{label=$label;present=$false} -Evidence @($list.StdoutPath,$list.StderrPath);throw ('Speech store no contiene label requerido: {0}' -f $label)}}
+        foreach($label in @('e2e_auto_default','e2e_daemon_default','e2e_auto_clone','e2e_daemon_clone','e2e_direct_en','e2e_direct_clone','e2e_direct_cross')){if(@($list.Payload.speech|ForEach-Object label) -contains $label){Set-SubcaseResult ('09-store-label-'+$label) 'PASS' -Command ($script:Bin+' speech list --json') -ExitCode $list.ExitCode -Payload @{label=$label;present=$true} -Evidence @($list.StdoutPath,$list.StderrPath)}else{Set-SubcaseResult ('09-store-label-'+$label) 'FAIL' -Command ($script:Bin+' speech list --json') -ExitCode $list.ExitCode -Payload @{label=$label;present=$false} -Evidence @($list.StdoutPath,$list.StderrPath);throw ('Speech store no contiene label requerido: {0}' -f $label)}}
         Assert-True (@($list.Payload.speech|ForEach-Object label) -contains 'e2e_direct_cross') 'Speech store no contiene síntesis directa cross-language.'
         Assert-True (@($list.Payload.speech|ForEach-Object label) -contains 'e2e_direct_en') 'Speech store no contiene síntesis directa del caso temperatura.'
         Assert-True (@($list.Payload.speech|ForEach-Object label) -contains 'e2e_direct_clone') 'Speech store no contiene síntesis ForceDirect de voz clonada.'
         $cloneList=Invoke-Cli @('speech','list','--voice','mi_voz') 'speech-list-clone' -Json;Assert-True (@($cloneList.Payload.speech|ForEach-Object label) -contains 'e2e_auto_clone') 'Speech store no conserva síntesis Auto de voz clonada.'
         $filtered=Invoke-Cli @('speech','list','--voice','mi_voz') 'speech-list-filter' -Json;Assert-True (@($filtered.Payload.speech|ForEach-Object label) -contains 'e2e_auto_clone') 'Filtro por voz no devuelve su etiqueta de síntesis.'
-        $output=@($script:Devices);if($script:OutputAvailable){$play=Invoke-Cli @('speech','play','--label','e2e_auto_default','--voice','default') 'speech-play' -Json;Assert-True ($play.Payload.status -eq 'played') 'Speech play no reportó played.'}else{Set-SubcaseResult '6-play' 'SKIP' -Reason 'No se enumeró salida de audio; play no se invocó.';Set-Step '6-play' 'SKIP' 'No hay salida de audio.'}
+        if($script:OutputAvailable){$play=Invoke-Cli @('speech','play','--label','e2e_auto_default','--voice','default') 'speech-play' -Json;Assert-True ($play.Payload.status -eq 'played') 'Speech play no reportó played.'}else{Set-SubcaseResult '09-store-play' 'SKIP' -Reason 'No se enumeró salida de audio; play no se invocó.';Set-Step '09-store-play' 'SKIP' 'No hay salida de audio.'}
         $removeSpeech=Invoke-Cli @('speech','remove','--label','e2e_direct_en','--voice','default') 'speech-remove' -Json
         Assert-True ($removeSpeech.Payload.status -eq 'removed' -and $removeSpeech.Payload.label -eq 'e2e_direct_en') 'Speech remove no confirmó la locución esperada.'
         $speechAfterRemove=Invoke-Cli @('speech','list') 'speech-list-after-remove' -Json;Assert-True (@($speechAfterRemove.Payload.speech|ForEach-Object label) -notcontains 'e2e_direct_en') 'La etiqueta removida continúa en speech store.'
@@ -866,35 +876,47 @@ function Run-E2E {
         $removeVoice=Invoke-Cli @('voice','remove','--name','mi_voz_denoise','--yes') 'voice-remove-disposable' -Json
         Assert-True ($removeVoice.Payload.status -eq 'removed' -and $removeVoice.Payload.voice -eq 'mi_voz_denoise' -and @($removeVoice.Payload.removed_speech).Count -ge 1) 'Voice remove no confirmó la voz y su namespace desechable.'
         $afterVoices=Invoke-Cli @('voice','list') 'voice-list-after-remove' -Json;Assert-True (@($afterVoices.Payload.voices) -notcontains 'mi_voz_denoise') 'La voz desechable sigue presente.'
+    }
+
+    Invoke-Step '10-stt' {
         $parakeetPath=Join-Path $script:ModelsDir 'models--istupakov--parakeet-tdt-0.6b-v3-onnx\snapshots\8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce\nemo128.onnx'
         $parakeetFile=Get-Item -LiteralPath $parakeetPath -ErrorAction SilentlyContinue
         $nativeStt=$false
         if($parakeetFile -and $parakeetFile.Length -gt 0){$nativeStt=Test-NativeSttCapability -AudioPath $sttSample}
         if($nativeStt -and $parakeetFile -and $parakeetFile.Length -gt 0){
             $stt=Invoke-Cli @('speech','transcribe','--audio',$sttSample,'--source-language','es','--no-daemon') 'stt-audio' -Json;Assert-PayloadSchema $stt.Payload;Assert-True (![string]::IsNullOrWhiteSpace($stt.Payload.text) -and $stt.Payload.source_language -eq 'es') 'STT sample vacío o source_language incorrecto.'
-            Set-SubcaseResult '6-stt-audio' 'PASS' -Command ($script:Bin+' speech transcribe --audio '+$sttSample) -ExitCode $stt.ExitCode -Payload $stt.Payload -Evidence @($stt.StdoutPath,$stt.StderrPath);Set-Step '6-stt-audio' 'PASS' 'Transcripción de audio validada.' -Command ($script:Bin+' speech transcribe --audio '+$sttSample) -ExitCode $stt.ExitCode -Payload $stt.Payload -Evidence @($stt.StdoutPath,$stt.StderrPath)
-        }else{Set-SubcaseResult '6-stt-audio' 'SKIP' -Reason 'native-stt o Parakeet no estaba disponible antes de intentar STT.';Set-Step '6-stt-audio' 'SKIP' 'native-stt o Parakeet ausente antes de transcribir.' -Reason 'Capacidad opcional no provisionada.'}
-        if($script:InputAvailable){$mic=Invoke-Cli @('speech','transcribe','--mic','--duration','5','--source-language','es','--no-daemon') 'stt-mic' -Json;Assert-PayloadSchema $mic.Payload;Assert-True (![string]::IsNullOrWhiteSpace($mic.Payload.text) -and $mic.Payload.source_language -eq 'es') 'STT mic vacío o source_language incorrecto.'}else{Set-SubcaseResult '6-mic' 'SKIP' -Reason 'La CLI no expone comprobación independiente de entrada y no se invocó micrófono.';Set-Step '6-mic' 'SKIP' 'No hay evidencia de dispositivo de entrada; la CLI no publica inventario de captura y no se invoca el micrófono.' -Reason 'devices --json enumera solo salidas; capability de captura no expuesta.'}
+            Set-SubcaseResult '10-stt-audio' 'PASS' -Command ($script:Bin+' speech transcribe --audio '+$sttSample) -ExitCode $stt.ExitCode -Payload $stt.Payload -Evidence @($stt.StdoutPath,$stt.StderrPath);Set-Step '10-stt-audio' 'PASS' 'Transcripción de audio validada.' -Command ($script:Bin+' speech transcribe --audio '+$sttSample) -ExitCode $stt.ExitCode -Payload $stt.Payload -Evidence @($stt.StdoutPath,$stt.StderrPath)
+        }else{Set-SubcaseResult '10-stt-audio' 'SKIP' -Reason 'native-stt o Parakeet no estaba disponible antes de intentar STT.';Set-Step '10-stt-audio' 'SKIP' 'native-stt o Parakeet ausente antes de transcribir.' -Reason 'Capacidad opcional no provisionada.'}
+        if($script:InputAvailable){$mic=Invoke-Cli @('speech','transcribe','--mic','--duration','5','--source-language','es','--no-daemon') 'stt-mic' -Json;Assert-PayloadSchema $mic.Payload;Assert-True (![string]::IsNullOrWhiteSpace($mic.Payload.text) -and $mic.Payload.source_language -eq 'es') 'STT mic vacío o source_language incorrecto.'}else{Set-SubcaseResult '10-stt-mic' 'SKIP' -Reason 'La CLI no expone comprobación independiente de entrada y no se invocó micrófono.';Set-Step '10-stt-mic' 'SKIP' 'No hay evidencia de dispositivo de entrada; la CLI no publica inventario de captura y no se invoca el micrófono.' -Reason 'devices --json enumera solo salidas; capability de captura no expuesta.'}
+    }
+
+    Invoke-Step '11-translate' {
         Start-ManagedDaemon
         $tr=Invoke-Cli @('translate','--text','Hola','--source-language','es','--target-language','en','--daemon') 'translate-es-en' -Json;Assert-True ($tr.Payload.translated -and $tr.Payload.translated -ne 'Hola') 'Translate es-en falló.'
         Stop-ManagedDaemon
         $tr=Invoke-Cli @('translate','--text','Hello','--source-language','en','--target-language','es','--no-daemon') 'translate-en-es' -Json;Assert-True ($tr.Payload.translated -and $tr.Payload.translated -ne 'Hello') 'Translate en-es falló.'
         $pass=Invoke-Cli @('translate','--text','Hola','--source-language','es','--target-language','es','--no-daemon') 'translate-passthrough' -Json;Assert-True ($pass.Payload.translated -eq 'Hola') 'Passthrough modificó texto.'
+    }
+
+    Invoke-Step '12-dub' {
         if($script:OutputAvailable){
             Start-ManagedDaemon
             $dub=Invoke-Cli @('speech','dub','--audio',$sttSample,'--source-language','es','--target-language','en','--daemon') 'dub-daemon-cross' -Json;Assert-True ($dub.Payload.status -eq 'dubbed' -and $dub.Payload.text) 'Dub daemon no produjo resultado.'
             Save-Event @{type='dub';mode='daemon';source='es';target='en';text=$dub.Payload.text;status=$dub.Payload.status}
-            $dubCommand=$script:Bin+' '+($dub.Arguments -join ' ');Set-SubcaseResult '6-dub-daemon' 'PASS' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath);Set-Step '6-dub-daemon' 'PASS' 'Dub daemon completó con status dubbed y texto no vacío.' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath)
+            $dubCommand=$script:Bin+' '+($dub.Arguments -join ' ');Set-SubcaseResult '12-dub-daemon' 'PASS' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath);Set-Step '12-dub-daemon' 'PASS' 'Dub daemon completó con status dubbed y texto no vacío.' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath)
             Stop-ManagedDaemon
             $dub=Invoke-Cli @('speech','dub','--audio',$script:WavRetained,'--source-language','es','--target-language','es','--no-daemon') 'dub-direct' -Json;Assert-True ($dub.Payload.status -eq 'dubbed' -and $dub.Payload.text) 'Dub directo no produjo resultado.';Save-Event @{type='dub';mode='direct';source='es';target='es';text=$dub.Payload.text;status=$dub.Payload.status}
-            $dubCommand=$script:Bin+' '+($dub.Arguments -join ' ');Set-SubcaseResult '6-dub-direct' 'PASS' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath);Set-Step '6-dub-direct' 'PASS' 'Dub directo completó con status dubbed y texto no vacío.' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath)
-        }else{Set-SubcaseResult '6-dub-daemon' 'SKIP' -Reason 'No hay dispositivo de salida enumerado; dub no se invocó.';Set-Step '6-dub-daemon' 'SKIP' 'No hay salida de audio; ambos casos dub se omiten antes de ejecutarlos.' -Reason 'devices --json válido no enumeró salida.';Set-SubcaseResult '6-dub-direct' 'SKIP' -Reason 'No hay dispositivo de salida enumerado; dub no se invocó.';Set-Step '6-dub-direct' 'SKIP' 'No hay salida de audio; ambos casos dub se omiten antes de ejecutarlos.' -Reason 'devices --json válido no enumeró salida.'}
+            $dubCommand=$script:Bin+' '+($dub.Arguments -join ' ');Set-SubcaseResult '12-dub-direct' 'PASS' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath);Set-Step '12-dub-direct' 'PASS' 'Dub directo completó con status dubbed y texto no vacío.' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath)
+        }else{Set-SubcaseResult '12-dub-daemon' 'SKIP' -Reason 'No hay dispositivo de salida enumerado; dub no se invocó.';Set-Step '12-dub-daemon' 'SKIP' 'No hay salida de audio; ambos casos dub se omiten antes de ejecutarlos.' -Reason 'devices --json válido no enumeró salida.';Set-SubcaseResult '12-dub-direct' 'SKIP' -Reason 'No hay dispositivo de salida enumerado; dub no se invocó.';Set-Step '12-dub-direct' 'SKIP' 'No hay salida de audio; ambos casos dub se omiten antes de ejecutarlos.' -Reason 'devices --json válido no enumeró salida.'}
+    }
+
+    Invoke-Step '13-denoise' {
         $dpdfPath=Join-Path $script:ModelsDir ('models--Ceva-IP--DPDFNet\snapshots\dd6818d00f50c836fed43a6243ebe49116de5964\onnx\dpdfnet8_48khz_hr.onnx');Assert-True (Test-Path -LiteralPath $dpdfPath -PathType Leaf) 'DPDFNet no está provisionado para casos denoise.'
         $nativeStt=Test-NativeSttCapability -AudioPath $sttSample
         $parakeetPath=Join-Path $script:ModelsDir 'models--istupakov--parakeet-tdt-0.6b-v3-onnx\snapshots\8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce\nemo128.onnx'
         $parakeetFile=Get-Item -LiteralPath $parakeetPath -ErrorAction SilentlyContinue
-        if($nativeStt -and $parakeetFile -and $parakeetFile.Length -gt 0){$denoiseTranscribe=Invoke-Cli @('speech','transcribe','--audio',$sttSample,'--source-language','es','--denoise','--no-daemon') 'stt-denoise' -Json;Assert-PayloadSchema $denoiseTranscribe.Payload;Assert-True ($denoiseTranscribe.Payload.text -and $denoiseTranscribe.Payload.source_language -eq 'es') 'STT denoise vacío o idioma incorrecto.';Save-Event @{type='denoise_opt_in';operation='transcribe';audio=$sttSample;transcript=$denoiseTranscribe.Payload.text}}else{Set-SubcaseResult '6-stt-denoise' 'SKIP' -Reason 'native-stt o Parakeet ausente antes del caso denoise STT.';Set-Step '6-stt-denoise' 'SKIP' 'native-stt o Parakeet ausente antes del caso denoise STT.' -Reason 'Capacidad o modelo opcional ausente.'}
-        if($script:OutputAvailable){$denoiseDub=Invoke-Cli @('speech','dub','--audio',$script:WavRetained,'--source-language','es','--target-language','es','--denoise','--no-daemon') 'dub-denoise' -Json;Assert-PayloadSchema $denoiseDub.Payload;Assert-True ($denoiseDub.Payload.status -eq 'dubbed' -and $denoiseDub.Payload.text) 'Dub denoise vacío o sin status dubbed.';Save-Event @{type='denoise_opt_in';operation='dub';audio=$script:WavRetained;transcript=$denoiseDub.Payload.text}}else{Set-SubcaseResult '6-dub-denoise' 'SKIP' -Reason 'No hay salida de audio; dub denoise no se invocó.';Set-Step '6-dub-denoise' 'SKIP' 'No hay salida de audio para dub denoise.' -Reason 'Caso dependiente de salida omitido antes de invocarlo.'}
+        if($nativeStt -and $parakeetFile -and $parakeetFile.Length -gt 0){$denoiseTranscribe=Invoke-Cli @('speech','transcribe','--audio',$sttSample,'--source-language','es','--denoise','--no-daemon') 'stt-denoise' -Json;Assert-PayloadSchema $denoiseTranscribe.Payload;Assert-True ($denoiseTranscribe.Payload.text -and $denoiseTranscribe.Payload.source_language -eq 'es') 'STT denoise vacío o idioma incorrecto.';Save-Event @{type='denoise_opt_in';operation='transcribe';audio=$sttSample;transcript=$denoiseTranscribe.Payload.text}}else{Set-SubcaseResult '13-denoise-stt' 'SKIP' -Reason 'native-stt o Parakeet ausente antes del caso denoise STT.';Set-Step '13-denoise-stt' 'SKIP' 'native-stt o Parakeet ausente antes del caso denoise STT.' -Reason 'Capacidad o modelo opcional ausente.'}
+        if($script:OutputAvailable){$denoiseDub=Invoke-Cli @('speech','dub','--audio',$script:WavRetained,'--source-language','es','--target-language','es','--denoise','--no-daemon') 'dub-denoise' -Json;Assert-PayloadSchema $denoiseDub.Payload;Assert-True ($denoiseDub.Payload.status -eq 'dubbed' -and $denoiseDub.Payload.text) 'Dub denoise vacío o sin status dubbed.';Save-Event @{type='denoise_opt_in';operation='dub';audio=$script:WavRetained;transcript=$denoiseDub.Payload.text}}else{Set-SubcaseResult '13-denoise-dub' 'SKIP' -Reason 'No hay salida de audio; dub denoise no se invocó.';Set-Step '13-denoise-dub' 'SKIP' 'No hay salida de audio para dub denoise.' -Reason 'Caso dependiente de salida omitido antes de invocarlo.'}
         $denoiseDir=Join-Path $script:Run 'denoise';[void](New-Item -ItemType Directory -Path $denoiseDir)
         $version=Invoke-Cli @('speech','denoise','--version') 'ffmpeg-version' -Json:$false;Assert-True ($version.Stdout -match '(?i)ffmpeg') 'No se identificó FFmpeg empaquetado.'
         foreach($preset in @('studio','default')){
@@ -902,7 +924,7 @@ function Run-E2E {
             [void](New-Item -ItemType Directory -Path $presetDir)
             $args=@('speech','denoise',$script:Reference,'--output-dir',$presetDir,'--json')
             if($preset -eq 'default'){$args+=@('--preset','default')}
-            $denoiseResult=Invoke-Cli -Arguments $args -Name ('denoise-{0}' -f $preset) -Json:$false
+            $denoiseResult=Invoke-Cli -Arguments $args -Name ('13-denoise-{0}' -f $preset) -Json:$false
             $lines=@($denoiseResult.Stdout -split '\r?\n'|Where-Object{$_.Trim()})
             Assert-True ($lines.Count -ge 2) 'Salida JSONL denoise incompleta.'
             $records=@($lines|ForEach-Object{ConvertFrom-JsonStrict $_})
@@ -919,19 +941,19 @@ function Run-E2E {
             }
             $script:DenoiseOutputByPreset[$preset]=$presetOutputs
             $script:DenoiseOutput+=@($presetOutputs)
-            Set-SubcaseResult ('denoise-'+$preset) 'PASS' -Command ($script:Bin+' '+($args -join ' ')) -ExitCode $denoiseResult.ExitCode -Payload $summary.summary -Evidence @($denoiseResult.StdoutPath,$denoiseResult.StderrPath)+$presetOutputs
+            Set-SubcaseResult ('13-denoise-'+$preset) 'PASS' -Command ($script:Bin+' '+($args -join ' ')) -ExitCode $denoiseResult.ExitCode -Payload $summary.summary -Evidence @($denoiseResult.StdoutPath,$denoiseResult.StderrPath)+$presetOutputs
         }
         $script:DenoiseOutput=@($script:DenoiseOutput|Select-Object -Unique);Assert-True ($script:DenoiseOutput.Count -ge 2) 'No hay salidas no vacías de ambos presets denoise.'
     }
 
-    Invoke-Step '7' {
+    Invoke-Step '14-final-state' {
         $entries=@(Get-PathEntries|Where-Object{$_.TrimEnd('\') -ieq $script:ProgramDir.TrimEnd('\')});Assert-True ($entries.Count -eq 1) 'PATH no contiene una entrada exacta.'
         $where=Invoke-WhereCheck -ExpectPresent:$true;Assert-True ($where.ExitCode -eq 0) 'where/doctor del hijo con PATH persistido fallaron.'
         $doctor=Invoke-Cli @('doctor') 'doctor-final' -Json -PersistedPath;Assert-PayloadSchema $doctor.Payload;Assert-True (@($doctor.Payload.failed).Count -eq 0) 'Doctor final falló.'
         $pathCheck=Invoke-WhereCheck -ExpectPresent:$true;Assert-True ($pathCheck.ExitCode -eq 0) 'where.exe y doctor no pasaron en el mismo hijo con PATH persistido.'
         Assert-True ($pathCheck.Doctor.install.version -eq $script:Version -and $pathCheck.Doctor.version -eq $script:Version) 'Doctor del mismo hijo informa receipt/binario de versión distinta.'
         Assert-True ($pathCheck.Doctor.install.receipt -eq 'valid' -and $pathCheck.Doctor.path.resolves_to_this_install -eq $true -and @($pathCheck.Doctor.path.duplicate_entries).Count -eq 0) 'Receipt o resolución PATH del mismo hijo no son válidos.'
-        Assert-True ((@($script:SubcaseResults|Where-Object{($_.name -eq 'wer-default' -or $_.name -eq 'wer-clone') -and $_.status -eq 'PASS'}).Count -eq 2 -or @($script:SubcaseResults|Where-Object{($_.name -eq 'wer-default' -or $_.name -eq 'wer-clone') -and $_.status -eq 'SKIP'}).Count -eq 2) -and @($script:WerResults|Where-Object wer -gt 0.25).Count -eq 0) 'Los dos WER deben existir y ser ≤ 0.25.'
+        Assert-True ((@($script:SubcaseResults|Where-Object{($_.name -eq '08-synthesis-wer-default' -or $_.name -eq '08-synthesis-wer-clone') -and $_.status -eq 'PASS'}).Count -eq 2 -or @($script:SubcaseResults|Where-Object{($_.name -eq '08-synthesis-wer-default' -or $_.name -eq '08-synthesis-wer-clone') -and $_.status -eq 'SKIP'}).Count -eq 2) -and @($script:WerResults|Where-Object wer -gt 0.25).Count -eq 0) 'Los dos WER deben existir y ser ≤ 0.25.'
         Assert-True ($pathCheck.Doctor.install.dir -eq $script:ProgramDir -and $pathCheck.Doctor.path.resolves_to_this_install -eq $true) 'Doctor del mismo hijo informa otra instalación como propietaria/resuelta.'
         Assert-True ($pathCheck.Doctor.models.root -eq $script:ModelsDir -and @($pathCheck.Doctor.models.missing).Count -eq 0 -and @($pathCheck.Doctor.models.provisioned).Count -eq 6) 'Doctor del mismo hijo no confirma la raíz y los seis modelos instalados.'
         $versionFinal=Invoke-Cli @('version') 'version-final' -Json -PersistedPath;Assert-PayloadSchema $versionFinal.Payload;Assert-True ($versionFinal.Payload.version -eq $script:Version) 'version --json final no coincide con el release.'
@@ -945,7 +967,7 @@ function Run-E2E {
         $status=Invoke-Cli @('daemon','status') 'daemon-final' -Json
         Assert-PayloadSchema $status.Payload
         if($status.Payload.daemon -eq 'running'){$identity=[int]$status.Payload.pid;Assert-True ($script:DaemonStartedIdentities.Contains($identity)) 'Daemon final running no pertenece a un PID iniciado por esta corrida.'}
-        Set-Step 'final-daemon' 'PASS' 'Estado final consultado.' -Command ($script:Bin+' daemon status --json') -ExitCode $status.ExitCode -Payload $status.Payload -Evidence @($status.StdoutPath,$status.StderrPath)
+        Set-Step '14-final-state-daemon' 'PASS' 'Estado final consultado.' -Command ($script:Bin+' daemon status --json') -ExitCode $status.ExitCode -Payload $status.Payload -Evidence @($status.StdoutPath,$status.StderrPath)
         Assert-True ($status.Payload.daemon -in @('running','stopped')) 'Estado daemon final no reconocido.'
         if($status.Payload.daemon -eq 'running'){Assert-True ($status.Payload.warm -eq 'warm') 'Daemon final running sin warm verificado.'}
         $finalWarm = if ($status.Payload.PSObject.Properties['warm']) { $status.Payload.warm } else { $null }
@@ -981,9 +1003,9 @@ try {
     $message=$_.Exception.Message
     $status=if($message.StartsWith('BLOCKED:')){'BLOCKED'}else{'FAIL'}
     if($script:Run){
-        foreach($phase in @('0a','0b','1','2','3','4','5','6','7')){
+        foreach($phase in @($script:Phases.Id)){
             if(!@($script:Results|Where-Object step -eq $phase).Count){
-                Set-Step $phase 'BLOCKED' 'No ejecutada por la detención previa.' -Payload @{executed=$false} -Reason $message
+                Set-Step $phase 'NOT_RUN' 'No ejecutada por la detención previa.' -Payload @{executed=$false} -Reason $message
             }
         }
         Set-Step 'run' $status $message -Reason $message -DurationMs $totalMs
