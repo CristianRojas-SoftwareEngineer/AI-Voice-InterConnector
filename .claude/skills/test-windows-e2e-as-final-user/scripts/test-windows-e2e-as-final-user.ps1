@@ -107,9 +107,36 @@ function Assert-True {
     if (!$Condition) { throw $Message }
 }
 
+function Initialize-Modules {
+    param([Parameter(Mandatory)][System.Management.Automation.Language.Ast]$Ast)
+    # Solo .NET y cmdlets de Microsoft.PowerShell.Core: este código corre antes de saber si los demás módulos estándar existen.
+    $defined = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($function in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) { [void]$defined.Add($function.Name) }
+    $used = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($command in $Ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true)) {
+        $name = $command.GetCommandName()
+        if ($name -and $name -match '^[A-Za-z]+-[A-Za-z]+$' -and -not $defined.Contains($name)) { [void]$used.Add($name) }
+    }
+    $missing = @($used | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    if (-not $missing.Count) { return $false }
+    # Un PSModulePath heredado de PowerShell 7 sombrea los módulos de Windows PowerShell 5.1: se importan por ruta absoluta bajo $PSHOME sin modificar PSModulePath.
+    foreach ($module in @('Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Archive')) {
+        Import-Module ([IO.Path]::Combine($PSHOME, 'Modules', $module)) -ErrorAction Stop
+    }
+    $missing = @($used | Where-Object { -not (Get-Command -Name $_ -ErrorAction SilentlyContinue) })
+    if ($missing.Count) { throw "BLOCKED: faltan cmdlets estándar de PowerShell: $($missing -join ', ')" }
+    return $true
+}
+
 function Initialize-Run {
     $script:TotalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $preflightWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    # El parseo AST es solo .NET y debe ir primero: la comprobación de módulos precede a cualquier cmdlet no verificado.
+    $astTokens = $null
+    $astErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$astTokens, [ref]$astErrors)
+    if ($astErrors.Count) { throw 'El parser AST detectó errores; no se ejecutará ninguna fase.' }
+    $modulesRepaired = Initialize-Modules -Ast $ast
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) { throw 'Se requiere Windows x64.' }
     if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Se requiere PowerShell 5.1 o posterior.' }
     if ([string]::IsNullOrWhiteSpace($env:TEMP) -or [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'Faltan TEMP o LOCALAPPDATA.' }
@@ -121,11 +148,6 @@ function Initialize-Run {
         $path = if ($relative -eq 'SKILL.md') { Join-Path $PSScriptRoot "..\$relative" } else { Join-Path $script:Root $relative }
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Falta la entrada requerida: $path" }
     }
-    $astTokens = $null
-    $astErrors = $null
-    [void][System.Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$astTokens, [ref]$astErrors)
-    if ($astErrors.Count) { throw 'El parser AST detectó errores; no se ejecutará ninguna fase.' }
-
     $script:Version = Get-SourceVersion (Join-Path $script:Root 'src\main.rs')
     $toml = Get-Content -LiteralPath (Join-Path $script:Root 'Cargo.toml') -Raw
     $cargoVersion = [regex]::Match($toml, '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value
@@ -147,7 +169,7 @@ function Initialize-Run {
     $runFull=[IO.Path]::GetFullPath($script:Run)
     foreach($forbidden in @($script:ProgramDir,(Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector'),(Join-Path $env:LOCALAPPDATA 'Programs'))){$full=[IO.Path]::GetFullPath($forbidden).TrimEnd('\');if($runFull.Equals($full,[StringComparison]::OrdinalIgnoreCase)-or $runFull.StartsWith($full+'\',[StringComparison]::OrdinalIgnoreCase)){throw "La carpeta de evidencia se solapa con raíces de usuario/producto: $full"}}
     $preflightWatch.Stop()
-    Set-Step 'preflight' 'PASS' 'Host, prerequisitos, fuentes y sintaxis AST validados.' -Command 'Initialize-Run + Parser::ParseFile' -Payload @{host=$env:OS;architecture='x64';powershell=$PSVersionTable.PSVersion.ToString();source_version=$script:Version} -Evidence @($PSCommandPath) -DurationMs $preflightWatch.ElapsedMilliseconds
+    Set-Step 'preflight' 'PASS' 'Host, prerequisitos, fuentes y sintaxis AST validados.' -Command 'Initialize-Run + Parser::ParseFile' -Payload @{host=$env:OS;architecture='x64';powershell=$PSVersionTable.PSVersion.ToString();source_version=$script:Version;modules_repaired=$modulesRepaired} -Evidence @($PSCommandPath) -DurationMs $preflightWatch.ElapsedMilliseconds
     Write-Result 'INFO' "Evidencia: $runPath"
     Write-Result 'INFO' "Versión fuente/fixture: $script:Version"
 }
@@ -237,6 +259,9 @@ function Invoke-LoggedProcess {
         $user = [Environment]::GetEnvironmentVariable('Path','User')
         $persisted = @($machine,$user | Where-Object { $_ }) -join ';'
         $psi.EnvironmentVariables['PATH'] = $persisted
+        # Como el PATH, el PSModulePath persistido modela una sesión real de usuario y evita que el hijo PowerShell herede módulos de un padre PowerShell 7.
+        $persistedModulePath = @([Environment]::GetEnvironmentVariable('PSModulePath','Machine'),[Environment]::GetEnvironmentVariable('PSModulePath','User') | Where-Object { $_ }) -join ';'
+        if ($persistedModulePath) { $psi.EnvironmentVariables['PSModulePath'] = $persistedModulePath }
     }
     foreach ($key in $Environment.Keys) { $psi.EnvironmentVariables[$key] = [string]$Environment[$key] }
 
@@ -754,6 +779,7 @@ function Run-E2E {
         $bootstrapPath = Join-Path $script:Run 'published-install.ps1'
         $bootstrap | Set-Content -LiteralPath $bootstrapPath -Encoding UTF8
         $hostExe = Join-Path $PSHOME $(if ($PSVersionTable.PSVersion.Major -ge 6) { 'pwsh.exe' } else { 'powershell.exe' })
+        # Sin -PersistedPath a propósito: el hijo conserva el entorno heredado para ejercitar la defensa propia del instalador publicado ante un PSModulePath contaminado.
         $result = Invoke-LoggedProcess -FilePath $hostExe -ArgumentList @('-NoProfile','-NonInteractive','-File',$bootstrapPath) -Name 'published-bootstrap' -TimeoutMs 600000 -Environment @{AVI_NO_SETUP='1'} -SanitizeOutput:$false
         Assert-True ($result.ExitCode -eq 0) 'Bootstrap publicado falló.'
         $receipt=Get-RegisteredRoots;Assert-True ($receipt.version -eq $script:Version) 'Versión del receipt no coincide.'
