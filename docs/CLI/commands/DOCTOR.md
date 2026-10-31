@@ -73,7 +73,7 @@ Sin `--json`, los chequeos fallidos van a stderr con prefijo `✗` y la línea d
 
 ```json
 {
-  "schema_version": "5",
+  "schema_version": "6",
   "version": "X.Y.Z",
   "target": "x86_64-pc-windows-msvc",
   "channel": "script",

@@ -159,7 +159,7 @@ function Initialize-Run {
     $cargoVersion = [regex]::Match($toml, '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value
     Assert-True ($cargoVersion -eq $script:Version) 'Cargo.toml y src/main.rs difieren en versión.'
     $fixture = Get-Content -LiteralPath (Join-Path $script:Root 'tests\golden\cli_version.json') -Raw | ConvertFrom-Json -ErrorAction Stop
-    Assert-True ($fixture.version -eq $script:Version -and $fixture.name -eq 'ai-voice-interconnector' -and $fixture.schema_version -eq '5') 'La versión fuente no coincide con fixture CLI schema 5.'
+    Assert-True ($fixture.version -eq $script:Version -and $fixture.name -eq 'ai-voice-interconnector' -and $fixture.schema_version -eq '6') 'La versión fuente no coincide con fixture CLI schema 6.'
     if(!(Get-Command git -ErrorAction SilentlyContinue)){throw 'BLOCKED: git no está disponible para comprobar tag/version.'}
     if(!(Get-Command cargo -ErrorAction SilentlyContinue)){throw 'BLOCKED: cargo no está disponible para ejecutar el gate Rust actual.'}
     $releaseTag=(& git -C $script:Root describe --tags --abbrev=0 2>$null).Trim()
@@ -341,7 +341,7 @@ function Get-PathEntries {
 
 function Assert-PayloadSchema {
     param($Payload)
-    Assert-True ($Payload.schema_version -eq '5') 'schema_version debe ser 5.'
+    Assert-True ($Payload.schema_version -eq '6') 'schema_version debe ser 6.'
 }
 
 function Test-NativeSttCapability {
@@ -378,9 +378,9 @@ function Invoke-WhereCheck {
     $powershell = Join-Path $PSHOME $(if ($PSVersionTable.PSVersion.Major -ge 6) { 'pwsh.exe' } else { 'powershell.exe' })
     $scriptText = if ($ExpectPresent) {
         if ($AllowPreSetup) {
-            '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''5'') {{ exit 12 }}; exit 0' -f $script:Bin.Replace("'", "''"),$script:Version
+            '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''6'') {{ exit 12 }}; exit 0' -f $script:Bin.Replace("'", "''"),$script:Version
         } else {
-            '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''5'') {{ exit 12 }}; & ''{0}'' doctor --json; exit $LASTEXITCODE' -f $script:Bin.Replace("'", "''"),$script:Version
+            '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''6'') {{ exit 12 }}; & ''{0}'' doctor --json; exit $LASTEXITCODE' -f $script:Bin.Replace("'", "''"),$script:Version
         }
     } else {
         'where.exe ai-voice-interconnector *> $null; if ($LASTEXITCODE -eq 1) { exit 0 } else { exit 11 }'
@@ -792,7 +792,7 @@ function Run-E2E {
         $entries=@(Get-PathEntries|Where-Object{$_.TrimEnd('\') -ieq $script:ProgramDir.TrimEnd('\')});Assert-True ($entries.Count -eq 1) 'HKCU PATH no tiene exactamente una entrada.'
         $where=Invoke-WhereCheck -ExpectPresent:$true -AllowPreSetup;Assert-True ($where.ExitCode -eq 0) 'where.exe con PATH persistido falló.'
         $version=Invoke-Cli @('version') 'version-installed' -Json;Assert-PayloadSchema $version.Payload;Assert-True ($version.Payload.version -eq $script:Version) 'Versión instalada inesperada.'
-        Assert-True ($version.Payload.schema_version -eq '5') 'El envelope de version no usa schema 5.'
+        Assert-True ($version.Payload.schema_version -eq '6') 'El envelope de version no usa schema 6.'
         $bootstrapLog=Get-Content -LiteralPath $result.StdoutPath -Raw
         Assert-True ($bootstrapLog -match '(?i)checksum verificado\.') 'Bootstrap no registra la verificación de checksum del bundle.'
         $zipAsset='ai-voice-interconnector-{0}-x86_64-windows.zip' -f $script:Version
@@ -935,12 +935,12 @@ function Run-E2E {
     Invoke-Step '12-dub' {
         if($script:OutputAvailable){
             Start-ManagedDaemon
-            $dub=Invoke-Cli @('speech','dub','--audio',$sttSample,'--source-language','es','--target-language','en','--daemon') 'dub-daemon-cross' -Json;Assert-True ($dub.Payload.status -eq 'dubbed' -and $dub.Payload.text) 'Dub daemon no produjo resultado.'
-            Save-Event @{type='dub';mode='daemon';source='es';target='en';text=$dub.Payload.text;status=$dub.Payload.status}
-            $dubCommand=$script:Bin+' '+($dub.Arguments -join ' ');Set-SubcaseResult '12-dub-daemon' 'PASS' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath);Set-Step '12-dub-daemon' 'PASS' 'Dub daemon completó con status dubbed y texto no vacío.' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath)
+            $dub=Invoke-Cli @('speech','dub','--audio',$sttSample,'--source-language','es','--target-language','en','--daemon') 'dub-daemon-cross' -Json;Assert-True ($dub.Payload.status -eq 'dubbed' -and $dub.Payload.text -and $dub.Payload.translated) 'Dub daemon no produjo transcripción y traducción.'
+            Save-Event @{type='dub';mode='daemon';source='es';target='en';text=$dub.Payload.text;translated=$dub.Payload.translated;status=$dub.Payload.status}
+            $dubCommand=$script:Bin+' '+($dub.Arguments -join ' ');Set-SubcaseResult '12-dub-daemon' 'PASS' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath);Set-Step '12-dub-daemon' 'PASS' 'Dub daemon completó con status dubbed, transcripción y traducción no vacías.' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath)
             Stop-ManagedDaemon
-            $dub=Invoke-Cli @('speech','dub','--audio',$script:WavRetained,'--source-language','es','--target-language','es','--no-daemon') 'dub-direct' -Json;Assert-True ($dub.Payload.status -eq 'dubbed' -and $dub.Payload.text) 'Dub directo no produjo resultado.';Save-Event @{type='dub';mode='direct';source='es';target='es';text=$dub.Payload.text;status=$dub.Payload.status}
-            $dubCommand=$script:Bin+' '+($dub.Arguments -join ' ');Set-SubcaseResult '12-dub-direct' 'PASS' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath);Set-Step '12-dub-direct' 'PASS' 'Dub directo completó con status dubbed y texto no vacío.' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath)
+            $dub=Invoke-Cli @('speech','dub','--audio',$script:WavRetained,'--source-language','es','--target-language','es','--no-daemon') 'dub-direct' -Json;Assert-True ($dub.Payload.status -eq 'dubbed' -and $dub.Payload.text -and $dub.Payload.translated) 'Dub directo no produjo transcripción y traducción.';Save-Event @{type='dub';mode='direct';source='es';target='es';text=$dub.Payload.text;translated=$dub.Payload.translated;status=$dub.Payload.status}
+            $dubCommand=$script:Bin+' '+($dub.Arguments -join ' ');Set-SubcaseResult '12-dub-direct' 'PASS' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath);Set-Step '12-dub-direct' 'PASS' 'Dub directo completó con status dubbed, transcripción y traducción no vacías.' -Command $dubCommand -ExitCode $dub.ExitCode -Payload $dub.Payload -Evidence @($dub.StdoutPath,$dub.StderrPath)
         }else{Set-SubcaseResult '12-dub-daemon' 'SKIP' -Reason 'No hay dispositivo de salida enumerado; dub no se invocó.';Set-Step '12-dub-daemon' 'SKIP' 'No hay salida de audio; ambos casos dub se omiten antes de ejecutarlos.' -Reason 'devices --json válido no enumeró salida.';Set-SubcaseResult '12-dub-direct' 'SKIP' -Reason 'No hay dispositivo de salida enumerado; dub no se invocó.';Set-Step '12-dub-direct' 'SKIP' 'No hay salida de audio; ambos casos dub se omiten antes de ejecutarlos.' -Reason 'devices --json válido no enumeró salida.'}
     }
 

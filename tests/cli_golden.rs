@@ -8,7 +8,7 @@
 //!
 //! Invoca el binario compilado con argumentos fijos y compara `stdout` (JSON) y el
 //! código de salida contra fixtures en `tests/golden/`, verificando el contrato de
-//! la CLI: `schema_version == "5"` (vía
+//! la CLI: `schema_version == "6"` (vía
 //! `avi_core::json_emitter`) y los códigos de salida de `avi_core::exit_codes`.
 //!
 //! Se ubica como test de integración del paquete raíz (y no dentro de `src/main.rs`)
@@ -1400,7 +1400,7 @@ fn speech_transcribe_with_audio_matches_contract() {
         &inst.args(),
     );
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
     assert_eq!(actual["source_language"], Value::String("es".to_string()));
     let text = actual["text"].as_str().expect("`text` debe ser un string");
     assert!(!text.is_empty(), "`text` no debe estar vacío");
@@ -2097,7 +2097,7 @@ fn cleanup_without_category_exits_2_with_usage_error() {
     let (code, actual) = run_json(&["--json", "cleanup"]);
     assert_eq!(code, 2, "cleanup sin flags debe ser InvalidInput");
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
 }
 
 /// El mismo gate, afirmado por su salida y su `reason` y nada más: es lo que la puerta
@@ -2123,7 +2123,7 @@ fn cleanup_voices_dry_run_reports_planned() {
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
 }
 
 /// `--synthetic-speech` en simulación emite el mismo envelope y el alcance de la categoría.
@@ -2140,7 +2140,7 @@ fn cleanup_synthetic_speech_dry_run_reports_planned() {
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
 }
 
 /// `--model` en simulación nombra una vez la raíz exclusiva de la aplicación en `removed`.
@@ -2159,7 +2159,7 @@ fn cleanup_model_dry_run_reports_planned() {
     );
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
     let roots = dir.join("cache").join(avi_shared::paths::MODELS_SUBDIR);
     assert!(
         actual["removed"]
@@ -2186,7 +2186,7 @@ fn cleanup_all_dry_run_reports_planned() {
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
 }
 
 /// La **única** prueba de `cleanup` que carga una fixture real: compara contra `tests/golden/cli_cleanup_dry_run.json`.
@@ -2199,7 +2199,7 @@ fn cleanup_dry_run_matches_fixture() {
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert!(actual.get("dry_run").is_none());
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
     // fixture de referencia para el simulacro debe coincidir en status y plan
     let expected = fixture("cli_cleanup_dry_run.json");
     assert_eq!(actual["status"], expected["status"]);
@@ -2219,7 +2219,7 @@ fn cleanup_dry_run_reports_preserved_program() {
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "cleanup", "--voices", "--dry-run"], &envs);
     assert_eq!(code, 0, "{actual}");
-    assert_eq!(actual["schema_version"], "5");
+    assert_eq!(actual["schema_version"], "6");
     assert!(
         actual["preserved"].as_array().unwrap().iter().any(|entry| {
             entry["path"] == program.display().to_string()
@@ -2277,7 +2277,7 @@ fn cleanup_dry_run_emits_the_phase_on_stderr_and_nothing_on_stdout() {
     );
     let envelope: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
-    assert_eq!(envelope["schema_version"], Value::String("5".to_string()));
+    assert_eq!(envelope["schema_version"], Value::String("6".to_string()));
     assert_eq!(envelope["status"], Value::String("planned".to_string()));
 }
 
@@ -2733,8 +2733,8 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
     );
     assert_eq!(
         value["schema_version"],
-        Value::String("5".to_string()),
-        "el envelope de la CLI sube a \"5\""
+        Value::String("6".to_string()),
+        "el envelope de la CLI sube a \"6\""
     );
     // Unmanaged carece de receipt e integración PATH: doctor integral debe fallar.
     assert_eq!(value["channel"], "unmanaged");
@@ -2844,7 +2844,7 @@ fn voice_list_respects_envelope_contract() {
     // invariantes de contrato (envelope + presencia de `default`).
     let (code, actual) = run_json(&["--json", "voice", "list"]);
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
     let voices = actual["voices"]
         .as_array()
         .expect("`voices` debe ser un array");
@@ -2893,7 +2893,7 @@ fn translate_es_to_en_produces_translation() {
         &inst.args(),
     );
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
     assert_eq!(actual["source_language"], Value::String("es".to_string()));
     assert_eq!(actual["target_language"], Value::String("en".to_string()));
     let translated = actual["translated"]
@@ -3414,7 +3414,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         assert_eq!(actual["status"], Value::String("success".to_string()));
         let audio = actual["audio_path"]
             .as_str()
@@ -3488,7 +3488,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         assert_eq!(actual["status"], Value::String("success".to_string()));
         let audio = actual["audio_path"]
             .as_str()
@@ -3950,7 +3950,7 @@ mod tts {
             &inst.contract_args(),
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         let entries = actual["speech"]
             .as_array()
             .expect("`speech` debe ser un array");
@@ -4018,7 +4018,7 @@ mod tts {
         create_utterance(&inst, "ryan", &label_ryan);
         let (code, actual) = run_json_env(&["--json", "speech", "list"], &inst.contract_args());
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         let entries = actual["speech"]
             .as_array()
             .expect("`speech` debe ser un array");
@@ -4264,11 +4264,21 @@ mod tts {
             .unwrap_or_default()
             .trim()
             .is_empty());
+        // En passthrough (es→es) el texto sintetizado es la propia transcripción.
+        let translated = actual["translated"]
+            .as_str()
+            .expect("translated debe existir");
+        assert!(
+            !translated.trim().is_empty(),
+            "`translated` no debe estar vacío"
+        );
+        assert_eq!(translated, actual["text"].as_str().unwrap());
     }
 
     /// Passthrough es→es con `--audio`: exit 0, WAV válido y tasa de error de
     /// palabras ≤ 0.25 frente
-    /// al texto transcrito (el pipeline devuelve `text`). El dub arranca por STT,
+    /// al texto transcrito (`text` es la transcripción y `translated` el texto
+    /// sintetizado). El dub arranca por STT,
     /// así que exige `native-stt`; sin el feature no se compila.
     #[cfg(feature = "native-stt")]
     #[test]
@@ -4310,13 +4320,19 @@ mod tts {
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
         // sin `audio_path` ni temporal, la verificación sobre archivo
         // (WAV válido + tasa de error de palabras) es imposible; queda el texto
-        // transcrito.
+        // transcrito (`text`) y el texto sintetizado (`translated`), que en
+        // passthrough coinciden.
         assert!(
             actual.get("audio_path").is_none(),
             "el envelope del dub no debe llevar audio_path: {actual}"
         );
         let text = actual["text"].as_str().expect("text debe existir");
         assert!(!text.is_empty(), "`text` no debe estar vacío");
+        let translated = actual["translated"]
+            .as_str()
+            .expect("translated debe existir");
+        assert!(!translated.is_empty(), "`translated` no debe estar vacío");
+        assert_eq!(translated, text, "en passthrough translated == text");
     }
 
     #[test]
@@ -4369,7 +4385,7 @@ mod tts {
             assert_eq!(output.status.code(), Some(2), "{args:?}");
             let actual: Value = serde_json::from_slice(&output.stdout).expect("envelope JSON");
             assert_eq!(actual["reason"], "usage_error", "{args:?}: {actual}");
-            assert_eq!(actual["schema_version"], "5", "{args:?}: {actual}");
+            assert_eq!(actual["schema_version"], "6", "{args:?}: {actual}");
         }
     }
 
@@ -4410,7 +4426,7 @@ mod tts {
             let actual: Value = serde_json::from_slice(&output.stdout).expect("envelope JSON");
             assert_eq!(code, 2, "{args:?}: {actual}");
             assert_eq!(actual["reason"], expected_reason, "{args:?}: {actual}");
-            assert_eq!(actual["schema_version"], "5", "{args:?}: {actual}");
+            assert_eq!(actual["schema_version"], "6", "{args:?}: {actual}");
         }
     }
 
@@ -4473,7 +4489,7 @@ mod tts {
             &inst.args(),
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(actual["precomputed"], Value::Bool(false));
         assert_clone_envelope_keys(&actual);
@@ -5307,8 +5323,8 @@ mod tts {
             pid.map(u64::from),
             "status informa el PID del daemon registrado: {actual}"
         );
-        // Cuando está running, el fixture running debe coincidir (schema_version 5)
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        // Cuando está running, el fixture running debe coincidir (schema_version 6)
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         let expected = fixture("cli_daemon_status_running.json");
         // Comparar daemon y engine
         assert_eq!(actual["daemon"], expected["daemon"]);
@@ -5331,7 +5347,7 @@ mod tts {
         let (code, actual) = run_json_env(&["--json", "daemon", "status"], &a);
         assert_eq!(code, 0, "daemon status con daemon debe salir 0: {actual}");
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         stop_instance(&inst, "daemon_status_with_isolated_daemon_reports_running");
         hit_end("tts::daemon_status_with_isolated_daemon_reports_running");
     }
@@ -6472,7 +6488,7 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0, "translate --daemon debe delegar con exit 0");
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         assert!(actual.get("translated").is_some());
         let expected = fixture("cli_translate_daemon.json");
         assert_eq!(actual["source_language"], expected["source_language"]);
@@ -6570,7 +6586,7 @@ mod tts {
             t0.elapsed().as_millis()
         ));
         assert_eq!(code, 0, "voice clone --daemon debe delegar con exit 0");
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(
             actual["precomputed"],
@@ -6662,14 +6678,20 @@ mod tts {
         );
         assert_eq!(code, 0, "dub passthrough --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
-        // el envelope no lleva `audio_path`; queda el texto no vacío.
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        // el envelope no lleva `audio_path`; quedan la transcripción (`text`) y el
+        // texto sintetizado (`translated`), iguales en passthrough.
         assert!(
             actual.get("audio_path").is_none(),
             "el envelope del dub no debe llevar audio_path: {actual}"
         );
         let text = actual["text"].as_str().expect("text debe existir");
         assert!(!text.is_empty(), "`text` no debe estar vacío");
+        let translated = actual["translated"]
+            .as_str()
+            .expect("translated debe existir");
+        assert!(!translated.is_empty(), "`translated` no debe estar vacío");
+        assert_eq!(translated, text, "en passthrough translated == text");
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "dub_daemon_passthrough");
         hit_end("tts::dub_daemon_passthrough");
@@ -6693,7 +6715,8 @@ mod tts {
         let a = inst.args();
         // Igual que `dub_daemon_passthrough` — el exit 0 con `dubbed` verifica la secuencia completa.
         // verifica la secuencia completa (transcribe→translate→sintetizar con
-        // latidos) hasta el evento final, sin cota de 10 s.
+        // latidos) hasta el evento final, sin cota de 10 s. El audio de muestra
+        // está en inglés, así que la dirección que traduce de verdad es en→es.
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -6703,23 +6726,28 @@ mod tts {
                 "--audio",
                 "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
                 "--source-language",
-                "es",
-                "--target-language",
                 "en",
+                "--target-language",
+                "es",
             ],
             &a,
         );
         assert_eq!(code, 0, "dub con traducción --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("5".to_string()));
-        // el envelope no lleva `audio_path`; queda el texto traducido
-        // no vacío (el daemon devuelve en `text` el final traducido).
+        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        // el envelope no lleva `audio_path`; `text` es la transcripción y
+        // `translated` el texto traducido que se sintetiza, distintos entre sí.
         assert!(
             actual.get("audio_path").is_none(),
             "el envelope del dub no debe llevar audio_path: {actual}"
         );
         let text = actual["text"].as_str().expect("text debe existir");
         assert!(!text.is_empty(), "`text` no debe estar vacío");
+        let translated = actual["translated"]
+            .as_str()
+            .expect("translated debe existir");
+        assert!(!translated.is_empty(), "`translated` no debe estar vacío");
+        assert_ne!(translated, text, "con traducción translated != text");
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "dub_daemon_with_translation");
         hit_end("tts::dub_daemon_with_translation");
@@ -7541,7 +7569,7 @@ fn no_subcommand_showsroot_help() {
 fn jsonroot_help_is_payload() {
     let (code, bare) = run_json(&["--json"]);
     assert_eq!(code, 0);
-    assert_eq!(bare["schema_version"], "5");
+    assert_eq!(bare["schema_version"], "6");
     let text = bare["help"].as_str().expect("`help` es texto");
     assert!(text.contains("Uso:"), "la ayuda lleva `Uso:`: {text}");
     for args in [["--json", "--help"], ["--json", "-h"]] {
@@ -8096,7 +8124,7 @@ fn uninstall_dry_run_keep_data_reports_preserved_models() {
         &envs,
     );
     assert_eq!(code, 0, "{actual}");
-    assert_eq!(actual["schema_version"], "5");
+    assert_eq!(actual["schema_version"], "6");
     assert!(
         actual["preserved"].as_array().unwrap().iter().any(|entry| {
             entry["path"] == models.display().to_string()
@@ -8272,6 +8300,9 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
         Value::String("dubbed".to_string()),
         "el envelope debe afirmar que se dobló, no solo que no falló: {actual}"
     );
+    // El envelope refleja el evento simulado: transcripción y texto sintetizado.
+    assert_eq!(actual["text"], Value::String("hola".to_string()));
+    assert_eq!(actual["translated"], Value::String("hola".to_string()));
     let residue = residue_with_prefix(dir, "avi_dub_");
     assert!(
         residue.is_empty(),

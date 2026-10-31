@@ -101,11 +101,11 @@ de apagado enviada», «No había daemon que detener (N s).» o el mensaje de de
 con el matiz del residente, según el mismo dato. El envelope de `stop` bindea el veredicto del motor (`StopOutcome`, calculado antes de tocar nada): una firma `shutdown_sent` sin daemon previo no es un veredicto válido.
 
 ```json
-{ "schema_version": "5", "status": "not_running", "daemon": "stopped", "was_running": false, "daemon_fully_stopped": true }
+{ "schema_version": "6", "status": "not_running", "daemon": "stopped", "was_running": false, "daemon_fully_stopped": true }
 ```
 
 ```json
-{ "schema_version": "5", "status": "still_running", "daemon": "running", "was_running": true, "daemon_fully_stopped": false, "resident_alive": false, "pid": 1234, "remaining": "el daemon en 127.0.0.1:9999 responde" }
+{ "schema_version": "6", "status": "still_running", "daemon": "running", "was_running": true, "daemon_fully_stopped": false, "resident_alive": false, "pid": 1234, "remaining": "el daemon en 127.0.0.1:9999 responde" }
 ```
 
 **Vida del motor residente.** El daemon (y la CLI, en el clonado por proceso local) lanza el motor `qwen_tts` con `--watch-stdin` y mantiene abierto el extremo de escritura de una tubería conectada a su entrada estándar mientras el motor vive. Con ese flag el motor arranca, tras parsear los argumentos y antes de cargar el modelo, un hilo que lee su entrada estándar hasta fin de fichero y entonces termina el proceso (`_exit(0)`), tanto en modo residente como en clonado. Si el proceso que lo lanzó muere, de forma ordenada o con un kill duro, el sistema operativo cierra la tubería y el motor termina solo en pocos segundos (medido: 2-3 s), sin depender de un grupo de procesos del sistema ni de un barrido. Sin el flag, el motor no cambia. Un motor sin reconstruir no conoce el flag y lo rechaza: el residente no arranca y el clonado falla, así que hay que reconstruir el motor (`vendor/qwen3-tts`, que diverge del upstream). En macOS, si el daemon lanza dos procesos a la vez, uno podría heredar el extremo de escritura de la tubería del otro y retrasar su cierre como mucho lo que dura un clonado; es un riesgo teórico, sin verificar en esa plataforma, que se acepta.
@@ -117,9 +117,9 @@ con el matiz del residente, según el mismo dato. El envelope de `stop` bindea e
 **`status` (handler de estado):** un solo `GET /health` con plazo propio; su éxito es el sondeo con el que `observe` clasifica, igual que en `start`, y su cuerpo aporta `engine`, `warm` y `warm_error`. `daemon` vale `running` solo con un daemon propio en servicio, y entonces lleva su `pid`; en cualquier otro caso vale `stopped`, y si quedan restos añade `degraded` con su código: `unresponsive` (el daemon registrado sigue vivo pero no responde), `unregistered` (algo responde en la dirección del daemon sin un daemon registrado) u `orphan_resident` (el residente sigue vivo sin daemon). Son los casos que `start` reclama antes de arrancar y que `stop` retira. Siempre sale 0, con `schema_version` ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema); fixtures `tests/golden/cli_daemon_status.json` y `cli_daemon_status_running.json`):
 
 ```json
-{ "schema_version": "5", "daemon": "running", "pid": 1234, "engine": "rust_native", "warm": "warm" }
-{ "schema_version": "5", "daemon": "stopped" }
-{ "schema_version": "5", "daemon": "stopped", "degraded": "unresponsive" }
+{ "schema_version": "6", "daemon": "running", "pid": 1234, "engine": "rust_native", "warm": "warm" }
+{ "schema_version": "6", "daemon": "stopped" }
+{ "schema_version": "6", "daemon": "stopped", "degraded": "unresponsive" }
 ```
 
 Esta clasificación es la detección de residual *al arrancar*; es un mecanismo distinto de la salud observada *por petición* dentro de una sesión ya viva que verifica la salud del residente antes de reutilizarlo en la síntesis TTS — no debe leerse como que esa verificación ya estaba resuelta por esta vía.

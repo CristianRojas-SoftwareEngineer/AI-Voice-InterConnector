@@ -104,7 +104,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 
 ```json
 {
-  "schema_version": "5",
+  "schema_version": "6",
   "status": "installed",
   "reason": "setup_failed",
   "install_dir": "…/ai-voice-interconnector",
@@ -185,7 +185,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `self update` | `status` (`updated` o `already_up_to_date` o `check` o `cancelled`) · `reason` (`setup_failed` en el parcial) · `previous_version` · `version`/`latest` · `channel` · `current`/`update_available` (en `--check`, `already_up_to_date` y `cancelled`; `cancelled` lleva `status`, `reason` nulo, `current`, `latest` y `channel`) · `models_cause` (solo en el parcial) |
 | `self uninstall` | `status` · `reason` (`null` normalmente; `program_dir_kept` si el directorio de programa no se pudo borrar ni programar su borrado) · `removed` · `planned` · `preserved` · `path_reverted` |
 
-`status` toma los valores `installed` / `repaired` en `self install`, `updated` / `already_up_to_date` / `check` / `cancelled` en `self update`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` / `planned` en `self uninstall`. En el parcial de `self update`, el padre valida el `models_cause` del hijo y conserva su causa concreta. `schema_version` lo inyecta `emit_raw_json` y vale **`"5"`**; el protocolo del daemon es otro contrato con su propia versión ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)).
+`status` toma los valores `installed` / `repaired` en `self install`, `updated` / `already_up_to_date` / `check` / `cancelled` en `self update`, y `uninstalled` / `removal_scheduled` / `not_installed` / `cancelled` / `planned` en `self uninstall`. En el parcial de `self update`, el padre valida el `models_cause` del hijo y conserva su causa concreta. `schema_version` lo inyecta `emit_raw_json` y vale **`"6"`**; el protocolo del daemon es otro contrato con su propia versión ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)).
 
 `planned` es el recibo de `compose_plan`, el mismo que usa la ejecución real, así que `--dry-run` anuncia exactamente lo que ocurriría. Con `--dry-run` el `status` es `planned`, `removed` copia `planned` y `path_reverted` es el valor previsto; el envelope no lleva clave `dry_run`: `planned` ya dice que nada se modificó.
 

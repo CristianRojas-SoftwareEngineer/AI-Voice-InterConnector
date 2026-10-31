@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.37.4 — 2026-10-30](#0374--2026-10-30)
 - [0.37.3 — 2026-10-30](#0373--2026-10-30)
 - [0.37.2 — 2026-10-30](#0372--2026-10-30)
@@ -122,6 +123,20 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+`speech dub` ocultaba la transcripción: en modo texto solo informaba «Doblaje reproducido» y con `--json` devolvía únicamente el texto traducido bajo `text`, a diferencia de `speech transcribe`. Ahora las cuatro rutas (transcribe y dub, local y daemon) imprimen el STT, y dub imprime además la traducción que se sintetiza, desde un emisor único por comando.
+
+### Cambiado
+
+- `speech dub` en modo texto imprime siempre tres líneas por stdout: `Transcripción: …`, `Traducción: …` y `Doblaje reproducido (N s).`.
+- `speech dub --json` emite `text` con la transcripción del audio de entrada y `translated` con el texto sintetizado. Antes `text` contenía el texto traducido: es un cambio incompatible. Quien leía `text` como texto traducido debe pasar a leer `translated`; `text` ahora es la transcripción y no se conserva el significado anterior.
+- El envelope `--json` de la CLI sube a `schema_version` `"6"` por este cambio incompatible de `speech dub`. El protocolo del daemon sigue en `"5"`.
+
+### Corregido
+
+- `speech dub` vía daemon ya no descarta la transcripción: si el evento de resultado del daemon omite `text` o `translated`, falla con `daemon_error`. Antes lo toleraba en silencio.
 
 ## [0.37.4] — 2026-10-30
 

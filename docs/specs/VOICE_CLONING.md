@@ -158,7 +158,7 @@ El motor ya cuenta con los componentes necesarios:
 | **RF-11** | En la ruta local, mic se escribe una vez a un `avi_process::scratch::temp_wav("avi_clone_mic_")` con guard RAII retenido durante clonado; archivo conserva la ruta original. |
 | **RF-12** | Con `--denoise` y feature `native-denoise`, el destino local limpia una vez en CLI y el daemon limpia una vez en servidor; el cliente envía `denoise: true` y no hay fallback local tras fallo del POST. |
 | **RF-13** | Se valida el nombre antes de capturar. En destino local, `VoiceStore::exists` detecta colisión antes de capturar si no hay `--force`; en daemon no se consulta el store cliente y la comprobación autoritativa ocurre después de capturar. No se agrega una reserva especial para nombres factory. |
-| **RF-14** | La salida JSON global (`--json`) debe mantener el envelope CLI `{"name": "<nombre>", "speech": "<ruta_qvoice>", "precomputed": bool, "schema_version": "5"}`. `precomputed` es obligatorio; `speech` puede pertenecer al filesystem del proceso que clonó. Este envelope no es el JSON protocolario del endpoint daemon. |
+| **RF-14** | La salida JSON global (`--json`) debe mantener el envelope CLI `{"name": "<nombre>", "speech": "<ruta_qvoice>", "precomputed": bool, "schema_version": "6"}`. `precomputed` es obligatorio; `speech` puede pertenecer al filesystem del proceso que clonó. Este envelope no es el JSON protocolario del endpoint daemon. |
 
 ### 5.2 Requisitos no funcionales
 
@@ -250,7 +250,7 @@ voice clone --name <nombre> [--speech-reference <wav> | --mic [--duration <N>]]
   │
   └─ 8. Cierre y Emisión:
         ├─ Salida humana: "Voz '<nombre>' clonada (N s)."
-        └─ Salida JSON global (--json, antes de `voice`): { "name": "...", "speech": "...", "precomputed": bool, "schema_version": "5" }
+        └─ Salida JSON global (--json, antes de `voice`): { "name": "...", "speech": "...", "precomputed": bool, "schema_version": "6" }
 ```
 
 La tabla de errores de archivo conserva el orden previo del CLI: nombre, límite de referencia, routing/modelo y después comprobación de existencia/lectura según destino. Las guardas nuevas de micrófono no cambian ese orden.

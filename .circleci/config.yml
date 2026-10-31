@@ -1586,7 +1586,7 @@ jobs:
             try { $j = $jsonRaw | ConvertFrom-Json } catch { throw "version --json no es JSON válido: $jsonRaw : $_" }
             if (-not $j.PSObject.Properties['version'] -or -not $j.version) { throw "version --json: campo 'version' ausente o vacío: $jsonRaw" }
             if (-not $j.PSObject.Properties['name'] -or $j.name -ne 'ai-voice-interconnector') { throw "version --json: campo 'name' incorrecto: $jsonRaw" }
-            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '5') { throw "version --json: campo 'schema_version' != '5': $jsonRaw" }
+            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '6') { throw "version --json: campo 'schema_version' != '6': $jsonRaw" }
             $expectedTag = $env:CIRCLE_TAG; if ($expectedTag) { $expectedTag = $expectedTag.TrimStart('v'); if ($j.version -ne $expectedTag) { throw "version --json: version '$($j.version)' != CIRCLE_TAG '$expectedTag' (tag=$env:CIRCLE_TAG)" } }
             Write-Host "version --json OK: name=$($j.name) version=$($j.version) schema_version=$($j.schema_version)"
             # Valida que la voz de fábrica 'default' quede registrada en un

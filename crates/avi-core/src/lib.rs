@@ -160,7 +160,7 @@ mod tests {
     fn test_emit_raw_json_includes_schema_version() {
         // Las dos versiones se afirman por separado y con su valor: la de la CLI y
         // la del protocolo del daemon son contratos independientes.
-        assert_eq!(CLI_SCHEMA_VERSION, "5");
+        assert_eq!(CLI_SCHEMA_VERSION, "6");
         assert_eq!(DAEMON_SCHEMA_VERSION, "5");
         let rendered = render_envelope(json!({ "status": "ok" }), CLI_SCHEMA_VERSION);
         let parsed: Value = serde_json::from_str(&rendered).unwrap();

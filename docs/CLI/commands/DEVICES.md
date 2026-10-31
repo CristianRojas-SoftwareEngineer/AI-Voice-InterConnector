@@ -88,7 +88,7 @@ inyecta `schema_version` sobre el objeto antes de serializar
     { "id": 0, "name": "Altavoces (Realtek Audio)", "latency": 0.0116 },
     { "id": 1, "name": "Auriculares (USB)", "latency": 0.0102 }
   ],
-  "schema_version": "5"
+  "schema_version": "6"
 }
 ```
 
@@ -134,7 +134,7 @@ nombre o una latencia `null` se muestran como `desconocido`:
 | `audio_enumeration_failed` | 1 (`ExitCode::Error`) | `AudioService::list_output_devices` devolvió `Err` (el host `cpal` no pudo enumerar los dispositivos de salida; la ausencia de dispositivos por sí sola NO es un error, produce lista vacía) |
 
 El error se envuelve en `main` (`src/main.rs`): con `--json` emite
-`{"error": <mensaje>, "reason": "audio_enumeration_failed", "schema_version": "5"}`
+`{"error": <mensaje>, "reason": "audio_enumeration_failed", "schema_version": "6"}`
 a stdout; sin `--json`, `Error: <mensaje>` a stderr. En ambos casos el
 proceso termina con exit code 1.
 

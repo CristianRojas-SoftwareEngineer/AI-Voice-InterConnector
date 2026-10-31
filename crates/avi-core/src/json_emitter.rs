@@ -7,11 +7,11 @@
 use serde_json::{Map, Value};
 use std::io::Write;
 
-/// Versión del envelope `--json` de la **CLI**; el valor vigente es `"5"`.
+/// Versión del envelope `--json` de la **CLI**; el valor vigente es `"6"`.
 ///
 /// Retirar o renombrar una clave del envelope, o cambiar su significado, obliga a
 /// subir la versión; añadir una clave nueva no.
-pub const CLI_SCHEMA_VERSION: &str = "5";
+pub const CLI_SCHEMA_VERSION: &str = "6";
 
 /// Versión del **protocolo del daemon** (NDJSON y cabecera `x-schema-version`); el
 /// valor vigente es `"5"`.

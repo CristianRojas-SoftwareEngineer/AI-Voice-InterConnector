@@ -418,7 +418,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
         "`setup_failed` es éxito parcial con código propio, `SetupFailed = 11` de la \
          tabla cerrada; el envelope fue {actual:?}"
     );
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
     assert_eq!(
         actual["status"],
         Value::String("installed".to_string()),
@@ -484,7 +484,7 @@ fn self_install_no_setup_exits_0_without_reason() {
     ]);
 
     assert_eq!(code, 0, "`--no-setup` sale con éxito: {actual:?}");
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
     assert_eq!(actual["status"], Value::String("installed".to_string()));
     assert_eq!(actual["reason"], Value::Null, "sin `reason` en el éxito");
     assert_eq!(actual["models"], Value::String("skipped".to_string()));

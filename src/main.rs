@@ -2356,11 +2356,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 .await;
                 let _elapsed = progress.close();
                 let text = result?;
-                if json_mode {
-                    emit_raw_json(json!({ "text": text, "source_language": source_language }));
-                } else {
-                    println!("{}", text);
-                }
+                emit_transcription(json_mode, &text, &source_language);
                 return Ok(());
             }
 
@@ -2484,12 +2480,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 .await;
                 let _elapsed = progress.close();
                 let text = result?;
-
-                if json_mode {
-                    emit_raw_json(json!({ "text": text, "source_language": source_language }));
-                } else {
-                    println!("{}", text);
-                }
+                emit_transcription(json_mode, &text, &source_language);
                 Ok(())
             }
         }
@@ -2852,15 +2843,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     )
                     .await;
                     let elapsed = progress.close();
-                    let final_text = result?;
-                    if json_mode {
-                        emit_raw_json(json!({ "status": "dubbed", "text": final_text }));
-                    } else {
-                        println!(
-                            "Doblaje reproducido ({}).",
-                            avi_lifecycle::progress::format_duration(elapsed)
-                        );
-                    }
+                    let outcome = result?;
+                    emit_dub(json_mode, &outcome, elapsed);
                     return Ok(());
                 }
             }
@@ -3079,22 +3063,15 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                                 format!("Fallo al reproducir el doblaje: {}", e),
                             )
                         })?;
-                    Ok(final_text)
+                    Ok(DubOutcome {
+                        transcript: transcribed,
+                        translated: final_text,
+                    })
                 }
                 .await;
                 let elapsed = progress.close();
-                let final_text = result?;
-                if json_mode {
-                    emit_raw_json(json!({
-                        "status": "dubbed",
-                        "text": final_text,
-                    }));
-                } else {
-                    println!(
-                        "Doblaje reproducido ({}).",
-                        avi_lifecycle::progress::format_duration(elapsed)
-                    );
-                }
+                let outcome = result?;
+                emit_dub(json_mode, &outcome, elapsed);
                 Ok(())
             }
         }
@@ -5724,6 +5701,78 @@ async fn clone_via_daemon(
     ))
 }
 
+/// Resultado de un doblaje, igual en la ruta local y en la del daemon.
+#[derive(Debug)]
+struct DubOutcome {
+    /// Texto reconocido en el audio de entrada (el STT).
+    transcript: String,
+    /// Texto que se sintetiza: la traducción, o la propia transcripción cuando
+    /// el idioma de origen y el de destino coinciden.
+    translated: String,
+}
+
+/// Envelope `--json` de `speech dub`: `text` es la transcripción y `translated`
+/// el texto sintetizado.
+fn dub_envelope(outcome: &DubOutcome) -> Value {
+    json!({
+        "status": "dubbed",
+        "text": outcome.transcript,
+        "translated": outcome.translated,
+    })
+}
+
+/// Salida de texto de `speech dub`: transcripción, traducción y estado final,
+/// siempre las tres líneas, también cuando no hay traducción.
+fn dub_text_lines(outcome: &DubOutcome, elapsed: std::time::Duration) -> String {
+    format!(
+        "Transcripción: {}\nTraducción: {}\nDoblaje reproducido ({}).",
+        outcome.transcript,
+        outcome.translated,
+        avi_lifecycle::progress::format_duration(elapsed)
+    )
+}
+
+/// Emite el resultado de `speech dub`; es el único punto de salida de las dos rutas.
+fn emit_dub(json_mode: bool, outcome: &DubOutcome, elapsed: std::time::Duration) {
+    if json_mode {
+        emit_raw_json(dub_envelope(outcome));
+    } else {
+        println!("{}", dub_text_lines(outcome, elapsed));
+    }
+}
+
+/// Lee `text` y `translated` del evento `result` del daemon. Un campo ausente o
+/// que no es texto es un error del daemon: no hay valor por defecto.
+fn dub_outcome_from_result(val: &Value) -> Result<DubOutcome, CliError> {
+    let field = |name: &str| {
+        val[name].as_str().map(str::to_string).ok_or_else(|| {
+            CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                format!("El daemon no devolvió '{name}' en el doblaje."),
+            )
+        })
+    };
+    Ok(DubOutcome {
+        transcript: field("text")?,
+        translated: field("translated")?,
+    })
+}
+
+/// Envelope `--json` de `speech transcribe`.
+fn transcription_envelope(text: &str, source_language: &str) -> Value {
+    json!({ "text": text, "source_language": source_language })
+}
+
+/// Emite el resultado de `speech transcribe`; es el único punto de salida de las dos rutas.
+fn emit_transcription(json_mode: bool, text: &str, source_language: &str) {
+    if json_mode {
+        emit_raw_json(transcription_envelope(text, source_language));
+    } else {
+        println!("{}", text);
+    }
+}
+
 // Firma ancha deliberada: cada argumento mapea 1:1 a un flag de `speech dub`.
 #[allow(clippy::too_many_arguments)]
 async fn dub_via_daemon(
@@ -5737,7 +5786,7 @@ async fn dub_via_daemon(
     temperature: Option<f32>,
     denoise: bool,
     voice: &str,
-) -> Result<String, CliError> {
+) -> Result<DubOutcome, CliError> {
     // Captura/lectura PCM y encode a base64 para POST /dub
     progress.phase(
         if mic { "capturing" } else { "reading" },
@@ -5810,10 +5859,10 @@ async fn dub_via_daemon(
         return Err(daemon_error_from_response(resp).await);
     }
     // El evento final del stream trae la forma contractual
-    // {status:"dubbed", text, translated, audio_b64, voice}; los eventos `error`
+    // {status:"dubbed", text, translated, audio_b64, voice}, donde `text` es la
+    // transcripción y `translated` el texto que se sintetiza; los eventos `error`
     // del stream se traducen con la misma tabla única.
     let val: Value = consume_ndjson_stream(resp, StreamResult::Dub, progress).await?;
-    // Respuesta esperada {status:"dubbed", text, translated, audio_b64}
     let audio_b64_resp = val["audio_b64"].as_str().ok_or_else(|| {
         CliError::new(
             ExitCode::Error,
@@ -5830,11 +5879,7 @@ async fn dub_via_daemon(
                 format!("audio_b64 del daemon no decodable: {}", e),
             )
         })?;
-    let final_text = val["translated"]
-        .as_str()
-        .or_else(|| val["text"].as_str())
-        .unwrap_or("")
-        .to_string();
+    let outcome = dub_outcome_from_result(&val)?;
     // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
     let tmp_wav = avi_process::scratch::temp_wav("avi_dub_")
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
@@ -5850,12 +5895,81 @@ async fn dub_via_daemon(
                 format!("Fallo al reproducir el doblaje: {}", e),
             )
         })?;
-    Ok(final_text)
+    Ok(outcome)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Las pruebas de integración de `transcribe` y `dub` exigen modelos y un
+    // dispositivo de audio; estas pruebas puras son la fuente determinista del
+    // contrato de salida de ambos comandos, igual en la ruta local y en la del daemon.
+
+    #[test]
+    fn dub_envelope_carries_transcript_as_text_and_translation() {
+        let outcome = DubOutcome {
+            transcript: "hola mundo".to_string(),
+            translated: "hello world".to_string(),
+        };
+        assert_eq!(
+            dub_envelope(&outcome),
+            json!({ "status": "dubbed", "text": "hola mundo", "translated": "hello world" })
+        );
+    }
+
+    #[test]
+    fn dub_text_lines_prints_transcript_translation_and_status() {
+        let outcome = DubOutcome {
+            transcript: "hola mundo".to_string(),
+            translated: "hello world".to_string(),
+        };
+        assert_eq!(
+            dub_text_lines(&outcome, std::time::Duration::from_secs(9)),
+            "Transcripción: hola mundo\nTraducción: hello world\nDoblaje reproducido (9 s)."
+        );
+    }
+
+    #[test]
+    fn dub_text_lines_keeps_both_lines_without_translation() {
+        let outcome = DubOutcome {
+            transcript: "hola".to_string(),
+            translated: "hola".to_string(),
+        };
+        assert_eq!(
+            dub_text_lines(&outcome, std::time::Duration::from_secs(2)),
+            "Transcripción: hola\nTraducción: hola\nDoblaje reproducido (2 s)."
+        );
+    }
+
+    #[test]
+    fn dub_outcome_from_result_reads_text_and_translated() {
+        let event =
+            json!({ "event": "result", "status": "dubbed", "text": "hola", "translated": "hello" });
+        let outcome = dub_outcome_from_result(&event).expect("evento completo");
+        assert_eq!(outcome.transcript, "hola");
+        assert_eq!(outcome.translated, "hello");
+    }
+
+    #[test]
+    fn dub_outcome_from_result_rejects_missing_fields_without_fallback() {
+        for event in [
+            json!({ "status": "dubbed", "text": "hola" }),
+            json!({ "status": "dubbed", "translated": "hello" }),
+            json!({ "status": "dubbed", "text": 1, "translated": "hello" }),
+        ] {
+            let err = dub_outcome_from_result(&event).expect_err("campo ausente o inválido");
+            assert_eq!(err.reason, "daemon_error", "{event}");
+        }
+    }
+
+    #[test]
+    fn transcription_envelope_has_text_and_source_language() {
+        assert_eq!(
+            transcription_envelope("hola", "es"),
+            json!({ "text": "hola", "source_language": "es" })
+        );
+    }
 
     #[test]
     fn clone_pcm_truncates_at_thirty_seconds_without_padding() {

@@ -43,7 +43,7 @@ const CONTRACT_DOC: &str = "docs/CLI/CONTRACT.md";
 /// declara. Cubre la redacción real, incluido el salto de línea de
 /// «(actualmente\n`"5"`)» y la frase larga que separa la mención de su valor
 /// («…inyecta `schema_version` vía `with_schema_version` …, que usa
-/// `CLI_SCHEMA_VERSION = "5"`»), sin llegar tan lejos como a recoger el valor de otra
+/// `CLI_SCHEMA_VERSION = "6"`»), sin llegar tan lejos como a recoger el valor de otra
 /// mención. Además, el valor tiene que estar en el **mismo bloque** que la mención: un
 /// valor de otro párrafo no es una declaración de esta.
 const VALUE_WINDOW: usize = 120;
@@ -193,7 +193,7 @@ fn phrase_bounds(block: &str, offset: usize) -> (usize, usize) {
 /// ¿La mención queda exenta por hablar del protocolo del daemon?
 ///
 /// El contexto inmediato es la frase que la contiene. Si esa frase nombra al envelope de
-/// la CLI —«el envelope de la CLI lleva `schema_version` "5"; el protocolo del daemon va
+/// la CLI —«el envelope de la CLI lleva `schema_version` "6"; el protocolo del daemon va
 /// por "4"»— no hay exención: las dos versiones de la frase se comprueban, porque solo la
 /// segunda es del daemon. La salvedad es la fila de tabla, que es donde el sujeto no cabe
 /// en la frase: una fila de endpoints del daemon declara su protocolo sin nombrarlo, y ahí

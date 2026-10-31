@@ -302,7 +302,8 @@ ai-voice-interconnector speech dub (--audio <archivo.wav> | --mic) [--duration <
 ```
 
 Pipeline voz→voz: transcribe → traduce (si `source != target`) → sintetiza →
-reproduce.
+reproduce. Informa la transcripción y el texto sintetizado (ver «Contrato
+`--json` (CLI)» más abajo).
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
@@ -388,12 +389,20 @@ En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo
 ### Contrato `--json` (CLI)
 
 ```json
-{ "status": "dubbed", "text": "<texto final, traducido o passthrough>" }
+{ "status": "dubbed", "text": "<transcripción>", "translated": "<texto sintetizado>" }
 ```
 
-(Mismo envelope en las dos rutas —local y vía `/dub`—;
-nótese que el campo del CLI se llama `text`, aunque el handler del daemon
-distingue internamente `text`/`translated`.)
+(Mismo envelope en las dos rutas —local y vía `/dub`—.) Los nombres son los del
+evento `result` del daemon: `text` es la transcripción del audio de entrada y
+`translated` el texto que se sintetizó, que coincide con `text` cuando el
+idioma de origen y el de destino son el mismo. `translated` está siempre
+presente. En la vía daemon, si al evento `result` le falta `text` o
+`translated`, la CLI sale con exit 1 `daemon_error`, sin valores por defecto.
+
+En modo texto (sin `--json`), `dub` imprime siempre tres líneas por stdout, en
+este orden: `Transcripción: <texto>`, `Traducción: <texto>` y
+`Doblaje reproducido (N s).`. Con origen igual a destino, las dos primeras
+llevan el mismo texto.
 
 **No hay `audio_path`, por la misma razón que en `say`.** El WAV temporal que
 el daemon sintetiza para el doblaje lo borra su dueño al salir de ámbito, y en
@@ -541,7 +550,9 @@ stdout: <el texto transcrito>
 stderr: … Transcribiendo audio… (0 s)
 
 # speech dub
-stdout: Doblaje reproducido (9 s).
+stdout: Transcripción: <el texto transcrito>
+        Traducción: <el texto traducido>
+        Doblaje reproducido (9 s).
 stderr: … Leyendo archivo de audio… (0 s)
         … Transcribiendo audio… (2 s)
         … Traduciendo texto transcrito… (5 s)
@@ -553,4 +564,4 @@ stdout: Reproduciendo locución 'saludo' de la voz 'default' (2 s).
 stderr: … Reproduciendo locución… (0 s)
 ```
 
-Con `--json`, stdout lleva **solo** el envelope —`{"status": "success", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`— y el resultado en texto no sale. El progreso por stderr es el mismo.
+Con `--json`, stdout lleva **solo** el envelope —`{"status": "success", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`, `{"status": "dubbed", "text", "translated"}`— y el resultado en texto no sale. El progreso por stderr es el mismo.

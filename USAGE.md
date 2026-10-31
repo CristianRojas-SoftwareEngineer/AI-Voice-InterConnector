@@ -127,7 +127,7 @@ subidas de cada uno vive en el [CHANGELOG](CHANGELOG.md).
 
 Los payloads siguientes son **parte del contrato programático**: sus claves son
 estables (los cambios solo pueden ser aditivos mientras `schema_version` sea
-`"5"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
+`"6"`). En todos los casos, stdout contiene exactamente un objeto JSON y el
 diagnóstico/progreso va a stderr. La clave `schema_version` (string) se omite de
 las tablas por brevedad: está presente en todos. Estos esquemas se repiten a
 propósito aquí y en la página de cada comando en [`docs/CLI/commands/`](docs/CLI/commands/),
@@ -678,9 +678,13 @@ Composición voz→voz: transcribe la entrada hablada (archivo o micrófono),
 traduce si `--source-language` difiere de `--target-language`, sintetiza con
 la voz elegida y reproduce el resultado. Reutiliza las etapas de
 `speech transcribe`, la traducción de `speech say`/`synthesize` y el despacho
-de síntesis; no guarda nada en el almacén (no tiene `--label`). Con `--json`
-emite `{"status":"dubbed","text"}` con el texto ya traducido y **sin
-`audio_path`**: el WAV es un temporal que se borra al terminar. Como `say`,
+de síntesis; no guarda nada en el almacén (no tiene `--label`). En modo texto
+imprime siempre tres líneas por stdout: `Transcripción: <texto>`,
+`Traducción: <texto>` y `Doblaje reproducido (N s).` (con origen igual a
+destino, las dos primeras llevan el mismo texto). Con `--json` emite
+`{"status":"dubbed","text","translated"}`, donde `text` es la transcripción y
+`translated` el texto sintetizado (siempre presente), y **sin `audio_path`**:
+el WAV es un temporal que se borra al terminar. Como `say`,
 `dub` es humo sin puerta de calidad sobre lo que sonó.
 
 `--audio` y `--mic` son **mutuamente excluyentes y exactamente una de las dos
@@ -875,7 +879,7 @@ ai-voice-interconnector cleanup --all --dry-run       # lista sin borrar (exit 0
 ai-voice-interconnector cleanup --voices --yes        # omite confirmación ( -y alias)
 ```
 
-**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `CristianRojaas/opus-mt-*-ct2-int8`, `istupakov/parakeet-tdt-0.6b-v3-onnx`) y sus locks, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` lista el plan sin borrar **y sin tomar el bloqueo**; `--yes/-y` omite la confirmación interactiva, y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada. Con `--json` emite `{"schema_version":"5","status":"cleanup_complete","reason":null,"removed":[...],"planned":[...]}` al borrar de verdad, y `{"schema_version":"5","status":"planned","reason":null,"removed":[...],"planned":[...]}` con `--dry-run` (el mismo plan como recibo, sin `dry_run`: el `planned` ya dice que nada se modificó). Todo es recuperable: `setup` re-descarga los modelos y
+**Qué esperar:** según el flag, borra selectivamente `data_dir()/voices` (preservando `FACTORY_VOICES`), `data_dir()/speech`, o la raíz de modelos. En la raíz de modelos **exclusiva** el borrado es de directorio entero (snapshots, locks y `xet` cuelgan de ella); si el usuario eligió una caché HF compartida con `HF_HUB_CACHE`/`HF_HOME`, solo se borran los repos de `MODEL_REVISIONS` (`Qwen/Qwen3-TTS…`, `CristianRojaas/opus-mt-*-ct2-int8`, `istupakov/parakeet-tdt-0.6b-v3-onnx`) y sus locks, y **`xet` y el `.locks` completo se conservan y se anuncian** (`doctor` dice si la raíz es compartida con `models.shared_root`). `--all` es la unión de las tres categorías **sin programa ni PATH** — solo `self uninstall` borra el programa y el `PATH`. El borrado es quirúrgico: nunca toca modelos de otros proyectos en una caché compartida. `--dry-run` lista el plan sin borrar **y sin tomar el bloqueo**; `--yes/-y` omite la confirmación interactiva, y **sin terminal es obligatorio**: sin él sale con `confirmation_required` (2) y no borra nada. Con `--json` emite `{"schema_version":"6","status":"cleanup_complete","reason":null,"removed":[...],"planned":[...]}` al borrar de verdad, y `{"schema_version":"6","status":"planned","reason":null,"removed":[...],"planned":[...]}` con `--dry-run` (el mismo plan como recibo, sin `dry_run`: el `planned` ya dice que nada se modificó). Todo es recuperable: `setup` re-descarga los modelos y
 `voice clone` vuelve a clonar voces.
 
 ---
@@ -896,7 +900,7 @@ ai-voice-interconnector self uninstall --keep-data   # conserva modelos, voces y
 —la integración de `PATH` se *retira*, no se borra el archivo, y una caché HF compartida se
 conserva—. Sin terminal, `--yes` es obligatorio: sin él sale con `confirmation_required`
 (exit 2) y no borra nada. Cancelar la confirmación no es un error: `status` `cancelled` y
-exit 0. Con `--json` emite `{"schema_version":"5","status":…,"reason":null,"removed":[…],"planned":[…],"path_reverted":bool}`, y con `--dry-run` el `status` es `planned` y `removed` copia `planned` (sin clave `dry_run`).
+exit 0. Con `--json` emite `{"schema_version":"6","status":…,"reason":null,"removed":[…],"planned":[…],"path_reverted":bool}`, y con `--dry-run` el `status` es `planned` y `removed` copia `planned` (sin clave `dry_run`).
 
 **Sin `--keep-data` se borra la raíz de datos entera**, no el plan de `cleanup --all`, y la
 diferencia es deliberada: `cleanup --all` protege las voces de fábrica porque van embebidas
