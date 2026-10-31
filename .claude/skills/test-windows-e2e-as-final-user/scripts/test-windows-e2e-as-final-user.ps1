@@ -4,6 +4,12 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# La salida de consola se declara UTF-8 solo para este proceso; sin ello depende de la página OEM
+# de la máquina (CP850) y un lector UTF-8 de la salida redirigida pierde los acentos.
+$consoleEncoding = [Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $consoleEncoding
+$OutputEncoding = $consoleEncoding
+
 $script:Run = $null
 $script:Results = [System.Collections.Generic.List[object]]::new()
 $script:Bin = $null
