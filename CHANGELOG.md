@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.38.1 — 2026-10-31](#0381--2026-10-31)
 - [0.38.0 — 2026-10-31](#0380--2026-10-31)
 - [0.37.4 — 2026-10-30](#0374--2026-10-30)
 - [0.37.3 — 2026-10-30](#0373--2026-10-30)
@@ -125,7 +125,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.38.1] — 2026-10-31
 
 La puerta de pruebas con recursos de `cargo xtask release` preparaba ONNX Runtime y el motor TTS, pero no FFmpeg: con un `target/` limpio la prueba de `speech denoise` no encontraba FFmpeg junto al binario de prueba, y las pruebas del crate `denoise` dependían del FFmpeg que tuviera instalado el sistema, distinto del fijado que usa la CI. Además, la puerta solo se alcanzaba dentro de un corte. Ahora la puerta prepara por sí misma el FFmpeg fijado y se puede ejecutar sin cortar versión, de modo que el corte funciona desde un `target/` limpio y local y CI prueban el mismo FFmpeg.
 
@@ -3755,3 +3755,4 @@ estado con el que nace el producto.
 [0.37.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.2...v0.37.3
 [0.37.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.3...v0.37.4
 [0.38.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.4...v0.38.0
+[0.38.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.38.0...v0.38.1
