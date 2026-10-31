@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.37.4 — 2026-10-30](#0374--2026-10-30)
 - [0.37.3 — 2026-10-30](#0373--2026-10-30)
 - [0.37.2 — 2026-10-30](#0372--2026-10-30)
 - [0.37.1 — 2026-10-29](#0371--2026-10-29)
@@ -123,7 +123,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.37.4] — 2026-10-30
 
 La captura interactiva para clonar una voz rechazaba el límite predeterminado
 compartido antes de abrir el micrófono. El clonado usa ahora su propio límite
@@ -3725,3 +3725,4 @@ estado con el que nace el producto.
 [0.37.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.0...v0.37.1
 [0.37.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.1...v0.37.2
 [0.37.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.2...v0.37.3
+[0.37.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.3...v0.37.4
