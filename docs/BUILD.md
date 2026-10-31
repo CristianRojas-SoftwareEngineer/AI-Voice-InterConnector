@@ -289,7 +289,13 @@ versión y de los seis codificadores de la matriz de egresión e imprime la ruta
 del ejecutable resultante, que es lo que se pone por delante en `PATH` antes de
 `cargo test`. Es el mismo camino que usa `cargo xtask package` y el que usan los
 jobs de prueba de la CI, así que local y CI no pueden ejercitar artefactos
-distintos.
+distintos. La gate de `cargo xtask release` y `cargo xtask resource-gate`, que la
+ejecuta sin cortar versión, hacen esto por sí mismas: aseguran el FFmpeg fijado,
+lo copian junto al binario de prueba de `target/debug` (la CLI solo lo busca
+junto a su ejecutable) y anteponen su carpeta al `PATH`. El paso manual solo
+hace falta para un `cargo test` lanzado a mano, y no basta para la prueba de
+`speech denoise` de la CLI, que exige FFmpeg junto al binario de prueba: esa
+prueba se ejecuta con `cargo xtask resource-gate`.
 
 La batería completa con `--include-ignored` se ejecuta con `-j2` y
 `--test-threads=2` y sin otra carga en la máquina, por ejemplo

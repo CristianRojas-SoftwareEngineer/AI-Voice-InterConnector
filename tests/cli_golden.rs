@@ -22,11 +22,12 @@
 //!   cerrado y PID fuera de rango) o `--no-daemon` impiden que el cliente
 //!   contacte 127.0.0.1:8765 o barra procesos `qwen_tts` de la máquina.
 //! - **Recursos** (`#[ignore = "requiere …"]`): necesitan modelos o motores
-//!   reales y se ejecutan con
-//!   `cargo test --workspace --features full -- --include-ignored`. Si falta
-//!   un recurso fallan con un mensaje que nombra el comando de
-//!   aprovisionamiento: `ai-voice-interconnector setup` o
-//!   `cargo xtask build-engine`. Usan la raíz de modelos real en solo lectura
+//!   reales y se ejecutan con `cargo xtask resource-gate`, que corre
+//!   `cargo test --workspace --features full -- --include-ignored` con ONNX
+//!   Runtime y FFmpeg fijados (FFmpeg copiado junto al binario de prueba). Si
+//!   falta un recurso fallan con un mensaje que nombra el comando que lo
+//!   aprovisiona: `ai-voice-interconnector setup`, `cargo xtask build-engine`
+//!   o `cargo xtask resource-gate`. Usan la raíz de modelos real en solo lectura
 //!   y estado y puerto propios (`IsolatedInstance`); el residente reserva su
 //!   propio puerto efímero y lo anota en el `daemon.pid` de la instancia.
 //!
@@ -6928,6 +6929,13 @@ fn speech_denoise_processes_real_wav_and_writes_output() {
         store.is_provisioned(avi_shared::paths::DPDFNET_MODEL),
         "falta {}: aprovisiona con `ai-voice-interconnector setup`",
         avi_shared::paths::DPDFNET_MODEL
+    );
+    let bundled_ffmpeg =
+        std::path::Path::new(BIN).with_file_name(format!("ffmpeg{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        bundled_ffmpeg.is_file(),
+        "falta FFmpeg junto al binario de prueba ({}): ejecútalo con `cargo xtask resource-gate`, que lo coloca",
+        bundled_ffmpeg.display()
     );
     let input =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("crates/denoise/tests/data/voz_noisy.wav");

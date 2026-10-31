@@ -3,8 +3,9 @@
 //! Test rápido de egresión de audio (sin modelo ONNX).
 //!
 //! Verifica la matriz de códecs de `encode_audio` y la verificación ligera
-//! adaptada a `StreamKind::Audio`. Requiere `ffmpeg 6+` con los códecs de la
-//! matriz (`libmp3lame`, `aac`, `flac`, `libvorbis`, `libopus`).
+//! adaptada a `StreamKind::Audio`. Requiere el FFmpeg fijado en `PATH`
+//! (`cargo xtask resource-gate` lo antepone), con los códecs de la matriz
+//! (`libmp3lame`, `aac`, `flac`, `libvorbis`, `libopus`).
 
 use denoise::ffmpeg_io::{encode_audio, find_ffmpeg, probe, verify_output_lightweight, StreamKind};
 use denoise::preset::AudioBitrate;
@@ -83,7 +84,7 @@ fn assert_decodable(ffmpeg: &Path, path: &Path) {
 
 #[test]
 fn test_encode_audio_codec_matrix() {
-    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
+    let ffmpeg = find_ffmpeg().expect("falta el FFmpeg fijado en PATH: ejecútalo con `cargo xtask resource-gate` o antepón al PATH la carpeta que imprime `cargo xtask ffmpeg`");
     let tmp_dir = std::env::temp_dir().join("denoise_audio_egress");
     let _ = fs::remove_dir_all(&tmp_dir);
     fs::create_dir_all(&tmp_dir).expect("Crear directorio temporal del test");
@@ -152,7 +153,7 @@ fn test_encode_audio_codec_matrix() {
 
 #[test]
 fn test_studio_loudnorm_forces_48k_lossy() {
-    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
+    let ffmpeg = find_ffmpeg().expect("falta el FFmpeg fijado en PATH: ejecútalo con `cargo xtask resource-gate` o antepón al PATH la carpeta que imprime `cargo xtask ffmpeg`");
     let tmp_dir = std::env::temp_dir().join("denoise_audio_egress_studio");
     let _ = fs::remove_dir_all(&tmp_dir);
     fs::create_dir_all(&tmp_dir).expect("Crear directorio temporal del test");

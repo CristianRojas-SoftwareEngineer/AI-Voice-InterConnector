@@ -66,9 +66,9 @@ la integridad se verifica cotejando los checksums SHA-256.
 
 ### Aprovisionamiento de los recursos antes de cortar
 
-La puerta de pruebas con recursos exige FFmpeg y ONNX Runtime de los pines,
-el motor TTS compilado y los seis modelos completos. Los cinco modelos
-obligatorios bloquean el arranque del daemon; `dpdfnet8` es el sexto pin y es
+La puerta de pruebas con recursos asegura por sí misma FFmpeg y ONNX Runtime
+de los pines; exige el motor TTS compilado y los seis modelos completos. Los
+cinco modelos obligatorios bloquean el arranque del daemon; `dpdfnet8` es el sexto pin y es
 opcional para el arranque, pero requerido por las superficies `--denoise` y
 `speech denoise`.
 
@@ -84,14 +84,14 @@ cargo xtask clean --app --dry-run              # revisar el plan de desinstalaci
 cargo xtask clean --app --yes                  # exigir resultado `uninstalled`, no aceptar `not_installed` como prueba
 cargo xtask clean --repo --dry-run             # retirar también la semilla compilada
 cargo xtask clean --repo --yes                 # deja target/ y bundles fuera para el cold start
-cargo xtask ffmpeg                             # FFmpeg del pin, verificado por SHA-256
 cargo xtask bootstrap --models --yes           # ORT, motor y seis modelos
+cargo xtask resource-gate                      # puerta con recursos, sin cortar versión
 ```
 
 La primera capa `--repo` puede compilar `xtask` para ejecutar el limpiador; su
 propio ejecutable se retira al terminar. La compilación semilla posterior crea
 el binario que necesita `--app`; la segunda capa `--repo` elimina los artefactos
-del producto antes del aprovisionamiento. Así `ffmpeg` y `bootstrap` arrancan sin
+del producto antes del aprovisionamiento. Así `bootstrap` y `resource-gate` arrancan sin
 el binario del producto, bundles nativos ni binario del motor. `xtask` deberá
 recompilarse para ejecutar cada orden Cargo que lo invoque. Cierra
 `rust-analyzer` y procesos del producto o de `xtask` antes de cada borrado de
@@ -105,9 +105,11 @@ antes de seguir. Si `--app` o el borrado diferido fallan,
 detente el procedimiento y resuelve la causa. Ninguno de estos comandos toca
 `CARGO_HOME`, rustup, MSYS2 ni `CARGO_HOME/bin`.
 
-**Preparación normal del gate.** Si no se ensaya desde cero, conserva recursos
-ya verificados; ejecuta `cargo xtask ffmpeg` y
-`cargo xtask bootstrap --models --yes` cuando falte o esté dañado algún requisito.
+**Preparación normal del gate.** La gate asegura por sí misma ONNX Runtime y
+FFmpeg en las versiones fijadas. Si no se ensaya desde cero, conserva los
+recursos ya verificados y ejecuta `cargo xtask bootstrap --models --yes` solo
+cuando falten o estén dañados los modelos o el motor. `cargo xtask ffmpeg` solo
+sirve para descargar FFmpeg por adelantado; la gate no lo exige.
 
 La descarga acota el silencio por dos vías: el cliente corta la lectura tras
 sesenta segundos sin bytes y el vigilante de `bootstrap` aborta `setup` tras diez
@@ -199,13 +201,17 @@ promovido.
 4. El árbol está limpio y hay commits desde el último tag.
 5. Pasa `cargo test --workspace --features full -- --include-ignored`, la
    puerta más lenta: incluye pruebas con modelos, motor e instalación real.
-   Requiere recursos aprovisionados con `cargo xtask ffmpeg` y
+   La gate prepara su propio entorno: asegura `ort-bundle/` en la versión
+   fijada y lo impone con `ORT_DYLIB_PATH`, para que STT use el runtime
+   incluido; asegura el FFmpeg fijado en `ffmpeg-bundle/`, lo copia junto al
+   binario de prueba (la CLI solo lo busca ahí) y antepone su carpeta al
+   `PATH` para las pruebas que lo resuelven así, sin depender del FFmpeg del
+   sistema; y habilita el motor de `vendor/qwen3-tts/` con
+   `AVI_ALLOW_CWD_VENDOR=1`. Solo exige los modelos aprovisionados con
    `cargo xtask bootstrap --models --yes`. Las pruebas de recursos de
    `avi-daemon/tests/golden.rs` consultan esa caché heredada en solo lectura;
    el caso HTTP que exige DPDFNet ausente corre en un target de integración con
-   una caché temporal privada. La gate asegura
-   `ort-bundle/` en la versión fijada y la impone con `ORT_DYLIB_PATH`, para que
-   STT use el runtime incluido. Un fallo aborta antes del bump.
+   una caché temporal privada. Un fallo aborta antes del bump.
 
 En el commit local del bump, `cargo test --all` usa el fixture de versión que el
 propio `cargo xtask release` actualizó. La comprobación estricta
@@ -213,17 +219,8 @@ propio `cargo xtask release` actualizó. La comprobación estricta
 `Cargo.toml` ya es la nueva y cuyo CHANGELOG promovido debe haber eliminado
 `[No publicado]`.
 
-Si se reproduce la puerta a mano, el entorno es obligatorio:
-
-```bash
-AVI_ALLOW_CWD_VENDOR=1 ORT_DYLIB_PATH=<ruta absoluta del repo>/ort-bundle/onnxruntime.dll \
-  cargo test --workspace --features full -- --include-ignored
-```
-
-`AVI_ALLOW_CWD_VENDOR=1` permite a los hijos CLI resolver el motor en
-`vendor/qwen3-tts/` sin una instalación. `ORT_DYLIB_PATH` debe ser absoluto:
-los tests corren desde directorios de paquetes miembros donde una ruta relativa
-a `ort-bundle/` no resuelve.
+Para reproducir o ensayar la puerta sin cortar versión, ejecuta
+`cargo xtask resource-gate`, que corre la misma función con el mismo entorno.
 
 El bump versiona `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
 `tests/golden/cli_version.json` y `SOURCE-OFFER.md`; regenera

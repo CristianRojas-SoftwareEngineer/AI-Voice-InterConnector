@@ -2,7 +2,8 @@
 
 //! Test de errores y taxonomía de salidas.
 //!
-//! Requiere `ffmpeg 6+` real (para probe), `FakeProvider` sin red/modelo.
+//! Requiere el FFmpeg fijado en `PATH` (para probe; `cargo xtask resource-gate`
+//! lo antepone) y `FakeProvider` sin red/modelo.
 
 use clap::Parser;
 use denoise::cli::{expand_inputs, resolve_outputs, run_dry_run, Cli, ResolvedItem};
@@ -14,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn get_real_ffmpeg() -> PathBuf {
-    find_ffmpeg().expect("ffmpeg 6+ debe estar instalado")
+    find_ffmpeg().expect("falta el FFmpeg fijado en PATH: ejecútalo con `cargo xtask resource-gate` o antepón al PATH la carpeta que imprime `cargo xtask ffmpeg`")
 }
 
 #[test]

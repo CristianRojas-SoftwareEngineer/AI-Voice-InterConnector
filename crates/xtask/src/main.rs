@@ -483,6 +483,8 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         dest: Option<PathBuf>,
     },
+    /// Ejecuta la puerta de pruebas con recursos del release (ONNX Runtime y FFmpeg fijados, modelos aprovisionados) sin cortar versión
+    ResourceGate,
 }
 
 fn main() -> Result<()> {
@@ -652,6 +654,7 @@ fn main() -> Result<()> {
             expect_version,
         } => package::run(out, no_compress, flat, expect_version)?,
         Commands::Ffmpeg { dest } => package::run_ffmpeg(dest.as_deref())?,
+        Commands::ResourceGate => check_resource_tests_gate()?,
     }
     Ok(())
 }
@@ -1473,6 +1476,27 @@ fn metadata_licenses() -> Result<HashMap<(String, String), Option<String>>> {
     Ok(licenses)
 }
 
+/// Carpeta de compilación que informa `cargo metadata` (`target_directory`).
+/// Así respeta `CARGO_TARGET_DIR` y `build.target-dir` sin replicar la lógica
+/// de resolución de cargo.
+fn cargo_target_dir() -> Result<PathBuf> {
+    let out = std::process::Command::new("cargo")
+        .args(["metadata", "--format-version", "1", "--no-deps"])
+        .output()
+        .map_err(|e| anyhow!("no se pudo invocar cargo metadata: {}", e))?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "cargo metadata falló: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
+    json["target_directory"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("cargo metadata no devolvió `target_directory`"))
+}
+
 /// Región del inventario generada desde `Cargo.lock` y `cargo metadata`.
 fn render_licenses_region() -> Result<String> {
     let lock_text = std::fs::read_to_string("Cargo.lock")?;
@@ -1533,15 +1557,29 @@ fn check_code_quality_gate() -> Result<()> {
 /// resuelven el motor recién compilado en `vendor/qwen3-tts/`, sin exigir un
 /// programa instalado. Sin este opt-in, un entorno limpio falla las 21 pruebas
 /// del motor aunque todo esté provisionado.
+///
+/// FFmpeg también se asegura en la versión fijada (`ffmpeg-bundle/`). La CLI
+/// solo lo busca junto a su propio ejecutable, así que la gate lo copia a la
+/// carpeta de binarios de prueba (`<target_directory>/debug`); y como las
+/// pruebas del crate `denoise` lo resuelven por `PATH`, antepone la carpeta
+/// del bundle al `PATH` del proceso de pruebas, igual que la CI. Ni una ni otra
+/// vía depende del FFmpeg del sistema. `xtask release` y `xtask resource-gate`
+/// comparten esta función, de modo que el ensayo reproduce la gate exacta.
 fn check_resource_tests_gate() -> Result<()> {
     let root = std::env::current_dir()?;
     let pins = doctor::load_pins(&root)?;
     let triple = package::host_triple()?;
     let bundle = package::ensure_ort_bundle(&root, triple, &pins)?;
     let ort_dylib = package::ort_dylib_path(&bundle, triple)?;
+    let ffmpeg = package::ensure_ffmpeg_bundle(&package::ffmpeg_bundle_dir(&root), triple, &pins)?;
+    package::stage_ffmpeg_beside(&ffmpeg, &cargo_target_dir()?.join("debug"), triple)?;
     let status = std::process::Command::new("cargo")
         .env("ORT_DYLIB_PATH", &ort_dylib)
         .env("AVI_ALLOW_CWD_VENDOR", "1")
+        .env(
+            "PATH",
+            package::path_with_prepended(&ffmpeg, std::env::var_os("PATH").as_deref())?,
+        )
         .args([
             "test",
             "--workspace",
@@ -1553,8 +1591,7 @@ fn check_resource_tests_gate() -> Result<()> {
         .status()?;
     if !status.success() {
         anyhow::bail!(
-            "las pruebas con recursos fallaron y no se ha modificado nada: corrígelas antes de release (reprodúcelo con `AVI_ALLOW_CWD_VENDOR=1 ORT_DYLIB_PATH={} cargo test --workspace --features full -- --include-ignored`)",
-            ort_dylib.display()
+            "las pruebas con recursos fallaron y no se ha modificado nada: corrígelas antes de release (reprodúcelo con `cargo xtask resource-gate`)"
         );
     }
     Ok(())

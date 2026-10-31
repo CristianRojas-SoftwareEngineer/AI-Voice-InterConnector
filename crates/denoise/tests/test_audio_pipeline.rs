@@ -2,7 +2,8 @@
 
 //! Test E2E `#[ignore]` — pipeline completo sobre un archivo de audio real.
 //!
-//! Requiere `ffmpeg 6+` y el modelo DPDFNet provisionado por `setup`.
+//! Requiere el FFmpeg fijado en `PATH` (`cargo xtask resource-gate` lo
+//! antepone) y el modelo DPDFNet provisionado por `setup`.
 //! Ejecutar con `cargo test --release --test test_audio_pipeline -- --ignored`.
 
 use denoise::errors::E;
@@ -20,7 +21,7 @@ use std::sync::Arc;
 #[test]
 #[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
 fn test_audio_wav_pipeline_e2e() {
-    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
+    let ffmpeg = find_ffmpeg().expect("falta el FFmpeg fijado en PATH: ejecútalo con `cargo xtask resource-gate` o antepón al PATH la carpeta que imprime `cargo xtask ffmpeg`");
     let input = Path::new("tests/data/voz_noisy.wav");
     assert!(
         input.exists(),
@@ -124,7 +125,7 @@ fn test_audio_wav_pipeline_e2e() {
 #[test]
 #[ignore = "requiere ffmpeg y modelo DPDFNet aprovisionado"]
 fn test_audio_wav_cancel_during_dsp_preserves_output() {
-    let ffmpeg = find_ffmpeg().expect("ffmpeg 6+ debe estar instalado");
+    let ffmpeg = find_ffmpeg().expect("falta el FFmpeg fijado en PATH: ejecútalo con `cargo xtask resource-gate` o antepón al PATH la carpeta que imprime `cargo xtask ffmpeg`");
     let input = Path::new("tests/data/voz_noisy.wav");
     assert!(input.exists(), "falta tests/data/voz_noisy.wav");
     let tmp_dir = std::env::temp_dir().join(format!("denoise_cancel_e2e_{}", std::process::id()));

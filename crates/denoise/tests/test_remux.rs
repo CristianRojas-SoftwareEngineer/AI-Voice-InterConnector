@@ -87,7 +87,7 @@ fn extract_video_stream_hash(ffmpeg: &Path, video_path: &Path) -> Vec<u8> {
 #[test]
 #[ignore = "requiere ffmpeg"]
 fn test_remux_video_copy() {
-    let ffmpeg = find_ffmpeg().expect("ffmpeg disponible");
+    let ffmpeg = find_ffmpeg().expect("falta el FFmpeg fijado en PATH: ejecútalo con `cargo xtask resource-gate` o antepón al PATH la carpeta que imprime `cargo xtask ffmpeg`");
     let temp_dir = std::env::temp_dir();
     let fixture_path = temp_dir.join("test_remux_in.mp4");
     let clean_wav_path = temp_dir.join("test_remux_clean.wav");
@@ -135,7 +135,7 @@ fn test_remux_video_copy() {
 #[test]
 #[ignore = "requiere ffmpeg"]
 fn test_remux_duracion_contenedor() {
-    let ffmpeg = find_ffmpeg().expect("ffmpeg disponible");
+    let ffmpeg = find_ffmpeg().expect("falta el FFmpeg fijado en PATH: ejecútalo con `cargo xtask resource-gate` o antepón al PATH la carpeta que imprime `cargo xtask ffmpeg`");
     let temp_dir = std::env::temp_dir();
     let fixture_path = temp_dir.join("test_remux_dur_in.mp4");
     let clean_wav_path = temp_dir.join("test_remux_dur_clean.wav");
@@ -176,7 +176,7 @@ fn test_remux_duracion_contenedor() {
 #[test]
 #[ignore = "requiere ffmpeg"]
 fn test_remux_mov_mp4_editlist_sync() {
-    let ffmpeg = find_ffmpeg().expect("ffmpeg disponible");
+    let ffmpeg = find_ffmpeg().expect("falta el FFmpeg fijado en PATH: ejecútalo con `cargo xtask resource-gate` o antepón al PATH la carpeta que imprime `cargo xtask ffmpeg`");
     let temp_dir = std::env::temp_dir();
     let fixture_path = temp_dir.join("test_remux_elst_in.mp4");
     let clean_wav_path = temp_dir.join("test_remux_elst_clean.wav");

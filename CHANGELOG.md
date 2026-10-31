@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.38.0 — 2026-10-31](#0380--2026-10-31)
 - [0.37.4 — 2026-10-30](#0374--2026-10-30)
 - [0.37.3 — 2026-10-30](#0373--2026-10-30)
@@ -123,6 +124,18 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La puerta de pruebas con recursos de `cargo xtask release` preparaba ONNX Runtime y el motor TTS, pero no FFmpeg: con un `target/` limpio la prueba de `speech denoise` no encontraba FFmpeg junto al binario de prueba, y las pruebas del crate `denoise` dependían del FFmpeg que tuviera instalado el sistema, distinto del fijado que usa la CI. Además, la puerta solo se alcanzaba dentro de un corte. Ahora la puerta prepara por sí misma el FFmpeg fijado y se puede ejecutar sin cortar versión, de modo que el corte funciona desde un `target/` limpio y local y CI prueban el mismo FFmpeg.
+
+### Añadido
+
+- `cargo xtask resource-gate` ejecuta la puerta de pruebas con recursos del release (la misma función, con el mismo entorno) sin comprobar árbol ni tag y sin cortar versión. El error de la puerta remite a este comando en lugar de a un entorno manual.
+
+### Corregido
+
+- La puerta de pruebas con recursos asegura el FFmpeg fijado en `packaging/pins.json`, lo copia junto al binario de prueba de `target/debug` y antepone su carpeta al `PATH` del proceso de pruebas, sin depender del FFmpeg del sistema. `cargo xtask ffmpeg` deja de ser un paso previo obligatorio del corte.
 
 ## [0.38.0] — 2026-10-31
 

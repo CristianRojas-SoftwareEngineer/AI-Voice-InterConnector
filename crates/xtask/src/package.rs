@@ -25,6 +25,7 @@
 use anyhow::{bail, Result};
 use avi_shared::manifest::{parse_manifest_text, BundleTarget};
 use avi_shared::pins::{self, Pins};
+use std::ffi::{OsStr, OsString};
 use std::io::Seek;
 use std::path::{Path, PathBuf};
 
@@ -229,7 +230,7 @@ fn ffmpeg_download(triple: &str, version: &str) -> Result<(String, String)> {
 }
 
 /// Nombre del ejecutable de FFmpeg dentro del bundle para el triple.
-fn ffmpeg_binary_name(triple: &str) -> Result<&'static str> {
+pub(crate) fn ffmpeg_binary_name(triple: &str) -> Result<&'static str> {
     if triple.contains("-windows-") {
         Ok("ffmpeg.exe")
     } else if triple.contains("-linux-") || triple.contains("-apple-") {
@@ -612,7 +613,7 @@ fn extract_ffmpeg_binary(archive: &Path, triple: &str) -> Result<Vec<u8>> {
 }
 
 /// Directorio canónico del bundle de FFmpeg dentro del repositorio.
-fn ffmpeg_bundle_dir(root: &Path) -> PathBuf {
+pub(crate) fn ffmpeg_bundle_dir(root: &Path) -> PathBuf {
     root.join(FFMPEG_BUNDLE_REL)
 }
 
@@ -640,7 +641,7 @@ pub fn run_ffmpeg(dest: Option<&Path>) -> Result<()> {
 /// antes de extraerlo. El humo `-version` corre sobre el binario extraído y el
 /// marcador solo se escribe después, así que un bundle fresco procede de una
 /// descarga verificada y ejecutable.
-fn ensure_ffmpeg_bundle(bundle: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
+pub(crate) fn ensure_ffmpeg_bundle(bundle: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
     let version = pins.ffmpeg.as_str();
     let expected_sha256 = pinned_ffmpeg_sha256(pins, triple)?;
     if bundle.is_dir() && ffmpeg_bundle_is_fresh(bundle, triple, expected_sha256)? {
@@ -681,6 +682,45 @@ fn ensure_ffmpeg_bundle(bundle: &Path, triple: &str, pins: &Pins) -> Result<Path
         bail!("el bundle de FFmpeg quedó incompleto tras la descarga");
     }
     Ok(bundle.to_path_buf())
+}
+
+/// Copia el ejecutable de FFmpeg del `bundle` a `dest_dir` y devuelve la ruta
+/// copiada. La CLI solo busca FFmpeg junto a su propio ejecutable, por eso la
+/// puerta de pruebas con recursos lo coloca en la carpeta de binarios de
+/// prueba. La copia se sobrescribe siempre para que un cambio de pin no deje
+/// un FFmpeg viejo en esa carpeta.
+pub(crate) fn stage_ffmpeg_beside(bundle: &Path, dest_dir: &Path, triple: &str) -> Result<PathBuf> {
+    let name = ffmpeg_binary_name(triple)?;
+    let source = bundle.join(name);
+    let dest = dest_dir.join(name);
+    std::fs::create_dir_all(dest_dir)
+        .and_then(|()| std::fs::copy(&source, &dest))
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "no se pudo copiar FFmpeg de {} a {}: {e}",
+                source.display(),
+                dest.display()
+            )
+        })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(dest)
+}
+
+/// Devuelve un `PATH` con `dir` en primer lugar seguido de las entradas de
+/// `original` en su orden. Las pruebas del crate `denoise` resuelven FFmpeg
+/// por `PATH`, y la puerta antepone el FFmpeg fijado, igual que la CI, para no
+/// depender del FFmpeg que tenga instalado el sistema.
+pub(crate) fn path_with_prepended(dir: &Path, original: Option<&OsStr>) -> Result<OsString> {
+    let mut entries = vec![dir.to_path_buf()];
+    if let Some(original) = original {
+        entries.extend(std::env::split_paths(original));
+    }
+    std::env::join_paths(entries)
+        .map_err(|e| anyhow::anyhow!("no se pudo construir el PATH con {}: {e}", dir.display()))
 }
 
 /// Humo mínimo del FFmpeg extraído: debe ejecutarse, reportar su versión y
@@ -1509,5 +1549,76 @@ mod tests {
             err.to_string().contains("--flat"),
             "el mensaje nombra la bandera: {err}"
         );
+    }
+
+    /// Triple del host para nombrar el ejecutable de FFmpeg en las pruebas.
+    fn host_ffmpeg_name() -> (&'static str, &'static str) {
+        let triple = host_triple().unwrap();
+        (triple, ffmpeg_binary_name(triple).unwrap())
+    }
+
+    /// La colocación crea la carpeta de destino inexistente y deja allí una
+    /// copia byte a byte del ejecutable del bundle.
+    #[test]
+    fn stage_ffmpeg_beside_creates_dest_and_copies() {
+        let (triple, name) = host_ffmpeg_name();
+        let bundle = tempfile::tempdir().unwrap();
+        std::fs::write(bundle.path().join(name), b"ffmpeg-falso").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let dest_dir = out.path().join("target").join("debug");
+        let staged = stage_ffmpeg_beside(bundle.path(), &dest_dir, triple).unwrap();
+        assert_eq!(staged, dest_dir.join(name));
+        assert_eq!(std::fs::read(&staged).unwrap(), b"ffmpeg-falso");
+    }
+
+    /// Una segunda colocación sobrescribe la copia previa, de modo que un
+    /// cambio de pin no deja un FFmpeg viejo junto al binario de prueba.
+    #[test]
+    fn stage_ffmpeg_beside_overwrites_previous_copy() {
+        let (triple, name) = host_ffmpeg_name();
+        let bundle = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        std::fs::write(bundle.path().join(name), b"version-vieja").unwrap();
+        stage_ffmpeg_beside(bundle.path(), dest_dir.path(), triple).unwrap();
+        std::fs::write(bundle.path().join(name), b"version-nueva").unwrap();
+        let staged = stage_ffmpeg_beside(bundle.path(), dest_dir.path(), triple).unwrap();
+        assert_eq!(std::fs::read(&staged).unwrap(), b"version-nueva");
+    }
+
+    /// En Unix la copia queda ejecutable aunque el origen no lo fuera.
+    #[cfg(unix)]
+    #[test]
+    fn stage_ffmpeg_beside_sets_executable_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let (triple, name) = host_ffmpeg_name();
+        let bundle = tempfile::tempdir().unwrap();
+        let source = bundle.path().join(name);
+        std::fs::write(&source, b"ffmpeg-falso").unwrap();
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let staged = stage_ffmpeg_beside(bundle.path(), dest_dir.path(), triple).unwrap();
+        let mode = std::fs::metadata(&staged).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+    }
+
+    /// La carpeta antepuesta queda primera y las entradas originales se
+    /// conservan en su orden; sin `PATH` original solo queda la carpeta.
+    #[test]
+    fn path_with_prepended_puts_dir_first_and_keeps_order() {
+        let dir = Path::new("bundle-ffmpeg");
+        let original = std::env::join_paths([Path::new("uno"), Path::new("dos")]).unwrap();
+        let joined = path_with_prepended(dir, Some(&original)).unwrap();
+        let entries: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(
+            entries,
+            vec![
+                PathBuf::from("bundle-ffmpeg"),
+                PathBuf::from("uno"),
+                PathBuf::from("dos")
+            ]
+        );
+        let alone = path_with_prepended(dir, None).unwrap();
+        let entries: Vec<PathBuf> = std::env::split_paths(&alone).collect();
+        assert_eq!(entries, vec![PathBuf::from("bundle-ffmpeg")]);
     }
 }
