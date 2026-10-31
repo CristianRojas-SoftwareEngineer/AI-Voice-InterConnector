@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.38.0 — 2026-10-31](#0380--2026-10-31)
 - [0.37.4 — 2026-10-30](#0374--2026-10-30)
 - [0.37.3 — 2026-10-30](#0373--2026-10-30)
 - [0.37.2 — 2026-10-30](#0372--2026-10-30)
@@ -124,7 +124,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.38.0] — 2026-10-31
 
 `speech dub` ocultaba la transcripción: en modo texto solo informaba «Doblaje reproducido» y con `--json` devolvía únicamente el texto traducido bajo `text`, a diferencia de `speech transcribe`. Ahora las cuatro rutas (transcribe y dub, local y daemon) imprimen el STT, y dub imprime además la traducción que se sintetiza, desde un emisor único por comando.
 
@@ -3741,3 +3741,4 @@ estado con el que nace el producto.
 [0.37.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.1...v0.37.2
 [0.37.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.2...v0.37.3
 [0.37.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.3...v0.37.4
+[0.38.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.4...v0.38.0
