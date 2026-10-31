@@ -110,10 +110,10 @@ El motor ya cuenta con los componentes necesarios:
    - `capture_16k_mono_pcm_until_enter(max_secs)`: captura interactiva
      push-to-talk hasta pulsar Enter, con tope failsafe en segundos. `capture_mic_pcm`
   aplica el mapeo de errores compartido con los demás comandos de captura.
-2. **`acquire_pcm()` en `src/main.rs`**:
-   - Unifica la lógica de adquisición (archivo vs micrófono) y traduce fallos de
-     hardware/dispositivo a `ExitCode::TranscriptionFailed` (10) o
-     `ExitCode::InvalidInput` (2).
+2. **`capture_mic_pcm()` en `src/main.rs`**:
+   - Unifica la captura de micrófono y traduce fallos de hardware/dispositivo a
+     `ExitCode::TranscriptionFailed` (10) o `ExitCode::InvalidInput` (2). En
+     clonado, la ruta de archivo conserva el WAV original.
 3. **`POST /voices/clone` en `avi-daemon`**:
    - Recibe `{ "name": String, "audio_b64": String, "force": bool, "denoise": bool }`.
    - Ya opera sobre bytes codificados en base64; no depende de rutas locales del
@@ -202,7 +202,7 @@ enum VoiceCommands {
     List,
     /// Clonar una voz desde audio de referencia o micrófono
     #[command(group(
-        clap::ArgGroup::new("input")
+        clap::ArgGroup::new("clone_input")
             .required(true)
             .multiple(false)
             .args(["speech_reference", "mic"])
