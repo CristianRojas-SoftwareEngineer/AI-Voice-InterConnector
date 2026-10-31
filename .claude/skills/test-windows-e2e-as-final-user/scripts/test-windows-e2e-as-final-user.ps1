@@ -30,10 +30,47 @@ $script:InputAvailable = $false
 $script:OutputAvailable = $false
 $script:SubcaseResults = [System.Collections.Generic.List[object]]::new()
 $script:DaemonStartedIdentities = [System.Collections.Generic.HashSet[int]]::new()
+$script:TotalStopwatch = $null
+
+function Format-Duration {
+    param([long]$Milliseconds)
+    $ts = [TimeSpan]::FromMilliseconds($Milliseconds)
+    if ($ts.TotalMinutes -ge 1) {
+        return ('{0}m {1:d2}s ({2:N0} ms)' -f [int][Math]::Floor($ts.TotalMinutes), $ts.Seconds, $Milliseconds)
+    } else {
+        return ('{0:N2}s ({1:N0} ms)' -f $ts.TotalSeconds, $Milliseconds)
+    }
+}
 
 function Write-Result {
     param([Parameter(Mandatory)][string]$Status, [Parameter(Mandatory)][string]$Message)
     Write-Host ("{0} {1}" -f $Status, $Message)
+}
+
+function Write-TimingSummary {
+    param([long]$TotalMs)
+    $totalFormatted = Format-Duration $TotalMs
+    Write-Host ""
+    Write-Host ("=" * 80) -ForegroundColor Cyan
+    Write-Host (" RESUMEN DE TIEMPOS DE EJECUCIÓN (Total: {0})" -f $totalFormatted) -ForegroundColor Cyan
+    Write-Host ("=" * 80) -ForegroundColor Cyan
+    Write-Host (" {0,-12} | {1,-8} | {2,-20} | {3}" -f "Fase", "Estado", "Duración", "Detalle") -ForegroundColor Cyan
+    Write-Host ("-" * 80) -ForegroundColor Cyan
+    foreach ($res in $script:Results) {
+        if ($res.step -in @('preflight','0a','0b','1','2','3','4','5','6','7','run')) {
+            $durStr = if ($res.duration_formatted) { [string]$res.duration_formatted } else { "-" }
+            $color = switch ($res.status) {
+                'PASS' { 'Green' }
+                'FAIL' { 'Red' }
+                'BLOCKED' { 'Yellow' }
+                'SKIP' { 'DarkGray' }
+                default { 'White' }
+            }
+            Write-Host (" {0,-12} | {1,-8} | {2,-20} | {3}" -f $res.step, $res.status, $durStr, $res.detail) -ForegroundColor $color
+        }
+    }
+    Write-Host ("=" * 80) -ForegroundColor Cyan
+    Write-Host ""
 }
 
 function Get-SourceVersion {
@@ -49,6 +86,8 @@ function Assert-True {
 }
 
 function Initialize-Run {
+    $script:TotalStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $preflightWatch = [System.Diagnostics.Stopwatch]::StartNew()
     if ($env:OS -ne 'Windows_NT' -or -not [Environment]::Is64BitOperatingSystem) { throw 'Se requiere Windows x64.' }
     if ($PSVersionTable.PSVersion -lt [version]'5.1') { throw 'Se requiere PowerShell 5.1 o posterior.' }
     if ([string]::IsNullOrWhiteSpace($env:TEMP) -or [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { throw 'Faltan TEMP o LOCALAPPDATA.' }
@@ -85,7 +124,8 @@ function Initialize-Run {
     $script:Run = $runPath
     $runFull=[IO.Path]::GetFullPath($script:Run)
     foreach($forbidden in @($script:ProgramDir,(Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector'),(Join-Path $env:LOCALAPPDATA 'Programs'))){$full=[IO.Path]::GetFullPath($forbidden).TrimEnd('\');if($runFull.Equals($full,[StringComparison]::OrdinalIgnoreCase)-or $runFull.StartsWith($full+'\',[StringComparison]::OrdinalIgnoreCase)){throw "La carpeta de evidencia se solapa con raíces de usuario/producto: $full"}}
-    Set-Step 'preflight' 'PASS' 'Host, prerequisitos, fuentes y sintaxis AST validados.' -Command 'Initialize-Run + Parser::ParseFile' -Payload @{host=$env:OS;architecture='x64';powershell=$PSVersionTable.PSVersion.ToString();source_version=$script:Version} -Evidence @($PSCommandPath)
+    $preflightWatch.Stop()
+    Set-Step 'preflight' 'PASS' 'Host, prerequisitos, fuentes y sintaxis AST validados.' -Command 'Initialize-Run + Parser::ParseFile' -Payload @{host=$env:OS;architecture='x64';powershell=$PSVersionTable.PSVersion.ToString();source_version=$script:Version} -Evidence @($PSCommandPath) -DurationMs $preflightWatch.ElapsedMilliseconds
     Write-Result 'INFO' "Evidencia: $runPath"
     Write-Result 'INFO' "Versión fuente/fixture: $script:Version"
 }
@@ -96,18 +136,30 @@ function Save-Event {
 }
 
 function Set-Step {
-    param([Parameter(Mandatory)][string]$Step, [Parameter(Mandatory)][ValidateSet('PENDING','RUNNING','PASS','FAIL','SKIP','BLOCKED')][string]$Status, [string]$Detail = '', [string]$Command = '', [Nullable[int]]$ExitCode = $null, $Payload = $null, [string[]]$Evidence = @(), [string]$Reason = '')
+    param(
+        [Parameter(Mandatory)][string]$Step,
+        [Parameter(Mandatory)][ValidateSet('PENDING','RUNNING','PASS','FAIL','SKIP','BLOCKED')][string]$Status,
+        [string]$Detail = '',
+        [string]$Command = '',
+        [Nullable[int]]$ExitCode = $null,
+        $Payload = $null,
+        [string[]]$Evidence = @(),
+        [string]$Reason = '',
+        [Nullable[long]]$DurationMs = $null
+    )
+    $formattedDuration = if ($null -ne $DurationMs) { Format-Duration $DurationMs } else { $null }
     $existing=@($script:Results|Where-Object step -eq $Step)
     if($Status -eq 'RUNNING'){
-        if($existing.Count -eq 0){$script:Results.Add([pscustomobject]@{step=$Step;status='PENDING';detail='';command='';exit_code=$null;payload=$null;evidence=@();reason='';utc=[DateTime]::UtcNow.ToString('o')})}
-        $entry=@($script:Results|Where-Object step -eq $Step|Select-Object -Last 1)[0];$entry.status='RUNNING';$entry.detail=$Detail;$entry.utc=[DateTime]::UtcNow.ToString('o')
-    }elseif($existing.Count){$entry=$existing[-1];$entry.status=$Status;$entry.detail=$Detail;$entry.utc=[DateTime]::UtcNow.ToString('o')}
-    else{$script:Results.Add([pscustomobject]@{step=$Step;status=$Status;detail=$Detail;command='';exit_code=$null;payload=$null;evidence=@();reason='';utc=[DateTime]::UtcNow.ToString('o')})}
+        if($existing.Count -eq 0){$script:Results.Add([pscustomobject]@{step=$Step;status='PENDING';detail='';command='';exit_code=$null;payload=$null;evidence=@();reason='';duration_ms=$null;duration_formatted=$null;utc=[DateTime]::UtcNow.ToString('o')})}
+        $entry=@($script:Results|Where-Object step -eq $Step|Select-Object -Last 1)[0];$entry.status='RUNNING';$entry.detail=$Detail;$entry.duration_ms=$null;$entry.duration_formatted=$null;$entry.utc=[DateTime]::UtcNow.ToString('o')
+    }elseif($existing.Count){$entry=$existing[-1];$entry.status=$Status;$entry.detail=$Detail;if($null -ne $DurationMs){$entry.duration_ms=$DurationMs;$entry.duration_formatted=$formattedDuration};$entry.utc=[DateTime]::UtcNow.ToString('o')}
+    else{$script:Results.Add([pscustomobject]@{step=$Step;status=$Status;detail=$Detail;command='';exit_code=$null;payload=$null;evidence=@();reason='';duration_ms=$DurationMs;duration_formatted=$formattedDuration;utc=[DateTime]::UtcNow.ToString('o')})}
     $entry=@($script:Results|Where-Object step -eq $Step|Select-Object -Last 1)[0];$entry.command=$Command;$entry.exit_code=$ExitCode;$entry.payload=$Payload;$entry.evidence=@($Evidence);$entry.reason=$Reason
-    $record = [pscustomobject]@{ step=$Step; status=$Status; detail=$Detail; command=$Command; exit_code=$ExitCode; payload=$Payload; evidence=@($Evidence); reason=$Reason; utc=[DateTime]::UtcNow.ToString('o') }
-    Save-Event @{ type='step'; step=$Step; status=$Status; detail=$Detail; command=$Command; exit_code=$ExitCode; evidence=@($Evidence); reason=$Reason; utc=$record.utc }
-    $existingSubcase=@($script:SubcaseResults|Where-Object name -eq $Step);if($existingSubcase.Count){$null=$script:SubcaseResults.Remove($existingSubcase[-1])};$script:SubcaseResults.Add([pscustomobject]@{name=$Step;status=$Status;command=$Command;exit_code=$ExitCode;payload=$Payload;evidence=@($Evidence);reason=$Reason;utc=$record.utc})
-    Write-Result $Status "$Step $Detail"
+    $record = [pscustomobject]@{ step=$Step; status=$Status; detail=$Detail; command=$Command; exit_code=$ExitCode; payload=$Payload; evidence=@($Evidence); reason=$Reason; duration_ms=$DurationMs; duration_formatted=$formattedDuration; utc=[DateTime]::UtcNow.ToString('o') }
+    Save-Event @{ type='step'; step=$Step; status=$Status; detail=$Detail; command=$Command; exit_code=$ExitCode; evidence=@($Evidence); reason=$Reason; duration_ms=$DurationMs; duration_formatted=$formattedDuration; utc=$record.utc }
+    $existingSubcase=@($script:SubcaseResults|Where-Object name -eq $Step);if($existingSubcase.Count){$null=$script:SubcaseResults.Remove($existingSubcase[-1])};$script:SubcaseResults.Add([pscustomobject]@{name=$Step;status=$Status;command=$Command;exit_code=$ExitCode;payload=$Payload;evidence=@($Evidence);reason=$Reason;duration_ms=$DurationMs;duration_formatted=$formattedDuration;utc=$record.utc})
+    $durationSuffix = if ($formattedDuration) { " [$formattedDuration]" } else { "" }
+    Write-Result $Status "$Step $Detail$durationSuffix"
 }
 
 function ConvertTo-NativeArgument {
@@ -418,10 +470,16 @@ function Get-DirectorySize {
 function Invoke-Step {
     param([Parameter(Mandatory)][string]$Id, [Parameter(Mandatory)][scriptblock]$Action)
     Set-Step $Id 'RUNNING'
-    try { & $Action; Set-Step $Id 'PASS' }
+    $stepWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        & $Action
+        $stepWatch.Stop()
+        Set-Step $Id 'PASS' -DurationMs $stepWatch.ElapsedMilliseconds
+    }
     catch {
+        $stepWatch.Stop()
         $status = if ($_.Exception.Message.StartsWith('BLOCKED:')) { 'BLOCKED' } else { 'FAIL' }
-        Set-Step $Id $status $_.Exception.Message
+        Set-Step $Id $status $_.Exception.Message -DurationMs $stepWatch.ElapsedMilliseconds
         throw
     }
 }
@@ -926,14 +984,49 @@ try {
     Run-E2E
     $unresolved=@($script:Results|Where-Object status -in @('PENDING','RUNNING'))
     Assert-True ($unresolved.Count -eq 0) ('Hay resultados sin estado terminal: {0}' -f (@($unresolved|ForEach-Object step)-join ', '))
-    $resultDocument=[pscustomobject]@{run=$script:Run;overall='PASS';steps=@($script:Results);subcases=@($script:SubcaseResults);events=(Join-Path $script:Run 'events.jsonl')}
+    if ($script:TotalStopwatch -and $script:TotalStopwatch.IsRunning) { $script:TotalStopwatch.Stop() }
+    $totalMs = if ($script:TotalStopwatch) { $script:TotalStopwatch.ElapsedMilliseconds } else { [long]0 }
+    $totalFormatted = Format-Duration $totalMs
+    $resultDocument=[pscustomobject]@{
+        run=$script:Run
+        overall='PASS'
+        total_duration_ms=$totalMs
+        total_duration=$totalFormatted
+        steps=@($script:Results)
+        subcases=@($script:SubcaseResults)
+        events=(Join-Path $script:Run 'events.jsonl')
+    }
     Set-Content -LiteralPath (Join-Path $script:Run 'result.json') -Value ($resultDocument|ConvertTo-Json -Depth 30) -Encoding UTF8
-    Write-Result 'PASS' ('E2E completada. Evidencia: {0}' -f $script:Run)
+    Write-TimingSummary -TotalMs $totalMs
+    Write-Result 'PASS' ('E2E completada en {0}. Evidencia: {1}' -f $totalFormatted, $script:Run)
     exit 0
 } catch {
+    if ($script:TotalStopwatch -and $script:TotalStopwatch.IsRunning) { $script:TotalStopwatch.Stop() }
+    $totalMs = if ($script:TotalStopwatch) { $script:TotalStopwatch.ElapsedMilliseconds } else { [long]0 }
+    $totalFormatted = Format-Duration $totalMs
     $message=$_.Exception.Message
     $status=if($message.StartsWith('BLOCKED:')){'BLOCKED'}else{'FAIL'}
-    if($script:Run){foreach($phase in @('0a','0b','1','2','3','4','5','6','7')){if(!@($script:Results|Where-Object step -eq $phase).Count){Set-Step $phase 'BLOCKED' 'No ejecutada por la detención previa.' -Payload @{executed=$false} -Reason $message}};Set-Step 'run' $status $message -Reason $message;$resultDocument=[pscustomobject]@{run=$script:Run;overall=$status;steps=@($script:Results);subcases=@($script:SubcaseResults);events=(Join-Path $script:Run 'events.jsonl')};Set-Content -LiteralPath (Join-Path $script:Run 'result.json') -Value ($resultDocument|ConvertTo-Json -Depth 30) -Encoding UTF8}else{Write-Result 'BLOCKED' $message}
+    if($script:Run){
+        foreach($phase in @('0a','0b','1','2','3','4','5','6','7')){
+            if(!@($script:Results|Where-Object step -eq $phase).Count){
+                Set-Step $phase 'BLOCKED' 'No ejecutada por la detención previa.' -Payload @{executed=$false} -Reason $message
+            }
+        }
+        Set-Step 'run' $status $message -Reason $message -DurationMs $totalMs
+        $resultDocument=[pscustomobject]@{
+            run=$script:Run
+            overall=$status
+            total_duration_ms=$totalMs
+            total_duration=$totalFormatted
+            steps=@($script:Results)
+            subcases=@($script:SubcaseResults)
+            events=(Join-Path $script:Run 'events.jsonl')
+        }
+        Set-Content -LiteralPath (Join-Path $script:Run 'result.json') -Value ($resultDocument|ConvertTo-Json -Depth 30) -Encoding UTF8
+        Write-TimingSummary -TotalMs $totalMs
+    } else {
+        Write-Result 'BLOCKED' $message
+    }
     Write-Result $status $message
     Write-Result 'INFO' 'No se ejecuta rollback automático; se preservan estado parcial y evidencias.'
     exit 1
