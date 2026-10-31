@@ -69,12 +69,13 @@ function Write-TimingSummary {
     param([long]$TotalMs)
     $totalFormatted = Format-Duration $TotalMs
     Write-Host ""
-    Write-Host ("=" * 80) -ForegroundColor Cyan
+    Write-Host ("=" * 115) -ForegroundColor Cyan
     Write-Host (" RESUMEN DE TIEMPOS DE EJECUCIÓN (Total: {0})" -f $totalFormatted) -ForegroundColor Cyan
-    Write-Host ("=" * 80) -ForegroundColor Cyan
-    Write-Host (" {0,-16} | {1,-8} | {2,-20} | {3}" -f "Fase", "Estado", "Duración", "Detalle") -ForegroundColor Cyan
-    Write-Host ("-" * 80) -ForegroundColor Cyan
+    Write-Host ("=" * 115) -ForegroundColor Cyan
+    Write-Host (" {0,-16} | {1,-32} | {2,-8} | {3,-20} | {4}" -f "Fase", "Título", "Estado", "Duración", "Detalle") -ForegroundColor Cyan
+    Write-Host ("-" * 115) -ForegroundColor Cyan
     $summarySteps = @('preflight') + @($script:Phases.Id) + @('run')
+    $phaseTitles = @{}; foreach ($phase in $script:Phases) { $phaseTitles[$phase.Id] = $phase.Title }
     foreach ($res in $script:Results) {
         if ($res.step -in $summarySteps) {
             $durStr = if ($res.duration_formatted) { [string]$res.duration_formatted } else { "-" }
@@ -86,10 +87,11 @@ function Write-TimingSummary {
                 'NOT_RUN' { 'DarkYellow' }
                 default { 'White' }
             }
-            Write-Host (" {0,-16} | {1,-8} | {2,-20} | {3}" -f $res.step, $res.status, $durStr, $res.detail) -ForegroundColor $color
+            $title = if ($phaseTitles.ContainsKey($res.step)) { $phaseTitles[$res.step] } else { '-' }
+            Write-Host (" {0,-16} | {1,-32} | {2,-8} | {3,-20} | {4}" -f $res.step, $title, $res.status, $durStr, $res.detail) -ForegroundColor $color
         }
     }
-    Write-Host ("=" * 80) -ForegroundColor Cyan
+    Write-Host ("=" * 115) -ForegroundColor Cyan
     Write-Host ""
 }
 
@@ -114,7 +116,7 @@ function Initialize-Run {
 
     $script:Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..\..')).Path
     if($env:AVI_NO_SETUP){throw 'BLOCKED: AVI_NO_SETUP ya está definido externamente; no se continúa con entorno de bootstrap ambiguo.'}
-    foreach($variable in @('AVI_INSTALL_DIR','AVI_BIN_DIR','AVI_DATA_DIR','AVI_CACHE_DIR','HF_HUB_CACHE','HF_HOME','AVI_DAEMON_PORT','AVI_DOWNLOAD_BASE_URL','AVI_VERSION','AVI_YES','AVI_NO_MODIFY_PATH')){if([Environment]::GetEnvironmentVariable($variable)){throw "BLOCKED: $variable altera versión, rutas, confirmación automática o transporte de esta corrida."}}
+    foreach($variable in @('AVI_INSTALL_DIR','AVI_BIN_DIR','AVI_DATA_DIR','AVI_CACHE_DIR','HF_HUB_CACHE','HF_HOME','AVI_DAEMON_PORT','AVI_DOWNLOAD_BASE_URL','AVI_VERSION','AVI_YES','AVI_NO_MODIFY_PATH','QWEN3_TTS_BIN','QWEN3_TTS_MODEL_DIR','QWEN3_TTS_BASE_MODEL_DIR','AVI_ALLOW_CWD_VENDOR')){if([Environment]::GetEnvironmentVariable($variable)){throw "BLOCKED: $variable altera versión, rutas, motor, confirmación automática o transporte de esta corrida."}}
     foreach ($relative in @('SKILL.md', 'src\main.rs', 'Cargo.toml', 'tests\golden\cli_version.json', 'assets\audios\Speech Sampler.wav', 'crates\avi-stt\tests\assets\parakeet_sample_16k.wav', 'packaging\bootstrap\install.ps1')) {
         $path = if ($relative -eq 'SKILL.md') { Join-Path $PSScriptRoot "..\$relative" } else { Join-Path $script:Root $relative }
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Falta la entrada requerida: $path" }
@@ -962,8 +964,9 @@ function Run-E2E {
         foreach($key in @('parked','stagings','scratch','temporaries','failure_logs','unknown_owner','pending_failures','unreadable')){Assert-True (@($doctor.Payload.pending.$key).Count -eq 0) ('Pending final no vacío: {0}' -f $key)}
         $receipt=Get-RegisteredRoots;Assert-True ($receipt.version -eq $script:Version) 'Receipt final no coincide con versión fuente/release.'
         Assert-True ($doctor.Payload.pending.transaction_journal -eq $false) 'Pending final reporta diario transaccional.'
-        Assert-True ((Get-Item -LiteralPath (Get-VoiceQvoice 'mi_voz')).Length -gt 0) 'qvoice retenido ausente.';Assert-Wav $script:WavRetained
-        Assert-True (@($script:DenoiseOutputByPreset.studio|Where-Object{Test-Path -LiteralPath $_ -PathType Leaf}).Count -gt 0 -and @($script:DenoiseOutputByPreset.default|Where-Object{Test-Path -LiteralPath $_ -PathType Leaf}).Count -gt 0) 'No quedaron artefactos retenidos de ambos presets denoise.'
+        foreach($voice in @('mi_voz','mi_voz_daemon')){Assert-True ((Get-Item -LiteralPath (Get-VoiceQvoice $voice)).Length -gt 0) ('qvoice retenido vacío: {0}' -f $voice)}
+        foreach($wav in @($script:WavShortDefault,$script:WavShortClone)){Assert-Wav $wav}
+        foreach($preset in @('studio','default')){$outputs=@($script:DenoiseOutputByPreset[$preset]);Assert-True ($outputs.Count -gt 0) ('El preset denoise {0} no dejó salidas retenidas.' -f $preset);foreach($path in $outputs){Assert-True ((Test-Path -LiteralPath $path -PathType Leaf) -and (Get-Item -LiteralPath $path).Length -gt 0) ('Salida denoise retenida ausente o vacía: {0}' -f $path)}}
         $status=Invoke-Cli @('daemon','status') 'daemon-final' -Json
         Assert-PayloadSchema $status.Payload
         if($status.Payload.daemon -eq 'running'){$identity=[int]$status.Payload.pid;Assert-True ($script:DaemonStartedIdentities.Contains($identity)) 'Daemon final running no pertenece a un PID iniciado por esta corrida.'}
