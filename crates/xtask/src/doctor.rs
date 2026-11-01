@@ -365,9 +365,7 @@ fn check_c_compiler() -> Row {
         }
         // `vswhere` delata una instalación de Visual Studio aunque `cl` no
         // esté en el PATH de esta terminal.
-        let vswhere =
-            Path::new(r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe");
-        if vswhere.is_file() {
+        if Path::new(crate::package::VSWHERE_PATH).is_file() {
             return Row {
                 id: "c-compiler",
                 label,

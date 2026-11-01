@@ -72,14 +72,26 @@ const ARCHIVE_MTIME: u64 = 1_577_836_800;
 /// necesita la librería oficial de ONNX Runtime (es /MD) y `vcomp140.dll`, el
 /// runtime OpenMP de MSVC que el binario importa porque CTranslate2 se compila
 /// con `/openmp`. Ninguna forma parte de Windows: sin ellas el binario o ONNX
-/// Runtime no cargan en un sistema sin el Redistributable.
-const VC_DLLS: &[&str] = &[
+/// Runtime no cargan en un sistema sin el Redistributable. Salen del redist de
+/// la instalación de Visual Studio que compila: las cuatro primeras de la
+/// carpeta `Microsoft.VC*.CRT` y `vcomp140.dll` de `Microsoft.VC*.OpenMP`.
+pub(crate) const VC_DLLS: &[&str] = &[
     "vcruntime140.dll",
     "vcruntime140_1.dll",
     "msvcp140.dll",
     "msvcp140_1.dll",
     "vcomp140.dll",
 ];
+
+/// DLL de [`VC_DLLS`] que sale de la carpeta `Microsoft.VC*.OpenMP` del redist;
+/// las demás salen de `Microsoft.VC*.CRT`.
+#[cfg(any(windows, test))]
+const VC_OPENMP_DLL: &str = "vcomp140.dll";
+
+/// Ruta fija de `vswhere.exe`, el localizador de instalaciones de Visual Studio
+/// que el instalador deja siempre en el mismo sitio.
+pub(crate) const VSWHERE_PATH: &str =
+    r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe";
 
 /// Une un fragmento del manifiesto (siempre con `/`) con una raíz, con el
 /// separador de la plataforma.
@@ -357,17 +369,14 @@ fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
 }
 
 /// Librerías que el bundle debe aportar por triple: la que el crate `ort` busca
-/// en `load-dynamic` junto al ejecutable, más el runtime de VC++ en Windows.
+/// en `load-dynamic` junto al ejecutable.
 fn ort_expected_libs(triple: &str) -> Result<Vec<&'static str>> {
-    let mut libs = match triple {
+    let libs = match triple {
         _ if triple.contains("-windows-") => vec!["onnxruntime.dll"],
         _ if triple.contains("-apple-") => vec!["libonnxruntime.dylib"],
         _ if triple.contains("-linux-") => vec!["libonnxruntime.so"],
         _ => bail!("triple no soportado: {triple}"),
     };
-    if triple.contains("-windows-") {
-        libs.extend(VC_DLLS);
-    }
     Ok(libs)
 }
 
@@ -647,17 +656,128 @@ fn extract_ort_library(
     }
 }
 
-/// Copia las DLL del runtime de VC++ desde System32 al bundle (app-local, como
-/// el job `build-windows-x64`: el usuario no instala el Redistributable).
+/// Resuelve las DLL de [`VC_DLLS`] en el redist de la instalación de Visual
+/// Studio `installation`. La versión del redist sale de
+/// `VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt`, y las DLL, de
+/// las carpetas `Microsoft.VC*.CRT` y `Microsoft.VC*.OpenMP` de
+/// `VC\Redist\MSVC\<versión>\x64`. Falla si falta el archivo de versión o una
+/// DLL, o si una de las dos carpetas no resuelve a exactamente una.
+#[cfg(any(windows, test))]
+fn vc_redist_dlls(installation: &Path) -> Result<Vec<PathBuf>> {
+    let version_file = relative_path(
+        installation,
+        "VC/Auxiliary/Build/Microsoft.VCRedistVersion.default.txt",
+    );
+    let version = std::fs::read_to_string(&version_file).map_err(|e| {
+        anyhow!(
+            "no se pudo leer la versión del redist de VC++ en {}: {e}",
+            version_file.display()
+        )
+    })?;
+    let arch_dir = relative_path(installation, "VC/Redist/MSVC")
+        .join(version.trim())
+        .join("x64");
+    let crt = unique_redist_dir(&arch_dir, ".CRT")?;
+    let openmp = unique_redist_dir(&arch_dir, ".OpenMP")?;
+    VC_DLLS
+        .iter()
+        .map(|dll| {
+            let dir = if *dll == VC_OPENMP_DLL { &openmp } else { &crt };
+            let path = dir.join(dll);
+            if !path.is_file() {
+                bail!("no se encontró {}", path.display());
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
+/// Única carpeta `Microsoft.VC*<suffix>` de `arch_dir`; ninguna o varias son
+/// un error, porque el origen de las DLL sería ambiguo.
+#[cfg(any(windows, test))]
+fn unique_redist_dir(arch_dir: &Path, suffix: &str) -> Result<PathBuf> {
+    let entries = std::fs::read_dir(arch_dir)
+        .map_err(|e| anyhow!("no se pudo leer {}: {e}", arch_dir.display()))?;
+    let mut found = Vec::new();
+    for entry in entries {
+        let path = entry?.path();
+        let matches = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(|name| name.starts_with("Microsoft.VC") && name.ends_with(suffix));
+        if matches && path.is_dir() {
+            found.push(path);
+        }
+    }
+    match found.as_slice() {
+        [dir] => Ok(dir.clone()),
+        [] => bail!(
+            "no hay carpeta Microsoft.VC*{suffix} en {}",
+            arch_dir.display()
+        ),
+        _ => bail!(
+            "hay {} carpetas Microsoft.VC*{suffix} en {}; se espera una sola",
+            found.len(),
+            arch_dir.display()
+        ),
+    }
+}
+
+/// Copia `src` en `dest` solo si su contenido difiere y devuelve si escribió:
+/// una DLL idéntica no se reescribe, porque un proceso en curso puede tenerla
+/// cargada y bloqueada.
+#[cfg(any(windows, test))]
+fn copy_if_differs(src: &Path, dest: &Path) -> Result<bool> {
+    let wanted =
+        std::fs::read(src).map_err(|e| anyhow!("no se pudo leer {}: {e}", src.display()))?;
+    match std::fs::read(dest) {
+        Ok(current) if current == wanted => return Ok(false),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => bail!("no se pudo leer {}: {e}", dest.display()),
+    }
+    std::fs::write(dest, &wanted)
+        .map_err(|e| anyhow!("no se pudo escribir {}: {e}", dest.display()))?;
+    Ok(true)
+}
+
+/// Instalación de Visual Studio con el compilador MSVC x64, con la misma
+/// consulta de `vswhere` con la que la CI importa `vcvars64`: el runtime
+/// empaquetado sale de la toolchain que compila.
+#[cfg(windows)]
+fn vs_installation() -> Result<PathBuf> {
+    let output = std::process::Command::new(VSWHERE_PATH)
+        .args([
+            "-latest",
+            "-products",
+            "*",
+            "-requires",
+            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+            "-property",
+            "installationPath",
+        ])
+        .output()
+        .map_err(|e| anyhow!("no se pudo ejecutar {VSWHERE_PATH}: {e}"))?;
+    if !output.status.success() {
+        bail!("{VSWHERE_PATH} terminó con {}", output.status);
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if path.is_empty() {
+        bail!("vswhere no encontró una instalación de Visual Studio con MSVC x64");
+    }
+    Ok(PathBuf::from(path))
+}
+
+/// Deja en el bundle las DLL del runtime de VC++ del redist de la toolchain
+/// que compila (app-local: el usuario no instala el Redistributable). Corre en
+/// cada ejecución y solo escribe las DLL cuyo contenido difiere.
 #[cfg(windows)]
 fn copy_vc_runtime(bundle: &Path) -> Result<()> {
-    let system32 = Path::new(r"C:\Windows\System32");
-    for dll in VC_DLLS {
-        let src = system32.join(dll);
-        if !src.is_file() {
-            bail!("no se encontró {dll} en System32");
-        }
-        std::fs::copy(&src, bundle.join(dll))?;
+    for src in vc_redist_dlls(&vs_installation()?)? {
+        let name = src
+            .file_name()
+            .ok_or_else(|| anyhow!("ruta sin nombre de archivo: {}", src.display()))?;
+        copy_if_differs(&src, &bundle.join(name))?;
     }
     Ok(())
 }
@@ -667,8 +787,10 @@ fn copy_vc_runtime(bundle: &Path) -> Result<()> {
 /// SHA-256 debe coincidir con el fijado en `pins.json` y el archivo debe traer
 /// la librería esperada con tamaño mayor que cero; el marcador de versión solo
 /// se escribe tras esas comprobaciones, así que un bundle fresco procede de
-/// una descarga verificada. Lo llama `ensure_pinned_bundles`, la entrada que
-/// usan `bootstrap`, la puerta de pruebas con recursos y `package`: un solo
+/// una descarga verificada. En Windows, tanto al reutilizar como al descargar,
+/// deja al día las DLL del runtime de VC++ con las del redist de la toolchain
+/// que compila. Lo llama `ensure_pinned_bundles`, la entrada que usan
+/// `bootstrap`, la puerta de pruebas con recursos y `package`: un solo
 /// descargador en el repositorio.
 pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
     let ort_version = pins.ort.as_str();
@@ -676,6 +798,8 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Resul
     let bundle = ort_bundle_dir(root);
     if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple, ort_version)? {
         eprintln!("Bundle ONNX Runtime reutilizado de {ORT_BUNDLE_REL}");
+        #[cfg(windows)]
+        copy_vc_runtime(&bundle)?;
         return Ok(bundle);
     }
     if bundle.is_dir() {
@@ -1641,7 +1765,7 @@ mod tests {
 
     /// Cada target del manifiesto canónico tiene su SHA-256 de ONNX Runtime
     /// fijado y bien formado, y su sección exige en el bundle todas las
-    /// librerías que aporta `ort-bundle/` (en Windows, también las cuatro DLL
+    /// librerías que aporta `ort-bundle/` (en Windows, también las cinco DLL
     /// de VC++): empaquetado, instalación y pines no pueden divergir.
     #[test]
     fn manifest_targets_have_pinned_hash_and_bundle_libs() {
@@ -1663,12 +1787,20 @@ mod tests {
             sections.len(),
             "un hash por target, sin sobrantes"
         );
-        let windows_libs = ort_expected_libs("x86_64-pc-windows-msvc").unwrap();
-        assert!(windows_libs.contains(&"vcomp140.dll"));
+        let windows = sections
+            .get("x86_64-pc-windows-msvc")
+            .expect("el manifiesto declara Windows x64");
+        for dll in VC_DLLS {
+            assert!(
+                windows.required.iter().any(|r| r == dll),
+                "el manifiesto de Windows debe exigir {dll}"
+            );
+        }
+        assert!(VC_DLLS.contains(&"vcomp140.dll"));
         // La ONNX Runtime oficial de Windows importa `MSVCP140_1.dll`, que no
         // forma parte de Windows: sin ella no carga en un sistema sin el
         // Redistributable.
-        assert!(windows_libs.contains(&"msvcp140_1.dll"));
+        assert!(VC_DLLS.contains(&"msvcp140_1.dll"));
     }
 
     /// Un triple sin hash o con un hash mal formado es un error.
@@ -1700,9 +1832,14 @@ mod tests {
     }
 
     /// Un `ort-bundle/` con las librerías y marcador coincidente se reutiliza;
-    /// sin marcador, con marcador divergente o con librerías ausentes, no.
+    /// sin marcador, con marcador divergente o con librerías ausentes, no. Las
+    /// DLL de VC++ no cuentan: se actualizan en cada ejecución.
     #[test]
     fn ort_bundle_freshness() {
+        assert!(ort_expected_libs("x86_64-pc-windows-msvc")
+            .unwrap()
+            .iter()
+            .all(|lib| !VC_DLLS.contains(lib)));
         let ort_version = test_ort_version();
         let triple = if cfg!(windows) {
             "x86_64-pc-windows-msvc"
@@ -1728,6 +1865,84 @@ mod tests {
         // Vacía (descarga truncada) tampoco es fresca: fuerza reconstruir.
         std::fs::write(base.join(ort_expected_libs(triple).unwrap()[0]), b"").unwrap();
         assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
+    }
+
+    /// Monta en `installation` un redist sintético de la versión `version` con
+    /// las carpetas `Microsoft.VC143.CRT` y `Microsoft.VC143.OpenMP` y las DLL
+    /// de [`VC_DLLS`]; devuelve el directorio `x64`.
+    fn fake_vc_redist(installation: &Path, version: &str) -> PathBuf {
+        let build = relative_path(installation, "VC/Auxiliary/Build");
+        std::fs::create_dir_all(&build).unwrap();
+        std::fs::write(
+            build.join("Microsoft.VCRedistVersion.default.txt"),
+            format!("{version}\r\n"),
+        )
+        .unwrap();
+        let arch_dir = relative_path(installation, "VC/Redist/MSVC")
+            .join(version)
+            .join("x64");
+        let crt = arch_dir.join("Microsoft.VC143.CRT");
+        let openmp = arch_dir.join("Microsoft.VC143.OpenMP");
+        std::fs::create_dir_all(&crt).unwrap();
+        std::fs::create_dir_all(&openmp).unwrap();
+        for dll in VC_DLLS {
+            let dir = if *dll == VC_OPENMP_DLL { &openmp } else { &crt };
+            std::fs::write(dir.join(dll), dll.as_bytes()).unwrap();
+        }
+        arch_dir
+    }
+
+    /// Una instalación válida resuelve las cinco DLL: `vcomp140.dll` de la
+    /// carpeta OpenMP y las demás de la carpeta CRT de la versión declarada.
+    #[test]
+    fn vc_redist_resolves_dlls_from_declared_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let arch_dir = fake_vc_redist(dir.path(), "14.44.35112");
+        let dlls = vc_redist_dlls(dir.path()).unwrap();
+        assert_eq!(dlls.len(), VC_DLLS.len());
+        for (path, dll) in dlls.iter().zip(VC_DLLS) {
+            let folder = if *dll == VC_OPENMP_DLL {
+                "Microsoft.VC143.OpenMP"
+            } else {
+                "Microsoft.VC143.CRT"
+            };
+            assert_eq!(path, &arch_dir.join(folder).join(dll));
+        }
+    }
+
+    /// Sin el archivo de versión, con una DLL ausente o con dos carpetas
+    /// `Microsoft.VC*.CRT` la resolución falla nombrando la ruta.
+    #[test]
+    fn vc_redist_rejects_missing_version_dll_or_ambiguous_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = vc_redist_dlls(dir.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("Microsoft.VCRedistVersion.default.txt"),
+            "{err}"
+        );
+
+        let arch_dir = fake_vc_redist(dir.path(), "14.44.35112");
+        std::fs::remove_file(arch_dir.join("Microsoft.VC143.CRT").join("msvcp140_1.dll")).unwrap();
+        let err = vc_redist_dlls(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("msvcp140_1.dll"), "{err}");
+
+        std::fs::create_dir_all(arch_dir.join("Microsoft.VC150.CRT")).unwrap();
+        let err = vc_redist_dlls(dir.path()).unwrap_err().to_string();
+        assert!(err.contains("Microsoft.VC*.CRT"), "{err}");
+    }
+
+    /// La copia no escribe si el destino es idéntico y sobrescribe si difiere.
+    #[test]
+    fn copy_if_differs_writes_only_changed_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src.dll");
+        let dest = dir.path().join("dest.dll");
+        std::fs::write(&src, b"nueva").unwrap();
+        assert!(copy_if_differs(&src, &dest).unwrap(), "destino ausente");
+        assert!(!copy_if_differs(&src, &dest).unwrap(), "destino idéntico");
+        std::fs::write(&dest, b"vieja").unwrap();
+        assert!(copy_if_differs(&src, &dest).unwrap(), "destino distinto");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"nueva");
     }
 
     /// El asset de Linux lista `libonnxruntime.so.1` (enlace, 0 bytes) antes
