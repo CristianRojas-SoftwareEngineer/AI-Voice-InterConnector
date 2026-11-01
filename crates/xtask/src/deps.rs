@@ -15,16 +15,21 @@
 //! un binario puede importar cualquier otra pieza del propio bundle. Los
 //! binarios se leen con `object`, igual en local que en la CI, y la auditoría
 //! reporta todas las violaciones juntas.
+//!
+//! En Windows se exige además la compatibilidad del runtime de VC++ empaquetado:
+//! cada DLL de VC++ del bundle debe traer recurso de versión, y su versión
+//! mayor.menor debe ser igual o más nueva que la del enlazador de cada PE que la
+//! importa, como exige Microsoft para el despliegue app-local.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 use avi_shared::manifest::{parse_manifest_text, BundleTarget};
 use object::read::elf::{Dyn, ElfFile64};
 use object::read::macho::{LoadCommandVariant, MachOFile64};
-use object::read::pe::PeFile64;
-use object::{elf, Endianness, FileKind};
+use object::read::pe::{ImageNtHeaders, ImageOptionalHeader, PeFile64, ResourceNameOrId};
+use object::{elf, pe, Endianness, FileKind, LittleEndian};
 
 /// Lo que un binario declara necesitar del sistema.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -36,6 +41,9 @@ pub(crate) struct Imports {
     pub symbol_versions: Vec<String>,
     /// Versión mínima de macOS declarada (`26.0`); solo Mach-O.
     pub min_os: Option<String>,
+    /// Versión (mayor, menor) del enlazador que produjo el binario, de la
+    /// cabecera opcional; solo PE.
+    pub linker_version: Option<(u8, u8)>,
 }
 
 /// Lee las importaciones de un binario. `Ok(None)` si los bytes no son un
@@ -119,10 +127,14 @@ fn decode_macho_version(raw: u32) -> String {
     }
 }
 
-/// PE: nombres de las DLL de la tabla de importación.
+/// PE: nombres de las DLL de la tabla de importación y versión del enlazador.
 fn pe_imports(data: &[u8]) -> Result<Imports> {
     let file = PeFile64::parse(data)?;
-    let mut imports = Imports::default();
+    let header = file.nt_headers().optional_header();
+    let mut imports = Imports {
+        linker_version: Some((header.major_linker_version(), header.minor_linker_version())),
+        ..Imports::default()
+    };
     if let Some(table) = file.import_table()? {
         let mut descriptors = table.descriptors()?;
         while let Some(descriptor) = descriptors.next()? {
@@ -133,6 +145,66 @@ fn pe_imports(data: &[u8]) -> Result<Imports> {
         }
     }
     Ok(imports)
+}
+
+/// Versión de archivo (mayor, menor) de un PE de 64 bits según su recurso de
+/// versión (`RT_VERSION`); `None` si los bytes no son un PE de 64 bits o no
+/// traen recurso de versión.
+pub(crate) fn pe_file_version(data: &[u8]) -> Option<(u16, u16)> {
+    let file = PeFile64::parse(data).ok()?;
+    let sections = file.section_table();
+    let rsrc = file
+        .data_directories()
+        .resource_directory(data, &sections)
+        .ok()??;
+    let version = rsrc.root().ok()?.entries.iter().find(
+        |entry| matches!(entry.name_or_id(), ResourceNameOrId::Id(id) if id == pe::RT_VERSION),
+    )?;
+    let names = version.data(rsrc).ok()?.table()?;
+    let languages = names.entries.first()?.data(rsrc).ok()?.table()?;
+    let leaf = languages.entries.first()?.data(rsrc).ok()?.data()?;
+    let bytes = sections.pe_data_at(data, leaf.offset_to_data.get(LittleEndian))?;
+    fixed_file_version(bytes.get(..leaf.size.get(LittleEndian) as usize)?)
+}
+
+/// Versión (mayor, menor) de `dwFileVersionMS` del `VS_FIXEDFILEINFO` de un
+/// recurso de versión, que se localiza por su firma `0xFEEF04BD` alineada a 4
+/// bytes; `None` si el recurso no la trae.
+fn fixed_file_version(resource: &[u8]) -> Option<(u16, u16)> {
+    let signature = 0xFEEF_04BD_u32.to_le_bytes();
+    let start = (0..resource.len().saturating_sub(11))
+        .step_by(4)
+        .find(|&i| resource[i..i + 4] == signature)?;
+    let ms = u32::from_le_bytes(resource[start + 8..start + 12].try_into().ok()?);
+    Some(((ms >> 16) as u16, (ms & 0xFFFF) as u16))
+}
+
+/// Hallazgos de compatibilidad del runtime de VC++ del binario `file`: cada DLL
+/// de VC++ empaquetada que importa debe tener versión mayor.menor igual o más
+/// nueva que la de su enlazador. `vc_versions` indexa por nombre en minúsculas
+/// la versión de cada DLL de VC++ del bundle; una sin recurso de versión
+/// (`None`) ya se informa al recogerla y aquí no se compara.
+fn vc_runtime_violations(
+    file: &str,
+    imports: &Imports,
+    vc_versions: &BTreeMap<String, Option<(u16, u16)>>,
+) -> Vec<String> {
+    let Some((linker_major, linker_minor)) = imports.linker_version else {
+        return Vec::new();
+    };
+    let linker = (u16::from(linker_major), u16::from(linker_minor));
+    let mut found = Vec::new();
+    for lib in &imports.libs {
+        if let Some(Some(version)) = vc_versions.get(&base_name(lib).to_ascii_lowercase()) {
+            if *version < linker {
+                found.push(format!(
+                    "{file}: enlazado con MSVC {}.{} importa {lib} {}.{}, más antigua; el runtime de VC++ empaquetado debe ser igual o más nuevo que la toolchain de cada binario que lo importa",
+                    linker.0, linker.1, version.0, version.1
+                ));
+            }
+        }
+    }
+    found
 }
 
 /// Último componente de una ruta con `/` (o el nombre entero si no la tiene).
@@ -266,8 +338,8 @@ fn collect_files(dir: &Path, base: &Path, out: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// Audita el árbol `dir` contra el contrato de `section` y devuelve todas las
-/// violaciones, ordenadas.
+/// Audita el árbol `dir` contra el contrato de `section` y la compatibilidad
+/// del runtime de VC++, y devuelve todas las violaciones, ordenadas.
 pub(crate) fn audit_tree(dir: &Path, section: &BundleTarget) -> Result<Vec<String>> {
     let mut files = Vec::new();
     collect_files(dir, dir, &mut files)?;
@@ -277,13 +349,29 @@ pub(crate) fn audit_tree(dir: &Path, section: &BundleTarget) -> Result<Vec<Strin
         .map(|f| base_name(f).to_ascii_lowercase())
         .collect();
     let mut found = Vec::new();
+    let mut vc_versions = BTreeMap::new();
+    let mut parsed = Vec::new();
     for file in &files {
         let data =
             std::fs::read(dir.join(file)).with_context(|| format!("no se pudo leer {file}"))?;
+        let name = base_name(file).to_ascii_lowercase();
+        if super::package::VC_DLLS.contains(&name.as_str()) {
+            let version = pe_file_version(&data);
+            if version.is_none() {
+                found.push(format!(
+                    "{file}: DLL del runtime de VC++ sin recurso de versión; no se puede comprobar su compatibilidad con la toolchain"
+                ));
+            }
+            vc_versions.insert(name, version);
+        }
         let imports = read_imports(&data).with_context(|| format!("no se pudo analizar {file}"))?;
         if let Some(imports) = imports {
             found.extend(violations(file, &imports, &bundled, section));
+            parsed.push((file, imports));
         }
+    }
+    for (file, imports) in &parsed {
+        found.extend(vc_runtime_violations(file, imports, &vc_versions));
     }
     Ok(found)
 }
@@ -350,6 +438,7 @@ mod tests {
             libs: names.iter().map(|n| (*n).to_string()).collect(),
             symbol_versions: Vec::new(),
             min_os: None,
+            linker_version: None,
         }
     }
 
@@ -359,6 +448,7 @@ mod tests {
             libs: Vec::new(),
             symbol_versions: names.iter().map(|n| (*n).to_string()).collect(),
             min_os: None,
+            linker_version: None,
         }
     }
 
@@ -482,6 +572,68 @@ mod tests {
     fn decodes_macho_version() {
         assert_eq!(decode_macho_version(0x001A_0000), "26.0");
         assert_eq!(decode_macho_version(0x000E_0201), "14.2.1");
+    }
+
+    /// Recurso de versión sintético: cabecera de `VS_VERSIONINFO` y un
+    /// `VS_FIXEDFILEINFO` con versión de archivo `major.minor.build.0`.
+    fn version_resource(major: u16, minor: u16, build: u16) -> Vec<u8> {
+        let mut bytes = vec![0u8; 40];
+        bytes.extend(0xFEEF_04BD_u32.to_le_bytes());
+        bytes.extend(0x0001_0000_u32.to_le_bytes());
+        bytes.extend(((u32::from(major) << 16) | u32::from(minor)).to_le_bytes());
+        bytes.extend((u32::from(build) << 16).to_le_bytes());
+        bytes.extend([0u8; 36]);
+        bytes
+    }
+
+    /// La versión de archivo sale de `dwFileVersionMS` tras la firma; sin firma
+    /// no hay versión, y los bytes que no son PE tampoco la tienen.
+    #[test]
+    fn reads_file_version_from_fixed_file_info() {
+        assert_eq!(
+            fixed_file_version(&version_resource(14, 44, 35112)),
+            Some((14, 44))
+        );
+        assert_eq!(fixed_file_version(&[0u8; 64]), None);
+        assert_eq!(pe_file_version(include_bytes!("../Cargo.toml")), None);
+    }
+
+    /// PE de fixture enlazado con MSVC `major.minor` que importa `libs`.
+    fn pe_linked(major: u8, minor: u8, names: &[&str]) -> Imports {
+        Imports {
+            linker_version: Some((major, minor)),
+            ..libs(names)
+        }
+    }
+
+    /// Una DLL de VC++ igual o más nueva que el enlazador pasa; una más vieja
+    /// viola nombrando el binario y la DLL; una sin versión no se compara aquí.
+    #[test]
+    fn vc_runtime_must_not_be_older_than_linker() {
+        let mut versions = BTreeMap::new();
+        versions.insert("vcruntime140.dll".to_string(), Some((14, 44)));
+        let same = pe_linked(14, 44, &["VCRUNTIME140.dll"]);
+        assert!(vc_runtime_violations("a.exe", &same, &versions).is_empty());
+        let older_linker = pe_linked(14, 38, &["VCRUNTIME140.dll"]);
+        assert!(vc_runtime_violations("a.exe", &older_linker, &versions).is_empty());
+        let newer_linker = pe_linked(14, 50, &["VCRUNTIME140.dll"]);
+        let found = vc_runtime_violations("a.exe", &newer_linker, &versions);
+        assert_eq!(found.len(), 1);
+        assert!(found[0].contains("a.exe") && found[0].contains("VCRUNTIME140.dll"));
+
+        versions.insert("vcruntime140.dll".to_string(), None);
+        assert!(vc_runtime_violations("a.exe", &newer_linker, &versions).is_empty());
+    }
+
+    /// Una DLL de VC++ del bundle sin recurso de versión es un hallazgo de la
+    /// auditoría del árbol.
+    #[test]
+    fn vc_dll_without_version_resource_is_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("vcruntime140.dll"), b"sin recurso").unwrap();
+        let found = audit_tree(dir.path(), &section(&[], &[], None)).unwrap();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].contains("sin recurso de versión"));
     }
 
     /// Los bytes de un fichero de texto no son un binario auditado.
