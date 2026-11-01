@@ -5215,8 +5215,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Modelo DeepFilterNet3: MIT © Rikorose/DeepFilterNet
-(https://github.com/Rikorose/DeepFilterNet)
+Modelo DPDFNet: Apache-2.0 © Ceva-IP
+(https://huggingface.co/Ceva-IP/DPDFNet)
 ```
 
 ### Texto 29: MIT

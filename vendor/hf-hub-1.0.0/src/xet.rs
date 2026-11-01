@@ -11,6 +11,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
+        // Patch: `AtomicU64` respalda el contador de identidades de grupo de descarga.
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -126,6 +127,8 @@ fn emit_remaining_completes(progress: &Option<Progress>, tracked: &[TrackedDownl
     }
 }
 
+// Patch: identidad única, dentro del proceso, de cada grupo de descarga; permite
+// distinguir las muestras de progreso de descargas simultáneas.
 #[cfg(not(target_family = "wasm"))]
 fn next_download_group_id() -> u64 {
     static NEXT_GROUP_ID: AtomicU64 = AtomicU64::new(0);
@@ -139,6 +142,7 @@ fn spawn_download_progress_poller(
     tracked: Arc<Vec<TrackedDownload>>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     let handler = progress.as_ref()?.clone();
+    // Patch: cada sondeo toma la identidad de su grupo y la emite con cada muestra.
     let group_id = next_download_group_id();
     let group = group.clone();
     Some(tokio::spawn(async move {
@@ -147,6 +151,7 @@ fn spawn_download_progress_poller(
 
             let report = group.progress();
             handler.emit(DownloadEvent::AggregateProgress {
+                // Patch: la muestra lleva la identidad del grupo que la originó.
                 group_id,
                 bytes_completed: report.total_bytes_completed,
                 total_bytes: report.total_bytes,
@@ -1053,6 +1058,7 @@ mod tests {
 
     use super::*;
 
+    // Patch: prueba propia de la identidad de los grupos de descarga.
     #[cfg(not(target_family = "wasm"))]
     #[test]
     fn concurrent_download_groups_have_distinct_ids() {

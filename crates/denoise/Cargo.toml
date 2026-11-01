@@ -7,6 +7,7 @@ rust-version = "1.88"
 # fuente de verdad mientras dure la migración. El aviso Apache-2.0 del modelo
 # DPDFNet vive en `src/models.rs`.
 license = "MIT"
+publish = false
 description = "Limpieza de ruido DPDFNet ONNX para la pista de audio de audio y vídeo (trasplante de Denoise 1.0.0)."
 
 [lib]
