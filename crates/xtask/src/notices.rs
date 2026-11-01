@@ -512,13 +512,13 @@ const COMPONENTS: &[Component] = &[
     },
     Component {
         name: "libquadmath enlazada en qwen_tts",
-        platforms: &[WINDOWS, LINUX_X64],
+        platforms: &[LINUX_X64],
         spdx: "LGPL-2.1-or-later",
         texts: &[ComponentText {
             license: "LGPL-2.1",
             source: TextSource::File("packaging/notices/lgpl-2.1.txt"),
         }],
-        covers: QWEN_BINARIES,
+        covers: &["vendor/qwen3-tts/qwen_tts"],
         note: "Para reenlazar el motor con otra versión de libquadmath, reconstruye el motor con `cargo xtask build-engine` a partir de `vendor/qwen3-tts/`, cuyas fuentes ofrece SOURCE-OFFER.md.",
     },
     Component {
