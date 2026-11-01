@@ -7626,6 +7626,18 @@ fn no_subcommand_showsroot_help() {
     assert_eq!(bare, help, "debe coincidir con `--help`");
 }
 
+/// La cabecera de la ayuda de la raíz es la descripción del paquete declarada
+/// en Cargo.toml: no hay un literal propio que pueda divergir de ella.
+#[test]
+fn root_help_shows_package_description() {
+    let (code, help) = run_text(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(
+        help.contains(env!("CARGO_PKG_DESCRIPTION")),
+        "la ayuda debe mostrar la descripción del paquete: {help}"
+    );
+}
+
 /// Con `--json`, la ayuda de la raíz (sin subcomando, `--help` o `-h`) sale
 /// como un único objeto `{"help"}` idéntico entre invocaciones.
 #[test]

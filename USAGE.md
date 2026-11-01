@@ -44,8 +44,8 @@
   - [Sin audio de salida](#sin-audio-de-salida)
   - [El sistema bloquea el primer arranque (binarios sin firmar)](#el-sistema-bloquea-el-primer-arranque-binarios-sin-firmar)
 
-AI Voice-InterConnector es un sintetizador de voz (TTS) 100 % local con clonación de voz en
-español. Esta guía recorre cada caso de uso desde la perspectiva
+AI Voice-InterConnector es un sistema de voz con IA 100 % local en español e inglés:
+transcripción, síntesis con clonación de voz, traducción y doblaje. Esta guía recorre cada caso de uso desde la perspectiva
 del usuario: qué comando ejecutar, qué ocurre y qué salida esperar.
 
 Todos los comandos funcionan **de forma idéntica en Windows, Linux y macOS**: la

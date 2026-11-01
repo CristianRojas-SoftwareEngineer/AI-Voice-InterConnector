@@ -179,7 +179,7 @@ fn validate_temperature(temperature: Option<f32>) -> Result<(), CliError> {
 }
 
 #[derive(Parser)]
-#[command(name = APP_NAME, version = VERSION, about = "AI Voice Interconnector CLI")]
+#[command(name = APP_NAME, version = VERSION, about)]
 struct Cli {
     /// Emitir la salida como JSON
     #[arg(long, global = true)]

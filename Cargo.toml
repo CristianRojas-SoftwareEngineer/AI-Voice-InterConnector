@@ -3,6 +3,7 @@ name = "ai-voice-interconnector"
 version = "0.39.0"
 edition = "2021"
 license = "MPL-2.0"
+description = "Voz con IA 100% local: transcripción, clonación de voz y traducción de voz a voz"
 # `cargo run` sin --bin: el binario canónico es el CLI (xtask es tooling).
 default-run = "ai-voice-interconnector"
 

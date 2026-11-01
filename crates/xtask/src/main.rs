@@ -26,6 +26,9 @@ mod pins;
 
 const GITHUB_REPO: &str = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector";
 const CASK_NAME: &str = "ai-voice-interconnector";
+// Manifiesto raíz embebido: el directorio actual de los tests es el de xtask,
+// cuyo Cargo.toml declara otra descripción, y cargo recompila xtask si cambia.
+const ROOT_MANIFEST: &str = include_str!("../../../Cargo.toml");
 
 const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
   version "{cask_version}"
@@ -33,7 +36,7 @@ const CASK_TEMPLATE: &str = r#"cask "{cask_name}" do
 
   url "https://github.com/{repo}/releases/download/v#{version}/ai-voice-interconnector-#{version}-arm64-macos.tar.gz"
   name "AI Voice-InterConnector"
-  desc "Motor de síntesis de voz (TTS) offline con clonación de voz en español latinoamericano"
+  desc "{cask_desc}"
   homepage "https://github.com/{repo}"
 
   livecheck do
@@ -800,6 +803,15 @@ pub(crate) fn get_version() -> Result<String> {
         .ok_or_else(|| anyhow!("Cargo.toml no declara la versión en [package]"))
 }
 
+/// Descripción corta del producto, declarada en el `[package]` del manifiesto.
+fn package_description(manifest: &str) -> Result<String> {
+    Regex::new(r#"\[package\][^\[]*?description\s*=\s*"([^"]+)""#)
+        .unwrap()
+        .captures(manifest)
+        .map(|m| m[1].to_string())
+        .ok_or_else(|| anyhow!("Cargo.toml no declara la descripción en [package]"))
+}
+
 fn render_source_offer(version: &str) -> String {
     SOURCE_OFFER_TEMPLATE
         .replace("{version}", version)
@@ -1201,24 +1213,25 @@ fn cask_zap_entries() -> Vec<String> {
     entries
 }
 
-fn render_cask(version: &str, sha256: &str) -> String {
+fn render_cask(version: &str, sha256: &str) -> Result<String> {
     let zap = cask_zap_entries()
         .iter()
         .map(|entry| format!("    \"{entry}\","))
         .collect::<Vec<_>>()
         .join("\n");
-    CASK_TEMPLATE
+    Ok(CASK_TEMPLATE
         .replace("{cask_name}", CASK_NAME)
         .replace("{cask_version}", version)
         .replace("{cask_sha256}", sha256)
+        .replace("{cask_desc}", &package_description(ROOT_MANIFEST)?)
         .replace("{repo}", GITHUB_REPO)
-        .replace("{zap_entries}", &zap)
+        .replace("{zap_entries}", &zap))
 }
 
 fn render_cask_from_tag(circle_tag: &str, sums_text: &str) -> Result<String> {
     let version = circle_tag.trim_start_matches('v');
     let sha256 = parse_macos_sha256(sums_text, version)?;
-    Ok(render_cask(version, &sha256))
+    render_cask(version, &sha256)
 }
 
 fn diff_lines(a: &str, b: &str) -> Vec<String> {
@@ -1652,7 +1665,7 @@ mod tests {
 
     #[test]
     fn test_render_cask_stanzas() {
-        let c = render_cask("1.2.3", &"a".repeat(64));
+        let c = render_cask("1.2.3", &"a".repeat(64)).unwrap();
         assert!(c.contains(r#"version "1.2.3""#));
         assert!(c.contains(&format!(r#"sha256 "{}""#, "a".repeat(64))));
         assert!(c.contains("ai-voice-interconnector-#{version}-arm64-macos.tar.gz"));
@@ -1678,7 +1691,29 @@ mod tests {
         // MACOSX_DEPLOYMENT_TARGET (macOS 26, Tahoe): Homebrew no debe
         // instalar el binario donde dyld no lo cargaría.
         assert!(c.contains(r#"depends_on macos: ">= :tahoe""#));
-        assert!(c.contains("síntesis"));
+        let desc = package_description(ROOT_MANIFEST).unwrap();
+        assert!(c.contains(&format!(r#"desc "{desc}""#)));
+    }
+
+    /// `brew audit` rechaza un `desc` de más de 80 caracteres o terminado en
+    /// punto, y el Cask lo toma de la descripción del manifiesto raíz.
+    #[test]
+    fn test_package_description_fits_homebrew() {
+        let desc = package_description(ROOT_MANIFEST).unwrap();
+        assert!(
+            desc.chars().count() <= 80,
+            "la descripción supera 80 caracteres: {desc}"
+        );
+        assert!(
+            !desc.ends_with('.'),
+            "la descripción termina en punto: {desc}"
+        );
+    }
+
+    #[test]
+    fn test_package_description_requires_field() {
+        let manifest = "[package]\nname = \"x\"\nversion = \"1.0.0\"\n\n[workspace]\n";
+        assert!(package_description(manifest).is_err());
     }
 
     /// El mínimo de macOS se fija una sola vez, con MACOSX_DEPLOYMENT_TARGET en
@@ -1698,7 +1733,7 @@ mod tests {
             "26" => "tahoe",
             other => panic!("falta el símbolo de Homebrew para macOS {other}"),
         };
-        let cask = render_cask("9.9.9", &"b".repeat(64));
+        let cask = render_cask("9.9.9", &"b".repeat(64)).unwrap();
         assert!(cask.contains(&format!(r#"depends_on macos: ">= :{symbol}""#)));
         let install_sh = include_str!("../../../packaging/bootstrap/install.sh");
         assert!(
@@ -1717,7 +1752,7 @@ mod tests {
 
     #[test]
     fn test_cask_zap_lists_current_model_caches() {
-        let c = render_cask("9.9.9", &"b".repeat(64));
+        let c = render_cask("9.9.9", &"b".repeat(64)).unwrap();
         // Raíz de modelos exclusiva: el canal Cask no puede usar
         // `self uninstall`, así que este `zap` es su única vía de borrado.
         let models_root = format!("~/Library/Caches/{}/models", avi_shared::paths::APP_NAME);

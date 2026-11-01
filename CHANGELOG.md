@@ -139,6 +139,7 @@ En una máquina con un token de Hugging Face caducado, `setup` fallaba con un 40
 
 - La descarga de modelos ignora `HF_TOKEN`, `HF_TOKEN_PATH` y el token guardado por `huggingface-cli login`: nunca envía credenciales. `HF_ENDPOINT`, `HF_HUB_CACHE` y `HF_HOME` se siguen respetando. La copia vendorizada de `hf-hub` gana para ello un modo explícito sin token (`HFClientBuilder::without_token`).
 - Cambio incompatible de enteros de salida: pasan de exit 20 (`network_error`) a exit 1 los rechazos de un modelo fijado por Hugging Face (`model_unavailable`), el 404 de GitHub en `self update` y en los instaladores (`release_unavailable`) y los fallos del disco local de `self update` al crear el staging o escribir y leer el archivo descargado (`io_error`). Quien distinguía estos casos por el exit 20 debe leer el exit 1 y el `reason`. `network_error` queda solo para los fallos de transporte o del servidor (sin red, 5xx, límite de peticiones), que sí pueden resolverse reintentando.
+- La cabecera de `--help` y del campo `help` de `--json` pasa de «AI Voice Interconnector CLI» a «Voz con IA 100% local: transcripción, clonación de voz y traducción de voz a voz», y el `desc` del Cask de Homebrew adopta el mismo texto (antes «Motor de síntesis de voz (TTS) offline con clonación de voz en español latinoamericano», que superaba el límite de 80 caracteres de Homebrew). Ambos se toman de la descripción del paquete.
 
 ### Corregido
 

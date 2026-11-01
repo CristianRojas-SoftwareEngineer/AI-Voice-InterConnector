@@ -21,10 +21,10 @@
 
 ## Resumen ejecutivo
 
-AI Voice-InterConnector es un motor de síntesis de voz (TTS) **100% local** que usa **Qwen3-TTS 0.6B CustomVoice** para clonación de voz en español. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
+AI Voice-InterConnector es un sistema de voz con IA **100% local** en español e inglés: transcripción con Parakeet TDT 0.6B v3, síntesis con clonación de voz sobre **Qwen3-TTS 0.6B** (las voces clonadas se sintetizan con el modelo Base), traducción con opus-mt y traducción de voz a voz con `speech dub`. El usuario puede clonar su propia voz a partir de ~10 segundos de audio y generar narración de alta calidad.
 
 - **Licencia**: MPL-2.0 (código del proyecto, copyleft a nivel de archivo); modelo y dependencias conservan sus licencias (MIT/BSD/Apache), salvo traducción `opus-mt` (CC-BY-4.0)
-- **Idiomas**: los 10 que soporta Qwen3-TTS, entre ellos Español (es)
+- **Idiomas**: español (`es`) e inglés (`en`)
 - **Clonación**: referencia de voz vía archivo (`--speech-reference`) o micrófono en vivo (`--mic`; ~10 s recomendados, máximo 30 s)
 - **Parámetros del modelo**: 0.6B (Qwen3-TTS)
 - **Hardware**: CPU con BLAS (Accelerate en macOS, OpenBLAS en Linux y Windows) — inferencia local sin APIs externas
