@@ -7324,12 +7324,17 @@ mod tests {
         }
     }
 
-    /// Un futuro que tarda un rato en terminar.
+    /// Un futuro que sigue pendiente hasta que el ayudante ha repintado.
     ///
-    /// Duerme un tiempo concreto, así que sigue pendiente durante ese tiempo
-    /// y el ayudante agota su espera para repintar.
-    async fn slow_future(millis: u64) -> u32 {
-        tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+    /// No depende de un tiempo fijo: con un temporizador de resolución
+    /// gruesa y la máquina cargada, una espera de 50 ms puede vencer en el
+    /// mismo instante que el intervalo de repintado y terminar antes de que
+    /// este llegue a dispararse. Esperar al primer repintado hace que el
+    /// resultado sea determinista.
+    async fn slow_future(progress: &CountingProgress) -> u32 {
+        while progress.repaints() == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
         0
     }
 
@@ -7358,7 +7363,8 @@ mod tests {
     async fn await_with_progress_repaints_while_the_future_is_pending() {
         let progress = CountingProgress::default();
         let value =
-            await_with_progress_every(&progress, TEST_REPAINT_INTERVAL, slow_future(50)).await;
+            await_with_progress_every(&progress, TEST_REPAINT_INTERVAL, slow_future(&progress))
+                .await;
         assert_eq!(value, 0);
         assert!(
             progress.repaints() >= 1,
@@ -7417,7 +7423,7 @@ mod tests {
     #[tokio::test]
     async fn asynchronous_work_asks_for_the_repaint() {
         let progress = CountingProgress::default();
-        await_with_progress_every(&progress, TEST_REPAINT_INTERVAL, slow_future(50)).await;
+        await_with_progress_every(&progress, TEST_REPAINT_INTERVAL, slow_future(&progress)).await;
         assert!(
             progress.repaints() >= 1,
             "la espera asíncrona sí pide repintar: {}",
