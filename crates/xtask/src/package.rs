@@ -47,10 +47,14 @@ pub(crate) const FFMPEG_MARKER: &str = ".ffmpeg-sha256";
 
 /// Release inmutable de BtbN del que salen los binarios Linux: el tag
 /// `latest` se mueve, así que la URL y el hash fijados apuntan aquí.
-const FFMPEG_BTBN_TAG: &str = "autobuild-2026-10-24-13-02";
+pub(crate) const FFMPEG_BTBN_TAG: &str = "autobuild-2026-10-24-13-02";
 
 /// Build concreto de FFmpeg dentro de [`FFMPEG_BTBN_TAG`].
-const FFMPEG_BTBN_BUILD: &str = "n9.0.2-35-g9a9b70bb8c";
+pub(crate) const FFMPEG_BTBN_BUILD: &str = "n9.0.2-35-g9a9b70bb8c";
+
+/// Commit al que apunta [`FFMPEG_BTBN_TAG`] en el repositorio de scripts de BtbN. Se
+/// descarga el archivo del commit y no el del tag, que un autor podría mover.
+const FFMPEG_BTBN_COMMIT: &str = "937868360a21d711ec94a33f5591d345ad9b7754";
 
 /// Marcador de versión dentro de `ort-bundle/`: lo escribe una descarga de este
 /// comando y el job de CI que arma el bundle. Un bundle sin marcador tiene una
@@ -201,7 +205,7 @@ fn pinned_sha256<'a>(
 /// quien lo decide no es la URL sino el SHA-256 fijado, que se verifica sobre
 /// el archivo descargado antes de extraer nada: un origen que sirviera otro
 /// binario no llegaría al bundle.
-fn ffmpeg_download(triple: &str, version: &str) -> Result<(String, String)> {
+pub(crate) fn ffmpeg_download(triple: &str, version: &str) -> Result<(String, String)> {
     let major: String = version.split('.').take(2).collect::<Vec<_>>().join(".");
     let (file, url) = match triple {
         "x86_64-pc-windows-msvc" => (
@@ -231,6 +235,90 @@ fn ffmpeg_download(triple: &str, version: &str) -> Result<(String, String)> {
         other => bail!("triple no soportado: {other}"),
     };
     Ok((file, url))
+}
+
+/// Assets de fuentes de FFmpeg que se publican con cada release, como pares `(nombre,
+/// URL)`: el tarball upstream de la versión fijada y los scripts de build de BtbN, el
+/// único compilador cuyo repositorio los publica con una URL estable. Gyan y Martin Riedl
+/// no publican scripts descargables; su configuración de build queda en el archivo
+/// `ffmpeg-<versión>-buildconf-<triple>.txt` que escribe `xtask package`.
+pub(crate) fn ffmpeg_sources(version: &str) -> Vec<(String, String)> {
+    vec![
+        (
+            format!("ffmpeg-{version}.tar.xz"),
+            format!("https://ffmpeg.org/releases/ffmpeg-{version}.tar.xz"),
+        ),
+        (
+            format!("ffmpeg-builds-{FFMPEG_BTBN_TAG}.tar.gz"),
+            format!("https://github.com/BtbN/FFmpeg-Builds/archive/{FFMPEG_BTBN_COMMIT}.tar.gz"),
+        ),
+    ]
+}
+
+/// Descarga cada asset de [`ffmpeg_sources`] a `out` verificando su SHA-256 fijado en
+/// `pins.json`. Falla si a un asset le falta el hash, si un hash fijado no corresponde a
+/// ningún asset o si algún hash no coincide; un asset no se deja en `out` hasta verificarlo.
+pub(crate) fn fetch_ffmpeg_sources(out: &Path, pins: &Pins) -> Result<Vec<PathBuf>> {
+    let sources = ffmpeg_sources(&pins.ffmpeg);
+    for name in pins.ffmpeg_source_sha256.keys() {
+        if !sources.iter().any(|(asset, _)| asset == name) {
+            bail!("pins.json fija el hash de `{name}`, que no es un asset de fuentes de FFmpeg");
+        }
+    }
+    let mut hashes = Vec::new();
+    for (name, _) in &sources {
+        let hash = pins.ffmpeg_source_sha256.get(name).ok_or_else(|| {
+            anyhow!("pins.json no fija el hash de `{name}` en `ffmpeg_source_sha256`")
+        })?;
+        hashes.push(hash.as_str());
+    }
+    std::fs::create_dir_all(out)?;
+    let mut written = Vec::new();
+    for ((name, url), hash) in sources.iter().zip(hashes) {
+        let temporary = tempfile::Builder::new()
+            .prefix("xtask-ffmpeg-source-")
+            .suffix(&format!("-{name}"))
+            .tempfile()?
+            .into_temp_path();
+        eprintln!("Descargando {name}: {url}");
+        download_https(url, &temporary)?;
+        verify_sha256(&temporary, hash)?;
+        let dest = out.join(name);
+        std::fs::copy(&temporary, &dest)?;
+        written.push(dest);
+    }
+    Ok(written)
+}
+
+/// Configuración de build del ejecutable de FFmpeg (`-buildconf`). Falla si el
+/// ejecutable no la imprime: sin ella no queda constancia de cómo se compiló.
+fn ffmpeg_buildconf(binary: &Path) -> Result<String> {
+    let output = std::process::Command::new(binary)
+        .args(["-hide_banner", "-buildconf"])
+        .output()
+        .map_err(|e| anyhow!("no se pudo ejecutar {}: {e}", binary.display()))?;
+    if !output.status.success() {
+        bail!(
+            "{} -buildconf terminó con {}",
+            binary.display(),
+            output.status
+        );
+    }
+    // FFmpeg imprime la configuración por su registro, que va a la salida de error.
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if text.trim().is_empty() {
+        bail!("{} -buildconf no imprimió nada", binary.display());
+    }
+    Ok(text)
+}
+
+/// Nombre del archivo con la configuración de build de FFmpeg del triple.
+fn ffmpeg_buildconf_name(version: &str, triple: &str) -> String {
+    format!("ffmpeg-{version}-buildconf-{triple}.txt")
 }
 
 /// Nombre del ejecutable de FFmpeg dentro del bundle para el triple.
@@ -708,9 +796,18 @@ pub(crate) fn ort_bundle_dir(root: &Path) -> PathBuf {
 /// SHA-256 y el mismo humo— y publica en la salida estándar la ruta del
 /// ejecutable resultante, para que quien invoque el subcomando no tenga que
 /// adivinar dónde quedó.
-pub fn run_ffmpeg(dest: Option<&Path>) -> Result<()> {
+///
+/// Con `sources`, en cambio, descarga a ese directorio las fuentes de FFmpeg que se
+/// publican con el release, verificando el hash fijado de cada una, y lista las rutas.
+pub fn run_ffmpeg(dest: Option<&Path>, sources: Option<&Path>) -> Result<()> {
     let root = std::env::current_dir()?;
     let pins = pins::load_from_root(&root).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if let Some(sources) = sources {
+        for path in fetch_ffmpeg_sources(sources, &pins)? {
+            println!("{}", path.display());
+        }
+        return Ok(());
+    }
     let triple = host_triple()?;
     let bundle = match dest {
         Some(dir) => dir.to_path_buf(),
@@ -1199,6 +1296,14 @@ pub fn run(
     }
     let out_dir = out.unwrap_or_else(|| root.join("artifacts"));
     std::fs::create_dir_all(&out_dir)?;
+    // Constancia de cómo se configuró el FFmpeg de este paquete: algunos compiladores no
+    // publican un manifiesto reproducible. Con `--flat` la salida es el árbol de instalación
+    // y no admite archivos ajenos al manifiesto.
+    if !flat {
+        let buildconf = out_dir.join(ffmpeg_buildconf_name(&pins.ffmpeg, triple));
+        std::fs::write(&buildconf, ffmpeg_buildconf(&ffmpeg_binary)?)?;
+        println!("Configuración de build de FFmpeg: {}", buildconf.display());
+    }
     let asset = release_asset_name(triple, &version)?;
     if no_compress {
         let dest = uncompressed_dest(&out_dir, &asset, flat);
@@ -1417,6 +1522,69 @@ mod tests {
         let (file, url) = ffmpeg_download("aarch64-apple-darwin", &version).unwrap();
         assert_eq!(file, "ffmpeg.zip");
         assert!(url.contains(&version));
+    }
+
+    /// Los assets de fuentes salen de la versión fijada y del commit de BtbN, no de literales.
+    #[test]
+    fn ffmpeg_sources_follow_the_pinned_version() {
+        let sources = ffmpeg_sources("9.0.2");
+        assert_eq!(sources[0].0, "ffmpeg-9.0.2.tar.xz");
+        assert_eq!(sources[0].1, "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz");
+        assert_eq!(
+            sources[1].0,
+            format!("ffmpeg-builds-{FFMPEG_BTBN_TAG}.tar.gz")
+        );
+        assert!(sources[1].1.contains(FFMPEG_BTBN_COMMIT));
+        let other = ffmpeg_sources("10.1");
+        assert_eq!(other[0].0, "ffmpeg-10.1.tar.xz");
+        assert_eq!(other[1].0, sources[1].0);
+    }
+
+    /// Los hashes de `pins.json` corresponden exactamente a los assets de fuentes.
+    #[test]
+    fn the_repository_pins_a_hash_for_every_source_asset() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let pins = pins::load_from_root(&root).unwrap();
+        let mut names: Vec<String> = ffmpeg_sources(&pins.ffmpeg)
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        names.sort();
+        let pinned: Vec<String> = pins.ffmpeg_source_sha256.keys().cloned().collect();
+        assert_eq!(pinned, names);
+    }
+
+    /// Sin hash fijado para un asset no se descarga nada: falla antes de tocar la red.
+    #[test]
+    fn fetching_sources_fails_when_a_hash_is_missing() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let mut pins = pins::load_from_root(&root).unwrap();
+        let removed = format!("ffmpeg-{}.tar.xz", pins.ffmpeg);
+        pins.ffmpeg_source_sha256.remove(&removed);
+        let out = tempfile::tempdir().unwrap();
+        let err = fetch_ffmpeg_sources(out.path(), &pins).unwrap_err();
+        assert!(err.to_string().contains(&removed), "{err}");
+        assert!(std::fs::read_dir(out.path()).unwrap().next().is_none());
+    }
+
+    /// Un hash fijado que ya no corresponde a ningún asset es una fijación obsoleta.
+    #[test]
+    fn fetching_sources_fails_on_a_pin_without_asset() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let mut pins = pins::load_from_root(&root).unwrap();
+        pins.ffmpeg_source_sha256
+            .insert("ffmpeg-0.0.tar.xz".to_string(), "0".repeat(64));
+        let out = tempfile::tempdir().unwrap();
+        let err = fetch_ffmpeg_sources(out.path(), &pins).unwrap_err();
+        assert!(err.to_string().contains("ffmpeg-0.0.tar.xz"), "{err}");
+    }
+
+    #[test]
+    fn the_buildconf_file_is_named_by_version_and_triple() {
+        assert_eq!(
+            ffmpeg_buildconf_name("9.0.2", "x86_64-pc-windows-msvc"),
+            "ffmpeg-9.0.2-buildconf-x86_64-pc-windows-msvc.txt"
+        );
     }
 
     /// El bundle se aprovisiona en el directorio que recibe —no en una ruta

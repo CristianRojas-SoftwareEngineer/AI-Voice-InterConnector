@@ -496,6 +496,9 @@ enum Commands {
         /// Directorio del bundle (por defecto, `ffmpeg-bundle` en la raíz del repositorio)
         #[arg(long, value_name = "DIR")]
         dest: Option<PathBuf>,
+        /// En lugar del binario, descarga a DIR las fuentes de FFmpeg que se publican con el release, verificadas contra sus hashes fijados
+        #[arg(long, value_name = "DIR", conflicts_with = "dest")]
+        sources: Option<PathBuf>,
     },
     /// Ejecuta la puerta de pruebas con recursos del release (ONNX Runtime y FFmpeg fijados, modelos aprovisionados) sin cortar versión
     ResourceGate,
@@ -666,7 +669,9 @@ fn main() -> Result<()> {
             flat,
             expect_version,
         } => package::run(out, no_compress, flat, expect_version)?,
-        Commands::Ffmpeg { dest } => package::run_ffmpeg(dest.as_deref())?,
+        Commands::Ffmpeg { dest, sources } => {
+            package::run_ffmpeg(dest.as_deref(), sources.as_deref())?
+        }
         Commands::ResourceGate => check_resource_tests_gate()?,
     }
     Ok(())
