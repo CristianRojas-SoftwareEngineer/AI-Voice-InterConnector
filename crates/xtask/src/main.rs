@@ -23,6 +23,7 @@ mod first_party;
 mod headers;
 mod install;
 mod language;
+mod notices;
 mod package;
 mod pins;
 
@@ -537,8 +538,8 @@ fn main() -> Result<()> {
                 check_licenses_gate()?;
                 println!("THIRD-PARTY-LICENSES.md está en sincronía con las dependencias distribuidas");
             } else {
-                write_licenses_inventory()?;
-                println!("Inventario de THIRD-PARTY-LICENSES.md regenerado: revisa el diff");
+                write_licenses_regions()?;
+                println!("Inventario y avisos de THIRD-PARTY-LICENSES.md regenerados: revisa el diff");
             }
         }
         Commands::Release { version } => {
@@ -585,8 +586,6 @@ fn main() -> Result<()> {
                 check_resource_tests_gate()?;
             }
             bump_version(version)?;
-            // El inventario incluye la versión del crate raíz: regenerarlo tras el bump.
-            write_licenses_inventory()?;
             promote_changelog(version)?;
 
             // Post-comprobaciones: las mismas puertas que CI ejecuta sobre el tag,
@@ -1515,29 +1514,39 @@ fn render_licenses_inventory(packages: &[DistPackage]) -> Result<String> {
     ))
 }
 
-/// Reemplaza el contenido entre `INVENTORY_START` e `INVENTORY_END` por `region`,
-/// conservando el texto exterior. Falla si falta alguno de los marcadores.
-fn replace_inventory_region(doc: &str, region: &str) -> Result<String> {
-    let start = doc.find(INVENTORY_START).ok_or_else(|| {
-        anyhow!(
-            "{} no tiene el marcador `{}`",
-            LICENSES_DOC,
-            INVENTORY_START
-        )
-    })? + INVENTORY_START.len();
+/// Reemplaza el contenido entre los marcadores `start_marker` y `end_marker` por
+/// `region`, conservando el texto exterior. Falla si falta alguno de los marcadores.
+fn replace_region(doc: &str, start_marker: &str, end_marker: &str, region: &str) -> Result<String> {
+    let start = doc
+        .find(start_marker)
+        .ok_or_else(|| anyhow!("{} no tiene el marcador `{}`", LICENSES_DOC, start_marker))?
+        + start_marker.len();
     let end = doc[start..]
-        .find(INVENTORY_END)
+        .find(end_marker)
         .map(|i| start + i)
-        .ok_or_else(|| anyhow!("{} no tiene el marcador `{}`", LICENSES_DOC, INVENTORY_END))?;
+        .ok_or_else(|| anyhow!("{} no tiene el marcador `{}`", LICENSES_DOC, end_marker))?;
     Ok(format!("{}\n{}{}", &doc[..start], region, &doc[end..]))
 }
 
+/// Documento con las dos regiones generadas (inventario y avisos) sustituidas.
+fn replace_licenses_regions(doc: &str, inventory: &str, notices: &str) -> Result<String> {
+    let with_inventory = replace_region(doc, INVENTORY_START, INVENTORY_END, inventory)?;
+    replace_region(
+        &with_inventory,
+        notices::NOTICES_START,
+        notices::NOTICES_END,
+        notices,
+    )
+}
+
 /// Compara `current` (contenido vigente de THIRD-PARTY-LICENSES.md) contra el
-/// documento con la región `region` recién generada, normalizando CRLF vs LF.
-/// Pura. `Ok(())` si coinciden; si no, un mensaje accionable con diff.
-fn diff_licenses_inventory(current: &str, region: &str) -> Result<(), String> {
+/// documento con las regiones `inventory` y `notices` recién generadas,
+/// normalizando CRLF vs LF. Pura. `Ok(())` si coinciden; si no, un mensaje
+/// accionable con diff.
+fn diff_licenses_doc(current: &str, inventory: &str, notices: &str) -> Result<(), String> {
     let norm_current = current.replace("\r\n", "\n");
-    let expected = replace_inventory_region(&norm_current, region).map_err(|e| e.to_string())?;
+    let expected =
+        replace_licenses_regions(&norm_current, inventory, notices).map_err(|e| e.to_string())?;
     if norm_current == expected {
         return Ok(());
     }
@@ -1607,26 +1616,35 @@ fn cargo_target_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("cargo metadata no devolvió `target_directory`"))
 }
 
-/// Región del inventario generada desde el grafo de dependencias distribuidas.
-fn render_licenses_region() -> Result<String> {
-    render_licenses_inventory(&load_distributed_packages()?)
+/// Regiones del inventario y de los avisos, generadas desde el mismo grafo de
+/// dependencias distribuidas.
+fn render_licenses_regions() -> Result<(String, String)> {
+    let packages = load_distributed_packages()?;
+    let pins = doctor::load_pins(Path::new("."))?;
+    Ok((
+        render_licenses_inventory(&packages)?,
+        notices::render_notices(Path::new("."), &packages, &pins.ort)?,
+    ))
 }
 
-/// Reescribe la región del inventario de THIRD-PARTY-LICENSES.md.
-fn write_licenses_inventory() -> Result<()> {
-    let region = render_licenses_region()?;
+/// Reescribe las regiones de inventario y de avisos de THIRD-PARTY-LICENSES.md.
+fn write_licenses_regions() -> Result<()> {
+    let (inventory, notices) = render_licenses_regions()?;
     let doc = std::fs::read_to_string(LICENSES_DOC)?.replace("\r\n", "\n");
-    std::fs::write(LICENSES_DOC, replace_inventory_region(&doc, &region)?)?;
+    std::fs::write(
+        LICENSES_DOC,
+        replace_licenses_regions(&doc, &inventory, &notices)?,
+    )?;
     Ok(())
 }
 
-/// Gate de licencias: falla con el diff si la región del inventario de
-/// `THIRD-PARTY-LICENSES.md` difiere de la generada (nombre, versión, licencia,
-/// familia o totales). Envoltura de E/S sobre `diff_licenses_inventory`.
+/// Gate de licencias: falla con el diff si las regiones de inventario o de avisos de
+/// `THIRD-PARTY-LICENSES.md` difieren de las generadas (paquetes, versiones,
+/// licencias, familias, totales o textos). Envoltura de E/S sobre `diff_licenses_doc`.
 fn check_licenses_gate() -> Result<()> {
-    let region = render_licenses_region()?;
+    let (inventory, notices) = render_licenses_regions()?;
     let current = std::fs::read_to_string(LICENSES_DOC)?;
-    diff_licenses_inventory(&current, &region).map_err(|msg| anyhow!(msg))
+    diff_licenses_doc(&current, &inventory, &notices).map_err(|msg| anyhow!(msg))
 }
 
 /// Gate de calidad de código: `cargo fmt --all --check` y
@@ -3092,12 +3110,17 @@ mod tests {
         render_licenses_inventory(&sample_packages()).unwrap()
     }
 
+    const SAMPLE_NOTICES: &str = "### Texto 1: MIT\n\nTexto de prueba.\n";
+
     fn sample_licenses_doc() -> String {
         format!(
-            "# Licencias\n\nProsa a mano.\n\n{}\n{}{}\n\n## Regeneración\n",
+            "# Licencias\n\nProsa a mano.\n\n{}\n{}{}\n\n## Avisos\n\n{}\n{}{}\n\n## Regeneración\n",
             INVENTORY_START,
             sample_region(),
-            INVENTORY_END
+            INVENTORY_END,
+            notices::NOTICES_START,
+            SAMPLE_NOTICES,
+            notices::NOTICES_END
         )
     }
 
@@ -3185,12 +3208,12 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_inventory_region_preserves_outer_text() {
+    fn test_replace_region_preserves_outer_text() {
         let doc = format!(
             "antes\n{}\nviejo\n{}\ndespués\n",
             INVENTORY_START, INVENTORY_END
         );
-        let out = replace_inventory_region(&doc, "nuevo\n").unwrap();
+        let out = replace_region(&doc, INVENTORY_START, INVENTORY_END, "nuevo\n").unwrap();
         assert_eq!(
             out,
             format!(
@@ -3201,34 +3224,44 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_inventory_region_fails_without_markers() {
-        assert!(replace_inventory_region("sin marcadores\n", "x\n").is_err());
+    fn test_replace_region_fails_without_markers() {
+        assert!(replace_region("sin marcadores\n", INVENTORY_START, INVENTORY_END, "x\n").is_err());
         let only_start = format!("{}\nx\n", INVENTORY_START);
-        let err = replace_inventory_region(&only_start, "x\n").unwrap_err();
+        let err = replace_region(&only_start, INVENTORY_START, INVENTORY_END, "x\n").unwrap_err();
         assert!(err.to_string().contains(INVENTORY_END));
     }
 
     #[test]
-    fn test_diff_licenses_inventory_synced_and_crlf() {
-        let doc = sample_licenses_doc();
-        assert!(diff_licenses_inventory(&doc, &sample_region()).is_ok());
-        let with_crlf = doc.replace('\n', "\r\n");
-        assert!(diff_licenses_inventory(&with_crlf, &sample_region()).is_ok());
+    fn test_replace_licenses_regions_needs_both_regions() {
+        let only_inventory = format!("{}\nx\n{}\n", INVENTORY_START, INVENTORY_END);
+        let err = replace_licenses_regions(&only_inventory, "a\n", "b\n").unwrap_err();
+        assert!(err.to_string().contains(notices::NOTICES_START));
     }
 
     #[test]
-    fn test_diff_licenses_inventory_detects_version_and_license() {
+    fn test_diff_licenses_doc_synced_and_crlf() {
+        let doc = sample_licenses_doc();
+        assert!(diff_licenses_doc(&doc, &sample_region(), SAMPLE_NOTICES).is_ok());
+        let with_crlf = doc.replace('\n', "\r\n");
+        assert!(diff_licenses_doc(&with_crlf, &sample_region(), SAMPLE_NOTICES).is_ok());
+    }
+
+    #[test]
+    fn test_diff_licenses_doc_detects_version_license_and_notice() {
         let doc = sample_licenses_doc();
         let old_version = doc.replace("| `denoise` | 1.0.0 |", "| `denoise` | 0.9.0 |");
-        let err = diff_licenses_inventory(&old_version, &sample_region()).unwrap_err();
+        let err = diff_licenses_doc(&old_version, &sample_region(), SAMPLE_NOTICES).unwrap_err();
         assert!(err.contains("desincronizado"));
         assert!(err.contains("+| `denoise` | 1.0.0 | MIT | MIT |"));
         let bad_license = doc.replace(
             "| `denoise` | 1.0.0 | MIT | MIT |",
             "| `denoise` | 1.0.0 | Zlib | Zlib |",
         );
-        let err = diff_licenses_inventory(&bad_license, &sample_region()).unwrap_err();
+        let err = diff_licenses_doc(&bad_license, &sample_region(), SAMPLE_NOTICES).unwrap_err();
         assert!(err.contains("-| `denoise` | 1.0.0 | Zlib | Zlib |"));
+        let old_notice = doc.replace("Texto de prueba.", "Texto viejo.");
+        let err = diff_licenses_doc(&old_notice, &sample_region(), SAMPLE_NOTICES).unwrap_err();
+        assert!(err.contains("+Texto de prueba."));
     }
 
     /// Renderiza el `--help` de un nodo vía `try_get_matches_from`,
