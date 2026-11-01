@@ -371,6 +371,12 @@ enum TextSource {
         file: &'static str,
         begin: &'static str,
     },
+    /// Un archivo dentro del directorio de un crate distribuido, en la versión que resuelve
+    /// el grafo; falla si el crate no se distribuye.
+    CrateFile {
+        krate: &'static str,
+        path: &'static str,
+    },
 }
 
 struct ComponentText {
@@ -453,7 +459,7 @@ const COMPONENTS: &[Component] = &[
             "msvcp140_1.dll",
             "vcomp140.dll",
         ],
-        note: "Archivos redistribuibles del Visual C++ Redistributable, que su licencia permite desplegar junto a la aplicación.",
+        note: "Archivos redistribuibles del Visual C++ Redistributable, propiedad de Microsoft, que los términos de «Distributable Code» de la licencia de Visual Studio permiten desplegar junto a la aplicación; esos términos siguen aplicándose a estos archivos.",
     },
     Component {
         name: "FFmpeg",
@@ -503,12 +509,12 @@ const COMPONENTS: &[Component] = &[
         note: "Enlazada estáticamente; en macOS el motor usa Accelerate.",
     },
     Component {
-        name: "Runtime de GCC enlazado en qwen_tts (libgfortran y libgcc)",
+        name: "Runtime de GCC enlazado en qwen_tts",
         platforms: &[WINDOWS, LINUX_X64, LINUX_ARM64],
         spdx: "GPL-3.0-or-later WITH GCC-exception-3.1",
         texts: &[GCC_EXCEPTION],
         covers: QWEN_BINARIES,
-        note: "Runtime que usa el LAPACK de OpenBLAS.",
+        note: "`libgcc` en todas; en Windows, `libgomp` (OpenMP de OpenBLAS); en Linux, `libgfortran` (LAPACK de OpenBLAS).",
     },
     Component {
         name: "libquadmath enlazada en qwen_tts",
@@ -553,10 +559,118 @@ const COMPONENTS: &[Component] = &[
         covers: MAIN_BINARIES,
         note: "Enlazadas estáticamente en el ejecutable a través de `ct2rs` y `onednn-src`.",
     },
+    Component {
+        name: "Código de terceros incluido en CTranslate2",
+        platforms: ALL_TARGETS,
+        spdx: "MIT",
+        texts: &[
+            ComponentText {
+                license: "MIT",
+                source: TextSource::File("vendor/ct2rs-0.10.0/CTranslate2/third_party/spdlog/LICENSE"),
+            },
+            ComponentText {
+                license: "MIT",
+                source: TextSource::File("packaging/notices/bs-thread-pool/LICENSE.txt"),
+            },
+        ],
+        covers: MAIN_BINARIES,
+        note: "spdlog (registro) y BS::thread_pool (hilos de CPU), compilados dentro de CTranslate2.",
+    },
+    Component {
+        name: "Código de terceros de CTranslate2 para x86_64",
+        platforms: &[WINDOWS, LINUX_X64],
+        spdx: "Apache-2.0 AND MIT AND Zlib AND BSD-2-Clause",
+        texts: &[
+            ComponentText {
+                license: "Apache-2.0",
+                source: TextSource::File(
+                    "vendor/ct2rs-0.10.0/CTranslate2/third_party/cpu_features/LICENSE",
+                ),
+            },
+            ComponentText {
+                license: "MIT y Zlib",
+                source: TextSource::CommentBlock {
+                    file: "vendor/ct2rs-0.10.0/CTranslate2/third_party/avx_mathfun.h",
+                    begin: "License of the modified version",
+                },
+            },
+            ComponentText {
+                license: "BSD-2-Clause",
+                source: TextSource::File("packaging/notices/simd-utils/LICENSE"),
+            },
+        ],
+        covers: MAIN_BINARIES,
+        note: "cpu_features (detección de CPU) y las funciones matemáticas AVX y AVX-512 (`avx_mathfun.h`, `avx512_mathfun.h` de SIMD_Utils).",
+    },
+    Component {
+        name: "Código de terceros de CTranslate2 para ARM64",
+        platforms: &[LINUX_ARM64, MACOS_ARM64],
+        spdx: "Zlib",
+        texts: &[ComponentText {
+            license: "Zlib",
+            source: TextSource::CommentBlock {
+                file: "vendor/ct2rs-0.10.0/CTranslate2/third_party/neon_mathfun.h",
+                begin: "Copyright (C) 2011  Julien Pommier",
+            },
+        }],
+        covers: &["ai-voice-interconnector"],
+        note: "Funciones matemáticas NEON (`neon_mathfun.h`).",
+    },
+    Component {
+        name: "Código de terceros incluido en SentencePiece",
+        platforms: ALL_TARGETS,
+        spdx: "Apache-2.0 AND BSD-3-Clause AND MIT",
+        texts: &[
+            ComponentText {
+                license: "Apache-2.0",
+                source: TextSource::CrateFile {
+                    krate: "sentencepiece-sys",
+                    path: "source/third_party/absl/LICENSE",
+                },
+            },
+            ComponentText {
+                license: "BSD-3-Clause",
+                source: TextSource::CrateFile {
+                    krate: "sentencepiece-sys",
+                    path: "source/third_party/darts_clone/LICENSE",
+                },
+            },
+            ComponentText {
+                license: "MIT",
+                source: TextSource::CrateFile {
+                    krate: "sentencepiece-sys",
+                    path: "source/third_party/esaxx/LICENSE",
+                },
+            },
+            ComponentText {
+                license: "BSD-3-Clause",
+                source: TextSource::CrateFile {
+                    krate: "sentencepiece-sys",
+                    path: "source/third_party/protobuf-lite/LICENSE",
+                },
+            },
+        ],
+        covers: MAIN_BINARIES,
+        note: "Abseil, Darts-clone, esaxx y protobuf-lite, que `sentencepiece-sys` compila desde sus fuentes y enlaza estáticamente en el ejecutable.",
+    },
 ];
 
-fn read_component_text(root: &Path, text: &ComponentText, ort: &str) -> Result<String> {
+fn read_component_text(
+    root: &Path,
+    packages: &[DistPackage],
+    text: &ComponentText,
+    ort: &str,
+) -> Result<String> {
     match &text.source {
+        TextSource::CrateFile { krate, path } => {
+            let package = packages
+                .iter()
+                .find(|package| package.name == *krate)
+                .ok_or_else(|| anyhow!("`{krate}` no está entre los crates distribuidos"))?;
+            let path = package.manifest_dir.join(path);
+            std::fs::read_to_string(&path)
+                .map_err(|e| anyhow!("no se pudo leer {}: {}", path.display(), e))
+        }
         TextSource::File(path) => {
             let path = root.join(path.replace("{ort}", ort));
             std::fs::read_to_string(&path)
@@ -759,7 +873,7 @@ pub(crate) fn render_notices(root: &Path, packages: &[DistPackage], ort: &str) -
     }
     for component in COMPONENTS {
         for text in component.texts {
-            let content = read_component_text(root, text, ort)?;
+            let content = read_component_text(root, packages, text, ort)?;
             groups.add(
                 &content,
                 &BTreeSet::from([text.license.to_string()]),
@@ -878,6 +992,29 @@ mod tests {
             license: Some(license.to_string()),
             manifest_dir: dir.to_path_buf(),
         }
+    }
+
+    #[test]
+    fn a_crate_file_is_read_from_the_distributed_crate_and_fails_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("third_party")).unwrap();
+        std::fs::write(dir.path().join("third_party/LICENSE"), "texto anidado").unwrap();
+        let packages = [package_in(dir.path(), "MIT")];
+        let text = ComponentText {
+            license: "MIT",
+            source: TextSource::CrateFile {
+                krate: "demo",
+                path: "third_party/LICENSE",
+            },
+        };
+        assert_eq!(
+            read_component_text(dir.path(), &packages, &text, "1.0.0").unwrap(),
+            "texto anidado"
+        );
+        let error = read_component_text(dir.path(), &[], &text, "1.0.0").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("`demo` no está entre los crates distribuidos"));
     }
 
     const MIT_TEXT: &str = "MIT License\n\nCopyright (c) 2020 Ana\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software.\n";

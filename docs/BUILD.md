@@ -451,7 +451,7 @@ En CI se **aprovisiona pineado**: el job `build-windows-x64` extrae el release
 base de MSYS2 y sincroniza las versiones pineadas, cacheando la instalación por
 clave de versión (determinismo de release). El log del bootstrap captura
 `pacman -Q` + `gcc --version` como evidencia de la **GCC Runtime Library
-Exception** (libgfortran/libquadmath/libgcc estáticos en el `.exe`). La
+Exception** (libgcc y libgomp estáticos en el `.exe`). La
 comparación con los pines no se hace en el bootstrap: `cargo xtask build-engine`
 la aplica en Windows antes de invocar `make`, con la misma regla que
 `cargo xtask doctor`, y falla nombrando cada paquete (gcc, OpenBLAS o make) cuya

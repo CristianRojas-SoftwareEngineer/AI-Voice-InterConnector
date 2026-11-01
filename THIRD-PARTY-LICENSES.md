@@ -55,9 +55,10 @@ construcción del motor y la descarga de modelos se documentan en `docs/BUILD.md
   a la aplicación
   (<https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files>).
 - **Motor TTS `qwen_tts`**: enlaza estáticamente OpenBLAS (**BSD-3-Clause**) y, en
-  Windows y Linux, el runtime de GCC que usa su LAPACK (`libgfortran` y `libgcc` bajo
-  GPL-3.0 con la **GCC Runtime Library Exception**, y, en Windows y Linux x86_64,
-  `libquadmath` bajo **LGPL-2.1-or-later**, combinable con el proyecto MPL-2.0
+  Windows y Linux, el runtime de GCC (`libgcc`; en Windows, `libgomp`, el OpenMP de
+  OpenBLAS; en Linux, `libgfortran`, que usa su LAPACK) bajo GPL-3.0 con la
+  **GCC Runtime Library Exception**, y, en Linux x86_64, `libquadmath` bajo
+  **LGPL-2.1-or-later**, combinable con el proyecto MPL-2.0
   como obra mayor). Para reenlazar el motor con otra versión de `libquadmath`,
   reconstruye `vendor/qwen3-tts/` con `cargo xtask build-engine` a partir de las
   fuentes que ofrece `SOURCE-OFFER.md`. En Windows también enlaza `winpthreads`
@@ -1198,7 +1199,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 21, BSD 3, CDLA-Permissive-
 ## Avisos de licencia
 
 <!-- avisos:inicio -->
-Generado desde los archivos de licencia de los crates distribuidos y de los componentes de la tabla siguiente: 46 textos distintos para 404 crates y 11 componentes.
+Generado desde los archivos de licencia de los crates distribuidos y de los componentes de la tabla siguiente: 54 textos distintos para 404 crates y 15 componentes.
 
 ### Componentes que no vienen de Cargo
 
@@ -1207,14 +1208,18 @@ Generado desde los archivos de licencia de los crates distribuidos y de los comp
 | AI Voice-InterConnector | todas | MPL-2.0 | `ai-voice-interconnector.exe`, `ai-voice-interconnector` | El ejecutable enlaza los crates de la sección de inventario. |
 | Runtime de GCC enlazado en el ejecutable (libgomp y libstdc++) | Linux x64, Linux ARM64 | GPL-3.0-or-later WITH GCC-exception-3.1 | `ai-voice-interconnector` | Enlazado estáticamente desde el gcc-toolset de la imagen de build. |
 | ONNX Runtime | todas | MIT | `onnxruntime.dll`, `libonnxruntime.so`, `libonnxruntime.dylib` | Librería oficial de Microsoft, con el aviso de terceros que ella misma publica. |
-| Runtime de Visual C++ | Windows x64 | LicenseRef-Microsoft-VC-Redistributable | `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`, `msvcp140_1.dll`, `vcomp140.dll` | Archivos redistribuibles del Visual C++ Redistributable, que su licencia permite desplegar junto a la aplicación. |
+| Runtime de Visual C++ | Windows x64 | LicenseRef-Microsoft-VC-Redistributable | `vcruntime140.dll`, `vcruntime140_1.dll`, `msvcp140.dll`, `msvcp140_1.dll`, `vcomp140.dll` | Archivos redistribuibles del Visual C++ Redistributable, propiedad de Microsoft, que los términos de «Distributable Code» de la licencia de Visual Studio permiten desplegar junto a la aplicación; esos términos siguen aplicándose a estos archivos. |
 | FFmpeg | todas | GPL-3.0-or-later | `ffmpeg.exe`, `ffmpeg` | Ejecutable independiente que la aplicación invoca como proceso; sus fuentes se ofrecen en SOURCE-OFFER.md. |
 | Motor TTS qwen_tts (código propio y vendorizado) | todas | MIT AND BSD-2-Clause | `vendor/qwen3-tts/qwen_tts.exe`, `vendor/qwen3-tts/qwen_tts` | Motor del proyecto qwen3-tts; las tablas de cuantización de ingot proceden de llama.cpp y LZ4 va en `vendor/lz4.c`. |
 | OpenBLAS enlazada en qwen_tts | Windows x64, Linux x64, Linux ARM64 | BSD-3-Clause | `vendor/qwen3-tts/qwen_tts.exe`, `vendor/qwen3-tts/qwen_tts` | Enlazada estáticamente; en macOS el motor usa Accelerate. |
-| Runtime de GCC enlazado en qwen_tts (libgfortran y libgcc) | Windows x64, Linux x64, Linux ARM64 | GPL-3.0-or-later WITH GCC-exception-3.1 | `vendor/qwen3-tts/qwen_tts.exe`, `vendor/qwen3-tts/qwen_tts` | Runtime que usa el LAPACK de OpenBLAS. |
+| Runtime de GCC enlazado en qwen_tts | Windows x64, Linux x64, Linux ARM64 | GPL-3.0-or-later WITH GCC-exception-3.1 | `vendor/qwen3-tts/qwen_tts.exe`, `vendor/qwen3-tts/qwen_tts` | `libgcc` en todas; en Windows, `libgomp` (OpenMP de OpenBLAS); en Linux, `libgfortran` (LAPACK de OpenBLAS). |
 | libquadmath enlazada en qwen_tts | Linux x64 | LGPL-2.1-or-later | `vendor/qwen3-tts/qwen_tts` | Para reenlazar el motor con otra versión de libquadmath, reconstruye el motor con `cargo xtask build-engine` a partir de `vendor/qwen3-tts/`, cuyas fuentes ofrece SOURCE-OFFER.md. |
 | winpthreads enlazada en qwen_tts.exe | Windows x64 | MIT AND BSD-3-Clause | `vendor/qwen3-tts/qwen_tts.exe` | Runtime de hilos POSIX de MinGW-w64. |
 | CTranslate2 y oneDNN (fuentes incluidas en crates vendorizados) | todas | MIT AND Apache-2.0 | `ai-voice-interconnector.exe`, `ai-voice-interconnector` | Enlazadas estáticamente en el ejecutable a través de `ct2rs` y `onednn-src`. |
+| Código de terceros incluido en CTranslate2 | todas | MIT | `ai-voice-interconnector.exe`, `ai-voice-interconnector` | spdlog (registro) y BS::thread_pool (hilos de CPU), compilados dentro de CTranslate2. |
+| Código de terceros de CTranslate2 para x86_64 | Windows x64, Linux x64 | Apache-2.0 AND MIT AND Zlib AND BSD-2-Clause | `ai-voice-interconnector.exe`, `ai-voice-interconnector` | cpu_features (detección de CPU) y las funciones matemáticas AVX y AVX-512 (`avx_mathfun.h`, `avx512_mathfun.h` de SIMD_Utils). |
+| Código de terceros de CTranslate2 para ARM64 | Linux ARM64, macOS ARM64 | Zlib | `ai-voice-interconnector` | Funciones matemáticas NEON (`neon_mathfun.h`). |
+| Código de terceros incluido en SentencePiece | todas | Apache-2.0 AND BSD-3-Clause AND MIT | `ai-voice-interconnector.exe`, `ai-voice-interconnector` | Abseil, Darts-clone, esaxx y protobuf-lite, que `sentencepiece-sys` compila desde sus fuentes y enlaza estáticamente en el ejecutable. |
 
 ### Texto 1: Apache-2.0
 
@@ -1437,10 +1442,249 @@ Aplica a: CTranslate2 y oneDNN (fuentes incluidas en crates vendorizados).
 Titulares:
 
 - (c) You must retain, in the Source form of any Derivative Works
+- COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+- Copyright (C) 2010 The Android Open Source Project
 - copyright license to reproduce, prepare Derivative Works of,
 - copyright notice that is included in or attached to the work
 
-Aplica a: `approx` 0.5.1, `cpal` 0.18.2, `esaxx-rs` 0.1.10, `hf-hub` 1.0.0, `hf-xet` 1.6.0, `hound` 3.5.1, `prost-derive` 0.14.4, `prost` 0.14.4, `sentencepiece-sys` 0.13.2, `spm_precompiled` 0.1.4, `tokenizers` 0.22.2, `xet-client` 1.6.0, `xet-core-structures` 1.6.0, `xet-data` 1.6.0, `xet-runtime` 1.6.0.
+Aplica a: Código de terceros de CTranslate2 para x86_64.
+
+```text
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+
+   1. Definitions.
+
+      "License" shall mean the terms and conditions for use, reproduction,
+      and distribution as defined by Sections 1 through 9 of this document.
+
+      "Licensor" shall mean the copyright owner or entity authorized by
+      the copyright owner that is granting the License.
+
+      "Legal Entity" shall mean the union of the acting entity and all
+      other entities that control, are controlled by, or are under common
+      control with that entity. For the purposes of this definition,
+      "control" means (i) the power, direct or indirect, to cause the
+      direction or management of such entity, whether by contract or
+      otherwise, or (ii) ownership of fifty percent (50%) or more of the
+      outstanding shares, or (iii) beneficial ownership of such entity.
+
+      "You" (or "Your") shall mean an individual or Legal Entity
+      exercising permissions granted by this License.
+
+      "Source" form shall mean the preferred form for making modifications,
+      including but not limited to software source code, documentation
+      source, and configuration files.
+
+      "Object" form shall mean any form resulting from mechanical
+      transformation or translation of a Source form, including but
+      not limited to compiled object code, generated documentation,
+      and conversions to other media types.
+
+      "Work" shall mean the work of authorship, whether in Source or
+      Object form, made available under the License, as indicated by a
+      (an example is provided in the Appendix below).
+
+      "Derivative Works" shall mean any work, whether in Source or Object
+      form, that is based on (or derived from) the Work and for which the
+      editorial revisions, annotations, elaborations, or other modifications
+      represent, as a whole, an original work of authorship. For the purposes
+      of this License, Derivative Works shall not include works that remain
+      separable from, or merely link (or bind by name) to the interfaces of,
+      the Work and Derivative Works thereof.
+
+      "Contribution" shall mean any work of authorship, including
+      the original version of the Work and any modifications or additions
+      to that Work or Derivative Works thereof, that is intentionally
+      submitted to Licensor for inclusion in the Work by the copyright owner
+      or by an individual or Legal Entity authorized to submit on behalf of
+      the copyright owner. For the purposes of this definition, "submitted"
+      means any form of electronic, verbal, or written communication sent
+      to the Licensor or its representatives, including but not limited to
+      communication on electronic mailing lists, source code control systems,
+      and issue tracking systems that are managed by, or on behalf of, the
+      Licensor for the purpose of discussing and improving the Work, but
+      excluding communication that is conspicuously marked or otherwise
+      designated in writing by the copyright owner as "Not a Contribution."
+
+      "Contributor" shall mean Licensor and any individual or Legal Entity
+      on behalf of whom a Contribution has been received by Licensor and
+      subsequently incorporated within the Work.
+
+   2. Grant of Copyright License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      publicly display, publicly perform, sublicense, and distribute the
+      Work and such Derivative Works in Source or Object form.
+
+   3. Grant of Patent License. Subject to the terms and conditions of
+      this License, each Contributor hereby grants to You a perpetual,
+      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
+      (except as stated in this section) patent license to make, have made,
+      use, offer to sell, sell, import, and otherwise transfer the Work,
+      where such license applies only to those patent claims licensable
+      by such Contributor that are necessarily infringed by their
+      Contribution(s) alone or by combination of their Contribution(s)
+      with the Work to which such Contribution(s) was submitted. If You
+      institute patent litigation against any entity (including a
+      cross-claim or counterclaim in a lawsuit) alleging that the Work
+      or a Contribution incorporated within the Work constitutes direct
+      or contributory patent infringement, then any patent licenses
+      granted to You under this License for that Work shall terminate
+      as of the date such litigation is filed.
+
+   4. Redistribution. You may reproduce and distribute copies of the
+      Work or Derivative Works thereof in any medium, with or without
+      modifications, and in Source or Object form, provided that You
+      meet the following conditions:
+
+      (a) You must give any other recipients of the Work or
+          Derivative Works a copy of this License; and
+
+      (b) You must cause any modified files to carry prominent notices
+          stating that You changed the files; and
+
+          that You distribute, all copyright, patent, trademark, and
+          attribution notices from the Source form of the Work,
+          excluding those notices that do not pertain to any part of
+          the Derivative Works; and
+
+      (d) If the Work includes a "NOTICE" text file as part of its
+          distribution, then any Derivative Works that You distribute must
+          include a readable copy of the attribution notices contained
+          within such NOTICE file, excluding those notices that do not
+          pertain to any part of the Derivative Works, in at least one
+          of the following places: within a NOTICE text file distributed
+          as part of the Derivative Works; within the Source form or
+          documentation, if provided along with the Derivative Works; or,
+          within a display generated by the Derivative Works, if and
+          wherever such third-party notices normally appear. The contents
+          of the NOTICE file are for informational purposes only and
+          do not modify the License. You may add Your own attribution
+          notices within Derivative Works that You distribute, alongside
+          or as an addendum to the NOTICE text from the Work, provided
+          that such additional attribution notices cannot be construed
+          as modifying the License.
+
+      You may add Your own copyright statement to Your modifications and
+      may provide additional or different license terms and conditions
+      for use, reproduction, or distribution of Your modifications, or
+      for any such Derivative Works as a whole, provided Your use,
+      reproduction, and distribution of the Work otherwise complies with
+      the conditions stated in this License.
+
+   5. Submission of Contributions. Unless You explicitly state otherwise,
+      any Contribution intentionally submitted for inclusion in the Work
+      by You to the Licensor shall be under the terms and conditions of
+      this License, without any additional terms or conditions.
+      Notwithstanding the above, nothing herein shall supersede or modify
+      the terms of any separate license agreement you may have executed
+      with Licensor regarding such Contributions.
+
+   6. Trademarks. This License does not grant permission to use the trade
+      names, trademarks, service marks, or product names of the Licensor,
+      except as required for reasonable and customary use in describing the
+      origin of the Work and reproducing the content of the NOTICE file.
+
+   7. Disclaimer of Warranty. Unless required by applicable law or
+      agreed to in writing, Licensor provides the Work (and each
+      Contributor provides its Contributions) on an "AS IS" BASIS,
+      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+      implied, including, without limitation, any warranties or conditions
+      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
+      PARTICULAR PURPOSE. You are solely responsible for determining the
+      appropriateness of using or redistributing the Work and assume any
+      risks associated with Your exercise of permissions under this License.
+
+   8. Limitation of Liability. In no event and under no legal theory,
+      whether in tort (including negligence), contract, or otherwise,
+      unless required by applicable law (such as deliberate and grossly
+      negligent acts) or agreed to in writing, shall any Contributor be
+      liable to You for damages, including any direct, indirect, special,
+      incidental, or consequential damages of any character arising as a
+      result of this License or out of the use or inability to use the
+      Work (including but not limited to damages for loss of goodwill,
+      work stoppage, computer failure or malfunction, or any and all
+      other commercial damages or losses), even if such Contributor
+      has been advised of the possibility of such damages.
+
+   9. Accepting Warranty or Additional Liability. While redistributing
+      the Work or Derivative Works thereof, You may choose to offer,
+      and charge a fee for, acceptance of support, warranty, indemnity,
+      or other liability obligations and/or rights consistent with this
+      License. However, in accepting such obligations, You may act only
+      on Your own behalf and on Your sole responsibility, not on behalf
+      of any other Contributor, and only if You agree to indemnify,
+      defend, and hold each Contributor harmless for any liability
+      incurred by, or claims asserted against, such Contributor by reason
+      of your accepting any such warranty or additional liability.
+
+   END OF TERMS AND CONDITIONS
+
+   APPENDIX: How to apply the Apache License to your work.
+
+      To apply the Apache License to your work, attach the following
+      boilerplate notice, with the fields enclosed by brackets "[]"
+      replaced with your own identifying information. (Don't include
+      the brackets!)  The text should be enclosed in the appropriate
+      comment syntax for the file format. We also recommend that a
+      file or class name and description of purpose be included on the
+      same "printed page" as the copyright notice for easier
+      identification within third-party archives.
+
+   Copyright [yyyy] [name of copyright owner]
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+--------------------------------------------------------------------------------
+For files in the `ndk_compat` folder:
+--------------------------------------------------------------------------------
+
+All rights reserved.
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions
+are met:
+ * Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+ * Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in
+   the documentation and/or other materials provided with the
+   distribution.
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
+FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS
+OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
+OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+SUCH DAMAGE.
+```
+
+### Texto 3: Apache-2.0
+
+Titulares:
+
+- (c) You must retain, in the Source form of any Derivative Works
+- copyright license to reproduce, prepare Derivative Works of,
+- copyright notice that is included in or attached to the work
+
+Aplica a: Código de terceros incluido en SentencePiece, `approx` 0.5.1, `cpal` 0.18.2, `esaxx-rs` 0.1.10, `hf-hub` 1.0.0, `hf-xet` 1.6.0, `hound` 3.5.1, `prost-derive` 0.14.4, `prost` 0.14.4, `sentencepiece-sys` 0.13.2, `spm_precompiled` 0.1.4, `tokenizers` 0.22.2, `xet-client` 1.6.0, `xet-core-structures` 1.6.0, `xet-data` 1.6.0, `xet-runtime` 1.6.0.
 
 ```text
                                  Apache License
@@ -1643,7 +1887,7 @@ Aplica a: `approx` 0.5.1, `cpal` 0.18.2, `esaxx-rs` 0.1.10, `hf-hub` 1.0.0, `hf-
    limitations under the License.
 ```
 
-### Texto 3: Apache-2.0
+### Texto 4: Apache-2.0
 
 Titulares:
 
@@ -1854,7 +2098,7 @@ Aplica a: `blake3` 1.8.7, `zopfli` 0.8.3.
    limitations under the License.
 ```
 
-### Texto 4: Apache-2.0
+### Texto 5: Apache-2.0
 
 Titulares:
 
@@ -2080,7 +2324,7 @@ the License, but only in their entirety and only with respect to the Combined
 Software.
 ```
 
-### Texto 5: Apache-2.0
+### Texto 6: Apache-2.0
 
 Titulares:
 
@@ -2266,7 +2510,7 @@ TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
 END OF TERMS AND CONDITIONS
 ```
 
-### Texto 6: Apache-2.0
+### Texto 7: Apache-2.0
 
 Titulares:
 
@@ -2542,7 +2786,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Texto 7: Apache-2.0, BSD-3-Clause, ISC, MIT
+### Texto 8: Apache-2.0, BSD-3-Clause, ISC, MIT
 
 Titulares:
 
@@ -2864,7 +3108,7 @@ Permission is hereby granted, free of charge, to any person obtaining a copy of 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ````
 
-### Texto 8: Apache-2.0, ISC
+### Texto 9: Apache-2.0, ISC
 
 Titulares:
 
@@ -3071,7 +3315,42 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### Texto 9: BSD-2-Clause
+### Texto 10: BSD-2-Clause
+
+Titulares:
+
+- Copyright (c) 2019, JishinMaster
+
+Aplica a: Código de terceros de CTranslate2 para x86_64.
+
+```text
+BSD 2-Clause License
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### Texto 11: BSD-2-Clause
 
 Titulares:
 
@@ -3112,7 +3391,7 @@ You can contact the author at :
  - LZ4 source repository : https://github.com/lz4/lz4
 ```
 
-### Texto 10: BSD-2-Clause
+### Texto 12: BSD-2-Clause
 
 Titulares:
 
@@ -3144,7 +3423,68 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Texto 11: BSD-3-Clause
+### Texto 13: BSD-3-Clause
+
+Titulares:
+
+- Copyright (c) 2008-2011, Susumu Yata
+
+Aplica a: Código de terceros incluido en SentencePiece.
+
+```text
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
+
+- Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
+- Redistributions in binary form must reproduce the above copyright notice, this list of conditions and the following disclaimer in the documentation and/or other materials provided with the distribution.
+- Neither the name of the <ORGANIZATION> nor the names of its contributors may be used to endorse or promote products derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+
+### Texto 14: BSD-3-Clause
+
+Titulares:
+
+- Copyright 2008 Google Inc.  All rights reserved.
+- copyright notice, this list of conditions and the following disclaimer
+
+Aplica a: Código de terceros incluido en SentencePiece.
+
+```text
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+    * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above
+in the documentation and/or other materials provided with the
+distribution.
+    * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Code generated by the Protocol Buffer compiler is owned by the owner
+of the input file used when generating it.  This code is not
+standalone and requires a support library to be linked with it.  This
+support library is itself covered by the above license.
+```
+
+### Texto 15: BSD-3-Clause
 
 Titulares:
 
@@ -3183,7 +3523,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Texto 12: BSD-3-Clause
+### Texto 16: BSD-3-Clause
 
 Titulares:
 
@@ -3220,7 +3560,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Texto 13: BSD-3-Clause
+### Texto 17: BSD-3-Clause
 
 Titulares:
 
@@ -3259,7 +3599,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Texto 14: CDLA-Permissive-2.0
+### Texto 18: CDLA-Permissive-2.0
 
 Aplica a: `webpki-roots` 1.0.11.
 
@@ -3327,13 +3667,13 @@ of Data, including for example machine learning models and models'
 insights.
 ```
 
-### Texto 15: GCC-exception-3.1
+### Texto 19: GCC-exception-3.1
 
 Titulares:
 
 - Copyright (C) 2009 Free Software Foundation, Inc. <http://fsf.org/>
 
-Aplica a: Runtime de GCC enlazado en el ejecutable (libgomp y libstdc++), Runtime de GCC enlazado en qwen_tts (libgfortran y libgcc).
+Aplica a: Runtime de GCC enlazado en el ejecutable (libgomp y libstdc++), Runtime de GCC enlazado en qwen_tts.
 
 ```text
 GCC RUNTIME LIBRARY EXCEPTION
@@ -3408,7 +3748,7 @@ presumption that third-party software is unaffected by the copyleft
 requirements of the license of GCC.
 ```
 
-### Texto 16: ISC
+### Texto 20: ISC
 
 Titulares:
 
@@ -3429,7 +3769,7 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 ```
 
-### Texto 17: ISC
+### Texto 21: ISC
 
 Titulares:
 
@@ -3451,7 +3791,7 @@ OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### Texto 18: ISC
+### Texto 22: ISC
 
 Titulares:
 
@@ -3479,7 +3819,7 @@ The files under third-party/chromium are licensed as described in
 third-party/chromium/LICENSE.
 ```
 
-### Texto 19: ISC
+### Texto 23: ISC
 
 Aplica a: `untrusted` 0.9.0.
 
@@ -3499,7 +3839,7 @@ Aplica a: `untrusted` 0.9.0.
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
-### Texto 20: LGPL-2.1
+### Texto 24: LGPL-2.1
 
 Titulares:
 
@@ -4010,7 +4350,7 @@ necessary.  Here is a sample; alter the names:
 That's all there is to it!
 ```
 
-### Texto 21: MIT
+### Texto 25: MIT
 
 Titulares:
 
@@ -4038,6 +4378,7 @@ Titulares:
 - Copyright (c) 2021 Stephen M. Coakley
 - Copyright (c) 2021 TrueLayer
 - Copyright (c) 2021 ethereal-sheep <55541825+ethereal-sheep@users.noreply.github.com>
+- Copyright (c) 2021-2026 Barak Shoshany
 - Copyright (c) 2022 1Password
 - Copyright (c) 2022 Ibraheem Ahmed
 - Copyright (c) 2023-2026 The ggml authors
@@ -4052,7 +4393,7 @@ Titulares:
 - Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
 - Copyright 2013-2014 RAD Game Tools and Valve Software
 
-Aplica a: CTranslate2 y oneDNN (fuentes incluidas en crates vendorizados), Motor TTS qwen_tts (código propio y vendorizado), ONNX Runtime, `alsa-sys` 0.4.0, `alsa` 0.11.0, `castaway` 0.2.4, `compact_str` 0.9.1, `const-str` 1.1.0, `countio` 0.3.0, `crc32fast` 1.5.1, `darling_core` 0.20.11, `darling_core` 0.24.1, `darling_macro` 0.20.11, `darling_macro` 0.24.1, `darling` 0.20.11, `darling` 0.24.1, `gearhash` 0.1.3, `heapify` 0.2.0, `ident_case` 1.0.1, `macro_rules_attribute-proc_macro` 0.2.3, `macro_rules_attribute` 0.2.3, `matchit` 0.7.3, `miniz_oxide` 0.9.1, `number_prefix` 0.4.0, `ort-sys` 2.0.0-rc.13, `ort` 2.0.0-rc.13, `os_str_bytes` 6.6.1, `realfft` 3.5.0, `reqwest-middleware` 0.5.2, `rustls-platform-verifier` 0.7.0, `simd-adler32` 0.3.10, `static_assertions` 1.1.0, `statrs` 0.18.0, `tinyvec_macros` 0.1.1, `tokio-macros` 2.7.2, `tokio-retry` 0.3.2, `tokio-stream` 0.1.19, `tokio-util` 0.7.19, `tokio` 1.53.1, `unit-prefix` 0.5.2, `whoami` 2.1.3.
+Aplica a: CTranslate2 y oneDNN (fuentes incluidas en crates vendorizados), Código de terceros incluido en CTranslate2, Motor TTS qwen_tts (código propio y vendorizado), ONNX Runtime, `alsa-sys` 0.4.0, `alsa` 0.11.0, `castaway` 0.2.4, `compact_str` 0.9.1, `const-str` 1.1.0, `countio` 0.3.0, `crc32fast` 1.5.1, `darling_core` 0.20.11, `darling_core` 0.24.1, `darling_macro` 0.20.11, `darling_macro` 0.24.1, `darling` 0.20.11, `darling` 0.24.1, `gearhash` 0.1.3, `heapify` 0.2.0, `ident_case` 1.0.1, `macro_rules_attribute-proc_macro` 0.2.3, `macro_rules_attribute` 0.2.3, `matchit` 0.7.3, `miniz_oxide` 0.9.1, `number_prefix` 0.4.0, `ort-sys` 2.0.0-rc.13, `ort` 2.0.0-rc.13, `os_str_bytes` 6.6.1, `realfft` 3.5.0, `reqwest-middleware` 0.5.2, `rustls-platform-verifier` 0.7.0, `simd-adler32` 0.3.10, `static_assertions` 1.1.0, `statrs` 0.18.0, `tinyvec_macros` 0.1.1, `tokio-macros` 2.7.2, `tokio-retry` 0.3.2, `tokio-stream` 0.1.19, `tokio-util` 0.7.19, `tokio` 1.53.1, `unit-prefix` 0.5.2, `whoami` 2.1.3.
 
 ```text
 MIT License
@@ -4076,7 +4417,74 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Texto 22: MIT
+### Texto 26: MIT
+
+Titulares:
+
+- Copyright (c) 2016 Gabi Melman.
+
+Aplica a: Código de terceros incluido en CTranslate2.
+
+```text
+The MIT License (MIT)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+-- NOTE: Third party dependency used by this software --
+This software depends on the fmt lib (MIT License),
+and users must comply to its license: https://github.com/fmtlib/fmt/blob/master/LICENSE.rst
+```
+
+### Texto 27: MIT
+
+Titulares:
+
+- Copyright (c) 2010 Daisuke Okanohara All Rights Reserved.
+
+Aplica a: Código de terceros incluido en SentencePiece.
+
+```text
+This is the esaxx copyright.
+
+Permission is hereby granted, free of charge, to any person
+obtaining a copy of this software and associated documentation
+files (the "Software"), to deal in the Software without
+restriction, including without limitation the rights to use,
+copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES
+OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### Texto 28: MIT
 
 Titulares:
 
@@ -4217,7 +4625,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Texto 23: MIT
+### Texto 29: MIT
 
 Titulares:
 
@@ -4270,7 +4678,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### Texto 24: MIT
+### Texto 30: MIT
 
 Titulares:
 
@@ -4321,7 +4729,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Texto 25: MIT
+### Texto 31: MIT
 
 Titulares:
 
@@ -4339,7 +4747,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Texto 26: MIT
+### Texto 32: MIT
 
 Titulares:
 
@@ -4585,7 +4993,7 @@ limitations under the License.
 ~~~~
 ```
 
-### Texto 27: MIT
+### Texto 33: MIT
 
 Titulares:
 
@@ -5186,7 +5594,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-### Texto 28: MIT
+### Texto 34: MIT
 
 Titulares:
 
@@ -5219,7 +5627,7 @@ Modelo DPDFNet: Apache-2.0 © Ceva-IP
 (https://huggingface.co/Ceva-IP/DPDFNet)
 ```
 
-### Texto 29: MIT
+### Texto 35: MIT
 
 Aplica a: `encode_unicode` 1.0.0.
 
@@ -5243,7 +5651,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE
 ```
 
-### Texto 30: MIT
+### Texto 36: MIT
 
 Titulares:
 
@@ -5277,7 +5685,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Texto 31: MIT
+### Texto 37: MIT
 
 Titulares:
 
@@ -5307,7 +5715,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### Texto 32: MIT
+### Texto 38: MIT
 
 Titulares:
 
@@ -5344,7 +5752,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Texto 33: MIT
+### Texto 39: MIT
 
 Titulares:
 
@@ -5381,7 +5789,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### Texto 34: MIT
+### Texto 40: MIT
 
 Aplica a: `ntapi` 0.4.3.
 
@@ -5405,7 +5813,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### Texto 35: MIT
+### Texto 41: MIT
 
 Aplica a: `onig_sys` 69.9.3.
 
@@ -5442,7 +5850,7 @@ information.
 > SOFTWARE.
 ```
 
-### Texto 36: MIT
+### Texto 42: MIT
 
 Aplica a: `onig` 6.5.3.
 
@@ -5478,7 +5886,7 @@ under the original license.
 > SOFTWARE.
 ```
 
-### Texto 37: MIT
+### Texto 43: MIT
 
 Titulares:
 
@@ -5508,7 +5916,7 @@ Aplica a: `windows-collections` 0.3.2, `windows-core` 0.62.2, `windows-future` 0
     SOFTWARE
 ```
 
-### Texto 38: MIT
+### Texto 44: MIT
 
 Titulares:
 
@@ -5541,7 +5949,7 @@ Some files in the "tests/data" subdirectory of this repository are under other
 licences; see files named LICENSE.*.txt for details.
 ```
 
-### Texto 39: MIT, Unicode-3.0
+### Texto 45: MIT, Unicode-3.0
 
 Titulares:
 
@@ -5588,7 +5996,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ```
 
-### Texto 40: MIT y BSD-3-Clause
+### Texto 46: MIT y BSD-3-Clause
 
 Titulares:
 
@@ -5653,7 +6061,70 @@ DEALINGS IN THE SOFTWARE.
  */
 ```
 
-### Texto 41: MPL-2.0
+### Texto 47: MIT y Zlib
+
+Titulares:
+
+- Copyright (C) 2012 Giovanni Garberoglio
+- Copyright (c) 2016 Marcin Junczys-Dowmunt, the University of Edinburgh, Adam
+
+Aplica a: Código de terceros de CTranslate2 para x86_64.
+
+```text
+AVX implementation of sin, cos, sincos, exp and log
+
+Based on "sse_mathfun.h", by Julien Pommier
+http://gruntthepeon.free.fr/ssemath/
+
+License of the modified version (https://github.com/marian-nmt/marian-dev):
+
+MIT License
+
+Mickiewicz University
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+License of the orignal version (http://software-lisc.fbk.eu/avx_mathfun/):
+
+Interdisciplinary Laboratory for Computational Science (LISC)
+Fondazione Bruno Kessler and University of Trento
+via Sommarive, 18
+I-38123 Trento (Italy)
+
+This software is provided 'as-is', without any express or implied
+warranty.  In no event will the authors be held liable for any damages
+arising from the use of this software.
+
+Permission is granted to anyone to use this software for any purpose,
+including commercial applications, and to alter it and redistribute it
+freely, subject to the following restrictions:
+
+1. The origin of this software must not be misrepresented; you must not
+   claim that you wrote the original software. If you use this software
+   in a product, an acknowledgment in the product documentation would be
+   appreciated but is not required.
+2. Altered source versions must be plainly marked as such, and must not be
+   misrepresented as being the original software.
+3. This notice may not be removed or altered from any source distribution.
+```
+
+### Texto 48: MPL-2.0
 
 Titulares:
 
@@ -6036,7 +6507,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### Texto 42: MPL-2.0
+### Texto 49: MPL-2.0
 
 Titulares:
 
@@ -6419,7 +6890,7 @@ Exhibit B - "Incompatible With Secondary Licenses" Notice
   defined by the Mozilla Public License, v. 2.0.
 ```
 
-### Texto 43: THIRD-PARTY-PROGRAMS de oneDNN
+### Texto 50: THIRD-PARTY-PROGRAMS de oneDNN
 
 Titulares:
 
@@ -7266,7 +7737,7 @@ limitations under the License.
 --------------------------------------------------------------------------------
 ```
 
-### Texto 44: ThirdPartyNotices de ONNX Runtime
+### Texto 51: ThirdPartyNotices de ONNX Runtime
 
 Titulares:
 
@@ -13253,7 +13724,7 @@ Redistribution and use in source and binary forms, with or without modification,
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### Texto 45: Unicode-3.0
+### Texto 52: Unicode-3.0
 
 Titulares:
 
@@ -13307,7 +13778,35 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ```
 
-### Texto 46: Zlib
+### Texto 53: Zlib
+
+Titulares:
+
+- Copyright (C) 2011  Julien Pommier
+
+Aplica a: Código de terceros de CTranslate2 para ARM64.
+
+```text
+ This software is provided 'as-is', without any express or implied
+ warranty.  In no event will the authors be held liable for any damages
+ arising from the use of this software.
+
+ Permission is granted to anyone to use this software for any purpose,
+ including commercial applications, and to alter it and redistribute it
+ freely, subject to the following restrictions:
+
+ 1. The origin of this software must not be misrepresented; you must not
+    claim that you wrote the original software. If you use this software
+    in a product, an acknowledgment in the product documentation would be
+    appreciated but is not required.
+ 2. Altered source versions must be plainly marked as such, and must not be
+    misrepresented as being the original software.
+ 3. This notice may not be removed or altered from any source distribution.
+
+ (this is the zlib license)
+```
+
+### Texto 54: Zlib
 
 Titulares:
 
