@@ -30,35 +30,25 @@
 
 use anyhow::{anyhow, Result};
 use regex::Regex;
+use crate::first_party;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Raíces de ficheros de primera parte que se recorren, en orden. Las cuatro familias
-/// del ciclo: código (`src`, `crates/*/src`), pruebas (`crates/*/tests`, `tests`),
-/// configuración (`.circleci`, `packaging`, `.githooks`) y scripts (los `.sh` y `.ps1`
-/// de `packaging/bootstrap`, `tests/bootstrap` y `.githooks`, que caen dentro de esas
-/// raíces). Una raíz que no exista se ignora en silencio.
-const ROOTS: &[&str] = &[
-    "src",
-    "crates",
-    "tests",
-    "packaging",
-    ".circleci",
-    ".githooks",
+/// Tipos de archivo propio que el control lee: las extensiones que puede contener un
+/// comentario o un diagnóstico de aserción en este repositorio, más los scripts sin
+/// extensión reconocidos por su shebang. Añadir una aquí obliga a revisar si el texto
+/// que se rechaza tiene sentido en ese lenguaje.
+const KINDS: &[&str] = &[
+    "rs",
+    "yml",
+    "toml",
+    "json",
+    "sh",
+    "bash",
+    "bats",
+    "ps1",
+    first_party::SHEBANG_SCRIPTS,
 ];
-
-/// Ficheros de configuración que viven en la raíz del repositorio y no bajo ninguna de
-/// las raíces anteriores.
-const ROOT_FILES: &[&str] = &["Cargo.toml", "rust-toolchain.toml", "opencode.json"];
-
-/// Extensiones que el control lee. Son las que puede contener un comentario o un
-/// diagnóstico de aserción en este repositorio; añadir una aquí obliga a revisar si el
-/// texto que se rechaza tiene sentido en ese lenguaje.
-const EXTS: &[&str] = &["rs", "yml", "toml", "json", "sh", "ps1"];
-
-/// Componentes de ruta que se excluyen: código de terceros vendorizado y directorios de
-/// construcción o de producto que no son fuente.
-const SKIP_DIRS: &[&str] = &["vendor", "target", "artifacts", ".git"];
 
 /// Una supervivencia conocida, con la razón escrita al lado.
 ///
@@ -156,14 +146,14 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
     std::process::exit(1);
 }
 
-/// Recorre los ficheros de las cuatro familias y devuelve las líneas rechazadas, en
+/// Recorre los archivos propios y devuelve las líneas rechazadas, en
 /// orden de fichero y de línea. Un fichero ilegible es un error, no un fichero limpio.
 fn scan(base: &Path, files: &[PathBuf]) -> Result<Vec<Hit>> {
     let mut hits = Vec::new();
     for file in files {
         let text = std::fs::read_to_string(file)
             .map_err(|e| anyhow!("no se pudo leer {}: {}", file.display(), e))?;
-        let relative = relative_to(base, file);
+        let relative = first_party::relative(base, file);
         if is_allowed(&relative) {
             continue;
         }
@@ -194,64 +184,9 @@ fn is_allowed(relative: &str) -> bool {
     ALLOWLIST.iter().any(|e| e.file == relative)
 }
 
-/// Ficheros de las cuatro familias bajo la raíz, ordenados. Las raíces que no existen se
-/// ignoran en silencio, y cualquier ruta con un componente de `SKIP_DIRS` queda fuera: es
-/// código de terceros o un directorio de construcción.
+/// Archivos propios que el control lee, ordenados.
 fn collect_files(base: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for root in ROOTS {
-        let dir = base.join(root);
-        if dir.is_dir() {
-            walk(&dir, &mut files)?;
-        }
-    }
-    for name in ROOT_FILES {
-        let file = base.join(name);
-        if file.is_file() {
-            files.push(file);
-        }
-    }
-    files.sort();
-    files.dedup();
-    Ok(files)
-}
-
-/// Recorrido en profundidad con las exclusiones aplicadas.
-fn walk(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    let entries =
-        std::fs::read_dir(dir).map_err(|e| anyhow!("no se pudo leer {}: {}", dir.display(), e))?;
-    for entry in entries {
-        let entry = entry
-            .map_err(|e| anyhow!("no se pudo leer una entrada de {}: {}", dir.display(), e))?;
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if SKIP_DIRS.iter().any(|s| *s == name) {
-            continue;
-        }
-        if path.is_dir() {
-            walk(&path, files)?;
-        } else if matches_extension(&path) {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-/// Si la extensión del fichero está entre las que el control lee.
-fn matches_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| EXTS.contains(&e))
-}
-
-/// Ruta del fichero relativa a la raíz, con separador `/` en todas las plataformas, para
-/// que la lista blanca se escriba igual en todos los sistemas operativos.
-fn relative_to(base: &Path, file: &Path) -> String {
-    file.strip_prefix(base)
-        .expect("todo fichero recorrido cuelga de la raíz")
-        .display()
-        .to_string()
-        .replace('\\', "/")
+    first_party::collect(base, KINDS)
 }
 
 /// Informe de las líneas rechazadas, con el fichero, la línea y el motivo.
@@ -427,23 +362,6 @@ mod tests {
         let body = format!("//! Explica el símbolo {} en la tabla.\n", section_sign());
         let hits = scan_fixture(&[("src/demo.rs", body)]);
         assert!(hits.is_empty(), "sin número no hay cita: {hits:?}");
-    }
-
-    #[test]
-    fn third_party_and_build_directories_are_skipped() {
-        let citation = section_citation();
-        let hits = scan_fixture(&[
-            ("src/ok.rs", "//! Limpio.\n".to_string()),
-            (
-                "vendor/third_party.rs",
-                format!("//! Apunta a {citation}.\n"),
-            ),
-            ("target/build.rs", format!("//! Apunta a {citation}.\n")),
-        ]);
-        assert!(
-            hits.is_empty(),
-            "terceros y construcción van fuera: {hits:?}"
-        );
     }
 
     #[test]

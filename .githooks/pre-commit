@@ -1,12 +1,19 @@
 #!/bin/sh
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+# If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# Copyright (c) 2026 Cristián Rojas Arredondo.
+# SPDX-License-Identifier: MPL-2.0
+
 # Gancho de pre-commit: las puertas de la política de código antes de dejar entrar un
-# commit. Son cuatro, y las cuatro son ejecutables por cualquier persona, no de recuerdo del
+# commit. Son cinco, y las cinco son ejecutables por cualquier persona, no de recuerdo del
 # orquestador:
 #
 #   - idioma:      ningún identificador en español en el código de primera parte.
 #   - comentarios: ni citas de sección ni localizadores de línea en comentarios y en
 #                  diagnósticos de aserción.
-#   - pines:       parámetros pineados de la CI contra `packaging/pins.json` y canal.
+#   - cabeceras:   todo archivo propio de código o de script lleva la cabecera MPL-2.0.
+#   - pines:      parámetros pineados de la CI contra `packaging/pins.json` y canal.
 #   - features:    todo feature que el código use alcanzable desde el paquete raíz, para
 #                  que un eslabón ausente falle aquí y no en el binario que se distribuye.
 #
@@ -20,5 +27,6 @@
 set -e
 cargo --quiet xtask language --check
 cargo --quiet xtask comments --check
+cargo --quiet xtask headers --check
 cargo --quiet xtask pins --check
 cargo --quiet xtask features --check

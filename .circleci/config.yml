@@ -1261,8 +1261,10 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   validate-licenses:
     # Gate de licencias MPL-2.0: verifica que SOURCE-OFFER.md esté regenerado para
-    # la versión vigente (cargo xtask source-offer --check) y que THIRD-PARTY-
-    # LICENSES.md esté en sincronía con Cargo.lock (cargo xtask licenses --check).
+    # la versión vigente (cargo xtask source-offer --check), que THIRD-PARTY-
+    # LICENSES.md esté en sincronía con las dependencias distribuidas (cargo xtask
+    # licenses --check) y que todo archivo propio lleve la cabecera MPL-2.0 (cargo
+    # xtask headers --check), además de las demás puertas de política.
     # Corre solo en tags v* como gate de los builds (ver workflow build-all).
     # Caché: registry + sccache (sin target) — xtask es pequeño, sccache basta.
     docker:
@@ -1296,6 +1298,12 @@ jobs:
             echo "[STEP] Verificar comentarios - INICIO"
             cargo --quiet xtask comments --check
             echo "[STEP] Verificar comentarios - FIN"
+      - run:
+          name: Verificar cabeceras de licencia
+          command: |
+            echo "[STEP] Verificar cabeceras de licencia - INICIO"
+            cargo --quiet xtask headers --check
+            echo "[STEP] Verificar cabeceras de licencia - FIN"
 
   validate-changelog:
     # Gate de CHANGELOG: verifica que exista la sección ## [X.Y.Z] para la

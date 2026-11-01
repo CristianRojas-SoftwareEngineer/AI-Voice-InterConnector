@@ -18,18 +18,12 @@
 //! comentarios y literales, porque un `//` en español o una cadena con
 //! `resultado` no son identificadores y no pueden disparar el escáner.
 
+use crate::first_party;
 use anyhow::{anyhow, Result};
 use regex::Regex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-
-/// Raíces de código de primera parte que se recorren, en orden. Una raíz que no
-/// exista se ignora: el fallo ante un escaneo sin ficheros lo da `run`.
-const ROOTS: &[&str] = &["src", "crates", "tests"];
-
-/// Componente de ruta que marca código de terceros vendorizado: se excluye.
-const VENDOR: &str = "vendor";
 
 /// Longitud mínima de un segmento ya normalizado para que se considere marca de
 /// identificador en español. **4 y no 5**: `solo` y `caso` son tan castellanas
@@ -524,11 +518,7 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
     for file in &files {
         let text = std::fs::read_to_string(file)
             .map_err(|e| anyhow!("no se pudo leer {}: {}", file.display(), e))?;
-        let relative = file
-            .strip_prefix(&base)
-            .expect("todo fichero recorrido cuelga de la raíz")
-            .display()
-            .to_string();
+        let relative = first_party::relative(&base, file);
         for hit in spanish_identifiers(&strip_code(&text)) {
             rows.push((relative.clone(), hit));
         }
@@ -554,49 +544,9 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
     std::process::exit(1);
 }
 
-/// Ficheros `.rs` bajo las raíces de primera parte, ordenados. Las raíces que no
-/// existen se ignoran y cualquier ruta con un componente `vendor` relativo a la
-/// base queda fuera: es código de terceros.
+/// Archivos `.rs` propios, ordenados.
 fn collect_rust_files(base: &Path) -> Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    for root in ROOTS {
-        let dir = base.join(root);
-        if !dir.is_dir() {
-            continue;
-        }
-        walk(base, &dir, &mut files)?;
-    }
-    files.sort();
-    Ok(files)
-}
-
-/// Recorrido en profundidad de un directorio, en orden de entrada.
-fn walk(base: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    let relative = dir
-        .strip_prefix(base)
-        .expect("todo directorio recorrido cuelga de la raíz");
-    if is_vendor_path(relative) {
-        return Ok(());
-    }
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            walk(base, &path, files)?;
-        } else if path.extension().is_some_and(|ext| ext == "rs") {
-            files.push(path);
-        }
-    }
-    Ok(())
-}
-
-/// ¿La ruta, relativa a la base escaneada, tiene un componente `vendor`? Solo se
-/// mira la parte relativa: escanear un repo que cuelgue de un directorio `vendor`
-/// no debe dejar el escaneo vacío.
-fn is_vendor_path(relative: &Path) -> bool {
-    relative
-        .components()
-        .any(|component| component.as_os_str() == VENDOR)
+    first_party::collect(base, &["rs"])
 }
 
 /// Devuelve el código con comentarios y literales apagados: cada `//` (que
@@ -983,35 +933,6 @@ mod tests {
         for word in ES_WORDS {
             assert!(unique.insert(word), "`{word}` está duplicado en la lista");
         }
-    }
-
-    /// El conjunto de raíces y la exclusión de `vendor` son la puerta de
-    /// alcance: lo que no es código de primera parte no se escanea.
-    #[test]
-    fn test_scan_roots_and_vendor_exclusion() {
-        assert_eq!(ROOTS, ["src", "crates", "tests"]);
-        assert!(is_vendor_path(Path::new(
-            "repo/vendor/qwen3-tts/src/lib.rs"
-        )));
-        assert!(is_vendor_path(Path::new("vendor/repo/src/main.rs")));
-        assert!(!is_vendor_path(Path::new(
-            "repo/crates/avi-core/src/lib.rs"
-        )));
-    }
-
-    /// Una base que cuelga de un directorio `vendor` se escanea igual: la
-    /// exclusión mira solo la parte relativa a la base.
-    #[test]
-    fn test_base_under_vendor_directory_is_scanned() {
-        let guard = tempfile::Builder::new()
-            .prefix("xtask-language-")
-            .tempdir()
-            .unwrap();
-        let base = guard.path().join("vendor").join("repo");
-        std::fs::create_dir_all(base.join("src")).unwrap();
-        std::fs::write(base.join("src/lib.rs"), "fn english() {}\n").unwrap();
-        let files = collect_rust_files(&base).unwrap();
-        assert_eq!(files.len(), 1);
     }
 
     /// Un escaneo sin ficheros es un error, no un pase.
