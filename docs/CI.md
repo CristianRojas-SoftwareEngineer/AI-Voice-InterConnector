@@ -12,6 +12,7 @@ Este documento explica **por qué** el pipeline de CircleCI tiene la forma que t
     - [Simetría de puertas y builds](#simetría-de-puertas-y-builds)
     - [Modos de ejecución de la suite](#modos-de-ejecución-de-la-suite)
     - [Hueco de cobertura de ARM64](#hueco-de-cobertura-de-arm64)
+    - [Cumplimiento de licencias](#cumplimiento-de-licencias)
   - [2. Cachés](#2-cachés)
     - [Qué se restaura y qué se recompila](#qué-se-restaura-y-qué-se-recompila)
     - [Clave normalizada de `Cargo.lock`](#clave-normalizada-de-cargolock)
@@ -54,6 +55,12 @@ La misma suite corre en dos modos, y cada uno destapa fallos distintos:
 ### Hueco de cobertura de ARM64
 
 Es una divergencia aceptada: `build-linux-arm64` está condicionado por tests en x86_64, y en ARM solo corre el smoke test de [Verificación post-build](BUILD.md#verificación-post-build): arrancar el binario (lo que exige resolver sus librerías dinámicas), `voice list`, el `--self-test` de los kernels del motor y el humo de `self install`. Ni la traducción (CTranslate2) ni la transcripción (ONNX Runtime) se ejecutan en ARM dentro del pipeline.
+
+### Cumplimiento de licencias
+
+El cumplimiento de licencias se vigila con comprobaciones, no con copias manuales. `validate-licenses` ejecuta, además de pines y features, `cargo xtask comments --check`, `cargo xtask headers --check` (todo archivo propio lleva la cabecera MPL-2.0), `cargo xtask licenses --check` (el inventario y los avisos de `THIRD-PARTY-LICENSES.md` coinciden con las dependencias que se distribuyen) y `cargo xtask source-offer --check` (la oferta de fuentes coincide con los pines de FFmpeg). Las mismas reglas corren en `cargo test` y en el hook `pre-commit`, de modo que el tag solo valida lo que únicamente la CI puede validar.
+
+`publish-release` corre en la imagen con Rust (`cimg/rust`, con el mismo digest que `validate-licenses` y `publish-metadata`) porque ejecuta `cargo xtask`: `ffmpeg --sources` descarga las fuentes de FFmpeg y verifica su hash fijado en `packaging/pins.json`, y `source-offer --notes` genera el pie de las notas de release desde la misma fuente que `SOURCE-OFFER.md`. Las fuentes y la configuración de build de FFmpeg que persiste cada job de build se publican como assets del Release.
 
 ## 2. Cachés
 

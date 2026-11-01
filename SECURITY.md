@@ -87,8 +87,11 @@ limitada, pero conviene explicitar sus supuestos:
   pesos descargados (el transporte y el direccionamiento por hash de commit
   corren a cargo de HuggingFace Hub).
 - Los builds se producen desde **`Cargo.lock`**; la cadena se verifica con
-  `cargo xtask licenses --check` / `source-offer --check` y
-  `THIRD-PARTY-LICENSES.md` / `SOURCE-OFFER.md` (ver `docs/RELEASING.md`).
+  `cargo xtask headers --check` (cabecera de licencia en todo archivo propio),
+  `licenses --check` (inventario y avisos de `THIRD-PARTY-LICENSES.md` contra
+  las dependencias que se distribuyen) y `source-offer --check`
+  (`SOURCE-OFFER.md` contra los pines de FFmpeg), y el release publica las
+  fuentes de FFmpeg con su hash fijado (ver `docs/RELEASING.md`).
 
 ### Contenido generado
 

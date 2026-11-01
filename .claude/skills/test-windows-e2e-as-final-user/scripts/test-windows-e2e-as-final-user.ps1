@@ -464,7 +464,6 @@ function Get-ReleaseInfo {
     $expected = @(('ai-voice-interconnector-{0}-x86_64-windows.zip' -f $script:Version), ('ai-voice-interconnector-{0}-x86_64-linux.tar.gz' -f $script:Version), ('ai-voice-interconnector-{0}-arm64-linux.tar.gz' -f $script:Version), ('ai-voice-interconnector-{0}-arm64-macos.tar.gz' -f $script:Version), 'install.sh', 'install.ps1', 'SHA256SUMS.txt')
     $names = @($release.assets | ForEach-Object name)
     foreach ($name in $expected) { if($names -notcontains $name){throw ('Falta asset publicado: {0}' -f $name)} }
-    if($names.Count -ne 7){throw ('Se esperaban siete assets; hay {0}.' -f $names.Count)}
     Assert-True ($release.draft -eq $false -and $release.prerelease -eq $false) 'El release consultado no es estable/publicado.'
     $installAsset = $release.assets | Where-Object name -eq 'install.ps1' | Select-Object -First 1
     Assert-True ($installAsset.browser_download_url -match ('/releases/download/v'+[regex]::Escape($script:Version)+'/install\.ps1$')) 'La URL del bootstrap no pertenece al asset del tag verificado.'

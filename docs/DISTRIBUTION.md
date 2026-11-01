@@ -52,9 +52,11 @@ runtime de VC++ en Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
 Los 5 documentos incluidos son `LICENSE`, `NOTICE`, `THIRD-PARTY-LICENSES.md`,
 `SOURCE-OFFER.md` (disponibilidad de la fuente, MPL-2.0 §3.2) y `README.md`. Al viajar dentro
 del archivo, quedan instalados junto al binario, satisfaciendo la disponibilidad
-de la fuente sin depender del bundle. `SHA256SUMS.txt` se calcula sobre los 4 archivos
-comprimidos más los 2 bootstrap (`install.sh`, `install.ps1`); el release
-publica 7 assets.
+de la fuente sin depender del bundle. Además de los 4 archivos comprimidos y los 2
+bootstrap (`install.sh`, `install.ps1`), el release publica las fuentes de FFmpeg
+(`ffmpeg-<versión>.tar.xz` y los scripts de build de BtbN) y la configuración de
+build del FFmpeg de cada target (`ffmpeg-<versión>-buildconf-<triple>.txt`).
+`SHA256SUMS.txt` se calcula sobre esos 12 ficheros; el release publica 13 assets.
 
 ## Instalación
 
@@ -179,8 +181,10 @@ con los documentos de licencia en el archivo comprimido de su target y lo
 persisten al workspace. Luego:
 
 1. `publish-release` estampa la versión del tag en ambos bootstrap, recoge los
-   4 archivos + los 2 bootstrap, calcula `SHA256SUMS.txt` sobre los 6 ficheros
-   y crea el GitHub Release (`gh release create`) con los 7 assets.
+   4 archivos, los 4 `ffmpeg-*-buildconf-*.txt` persistidos por los builds y los
+   2 bootstrap, descarga y verifica las 2 fuentes de FFmpeg, calcula
+   `SHA256SUMS.txt` sobre los 12 ficheros y crea el GitHub Release
+   (`gh release create`) con los 13 assets.
 2. `publish-metadata` (depende de `publish-release`) renderiza el Cask de
    Homebrew con `cargo xtask cask` — `binary` stanza sobre el `tar.gz` de
    macOS, con el `sha256` extraído de `SHA256SUMS.txt` — y lo empuja al tap.

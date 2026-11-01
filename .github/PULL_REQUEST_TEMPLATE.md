@@ -11,6 +11,6 @@
 - [ ] `cargo test --all`, `cargo fmt --all --check` y `cargo clippy --all-targets` pasan en local.
 - [ ] Añadí tests para todo comportamiento nuevo o corregido.
 - [ ] La documentación afectada (`README.md`, `USAGE.md`, `docs/`, `AGENTS.md`) quedó sincronizada con el cambio.
-- [ ] Si cambié `Cargo.toml`, regeneré `Cargo.lock` y revisé el diff (y actualicé `THIRD-PARTY-LICENSES.md` si aplicó).
-- [ ] Si cambiaron las dependencias empaquetadas, actualicé `THIRD-PARTY-LICENSES.md`.
+- [ ] Si cambié `Cargo.toml`, regeneré `Cargo.lock` y revisé el diff.
+- [ ] Si cambiaron las dependencias distribuidas o `packaging/notices/`, regeneré `THIRD-PARTY-LICENSES.md` con `cargo xtask licenses`.
 - [ ] Mensajes de commit en español, con prefijo de tipo (`feat:`, `fix:`, `docs:`, …).

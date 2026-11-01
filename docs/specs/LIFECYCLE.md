@@ -792,11 +792,11 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/CLI/commands/TRANSLATE.md` | Documento de `translate`: traducción de texto es↔en, delegable al daemon o ejecutada con el motor local |
 | `docs/CLI/commands/DEVICES.md` | Documento de `devices`: enumeración de los dispositivos de salida de audio y de la entrada y la salida predeterminadas, sin subcomandos, sin estado y sin daemon |
 | `docs/CLI/commands/VERSION.md` | Documento de `version`, el único comando de nivel superior sin motor en `avi-lifecycle`: lo resuelve `handle_version` en `src/main.rs`, y por eso el envelope `--json` es toda su superficie |
-| `THIRD-PARTY-LICENSES.md` | Inventario de licencias de terceros, con la región generada por `cargo xtask licenses` y la región curada arriba; gobierna el aviso de atribución de los pesos de modelo |
+| `THIRD-PARTY-LICENSES.md` | Inventario y avisos de licencias de terceros: dos regiones generadas por `cargo xtask licenses` desde las dependencias distribuidas (el inventario y los textos de licencia con sus titulares, más la tabla de componentes que no vienen de Cargo) y las secciones curadas; gobierna el aviso de atribución de los pesos de modelo |
 | `SECURITY.md` | Política y runbook: Mark-of-the-Web, los dos bootstrap como única ejecución previa al binario, y el aviso de binarios sin firmar diferido al goal a largo plazo |
 | `AGENTS.md` | Directrices de trabajo en este repositorio: idioma, surgicalidad, disciplina de versionado y prohibiciones; gobierna a quien modifica el proyecto, no al usuario final |
 | `CHANGELOG.md` | Historial de cambios por versión; la sección `[No publicado]` se cura durante el desarrollo y `cargo xtask release` la promueve |
-| `SOURCE-OFFER.md` | Aviso de disponibilidad de la fuente (MPL-2.0 §3.2), ligado a la versión publicada y actualizado en el corte de release |
+| `SOURCE-OFFER.md` | Aviso de disponibilidad de la fuente (MPL-2.0 §3.2), generado con `cargo xtask source-offer` desde la versión, los pines y los crates MPL-2.0 de terceros (FFmpeg, sus fuentes y su configuración de build incluidos) y actualizado en el corte de release |
 | `docs/dev/CONTEXT-OPTIMIZATION.md` | Guía de desarrollo sobre la optimización de contexto de los agentes de código con Engram y Codebase Memory MCP |
 | `docs/issues/README.md` | Índice y convenciones del registro de defectos: estructura común de cada informe transitorio en investigación |
 ## 14. Criterios de aceptación

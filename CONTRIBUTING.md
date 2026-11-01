@@ -67,7 +67,7 @@ Los hooks viven versionados en `.githooks/` y no se activan solos. Actívalos un
 git config core.hooksPath .githooks
 ```
 
-- `pre-commit`: puertas de idioma, comentarios, pines y features; falla el commit si no pasan.
+- `pre-commit`: puertas de idioma, comentarios, cabeceras de licencia, pines y features; falla el commit si no pasan.
 - `post-merge`: poda fina de `target/` tras integrar en `main`, solo si el merge tocó dependencias o toolchain y `target/` supera el umbral definido en la cabecera del hook. Es best-effort y nunca falla el merge.
 
 ### Worktrees
@@ -94,7 +94,12 @@ cargo test --all --verbose          # tests (avi-core/audio/tts/stt/translation/
 cargo fmt --all --check
 cargo clippy --all-targets
 
-# Validación de licencias MPL-2.0 (gate de CI)
+# Puertas de política y de licencias MPL-2.0 (las mismas de pre-commit y de CI)
+cargo xtask language --check
+cargo xtask comments --check
+cargo xtask headers --check
+cargo xtask pins --check
+cargo xtask features --check
 cargo xtask source-offer --check
 cargo xtask licenses --check
 ```
@@ -149,9 +154,11 @@ cargo update          # regenera Cargo.lock
 cargo test --all      # verifica
 ```
 
-Revisa el diff de `Cargo.lock` antes de commitear. Si cambia, regenera el inventario de `THIRD-PARTY-LICENSES.md` con `cargo xtask licenses` y revisa su diff (ver su §Regeneración).
+Revisa el diff de `Cargo.lock` antes de commitear. `THIRD-PARTY-LICENSES.md` tiene dos regiones generadas con `cargo xtask licenses` a partir del grafo de dependencias que se distribuye (las dependencias normales del paquete raíz con `--features full`, para los targets de `packaging/bundle-manifest.json`): el inventario y los avisos con el texto de cada licencia. Regénéralas y revisa el diff cuando cambien las dependencias distribuidas o `packaging/notices/`; un crate sin texto de licencia necesita su copia en `packaging/notices/crates/`, y un archivo nuevo del paquete necesita su entrada en la tabla de componentes de `crates/xtask/src/notices.rs`.
 
 `THIRD-PARTY-LICENSES.md` y `SOURCE-OFFER.md` viajan dentro de los `tar.gz`/`.zip`; el gate `validate-licenses` falla si divergen.
+
+**Cabeceras de licencia.** Todo archivo propio de código o de script (`.rs`, `.sh`, `.bash`, `.bats`, `.ps1` y los scripts sin extensión con shebang) lleva la cabecera de cinco líneas del Exhibit A de la MPL-2.0, con el prefijo de comentario del lenguaje (`//` en Rust, `#` en los demás) y justo después del shebang si lo hay. Los `.ps1` son ASCII puro, así que escriben el titular sin tilde. `cargo xtask headers --check` lo comprueba, y quedan fuera los crates cuyo `Cargo.toml` declara otra licencia (`crates/denoise`, MIT).
 
 ## Compilación de binarios
 

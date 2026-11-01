@@ -451,9 +451,11 @@ En CI se **aprovisiona pineado**: el job `build-windows-x64` extrae el release
 base de MSYS2 y sincroniza las versiones pineadas, cacheando la instalación por
 clave de versión (determinismo de release). El log del bootstrap captura
 `pacman -Q` + `gcc --version` como evidencia de la **GCC Runtime Library
-Exception** (libgfortran/libquadmath/libgcc estáticos en el `.exe`). Si la
-versión instalada difiere del pin, el bootstrap registra `[WARN]` y continúa
-usando la instalada como evidencia (`log on drift`, sin fallar de inmediato).
+Exception** (libgfortran/libquadmath/libgcc estáticos en el `.exe`). La
+comparación con los pines no se hace en el bootstrap: `cargo xtask build-engine`
+la aplica en Windows antes de invocar `make`, con la misma regla que
+`cargo xtask doctor`, y falla nombrando cada paquete (gcc, OpenBLAS o make) cuya
+versión instalada difiere de su pin.
 
 | Plataforma | `ARCH_FLAGS` | `CFLAGS_BASE` | `LDLIBS` / BLAS | Shims |
 |---|---|---|---|---|
@@ -554,10 +556,19 @@ y publicar una revisión nueva.
 - **Versión fijada:** la dependencia se declara con versión exacta (`=`), de modo
   que `[patch.crates-io]` no puede quedar sin efecto en silencio si el resolver
   eligiera otra versión.
+- **Qué cambia (identidad de los grupos de descarga):** `next_download_group_id`
+  (`vendor/hf-hub-*/src/xet.rs`) asigna a cada grupo de descarga Xet una
+  identidad única en el proceso, y `DownloadEvent::AggregateProgress`
+  (`vendor/hf-hub-*/src/progress.rs`) gana el campo `group_id` con la del grupo
+  que originó cada muestra. Sin él, las muestras de descargas simultáneas no se
+  pueden distinguir y el progreso agregado se mezcla; la prueba
+  `concurrent_download_groups_have_distinct_ids` fija que las identidades no se
+  repiten.
 - **Licencia y avisos:** la copia incluye el texto de Apache-2.0
   (`LICENSE-APACHE`) y marca con `// Patch:` cada comentario o código
   modificado en los archivos tocados (`vendor/hf-hub-*/src/cache/storage.rs`,
-  `vendor/hf-hub-*/src/repository/download.rs` y `vendor/hf-hub-*/src/client.rs`).
+  `vendor/hf-hub-*/src/repository/download.rs`, `vendor/hf-hub-*/src/client.rs`,
+  `vendor/hf-hub-*/src/xet.rs` y `vendor/hf-hub-*/src/progress.rs`).
 - **Cobertura:** la prueba `crates/avi-store/tests/hf_cache_layout.rs` descarga un
   archivo desde un servidor local y afirma que puntero y blob son el mismo
   archivo. La prueba `crates/avi-store/tests/hub_client_anonymous.rs` descarga con

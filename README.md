@@ -281,12 +281,12 @@ Un único binario Rust expone la CLI. La síntesis la hace el motor Qwen3-TTS, q
 - [docs/dev/CONTEXT-OPTIMIZATION.md](docs/dev/CONTEXT-OPTIMIZATION.md) — optimización de contexto para agentes de código.
 - [AGENTS.md](AGENTS.md) — guías para agentes de código.
 - [SOURCE-OFFER.md](SOURCE-OFFER.md) — disponibilidad de la fuente (MPL-2.0 §3.2).
-- [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) — inventario de licencias de terceros.
+- [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) — inventario y avisos de licencias de terceros.
 - [docs/issues/README.md](docs/issues/README.md) — registro de defectos en investigación.
 
 ## Licencia
 
-Copyright © 2026 Cristián Rojas Arredondo — **MPL-2.0** ([LICENSE](LICENSE), avisos en [NOTICE](NOTICE)). Motor Qwen3-TTS MIT/Apache-2.0; par de traducción `opus-mt` (Helsinki-NLP) CC-BY-4.0; dependencias en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md). Disponibilidad de la fuente (MPL-2.0 §3.2) en [SOURCE-OFFER.md](SOURCE-OFFER.md).
+Copyright © 2026 Cristián Rojas Arredondo — **MPL-2.0** ([LICENSE](LICENSE), avisos en [NOTICE](NOTICE)). Modelos descargados con `setup` bajo sus propias licencias: Qwen3-TTS y DPDFNet Apache-2.0; Parakeet TDT 0.6B v3 y el par de traducción `opus-mt` (Helsinki-NLP) CC-BY-4.0. Los avisos de licencia de las dependencias y de los componentes del paquete están en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md), y la disponibilidad de la fuente (MPL-2.0 §3.2), incluida la de FFmpeg, en [SOURCE-OFFER.md](SOURCE-OFFER.md).
 
 ## Comunidad y soporte
 

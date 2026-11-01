@@ -48,11 +48,15 @@ la integridad se verifica cotejando los checksums SHA-256.
 - **Árbol de trabajo limpio y al menos un commit desde el último tag.** Los
   cambios previos al bump —incluida la curación del CHANGELOG— deben estar
   commiteados antes de invocar `xtask release`; el comando aborta si no se cumple.
-- **`THIRD-PARTY-LICENSES.md` en sincronía con `Cargo.lock`.** Cada vez que
-  cambia `Cargo.lock`, hay que regenerar el inventario con
+- **`THIRD-PARTY-LICENSES.md` en sincronía con las dependencias distribuidas.**
+  Cada vez que cambian las dependencias que se distribuyen o
+  `packaging/notices/`, hay que regenerar el inventario y los avisos con
   `cargo xtask licenses` y revisar el diff. La comprobación
-  `cargo xtask licenses --check` compara el inventario completo:
-  nombre, versión, licencia, familia y totales.
+  `cargo xtask licenses --check` compara las dos regiones completas:
+  paquetes, versiones, licencias, familias, totales y textos de licencia. Si
+  sube el pin de ONNX Runtime, hay que actualizar también la copia de sus avisos
+  en `packaging/notices/onnxruntime-<versión>/`: `cargo xtask package` falla si
+  difiere de la del archivo oficial.
 - **Revisiones de los modelos auditadas.** Los seis modelos fijados (Qwen3-TTS,
   dos pares opus-mt, Parakeet y DPDFNet) se descargan con
   `ai-voice-interconnector setup` y no se empaquetan. Para incorporar una
@@ -205,7 +209,8 @@ promovido.
 `cargo xtask release X.Y.Z` ejecuta estas puertas antes de mutar archivos:
 
 1. La versión tiene formato `X.Y.Z`.
-2. `THIRD-PARTY-LICENSES.md` está en sincronía con `Cargo.lock`.
+2. `THIRD-PARTY-LICENSES.md` está en sincronía con las dependencias distribuidas
+   (inventario y avisos).
 3. `cargo fmt --all --check` y `cargo clippy --all-targets -- -D warnings` pasan.
 4. El árbol está limpio y hay commits desde el último tag.
 5. Pasa `cargo test --workspace --features full -- --include-ignored`, la
@@ -233,10 +238,9 @@ versión, ejecuta `cargo xtask resource-gate`, que corre la misma función con e
 mismo entorno. No es un paso previo al corte.
 
 El bump versiona `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
-`tests/golden/cli_version.json` y `SOURCE-OFFER.md`; regenera
-`THIRD-PARTY-LICENSES.md` y promueve `## [No publicado]` a la sección de versión
-fechada. Las post-comprobaciones verifican licencias, `SOURCE-OFFER.md` y
-CHANGELOG. Si una post-comprobación falla, los archivos ya se modificaron:
+`tests/golden/cli_version.json` y `SOURCE-OFFER.md`, y promueve
+`## [No publicado]` a la sección de versión fechada. Las post-comprobaciones
+verifican licencias, `SOURCE-OFFER.md` y CHANGELOG. Si una post-comprobación falla, los archivos ya se modificaron:
 corrígelos de forma explícita o revierte únicamente esos cambios y vuelve a
 validar. No avances al tag hasta que todas las comprobaciones pasen.
 
@@ -254,7 +258,7 @@ en `.circleci/config.yml`. Con el tag publicado, ejecuta sin intervención:
    | `test-linux`, `test-windows`, `test-macos` | `cargo nextest run --all` en cada SO nativo |
    | `coverage` | Cobertura de la suite, con todas las pruebas de un binario en un mismo proceso (arnés de `cargo test`) |
    | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de `tests/bootstrap/`: bats contra `openssl s_server` y Pester contra `Serve.ps1` |
-   | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render y el inventario de terceros con `Cargo.lock` |
+   | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render desde los pines, el inventario y los avisos de `THIRD-PARTY-LICENSES.md` con las dependencias distribuidas, y todo archivo propio lleva la cabecera MPL-2.0 (`headers --check`) |
    | `validate-changelog` | Sección `[X.Y.Z]`, entrada del índice/ancla, enlace de comparación, sin `TODO: curar` ni `[No publicado]` |
 
 2. **Builds.** `build-windows-x64`, `build-linux-x64`, `build-linux-arm64` y
@@ -267,11 +271,15 @@ en `.circleci/config.yml`. Con el tag publicado, ejecuta sin intervención:
      en sandbox y persisten el artefacto en el workspace.
 
    Los cuatro artefactos son Windows x64, Linux x64, Linux arm64 y macOS arm64.
-   Se añaden `install.sh`, `install.ps1` y `SHA256SUMS.txt` al Release.
+   Cada build persiste además la configuración de build de su FFmpeg
+   (`ffmpeg-<versión>-buildconf-<triple>.txt`). Se añaden `install.sh`,
+   `install.ps1` y `SHA256SUMS.txt` al Release.
 
-3. **`publish-release`** estampa la versión en ambos bootstrap, genera los
-   checksums y publica las notas extraídas del CHANGELOG con los enlaces de la
-   fuente (MPL-2.0 §3.2).
+3. **`publish-release`** (imagen con Rust) estampa la versión en ambos
+   bootstrap, descarga y verifica las fuentes de FFmpeg
+   (`cargo xtask ffmpeg --sources`), genera los checksums y publica las notas
+   extraídas del CHANGELOG con el pie de fuentes que genera
+   `cargo xtask source-offer --notes` (MPL-2.0 §3.2).
 4. **`publish-metadata`** obtiene los checksums, actualiza el Cask de Homebrew y
    lo empuja al tap. Si el Cask no cambió, no empuja nada.
 
@@ -283,8 +291,10 @@ gh release view vX.Y.Z --json tagName,assets
 
 Verifica que el Release `vX.Y.Z` esté publicado y marcado como *latest*:
 
-- Tiene los **7 assets**: cuatro artefactos, dos bootstrap y
-  `SHA256SUMS.txt`.
+- Tiene los **13 assets**: cuatro artefactos, dos bootstrap, `SHA256SUMS.txt`,
+  las dos fuentes de FFmpeg (`ffmpeg-<versión>.tar.xz` y
+  `ffmpeg-builds-<tag de BtbN>.tar.gz`) y las cuatro configuraciones de build de
+  FFmpeg (`ffmpeg-<versión>-buildconf-<triple>.txt`).
 - Las notas coinciden con la sección `[X.Y.Z]` del CHANGELOG e incluyen el
   enlace al tarball fuente `archive/refs/tags/vX.Y.Z.tar.gz`.
 - Opcionalmente, compara los hashes con los emitidos por los builds.
