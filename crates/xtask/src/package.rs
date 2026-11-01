@@ -1529,7 +1529,10 @@ mod tests {
     fn ffmpeg_sources_follow_the_pinned_version() {
         let sources = ffmpeg_sources("9.0.2");
         assert_eq!(sources[0].0, "ffmpeg-9.0.2.tar.xz");
-        assert_eq!(sources[0].1, "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz");
+        assert_eq!(
+            sources[0].1,
+            "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz"
+        );
         assert_eq!(
             sources[1].0,
             format!("ffmpeg-builds-{FFMPEG_BTBN_TAG}.tar.gz")
@@ -1891,7 +1894,11 @@ mod tests {
         let pins = pins::load_from_root(&root).unwrap();
         let dir = ort_notices_dir(&root, &pins.ort);
         for name in ORT_NOTICE_FILES {
-            assert!(dir.join(name).is_file(), "falta {}", dir.join(name).display());
+            assert!(
+                dir.join(name).is_file(),
+                "falta {}",
+                dir.join(name).display()
+            );
         }
     }
 

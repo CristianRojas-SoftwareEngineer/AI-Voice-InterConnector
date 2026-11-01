@@ -278,7 +278,9 @@ fn text_matches(license_id: &str, text: &str) -> Result<bool> {
     let normalized = collapse(text);
     let has_all = |phrases: &[&str]| phrases.iter().all(|phrase| normalized.contains(phrase));
     Ok(match license_id {
-        "MIT" => has_all(&["permission is hereby granted, free of charge, to any person obtaining a copy"]),
+        "MIT" => has_all(&[
+            "permission is hereby granted, free of charge, to any person obtaining a copy",
+        ]),
         "Apache-2.0" => has_all(&["apache license", "version 2.0, january 2004"]),
         "BSD-3-Clause" => has_all(&[
             "redistribution and use in source and binary forms",
@@ -293,7 +295,9 @@ fn text_matches(license_id: &str, text: &str) -> Result<bool> {
         "MPL-2.0" => has_all(&["mozilla public license", "version 2.0"]),
         "Unicode-3.0" => has_all(&["unicode license v3"]),
         "CDLA-Permissive-2.0" => has_all(&["community data license agreement"]),
-        other => bail!("la licencia `{other}` no tiene frase de reconocimiento: añádela a text_matches"),
+        other => {
+            bail!("la licencia `{other}` no tiene frase de reconocimiento: añádela a text_matches")
+        }
     })
 }
 
@@ -562,8 +566,7 @@ fn read_component_text(root: &Path, text: &ComponentText, ort: &str) -> Result<S
             let path = root.join(file);
             let source = std::fs::read_to_string(&path)
                 .map_err(|e| anyhow!("no se pudo leer {}: {}", path.display(), e))?;
-            comment_block(&source, begin)
-                .map_err(|e| anyhow!("{}: {}", path.display(), e))
+            comment_block(&source, begin).map_err(|e| anyhow!("{}: {}", path.display(), e))
         }
     }
 }
@@ -605,9 +608,14 @@ fn is_copyright_line(trimmed: &str) -> bool {
         || lower.starts_with("(c)")
         || lower.starts_with("portions copyright")
         || lower.starts_with('©');
-    let placeholder = ["yyyy", "<year>", "name of author", "name of copyright owner"]
-        .iter()
-        .any(|marker| lower.contains(marker));
+    let placeholder = [
+        "yyyy",
+        "<year>",
+        "name of author",
+        "name of copyright owner",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker));
     declares && !placeholder
 }
 
@@ -778,7 +786,12 @@ pub(crate) fn render_notices(root: &Path, packages: &[DistPackage], ort: &str) -
         out.push_str(&format!(
             "### Texto {}: {}\n\n",
             index + 1,
-            group.licenses.iter().cloned().collect::<Vec<_>>().join(", ")
+            group
+                .licenses
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
         if !group.holders.is_empty() {
             out.push_str("Titulares:\n\n");
@@ -821,7 +834,10 @@ mod tests {
         assert_eq!(ids("Zlib OR Apache-2.0"), ["Apache-2.0"]);
         assert_eq!(ids("Zlib OR ISC"), ["Zlib"]);
         assert_eq!(ids("Unlicense OR MIT OR Apache-2.0 OR CC0-1.0"), ["MIT"]);
-        assert_eq!(ids("CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"), ["Apache-2.0"]);
+        assert_eq!(
+            ids("CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"),
+            ["Apache-2.0"]
+        );
     }
 
     #[test]
@@ -837,10 +853,7 @@ mod tests {
             ids("(Apache-2.0 OR MIT) AND BSD-3-Clause"),
             ["MIT", "BSD-3-Clause"]
         );
-        assert_eq!(
-            ids("ISC AND (Apache-2.0 OR ISC)"),
-            ["ISC", "Apache-2.0"]
-        );
+        assert_eq!(ids("ISC AND (Apache-2.0 OR ISC)"), ["ISC", "Apache-2.0"]);
     }
 
     #[test]
@@ -973,7 +986,8 @@ mod tests {
 
     #[test]
     fn a_comment_block_is_extracted_without_indentation() {
-        let source = "int x;\n/*\n   LZ4 - Fast\n   Copyright (C) 2011, Yann\n\n     * item\n*/\nint y;\n";
+        let source =
+            "int x;\n/*\n   LZ4 - Fast\n   Copyright (C) 2011, Yann\n\n     * item\n*/\nint y;\n";
         let block = comment_block(source, "LZ4 - Fast").unwrap();
         assert!(block.contains("LZ4 - Fast\nCopyright (C) 2011, Yann"));
         assert!(block.contains("  * item"));
@@ -1058,7 +1072,8 @@ mod tests {
             .join("notices")
             .join(format!("onnxruntime-{}", pins.ort));
         assert!(
-            directory.join("LICENSE").is_file() && directory.join("ThirdPartyNotices.txt").is_file(),
+            directory.join("LICENSE").is_file()
+                && directory.join("ThirdPartyNotices.txt").is_file(),
             "faltan los avisos de ONNX Runtime {} en {}",
             pins.ort,
             directory.display()

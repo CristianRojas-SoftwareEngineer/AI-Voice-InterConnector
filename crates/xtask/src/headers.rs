@@ -105,10 +105,13 @@ fn check_text(text: &str, prefix: &str) -> Option<Problem> {
     }
     // La primera línea de la cabecera es la que identifica un intento de cabecera.
     let marker = expected[0].as_str();
-    if lines.get(start).is_some_and(|line| line.starts_with(prefix) && line.contains("Source Code Form")) {
+    if lines
+        .get(start)
+        .is_some_and(|line| line.starts_with(prefix) && line.contains("Source Code Form"))
+    {
         return Some(Problem::Different);
     }
-    if lines.iter().any(|line| *line == marker) {
+    if lines.contains(&marker) {
         return Some(Problem::Misplaced);
     }
     if lines.iter().any(|line| line.contains("Source Code Form")) {
@@ -285,9 +288,15 @@ mod tests {
     #[test]
     fn a_crate_with_another_license_is_excluded() {
         let hits = scan_tree(&[
-            ("crates/otro/Cargo.toml", "[package]\nlicense = \"MIT\"\n".to_string()),
+            (
+                "crates/otro/Cargo.toml",
+                "[package]\nlicense = \"MIT\"\n".to_string(),
+            ),
             ("crates/otro/src/lib.rs", "fn a() {}\n".to_string()),
-            ("crates/propio/Cargo.toml", "[package]\nlicense = \"MPL-2.0\"\n".to_string()),
+            (
+                "crates/propio/Cargo.toml",
+                "[package]\nlicense = \"MPL-2.0\"\n".to_string(),
+            ),
             ("crates/propio/src/lib.rs", "fn a() {}\n".to_string()),
         ]);
         assert_eq!(hits.len(), 1);

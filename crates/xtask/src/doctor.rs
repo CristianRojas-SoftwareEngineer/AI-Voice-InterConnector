@@ -587,8 +587,8 @@ pub(crate) fn check_engine_toolchain(pins: &Pins) -> Row {
                 )),
             };
         }
-        let installed = msys2_packages(pins)
-            .map(|(package, _)| msys2_package_version(&pacman, package));
+        let installed =
+            msys2_packages(pins).map(|(package, _)| msys2_package_version(&pacman, package));
         return evaluate_msys2_versions(pins, &installed);
     }
     if cfg!(target_os = "macos") {

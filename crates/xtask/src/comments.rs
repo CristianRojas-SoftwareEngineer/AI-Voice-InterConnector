@@ -28,9 +28,9 @@
 //!
 //! Sin dependencias nuevas: el lexer que hace falta es una expresión regular.
 
+use crate::first_party;
 use anyhow::{anyhow, Result};
 use regex::Regex;
-use crate::first_party;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -68,13 +68,11 @@ struct AllowEntry {
 /// Las dos son la **sección 3.2 de la MPL-2.0**, que es una sección del contrato de
 /// licencia y no de la especificación. Este control no las reescribe y no puede hacerlo,
 /// porque es el texto que la propia licencia exige publicar.
-const ALLOWLIST: &[AllowEntry] = &[
-    AllowEntry {
-        file: "crates/xtask/src/main.rs",
-        reason: "sección 3.2 de la MPL-2.0 en la plantilla y el anuncio del aviso de \
+const ALLOWLIST: &[AllowEntry] = &[AllowEntry {
+    file: "crates/xtask/src/main.rs",
+    reason: "sección 3.2 de la MPL-2.0 en la plantilla y el anuncio del aviso de \
                  disponibilidad de la fuente; es contrato de licencia, no de la especificación",
-    },
-];
+}];
 
 /// Una línea rechazada, con su fichero, su número, su motivo y el texto tal cual.
 #[derive(Debug)]

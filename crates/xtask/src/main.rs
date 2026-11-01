@@ -337,7 +337,7 @@ enum Commands {
         #[arg(long, value_name = "TAG", conflicts_with = "check")]
         notes: Option<String>,
     },
-    /// Genera o verifica el inventario de THIRD-PARTY-LICENSES.md
+    /// Genera o verifica el inventario y los avisos de THIRD-PARTY-LICENSES.md
     Licenses {
         #[arg(long)]
         check: bool,
@@ -553,10 +553,14 @@ fn main() -> Result<()> {
         Commands::Licenses { check } => {
             if check {
                 check_licenses_gate()?;
-                println!("THIRD-PARTY-LICENSES.md está en sincronía con las dependencias distribuidas");
+                println!(
+                    "THIRD-PARTY-LICENSES.md está en sincronía con las dependencias distribuidas"
+                );
             } else {
                 write_licenses_regions()?;
-                println!("Inventario y avisos de THIRD-PARTY-LICENSES.md regenerados: revisa el diff");
+                println!(
+                    "Inventario y avisos de THIRD-PARTY-LICENSES.md regenerados: revisa el diff"
+                );
             }
         }
         Commands::Release { version } => {
@@ -624,7 +628,6 @@ fn main() -> Result<()> {
             println!("  - Cargo.toml (package.version)");
             println!("  - Cargo.lock (ai-voice-interconnector)");
             println!("  - tests/golden/cli_version.json");
-            println!("  - THIRD-PARTY-LICENSES.md (inventario regenerado)");
             println!("  - SOURCE-OFFER.md (aviso MPL-2.0 §3.2 versionado)");
             println!("  - CHANGELOG.md (sección promovida desde [No publicado] + ToC + enlace)");
             println!(
@@ -926,7 +929,9 @@ fn render_source_offer(
         let list: Vec<String> = mpl_crates
             .iter()
             .map(|(name, crate_version)| {
-                format!("- `{name}` {crate_version}: <https://crates.io/crates/{name}/{crate_version}>")
+                format!(
+                    "- `{name}` {crate_version}: <https://crates.io/crates/{name}/{crate_version}>"
+                )
             })
             .collect();
         format!(
@@ -1529,7 +1534,9 @@ fn distributed_packages(metadata: &[serde_json::Value]) -> Result<Vec<DistPackag
                 package["version"].as_str(),
                 package["manifest_path"].as_str(),
             ) else {
-                anyhow::bail!("cargo metadata devolvió un paquete sin nombre, versión o manifiesto");
+                anyhow::bail!(
+                    "cargo metadata devolvió un paquete sin nombre, versión o manifiesto"
+                );
             };
             let manifest_dir = Path::new(manifest)
                 .parent()
@@ -2062,7 +2069,9 @@ mod tests {
     /// Texto de un job de la pipeline, desde su cabecera hasta la del siguiente.
     fn ci_job_block(cfg: &str, job: &str) -> String {
         let header = format!("\n  {job}:\n");
-        let start = cfg.find(&header).unwrap_or_else(|| panic!("no hay job {job}"));
+        let start = cfg
+            .find(&header)
+            .unwrap_or_else(|| panic!("no hay job {job}"));
         let body = &cfg[start + header.len()..];
         let next = Regex::new(r"\n  [a-z0-9-]+:\n")
             .unwrap()
@@ -2088,7 +2097,8 @@ mod tests {
         assert!(image(&release).starts_with("cimg/rust:"));
         assert_eq!(image(&release), image(&metadata));
         assert!(release.contains("cargo --quiet xtask ffmpeg --sources artifacts"));
-        assert!(release.contains("cargo --quiet xtask source-offer --notes \"$CIRCLE_TAG\" >> notes.md"));
+        assert!(release
+            .contains("cargo --quiet xtask source-offer --notes \"$CIRCLE_TAG\" >> notes.md"));
         assert!(release.contains("sha256sum ai-voice-interconnector-* ffmpeg-*"));
         assert!(release.contains("artifacts/ffmpeg-*"));
         assert!(!release.contains("echo \"- Tarball de fuente"));
@@ -3357,8 +3367,16 @@ mod tests {
                 ("ai-voice-interconnector 1.0.0", "macros 0.2.0", None),
                 ("ai-voice-interconnector 1.0.0", "denoise 1.0.0", None),
                 ("ai-voice-interconnector 1.0.0", "avi-core 0.1.0", None),
-                ("ai-voice-interconnector 1.0.0", "dev-only 1.0.0", Some("dev")),
-                ("ai-voice-interconnector 1.0.0", "build-only 1.0.0", Some("build")),
+                (
+                    "ai-voice-interconnector 1.0.0",
+                    "dev-only 1.0.0",
+                    Some("dev"),
+                ),
+                (
+                    "ai-voice-interconnector 1.0.0",
+                    "build-only 1.0.0",
+                    Some("build"),
+                ),
                 ("macros 0.2.0", "cfg-if 0.1.10", None),
                 ("build-only 1.0.0", "build-helper 1.0.0", None),
             ],
@@ -3399,7 +3417,12 @@ mod tests {
         // su transitiva.
         assert_eq!(
             names,
-            ["cfg-if 0.1.10", "cfg-if 1.0.4", "denoise 1.0.0", "macros 0.2.0"]
+            [
+                "cfg-if 0.1.10",
+                "cfg-if 1.0.4",
+                "denoise 1.0.0",
+                "macros 0.2.0"
+            ]
         );
     }
 
