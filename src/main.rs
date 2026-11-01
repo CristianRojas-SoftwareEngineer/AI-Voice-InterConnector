@@ -473,7 +473,7 @@ impl Routing {
 enum Commands {
     /// Muestra la versión del programa
     Version,
-    /// Enumera dispositivos de salida de audio
+    /// Enumera dispositivos de salida de audio y muestra la entrada y la salida predeterminadas
     Devices,
     /// Traducción de texto es<->en
     Translate {
@@ -1219,17 +1219,40 @@ fn handle_denoise(json_mode: bool, args: denoise::cli::Cli) -> Outcome {
 }
 
 fn handle_devices(json_mode: bool) -> Result<(), CliError> {
-    let devices = audio::get_devices_json()
-        .map_err(|e| CliError::new(ExitCode::Error, "audio_enumeration_failed", e.to_string()))?;
+    let report = audio::get_devices_json().map_err(|e| {
+        audio_error(e, ExitCode::Error, "audio_enumeration_failed", |e| {
+            e.to_string()
+        })
+    })?;
     if json_mode {
-        emit_raw_json(json!({ "devices": devices }));
+        emit_raw_json(report);
     } else {
         println!("Dispositivos de salida de audio:");
-        for dev in &devices {
+        for dev in report["devices"].as_array().into_iter().flatten() {
             println!("{}", device_line(dev));
         }
+        println!(
+            "{}",
+            default_device_line("Entrada predeterminada", &report["default_input"])
+        );
+        println!(
+            "{}",
+            default_device_line("Salida predeterminada", &report["default_output"])
+        );
     }
     Ok(())
+}
+
+/// Línea de texto de un dispositivo predeterminado del JSON de
+/// `avi_audio::get_devices_json`: `null` es «ninguna» (el sistema no tiene) y
+/// un nombre `null` es «desconocido», como en `device_line`.
+fn default_device_line(label: &str, device: &Value) -> String {
+    let name = if device.is_null() {
+        "ninguna"
+    } else {
+        device["name"].as_str().unwrap_or("desconocido")
+    };
+    format!("{label}: {name}")
 }
 
 /// Línea de texto de un dispositivo del JSON de `avi_audio::get_devices_json`:
@@ -1770,27 +1793,51 @@ async fn capture_mic_pcm(duration: Option<u64>, max_secs: u64) -> Result<Vec<i16
     })
     .await
     .map_err(|e| {
-        let message = e.to_string();
-        if message.contains("empty_audio") {
-            return CliError::new(ExitCode::InvalidInput, "empty_audio", message);
-        }
         CliError::new(
             ExitCode::TranscriptionFailed,
             "transcription_failed",
-            message,
+            e.to_string(),
         )
     })?
     .map_err(|e| {
-        let message = e.to_string();
-        if message.contains("empty_audio") {
-            return CliError::new(ExitCode::InvalidInput, "empty_audio", message);
-        }
-        CliError::new(
+        audio_error(
+            e,
             ExitCode::TranscriptionFailed,
             "transcription_failed",
-            message,
+            |e| e.to_string(),
         )
     })
+}
+
+/// Clasificador único de los errores de las operaciones de audio (captura,
+/// reproducción y enumeración). El entorno se clasifica por tipo: sin backend
+/// de audio, sin entrada o sin salida predeterminada es un recurso ausente
+/// (exit 3) y una captura sin muestras es entrada inválida (exit 2), sea cual
+/// sea la operación. Lo demás conserva el `code`, el `reason` y el mensaje
+/// propios de la operación.
+fn audio_error(
+    e: anyhow::Error,
+    code: ExitCode,
+    reason: &str,
+    message: impl FnOnce(&anyhow::Error) -> String,
+) -> CliError {
+    if e.downcast_ref::<avi_audio::AudioBackendUnavailable>()
+        .is_some()
+    {
+        CliError::new(
+            ExitCode::NotFound,
+            "audio_backend_unavailable",
+            e.to_string(),
+        )
+    } else if e.downcast_ref::<avi_audio::NoInputDevice>().is_some() {
+        CliError::new(ExitCode::NotFound, "no_input_device", e.to_string())
+    } else if e.downcast_ref::<avi_audio::NoOutputDevice>().is_some() {
+        CliError::new(ExitCode::NotFound, "no_output_device", e.to_string())
+    } else if e.downcast_ref::<avi_audio::EmptyAudio>().is_some() {
+        CliError::new(ExitCode::InvalidInput, "empty_audio", e.to_string())
+    } else {
+        CliError::new(code, reason, message(&e))
+    }
 }
 
 /// Rechaza con exit 3 (`audio_not_found`) un `--audio` que no es un archivo
@@ -1933,7 +1980,8 @@ fn ensure_clone_reference_within_limit(path: &std::path::Path) -> Result<(), Cli
 
 /// Obtiene el PCM 16 kHz mono desde el micrófono o desde un WAV, y traduce los
 /// fallos al contrato: archivo ausente exit 3, WAV inválido exit 2, error de
-/// E/S exit 1 y fallo de micrófono exit 10 (`transcription_failed`). `max_secs` es el techo de la
+/// E/S exit 1; en la captura, sin entrada predeterminada o sin backend de audio
+/// exit 3, audio vacío exit 2 y el resto exit 10 (`transcription_failed`). `max_secs` es el techo de la
 /// captura push-to-talk. Con `mic == false`, `audio` debe ser `Some`.
 async fn acquire_pcm(
     audio: Option<&str>,
@@ -2107,11 +2155,9 @@ fn menu_playback(label: &str) -> impl FnMut(&std::path::Path) -> Result<(), CliE
     let label = label.to_string();
     move |wav: &std::path::Path| {
         audio::AudioService::new().play_wav(wav).map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "playback_failed",
-                format!("Fallo al reproducir la locución '{}': {}", label, e),
-            )
+            audio_error(e, ExitCode::Error, "playback_failed", |e| {
+                format!("Fallo al reproducir la locución '{}': {}", label, e)
+            })
         })
     }
 }
@@ -2753,11 +2799,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 audio::AudioService::new()
                     .play_wav(tmp_wav.path())
                     .map_err(|e| {
-                        CliError::new(
-                            ExitCode::Error,
-                            "playback_failed",
-                            format!("Fallo al reproducir la locución: {}", e),
-                        )
+                        audio_error(e, ExitCode::Error, "playback_failed", |e| {
+                            format!("Fallo al reproducir la locución: {}", e)
+                        })
                     })?;
                 Ok(())
             }
@@ -3057,11 +3101,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     audio::AudioService::new()
                         .play_wav(tmp_wav.path())
                         .map_err(|e| {
-                            CliError::new(
-                                ExitCode::Error,
-                                "playback_failed",
-                                format!("Fallo al reproducir el doblaje: {}", e),
-                            )
+                            audio_error(e, ExitCode::Error, "playback_failed", |e| {
+                                format!("Fallo al reproducir el doblaje: {}", e)
+                            })
                         })?;
                     Ok(DubOutcome {
                         transcript: transcribed,
@@ -3093,14 +3135,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         break 'work audio::AudioService::new()
                             .play_wav(&entry.audio_path)
                             .map_err(|e| {
-                                CliError::new(
-                                    ExitCode::Error,
-                                    "playback_failed",
+                                audio_error(e, ExitCode::Error, "playback_failed", |e| {
                                     format!(
                                         "Fallo al reproducir la locución '{}' de la voz '{}': {}",
                                         label, voice, e
-                                    ),
-                                )
+                                    )
+                                })
                             });
                     };
                     let elapsed = progress.close();
@@ -5617,11 +5657,9 @@ async fn say_via_daemon(
     audio::AudioService::new()
         .play_wav(tmp.path())
         .map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "playback_failed",
-                format!("Fallo al reproducir la locución: {}", e),
-            )
+            audio_error(e, ExitCode::Error, "playback_failed", |e| {
+                format!("Fallo al reproducir la locución: {}", e)
+            })
         })?;
     Ok(())
 }
@@ -5889,11 +5927,9 @@ async fn dub_via_daemon(
     audio::AudioService::new()
         .play_wav(tmp_wav.path())
         .map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "playback_failed",
-                format!("Fallo al reproducir el doblaje: {}", e),
-            )
+            audio_error(e, ExitCode::Error, "playback_failed", |e| {
+                format!("Fallo al reproducir el doblaje: {}", e)
+            })
         })?;
     Ok(outcome)
 }
@@ -6092,6 +6128,61 @@ mod tests {
         assert_eq!(
             device_line(&json!({ "id": 0, "name": "Altavoces", "latency": 0.0105 })),
             "  [0] Altavoces (latencia: 10.5ms)"
+        );
+    }
+
+    /// Un predeterminado ausente se muestra como «ninguna», uno sin nombre como
+    /// «desconocido» y uno con nombre, tal cual.
+    #[test]
+    fn default_device_line_shows_none_unknown_and_name() {
+        assert_eq!(
+            default_device_line("Entrada predeterminada", &Value::Null),
+            "Entrada predeterminada: ninguna"
+        );
+        assert_eq!(
+            default_device_line("Salida predeterminada", &json!({ "name": null })),
+            "Salida predeterminada: desconocido"
+        );
+        assert_eq!(
+            default_device_line("Salida predeterminada", &json!({ "name": "Altavoces" })),
+            "Salida predeterminada: Altavoces"
+        );
+    }
+
+    /// Los fallos de entorno se clasifican por tipo en cualquier operación; el
+    /// resto conserva el código, el `reason` y el mensaje de la operación.
+    #[test]
+    fn audio_error_classifies_environment_by_type() {
+        let backend = avi_audio::AudioBackendUnavailable {
+            library: "libasound.so.2",
+            missing: None,
+        };
+        let cases: [(anyhow::Error, i32, &str); 4] = [
+            (backend.into(), 3, "audio_backend_unavailable"),
+            (avi_audio::NoInputDevice.into(), 3, "no_input_device"),
+            (avi_audio::NoOutputDevice.into(), 3, "no_output_device"),
+            (avi_audio::EmptyAudio.into(), 2, "empty_audio"),
+        ];
+        for (error, code, reason) in cases {
+            let cli = audio_error(error, ExitCode::Error, "playback_failed", |_| {
+                unreachable!("el entorno no usa el mensaje de la operación")
+            });
+            assert_eq!((cli.code.code(), cli.reason.as_str()), (code, reason));
+        }
+
+        let other = audio_error(
+            anyhow::anyhow!("stream roto"),
+            ExitCode::Error,
+            "playback_failed",
+            |e| format!("Fallo al reproducir: {e}"),
+        );
+        assert_eq!(
+            (
+                other.code.code(),
+                other.reason.as_str(),
+                other.message.as_str()
+            ),
+            (1, "playback_failed", "Fallo al reproducir: stream roto")
         );
     }
 

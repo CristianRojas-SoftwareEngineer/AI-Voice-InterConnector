@@ -787,7 +787,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/CLI/commands/SPEECH.md` | Documento de `speech`: síntesis, transcripción y doblaje voz→voz, y el CRUD de las locuciones persistidas |
 | `docs/CLI/commands/VOICE.md` | Documento de `voice`: registro de voces (fábrica y clonadas), con `clone` delegable al daemon y `list`/`remove` siempre locales |
 | `docs/CLI/commands/TRANSLATE.md` | Documento de `translate`: traducción de texto es↔en, delegable al daemon o ejecutada con el motor local |
-| `docs/CLI/commands/DEVICES.md` | Documento de `devices`: enumeración de los dispositivos de salida de audio, sin subcomandos, sin estado y sin daemon |
+| `docs/CLI/commands/DEVICES.md` | Documento de `devices`: enumeración de los dispositivos de salida de audio y de la entrada y la salida predeterminadas, sin subcomandos, sin estado y sin daemon |
 | `docs/CLI/commands/VERSION.md` | Documento de `version`, el único comando de nivel superior sin motor en `avi-lifecycle`: lo resuelve `handle_version` en `src/main.rs`, y por eso el envelope `--json` es toda su superficie |
 | `THIRD-PARTY-LICENSES.md` | Inventario de licencias de terceros, con la región generada por `cargo xtask licenses` y la región curada arriba; gobierna el aviso de atribución de los pesos de modelo |
 | `SECURITY.md` | Política y runbook: Mark-of-the-Web, los dos bootstrap como única ejecución previa al binario, y el aviso de binarios sin firmar diferido al goal a largo plazo |

@@ -273,6 +273,10 @@ copia).
 | Modelo Base de clonado no provisionado | clone (ruta local) | 4 | `model_missing` |
 | Referencia que no es un WAV válido, está truncada o declara una frecuencia de muestreo nula | clone | 2 | `invalid_audio` |
 | Fallo de E/S al leer la referencia | clone | 1 | `io_error` |
+| `--mic` sin dispositivo de entrada predeterminado en el sistema | clone | 3 | `no_input_device` |
+| `--mic` en un sistema sin backend de audio (en Linux, falta ALSA, `libasound.so.2`, o no define alguna función que se usa) | clone | 3 | `audio_backend_unavailable` |
+| `--mic` terminó la captura sin ninguna muestra | clone | 2 | `empty_audio` |
+| Otro fallo de la captura de `--mic`, no atribuible al entorno | clone | 10 | `transcription_failed` |
 | Falla el motor de `avi_tts::clone_voice` o `save_reference` (el mensaje termina con `Log del motor: <ruta>` a `data/logs/qwen3-tts_*.log`) | clone | 1 | `voice_clone_failed` |
 | Daemon inalcanzable (inactividad / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |

@@ -213,6 +213,8 @@ una respuesta válida y sale como payload, no como texto.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `devices` | array de objetos | Un objeto por dispositivo de salida: `id` (number), `name` (string o `null` si el backend no lo expone), `latency` (number o `null`, segundos; `null` si el backend no la expone) |
+| `default_input` | objeto o `null` | Entrada predeterminada (micrófono) que usaría la captura: `{ "name" }` (string o `null` si el backend no lo expone), o `null` si el sistema no tiene ninguna |
+| `default_output` | objeto o `null` | Salida predeterminada que usaría la reproducción: `{ "name" }` (string o `null` si el backend no lo expone), o `null` si el sistema no tiene ninguna |
 
 **`voice list --json`**
 
@@ -344,7 +346,9 @@ Referencia canónica: `docs/CLI/commands/DOCTOR.md`.
 
 ### `devices`
 
-Lista los dispositivos de salida de audio disponibles.
+Lista los dispositivos de salida de audio disponibles y muestra la entrada
+(micrófono) y la salida predeterminadas, que son las que usan la captura con
+`--mic` y la reproducción.
 
 ```bash
 ai-voice-interconnector devices
@@ -357,7 +361,12 @@ ai-voice-interconnector devices --json
 Dispositivos de salida de audio:
   [0] Altavoces (Realtek High Definition Audio) (latencia: 10.0ms)
   [1] Auriculares (latencia: 8.0ms)
+Entrada predeterminada: Micrófono (Realtek High Definition Audio)
+Salida predeterminada: Altavoces (Realtek High Definition Audio)
 ```
+
+Una predeterminada que el sistema no tiene se muestra como `ninguna`, y una
+cuyo nombre el sistema no expone, como `desconocido`.
 
 ---
 
@@ -1175,7 +1184,9 @@ Actualiza la distro o compila desde código fuente en tu distro actual (ver
 [docs/BUILD.md](docs/BUILD.md)).
 
 Sin ALSA el binario arranca igual: solo `devices` y las órdenes que reproducen
-o capturan audio fallan, con un error que nombra la librería de ALSA ausente.
+o capturan audio fallan, con un error que nombra la librería de ALSA ausente,
+el código `audio_backend_unavailable` y exit 3 (un recurso ausente del
+sistema, no un fallo del programa).
 Si necesitas audio en ese sistema, instala el paquete de runtime de ALSA con el
 gestor de paquetes de la distribución.
 
@@ -1221,12 +1232,14 @@ usando `voice clone --force`: la tuya toma precedencia.
 
 ### Sin audio de salida
 
-1. Verifica que `ai-voice-interconnector devices` detecta tu dispositivo
+1. Verifica que `ai-voice-interconnector devices` detecta tu dispositivo y
+   muestra una «Salida predeterminada»
 2. Comprueba que el volumen del sistema no está en mute
 3. Verifica que el dispositivo de audio predeterminado es correcto
-4. Si la reproducción falla, la CLI termina con el código `playback_failed` y
-   el mensaje del sistema de audio indica la causa (p. ej. sesiones remotas o
-   headless sin dispositivo de salida)
+4. Sin salida predeterminada (p. ej. sesiones remotas o headless), la CLI
+   termina con el código `no_output_device` y exit 3; si la reproducción falla
+   por otra causa, termina con `playback_failed` y el mensaje del sistema de
+   audio indica la causa
 
 En un host sin audio puedes seguir usando la síntesis a archivo
 (`ai-voice-interconnector speech synthesize --text T --label L`); ni `setup` ni

@@ -113,7 +113,7 @@ Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma)
   distribuciones de escritorio. En un sistema sin ALSA (servidores o
   contenedores mínimos) el binario arranca igual: solo `devices` y las órdenes
   que reproducen o capturan audio fallan, con un error que nombra la librería
-  de ALSA ausente.
+  de ALSA ausente, el código `audio_backend_unavailable` y exit 3.
 
 #### Requisitos en macOS
 

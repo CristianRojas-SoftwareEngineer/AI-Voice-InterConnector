@@ -370,6 +370,59 @@ impl std::fmt::Display for AudioBackendUnavailable {
 
 impl std::error::Error for AudioBackendUnavailable {}
 
+// Fallos del entorno de audio y de la captura tipados para que la CLI los
+// clasifique por su tipo con `downcast_ref` y no por el texto del mensaje:
+// la falta de entrada o salida predeterminada es un recurso ausente del
+// sistema, no un fallo del producto, y el audio vacío es una entrada inválida.
+
+/// El sistema no tiene dispositivo de entrada (micrófono) predeterminado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoInputDevice;
+
+impl std::fmt::Display for NoInputDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("No hay dispositivo de entrada predeterminado")
+    }
+}
+
+impl std::error::Error for NoInputDevice {}
+
+/// El sistema no tiene dispositivo de salida predeterminado.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoOutputDevice;
+
+impl std::fmt::Display for NoOutputDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("No hay dispositivo de salida predeterminado")
+    }
+}
+
+impl std::error::Error for NoOutputDevice {}
+
+/// La captura de micrófono terminó sin ninguna muestra.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmptyAudio;
+
+impl std::fmt::Display for EmptyAudio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("No se capturaron muestras de audio; el micrófono no entregó datos")
+    }
+}
+
+impl std::error::Error for EmptyAudio {}
+
+/// Dispositivo predeterminado de una dirección (entrada o salida); `name` es
+/// `None` cuando el backend no expone su nombre.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultDevice {
+    pub name: Option<String>,
+}
+
+/// Nombre legible de un dispositivo, o `None` si el backend no lo expone.
+fn device_name(device: &cpal::Device) -> Option<String> {
+    device.description().ok().map(|d| d.name().to_owned())
+}
+
 /// Host de audio por defecto. En Linux, comprobar antes que ALSA se puede
 /// cargar y define todas las funciones que se usan evita que `cpal` aborte al
 /// inicializarla o en una llamada posterior.
@@ -418,11 +471,53 @@ impl AudioService {
         self.host.as_ref().map_err(|e| e.clone().into())
     }
 
+    /// Dispositivo de entrada predeterminado; la captura y el informe de
+    /// `devices` lo resuelven aquí para que no puedan divergir.
+    fn default_input_device(&self) -> Result<cpal::Device> {
+        self.host()?
+            .default_input_device()
+            .ok_or_else(|| NoInputDevice.into())
+    }
+
+    /// Dispositivo de salida predeterminado; la reproducción y el informe de
+    /// `devices` lo resuelven aquí para que no puedan divergir.
+    fn default_output_device(&self) -> Result<cpal::Device> {
+        self.host()?
+            .default_output_device()
+            .ok_or_else(|| NoOutputDevice.into())
+    }
+
+    /// Entrada predeterminada que usaría la captura: `Ok(None)` si el sistema no
+    /// tiene ninguna; solo falla si falta el backend de audio.
+    pub fn default_input(&self) -> Result<Option<DefaultDevice>> {
+        match self.default_input_device() {
+            Ok(device) => Ok(Some(DefaultDevice {
+                name: device_name(&device),
+            })),
+            Err(e) if e.downcast_ref::<NoInputDevice>().is_some() => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Salida predeterminada que usaría la reproducción: `Ok(None)` si el sistema
+    /// no tiene ninguna; solo falla si falta el backend de audio.
+    pub fn default_output(&self) -> Result<Option<DefaultDevice>> {
+        match self.default_output_device() {
+            Ok(device) => Ok(Some(DefaultDevice {
+                name: device_name(&device),
+            })),
+            Err(e) if e.downcast_ref::<NoOutputDevice>().is_some() => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Listar dispositivos de salida de audio con estimación de latencia. Un fallo
     /// del host al enumerar es un error; un nombre o una latencia que el backend
     /// no expone quedan como `None`. Con `cpal` 0.18 enumerar salidas ya no abre
     /// la entrada de audio (micrófono), que en macOS sin sesión de usuario dejaba
-    /// la consulta esperando para siempre a `coreaudiod`.
+    /// la consulta esperando para siempre a `coreaudiod`; la consulta de la
+    /// entrada predeterminada (`default_input`) tampoco la abre: solo lee una
+    /// propiedad del sistema.
     pub fn list_output_devices(&self) -> Result<Vec<AudioDevice>> {
         let output_devices = self
             .host()?
@@ -432,7 +527,7 @@ impl AudioService {
             .enumerate()
             .map(|(idx, dev)| AudioDevice {
                 id: idx,
-                name: dev.description().ok().map(|d| d.name().to_owned()),
+                name: device_name(&dev),
                 latency_ms: dev
                     .default_output_config()
                     .ok()
@@ -447,10 +542,7 @@ impl AudioService {
         let spec = reader.spec();
         ensure_nonzero_sample_rate(&spec)?;
 
-        let device = self
-            .host()?
-            .default_output_device()
-            .ok_or_else(|| anyhow!("No hay dispositivo de salida predeterminado"))?;
+        let device = self.default_output_device()?;
 
         // El dispositivo puede no soportar la tasa del WAV (p. ej. 24 kHz del
         // TTS); se remuestrea a la tasa nativa del dispositivo por defecto.
@@ -498,10 +590,7 @@ impl AudioService {
 
     /// Capturar audio del micrófono por N segundos remuestreado a 16kHz/mono/int16 (Whisper compatible)
     pub fn capture_16k_mono_pcm(&self, duration_secs: u64) -> Result<Vec<i16>> {
-        let device = self
-            .host()?
-            .default_input_device()
-            .ok_or_else(|| anyhow!("No hay dispositivo de entrada predeterminado"))?;
+        let device = self.default_input_device()?;
 
         let config = device.default_input_config()?;
         let sample_rate = config.sample_rate();
@@ -543,14 +632,11 @@ impl AudioService {
     /// lectura de stdin o si un error fatal invalida el stream de audio; los
     /// errores transitorios no se registran en stderr y la captura continúa.
     /// Rechaza con error cuando la captura no produjo muestras (usuario pulsa
-    /// Enter sin hablar o un Xrun descarta todos los frames), con `reason
-    /// "empty_audio"`; no retorna `Ok(Vec::new())`.
+    /// Enter sin hablar o un Xrun descarta todos los frames), con el error
+    /// tipado [`EmptyAudio`]; no retorna `Ok(Vec::new())`.
     pub fn capture_16k_mono_pcm_until_enter(&self, max_secs: u64) -> Result<Vec<i16>> {
         let max_secs = max_secs.min(push_to_talk_max_secs()?);
-        let device = self
-            .host()?
-            .default_input_device()
-            .ok_or_else(|| anyhow!("No hay dispositivo de entrada predeterminado"))?;
+        let device = self.default_input_device()?;
 
         let config = device.default_input_config()?;
         let sample_rate = config.sample_rate();
@@ -603,14 +689,12 @@ impl AudioService {
 
 /// Rechaza una captura de micrófono que no produjo muestras: el usuario pulsó
 /// Enter sin hablar o un error transitorio del stream (Xrun) descartó todos los
-/// frames. Devuelve el error con `reason "empty_audio"` para que las capas
-/// superiores (CLI, daemon) lo mapeen a un mensaje claro y no pasen un tensor
-/// vacío a Parakeet STT.
+/// frames. Devuelve el error tipado [`EmptyAudio`], que es lo que las capas
+/// superiores reconocen para clasificarlo como entrada inválida, y así no se
+/// pasa un tensor vacío a Parakeet STT.
 fn ensure_captured_samples_non_empty(raw_samples: Vec<f32>) -> Result<Vec<f32>> {
     if raw_samples.is_empty() {
-        return Err(anyhow!(
-            "No se capturaron muestras de audio; el micrófono no entregó datos (reason: empty_audio)"
-        ));
+        return Err(EmptyAudio.into());
     }
     Ok(raw_samples)
 }
@@ -865,10 +949,30 @@ fn device_to_json(device: &AudioDevice) -> Value {
     })
 }
 
-pub fn get_devices_json() -> Result<Vec<Value>> {
+/// Representación JSON de un dispositivo predeterminado: `null` si el sistema
+/// no tiene ninguno; si lo tiene, un objeto cuyo `name` es `null` cuando el
+/// backend no lo expone.
+fn default_device_to_json(device: Option<&DefaultDevice>) -> Value {
+    match device {
+        Some(device) => json!({ "name": device.name }),
+        None => Value::Null,
+    }
+}
+
+/// Informe de audio de `devices`: `devices` lista las salidas, y
+/// `default_input` y `default_output` son la entrada y la salida
+/// predeterminadas que usarían la captura y la reproducción. Falla solo si el
+/// sistema no tiene backend de audio o el host no puede enumerar.
+pub fn get_devices_json() -> Result<Value> {
     let service = AudioService::new();
     let devs = service.list_output_devices()?;
-    Ok(devs.iter().map(device_to_json).collect())
+    let default_input = service.default_input()?;
+    let default_output = service.default_output()?;
+    Ok(json!({
+        "devices": devs.iter().map(device_to_json).collect::<Vec<_>>(),
+        "default_input": default_device_to_json(default_input.as_ref()),
+        "default_output": default_device_to_json(default_output.as_ref()),
+    }))
 }
 
 /// Escribe en `path` un WAV PCM 16-bit mono con `sample_rate` 0 y 100 muestras.
@@ -933,10 +1037,20 @@ mod tests {
             result.is_err(),
             "una captura con 0 muestras debe retornar error"
         );
-        let message = result.unwrap_err().to_string();
+        let error = result.unwrap_err();
         assert!(
-            message.contains("empty_audio"),
-            "el mensaje debe incluir el reason 'empty_audio', obtuvo: {message}"
+            error.downcast_ref::<crate::EmptyAudio>().is_some(),
+            "el error debe ser EmptyAudio, obtuvo: {error}"
+        );
+    }
+
+    #[test]
+    fn default_device_json_is_null_when_absent_and_keeps_null_name() {
+        assert_eq!(crate::default_device_to_json(None), serde_json::Value::Null);
+        let unnamed = crate::DefaultDevice { name: None };
+        assert_eq!(
+            crate::default_device_to_json(Some(&unnamed)),
+            serde_json::json!({ "name": null })
         );
     }
 

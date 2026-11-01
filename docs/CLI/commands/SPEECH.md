@@ -489,19 +489,23 @@ Los subcomandos de este grupo pintan la fase del trabajo por stderr, con la form
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera `MAX_TEXT_LENGTH` caracteres Unicode ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `audio_too_long` | 2 | El audio de `dub` supera `MAX_DUB_AUDIO_SECS`, o `--duration` lo supera; el de `transcribe` supera `MAX_TRANSCRIBE_AUDIO_SECS`, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` lo superan ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
+| `empty_audio` | 2 | La captura de micrófono (`--mic` de transcribe y dub) terminó sin ninguna muestra |
 | `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `list --voice`, `play` y `remove` con voz ilegal) |
 | `audio_not_found` | 3 | `--audio` en `transcribe` o `dub` apunta a un archivo inexistente |
 | `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `list --voice`, `play` y `remove` sobre voz inexistente) |
 | `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente de una voz que existe |
+| `no_input_device` | 3 | `--mic` de transcribe y dub sin dispositivo de entrada predeterminado en el sistema |
+| `no_output_device` | 3 | La reproducción (`say`, `play`, `dub` y `synthesize --play`) sin dispositivo de salida predeterminado en el sistema |
+| `audio_backend_unavailable` | 3 | Captura o reproducción en un sistema sin backend de audio (en Linux, falta ALSA, `libasound.so.2`, o no define alguna función que se usa) |
 | `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`); una voz clonada exige además `qwen3-tts-0.6b-base` |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
 | `lifecycle_locked` | 17 | Todos los subcomandos: hay una operación de ciclo de vida en curso (`self install`, `self update`, `self uninstall`, `cleanup`, `doctor --repair`) y el comando no llega a ejecutarse |
 | `stt_unsupported` | 1 | Binario compilado sin el feature `native-stt` (transcribe/dub) |
 | `translation_unsupported` | 1 | Binario compilado sin el feature `native-translation`, con par no-passthrough |
-| `transcription_failed` | 10 | Fallo de captura del micrófono o del motor Parakeet (la lectura de un `--audio` ausente, corrupto o con error de E/S sale con 3, 2 y 1) |
+| `transcription_failed` | 10 | Fallo del motor Parakeet o de la captura no atribuible al entorno (la falta de micrófono o de backend sale con 3 y la captura vacía con 2; la lectura de un `--audio` ausente, corrupto o con error de E/S sale con 3, 2 y 1) |
 | `translation_failed` | 9 | Fallo del motor CT2 |
-| `synthesis_failed` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS o de reproducción |
+| `synthesis_failed` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS o de una reproducción no atribuible al entorno (la falta de salida o de backend sale con 3) |
 | `synthesis_timeout` | 1 | La síntesis superó su presupuesto (`synthesis_budget`, [`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `io_error` | 1 | Fallo de E/S al leer el WAV (`--audio` de transcribe y dub, referencia de `voice clone`) |
 

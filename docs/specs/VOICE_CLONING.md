@@ -153,7 +153,7 @@ El motor ya cuenta con los componentes necesarios:
 | **RF-06** | En entorno no interactivo (no-TTY), `--mic` sin `--duration` debe abortar antes de resolver destino o abrir el micrófono con exit 2 (`usage_error`). |
 | **RF-07** | Al iniciar la grabación de micrófono, se debe emitir un aviso por `stderr` (`"Grabando del micrófono…"` o fase `capturing`), nunca permanecer en espera silenciosa. |
 | **RF-08** | Si la captura de micrófono entrega cero muestras, debe salir con exit 2 (`empty_audio`); no se detecta ni rechaza silencio. |
-| **RF-09** | Si el dispositivo de entrada falla (sin permisos, desconectado, error de backend `cpal`), debe salir con exit 10 (`transcription_failed`). |
+| **RF-09** | Si el sistema no tiene dispositivo de entrada predeterminado, debe salir con exit 3 (`no_input_device`); si no tiene backend de audio, con exit 3 (`audio_backend_unavailable`); si el dispositivo de entrada falla por otra causa (sin permisos, error de backend `cpal` al abrir o durante la captura), con exit 10 (`transcription_failed`). |
 | **RF-10** | En la ruta daemon, archivo envía sus bytes WAV originales y mic envía un WAV 16 kHz/mono/int16 codificado una vez desde PCM; ambos usan `audio_b64` en el `POST /voices/clone` existente. |
 | **RF-11** | En la ruta local, mic se escribe una vez a un `avi_process::scratch::temp_wav("avi_clone_mic_")` con guard RAII retenido durante clonado; archivo conserva la ruta original. |
 | **RF-12** | Con `--denoise` y feature `native-denoise`, el destino local limpia una vez en CLI y el daemon limpia una vez en servidor; el cliente envía `denoise: true` y no hay fallback local tras fallo del POST. |
@@ -389,8 +389,10 @@ async fn clone_via_daemon(
 | Nombre de voz ilegal | Validación | `2` | `invalid_voice_name` | «Nombre de voz inválido: ...» |
 | Voz ya existe sin `--force` | `VoiceStore` | `6` | `voice_exists` | «La voz '...' ya existe (usa `--force` para sobrescribirla).» |
 | Archivo `--speech-reference` ausente | Filesystem | `3` | `audio_not_found` | «El audio de referencia '...' no existe.» |
-| Fallo de hardware / mic cerrado | `avi-audio` | `10` | `transcription_failed` | «Fallo de captura de audio: ...» |
-| Captura vacía (0 bytes) | `avi-audio` | `2` | `empty_audio` | «El audio capturado está vacío.» |
+| Sin dispositivo de entrada predeterminado | `avi-audio` | `3` | `no_input_device` | «No hay dispositivo de entrada predeterminado» |
+| Sin backend de audio (en Linux, falta ALSA) | `avi-audio` | `3` | `audio_backend_unavailable` | «No hay audio en este sistema: falta la librería ...» |
+| Otro fallo de hardware / mic cerrado | `avi-audio` | `10` | `transcription_failed` | «Fallo de captura de audio: ...» |
+| Captura vacía (0 muestras) | `avi-audio` | `2` | `empty_audio` | «No se capturaron muestras de audio; el micrófono no entregó datos» |
 | Modelo Base no provisionado | `avi-tts` | `4` | `model_missing` | «El modelo Base de clonado TTS no está provisionado. Ejecuta 'setup'.» |
 | Daemon inalcanzable (vía daemon) | IPC client | `5` | `daemon_unreachable` | «El daemon no responde.» |
 | Error interno de clonado | `qwen3-tts` | `1` | `voice_clone_failed` | «Fallo al clonar la voz: ...» |
@@ -441,7 +443,7 @@ La matriz se ejecuta en cada host y plataforma accesibles con micrófono, modelo
 | **AC-10** | El flag global `--json` | Se ejecuta `ai-voice-interconnector --json voice clone --name v1 --mic --duration 5` | Stdout contiene únicamente el envelope CLI `{ name, speech, precomputed, schema_version }`; `speech` puede apuntar al filesystem del proceso que clonó. |
 | **AC-11** | La ruta local explícita | Se ejecuta `voice clone --name v1 --mic --duration 5 --no-daemon` | Genera `reference.qvoice`, elimina temporales de scratch y emite `precomputed: false`. |
 | **AC-12** | La feature `native-denoise` | Se pasa `--denoise` con `--mic` | El audio capturado se procesa con DPDFNet antes de la extracción de x-vector. |
-| **AC-13** | Dispositivo de audio inaccesible | Se ejecuta `--mic` | Sale con exit `10` (`transcription_failed`) con mensaje descriptivo. |
+| **AC-13** | Un sistema sin dispositivo de entrada predeterminado, o con uno inaccesible | Se ejecuta `--mic` | Sin dispositivo sale con exit `3` (`no_input_device`); con uno inaccesible, con exit `10` (`transcription_failed`); en ambos casos con mensaje descriptivo. |
 | **AC-14** | Una clonación local completada con `--mic` | Se inspecciona el scratch tras una salida controlada | Existe `<data_dir>/voices/v1/reference.qvoice` y se limpió el WAV scratch; terminación forzosa o fallo filesystem puede dejarlo para barrido posterior. |
 | **AC-15** | WAV pregrabado y captura del mismo locutor, con modelos y dispositivo disponibles | Se clonan y sintetizan mediante ambas rutas | Mismo contrato y síntesis funcional; no se espera identidad de las tomas ni igualdad binaria de `.qvoice`. |
 

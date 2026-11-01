@@ -1330,12 +1330,16 @@ fn model_pins_match_fixture() {
     );
 }
 
-/// `devices --json` solo tiene dos salidas válidas, según el host: la lista de
-/// dispositivos (cada `name` y `latency` es texto/número o `null` si el backend no
-/// lo expone) o el fallo `audio_enumeration_failed` con exit 1. La forma se afirma
-/// en ambos casos sin exigir que la máquina tenga dispositivos.
+/// `devices --json` solo tiene tres salidas válidas, según el host: el informe
+/// de audio (la lista de salidas, donde cada `name` y `latency` es texto/número o
+/// `null` si el backend no lo expone, más `default_input` y `default_output`,
+/// cada uno `null` si el sistema no tiene ese dispositivo o un objeto cuyo
+/// `name` es texto o `null`), el fallo `audio_backend_unavailable` con exit 3 si
+/// el sistema no tiene backend de audio, o `audio_enumeration_failed` con exit 1.
+/// La forma se afirma en todos los casos sin exigir que la máquina tenga
+/// dispositivos.
 #[test]
-fn devices_json_is_list_with_nullable_fields_or_enumeration_failure() {
+fn devices_json_reports_outputs_and_defaults_or_audio_failure() {
     let (code, actual) = run_json(&["--json", "devices"]);
     match code {
         0 => {
@@ -1351,7 +1355,19 @@ fn devices_json_is_list_with_nullable_fields_or_enumeration_failure() {
                     "latency número o null: {dev}"
                 );
             }
+            for key in ["default_input", "default_output"] {
+                let default = actual
+                    .get(key)
+                    .unwrap_or_else(|| panic!("falta la clave `{key}`: {actual}"));
+                assert!(
+                    default.is_null()
+                        || (default.is_object()
+                            && (default["name"].is_string() || default["name"].is_null())),
+                    "`{key}` es null u objeto con name texto o null: {default}"
+                );
+            }
         }
+        3 => assert_eq!(actual["reason"], "audio_backend_unavailable"),
         1 => assert_eq!(actual["reason"], "audio_enumeration_failed"),
         other => panic!("exit inesperado {other}: {actual}"),
     }
@@ -3386,21 +3402,22 @@ mod tts {
         prev[b.len()]
     }
 
-    /// Solo lo usan los E2E de reproducción/dub que dependen de STT (native-stt).
+    /// ¿Hay salida predeterminada, la misma que usa la reproducción? Solo lo usan
+    /// los E2E de reproducción/dub que dependen de STT (native-stt).
     #[cfg(feature = "native-stt")]
     fn has_audio_device() -> bool {
         match avi_audio::get_devices_json() {
-            Ok(devs) => !devs.is_empty(),
+            Ok(report) => !report["default_output"].is_null(),
             Err(_) => false,
         }
     }
 
-    /// Exige al menos un dispositivo de salida de audio.
+    /// Exige la salida predeterminada que usa la reproducción.
     #[cfg(feature = "native-stt")]
     fn require_audio_device() {
         assert!(
             has_audio_device(),
-            "no hay ningún dispositivo de salida de audio disponible en esta máquina"
+            "no hay dispositivo de salida de audio predeterminado en esta máquina"
         );
     }
 
@@ -4331,7 +4348,7 @@ mod tts {
         // archivo producido. El gate de audio se conserva porque `dub`
         // reproduce siempre en ambas rutas, directo y por el daemon, en passthrough
         // y en traducción: sin
-        // mezclador el comando falla con `playback_failed` y no hay archivo
+        // salida predeterminada el comando falla con `no_output_device` y no hay archivo
         // que verificar.
         let inst = IsolatedInstance::new("dub_passthrough_direct");
         avi_store::VoiceStore::at(inst.dir.join("voices"))
@@ -8261,15 +8278,16 @@ fn unreadable_audio_b64() -> String {
 
 /// Exige un dispositivo de salida para poder afirmar el envelope de éxito.
 ///
-/// `say` y `dub` reproducen de verdad, así que sin dispositivo el envelope sería
-/// `playback_failed` y una prueba chamada «success» no podría demostrar nada. Las
-/// pruebas que la llaman se declaran por eso como recurso
+/// `say` y `dub` reproducen de verdad, así que sin salida predeterminada el
+/// envelope sería `no_output_device` y una prueba llamada «success» no podría
+/// demostrar nada. Las pruebas que la llaman se declaran por eso como recurso
 /// (`#[ignore = "requiere un dispositivo de salida de audio"]`): no corren en la
 /// suite estándar y, en la batería con recursos, esta comprobación las hace
-/// fallar si el dispositivo falta. Usa la misma enumeración que `devices`.
+/// fallar si el dispositivo falta. Usa la misma salida predeterminada que la
+/// reproducción (`default_output` de `devices`).
 fn require_output_device() {
     let has_output_device = avi_audio::get_devices_json()
-        .map(|d| !d.is_empty())
+        .map(|report| !report["default_output"].is_null())
         .unwrap_or(false);
     assert!(
         has_output_device,

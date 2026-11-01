@@ -2118,7 +2118,8 @@ jobs:
     # exigieran algo que el sistema base no trae, o una glibc mayor, fallan
     # aquí antes de publicar. `self install` y la comprobación de ONNX Runtime
     # se ejercen también a través del symlink instalado, que es como el usuario
-    # invoca la app.
+    # invoca la app, y `devices` confirma que la falta de ALSA sale como
+    # recurso ausente (`audio_backend_unavailable`, exit 3).
     parameters:
       image:
         type: string
@@ -2167,6 +2168,17 @@ jobs:
               *'"ok": true'*) echo "onnx_runtime: OK" ;;
               *) echo "la comprobación onnx_runtime de doctor no pasó" >&2; exit 1 ;;
             esac
+            # La imagen no trae ALSA (`libasound.so.2`), así que el sistema no
+            # tiene backend de audio: `devices` debe arrancar igual y fallar con
+            # el recurso ausente `audio_backend_unavailable`, que sale con exit 3,
+            # y no con un fallo del producto. No necesita modelos.
+            devices_code=0
+            devices_out="$("$AVI_BIN_DIR/ai-voice-interconnector" --json devices)" || devices_code=$?
+            printf '%s\n' "$devices_out"
+            if [ "$devices_code" -ne 3 ]; then
+              echo "devices sin ALSA debe salir con exit 3, salió con $devices_code" >&2; exit 1
+            fi
+            printf '%s\n' "$devices_out" | grep -q '"reason": *"audio_backend_unavailable"'
             echo "[STEP] Sala limpia - FIN"
 
   # ──────────────────────────────────────────────────────────────

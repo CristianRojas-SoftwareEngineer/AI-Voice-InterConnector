@@ -169,7 +169,9 @@ no declara más librerías que las del sistema base:
   Sin ALSA, o con una ALSA a la que le
   falte alguna de esas funciones, el binario arranca y solo `devices` y las
   órdenes que reproducen o capturan audio fallan, con un error que nombra la
-  librería y, si es el caso, la función ausente.
+  librería y, si es el caso, la función ausente, el `reason`
+  `audio_backend_unavailable` y exit 3. El job `verify-portability` lo
+  comprueba con `devices --json` en una imagen sin ALSA.
 - **OpenMP y C++** se piden estáticas en origen, cada una detrás del crate
   que la necesita. La política vive solo en `.cargo/config.toml`:
   `CXXSTDLIB_<target>` y `GOMPLIB_<target>` (para `x86_64` y `aarch64`

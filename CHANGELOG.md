@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.38.1 — 2026-10-31](#0381--2026-10-31)
 - [0.38.0 — 2026-10-31](#0380--2026-10-31)
 - [0.37.4 — 2026-10-30](#0374--2026-10-30)
@@ -124,6 +125,21 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La CLI presentaba los fallos del entorno de audio como fallos del producto: sin micrófono la captura salía con `transcription_failed` (exit 10), también en `voice clone`; sin salida predeterminada la reproducción salía con `playback_failed` (exit 1); y sin ALSA en Linux el mismo error salía con un `reason` distinto según el comando. Además, nada permitía saber de antemano si había entrada o salida predeterminada. Ahora `devices` informa de ambas y los fallos de entorno se clasifican por su tipo, en un solo punto, con tres `reason` explícitos de recurso ausente.
+
+### Añadido
+
+- `devices --json` añade `default_input` y `default_output`: la entrada y la salida predeterminadas que usarían la captura y la reproducción, como `{ "name": … }` (`name` es `null` si el sistema no lo expone) o `null` si el sistema no tiene ese dispositivo. `devices[]` no cambia. En modo texto, `devices` añade las líneas «Entrada predeterminada: …» y «Salida predeterminada: …» (`ninguna` si falta, `desconocido` si no tiene nombre).
+- Tres `reason` nuevos con exit 3 (recurso ausente), comunes a toda operación de audio: `no_input_device` (sin entrada predeterminada), `no_output_device` (sin salida predeterminada) y `audio_backend_unavailable` (sin backend de audio; en Linux, falta ALSA).
+- El job de CI `verify-portability` comprueba en la imagen sin ALSA que `devices --json` sale con exit 3 y `audio_backend_unavailable`.
+
+### Cambiado
+
+- Cambio incompatible de enteros de salida: la captura sin micrófono pasa de 10 a 3 (`no_input_device`), la reproducción sin salida predeterminada pasa de 1 a 3 (`no_output_device`) y cualquier operación de audio sin backend pasa de 10 o 1 a 3 (`audio_backend_unavailable`). Quien distinguía estos casos por el exit 10 o 1 debe leer el exit 3 y el `reason`. Los demás fallos de captura, reproducción y enumeración conservan `transcription_failed` (10), `playback_failed` (1) y `audio_enumeration_failed` (1).
+- La captura vacía sigue saliendo con `empty_audio` (exit 2), pero se reconoce por su tipo y no por el texto del mensaje, que ya no lleva el sufijo `(reason: empty_audio)`.
 
 ## [0.38.1] — 2026-10-31
 

@@ -28,7 +28,7 @@ docs/CLI/
 | [CONTRACT.md](CONTRACT.md) | Contrato normativo: invariantes de diseño, vocabulario, códigos de salida, payloads `--json`, reglas de validación, matrices de comportamiento |
 | [commands/SPEECH.md](commands/SPEECH.md) | Comportamiento e implementación del grupo `speech`: síntesis, reproducción, dubbing, transcripción, limpieza de archivos de audio/vídeo y gestión del almacén |
 | [commands/VOICE.md](commands/VOICE.md) | Comportamiento e implementación de `voice`: clonación, listado y eliminación de voces |
-| [commands/DEVICES.md](commands/DEVICES.md) | Comportamiento e implementación de `devices`: enumeración de dispositivos de audio |
+| [commands/DEVICES.md](commands/DEVICES.md) | Comportamiento e implementación de `devices`: enumeración de las salidas de audio y entrada y salida predeterminadas |
 | [commands/DOCTOR.md](commands/DOCTOR.md) | Comportamiento e implementación de `doctor`: diagnósticos del sistema, sección de ciclo de vida y patrón de veredicto |
 | [commands/SETUP.md](commands/SETUP.md) | Comportamiento e implementación de `setup`: provisión del runtime, modelos y el papel de `setup_failed` |
 | [commands/CLEANUP.md](commands/CLEANUP.md) | Comportamiento e implementación de `cleanup`: borrado por categorías, reglas de propiedad y confirmación |
@@ -54,7 +54,7 @@ La CLI Rust (clap) expone los comandos de nivel superior que listan las dos tabl
 
 | Comando | Propósito |
 |---|---|
-| `devices` | Lista dispositivos de audio del sistema |
+| `devices` | Lista las salidas de audio del sistema y la entrada y la salida predeterminadas |
 | `doctor` | Diagnóstico del sistema y del estado del ciclo de vida (recibo, canal, `PATH`, pendientes, modelos) |
 | `setup` | Descarga los modelos pinneados vía HuggingFace Hub (sin índice: solo presencia de snapshot) |
 | `cleanup` | Borra el estado por categorías (`--voices`/`--synthetic-speech`/`--model`/`--all`, `--dry-run`, `--yes/-y`; sin categoría → exit 2) sin tocar el programa ni el `PATH` |

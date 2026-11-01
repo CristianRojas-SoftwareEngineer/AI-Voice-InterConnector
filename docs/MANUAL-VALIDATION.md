@@ -138,14 +138,18 @@ resuelva.
 ## 4. Dispositivos de audio
 
 ```bash
-# Listar solo dispositivos de salida (render)
+# Listar los dispositivos de salida (render) y la entrada y la salida predeterminadas
 ai-voice-interconnector devices
 
 # En JSON
 ai-voice-interconnector devices --json
 ```
 
-**Esperado**: lista de dispositivos de salida a stdout, **exit 0**.
+**Esperado**: lista de dispositivos de salida a stdout seguida de las líneas
+«Entrada predeterminada» y «Salida predeterminada» con los dispositivos que
+el sistema tiene por defecto (o `ninguna`); en JSON, `devices` más
+`default_input` y `default_output` (`null` si el sistema no tiene ese
+dispositivo); **exit 0**.
 
 ## 5. Síntesis y reproducción
 
@@ -247,7 +251,7 @@ ai-voice-interconnector speech transcribe --audio clip.wav --source-language es 
 ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --target-language es --voice mi_voz
 ```
 
-**Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`), **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce, **exit 0**. Un `--audio` inexistente sale con **exit 3**; un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
+**Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`), **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce, **exit 0**. Un `--audio` inexistente sale con **exit 3**, igual que un `--mic` sin entrada predeterminada (`no_input_device`) o un `dub` sin salida predeterminada (`no_output_device`); un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
 
 ### Limpieza de ruido (`--denoise`)
 
