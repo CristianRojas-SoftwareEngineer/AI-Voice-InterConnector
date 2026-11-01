@@ -459,7 +459,7 @@ const COMPONENTS: &[Component] = &[
             "msvcp140_1.dll",
             "vcomp140.dll",
         ],
-        note: "Archivos redistribuibles del Visual C++ Redistributable, propiedad de Microsoft, que los términos de «Distributable Code» de la licencia de Visual Studio permiten desplegar junto a la aplicación; esos términos siguen aplicándose a estos archivos.",
+        note: "Archivos redistribuibles del Visual C++ Redistributable, propiedad de Microsoft, tomados del redist de la toolchain MSVC que compila el paquete; los términos de «Distributable Code» de la licencia de Visual Studio permiten desplegarlos junto a la aplicación y siguen aplicándose a estos archivos.",
     },
     Component {
         name: "FFmpeg",

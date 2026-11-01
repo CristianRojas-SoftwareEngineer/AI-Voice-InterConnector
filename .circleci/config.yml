@@ -1665,10 +1665,12 @@ jobs:
       # `ort-bundle/` (ONNX Runtime oficial más las cinco DLL app-local de
       # VC++: vcruntime140, vcruntime140_1, msvcp140, msvcp140_1 y vcomp140) lo arma y lo
       # verifica `xtask package`, el único descargador: comprueba el SHA-256
-      # fijado en packaging/pins.json y copia las DLL de System32. La caché
-      # solo evita repetir la descarga; `xtask package` reutiliza lo
-      # restaurado solo si trae todas las librerías y el marcador de la
-      # versión fijada, y si no lo vuelve a descargar.
+      # fijado en packaging/pins.json y, en cada ejecución, copia las DLL de
+      # VC++ del redist de la instalación de Visual Studio que compila (la
+      # que devuelve vswhere), escribiendo solo las que difieren. La caché
+      # solo evita repetir la descarga de ONNX Runtime y no fija las DLL;
+      # `xtask package` reutiliza lo restaurado solo si trae la librería y el
+      # marcador de la versión fijada, y si no lo vuelve a descargar.
       - restore_cache:
           keys:
             - ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
