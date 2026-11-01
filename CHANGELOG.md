@@ -7,7 +7,6 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
 - [0.39.0 — 2026-11-01](#0390--2026-11-01)
 - [0.38.1 — 2026-10-31](#0381--2026-10-31)
 - [0.38.0 — 2026-10-31](#0380--2026-10-31)
@@ -127,17 +126,9 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
-
-El bloqueo de ciclo de vida podía seguir tomado después de soltarlo: se soltaba solo cerrando el descriptor, y el cierre no libera el bloqueo mientras un proceso hijo recién lanzado conserve una copia del descriptor hasta su `exec`. Eso hizo fallar de forma intermitente las pruebas que se ejecutan como hilos de un mismo proceso, donde otras pruebas lanzan procesos a la vez. Ahora el bloqueo se suelta de forma explícita.
-
-### Corregido
-
-- El bloqueo de ciclo de vida se suelta desbloqueando de forma explícita y después cerrando, en todos sus caminos: al terminar la operación, en `release_main` antes del traspaso de `self update`, en el borrado final de `self uninstall`, al fallar la verificación de inodo y al quedar la toma a medias (compuerta tomada y principal fallido). Si el desbloqueo falla se avisa por stderr. Dos pruebas de regresión fijan que el bloqueo queda libre aunque siga viva una copia del descriptor. La guarda del bloqueo TTS de las pruebas avisa si no puede desbloquear, en lugar de descartar el error, y los comentarios del CI, `docs/CI.md`, `docs/RELEASING.md` y `CONTRIBUTING.md` describen que la triple puerta usa `cargo nextest run --all` y que `coverage` es la única ejecución en proceso compartido.
-
 ## [0.39.0] — 2026-11-01
 
-La CLI presentaba los fallos del entorno de audio como fallos del producto: sin micrófono la captura salía con `transcription_failed` (exit 10), también en `voice clone`; sin salida predeterminada la reproducción salía con `playback_failed` (exit 1); y sin ALSA en Linux el mismo error salía con un `reason` distinto según el comando. Además, nada permitía saber de antemano si había entrada o salida predeterminada. Ahora `devices` informa de ambas y los fallos de entorno se clasifican por su tipo, en un solo punto, con tres `reason` explícitos de recurso ausente. Se corrige también el aprovisionamiento del entorno de desarrollo: `cargo xtask bootstrap` deja listos todos los recursos fijados que exige la verificación, y el release vuelve a ejecutar la puerta de pruebas con recursos una sola vez.
+La CLI presentaba los fallos del entorno de audio como fallos del producto: sin micrófono la captura salía con `transcription_failed` (exit 10), también en `voice clone`; sin salida predeterminada la reproducción salía con `playback_failed` (exit 1); y sin ALSA en Linux el mismo error salía con un `reason` distinto según el comando. Además, nada permitía saber de antemano si había entrada o salida predeterminada. Ahora `devices` informa de ambas y los fallos de entorno se clasifican por su tipo, en un solo punto, con tres `reason` explícitos de recurso ausente. Se corrige también el aprovisionamiento del entorno de desarrollo: `cargo xtask bootstrap` deja listos todos los recursos fijados que exige la verificación, y el release vuelve a ejecutar la puerta de pruebas con recursos una sola vez. Por último, el bloqueo de ciclo de vida podía seguir tomado después de soltarlo: se soltaba solo cerrando el descriptor, y el cierre no libera el bloqueo mientras un proceso hijo recién lanzado conserve una copia del descriptor hasta su `exec`. Eso hacía fallar de forma intermitente las pruebas que se ejecutan como hilos de un mismo proceso; ahora el bloqueo se suelta de forma explícita.
 
 ### Añadido
 
@@ -153,6 +144,7 @@ La CLI presentaba los fallos del entorno de audio como fallos del producto: sin 
 ### Corregido
 
 - `cargo xtask bootstrap` aseguraba ONNX Runtime pero no FFmpeg, así que tras un `cargo xtask clean --repo` terminaba con éxito y a continuación `cargo xtask verify-resources` daba `ffmpeg.ok: false`; solo la puerta de pruebas con recursos aprovisionaba FFmpeg, y el release acababa ejecutando la suite completa dos veces. Ahora el conjunto de recursos fijados (ONNX Runtime y FFmpeg) se declara una sola vez y lo comparten `bootstrap`, `doctor`, `verify-resources`, la puerta, `package` y `clean`: `bootstrap` asegura los dos, `doctor` informa de FFmpeg con su propia fila obligatoria y quien asegura y quien comprueba no pueden cubrir recursos distintos. La secuencia de release ya no ejecuta `cargo xtask resource-gate` antes del corte, que queda solo para reproducir un fallo de la puerta.
+- El bloqueo de ciclo de vida se suelta desbloqueando de forma explícita y después cerrando, en todos sus caminos: al terminar la operación, en `release_main` antes del traspaso de `self update`, en el borrado final de `self uninstall`, al fallar la verificación de inodo y al quedar la toma a medias (compuerta tomada y principal fallido). Si el desbloqueo falla se avisa por stderr. Dos pruebas de regresión fijan que el bloqueo queda libre aunque siga viva una copia del descriptor. La guarda del bloqueo TTS de las pruebas avisa si no puede desbloquear, en lugar de descartar el error, y los comentarios del CI, `docs/CI.md`, `docs/RELEASING.md` y `CONTRIBUTING.md` describen que la triple puerta usa `cargo nextest run --all` y que `coverage` es la única ejecución en proceso compartido.
 
 ## [0.38.1] — 2026-10-31
 
