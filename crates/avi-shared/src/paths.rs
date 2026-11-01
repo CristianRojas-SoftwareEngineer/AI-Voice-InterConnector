@@ -233,6 +233,10 @@ pub struct ModelPin {
 }
 
 /// Pines de los modelos que provisiona la aplicación.
+///
+/// `tests/golden/model_pins.json` copia esta tabla, junto con los ficheros de
+/// `MODEL_FILE_PATTERNS`, para el E2E de Windows; el test
+/// `model_pins_match_fixture` falla si la copia difiere de estas constantes.
 pub const MODEL_REVISIONS: &[ModelPin] = &[
     // Motor TTS Qwen3-TTS 0.6B CustomVoice (pesos safetensors BF16)
     ModelPin {

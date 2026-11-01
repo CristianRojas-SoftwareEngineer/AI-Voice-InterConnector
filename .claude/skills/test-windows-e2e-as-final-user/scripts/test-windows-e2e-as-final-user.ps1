@@ -38,6 +38,8 @@ $script:SubcaseResults = [System.Collections.Generic.List[object]]::new()
 $script:DaemonStartedIdentities = [System.Collections.Generic.HashSet[int]]::new()
 $script:TotalStopwatch = $null
 $script:Release = $null
+$script:CliSchema = $null
+$script:ModelPins = @()
 # Fuente única de IDs y títulos de fase, en orden de ejecución.
 $script:Phases = @(
     [pscustomobject]@{Id='01-release';Title='Resolución del release publicado'}
@@ -159,7 +161,25 @@ function Initialize-Run {
     $cargoVersion = [regex]::Match($toml, '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value
     Assert-True ($cargoVersion -eq $script:Version) 'Cargo.toml y src/main.rs difieren en versión.'
     $fixture = Get-Content -LiteralPath (Join-Path $script:Root 'tests\golden\cli_version.json') -Raw | ConvertFrom-Json -ErrorAction Stop
-    Assert-True ($fixture.version -eq $script:Version -and $fixture.name -eq 'ai-voice-interconnector' -and $fixture.schema_version -eq '6') 'La versión fuente no coincide con fixture CLI schema 6.'
+    Assert-True ($fixture.version -eq $script:Version -and $fixture.name -eq 'ai-voice-interconnector') 'La versión fuente no coincide con la fixture CLI.'
+    # Las fixtures son la única fuente de los contratos del producto en este ejecutor; 02-source-gate las compara con el código antes de cualquier borrado.
+    $schemaProperty=$fixture.PSObject.Properties['schema_version']
+    if(!$schemaProperty -or $schemaProperty.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($schemaProperty.Value)){throw 'BLOCKED: tests/golden/cli_version.json no define schema_version como texto.'}
+    $script:CliSchema=$schemaProperty.Value
+    $pinsPath=Join-Path $script:Root 'tests\golden\model_pins.json'
+    if(!(Test-Path -LiteralPath $pinsPath -PathType Leaf)){throw "BLOCKED: falta la fixture de modelos fijados: $pinsPath"}
+    $pinsFixture=Get-Content -LiteralPath $pinsPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $modelsProperty=$pinsFixture.PSObject.Properties['models']
+    if(!$modelsProperty -or $modelsProperty.Value -isnot [array] -or !@($modelsProperty.Value).Count){throw 'BLOCKED: tests/golden/model_pins.json no define models como lista no vacía.'}
+    foreach($pin in @($modelsProperty.Value)){
+        if($pin -isnot [pscustomobject]){throw 'BLOCKED: tests/golden/model_pins.json contiene un modelo que no es objeto.'}
+        foreach($key in @('name','repo','revision')){$property=$pin.PSObject.Properties[$key];if(!$property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)){throw ('BLOCKED: tests/golden/model_pins.json contiene un modelo sin {0} como texto.' -f $key)}}
+        $bytesProperty=$pin.PSObject.Properties['approx_bytes']
+        if(!$bytesProperty -or !($bytesProperty.Value -is [int] -or $bytesProperty.Value -is [long]) -or [long]$bytesProperty.Value -le 0){throw ('BLOCKED: el modelo {0} de tests/golden/model_pins.json no define approx_bytes como entero positivo.' -f $pin.name)}
+        $filesProperty=$pin.PSObject.Properties['files']
+        if(!$filesProperty -or $filesProperty.Value -isnot [array] -or !@($filesProperty.Value).Count -or @($filesProperty.Value|Where-Object{$_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_)}).Count){throw ('BLOCKED: el modelo {0} de tests/golden/model_pins.json no define files como lista de textos.' -f $pin.name)}
+    }
+    $script:ModelPins=@($modelsProperty.Value)
     if(!(Get-Command git -ErrorAction SilentlyContinue)){throw 'BLOCKED: git no está disponible para comprobar tag/version.'}
     if(!(Get-Command cargo -ErrorAction SilentlyContinue)){throw 'BLOCKED: cargo no está disponible para ejecutar el gate Rust actual.'}
     $releaseTag=(& git -C $script:Root describe --tags --abbrev=0 2>$null).Trim()
@@ -341,7 +361,7 @@ function Get-PathEntries {
 
 function Assert-PayloadSchema {
     param($Payload)
-    Assert-True ($Payload.schema_version -eq '6') 'schema_version debe ser 6.'
+    Assert-True ($Payload.schema_version -eq $script:CliSchema) ('schema_version {0} distinto del vigente {1}.' -f $Payload.schema_version,$script:CliSchema)
 }
 
 function Test-NativeSttCapability {
@@ -363,6 +383,14 @@ function Get-ModelSnapshot {
     return $snapshot
 }
 
+function Test-PinnedModel {
+    param([Parameter(Mandatory)][string]$ModelName)
+    # El repo, la revisión y los ficheros obligatorios salen de tests/golden/model_pins.json, no de copias locales.
+    $pin=@($script:ModelPins|Where-Object name -eq $ModelName)
+    if(!$pin.Count){throw ('tests/golden/model_pins.json no fija el modelo {0}.' -f $ModelName)}
+    try{$null=Get-ModelSnapshot $pin[0].name $pin[0].repo $pin[0].revision @($pin[0].files);return $true}catch{return $false}
+}
+
 function Set-SubcaseResult {
     param([string]$Name,[ValidateSet('PENDING','RUNNING','PASS','FAIL','SKIP','BLOCKED')][string]$Status,[string]$Command='',[Nullable[int]]$ExitCode=$null,$Payload=$null,[string[]]$Evidence=@(),[string]$Reason='')
     $record=[pscustomobject]@{name=$Name;status=$Status;command=$Command;exit_code=$ExitCode;payload=$Payload;evidence=@($Evidence);reason=$Reason;utc=[DateTime]::UtcNow.ToString('o')}
@@ -378,9 +406,9 @@ function Invoke-WhereCheck {
     $powershell = Join-Path $PSHOME $(if ($PSVersionTable.PSVersion.Major -ge 6) { 'pwsh.exe' } else { 'powershell.exe' })
     $scriptText = if ($ExpectPresent) {
         if ($AllowPreSetup) {
-            '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''6'') {{ exit 12 }}; exit 0' -f $script:Bin.Replace("'", "''"),$script:Version
+            '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''{2}'') {{ exit 12 }}; exit 0' -f $script:Bin.Replace("'", "''"),$script:Version,$script:CliSchema
         } else {
-            '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''6'') {{ exit 12 }}; & ''{0}'' doctor --json; exit $LASTEXITCODE' -f $script:Bin.Replace("'", "''"),$script:Version
+            '$p = (where.exe ai-voice-interconnector 2>$null); if ($LASTEXITCODE -ne 0 -or -not ($p -contains ''{0}'')) {{ exit 10 }}; $version = (& ''{0}'' version --json | ConvertFrom-Json -ErrorAction Stop); if ($LASTEXITCODE -ne 0 -or $version.version -ne ''{1}'' -or $version.schema_version -ne ''{2}'') {{ exit 12 }}; & ''{0}'' doctor --json; exit $LASTEXITCODE' -f $script:Bin.Replace("'", "''"),$script:Version,$script:CliSchema
         }
     } else {
         'where.exe ai-voice-interconnector *> $null; if ($LASTEXITCODE -eq 1) { exit 0 } else { exit 11 }'
@@ -412,9 +440,15 @@ function Get-RegisteredRoots {
         throw ('Falta receipt: {0}' -f $receiptPath)
     }
     $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json -ErrorAction Stop
-    Assert-True ($receipt.schema_version -eq 2 -and $receipt.app -eq 'ai-voice-interconnector') 'Receipt ilegible o de esquema/app no reconocido.'
+    # Solo se exige la forma de los campos que este ejecutor consume; el número de esquema lo valida doctor.
+    foreach($key in @('app','install_dir','version')){$property=$receipt.PSObject.Properties[$key];if(!$property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)){throw ('Receipt no define {0} como texto.' -f $key)}}
+    Assert-True ($receipt.app -eq 'ai-voice-interconnector') 'Receipt de una app no reconocida.'
     Assert-True ($receipt.install_dir -eq $script:ProgramDir) 'Receipt no es propietario del directorio esperado.'
-    foreach($key in @('data_dir','cache_dir')){if([string]::IsNullOrWhiteSpace([string]$receipt.roots.$key)){throw ('Receipt no define roots.{0}.' -f $key)}}
+    $roots=$receipt.PSObject.Properties['roots']
+    if(!$roots -or $roots.Value -isnot [pscustomobject]){throw 'Receipt no define roots como objeto.'}
+    foreach($key in @('data_dir','cache_dir')){$property=$roots.Value.PSObject.Properties[$key];if(!$property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)){throw ('Receipt no define roots.{0} como texto.' -f $key)}}
+    $pathIntegration=$receipt.PSObject.Properties['path_integration']
+    if(!$pathIntegration -or $pathIntegration.Value -isnot [pscustomobject] -or !$pathIntegration.Value.PSObject.Properties['modify_path'] -or $pathIntegration.Value.modify_path -isnot [bool]){throw 'Receipt no define path_integration.modify_path como booleano.'}
     return $receipt
 }
 
@@ -435,7 +469,9 @@ function Get-DryRunTargets {
     $cleanup = Invoke-Cli @('cleanup','--all','--dry-run') 'cleanup-dry-run' -Json
     $uninstall = Invoke-Cli @('self','uninstall','--dry-run') 'uninstall-dry-run' -Json
     foreach($pair in @(@{payload=$cleanup.Payload;kind='cleanup'},@{payload=$uninstall.Payload;kind='uninstall'})){
-        Assert-PayloadSchema $pair.payload
+        # El binario instalado puede ser de una release anterior: su esquema se registra como evidencia y no se compara con el de la fuente; solo se valida la forma de lo que se consume.
+        $schemaProperty=$pair.payload.PSObject.Properties['schema_version']
+        Save-Event @{type='dry_run_schema';kind=$pair.kind;schema_version=$(if($schemaProperty){$schemaProperty.Value}else{$null})}
         foreach($name in @('planned','preserved')){
             $property=$pair.payload.PSObject.Properties[$name]
             if(!$property -or $property.Value -isnot [array]){throw ('BLOCKED: {0} --dry-run no expone {1} como array.' -f $pair.kind,$name)}
@@ -657,15 +693,16 @@ function Run-E2E {
     }
 
     Invoke-Step '02-source-gate' {
-        $rustGate=Invoke-LoggedProcess -FilePath (Get-Command cargo -ErrorAction Stop).Source -ArgumentList @('test','--test','cli_golden','version_matches_fixture','--','--exact','--nocapture') -Name 'source-version-fixture-gate' -TimeoutMs 600000
+        $rustGate=Invoke-LoggedProcess -FilePath (Get-Command cargo -ErrorAction Stop).Source -ArgumentList @('test','--test','cli_golden','--','--exact','--nocapture','version_matches_fixture','model_pins_match_fixture') -Name 'source-version-fixture-gate' -TimeoutMs 600000
         $rustSummary=[regex]::Match(($rustGate.Stdout+$rustGate.Stderr),'(?m)^test result: (?<status>[^.]+)\. (?<passed>\d+) passed; (?<failed>\d+) failed; (?<ignored>\d+) ignored; (?<measured>\d+) measured; (?<filtered>\d+) filtered out;')
-        Assert-True ($rustGate.ExitCode -eq 0 -and $rustSummary.Success -and $rustSummary.Groups['passed'].Value -eq '1' -and $rustSummary.Groups['failed'].Value -eq '0') 'Gate Rust version_matches_fixture no pasó o no entregó resumen parseable.'
-        Save-Event @{type='source_test_gate';command='cargo test --test cli_golden version_matches_fixture -- --exact --nocapture';features=@();exit_code=$rustGate.ExitCode;passed=[int]$rustSummary.Groups['passed'].Value;failed=[int]$rustSummary.Groups['failed'].Value;ignored=[int]$rustSummary.Groups['ignored'].Value;stdout=$rustGate.StdoutPath;stderr=$rustGate.StderrPath}
+        Assert-True ($rustGate.ExitCode -eq 0 -and $rustSummary.Success -and $rustSummary.Groups['passed'].Value -eq '2' -and $rustSummary.Groups['failed'].Value -eq '0') 'Gate Rust version_matches_fixture + model_pins_match_fixture no pasó o no entregó resumen parseable.'
+        Save-Event @{type='source_test_gate';command='cargo test --test cli_golden -- --exact --nocapture version_matches_fixture model_pins_match_fixture';features=@();exit_code=$rustGate.ExitCode;passed=[int]$rustSummary.Groups['passed'].Value;failed=[int]$rustSummary.Groups['failed'].Value;ignored=[int]$rustSummary.Groups['ignored'].Value;stdout=$rustGate.StdoutPath;stderr=$rustGate.StderrPath}
     }
 
     Invoke-Step '03-cleanup' {
         $receiptPath=Get-ReceiptPath; $binaryExists=Test-Path -LiteralPath $script:Bin -PathType Leaf
-        $registered=Get-RegisteredRoots -AllowMissing
+        # La instalación previa puede venir de una release anterior: un receipt cuya propiedad no se puede establecer es una precondición insegura, no un fallo del producto.
+        try{$registered=Get-RegisteredRoots -AllowMissing}catch{throw ('BLOCKED: receipt de la instalación previa no utilizable: {0}' -f $_.Exception.Message)}
         $programDir=Split-Path -Parent $script:Bin
         $dataDir=Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector\data'; $cacheRoot=Join-Path $env:LOCALAPPDATA 'ai-voice-interconnector\cache'
         foreach($variable in @('AVI_DATA_DIR','AVI_CACHE_DIR','HF_HUB_CACHE','HF_HOME')){if([Environment]::GetEnvironmentVariable($variable)){throw ('BLOCKED: {0} modifica el alcance de las raíces del receipt; no se continuará con rutas ambiguas.' -f $variable)}}
@@ -708,10 +745,10 @@ function Run-E2E {
                 foreach($target in @($targetSizes|Where-Object{$_})){$sizeMessage='DESTINO {0} - {1} bytes' -f $target.path,([long]$target.bytes);Write-Host $sizeMessage -ForegroundColor Yellow}
                 foreach($pair in @(@{kind='cleanup';payload=$dry.Cleanup},@{kind='uninstall';payload=$dry.Uninstall})){foreach($preserved in @($pair.payload.preserved|Where-Object{$_})){$preservedSize=Get-DirectorySize $preserved.path;Write-Host ('PRESERVADO {0}: {1} - {2} bytes - {3}' -f $pair.kind,$preserved.path,$preservedSize,$preserved.reason) -ForegroundColor DarkCyan}}
                 $targetSizes|ConvertTo-Json -Depth 5|Set-Content -LiteralPath (Join-Path $script:Run 'dry-run-target-sizes.json') -Encoding UTF8
-                $modelTargetBytes=[long]5865044386
+                $modelTargetBytes=[long]0;foreach($pin in $script:ModelPins){$modelTargetBytes+=[long]$pin.approx_bytes}
                 $modelRoot=Join-Path $cacheRoot 'models'
                 $purgesModelRoot=@($targets|Where-Object{[IO.Path]::GetFullPath($_).TrimEnd('\') -ieq [IO.Path]::GetFullPath($modelRoot).TrimEnd('\')}).Count -gt 0
-                if($purgesModelRoot){$downloadImpact=('Se espera redescargar seis modelos: aproximadamente 5.86 GB ({0} bytes).' -f $modelTargetBytes)}else{$downloadImpact='Los dry-runs no incluyen la raíz de modelos; no se estima redescarga de modelos.'}
+                if($purgesModelRoot){$downloadImpact=('Se espera redescargar {0} modelos: aproximadamente {1} GB ({2} bytes).' -f $script:ModelPins.Count,[Math]::Round($modelTargetBytes/1e9,2),$modelTargetBytes)}else{$downloadImpact='Los dry-runs no incluyen la raíz de modelos; no se estima redescarga de modelos.'}
                 $cleanupSummary=@(@($script:CleanupTargetSpecs|Where-Object{$_})|ForEach-Object{$pathText=[string]$_.path;$bytes=[long]$_.bytes;('{0}: {1} bytes' -f $pathText,$bytes)}) -join '; '
                 $uninstallSummary=@(@($script:UninstallTargetSpecs|Where-Object{$_})|ForEach-Object{$pathText=[string]$_.path;$bytes=[long]$_.bytes;('{0}: {1} bytes' -f $pathText,$bytes)}) -join '; '
                 $residueSummary=@(@($residue|Where-Object{$_})) -join ', '
@@ -792,7 +829,7 @@ function Run-E2E {
         $entries=@(Get-PathEntries|Where-Object{$_.TrimEnd('\') -ieq $script:ProgramDir.TrimEnd('\')});Assert-True ($entries.Count -eq 1) 'HKCU PATH no tiene exactamente una entrada.'
         $where=Invoke-WhereCheck -ExpectPresent:$true -AllowPreSetup;Assert-True ($where.ExitCode -eq 0) 'where.exe con PATH persistido falló.'
         $version=Invoke-Cli @('version') 'version-installed' -Json;Assert-PayloadSchema $version.Payload;Assert-True ($version.Payload.version -eq $script:Version) 'Versión instalada inesperada.'
-        Assert-True ($version.Payload.schema_version -eq '6') 'El envelope de version no usa schema 6.'
+        Assert-True ($version.Payload.schema_version -eq $script:CliSchema) ('El envelope de version no usa el esquema vigente {0}.' -f $script:CliSchema)
         $bootstrapLog=Get-Content -LiteralPath $result.StdoutPath -Raw
         Assert-True ($bootstrapLog -match '(?i)checksum verificado\.') 'Bootstrap no registra la verificación de checksum del bundle.'
         $zipAsset='ai-voice-interconnector-{0}-x86_64-windows.zip' -f $script:Version
@@ -814,18 +851,16 @@ function Run-E2E {
         $before=Invoke-Cli @('doctor') 'doctor-before-setup' -Json -ExpectedExit @(1)
         Assert-True (@($before.Payload.failed) -contains 'models_provisioned') 'Doctor pre-setup no reporta modelos ausentes.'
         $missing=@($before.Payload.models.missing)
-        if($missing.Count -ne 6){throw ('Doctor pre-setup debe identificar seis modelos faltantes; encontró {0}. Se detiene antes de setup.' -f $missing.Count)}
-        $pinBytes=@{'qwen3-tts-0.6b'=2498388392;'qwen3-tts-0.6b-base'=2516106051;'parakeet-tdt-v3'=670619706;'opus-mt-es-en'=82536565;'opus-mt-en-es'=82536565;'dpdfnet8'=14857107}
-        $estimate=[long]0;foreach($model in $missing){$estimate+=[long]$pinBytes[[string]$model]}
+        if($missing.Count -ne $script:ModelPins.Count){throw ('Doctor pre-setup debe identificar {0} modelos faltantes; encontró {1}. Se detiene antes de setup.' -f $script:ModelPins.Count,$missing.Count)}
+        $estimate=[long]0;foreach($model in $missing){$pin=@($script:ModelPins|Where-Object name -eq ([string]$model));if(!$pin.Count){throw ('Doctor pre-setup reporta un modelo ausente de tests/golden/model_pins.json: {0}' -f $model)};$estimate+=[long]$pin[0].approx_bytes}
         $estimateGiB=[Math]::Round($estimate/1GB,2)
         $modelImpact='Descarga estimada: {0} bytes ({1} GiB) para los modelos faltantes: {2}.' -f $estimate,$estimateGiB,($missing -join ', ')
         Save-Event @{type='impact';operation='model-download';targets=@($script:ModelsDir);impact=$modelImpact};Write-Host ('IMPACTO: {0}' -f $modelImpact) -ForegroundColor Yellow
         $setup=Invoke-Cli @('setup') 'setup' -TimeoutMs 1200000 -Json -KillOnTimeout
-        Assert-PayloadSchema $setup.Payload;Assert-True ($setup.Payload.status -eq 'completed' -and @($setup.Payload.models_provisioned).Count -eq 6) 'Setup no completó los seis modelos.'
+        Assert-PayloadSchema $setup.Payload;Assert-True ($setup.Payload.status -eq 'completed' -and @($setup.Payload.models_provisioned).Count -eq $script:ModelPins.Count) 'Setup no completó todos los modelos fijados.'
         $doctor=Invoke-Cli @('doctor') 'doctor-after-setup' -Json -PersistedPath;Assert-PayloadSchema $doctor.Payload
         Assert-True (@($doctor.Payload.failed).Count -eq 0) 'Doctor reporta fallos.'
-        $expectedModels=@('qwen3-tts-0.6b','qwen3-tts-0.6b-base','parakeet-tdt-v3','opus-mt-es-en','opus-mt-en-es','dpdfnet8')
-        Assert-True ((@($setup.Payload.models_provisioned|Sort-Object)-join ',') -eq (@($expectedModels|Sort-Object)-join ',')) 'Setup no reporta exactamente los seis modelos fijados.'
+        Assert-True ((@($setup.Payload.models_provisioned|Sort-Object)-join ',') -eq (@($script:ModelPins.name|Sort-Object)-join ',')) 'Setup no reporta exactamente los modelos fijados.'
         $pathCheck=Invoke-WhereCheck -ExpectPresent:$true;Assert-True ($pathCheck.ExitCode -eq 0) 'where.exe/doctor integrado con PATH persistido falló tras setup.'
         foreach($key in @('parked','stagings','scratch','temporaries','failure_logs','unknown_owner','pending_failures','unreadable')){Assert-True (@($doctor.Payload.pending.$key).Count -eq 0) ('Doctor reporta pending {0}.' -f $key)}
         Assert-True ($doctor.Payload.pending.transaction_journal -eq $false) 'Doctor reporta diario de transacción pendiente.'
@@ -834,15 +869,7 @@ function Run-E2E {
         Save-Event @{type='audio_capability';output_available=$script:OutputAvailable;output_devices=$script:Devices;input_available='not_exposed_by_devices_contract'}
         $receipt=Get-RegisteredRoots;$script:DataDir=[string]$receipt.roots.data_dir;$script:CacheDir=[string]$receipt.roots.cache_dir;$script:ModelsDir=Join-Path $script:CacheDir 'models'
         Assert-True ($doctor.Payload.models.root -eq $script:ModelsDir) 'Doctor no está verificando la raíz de modelos del receipt.'
-        $modelSpecs=@{
-            'qwen3-tts-0.6b'=@{repo='Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice';revision='85e237c12c027371202489a0ec509ded67b5e4b5';files=@('config.json','generation_config.json','merges.txt','model.safetensors','preprocessor_config.json','speech_tokenizer\config.json','speech_tokenizer\configuration.json','speech_tokenizer\model.safetensors','speech_tokenizer\preprocessor_config.json','tokenizer_config.json','vocab.json')}
-            'qwen3-tts-0.6b-base'=@{repo='Qwen/Qwen3-TTS-12Hz-0.6B-Base';revision='5d83992436eae1d760afd27aff78a71d676296fc';files=@('config.json','generation_config.json','merges.txt','model.safetensors','preprocessor_config.json','speech_tokenizer\config.json','speech_tokenizer\configuration.json','speech_tokenizer\model.safetensors','speech_tokenizer\preprocessor_config.json','tokenizer_config.json','vocab.json')}
-            'parakeet-tdt-v3'=@{repo='istupakov/parakeet-tdt-0.6b-v3-onnx';revision='8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce';files=@('encoder-model.int8.onnx','decoder_joint-model.int8.onnx','nemo128.onnx','vocab.txt')}
-            'opus-mt-es-en'=@{repo='CristianRojaas/opus-mt-es-en-ct2-int8';revision='6eabf2f7d9f92dd52e38fe95c9da29f219613c19';files=@('config.json','model.bin','shared_vocabulary.json','source.spm','target.spm')}
-            'opus-mt-en-es'=@{repo='CristianRojaas/opus-mt-en-es-ct2-int8';revision='452971fec59e5a4093f8630e55022909dc5beceb';files=@('config.json','model.bin','shared_vocabulary.json','source.spm','target.spm')}
-            'dpdfnet8'=@{repo='Ceva-IP/DPDFNet';revision='dd6818d00f50c836fed43a6243ebe49116de5964';files=@('onnx\dpdfnet8_48khz_hr.onnx')}
-        }
-        foreach($name in $modelSpecs.Keys){$spec=$modelSpecs[$name];$null=Get-ModelSnapshot $name $spec.repo $spec.revision $spec.files}
+        foreach($pin in $script:ModelPins){$null=Get-ModelSnapshot $pin.name $pin.repo $pin.revision @($pin.files)}
         Save-Event @{type='setup';models=$setup.Payload.models_provisioned;model_root=$script:ModelsDir;receipt=$receipt}
     }
 
@@ -885,10 +912,7 @@ function Run-E2E {
         $cross=Invoke-Cli @('speech','synthesize','--text','Hola mundo','--label','e2e_direct_cross','--voice','default','--source-language','es','--target-language','en','--temperature','0.7','--no-daemon') 'synth-direct-cross' -Json;Assert-True ($cross.Payload.status -eq 'success') 'Síntesis directa cross-language falló.';Assert-Wav ([IO.Path]::GetFullPath([string]$cross.Payload.audio_path))
         Assert-Wav $script:WavShortClone
         $nativeStt=Test-NativeSttCapability -AudioPath (Join-Path $script:Root 'crates\avi-stt\tests\assets\parakeet_sample_16k.wav')
-        $parakeetSpec=@{repo='istupakov/parakeet-tdt-0.6b-v3-onnx';revision='8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce';files=@('nemo128.onnx')}
-        $parakeetPath=Join-Path $script:ModelsDir ('models--istupakov--parakeet-tdt-0.6b-v3-onnx\snapshots\'+$parakeetSpec.revision+'\nemo128.onnx')
-        $parakeetItem=Get-Item -LiteralPath $parakeetPath -ErrorAction SilentlyContinue
-        $parakeetAvailable=($null -ne $parakeetItem -and $parakeetItem.Length -gt 0)
+        $parakeetAvailable=Test-PinnedModel 'parakeet-tdt-v3'
         if($nativeStt -and $parakeetAvailable){
             foreach($sample in @(@{name='default';path=$script:WavShortDefault;text='Hola mundo'},@{name='clone';path=$script:WavShortClone;text='Hola mundo'})){$stt=Invoke-Cli @('speech','transcribe','--audio',$sample.path,'--source-language','es','--no-daemon') ('08-synthesis-wer-'+$sample.name) -Json;Assert-PayloadSchema $stt.Payload;Assert-True ($stt.Payload.source_language -eq 'es' -and ![string]::IsNullOrWhiteSpace($stt.Payload.text)) 'STT WER devolvió vacío o idioma de origen incorrecto.';$wer=Get-Wer $sample.text $stt.Payload.text;$result=[pscustomobject]@{reference=$sample.text;transcript=$stt.Payload.text;wer=$wer;audio=$sample.path};$script:WerResults.Add($result);Assert-True ($wer -le 0.25) ('WER {0} supera 0.25.' -f $wer);Set-SubcaseResult ('08-synthesis-wer-'+$sample.name) 'PASS' -Command ($script:Bin+' speech transcribe --audio '+$sample.path) -ExitCode $stt.ExitCode -Payload $result -Evidence @($stt.StdoutPath,$stt.StderrPath);Save-Event @{type='wer';reference=$sample.text;transcript=$stt.Payload.text;wer=$wer;audio=$sample.path}}
         }else{foreach($case in @('08-synthesis-wer-default','08-synthesis-wer-clone')){Set-SubcaseResult $case 'SKIP' -Reason ('Capacidad ausente antes de transcribir: native-stt={0}, parakeet_model={1}.' -f $nativeStt,$parakeetAvailable);Set-Step $case 'SKIP' 'Feature o modelo Parakeet no disponible antes de WER.' -Reason ('native-stt={0}; parakeet_model={1}' -f $nativeStt,$parakeetAvailable)}}
@@ -913,11 +937,10 @@ function Run-E2E {
     }
 
     Invoke-Step '10-stt' {
-        $parakeetPath=Join-Path $script:ModelsDir 'models--istupakov--parakeet-tdt-0.6b-v3-onnx\snapshots\8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce\nemo128.onnx'
-        $parakeetFile=Get-Item -LiteralPath $parakeetPath -ErrorAction SilentlyContinue
+        $parakeetAvailable=Test-PinnedModel 'parakeet-tdt-v3'
         $nativeStt=$false
-        if($parakeetFile -and $parakeetFile.Length -gt 0){$nativeStt=Test-NativeSttCapability -AudioPath $sttSample}
-        if($nativeStt -and $parakeetFile -and $parakeetFile.Length -gt 0){
+        if($parakeetAvailable){$nativeStt=Test-NativeSttCapability -AudioPath $sttSample}
+        if($nativeStt -and $parakeetAvailable){
             $stt=Invoke-Cli @('speech','transcribe','--audio',$sttSample,'--source-language','es','--no-daemon') 'stt-audio' -Json;Assert-PayloadSchema $stt.Payload;Assert-True (![string]::IsNullOrWhiteSpace($stt.Payload.text) -and $stt.Payload.source_language -eq 'es') 'STT sample vacío o source_language incorrecto.'
             Set-SubcaseResult '10-stt-audio' 'PASS' -Command ($script:Bin+' speech transcribe --audio '+$sttSample) -ExitCode $stt.ExitCode -Payload $stt.Payload -Evidence @($stt.StdoutPath,$stt.StderrPath);Set-Step '10-stt-audio' 'PASS' 'Transcripción de audio validada.' -Command ($script:Bin+' speech transcribe --audio '+$sttSample) -ExitCode $stt.ExitCode -Payload $stt.Payload -Evidence @($stt.StdoutPath,$stt.StderrPath)
         }else{Set-SubcaseResult '10-stt-audio' 'SKIP' -Reason 'native-stt o Parakeet no estaba disponible antes de intentar STT.';Set-Step '10-stt-audio' 'SKIP' 'native-stt o Parakeet ausente antes de transcribir.' -Reason 'Capacidad opcional no provisionada.'}
@@ -945,11 +968,9 @@ function Run-E2E {
     }
 
     Invoke-Step '13-denoise' {
-        $dpdfPath=Join-Path $script:ModelsDir ('models--Ceva-IP--DPDFNet\snapshots\dd6818d00f50c836fed43a6243ebe49116de5964\onnx\dpdfnet8_48khz_hr.onnx');Assert-True (Test-Path -LiteralPath $dpdfPath -PathType Leaf) 'DPDFNet no está provisionado para casos denoise.'
+        Assert-True (Test-PinnedModel 'dpdfnet8') 'DPDFNet no está provisionado para casos denoise.'
         $nativeStt=Test-NativeSttCapability -AudioPath $sttSample
-        $parakeetPath=Join-Path $script:ModelsDir 'models--istupakov--parakeet-tdt-0.6b-v3-onnx\snapshots\8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce\nemo128.onnx'
-        $parakeetFile=Get-Item -LiteralPath $parakeetPath -ErrorAction SilentlyContinue
-        if($nativeStt -and $parakeetFile -and $parakeetFile.Length -gt 0){$denoiseTranscribe=Invoke-Cli @('speech','transcribe','--audio',$sttSample,'--source-language','es','--denoise','--no-daemon') 'stt-denoise' -Json;Assert-PayloadSchema $denoiseTranscribe.Payload;Assert-True ($denoiseTranscribe.Payload.text -and $denoiseTranscribe.Payload.source_language -eq 'es') 'STT denoise vacío o idioma incorrecto.';Save-Event @{type='denoise_opt_in';operation='transcribe';audio=$sttSample;transcript=$denoiseTranscribe.Payload.text}}else{Set-SubcaseResult '13-denoise-stt' 'SKIP' -Reason 'native-stt o Parakeet ausente antes del caso denoise STT.';Set-Step '13-denoise-stt' 'SKIP' 'native-stt o Parakeet ausente antes del caso denoise STT.' -Reason 'Capacidad o modelo opcional ausente.'}
+        if($nativeStt -and (Test-PinnedModel 'parakeet-tdt-v3')){$denoiseTranscribe=Invoke-Cli @('speech','transcribe','--audio',$sttSample,'--source-language','es','--denoise','--no-daemon') 'stt-denoise' -Json;Assert-PayloadSchema $denoiseTranscribe.Payload;Assert-True ($denoiseTranscribe.Payload.text -and $denoiseTranscribe.Payload.source_language -eq 'es') 'STT denoise vacío o idioma incorrecto.';Save-Event @{type='denoise_opt_in';operation='transcribe';audio=$sttSample;transcript=$denoiseTranscribe.Payload.text}}else{Set-SubcaseResult '13-denoise-stt' 'SKIP' -Reason 'native-stt o Parakeet ausente antes del caso denoise STT.';Set-Step '13-denoise-stt' 'SKIP' 'native-stt o Parakeet ausente antes del caso denoise STT.' -Reason 'Capacidad o modelo opcional ausente.'}
         if($script:OutputAvailable){$denoiseDub=Invoke-Cli @('speech','dub','--audio',$script:WavRetained,'--source-language','es','--target-language','es','--denoise','--no-daemon') 'dub-denoise' -Json;Assert-PayloadSchema $denoiseDub.Payload;Assert-True ($denoiseDub.Payload.status -eq 'dubbed' -and $denoiseDub.Payload.text) 'Dub denoise vacío o sin status dubbed.';Save-Event @{type='denoise_opt_in';operation='dub';audio=$script:WavRetained;transcript=$denoiseDub.Payload.text}}else{Set-SubcaseResult '13-denoise-dub' 'SKIP' -Reason 'No hay salida de audio; dub denoise no se invocó.';Set-Step '13-denoise-dub' 'SKIP' 'No hay salida de audio para dub denoise.' -Reason 'Caso dependiente de salida omitido antes de invocarlo.'}
         $denoiseDir=Join-Path $script:Run 'denoise';[void](New-Item -ItemType Directory -Path $denoiseDir)
         $version=Invoke-Cli @('speech','denoise','--version') 'ffmpeg-version' -Json:$false;Assert-True ($version.Stdout -match '(?i)ffmpeg') 'No se identificó FFmpeg empaquetado.'
@@ -989,7 +1010,7 @@ function Run-E2E {
         Assert-True ($pathCheck.Doctor.install.receipt -eq 'valid' -and $pathCheck.Doctor.path.resolves_to_this_install -eq $true -and @($pathCheck.Doctor.path.duplicate_entries).Count -eq 0) 'Receipt o resolución PATH del mismo hijo no son válidos.'
         Assert-True ((@($script:SubcaseResults|Where-Object{($_.name -eq '08-synthesis-wer-default' -or $_.name -eq '08-synthesis-wer-clone') -and $_.status -eq 'PASS'}).Count -eq 2 -or @($script:SubcaseResults|Where-Object{($_.name -eq '08-synthesis-wer-default' -or $_.name -eq '08-synthesis-wer-clone') -and $_.status -eq 'SKIP'}).Count -eq 2) -and @($script:WerResults|Where-Object wer -gt 0.25).Count -eq 0) 'Los dos WER deben existir y ser ≤ 0.25.'
         Assert-True ($pathCheck.Doctor.install.dir -eq $script:ProgramDir -and $pathCheck.Doctor.path.resolves_to_this_install -eq $true) 'Doctor del mismo hijo informa otra instalación como propietaria/resuelta.'
-        Assert-True ($pathCheck.Doctor.models.root -eq $script:ModelsDir -and @($pathCheck.Doctor.models.missing).Count -eq 0 -and @($pathCheck.Doctor.models.provisioned).Count -eq 6) 'Doctor del mismo hijo no confirma la raíz y los seis modelos instalados.'
+        Assert-True ($pathCheck.Doctor.models.root -eq $script:ModelsDir -and @($pathCheck.Doctor.models.missing).Count -eq 0 -and @($pathCheck.Doctor.models.provisioned).Count -eq $script:ModelPins.Count) 'Doctor del mismo hijo no confirma la raíz y todos los modelos fijados instalados.'
         $versionFinal=Invoke-Cli @('version') 'version-final' -Json -PersistedPath;Assert-PayloadSchema $versionFinal.Payload;Assert-True ($versionFinal.Payload.version -eq $script:Version) 'version --json final no coincide con el release.'
         $dataSize=Get-DirectorySize $script:DataDir;$modelsSize=Get-DirectorySize $script:ModelsDir
         Save-Event @{type='final_sizes';data_root=$script:DataDir;data_bytes=$dataSize;models_root=$script:ModelsDir;models_bytes=$modelsSize}

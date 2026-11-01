@@ -1295,6 +1295,41 @@ fn version_matches_fixture() {
     assert_eq!(actual, fixture("cli_version.json"));
 }
 
+/// `tests/golden/model_pins.json` es la copia de los modelos fijados que lee el
+/// E2E de Windows: nombre, repo, revisión, bytes aproximados y ficheros
+/// obligatorios de cada pin, en el orden de `MODEL_REVISIONS`. El CLI no expone
+/// esa tabla, así que este test es lo que impide que la copia se desfase del
+/// código cuando cambia un modelo.
+#[test]
+fn model_pins_match_fixture() {
+    let models: Vec<Value> = avi_shared::paths::MODEL_REVISIONS
+        .iter()
+        .map(|pin| {
+            let files = avi_shared::paths::MODEL_FILE_PATTERNS
+                .iter()
+                .find(|(name, _)| *name == pin.name)
+                .map(|(_, files)| *files)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "el pin {} no tiene entrada en MODEL_FILE_PATTERNS",
+                        pin.name
+                    )
+                });
+            serde_json::json!({
+                "name": pin.name,
+                "repo": pin.repo,
+                "revision": pin.revision,
+                "approx_bytes": pin.approx_bytes,
+                "files": files,
+            })
+        })
+        .collect();
+    assert_eq!(
+        serde_json::json!({ "models": models }),
+        fixture("model_pins.json")
+    );
+}
+
 /// `devices --json` solo tiene dos salidas válidas, según el host: la lista de
 /// dispositivos (cada `name` y `latency` es texto/número o `null` si el backend no
 /// lo expone) o el fallo `audio_enumeration_failed` con exit 1. La forma se afirma

@@ -59,7 +59,11 @@ la integridad se verifica cotejando los checksums SHA-256.
   revisión nueva de alguno:
   1. consultar el `sha` vigente en `https://huggingface.co/api/models/<repo>`;
   2. auditar el diff de esa revisión en HuggingFace;
-  3. verificarla con `setup` y `doctor`.
+  3. verificarla con `setup` y `doctor`;
+  4. actualizar `tests/golden/model_pins.json` con la nueva `revision`,
+     `approx_bytes` o lista de ficheros: el E2E de Windows lee los modelos de
+     ese fixture y el test `model_pins_match_fixture` falla si difiere de
+     `MODEL_REVISIONS` o de `MODEL_FILE_PATTERNS`.
 - **La publicación es irreversible.** El Release se publica directamente sobre
   el tag. La versión y el CHANGELOG deben estar correctos **antes** de crear el
   tag, porque corregirlos después exige borrar un Release público.

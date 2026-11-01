@@ -1,0 +1,89 @@
+{
+  "models": [
+    {
+      "name": "qwen3-tts-0.6b",
+      "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
+      "approx_bytes": 2498388392,
+      "files": [
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "speech_tokenizer/config.json",
+        "speech_tokenizer/configuration.json",
+        "speech_tokenizer/model.safetensors",
+        "speech_tokenizer/preprocessor_config.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ]
+    },
+    {
+      "name": "opus-mt-es-en",
+      "repo": "CristianRojaas/opus-mt-es-en-ct2-int8",
+      "revision": "6eabf2f7d9f92dd52e38fe95c9da29f219613c19",
+      "approx_bytes": 82536565,
+      "files": [
+        "config.json",
+        "model.bin",
+        "shared_vocabulary.json",
+        "source.spm",
+        "target.spm"
+      ]
+    },
+    {
+      "name": "opus-mt-en-es",
+      "repo": "CristianRojaas/opus-mt-en-es-ct2-int8",
+      "revision": "452971fec59e5a4093f8630e55022909dc5beceb",
+      "approx_bytes": 82536565,
+      "files": [
+        "config.json",
+        "model.bin",
+        "shared_vocabulary.json",
+        "source.spm",
+        "target.spm"
+      ]
+    },
+    {
+      "name": "parakeet-tdt-v3",
+      "repo": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+      "revision": "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+      "approx_bytes": 670619706,
+      "files": [
+        "encoder-model.int8.onnx",
+        "decoder_joint-model.int8.onnx",
+        "nemo128.onnx",
+        "vocab.txt"
+      ]
+    },
+    {
+      "name": "dpdfnet8",
+      "repo": "Ceva-IP/DPDFNet",
+      "revision": "dd6818d00f50c836fed43a6243ebe49116de5964",
+      "approx_bytes": 14857107,
+      "files": [
+        "onnx/dpdfnet8_48khz_hr.onnx"
+      ]
+    },
+    {
+      "name": "qwen3-tts-0.6b-base",
+      "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+      "revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+      "approx_bytes": 2516106051,
+      "files": [
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "preprocessor_config.json",
+        "speech_tokenizer/config.json",
+        "speech_tokenizer/configuration.json",
+        "speech_tokenizer/model.safetensors",
+        "speech_tokenizer/preprocessor_config.json",
+        "tokenizer_config.json",
+        "vocab.json"
+      ]
+    }
+  ]
+}
