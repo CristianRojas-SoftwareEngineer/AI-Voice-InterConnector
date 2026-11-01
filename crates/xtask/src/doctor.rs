@@ -499,9 +499,74 @@ fn check_cmake() -> Row {
     }
 }
 
+/// Paquetes de MSYS2 UCRT64 que compilan el motor, con su versión fijada, en el orden
+/// gcc, OpenBLAS y make.
+fn msys2_packages(pins: &Pins) -> [(&'static str, &str); 3] {
+    [
+        ("mingw-w64-ucrt-x86_64-gcc", pins.msys2_gcc.as_str()),
+        (
+            "mingw-w64-ucrt-x86_64-openblas",
+            pins.msys2_openblas.as_str(),
+        ),
+        ("mingw-w64-ucrt-x86_64-make", pins.msys2_make.as_str()),
+    ]
+}
+
+/// Compara las versiones instaladas de los paquetes de [`msys2_packages`] (mismo orden)
+/// con los pines: `Ok` si todas coinciden, `Mismatch` nombrando cada diferencia y
+/// `Error` si alguna sonda no pudo ejecutarse.
+fn evaluate_msys2_versions(pins: &Pins, installed: &[Result<Option<String>, String>; 3]) -> Row {
+    let label = "Toolchain del motor TTS";
+    let mut stale = Vec::new();
+    let mut details = Vec::new();
+    let mut failures = Vec::new();
+    for ((package, pinned), version) in msys2_packages(pins).into_iter().zip(installed) {
+        match version {
+            Ok(Some(v)) if pin_covers(v, pinned) => details.push(format!("{package} {v}")),
+            Ok(Some(v)) => stale.push(format!("{package}: instalado {v}, fijado {pinned}")),
+            Ok(None) => stale.push(format!("{package}: no instalado (fijado {pinned})")),
+            Err(reason) => failures.push(reason.clone()),
+        }
+    }
+    if !failures.is_empty() {
+        return probe_error_row(
+            "engine-toolchain",
+            label,
+            true,
+            Some("MSYS2 UCRT64 con los pines de pins.json".to_string()),
+            failures.join("; "),
+        );
+    }
+    if stale.is_empty() {
+        return Row {
+            id: "engine-toolchain",
+            label,
+            mandatory: true,
+            status: Status::Ok,
+            found: Some(details.join(", ")),
+            want: Some("MSYS2 UCRT64 con los pines de pins.json".to_string()),
+            hint: None,
+        };
+    }
+    Row {
+        id: "engine-toolchain",
+        label,
+        mandatory: true,
+        status: Status::Mismatch,
+        found: Some(stale.join("; ")),
+        want: Some(format!(
+            "gcc {}, OpenBLAS {}, make {}",
+            pins.msys2_gcc, pins.msys2_openblas, pins.msys2_make
+        )),
+        hint: Some(
+            "en la shell de MSYS2 UCRT64: pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make".to_string(),
+        ),
+    }
+}
+
 /// Sonda de la toolchain del motor TTS según el SO, con los pines de MSYS2
-/// en Windows.
-fn check_engine_toolchain(pins: &Pins) -> Row {
+/// en Windows. `build-engine` aplica esta misma regla antes de compilar.
+pub(crate) fn check_engine_toolchain(pins: &Pins) -> Row {
     let label = "Toolchain del motor TTS";
     if cfg!(windows) {
         let pacman = msys2_root().join("usr").join("bin").join("pacman.exe");
@@ -522,59 +587,9 @@ fn check_engine_toolchain(pins: &Pins) -> Row {
                 )),
             };
         }
-        let wants = [
-            ("mingw-w64-ucrt-x86_64-gcc", pins.msys2_gcc.as_str()),
-            (
-                "mingw-w64-ucrt-x86_64-openblas",
-                pins.msys2_openblas.as_str(),
-            ),
-            ("mingw-w64-ucrt-x86_64-make", pins.msys2_make.as_str()),
-        ];
-        let mut stale = Vec::new();
-        let mut details = Vec::new();
-        let mut failures = Vec::new();
-        for (package, pinned) in wants {
-            match msys2_package_version(&pacman, package) {
-                Ok(Some(v)) if pin_covers(&v, pinned) => details.push(format!("{package} {v}")),
-                Ok(Some(v)) => stale.push(format!("{package}: instalado {v}, fijado {pinned}")),
-                Ok(None) => stale.push(format!("{package}: no instalado (fijado {pinned})")),
-                Err(reason) => failures.push(reason),
-            }
-        }
-        if !failures.is_empty() {
-            return probe_error_row(
-                "engine-toolchain",
-                label,
-                true,
-                Some("MSYS2 UCRT64 con los pines de pins.json".to_string()),
-                failures.join("; "),
-            );
-        }
-        if stale.is_empty() {
-            return Row {
-                id: "engine-toolchain",
-                label,
-                mandatory: true,
-                status: Status::Ok,
-                found: Some(details.join(", ")),
-                want: Some("MSYS2 UCRT64 con los pines de pins.json".to_string()),
-                hint: None,
-            };
-        }
-        return Row {
-            id: "engine-toolchain",
-            label,
-            mandatory: true,
-            status: Status::Mismatch,
-            found: Some(stale.join("; ")),
-            want: Some(format!(
-                "gcc {}, OpenBLAS {}, make {}",
-                pins.msys2_gcc, pins.msys2_openblas, pins.msys2_make
-            )),
-            hint: Some(
-                "en la shell de MSYS2 UCRT64: pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make".to_string(),
-            ),
-        };
+        let installed = msys2_packages(pins)
+            .map(|(package, _)| msys2_package_version(&pacman, package));
+        return evaluate_msys2_versions(pins, &installed);
     }
     if cfg!(target_os = "macos") {
         let want = "make, clang y Accelerate (Xcode CLT)";
@@ -1556,6 +1571,43 @@ mod tests {
         assert!(pin_covers("16.2.0-1", "16.2.0"));
         assert!(pin_covers("0.3.34-1", "0.3.34-1"));
         assert!(!pin_covers("15.1.0-1", "16.2.0"));
+    }
+
+    #[test]
+    fn msys2_versions_equal_to_the_pins_are_accepted() {
+        let installed = [
+            Ok(Some("16.2.0-6".to_string())),
+            Ok(Some("0.3.34-1".to_string())),
+            Ok(Some("4.4.1-5".to_string())),
+        ];
+        let row = evaluate_msys2_versions(&fixture_pins(), &installed);
+        assert_eq!(row.status, Status::Ok);
+    }
+
+    #[test]
+    fn msys2_versions_that_differ_are_rejected_naming_each_difference() {
+        let installed = [
+            Ok(Some("15.1.0-1".to_string())),
+            Ok(Some("0.3.34-1".to_string())),
+            Ok(None),
+        ];
+        let row = evaluate_msys2_versions(&fixture_pins(), &installed);
+        assert_eq!(row.status, Status::Mismatch);
+        let found = row.found.unwrap();
+        assert!(found.contains("gcc: instalado 15.1.0-1, fijado 16.2.0"));
+        assert!(found.contains("make: no instalado (fijado 4.4.1-5)"));
+        assert!(!found.contains("openblas"));
+    }
+
+    #[test]
+    fn a_failed_msys2_probe_is_an_error_and_not_a_pass() {
+        let installed = [
+            Ok(Some("16.2.0-6".to_string())),
+            Err("pacman no respondió".to_string()),
+            Ok(Some("4.4.1-5".to_string())),
+        ];
+        let row = evaluate_msys2_versions(&fixture_pins(), &installed);
+        assert_eq!(row.status, Status::Error);
     }
 
     #[test]

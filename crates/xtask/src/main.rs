@@ -729,6 +729,24 @@ fn augment_windows_env(cmd: &mut std::process::Command) -> Result<()> {
 /// invoca `mingw32-make` con el entorno MSYS2 UCRT64 augmentado. Verifica que el
 /// binario se generó y, con --self-test, ejecuta el oráculo de kernels.
 fn build_engine(self_test: bool, simd: Option<String>, jobs: Option<usize>) -> Result<()> {
+    // En Windows el motor solo se compila con los paquetes MSYS2 fijados: la misma regla
+    // que `doctor`, aplicada aquí para que local y CI no puedan enlazar otra OpenBLAS.
+    #[cfg(windows)]
+    {
+        let pins = doctor::load_pins(Path::new("."))?;
+        let row = doctor::check_engine_toolchain(&pins);
+        if row.status != doctor::Status::Ok {
+            anyhow::bail!(
+                "la toolchain del motor TTS no coincide con packaging/pins.json: {} (esperado: {}){}",
+                row.found.as_deref().unwrap_or("no encontrada"),
+                row.want.as_deref().unwrap_or("los pines"),
+                row.hint
+                    .as_deref()
+                    .map(|hint| format!(". {hint}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
     let dir = engine_dir();
     let simd = simd.unwrap_or_else(|| "auto".to_string());
     let jobs = jobs.unwrap_or_else(|| match std::thread::available_parallelism() {

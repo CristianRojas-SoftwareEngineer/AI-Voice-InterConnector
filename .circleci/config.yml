@@ -34,9 +34,9 @@ parameters:
   # Pines del toolchain C del motor TTS en Windows (MSYS2 UCRT64). Espejan a
   # `packaging/pins.json`, que es la fuente única. El release base fija un
   # snapshot reproducible; la caché de C:\msys64 (msys2_*_cache) es el
-  # mecanismo de determinismo, y el assert de gcc en el bootstrap ataja el
-  # drift upstream en caché fría. Bump = editar el JSON (invalida la caché por
-  # clave).
+  # mecanismo de determinismo, y `cargo xtask build-engine` falla si gcc,
+  # OpenBLAS o make difieren de estos pines. Bump = editar el JSON (invalida la
+  # caché por clave).
   msys2_base_pin:
     type: string
     default: "2026-06-11"
@@ -1475,8 +1475,8 @@ jobs:
           # instala el base de MSYS2 vía Chocolatey (ya presente en el executor)
           # pineado a la misma versión del release base, y sincroniza gcc (RLE:
           # libgfortran/libgcc/libquadmath estáticos), openblas y make (mingw32-make).
-          # El pin de choco + la caché fijan el resultado; si upstream driftó gcc,
-          # se loguea (no aborta) y la versión instalada manda como evidencia RLE.
+          # El pin de choco + la caché fijan el resultado; si upstream cambió algún
+          # paquete, `cargo xtask build-engine` falla al compilar el motor.
           # pacman -Q + gcc --version quedan al log como evidencia auditable (RLE).
           # Marcadores por subpaso para localizar cuelgues.
           name: Bootstrap MSYS2 UCRT64 (toolchain motor TTS)
@@ -1484,7 +1484,6 @@ jobs:
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - INICIO"
             $ErrorActionPreference = "Stop"
             $Root = "C:\msys64"
-            $GccPin = "<< pipeline.parameters.msys2_gcc_pin >>"
             if (Test-Path "$Root\ucrt64\bin\gcc.exe") {
               Write-Host "MSYS2 restaurado de caché; se omite instalación"
             } else {
@@ -1505,18 +1504,11 @@ jobs:
               if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
               Write-Host "[STEP] Sincronizar toolchain - FIN"
             }
-            # Auditabilidad (RLE) + verificación de pines: pacman -Q y gcc --version.
+            # Evidencia auditable de la build: versiones instaladas de gcc, OpenBLAS y make.
+            # La comparación con los pines no se hace aquí: `cargo xtask build-engine` la
+            # aplica antes de compilar y falla si algún paquete difiere.
             & "$Root\usr\bin\bash.exe" -lc "pacman -Q mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
             & "$Root\ucrt64\bin\gcc.exe" --version
-            $GccInstalled = (& "$Root\ucrt64\bin\gcc.exe" -dumpfullversion).Trim()
-            # Log on drift (no halt): la versión instalada es la fuente de verdad de
-            # la evidencia RLE. Si difiere del pin declarado, se advierte pero no se
-            # aborta; actualizar el pin es opcional (solo refresca la clave de caché).
-            if ($GccInstalled -ne $GccPin) {
-              Write-Host "[WARN] gcc instalado ($GccInstalled) != pin declarado ($GccPin): drift upstream de MSYS2; evidencia RLE = $GccInstalled"
-            } else {
-              Write-Host "gcc instalado ($GccInstalled) coincide con el pin declarado"
-            }
             Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - FIN"
       - msys2_save_cache
       - cargo_restore_caches:
