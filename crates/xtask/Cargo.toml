@@ -41,6 +41,7 @@ windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_
 
 [dev-dependencies]
 # Envejecer un directorio para probar el discriminante de antigüedad de la
-# poda fina. Es la misma versión que ya usa `tar` en el lockfile, así que el
-# inventario de licencias no cambia.
+# poda fina. Es la misma versión que ya usa `tar` en el lockfile. Una
+# dependencia de desarrollo no se distribuye, así que no entra en el inventario
+# de licencias.
 filetime = "0.2"
