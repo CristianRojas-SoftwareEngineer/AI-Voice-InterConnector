@@ -1,6 +1,6 @@
 # Pipeline CircleCI Tier 1 — Rust nativo 3 SO (Linux/Windows/macOS)
 # UN pipeline de release (`build-all`), disparado SOLO en tags v* (ver
-# `workflows:`): la triple puerta `cargo test --all` por plataforma
+# `workflows:`): la triple puerta `cargo nextest run --all` por plataforma
 # (test-linux/windows/macos) es gate mecánico de los 4 builds, de modo que la
 # publicación queda condicionada a los tests dentro de la MISMA pipeline
 # (CircleCI no encadena pipelines distintas). Empaquetado + publicación tras
@@ -832,7 +832,7 @@ commands:
 
 jobs:
   # ──────────────────────────────────────────────────────────────
-  # Gate Rust — triple puerta simétrica (cargo test --all)
+  # Gate Rust — triple puerta simétrica (cargo nextest run --all, un proceso por prueba)
   # ──────────────────────────────────────────────────────────────
   test-linux:
     # Executor x86_64 Docker con Rust preinstalado. La suite es
@@ -927,7 +927,7 @@ jobs:
           variant: test
 
   test-windows:
-    # Suite Rust en Windows nativo (cargo test --all). Puerta simétrica con
+    # Suite Rust en Windows nativo (cargo nextest run --all). Puerta simétrica con
     # test-linux/macos: valida código específico de Windows (lanzamiento con
     # lista explícita de handles, limpiador diferido, PATH en HKCU, WASAPI y
     # consola UTF-8) antes de compilar. Sin este gate, bugs de Windows solo se verían en build.
@@ -1188,6 +1188,11 @@ jobs:
     # sin señal nueva. Reemplaza a pytest-cov; genera lcov.info y resumen por
     # líneas. Sin gate de % por diseño — solo valida
     # que la instrumentación no rompa la suite.
+    # Es, a propósito, la única ejecución del CI con el arnés de `cargo test`
+    # (todas las pruebas de un binario como hilos del mismo proceso): el modo de
+    # `cargo test` en local y de la puerta de pruebas con recursos de
+    # `cargo xtask release`. Por eso no se pasa a nextest, que ejecuta cada
+    # prueba en su propio proceso como la triple puerta.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463 # digest del índice multi-arch de 1.96.0 (ver parameters.rust_pin)
     resource_class: medium

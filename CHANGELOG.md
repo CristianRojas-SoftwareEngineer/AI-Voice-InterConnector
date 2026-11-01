@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.39.0 — 2026-11-01](#0390--2026-11-01)
 - [0.38.1 — 2026-10-31](#0381--2026-10-31)
 - [0.38.0 — 2026-10-31](#0380--2026-10-31)
@@ -125,6 +126,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+El bloqueo de ciclo de vida podía seguir tomado después de soltarlo: se soltaba solo cerrando el descriptor, y el cierre no libera el bloqueo mientras un proceso hijo recién lanzado conserve una copia del descriptor hasta su `exec`. Eso hizo fallar de forma intermitente las pruebas que se ejecutan como hilos de un mismo proceso, donde otras pruebas lanzan procesos a la vez. Ahora el bloqueo se suelta de forma explícita.
+
+### Corregido
+
+- El bloqueo de ciclo de vida se suelta desbloqueando de forma explícita y después cerrando, en todos sus caminos: al terminar la operación, en `release_main` antes del traspaso de `self update`, en el borrado final de `self uninstall`, al fallar la verificación de inodo y al quedar la toma a medias (compuerta tomada y principal fallido). Si el desbloqueo falla se avisa por stderr. Dos pruebas de regresión fijan que el bloqueo queda libre aunque siga viva una copia del descriptor. La guarda del bloqueo TTS de las pruebas avisa si no puede desbloquear, en lugar de descartar el error, y los comentarios del CI describen que la triple puerta usa `cargo nextest run --all` y que `coverage` es la única ejecución en proceso compartido.
 
 ## [0.39.0] — 2026-11-01
 

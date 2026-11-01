@@ -47,11 +47,18 @@
 //! **No hay crate de bloqueo**: `std::fs::File::try_lock` y `try_lock_shared`
 //! están estables desde 1.89 y la toolchain del proyecto es 1.96.
 //!
+//! **Liberación explícita.** El bloqueo se suelta con `unlock()` y después se
+//! cierra el descriptor. El cierre solo libera el bloqueo cuando se cierra la
+//! última copia del descriptor, y en Unix un hijo lanzado por otro hilo del mismo
+//! proceso comparte la descripción abierta hasta su `exec`: soltar solo cerrando
+//! dejaría el bloqueo tomado mientras esa copia exista.
+//!
 //! Los ficheros se abren con lectura **y** escritura, no solo para anexar: un
 //! `O_APPEND` impide el bloqueo exclusivo en Windows.
 //!
 //! Uso: se toma al principio de cada operación y se suelta al final, también en
-//! el camino de error, que es lo que hace `Drop`.
+//! el camino de error: el `Drop` de cada descriptor tomado desbloquea y después
+//! cierra.
 
 use crate::update::HANDOVER_PARENT_PID_ENV;
 use crate::LifecycleError;
@@ -86,11 +93,13 @@ fn sibling(program_dir: &Path, name: &str) -> PathBuf {
 #[derive(Debug)]
 pub struct LifecycleLock {
     /// Compuerta de traspaso; `None` en el hijo del traspaso, que no la toma. Se
-    /// conserva abierta mientras viva el bloqueo: es el descriptor que el sistema
-    /// tiene tomado, no un dato que se consulte.
-    _gate: Option<File>,
-    /// Bloqueo principal; `None` tras [`LifecycleLock::release_main`].
-    main: Option<File>,
+    /// conserva mientras viva el bloqueo: es el descriptor que el sistema tiene
+    /// tomado, no un dato que se consulte. Al soltarse se desbloquea de forma
+    /// explícita y después se cierra.
+    _gate: Option<HeldLock>,
+    /// Bloqueo principal; `None` tras [`LifecycleLock::release_main`]. Al
+    /// soltarse se desbloquea de forma explícita y después se cierra.
+    main: Option<HeldLock>,
     path: PathBuf,
     gate_path: PathBuf,
 }
@@ -108,7 +117,9 @@ impl LifecycleLock {
 
     /// Suelta solo el bloqueo principal y conserva la compuerta. Es lo que hace
     /// `self update` antes de lanzar el `self install` del binario nuevo, que toma
-    /// el principal, y retiene la compuerta hasta que el traspaso vuelve.
+    /// el principal, y retiene la compuerta hasta que el traspaso vuelve. Soltar
+    /// es desbloquear y después cerrar, así que el hijo entra aunque otro hilo
+    /// haya lanzado un proceso que aún conserva una copia del descriptor.
     pub fn release_main(&mut self) {
         self.main = None;
     }
@@ -126,7 +137,7 @@ impl LifecycleLock {
     /// En Windows los ficheros se abren sin `FILE_SHARE_DELETE`, así que mientras
     /// alguien los tiene abiertos nadie puede borrarlos, y por eso no existe el
     /// fichero huérfano. Para borrar hay que soltar primero los descriptores
-    /// propios; si en ese instante otro proceso abrió el fichero, el borrado falla
+    /// propios (desbloquear y después cerrar); si en ese instante otro proceso abrió el fichero, el borrado falla
     /// con una violación de compartición y el fichero se queda, sin consecuencias:
     /// su dueño sigue bloqueando el fichero que está en la ruta.
     pub fn remove_files(self) -> Vec<(PathBuf, std::io::Error)> {
@@ -145,6 +156,23 @@ impl LifecycleLock {
         drop(held);
         failures
     }
+
+    /// Copia del descriptor principal. Modela la copia que hereda un hijo lanzado
+    /// por otro hilo antes de su `exec`: comparte la descripción abierta y su
+    /// bloqueo.
+    #[cfg(test)]
+    fn duplicate_main(&self) -> File {
+        let main = self.main.as_ref().expect("el principal está tomado");
+        main.file.try_clone().expect("se duplica el principal")
+    }
+
+    /// Copia del descriptor de la compuerta, con el mismo papel que
+    /// [`LifecycleLock::duplicate_main`].
+    #[cfg(test)]
+    fn duplicate_gate(&self) -> File {
+        let gate = self._gate.as_ref().expect("la compuerta está tomada");
+        gate.file.try_clone().expect("se duplica la compuerta")
+    }
 }
 
 /// Modo de toma de un bloqueo.
@@ -152,6 +180,27 @@ impl LifecycleLock {
 enum Mode {
     Shared,
     Exclusive,
+}
+
+/// Descriptor con el bloqueo tomado. Al soltarse lo desbloquea de forma
+/// explícita antes de cerrarlo: el cierre solo libera el bloqueo cuando se cierra
+/// la última copia del descriptor, y un hijo lanzado por otro hilo conserva una
+/// copia hasta su `exec`.
+#[derive(Debug)]
+struct HeldLock {
+    file: File,
+    path: PathBuf,
+}
+
+impl Drop for HeldLock {
+    fn drop(&mut self) {
+        if let Err(e) = self.file.unlock() {
+            eprintln!(
+                "Aviso: no se pudo soltar el bloqueo de ciclo de vida {}: {e}",
+                self.path.display()
+            );
+        }
+    }
 }
 
 /// Toma el bloqueo de una operación de ciclo de vida: compuerta y principal en
@@ -207,8 +256,10 @@ fn acquire(
 }
 
 /// Abre `path`, lo bloquea sin esperar en el modo pedido y verifica que lo
-/// bloqueado sigue siendo el fichero de la ruta.
-fn take(path: &Path, mode: Mode) -> Result<File, LifecycleError> {
+/// bloqueado sigue siendo el fichero de la ruta. El descriptor pasa a
+/// [`HeldLock`] en cuanto el bloqueo se obtiene, así que una verificación fallida
+/// lo suelta de forma explícita.
+fn take(path: &Path, mode: Mode) -> Result<HeldLock, LifecycleError> {
     let file = open_lock_file(path)?;
     let locked = match mode {
         Mode::Exclusive => file.try_lock(),
@@ -231,8 +282,12 @@ fn take(path: &Path, mode: Mode) -> Result<File, LifecycleError> {
             )))
         }
     }
-    verify_same_file(&file, path)?;
-    Ok(file)
+    let held = HeldLock {
+        file,
+        path: path.to_path_buf(),
+    };
+    verify_same_file(&held.file, path)?;
+    Ok(held)
 }
 
 /// Comprueba que el descriptor bloqueado sigue siendo el fichero de `path`: mismo
@@ -399,6 +454,41 @@ mod tests {
         assert_locked(acquire_exclusive_with(&program, true));
         drop(child);
         drop(parent);
+    }
+
+    /// Soltar el principal lo libera aunque siga viva una copia del descriptor,
+    /// como la que hereda un hijo lanzado por otro hilo hasta su `exec`: el hijo
+    /// del traspaso entra.
+    #[test]
+    fn release_main_frees_main_despite_a_live_copy() {
+        let dir = scratch("lock-release-copy");
+        let program = program_dir(&dir);
+
+        let mut parent = acquire_exclusive_with(&program, false).expect("el padre toma ambos");
+        let copy = parent.duplicate_main();
+        parent.release_main();
+        let child = acquire_exclusive_with(&program, true)
+            .expect("el hijo toma el principal con la copia viva");
+        drop((child, copy, parent));
+    }
+
+    /// Soltar el bloqueo libera la compuerta y el principal aunque sigan vivas
+    /// copias de ambos descriptores.
+    #[test]
+    fn dropping_the_lock_frees_both_files_despite_live_copies() {
+        let dir = scratch("lock-drop-copies");
+        let program = program_dir(&dir);
+
+        let lock = acquire_exclusive_with(&program, false).expect("toma ambos");
+        let gate_copy = lock.duplicate_gate();
+        let main_copy = lock.duplicate_main();
+        drop(lock);
+
+        let operation = acquire_exclusive_with(&program, false)
+            .expect("otra operación entra con las copias vivas");
+        drop(operation);
+        let usage = acquire_shared(&program).expect("el uso entra con las copias vivas");
+        drop((usage, gate_copy, main_copy));
     }
 
     /// `remove_files` borra el bloqueo y la compuerta del dueño de ambos.

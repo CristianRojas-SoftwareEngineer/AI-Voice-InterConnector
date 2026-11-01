@@ -3221,9 +3221,12 @@ mod tts {
 
     impl Drop for TtsGuard {
         fn drop(&mut self) {
-            // Liberación explícita; se ignora el error porque el close del
-            // descriptor libera el lock de todos modos.
-            let _ = self._file.unlock();
+            // Liberación explícita: un hijo lanzado por otra prueba conserva una
+            // copia del descriptor hasta su `exec`, y el cierre no liberaría el
+            // lock mientras esa copia exista.
+            if let Err(e) = self._file.unlock() {
+                eprintln!("Aviso: no se pudo soltar el bloqueo TTS target/tts-serial.lock: {e}");
+            }
         }
     }
 
