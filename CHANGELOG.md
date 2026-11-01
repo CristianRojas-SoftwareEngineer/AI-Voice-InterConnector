@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.40.0 — 2026-11-01](#0400--2026-11-01)
 - [0.39.0 — 2026-11-01](#0390--2026-11-01)
 - [0.38.1 — 2026-10-31](#0381--2026-10-31)
 - [0.38.0 — 2026-10-31](#0380--2026-10-31)
@@ -127,7 +127,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.40.0] — 2026-11-01
 
 En una máquina con un token de Hugging Face caducado, `setup` fallaba con un 401 y no se podían instalar los modelos, aunque todos los modelos fijados son públicos y se descargan sin credenciales: la librería de descarga buscaba por su cuenta un token en `HF_TOKEN`, `HF_TOKEN_PATH` o el archivo `token` guardado y lo enviaba en cada petición. El mismo comportamiento escondía en la máquina del desarrollador un modelo que dejara de ser público. Además, el diagnóstico de las descargas era engañoso: `setup`, `self update` y los instaladores informaban como `network_error` (exit 20) los rechazos del servidor y los fallos del disco local, y los mensajes de éxito parcial prometían que reintentar con `setup` lo resolvía. Ahora la descarga de modelos es anónima en cualquier estado del entorno y cada fallo se clasifica por su causa real, de modo que el mensaje dice si conviene reintentar o no.
 
@@ -3819,3 +3819,4 @@ estado con el que nace el producto.
 [0.38.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.4...v0.38.0
 [0.38.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.38.0...v0.38.1
 [0.39.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.38.1...v0.39.0
+[0.40.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.39.0...v0.40.0
