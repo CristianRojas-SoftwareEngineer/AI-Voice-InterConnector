@@ -145,6 +145,7 @@ En una máquina con un token de Hugging Face caducado, `setup` fallaba con un 40
 
 - `setup` ya no falla con un 401 cuando el entorno tiene un token de Hugging Face caducado o ajeno.
 - Los mensajes de éxito parcial de `self install` y `self update` dan el consejo según la causa del fallo de provisión: recomiendan reintentar con `setup` ante un fallo de transporte y advierten que reintentar no lo resuelve cuando el modelo fijado ya no está disponible. El mensaje de `self update` incluye además la causa.
+- Las instrucciones de descarga manual del README verifican de verdad el checksum: antes guardaban el archivo con otro nombre, de modo que la comprobación no encontraba nada que verificar, y ejecutaban `setup` antes de verificar. Ahora descargan el archivo de la versión indicada junto a `SHA256SUMS.txt`, lo verifican antes de ejecutar nada y lo instalan con `self install`.
 
 ## [0.39.0] — 2026-11-01
 

@@ -1,42 +1,32 @@
 # AI Voice-InterConnector
 
-Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **español**, sobre el motor Qwen3-TTS 0.6B (12 Hz, multilingüe; [QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)). Se distribuye como un único archivo por plataforma que trae el binario, el motor TTS y ONNX Runtime.
+Sistema de voz con IA **100% local** en español e inglés: transcripción, texto a voz con clonación de voz y traducción de voz a voz. Corre en CPU, sin GPU ni APIs externas, y funciona sin conexión una vez descargados los modelos. La síntesis usa el motor Qwen3-TTS 0.6B ([QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)), la transcripción Parakeet TDT 0.6B v3 y la traducción opus-mt. Se distribuye como un único archivo por plataforma, para Windows x64, Linux x64/ARM64 y macOS con Apple Silicon.
 
-- **Síntesis local**: texto a voz sin APIs externas.
-- **Clonación de voz**: usa un WAV o captura tu voz con `voice clone --mic`; duración fija de 1 a 30 s o push-to-talk en TTY.
-- **Síntesis cross-lingual**: reutiliza el timbre de una voz clonada para hablar en español o en inglés.
-- **Transcripción**: voz a texto con Parakeet TDT 0.6B v3.
-- **Limpieza de archivos**: `speech denoise` procesa audio y limpia la pista de audio de vídeo sin alterar su imagen; usa el preset `studio` por omisión.
-- **Traducción**: es↔en con opus-mt.
-- **Daemon opcional**: mantiene los motores calientes entre invocaciones.
-- **100% offline** tras descargar los modelos con `setup`.
-- **Multiplataforma**: Windows x64, Linux x64/ARM64, macOS ARM64 (Apple Silicon).
-- **Invocable por CLI** desde cualquier lenguaje de programación.
+- **Transcripción**: voz a texto desde un archivo WAV o el micrófono.
+- **Texto a voz**: síntesis en español o en inglés, reproducida al momento o guardada como WAV.
+- **Clonación de voz**: crea una voz a partir de unos 10 segundos de audio (archivo WAV o micrófono) y úsala para hablar en español o en inglés.
+- **Traducción**: texto entre español e inglés.
+- **Traducción de voz a voz** (doblaje): [`speech dub`](USAGE.md#speech-dub) transcribe lo que dices, lo traduce y lo reproduce con una voz clonada; no genera un archivo.
+- **Limpieza de ruido**: `speech denoise` limpia archivos de audio y la pista de audio de un vídeo, sin tocar su imagen.
+- **Invocable desde cualquier lenguaje**: cada comando acepta `--json` para leer su resultado desde otro programa, y un daemon opcional mantiene los motores cargados entre invocaciones.
 
 ## Tabla de contenidos
 
 - [Uso ético y responsable](#uso-ético-y-responsable)
+- [Requisitos](#requisitos)
 - [Instalación](#instalación)
-  - [Requisitos](#requisitos)
-    - [Requisitos en Windows](#requisitos-en-windows)
-    - [Requisitos en Linux](#requisitos-en-linux)
-    - [Requisitos en macOS](#requisitos-en-macos)
-  - [Instalación de una línea](#instalación-de-una-línea)
-    - [Instalar en Windows](#instalar-en-windows)
-    - [Instalar en Linux](#instalar-en-linux)
-    - [Instalar en macOS](#instalar-en-macos)
+  - [Windows](#windows)
+  - [Linux](#linux)
+  - [macOS](#macos)
   - [Descargar binario pre-compilado](#descargar-binario-pre-compilado)
-    - [Descarga manual en Windows](#descarga-manual-en-windows)
-    - [Descarga manual en Linux](#descarga-manual-en-linux)
-    - [Descarga manual en macOS](#descarga-manual-en-macos)
-  - [Primer arranque: SmartScreen / Gatekeeper](#primer-arranque-smartscreen--gatekeeper)
-    - [Primer arranque en Windows](#primer-arranque-en-windows)
-    - [Primer arranque en macOS](#primer-arranque-en-macos)
-  - [Provisión de los modelos (`setup`)](#provisión-de-los-modelos-setup)
+    - [Primer arranque: SmartScreen / Gatekeeper](#primer-arranque-smartscreen--gatekeeper)
 - [Primeros pasos](#primeros-pasos)
+  - [Modelos](#modelos)
   - [Síntesis](#síntesis)
   - [Clonación de voz](#clonación-de-voz)
-- [Limpieza de archivos de audio y vídeo](#limpieza-de-archivos-de-audio-y-vídeo)
+  - [Transcripción y traducción](#transcripción-y-traducción)
+  - [Traducción de voz a voz](#traducción-de-voz-a-voz)
+  - [Limpieza de audio y vídeo](#limpieza-de-audio-y-vídeo)
   - [Invocación desde cualquier lenguaje](#invocación-desde-cualquier-lenguaje)
 - [Actualizar y desinstalar](#actualizar-y-desinstalar)
 - [Arquitectura](#arquitectura)
@@ -48,109 +38,60 @@ Sistema de síntesis de voz (TTS) **100% local** con clonación de voz en **espa
 
 ## Uso ético y responsable
 
-AI Voice-InterConnector clona voces arbitrarias y **el audio que genera no lleva marca de
-agua** (el motor Qwen3-TTS no incorpora watermarker), por lo que no es distinguible
-por medios técnicos de una grabación real. Esto exige un uso responsable:
+AI Voice-InterConnector puede clonar cualquier voz, y **el audio que genera no lleva marca de agua**: no se distingue por medios técnicos de una grabación real. Úsalo de forma responsable:
 
-- **Consentimiento**: clona únicamente voces para las que tengas permiso explícito
-  de la persona titular. No clones la voz de nadie sin su autorización.
-- **No suplantación**: no uses la herramienta para hacerte pasar por otra persona,
-  cometer fraude, difamar, ni producir contenido engañoso.
-- **Divulgación**: al publicar o compartir audio sintetizado, indícalo como tal.
-  Recuerda que el audio no contiene marca de agua que lo identifique.
-- **Reporte**: si detectas un uso indebido de este proyecto, repórtalo abriendo un
-  [Issue](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues).
+- **Consentimiento**: clona solo voces para las que tengas permiso explícito de su titular.
+- **No suplantación**: no lo uses para hacerte pasar por otra persona, cometer fraude, difamar ni producir contenido engañoso.
+- **Divulgación**: al publicar o compartir audio sintetizado, indica que lo es.
+- **Reporte**: si detectas un uso indebido del proyecto, abre un [Issue](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/issues).
 
-El proyecto no impone barreras técnicas (fácilmente sorteables en software libre):
-la responsabilidad del uso legítimo recae en quien lo emplea.
+El proyecto no impone barreras técnicas, que serían fáciles de sortear en software libre: la responsabilidad del uso legítimo recae en quien lo emplea.
+
+## Requisitos
+
+| Sistema | Versión mínima | Nada más que instalar porque… |
+|---|---|---|
+| Windows | Windows 10 1903 o posterior, x64 | el archivo trae las DLL del runtime de VC++ |
+| Linux | glibc ≥ 2.28 (Debian 10+, Ubuntu 20.04+, RHEL/Rocky/Alma 8+, Fedora 29+), x64 o ARM64 | solo usa las librerías de C y C++ que trae toda distribución con glibc |
+| macOS | macOS 26 (Tahoe) o posterior, Apple Silicon (M1 en adelante) | el archivo trae todo lo necesario |
+
+No están soportados los Mac Intel ni Windows ARM64. En Linux, la reproducción y la captura de audio usan ALSA, que traen las distribuciones de escritorio; sin ALSA (servidores o contenedores mínimos), el programa funciona, pero los comandos que reproducen o graban audio fallan con un error que lo explica.
+
+Toda la inferencia corre en CPU:
+
+- **CPU**: x86-64 o ARM64 moderna; en procesadores antiguos la síntesis es más lenta.
+- **RAM**: 8 GB recomendados, 4 GB mínimo. Con menos memoria funciona, pero los textos largos se ralentizan. `doctor` no comprueba la CPU ni la RAM.
+- **Disco**: unos 5,9 GB para los modelos (los dos de Qwen3-TTS suman 5 GB; Parakeet, opus-mt y DPDFNet, el resto) y entre 150 y 320 MB para el programa, según la plataforma. En sistemas de archivos sin enlaces duros (FAT32, exFAT y algunos recursos de red), el espacio de los modelos se duplica.
+
+Detalle por plataforma en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
 
 ## Instalación
 
-**Elige tu sistema**:
+La instalación recomendada es de una línea: no pide privilegios de administrador, verifica el checksum del archivo contra `SHA256SUMS.txt`, añade el programa al PATH y descarga los modelos. Cada release publica sus propios instaladores; nada se sirve desde `main`. Más detalle sobre los canales en [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
-| Sistema | Requisitos | Instalación de una línea | Descarga manual | Primer arranque |
-|---|---|---|---|---|
-| Windows | [Requisitos en Windows](#requisitos-en-windows) | [Instalar en Windows](#instalar-en-windows) | [Descarga manual en Windows](#descarga-manual-en-windows) | [Primer arranque en Windows](#primer-arranque-en-windows) |
-| Linux | [Requisitos en Linux](#requisitos-en-linux) | [Instalar en Linux](#instalar-en-linux) | [Descarga manual en Linux](#descarga-manual-en-linux) | — |
-| macOS | [Requisitos en macOS](#requisitos-en-macos) | [Instalar en macOS](#instalar-en-macos) | [Descarga manual en macOS](#descarga-manual-en-macos) | [Primer arranque en macOS](#primer-arranque-en-macos) |
+### Windows
 
-AI Voice-InterConnector se distribuye por **canal nativo** (archivos comprimidos Rust, ver [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)). La instalación es de **una línea**, sin privilegios de administrador y con verificación de checksum.
-
-### Requisitos
-
-La síntesis corre en CPU por defecto (sin GPU). Requisitos orientativos:
-
-- **CPU**: x86-64 o ARM64 moderna. Toda la inferencia corre en CPU, así que en
-  procesadores antiguos la síntesis es más lenta.
-- **RAM**: **8 GB recomendados**, **4 GB mínimo**. Con menos memoria la síntesis
-  funciona pero puede paginar (ralentizarse) en textos largos. `doctor` no mide
-  ni la CPU ni la RAM.
-- **Disco**: 5,85 GB para los modelos descargados (Qwen3-TTS 2,5 GB + modelo Base
-  de clonado 2,5 GB + opus-mt es↔en 0,17 GB + Parakeet TDT v3 0,7 GB). El disco
-  ocupa lo mismo que la descarga, salvo en sistemas de archivos sin enlaces duros (FAT32,
-  exFAT o algunos recursos de red), donde `hf-hub` copia cada archivo y el espacio se
-  duplica. El programa instalado (binario, motor TTS y ONNX Runtime) ocupa ~124 MB en Windows.
-- **GPU (opcional)**: el motor usa CPU por defecto; no es necesaria para el
-  funcionamiento.
-- **Plataformas no soportadas**: Mac Intel (x86_64) y Windows ARM64 (limitación de toolchain aceptada).
-
-Detalle en [docs/BUILD.md](docs/BUILD.md#dependencias-de-runtime-por-plataforma).
-
-#### Requisitos en Windows
-
-- **Windows 10 1903 o posterior** (x64); nada que instalar: el
-  archivo trae las DLL del runtime de VC++ que necesitan el binario y ONNX
-  Runtime.
-
-#### Requisitos en Linux
-
-- **glibc ≥ 2.28** (Debian 10+, Ubuntu 20.04+, RHEL, Rocky y Alma 8+,
-  Fedora 29+ o equivalente), sin nada más que instalar: el binario solo usa la
-  glibc y las librerías de C y C++ que toda distribución con glibc trae, y el
-  motor TTS lleva OpenBLAS enlazado estático. El bootstrap comprueba que el binario
-  arranca y, si no lo hace, aborta con `binary_incompatible`.
-- **Audio**: la reproducción y la captura usan ALSA, que traen las
-  distribuciones de escritorio. En un sistema sin ALSA (servidores o
-  contenedores mínimos) el binario arranca igual: solo `devices` y las órdenes
-  que reproducen o capturan audio fallan, con un error que nombra la librería
-  de ALSA ausente, el código `audio_backend_unavailable` y exit 3.
-
-#### Requisitos en macOS
-
-- **macOS 26 (Tahoe) o posterior**, en cualquier Mac con Apple Silicon
-  (M1 en adelante).
-
-### Instalación de una línea
-
-Ambos bootstrap abortan si el checksum no coincide con `SHA256SUMS.txt` (ver [SECURITY.md](SECURITY.md)). Cada release los publica estampados con su versión como assets propios; nada se sirve desde `main`.
-
-#### Instalar en Windows
-
-En **Windows** (`irm | iex`, sin UAC), el bootstrap descarga el `.zip` x86_64, verifica su hash, comprueba el arranque y delega en `self install` (que integra el PATH de usuario y encadena `setup`):
+En PowerShell:
 
 ```powershell
 irm https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.ps1 | iex
 ```
 
-#### Instalar en Linux
-
-En **Linux y macOS** (`curl | sh`, sin `sudo`), el bootstrap detecta el target del host, verifica `SHA256SUMS.txt`, comprueba que el binario arranca y delega en `self install` (que integra el PATH y encadena `setup`):
+### Linux
 
 ```bash
 curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh
 ```
 
-#### Instalar en macOS
+El instalador detecta si el equipo es x64 o ARM64 y comprueba que el binario arranca antes de instalarlo.
 
-El one-liner es el mismo que en [Linux](#instalar-en-linux):
+### macOS
 
 ```bash
 curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/install.sh | sh
 ```
 
-En **macOS** solo Apple Silicon está soportado; la limpieza de cuarentena Gatekeeper la aplica `self install`, no el bootstrap.
-
-**Alternativa Homebrew (macOS)**: automatiza checksum/PATH/cuarentena (exige Homebrew, no provisiona modelo):
+Como alternativa, con Homebrew:
 
 ```bash
 brew tap CristianRojas-SoftwareEngineer/ai-voice-interconnector
@@ -158,179 +99,171 @@ brew install --cask ai-voice-interconnector
 ai-voice-interconnector setup
 ```
 
-Con Homebrew, para actualizar y desinstalar:
-
-```bash
-brew upgrade --cask ai-voice-interconnector
-brew uninstall --cask --zap ai-voice-interconnector
-```
+Homebrew verifica el checksum, deja el binario en el PATH y quita la cuarentena de Gatekeeper, pero no descarga los modelos: por eso hay que ejecutar `setup`.
 
 ### Descargar binario pre-compilado
 
-Desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases) (sustituye X.Y.Z por la versión del Release).
+Si prefieres no usar el instalador, descarga el archivo de tu plataforma y `SHA256SUMS.txt` desde [Releases](https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases), verifica el checksum **antes de ejecutar nada** e instala con `self install`, que hace lo mismo que el instalador de una línea: copia el programa, lo añade al PATH y descarga los modelos. Sustituye `X.Y.Z` por la versión que descargas.
 
-Cada Release publica `SHA256SUMS.txt` con el hash de cada archivo y de cada bootstrap. Antes de ejecutar, descárgalo junto al archivo y verifica el hash con la orden de tu sistema.
-
-#### Descarga manual en Windows
+Windows (PowerShell):
 
 ```powershell
-# Windows x64 (PowerShell)
-Invoke-WebRequest https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -OutFile ai.zip
-Expand-Archive ai.zip -Force; .\ai-voice-interconnector.exe setup
+$V = "X.Y.Z"; $F = "ai-voice-interconnector-$V-x86_64-windows.zip"
+$U = "https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v$V"
+Invoke-WebRequest "$U/$F" -OutFile $F; Invoke-WebRequest "$U/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+$esperado = ((Get-Content SHA256SUMS.txt) -match " $F$" -split " ")[0]
+if ((Get-FileHash $F -Algorithm SHA256).Hash -ne $esperado) { throw "El checksum no coincide" }
+Expand-Archive $F -DestinationPath ai-voice-interconnector
+.\ai-voice-interconnector\ai-voice-interconnector.exe self install
 ```
 
-```powershell
-# Windows (PowerShell): compara el resultado con la línea del archivo en SHA256SUMS.txt
-Get-FileHash .\ai-voice-interconnector-X.Y.Z-x86_64-windows.zip -Algorithm SHA256
-```
-
-#### Descarga manual en Linux
+Linux (`x86_64` o `arm64`):
 
 ```bash
-# Linux x64
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-x86_64-linux.tar.gz -o ai.tar.gz
-tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
-```
-
-```bash
-# Linux / macOS
+V=X.Y.Z; F=ai-voice-interconnector-$V-x86_64-linux.tar.gz
+U=https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v$V
+curl -fsSLO "$U/$F" && curl -fsSLO "$U/SHA256SUMS.txt"
 sha256sum -c SHA256SUMS.txt --ignore-missing
+mkdir ai-voice-interconnector && tar -xzf "$F" -C ai-voice-interconnector
+./ai-voice-interconnector/ai-voice-interconnector self install
 ```
 
-#### Descarga manual en macOS
+macOS:
 
 ```bash
-# macOS arm64
-curl -fsSL https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/latest/download/ai-voice-interconnector-X.Y.Z-arm64-macos.tar.gz -o ai.tar.gz
-tar -xzf ai.tar.gz && ./ai-voice-interconnector setup
+V=X.Y.Z; F=ai-voice-interconnector-$V-arm64-macos.tar.gz
+U=https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v$V
+curl -fsSLO "$U/$F" && curl -fsSLO "$U/SHA256SUMS.txt"
+grep " $F\$" SHA256SUMS.txt | shasum -a 256 -c
+mkdir ai-voice-interconnector && tar -xzf "$F" -C ai-voice-interconnector
+./ai-voice-interconnector/ai-voice-interconnector self install
 ```
 
-```bash
-# Linux / macOS
-sha256sum -c SHA256SUMS.txt --ignore-missing
-```
+El archivo trae, además del binario, el motor TTS, ONNX Runtime, FFmpeg y los avisos de licencia; por eso se extrae en un directorio propio, que puedes borrar después de `self install`.
 
-### Primer arranque: SmartScreen / Gatekeeper
+#### Primer arranque: SmartScreen / Gatekeeper
 
-Al ejecutar por primera vez un binario **descargado por navegador**, es esperable que el SO lo bloquee (Mark-of-the-Web): los binarios no están firmados ni notarizados, y SmartScreen y Gatekeeper tratan todo ejecutable sin historial como no confiable. No significa que el archivo contenga malware; el porqué está en [SECURITY.md](SECURITY.md#artefactos-sin-firmar). Los **one-liners no lo disparan** (descarga por CLI sin Mark-of-the-Web; la limpieza de cuarentena en macOS la aplica `self install`).
+Solo afecta a Windows y macOS, y solo si descargaste el archivo **con el navegador**: los binarios no están firmados ni notarizados, y el sistema bloquea la primera ejecución de un ejecutable descargado sin historial. No significa que contenga malware; el porqué está en [SECURITY.md](SECURITY.md#artefactos-sin-firmar). Las descargas desde la terminal, como las de arriba y las del instalador de una línea, no lo provocan. Linux no tiene un bloqueo equivalente.
 
-Antes de aceptar, verifica el hash contra `SHA256SUMS.txt` como se indica en
-[Descargar binario pre-compilado](#descargar-binario-pre-compilado). Esto solo ocurre
-en el primer arranque de cada versión. Si un antivirus de terceros pone el archivo en
-cuarentena, restáuralo y añade una exclusión **solo después** de verificar el hash.
-La firma Authenticode y la notarización de Apple son un objetivo a largo plazo
-([docs/GOAL.md](docs/GOAL.md)).
+Verifica el checksum antes de aceptar. Si un antivirus pone el archivo en cuarentena, restáuralo y añade una exclusión solo después de verificarlo.
 
-#### Primer arranque en Windows
+- **Windows (SmartScreen)**: en «Windows protegió tu PC», pulsa **Más información** → **Ejecutar de todas formas**. Si el navegador bloqueó la descarga, consérvala desde su menú de descargas: **Conservar** → **Conservar de todas formas**.
+- **macOS (Gatekeeper)**: haz clic derecho sobre el binario → **Abrir** y confirma, o quita la cuarentena desde la terminal:
 
-**SmartScreen**: en el diálogo «Windows protegió tu PC», pulsa
-**Más información** → **Ejecutar de todas formas**. Si el navegador ya
-bloqueó la descarga, consérvala desde el menú de descargas: **Conservar** →
-**Conservar de todas formas**.
+  ```bash
+  xattr -d com.apple.quarantine ai-voice-interconnector
+  ```
 
-#### Primer arranque en macOS
+La firma Authenticode y la notarización de Apple son un objetivo a largo plazo ([docs/GOAL.md](docs/GOAL.md)).
 
-**Gatekeeper**: haz clic derecho sobre el binario → **Abrir** y confirma; o
-quita la cuarentena desde una terminal:
+## Primeros pasos
 
-```bash
-xattr -d com.apple.quarantine ai-voice-interconnector
-```
+### Modelos
 
-### Provisión de los modelos (`setup`)
-
-Los modelos no vienen en el binario: `setup` descarga los modelos pinneados a la caché
-de la aplicación (el espacio necesario está en [Requisitos](#requisitos)). Los one-liners
-lo ejecutan al terminar la instalación; tras una descarga manual o con Homebrew, ejecútalo tú:
+Los modelos no vienen en el programa. El instalador de una línea y `self install` los descargan al terminar; si instalaste con Homebrew o se interrumpió la descarga, ejecuta:
 
 ```bash
 ai-voice-interconnector setup
 ai-voice-interconnector doctor
 ```
 
-Hasta provisionar, `speech synthesize`/`daemon start` fallan con exit 4 remitiendo a `setup`.
-Detalle de cada modelo y de la caché en [USAGE.md](USAGE.md#modelos-setup).
-
-## Primeros pasos
+`setup` no necesita cuenta y, si los modelos ya están, termina al instante. `doctor` comprueba que todo está listo. Hasta descargar los modelos, los comandos que los usan fallan con un mensaje que remite a `setup`. Detalle de cada modelo en [USAGE.md](USAGE.md#modelos-setup).
 
 ### Síntesis
 
 ```bash
-ai-voice-interconnector speech say --text "Hola mundo"                    # voz default
-ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
+ai-voice-interconnector speech say --text "Hola mundo"
+ai-voice-interconnector speech say --text "Hello world" --target-language en
 ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo
 ```
 
-Sin `--voice` se usa la voz de fábrica `default`, que viene embebida en el binario. `speech say` reproduce sin guardar; `speech synthesize` guarda el WAV en el almacén `(voz, etiqueta)` y muestra su ruta; con `--json`, la ruta llega en el campo `audio_path`.
-
-### Limpieza de archivos de audio y vídeo
-
-El subcomando `speech denoise` limpia archivos de audio o la pista de audio de un vídeo; conserva la imagen del vídeo sin procesarla. Usa `studio` por omisión y permite seleccionar el perfil original con `--preset default`:
-
-```bash
-ai-voice-interconnector speech denoise entrevista.mp4
-ai-voice-interconnector speech denoise voz.wav --preset default --json
-```
-
-El modelo DPDFNet debe estar provisionado con `setup`. La opción global `--json` produce JSONL. Consulta las [opciones y contratos de `speech denoise`](docs/CLI/commands/SPEECH.md#speech-denoise) y el [diseño técnico](docs/DESIGN.md#limpieza-de-audio-y-vídeo-por-cli).
+`speech say` reproduce sin guardar; `speech synthesize` guarda el WAV y muestra su ruta. Sin `--voice` se usa la voz de fábrica `default`, que viene incluida en el programa.
 
 ### Clonación de voz
 
 ```bash
-ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.wav
+ai-voice-interconnector voice clone --name mi_voz --speech-reference referencia.wav
 ai-voice-interconnector voice clone --name mi_voz --mic --duration 10
-ai-voice-interconnector voice clone --name mi_voz --mic  # push-to-talk en TTY
 ai-voice-interconnector speech say --text "Hola mundo" -v mi_voz
-ai-voice-interconnector speech synthesize --text "Hola mundo" -v mi_voz --label saludo
 ```
 
-La referencia recomendada es un único audio de ~10 segundos de habla limpia. Puede ser WAV o captura de micrófono; `--duration` fija un objetivo de 1 a 30 segundos y, si se omite, se requiere TTY para push-to-talk.
+La referencia ideal es un solo audio de unos 10 segundos de habla limpia, en archivo WAV o grabado con `--mic`. `--duration` fija la grabación entre 1 y 30 segundos; sin ella, en una terminal interactiva se graba hasta que pulsas Enter. El recorrido completo está en [USAGE.md](USAGE.md#clonación-de-voz-recorrido-completo).
+
+### Transcripción y traducción
+
+```bash
+ai-voice-interconnector speech transcribe --audio grabacion.wav --source-language es
+ai-voice-interconnector speech transcribe --mic --source-language en
+ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --source-language es --target-language en
+```
+
+### Traducción de voz a voz
+
+```bash
+ai-voice-interconnector speech dub --mic --source-language es --target-language en -v mi_voz
+ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --target-language es
+```
+
+`speech dub` transcribe lo que dices, lo traduce si los idiomas difieren y lo reproduce con la voz elegida (`default` si no pasas `-v`). Muestra la transcripción y la traducción, y no guarda ningún archivo.
+
+### Limpieza de audio y vídeo
+
+```bash
+ai-voice-interconnector speech denoise entrevista.mp4
+ai-voice-interconnector speech denoise voz.wav --preset default
+```
+
+`speech denoise` limpia archivos de audio o la pista de audio de un vídeo, sin procesar la imagen. Usa el preset `studio` por omisión; `--preset default` aplica el perfil original, sin normalización. Opciones, formatos y límites en la [referencia de `speech denoise`](docs/CLI/commands/SPEECH.md#speech-denoise).
 
 ### Invocación desde cualquier lenguaje
 
-```bash
-./ai-voice-interconnector speech say --text "Hola mundo"
-subprocess.run(["./ai-voice-interconnector", "speech", "say", "--text", "Hola mundo"])
-child_process.spawn("./ai-voice-interconnector", ["speech", "say", "--text", "Hola mundo"])
-std::process::Command::new("./ai-voice-interconnector").args(["speech", "say", "--text", "Hola"]).output()?;
-exec.Command("./ai-voice-interconnector", "speech", "say", "--text", "Hola")
-new ProcessBuilder("./ai-voice-interconnector", "speech", "say", "--text", "Hola").start()
+El programa se invoca como cualquier proceso externo. Con la opción global `--json`, cada comando escribe su resultado como JSON en stdout, de modo que no hace falta interpretar texto. Por ejemplo, en Python:
+
+```python
+import json, subprocess
+
+salida = subprocess.run(
+    ["ai-voice-interconnector", "--json", "speech", "synthesize", "--text", "Hola mundo", "--label", "saludo"],
+    capture_output=True, text=True, check=True,
+).stdout
+print(json.loads(salida)["audio_path"])
 ```
 
-Todos los comandos, la salida `--json` y la transcripción y traducción se detallan en [USAGE.md](USAGE.md); el contrato de la CLI está en [docs/CLI/README.md](docs/CLI/README.md).
+Todos los comandos y sus salidas `--json` están en [USAGE.md](USAGE.md); el contrato de la CLI, en [docs/CLI/README.md](docs/CLI/README.md).
 
 ## Actualizar y desinstalar
 
-El programa se gestiona a sí mismo: no hay un `uninstall` de nivel superior.
+El programa se gestiona a sí mismo:
 
 ```bash
-ai-voice-interconnector self update --check             # informa la versión disponible sin modificar nada
-ai-voice-interconnector self update --yes               # actualiza a la última estable con verificación
-ai-voice-interconnector self uninstall --yes            # desinstalación completa (programa + PATH + datos)
-ai-voice-interconnector self uninstall --keep-data --yes  # conserva modelos, voces y habla
-ai-voice-interconnector cleanup --all --yes             # borra los datos sin tocar programa ni PATH
+ai-voice-interconnector self update --check               # informa si hay una versión nueva, sin cambiar nada
+ai-voice-interconnector self update --yes                 # actualiza a la última versión estable, con verificación
+ai-voice-interconnector self uninstall --yes              # desinstala el programa, el PATH y los datos
+ai-voice-interconnector self uninstall --keep-data --yes  # conserva los modelos, las voces y los audios
+ai-voice-interconnector cleanup --all --yes               # borra los datos sin tocar el programa ni el PATH
 ```
 
-Con Homebrew, las órdenes para actualizar y desinstalar están en [Instalar en macOS](#instalar-en-macos).
+Si instalaste con Homebrew, usa sus órdenes; `--zap` borra también los modelos y los datos:
 
-La desinstalación es completa (programa, integración de PATH y datos) e idempotente: repetirla en un sistema ya limpio termina con éxito. Detalle en [USAGE.md](USAGE.md#ciclo-de-vida-de-la-instalación-self).
+```bash
+brew upgrade --cask ai-voice-interconnector
+brew uninstall --cask --zap ai-voice-interconnector
+```
+
+Detalle en [USAGE.md](USAGE.md#ciclo-de-vida-de-la-instalación-self).
 
 ## Arquitectura
 
-Un único binario Rust expone la CLI. La síntesis la hace el motor Qwen3-TTS, que corre
-como proceso residente y se comunica por HTTP en loopback; la transcripción (Parakeet,
-ONNX Runtime) y la traducción (CTranslate2) corren dentro del proceso. Un daemon opcional
-mantiene los motores calientes entre invocaciones. Detalle en
-[docs/DESIGN.md](docs/DESIGN.md#arquitectura).
+Un único binario Rust expone la CLI. La síntesis la hace el motor Qwen3-TTS, que corre como proceso residente y se comunica por HTTP en loopback; la transcripción (Parakeet, ONNX Runtime) y la traducción (CTranslate2) corren dentro del proceso. Un daemon opcional mantiene los motores cargados entre invocaciones. Detalle en [docs/DESIGN.md](docs/DESIGN.md#arquitectura).
 
 ## Documentación
 
 ### Para usuarios
 
-- [USAGE.md](USAGE.md) — guía de uso con el programa instalado: comandos, modelos, ciclo de vida, daemon y solución de problemas.
-- [docs/CLI/README.md](docs/CLI/README.md) — referencia por comando de la CLI (cada comando tiene su página en `docs/CLI/commands/`) y códigos de salida.
-- [docs/CLI/CONTRACT.md](docs/CLI/CONTRACT.md) — contrato normativo de la CLI y de la salida `--json`, que es el contrato con el plugin.
-- [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) — canal de distribución nativo, Homebrew Cask y antivirus.
+- [USAGE.md](USAGE.md) — guía de uso: comandos, modelos, ciclo de vida, daemon y solución de problemas.
+- [docs/CLI/README.md](docs/CLI/README.md) — referencia por comando de la CLI y códigos de salida.
+- [docs/CLI/CONTRACT.md](docs/CLI/CONTRACT.md) — contrato normativo de la CLI y de la salida `--json`.
+- [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md) — canales de distribución, Homebrew y antivirus.
 - [SECURITY.md](SECURITY.md) — seguridad y reporte de vulnerabilidades.
 - [CHANGELOG.md](CHANGELOG.md) — historial de cambios.
 
@@ -342,19 +275,18 @@ mantiene los motores calientes entre invocaciones. Detalle en
 - [docs/RELEASING.md](docs/RELEASING.md) — publicación de releases.
 - [docs/CI.md](docs/CI.md) — integración continua.
 - [docs/GOAL.md](docs/GOAL.md) — meta y criterios de aceptación.
-- [docs/specs/LIFECYCLE.md](docs/specs/LIFECYCLE.md) — especificación del ciclo de vida y paridad entre SO.
-- [docs/specs/VOICE_CLONING.md](docs/specs/VOICE_CLONING.md) — especificación funcional de clonación de voz.
+- [docs/specs/LIFECYCLE.md](docs/specs/LIFECYCLE.md) — especificación del ciclo de vida y paridad entre sistemas.
+- [docs/specs/VOICE_CLONING.md](docs/specs/VOICE_CLONING.md) — especificación funcional de la clonación de voz.
 - [docs/MANUAL-VALIDATION.md](docs/MANUAL-VALIDATION.md) — validación manual de la CLI.
 - [docs/dev/CONTEXT-OPTIMIZATION.md](docs/dev/CONTEXT-OPTIMIZATION.md) — optimización de contexto para agentes de código.
 - [AGENTS.md](AGENTS.md) — guías para agentes de código.
 - [SOURCE-OFFER.md](SOURCE-OFFER.md) — disponibilidad de la fuente (MPL-2.0 §3.2).
 - [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) — inventario de licencias de terceros.
-- [docs/issues/README.md](docs/issues/README.md) — registro transitorio de defectos en investigación.
+- [docs/issues/README.md](docs/issues/README.md) — registro de defectos en investigación.
 
 ## Licencia
 
-Copyright © 2026 Cristián Rojas Arredondo — **MPL-2.0** ([LICENSE](LICENSE), avisos en [NOTICE](NOTICE)).
-Motor Qwen3-TTS MIT/Apache-2.0; par de traducción `opus-mt` (Helsinki-NLP) CC-BY-4.0; dependencias en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) (inventario Rust `Cargo.lock`). Disponibilidad de la fuente (MPL-2.0 §3.2) en [SOURCE-OFFER.md](SOURCE-OFFER.md).
+Copyright © 2026 Cristián Rojas Arredondo — **MPL-2.0** ([LICENSE](LICENSE), avisos en [NOTICE](NOTICE)). Motor Qwen3-TTS MIT/Apache-2.0; par de traducción `opus-mt` (Helsinki-NLP) CC-BY-4.0; dependencias en [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md). Disponibilidad de la fuente (MPL-2.0 §3.2) en [SOURCE-OFFER.md](SOURCE-OFFER.md).
 
 ## Comunidad y soporte
 
