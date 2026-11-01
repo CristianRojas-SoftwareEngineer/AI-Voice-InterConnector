@@ -5,10 +5,13 @@ Rust y su archivo de release empaquetan software de terceros bajo sus propias
 licencias. Este documento reúne los avisos de copyright y las licencias correspondientes,
 cuya preservación exigen dichas licencias al redistribuir el software.
 
-Este inventario se **regenera desde `Cargo.lock`** (lockfile Rust, fuente de verdad del build) y
-el metadato `license` de cada crate con `cargo xtask licenses`. La columna «Familia» es una
-normalización para agrupar; la columna «Licencia (metadato)» es el dato declarado por
-cada crate y prevalece en caso de duda.
+Dos regiones de este documento se **regeneran con `cargo xtask licenses`** a partir del grafo
+de dependencias que se distribuye (las dependencias normales de `ai-voice-interconnector` con
+`--features full`, para los cuatro targets del paquete): el **inventario**, con la licencia
+declarada por cada crate, y los **avisos**, con el texto de cada licencia, sus titulares de
+copyright y los componentes que no vienen de Cargo. La columna «Familia» del inventario es una
+normalización para agrupar; la columna «Licencia (metadato)» es el dato declarado por cada
+crate y prevalece en caso de duda. El resto del documento está escrito a mano.
 
 > Nota: los pesos de modelos no se empaquetan en el binario; van, vía `setup`, a la raíz de modelos **exclusiva de la aplicación** —`models_cache_dir()` en `crates/avi-shared/src/paths.rs`—: `%LOCALAPPDATA%\ai-voice-interconnector\cache\models` en Windows, `~/Library/Caches/ai-voice-interconnector/models` en macOS y `$XDG_CACHE_HOME/ai-voice-interconnector/models` en Linux. La caché compartida de HuggingFace solo se usa si quien instala define `HF_HUB_CACHE` o `HF_HOME`.
 
@@ -22,88 +25,54 @@ completitud.
 
 | Modelo | Licencia (verificada en HuggingFace) | Fuente |
 |--------|--------------------------------------|--------|
-| `qwen3-tts-0.6b` / `qwen3-tts-0.6b-base` (motor Qwen3-TTS, Base opt-in) | **MIT / Apache-2.0** | <https://github.com/QwenLM/Qwen3-TTS> |
+| `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` / `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (síntesis de voz; Base opt-in) | **Apache-2.0** | <https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice>, <https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base> |
+| `istupakov/parakeet-tdt-0.6b-v3-onnx` (reconocimiento de voz: Parakeet TDT 0.6B v3 int8, ONNX; origen `nvidia/parakeet-tdt-0.6b-v3`) | **CC-BY-4.0** | <https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx> |
+| `Ceva-IP/DPDFNet` (preprocesamiento de audio) | **Apache-2.0** | <https://huggingface.co/Ceva-IP/DPDFNet> |
 | `CristianRojaas/opus-mt-es-en-ct2-int8` / `CristianRojaas/opus-mt-en-es-ct2-int8` (traducción; derivados int8 de Helsinki-NLP/opus-mt) | **CC-BY-4.0** | <https://huggingface.co/CristianRojaas/opus-mt-es-en-ct2-int8>, <https://huggingface.co/CristianRojaas/opus-mt-en-es-ct2-int8>; origen: <https://huggingface.co/Helsinki-NLP/opus-mt-es-en> |
-| `istupakov/parakeet-tdt-0.6b-v3-onnx` (Parakeet TDT 0.6B v3 int8, ONNX) | **CC-BY-4.0** | <https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx> |
-
----
-
-## Familias de licencias permisivas
-
-La mayoría de los crates empaquetados usan licencias permisivas compatibles con
-MPL-2.0: **MIT**, **Apache-2.0**, **BSD**, **ISC**, **Unlicense**.
-
-- **MIT** — permiso de uso, copia, modificación y distribución conservando el aviso de
-  copyright y la nota de permiso. Texto: <https://opensource.org/license/mit>.
-- **Apache-2.0** — conserva avisos de copyright, el texto de la licencia y el archivo
-  `NOTICE`. Texto: <https://www.apache.org/licenses/LICENSE-2.0>.
-- **BSD (2/3-Clause)** — redistribución conservando el aviso de copyright. Texto:
-  <https://opensource.org/license/bsd-3-clause>.
-- **ISC** — funcionalmente equivalente a MIT/BSD-2. Texto:
-  <https://opensource.org/license/isc-license-txt>.
-- **Unlicense** — dominio público. Texto: <https://unlicense.org>.
-
-```
-MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
 
 ---
 
 ## Componentes con obligaciones adicionales
 
 Solo crates permisivos y el propio proyecto (MPL-2.0) están presentes en el
-binario Rust. El binario Rust no incorpora componentes GPL/AGPL; sus únicas
+binario Rust, salvo tres crates de terceros también bajo MPL-2.0 (nombrados en
+`SOURCE-OFFER.md`). El binario Rust no incorpora componentes GPL/AGPL; sus únicas
 excepciones son los runtimes del sistema con excepción (GCC Runtime Library
-Exception, documentados abajo). El archivo de release añade FFmpeg como
-ejecutable independiente, que la aplicación invoca como proceso y no enlaza.
-Los pesos de modelos y OpenBLAS (BSD-3-Clause, GCC Runtime Exception) se documentan
-en `docs/BUILD.md` §6 (build del motor) y §7 (descarga de modelos).
+Exception). El texto de cada licencia y sus titulares figuran en la región de
+avisos, y la tabla de su comienzo atribuye cada archivo del paquete que no
+viene de Cargo; esta sección solo explica lo que los textos no dicen. La
+construcción del motor y la descarga de modelos se documentan en `docs/BUILD.md`.
 
-El archivo de release añade al binario Rust estos componentes binarios de terceros:
-
-- **FFmpeg 9.0.2** (`ffmpeg.exe`/`ffmpeg`): ejecutable independiente de los
-  builds GPL de BtbN (Linux), Gyan (Windows) y Martin Riedl (macOS), bajo
+- **FFmpeg** (`ffmpeg.exe`/`ffmpeg`): ejecutable independiente de los builds
+  GPL de BtbN (Linux), Gyan (Windows) y Martin Riedl (macOS), bajo
   **GPL-3.0-or-later**. La aplicación lo ejecuta como proceso; no forma parte
-  del binario Rust ni de su espacio de direcciones. Fuente upstream:
-  <https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz>. Scripts y fuentes de cada
-  build: <https://github.com/BtbN/FFmpeg-Builds>,
-  <https://www.gyan.dev/ffmpeg/builds/> y <https://ffmpeg.martin-riedl.de/>.
-  La oferta de fuentes correspondiente figura en `SOURCE-OFFER.md`.
-- **ONNX Runtime** (`onnxruntime.dll`, `libonnxruntime.so`, `libonnxruntime.dylib`):
-  la librería oficial de Microsoft, bajo **MIT**
-  (<https://github.com/microsoft/onnxruntime/blob/main/LICENSE>).
-- **Runtime de Visual C++** (solo Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
-  `msvcp140.dll`, `msvcp140_1.dll` y `vcomp140.dll`): ficheros redistribuibles del Microsoft Visual C++
-  Redistributable, que su licencia permite desplegar junto a la aplicación
+  del binario Rust ni de su espacio de direcciones. Las fuentes y la
+  configuración de build de cada binario se ofrecen en `SOURCE-OFFER.md`.
+- **ONNX Runtime**: la librería oficial de Microsoft, bajo **MIT**, con el aviso
+  de terceros que ella misma publica.
+- **Runtime de Visual C++** (solo Windows): ficheros redistribuibles del
+  Microsoft Visual C++ Redistributable, que su licencia permite desplegar junto
+  a la aplicación
   (<https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files>).
 - **Motor TTS `qwen_tts`**: enlaza estáticamente OpenBLAS (**BSD-3-Clause**) y, en
   Windows y Linux, el runtime de GCC que usa su LAPACK (`libgfortran` y `libgcc` bajo
   GPL-3.0 con la **GCC Runtime Library Exception**, y, en Windows y Linux x86_64,
-   `libquadmath` bajo **LGPL-2.1-or-later**, combinable con el proyecto MPL-2.0
-   como obra mayor).
+  `libquadmath` bajo **LGPL-2.1-or-later**, combinable con el proyecto MPL-2.0
+  como obra mayor). Para reenlazar el motor con otra versión de `libquadmath`,
+  reconstruye `vendor/qwen3-tts/` con `cargo xtask build-engine` a partir de las
+  fuentes que ofrece `SOURCE-OFFER.md`. En Windows también enlaza `winpthreads`
+  (MIT y BSD-3-Clause).
 - **Runtime de GCC en el binario de Linux**: el binario principal enlaza
   estáticamente `libgomp` (runtime OpenMP de CTranslate2 y oneDNN) y `libstdc++`
   (runtime C++ de CTranslate2, oneDNN, SentencePiece y `cxx`), del gcc-toolset de la imagen de
   build, bajo GPL-3.0 con la **GCC Runtime Library Exception**; `libgcc_s` se
   usa dinámica, del sistema.
+- **`hf-hub` vendorizado** (`vendor/hf-hub-1.0.0`): copia del crate `hf-hub`
+  1.0.0 bajo **Apache-2.0** (`vendor/hf-hub-1.0.0/LICENSE-APACHE`), con
+  modificaciones propias señaladas en el código con `// Patch:`: punteros de
+  caché por enlace duro en Windows, cliente que no envía credenciales y un
+  identificador de grupo de descarga en los eventos de progreso (`src/xet.rs` y
+  `src/progress.rs`). El detalle figura en `docs/BUILD.md`.
 - **`alsa-sys` vendorizado** (`vendor/alsa-sys-0.4.0`, solo Linux): copia del
   crate `alsa-sys` 0.4.0 bajo **MIT** (`vendor/alsa-sys-0.4.0/LICENSE`),
   modificada para cargar `libasound.so.2` en tiempo de ejecución con `dlopen` en
@@ -808,7 +777,7 @@ Public License instead of this License.  But first, please read
 <https://www.gnu.org/licenses/why-not-lgpl.html>.
 ```
 
-## Inventario completo del lockfile
+## Inventario de las dependencias distribuidas
 
 <!-- inventario:inicio -->
 Generado desde el grafo de dependencias distribuidas (404 paquetes resueltos, 375 crates únicos): dependencias normales de `ai-voice-interconnector` con `--features full`, para los triples de `packaging/bundle-manifest.json`, sin dependencias de desarrollo ni de compilación.
@@ -13753,18 +13722,25 @@ freely, subject to the following restrictions:
 
 ## Regeneración
 
-Este inventario se regenera de forma **deliberada** tras actualizar `Cargo.lock`:
+El inventario y los avisos se regeneran de forma **deliberada** cuando cambian las
+dependencias distribuidas o `packaging/notices/`:
 
 ```bash
-cargo xtask licenses          # reescribe la región del inventario
+cargo xtask licenses          # reescribe las regiones de inventario y de avisos
 cargo xtask licenses --check  # verifica sincronía completa
 ```
 
-El generador reescribe solo la región entre los marcadores `<!-- inventario:inicio -->` y
-`<!-- inventario:fin -->`: una fila por versión resuelta en `Cargo.lock`, con la licencia
-de `cargo metadata --all-features`, y el conteo y el resumen por familia calculados. Falla
-ante una expresión de licencia sin familia asignada o un paquete sin licencia declarada.
-`--check` compara la región completa (nombre, versión, licencia, familia y totales).
+El generador reescribe solo las regiones entre los marcadores `<!-- inventario:inicio -->` y
+`<!-- inventario:fin -->`, y entre `<!-- avisos:inicio -->` y `<!-- avisos:fin -->`, a partir del
+grafo de dependencias normales de `ai-voice-interconnector` con `--features full` para los
+triples de `packaging/bundle-manifest.json`. El inventario tiene una fila por versión resuelta,
+con su licencia declarada, el conteo y el resumen por familia. Los avisos reproducen el texto
+de cada licencia que exige la expresión SPDX del crate (`AND` los exige todos; en `OR` se elige
+MIT, luego Apache-2.0 y luego el resto), tomado de sus archivos `LICENSE*`, `COPYING*` y
+`NOTICE*` o de `packaging/notices/crates/`, agrupado por cuerpo de licencia con sus titulares,
+más los componentes que no vienen de Cargo. Falla ante una expresión sin familia, un paquete
+sin licencia declarada, un crate sin texto de alguna de sus licencias o un archivo del
+paquete sin componente que lo atribuya. `--check` compara ambas regiones completas.
 
 Revisar el diff resultante para auditar altas/bajas de dependencias y cambios de licencia
 antes de commitear.
