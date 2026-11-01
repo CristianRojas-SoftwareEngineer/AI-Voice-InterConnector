@@ -6,8 +6,10 @@
 # (CircleCI no encadena pipelines distintas). Empaquetado + publicación tras
 # los gates + `coverage` + instaladores + licencias/changelog.
 # El trabajo diario vive en `main` (trunk-based); sus commits no disparan CI.
-# Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust + documentos de
-# licencia, versionados vía `persist_to_workspace` → `publish-release`.
+# Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust, FFmpeg y los
+# documentos de licencia, más la configuración de build de FFmpeg de cada target.
+# Los jobs de build los pasan por `persist_to_workspace` a `publish-release`, que
+# además descarga las fuentes de FFmpeg verificadas y publica todo en el Release.
 # Pines reproducibles: `rust_pin` + `ort_pin` + digest de `cimg/rust`.
 
 version: 2.1
@@ -1722,6 +1724,7 @@ jobs:
           root: artifacts
           paths:
             - ai-voice-interconnector-*-x86_64-windows.zip
+            - ffmpeg-*-buildconf-*.txt
 
   build-linux-x64:
     # Linux x64: el más barato/rápido para la suite, pero el build necesita
@@ -1843,6 +1846,7 @@ jobs:
           root: artifacts
           paths:
             - ai-voice-interconnector-*-x86_64-linux.tar.gz
+            - ffmpeg-*-buildconf-*.txt
 
   build-linux-arm64:
     # Linux ARM64 nativo (no cross-compile): Docker arm.medium ejecuta
@@ -1964,6 +1968,7 @@ jobs:
           root: artifacts
           paths:
             - ai-voice-interconnector-*-arm64-linux.tar.gz
+            - ffmpeg-*-buildconf-*.txt
 
   build-darwin-arm64:
     # macOS ARM64 (Apple Silicon, Xcode 26.4.0): clang nativo, sin cross.
@@ -2111,6 +2116,7 @@ jobs:
           root: artifacts
           paths:
             - ai-voice-interconnector-*-arm64-macos.tar.gz
+            - ffmpeg-*-buildconf-*.txt
 
   # ──────────────────────────────────────────────────────────────
   # CD — publicación del GitHub Release (Rust nativo, 4 binarios)
@@ -2188,17 +2194,29 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────
   publish-release:
-    # Recolecta los 4 binarios Rust versionados por workspace (no `gh run
-    # download`: determinista, sin token API CircleCI), genera SHA256SUMS.txt
-    # y publica el GitHub Release directo (sin borrador). Solo en tags v*.
+    # Recolecta los 4 archivos del paquete y las configuraciones de build de FFmpeg
+    # que persisten los jobs de build (no `gh run download`: determinista, sin token
+    # API CircleCI), descarga las fuentes de FFmpeg verificadas contra los hashes de
+    # `packaging/pins.json`, genera SHA256SUMS.txt y publica el GitHub Release directo
+    # (sin borrador). Usa la imagen con Rust porque el pie de las notas y las fuentes
+    # salen de `cargo xtask`. Solo en tags v*.
     # Requiere context `github-release` con GH_TOKEN (contents:write).
     docker:
-      # Mismo pin por digest que test-bootstrap-linux (cimg/base:2026.09).
-      - image: cimg/base:2026.09@sha256:668174490adc470cd34eb3aa178939d65f817bc13ef657a94ff0278338f7d8da
+      # Mismo pin por digest que publish-metadata y validate-licenses.
+      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
+    environment:
+      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
+      CARGO_INCREMENTAL: "0"
     steps:
       - checkout
       - attach_workspace:
           at: artifacts
+      - cargo_restore_registry
+      - sccache_restore_cache:
+          os: linux
+      - sccache_setup_unix
+      - validate_pins
+      - validate_features
       - install_gh_cli
       - run:
           name: Estampar la versión del tag en los bootstrap
@@ -2221,16 +2239,23 @@ jobs:
             done
             echo "[STEP] Estampar la versión en los bootstrap - FIN"
       - run:
+          name: Descargar y verificar las fuentes de FFmpeg
+          command: |
+            echo "[STEP] Descargar fuentes de FFmpeg - INICIO"
+            set -euo pipefail
+            cargo --quiet xtask ffmpeg --sources artifacts
+            echo "[STEP] Descargar fuentes de FFmpeg - FIN"
+      - run:
           name: Generar SHA256SUMS.txt sobre artefactos del workspace
           command: |
             echo "[STEP] Generar SHA256SUMS.txt - INICIO"
             set -euo pipefail
             cp packaging/bootstrap/install.sh packaging/bootstrap/install.ps1 artifacts/
             cd artifacts
-            sha256sum ai-voice-interconnector-* install.sh install.ps1 > SHA256SUMS.txt
+            sha256sum ai-voice-interconnector-* ffmpeg-* install.sh install.ps1 > SHA256SUMS.txt
             cat SHA256SUMS.txt
             echo "Artefactos recolectados:"
-            ls -lh ai-voice-interconnector-* install.sh install.ps1 SHA256SUMS.txt
+            ls -lh ai-voice-interconnector-* ffmpeg-* install.sh install.ps1 SHA256SUMS.txt
             echo "[STEP] Generar SHA256SUMS.txt - FIN"
       - run:
           name: Extraer notas de release desde CHANGELOG
@@ -2255,18 +2280,7 @@ jobs:
           command: |
             echo "[STEP] Anexar pie de fuente MPL-2.0 - INICIO"
             set -euo pipefail
-            {
-              echo ""
-              echo "---"
-              echo ""
-              echo "## Código fuente (MPL-2.0 §3.2)"
-              echo ""
-              echo "Este release se distribuye bajo **MPL-2.0**. El código"
-              echo "fuente correspondiente a este tag está disponible en:"
-              echo ""
-              echo "- Tarball de fuente: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/archive/refs/tags/${CIRCLE_TAG}.tar.gz"
-              echo "- Etiqueta del release: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/tag/${CIRCLE_TAG}"
-            } >> notes.md
+            cargo --quiet xtask source-offer --notes "$CIRCLE_TAG" >> notes.md
             echo "[STEP] Anexar pie de fuente MPL-2.0 - FIN"
       - run:
           name: Publicar GitHub Release (artefactos + SHA256SUMS)
@@ -2274,7 +2288,7 @@ jobs:
             echo "[STEP] Publicar GitHub Release - INICIO"
             set -euo pipefail
             gh release create "$CIRCLE_TAG" \
-              artifacts/ai-voice-interconnector-* artifacts/install.sh artifacts/install.ps1 artifacts/SHA256SUMS.txt \
+              artifacts/ai-voice-interconnector-* artifacts/ffmpeg-* artifacts/install.sh artifacts/install.ps1 artifacts/SHA256SUMS.txt \
               --title "$CIRCLE_TAG" \
               --notes-file notes.md
             echo "[STEP] Publicar GitHub Release - FIN"

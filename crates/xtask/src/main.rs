@@ -2059,6 +2059,62 @@ mod tests {
         std::fs::read_to_string(&m).expect("no se pudo leer .circleci/config.yml")
     }
 
+    /// Texto de un job de la pipeline, desde su cabecera hasta la del siguiente.
+    fn ci_job_block(cfg: &str, job: &str) -> String {
+        let header = format!("\n  {job}:\n");
+        let start = cfg.find(&header).unwrap_or_else(|| panic!("no hay job {job}"));
+        let body = &cfg[start + header.len()..];
+        let next = Regex::new(r"\n  [a-z0-9-]+:\n")
+            .unwrap()
+            .find(body)
+            .map_or(body.len(), |m| m.start());
+        body[..next].to_string()
+    }
+
+    /// El job de publicación usa la misma imagen con Rust que `publish-metadata`, genera el pie
+    /// de las notas y las fuentes de FFmpeg con xtask y publica sus assets; cada job de build
+    /// persiste la configuración de build de FFmpeg que el release adjunta.
+    #[test]
+    fn test_publish_release_ships_ffmpeg_sources_and_buildconf() {
+        let cfg = read_ci_config();
+        let release = ci_job_block(&cfg, "publish-release");
+        let metadata = ci_job_block(&cfg, "publish-metadata");
+        let image = |block: &str| {
+            block
+                .lines()
+                .find_map(|l| l.trim().strip_prefix("- image: ").map(str::to_string))
+                .expect("el job declara su imagen")
+        };
+        assert!(image(&release).starts_with("cimg/rust:"));
+        assert_eq!(image(&release), image(&metadata));
+        assert!(release.contains("cargo --quiet xtask ffmpeg --sources artifacts"));
+        assert!(release.contains("cargo --quiet xtask source-offer --notes \"$CIRCLE_TAG\" >> notes.md"));
+        assert!(release.contains("sha256sum ai-voice-interconnector-* ffmpeg-*"));
+        assert!(release.contains("artifacts/ffmpeg-*"));
+        assert!(!release.contains("echo \"- Tarball de fuente"));
+        for job in [
+            "build-windows-x64",
+            "build-linux-x64",
+            "build-linux-arm64",
+            "build-darwin-arm64",
+        ] {
+            assert!(
+                ci_job_block(&cfg, job).contains("- ffmpeg-*-buildconf-*.txt"),
+                "{job} debe persistir la configuración de build de FFmpeg"
+            );
+        }
+    }
+
+    /// El paso de MSYS2 no compara versiones por su cuenta: la regla estricta vive en
+    /// `build-engine`.
+    #[test]
+    fn test_windows_msys2_step_has_no_drift_logic() {
+        let windows = ci_job_block(&read_ci_config(), "build-windows-x64");
+        assert!(!windows.contains("$GccPin"));
+        assert!(!windows.contains("[WARN] gcc instalado"));
+        assert!(windows.contains("pacman -Q mingw-w64-ucrt-x86_64-gcc"));
+    }
+
     /// Directorios `vendor/<dir>` con `Cargo.toml`, ordenados: la regla del CI
     /// para decidir qué crates son parches vendorizados.
     fn vendor_crate_dirs() -> Vec<String> {

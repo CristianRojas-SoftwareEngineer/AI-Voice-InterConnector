@@ -74,11 +74,6 @@ const ALLOWLIST: &[AllowEntry] = &[
         reason: "sección 3.2 de la MPL-2.0 en la plantilla y el anuncio del aviso de \
                  disponibilidad de la fuente; es contrato de licencia, no de la especificación",
     },
-    AllowEntry {
-        file: ".circleci/config.yml",
-        reason: "sección 3.2 de la MPL-2.0 en el título del pie de fuente que \
-                 publica el job de release; mismo contrato de licencia",
-    },
 ];
 
 /// Una línea rechazada, con su fichero, su número, su motivo y el texto tal cual.
