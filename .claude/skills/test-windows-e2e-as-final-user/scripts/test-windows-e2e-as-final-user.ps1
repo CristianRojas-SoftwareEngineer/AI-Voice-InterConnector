@@ -518,14 +518,61 @@ function Assert-TargetSetsEqual {
     if($difference.Count){throw ('BLOCKED: el plan efectivo de {0} difiere de su dry-run. Dry-run=[{1}] Efectivo=[{2}]' -f $Operation,($expectedSet -join '; '),($currentSet -join '; '))}
 }
 
+# Espacio que ocupan en disco los árboles de $Path, medido con la regla del producto: un archivo
+# con varios enlaces duros (los blobs y snapshots de la caché de modelos en Windows) cuenta una
+# sola vez, y los puntos de reanálisis (junctions, enlaces simbólicos) no se siguen ni suman.
+# Las raíces comparten el registro de archivos vistos, así que varias rutas anidadas o solapadas
+# miden su unión. Un archivo que no se puede identificar es un error, no una estimación.
 function Get-DirectorySize {
-    param([string]$Path)
-    if (!(Test-Path -LiteralPath $Path)) { return [long]0 }
-    $files = @(Get-ChildItem -LiteralPath $Path -File -Recurse -Force -ErrorAction Stop)
-    if (!$files.Count) { return [long]0 }
-    $sum = ($files | Measure-Object -Property Length -Sum).Sum
-    if($null -eq $sum){return [long]0}
-    return [long]$sum
+    param([string[]]$Path)
+    if(-not ('AviE2E.FileIdentity' -as [type])){
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace AviE2E {
+    public static class FileIdentity {
+        [StructLayout(LayoutKind.Sequential)]
+        struct Info {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
+            public uint VolumeSerial, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+        }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool GetFileInformationByHandle(SafeFileHandle handle, out Info info);
+        // Acceso 0 y compartición total: solo consulta metadatos, así que no choca con un
+        // modelo abierto o mapeado por el daemon.
+        public static string Of(string path) {
+            string longPath = path.StartsWith(@"\\") ? @"\\?\UNC\" + path.Substring(2) : @"\\?\" + path;
+            using (SafeFileHandle handle = CreateFileW(longPath, 0, 7, IntPtr.Zero, 3, 0, IntPtr.Zero)) {
+                Info info;
+                if (handle.IsInvalid || !GetFileInformationByHandle(handle, out info)) {
+                    throw new InvalidOperationException("No se pudo identificar el archivo " + path + ": " + new Win32Exception(Marshal.GetLastWin32Error()).Message);
+                }
+                return info.VolumeSerial + ":" + info.IndexHigh + ":" + info.IndexLow;
+            }
+        }
+    }
+}
+'@
+    }
+    $seen=[System.Collections.Generic.HashSet[string]]::new()
+    $total=[long]0
+    foreach($root in @($Path|Where-Object{$_})){
+        if(!(Test-Path -LiteralPath $root)){continue}
+        $stack=[System.Collections.Generic.Stack[IO.FileSystemInfo]]::new()
+        $stack.Push((Get-Item -LiteralPath $root -Force))
+        while($stack.Count){
+            $item=$stack.Pop()
+            if($item.Attributes -band [IO.FileAttributes]::ReparsePoint){continue}
+            if($item -is [IO.DirectoryInfo]){foreach($child in $item.EnumerateFileSystemInfos()){$stack.Push($child)};continue}
+            if($seen.Add([AviE2E.FileIdentity]::Of($item.FullName))){$total+=$item.Length}
+        }
+    }
+    return $total
 }
 
 function Invoke-Step {
@@ -754,10 +801,13 @@ function Run-E2E {
                 $residueSummary=@(@($residue|Where-Object{$_})) -join ', '
                 $cleanupPreserved=@(@($dry.Cleanup.preserved|Where-Object{$_})|ForEach-Object{'{0}: {1} bytes; {2}' -f $_.path,(Get-DirectorySize $_.path),$_.reason}) -join '; '
                 $uninstallPreserved=@(@($dry.Uninstall.preserved|Where-Object{$_})|ForEach-Object{'{0}: {1} bytes; {2}' -f $_.path,(Get-DirectorySize $_.path),$_.reason}) -join '; '
-                $cleanupImpact='Operación cleanup. Destinos: {0}. Preservados: {1}. Residuos: {2}. {3}' -f $cleanupSummary,$cleanupPreserved,$residueSummary,$downloadImpact
-                $uninstallImpact='Operación uninstall. Destinos: {0}. Preservados: {1}. Residuos: {2}. {3}' -f $uninstallSummary,$uninstallPreserved,$residueSummary,$downloadImpact
-                Save-Event @{type='impact';operation='cleanup';targets=$cleanupTargets;impact=$cleanupImpact};Write-Host ('IMPACTO: {0}' -f $cleanupImpact) -ForegroundColor Yellow
-                Save-Event @{type='impact';operation='uninstall-preliminar';targets=$uninstallTargets;impact=$uninstallImpact};Write-Host ('IMPACTO: {0}' -f $uninstallImpact) -ForegroundColor Yellow
+                # Las rutas del plan se anidan (un contenedor podado incluye los destinos que contiene), así
+                # que las cifras por ruta no se suman: el espacio liberado es la unión medida de una vez.
+                $cleanupFreed=Get-DirectorySize @($script:CleanupTargetSpecs|ForEach-Object path);$uninstallFreed=Get-DirectorySize @($script:UninstallTargetSpecs|ForEach-Object path)
+                $cleanupImpact='Operación cleanup. Espacio liberado: {4} bytes. Destinos (cifras solapadas, no sumables): {0}. Preservados: {1}. Residuos: {2}. {3}' -f $cleanupSummary,$cleanupPreserved,$residueSummary,$downloadImpact,$cleanupFreed
+                $uninstallImpact='Operación uninstall. Espacio liberado: {4} bytes. Destinos (cifras solapadas, no sumables): {0}. Preservados: {1}. Residuos: {2}. {3}' -f $uninstallSummary,$uninstallPreserved,$residueSummary,$downloadImpact,$uninstallFreed
+                Save-Event @{type='impact';operation='cleanup';targets=$cleanupTargets;freed_bytes=$cleanupFreed;impact=$cleanupImpact};Write-Host ('IMPACTO: {0}' -f $cleanupImpact) -ForegroundColor Yellow
+                Save-Event @{type='impact';operation='uninstall-preliminar';targets=$uninstallTargets;freed_bytes=$uninstallFreed;impact=$uninstallImpact};Write-Host ('IMPACTO: {0}' -f $uninstallImpact) -ForegroundColor Yellow
                 $daemonStatus=Invoke-Cli @('daemon','status') 'daemon-before-cleanup' -Json
                 if($daemonStatus.Payload.daemon -eq 'running'){$stop=Invoke-Cli @('daemon','stop') 'daemon-stop-before-cleanup' -TimeoutMs 30000 -Json;Assert-True ($stop.Payload.daemon_fully_stopped -eq $true) 'Stop antes de cleanup no confirmó daemon_fully_stopped.';$stopped=Invoke-Cli @('daemon','status') 'daemon-status-before-cleanup' -Json;Assert-True ($stopped.Payload.daemon -eq 'stopped') 'No se pudo verificar daemon stopped antes de cleanup.'}elseif($daemonStatus.Payload.daemon -ne 'stopped'){throw 'BLOCKED: el daemon no está stopped ni running verificable antes de cleanup.'}
                 if(@($cleanupTargets).Count){
@@ -780,8 +830,9 @@ function Run-E2E {
                 if(@($uninstallTargets).Count){
                 $uninstallSummary=@(@($script:UninstallTargetSpecs|Where-Object{$_})|ForEach-Object{'{0}: {1} bytes' -f $_.path,$_.bytes}) -join '; '
                 $uninstallPreserved=@(@($uninstallDry.Uninstall.preserved|Where-Object{$_})|ForEach-Object{'{0}: {1} bytes; {2}' -f $_.path,(Get-DirectorySize $_.path),$_.reason}) -join '; '
-                $uninstallImpact='Operación uninstall después de cleanup. Destinos: {0}. Preservados: {1}. {2}' -f $uninstallSummary,$uninstallPreserved,$downloadImpact
-                Save-Event @{type='impact';operation='uninstall';targets=$uninstallTargets;impact=$uninstallImpact};Write-Host ('IMPACTO: {0}' -f $uninstallImpact) -ForegroundColor Yellow
+                $uninstallFreed=Get-DirectorySize @($script:UninstallTargetSpecs|ForEach-Object path)
+                $uninstallImpact='Operación uninstall después de cleanup. Espacio liberado: {3} bytes. Destinos (cifras solapadas, no sumables): {0}. Preservados: {1}. {2}' -f $uninstallSummary,$uninstallPreserved,$downloadImpact,$uninstallFreed
+                Save-Event @{type='impact';operation='uninstall';targets=$uninstallTargets;freed_bytes=$uninstallFreed;impact=$uninstallImpact};Write-Host ('IMPACTO: {0}' -f $uninstallImpact) -ForegroundColor Yellow
                 $uninstall=Invoke-Cli @('self','uninstall','--yes') 'uninstall' -Json -ExpectedExit @(0,22)
                 $uninstallPlan=@($uninstall.Payload.planned)
                 $expectedUninstall=$uninstallTargets
@@ -1013,7 +1064,8 @@ function Run-E2E {
         Assert-True ($pathCheck.Doctor.models.root -eq $script:ModelsDir -and @($pathCheck.Doctor.models.missing).Count -eq 0 -and @($pathCheck.Doctor.models.provisioned).Count -eq $script:ModelPins.Count) 'Doctor del mismo hijo no confirma la raíz y todos los modelos fijados instalados.'
         $versionFinal=Invoke-Cli @('version') 'version-final' -Json -PersistedPath;Assert-PayloadSchema $versionFinal.Payload;Assert-True ($versionFinal.Payload.version -eq $script:Version) 'version --json final no coincide con el release.'
         $dataSize=Get-DirectorySize $script:DataDir;$modelsSize=Get-DirectorySize $script:ModelsDir
-        Save-Event @{type='final_sizes';data_root=$script:DataDir;data_bytes=$dataSize;models_root=$script:ModelsDir;models_bytes=$modelsSize}
+        Save-Event @{type='final_sizes';data_root=$script:DataDir;data_bytes=$dataSize;models_root=$script:ModelsDir;models_bytes=$modelsSize;doctor_models_bytes=[long]$pathCheck.Doctor.models.size_bytes}
+        Assert-True ($modelsSize -eq [long]$pathCheck.Doctor.models.size_bytes) ('La medición de la raíz de modelos ({0} bytes) no coincide con doctor models.size_bytes ({1} bytes).' -f $modelsSize,$pathCheck.Doctor.models.size_bytes)
         foreach($key in @('parked','stagings','scratch','temporaries','failure_logs','unknown_owner','pending_failures','unreadable')){Assert-True (@($doctor.Payload.pending.$key).Count -eq 0) ('Pending final no vacío: {0}' -f $key)}
         $receipt=Get-RegisteredRoots;Assert-True ($receipt.version -eq $script:Version) 'Receipt final no coincide con versión fuente/release.'
         Assert-True ($doctor.Payload.pending.transaction_journal -eq $false) 'Pending final reporta diario transaccional.'
