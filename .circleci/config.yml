@@ -102,6 +102,14 @@ parameters:
       pruebas (Linux, Windows y macOS). Se instala desde el asset oficial del
       release en $HOME/.cargo/bin y el paso aborta si `cargo-nextest
       --version` no coincide: mismo runner en los tres SO, sin cargo install.
+  windows_image_pin:
+    type: string
+    default: "2026.10.1"
+    description: >
+      Versión de la imagen windows-server-2022-gui de los jobs de Windows
+      (test-windows, test-bootstrap-windows y build-windows-x64). Fija el
+      compilador MSVC y su redist, del que salen las DLL de VC++ del paquete;
+      subirla es un cambio deliberado de este pin.
 
 # Cachés compartidas por los jobs Rust (restore/save nativos, idénticos en bash
 # y PowerShell). Ninguna clave depende del código fuente del workspace: editar
@@ -944,7 +952,9 @@ jobs:
     # Compiling con hit exacto, incluyendo dependencias externas).
     # Las puertas validate_* son la primera compilación del workspace: van tras
     # restaurar las cachés y configurar sccache.
-    executor: win/server-2022
+    executor:
+      name: win/server-2022
+      version: << pipeline.parameters.windows_image_pin >>
     # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
     # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
     environment:
@@ -1362,7 +1372,9 @@ jobs:
     # cambios). El arnés (support/Serve.ps1) es HTTP local sin dependencias.
     # Las pruebas de tubería ejecutan `irm | iex` con los dos motores:
     # powershell.exe (5.1, del executor) y pwsh (7, pineado e instalado aquí).
-    executor: win/server-2022
+    executor:
+      name: win/server-2022
+      version: << pipeline.parameters.windows_image_pin >>
     steps:
       - checkout
       - run:
@@ -1445,7 +1457,9 @@ jobs:
   # ──────────────────────────────────────────────────────────────
   build-windows-x64:
     # Windows x64: binario + smoke test nativo. No usa Inno Setup aún.
-    executor: win/server-2022
+    executor:
+      name: win/server-2022
+      version: << pipeline.parameters.windows_image_pin >>
     # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
     # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
     environment:

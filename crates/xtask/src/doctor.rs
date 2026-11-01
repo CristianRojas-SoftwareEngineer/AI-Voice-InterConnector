@@ -1455,6 +1455,7 @@ mod tests {
             pwsh: "7.6.6".to_string(),
             pester: "5.8.0".to_string(),
             nextest: "0.9.148".to_string(),
+            windows_image: "2026.10.1".to_string(),
         }
     }
 

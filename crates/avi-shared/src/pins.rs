@@ -50,6 +50,9 @@ pub struct Pins {
     pub pwsh: String,
     pub pester: String,
     pub nextest: String,
+    /// Versión de la imagen `windows-server-2022-gui` de los jobs de Windows de
+    /// la CI: fija el compilador MSVC y el redist del que salen las DLL de VC++.
+    pub windows_image: String,
 }
 
 /// Parsea el texto de `pins.json`.

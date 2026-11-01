@@ -24,6 +24,8 @@
 //! `version --json` debe ser `CLI_SCHEMA_VERSION`, y la limpieza anterior a
 //! guardar `target/` debe cubrir todos los prefijos de prueba declarados en
 //! `avi-shared`, además de los temporales por defecto y la raíz del daemon.
+//! Además, cada executor de Windows debe tomar la versión de su imagen del
+//! parámetro `windows_image_pin`.
 //!
 //! Sin dependencias nuevas: basta con leer ficheros y comparar cadenas.
 
@@ -74,7 +76,7 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
         let errors = check_text(&pins, &cfg, &toolchain);
         if errors.is_empty() {
             println!(
-                "pines en sincronía: parámetros, canal de Rust, instaladores, schema_version del humo y limpieza de la caché"
+                "pines en sincronía: parámetros, canal de Rust, instaladores, schema_version del humo, limpieza de la caché e imagen de Windows"
             );
             return Ok(());
         }
@@ -89,8 +91,8 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Las doce claves con su valor, en el orden del manifiesto.
-fn all_pins(pins: &Pins) -> [(&'static str, &String); 12] {
+/// Las trece claves con su valor, en el orden del manifiesto.
+fn all_pins(pins: &Pins) -> [(&'static str, &String); 13] {
     [
         ("rust", &pins.rust),
         ("ort", &pins.ort),
@@ -104,6 +106,7 @@ fn all_pins(pins: &Pins) -> [(&'static str, &String); 12] {
         ("pwsh", &pins.pwsh),
         ("pester", &pins.pester),
         ("nextest", &pins.nextest),
+        ("windows_image", &pins.windows_image),
     ]
 }
 
@@ -220,6 +223,38 @@ fn check_text(pins: &Pins, cfg: &str, toolchain: &str) -> Vec<String> {
         avi_core::json_emitter::CLI_SCHEMA_VERSION,
     ));
     errors.extend(cache_cleanup_errors(cfg));
+    errors.extend(windows_executor_errors(cfg));
+    errors
+}
+
+/// Executor del orb de Windows cuya imagen fija `windows_image_pin`.
+const WINDOWS_EXECUTOR: &str = "win/server-2022";
+
+/// Línea que fija la imagen del executor de Windows con el parámetro del pin.
+const WINDOWS_IMAGE_VERSION: &str = "version: << pipeline.parameters.windows_image_pin >>";
+
+/// Exige que cada executor `win/server-2022` tome la versión de la imagen de
+/// `windows_image_pin`: la forma corta `executor: win/server-2022` usa la imagen
+/// `current` del orb, que cambia el compilador MSVC sin que el repositorio lo
+/// registre.
+fn windows_executor_errors(cfg: &str) -> Vec<String> {
+    let lines: Vec<&str> = cfg.lines().map(str::trim).collect();
+    let mut errors = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if *line == format!("executor: {WINDOWS_EXECUTOR}") {
+            errors.push(format!(
+                "executor {WINDOWS_EXECUTOR} sin versión de imagen (línea {}): declara `name: {WINDOWS_EXECUTOR}` y `{WINDOWS_IMAGE_VERSION}`",
+                i + 1
+            ));
+        } else if *line == format!("name: {WINDOWS_EXECUTOR}")
+            && lines.get(i + 1) != Some(&WINDOWS_IMAGE_VERSION)
+        {
+            errors.push(format!(
+                "executor {WINDOWS_EXECUTOR} sin la versión del pin (línea {}): añade `{WINDOWS_IMAGE_VERSION}` tras `name`",
+                i + 1
+            ));
+        }
+    }
     errors
 }
 
@@ -316,11 +351,12 @@ mod tests {
             pwsh: "7.6.6".to_string(),
             pester: "5.8.0".to_string(),
             nextest: "0.9.148".to_string(),
+            windows_image: "2026.10.1".to_string(),
         }
     }
 
-    /// CI de fixture con los once parámetros esperados, el humo de
-    /// `schema_version` y la limpieza de caché vigentes.
+    /// CI de fixture con los doce parámetros esperados, el humo de
+    /// `schema_version`, la limpieza de caché y un executor de Windows vigentes.
     fn fixture_config() -> String {
         let pins = fixture_pins();
         let mut cfg = String::from("parameters:\n");
@@ -343,8 +379,12 @@ mod tests {
             cfg.push_str(&format!("target/{prefix}* "));
         }
         cfg.push_str("\n      - save_cache:\n");
+        cfg.push_str(FIXTURE_WINDOWS_EXECUTOR);
         cfg
     }
+
+    /// Executor de Windows de fixture con la versión del pin.
+    const FIXTURE_WINDOWS_EXECUTOR: &str = "  test-windows:\n    executor:\n      name: win/server-2022\n      version: << pipeline.parameters.windows_image_pin >>\n";
 
     /// Línea del humo de Windows que exige `version` a `version --json`.
     fn fixture_schema_smoke(version: &str) -> String {
@@ -502,6 +542,40 @@ mod tests {
         assert!(errors.is_empty(), "{errors:?}");
     }
 
+    /// Un executor de Windows en forma corta (imagen `current`) o con `name` y
+    /// sin la versión del pin se rechaza.
+    #[test]
+    fn windows_executor_without_pinned_image_is_rejected() {
+        let short = fixture_config().replace(
+            FIXTURE_WINDOWS_EXECUTOR,
+            "  test-windows:\n    executor: win/server-2022\n",
+        );
+        let errors = check_text(&fixture_pins(), &short, &fixture_toolchain());
+        assert!(
+            errors.iter().any(|e| e.contains("sin versión de imagen")),
+            "{errors:?}"
+        );
+
+        let unpinned = fixture_config().replace(
+            "      version: << pipeline.parameters.windows_image_pin >>\n",
+            "      version: current\n",
+        );
+        let errors = check_text(&fixture_pins(), &unpinned, &fixture_toolchain());
+        assert!(
+            errors.iter().any(|e| e.contains("sin la versión del pin")),
+            "{errors:?}"
+        );
+    }
+
+    /// Los executors de Windows del pipeline real toman la versión del pin.
+    #[test]
+    fn real_pipeline_windows_executors_use_pinned_image() {
+        let cfg = include_str!("../../../.circleci/config.yml");
+        assert!(cfg.contains("name: win/server-2022"));
+        let errors = windows_executor_errors(cfg);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
     #[test]
     fn sync_writes_channel_from_pins() {
         let guard = own_dir("sync");
@@ -514,7 +588,7 @@ mod tests {
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
-                "nextest": "0.9.148",
+                "nextest": "0.9.148", "windows_image": "2026.10.1",
             }))
             .unwrap(),
         )
@@ -537,7 +611,7 @@ mod tests {
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
-                "nextest": "0.9.148",
+                "nextest": "0.9.148", "windows_image": "2026.10.1",
             }))
             .unwrap(),
         )

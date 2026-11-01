@@ -27,5 +27,6 @@
   "bats": "1.14.0",
   "pwsh": "7.6.6",
   "pester": "5.8.0",
-  "nextest": "0.9.148"
+  "nextest": "0.9.148",
+  "windows_image": "2026.10.1"
 }
