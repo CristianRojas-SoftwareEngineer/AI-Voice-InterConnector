@@ -539,16 +539,30 @@ y publicar una revisión nueva.
   (`blobs/` y `snapshots/`). Con el enlace duro, el disco ocupado iguala a la
   descarga y se conserva el layout de caché compartido con otras herramientas
   de Hugging Face.
+- **Qué cambia (cliente sin token):** `HFClientBuilder` gana el método
+  `without_token()` (`vendor/hf-hub-*/src/client.rs`); con él, `build` no resuelve
+  ni acepta token y el cliente no envía la cabecera `Authorization` en ninguna
+  petición (descargas, paginación ni Xet). Sin llamarlo, el comportamiento es el
+  del crate original. La aplicación construye el cliente solo desde
+  `avi_store::hub_client_builder`, que lo activa.
+- **Por qué:** el original busca por su cuenta un token en `HF_TOKEN`,
+  `HF_TOKEN_PATH` o `$HF_HOME/token` y lo envía siempre. Los modelos fijados son
+  repositorios públicos: un token del entorno caducado rompía la descarga con un
+  401, y uno válido escondía en la máquina del desarrollador un modelo que hubiera
+  dejado de ser público. La única alternativa del original,
+  `HF_HUB_DISABLE_IMPLICIT_TOKEN`, obliga a mutar el entorno global del proceso.
 - **Versión fijada:** la dependencia se declara con versión exacta (`=`), de modo
   que `[patch.crates-io]` no puede quedar sin efecto en silencio si el resolver
   eligiera otra versión.
 - **Licencia y avisos:** la copia incluye el texto de Apache-2.0
   (`LICENSE-APACHE`) y marca con `// Patch:` cada comentario o código
-  modificado en los archivos tocados (`vendor/hf-hub-*/src/cache/storage.rs`
-  y `vendor/hf-hub-*/src/repository/download.rs`).
+  modificado en los archivos tocados (`vendor/hf-hub-*/src/cache/storage.rs`,
+  `vendor/hf-hub-*/src/repository/download.rs` y `vendor/hf-hub-*/src/client.rs`).
 - **Cobertura:** la prueba `crates/avi-store/tests/hf_cache_layout.rs` descarga un
   archivo desde un servidor local y afirma que puntero y blob son el mismo
-  archivo.
+  archivo. La prueba `crates/avi-store/tests/hub_client_anonymous.rs` descarga con
+  `HF_TOKEN`, `HF_TOKEN_PATH` y un archivo `token` presentes y afirma que ninguna
+  petición lleva `Authorization`.
 
 ### Ubicaciones en disco por SO
 

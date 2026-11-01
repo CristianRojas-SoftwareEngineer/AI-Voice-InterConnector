@@ -146,6 +146,9 @@ pub struct HFClientBuilder {
     cache_enabled: Option<bool>,
     retry_max_attempts: Option<usize>,
     retry_base_delay: Option<Duration>,
+    // Patch: la aplicación descarga solo repositorios públicos y no debe enviar
+    // credenciales del entorno; con este campo activo `build` no resuelve token.
+    without_token: bool,
 }
 
 impl HFClientBuilder {
@@ -161,6 +164,7 @@ impl HFClientBuilder {
             cache_enabled: None,
             retry_max_attempts: None,
             retry_base_delay: None,
+            without_token: false,
         }
     }
 
@@ -174,6 +178,15 @@ impl HFClientBuilder {
     /// var and the cached token file written by `huggingface-cli login`.
     pub fn token(mut self, token: impl Into<String>) -> Self {
         self.token = Some(token.into());
+        self
+    }
+
+    // Patch: modo explícito sin credenciales, sin depender del estado global del
+    // proceso (`HF_HUB_DISABLE_IMPLICIT_TOKEN`).
+    /// Construye un cliente que nunca envía `Authorization`: anula [`token`](Self::token),
+    /// `HF_TOKEN`, `HF_TOKEN_PATH` y el archivo `token` guardado por `huggingface-cli login`.
+    pub fn without_token(mut self) -> Self {
+        self.without_token = true;
         self
     }
 
@@ -237,7 +250,13 @@ impl HFClientBuilder {
 
         let _ = url::Url::parse(&endpoint)?;
 
-        let token = self.token.or_else(resolve_token);
+        // Patch: sin token cuando se pidió `without_token`; en otro caso se conserva
+        // la resolución original (argumento, variables de entorno y archivo `token`).
+        let token = if self.without_token {
+            None
+        } else {
+            self.token.or_else(resolve_token)
+        };
 
         let cache_dir = self.cache_dir.unwrap_or_else(constants::resolve_cache_dir);
 

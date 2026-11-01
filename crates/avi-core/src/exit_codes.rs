@@ -20,8 +20,13 @@ use thiserror::Error;
 ///   `self uninstall`, `cleanup`), una variante por `reason`: `setup_failed`,
 ///   `externally_managed`, `rolled_back`, `path_conflict`, `bundle_invalid`,
 ///   `daemon_stop_failed` y `lifecycle_locked`.
+/// - 1 también para `model_unavailable` (`setup`, y anidado en `self install` y
+///   `self update`) y `release_unavailable` (`self update` y los instaladores): el
+///   servidor rechaza el modelo fijado o el release pedido, y reintentar no lo
+///   resuelve.
 /// - 18 al 21: la red y la integridad de `self update`: `unsupported_platform`,
-///   `binary_incompatible`, `network_error` y `checksum_mismatch`.
+///   `binary_incompatible`, `network_error` (solo fallo de transporte o del
+///   servidor, que reintentar puede resolver) y `checksum_mismatch`.
 /// - 22: `program_dir_kept`, de `self uninstall`.
 /// - 130: interrupción por el usuario.
 #[derive(Error, Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +49,7 @@ pub enum ExitCode {
     TranslationFailed = 9,
     #[error("Fallo del pipeline de transcripción")]
     TranscriptionFailed = 10,
-    #[error("Provisión de modelos fallida (reintentable con 'setup')")]
+    #[error("Provisión de modelos fallida (el programa queda instalado)")]
     SetupFailed = 11,
     #[error("La copia la gestiona otra herramienta")]
     ExternallyManaged = 12,
@@ -140,6 +145,8 @@ pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("checksum_mismatch", ExitCode::ChecksumMismatch),
     ("program_dir_kept", ExitCode::ProgramDirKept),
     ("io_error", ExitCode::Error),
+    ("model_unavailable", ExitCode::Error),
+    ("release_unavailable", ExitCode::Error),
     ("voice_clone_failed", ExitCode::Error),
     ("synthesis_failed", ExitCode::Error),
     ("synthesis_timeout", ExitCode::Error),
@@ -227,6 +234,8 @@ mod tests {
         ("checksum_mismatch", 21),
         ("program_dir_kept", 22),
         ("io_error", 1),
+        ("model_unavailable", 1),
+        ("release_unavailable", 1),
         ("voice_clone_failed", 1),
         ("synthesis_failed", 1),
         ("synthesis_timeout", 1),

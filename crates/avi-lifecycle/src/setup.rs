@@ -245,15 +245,39 @@ fn live_snapshot_name(snapshots: &Path, revision: &str) -> Option<String> {
     None
 }
 
-/// Traduce un fallo de provisión al `reason` de contrato que corresponde.
+/// Traduce un fallo de descarga de un modelo al `reason` de contrato que
+/// corresponde a su causa real.
 ///
-/// `setup_failed` es el que el resumen de `self install` emite ("Programa
-/// instalado, pero la provisión de modelos falló"), y `network_error` el que la
-/// tabla declara para un fallo de descarga tras reintentos. La traducción vive aquí
-/// para que `self install` no tenga que distinguir el origen del fallo: lo que le
-/// importa es que el programa queda instalado y basta reintentar con `setup`.
+/// - `model_unavailable` cuando Hugging Face rechaza el modelo fijado (401, 403
+///   o 404): el repositorio, la revisión o el archivo no existe o dejó de ser
+///   público, y reintentar no lo resuelve.
+/// - `network_error` para el resto (transporte, límite de peticiones o fallo
+///   del servidor tras los reintentos): reintentar con `setup` puede resolverlo.
+///
+/// La traducción vive aquí para que `setup`, `self install` y `self update`
+/// publiquen la misma causa sin distinguir el origen del fallo.
 pub fn map_download_failure(model: &str, cause: &anyhow::Error) -> LifecycleError {
-    LifecycleError::new("network_error", format!("{model}: {cause}"))
+    let message = format!("{model}: {cause}");
+    if avi_store::is_download_rejected(cause) {
+        LifecycleError::model_unavailable(message)
+    } else {
+        LifecycleError::network_error(message)
+    }
+}
+
+/// Consejo para el usuario tras un éxito parcial, decidido a partir del `reason`
+/// de la causa de provisión. Con `model_unavailable` el Hub rechazó el modelo
+/// fijado y reintentar no lo resuelve; con cualquier otra causa (transporte,
+/// servidor o disco) reintentar con `setup` puede completar la provisión. Es la
+/// única fuente del consejo para los mensajes de `self install` y `self update`.
+pub fn retry_advice(cause_reason: &str) -> &'static str {
+    match cause_reason {
+        "model_unavailable" => {
+            "reintentar no lo resuelve: el modelo fijado ya no está disponible en Hugging \
+             Face y hace falta una versión que vuelva a fijarlo"
+        }
+        _ => "basta reintentar con setup",
+    }
 }
 
 /// Costura de la provisión: la descarga (red) se inyecta para poder comprobar la
@@ -468,6 +492,40 @@ pub(crate) mod tests {
     use avi_shared::paths::{CLONING_MODEL, MODEL_FILE_PATTERNS, MODEL_REVISIONS};
     use std::path::PathBuf;
     use std::sync::MutexGuard;
+
+    #[test]
+    fn retry_advice_depends_on_the_cause() {
+        let rejected = retry_advice("model_unavailable");
+        assert!(rejected.contains("reintentar no lo resuelve"), "{rejected}");
+        assert!(!rejected.contains("basta reintentar"), "{rejected}");
+        assert_eq!(retry_advice("network_error"), "basta reintentar con setup");
+    }
+
+    #[test]
+    fn hub_rejection_maps_to_model_unavailable() {
+        let cause = anyhow::Error::from(hf_hub::HFError::RepoNotFound {
+            repo_id: "owner/model".to_string(),
+            context: None,
+        });
+        let error = map_download_failure("modelo", &cause);
+        assert_eq!(error.reason, "model_unavailable");
+        assert_eq!(
+            avi_core::exit_codes::ExitCode::from_reason(error.reason),
+            avi_core::exit_codes::ExitCode::Error
+        );
+        assert!(error.message.starts_with("modelo: "), "{}", error.message);
+    }
+
+    #[test]
+    fn transport_failure_maps_to_network_error() {
+        let cause = anyhow::anyhow!("conexión rechazada");
+        let error = map_download_failure("modelo", &cause);
+        assert_eq!(error.reason, "network_error");
+        assert_eq!(
+            avi_core::exit_codes::ExitCode::from_reason(error.reason),
+            avi_core::exit_codes::ExitCode::NetworkError
+        );
+    }
 
     /// Provisionador simulado: la descarga escribe el snapshot pinneado, sin red,
     /// y le cuenta al observador un total y un completado iguales a lo escrito.

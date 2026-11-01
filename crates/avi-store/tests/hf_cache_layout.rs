@@ -70,11 +70,13 @@ async fn pointer_and_blob_are_the_same_file() {
         .expect("directorio temporal de la caché");
     let cache = cache_guard.path().to_path_buf();
 
-    let client = hf_hub::HFClient::builder()
-        .endpoint(endpoint)
-        .cache_dir(&cache)
-        .build()
-        .expect("el cliente se construye con endpoint y caché explícitos");
+    let client = avi_store::hub_client_builder(
+        avi_store::download_http_client().expect("el cliente HTTP de descargas se construye"),
+    )
+    .endpoint(endpoint)
+    .cache_dir(&cache)
+    .build()
+    .expect("el cliente se construye con endpoint y caché explícitos");
     let pointer = client
         .model("owner", "model")
         .download_file()

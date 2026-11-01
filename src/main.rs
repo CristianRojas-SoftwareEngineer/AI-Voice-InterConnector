@@ -3837,7 +3837,8 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 });
                 // El `reason` de la operación es `setup_failed`; el del fallo de provisión
                 // viaja anidado en `models_cause`, que es donde un consumidor encuentra
-                // `network_error` sin perderlo. Solo existe si
+                // el `reason` real de la causa (`network_error` o `model_unavailable`)
+                // sin perderlo. Solo existe si
                 // hubo fallo: un envelope estable es más fácil de leer que uno con nulos.
                 if let lifecycle::install::ModelsState::Failed { cause } = &outcome.models {
                     on["models_cause"] = json!({
@@ -4238,8 +4239,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     resolution.target,
                     avi_lifecycle::progress::format_duration(elapsed)
                 );
-                if partial {
-                    println!("  Aviso: {}.", lifecycle::update::partial_setup_message());
+                if let lifecycle::update::HandoverOutcome::PartialSetupFailed { cause } = &handover
+                {
+                    println!(
+                        "  Aviso: {}.",
+                        lifecycle::update::partial_setup_message(cause)
+                    );
                 }
                 if !recovery.kept.is_empty() {
                     println!(

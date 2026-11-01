@@ -581,8 +581,8 @@ fn no_setup_provisions_nothing() {
 /// la tabla cerrada, que es lo que la tabla de reasons declara como **éxito parcial** y lo
 /// que el cableado convierte en código de salida. Y se afirma también la separación de los
 /// dos `reason`, que es lo que `self update` necesita: el de la **operación** es
-/// `setup_failed` y el del **fallo de provisión** viaja anidado, y en este caso es
-/// `network_error`.
+/// `setup_failed` y el del **fallo de provisión** viaja anidado, y en este caso (un puerto
+/// cerrado, fallo de transporte) es `network_error`.
 ///
 /// El resumen en texto se afirma por las dos mitades —el estado de los modelos y el aviso
 /// con el motivo de la causa y la instrucción de reintentar—, porque es la otra salida de
@@ -657,8 +657,7 @@ fn setup_failure_keeps_install() {
     assert_eq!(outcome.models.as_str(), "failed");
     assert_eq!(
         cause.reason, "network_error",
-        "el fallo de provisión conserva su `reason`, que es el que \
-         `docs/CLI/commands/SETUP.md` publica para una descarga fallida"
+        "el fallo de provisión conserva su `reason`, que es el de un fallo de transporte"
     );
     assert_eq!(
         ExitCode::from_reason(cause.reason).code(),
@@ -685,8 +684,8 @@ fn setup_failure_keeps_install() {
         11,
         "el código de `setup_failed` sale de la tabla única, sin copia propia"
     );
-    // El mensaje dice las dos cosas que promete el resumen: qué no se completó y que
-    // basta reintentar con `setup`.
+    // El mensaje dice las dos cosas que promete el resumen: qué no se completó y, por ser
+    // un fallo de transporte, que basta reintentar con `setup`.
     assert!(
         failure.message.contains("no se completó"),
         "el mensaje dice qué no se completó: {}",

@@ -132,6 +132,21 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
         return $version
     }
 
+    function Get-BootstrapDownloadError {
+        # Mensaje del fallo de una descarga del release. Un 404 significa que la
+        # version o el archivo no existe, y reintentar no lo resuelve
+        # (release_unavailable); el resto (sin red, 5xx, el 403 del limite de
+        # peticiones de GitHub) es network_error. El estado vive en
+        # Exception.Response en 5.1 (HttpWebResponse) y en 7+ (HttpResponseMessage);
+        # sin respuesta, el fallo fue de transporte.
+        param([string]$Name, [string]$Version, $ErrorRecord)
+        $response = $ErrorRecord.Exception.Response
+        if ($null -ne $response -and [int]$response.StatusCode -eq 404) {
+            return "ERROR [release_unavailable]: la versi${o}n $Version no existe o no publica $Name (404). Comprueba la versi${o}n pedida."
+        }
+        return "ERROR [network_error]: descarga fallida: $Name. $ErrorRecord"
+    }
+
     function Resolve-BootstrapTarget {
         # Arquitectura nativa del SO, no la del proceso (WOW64 o emulacion).
         $osArch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432")
@@ -212,12 +227,12 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             try {
                 Invoke-WebRequest -Uri "$base/v$version/$archiveName" -OutFile $archivePath -UseBasicParsing
             } catch {
-                throw "ERROR [network_error]: descarga fallida: $archiveName. $_"
+                throw (Get-BootstrapDownloadError -Name $archiveName -Version $version -ErrorRecord $_)
             }
             try {
                 Invoke-WebRequest -Uri "$base/v$version/SHA256SUMS.txt" -OutFile $sumsPath -UseBasicParsing
             } catch {
-                throw "ERROR [network_error]: descarga fallida: SHA256SUMS.txt. $_"
+                throw (Get-BootstrapDownloadError -Name "SHA256SUMS.txt" -Version $version -ErrorRecord $_)
             }
 
             # Verificacion exacta antes de extraer: el nombre coincide cadena a cadena.

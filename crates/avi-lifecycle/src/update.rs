@@ -27,7 +27,7 @@
 //! Nunca se toca nada fuera del staging que trajo la operación.
 
 use crate::faults::{self, FaultPoint};
-use crate::LifecycleError;
+use crate::{setup, LifecycleError};
 use avi_process::{spawn_with_allowlist_env, OwnerToken, RestrictedSpawnRequest, StdinSpec};
 use std::path::{Path, PathBuf};
 
@@ -267,16 +267,20 @@ fn inherited_stdio_file(end: StdioEnd) -> anyhow::Result<std::fs::File> {
     }
 }
 
-/// Prosa del éxito parcial del traspaso: el programa
-/// queda actualizado y basta reintentar con `setup`.
+/// Prosa del éxito parcial del traspaso: el programa queda actualizado, con el
+/// consejo que [`setup::retry_advice`] decide según la causa de la provisión.
 ///
 /// Es la contrapartida de `install::setup_failed_message` para el camino del
 /// `update`: allí la causa viaja anidada (`models_cause`); aquí el traspaso
 /// valida y conserva la misma causa estructurada del proceso hijo.
-pub fn partial_setup_message() -> String {
-    "la provisión de modelos no se completó durante el traspaso. El programa \
-     queda actualizado y basta reintentar con setup"
-        .to_string()
+pub fn partial_setup_message(cause: &ModelsCause) -> String {
+    format!(
+        "la provisión de modelos no se completó durante el traspaso ({}: {}). El programa \
+         queda actualizado y {}",
+        cause.reason,
+        cause.message,
+        setup::retry_advice(&cause.reason)
+    )
 }
 
 /// Borrado de una ruta del ciclo cuando el ejecutable en uso puede estar
@@ -372,6 +376,35 @@ pub fn schedule_leftovers(
 mod tests {
     use super::*;
     use avi_core::exit_codes::ExitCode;
+
+    /// Un modelo rechazado por el Hub no se arregla reintentando: el mensaje no lo
+    /// promete.
+    #[test]
+    fn partial_setup_message_without_retry_for_rejected_model() {
+        let message = partial_setup_message(&ModelsCause {
+            reason: "model_unavailable".to_string(),
+            message: "modelo: 404".to_string(),
+        });
+        assert!(
+            message.contains("model_unavailable: modelo: 404"),
+            "{message}"
+        );
+        assert!(!message.contains("basta reintentar"), "{message}");
+        assert!(message.contains("reintentar no lo resuelve"), "{message}");
+    }
+
+    /// Un fallo de transporte sí puede resolverse reintentando con `setup`.
+    #[test]
+    fn partial_setup_message_advises_retry_for_transport_failure() {
+        let message = partial_setup_message(&ModelsCause {
+            reason: "network_error".to_string(),
+            message: "modelo: sin red".to_string(),
+        });
+        assert!(
+            message.ends_with("y basta reintentar con setup"),
+            "{message}"
+        );
+    }
 
     /// Los argumentos del `install` interno llevan `--yes` siempre y heredan
     /// `--no-modify-path`, `--no-setup` y `--force` solo cuando tocan.

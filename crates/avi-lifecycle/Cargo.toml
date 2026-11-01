@@ -57,6 +57,10 @@ indicatif = "0.18"
 avi-core = { path = "../avi-core" }
 # Directorios de trabajo de las pruebas con dueño que los borra al soltarse.
 tempfile = "3"
+# Las pruebas de la traducción de fallos de descarga construyen el `HFError` que
+# devuelve la descarga. Es la misma versión exacta, parcheada, que ya compila
+# `avi-store`, así que no añade otra copia.
+hf-hub = { version = "=1.0.0", default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(windows)'.dependencies]
 # Acceso directo a `HKCU\Environment` para la integracion de PATH: se accede con

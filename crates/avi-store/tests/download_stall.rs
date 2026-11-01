@@ -77,14 +77,13 @@ async fn stalled_body_fails_instead_of_hanging() {
         .tempdir()
         .expect("directorio temporal de la caché");
 
-    // El cliente es el de producción, con el plazo de silencio acortado para que
-    // la prueba no espere el minuto real.
+    // El cliente es el de producción (`hub_client_builder`, sin token), con el
+    // plazo de silencio acortado para que la prueba no espere el minuto real.
     let http = avi_store::download_http_client_with(Duration::from_secs(2))
         .expect("el cliente de descargas se construye");
-    let client = hf_hub::HFClient::builder()
+    let client = avi_store::hub_client_builder(http)
         .endpoint(endpoint)
         .cache_dir(cache_guard.path())
-        .client(http)
         .build()
         .expect("el cliente se construye con endpoint y caché explícitos");
 

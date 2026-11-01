@@ -74,7 +74,7 @@ La CLI Rust (clap) expone los comandos de nivel superior que listan las dos tabl
 | 6 | `ExitCode::StateConflict` | Conflicto de estado |
 | 9 | `ExitCode::TranslationFailed` | Fallo de traducción |
 | 10 | `ExitCode::TranscriptionFailed` | Fallo de transcripción |
-| 11 | `ExitCode::SetupFailed` | Provisión de modelos fallida; el programa **queda instalado** (éxito parcial, reintentable con `setup`) |
+| 11 | `ExitCode::SetupFailed` | Provisión de modelos fallida; el programa **queda instalado** (éxito parcial, reintentable con `setup` salvo que la causa sea `model_unavailable`) |
 | 12 | `ExitCode::ExternallyManaged` | La copia la gestiona otra herramienta |
 | 13 | `ExitCode::RolledBack` | Fallo en el reemplazo; versión anterior restaurada |
 | 14 | `ExitCode::PathConflict` | Conflicto en la ruta del enlace del `PATH` |

@@ -98,9 +98,9 @@ Si la provisión de `self install` (la misma de `setup`) falla, **la instalació
 | `reason` | `setup_failed` |
 | Código de salida | **11** (`ExitCode::SetupFailed`) |
 | Forma de salida | **Por veredicto**: el envelope y el resumen se emiten igual, y **no** se adjunta el objeto `error` |
-| Qué hacer | Reintentar con `setup`: el programa está instalado |
+| Qué hacer | El programa está instalado. Con causa `network_error`, reintentar con `setup`; con `model_unavailable`, reintentar no lo resuelve y hace falta una versión que vuelva a fijar el modelo |
 
-El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cause`, con su propio `reason` —`network_error` para un fallo de descarga— y su mensaje. Ese `reason` y `setup_failed` dicen cosas distintas y por eso no se funden: uno dice **qué** falló y el otro **qué dejó de completarse**.
+El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cause`, con su propio `reason` —`network_error` para un fallo de transporte o del servidor, `model_unavailable` cuando Hugging Face rechaza el modelo fijado (401, 403 o 404)— y su mensaje. El resumen en texto da el consejo según esa causa. Ese `reason` y `setup_failed` dicen cosas distintas y por eso no se funden: uno dice **qué** falló y el otro **qué dejó de completarse**.
 
 ```json
 {
@@ -118,7 +118,7 @@ El motivo del fallo de provisión **no se pierde**: viaja anidado en `models_cau
 
 `models_cause` **solo existe si hubo fallo**: un envelope estable es más fácil de leer que uno con nulos. Los cuatro valores de `models` son `skipped` (`--no-setup`), `already_provisioned`, `provisioned` y `failed`. Son valores del envelope; el texto del resumen nunca los imprime.
 
-Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de descarga sale con `network_error` y **20**. El `self update` propaga el parcial del binario nuevo: el resultado es `updated` con `reason` `setup_failed`, salida 11 y la causa real de provisión en `models_cause.reason`/`models_cause.message`; `reason` describe el resultado parcial, no sustituye la causa.
+Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el traspaso de `self update`), un fallo de transporte sale con `network_error` y **20**, y un rechazo del modelo fijado con `model_unavailable` y **1**. El `self update` propaga el parcial del binario nuevo: el resultado es `updated` con `reason` `setup_failed`, salida 11 y la causa real de provisión en `models_cause.reason`/`models_cause.message`; `reason` describe el resultado parcial, no sustituye la causa.
 
 ---
 
@@ -209,12 +209,14 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 | `rolled_back` | 13 | Fallo en el reemplazo; la versión anterior quedó restaurada |
 | `externally_managed` | 12 | `homebrew`: la copia la gestiona Homebrew (`self uninstall` y `self update`) |
 | `confirmation_required` | 2 | Destructiva sin terminal y sin `--yes` |
-| `setup_failed` | 11 | `self install` terminó con el programa instalado y la provisión sin completar; `self update` propaga el mismo parcial del binario nuevo |
+| `setup_failed` | 11 | `self install` terminó con el programa instalado y la provisión sin completar; `self update` propaga el mismo parcial del binario nuevo. La causa (`network_error` o `model_unavailable`) viaja en `models_cause` |
 | `already_up_to_date` | 0 | — (es el `status` del envelope, no un `reason`): `self update` sin descarga, ya se está en la versión objetivo (éxito) |
 | `not_installed` | 3 | `self update` sin instalación registrada, con el one-liner |
 | `unsupported_platform` | 18 | Target no soportado, antes de tocar la red |
 | `binary_incompatible` | 19 | El binario descargado no arranca o no informa la versión objetivo, con diagnóstico |
-| `network_error` | 20 | Fallo de descarga tras reintentos acotados |
+| `network_error` | 20 | Fallo de transporte o del servidor en la descarga tras reintentos acotados (sin red, 5xx, o el 403 del límite de peticiones de GitHub); reintentar puede resolverlo |
+| `release_unavailable` | 1 | `self update`: GitHub responde 404 a la versión o al asset pedido (no está publicado para esta plataforma); reintentar no lo resuelve |
+| `io_error` | 1 | `self update`: falla el disco local al crear el staging, escribir o leer el archivo descargado; no es un fallo de red |
 | `checksum_mismatch` | 21 | El hash no coincide o falta en `SHA256SUMS.txt`; staging borrado y nada más modificado |
 | `program_dir_kept` | 22 | `self uninstall`: el resto se completó, pero el directorio de programa no se pudo borrar ni programar su borrado |
 

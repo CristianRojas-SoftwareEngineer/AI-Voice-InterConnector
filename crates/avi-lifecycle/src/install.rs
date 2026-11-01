@@ -246,11 +246,13 @@ pub enum ModelsState {
         bytes: u64,
         elapsed: std::time::Duration,
     },
-    /// Se empezó a provisionar y falló. El programa queda instalado y basta reintentar
-    /// con `setup`, que es lo que se llama éxito parcial de `setup_failed`.
+    /// Se empezó a provisionar y falló. El programa queda instalado, que es lo que se
+    /// llama éxito parcial de `setup_failed`.
     ///
-    /// `cause` es el fallo **de la provisión**, con su propio `reason`: un fallo de
-    /// descarga es `network_error`. No es el `reason` de la operación, que es
+    /// `cause` es el fallo **de la provisión**, con su propio `reason`:
+    /// `model_unavailable` si el Hub rechaza el modelo fijado (reintentar no lo
+    /// resuelve) y `network_error` si falla el transporte (reintentar con `setup` puede
+    /// resolverlo). No es el `reason` de la operación, que es
     /// `setup_failed` y vive en [`Outcome::lifecycle_error`]: uno dice *qué* falló y el
     /// otro *qué dejó de completarse*, y confundirlos perdería el `reason` que la tabla
     /// de reasons reserva a cada caso.
@@ -921,11 +923,12 @@ fn pending_models() -> Result<setup::Pending, LifecycleError> {
 /// paso 4.
 ///
 /// Un fallo **no** es un `Err`: `setup_failed` es éxito parcial con el
-/// programa instalado y reintentable con `setup`, así que es un estado del desenlace y
+/// programa instalado, así que es un estado del desenlace y
 /// no un fallo de la instalación. El `reason` de la operación lo decide
 /// [`Outcome::lifecycle_error`]; lo que viaja aquí es el **fallo de la provisión**, con su
 /// propio `reason`, que es lo que la tabla de reasons reserva a cada caso:
-/// `network_error` para un fallo de descarga.
+/// `model_unavailable` si el Hub rechaza el modelo fijado y `network_error` si falla el
+/// transporte; reintentar con `setup` solo sirve en el segundo caso.
 async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
     let store = match avi_store::ModelStore::new() {
         Ok(store) => store,
@@ -952,8 +955,9 @@ async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
     }
 }
 
-/// Prose de `setup_failed`: el programa queda instalado y basta
-/// reintentar con `setup`.
+/// Prosa de `setup_failed`: el programa queda instalado, con el consejo que
+/// [`setup::retry_advice`] decide según la causa (reintentar con `setup` solo
+/// cuando puede resolverlo).
 ///
 /// **Una sola fuente** para el resumen final y para el `reason` del envelope, para que
 /// las dos salidas no puedan divergir: es la razón de que el mensaje viva aquí y no en las
@@ -961,10 +965,11 @@ async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
 fn setup_failed_message(program_dir: &Path, cause: &LifecycleError) -> String {
     format!(
         "la provisión de modelos no se completó ({}: {}). El programa queda instalado en {} \
-         y basta reintentar con setup",
+         y {}",
         cause.reason,
         cause.message,
-        program_dir.display()
+        program_dir.display(),
+        setup::retry_advice(cause.reason)
     )
 }
 
@@ -1408,6 +1413,26 @@ mod tests {
                 "la descripción de {state:?} contiene su literal de contrato"
             );
         }
+    }
+
+    /// El mensaje del éxito parcial solo recomienda reintentar cuando puede servir.
+    #[test]
+    fn setup_failed_message_advises_by_cause() {
+        let program = Path::new("programa");
+        let rejected = setup_failed_message(
+            program,
+            &LifecycleError::model_unavailable("modelo: 404".to_string()),
+        );
+        assert!(!rejected.contains("basta reintentar"), "{rejected}");
+        assert!(rejected.contains("reintentar no lo resuelve"), "{rejected}");
+        let transport = setup_failed_message(
+            program,
+            &LifecycleError::network_error("modelo: sin red".to_string()),
+        );
+        assert!(
+            transport.ends_with("y basta reintentar con setup"),
+            "{transport}"
+        );
     }
 
     /// La degradación se distingue de la actualización y de la misma versión, que es

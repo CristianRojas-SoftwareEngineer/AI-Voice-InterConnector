@@ -398,8 +398,8 @@ impl Sandbox {
 ///
 /// Y el `reason` del **fallo de provisión** viaja anidado en `models_cause`, que es donde un
 /// consumidor lo encuentra sin perderlo: el de la operación y el de la causa son dos cosas
-/// distintas, y confundirlas perdería el `network_error` de un fallo de descarga, que es el
-/// `reason` del fallo de provisión.
+/// distintas, y confundirlas perdería el `network_error` de un fallo de transporte (aquí, un
+/// puerto cerrado), que es el `reason` del fallo de provisión.
 #[test]
 fn self_install_setup_failure_exits_11_with_partial_success() {
     let sandbox = Sandbox::new("setupfailed");
@@ -429,8 +429,7 @@ fn self_install_setup_failure_exits_11_with_partial_success() {
     assert_eq!(
         actual["models_cause"]["reason"],
         Value::String("network_error".to_string()),
-        "el `reason` del fallo de provisión viaja anidado, y es el que \
-         `docs/CLI/commands/SETUP.md` publica para una descarga fallida"
+        "el `reason` del fallo de provisión viaja anidado, y es el de un fallo de transporte"
     );
     assert!(
         actual["models_cause"]["message"]

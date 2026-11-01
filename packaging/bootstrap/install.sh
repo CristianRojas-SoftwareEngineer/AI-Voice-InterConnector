@@ -39,8 +39,21 @@ AVI_YES=1, AVI_DOWNLOAD_BASE_URL. Sin --check: usa `self update --check`.
 EOF
 }
 
+# Descarga $1 en $2. Devuelve 0 si descarga, 2 ante un 404 (la versión o el
+# archivo no existe) y 1 ante cualquier otro fallo (sin red, 5xx o el 403 del
+# límite de peticiones de GitHub). Con `-f`, curl falla ante un estado >= 400 y
+# aun así escribe el código de la última respuesta (000 sin respuesta).
 fetch() { # $1=url, $2=destino
-    curl -fsSL --proto '=https' --tlsv1.2 -o "$2" "$1"
+    status="$(curl -fsSL --proto '=https' --tlsv1.2 -o "$2" -w '%{http_code}' "$1")" && return 0
+    [ "$status" = "404" ] && return 2
+    return 1
+}
+
+# Termina con el `reason` del fallo de una descarga del release: un 404 no se
+# resuelve reintentando (release_unavailable); el resto sí puede (network_error).
+download_failed() { # $1=código de fetch, $2=archivo
+    [ "$1" -eq 2 ] && fail "[release_unavailable] la versión $version no existe o no publica $2 (404). Comprueba la versión pedida."
+    fail "[network_error] descarga fallida: $2."
 }
 
 # Última estable sin API REST: se sigue la redirección de releases/latest.
@@ -159,8 +172,8 @@ main() {
     archive="$app-$version-$asset_arch-$asset_os.tar.gz"
     log "Descargando $archive..."
     started="$(date +%s)"
-    fetch "$base/v$version/$archive" "$staging/$archive" || fail "[network_error] descarga fallida: $archive."
-    fetch "$base/v$version/SHA256SUMS.txt" "$staging/SHA256SUMS.txt" || fail "[network_error] descarga fallida: SHA256SUMS.txt."
+    fetch "$base/v$version/$archive" "$staging/$archive" || download_failed "$?" "$archive"
+    fetch "$base/v$version/SHA256SUMS.txt" "$staging/SHA256SUMS.txt" || download_failed "$?" "SHA256SUMS.txt"
 
     # Verificación exacta: el nombre debe coincidir cadena a cadena, sin regex.
     expected=""

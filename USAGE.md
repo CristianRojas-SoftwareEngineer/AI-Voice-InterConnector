@@ -87,7 +87,11 @@ interrumpida se repite entera. La provisión se decide solo por presencia del sn
 índice `manifest.json` que consultar): si lo vuelves a ejecutar con los
 snapshots presentes, termina al instante sin descargar nada. Si la provisión falla al
 final de una instalación, el programa **queda instalado** y el comando sale con `11`
-(`setup_failed`): es un éxito parcial y basta reintentar con `setup`. La limpieza
+(`setup_failed`): es un éxito parcial. Si la causa es un fallo de red (`network_error`)
+basta reintentar con `setup`; si Hugging Face rechaza un modelo fijado
+(`model_unavailable`), reintentar no lo resuelve y hace falta una versión que vuelva a
+fijarlo. `setup` no requiere cuenta: descarga sin credenciales e ignora `HF_TOKEN`,
+`HF_TOKEN_PATH` y el token guardado. La limpieza
 posterior corresponde a `cleanup` (datos) o `self uninstall` (además programa y PATH).
 
 > **Importante**: hasta que los modelos estén provisionados, `speech say` y `daemon start`
@@ -258,7 +262,7 @@ clave sería redundante.
 | `install_dir` / `version` / `channel` | string | Lo que queda en el recibo de la instalación |
 | `path_integrated` | boolean | Si la integración de `PATH` está en pie (estado, no diff de esta pasada) |
 | `models` | string | `"skipped"` (`--no-setup`), `"already_provisioned"`, `"provisioned"` o `"failed"` |
-| `models_cause` | objeto | **Solo si `models` es `"failed"`**: `{reason, message}` con `network_error` |
+| `models_cause` | objeto | **Solo si `models` es `"failed"`**: `{reason, message}` con `network_error` (fallo de transporte; reintentar con `setup` puede resolverlo) o `model_unavailable` (Hugging Face rechaza el modelo fijado; reintentar no lo resuelve) |
 
 **`self update --json`**
 
@@ -950,8 +954,11 @@ instalación rota, es que no hay nada alrededor que instalar.
 
 Si la provisión de modelos falla al final, el programa **queda instalado**, el `status` es
 `installed`, el `reason` es `setup_failed`, el código de salida es **11** y el motivo del
-fallo viaja anidado en `models_cause` (`network_error`). Es un
-**éxito parcial**: basta reintentar con `setup`.
+fallo viaja anidado en `models_cause`: `network_error` si falló el transporte o el
+servidor, o `model_unavailable` si Hugging Face rechaza el modelo fijado. Es un
+**éxito parcial**: con `network_error` basta reintentar con `setup`; con
+`model_unavailable` reintentar no lo resuelve y hace falta una versión que vuelva a fijar
+el modelo.
 
 ---
 
@@ -967,7 +974,7 @@ ai-voice-interconnector self update --force               # reinstala la misma v
 ai-voice-interconnector self update --no-setup --yes      # sin provisión y sin confirmación
 ```
 
-**Qué esperar:** resolución de la versión objetivo (sin API, con respaldo), comparación semántica (iguales → `already_up_to_date` sin descargar, éxito con 0), resumen y confirmación, descarga con SHA-256 y arranque verificado en staging, parada del daemon con el binario actual, traspaso al binario nuevo con las preferencias del recibo y resultado `anterior → nueva`. Sin reinicio automático del daemon: si estaba activo, el resumen indica cómo relanzarlo. Sin instalación → `not_installed` (3) con el one-liner; en canal `homebrew` → `externally_managed` (12) con el comando correcto. Un recibo de instalación ilegible hace fallar el comando (`self_update_failed`) con un mensaje que nombra el fichero. Si la provisión del binario nuevo falla, el programa **queda actualizado** con `reason` `setup_failed` y salida **11**: es un éxito parcial y basta reintentar con `setup`.
+**Qué esperar:** resolución de la versión objetivo (sin API, con respaldo), comparación semántica (iguales → `already_up_to_date` sin descargar, éxito con 0), resumen y confirmación, descarga con SHA-256 y arranque verificado en staging, parada del daemon con el binario actual, traspaso al binario nuevo con las preferencias del recibo y resultado `anterior → nueva`. Sin reinicio automático del daemon: si estaba activo, el resumen indica cómo relanzarlo. Sin instalación → `not_installed` (3) con el one-liner; en canal `homebrew` → `externally_managed` (12) con el comando correcto. Un recibo de instalación ilegible hace fallar el comando (`self_update_failed`) con un mensaje que nombra el fichero. Si la provisión del binario nuevo falla, el programa **queda actualizado** con `reason` `setup_failed` y salida **11**: es un éxito parcial, y el consejo depende de la causa en `models_cause` (con `network_error` basta reintentar con `setup`; con `model_unavailable` no). Una versión pedida que no existe en GitHub (404) sale con `release_unavailable` (1), y un fallo del disco local durante la descarga con `io_error` (1).
 
 - **macOS (Homebrew)**: `brew upgrade --cask ai-voice-interconnector`.
 
@@ -1119,7 +1126,7 @@ desde el binario como desde el código fuente. En concreto:
   `setup` o `self update`; y `130`, una interrupción con Ctrl+C. Los códigos del `11`
   al `22` pertenecen al ciclo de vida, y el `11` hay que leerlo con cuidado: **no es un
   error**, es un éxito parcial con el programa ya instalado y la provisión de modelos
-  reintentable con `setup`.
+  reintentable con `setup` salvo que su causa sea `model_unavailable`.
 - **La voz `default` y el modelo** son los mismos en todas las plataformas: el
   audio generado para un mismo texto y voz es equivalente en cualquier SO.
 - **El motor de audio** es nativo por SO (`cpal`: WASAPI/CoreAudio/ALSA); no

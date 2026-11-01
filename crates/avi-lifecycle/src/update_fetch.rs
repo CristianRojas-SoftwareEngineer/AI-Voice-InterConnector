@@ -79,8 +79,10 @@ pub(crate) fn retry_delay(attempt: u32) -> Duration {
     Duration::from_millis(RETRY_BASE_DELAY_MS * attempt.max(1) as u64)
 }
 
-/// `GET` con reintentos acotados: se reintenta el error de transporte y el 5xx;
-/// el resto de estados no exitosos falla ya con `network_error`.
+/// `GET` con reintentos acotados: se reintenta el error de transporte y el 5xx.
+/// Un 404 falla ya con `release_unavailable` (la versión o el asset no existe y
+/// reintentar no lo resuelve); el resto de estados no exitosos, incluido el 403
+/// del límite de peticiones de GitHub, falla con `network_error`.
 pub(crate) async fn get_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -92,6 +94,12 @@ pub(crate) async fn get_with_retry(
             Ok(reply) => {
                 if reply.status().is_success() {
                     return Ok(reply);
+                }
+                if reply.status() == reqwest::StatusCode::NOT_FOUND {
+                    return Err(LifecycleError::release_unavailable(format!(
+                        "{url} no existe (404): la versión pedida no está publicada o no \
+                         tiene el archivo de esta plataforma"
+                    )));
                 }
                 if !reply.status().is_server_error() || attempt >= MAX_ATTEMPTS {
                     return Err(LifecycleError::network_error(format!(
@@ -154,21 +162,21 @@ pub async fn fetch(
     request: &FetchRequest,
 ) -> Result<StagedBundle, LifecycleError> {
     let owner = avi_process::current_owner_token().map_err(|e| {
-        LifecycleError::network_error(format!(
+        LifecycleError::io_error(format!(
             "no se pudo identificar el proceso para nombrar el staging: {e}"
         ))
     })?;
     let staging = staging_dir_for(&request.program_dir, &request.version, &owner);
     if staging.exists() {
         std::fs::remove_dir_all(&staging).map_err(|e| {
-            LifecycleError::network_error(format!(
+            LifecycleError::io_error(format!(
                 "no se pudo limpiar el staging previo {}: {e}",
                 staging.display()
             ))
         })?;
     }
     std::fs::create_dir_all(&staging).map_err(|e| {
-        LifecycleError::network_error(format!(
+        LifecycleError::io_error(format!(
             "no se pudo crear el staging {}: {e}",
             staging.display()
         ))
@@ -398,7 +406,7 @@ pub async fn verify_boot(
 async fn write_streamed(mut reply: reqwest::Response, dest: &Path) -> Result<(), LifecycleError> {
     use tokio::io::AsyncWriteExt;
     let mut file = tokio::fs::File::create(dest).await.map_err(|e| {
-        LifecycleError::network_error(format!("no se pudo escribir {}: {e}", dest.display()))
+        LifecycleError::io_error(format!("no se pudo escribir {}: {e}", dest.display()))
     })?;
     loop {
         let chunk = reply.chunk().await.map_err(|e| {
@@ -408,11 +416,11 @@ async fn write_streamed(mut reply: reqwest::Response, dest: &Path) -> Result<(),
             break;
         };
         file.write_all(&bytes).await.map_err(|e| {
-            LifecycleError::network_error(format!("no se pudo escribir {}: {e}", dest.display()))
+            LifecycleError::io_error(format!("no se pudo escribir {}: {e}", dest.display()))
         })?;
     }
     file.flush().await.map_err(|e| {
-        LifecycleError::network_error(format!("no se pudo escribir {}: {e}", dest.display()))
+        LifecycleError::io_error(format!("no se pudo escribir {}: {e}", dest.display()))
     })?;
     Ok(())
 }
@@ -428,7 +436,7 @@ pub fn verify_sums(
     asset_path: &Path,
 ) -> Result<(), LifecycleError> {
     let bytes = std::fs::read(asset_path).map_err(|e| {
-        LifecycleError::network_error(format!(
+        LifecycleError::io_error(format!(
             "no se pudo leer el archivo descargado {}: {e}",
             asset_path.display()
         ))
@@ -519,7 +527,7 @@ fn extract_bundle(asset_path: &Path, staging: &Path) -> Result<(), LifecycleErro
 /// Extrae un `.zip`, rechazando las entradas fuera de la raíz (`ZipSlip`).
 fn extract_zip(asset_path: &Path, staging: &Path) -> Result<(), LifecycleError> {
     let file = std::fs::File::open(asset_path).map_err(|e| {
-        LifecycleError::network_error(format!("no se pudo abrir {}: {e}", asset_path.display()))
+        LifecycleError::io_error(format!("no se pudo abrir {}: {e}", asset_path.display()))
     })?;
     let mut archive = zip::ZipArchive::new(file).map_err(|e| {
         LifecycleError::bundle_invalid(format!("el `.zip` descargado no se puede abrir: {e}"))
@@ -570,7 +578,7 @@ fn extract_zip(asset_path: &Path, staging: &Path) -> Result<(), LifecycleError> 
 /// Extrae un `.tar.gz`, rechazando las entradas absolutas o con `..`.
 fn extract_tar_gz(asset_path: &Path, staging: &Path) -> Result<(), LifecycleError> {
     let file = std::fs::File::open(asset_path).map_err(|e| {
-        LifecycleError::network_error(format!("no se pudo abrir {}: {e}", asset_path.display()))
+        LifecycleError::io_error(format!("no se pudo abrir {}: {e}", asset_path.display()))
     })?;
     let decoder = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
@@ -873,6 +881,58 @@ mod tests {
                 (name.clone(), content)
             })
             .collect()
+    }
+
+    /// Un 404 de GitHub es `release_unavailable` (exit 1) al primer intento:
+    /// la versión o el asset no existe y reintentar no lo resuelve.
+    #[tokio::test]
+    async fn update_fetch_not_found_is_release_unavailable() {
+        let (base, seen, handle) = serve_responses(vec![FakeResponse::new(404, "")]).await;
+        let error = get_with_retry(&http_client().unwrap(), &format!("{base}/asset"))
+            .await
+            .expect_err("un 404 no es una descarga válida");
+        assert_eq!(error.reason, "release_unavailable");
+        assert_eq!(ExitCode::from_reason(error.reason), ExitCode::Error);
+        handle.await.expect("el servidor local termina");
+        assert_eq!(seen.lock().unwrap().len(), 1, "un 404 no se reintenta");
+    }
+
+    /// El 403 de GitHub es su límite de peticiones: sigue siendo `network_error`.
+    #[tokio::test]
+    async fn update_fetch_forbidden_is_network_error() {
+        let (base, _, handle) = serve_responses(vec![FakeResponse::new(403, "")]).await;
+        let error = get_with_retry(&http_client().unwrap(), &format!("{base}/asset"))
+            .await
+            .expect_err("un 403 no es una descarga válida");
+        assert_eq!(error.reason, "network_error");
+        assert_eq!(ExitCode::from_reason(error.reason), ExitCode::NetworkError);
+        handle.await.expect("el servidor local termina");
+    }
+
+    /// Un 5xx persistente agota los reintentos y es `network_error`.
+    #[tokio::test]
+    async fn update_fetch_server_error_after_retries_is_network_error() {
+        let responses = (0..MAX_ATTEMPTS)
+            .map(|_| FakeResponse::new(500, ""))
+            .collect();
+        let (base, seen, handle) = serve_responses(responses).await;
+        let error = get_with_retry(&http_client().unwrap(), &format!("{base}/asset"))
+            .await
+            .expect_err("un 500 persistente no es una descarga válida");
+        assert_eq!(error.reason, "network_error");
+        assert_eq!(ExitCode::from_reason(error.reason), ExitCode::NetworkError);
+        handle.await.expect("el servidor local termina");
+        assert_eq!(seen.lock().unwrap().len(), MAX_ATTEMPTS as usize);
+    }
+
+    /// Un fallo del disco local es `io_error`, no un fallo de red.
+    #[test]
+    fn update_fetch_local_read_failure_is_io_error() {
+        let sandbox = scratch("fetch-io");
+        let error = verify_sums("", "asset.zip", &sandbox.join("no-existe.zip"))
+            .expect_err("el archivo no existe");
+        assert_eq!(error.reason, "io_error");
+        assert_eq!(ExitCode::from_reason(error.reason), ExitCode::Error);
     }
 
     /// Descarga, verificación, extracción y validación contra el servidor local:

@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.39.0 — 2026-11-01](#0390--2026-11-01)
 - [0.38.1 — 2026-10-31](#0381--2026-10-31)
 - [0.38.0 — 2026-10-31](#0380--2026-10-31)
@@ -125,6 +126,24 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+En una máquina con un token de Hugging Face caducado, `setup` fallaba con un 401 y no se podían instalar los modelos, aunque todos los modelos fijados son públicos y se descargan sin credenciales: la librería de descarga buscaba por su cuenta un token en `HF_TOKEN`, `HF_TOKEN_PATH` o el archivo `token` guardado y lo enviaba en cada petición. El mismo comportamiento escondía en la máquina del desarrollador un modelo que dejara de ser público. Además, el diagnóstico de las descargas era engañoso: `setup`, `self update` y los instaladores informaban como `network_error` (exit 20) los rechazos del servidor y los fallos del disco local, y los mensajes de éxito parcial prometían que reintentar con `setup` lo resolvía. Ahora la descarga de modelos es anónima en cualquier estado del entorno y cada fallo se clasifica por su causa real, de modo que el mensaje dice si conviene reintentar o no.
+
+### Añadido
+
+- Dos `reason` nuevos con exit 1, porque su remedio no es un comando de esta CLI: `model_unavailable`, cuando Hugging Face rechaza un modelo fijado con 401, 403 o 404 (en `setup`, y anidado en `models_cause` de `self install` y `self update`), y `release_unavailable`, cuando GitHub responde 404 a la versión o al asset pedido (en `self update` y en los instaladores `install.ps1` e `install.sh`). Reintentar no resuelve ninguno de los dos.
+
+### Cambiado
+
+- La descarga de modelos ignora `HF_TOKEN`, `HF_TOKEN_PATH` y el token guardado por `huggingface-cli login`: nunca envía credenciales. `HF_ENDPOINT`, `HF_HUB_CACHE` y `HF_HOME` se siguen respetando. La copia vendorizada de `hf-hub` gana para ello un modo explícito sin token (`HFClientBuilder::without_token`).
+- Cambio incompatible de enteros de salida: pasan de exit 20 (`network_error`) a exit 1 los rechazos de un modelo fijado por Hugging Face (`model_unavailable`), el 404 de GitHub en `self update` y en los instaladores (`release_unavailable`) y los fallos del disco local de `self update` al crear el staging o escribir y leer el archivo descargado (`io_error`). Quien distinguía estos casos por el exit 20 debe leer el exit 1 y el `reason`. `network_error` queda solo para los fallos de transporte o del servidor (sin red, 5xx, límite de peticiones), que sí pueden resolverse reintentando.
+
+### Corregido
+
+- `setup` ya no falla con un 401 cuando el entorno tiene un token de Hugging Face caducado o ajeno.
+- Los mensajes de éxito parcial de `self install` y `self update` dan el consejo según la causa del fallo de provisión: recomiendan reintentar con `setup` ante un fallo de transporte y advierten que reintentar no lo resuelve cuando el modelo fijado ya no está disponible. El mensaje de `self update` incluye además la causa.
 
 ## [0.39.0] — 2026-11-01
 

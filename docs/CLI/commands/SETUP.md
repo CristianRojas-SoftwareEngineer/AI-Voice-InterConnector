@@ -100,12 +100,18 @@ El espacio en disco coincide con la descarga: `hf-hub` publica cada archivo de `
 | `status` | `installed` — el programa **queda instalado** |
 | `reason` | `setup_failed` |
 | Código de salida | **11** (`ExitCode::SetupFailed`) |
-| Causa del fallo de provisión | Anidada en `models_cause.reason`: `network_error` |
-| Qué hacer | Reintentar con `setup` |
+| Causa del fallo de provisión | Anidada en `models_cause.reason`: `network_error` (fallo de transporte o del servidor) o `model_unavailable` (Hugging Face rechaza el modelo fijado) |
+| Qué hacer | Con `network_error`, reintentar con `setup`; con `model_unavailable`, reintentar no lo resuelve y hace falta una versión que vuelva a fijar el modelo |
 
 Es un **éxito parcial**, y por eso el envelope de `self install` sale por veredicto y no con el objeto `error` detrás. El detalle está en [`SELF.md`](SELF.md) y en el [contrato de `setup`](../CONTRACT.md#setup).
 
-Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de descarga sale con `network_error` y **20**.
+Cuando `setup` se invoca **directamente**, en cambio, sí es un error: un fallo de transporte sale con `network_error` y **20**, y un rechazo del modelo fijado con `model_unavailable` y **1**.
+
+---
+
+## Descarga sin credenciales
+
+`setup` no requiere cuenta de Hugging Face: los modelos fijados son repositorios públicos y se descargan de forma anónima. La descarga **ignora** `HF_TOKEN`, `HF_TOKEN_PATH` y el token guardado por `huggingface-cli login` (el archivo `token` de `HF_HOME`), de modo que un token caducado o ajeno no rompe la descarga ni esconde un modelo que haya dejado de ser público. `HF_ENDPOINT`, `HF_HUB_CACHE` y `HF_HOME` se siguen respetando.
 
 ---
 
@@ -133,8 +139,9 @@ No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a s
 | Situación | `reason` | Código |
 |---|---|---|
 | No se pudo inicializar el registro de voces | `voice_store_init_failed` | 1 |
-| Fallo de descarga de un snapshot (invocación directa) | `network_error` | 20 |
-| Fallo de descarga, invocado desde `self install` | `setup_failed` (11) con la causa en `models_cause` | 11 |
+| Fallo de transporte al descargar un snapshot: sin red, 5xx o límite de peticiones tras los reintentos (invocación directa; reintentar puede resolverlo) | `network_error` | 20 |
+| Hugging Face rechaza el modelo fijado con 401, 403 o 404: el repositorio, la revisión o el archivo no existe o dejó de ser público (invocación directa; reintentar no lo resuelve) | `model_unavailable` | 1 |
+| Fallo de descarga, invocado desde `self install` | `setup_failed` (11) con la causa en `models_cause` (`network_error` o `model_unavailable`) | 11 |
 | Hay una operación de ciclo de vida en curso (invocación directa; no llega a ejecutarse) | `lifecycle_locked` | 17 |
 
 ---

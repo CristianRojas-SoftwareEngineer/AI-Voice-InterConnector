@@ -716,6 +716,44 @@ pub fn download_http_client_with(read_timeout: std::time::Duration) -> Result<re
         .build()?)
 }
 
+/// Builder del cliente de `hf-hub` con la configuración de la aplicación: el
+/// cliente HTTP acotado que recibe y ninguna credencial. Los modelos fijados son
+/// repositorios públicos, así que la aplicación nunca envía el token del entorno
+/// (`HF_TOKEN`, `HF_TOKEN_PATH` ni el archivo `token`): uno caducado rompería la
+/// descarga con un 401 y uno válido escondería un modelo que dejó de ser
+/// público. `HF_ENDPOINT`, `HF_HUB_CACHE` y `HF_HOME` se siguen respetando. Es la
+/// única forma de construir el cliente, en producción y en pruebas.
+pub fn hub_client_builder(http: reqwest::Client) -> hf_hub::HFClientBuilder {
+    hf_hub::HFClient::builder().client(http).without_token()
+}
+
+/// Indica si un fallo de descarga es un rechazo del Hub al recurso fijado (401,
+/// 403 o 404): el repositorio, la revisión o el archivo no existe o dejó de ser
+/// público, y reintentar no lo resuelve. Recorre la cadena del error buscando un
+/// `HFError`. Además de las variantes específicas decide por el estado HTTP,
+/// porque la paginación de `hf-hub` (el listado de archivos de
+/// `snapshot_download`) devuelve cualquier estado como `HFError::Http` genérico.
+/// 429 y 5xx no cuentan como rechazo: son límites o fallos transitorios del
+/// servidor que se arreglan reintentando, igual que los fallos de transporte.
+pub fn is_download_rejected(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<hf_hub::HFError>(),
+            Some(
+                hf_hub::HFError::AuthRequired { .. }
+                    | hf_hub::HFError::Forbidden { .. }
+                    | hf_hub::HFError::RepoNotFound { .. }
+                    | hf_hub::HFError::RevisionNotFound { .. }
+                    | hf_hub::HFError::EntryNotFound { .. }
+            )
+        ) || matches!(
+            cause.downcast_ref::<hf_hub::HFError>(),
+            Some(hf_hub::HFError::Http { context })
+                if matches!(context.status.as_u16(), 401 | 403 | 404)
+        )
+    })
+}
+
 impl ModelStore {
     /// Ancla el almacén en `models_cache_dir()`, nunca en `data_dir()/models`:
     /// los modelos son caché regenerable de propiedad exclusiva y no estado de
@@ -947,11 +985,11 @@ impl ModelStore {
         // Cache explícita: la resolución de la app (models_cache_dir) manda sobre el
         // fallback roto de hf-hub (HOME→/tmp); lectura y escritura convergen. El
         // cliente —establecimiento de conexión y silencio de lectura, ambos
-        // acotados— lo construye `download_http_client`.
+        // acotados— lo construye `download_http_client`, y `hub_client_builder`
+        // lo deja sin token: los modelos fijados se descargan de forma anónima.
         let http = download_http_client()?;
-        let client = hf_hub::HFClient::builder()
+        let client = hub_client_builder(http)
             .cache_dir(models_cache_dir()?)
-            .client(http)
             .build()?;
         let (owner, name) = hf_hub::split_id(repo_id);
         let repo = client.model(owner, name);
@@ -1272,6 +1310,168 @@ mod tests {
     /// Serializa los tests que manipulan variables de entorno (estado global
     /// del proceso): `cargo test` los corre en paralelo y sin lock se pisan.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Servidor local que responde a toda petición con `status` y cuerpo vacío.
+    async fn serve_status(status: u16) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("se puede enlazar el servidor local de la prueba");
+        let addr = listener
+            .local_addr()
+            .expect("el servidor local tiene dirección");
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut conn, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while let Ok(read) = conn.read(&mut chunk).await {
+                        if read == 0 {
+                            break;
+                        }
+                        request.extend_from_slice(&chunk[..read]);
+                        if request.len() > 8192 || request.windows(4).any(|w| w == b"\r\n\r\n") {
+                            break;
+                        }
+                    }
+                    let head = format!(
+                        "HTTP/1.1 {status} Estado\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    let _ = conn.write_all(head.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    /// Error real de `snapshot_download` contra un servidor que responde
+    /// `status`, envuelto en `anyhow` como en `ensure_downloaded`. Con una
+    /// revisión de commit (como las de `MODEL_REVISIONS`) `hf-hub` pasa directo
+    /// al listado paginado de archivos; con una rama consulta antes la
+    /// información del repositorio.
+    async fn snapshot_error(status: u16, revision: &str) -> anyhow::Error {
+        let cache = tempfile::tempdir().expect("directorio temporal de la caché");
+        let client = hub_client_builder(
+            download_http_client_with(std::time::Duration::from_secs(5))
+                .expect("el cliente HTTP de descargas se construye"),
+        )
+        .endpoint(serve_status(status).await)
+        .cache_dir(cache.path())
+        .retry_max_attempts(0)
+        .build()
+        .expect("el cliente se construye con endpoint y caché explícitos");
+        let error = client
+            .model("owner", "model")
+            .snapshot_download()
+            .maybe_revision(Some(revision.to_string()))
+            .send()
+            .await
+            .expect_err("el servidor responde con un estado de error");
+        anyhow::Error::from(error)
+    }
+
+    const PINNED_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn hub_rejections_are_download_rejected() {
+        for status in [401u16, 403, 404] {
+            let error = snapshot_error(status, PINNED_COMMIT).await;
+            assert!(
+                matches!(
+                    error.downcast_ref::<hf_hub::HFError>(),
+                    Some(hf_hub::HFError::Http { .. })
+                ),
+                "el listado paginado devuelve el estado como Http genérico: {error:?}"
+            );
+            assert!(is_download_rejected(&error), "{status} es un rechazo");
+        }
+        let auth = snapshot_error(401, "main").await;
+        assert!(matches!(
+            auth.downcast_ref::<hf_hub::HFError>(),
+            Some(hf_hub::HFError::AuthRequired { .. })
+        ));
+        assert!(is_download_rejected(&auth));
+        let forbidden = snapshot_error(403, "main").await;
+        assert!(matches!(
+            forbidden.downcast_ref::<hf_hub::HFError>(),
+            Some(hf_hub::HFError::Forbidden { .. })
+        ));
+        assert!(is_download_rejected(&forbidden));
+        for missing in [
+            hf_hub::HFError::RepoNotFound {
+                repo_id: "owner/model".to_string(),
+                context: None,
+            },
+            hf_hub::HFError::RevisionNotFound {
+                repo_id: "owner/model".to_string(),
+                revision: PINNED_COMMIT.to_string(),
+                context: None,
+            },
+            hf_hub::HFError::EntryNotFound {
+                path: "config.json".to_string(),
+                repo_id: "owner/model".to_string(),
+                context: None,
+            },
+        ] {
+            let error = anyhow::Error::from(missing);
+            assert!(is_download_rejected(&error), "{error} es un rechazo");
+        }
+        // El rechazo se reconoce también envuelto en contexto.
+        let wrapped = anyhow::Error::from(hf_hub::HFError::RepoNotFound {
+            repo_id: "owner/model".to_string(),
+            context: None,
+        })
+        .context("No se pudo descargar el modelo");
+        assert!(is_download_rejected(&wrapped));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retryable_failures_are_not_download_rejected() {
+        for status in [429u16, 503] {
+            let error = snapshot_error(status, PINNED_COMMIT).await;
+            assert!(
+                !is_download_rejected(&error),
+                "{status} se arregla reintentando"
+            );
+        }
+        // Puerto sin servidor: fallo de transporte (`HFError::Request`).
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("se reserva un puerto local");
+        let endpoint = format!("http://{}", closed.local_addr().expect("dirección local"));
+        drop(closed);
+        let cache = tempfile::tempdir().expect("directorio temporal de la caché");
+        let client = hub_client_builder(
+            download_http_client_with(std::time::Duration::from_secs(5))
+                .expect("el cliente HTTP de descargas se construye"),
+        )
+        .endpoint(endpoint)
+        .cache_dir(cache.path())
+        .retry_max_attempts(0)
+        .build()
+        .expect("el cliente se construye con endpoint y caché explícitos");
+        let transport = anyhow::Error::from(
+            client
+                .model("owner", "model")
+                .snapshot_download()
+                .maybe_revision(Some(PINNED_COMMIT.to_string()))
+                .send()
+                .await
+                .expect_err("no hay servidor en el puerto"),
+        );
+        assert!(
+            matches!(
+                transport.downcast_ref::<hf_hub::HFError>(),
+                Some(hf_hub::HFError::Request { .. })
+            ),
+            "un puerto cerrado es un fallo de transporte: {transport:?}"
+        );
+        assert!(!is_download_rejected(&transport));
+        assert!(!is_download_rejected(&anyhow::anyhow!("fallo sin HFError")));
+    }
 
     fn download(event: hf_hub::progress::DownloadEvent) -> hf_hub::progress::ProgressEvent {
         hf_hub::progress::ProgressEvent::Download(event)

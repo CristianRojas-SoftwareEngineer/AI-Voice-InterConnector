@@ -146,7 +146,8 @@ impl LifecycleError {
     }
 
     /// El programa quedó instalado pero la provisión de modelos falló. Es un
-    /// **éxito parcial** con código propio, reintentable con `setup`.
+    /// **éxito parcial** con código propio; reintentar con `setup` sirve salvo que la
+    /// causa sea `model_unavailable`.
     pub fn setup_failed(message: impl Into<String>) -> Self {
         Self::new("setup_failed", message.into())
     }
@@ -163,10 +164,30 @@ impl LifecycleError {
         Self::new("binary_incompatible", message.into())
     }
 
-    /// Fallo de red acotado por los reintentos (pasos 3 a 5 y 7 de la
-    /// actualización).
+    /// Fallo de transporte o del servidor acotado por los reintentos (pasos 3 a 5
+    /// y 7 de la actualización, y descarga de modelos): reintentar puede
+    /// resolverlo.
     pub fn network_error(message: impl Into<String>) -> Self {
         Self::new("network_error", message.into())
+    }
+
+    /// Hugging Face rechaza un modelo fijado (401, 403 o 404): el repositorio, la
+    /// revisión o el archivo no existe o dejó de ser público. Reintentar no lo
+    /// resuelve; hace falta una versión que vuelva a fijar el modelo.
+    pub fn model_unavailable(message: impl Into<String>) -> Self {
+        Self::new("model_unavailable", message.into())
+    }
+
+    /// GitHub responde 404 a la versión o al asset pedido: no existe para esta
+    /// plataforma. Reintentar no lo resuelve.
+    pub fn release_unavailable(message: impl Into<String>) -> Self {
+        Self::new("release_unavailable", message.into())
+    }
+
+    /// Fallo del disco local (crear, escribir, leer o borrar un archivo); no es
+    /// un fallo de red.
+    pub fn io_error(message: impl Into<String>) -> Self {
+        Self::new("io_error", message.into())
     }
 
     /// El archivo descargado no coincide con `SHA256SUMS.txt`: hash distinto
