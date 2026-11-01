@@ -14,6 +14,10 @@
     "aarch64-unknown-linux-gnu": "710ac178fffa266d6b197a9e3cca4d2c62f35bed70d5cf99762d40aa8a5791f9",
     "aarch64-apple-darwin": "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924"
   },
+  "ffmpeg_source_sha256": {
+    "ffmpeg-9.0.2.tar.xz": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
+    "ffmpeg-builds-autobuild-2026-10-24-13-02.tar.gz": "9ee4b55c6bf1ea2f9ee50a63bac8887532117ce9f7e7b0e2842a533b2d5f046a"
+  },
   "sccache": "0.8.2",
   "msys2_base": "2026-06-11",
   "msys2_gcc": "16.2.0",

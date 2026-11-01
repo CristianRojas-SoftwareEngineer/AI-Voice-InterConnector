@@ -35,6 +35,11 @@ pub struct Pins {
     /// triple de Rust. Una descarga cuyo hash no coincide, o un triple sin
     /// entrada, es un error.
     pub ffmpeg_sha256: BTreeMap<String, String>,
+    /// SHA-256 de cada asset de fuentes de FFmpeg que se publica con el release
+    /// (el tarball upstream y los scripts de build del compilador cuyo
+    /// repositorio los publica), indexado por nombre de asset. Una descarga cuyo
+    /// hash no coincide, o un asset sin entrada, es un error.
+    pub ffmpeg_source_sha256: BTreeMap<String, String>,
     pub sccache: String,
     pub msys2_base: String,
     pub msys2_gcc: String,
