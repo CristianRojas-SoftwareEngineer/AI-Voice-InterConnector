@@ -10,6 +10,7 @@ Este documento explica **por qué** el pipeline de CircleCI tiene la forma que t
     - [Por qué un pipeline y no dos](#por-qué-un-pipeline-y-no-dos)
     - [Feedback pre-release](#feedback-pre-release)
     - [Simetría de puertas y builds](#simetría-de-puertas-y-builds)
+    - [Modos de ejecución de la suite](#modos-de-ejecución-de-la-suite)
     - [Hueco de cobertura de ARM64](#hueco-de-cobertura-de-arm64)
   - [2. Cachés](#2-cachés)
     - [Qué se restaura y qué se recompila](#qué-se-restaura-y-qué-se-recompila)
@@ -42,6 +43,13 @@ Las puertas de test y los builds responden a **ejes distintos**:
 - Los builds son **por target de distribución**, y Linux publica dos arquitecturas.
 
 Son ejes ortogonales (SO × target). El runner de `test-linux` es x86_64 porque es el executor Docker más barato y rápido; la suite es independiente de la arquitectura y mockea el motor, así que basta la más barata.
+
+### Modos de ejecución de la suite
+
+La misma suite corre en dos modos, y cada uno destapa fallos distintos:
+
+- La triple puerta (`test-linux`, `test-windows`, `test-macos`) usa `cargo nextest run --all`: **un proceso por prueba**, así que ninguna prueba comparte estado de proceso con otra.
+- `coverage` usa `cargo llvm-cov --workspace`, con el arnés de `cargo test`: **todas las pruebas de un binario son hilos del mismo proceso**. Es el modo de `cargo test` en local y de la puerta de pruebas con recursos de `cargo xtask release`, y es la única ejecución del CI que lo cubre. Destapa lo que el aislamiento por proceso oculta, como un descriptor que un hijo lanzado por otra prueba hereda hasta su `exec`. Por eso `coverage` no se pasa a nextest.
 
 ### Hueco de cobertura de ARM64
 

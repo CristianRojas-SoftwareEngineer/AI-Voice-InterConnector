@@ -252,7 +252,7 @@ en `.circleci/config.yml`. Con el tag publicado, ejecuta sin intervención:
    | Puerta | Qué comprueba |
    |---|---|
    | `test-linux`, `test-windows`, `test-macos` | `cargo nextest run --all` en cada SO nativo |
-   | `coverage` | Cobertura de la suite |
+   | `coverage` | Cobertura de la suite, con todas las pruebas de un binario en un mismo proceso (arnés de `cargo test`) |
    | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de `tests/bootstrap/`: bats contra `openssl s_server` y Pester contra `Serve.ps1` |
    | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render y el inventario de terceros con `Cargo.lock` |
    | `validate-changelog` | Sección `[X.Y.Z]`, entrada del índice/ancla, enlace de comparación, sin `TODO: curar` ni `[No publicado]` |

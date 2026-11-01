@@ -133,7 +133,7 @@ El bloqueo de ciclo de vida podía seguir tomado después de soltarlo: se soltab
 
 ### Corregido
 
-- El bloqueo de ciclo de vida se suelta desbloqueando de forma explícita y después cerrando, en todos sus caminos: al terminar la operación, en `release_main` antes del traspaso de `self update`, en el borrado final de `self uninstall`, al fallar la verificación de inodo y al quedar la toma a medias (compuerta tomada y principal fallido). Si el desbloqueo falla se avisa por stderr. Dos pruebas de regresión fijan que el bloqueo queda libre aunque siga viva una copia del descriptor. La guarda del bloqueo TTS de las pruebas avisa si no puede desbloquear, en lugar de descartar el error, y los comentarios del CI describen que la triple puerta usa `cargo nextest run --all` y que `coverage` es la única ejecución en proceso compartido.
+- El bloqueo de ciclo de vida se suelta desbloqueando de forma explícita y después cerrando, en todos sus caminos: al terminar la operación, en `release_main` antes del traspaso de `self update`, en el borrado final de `self uninstall`, al fallar la verificación de inodo y al quedar la toma a medias (compuerta tomada y principal fallido). Si el desbloqueo falla se avisa por stderr. Dos pruebas de regresión fijan que el bloqueo queda libre aunque siga viva una copia del descriptor. La guarda del bloqueo TTS de las pruebas avisa si no puede desbloquear, en lugar de descartar el error, y los comentarios del CI, `docs/CI.md`, `docs/RELEASING.md` y `CONTRIBUTING.md` describen que la triple puerta usa `cargo nextest run --all` y que `coverage` es la única ejecución en proceso compartido.
 
 ## [0.39.0] — 2026-11-01
 

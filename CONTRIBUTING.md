@@ -115,7 +115,7 @@ cargo llvm-cov --workspace --lcov --output-path lcov.info
 cargo llvm-cov --workspace --summary-only
 ```
 
-No hay gate de porcentaje aún; el job valida que la instrumentación no rompa la suite.
+No hay gate de porcentaje aún; el job valida que la instrumentación no rompa la suite. Además es la única ejecución del CI con el arnés de `cargo test`, con las pruebas de un binario como hilos del mismo proceso, igual que `cargo test` en local; las puertas `test-linux`, `test-windows` y `test-macos` usan `cargo nextest run --all`, con un proceso por prueba.
 
 ### Smoke-tests de instaladores
 
