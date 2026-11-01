@@ -1,4 +1,10 @@
 #!/bin/sh
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+# If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# Copyright (c) 2026 Cristián Rojas Arredondo.
+# SPDX-License-Identifier: MPL-2.0
+
 # Genera la CA y el certificado de servidor para 127.0.0.1 del arnés local
 # (solo pruebas). Uso: sh make-cert.sh <destino>.
 # Escribe ca.pem, server.pem y server-key.pem en el destino.

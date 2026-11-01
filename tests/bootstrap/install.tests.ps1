@@ -1,3 +1,9 @@
+# This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0.
+# If a copy of the MPL was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#
+# Copyright (c) 2026 Cristián Rojas Arredondo.
+# SPDX-License-Identifier: MPL-2.0
+
 # Suite del bootstrap Windows packaging/bootstrap/install.ps1 (Pester v5).
 #
 # Corre contra el servidor falso local (support/Serve.ps1, HTTP en 127.0.0.1)
