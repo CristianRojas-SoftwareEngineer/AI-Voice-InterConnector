@@ -535,7 +535,7 @@ fn main() -> Result<()> {
         Commands::Licenses { check } => {
             if check {
                 check_licenses_gate()?;
-                println!("THIRD-PARTY-LICENSES.md está en sincronía con Cargo.lock");
+                println!("THIRD-PARTY-LICENSES.md está en sincronía con las dependencias distribuidas");
             } else {
                 write_licenses_inventory()?;
                 println!("Inventario de THIRD-PARTY-LICENSES.md regenerado: revisa el diff");
@@ -1317,25 +1317,111 @@ const LICENSES_DOC: &str = "THIRD-PARTY-LICENSES.md";
 const INVENTORY_START: &str = "<!-- inventario:inicio -->";
 const INVENTORY_END: &str = "<!-- inventario:fin -->";
 
-/// Licencias de paquetes de `Cargo.lock` que `cargo metadata` no reporta (p. ej.,
-/// `cxxbridge-cmd`, dependencia de artefacto de `cxx`). Solo se consultan para
-/// paquetes ausentes del metadato.
-const LICENSE_OVERRIDES: &[(&str, &str)] = &[("cxxbridge-cmd", "MIT OR Apache-2.0")];
+/// Paquete que viaja en el binario distribuido: lo alcanza una arista de dependencia
+/// normal desde el paquete raíz para alguno de los triples del manifiesto del paquete.
+struct DistPackage {
+    name: String,
+    version: String,
+    /// Expresión SPDX del `Cargo.toml`; `None` si el paquete no declara `license`.
+    license: Option<String>,
+    /// Directorio del paquete, donde viven sus archivos de licencia.
+    manifest_dir: PathBuf,
+}
 
-/// Paquetes `(nombre, versión)` de `Cargo.lock`, en el orden del lock (una
-/// entrada por versión resuelta).
-fn cargo_lock_entries(text: &str) -> Vec<(String, String)> {
-    let re =
-        Regex::new(r#"\[\[package\]\]\s+name\s*=\s*"([^"]+)"\s+version\s*=\s*"([^"]+)""#).unwrap();
-    re.captures_iter(text)
-        .map(|c| (c[1].to_string(), c[2].to_string()))
-        .collect()
+/// Licencia del propio proyecto: los paquetes propios que la declaran se cubren con el
+/// `LICENSE` de la raíz y no se inventarían como terceros.
+const PROJECT_LICENSE: &str = "MPL-2.0";
+
+/// Paquetes distribuidos a partir de la salida de `cargo metadata` de cada triple,
+/// ordenados por nombre y versión y unidos por `(nombre, versión)`.
+///
+/// Se recorre el grafo `resolve` desde el paquete raíz solo por aristas de dependencia
+/// normal (los proc-macros lo son): las dependencias de desarrollo y de compilación no
+/// forman parte de lo que se distribuye. Los paquetes del espacio de trabajo con la
+/// licencia del proyecto quedan fuera; los demás (p. ej. `denoise`, bajo MIT) se
+/// inventarían.
+fn distributed_packages(metadata: &[serde_json::Value]) -> Result<Vec<DistPackage>> {
+    let mut union: BTreeMap<(String, String), DistPackage> = BTreeMap::new();
+    for json in metadata {
+        let packages = json["packages"]
+            .as_array()
+            .ok_or_else(|| anyhow!("cargo metadata no devolvió `packages`"))?;
+        let nodes = json["resolve"]["nodes"]
+            .as_array()
+            .ok_or_else(|| anyhow!("cargo metadata no devolvió `resolve.nodes`"))?;
+        let root = json["resolve"]["root"]
+            .as_str()
+            .ok_or_else(|| anyhow!("cargo metadata no devolvió `resolve.root`"))?;
+        let workspace: HashSet<&str> = json["workspace_members"]
+            .as_array()
+            .map(|members| members.iter().filter_map(|m| m.as_str()).collect())
+            .unwrap_or_default();
+        let by_id: HashMap<&str, &serde_json::Value> = packages
+            .iter()
+            .filter_map(|p| p["id"].as_str().map(|id| (id, p)))
+            .collect();
+        let edges: HashMap<&str, Vec<&str>> = nodes
+            .iter()
+            .filter_map(|node| {
+                let id = node["id"].as_str()?;
+                let normal = node["deps"]
+                    .as_array()?
+                    .iter()
+                    .filter(|dep| {
+                        dep["dep_kinds"]
+                            .as_array()
+                            .is_some_and(|kinds| kinds.iter().any(|kind| kind["kind"].is_null()))
+                    })
+                    .filter_map(|dep| dep["pkg"].as_str())
+                    .collect();
+                Some((id, normal))
+            })
+            .collect();
+        let mut seen: HashSet<&str> = HashSet::new();
+        let mut pending = vec![root];
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
+            }
+            pending.extend(edges.get(id).into_iter().flatten().copied());
+        }
+        for id in seen {
+            let package = by_id
+                .get(id)
+                .ok_or_else(|| anyhow!("el grafo cita el paquete {id} que `packages` no lista"))?;
+            let license = package["license"].as_str().map(str::to_string);
+            if workspace.contains(id) && license.as_deref() == Some(PROJECT_LICENSE) {
+                continue;
+            }
+            let (Some(name), Some(version), Some(manifest)) = (
+                package["name"].as_str(),
+                package["version"].as_str(),
+                package["manifest_path"].as_str(),
+            ) else {
+                anyhow::bail!("cargo metadata devolvió un paquete sin nombre, versión o manifiesto");
+            };
+            let manifest_dir = Path::new(manifest)
+                .parent()
+                .ok_or_else(|| anyhow!("el manifiesto {manifest} no tiene directorio"))?
+                .to_path_buf();
+            union
+                .entry((name.to_string(), version.to_string()))
+                .or_insert(DistPackage {
+                    name: name.to_string(),
+                    version: version.to_string(),
+                    license,
+                    manifest_dir,
+                });
+        }
+    }
+    Ok(union.into_values().collect())
 }
 
 /// Familia de una expresión de licencia: `MIT` si MIT (o su variante MIT-0) es
 /// alternativa o componente; `Apache-2.0` si no hay MIT pero sí Apache; `BSD`
-/// para BSD-2/3-Clause; la propia licencia en los demás casos. Tabla explícita:
-/// `None` ante una expresión desconocida, que exige decidir su familia a mano.
+/// para BSD-2/3-Clause; la propia licencia en los demás casos. Tabla explícita
+/// con las expresiones de los paquetes distribuidos: `None` ante una expresión
+/// desconocida, que exige decidir su familia a mano.
 fn license_family(expr: &str) -> Option<&'static str> {
     let family = match expr {
         "MIT"
@@ -1348,7 +1434,6 @@ fn license_family(expr: &str) -> Option<&'static str> {
         | "Unlicense OR MIT"
         | "Unlicense OR MIT OR Apache-2.0 OR CC0-1.0"
         | "MIT AND BSD-3-Clause"
-        | "MIT OR Apache-2.0 OR LGPL-2.1-or-later"
         | "MIT OR Zlib OR Apache-2.0"
         | "MIT OR Apache-2.0 OR Zlib"
         | "Apache-2.0 OR MIT OR Zlib"
@@ -1358,7 +1443,6 @@ fn license_family(expr: &str) -> Option<&'static str> {
         | "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT"
         | "BSD-2-Clause OR Apache-2.0 OR MIT"
         | "BSD-2-Clause OR MIT OR Apache-2.0"
-        | "BSD-3-Clause OR MIT OR Apache-2.0"
         | "(Apache-2.0 OR MIT) AND BSD-3-Clause"
         | "(MIT OR Apache-2.0) AND Unicode-3.0"
         | "CC0-1.0 OR MIT-0 OR Apache-2.0"
@@ -1375,43 +1459,27 @@ fn license_family(expr: &str) -> Option<&'static str> {
         "MPL-2.0" => "MPL-2.0",
         "Unicode-3.0" => "Unicode-3.0",
         "CDLA-Permissive-2.0" => "CDLA-Permissive-2.0",
-        "GPL-3.0-or-later" => "GPL-3.0-or-later",
         _ => return None,
     };
     Some(family)
 }
 
-/// Región del inventario (conteo, resumen por familia y tabla) a partir de los
-/// paquetes del lock y de las licencias de `cargo metadata` por `(nombre,
-/// versión)`; `None` como licencia = el paquete no declara `license`. Pura: falla
-/// nombrando el paquete si no hay licencia o si su familia es desconocida.
-fn render_licenses_inventory(
-    entries: &[(String, String)],
-    licenses: &HashMap<(String, String), Option<String>>,
-) -> Result<String> {
+/// Región del inventario (conteo, resumen por familia y tabla) de los paquetes
+/// distribuidos. Pura: falla nombrando el paquete si no declara licencia o si su
+/// familia es desconocida.
+fn render_licenses_inventory(packages: &[DistPackage]) -> Result<String> {
     let mut rows = String::new();
     let mut families: BTreeMap<&str, usize> = BTreeMap::new();
     let mut names = HashSet::new();
-    for (name, version) in entries {
-        let license = match licenses.get(&(name.clone(), version.clone())) {
-            Some(Some(license)) => license.as_str(),
-            Some(None) => anyhow::bail!(
+    for package in packages {
+        let (name, version) = (&package.name, &package.version);
+        let license = package.license.as_deref().ok_or_else(|| {
+            anyhow!(
                 "{} {} no declara `license` en su Cargo.toml: no hay licencia que registrar",
                 name,
                 version
-            ),
-            None => LICENSE_OVERRIDES
-                .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, l)| *l)
-                .ok_or_else(|| {
-                    anyhow!(
-                        "{} {} está en Cargo.lock pero no en cargo metadata: añade su licencia a LICENSE_OVERRIDES",
-                        name,
-                        version
-                    )
-                })?,
-        };
+            )
+        })?;
         let family = license_family(license).ok_or_else(|| {
             anyhow!(
                 "{} {}: expresión de licencia sin familia `{}`: añádela a license_family",
@@ -1432,13 +1500,15 @@ fn render_licenses_inventory(
         .map(|(family, count)| format!("{} {}", family, count))
         .collect();
     Ok(format!(
-        "Generado desde `Cargo.lock` ({} paquetes resueltos, {} crates únicos, directos y transitivos).\n\
+        "Generado desde el grafo de dependencias distribuidas ({} paquetes resueltos, {} crates únicos): \
+         dependencias normales de `ai-voice-interconnector` con `--features full`, para los triples de \
+         `packaging/bundle-manifest.json`, sin dependencias de desarrollo ni de compilación.\n\
          Resumen por familia (paquetes resueltos): {}.\n\
          \n\
          | Paquete | Versión | Licencia (metadato) | Familia |\n\
          |---------|---------|---------------------|--------|\n\
          {}",
-        entries.len(),
+        packages.len(),
         names.len(),
         summary.join(", "),
         rows
@@ -1482,40 +1552,38 @@ fn diff_licenses_inventory(current: &str, region: &str) -> Result<(), String> {
     Err(msg)
 }
 
-/// Licencia declarada de cada paquete de `cargo metadata --all-features` (sin
-/// `--all-features` se omiten los crates que solo entran por features opcionales).
-fn metadata_licenses() -> Result<HashMap<(String, String), Option<String>>> {
-    let out = std::process::Command::new("cargo")
-        .args([
-            "metadata",
-            "--format-version",
-            "1",
-            "--locked",
-            "--all-features",
-        ])
-        .output()
-        .map_err(|e| anyhow!("no se pudo invocar cargo metadata: {}", e))?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "cargo metadata falló: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+/// Paquetes distribuidos del repositorio: el grafo de `cargo metadata --features full`
+/// de cada triple del manifiesto del paquete, recorrido por [`distributed_packages`].
+fn load_distributed_packages() -> Result<Vec<DistPackage>> {
+    let manifest_text = std::fs::read_to_string(package::MANIFEST_REL)
+        .map_err(|e| anyhow!("no se pudo leer {}: {}", package::MANIFEST_REL, e))?;
+    let targets = avi_shared::manifest::parse_manifest_text(&manifest_text)
+        .map_err(|e| anyhow!("{}: {}", package::MANIFEST_REL, e))?;
+    let mut metadata = Vec::new();
+    for triple in targets.keys() {
+        let out = std::process::Command::new("cargo")
+            .args([
+                "metadata",
+                "--format-version",
+                "1",
+                "--locked",
+                "--features",
+                "full",
+                "--filter-platform",
+                triple,
+            ])
+            .output()
+            .map_err(|e| anyhow!("no se pudo invocar cargo metadata: {}", e))?;
+        if !out.status.success() {
+            anyhow::bail!(
+                "cargo metadata falló para {}: {}",
+                triple,
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        metadata.push(serde_json::from_slice(&out.stdout)?);
     }
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    let packages = json["packages"]
-        .as_array()
-        .ok_or_else(|| anyhow!("cargo metadata no devolvió `packages`"))?;
-    let mut licenses = HashMap::new();
-    for p in packages {
-        let (Some(name), Some(version)) = (p["name"].as_str(), p["version"].as_str()) else {
-            anyhow::bail!("cargo metadata devolvió un paquete sin nombre o versión");
-        };
-        licenses.insert(
-            (name.to_string(), version.to_string()),
-            p["license"].as_str().map(str::to_string),
-        );
-    }
-    Ok(licenses)
+    distributed_packages(&metadata)
 }
 
 /// Carpeta de compilación que informa `cargo metadata` (`target_directory`).
@@ -1539,10 +1607,9 @@ fn cargo_target_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("cargo metadata no devolvió `target_directory`"))
 }
 
-/// Región del inventario generada desde `Cargo.lock` y `cargo metadata`.
+/// Región del inventario generada desde el grafo de dependencias distribuidas.
 fn render_licenses_region() -> Result<String> {
-    let lock_text = std::fs::read_to_string("Cargo.lock")?;
-    render_licenses_inventory(&cargo_lock_entries(&lock_text), &metadata_licenses()?)
+    render_licenses_inventory(&load_distributed_packages()?)
 }
 
 /// Reescribe la región del inventario de THIRD-PARTY-LICENSES.md.
@@ -2938,43 +3005,91 @@ mod tests {
         assert!(err.contains("SOURCE-OFFER.md desincronizado"));
     }
 
-    /// Lock mínimo con dos versiones de `cfg-if` y un paquete ausente del metadato.
-    const SAMPLE_LOCK: &str = r#"version = 4
+    /// Paquete del fixture de `cargo metadata`: `(nombre, versión, licencia, miembro del
+    /// espacio de trabajo)`.
+    type FixturePackage = (&'static str, &'static str, Option<&'static str>, bool);
 
-[[package]]
-name = "cfg-if"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+    /// Salida mínima de `cargo metadata` con un paquete raíz propio, dos versiones de
+    /// `cfg-if` como dependencias normales, un proc-macro, un paquete propio bajo otra
+    /// licencia y un propio bajo la del proyecto, más una dependencia de desarrollo, una
+    /// de compilación y una transitiva de esta última, que no se distribuyen.
+    fn fixture_metadata(
+        packages: &[FixturePackage],
+        edges: &[(&str, &str, Option<&str>)],
+    ) -> serde_json::Value {
+        let id = |name: &str, version: &str| format!("{name} {version}");
+        let package_list: Vec<_> = packages
+            .iter()
+            .map(|(name, version, license, _)| {
+                serde_json::json!({
+                    "id": id(name, version),
+                    "name": name,
+                    "version": version,
+                    "license": license,
+                    "manifest_path": format!("/registro/{name}-{version}/Cargo.toml"),
+                })
+            })
+            .collect();
+        let nodes: Vec<_> = packages
+            .iter()
+            .map(|(name, version, _, _)| {
+                let deps: Vec<_> = edges
+                    .iter()
+                    .filter(|(from, _, _)| from.starts_with(&format!("{name} ")))
+                    .map(|(_, to, kind)| {
+                        serde_json::json!({
+                            "pkg": to,
+                            "dep_kinds": [{"kind": kind, "target": null}],
+                        })
+                    })
+                    .collect();
+                serde_json::json!({"id": id(name, version), "deps": deps})
+            })
+            .collect();
+        let members: Vec<_> = packages
+            .iter()
+            .filter(|(_, _, _, member)| *member)
+            .map(|(name, version, _, _)| id(name, version))
+            .collect();
+        serde_json::json!({
+            "packages": package_list,
+            "workspace_members": members,
+            "resolve": {"root": id(packages[0].0, packages[0].1), "nodes": nodes},
+        })
+    }
 
-[[package]]
-name = "cfg-if"
-version = "1.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
+    fn sample_metadata() -> serde_json::Value {
+        fixture_metadata(
+            &[
+                ("ai-voice-interconnector", "1.0.0", Some("MPL-2.0"), true),
+                ("cfg-if", "0.1.10", Some("MIT/Apache-2.0"), false),
+                ("cfg-if", "1.0.4", Some("MIT OR Apache-2.0"), false),
+                ("macros", "0.2.0", Some("MIT"), false),
+                ("denoise", "1.0.0", Some("MIT"), true),
+                ("avi-core", "0.1.0", Some("MPL-2.0"), true),
+                ("dev-only", "1.0.0", Some("MIT"), false),
+                ("build-only", "1.0.0", Some("MIT"), false),
+                ("build-helper", "1.0.0", Some("Zlib"), false),
+            ],
+            &[
+                ("ai-voice-interconnector 1.0.0", "cfg-if 1.0.4", None),
+                ("ai-voice-interconnector 1.0.0", "macros 0.2.0", None),
+                ("ai-voice-interconnector 1.0.0", "denoise 1.0.0", None),
+                ("ai-voice-interconnector 1.0.0", "avi-core 0.1.0", None),
+                ("ai-voice-interconnector 1.0.0", "dev-only 1.0.0", Some("dev")),
+                ("ai-voice-interconnector 1.0.0", "build-only 1.0.0", Some("build")),
+                ("macros 0.2.0", "cfg-if 0.1.10", None),
+                ("build-only 1.0.0", "build-helper 1.0.0", None),
+            ],
+        )
+    }
 
-[[package]]
-name = "cxxbridge-cmd"
-version = "1.0.199"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-
-[[package]]
-name = "foldhash"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-"#;
-
-    fn sample_licenses() -> HashMap<(String, String), Option<String>> {
-        [
-            ("cfg-if", "0.1.10", "MIT/Apache-2.0"),
-            ("cfg-if", "1.0.4", "MIT OR Apache-2.0"),
-            ("foldhash", "0.1.5", "Zlib"),
-        ]
-        .into_iter()
-        .map(|(n, v, l)| ((n.to_string(), v.to_string()), Some(l.to_string())))
-        .collect()
+    fn sample_packages() -> Vec<DistPackage> {
+        distributed_packages(&[sample_metadata()]).unwrap()
     }
 
     fn sample_region() -> String {
-        render_licenses_inventory(&cargo_lock_entries(SAMPLE_LOCK), &sample_licenses()).unwrap()
+        render_licenses_inventory(&sample_packages()).unwrap()
     }
 
     fn sample_licenses_doc() -> String {
@@ -2987,18 +3102,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     }
 
     #[test]
-    fn test_cargo_lock_entries_one_per_version_in_order() {
-        let entries = cargo_lock_entries(SAMPLE_LOCK);
-        let expected: Vec<(String, String)> = [
-            ("cfg-if", "0.1.10"),
-            ("cfg-if", "1.0.4"),
-            ("cxxbridge-cmd", "1.0.199"),
-            ("foldhash", "0.1.5"),
-        ]
-        .iter()
-        .map(|(n, v)| (n.to_string(), v.to_string()))
-        .collect();
-        assert_eq!(entries, expected);
+    fn test_distributed_packages_only_follow_normal_edges() {
+        let names: Vec<String> = sample_packages()
+            .iter()
+            .map(|p| format!("{} {}", p.name, p.version))
+            .collect();
+        // Entran las dependencias normales (también las de un proc-macro) y el crate
+        // propio bajo otra licencia; quedan fuera la raíz, el crate propio bajo la
+        // licencia del proyecto, la dependencia de desarrollo y la de compilación con
+        // su transitiva.
+        assert_eq!(
+            names,
+            ["cfg-if 0.1.10", "cfg-if 1.0.4", "denoise 1.0.0", "macros 0.2.0"]
+        );
+    }
+
+    #[test]
+    fn test_distributed_packages_union_across_triples() {
+        let other = fixture_metadata(
+            &[
+                ("ai-voice-interconnector", "1.0.0", Some("MPL-2.0"), true),
+                ("windows-sys", "0.52.0", Some("MIT OR Apache-2.0"), false),
+                ("cfg-if", "1.0.4", Some("MIT OR Apache-2.0"), false),
+            ],
+            &[
+                ("ai-voice-interconnector 1.0.0", "windows-sys 0.52.0", None),
+                ("ai-voice-interconnector 1.0.0", "cfg-if 1.0.4", None),
+            ],
+        );
+        let packages = distributed_packages(&[sample_metadata(), other]).unwrap();
+        let names: Vec<String> = packages.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names.iter().filter(|n| *n == "cfg-if").count(), 2);
+        assert!(names.contains(&"windows-sys".to_string()));
+        assert_eq!(packages.len(), 5);
     }
 
     #[test]
@@ -3008,55 +3144,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
         assert_eq!(license_family("Apache-2.0 AND ISC"), Some("Apache-2.0"));
         assert_eq!(license_family("BSD-3-Clause"), Some("BSD"));
         assert_eq!(license_family("Zlib"), Some("Zlib"));
-        assert_eq!(license_family("GPL-3.0-or-later"), Some("GPL-3.0-or-later"));
+        assert_eq!(license_family("GPL-3.0-or-later"), None);
         assert_eq!(license_family("WTFPL"), None);
     }
 
     #[test]
-    fn test_render_inventory_two_versions_and_override() {
+    fn test_render_inventory_two_versions() {
         let region = sample_region();
         assert!(region.contains("| `cfg-if` | 0.1.10 | MIT/Apache-2.0 | MIT |\n"));
         assert!(region.contains("| `cfg-if` | 1.0.4 | MIT OR Apache-2.0 | MIT |\n"));
-        // cxxbridge-cmd no está en el metadato: su licencia sale de LICENSE_OVERRIDES.
-        assert!(region.contains("| `cxxbridge-cmd` | 1.0.199 | MIT OR Apache-2.0 | MIT |\n"));
-        assert!(region.contains("| `foldhash` | 0.1.5 | Zlib | Zlib |\n"));
+        assert!(region.contains("| `denoise` | 1.0.0 | MIT | MIT |\n"));
+        assert!(!region.contains("dev-only"));
+        assert!(!region.contains("build-helper"));
     }
 
     #[test]
     fn test_render_inventory_count_and_summary() {
         let region = sample_region();
         assert!(region.starts_with(
-            "Generado desde `Cargo.lock` (4 paquetes resueltos, 3 crates únicos, directos y transitivos).\n\
-             Resumen por familia (paquetes resueltos): MIT 3, Zlib 1.\n"
+            "Generado desde el grafo de dependencias distribuidas (4 paquetes resueltos, 3 crates únicos)"
         ));
+        assert!(region.contains("Resumen por familia (paquetes resueltos): MIT 4.\n"));
     }
 
     #[test]
     fn test_render_inventory_fails_with_unknown_expression() {
-        let mut licenses = sample_licenses();
-        licenses.insert(
-            ("foldhash".to_string(), "0.1.5".to_string()),
-            Some("WTFPL".to_string()),
-        );
-        let err =
-            render_licenses_inventory(&cargo_lock_entries(SAMPLE_LOCK), &licenses).unwrap_err();
-        assert!(err.to_string().contains("foldhash"));
+        let mut packages = sample_packages();
+        packages[0].license = Some("WTFPL".to_string());
+        let err = render_licenses_inventory(&packages).unwrap_err();
+        assert!(err.to_string().contains("cfg-if"));
         assert!(err.to_string().contains("WTFPL"));
     }
 
     #[test]
     fn test_render_inventory_fails_without_license() {
-        let mut licenses = sample_licenses();
-        licenses.insert(("foldhash".to_string(), "0.1.5".to_string()), None);
-        let err =
-            render_licenses_inventory(&cargo_lock_entries(SAMPLE_LOCK), &licenses).unwrap_err();
-        assert!(err.to_string().contains("foldhash"));
-        // Ausente del metadato y sin override: también falla nombrando el paquete.
-        let mut licenses = sample_licenses();
-        licenses.remove(&("cfg-if".to_string(), "1.0.4".to_string()));
-        let err =
-            render_licenses_inventory(&cargo_lock_entries(SAMPLE_LOCK), &licenses).unwrap_err();
-        assert!(err.to_string().contains("cfg-if 1.0.4"));
+        let mut packages = sample_packages();
+        packages[0].license = None;
+        let err = render_licenses_inventory(&packages).unwrap_err();
+        assert!(err.to_string().contains("cfg-if 0.1.10"));
     }
 
     #[test]
@@ -3094,16 +3219,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
     #[test]
     fn test_diff_licenses_inventory_detects_version_and_license() {
         let doc = sample_licenses_doc();
-        let old_version = doc.replace("| `foldhash` | 0.1.5 |", "| `foldhash` | 0.1.4 |");
+        let old_version = doc.replace("| `denoise` | 1.0.0 |", "| `denoise` | 0.9.0 |");
         let err = diff_licenses_inventory(&old_version, &sample_region()).unwrap_err();
         assert!(err.contains("desincronizado"));
-        assert!(err.contains("+| `foldhash` | 0.1.5 | Zlib | Zlib |"));
+        assert!(err.contains("+| `denoise` | 1.0.0 | MIT | MIT |"));
         let bad_license = doc.replace(
-            "| `foldhash` | 0.1.5 | Zlib | Zlib |",
-            "| `foldhash` | 0.1.5 | MIT OR Apache-2.0 | MIT |",
+            "| `denoise` | 1.0.0 | MIT | MIT |",
+            "| `denoise` | 1.0.0 | Zlib | Zlib |",
         );
         let err = diff_licenses_inventory(&bad_license, &sample_region()).unwrap_err();
-        assert!(err.contains("-| `foldhash` | 0.1.5 | MIT OR Apache-2.0 | MIT |"));
+        assert!(err.contains("-| `denoise` | 1.0.0 | Zlib | Zlib |"));
     }
 
     /// Renderiza el `--help` de un nodo vía `try_get_matches_from`,
