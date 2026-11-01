@@ -87,8 +87,8 @@ impl Layer {
 /// Entradas del repo regenerables por el build (relativas a la raíz).
 const REPO_ENTRIES: &[&str] = &[
     "target",
-    "ort-bundle",
-    "ffmpeg-bundle",
+    super::package::ORT_BUNDLE_REL,
+    super::package::FFMPEG_BUNDLE_REL,
     "artifacts",
     ".coverage",
     "coverage.json",

@@ -624,7 +624,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 
 ### 9.1 Requisitos por target
 
-Las versiones fijadas (Rust, ONNX Runtime, paquetes de MSYS2) se declaran **una sola vez, en `packaging/pins.json`**, y de ahí las consumen `cargo xtask doctor`, `cargo xtask bootstrap` y la CI; `cargo xtask doctor` es la fuente de verdad de qué requisitos faltan en una máquina. La tabla siguiente es un resumen de diseño de los requisitos por target: la guía de build no la repite y remite a `cargo xtask doctor`.
+Las versiones fijadas (Rust, ONNX Runtime, FFmpeg, paquetes de MSYS2) se declaran **una sola vez, en `packaging/pins.json`**, y de ahí las consumen `cargo xtask doctor`, `cargo xtask bootstrap` y la CI; `cargo xtask doctor` es la fuente de verdad de qué requisitos faltan en una máquina. La tabla siguiente es un resumen de diseño de los requisitos por target: la guía de build no la repite y remite a `cargo xtask doctor`.
 
 | Requisito | Windows x86_64 | Linux x86_64 / arm64 | macOS arm64 | Lo provee |
 |---|---|---|---|---|
@@ -633,11 +633,12 @@ Las versiones fijadas (Rust, ONNX Runtime, paquetes de MSYS2) se declaran **una 
 | CMake ≥ 3.20 | winget | Gestor de la distribución | Homebrew | Sistema |
 | Toolchain del motor TTS | MSYS2 UCRT64 (gcc, OpenBLAS y `mingw32-make` fijados) | make, gcc y las librerías estáticas de OpenBLAS y libgfortran (el motor las enlaza estáticas) | make, clang y Accelerate (Xcode CLT) | Sistema (MSYS2: su `pacman`) |
 | ONNX Runtime (runtime de STT, versión fijada) | Descarga del asset oficial verificada con el SHA-256 fijado | Ídem | Ídem | `cargo xtask bootstrap` |
+| FFmpeg (medios, versión fijada) | Descarga del artefacto fijado verificada con el SHA-256 fijado | Ídem | Ídem | `cargo xtask bootstrap` |
 | sccache (opcional) | ✅ | ✅ | ✅ | `cargo install` o gestor |
 
 ### 9.2 `cargo xtask doctor`
 
-Solo lectura. Para cada requisito informa si está correcto, falta o tiene una versión distinta de la fijada. Cuando algo falta, da el comando exacto de instalación para el gestor detectado (apt, dnf, pacman o zypper; `xcode-select` o `brew`; winget o el `pacman` de MSYS2). Informa además de la deriva del entorno: motor TTS desactualizado respecto de sus fuentes, versión de ONNX Runtime distinta de la fijada y modelos no provisionados. Termina con éxito solo si están todos los requisitos obligatorios. Admite `--json`.
+Solo lectura. Para cada requisito informa si está correcto, falta o tiene una versión distinta de la fijada. Cuando algo falta, da el comando exacto de instalación para el gestor detectado (apt, dnf, pacman o zypper; `xcode-select` o `brew`; winget o el `pacman` de MSYS2). Informa de FFmpeg en su versión fijada con su propia fila obligatoria, igual que de ONNX Runtime. Informa además de la deriva del entorno: motor TTS desactualizado respecto de sus fuentes, versión de ONNX Runtime distinta de la fijada y modelos no provisionados. Termina con éxito solo si están todos los requisitos obligatorios. Admite `--json`.
 
 ### 9.3 `cargo xtask bootstrap` (instalar y actualizar el entorno)
 
@@ -645,7 +646,7 @@ Es **convergente**: la misma orden prepara el entorno la primera vez y lo pone a
 
 1. Ejecuta `doctor`. Para los requisitos del sistema que falten, imprime los comandos de instalación. Con `--system`, los ejecuta, y es la única operación de toda la especificación que puede pedir `sudo` o UAC, y solo por petición explícita.
 2. Asegura los componentes de Rust necesarios (clippy, rustfmt y, si se usa cobertura, las herramientas LLVM). La versión de Rust ya la aplica `rust-toolchain.toml`.
-3. Descarga ONNX Runtime en la versión fijada para el target del host por HTTPS (TLS ≥ 1.2), exige que el archivo tenga el SHA-256 que fija `packaging/pins.json` para el target (clave `ort_sha256`) y que traiga la librería esperada con tamaño mayor que cero, y falla si no; la deja en `ort-bundle/` con el marcador `.ort-version` y hace que la encuentren los binarios de `target/`.
+3. Asegura los recursos fijados para el target del host, reutilizando los que ya estén completos y descargando los demás por HTTPS (TLS ≥ 1.2): ONNX Runtime en `ort-bundle/`, cuyo archivo debe tener el SHA-256 que fija `packaging/pins.json` (clave `ort_sha256`) y traer la librería esperada con tamaño mayor que cero, con el marcador `.ort-version`; y FFmpeg en `ffmpeg-bundle/`, cuyo artefacto debe tener el SHA-256 fijado (clave `ffmpeg_sha256`) y superar la prueba de humo, con el marcador de ese hash. Falla si alguna comprobación no se cumple. La puerta de pruebas con recursos y `package` aseguran los recursos con la misma función, de modo que tras `bootstrap` no vuelven a descargar nada y `cargo xtask verify-resources` los da por completos.
 4. Compila el motor TTS (`build-engine --self-test`) si falta o está desactualizado.
 5. Con `--models`, provisiona los modelos ejecutando `setup` con el build local.
 6. Imprime un resumen del estado alcanzado.
@@ -657,8 +658,8 @@ Produce el bundle y el archivo de release del target del host. No hay compilaci�
 1. Valida la versión contra `--expect-version` (en CI, el tag).
 2. Exige lo que el repositorio debe aportar ya compilado: el binario en `target/release/` (`cargo build --release --features full`), el motor en `vendor/qwen3-tts/` (`cargo xtask build-engine`) y los documentos de licencia. No compila nada.
 3. Hace una prueba de humo del binario (`version` y `voice list`).
-4. Asegura `ort-bundle/` en la versión fijada (lo reutiliza si está completo y su marcador coincide; si no, lo descarga como `bootstrap`).
-5. Monta el bundle con la lista canónica de archivos del target (la misma que valida `self install`): ejecutable, motor TTS, ONNX Runtime (más las DLL del runtime de VC++ en Windows) y documentos de licencia.
+4. Asegura `ort-bundle/` y `ffmpeg-bundle/` en sus versiones fijadas con la misma función que `bootstrap` (reutiliza cada uno si está completo y su marcador coincide; si no, lo descarga).
+5. Monta el bundle con la lista canónica de archivos del target (la misma que valida `self install`): ejecutable, motor TTS, ONNX Runtime (más las DLL del runtime de VC++ en Windows), el ejecutable de FFmpeg y documentos de licencia.
 6. Comprime de forma determinista (`.tar.gz` o `.zip`) con el nombre convencional.
 
 Los cuatro jobs de build de CI invocan este comando en lugar de repetir cada uno su propio staging. El job de publicación estampa la versión en los bootstrap, los añade como assets y calcula `SHA256SUMS.txt` sobre todos los assets.
@@ -674,7 +675,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 
 | Capa | Flag | Contenido | Mecanismo |
 |---|---|---|---|
-| Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, salidas de `package`, binario y objetos del motor, cobertura y pesos locales heredados bajo `vendor/qwen3-tts` | `xtask` |
+| Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, `ffmpeg-bundle/`, salidas de `package`, binario y objetos del motor, cobertura y pesos locales heredados bajo `vendor/qwen3-tts` | `xtask` |
 | Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew`), ejecutado con el binario del repositorio |
 | Ambas | `--all` | Aplicación y después repositorio | Ídem |
 | Global | `--global` (nunca incluida en `--all`) | Cachés regenerables de Cargo bajo `CARGO_HOME` (`registry/{cache,src,index}` y `git/{db,checkouts}`) y, en Windows, el contenido del `CacheDir` de pacman declarado en el `pacman.conf` de MSYS2 | `xtask` |

@@ -32,15 +32,17 @@ use std::path::{Path, PathBuf};
 /// Manifiesto canónico, relativo a la raíz del repositorio.
 pub(crate) const MANIFEST_REL: &str = "packaging/bundle-manifest.json";
 
-/// Caché local del bundle de ONNX Runtime, relativa a la raíz.
-const ORT_BUNDLE_REL: &str = "ort-bundle";
+/// Caché local del bundle de ONNX Runtime, relativa a la raíz. Es la única
+/// fuente de esta ruta en `xtask`: ningún otro módulo la escribe a mano.
+pub(crate) const ORT_BUNDLE_REL: &str = "ort-bundle";
 
-/// Caché local del binario de FFmpeg, relativa a la raíz.
-const FFMPEG_BUNDLE_REL: &str = "ffmpeg-bundle";
+/// Caché local del binario de FFmpeg, relativa a la raíz. Es la única fuente
+/// de esta ruta en `xtask`: ningún otro módulo la escribe a mano.
+pub(crate) const FFMPEG_BUNDLE_REL: &str = "ffmpeg-bundle";
 
 /// Marcador del SHA-256 del artefacto dentro de `ffmpeg-bundle/`: un cambio de
 /// pin invalida el bundle aunque la versión nominal no cambie.
-const FFMPEG_MARKER: &str = ".ffmpeg-sha256";
+pub(crate) const FFMPEG_MARKER: &str = ".ffmpeg-sha256";
 
 /// Release inmutable de BtbN del que salen los binarios Linux: el tag
 /// `latest` se mueve, así que la URL y el hash fijados apuntan aquí.
@@ -51,8 +53,9 @@ const FFMPEG_BTBN_BUILD: &str = "n9.0.2-35-g9a9b70bb8c";
 
 /// Marcador de versión dentro de `ort-bundle/`: lo escribe una descarga de este
 /// comando y el job de CI que arma el bundle. Un bundle sin marcador tiene una
-/// versión desconocida y no se reutiliza.
-const ORT_MARKER: &str = ".ort-version";
+/// versión desconocida y no se reutiliza. Es la única fuente de este nombre en
+/// `xtask`.
+pub(crate) const ORT_MARKER: &str = ".ort-version";
 
 /// Marca temporal fija de los archivos comprimidos (2020-01-01 UTC): con
 /// entradas ordenadas y metadatos fijos, el mismo árbol produce el mismo
@@ -161,7 +164,7 @@ fn pinned_ort_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&'a str> {
 }
 
 /// SHA-256 fijado en `pins.json` para el artefacto de FFmpeg del triple.
-fn pinned_ffmpeg_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&'a str> {
+pub(crate) fn pinned_ffmpeg_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&'a str> {
     pinned_sha256(&pins.ffmpeg_sha256, "FFmpeg", triple)
 }
 
@@ -506,12 +509,13 @@ fn copy_vc_runtime(bundle: &Path) -> Result<()> {
 /// SHA-256 debe coincidir con el fijado en `pins.json` y el archivo debe traer
 /// la librería esperada con tamaño mayor que cero; el marcador de versión solo
 /// se escribe tras esas comprobaciones, así que un bundle fresco procede de
-/// una descarga verificada. Lo reutilizan `bootstrap`, la gate de pruebas con
-/// recursos y la CI: un solo descargador en el repositorio.
+/// una descarga verificada. Lo llama `ensure_pinned_bundles`, la entrada que
+/// usan `bootstrap`, la puerta de pruebas con recursos y `package`: un solo
+/// descargador en el repositorio.
 pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
     let ort_version = pins.ort.as_str();
     let expected_sha256 = pinned_ort_sha256(pins, triple)?;
-    let bundle = root.join(ORT_BUNDLE_REL);
+    let bundle = ort_bundle_dir(root);
     if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple, ort_version)? {
         eprintln!("Bundle ONNX Runtime reutilizado de {ORT_BUNDLE_REL}");
         return Ok(bundle);
@@ -617,6 +621,11 @@ pub(crate) fn ffmpeg_bundle_dir(root: &Path) -> PathBuf {
     root.join(FFMPEG_BUNDLE_REL)
 }
 
+/// Directorio canónico del bundle de ONNX Runtime dentro del repositorio.
+pub(crate) fn ort_bundle_dir(root: &Path) -> PathBuf {
+    root.join(ORT_BUNDLE_REL)
+}
+
 /// Punto de entrada de `xtask ffmpeg`: aprovisiona en `dest` el FFmpeg fijado
 /// en `packaging/pins.json` para el target del host —la misma operación que
 /// `xtask package` hace antes de montar el bundle, con la misma verificación de
@@ -682,6 +691,45 @@ pub(crate) fn ensure_ffmpeg_bundle(bundle: &Path, triple: &str, pins: &Pins) -> 
         bail!("el bundle de FFmpeg quedó incompleto tras la descarga");
     }
     Ok(bundle.to_path_buf())
+}
+
+/// Conjunto completo de recursos fijados del repositorio, uno por campo. Quien
+/// asegura (`ensure_pinned_bundles`) y quien comprueba (`pinned_bundles_status`)
+/// construyen este mismo literal, así que añadir un campo obliga a cubrirlo en
+/// los dos lados: el compilador impide que uno se quede atrás.
+pub(crate) struct PinnedBundles<T> {
+    pub ort: T,
+    pub ffmpeg: T,
+}
+
+/// Asegura todos los recursos fijados en sus directorios canónicos y devuelve
+/// la ruta de cada bundle. Es la entrada que comparten `bootstrap`, la puerta
+/// de pruebas con recursos y `package`; reutiliza un bundle fresco sin
+/// descargar nada.
+pub(crate) fn ensure_pinned_bundles(
+    root: &Path,
+    triple: &str,
+    pins: &Pins,
+) -> Result<PinnedBundles<PathBuf>> {
+    Ok(PinnedBundles {
+        ort: ensure_ort_bundle(root, triple, pins)?,
+        ffmpeg: ensure_ffmpeg_bundle(&ffmpeg_bundle_dir(root), triple, pins)?,
+    })
+}
+
+/// Comprueba sin escribir nada si cada recurso fijado está fresco en su
+/// directorio canónico. Un pin ausente o un fichero ilegible es un error del
+/// recurso afectado y no contamina el estado de los demás.
+pub(crate) fn pinned_bundles_status(
+    root: &Path,
+    triple: &str,
+    pins: &Pins,
+) -> PinnedBundles<Result<bool>> {
+    PinnedBundles {
+        ort: ort_bundle_is_fresh(&ort_bundle_dir(root), triple, &pins.ort),
+        ffmpeg: pinned_ffmpeg_sha256(pins, triple)
+            .and_then(|sha| ffmpeg_bundle_is_fresh(&ffmpeg_bundle_dir(root), triple, sha)),
+    }
 }
 
 /// Copia el ejecutable de FFmpeg del `bundle` a `dest_dir` y devuelve la ruta
@@ -1042,13 +1090,15 @@ pub fn run(
     })?;
     let sources = locate_sources(&root)?;
     smoke_binary(&sources.binary)?;
-    let bundle = ensure_ort_bundle(&root, triple, &pins)?;
+    let PinnedBundles {
+        ort: bundle,
+        ffmpeg: ffmpeg_bundle,
+    } = ensure_pinned_bundles(&root, triple, &pins)?;
     for lib in ort_expected_libs(triple)? {
         if !bundle.join(lib).is_file() {
             bail!("librería no encontrada en {}: {lib}", bundle.display());
         }
     }
-    let ffmpeg_bundle = ensure_ffmpeg_bundle(&ffmpeg_bundle_dir(&root), triple, &pins)?;
     let ffmpeg_binary = ffmpeg_bundle.join(ffmpeg_binary_name(triple)?);
     if !ffmpeg_binary.is_file() {
         bail!(
@@ -1620,5 +1670,34 @@ mod tests {
         let alone = path_with_prepended(dir, None).unwrap();
         let entries: Vec<PathBuf> = std::env::split_paths(&alone).collect();
         assert_eq!(entries, vec![PathBuf::from("bundle-ffmpeg")]);
+    }
+
+    /// En una raíz sin bundles, todos los recursos fijados se informan como no
+    /// frescos, sin error y sin crear nada.
+    #[test]
+    fn pinned_bundles_status_reports_missing_bundles_as_stale() {
+        let root = tempfile::tempdir().unwrap();
+        let pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido");
+        let triple = host_triple().unwrap();
+        let PinnedBundles { ort, ffmpeg } = pinned_bundles_status(root.path(), triple, &pins);
+        assert!(!ort.unwrap());
+        assert!(!ffmpeg.unwrap());
+        assert!(!ort_bundle_dir(root.path()).exists());
+        assert!(!ffmpeg_bundle_dir(root.path()).exists());
+    }
+
+    /// Un triple sin hash de FFmpeg fijado es un error solo de FFmpeg: el estado
+    /// de ONNX Runtime se sigue informando.
+    #[test]
+    fn pinned_bundles_status_isolates_a_missing_ffmpeg_pin() {
+        let root = tempfile::tempdir().unwrap();
+        let mut pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido");
+        let triple = host_triple().unwrap();
+        pins.ffmpeg_sha256.remove(triple);
+        let PinnedBundles { ort, ffmpeg } = pinned_bundles_status(root.path(), triple, &pins);
+        assert!(!ort.unwrap());
+        assert!(ffmpeg.is_err());
     }
 }

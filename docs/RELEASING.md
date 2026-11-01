@@ -88,15 +88,15 @@ cargo xtask clean --app --dry-run              # revisar el plan de desinstalaci
 cargo xtask clean --app --yes                  # exigir resultado `uninstalled`, no aceptar `not_installed` como prueba
 cargo xtask clean --repo --dry-run             # retirar también la semilla compilada
 cargo xtask clean --repo --yes                 # deja target/ y bundles fuera para el cold start
-cargo xtask bootstrap --models --yes           # ORT, motor y seis modelos
-cargo xtask resource-gate                      # puerta con recursos, sin cortar versión
+cargo xtask bootstrap --models --yes           # ORT, FFmpeg, motor y seis modelos
+cargo xtask verify-resources --json            # debe dar exit 0 y `ok: true` sin otro paso
 ```
 
 La primera capa `--repo` puede compilar `xtask` para ejecutar el limpiador; su
 propio ejecutable se retira al terminar. La compilación semilla posterior crea
 el binario que necesita `--app`; la segunda capa `--repo` elimina los artefactos
-del producto antes del aprovisionamiento. Así `bootstrap` y `resource-gate` arrancan sin
-el binario del producto, bundles nativos ni binario del motor. `xtask` deberá
+del producto antes del aprovisionamiento. Así `bootstrap` arranca sin el binario
+del producto, bundles nativos ni binario del motor. `xtask` deberá
 recompilarse para ejecutar cada orden Cargo que lo invoque. Cierra
 `rust-analyzer` y procesos del producto o de `xtask` antes de cada borrado de
 repo. Al pedir `clean --repo --yes`, el propio `xtask.exe` puede quedar en un
@@ -109,11 +109,16 @@ antes de seguir. Si `--app` o el borrado diferido fallan,
 detente el procedimiento y resuelve la causa. Ninguno de estos comandos toca
 `CARGO_HOME`, rustup, MSYS2 ni `CARGO_HOME/bin`.
 
-**Preparación normal del gate.** La gate asegura por sí misma ONNX Runtime y
-FFmpeg en las versiones fijadas. Si no se ensaya desde cero, conserva los
-recursos ya verificados y ejecuta `cargo xtask bootstrap --models --yes` solo
-cuando falten o estén dañados los modelos o el motor. `cargo xtask ffmpeg` solo
-sirve para descargar FFmpeg por adelantado; la gate no lo exige.
+**Preparación normal del gate.** `cargo xtask bootstrap --models --yes` deja
+listos ONNX Runtime y FFmpeg en sus versiones fijadas, el motor y los modelos.
+La gate vuelve a asegurar ONNX Runtime y FFmpeg con la misma función que
+`bootstrap`, así que tras él no descarga nada. Si no se ensaya desde cero,
+conserva los recursos ya verificados y ejecuta `bootstrap` solo cuando falte o
+esté dañado alguno. `cargo xtask resource-gate` solo sirve para reproducir un
+fallo de la gate tras un corte abortado, nunca como paso previo al corte: el
+corte ya ejecuta la gate. Si `cargo xtask verify-resources --json` da
+`ok: false` justo después de un `bootstrap` terminado con éxito, es un defecto
+de `xtask` que se reporta; no se rodea con otros comandos.
 
 La descarga acota el silencio por dos vías: el cliente corta la lectura tras
 sesenta segundos sin bytes y el vigilante de `bootstrap` aborta `setup` tras diez
@@ -223,8 +228,9 @@ propio `cargo xtask release` actualizó. La comprobación estricta
 `Cargo.toml` ya es la nueva y cuyo CHANGELOG promovido debe haber eliminado
 `[No publicado]`.
 
-Para reproducir o ensayar la puerta sin cortar versión, ejecuta
-`cargo xtask resource-gate`, que corre la misma función con el mismo entorno.
+Para reproducir un fallo de la puerta tras un corte abortado, sin cortar
+versión, ejecuta `cargo xtask resource-gate`, que corre la misma función con el
+mismo entorno. No es un paso previo al corte.
 
 El bump versiona `src/main.rs`, `Cargo.toml`, `Cargo.lock`,
 `tests/golden/cli_version.json` y `SOURCE-OFFER.md`; regenera

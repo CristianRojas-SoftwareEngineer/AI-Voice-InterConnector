@@ -10,9 +10,10 @@
 //! día tras un `git pull`; si nada cambió, no hace trabajo. Los
 //! 6 pasos se ejecutan en orden y cada uno es no-op cuando su estado ya
 //! converge. `--system` es la única vía que ejecuta gestores con `sudo`/UAC,
-//! y solo por petición explícita (flag más confirmación). La versión de ONNX
-//! sale de los pines y su aseguramiento reutiliza `ensure_ort_bundle` de
-//! `package.rs`: `bootstrap` no implementa su propia descarga.
+//! y solo por petición explícita (flag más confirmación). Las versiones de
+//! ONNX Runtime y FFmpeg salen de los pines y ambos se aseguran con
+//! `ensure_pinned_bundles` de `package.rs`: `bootstrap` no implementa su propia
+//! descarga.
 //! `--models` provisiona con `setup` del build local. Sin `rustup` (caso WSL),
 //! el paso 2 indica la instalación antes de fallar. Sin red en los tests:
 //! las decisiones son funciones puras sobre fixtures.
@@ -183,12 +184,19 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
         }
     }
 
-    // Paso 3. ONNX Runtime en la versión fijada (reutiliza si está fresco).
+    // Paso 3. Recursos fijados (ONNX Runtime y FFmpeg) con la misma función que
+    // la puerta y `package`; reutiliza los bundles frescos. Un bundle que no
+    // estaba fresco antes de asegurarlo se descargó, y eso cuenta como trabajo.
     let triple = super::package::host_triple()?;
-    super::package::ensure_ort_bundle(&root, triple, &pins)?;
+    let super::package::PinnedBundles { ort, ffmpeg } =
+        super::package::pinned_bundles_status(&root, triple, &pins);
+    if !matches!(ort, Ok(true)) || !matches!(ffmpeg, Ok(true)) {
+        worked = true;
+    }
+    super::package::ensure_pinned_bundles(&root, triple, &pins)?;
     println!(
-        "Paso 3/6 (ONNX Runtime {}): asegurado en ort-bundle/.",
-        pins.ort
+        "Paso 3/6 (recursos fijados): ONNX Runtime {} en ort-bundle/ y FFmpeg {} en ffmpeg-bundle/ asegurados.",
+        pins.ort, pins.ffmpeg
     );
 
     // Paso 4. Motor TTS si falta o está desactualizado.

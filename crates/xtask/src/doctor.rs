@@ -7,7 +7,7 @@
 //! `xtask doctor`: diagnóstico solo-lectura del entorno de desarrollo.
 //!
 //! La tabla de requisitos se declara una sola vez aquí: los pines (Rust, ONNX
-//! Runtime, MSYS2…) se leen de `packaging/pins.json` vía `avi-shared`, y de
+//! Runtime, FFmpeg, MSYS2…) se leen de `packaging/pins.json` vía `avi-shared`, y de
 //! ahí los consumen `doctor`, `bootstrap` y la CI. Por cada requisito informa
 //! si está correcto, falta o tiene una versión distinta de la fijada; cuando
 //! algo falta, da el comando exacto de instalación para el gestor detectado
@@ -29,6 +29,7 @@ pub(crate) const ROW_IDS: &[&str] = &[
     "cmake",
     "engine-toolchain",
     "onnx",
+    "ffmpeg",
     "sccache",
     "target-hygiene",
 ];
@@ -727,15 +728,14 @@ fn static_openblas_candidates(multiarch: &str) -> Vec<String> {
 fn check_onnx(root: &Path, pins: &Pins) -> Row {
     let label = "ONNX Runtime (versión fijada)";
     let want = Some(pins.ort.clone());
-    let bundle = root.join("ort-bundle");
-    let lib = if cfg!(windows) {
-        "onnxruntime.dll"
-    } else if cfg!(target_os = "macos") {
-        "libonnxruntime.dylib"
-    } else {
-        "libonnxruntime.so"
+    let bundle = super::package::ort_bundle_dir(root);
+    let lib = match super::package::host_triple()
+        .and_then(|triple| super::package::ort_dylib_path(&bundle, triple))
+    {
+        Ok(lib) => lib,
+        Err(e) => return probe_error_row("onnx", label, true, want, e.to_string()),
     };
-    if !bundle.join(lib).is_file() {
+    if !lib.is_file() {
         return Row {
             id: "onnx",
             label,
@@ -765,6 +765,43 @@ fn check_onnx(root: &Path, pins: &Pins) -> Row {
             want,
             hint: Some("cargo xtask bootstrap".to_string()),
         },
+    }
+}
+
+/// Sonda FFmpeg: `ffmpeg-bundle/` fresco para el SHA-256 fijado del triple
+/// (ejecutable no vacío y marcador coincidente). Solo lectura: descargarlo es
+/// tarea de `bootstrap`.
+fn check_ffmpeg(root: &Path, pins: &Pins) -> Row {
+    let label = "FFmpeg (versión fijada)";
+    let want = Some(pins.ffmpeg.clone());
+    let bundle = super::package::ffmpeg_bundle_dir(root);
+    let row = |status: Status, found: Option<String>| Row {
+        id: "ffmpeg",
+        label,
+        mandatory: true,
+        hint: (status != Status::Ok).then(|| "cargo xtask bootstrap".to_string()),
+        status,
+        found,
+        want: want.clone(),
+    };
+    if !bundle.is_dir() {
+        return row(Status::Missing, None);
+    }
+    let fresh = super::package::host_triple().and_then(|triple| {
+        let sha = super::package::pinned_ffmpeg_sha256(pins, triple)?;
+        super::package::ffmpeg_bundle_is_fresh(&bundle, triple, sha)
+    });
+    let dir = super::package::FFMPEG_BUNDLE_REL;
+    match fresh {
+        Ok(true) => row(Status::Ok, Some(format!("{dir} {}", pins.ffmpeg))),
+        Ok(false) => row(
+            Status::Mismatch,
+            Some(format!(
+                "{dir} incompleto o de otro artefacto (fijado {})",
+                pins.ffmpeg
+            )),
+        ),
+        Err(e) => row(Status::Error, Some(e.to_string())),
     }
 }
 
@@ -798,7 +835,7 @@ impl OrtMarker {
 /// Lee el marcador de versión de `bundle`; un marcador ausente no se confunde
 /// con uno ilegible.
 fn read_ort_marker(bundle: &Path) -> OrtMarker {
-    match std::fs::read_to_string(bundle.join(".ort-version")) {
+    match std::fs::read_to_string(bundle.join(super::package::ORT_MARKER)) {
         Ok(text) => OrtMarker::Version(text.trim().to_string()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => OrtMarker::Absent,
         Err(e) => OrtMarker::Unreadable(e.to_string()),
@@ -1034,7 +1071,7 @@ fn probe_engine_drift(root: &Path) -> Result<Option<String>> {
 /// Deriva de ONNX: `ort-bundle/` ausente o con marcador ausente, ilegible o
 /// distinto del pin.
 fn probe_onnx_drift(root: &Path, pins: &Pins) -> Option<String> {
-    let bundle = root.join("ort-bundle");
+    let bundle = super::package::ort_bundle_dir(root);
     if !bundle.is_dir() {
         return Some(format!(
             "ONNX Runtime sin descargar (fijado {}; lo provee `cargo xtask bootstrap`)",
@@ -1091,6 +1128,7 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         check_cmake(),
         check_engine_toolchain(pins),
         check_onnx(root, pins),
+        check_ffmpeg(root, pins),
         check_sccache(pins),
         check_target_hygiene(root),
     ];
@@ -1147,7 +1185,9 @@ pub fn run(json: bool) -> Result<()> {
     }
 }
 
-/// Verifica que los recursos usados por bootstrap estén completos, sin checks de lifecycle.
+/// Verifica que estén completos los recursos fijados que asegura `bootstrap`
+/// (ONNX Runtime y FFmpeg), los modelos, la ausencia de `.incomplete` y la de
+/// residuos, sin las comprobaciones del ciclo de vida.
 pub fn verify_resources(json: bool) -> Result<()> {
     use serde_json::json;
 
@@ -1155,14 +1195,8 @@ pub fn verify_resources(json: bool) -> Result<()> {
     let pins = load_pins(&root)?;
     let triple = super::package::host_triple()?;
     let models = models_drift();
-    let ort = super::package::ort_bundle_is_fresh(&root.join("ort-bundle"), triple, &pins.ort);
-    let ffmpeg = pins
-        .ffmpeg_sha256
-        .get(triple)
-        .ok_or_else(|| anyhow::anyhow!("falta pin SHA-256 de FFmpeg para {triple}"))
-        .and_then(|sha| {
-            super::package::ffmpeg_bundle_is_fresh(&root.join("ffmpeg-bundle"), triple, sha)
-        });
+    let super::package::PinnedBundles { ort, ffmpeg } =
+        super::package::pinned_bundles_status(&root, triple, &pins);
     let incomplete = find_incomplete_files(&models_cache_root()?);
     let pending = find_pending_resources(&root);
     let mut errors = Vec::new();
@@ -1423,6 +1457,7 @@ mod tests {
                 "c-compiler",
                 "cmake",
                 "engine-toolchain",
+                "ffmpeg",
                 "onnx",
                 "rust",
                 "sccache",
@@ -1452,7 +1487,7 @@ mod tests {
         }
     }
 
-    /// `check` sobre fixtures produce las 7 filas en orden y `ok()` solo
+    /// `check` sobre fixtures produce las 8 filas en orden y `ok()` solo
     /// exige las obligatorias (`sccache` y `target-hygiene` no bloquean).
     #[test]
     fn check_yields_all_rows_in_order() {
@@ -1539,18 +1574,13 @@ mod tests {
             .prefix("xtask_doctor_onnx_")
             .tempdir()
             .unwrap();
-        let bundle = root.path().join("ort-bundle");
+        let bundle = super::super::package::ort_bundle_dir(root.path());
         std::fs::create_dir(&bundle).unwrap();
-        let lib = if cfg!(windows) {
-            "onnxruntime.dll"
-        } else if cfg!(target_os = "macos") {
-            "libonnxruntime.dylib"
-        } else {
-            "libonnxruntime.so"
-        };
-        std::fs::write(bundle.join(lib), b"").unwrap();
+        let triple = super::super::package::host_triple().unwrap();
+        let lib = super::super::package::ort_dylib_path(&bundle, triple).unwrap();
+        std::fs::write(lib, b"").unwrap();
         if let Some(text) = marker {
-            std::fs::write(bundle.join(".ort-version"), text).unwrap();
+            std::fs::write(bundle.join(super::super::package::ORT_MARKER), text).unwrap();
         }
         root
     }
@@ -1582,7 +1612,11 @@ mod tests {
     #[test]
     fn onnx_unreadable_marker_is_reported() {
         let root = onnx_fixture(None);
-        std::fs::create_dir(root.path().join("ort-bundle").join(".ort-version")).unwrap();
+        std::fs::create_dir(
+            super::super::package::ort_bundle_dir(root.path())
+                .join(super::super::package::ORT_MARKER),
+        )
+        .unwrap();
         let row = check_onnx(root.path(), &fixture_pins());
         assert_eq!(row.status, Status::Mismatch);
         assert!(row.found.unwrap().contains("ilegible"));
@@ -1665,6 +1699,60 @@ mod tests {
         assert!(row.hint.unwrap().contains("bootstrap"));
     }
 
+    /// Pines de fixture con el SHA-256 de FFmpeg fijado para el triple del host.
+    fn ffmpeg_fixture_pins(sha: &str) -> Pins {
+        let mut pins = fixture_pins();
+        let triple = super::super::package::host_triple().unwrap();
+        pins.ffmpeg_sha256
+            .insert(triple.to_string(), sha.to_string());
+        pins
+    }
+
+    /// Escribe en `ffmpeg-bundle/` un ejecutable no vacío y el marcador dado.
+    fn write_ffmpeg_bundle(root: &Path, marker: &str) {
+        let bundle = super::super::package::ffmpeg_bundle_dir(root);
+        std::fs::create_dir_all(&bundle).unwrap();
+        let triple = super::super::package::host_triple().unwrap();
+        let name = super::super::package::ffmpeg_binary_name(triple).unwrap();
+        std::fs::write(bundle.join(name), b"ffmpeg").unwrap();
+        std::fs::write(bundle.join(super::super::package::FFMPEG_MARKER), marker).unwrap();
+    }
+
+    /// Sin bundle la fila FFmpeg falta; con marcador de otro artefacto es una
+    /// versión distinta; con ejecutable y marcador del hash fijado es correcta.
+    /// Solo la correcta prescinde de la pista de `bootstrap`.
+    #[test]
+    fn ffmpeg_row_reports_missing_mismatch_and_ok() {
+        let sha = "a".repeat(64);
+        let pins = ffmpeg_fixture_pins(&sha);
+        let root = tempfile::tempdir().unwrap();
+        let row = check_ffmpeg(root.path(), &pins);
+        assert_eq!(row.id, "ffmpeg");
+        assert!(row.mandatory);
+        assert_eq!(row.status, Status::Missing);
+        assert_eq!(row.want, Some("9.0.2".to_string()));
+        assert!(row.hint.unwrap().contains("cargo xtask bootstrap"));
+        write_ffmpeg_bundle(root.path(), &"b".repeat(64));
+        let row = check_ffmpeg(root.path(), &pins);
+        assert_eq!(row.status, Status::Mismatch);
+        assert!(row.hint.is_some());
+        write_ffmpeg_bundle(root.path(), &sha);
+        let row = check_ffmpeg(root.path(), &pins);
+        assert_eq!(row.status, Status::Ok);
+        assert!(row.hint.is_none());
+    }
+
+    /// Un bundle presente sin hash de FFmpeg fijado para el triple no se puede
+    /// contrastar: la fila es un error, no una ausencia ni una coincidencia.
+    #[test]
+    fn ffmpeg_row_without_pin_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        write_ffmpeg_bundle(root.path(), &"a".repeat(64));
+        let row = check_ffmpeg(root.path(), &fixture_pins());
+        assert_eq!(row.status, Status::Error);
+        assert!(row.found.unwrap().contains("FFmpeg"));
+    }
+
     /// Un programa inexistente es «no instalado»; uno que no se puede ejecutar
     /// por otra causa (aquí, un directorio) es un error, no una ausencia.
     #[test]
@@ -1720,14 +1808,8 @@ mod tests {
 
         let ort = root.path().join("ort");
         std::fs::create_dir_all(&ort).unwrap();
-        let ort_lib = if triple.contains("windows") {
-            "onnxruntime.dll"
-        } else if triple.contains("apple") {
-            "libonnxruntime.dylib"
-        } else {
-            "libonnxruntime.so"
-        };
-        std::fs::write(ort.join(ort_lib), b"").unwrap();
+        let ort_lib = super::super::package::ort_dylib_path(&ort, triple).unwrap();
+        std::fs::write(ort_lib, b"").unwrap();
         assert!(!super::super::package::ort_bundle_is_fresh(&ort, triple, &pins.ort).unwrap());
 
         let ffmpeg = root.path().join("ffmpeg");

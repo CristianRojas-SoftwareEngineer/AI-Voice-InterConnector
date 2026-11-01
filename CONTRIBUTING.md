@@ -40,7 +40,7 @@ cd AI-Voice-InterConnector
 rustc --version  # 1.96.0
 cargo --version
 
-# Poner el entorno al día: componentes de Rust, ONNX Runtime y motor TTS
+# Poner el entorno al día: componentes de Rust, ONNX Runtime, FFmpeg y motor TTS
 cargo xtask bootstrap
 
 # Comprobar los requisitos del host (solo lectura)

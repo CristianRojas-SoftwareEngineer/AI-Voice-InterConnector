@@ -277,21 +277,22 @@ que `.cargo/config.toml` fija en `[env]` `ORT_DYLIB_PATH` al directorio
 recursos y `cargo run` con STT la encuentran sin pasos manuales. Ese valor solo
 rige en los procesos que lanza cargo, no se incrusta en el binario distribuido,
 y una `ORT_DYLIB_PATH` exportada explícitamente lo sustituye. `cargo xtask
+bootstrap` deja además `ffmpeg-bundle/` con el FFmpeg fijado. `cargo xtask
 release` asegura `ort-bundle/` en la versión fijada y exporta la ruta de su
 librería para su gate de pruebas con recursos, junto con
 `AVI_ALLOW_CWD_VENDOR=1` para que los hijos CLI resuelvan el motor recién
 compilado sin exigir un programa instalado.
 
 Las pruebas que codifican, remuestrean o analizan medios resuelven `ffmpeg` por
-`PATH` (`find_ffmpeg`), así que desde el repositorio hay que aprovisionar el
-binario fijado y anteponerlo: `cargo xtask ffmpeg --dest ffmpeg-bundle` baja el
+`PATH` (`find_ffmpeg`), así que desde el repositorio hay que tener el binario
+fijado y anteponerlo. `cargo xtask bootstrap` ya deja `ffmpeg-bundle/` con el
 artefacto que [`packaging/pins.json`](../packaging/pins.json) fija para el
-target del host, verifica su SHA-256, extrae el ejecutable, le pasa el humo de
-versión y de los seis codificadores de la matriz de egresión e imprime la ruta
-del ejecutable resultante, que es lo que se pone por delante en `PATH` antes de
-`cargo test`. Es el mismo camino que usa `cargo xtask package` y el que usan los
-jobs de prueba de la CI, así que local y CI no pueden ejercitar artefactos
-distintos. La gate de `cargo xtask release` y `cargo xtask resource-gate`, que la
+target del host, verificado con su SHA-256 y con el humo de versión y de los
+seis codificadores de la matriz de egresión; para un `cargo test` manual basta
+con anteponer ese directorio al `PATH`. La CI usa `cargo xtask ffmpeg --dest
+<directorio>`, que hace la misma operación en el directorio indicado e imprime
+la ruta del ejecutable resultante. Ambos caminos y `cargo xtask package` usan el
+mismo descargador, así que local y CI no pueden ejercitar artefactos distintos. La gate de `cargo xtask release` y `cargo xtask resource-gate`, que la
 ejecuta sin cortar versión, hacen esto por sí mismas: aseguran el FFmpeg fijado,
 lo copian junto al binario de prueba de `target/debug` (la CLI solo lo busca
 junto a su ejecutable) y anteponen su carpeta al `PATH`. El paso manual solo
@@ -325,9 +326,10 @@ El archivo de release trae ONNX Runtime: el usuario no lo instala. El bundle
 lleva el asset oficial de Microsoft de su plataforma, en la versión `ort` de
 [`packaging/pins.json`](../packaging/pins.json) (pareja del crate `ort`), con la
 librería dinámica junto al binario y con el nombre por defecto que busca `ort`.
-Lo descarga un único descargador, el de `cargo xtask package` (el mismo que usan
+Lo descarga un único descargador de `xtask`, que `cargo xtask package`,
 `cargo xtask bootstrap` y la gate de pruebas con recursos de `cargo xtask
-release`), en los cuatro jobs. La descarga va por HTTPS (TLS ≥ 1.2) y el archivo
+release` invocan desde la misma función que asegura todos los recursos fijados
+(ONNX Runtime y FFmpeg), en los cuatro jobs. La descarga va por HTTPS (TLS ≥ 1.2) y el archivo
 debe tener el SHA-256 que fija `pins.json` para su target (clave `ort_sha256`) y
 traer la librería esperada con tamaño mayor que cero; si no, el empaquetado
 falla. Los hashes son los `digest` que GitHub publica para cada asset del

@@ -128,7 +128,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-La CLI presentaba los fallos del entorno de audio como fallos del producto: sin micrófono la captura salía con `transcription_failed` (exit 10), también en `voice clone`; sin salida predeterminada la reproducción salía con `playback_failed` (exit 1); y sin ALSA en Linux el mismo error salía con un `reason` distinto según el comando. Además, nada permitía saber de antemano si había entrada o salida predeterminada. Ahora `devices` informa de ambas y los fallos de entorno se clasifican por su tipo, en un solo punto, con tres `reason` explícitos de recurso ausente.
+La CLI presentaba los fallos del entorno de audio como fallos del producto: sin micrófono la captura salía con `transcription_failed` (exit 10), también en `voice clone`; sin salida predeterminada la reproducción salía con `playback_failed` (exit 1); y sin ALSA en Linux el mismo error salía con un `reason` distinto según el comando. Además, nada permitía saber de antemano si había entrada o salida predeterminada. Ahora `devices` informa de ambas y los fallos de entorno se clasifican por su tipo, en un solo punto, con tres `reason` explícitos de recurso ausente. Se corrige también el aprovisionamiento del entorno de desarrollo: `cargo xtask bootstrap` deja listos todos los recursos fijados que exige la verificación, y el release vuelve a ejecutar la puerta de pruebas con recursos una sola vez.
 
 ### Añadido
 
@@ -140,6 +140,10 @@ La CLI presentaba los fallos del entorno de audio como fallos del producto: sin 
 
 - Cambio incompatible de enteros de salida: la captura sin micrófono pasa de 10 a 3 (`no_input_device`), la reproducción sin salida predeterminada pasa de 1 a 3 (`no_output_device`) y cualquier operación de audio sin backend pasa de 10 o 1 a 3 (`audio_backend_unavailable`). Quien distinguía estos casos por el exit 10 o 1 debe leer el exit 3 y el `reason`. Los demás fallos de captura, reproducción y enumeración conservan `transcription_failed` (10), `playback_failed` (1) y `audio_enumeration_failed` (1).
 - La captura vacía sigue saliendo con `empty_audio` (exit 2), pero se reconoce por su tipo y no por el texto del mensaje, que ya no lleva el sufijo `(reason: empty_audio)`.
+
+### Corregido
+
+- `cargo xtask bootstrap` aseguraba ONNX Runtime pero no FFmpeg, así que tras un `cargo xtask clean --repo` terminaba con éxito y a continuación `cargo xtask verify-resources` daba `ffmpeg.ok: false`; solo la puerta de pruebas con recursos aprovisionaba FFmpeg, y el release acababa ejecutando la suite completa dos veces. Ahora el conjunto de recursos fijados (ONNX Runtime y FFmpeg) se declara una sola vez y lo comparten `bootstrap`, `doctor`, `verify-resources`, la puerta, `package` y `clean`: `bootstrap` asegura los dos, `doctor` informa de FFmpeg con su propia fila obligatoria y quien asegura y quien comprueba no pueden cubrir recursos distintos. La secuencia de release ya no ejecuta `cargo xtask resource-gate` antes del corte, que queda solo para reproducir un fallo de la puerta.
 
 ## [0.38.1] — 2026-10-31
 
