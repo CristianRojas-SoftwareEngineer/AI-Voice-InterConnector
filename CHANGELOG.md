@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.39.0 — 2026-11-01](#0390--2026-11-01)
 - [0.38.1 — 2026-10-31](#0381--2026-10-31)
 - [0.38.0 — 2026-10-31](#0380--2026-10-31)
 - [0.37.4 — 2026-10-30](#0374--2026-10-30)
@@ -126,7 +126,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.39.0] — 2026-11-01
 
 La CLI presentaba los fallos del entorno de audio como fallos del producto: sin micrófono la captura salía con `transcription_failed` (exit 10), también en `voice clone`; sin salida predeterminada la reproducción salía con `playback_failed` (exit 1); y sin ALSA en Linux el mismo error salía con un `reason` distinto según el comando. Además, nada permitía saber de antemano si había entrada o salida predeterminada. Ahora `devices` informa de ambas y los fallos de entorno se clasifican por su tipo, en un solo punto, con tres `reason` explícitos de recurso ausente. Se corrige también el aprovisionamiento del entorno de desarrollo: `cargo xtask bootstrap` deja listos todos los recursos fijados que exige la verificación, y el release vuelve a ejecutar la puerta de pruebas con recursos una sola vez.
 
@@ -3776,3 +3776,4 @@ estado con el que nace el producto.
 [0.37.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.3...v0.37.4
 [0.38.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.37.4...v0.38.0
 [0.38.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.38.0...v0.38.1
+[0.39.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.38.1...v0.39.0
