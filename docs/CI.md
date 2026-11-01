@@ -143,7 +143,7 @@ Invalidan sin que cambie ningún archivo:
 
 - **Cambio de `{{ arch }}` del executor.** Todas las claves llevan `{{ arch }}`, y en los executors Linux x86-64 ese valor incluye la familia y el modelo de CPU. Si CircleCI asigna un hardware distinto, todas las familias de ese job fallan y la corrida es fría.
 - **Expiración por retención.** CircleCI borra las cachés según la política de retención de la organización. Tras un período sin corridas más largo que la retención, la siguiente es fría. Las familias rolling (`sccache`) se renuevan en cada corrida; las inmutables (`target/`) solo existen mientras no expiren.
-- **Actualización de la imagen del executor.** Una versión nueva del compilador (MSVC, Xcode/clang, gcc) cambia la identidad del compilador que `sccache` hashea: la clave restaura, pero la primera corrida no obtiene aciertos C/C++ y vuelve a sembrar la caché. Ninja no se cachea: se descarga en cada corrida con la versión de `ninja_pin`.
+- **Actualización de la imagen del executor.** Una versión nueva del compilador (Xcode/clang, gcc) cambia la identidad del compilador que `sccache` hashea: la clave restaura, pero la primera corrida no obtiene aciertos C/C++ y vuelve a sembrar la caché. La imagen de Windows no cambia sola: los tres jobs de Windows la toman de `windows_image_pin` (espejo de la clave `windows_image` de `packaging/pins.json`, vigilado por `cargo xtask pins --check`), así que subir MSVC y su redist es un cambio deliberado de ese pin, con el mismo efecto sobre `sccache` en la primera corrida. Ninja no se cachea: se descarga en cada corrida con la versión de `ninja_pin`.
 
 ## 4. Determinismo de releases
 

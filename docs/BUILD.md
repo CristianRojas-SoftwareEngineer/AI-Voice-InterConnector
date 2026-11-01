@@ -148,7 +148,15 @@ que necesita ONNX Runtime, y `vcomp140.dll`, el runtime OpenMP de MSVC que el
 binario importa porque CTranslate2 se compila con `/openmp`. Se empaquetan junto
 al binario (*app-local deployment*, permitido por la licencia de redistribución
 de Microsoft) para no exigir al usuario el *Visual C++ Redistributable*:
-`cargo xtask package` las copia de System32 del runner. El Universal CRT
+salen del redist de la instalación de Visual Studio que compila, la que devuelve
+`vswhere -latest -products * -requires
+Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (la misma consulta con la
+que la CI importa `vcvars64`): la versión se lee de
+`VC\Auxiliary\Build\Microsoft.VCRedistVersion.default.txt`, y las DLL, de las
+carpetas `Microsoft.VC*.CRT` y `Microsoft.VC*.OpenMP` de
+`VC\Redist\MSVC\<versión>\x64`. Cada ejecución las copia a `ort-bundle/`, pero
+solo escribe las que difieren byte a byte; si falta una DLL o una de las
+carpetas no es única, el empaquetado falla nombrando la ruta. El Universal CRT
 (`ucrtbase.dll`) ya forma parte de Windows.
 
 En **Linux**, el binario se compila contra la glibc de la imagen `manylinux` y
@@ -214,8 +222,12 @@ de los procesos sin herramientas externas: en Linux, de una sola lectura de
 Mach-O o PE, con el crate `object`) y falla, nombrando fichero y dependencia, si
 importa una librería que no es del sistema base del target ni del propio
 bundle, si exige una versión de símbolo por encima del techo de su familia o si
-declara un `minos` mayor que el mínimo de macOS. Reporta todas las violaciones
-juntas. `cargo xtask deps --check --dir <ruta>` aplica la misma auditoría a un
+declara un `minos` mayor que el mínimo de macOS. En Windows comprueba además la
+compatibilidad del runtime de VC++, que Microsoft exige igual o más nuevo que la
+toolchain de cada binario que lo importa: falla si un PE importa una DLL de
+VC++ empaquetada cuya versión mayor.menor es inferior a la de su enlazador, o
+si una DLL de VC++ del bundle no trae recurso de versión. Reporta todas las
+violaciones juntas. `cargo xtask deps --check --dir <ruta>` aplica la misma auditoría a un
 árbol ya montado o extraído, con el contrato del target del host.
 
 ---
@@ -335,8 +347,10 @@ traer la librería esperada con tamaño mayor que cero; si no, el empaquetado
 falla. Los hashes son los `digest` que GitHub publica para cada asset del
 release oficial de Microsoft, que no publica ficheros de checksum propios; al
 subir `ort` hay que actualizarlos en el mismo cambio. `ort-bundle/` se reutiliza
-solo si trae todas las librerías y el marcador `.ort-version` de la versión
-fijada, que solo se escribe tras una descarga verificada.
+solo si trae la librería de ONNX Runtime y el marcador `.ort-version` de la
+versión fijada, que solo se escribe tras una descarga verificada. La frescura
+solo mira ONNX Runtime: en Windows, las DLL de VC++ se actualizan en cada
+ejecución desde el redist de la toolchain, también al reutilizar el bundle.
 
 Los instaladores extraen el archivo completo al directorio de instalación y
 ejecutan el binario desde ahí, de modo que la librería llega junto al binario y
