@@ -22,9 +22,10 @@
 //! `ensure_ffmpeg_bundle`; todo lo demás (manifiesto, nombres, puerta de
 //! versión, hash, montaje, compresión) es puro o solo toca temporales.
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use avi_shared::manifest::{parse_manifest_text, BundleTarget};
 use avi_shared::pins::{self, Pins};
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::Seek;
 use std::path::{Path, PathBuf};
@@ -410,15 +411,71 @@ fn rank_lib_candidate(
     }
 }
 
+/// Archivos de aviso de ONNX Runtime que el archivo oficial trae en su raíz y que el
+/// paquete reproduce desde `packaging/notices/onnxruntime-<versión>/`.
+const ORT_NOTICE_FILES: [&str; 2] = ["LICENSE", "ThirdPartyNotices.txt"];
+
+/// Nombre del aviso si la ruta dentro del archivo es uno de [`ORT_NOTICE_FILES`] en la raíz
+/// del directorio principal (no los homónimos de subdirectorios).
+fn ort_notice_name(path: &str) -> Option<&'static str> {
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.len() != 2 {
+        return None;
+    }
+    ORT_NOTICE_FILES.into_iter().find(|name| *name == parts[1])
+}
+
+/// Directorio con las copias versionadas de los avisos de la versión fijada de ONNX Runtime.
+fn ort_notices_dir(root: &Path, ort_version: &str) -> PathBuf {
+    root.join("packaging")
+        .join("notices")
+        .join(format!("onnxruntime-{ort_version}"))
+}
+
+/// Compara los avisos leídos del archivo oficial con las copias versionadas, ignorando
+/// la diferencia de fin de línea (el zip de Windows los trae con CRLF). Falla nombrando el
+/// archivo si falta en el archivo oficial o difiere de la copia.
+fn verify_ort_notices(
+    notices_dir: &Path,
+    ort_version: &str,
+    archived: &BTreeMap<&'static str, Vec<u8>>,
+) -> Result<()> {
+    for name in ORT_NOTICE_FILES {
+        let bytes = archived
+            .get(name)
+            .ok_or_else(|| anyhow!("el archivo de ONNX Runtime {ort_version} no trae {name}"))?;
+        let copy_path = notices_dir.join(name);
+        let copy = std::fs::read(&copy_path).map_err(|e| {
+            anyhow!(
+                "no se pudo leer la copia versionada {}: {}",
+                copy_path.display(),
+                e
+            )
+        })?;
+        let normalize = |data: &[u8]| String::from_utf8_lossy(data).replace("\r\n", "\n");
+        if normalize(bytes) != normalize(&copy) {
+            bail!(
+                "{name} de ONNX Runtime {ort_version} difiere de {}: actualiza la copia versionada \
+                 con el archivo oficial",
+                copy_path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Extrae la librería de ONNX Runtime del archivo descargado a `bundle/` con su
-/// nombre canónico (el que el crate `ort` busca en `load-dynamic`). Falla si el
-/// archivo no trae la librería esperada con tamaño mayor que cero.
+/// nombre canónico (el que el crate `ort` busca en `load-dynamic`) y verifica que
+/// sus avisos coincidan con las copias de `notices_dir`. Falla si el archivo no trae
+/// la librería esperada con tamaño mayor que cero o si algún aviso difiere.
 fn extract_ort_library(
     archive: &Path,
     bundle: &Path,
     triple: &str,
     ort_version: &str,
+    notices_dir: &Path,
 ) -> Result<()> {
+    let mut notices: BTreeMap<&'static str, Vec<u8>> = BTreeMap::new();
     let canonical = if triple.contains("-windows-") {
         "onnxruntime.dll"
     } else if triple.contains("-apple-") {
@@ -436,8 +493,14 @@ fn extract_ort_library(
         let mut zip = zip::ZipArchive::new(file)?;
         let mut best: Option<((u8, usize), usize)> = None;
         for i in 0..zip.len() {
-            let entry = zip.by_index(i)?;
+            let mut entry = zip.by_index(i)?;
             if entry.is_dir() {
+                continue;
+            }
+            if let Some(notice) = ort_notice_name(entry.name()) {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+                notices.insert(notice, bytes);
                 continue;
             }
             let name = entry.name().rsplit('/').next().unwrap_or("").to_string();
@@ -465,6 +528,12 @@ fn extract_ort_library(
         for entry in tar.entries()? {
             let mut entry = entry?;
             let path = entry.path()?.to_string_lossy().to_string();
+            if let Some(notice) = ort_notice_name(&path) {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+                notices.insert(notice, bytes);
+                continue;
+            }
             let name = path.rsplit('/').next().unwrap_or("").to_string();
             let rank = rank_lib_candidate(canonical, pattern, &name, entry.size());
             if rank.is_some_and(|r| best_rank.is_none_or(|b| r > b)) {
@@ -478,6 +547,7 @@ fn extract_ort_library(
     };
     match found {
         Some(bytes) => {
+            verify_ort_notices(notices_dir, ort_version, &notices)?;
             std::fs::create_dir_all(bundle)?;
             std::fs::write(bundle.join(canonical), bytes)?;
             Ok(())
@@ -535,7 +605,13 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Resul
     eprintln!("Descargando ONNX Runtime {ort_version}: {url}");
     download_https(&url, &dest)?;
     verify_sha256(&dest, expected_sha256)?;
-    extract_ort_library(&dest, &bundle, triple, ort_version)?;
+    extract_ort_library(
+        &dest,
+        &bundle,
+        triple,
+        ort_version,
+        &ort_notices_dir(root, ort_version),
+    )?;
     #[cfg(windows)]
     copy_vc_runtime(&bundle)?;
     std::fs::write(bundle.join(ORT_MARKER), ort_version)?;
@@ -1515,15 +1591,140 @@ mod tests {
             header.set_cksum();
             tar.append_data(&mut header, "lib/libonnxruntime.so.1.28.0", &data[..])
                 .unwrap();
+            for (name, text) in [("LICENSE", "licencia"), ("ThirdPartyNotices.txt", "avisos")] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(text.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append_data(&mut header, format!("ort/{name}"), text.as_bytes())
+                    .unwrap();
+            }
             let gz = tar.into_inner().unwrap();
             gz.finish().unwrap();
         }
+        let notices = base.join("notices");
+        write_notices(&notices, "licencia", "avisos");
         let bundle = base.join("bundle");
-        extract_ort_library(&archive_path, &bundle, "x86_64-unknown-linux-gnu", "1.28.0").unwrap();
+        extract_ort_library(
+            &archive_path,
+            &bundle,
+            "x86_64-unknown-linux-gnu",
+            "1.28.0",
+            &notices,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(bundle.join("libonnxruntime.so")).unwrap(),
             b"REAL"
         );
+    }
+
+    fn write_notices(dir: &Path, license: &str, third_party: &str) {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(dir.join("LICENSE"), license).unwrap();
+        std::fs::write(dir.join("ThirdPartyNotices.txt"), third_party).unwrap();
+    }
+
+    /// Zip sintético de ONNX Runtime para Windows con avisos de fin de línea CRLF.
+    fn write_ort_zip(path: &Path, license: &str, third_party: &str) {
+        use std::io::Write;
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, data) in [
+            ("ort/lib/onnxruntime.dll", "DLL"),
+            ("ort/LICENSE", license),
+            ("ort/ThirdPartyNotices.txt", third_party),
+            ("ort/docs/LICENSE", "homónimo de un subdirectorio"),
+        ] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(data.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    /// Los avisos del archivo fijado coinciden con las copias versionadas, también cuando
+    /// el zip de Windows los trae con CRLF.
+    #[test]
+    fn extract_accepts_notices_that_match_the_versioned_copies() {
+        let base_guard = tempfile::tempdir().unwrap();
+        let base = base_guard.path();
+        let archive = base.join("ort.zip");
+        write_ort_zip(&archive, "linea1\r\nlinea2\r\n", "avisos\r\n");
+        let notices = base.join("notices");
+        write_notices(&notices, "linea1\nlinea2\n", "avisos\n");
+        extract_ort_library(
+            &archive,
+            &base.join("bundle"),
+            "x86_64-pc-windows-msvc",
+            "1.28.0",
+            &notices,
+        )
+        .unwrap();
+        assert!(base.join("bundle/onnxruntime.dll").is_file());
+    }
+
+    /// Un aviso distinto en el archivo fijado falla nombrando el archivo, y no deja
+    /// librería extraída.
+    #[test]
+    fn extract_rejects_notices_that_differ_from_the_versioned_copies() {
+        let base_guard = tempfile::tempdir().unwrap();
+        let base = base_guard.path();
+        let archive = base.join("ort.zip");
+        write_ort_zip(&archive, "licencia nueva", "avisos");
+        let notices = base.join("notices");
+        write_notices(&notices, "licencia vieja", "avisos");
+        let err = extract_ort_library(
+            &archive,
+            &base.join("bundle"),
+            "x86_64-pc-windows-msvc",
+            "1.28.0",
+            &notices,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("LICENSE"), "{err}");
+        assert!(!base.join("bundle/onnxruntime.dll").exists());
+    }
+
+    /// Un archivo sin los avisos también falla: no se da por bueno lo que no se puede comparar.
+    #[test]
+    fn extract_rejects_an_archive_without_notices() {
+        let base_guard = tempfile::tempdir().unwrap();
+        let base = base_guard.path();
+        let archive = base.join("ort.zip");
+        {
+            use std::io::Write;
+            let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
+            zip.start_file(
+                "ort/lib/onnxruntime.dll",
+                zip::write::SimpleFileOptions::default(),
+            )
+            .unwrap();
+            zip.write_all(b"DLL").unwrap();
+            zip.finish().unwrap();
+        }
+        let notices = base.join("notices");
+        write_notices(&notices, "a", "b");
+        let err = extract_ort_library(
+            &archive,
+            &base.join("bundle"),
+            "x86_64-pc-windows-msvc",
+            "1.28.0",
+            &notices,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("no trae LICENSE"), "{err}");
+    }
+
+    /// Las copias versionadas del repositorio existen para la versión fijada.
+    #[test]
+    fn the_pinned_onnx_runtime_notices_exist_in_the_repository() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..");
+        let pins = pins::load_from_root(&root).unwrap();
+        let dir = ort_notices_dir(&root, &pins.ort);
+        for name in ORT_NOTICE_FILES {
+            assert!(dir.join(name).is_file(), "falta {}", dir.join(name).display());
+        }
     }
 
     /// Compresión determinista: dos pasadas sobre el mismo árbol dan el mismo
