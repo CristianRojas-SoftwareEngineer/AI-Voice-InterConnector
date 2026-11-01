@@ -91,7 +91,9 @@ fn read_capture(file: &mut std::fs::File) -> String {
 /// nombre, y con `--features full` el binario importa siempre `VCOMP140.dll`
 /// (OpenMP de CTranslate2); el cargador las busca primero junto al ejecutable: un marcador de texto en su
 /// lugar mata al hijo con imagen inválida antes de que emita nada. El staging
-/// lleva las reales y no un marcador.
+/// de prueba lleva las reales y no un marcador; solo necesita DLL que carguen,
+/// sin importar su versión, así que las del sistema bastan. El paquete de
+/// release toma las suyas del redist de la toolchain que compila.
 #[cfg(windows)]
 fn system_crt_dll(relative: &str) -> Option<PathBuf> {
     const CRT: &[&str] = &[
