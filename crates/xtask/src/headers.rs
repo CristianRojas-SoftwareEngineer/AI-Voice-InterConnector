@@ -11,6 +11,7 @@
 //! (`//` en Rust, `#` en shell, PowerShell y bats) y, si el archivo empieza por un
 //! shebang, justo después de él. Se rechaza un archivo sin cabecera, uno con una
 //! cabecera de otro texto y uno donde la cabecera existe pero no está en su posición.
+//! Los `.ps1` son ASCII puro, así que su cabecera escribe el titular sin tilde.
 //!
 //! Quedan fuera los crates cuyo `Cargo.toml` declara una licencia distinta de MPL-2.0
 //! (`crates/denoise`, bajo MIT): su cabecera sería falsa.
@@ -75,13 +76,22 @@ fn comment_prefix(path: &Path) -> &'static str {
     }
 }
 
-/// Cabecera canónica con el prefijo de comentario aplicado.
-fn expected_header(prefix: &str) -> Vec<String> {
+/// Si el lenguaje del archivo exige ASCII puro. Los `.ps1` del bootstrap y de su suite lo
+/// exigen (PowerShell 5.1 corrompe los bytes no ASCII que entrega `irm`), así que su
+/// cabecera lleva el titular sin tilde.
+fn requires_ascii(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("ps1")
+}
+
+/// Cabecera canónica con el prefijo de comentario aplicado, y sin tildes si `ascii`.
+fn expected_header(prefix: &str, ascii: bool) -> Vec<String> {
     HEADER
         .iter()
         .map(|line| {
             if line.is_empty() {
                 prefix.to_string()
+            } else if ascii {
+                format!("{prefix} {}", line.replace('á', "a"))
             } else {
                 format!("{prefix} {line}")
             }
@@ -90,10 +100,11 @@ fn expected_header(prefix: &str) -> Vec<String> {
 }
 
 /// Evalúa el contenido de un archivo contra la cabecera de su lenguaje.
-fn check_text(text: &str, prefix: &str) -> Option<Problem> {
+fn check_text(text: &str, path: &Path) -> Option<Problem> {
+    let prefix = comment_prefix(path);
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let lines: Vec<&str> = text.lines().collect();
-    let expected = expected_header(prefix);
+    let expected = expected_header(prefix, requires_ascii(path));
     let start = usize::from(lines.first().is_some_and(|line| line.starts_with("#!")));
     let at_position = lines.get(start..start + expected.len());
     if at_position.is_some_and(|found| found == expected.as_slice()) {
@@ -175,7 +186,7 @@ fn scan(base: &Path, files: &[PathBuf]) -> Result<Vec<Hit>> {
     for file in files {
         let text = std::fs::read_to_string(file)
             .map_err(|e| anyhow!("no se pudo leer {}: {}", file.display(), e))?;
-        if let Some(problem) = check_text(&text, comment_prefix(file)) {
+        if let Some(problem) = check_text(&text, file) {
             hits.push(Hit {
                 file: first_party::relative(base, file),
                 problem,
@@ -223,7 +234,12 @@ mod tests {
     use super::*;
 
     fn header(prefix: &str) -> String {
-        expected_header(prefix).join("\n")
+        expected_header(prefix, false).join("\n")
+    }
+
+    /// Cabecera de un `.ps1`: el titular va sin tilde porque el archivo es ASCII puro.
+    fn ascii_header() -> String {
+        expected_header("#", true).join("\n")
     }
 
     /// Escribe un árbol de archivos en un temporal con dueño y lo escanea.
@@ -245,7 +261,7 @@ mod tests {
     fn a_correct_header_is_accepted_in_every_language() {
         let rust = format!("{}\n\nfn a() {{}}\n", header("//"));
         let shell = format!("#!/bin/sh\n{}\necho hola\n", header("#"));
-        let powershell = format!("{}\nWrite-Host 1\n", header("#"));
+        let powershell = format!("{}\nWrite-Host 1\n", ascii_header());
         let hits = scan_tree(&[
             ("src/a.rs", rust),
             ("tests/run.sh", shell.clone()),
@@ -253,6 +269,15 @@ mod tests {
             ("tests/x.ps1", powershell),
         ]);
         assert!(hits.is_empty(), "{hits:?}");
+    }
+
+    #[test]
+    fn a_powershell_header_must_be_ascii() {
+        assert!(!ascii_header().contains('á'));
+        let accented = format!("{}\nWrite-Host 1\n", header("#"));
+        let hits = scan_tree(&[("tests/x.ps1", accented)]);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].problem, Problem::Different);
     }
 
     #[test]
