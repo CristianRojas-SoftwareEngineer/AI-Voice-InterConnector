@@ -317,7 +317,7 @@ fn ffmpeg_buildconf(binary: &Path) -> Result<String> {
 }
 
 /// Nombre del archivo con la configuración de build de FFmpeg del triple.
-fn ffmpeg_buildconf_name(version: &str, triple: &str) -> String {
+pub(crate) fn ffmpeg_buildconf_name(version: &str, triple: &str) -> String {
     format!("ffmpeg-{version}-buildconf-{triple}.txt")
 }
 

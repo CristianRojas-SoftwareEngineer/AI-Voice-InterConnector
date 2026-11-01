@@ -684,7 +684,7 @@ impl Groups {
     }
 }
 
-fn platform_name(triple: &str) -> &str {
+pub(crate) fn platform_name(triple: &str) -> &str {
     match triple {
         WINDOWS => "Windows x64",
         LINUX_X64 => "Linux x64",

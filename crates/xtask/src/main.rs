@@ -7,6 +7,7 @@
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
 use anyhow::{anyhow, Result};
+use avi_shared::pins::Pins;
 use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -84,32 +85,36 @@ el código fuente correspondiente a esta versión exacta está disponible en:
 
 Las atribuciones de las dependencias redistribuidas están en
 `THIRD-PARTY-LICENSES.md`, junto a este archivo. Los pesos de los modelos no se
-empaquetan en el binario: se descargan con `setup` y conservan sus licencias
-(Qwen3-TTS MIT/Apache-2.0, opus-mt CC-BY-4.0).
+empaquetan en el binario: se descargan con `setup` y conservan sus licencias:
+Qwen3-TTS (CustomVoice y Base) y DPDFNet, Apache-2.0; Parakeet TDT 0.6B v3
+(ONNX) y los derivados int8 de opus-mt, CC-BY-4.0.
+{mpl_crates}
+## FFmpeg {ffmpeg_version}
 
-El paquete incluye **FFmpeg 9.0.2** como ejecutable independiente: la aplicación
-lo invoca como proceso y no lo enlaza con el binario principal. Los builds
-distribuidos son GPL-3.0-or-later. Su código fuente correspondiente está
-disponible en:
+El paquete incluye **FFmpeg {ffmpeg_version}** como ejecutable independiente: la
+aplicación lo invoca como proceso y no lo enlaza con el binario principal. Los
+builds distribuidos son GPL-3.0-or-later. Su código fuente correspondiente está
+disponible en estos assets del release v{version}, verificados contra los
+hashes fijados en `packaging/pins.json`:
 
-- **FFmpeg 9.0.2 (fuente upstream):**
-  <https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz>
-- **Builds Linux (BtbN) y scripts de compilación:**
-  <https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-24-13-02>
-  (build `n9.0.2-35-g9a9b70bb8c`)
-- **Build Windows (Gyan):**
-  <https://github.com/GyanD/codexffmpeg/releases/tag/9.0.2>
-  (el mismo binario se publica en <https://www.gyan.dev/ffmpeg/builds/>)
-- **Build macOS (Martin Riedl):** <https://ffmpeg.martin-riedl.de/>
+{ffmpeg_sources}
+
+Los binarios proceden de estos builds (Linux: build `{ffmpeg_btbn_build}` del
+release `{ffmpeg_btbn_tag}` de BtbN):
+
+{ffmpeg_binaries}
+
+La configuración con la que se compiló cada binario figura en estos assets del
+mismo release:
+
+{ffmpeg_buildconfs}
+
+## Solicitud del código fuente
 
 Si necesitas el árbol de fuentes exacto de un build, incluidas las bibliotecas
-que enlaza, solicítalo abriendo un issue en el repositorio o contactando al
-mantenedor. La oferta se mantiene durante al menos tres años desde la entrega
-del binario.
-
-Si recibiste este binario sin acceso a las URLs anteriores, puedes solicitar
-el código fuente abriendo un issue en el repositorio o contactando al
-mantenedor del proyecto, Cristián Rojas Arredondo.
+que enlaza, o recibiste este binario sin acceso a las URLs anteriores, solicítalo
+abriendo un issue en <https://github.com/{repo}/issues>. La oferta se mantiene
+durante al menos tres años desde la entrega del binario.
 "#;
 
 #[derive(Parser)]
@@ -328,6 +333,9 @@ enum Commands {
     SourceOffer {
         #[arg(long)]
         check: bool,
+        /// Imprime el pie de fuentes de las notas del release TAG (p. ej. v0.39.0) en lugar de la oferta
+        #[arg(long, value_name = "TAG", conflicts_with = "check")]
+        notes: Option<String>,
     },
     /// Genera o verifica el inventario de THIRD-PARTY-LICENSES.md
     Licenses {
@@ -527,13 +535,19 @@ fn main() -> Result<()> {
             std::fs::write(&out, cask)?;
             eprintln!("Cask generado: {}", out.display());
         }
-        Commands::SourceOffer { check } => {
+        Commands::SourceOffer { check, notes } => {
+            if let Some(tag) = notes {
+                let pins = doctor::load_pins(Path::new("."))?;
+                print!("{}", render_release_notes_footer(&tag, &pins));
+                return Ok(());
+            }
             let version = get_version()?;
             if check {
                 check_source_offer(&version)?;
                 println!("SOURCE-OFFER.md en sincronía");
             } else {
-                print!("{}", render_source_offer(&version));
+                let (pins, mpl_crates) = source_offer_inputs()?;
+                print!("{}", render_source_offer(&version, &pins, &mpl_crates)?);
             }
         }
         Commands::Licenses { check } => {
@@ -845,10 +859,121 @@ fn package_description(manifest: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("Cargo.toml no declara la descripción en [package]"))
 }
 
-fn render_source_offer(version: &str) -> String {
-    SOURCE_OFFER_TEMPLATE
+/// URL de un asset publicado en el release de `version`.
+fn release_asset_url(version: &str, asset: &str) -> String {
+    format!("https://github.com/{GITHUB_REPO}/releases/download/v{version}/{asset}")
+}
+
+/// Nombres de los assets de fuentes y de configuración de build de FFmpeg que acompañan
+/// al release: las fuentes de `package::ffmpeg_sources` y un archivo de configuración por
+/// cada triple con binario fijado.
+fn ffmpeg_release_assets(pins: &Pins) -> (Vec<String>, Vec<String>) {
+    let sources = package::ffmpeg_sources(&pins.ffmpeg)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    let buildconfs = pins
+        .ffmpeg_sha256
+        .keys()
+        .map(|triple| package::ffmpeg_buildconf_name(&pins.ffmpeg, triple))
+        .collect();
+    (sources, buildconfs)
+}
+
+/// Lista Markdown de enlaces a los assets del release de `version`.
+fn asset_links(version: &str, assets: &[String]) -> String {
+    assets
+        .iter()
+        .map(|asset| format!("- `{asset}`: <{}>", release_asset_url(version, asset)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Crates de terceros que se distribuyen bajo MPL-2.0 como `(nombre, versión)`: su código
+/// fuente lo sirve crates.io y la oferta lo nombra.
+fn mpl_third_party_crates(packages: &[DistPackage]) -> Result<Vec<(String, String)>> {
+    let mut crates = Vec::new();
+    for package in packages {
+        let Some(expression) = package.license.as_deref() else {
+            continue;
+        };
+        let required = notices::required_licenses(expression)
+            .map_err(|e| anyhow!("{} {}: {}", package.name, package.version, e))?;
+        if required.iter().any(|license| license.id == "MPL-2.0") {
+            crates.push((package.name.clone(), package.version.clone()));
+        }
+    }
+    Ok(crates)
+}
+
+/// Oferta de código fuente de `version`. Todo lo variable sale de su fuente única: la
+/// versión y los hashes de FFmpeg de `pins.json`, el build y las URLs de `package.rs` y
+/// los crates MPL-2.0 de terceros del grafo distribuido.
+fn render_source_offer(
+    version: &str,
+    pins: &Pins,
+    mpl_crates: &[(String, String)],
+) -> Result<String> {
+    let (sources, buildconfs) = ffmpeg_release_assets(pins);
+    let mut binaries = Vec::new();
+    for triple in pins.ffmpeg_sha256.keys() {
+        let (_, url) = package::ffmpeg_download(triple, &pins.ffmpeg)?;
+        binaries.push(format!("- {}: <{url}>", notices::platform_name(triple)));
+    }
+    let mpl_section = if mpl_crates.is_empty() {
+        String::new()
+    } else {
+        let list: Vec<String> = mpl_crates
+            .iter()
+            .map(|(name, crate_version)| {
+                format!("- `{name}` {crate_version}: <https://crates.io/crates/{name}/{crate_version}>")
+            })
+            .collect();
+        format!(
+            "\n## Crates de terceros bajo MPL-2.0\n\n\
+             El binario enlaza estos crates de terceros, también bajo MPL-2.0; su código fuente \
+             exacto se publica en crates.io:\n\n{}\n",
+            list.join("\n")
+        )
+    };
+    Ok(SOURCE_OFFER_TEMPLATE
+        .replace("{mpl_crates}", &mpl_section)
+        .replace("{ffmpeg_sources}", &asset_links(version, &sources))
+        .replace("{ffmpeg_binaries}", &binaries.join("\n"))
+        .replace("{ffmpeg_buildconfs}", &asset_links(version, &buildconfs))
+        .replace("{ffmpeg_version}", &pins.ffmpeg)
+        .replace("{ffmpeg_btbn_build}", package::FFMPEG_BTBN_BUILD)
+        .replace("{ffmpeg_btbn_tag}", package::FFMPEG_BTBN_TAG)
         .replace("{version}", version)
-        .replace("{repo}", GITHUB_REPO)
+        .replace("{repo}", GITHUB_REPO))
+}
+
+/// Pie de las notas del release `tag`: el tarball de fuentes del tag y los assets de
+/// fuentes de FFmpeg. Lo imprime `source-offer --notes` y lo anexa el job de publicación,
+/// de modo que las notas y `SOURCE-OFFER.md` salen de las mismas fuentes.
+fn render_release_notes_footer(tag: &str, pins: &Pins) -> String {
+    let version = tag.trim_start_matches('v');
+    let (sources, buildconfs) = ffmpeg_release_assets(pins);
+    format!(
+        "\n---\n\n\
+         ## Código fuente (MPL-2.0 §3.2)\n\n\
+         Este release se distribuye bajo **MPL-2.0**. El código fuente correspondiente a este tag \
+         está disponible en:\n\n\
+         - Tarball de fuente: https://github.com/{GITHUB_REPO}/archive/refs/tags/{tag}.tar.gz\n\
+         - Etiqueta del release: https://github.com/{GITHUB_REPO}/releases/tag/{tag}\n\n\
+         Las fuentes de FFmpeg {} (GPL-3.0-or-later) y la configuración de build de cada binario \
+         se publican como assets de este release:\n\n{}\n{}\n",
+        pins.ffmpeg,
+        asset_links(version, &sources),
+        asset_links(version, &buildconfs)
+    )
+}
+
+/// Pines y crates MPL-2.0 de terceros con los que se renderiza la oferta.
+fn source_offer_inputs() -> Result<(Pins, Vec<(String, String)>)> {
+    let pins = doctor::load_pins(Path::new("."))?;
+    let mpl_crates = mpl_third_party_crates(&load_distributed_packages()?)?;
+    Ok((pins, mpl_crates))
 }
 
 /// Compara `current` (contenido vigente de SOURCE-OFFER.md) contra `rendered`
@@ -875,7 +1000,8 @@ fn diff_source_offer(current: &str, rendered: &str) -> Result<(), String> {
 /// Gate de `SOURCE-OFFER.md`: verifica que esté en sincronía con el renderizado
 /// para `version`. Envoltura de E/S sobre `diff_source_offer` (pura, testeable).
 fn check_source_offer(version: &str) -> Result<()> {
-    let rendered = render_source_offer(version);
+    let (pins, mpl_crates) = source_offer_inputs()?;
+    let rendered = render_source_offer(version, &pins, &mpl_crates)?;
     let dest = Path::new("SOURCE-OFFER.md");
     if !dest.is_file() {
         anyhow::bail!("SOURCE-OFFER.md no existe; esperado:\n{}", rendered);
@@ -928,7 +1054,8 @@ fn bump_version(version: &str) -> Result<()> {
     )?;
 
     // SOURCE-OFFER.md: aviso MPL-2.0 §3.2 versionado
-    let offer = render_source_offer(version);
+    let (pins, mpl_crates) = source_offer_inputs()?;
+    let offer = render_source_offer(version, &pins, &mpl_crates)?;
     std::fs::write(Path::new("SOURCE-OFFER.md"), offer)?;
 
     Ok(())
@@ -3007,25 +3134,100 @@ mod tests {
         assert!(err.to_string().contains("0203--2026-09-22"));
     }
 
+    /// Pines reales del repositorio: la oferta se prueba contra la misma fuente que usa.
+    fn repo_pins() -> Pins {
+        doctor::load_pins(&Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("..")).unwrap()
+    }
+
+    fn sample_mpl_crates() -> Vec<(String, String)> {
+        vec![("ejemplo-mpl".to_string(), "1.2.0".to_string())]
+    }
+
+    fn render_offer(version: &str) -> String {
+        render_source_offer(version, &repo_pins(), &sample_mpl_crates()).unwrap()
+    }
+
     #[test]
     fn test_diff_source_offer_matches() {
-        let rendered = render_source_offer("1.2.3");
+        let rendered = render_offer("1.2.3");
         assert!(diff_source_offer(&rendered, &rendered).is_ok());
     }
 
     #[test]
     fn test_diff_source_offer_normalizes_crlf() {
-        let rendered = render_source_offer("1.2.3");
+        let rendered = render_offer("1.2.3");
         let with_crlf = rendered.replace('\n', "\r\n");
         assert!(diff_source_offer(&with_crlf, &rendered).is_ok());
     }
 
     #[test]
     fn test_diff_source_offer_out_of_sync() {
-        let rendered = render_source_offer("1.2.3");
-        let old = render_source_offer("1.2.2");
+        let rendered = render_offer("1.2.3");
+        let old = render_offer("1.2.2");
         let err = diff_source_offer(&old, &rendered).unwrap_err();
         assert!(err.contains("SOURCE-OFFER.md desincronizado"));
+    }
+
+    /// La oferta cita la versión y el build de FFmpeg fijados, los assets de fuentes y de
+    /// configuración, los crates MPL-2.0 de terceros y solo Issues como canal.
+    #[test]
+    fn test_source_offer_is_derived_from_the_pins() {
+        let pins = repo_pins();
+        let offer = render_offer("1.2.3");
+        assert!(offer.contains(&format!("FFmpeg {}", pins.ffmpeg)));
+        assert!(offer.contains(package::FFMPEG_BTBN_BUILD));
+        assert!(offer.contains(package::FFMPEG_BTBN_TAG));
+        let (sources, buildconfs) = ffmpeg_release_assets(&pins);
+        for asset in sources.iter().chain(&buildconfs) {
+            assert!(
+                offer.contains(&release_asset_url("1.2.3", asset)),
+                "falta el asset {asset}"
+            );
+        }
+        assert!(offer.contains("https://crates.io/crates/ejemplo-mpl/1.2.0"));
+        assert!(offer.contains(&format!("https://github.com/{GITHUB_REPO}/issues")));
+        assert!(!offer.contains("contactando al mantenedor"));
+        assert!(!offer.contains('{'), "marcador sin resolver en la oferta");
+    }
+
+    #[test]
+    fn test_source_offer_follows_a_pin_change() {
+        let mut pins = repo_pins();
+        pins.ffmpeg = "10.1".to_string();
+        let offer = render_source_offer("1.2.3", &pins, &[]).unwrap();
+        assert!(offer.contains("ffmpeg-10.1.tar.xz"));
+        assert!(!offer.contains("ffmpeg-9.0.2.tar.xz"));
+        assert!(!offer.contains("Crates de terceros bajo MPL-2.0"));
+    }
+
+    #[test]
+    fn test_release_notes_footer_names_the_tag_tarball_and_the_source_assets() {
+        let pins = repo_pins();
+        let footer = render_release_notes_footer("v1.2.3", &pins);
+        assert!(footer.contains(&format!(
+            "https://github.com/{GITHUB_REPO}/archive/refs/tags/v1.2.3.tar.gz"
+        )));
+        let (sources, buildconfs) = ffmpeg_release_assets(&pins);
+        for asset in sources.iter().chain(&buildconfs) {
+            assert!(footer.contains(&release_asset_url("1.2.3", asset)));
+        }
+    }
+
+    #[test]
+    fn test_mpl_third_party_crates_are_selected_by_license() {
+        let package = |name: &str, license: &str| DistPackage {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            license: Some(license.to_string()),
+            manifest_dir: PathBuf::new(),
+        };
+        let crates = mpl_third_party_crates(&[
+            package("a", "MIT"),
+            package("b", "MPL-2.0"),
+            package("c", "MIT OR Apache-2.0"),
+        ])
+        .unwrap();
+        assert_eq!(crates, [("b".to_string(), "1.0.0".to_string())]);
     }
 
     /// Paquete del fixture de `cargo metadata`: `(nombre, versión, licencia, miembro del
