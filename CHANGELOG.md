@@ -156,7 +156,7 @@ En Windows, cada `cargo xtask clean` imprimía un aviso con jerga del sistema (�
 - La regeneración de `--play` muestra «Sintetizando otra toma…» en la ruta directa y en la del daemon, y deja la línea de progreso cerrada antes del menú.
 - La misma entrada se traduce igual por la ruta directa y por la del daemon: el daemon traducía el texto completo como una sola oración, y ahora segmenta en oraciones y párrafos como la ruta directa, también en textos de varias oraciones y párrafos.
 - `speech synthesize --daemon` guarda en el sidecar el texto traducido, igual que la ruta directa.
-- `/synthesize` traduce fuera del runtime del daemon y con latidos `translate`, y anuncia la etapa de síntesis solo cuando la síntesis empieza.
+- `/synthesize` traduce fuera del runtime del daemon bajo la etapa `translate`, y anuncia la etapa de síntesis solo cuando la síntesis empieza. Cada etapa de trabajo pesado del daemon se anuncia con un `progress` al empezar, así que la fase se muestra aunque el trabajo termine antes del primer latido.
 - `speech say` muestra «Sintetizando voz…» en lugar de «Sintetizando voz doblada…».
 - Con `--mic --duration N`, la fase de captura sigue visible y su tiempo avanza durante la grabación; antes la línea se borraba y la terminal quedaba en silencio.
 - `speech dub` muestra una fase de limpieza de ruido en las dos rutas, y `voice clone` muestra la espera de turno de la limpieza.

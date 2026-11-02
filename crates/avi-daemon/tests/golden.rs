@@ -1553,14 +1553,14 @@ async fn synthesize_preset_delivers_audio_and_leaves_no_temporary() {
     assert_ne!(a, c, "otro seed debe dar otro audio");
 }
 
-/// `/synthesize` con idiomas distintos traduce antes de sintetizar: emite
-/// latidos `translate` antes de la etapa `synthesis`, y el texto traducido de
+/// `/synthesize` con idiomas distintos traduce antes de sintetizar: anuncia la
+/// etapa `translate` antes de la etapa `synthesis`, y el texto traducido de
 /// varias oraciones coincide con el de la ruta directa, porque las dos
 /// segmentan igual.
 #[cfg(feature = "native-translation")]
 #[tokio::test]
 #[ignore = "requiere el binario del motor, todos los modelos provisionados y CT2"]
-async fn synthesize_translation_has_heartbeats_and_matches_the_direct_route() {
+async fn synthesize_announces_translation_and_matches_the_direct_route() {
     require_clone_binary();
     require_custom_voice_model();
     let _temporaries = lock_temporaries().await;
@@ -1574,6 +1574,7 @@ async fn synthesize_translation_has_heartbeats_and_matches_the_direct_route() {
     let binary = std::env::var_os("QWEN3_TTS_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(vendor_binary);
+    std::env::set_var("QWEN3_TTS_BIN", &binary);
     state.tts_engine.binary_path = Some(binary);
     let text = "Hola, esto es una prueba. ¿Cómo estás hoy?";
     let (status, bytes) = send_to(
@@ -1592,14 +1593,14 @@ async fn synthesize_translation_has_heartbeats_and_matches_the_direct_route() {
     assert_events_carry_no_human_text(&events);
     let first_translate = events
         .iter()
-        .position(|e| e["event"] == "heartbeat" && e["stage"] == "translate");
+        .position(|e| e["event"] == "progress" && e["stage"] == "translate");
     let synthesis = events
         .iter()
         .position(|e| e["event"] == "progress" && e["stage"] == "synthesis")
         .expect("la etapa de síntesis se anuncia");
     assert!(
         first_translate.is_some_and(|t| t < synthesis),
-        "debe haber latidos `translate` antes de la síntesis: {events:?}"
+        "la etapa `translate` debe anunciarse antes de la síntesis: {events:?}"
     );
     let local = avi_translation::translate(
         text,
@@ -1612,7 +1613,7 @@ async fn synthesize_translation_has_heartbeats_and_matches_the_direct_route() {
     assert_eq!(
         result["translated"],
         Value::String(local),
-        "el daemon traduce igual que la ruta directa"
+        "el daemon traduce igual que la ruta directa: {result}"
     );
 }
 

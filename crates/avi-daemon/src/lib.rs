@@ -315,6 +315,9 @@ async fn emit_ndjson(tx: &tokio::sync::mpsc::Sender<String>, event: Value) {
 const STREAM_HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Espera un trabajo pesado bloqueante emitiendo latidos NDJSON.
+/// La etapa se anuncia con un `progress` al empezar, de modo que el cliente
+/// muestra su fase aunque el trabajo termine antes del primer latido; después
+/// sigue un latido por intervalo mientras el trabajo corre.
 /// Retorna `Some(res)` al completar, o `None` si el cliente se desconectó: en
 /// ese caso el trabajo se aborta (`AbortHandle`) y el llamante debe retornar
 /// sin entregar ni persistir resultado (sin trabajo huérfano ni fuga de estado).
@@ -327,6 +330,7 @@ async fn with_heartbeats<T>(
     handle: tokio::task::JoinHandle<T>,
 ) -> Option<Result<T, tokio::task::JoinError>> {
     let mut handle = handle;
+    emit_ndjson(tx, json!({ "event": "progress", "stage": stage })).await;
     loop {
         tokio::select! {
             _ = tokio::time::sleep(STREAM_HEARTBEAT) => {
@@ -3301,6 +3305,23 @@ mod tests {
             heartbeats >= 1,
             "trabajo de 2 s debe latir al menos una vez"
         );
+    }
+
+    /// Un trabajo que termina antes del primer latido anuncia igualmente su
+    /// etapa con un `progress`, para que el cliente muestre la fase.
+    #[tokio::test]
+    async fn with_heartbeats_announces_the_stage_of_a_fast_work() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(32);
+        let work = tokio::task::spawn_blocking(|| "hecho");
+        let res = with_heartbeats(&tx, "translate", work)
+            .await
+            .expect("sin desconexión hay resultado");
+        assert_eq!(res.expect("join ok"), "hecho");
+        drop(tx);
+        let first: Value =
+            serde_json::from_str(&rx.recv().await.expect("un evento")).expect("evento JSON");
+        assert_eq!(first["event"], "progress");
+        assert_eq!(first["stage"], "translate");
     }
 
     /// Latido corto y márgenes de milisegundos para probar la fase de síntesis.
