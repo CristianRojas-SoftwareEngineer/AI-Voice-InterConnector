@@ -1310,7 +1310,7 @@ async fn handle_translate(
     }
     // Despacho 3 modos vía daemon_client + route_to_daemon
     let client = daemon_client();
-    if route_to_daemon(daemon_mode, &client).await? {
+    if route_to_daemon(daemon_mode).await? {
         let mut progress = PhaseProgress::new();
         progress.phase("translating", "Traduciendo texto (daemon)…");
         let result = translate_via_daemon(&client, text, source, target, &progress).await;
@@ -1501,7 +1501,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     }
                 }
                 let client = daemon_client();
-                let use_daemon = route_to_daemon(routing.mode(), &client).await?;
+                let use_daemon = route_to_daemon(routing.mode()).await?;
                 let (speech_path, daemon_audio, mic_scratch) = if mic {
                     if !use_daemon && !force && voice_store.exists(&name).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))? {
                         return Err(CliError::new(ExitCode::StateConflict, "voice_exists", format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name)));
@@ -2385,10 +2385,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // Dispatch 3 modos (Transcribe es delegable al daemon):
             // ForceDaemon → daemon (error si no responde); Auto → daemon si
             // responde, si no cae a directo; ForceDirect → local. El probe de
-            // vida usa un deadline corto para que el fallback Auto→directo sea
-            // prácticamente instantáneo cuando el daemon no está en ejecución.
+            // vida es la sonda del daemon (`daemon_stop::probe`): sin daemon, el
+            // rechazo es inmediato en todas las plataformas y el fallback
+            // Auto→directo no espera.
             let client = daemon_client();
-            if route_to_daemon(routing.mode(), &client).await? {
+            if route_to_daemon(routing.mode()).await? {
                 let mut progress = PhaseProgress::new();
                 let result = transcribe_via_daemon(
                     &client,
@@ -2572,7 +2573,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
 
                 // Dispatch 3 modos (Synthesize es delegable al daemon).
                 let client = daemon_client();
-                if route_to_daemon(routing.mode(), &client).await? {
+                if route_to_daemon(routing.mode()).await? {
                     return synthesize_via_daemon(
                         &mut progress,
                         &client,
@@ -2740,7 +2741,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
 
                 // Dispatch 3 modos (Say es delegable al daemon).
                 let client = daemon_client();
-                if route_to_daemon(routing.mode(), &client).await? {
+                if route_to_daemon(routing.mode()).await? {
                     say_via_daemon(
                         &mut progress,
                         &client,
@@ -2871,7 +2872,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // Despacho 3 modos: delega a POST /dub si daemon activo
             {
                 let client = daemon_client();
-                if route_to_daemon(routing.mode(), &client).await? {
+                if route_to_daemon(routing.mode()).await? {
                     let mut progress = PhaseProgress::new();
                     let result = dub_via_daemon(
                         &mut progress,
@@ -3270,14 +3271,13 @@ async fn handle_daemon(
             avi_shared::diag_trace::mark("start.enter");
             require_model_provisioned()?;
             avi_shared::diag_trace::mark("start.model_provisioned");
-            let client = daemon_client();
             // Revalidación con reclamo matar-y-rearrancar: la vida del
             // residual se comprueba por PID vivo más probe, no por probe solo ni
             // pidfile solo. En servicio → `already_running`; degradado → la parada
             // unificada lo reclama y se rearranca con salida 0 y payload `started`.
             let data_dir = effective_data_dir()?;
             let client_addr = lifecycle::daemon_stop::resolve_client_addr(&data_dir);
-            let responds = probe_health(&client, &client_addr).await;
+            let responds = lifecycle::daemon_stop::probe(&client_addr).await;
             avi_shared::diag_trace::mark("start.health_probe_done");
             // El indicador nace **antes** de la parada del daemon residual: así
             // no hay segundos de silencio antes de la primera fase, y el mismo
@@ -3323,7 +3323,6 @@ async fn handle_daemon(
             // en el residente y no bloquea este bucle de sondeo).
             progress.phase("warming", "Calentando motor de síntesis…");
             let pid = launch_daemon(
-                &client,
                 auto_restart,
                 max_retries,
                 &warm_voice,
@@ -3434,7 +3433,6 @@ async fn handle_daemon(
             // reclamo por PID.
             let t_total = std::time::Instant::now();
             let budget = std::time::Duration::from_secs(12);
-            let client = daemon_client();
             // El indicador nace **antes** de la parada, igual que en `start` y
             // en `stop`: así no hay segundos de silencio antes de la primera
             // fase, y la fase `stopping` se reutiliza.
@@ -3464,15 +3462,7 @@ async fn handle_daemon(
             // códigos de fallo.
             progress.phase("starting", "Iniciando daemon…");
             progress.phase("warming", "Calentando motor de síntesis…");
-            let pid = launch_daemon(
-                &client,
-                false,
-                3,
-                "default",
-                ready_deadline,
-                Some(&progress),
-            )
-            .await;
+            let pid = launch_daemon(false, 3, "default", ready_deadline, Some(&progress)).await;
             let closed = progress.close();
             match pid {
                 Ok(pid) => {
@@ -3493,41 +3483,48 @@ async fn handle_daemon(
             }
         }
         DaemonCommands::Status => {
-            // Un solo GET /health contra la dirección descubierta: su éxito es el
-            // sondeo con el que `observe` clasifica (el mismo criterio que `start`)
-            // y su cuerpo aporta motor y warmup. Sin respuesta (timeout/conexión)
-            // el sondeo es negativo; siempre exit 0.
-            let client = daemon_client();
+            // Primero la sonda única del daemon contra la dirección descubierta
+            // (la misma de `start`), cuyo rechazo es inmediato sin daemon; solo
+            // si responde se pide el cuerpo de GET /health, que aporta motor y
+            // warmup. El éxito de ese GET es el sondeo con el que `observe`
+            // clasifica: un daemon que muere entre la sonda y el GET cuenta como
+            // «no responde». Siempre exit 0.
             let data_dir = effective_data_dir()?;
             let client_addr = lifecycle::daemon_stop::resolve_client_addr(&data_dir);
-            let health = match tokio::time::timeout(
-                std::time::Duration::from_millis(500),
-                client.get(format!("http://{}/health", client_addr)).send(),
-            )
-            .await
-            {
-                Ok(Ok(resp)) if resp.status().is_success() => Some(
-                    tokio::time::timeout(
-                        std::time::Duration::from_millis(800),
-                        resp.json::<Value>(),
-                    )
-                    .await
-                    .map_err(|_| {
-                        CliError::new(
-                            ExitCode::DaemonUnreachable,
-                            "daemon_unreachable",
-                            format!("Daemon inalcanzable en {} (timeout json)", client_addr),
+            let health = if !lifecycle::daemon_stop::probe(&client_addr).await {
+                None
+            } else {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    daemon_client()
+                        .get(format!("http://{}/health", client_addr))
+                        .send(),
+                )
+                .await
+                {
+                    Ok(Ok(resp)) if resp.status().is_success() => Some(
+                        tokio::time::timeout(
+                            std::time::Duration::from_millis(800),
+                            resp.json::<Value>(),
                         )
-                    })?
-                    .map_err(|e| {
-                        CliError::new(
-                            ExitCode::Error,
-                            "daemon_error",
-                            format!("Respuesta de /health no es JSON: {}", e),
-                        )
-                    })?,
-                ),
-                _ => None,
+                        .await
+                        .map_err(|_| {
+                            CliError::new(
+                                ExitCode::DaemonUnreachable,
+                                "daemon_unreachable",
+                                format!("Daemon inalcanzable en {} (timeout json)", client_addr),
+                            )
+                        })?
+                        .map_err(|e| {
+                            CliError::new(
+                                ExitCode::Error,
+                                "daemon_error",
+                                format!("Respuesta de /health no es JSON: {}", e),
+                            )
+                        })?,
+                    ),
+                    _ => None,
+                }
             };
             let state =
                 lifecycle::daemon_stop::observe(&data_dir, &ProductProcesses, health.is_some());
@@ -4631,7 +4628,6 @@ fn ready_file_path() -> Result<PathBuf, CliError> {
 /// `daemon.ready`. No escribe el pidfile: lo escribe el propio daemon antes de
 /// publicar `daemon.ready`.
 async fn launch_daemon(
-    client: &reqwest::Client,
     auto_restart: bool,
     max_retries: u32,
     warm_voice: &str,
@@ -4796,7 +4792,6 @@ async fn launch_daemon(
 
     avi_shared::diag_trace::mark("launch_daemon.health_probe_begin");
     if let Err(e) = await_daemon_ready(
-        client,
         &addr,
         DAEMON_HEALTH_DEADLINE,
         DAEMON_POLL_INTERVAL,
@@ -4853,7 +4848,6 @@ async fn abort_launch(child: &mut avi_process::RestrictedChild, ready_path: &std
 /// sonda, aunque `deadline` sea 0, y después agota `deadline` por reloj de
 /// pared con cadencia `interval`.
 async fn await_daemon_ready(
-    client: &reqwest::Client,
     addr: &str,
     deadline: std::time::Duration,
     interval: std::time::Duration,
@@ -4861,7 +4855,7 @@ async fn await_daemon_ready(
 ) -> anyhow::Result<()> {
     let start = std::time::Instant::now();
     loop {
-        if probe_health(client, addr).await {
+        if lifecycle::daemon_stop::probe(addr).await {
             return Ok(());
         }
         if start.elapsed() >= deadline {
@@ -5022,35 +5016,21 @@ where
     }
 }
 
-/// Probe de vida (GET /health) con deadline corto contra `addr`; `false` en
-/// cualquier fallo (connection-refused incluido).
-async fn probe_health(client: &reqwest::Client, addr: &str) -> bool {
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        client.get(format!("http://{}/health", addr)).send(),
-    )
-    .await
-    {
-        Ok(Ok(resp)) => resp.status().is_success(),
-        _ => false,
-    }
-}
-
 /// Probe de vida sobre la dirección descubierta (pidfile o, sin él, la dirección
 /// por defecto del protocolo); `false` habilita el fallback Auto→local.
-async fn daemon_active(client: &reqwest::Client) -> Result<bool, CliError> {
+async fn daemon_active() -> Result<bool, CliError> {
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
-    Ok(probe_health(client, &client_addr).await)
+    Ok(lifecycle::daemon_stop::probe(&client_addr).await)
 }
 
 /// Decide si una acción delegable se despacha al daemon:
 /// ForceDaemon → siempre (el POST fallará con DaemonUnreachable si no corre);
 /// Auto → solo si el daemon responde; ForceDirect → nunca.
-async fn route_to_daemon(mode: DaemonMode, client: &reqwest::Client) -> Result<bool, CliError> {
+async fn route_to_daemon(mode: DaemonMode) -> Result<bool, CliError> {
     match mode {
         DaemonMode::ForceDaemon => Ok(true),
         DaemonMode::ForceDirect => Ok(false),
-        DaemonMode::Auto => daemon_active(client).await,
+        DaemonMode::Auto => daemon_active().await,
     }
 }
 
@@ -6238,7 +6218,7 @@ mod tests {
         let deadline = std::time::Duration::from_millis(800);
         let interval = std::time::Duration::from_millis(100);
         let start = std::time::Instant::now();
-        let res = await_daemon_ready(&daemon_client(), &addr, deadline, interval, None).await;
+        let res = await_daemon_ready(&addr, deadline, interval, None).await;
         let elapsed = start.elapsed();
 
         assert!(res.is_err(), "esperado Err contra puerto cerrado");
@@ -6282,7 +6262,6 @@ mod tests {
         });
 
         let res = await_daemon_ready(
-            &daemon_client(),
             &addr,
             std::time::Duration::ZERO,
             std::time::Duration::from_millis(100),
