@@ -2956,39 +2956,45 @@ mod tests {
         // original (`find`), no a `| head` en general.
         assert!(
             !cfg.contains("-type f | head"),
-            "no debe existir `find ... | head` directo: materializar la salida (`ort_matches=\"$(find ...)\"`) antes de aplicar head (regresión EPIPE v0.20.9)"
+            "no debe existir `find ... | head` directo: materializar la salida (`matches=\"$(find ...)\"`) antes de aplicar head (regresión EPIPE v0.20.9)"
         );
     }
 
-    /// La caché de `target/` usa clave inmutable (el primer `save_cache` gana): en
-    /// build-* (variant: full), guardar con `when: always` persistiría para
-    /// siempre un `target/` incompleto si `cargo build --release` falla a
-    /// medias (ya ocurrió con linux-x64 en v0.20.9).
+    /// Las cachés de `target/` y de MSYS2 usan clave inmutable (el primer
+    /// `save_cache` gana): guardar tras un fallo persistiría para siempre un
+    /// directorio incompleto (ya ocurrió con linux-x64 en v0.20.9). Por eso sus
+    /// commands fijan `when: on_success` en cada paso y no lo exponen como
+    /// parámetro que un job pueda cambiar.
     #[test]
-    fn test_cargo_save_target_on_success_in_build_variant_full() {
+    fn test_immutable_cache_saves_only_on_success() {
         let cfg = read_ci_config();
-        // Cada bloque `cargo_save_target:` con `variant: full` debe traer
-        // `when: on_success` en las mismas 3 líneas siguientes.
-        let mut seen_full = 0;
-        let lines: Vec<&str> = cfg.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
-            if line.trim() != "- cargo_save_target:" {
-                continue;
-            }
-            let window = lines[i..(i + 5).min(lines.len())].join("\n");
-            if window.contains("variant: full") {
-                seen_full += 1;
-                assert!(
-                    window.contains("when: on_success"),
-                    "cargo_save_target con variant: full debe pasar when: on_success (evita persistir target/ incompleto bajo clave inmutable); bloque:\n{window}"
-                );
-            }
+        for command in ["cargo_save_target", "msys2_save_cache"] {
+            // El command termina en la primera línea en blanco.
+            let block = cfg
+                .split(&format!("\n  {command}:\n"))
+                .nth(1)
+                .unwrap_or("")
+                .split("\n\n")
+                .next()
+                .unwrap_or("");
+            let whens: Vec<&str> = block
+                .lines()
+                .map(str::trim)
+                .filter(|line| line.starts_with("when:"))
+                .collect();
+            assert!(
+                !whens.is_empty(),
+                "{command} debe declarar `when` en sus pasos"
+            );
+            assert!(
+                whens.iter().all(|when| *when == "when: on_success"),
+                "{command} debe guardar solo con `when: on_success` (clave inmutable); encontrado: {whens:?}"
+            );
+            assert!(
+                !block.contains("parameters.when"),
+                "{command} no debe exponer `when` como parámetro"
+            );
         }
-        // Los 4 build-* (windows-x64, linux-x64, linux-arm64, darwin-arm64).
-        assert_eq!(
-            seen_full, 4,
-            "se esperaban 4 invocaciones de cargo_save_target con variant: full (una por build-*)"
-        );
     }
 
     /// Sección de la definición de un job (hasta el siguiente job).

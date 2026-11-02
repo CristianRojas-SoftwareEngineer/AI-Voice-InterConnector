@@ -22,7 +22,7 @@ orbs:
 # parámetro la espeja porque se interpola con
 # << pipeline.parameters.rust_pin >> en cada job Rust (no repetir literal).
 # Bump de versión = editar el JSON (el validador falla si divergen) +
-# actualizar el digest de `cimg/rust` en las 7 referencias `image:`
+# actualizar el digest de `cimg/rust` en las 5 referencias `image:`
 # (obtenido vía `docker buildx imagetools inspect
 # cimg/rust:<< pipeline.parameters.rust_pin >>` o hub.docker.com). Sin digest,
 # el tag es flotante y pierde
@@ -134,8 +134,8 @@ parameters:
 #   - msys2 (v1): cambia con los pines de versión MSYS2 (solo build-windows-x64).
 #   - sccache (v1): cubo semanal por variant (semana ISO en la clave de
 #     guardado, restauración por prefijo): una subida por variante y semana.
-#   - ort-bundle (v4): cambia con ort_pin (los 4 builds, clave por triple de
-#     target). Guarda el `ort-bundle/` que arma `xtask package` (con su SHA-256
+#   - ort-bundle (v4): cambia con ort_pin (los 4 builds, clave por plataforma
+#     de target). Guarda el `ort-bundle/` que arma `xtask package` (con su SHA-256
 #     verificado; más las cinco DLL de VC++ en Windows), incluido el marcador
 #     `.ort-version` que exige para reutilizarlo.
 #   - ffmpeg (v1): cambia con packaging/pins.json (los 4 jobs de prueba y los 4
@@ -258,7 +258,7 @@ commands:
     # sccache nunca cachea crates `--crate-type bin` (el binario final siempre
     # pasa por `rustc` real).
     #
-    # `when` es `on_success` en todos los jobs: como la clave de la caché de
+    # El guardado es siempre `when: on_success`: como la clave de la caché de
     # `target/` es inmutable (el primer `save_cache` gana), un job que falla antes
     # de compilar o a medio compilar persistiría un `target/` vacío o incompleto
     # bajo esa clave para siempre, y ninguna corrida posterior con el mismo
@@ -272,9 +272,6 @@ commands:
       os:
         type: string
         default: "linux"
-      when:
-        type: string
-        default: "on_success"
     steps:
       # TMP/TEMP/TMPDIR apuntan a target/ (ver `.cargo/config.toml`): los restos de
       # una prueba abortada quedan dentro de target/ y no deben viajar en la caché.
@@ -294,12 +291,12 @@ commands:
             target/xtask-comments-* target/xtask-language-* target/xtask_doctor_*
             target/xtask_install_* target/xtask_package_* target/xtask-package-*
             target/xtask_pins_* target/cargo-timings
-          when: << parameters.when >>
+          when: on_success
       - save_cache:
           key: target-v6-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
           paths:
             - target
-          when: << parameters.when >>
+          when: on_success
 
   # Caché de toolchain: ~/.rustup (toolchain + componentes) y ~/.cargo/bin
   # (binarios instalados: rustup, cargo, cargo-llvm-cov). Clave sin checksum —
@@ -341,16 +338,12 @@ commands:
             - msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
   msys2_save_cache:
     description: Guarda C:\msys64 (clave inmutable por arch + pines de versión MSYS2)
-    parameters:
-      when:
-        type: string
-        default: "on_success"
     steps:
       - save_cache:
           key: msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
           paths:
             - C:\msys64
-          when: << parameters.when >>
+          when: on_success
 
   # sccache: envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
   # hash de contenido en ~/.cache/sccache. Cada variante (test/full/cov) guarda
@@ -529,8 +522,8 @@ commands:
   # Fuente única de pines: `packaging/pins.json` es la única tabla de versiones;
   # los parámetros del pipeline la espejan. Este paso invoca al validador único
   # (`cargo xtask pins --check`), que es la primera compilación del workspace,
-  # tras restaurar las cachés y activar `sccache`, y falla antes de compilar el
-  # producto si algún pin diverge del JSON. No genera pasos de instalación: la
+  # tras restaurar las cachés (y activar `sccache` en los jobs que lo usan),
+  # y falla antes de compilar el producto si algún pin diverge del JSON. No genera pasos de instalación: la
   # CI conserva sus comandos (`apt`, `brew`, MSYS2).
   validate_pins:
     description: Valida los pines del pipeline contra packaging/pins.json (falla si divergen)
@@ -827,12 +820,10 @@ commands:
             export PATH="$HOME/.cargo/bin:$PATH"
             test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
             target/release/ai-voice-interconnector version
-            # En jobs de release la versión del binario debe coincidir con el
-            # tag. La preintegración de rama no tiene CIRCLE_TAG: allí el smoke
-            # verifica que el binario arranque y deja la comparación al job de tag.
-            if [ -n "${CIRCLE_TAG:-}" ]; then
-              test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
-            fi
+            # La versión del binario debe coincidir con el tag. El pipeline solo
+            # corre en tags `v*`, así que un CIRCLE_TAG ausente es un error.
+            : "${CIRCLE_TAG:?el pipeline solo corre en tags v*}"
+            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
             # Valida la voz de fábrica 'default' (runner limpio: voice list
             # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
             # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
@@ -1245,8 +1236,7 @@ jobs:
   coverage:
     # Job de cobertura Rust (cargo-llvm-cov, LLVM instrumentation). Corre solo
     # en Linux x86_64: coverage es agnóstico de SO, duplicarlo triplicaría coste
-    # sin señal nueva. Reemplaza a pytest-cov; genera lcov.info y resumen por
-    # líneas. Sin gate de % por diseño — solo valida
+    # sin señal nueva. Genera lcov.info y resumen por líneas. Sin gate de % por diseño — solo valida
     # que la instrumentación no rompa la suite.
     # Es, a propósito, la única ejecución del CI con el arnés de `cargo test`
     # (todas las pruebas de un binario como hilos del mismo proceso): el modo de
@@ -1392,8 +1382,8 @@ jobs:
     # `openssl s_server` HTTPS local: detección, resolución, integridad,
     # delegación y confirmación con terminal.
     docker:
-      # Digest del índice multi-arch de cimg/base:2026.09 (pin reproducible;
-      # el mismo que publish-release). Renovar a mano junto con su tag.
+      # Digest del índice multi-arch de cimg/base:2026.09 (pin reproducible).
+      # Renovar a mano junto con su tag.
       - image: cimg/base:2026.09@sha256:668174490adc470cd34eb3aa178939d65f817bc13ef657a94ff0278338f7d8da
     steps:
       - checkout
@@ -1660,7 +1650,8 @@ jobs:
             if (-not $j.PSObject.Properties['version'] -or -not $j.version) { throw "version --json: campo 'version' ausente o vacío: $jsonRaw" }
             if (-not $j.PSObject.Properties['name'] -or $j.name -ne 'ai-voice-interconnector') { throw "version --json: campo 'name' incorrecto: $jsonRaw" }
             if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '6') { throw "version --json: campo 'schema_version' != '6': $jsonRaw" }
-            $expectedTag = $env:CIRCLE_TAG; if ($expectedTag) { $expectedTag = $expectedTag.TrimStart('v'); if ($j.version -ne $expectedTag) { throw "version --json: version '$($j.version)' != CIRCLE_TAG '$expectedTag' (tag=$env:CIRCLE_TAG)" } }
+            if (-not $env:CIRCLE_TAG) { throw "el pipeline solo corre en tags v*: falta CIRCLE_TAG" }
+            $expectedTag = $env:CIRCLE_TAG.TrimStart('v'); if ($j.version -ne $expectedTag) { throw "version --json: version '$($j.version)' != CIRCLE_TAG '$expectedTag' (tag=$env:CIRCLE_TAG)" }
             Write-Host "version --json OK: name=$($j.name) version=$($j.version) schema_version=$($j.schema_version)"
             # Valida que la voz de fábrica 'default' quede registrada en un
             # runner limpio (voice list no carga el modelo y auto-inicializa
@@ -1682,7 +1673,6 @@ jobs:
       - cargo_save_target:
           os: windows
           variant: full
-          when: on_success
       - tts_engine_cachekey
       - restore_cache:
           keys:
@@ -1739,12 +1729,9 @@ jobs:
             Write-Host "[STEP] Empaquetar bundle con xtask package - INICIO"
             $ErrorActionPreference = "Stop"
             $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-            if ($env:CIRCLE_TAG) {
-              $TagVersion = $env:CIRCLE_TAG -replace '^v',''
-              cargo xtask package --expect-version "$TagVersion"
-            } else {
-              cargo xtask package
-            }
+            if (-not $env:CIRCLE_TAG) { throw "el pipeline solo corre en tags v*: falta CIRCLE_TAG" }
+            $TagVersion = $env:CIRCLE_TAG -replace '^v',''
+            cargo xtask package --expect-version "$TagVersion"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
@@ -1875,7 +1862,6 @@ jobs:
       - cargo_save_target:
           os: linux-el8
           variant: full
-          when: on_success
       - sccache_save_cache:
           os: linux-el8
           variant: full
@@ -1897,11 +1883,7 @@ jobs:
           command: |
             echo "[STEP] Empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            if [ -n "${CIRCLE_TAG:-}" ]; then
-              cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-            else
-              cargo xtask package
-            fi
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
           key: ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
@@ -1928,7 +1910,8 @@ jobs:
     # Linux ARM64 nativo (no cross-compile): Docker arm.medium ejecuta
     # aarch64 real, evitando toolchain de cross-compilación y sysroot.
     # Sin test-linux-arm64 (suite mockeada arch-independiente), el smoke
-    # test de este build es el único gate del stack aarch64 (binario nativo).
+    # test de este build y las dos verify-portability-arm64 son las únicas
+    # validaciones del binario aarch64 nativo.
     # Misma imagen manylinux_2_28 que build-linux-x64, en su variante aarch64:
     # suelo de glibc 2.28.
     docker:
@@ -1967,8 +1950,8 @@ jobs:
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: sccache --show-stats
-      # Gate de facto ARM64: no hay test-linux-arm64 (suite mockeada),
-      # así que este smoke test es la única validación del stack aarch64.
+      # No hay test-linux-arm64 (suite mockeada): este smoke test es, junto con
+      # las dos verify-portability-arm64, la única validación del stack aarch64.
       - smoke_test_unix:
           label: "Linux ARM64"
       - tts_engine_cachekey
@@ -2001,7 +1984,6 @@ jobs:
       - cargo_save_target:
           os: linux-el8
           variant: full
-          when: on_success
       - sccache_save_cache:
           os: linux-el8
           variant: full
@@ -2023,11 +2005,7 @@ jobs:
           command: |
             echo "[STEP] Empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            if [ -n "${CIRCLE_TAG:-}" ]; then
-              cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-            else
-              cargo xtask package
-            fi
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
           key: ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
@@ -2152,7 +2130,6 @@ jobs:
       - cargo_save_target:
           os: macos
           variant: full
-          when: on_success
       - sccache_save_cache:
           os: macos
           variant: full
@@ -2175,11 +2152,7 @@ jobs:
           command: |
             echo "[STEP] Empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            if [ -n "${CIRCLE_TAG:-}" ]; then
-              cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-            else
-              cargo xtask package
-            fi
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
           key: ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>

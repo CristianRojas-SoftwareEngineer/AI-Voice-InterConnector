@@ -57,7 +57,7 @@ pub(crate) const FFMPEG_BTBN_BUILD: &str = "n9.0.2-35-g9a9b70bb8c";
 const FFMPEG_BTBN_COMMIT: &str = "937868360a21d711ec94a33f5591d345ad9b7754";
 
 /// Marcador de versión dentro de `ort-bundle/`: lo escribe una descarga de este
-/// comando y el job de CI que arma el bundle. Un bundle sin marcador tiene una
+/// comando, también en la CI. Un bundle sin marcador tiene una
 /// versión desconocida y no se reutiliza. Es la única fuente de este nombre en
 /// `xtask`.
 pub(crate) const ORT_MARKER: &str = ".ort-version";

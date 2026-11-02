@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.41.0 — 2026-11-02](#0410--2026-11-02)
 - [0.40.1 — 2026-11-01](#0401--2026-11-01)
 - [0.40.0 — 2026-11-01](#0400--2026-11-01)
@@ -128,6 +129,17 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Tras reorganizar el pipeline en 0.41.0, varios documentos y comentarios seguían describiendo el grafo anterior (builds condicionados por las puertas, un `SHA256SUMS.txt` sobre 6 ficheros, 7 imágenes `cimg/rust`), y el config conservaba ramas para corridas sin tag y un parámetro `when` que ningún job cambiaba. Esta versión alinea la documentación con el pipeline vigente y retira esos restos, de modo que lo descrito y lo ejecutado coincidan.
+
+### Cambiado
+
+- `CONTRIBUTING.md`, `SECURITY.md` y `docs/` (`CI.md`, `BUILD.md`, `DISTRIBUTION.md`, `GOAL.md`, `RELEASING.md`, `DESIGN.md`) describen el pipeline vigente: las puertas condicionan la publicación y no los builds, `SHA256SUMS.txt` cubre los 12 ficheros publicados, `validate-licenses` incluye `changelog --check` y `comments --check`, `verify-portability` comprueba el artefacto antes de publicarlo y `language --check` solo corre en el hook `pre-commit`.
+- Los smoke tests y el empaquetado de los cuatro builds exigen `CIRCLE_TAG` y fallan si falta, en lugar de tener una rama sin tag que ningún workflow ejecuta.
+- `cargo_save_target` y `msys2_save_cache` fijan `when: on_success` en lugar de recibirlo como parámetro, y la prueba de contrato comprueba ese valor en ambos commands.
+- `forward_stft` e `inverse_stft` de `denoise` solo se compilan en pruebas, donde sirven de oráculo de `process_streaming`.
 
 ## [0.41.0] — 2026-11-02
 

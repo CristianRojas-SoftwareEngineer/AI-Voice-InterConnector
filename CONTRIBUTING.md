@@ -94,7 +94,8 @@ cargo test --all --verbose          # tests (avi-core/audio/tts/stt/translation/
 cargo fmt --all --check
 cargo clippy --all-targets
 
-# Puertas de política y de licencias MPL-2.0 (las mismas de pre-commit y de CI)
+# Puertas de política y de licencias MPL-2.0 (las mismas de pre-commit; la CI
+# ejecuta todas salvo `language --check`)
 cargo xtask language --check
 cargo xtask comments --check
 cargo xtask headers --check
@@ -143,7 +144,7 @@ En Git Bash de Windows, anteponer `MSYS_NO_PATHCONV=1` a `docker run` para que n
 
 Todo `.ps1` del repositorio (bootstrap y suite) se escribe en ASCII puro y sin BOM: comentarios sin tildes y mensajes al usuario compuestos con `[char]`. `install.tests.ps1` lo verifica. Sus pruebas de tubería (`irm | iex`) necesitan `pwsh` en el PATH para no omitirse. La suite cubre también el entorno con `PSModulePath` heredado de PowerShell 7: la prueba construye esa contaminación a propósito (el directorio `Modules` de `pwsh` delante del `PSModulePath`), así que no depende del anfitrión que lance la suite.
 
-Si modificas un bootstrap, actualiza su suite; los tres jobs (`test-bootstrap-*`) son puerta de los 4 builds en CI.
+Si modificas un bootstrap, actualiza su suite; los tres jobs (`test-bootstrap-*`) son puerta de `publish-release` en CI.
 
 ## Dependencias y lockfile
 

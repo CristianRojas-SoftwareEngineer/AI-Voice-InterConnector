@@ -111,7 +111,7 @@ AI-Voice-InterConnector/
 │   └── bootstrap/                      # bats (openssl s_server) + Pester (Serve.ps1) de los dos bootstrap
 ├── Cargo.toml                          # Workspace Rust (version = X.Y.Z, espejo de src/main.rs)
 ├── Cargo.lock
-├── rust-toolchain.toml                 # Versión de Rust fijada para desarrollo y CI (único archivo nuevo en la raíz)
+├── rust-toolchain.toml                 # Versión de Rust fijada para desarrollo y CI
 ├── .circleci/config.yml                # Pipeline Rust (cargo test/build + publish-release)
 └── docs/                               # ver el índice en README.md#documentación
 ```

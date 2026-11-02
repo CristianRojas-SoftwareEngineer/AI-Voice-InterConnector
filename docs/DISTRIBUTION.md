@@ -175,10 +175,11 @@ fricción de SmartScreen/Gatekeeper.
 
 ## Flujo de publicación (CI)
 
-En cada tag `v*`, tras la triple puerta de tests (`test-linux`, `test-windows`,
-`test-macos`) y `coverage`, los cuatro `build-*` compilan el binario, lo empaquetan
-con los documentos de licencia en el archivo comprimido de su target y lo
-persisten al workspace. Luego:
+En cada tag `v*`, en paralelo con las puertas (tests, `coverage`, bootstrap y
+licencias), los cuatro `build-*` compilan el binario, lo empaquetan con los
+documentos de licencia en el archivo comprimido de su target y lo persisten al
+workspace. Luego, cuando han pasado todas las puertas, los builds y las
+verificaciones de portabilidad:
 
 1. `publish-release` estampa la versión del tag en ambos bootstrap, recoge los
    4 archivos, los 4 `ffmpeg-*-buildconf-*.txt` persistidos por los builds y los

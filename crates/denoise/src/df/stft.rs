@@ -118,6 +118,10 @@ impl StftHelper {
 
     /// Calcula la STFT de una señal con padding.
     /// Retorna una matriz de frames, cada frame con 481 bins complejos.
+    ///
+    /// Solo existe en pruebas: junto con `inverse_stft` es el oráculo por lotes
+    /// con el que se compara `process_streaming`, la ruta de producción.
+    #[cfg(test)]
     pub fn forward_stft(&self, padded_signal: &[f32]) -> Vec<Vec<Complex32>> {
         let num_frames = (padded_signal.len().saturating_sub(FFT_SIZE)) / HOP_SIZE + 1;
         let mut frames = Vec::with_capacity(num_frames);
@@ -158,6 +162,9 @@ impl StftHelper {
     ///
     /// Se procesan **todos** los frames sin descartar ninguno: la referencia
     /// conserva todas las salidas del grafo y solo desplaza el recorte.
+    ///
+    /// Solo existe en pruebas, como oráculo de `process_streaming`.
+    #[cfg(test)]
     pub fn inverse_stft(&self, frames: &[Vec<Complex32>], target_len: usize) -> Vec<f32> {
         let num_frames = frames.len();
         if num_frames == 0 || target_len == 0 {

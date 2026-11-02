@@ -105,7 +105,7 @@ La primera instalación en cada SO la cubren dos bootstrap **versionados por
 release** (`packaging/bootstrap/install.sh` en Linux y macOS, `install.ps1` en
 Windows): `publish-release` estampa en ellos la versión del tag y los publica
 como assets del release junto a los 4 archivos, con `SHA256SUMS.txt` calculado
-sobre los 6 ficheros (ver «Artefactos sin firmar» abajo). Se ejecutan con
+sobre los 12 ficheros (ver «Artefactos sin firmar» abajo). Se ejecutan con
 `curl | sh` / `irm | iex` desde `releases/latest/download`: nada se sirve
 desde `main`. La mitigación de ese patrón —ejecutar contenido remoto sin
 inspeccionarlo antes— es común a ambos: **el propio bootstrap verifica el

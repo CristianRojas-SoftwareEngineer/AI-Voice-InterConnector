@@ -259,7 +259,7 @@ en `.circleci/config.yml`. Con el tag publicado, ejecuta sin intervención:
    | `test-linux`, `test-windows`, `test-macos` | `cargo nextest run --all` en cada SO nativo |
    | `coverage` | Cobertura de la suite, con todas las pruebas de un binario en un mismo proceso (arnés de `cargo test`) |
    | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de `tests/bootstrap/`: bats contra `openssl s_server` y Pester contra `Serve.ps1` |
-   | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render desde los pines, el inventario y los avisos de `THIRD-PARTY-LICENSES.md` con las dependencias distribuidas, y todo archivo propio lleva la cabecera MPL-2.0 (`headers --check`); y, con `changelog --check`, que `CHANGELOG.md` tenga la sección `[X.Y.Z]`, su entrada del índice/ancla y su enlace de comparación, sin `TODO: curar` ni `[No publicado]` |
+   | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render desde los pines, el inventario y los avisos de `THIRD-PARTY-LICENSES.md` con las dependencias distribuidas, todo archivo propio lleva la cabecera MPL-2.0 (`headers --check`) y los comentarios cumplen su política (`comments --check`); y, con `changelog --check`, que `CHANGELOG.md` tenga la sección `[X.Y.Z]`, su entrada del índice/ancla y su enlace de comparación, sin `TODO: curar` ni `[No publicado]` |
 
 2. **Builds.** `build-windows-x64`, `build-linux-x64`, `build-linux-arm64` y
    `build-darwin-arm64`:

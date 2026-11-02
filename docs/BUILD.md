@@ -376,7 +376,7 @@ antes de publicar el artefacto, ejecuta en este orden:
    [Auditoría de dependencias](#auditoría-de-dependencias)).
 4. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
    archivo empaquetado en un sandbox con las cuatro raíces reubicadas, y
-   `--version` del binario instalado. Los jobs permanentes comprueban además
+   `--version` del binario instalado. Los cuatro builds comprueban además
    `speech denoise --help`, el rechazo del alias raíz `denoise` y que el FFmpeg
    instalado arranque (`-version` en Unix y Windows).
 5. En Linux, la verificación de portabilidad del artefacto en salas limpias, de
