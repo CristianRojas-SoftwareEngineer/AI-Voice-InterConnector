@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.41.0 — 2026-11-02](#0410--2026-11-02)
 - [0.40.1 — 2026-11-01](#0401--2026-11-01)
 - [0.40.0 — 2026-11-01](#0400--2026-11-01)
 - [0.39.0 — 2026-11-01](#0390--2026-11-01)
@@ -129,7 +129,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.41.0] — 2026-11-02
 
 El pipeline de release de 0.40.1 tardó casi 30 minutos, y buena parte de ese tiempo no aportaba nada: los cuatro builds esperaban a que terminaran todas las puertas aunque no consumen nada de ellas, `test-windows` compilaba dos veces la cadena de C de `cc` porque la suite y los pasos de `xtask` usaban entornos MSVC distintos, `sccache` subía 3 GiB por variante en cada corrida, cada job descargaba y descomprimía FFmpeg y PowerShell 7 de nuevo, `xtask` comprimía el paquete con un deflate sin optimizar y los jobs pequeños compilaban `xtask` desde cero. Ahora los builds corren en paralelo con las puertas, que siguen bloqueando la publicación, y cada job reutiliza lo que ya verificó, sin quitar ninguna validación.
 
@@ -3847,3 +3847,4 @@ estado con el que nace el producto.
 [0.39.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.38.1...v0.39.0
 [0.40.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.39.0...v0.40.0
 [0.40.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.40.0...v0.40.1
+[0.41.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.40.1...v0.41.0
