@@ -7,6 +7,7 @@
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
 use anyhow::{anyhow, Result};
+use avi_process::loopback::Connection;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -764,12 +765,14 @@ impl Qwen3TtsEngine {
         }
         let budget = avi_core::synthesis_budget(text.chars().count());
         let body = build_tts_body(text, voice, options, None, None)?.to_string();
+        // Petición de trabajo: debe poder entrar en una cola que se vacía.
         let (status, bytes) = http_exchange(
             &format!("{}/v1/tts", url),
             "POST",
             Some(&body),
             budget,
             Some(cancel),
+            Connection::Work,
         )?;
         if (200..300).contains(&status) {
             std::fs::write(out_path, bytes)?;
@@ -926,12 +929,17 @@ const CANCEL_POLL: Duration = Duration::from_millis(100);
 /// socket se cierra al soltarse, y ese cierre es la señal con la que el motor
 /// aborta la generación. Por eso nunca se cierra la mitad de escritura tras
 /// enviar la petición: el motor lo interpretaría como un abandono.
+///
+/// `connection` declara el uso: una sonda (`Connection::Probe`) se rechaza al
+/// instante si nadie escucha; una petición de trabajo (`Connection::Work`)
+/// conserva los reintentos de conexión del sistema.
 fn http_exchange(
     url: &str,
     method: &str,
     body: Option<&str>,
     timeout: Duration,
     cancel: Option<&AtomicBool>,
+    connection: Connection,
 ) -> Result<(u16, Vec<u8>)> {
     let deadline = Instant::now() + timeout;
     let timed_out = || anyhow::Error::new(SynthesisTimeout { budget: timeout });
@@ -940,7 +948,7 @@ fn http_exchange(
     let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))?
         .next()
         .ok_or_else(|| anyhow!("No se pudo resolver {}:{}", host, port))?;
-    let mut stream = std::net::TcpStream::connect_timeout(&addr, timeout)?;
+    let mut stream = avi_process::loopback::connect_timeout(&addr, timeout, connection)?;
     let is_timeout = |e: &std::io::Error| {
         matches!(
             e.kind(),
@@ -1530,9 +1538,18 @@ pub mod resident {
             if let Some(status) = child.try_wait()? {
                 return Err(crashed(status));
             }
-            let ok = http_exchange(&url, "GET", None, Duration::from_millis(interval_ms), None)
-                .map(|(status, _)| (200..300).contains(&status))
-                .unwrap_or(false);
+            // Como sonda, un motor que aún no escucha se rechaza al instante y el
+            // presupuesto `retries × interval_ms` es el real también en Windows.
+            let ok = http_exchange(
+                &url,
+                "GET",
+                None,
+                Duration::from_millis(interval_ms),
+                None,
+                Connection::Probe,
+            )
+            .map(|(status, _)| (200..300).contains(&status))
+            .unwrap_or(false);
             if ok {
                 return Ok(());
             }
@@ -2824,6 +2841,7 @@ fn main() {
             Some("{}"),
             budget,
             Some(&AtomicBool::new(false)),
+            Connection::Work,
         )
         .expect_err("un servidor mudo debe agotar el presupuesto");
         let timeout = err
@@ -2856,6 +2874,7 @@ fn main() {
             Some("{}"),
             budget,
             None,
+            Connection::Work,
         )
         .expect_err("el goteo no debe extender el plazo total");
         let elapsed = started.elapsed();
@@ -2914,6 +2933,7 @@ fn main() {
             Some("{}"),
             Duration::from_secs(10),
             Some(&cancel),
+            Connection::Work,
         )
         .expect_err("la bandera debe cancelar el intercambio");
         let ended = Instant::now();
