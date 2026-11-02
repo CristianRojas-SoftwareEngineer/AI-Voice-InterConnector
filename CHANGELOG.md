@@ -142,10 +142,15 @@ En Windows, cada `cargo xtask clean` imprimía un aviso con jerga del sistema (�
 
 - `cargo xtask clean` cierra con «Limpieza completada: N ruta(s).» cuando todo se borró en el acto, o con «Limpieza programada» cuando `target/` sigue borrándose en segundo plano. La nota sobre una interrupción de cargo sale solo si el limpiador no pudo separarse. Ya no imprime una línea por ruta borrada ni el aviso con jerga.
 - `self uninstall`, `self update` y `self install` informan el borrado programado y, si el limpiador depende del proceso que ejecuta el comando, indican qué hacer: borrar la ruta a mano tras `self uninstall`, o dejar que la recuperación de la siguiente operación recoja el resto tras `self update` y `self install`.
+- **Cambio incompatible del protocolo del daemon:** `DAEMON_SCHEMA_VERSION` sube a `"6"`. El `result` de `/synthesize` ya no incluye `t3_time` ni `s3gen_time` (siempre `0.0`, heredadas de un motor anterior) e incluye `translated`, el texto realmente sintetizado; además acepta un `seed` opcional (entero entre 0 e `i32::MAX`, `usage_error` 400 si no cumple). Un daemon de la versión anterior en ejecución debe reiniciarse tras actualizar.
+- El menú de `speech synthesize --play` imprime las cuatro opciones del contrato («Reproducir otra vez», «Aceptar y guardar», «Rechazar y regenerar», «Rechazar y descartar»).
 
 ### Corregido
 
 - Los mensajes de borrado programado ya no quedan pegados a la línea de fase en un terminal.
+- «Rechazar y regenerar» en `speech synthesize --play` produce una toma distinta: la primera conserva el seed de producción y cada regeneración usa un seed nuevo, en la ruta directa y en la del daemon.
+- La regeneración de `--play` muestra «Sintetizando otra toma…» y deja la línea de progreso cerrada antes del menú.
+- `speech synthesize --daemon` guarda en el sidecar el texto traducido, igual que la ruta directa.
 
 ## [0.41.4] — 2026-11-02
 

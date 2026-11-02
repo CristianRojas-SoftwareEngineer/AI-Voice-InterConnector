@@ -14,12 +14,12 @@ use std::io::Write;
 pub const CLI_SCHEMA_VERSION: &str = "6";
 
 /// Versión del **protocolo del daemon** (NDJSON y cabecera `x-schema-version`); el
-/// valor vigente es `"5"`.
+/// valor vigente es `"6"`.
 ///
 /// Es un contrato independiente del envelope de la CLI y sube por sus propios
 /// cambios incompatibles, con la misma regla: retirar o renombrar una clave, o
 /// cambiar su significado, obliga a subirla; añadir una clave nueva no.
-pub const DAEMON_SCHEMA_VERSION: &str = "5";
+pub const DAEMON_SCHEMA_VERSION: &str = "6";
 
 /// Inserta `schema_version` en un objeto JSON sin imprimirlo.
 ///

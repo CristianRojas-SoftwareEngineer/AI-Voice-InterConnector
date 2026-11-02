@@ -433,7 +433,7 @@ Síntesis completada: <ruta del WAV persistido> (N s).
 - `--text, -t` (requerido): Texto a sintetizar
 - `--label, -l` (requerido): Etiqueta de la locución en el almacén (normalizada a minúsculas)
 - `--voice, -v`: Nombre de la voz a usar (default: `default`)
-- `--play`: Reproduce el WAV tras guardar
+- `--play`: Reproduce la toma y abre un menú interactivo; solo guarda al aceptar
 - `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
 - `--source-language`: Idioma del texto de entrada (`es` o `en`; por defecto igual a `--target-language`, sin traducir)
 - `--target-language`: Idioma/modelo de síntesis (`es` o `en`; default `es`; si difiere del origen, el texto se traduce antes de sintetizar)
@@ -459,9 +459,9 @@ y aparece un menú de cuatro opciones (por stderr; `--json` es incompatible con
 Opción [1-4]:
 ```
 
-- **Reproducir otra vez**: repite los mismos bytes en memoria, sin volver a sintetizar.
+- **Reproducir otra vez**: repite el mismo WAV temporal, sin volver a sintetizar.
 - **Aceptar y guardar**: persiste la toma que acabas de oír y termina con exit 0.
-- **Rechazar y regenerar**: sintetiza otra toma y vuelve a preguntar.
+- **Rechazar y regenerar**: sintetiza una toma nueva (suena distinta de las anteriores), muestra «Sintetizando otra toma…» y vuelve a preguntar.
 - **Rechazar y descartar**: termina con exit 0 sin guardar nada.
 
 Ctrl-D en la pregunta equivale a «rechazar y descartar». `speech synthesize

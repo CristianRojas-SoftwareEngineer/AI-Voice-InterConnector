@@ -81,6 +81,13 @@ fn lock_live(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Seed de la config de producción: el de la primera toma de cada síntesis.
+pub const PRODUCTION_SEED: u64 = 4;
+
+/// Mayor seed que acepta el motor: lo lee como `int` de 32 bits con signo y
+/// descarta los negativos, así que el techo es `i32::MAX`.
+pub const MAX_ENGINE_SEED: u64 = i32::MAX as u64;
+
 /// Opciones de generación para la síntesis de voz (API agnóstica del motor)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationOptions {
@@ -134,9 +141,18 @@ impl GenerationOptions {
     pub fn production(language: &str) -> Self {
         Self {
             temperature: 0.35,
-            seed: Some(4),
+            seed: Some(PRODUCTION_SEED),
             ..Self::new(language)
         }
+    }
+
+    /// Sustituye el seed cuando se indica uno; con `None` conserva el que ya
+    /// tenían las opciones (el de producción).
+    pub fn with_seed_override(mut self, seed: Option<u64>) -> Self {
+        if let Some(s) = seed {
+            self.seed = Some(s);
+        }
+        self
     }
 
     /// Resuelve la temperatura opcional del CLI a opciones efectivas: sin flag
@@ -1978,6 +1994,30 @@ mod tests {
         assert_eq!(p.top_p, DEFAULT_TOP_P);
         assert_eq!(p.rep_penalty, DEFAULT_REP_PENALTY);
         assert_eq!(p.language, "es");
+    }
+
+    /// `with_seed_override(None)` conserva el seed de producción; con `Some`
+    /// solo cambia el seed.
+    #[test]
+    fn generation_options_with_seed_override_resolves_override() {
+        let kept = GenerationOptions::production("es").with_seed_override(None);
+        assert_eq!(kept.seed, Some(PRODUCTION_SEED));
+        let o = GenerationOptions::production("es").with_seed_override(Some(123));
+        assert_eq!(o.seed, Some(123));
+        assert_eq!(o.temperature, 0.35);
+        assert_eq!(o.top_k, DEFAULT_TOP_K);
+        assert_eq!(o.top_p, DEFAULT_TOP_P);
+        assert_eq!(o.rep_penalty, DEFAULT_REP_PENALTY);
+        assert_eq!(o.language, "es");
+    }
+
+    /// El seed sobrescrito viaja en el cuerpo HTTP de la petición.
+    #[test]
+    fn build_tts_body_carries_overridden_seed() {
+        let voice = VoiceEngine::Preset("ryan".to_string());
+        let opts = GenerationOptions::production("es").with_seed_override(Some(777));
+        let body = build_tts_body("Hola", &voice, &opts, None, None).expect("idioma válido");
+        assert_eq!(body.get("seed").and_then(|v| v.as_u64()), Some(777));
     }
 
     /// `with_temperature(None, ..)` equivale a `production(..)`; con `Some` solo

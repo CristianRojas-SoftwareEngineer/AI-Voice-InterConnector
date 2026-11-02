@@ -345,7 +345,7 @@ async fn health_matches_fixture() {
     let fixture_val = fixture("daemon_health.json");
     assert_eq!(actual["status"], fixture_val["status"]);
     assert_eq!(actual["warm"], fixture_val["warm"]);
-    assert_eq!(actual["schema_version"], Value::String("5".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
     // Las claves aditivas `ct2` y `stt` no cambian `schema_version`.
     assert_eq!(actual["engine"], fixture_val["engine"]);
 }
@@ -463,11 +463,11 @@ async fn synthesize_emits_contract_ndjson_stream() {
         .collect();
     assert!(!events.is_empty(), "debe haber al menos un evento");
 
-    // Invariante de envelope: schema_version=5 en todo evento.
+    // Invariante de envelope: todo evento lleva el schema_version vigente del daemon.
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("5".to_string()),
+            Value::String("6".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -808,11 +808,11 @@ async fn voices_clone_daemon_precomputed_true() {
         state.tts_engine.shutdown();
     }
     assert!(!events.is_empty(), "debe haber al menos un evento");
-    // Invariante de envelope: schema_version=5 en todo evento.
+    // Invariante de envelope: todo evento lleva el schema_version vigente del daemon.
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("5".to_string()),
+            Value::String("6".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -1176,6 +1176,9 @@ async fn synthesize_invalid_fields_return_usage_error() {
         ("target_language", serde_json::json!("es-latam")),
         ("voice", serde_json::json!(7)),
         ("temperature", serde_json::json!("alta")),
+        ("seed", serde_json::json!("x")),
+        ("seed", serde_json::json!(-1)),
+        ("seed", serde_json::json!(2147483648u64)),
     ] {
         let mut body = valid.clone();
         body[key] = value;
@@ -1302,11 +1305,11 @@ async fn dub_emits_contract_ndjson_stream_naming_the_operation() {
         .collect();
     assert!(!events.is_empty(), "debe haber al menos un evento");
 
-    // Invariante de envelope: schema_version=5 en todo evento.
+    // Invariante de envelope: todo evento lleva el schema_version vigente del daemon.
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("5".to_string()),
+            Value::String("6".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -1502,13 +1505,45 @@ async fn synthesize_preset_delivers_audio_and_leaves_no_temporary() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let audio = result_audio(&ndjson_events(&bytes));
+    let events = ndjson_events(&bytes);
+    let audio = result_audio(&events);
     assert!(audio.starts_with(b"RIFF"), "se esperaba un WAV");
     assert!(audio.len() > 44, "el WAV no debe estar vacío");
+    // Mismo idioma de origen y destino: `translated` es el texto de la petición.
+    let result = events.last().expect("evento final");
+    assert_eq!(result["translated"], "Hola, esto es una prueba.");
+    assert!(result.get("t3_time").is_none());
+    assert!(result.get("s3gen_time").is_none());
     assert!(
         temp_wavs("avi_daemon_synth_").is_empty(),
         "la ruta feliz no debe dejar temporal"
     );
+
+    // El seed enviado gobierna la toma: mismo seed, mismo audio; otro seed, otro audio.
+    let with_seed = |seed: u64| {
+        let state = clone_state();
+        async move {
+            let (status, bytes) = send_to(
+                state,
+                post_json(
+                    "/synthesize",
+                    serde_json::json!({
+                        "text": "Hola, esto es una prueba.", "voice": "ryan",
+                        "source_language": "es", "target_language": "es",
+                        "seed": seed
+                    }),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            result_audio(&ndjson_events(&bytes))
+        }
+    };
+    let a = with_seed(11).await;
+    let b = with_seed(11).await;
+    let c = with_seed(12).await;
+    assert_eq!(a, b, "el mismo seed debe dar el mismo audio");
+    assert_ne!(a, c, "otro seed debe dar otro audio");
 }
 
 /// El idioma de destino `es` y `en` de un preset producen audio no vacío.

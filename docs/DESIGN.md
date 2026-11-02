@@ -133,7 +133,7 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Parámetros** | 0.6B |
 | **Clonación de voz** | referencia de voz vía archivo (`--speech-reference`) o micrófono (`--mic`; ~10 s recomendados, máximo 30 s); se guarda solo la huella de timbre (sin transcripción) |
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
-| **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 |
+| **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 (`PRODUCTION_SEED`, primera toma; las regeneraciones de `--play` lo sustituyen con `with_seed_override`) |
 
 Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/CLAUDE.md` para el contrato de invocación: el residente se lanza como `--serve <puerto> --host 127.0.0.1 -j 4 --stream --watch-stdin` (más `--load-voice <qvoice> --graft` cuando se le carga una voz clonada), y el clonado por proceso local como `-d <modelo> --ref-audio <wav> --xvector-only --save-voice <out> --voice-name <nombre> --watch-stdin`. El residente no lleva `--int4`: en el modelo 0.6B cuantizaría el code predictor y la salida dejaría de ser determinista y saldría truncada (p. ej. con la voz `ryan`). El idioma del producto (`es`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error.
 

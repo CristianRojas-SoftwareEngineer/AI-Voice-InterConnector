@@ -279,7 +279,7 @@ type SharedState = Arc<DaemonState>;
 /// Inserta `schema_version` en un envelope objeto, reutilizado por handlers que
 /// devuelven JSON directamente.
 ///
-/// **El protocolo del daemon tiene su propia versión**, `DAEMON_SCHEMA_VERSION = 5`: el
+/// **El protocolo del daemon tiene su propia versión**, `DAEMON_SCHEMA_VERSION`: el
 /// emisor compartido de `avi-core` lo comparte con el envelope `--json` de la CLI,
 /// pero los dos son contratos independientes y sus versiones se gobiernan por
 /// separado. Por eso la versión se pasa explícitamente en vez de leerse de una
@@ -556,7 +556,7 @@ async fn health_handler(State(state): State<SharedState>) -> Json<Value> {
 /// POST /synthesize — síntesis con streaming NDJSON de progreso
 ///
 /// Contrato NDJSON vigente: `started` → `progress`(N)
-/// → `result`{`audio_b64`,`t3_time`,`s3gen_time`} OR `error`{`reason`,`message`}.
+/// → `result`{`audio_b64`,`translated`,`work_ms`} OR `error`{`reason`,`message`}.
 /// El motor `TtsEngine` no expone callback de progreso, por lo que se emite un
 /// único marcador `progress` genérico antes de sintetizar.
 async fn synthesize_handler(
@@ -592,9 +592,10 @@ async fn synthesize_handler(
             required_language(&payload, "source_language")?.to_string(),
             required_language(&payload, "target_language")?.to_string(),
             optional_temperature(&payload)?,
+            optional_seed(&payload)?,
         ))
     })();
-    let (voice, source_raw, target_raw, temperature) = match fields {
+    let (voice, source_raw, target_raw, temperature, seed) = match fields {
         Ok(fields) => fields,
         Err(e) => {
             return (
@@ -763,9 +764,13 @@ async fn synthesize_handler(
             name: voice_owned.clone(),
             qvoice_path,
         };
-        // Sin flag se usa la config de producción (temperature=0.35); con flag
-        // se sobrescribe la temperatura ya validada.
-        let options = GenerationOptions::with_temperature(temperature, &target_owned);
+        // Sin campos se usa la config de producción (temperature=0.35, seed de
+        // producción); con ellos se sobrescriben la temperatura y el seed ya
+        // validados.
+        let options = GenerationOptions::with_temperature(temperature, &target_owned)
+            .with_seed_override(seed);
+        // Texto realmente sintetizado, que el resultado devuelve al cliente.
+        let translated_text = text_final.clone();
         // Guardián del temporal: su dueño es el trabajo que escribe en él, no el
         // ámbito del handler. La propiedad pasa al `job` bloqueante y solo vuelve
         // al handler en el éxito, para que lea el WAV ya sintetizado y lo borre al
@@ -827,10 +832,9 @@ async fn synthesize_handler(
                             json!({
                                 "event": "result",
                                 "audio_b64": base64::engine::general_purpose::STANDARD.encode(&wav_bytes),
-                                // El motor no expone tiempos; por contrato el campo
-                                // existe y se reporta como 0.0.
-                                "t3_time": 0.0,
-                                "s3gen_time": 0.0,
+                                // Texto sintetizado (ya traducido si los idiomas
+                                // difieren; idéntico al de la petición si no).
+                                "translated": translated_text,
                                 // Ms de trabajo puro tras el lock (excluye la
                                 // espera en cola), como señal de rendimiento
                                 // separada de la de corrección.
@@ -1134,6 +1138,24 @@ fn optional_temperature(body: &Value) -> Result<Option<f32>, InputError> {
             .as_f64()
             .map(|t| Some(t as f32))
             .ok_or_else(|| InputError::usage("El campo 'temperature' debe ser numérico.".into())),
+    }
+}
+
+/// Seed opcional: si está presente debe ser un entero no negativo que el motor
+/// pueda leer (`0..=MAX_ENGINE_SEED`).
+fn optional_seed(body: &Value) -> Result<Option<u64>, InputError> {
+    match body.get("seed") {
+        None => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .filter(|s| *s <= avi_tts::MAX_ENGINE_SEED)
+            .map(Some)
+            .ok_or_else(|| {
+                InputError::usage(format!(
+                    "El campo 'seed' debe ser un entero entre 0 y {}.",
+                    avi_tts::MAX_ENGINE_SEED
+                ))
+            }),
     }
 }
 
@@ -3717,6 +3739,27 @@ mod tests {
         );
         let bad = optional_temperature(&json!({ "temperature": "alta" }));
         assert_eq!(bad.err().map(|e| e.reason), Some("usage_error"));
+    }
+
+    /// `seed` ausente es `None`; presente debe ser entero en `0..=i32::MAX`.
+    #[test]
+    fn optional_seed_validates_range_and_type() {
+        assert_eq!(optional_seed(&json!({})), Ok(None));
+        assert_eq!(optional_seed(&json!({ "seed": 7 })), Ok(Some(7)));
+        assert_eq!(optional_seed(&json!({ "seed": 0 })), Ok(Some(0)));
+        assert_eq!(
+            optional_seed(&json!({ "seed": i32::MAX })),
+            Ok(Some(i32::MAX as u64))
+        );
+        for bad in [
+            json!(i64::from(i32::MAX) + 1),
+            json!(-1),
+            json!(1.5),
+            json!("x"),
+        ] {
+            let r = optional_seed(&json!({ "seed": bad }));
+            assert_eq!(r.err().map(|e| e.reason), Some("usage_error"), "{bad}");
+        }
     }
 
     /// El motor y el estado comparten el registro: anotar un residente no borra

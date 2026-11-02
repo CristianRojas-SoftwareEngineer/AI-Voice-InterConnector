@@ -356,12 +356,16 @@ ai-voice-interconnector speech synthesize --text "Prueba del bucle interactivo."
 ```
 **Esperado**: sintetiza **una vez**, reproduce la toma, y en **stderr** muestra:
 ```
-Opciones: [1] mantener (reproducir de nuevo)  [2] guardar  [3] repetir (nueva síntesis)  [4] descartar
+¿Qué quieres hacer con esta toma?
+  1) Reproducir otra vez
+  2) Aceptar y guardar
+  3) Rechazar y regenerar
+  4) Rechazar y descartar
 Opción [1-4]:
 ```
 Prueba cada opción:
 - **`1`** → vuelve a reproducir la **misma** toma (sin re-sintetizar) y reaparece el menú.
-- **`3`** → **re-sintetiza** una toma nueva, la reproduce y reaparece el menú.
+- **`3`** → muestra «Sintetizando otra toma…», **re-sintetiza** una toma nueva, la reproduce y reaparece el menú sin que la línea de progreso quede pegada a él. Elige `3` varias veces: **cada toma debe sonar distinta** de las anteriores. Repite todo el procedimiento con `--no-daemon` y con `--daemon` para cubrir la ruta directa y la del daemon.
 - **`2`** → guarda la locución (**exit 0**); verifícalo con `ai-voice-interconnector speech list --json` (debe aparecer `demo_loop`).
 - **`4`** o **Ctrl-D (EOF)** → imprime `Descartado.` y sale **exit 0** **sin** guardar nada.
 

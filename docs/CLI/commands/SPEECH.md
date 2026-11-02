@@ -205,7 +205,7 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 | `--voice`, `-v` | string | `default` | Voz a usar |
 | `--label`, `-l` | string | — | Obligatorio. Etiqueta bajo la que se persiste la locución (se normaliza a minúsculas) |
 | `--force`, `-f` | flag | `false` | Sobrescribe una locución existente con la misma etiqueta |
-| `--play` | flag | `false` | Reproduce el WAV tras sintetizar |
+| `--play` | flag | `false` | Reproduce la toma y abre el menú interactivo; solo persiste al aceptar |
 | `--source-language` | `es`\|`en` | = `target-language` | Idioma del texto de entrada |
 | `--target-language` | `es`\|`en` | `es` | Idioma/modelo de síntesis; si difiere del origen, el texto se traduce antes de sintetizar |
 | `--temperature` | f32 | producción (`0.35`) | Override de muestreo; rango `0 < t <= 2.0` |
@@ -217,7 +217,10 @@ veces: antes de sintetizar (fast-fail, exit 6 sin pagar la síntesis) y de nuevo
 aceptar (opción 2), por si la etiqueta quedó ocupada mientras el bucle
 esperaba respuesta — si colisiona en ese instante, también exit 6. Rechazar y
 descartar (opción 4) o Ctrl-D terminan con exit 0 sin persistir nada; solo
-aceptar (opción 2) persiste la toma que sonó. `--play` es incompatible con
+aceptar (opción 2) persiste la toma que sonó. La primera toma usa el seed de
+producción; cada regeneración (opción 3) usa un seed nuevo, distinto de los
+anteriores, y muestra «Sintetizando otra toma…» sin dejar la línea de progreso
+pegada al menú. `--play` es incompatible con
 `--json` (exit 2 si se combinan) y exige terminal interactiva en la entrada
 estándar (exit 2 sin TTY, antes de sintetizar).
 
@@ -240,10 +243,12 @@ Validaciones y flujo local:
 
 La rama vía daemon repite las mismas validaciones de etiqueta/duplicado en el
 cliente antes de despachar la síntesis al daemon (`POST /synthesize`, consume
-el NDJSON y decodifica `audio_b64` del evento `result`), guarda el WAV
-temporal, aplica el mismo bucle de `--play` (o persiste directo sin él) y
-expone la ruta del WAV persistido — el mismo contrato de salida que la rama
-local.
+el NDJSON y decodifica `audio_b64` y `translated` del evento `result`; un
+`result` sin `translated` es `synthesis_failed`), guarda el WAV temporal,
+aplica el mismo bucle de `--play` (o persiste directo sin él; cada
+regeneración envía un `seed` explícito) y expone la ruta del WAV persistido.
+El sidecar guarda el texto realmente sintetizado (`translated`), igual que la
+rama local — el mismo contrato de salida y de persistencia.
 
 ### Contrato `--json`
 

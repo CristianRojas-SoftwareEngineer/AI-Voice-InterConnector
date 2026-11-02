@@ -165,7 +165,7 @@ El motor ya cuenta con los componentes necesarios:
 | ID | Requisito |
 | --- | --- |
 | **RNF-01** | **Cero dependencias externas adicionales**: Reutilizar `avi-audio` y `cpal` existentes sin añadir crates nuevos. |
-| **RNF-02** | **Estabilidad del protocolo IPC**: `DAEMON_SCHEMA_VERSION = 5` no se modifica. El endpoint `POST /voices/clone` sigue recibiendo `audio_b64`. |
+| **RNF-02** | **Estabilidad del protocolo IPC**: el clonado no altera el protocolo IPC del daemon ni su versión de esquema. El endpoint `POST /voices/clone` sigue recibiendo `audio_b64`. |
 | **RNF-03** | El WAV scratch local se limpia por RAII en salidas controladas. Una terminación forzosa o un fallo del filesystem puede dejar residuos para el barrido posterior; el WAV no se guarda en `VoiceStore`. |
 | **RNF-04** | La captura ocurre en CLI; en destino daemon, el WAV se transmite al daemon mediante `POST /voices/clone`. No se conserva el WAV en `VoiceStore`; `reference.qvoice` sí es un dato derivado persistente. |
 | **RNF-05** | **Paridad multiplataforma**: La captura mantiene el mismo contrato CLI; la disponibilidad de dispositivos y E2E se verifica en las plataformas accesibles. |
@@ -181,7 +181,7 @@ La captura reside en el proceso CLI (`avi-audio` con `cpal`) para acceder a la T
 
 ### 6.2 Formato de paso al daemon
 
-El CLI codifica el PCM 16 kHz mono capturado a WAV en memoria y lo transmite en base64 (`audio_b64`) al endpoint existente `POST /voices/clone`. Esto preserva intacto el protocolo IPC (`DAEMON_SCHEMA_VERSION = 5`) y el contrato del daemon.
+El CLI codifica el PCM 16 kHz mono capturado a WAV en memoria y lo transmite en base64 (`audio_b64`) al endpoint existente `POST /voices/clone`. Esto preserva intacto el protocolo IPC y el contrato del daemon.
 
 ### 6.3 Interacción push-to-talk y duración
 

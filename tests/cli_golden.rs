@@ -6063,7 +6063,7 @@ mod tts {
 
     /// Cuerpo de `/health` de un daemon en servicio y ya caliente.
     const HEALTH_WARM: &str =
-        r#"{"status":"ready","warm":"warm","engine":"rust_native","schema_version":"5"}"#;
+        r#"{"status":"ready","warm":"warm","engine":"rust_native","schema_version":"6"}"#;
 
     /// Un daemon propio que responde a `/health` sale `running` con su PID, el
     /// mismo que `daemon start` informa al lanzarlo.
@@ -8459,7 +8459,7 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
     let wav_b64 = silent_wav_b64(&body_wav);
     let fake = FakeDaemon::start(
         200,
-        serde_json::json!({ "event": "result", "audio_b64": wav_b64 }),
+        serde_json::json!({ "event": "result", "audio_b64": wav_b64, "translated": "Hola" }),
     );
     fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -8488,6 +8488,86 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
     );
 }
 
+/// `speech synthesize --daemon` guarda en el sidecar el texto `translated` que
+/// devuelve el daemon, no el de la petición.
+#[test]
+fn synthesize_daemon_persists_translated_text() {
+    let (sandbox, envs) = contract_sandbox("synthesize-translated");
+    let dir = sandbox.path();
+    let body_wav = dir
+        .join("child-tmp")
+        .join(format!("synth_body_{}.wav", std::process::id()));
+    let wav_b64 = silent_wav_b64(&body_wav);
+    let fake = FakeDaemon::start(
+        200,
+        serde_json::json!({
+            "event": "result", "audio_b64": wav_b64, "translated": "Hello there"
+        }),
+    );
+    fake.publish_in(&dir.join("data"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "speech",
+            "synthesize",
+            "--daemon",
+            "--text",
+            "Hola",
+            "--voice",
+            "default",
+            "--label",
+            "traducida",
+            "--source-language",
+            "es",
+            "--target-language",
+            "en",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "{actual}");
+    let (code, list) = run_json_env(&["--json", "speech", "list"], &envs);
+    assert_eq!(code, 0, "{list}");
+    assert!(
+        list.to_string().contains("Hello there"),
+        "el sidecar debe guardar el texto traducido: {list}"
+    );
+}
+
+/// Un `result` de `/synthesize` sin `translated` es un error, sin respaldo.
+#[test]
+fn synthesize_daemon_result_without_translated_fails() {
+    let (sandbox, envs) = contract_sandbox("synthesize-no-translated");
+    let dir = sandbox.path();
+    let body_wav = dir
+        .join("child-tmp")
+        .join(format!("synth_body_{}.wav", std::process::id()));
+    let wav_b64 = silent_wav_b64(&body_wav);
+    let fake = FakeDaemon::start(
+        200,
+        serde_json::json!({ "event": "result", "audio_b64": wav_b64 }),
+    );
+    fake.publish_in(&dir.join("data"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "speech",
+            "synthesize",
+            "--daemon",
+            "--text",
+            "Hola",
+            "--voice",
+            "default",
+            "--label",
+            "sin-traducido",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 1, "{actual}");
+    assert_eq!(actual["reason"], "synthesis_failed", "{actual}");
+}
+
 /// El guardián del temporal de `say` borra su WAV también cuando **la
 /// reproducción falla**. Vale lo dicho en el test del dub: el fallo se fuerza con
 /// audio ilegible, no confiando en que la máquina tenga o no dispositivo.
@@ -8495,7 +8575,9 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
 fn say_daemon_playback_failure_leaves_no_residue() {
     let fake = FakeDaemon::start(
         200,
-        serde_json::json!({ "event": "result", "audio_b64": unreadable_audio_b64() }),
+        serde_json::json!({
+            "event": "result", "audio_b64": unreadable_audio_b64(), "translated": "Hola"
+        }),
     );
     let (sandbox, envs) = contract_sandbox("say-playback-failed");
     let dir = sandbox.path();

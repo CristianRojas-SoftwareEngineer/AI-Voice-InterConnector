@@ -141,13 +141,17 @@ fn open_model_store() -> Result<ModelStore, CliError> {
 
 /// Síntesis directa de una voz del almacén del comando: resuelve su referencia
 /// clonada y pide al motor el idioma de destino (token del producto) con la
-/// temperatura opcional ya validada.
+/// temperatura opcional ya validada y el seed opcional (`None` usa el de
+/// producción).
+// Firma ancha deliberada: cada argumento mapea 1:1 a un dato de la síntesis.
+#[allow(clippy::too_many_arguments)]
 fn synthesize_voice_directly(
     engine: &Qwen3TtsEngine,
     voice_store: &VoiceStore,
     text: &str,
     voice: &str,
     temperature: Option<f32>,
+    seed: Option<u64>,
     language: &str,
     output_path: &PathBuf,
 ) -> Result<PathBuf, CliError> {
@@ -158,7 +162,8 @@ fn synthesize_voice_directly(
         name: voice.to_string(),
         qvoice_path,
     };
-    let options = avi_tts::GenerationOptions::with_temperature(temperature, language);
+    let options = avi_tts::GenerationOptions::with_temperature(temperature, language)
+        .with_seed_override(seed);
     engine
         .synthesize_with_options(text, &profile, &options, Some(output_path))
         .map_err(synthesis_cli_error)
@@ -2045,19 +2050,53 @@ fn menu_stdin() -> impl FnMut(&mut String) -> std::io::Result<usize> {
     |line: &mut String| std::io::stdin().read_line(line)
 }
 
+/// Seeds de las regeneraciones del menú `--play`: cada toma nueva usa un seed
+/// que no se ha usado antes en este menú, y nunca el de producción, que es el
+/// de la primera toma. El azar sale de la biblioteca estándar (`RandomState`
+/// se inicializa con claves aleatorias del sistema por instancia).
+struct RetakeSeeds {
+    used: Vec<u64>,
+}
+
+impl RetakeSeeds {
+    fn new() -> Self {
+        Self {
+            used: vec![avi_tts::PRODUCTION_SEED],
+        }
+    }
+
+    /// Sortea un seed en `0..=MAX_ENGINE_SEED` ausente de la lista de usados, lo
+    /// registra y lo devuelve.
+    fn next(&mut self) -> u64 {
+        use std::hash::{BuildHasher, Hasher};
+        loop {
+            let hasher = std::collections::hash_map::RandomState::new().build_hasher();
+            let seed = hasher.finish() % (avi_tts::MAX_ENGINE_SEED + 1);
+            if !self.used.contains(&seed) {
+                self.used.push(seed);
+                return seed;
+            }
+        }
+    }
+}
+
 /// Re-síntesis del menú `--play`: la ejecuta el llamador, nunca el menú. Cada
 /// implementación vuelve a sintetizar la locución sobre el mismo temporal.
 ///
 /// El menú devuelve `PlayDecision::Resynthesize` y el llamador la resuelve con
-/// esta pieza; así el menú no conoce ni el motor local ni el daemon, y ningún
-/// futuro de re-síntesis captura el indicador de progreso.
+/// esta pieza; así el menú no conoce ni el motor local ni el daemon. El
+/// llamador del menú entrega el seed de cada regeneración.
 trait PlayResynthesizer {
-    /// Vuelve a sintetizar la locución sobre el temporal del menú.
-    fn resynthesize(&mut self) -> impl std::future::Future<Output = Result<(), CliError>>;
+    /// Vuelve a sintetizar la locución sobre el temporal del menú con el seed
+    /// indicado.
+    fn resynthesize(
+        &mut self,
+        seed: u64,
+    ) -> impl std::future::Future<Output = Result<(), CliError>>;
 }
 
 /// Re-síntesis directa: vuelve a sintetizar con el motor local sobre el mismo
-/// temporal.
+/// temporal y se encarga de su propio progreso.
 struct LocalResynthesizer<'a> {
     engine: &'a Qwen3TtsEngine,
     voice_store: &'a VoiceStore,
@@ -2066,19 +2105,28 @@ struct LocalResynthesizer<'a> {
     temperature: Option<f32>,
     target_language: &'a str,
     tmp_wav: &'a PathBuf,
+    progress: &'a mut PhaseProgress,
 }
 
 impl PlayResynthesizer for LocalResynthesizer<'_> {
-    async fn resynthesize(&mut self) -> Result<(), CliError> {
-        synthesize_voice_directly(
+    async fn resynthesize(&mut self, seed: u64) -> Result<(), CliError> {
+        self.progress
+            .phase("synthesizing", "Sintetizando otra toma…");
+        self.progress.tick();
+        let result = synthesize_voice_directly(
             self.engine,
             self.voice_store,
             self.final_text,
             self.voice,
             self.temperature,
+            Some(seed),
             self.target_language,
             self.tmp_wav,
-        )?;
+        );
+        // La línea de progreso se cede antes de que escriba el menú, también si
+        // la síntesis falla.
+        self.progress.close_line();
+        result?;
         Ok(())
     }
 }
@@ -2097,8 +2145,9 @@ struct DaemonResynthesizer<'a> {
 }
 
 impl PlayResynthesizer for DaemonResynthesizer<'_> {
-    async fn resynthesize(&mut self) -> Result<(), CliError> {
-        let wav = daemon_synthesize_wav(
+    async fn resynthesize(&mut self, seed: u64) -> Result<(), CliError> {
+        // La fase «Sintetizando…» la pinta el consumo del stream del daemon.
+        let result = daemon_synthesize_wav(
             self.progress,
             self.client,
             self.text,
@@ -2106,9 +2155,14 @@ impl PlayResynthesizer for DaemonResynthesizer<'_> {
             self.source_language,
             self.target_language,
             self.temperature,
+            Some(seed),
         )
-        .await?;
-        std::fs::write(self.tmp_wav, &wav)
+        .await;
+        // La línea de progreso se cede antes de que escriba el menú, también si
+        // la síntesis falla.
+        self.progress.close_line();
+        let synthesis = result?;
+        std::fs::write(self.tmp_wav, &synthesis.wav)
             .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
     }
 }
@@ -2131,6 +2185,7 @@ async fn play_menu_loop<R: PlayResynthesizer>(
     playback: &mut dyn FnMut(&std::path::Path) -> Result<(), CliError>,
     resynthesizer: &mut R,
 ) -> Result<Option<PathBuf>, CliError> {
+    let mut seeds = RetakeSeeds::new();
     loop {
         match synthesize_play_loop(
             voice,
@@ -2144,7 +2199,7 @@ async fn play_menu_loop<R: PlayResynthesizer>(
         )? {
             PlayDecision::Saved(saved) => return Ok(Some(saved)),
             PlayDecision::Discarded => return Ok(None),
-            PlayDecision::Resynthesize => resynthesizer.resynthesize().await?,
+            PlayDecision::Resynthesize => resynthesizer.resynthesize(seeds.next()).await?,
         }
     }
 }
@@ -2163,10 +2218,10 @@ fn menu_playback(label: &str) -> impl FnMut(&std::path::Path) -> Result<(), CliE
 }
 
 /// Menú interactivo `--play`: reproduce la toma y ofrece 4 opciones a stderr —
-/// 1) mantener (reproducir de nuevo, sin re-síntesis), 2) guardar
-///    (recomprobando colisión de label al guardar), 3) repetir con una síntesis
-///    nueva, 4) descartar. EOF o error de lectura de stdin también descartan;
-///    una opción inválida avisa y repite el menú.
+/// 1) reproducir otra vez (sin re-síntesis), 2) aceptar y guardar
+///    (recomprobando colisión de label al guardar), 3) rechazar y regenerar
+///    (una síntesis nueva), 4) rechazar y descartar. EOF o error de lectura de
+///    stdin también descartan; una opción inválida avisa y repite el menú.
 ///
 /// La opción 1 se resuelve dentro del menú porque no necesita volver a
 /// sintetizar; la 3 se devuelve al llamador como `Resynthesize`, que re-sintetiza
@@ -2188,9 +2243,11 @@ fn synthesize_play_loop(
     playback(wav)?;
 
     loop {
-        eprintln!(
-            "Opciones: [1] mantener (reproducir de nuevo)  [2] guardar  [3] repetir (nueva síntesis)  [4] descartar"
-        );
+        eprintln!("¿Qué quieres hacer con esta toma?");
+        eprintln!("  1) Reproducir otra vez");
+        eprintln!("  2) Aceptar y guardar");
+        eprintln!("  3) Rechazar y regenerar");
+        eprintln!("  4) Rechazar y descartar");
         eprint!("Opción [1-4]: ");
         #[expect(
             clippy::let_underscore_must_use,
@@ -2647,6 +2704,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     &final_text,
                     &voice,
                     temperature,
+                    None,
                     &target_language,
                     &tmp_wav,
                 )?;
@@ -2658,6 +2716,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     // esta rama, sobre el mismo temporal.
                     let mut reader = menu_stdin();
                     let mut playback = menu_playback(&label);
+                    progress.close_line();
                     let mut resynthesizer = LocalResynthesizer {
                         engine: &engine,
                         voice_store: &voice_store,
@@ -2666,8 +2725,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         temperature,
                         target_language: &target_language,
                         tmp_wav: &tmp_wav,
+                        progress: &mut progress,
                     };
-                    progress.close_line();
                     let outcome = play_menu_loop(
                         &voice,
                         &label,
@@ -2793,6 +2852,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     &final_text,
                     &voice,
                     temperature,
+                    None,
                     &target_language,
                     tmp_wav.path(),
                 )?;
@@ -3095,6 +3155,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &final_text,
                         &voice,
                         temperature,
+                        None,
                         &target_language,
                         tmp_wav.path(),
                     )?;
@@ -5210,8 +5271,18 @@ async fn translate_via_daemon(
     ))
 }
 
+/// Resultado de una síntesis por daemon: el WAV del motor (24 kHz s16le mono) y
+/// el texto realmente sintetizado (ya traducido si los idiomas difieren).
+struct DaemonSynthesis {
+    wav: Vec<u8>,
+    translated: String,
+}
+
 /// POST /synthesize al daemon, consume el stream NDJSON y decodifica `audio_b64`
-/// del evento `result`, devolviendo los bytes WAV del motor (24 kHz s16le mono).
+/// y `translated` del evento `result`. El seed opcional fija la toma; sin él el
+/// daemon usa el de producción.
+// Cada argumento mapea 1:1 a un campo de la petición y el indicador es del llamador.
+#[allow(clippy::too_many_arguments)]
 async fn daemon_synthesize_wav(
     progress: &mut PhaseProgress,
     client: &reqwest::Client,
@@ -5220,10 +5291,14 @@ async fn daemon_synthesize_wav(
     source_language: &str,
     target_language: &str,
     temperature: Option<f32>,
-) -> Result<Vec<u8>, CliError> {
+    seed: Option<u64>,
+) -> Result<DaemonSynthesis, CliError> {
     let mut payload = serde_json::json!({ "text": text, "voice": voice, "source_language": source_language, "target_language": target_language });
     if let Some(t) = temperature {
         payload["temperature"] = serde_json::json!(t);
+    }
+    if let Some(s) = seed {
+        payload["seed"] = serde_json::json!(s);
     }
     // El POST apunta a la dirección descubierta.
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
@@ -5250,7 +5325,14 @@ async fn daemon_synthesize_wav(
             "El daemon devolvió result sin audio_b64.",
         )
     })?;
-    base64::engine::general_purpose::STANDARD
+    let translated = val["translated"].as_str().ok_or_else(|| {
+        CliError::new(
+            ExitCode::Error,
+            "synthesis_failed",
+            "El daemon devolvió result sin translated.",
+        )
+    })?;
+    let wav = base64::engine::general_purpose::STANDARD
         .decode(b64)
         .map_err(|e| {
             CliError::new(
@@ -5258,7 +5340,11 @@ async fn daemon_synthesize_wav(
                 "synthesis_failed",
                 format!("audio_b64 del daemon no decodable: {}", e),
             )
-        })
+        })?;
+    Ok(DaemonSynthesis {
+        wav,
+        translated: translated.to_string(),
+    })
 }
 
 /// Timeout de inactividad entre eventos de un stream NDJSON: 1500 ms.
@@ -5560,7 +5646,7 @@ async fn synthesize_via_daemon(
             ),
         ));
     }
-    let wav = daemon_synthesize_wav(
+    let first_take = daemon_synthesize_wav(
         progress,
         client,
         text,
@@ -5568,13 +5654,17 @@ async fn synthesize_via_daemon(
         source_language,
         target_language,
         temperature,
+        None,
     )
     .await?;
+    // Texto realmente sintetizado: el que ven el menú y el sidecar (paridad
+    // con la ruta directa, que guarda el traducido).
+    let final_text = first_take.translated.as_str();
     // Guardián del temporal: lo borra al salir de ámbito por cualquier camino.
     let tmp_guard = avi_process::scratch::temp_wav("avi_tts_")
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
     let tmp = tmp_guard.path().clone();
-    std::fs::write(&tmp, &wav)
+    std::fs::write(&tmp, &first_take.wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
 
     let saved = if play {
@@ -5598,7 +5688,7 @@ async fn synthesize_via_daemon(
             &label_lower,
             force,
             &speech_store,
-            text,
+            final_text,
             &tmp,
             &mut reader,
             &mut playback,
@@ -5613,7 +5703,7 @@ async fn synthesize_via_daemon(
     } else {
         progress.phase("saving", "Guardando locución…");
         speech_store
-            .save(voice, &label_lower, text, &tmp)
+            .save(voice, &label_lower, final_text, &tmp)
             .map_err(|e| CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()))?
     };
     Ok(Some(saved))
@@ -5639,8 +5729,10 @@ async fn say_via_daemon(
         source_language,
         target_language,
         temperature,
+        None,
     )
-    .await?;
+    .await?
+    .wav;
     // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
     let tmp = avi_process::scratch::temp_wav("avi_say_")
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
@@ -7174,16 +7266,76 @@ mod tests {
         assert_eq!(entry.metadata.expect("sidecar").text, "texto final");
     }
 
-    /// Re-síntesis de mentira: cuenta las re-síntesis y no toca el motor.
+    /// Re-síntesis de mentira: cuenta las re-síntesis, registra los seeds
+    /// recibidos y no toca el motor.
     struct CountingResynthesizer {
         counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        seeds: Vec<u64>,
+    }
+
+    impl CountingResynthesizer {
+        fn new(counter: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+            Self {
+                counter,
+                seeds: Vec::new(),
+            }
+        }
     }
 
     impl PlayResynthesizer for CountingResynthesizer {
-        async fn resynthesize(&mut self) -> Result<(), CliError> {
+        async fn resynthesize(&mut self, seed: u64) -> Result<(), CliError> {
             self.counter
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.seeds.push(seed);
             Ok(())
+        }
+    }
+
+    /// Varias regeneraciones consecutivas del bucle entregan seeds en rango,
+    /// distintos entre sí y distintos del seed de producción.
+    #[tokio::test]
+    async fn play_menu_loop_hands_distinct_seeds_to_each_retake() {
+        let (_dir, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reader = scripted_reader(vec!["3", "3", "3", "3", "4"]);
+        let mut playback = fake_playback(&plays);
+        let mut resynthesizer =
+            CountingResynthesizer::new(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)));
+
+        play_menu_loop(
+            "voz",
+            "etiqueta",
+            false,
+            &store,
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+            &mut resynthesizer,
+        )
+        .await
+        .expect("el bucle no debe fallar");
+
+        let seeds = &resynthesizer.seeds;
+        assert_eq!(seeds.len(), 4);
+        for (i, seed) in seeds.iter().enumerate() {
+            assert!(*seed <= avi_tts::MAX_ENGINE_SEED);
+            assert_ne!(*seed, avi_tts::PRODUCTION_SEED);
+            assert!(!seeds[..i].contains(seed), "seed repetido: {seed}");
+        }
+    }
+
+    /// `RetakeSeeds::next` no repite ni devuelve el seed de producción en muchas
+    /// iteraciones y se mantiene dentro del rango del motor.
+    #[test]
+    fn retake_seeds_never_repeat_nor_use_production_seed() {
+        let mut seeds = RetakeSeeds::new();
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..2000 {
+            let seed = seeds.next();
+            assert!(seed <= avi_tts::MAX_ENGINE_SEED);
+            assert_ne!(seed, avi_tts::PRODUCTION_SEED);
+            assert!(seen.insert(seed), "seed repetido: {seed}");
         }
     }
 
@@ -7196,9 +7348,7 @@ mod tests {
         let resyntheses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["3", "2"]);
         let mut playback = fake_playback(&plays);
-        let mut resynthesizer = CountingResynthesizer {
-            counter: resyntheses.clone(),
-        };
+        let mut resynthesizer = CountingResynthesizer::new(resyntheses.clone());
 
         let outcome = play_menu_loop(
             "voz",
@@ -7234,9 +7384,8 @@ mod tests {
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["3", "4"]);
         let mut playback = fake_playback(&plays);
-        let mut resynthesizer = CountingResynthesizer {
-            counter: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-        };
+        let mut resynthesizer =
+            CountingResynthesizer::new(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)));
 
         let outcome = play_menu_loop(
             "voz",
