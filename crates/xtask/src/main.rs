@@ -2206,7 +2206,7 @@ mod tests {
                 "{job}: la caché de ffmpeg-bundle/ debe restaurarse antes de su primer uso y guardarse después"
             );
         }
-        let key = "ffmpeg-v1-<< parameters.triple >>-{{ checksum \".cache-root\" }}-{{ checksum \"packaging/pins.json\" }}";
+        let key = "ffmpeg-v1-{{ checksum \".cache-root\" }}-<< parameters.triple >>-{{ checksum \"packaging/pins.json\" }}";
         assert_eq!(
             cfg.matches(key).count(),
             2,
@@ -2613,7 +2613,7 @@ mod tests {
             .and_then(|s| s.split("\n  sccache_setup_unix:").next())
             .expect("debe existir el comando sccache_save_cache");
         assert!(
-            save.contains("key: sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum \".sccache-week\" }}"),
+            save.contains("key: sccache-v1-{{ checksum \".cache-root\" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum \".sccache-week\" }}"),
             "sccache_save_cache debe usar clave por semana ISO segmentada por variante"
         );
         assert!(
@@ -2641,7 +2641,7 @@ mod tests {
             "la semana debe escribirse antes de restaurar la caché de sccache"
         );
         assert!(
-            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-"),
+            cfg.contains("sccache-v1-{{ checksum \".cache-root\" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-"),
             "sccache_restore_cache debe usar clave por prefijo segmentada por variante"
         );
         // Secciones scoping por job (delimitadas por siguiente job header para evitar falso-positivo cross-job)
@@ -2997,45 +2997,130 @@ mod tests {
         }
     }
 
-    /// CircleCI restaura cada caché en la ruta absoluta desde la que se guardó, y
-    /// los jobs Linux x86_64 corren en ejecutores con `HOME` y directorio de
-    /// trabajo distintos (`cimg/rust` frente a manylinux). Las cachés que esos
-    /// jobs comparten (registry y ffmpeg) llevan en la clave el checksum de
-    /// `.cache-root`, escrito antes de restaurar, para que un acierto solo venga
-    /// de un job con las mismas rutas.
-    #[test]
-    fn test_shared_caches_are_keyed_by_job_root() {
-        let cfg = read_ci_config();
-        let root_key = "{{ checksum \".cache-root\" }}";
-        for prefix in ["cargo-v2-", "ffmpeg-v1-"] {
-            let keys: Vec<&str> = cfg
-                .lines()
-                .map(str::trim)
-                .filter(|line| {
-                    line.trim_start_matches("- ")
-                        .trim_start_matches("key: ")
-                        .starts_with(prefix)
-                })
-                .collect();
-            assert!(!keys.is_empty(), "debe existir la caché {prefix}");
-            for key in keys {
-                assert!(
-                    key.contains(root_key),
-                    "la clave {key} debe incluir la raíz del job"
-                );
+    /// Claves de caché del config: cada `key:` de `save_cache` y cada elemento de
+    /// la lista `keys:` de `restore_cache`.
+    fn cache_keys(cfg: &str) -> Vec<&str> {
+        let mut keys = Vec::new();
+        let mut list_indent = None;
+        for line in cfg.lines() {
+            let trimmed = line.trim_start();
+            let indent = line.len() - trimmed.len();
+            if let Some(list) = list_indent {
+                match trimmed.strip_prefix("- ") {
+                    Some(key) if indent > list => {
+                        keys.push(key);
+                        continue;
+                    }
+                    _ => list_indent = None,
+                }
+            }
+            if trimmed == "keys:" {
+                list_indent = Some(indent);
+            } else if let Some(key) = trimmed.strip_prefix("key: ") {
+                keys.push(key);
             }
         }
-        for command in ["cargo_restore_caches", "ffmpeg_restore_cache"] {
-            let block = cfg.split(&format!("\n  {command}:\n")).nth(1).unwrap_or("");
-            let root = block
-                .find("- cache_root")
-                .unwrap_or_else(|| panic!("{command} debe escribir .cache-root"));
-            let restore = block.find("- restore_cache:").unwrap();
+        keys
+    }
+
+    /// CircleCI restaura cada caché en la ruta absoluta desde la que se guardó, y
+    /// los ejecutores no comparten raíz (`cimg/rust` corre como `circleci`,
+    /// manylinux como root). La regla es uniforme: toda clave lleva el checksum
+    /// de `.cache-root` (HOME y directorio de trabajo) justo tras su prefijo
+    /// `familia-vN-`, también los prefijos de restauración, y todo job que toca
+    /// una caché, directamente o a través de un command, escribe `.cache-root`
+    /// antes de la primera. Así ninguna familia, presente o futura, puede servir
+    /// una entrada que se extraiga donde el job no la busca.
+    #[test]
+    fn test_every_cache_key_is_scoped_to_job_root() {
+        let cfg = read_ci_config();
+        let root_key = "{{ checksum \".cache-root\" }}";
+        let keys = cache_keys(&cfg);
+        assert!(
+            keys.len() >= 20,
+            "se esperaban todas las claves de caché: {keys:?}"
+        );
+        for key in keys {
+            let scoped = key.split_once("-v").is_some_and(|(family, rest)| {
+                let digits = rest.chars().take_while(char::is_ascii_digit).count();
+                !family.is_empty()
+                    && digits > 0
+                    && rest[digits..].starts_with(&format!("-{root_key}-"))
+            });
             assert!(
-                root < restore,
-                "{command} debe escribir .cache-root antes de restaurar"
+                scoped,
+                "la clave {key} debe llevar {root_key} justo tras su prefijo familia-vN-"
             );
         }
+
+        // Commands que tocan una caché, directa o indirectamente.
+        let commands = cfg
+            .split("\ncommands:\n")
+            .nth(1)
+            .and_then(|s| s.split("\njobs:\n").next())
+            .expect("el config declara commands y jobs");
+        // Cada command empieza en una línea `  nombre:` con sangría 2.
+        let mut blocks: Vec<(&str, String)> = Vec::new();
+        for line in commands.lines() {
+            let name = line
+                .strip_prefix("  ")
+                .and_then(|l| l.strip_suffix(':'))
+                .filter(|n| n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
+            match name {
+                Some(name) => blocks.push((name, String::new())),
+                None => {
+                    if let Some(last) = blocks.last_mut() {
+                        last.1.push_str(line);
+                        last.1.push('\n');
+                    }
+                }
+            }
+        }
+        let invokes = |text: &str, name: &str| {
+            text.match_indices(&format!("- {name}"))
+                .map(|(i, m)| i + m.len())
+                .find(|&end| matches!(text[end..].chars().next(), Some(':' | '\n' | '\r')))
+                .map(|end| end - name.len() - 2)
+        };
+        let mut cache_commands: Vec<&str> = Vec::new();
+        loop {
+            let before = cache_commands.len();
+            for (name, body) in &blocks {
+                let touches = body.contains("restore_cache:")
+                    || body.contains("save_cache:")
+                    || cache_commands.iter().any(|c| invokes(body, c).is_some());
+                if touches && !cache_commands.contains(name) {
+                    cache_commands.push(name);
+                }
+            }
+            if cache_commands.len() == before {
+                break;
+            }
+        }
+        assert!(
+            !cache_commands.contains(&"cache_root"),
+            "cache_root solo escribe .cache-root"
+        );
+
+        let mut jobs_with_cache = 0;
+        for (job, section) in ci_jobs(&cfg) {
+            let first_cache = ["- restore_cache:", "- save_cache:"]
+                .iter()
+                .filter_map(|marker| section.find(marker))
+                .chain(cache_commands.iter().filter_map(|c| invokes(section, c)))
+                .min();
+            let Some(first_cache) = first_cache else {
+                continue;
+            };
+            jobs_with_cache += 1;
+            let root = invokes(section, "cache_root")
+                .unwrap_or_else(|| panic!("{job} usa cachés y debe ejecutar cache_root"));
+            assert!(
+                root < first_cache,
+                "{job} debe ejecutar cache_root antes de su primera caché"
+            );
+        }
+        assert_eq!(jobs_with_cache, 12, "se esperaban los 12 jobs con caché");
         assert!(
             cfg.contains("printf '%s\\n%s\\n' \"$HOME\" \"$(pwd)\" > .cache-root"),
             ".cache-root debe registrar HOME y el directorio de trabajo"

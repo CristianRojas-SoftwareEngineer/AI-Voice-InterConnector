@@ -133,11 +133,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-La primera corrida de 0.41.1 con las cachés calientes mostró que `build-linux-x64` seguía descargando FFmpeg y las dependencias de cargo aunque sus cachés acertaban. CircleCI restaura cada caché en la ruta absoluta desde la que se guardó, y ese build (manylinux como root, `/root/project`) compartía clave con `test-linux` (`cimg/rust` como `circleci`, `/home/circleci/project`): lo restaurado se extraía donde el build no lo busca. Ahora la clave de esas cachés incluye las rutas del job, así que un acierto siempre llega donde se usa.
+La primera corrida de 0.41.1 con las cachés calientes mostró que `build-linux-x64` seguía descargando FFmpeg y las dependencias de cargo aunque sus cachés acertaban. CircleCI restaura cada caché en la ruta absoluta desde la que se guardó, y ese build (manylinux como root, `/root/project`) compartía clave con `test-linux` (`cimg/rust` como `circleci`, `/home/circleci/project`): lo restaurado se extraía donde el build no lo busca. Las demás familias se libraban solo porque su clave llevaba el sistema operativo o la plataforma. Ahora toda clave de caché incluye las rutas del job, así que un acierto siempre llega donde se usa, también en familias futuras.
 
 ### Corregido
 
-- Las cachés del registry de cargo (`cargo-v2`) y de FFmpeg (`ffmpeg-v1`) incluyen en la clave el checksum de `.cache-root`, que registra `HOME` y el directorio de trabajo del job antes de restaurar. `build-linux-x64` deja de reutilizar entradas de `test-linux` que se extraían en `/home/circleci` y vuelve a aprovechar su propia caché de FFmpeg, que en la corrida anterior le costó 124 s de empaquetado frente a 14 s en arm64.
+- Toda clave de caché del pipeline (`cargo-v2`, `target-v6`, `toolchain`, `msys2`, `sccache`, `ffmpeg`, `pwsh`, `tts` y `ort-bundle`) lleva, justo tras su prefijo, el checksum de `.cache-root`, que registra `HOME` y el directorio de trabajo. Cada job con cachés lo escribe tras `checkout`, antes de su primera restauración. `build-linux-x64` deja de reutilizar entradas de `test-linux` que se extraían en `/home/circleci`, y que en la corrida anterior le costaron 124 s de empaquetado frente a 14 s en arm64. Una prueba de contrato recorre todas las claves y todos los jobs para que ninguna familia nueva repita el defecto.
+- El cambio de clave invalida una vez todas las cachés: la primera corrida tras esta versión las vuelve a sembrar.
 
 ## [0.41.1] — 2026-11-02
 

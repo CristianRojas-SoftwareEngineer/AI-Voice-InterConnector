@@ -123,8 +123,10 @@ parameters:
 # no la encuentra exactamente una vez). Así el bump de cada release no cambia la
 # clave; solo la cambian dependencias reales.
 # Invalidación por familia de caché:
-#   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock y con la
-#     raíz del job (`.cache-root`); conserva fallback por prefijo.
+# Toda familia cambia además con la raíz del job (`.cache-root`: HOME y
+# directorio de trabajo; ver el command `cache_root`).
+#   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock;
+#     conserva fallback por prefijo.
 #   - target (v6): por variant (test, cov, full y xtask, la de los jobs pequeños
 #     que solo compilan `xtask`); cambia con dependencias reales en Cargo.lock y con el tree hash
 #     git de cada crate parcheado de `vendor/*/Cargo.toml`. Clave exacta SIN
@@ -139,7 +141,7 @@ parameters:
 #     verificado; más las cinco DLL de VC++ en Windows), incluido el marcador
 #     `.ort-version` que exige para reutilizarlo.
 #   - ffmpeg (v1): cambia con packaging/pins.json (los 4 jobs de prueba y los 4
-#     builds, clave por triple y por raíz del job, `.cache-root`). Guarda `ffmpeg-bundle/`, que `xtask` reutiliza
+#     builds, clave por triple). Guarda `ffmpeg-bundle/`, que `xtask` reutiliza
 #     solo si su marcador `.ffmpeg-sha256` coincide con el pin y el ejecutable
 #     pasa el humo.
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey (+ msys2
@@ -165,14 +167,16 @@ commands:
             set -euo pipefail
             perl -0777 -pe '$n = s/^(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/mg; END { $? = 1 if $n != 1 }' Cargo.lock > Cargo.lock.cachekey \
               || { echo "Cargo.lock no declara exactamente una vez el paquete ai-voice-interconnector seguido de su version: no se puede normalizar la clave de caché"; exit 1; }
-  # CircleCI restaura cada caché en la ruta absoluta desde la que se guardó. Los
-  # jobs Linux x86_64 corren en dos ejecutores con raíces distintas: `cimg/rust`
-  # como `circleci` (/home/circleci/project) y manylinux como root
-  # (/root/project). Con una clave común, el acierto de uno se extrae donde el
-  # otro no lo busca, y este vuelve a descargar. `.cache-root` registra `HOME` y
-  # el directorio de trabajo, y las claves de las cachés que comparten esos jobs
-  # (registry y ffmpeg) incluyen su checksum: solo comparten entrada los jobs
-  # cuyas rutas coinciden. Va antes de restaurar porque la clave se forma en
+  # CircleCI restaura cada caché en la ruta absoluta desde la que se guardó, así
+  # que una clave solo es correcta si determina esa ruta. Los ejecutores no
+  # comparten raíz: en Linux x86_64, `cimg/rust` corre como `circleci`
+  # (/home/circleci/project) y manylinux como root (/root/project). Con una
+  # clave común, el acierto de uno se extraería donde el otro no lo busca. Por
+  # eso `.cache-root` registra `HOME` y el directorio de trabajo, y TODA clave de
+  # caché lleva su checksum justo tras el prefijo `familia-vN-`, también en los
+  # prefijos de restauración: solo comparten entrada los jobs con las mismas
+  # rutas, sea cual sea la familia. Cada job con cachés lo ejecuta tras
+  # `checkout` y antes de su primera restauración, porque la clave se forma en
   # tiempo de config.
   cache_root:
     description: Escribe .cache-root (HOME y directorio de trabajo) para las claves de caché
@@ -219,7 +223,6 @@ commands:
         default: "linux"
     steps:
       - cargo_lock_cachekey
-      - cache_root
       - run:
           name: Calcular identidad de contenido de los parches vendorizados (clave de target/)
           shell: bash
@@ -240,11 +243,11 @@ commands:
             [ "$(grep -Ec '^[0-9a-f]{40}$' .vendor-patches.tree)" = "$(wc -l < .vendor-patches.list | tr -d ' ')" ] || { echo "tree hash inválido en los parches vendorizados (se esperaba una línea de 40 hex por parche)"; exit 1; }
       - restore_cache:
           keys:
-            - cargo-v2-{{ arch }}-{{ checksum ".cache-root" }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
-            - cargo-v2-{{ arch }}-{{ checksum ".cache-root" }}-<< pipeline.parameters.rust_pin >>-
+            - cargo-v2-{{ checksum ".cache-root" }}-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
+            - cargo-v2-{{ checksum ".cache-root" }}-{{ arch }}-<< pipeline.parameters.rust_pin >>-
       - restore_cache:
           keys:
-            - target-v6-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
+            - target-v6-{{ checksum ".cache-root" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
       - run:
           name: Fijar mtime de los parches vendorizados (evita cascada Dirty)
           shell: bash
@@ -262,7 +265,7 @@ commands:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
     steps:
       - save_cache:
-          key: cargo-v2-{{ arch }}-{{ checksum ".cache-root" }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
+          key: cargo-v2-{{ checksum ".cache-root" }}-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
           paths:
             - ~/.cargo/registry
             - ~/.cargo/git
@@ -310,7 +313,7 @@ commands:
             target/xtask_pins_*
           when: on_success
       - save_cache:
-          key: target-v6-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
+          key: target-v6-{{ checksum ".cache-root" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
           paths:
             - target
           when: on_success
@@ -329,7 +332,7 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>
+            - toolchain-v1-{{ checksum ".cache-root" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>
   toolchain_save_cache:
     description: Guarda ~/.rustup y ~/.cargo/bin (clave inmutable por arch + rust_pin + OS)
     parameters:
@@ -338,7 +341,7 @@ commands:
         default: "linux"
     steps:
       - save_cache:
-          key: toolchain-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>
+          key: toolchain-v1-{{ checksum ".cache-root" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>
           paths:
             - ~/.rustup
             - ~/.cargo/bin
@@ -352,12 +355,12 @@ commands:
     steps:
       - restore_cache:
           keys:
-            - msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
+            - msys2-v1-{{ checksum ".cache-root" }}-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
   msys2_save_cache:
     description: Guarda C:\msys64 (clave inmutable por arch + pines de versión MSYS2)
     steps:
       - save_cache:
-          key: msys2-v1-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
+          key: msys2-v1-{{ checksum ".cache-root" }}-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
           paths:
             - C:\msys64
           when: on_success
@@ -399,7 +402,7 @@ commands:
             echo "Cubo semanal de sccache: $(cat .sccache-week)"
       - restore_cache:
           keys:
-            - sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-
+            - sccache-v1-{{ checksum ".cache-root" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-
   sccache_save_cache:
     description: Guarda el directorio de sccache (clave por semana ISO, OS-específico)
     # `when: on_success`: con una clave por semana, la primera corrida que guarda
@@ -416,7 +419,7 @@ commands:
         default: "test"
     steps:
       - save_cache:
-          key: sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum ".sccache-week" }}
+          key: sccache-v1-{{ checksum ".cache-root" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum ".sccache-week" }}
           paths:
             - ~/.cache/sccache
           when: on_success
@@ -734,10 +737,9 @@ commands:
       triple:
         type: string
     steps:
-      - cache_root
       - restore_cache:
           keys:
-            - ffmpeg-v1-<< parameters.triple >>-{{ checksum ".cache-root" }}-{{ checksum "packaging/pins.json" }}
+            - ffmpeg-v1-{{ checksum ".cache-root" }}-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
   ffmpeg_save_cache:
     description: Guarda ffmpeg-bundle/ (clave inmutable por triple y packaging/pins.json)
     parameters:
@@ -745,7 +747,7 @@ commands:
         type: string
     steps:
       - save_cache:
-          key: ffmpeg-v1-<< parameters.triple >>-{{ checksum ".cache-root" }}-{{ checksum "packaging/pins.json" }}
+          key: ffmpeg-v1-{{ checksum ".cache-root" }}-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
           paths:
             - ffmpeg-bundle
           when: on_success
@@ -923,6 +925,7 @@ jobs:
       # native-translation apagados), `aws-lc-sys` se compila con `cc` y la copia
       # vendorizada de alsa-sys carga ALSA en tiempo de ejecución.
       - checkout
+      - cache_root
       - cargo_restore_caches:
           os: linux
           variant: test
@@ -1028,6 +1031,7 @@ jobs:
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     steps:
       - checkout
+      - cache_root
       - toolchain_restore_cache:
           os: windows
       - install_rust_windows
@@ -1189,6 +1193,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - checkout
+      - cache_root
       - toolchain_restore_cache:
           os: macos
       - install_rust_macos
@@ -1273,6 +1278,7 @@ jobs:
       # compila con `cc` y la copia vendorizada de alsa-sys carga ALSA en tiempo
       # de ejecución.
       - checkout
+      - cache_root
       - cargo_restore_caches:
           os: linux
           variant: cov
@@ -1351,6 +1357,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - checkout
+      - cache_root
       - cargo_restore_caches:
           os: linux
           variant: xtask
@@ -1424,9 +1431,10 @@ jobs:
       version: << pipeline.parameters.windows_image_pin >>
     steps:
       - checkout
+      - cache_root
       - restore_cache:
           keys:
-            - pwsh-v1-<< pipeline.parameters.pwsh_pin >>
+            - pwsh-v1-{{ checksum ".cache-root" }}-<< pipeline.parameters.pwsh_pin >>
       - run:
           name: Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>)
           command: |
@@ -1445,7 +1453,7 @@ jobs:
             if ($got -ne $pin) { throw "pwsh: $got != $pin" }
             Write-Host "[STEP] Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>) - FIN"
       - save_cache:
-          key: pwsh-v1-<< pipeline.parameters.pwsh_pin >>
+          key: pwsh-v1-{{ checksum ".cache-root" }}-<< pipeline.parameters.pwsh_pin >>
           paths:
             - C:\pwsh
           when: on_success
@@ -1528,6 +1536,7 @@ jobs:
       SCCACHE_CACHE_SIZE: << pipeline.parameters.sccache_cache_size >>
     steps:
       - checkout
+      - cache_root
       - toolchain_restore_cache:
           os: windows
       - install_rust_windows
@@ -1700,7 +1709,7 @@ jobs:
       - tts_engine_cachekey
       - restore_cache:
           keys:
-            - tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+            - tts-v1-{{ checksum ".cache-root" }}-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` compila el motor con
           # mingw32-make bajo el entorno MSYS2 UCRT64 (PATH ucrt64/bin + usr/bin,
@@ -1724,7 +1733,7 @@ jobs:
             }
             Write-Host "[STEP] Compilar y verificar motor TTS - FIN"
       - save_cache:
-          key: tts-v1-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          key: tts-v1-{{ checksum ".cache-root" }}-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
           paths:
             - vendor/qwen3-tts/qwen_tts.exe
           when: on_success
@@ -1739,7 +1748,7 @@ jobs:
       # marcador de la versión fijada, y si no lo vuelve a descargar.
       - restore_cache:
           keys:
-            - ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
+            - ort-v4-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: x86_64-pc-windows-msvc
       - run:
@@ -1759,7 +1768,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
-          key: ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
+          key: ort-v4-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
@@ -1827,6 +1836,7 @@ jobs:
     steps:
       - install_manylinux_ssh
       - checkout
+      - cache_root
       - install_manylinux_build_deps
       - cargo_restore_caches:
           os: linux-el8
@@ -1864,7 +1874,7 @@ jobs:
       - tts_engine_cachekey
       - restore_cache:
           keys:
-            - tts-v1-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+            - tts-v1-{{ checksum ".cache-root" }}-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
           # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
@@ -1884,7 +1894,7 @@ jobs:
             fi
             echo "[STEP] Compilar y verificar motor TTS - FIN"
       - save_cache:
-          key: tts-v1-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          key: tts-v1-{{ checksum ".cache-root" }}-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
           paths:
             - vendor/qwen3-tts/qwen_tts
           when: on_success
@@ -1899,7 +1909,7 @@ jobs:
       # descarga; sin acierto se vuelve a descargar.
       - restore_cache:
           keys:
-            - ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
+            - ort-v4-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: x86_64-unknown-linux-gnu
       - run:
@@ -1915,7 +1925,7 @@ jobs:
             cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
-          key: ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
+          key: ort-v4-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
@@ -1952,6 +1962,7 @@ jobs:
     steps:
       - install_manylinux_ssh
       - checkout
+      - cache_root
       - install_manylinux_build_deps
       - cargo_restore_caches:
           os: linux-el8
@@ -1991,7 +2002,7 @@ jobs:
       - tts_engine_cachekey
       - restore_cache:
           keys:
-            - tts-v1-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+            - tts-v1-{{ checksum ".cache-root" }}-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
           # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
@@ -2011,7 +2022,7 @@ jobs:
             fi
             echo "[STEP] Compilar y verificar motor TTS - FIN"
       - save_cache:
-          key: tts-v1-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          key: tts-v1-{{ checksum ".cache-root" }}-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
           paths:
             - vendor/qwen3-tts/qwen_tts
           when: on_success
@@ -2026,7 +2037,7 @@ jobs:
       # descarga; sin acierto se vuelve a descargar.
       - restore_cache:
           keys:
-            - ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
+            - ort-v4-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: aarch64-unknown-linux-gnu
       - run:
@@ -2042,7 +2053,7 @@ jobs:
             cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
-          key: ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
+          key: ort-v4-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
@@ -2080,6 +2091,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "26.0"
     steps:
       - checkout
+      - cache_root
       - toolchain_restore_cache:
           os: macos
       - install_rust_macos
@@ -2141,7 +2153,7 @@ jobs:
       - tts_engine_cachekey
       - restore_cache:
           keys:
-            - tts-v1-macos-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+            - tts-v1-{{ checksum ".cache-root" }}-macos-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
       - run:
           # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
           # por plataforma (make + framework Accelerate en macOS), centraliza la
@@ -2162,7 +2174,7 @@ jobs:
             fi
             echo "[STEP] Compilar y verificar motor TTS - FIN"
       - save_cache:
-          key: tts-v1-macos-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
+          key: tts-v1-{{ checksum ".cache-root" }}-macos-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
           paths:
             - vendor/qwen3-tts/qwen_tts
           when: on_success
@@ -2177,7 +2189,7 @@ jobs:
       # descarga; sin acierto se vuelve a descargar.
       - restore_cache:
           keys:
-            - ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
+            - ort-v4-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: aarch64-apple-darwin
       - run:
@@ -2194,7 +2206,7 @@ jobs:
             cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - save_cache:
-          key: ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
+          key: ort-v4-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
@@ -2305,6 +2317,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - checkout
+      - cache_root
       - attach_workspace:
           at: artifacts
       # Caché: registry + target/ de la variante xtask, que guarda
@@ -2403,6 +2416,7 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - checkout
+      - cache_root
       # Caché: registry + target/ de la variante xtask, que guarda
       # validate-licenses; `xtask` solo recompila los crates propios, sin sccache.
       - cargo_restore_caches:

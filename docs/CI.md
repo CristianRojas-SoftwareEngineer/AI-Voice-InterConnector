@@ -82,7 +82,9 @@ El `variant` de la clave (`test`, `cov`, `full`, `xtask`) separa conjuntos de fe
 
 ### Raíz del job en la clave
 
-CircleCI restaura cada caché en la ruta absoluta desde la que se guardó. Los jobs Linux x86_64 corren en dos ejecutores con raíces distintas: `test-linux`, `coverage` y los jobs pequeños usan `cimg/rust` como usuario `circleci` (`/home/circleci/project`), y `build-linux-x64` usa manylinux como root (`/root/project`). Con una clave común, el acierto de uno se extraería donde el otro no lo busca, y el job volvería a descargar FFmpeg y las dependencias aunque la caché acertara. Por eso el command `cache_root` escribe `.cache-root` con `HOME` y el directorio de trabajo antes de restaurar, y las claves de `cargo-v2` y de `ffmpeg` incluyen su checksum: solo comparten entrada los jobs cuyas rutas coinciden. Las demás familias ya separan esos ejecutores por `os` o por plataforma en la clave. La vigila `test_shared_caches_are_keyed_by_job_root`.
+CircleCI restaura cada caché en la ruta absoluta desde la que se guardó, así que una clave solo es correcta si determina esa ruta. Los ejecutores no comparten raíz. En Linux x86_64, `test-linux`, `coverage` y los jobs pequeños usan `cimg/rust` como usuario `circleci` (`/home/circleci/project`), y `build-linux-x64` usa manylinux como root (`/root/project`). Con una clave común, el acierto de uno se extraería donde el otro no lo busca, y el job volvería a descargar o compilar aunque la caché acertara. Ocurrió en v0.41.1: `build-linux-x64` restauraba el FFmpeg y el registry que había guardado `test-linux`, se extraían en `/home/circleci` y el job descargaba FFmpeg de nuevo.
+
+La regla es uniforme y no depende de qué familias coinciden hoy entre ejecutores. Cada job con cachés ejecuta el command `cache_root` tras `checkout`, que escribe `.cache-root` con `HOME` y el directorio de trabajo. Toda clave de caché lleva su checksum justo tras el prefijo `familia-vN-`, también los prefijos de restauración por los que restauran `sccache` y el registry. Solo comparten entrada los jobs con las mismas rutas, y una familia nueva queda cubierta sin pensar en ello. La vigila `test_every_cache_key_is_scoped_to_job_root`, que recorre todas las claves del config y exige `cache_root` antes de la primera caché de cada job, incluidas las que se restauran a través de un command.
 
 ### Clave normalizada de `Cargo.lock`
 
@@ -144,6 +146,7 @@ De menor a mayor costo en los `build-*`:
 | Cambio real de dependencias Rust en `Cargo.lock` sin tocar nativos | `target/` (sin fallback) y `cargo-v2` (cae a su fallback por prefijo) | `target/` parte vacío, pero `sccache` sirve por contenido Rust y C/C++: costo moderado en Unix y notablemente mayor en Windows, el executor más lento. |
 | Edición, alta o baja de un parche vendorizado, o cambio de versión de un crate nativo (`ct2rs`, `onednn-src`, `sentencepiece-sys`, `aws-lc-sys`…) | `target/`; `sccache` falla solo para las unidades cuyo fuente o flags cambiaron (si el parche de cmake cambia los flags, afecta a toda la cadena CMake) | Recompilación de la cadena nativa afectada. Si alcanza a oneDNN o CTranslate2, el costo se acerca al frío total. |
 | Cambio de `rust_pin` | `toolchain`, `cargo-v2`, `target/` y `sccache` (todas llevan la versión en la clave) | Frío total: se reinstala Rust y se recompila todo, Rust y C/C++, sin ayuda de `sccache`. Es el caso más caro. |
+| Cambio del ejecutor de un job que altera su `HOME` o su directorio de trabajo (imagen, usuario o `working_directory`) | Todas las familias de ese job (todas llevan `.cache-root` en la clave) | Frío para ese job, como un cambio de `rust_pin` limitado a él; los demás jobs aciertan. |
 
 ### Causas ajenas al repositorio
 

@@ -387,8 +387,9 @@ Los cuatro jobs de prueba aprovisionan ese mismo FFmpeg antes de su suite, con
 puede divergir de `packaging/pins.json`, y `test-windows` ejecuta la suite sobre
 el target MSVC que el paquete distribuye. `ffmpeg-bundle/` se cachea por triple
 en los cuatro jobs de prueba y en los cuatro builds, con una clave que depende
-de `packaging/pins.json` y de las rutas del job (CircleCI restaura en la ruta
-absoluta guardada): se restaura antes de su primer uso y se guarda después.
+de `packaging/pins.json` y, como toda clave de caché, de las rutas del job
+(CircleCI restaura en la ruta absoluta guardada): se restaura antes de su
+primer uso y se guarda después.
 Lo restaurado solo se reutiliza si su marcador `.ffmpeg-sha256` coincide con el
 SHA-256 fijado y el ejecutable pasa el humo de versión y de codificadores; si
 no, `xtask` lo descarga y lo verifica de nuevo. Así se evita descargar y
