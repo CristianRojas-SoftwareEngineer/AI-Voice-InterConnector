@@ -18,7 +18,8 @@
 //! proceso**, y eso solo se ve ejecutando el binario.
 //!
 //! Y aquí no cabe en `cli_golden.rs`: el fallo de provisión pasa por la descarga de un
-//! modelo contra un puerto local cerrado, con los reintentos del cliente de descarga, y esa
+//! modelo contra un endpoint local que cierra la conexión, con los reintentos del cliente de
+//! descarga, y esa
 //! espera compite con las pruebas de presupuesto de `cli_golden.rs` —
 //! `perf_local_fast_commands_under_budget` y `perf_invalid_input_rejection_is_immediate`,
 //! con
@@ -412,8 +413,8 @@ impl Sandbox {
 ///
 /// Y el `reason` del **fallo de provisión** viaja anidado en `models_cause`, que es donde un
 /// consumidor lo encuentra sin perderlo: el de la operación y el de la causa son dos cosas
-/// distintas, y confundirlas perdería el `network_error` de un fallo de transporte (aquí, un
-/// puerto cerrado), que es el `reason` del fallo de provisión.
+/// distintas, y confundirlas perdería el `network_error` de un fallo de transporte (aquí, una
+/// conexión cerrada sin respuesta), que es el `reason` del fallo de provisión.
 #[test]
 fn self_install_setup_failure_exits_11_with_partial_success() {
     let sandbox = Sandbox::new("setupfailed");
