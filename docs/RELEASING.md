@@ -103,8 +103,8 @@ del producto antes del aprovisionamiento. Así `bootstrap` arranca sin el binari
 del producto, bundles nativos ni binario del motor. `xtask` deberá
 recompilarse para ejecutar cada orden Cargo que lo invoque. Cierra
 `rust-analyzer` y procesos del producto o de `xtask` antes de cada borrado de
-repo. Al pedir `clean --repo --yes`, el propio `xtask.exe` puede quedar en un
-borrado diferido hasta que el comando salga. En Windows, no continúes mientras
+repo. Si `clean --repo --yes` cierra con «Limpieza programada», `target/` sigue
+borrándose en segundo plano hasta que el comando salga. En Windows, no continúes mientras
 exista `target/` o `target.removal-failed.log`; identifica el proceso que retiene
 el DLL y comprueba que la retirada terminó. En las pruebas de este plan, la
 sesión del editor mantuvo `async_trait-*.dll` abierto a través de `rust-analyzer`:
@@ -315,8 +315,8 @@ cargo xtask clean --repo --dry-run
 cargo xtask clean --repo --yes
 ```
 
-Comprueba que `target/` desapareció y que no queda
-`target.removal-failed.log`. El corte es un commit directo en `main`, así que no
+Si el cierre es «Limpieza programada», comprueba que `target/` desapareció y
+que no queda `target.removal-failed.log`. El corte es un commit directo en `main`, así que no
 dispara `post-merge`; esta limpieza limita los artefactos acumulados al ciclo
 entre releases.
 

@@ -36,7 +36,10 @@
 //! versionado y aplica las reglas de confirmación (`--dry-run`, `--yes`
 //! obligatorio sin terminal). En Windows, el `xtask.exe` en ejecución se
 //! borra con la misma implementación de borrado diferido que el producto
-//! (`avi-process`).
+//! (`avi-process`). El cierre distingue «Limpieza completada» (todo se borró en
+//! el acto) de «Limpieza programada» (`target/` sigue borrándose en segundo
+//! plano), y añade una nota solo si el limpiador no pudo separarse del proceso
+//! de cargo y una interrupción de este lo cortaría.
 //!
 //! Las rutas de la capa app viven en `avi-shared` y las ejecuta el binario
 //! del repositorio: este módulo no replica ni una (fuente única en `avi-shared`).
@@ -933,12 +936,13 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
     let target_dir = root.join("target");
     let mut failed: Vec<(PathBuf, String)> = Vec::new();
     let mut deferred_target = false;
+    let mut removed = 0usize;
     for p in repo_paths.iter().chain(&global_paths).chain(&sandbox_paths) {
         if p.symlink_metadata().is_err() {
             continue;
         }
         match remove_path(p) {
-            Ok(()) => println!("  ✓ {}", p.display()),
+            Ok(()) => removed += 1,
             Err(e) => {
                 // Windows no borra el ejecutable en uso (`target/.../xtask.exe`).
                 let own = cfg!(windows) && *p == target_dir && self_exe.starts_with(&target_dir);
@@ -951,15 +955,18 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
         }
     }
 
+    // `deferred_target` solo se activa en Windows, así que en otras plataformas
+    // `deferred` queda en `None`.
+    #[allow(unused_mut)] // en plataformas distintas de Windows nunca se asigna
+    let mut deferred: Option<avi_process::Scheduling> = None;
     if deferred_target {
         #[cfg(windows)]
         {
-            avi_process::schedule_removal(&target_dir, &avi_process::current_owner_token()?)?;
+            deferred = Some(avi_process::schedule_removal(
+                &target_dir,
+                &avi_process::current_owner_token()?,
+            )?);
         }
-        println!(
-            "  … {} se termina de borrar al salir este proceso (limpiador en segundo plano)",
-            target_dir.display()
-        );
     }
     if !failed.is_empty() {
         eprintln!("No se pudieron borrar {} ruta(s):", failed.len());
@@ -972,13 +979,53 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
     if layer.wants_repo() {
         report_removal_log(&root, true)?;
     }
-    println!("Limpieza completa.");
+    println!("{}", closing_message(removed, deferred));
     Ok(())
+}
+
+/// Cierre de la limpieza. Sin borrado diferido, todo se borró en el acto. Con él,
+/// `target/` sigue borrándose en segundo plano; si el limpiador quedó dentro del
+/// Job del proceso de cargo, se avisa de que una interrupción lo corta y de que
+/// la próxima limpieza retira el resto.
+fn closing_message(removed: usize, deferred: Option<avi_process::Scheduling>) -> String {
+    match deferred {
+        None => format!("Limpieza completada: {removed} ruta(s)."),
+        Some(scheduling) => {
+            let mut msg = format!(
+                "Limpieza programada: {removed} ruta(s) borradas; `target/` se termina de borrar en segundo plano al salir este comando."
+            );
+            if scheduling == avi_process::Scheduling::Attached {
+                msg.push_str(" Si se interrumpe cargo antes, la próxima limpieza retira el resto.");
+            }
+            msg
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closing_message_without_deferred_is_completed() {
+        assert_eq!(closing_message(3, None), "Limpieza completada: 3 ruta(s).");
+    }
+
+    #[test]
+    fn closing_message_detached_has_no_interruption_note() {
+        let msg = closing_message(2, Some(avi_process::Scheduling::Detached));
+        assert_eq!(
+            msg,
+            "Limpieza programada: 2 ruta(s) borradas; `target/` se termina de borrar en segundo plano al salir este comando."
+        );
+    }
+
+    #[test]
+    fn closing_message_attached_adds_interruption_note() {
+        let msg = closing_message(2, Some(avi_process::Scheduling::Attached));
+        assert!(msg.starts_with("Limpieza programada: 2 ruta(s) borradas;"));
+        assert!(msg.ends_with("Si se interrumpe cargo antes, la próxima limpieza retira el resto."));
+    }
 
     /// Las capas piden lo que declaran: `--repo` por defecto no alcanza la
     /// app, `--all` alcanza ambas.

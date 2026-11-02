@@ -70,7 +70,10 @@ fn removal_succeeds_without_leaving_copy_or_log() {
     let target = make_target(root.path());
 
     let mut child = spawn_sleeper(5);
-    avi_process::schedule_removal(&target, &token_of(&child)).expect("programar el borrado");
+    // La variante (`Detached` o `Attached`) depende del Job del anfitrión; el borrado
+    // es correcto con cualquiera de las dos.
+    let _scheduling =
+        avi_process::schedule_removal(&target, &token_of(&child)).expect("programar el borrado");
     // Con la identidad exacta el borrado espera: el proceso sigue vivo y el
     // destino también.
     assert!(
@@ -111,7 +114,8 @@ fn removal_failure_leaves_only_removal_failed_log() {
     let token = token_of(&child);
     child.kill().unwrap();
     let _ = child.wait();
-    avi_process::schedule_removal(&target, &token).expect("programar el borrado");
+    // La variante depende del Job del anfitrión; el resultado no cambia.
+    let _scheduling = avi_process::schedule_removal(&target, &token).expect("programar el borrado");
 
     let log = root.path().join("victim.removal-failed.log");
     assert!(wait_until(|| log.exists()), "debe escribirse el registro");
@@ -139,7 +143,9 @@ fn reused_pid_with_other_start_does_not_block() {
     let real = token_of(&child);
     let other_start: u64 = real.start().parse::<u64>().unwrap() + 1;
     let reused = OwnerToken::new(real.pid(), other_start.to_string()).unwrap();
-    avi_process::schedule_removal(&target, &reused).expect("programar el borrado");
+    // La variante depende del Job del anfitrión; el resultado no cambia.
+    let _scheduling =
+        avi_process::schedule_removal(&target, &reused).expect("programar el borrado");
 
     let removed = wait_until(|| !target.exists());
     let still_alive = child.try_wait().unwrap().is_none();

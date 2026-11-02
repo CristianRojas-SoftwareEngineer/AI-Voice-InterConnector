@@ -27,8 +27,11 @@
 //! Nunca se toca nada fuera del staging que trajo la operación.
 
 use crate::faults::{self, FaultPoint};
+use crate::progress::PhaseProgress;
 use crate::{setup, LifecycleError};
-use avi_process::{spawn_with_allowlist_env, OwnerToken, RestrictedSpawnRequest, StdinSpec};
+use avi_process::{
+    spawn_with_allowlist_env, OwnerToken, RestrictedSpawnRequest, Scheduling, StdinSpec,
+};
 use std::path::{Path, PathBuf};
 
 /// Variable interna con el PID del `self update` que lanza el traspaso.
@@ -287,7 +290,7 @@ pub fn partial_setup_message(cause: &ModelsCause) -> String {
 /// dentro.
 ///
 /// El **mecanismo** es de plataforma y lo implementa el binario —en Unix es
-/// `remove_dir_all`, y en Windows el limpiador propio desacoplado—, porque el
+/// `remove_dir_all`, y en Windows el limpiador propio, desacoplado cuando el anfitrión lo permite—, porque el
 /// motor no lo puede implementar sin arrastrar `avi-daemon`. Es la misma
 /// división que `uninstall::ProgramDirRemover`, pero sobre rutas arbitrarias
 /// del ciclo (staging, `.old-*`) en vez de solo el directorio de programa.
@@ -296,9 +299,10 @@ pub trait PathRemover {
     /// que dejar de existir, y si ya no existe el objetivo está cumplido.
     fn remove_now(&self, path: &Path) -> anyhow::Result<()>;
     /// Programa el borrado para cuando termine el proceso `wait`, identificado por
-    /// PID e inicio. `Ok` significa que el limpiador está en marcha. Es el caso
+    /// PID e inicio. `Ok` significa que el limpiador está en marcha y dice cómo
+    /// quedó (separado del proceso anfitrión o dependiente de él). Es el caso
     /// diferido de Windows.
-    fn schedule(&self, path: &Path, wait: &OwnerToken) -> anyhow::Result<()>;
+    fn schedule(&self, path: &Path, wait: &OwnerToken) -> anyhow::Result<Scheduling>;
 }
 
 /// Cómo quedó el staging tras la limpieza post-traspaso.
@@ -318,21 +322,26 @@ pub enum StagingCleanup {
 ///
 /// Nunca falla el `update`: un staging que sobrevive es litter con prefijo
 /// propio de la tabla de rutas, que es exactamente lo que el barrido recoge.
-pub fn cleanup_staging(staging: &Path, remover: &dyn PathRemover) -> StagingCleanup {
+///
+/// Cede la línea de fase de `progress` antes de escribir por stderr.
+pub fn cleanup_staging(
+    staging: &Path,
+    remover: &dyn PathRemover,
+    progress: &mut PhaseProgress,
+) -> StagingCleanup {
     if remover.remove_now(staging).is_ok() {
         return StagingCleanup::Removed;
     }
     let scheduled =
         avi_process::current_owner_token().and_then(|own| remover.schedule(staging, &own));
     match scheduled {
-        Ok(()) => {
-            eprintln!(
-                "  el staging se borrará al terminar este proceso: {}",
-                staging.display()
-            );
+        Ok(scheduling) => {
+            progress.close_line();
+            eprintln!("  {}", scheduled_staging_message(staging, scheduling));
             StagingCleanup::Scheduled
         }
         Err(_) => {
+            progress.close_line();
             eprintln!(
                 "  no se pudo borrar {}: lo recogerá la recuperación de la \
                  siguiente operación",
@@ -343,11 +352,30 @@ pub fn cleanup_staging(staging: &Path, remover: &dyn PathRemover) -> StagingClea
     }
 }
 
+/// Mensaje del borrado programado del staging. Si el limpiador quedó dependiente
+/// del proceso anfitrión, añade que la recuperación de la siguiente operación
+/// recoge el resto.
+pub fn scheduled_staging_message(staging: &Path, scheduling: Scheduling) -> String {
+    let base = format!(
+        "el staging se borrará al terminar este proceso: {}",
+        staging.display()
+    );
+    match scheduling {
+        Scheduling::Detached => base,
+        Scheduling::Attached => format!(
+            "{base}. Si el proceso que ejecuta el comando se cierra antes, lo recoge la recuperación de la siguiente operación."
+        ),
+    }
+}
+
 /// Resultado de programar los restos del aparcado con el limpiador.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScheduledLeftovers {
     /// Rutas programadas con el limpiador, en el orden recibido.
     pub scheduled: Vec<PathBuf>,
+    /// `true` si algún resto quedó dependiente del proceso anfitrión
+    /// ([`Scheduling::Attached`]) y puede sobrevivir a su cierre.
+    pub attached: bool,
 }
 
 /// Programa los restos del aparcado que sobrevivieron al commit con el
@@ -364,12 +392,17 @@ pub fn schedule_leftovers(
     // Programar no falla la operación: lo que el limpiador no acepte queda
     // para el barrido de la siguiente operación, como el staging `Kept`.
     let mut scheduled = Vec::with_capacity(leftovers.len());
+    let mut attached = false;
     for leftover in leftovers {
-        if remover.schedule(leftover, wait).is_ok() {
+        if let Ok(scheduling) = remover.schedule(leftover, wait) {
             scheduled.push(leftover.clone());
+            attached |= scheduling == Scheduling::Attached;
         }
     }
-    ScheduledLeftovers { scheduled }
+    ScheduledLeftovers {
+        scheduled,
+        attached,
+    }
 }
 
 #[cfg(test)]
@@ -499,9 +532,9 @@ mod tests {
             }
         }
 
-        fn schedule(&self, _path: &Path, _wait: &OwnerToken) -> anyhow::Result<()> {
+        fn schedule(&self, _path: &Path, _wait: &OwnerToken) -> anyhow::Result<Scheduling> {
             match &self.schedule {
-                Ok(()) => Ok(()),
+                Ok(()) => Ok(Scheduling::Detached),
                 Err(_) => Err(anyhow::anyhow!("diferido no disponible")),
             }
         }
@@ -519,7 +552,8 @@ mod tests {
                 &FakeRemover {
                     remove_ok: true,
                     schedule: Ok(()),
-                }
+                },
+                &mut PhaseProgress::new()
             ),
             StagingCleanup::Removed
         );
@@ -529,7 +563,8 @@ mod tests {
                 &FakeRemover {
                     remove_ok: false,
                     schedule: Ok(()),
-                }
+                },
+                &mut PhaseProgress::new()
             ),
             StagingCleanup::Scheduled
         );
@@ -539,10 +574,24 @@ mod tests {
                 &FakeRemover {
                     remove_ok: false,
                     schedule: Err(anyhow::anyhow!("x")),
-                }
+                },
+                &mut PhaseProgress::new()
             ),
             StagingCleanup::Kept
         );
+    }
+
+    /// El mensaje del staging programado añade la recuperación solo si el
+    /// limpiador quedó dependiente del proceso anfitrión.
+    #[test]
+    fn scheduled_staging_message_depends_on_scheduling() {
+        let staging = Path::new("/staging/update-0.24.0");
+        let detached = scheduled_staging_message(staging, Scheduling::Detached);
+        assert!(detached.starts_with("el staging se borrará al terminar este proceso: "));
+        assert!(!detached.contains("recuperación"));
+        let attached = scheduled_staging_message(staging, Scheduling::Attached);
+        assert!(attached.starts_with(&detached));
+        assert!(attached.contains("recuperación de la siguiente operación"));
     }
 
     /// Los restos del aparcado se programan con el limpiador en vez de

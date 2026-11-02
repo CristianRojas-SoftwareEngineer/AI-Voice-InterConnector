@@ -3801,8 +3801,14 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 if scheduled.scheduled.len() == outcome.parked_leftovers.len() {
                     eprintln!(
                         "  el aparcado anterior se borrará al terminar el proceso que lo \
-                         retiene ({} ruta(s) programadas)",
-                        scheduled.scheduled.len()
+                         retiene ({} ruta(s) programadas){}",
+                        scheduled.scheduled.len(),
+                        if scheduled.attached {
+                            ". Si el proceso que ejecuta el comando se cierra antes, lo \
+                             recoge la recuperación de la siguiente operación."
+                        } else {
+                            ""
+                        }
                     );
                 } else {
                     eprintln!(
@@ -4201,7 +4207,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             })
             .await
             .map_err(lifecycle_error_to_cli)?;
-            lifecycle::update::cleanup_staging(&staged.staging, &LifecyclePaths);
+            lifecycle::update::cleanup_staging(&staged.staging, &LifecyclePaths, &mut progress);
             let elapsed = progress.close();
 
             // ── Resultado `anterior → nueva` ─────────────────────────────────
@@ -4426,7 +4432,7 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
 ///
 /// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro —que es
 /// el caso normal, porque el comando se invoca desde la propia instalación—, el
-/// borrado directo es imposible y se programa con el limpiador propio desacoplado;
+/// borrado directo es imposible y se programa con el limpiador propio (desacoplado si el anfitrión lo permite);
 /// el motor decide cuál de los dos casos es y cambia el
 /// desenlace a `removal_scheduled`.
 struct ProgramRemoval;
@@ -4473,7 +4479,7 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
         &self,
         program_dir: &std::path::Path,
         wait: &avi_process::OwnerToken,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<avi_process::Scheduling> {
         // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
         // impide el borrado directo. En Unix no hay tal impedance y el motor ya habría
         // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
@@ -4512,7 +4518,7 @@ impl lifecycle::update::PathRemover for LifecyclePaths {
         &self,
         path: &std::path::Path,
         wait: &avi_process::OwnerToken,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<avi_process::Scheduling> {
         // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
         // impide el borrado directo. En Unix no hay tal impedimento y el motor ya habría
         // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que

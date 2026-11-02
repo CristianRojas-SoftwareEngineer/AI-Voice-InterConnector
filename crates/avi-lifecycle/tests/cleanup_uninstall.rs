@@ -54,14 +54,18 @@ impl uninstall::ProgramDirRemover for Deferred {
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
     }
-    fn schedule(&self, program_dir: &Path, wait: &avi_process::OwnerToken) -> anyhow::Result<()> {
+    fn schedule(
+        &self,
+        program_dir: &Path,
+        wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<avi_process::Scheduling> {
         // El limpiador real lanza PowerShell; aquí basta con registrar que se
         // pidió, que es lo que el motor decide.
         write(
             &program_dir.join("scheduled-removal"),
             &wait.pid().to_string(),
         );
-        Ok(())
+        Ok(avi_process::Scheduling::Detached)
     }
 }
 
@@ -76,7 +80,11 @@ impl uninstall::ProgramDirRemover for Unschedulable {
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
     }
-    fn schedule(&self, _program_dir: &Path, _wait: &avi_process::OwnerToken) -> anyhow::Result<()> {
+    fn schedule(
+        &self,
+        _program_dir: &Path,
+        _wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<avi_process::Scheduling> {
         anyhow::bail!("el auxiliar terminó sin ejecutar su script")
     }
 }
@@ -535,9 +543,13 @@ impl uninstall::ProgramDirRemover for DeferredRecording {
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
     }
-    fn schedule(&self, target: &Path, _wait: &avi_process::OwnerToken) -> anyhow::Result<()> {
+    fn schedule(
+        &self,
+        target: &Path,
+        _wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<avi_process::Scheduling> {
         *self.0.lock().expect("se anota el destino") = Some(target.to_path_buf());
-        Ok(())
+        Ok(avi_process::Scheduling::Detached)
     }
 }
 
@@ -979,7 +991,7 @@ fn uninstall_reports_program_dir_kept_when_exe_location_is_undeterminable() {
             &self,
             _program_dir: &Path,
             _wait: &avi_process::OwnerToken,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<avi_process::Scheduling> {
             anyhow::bail!("schedule no debe llamarse sin saber dónde está el ejecutable")
         }
     }

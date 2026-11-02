@@ -30,8 +30,12 @@ impl uninstall::ProgramDirRemover for Now {
         std::fs::remove_dir_all(program_dir)?;
         Ok(())
     }
-    fn schedule(&self, _program_dir: &Path, _wait: &avi_process::OwnerToken) -> anyhow::Result<()> {
-        Ok(())
+    fn schedule(
+        &self,
+        _program_dir: &Path,
+        _wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<avi_process::Scheduling> {
+        Ok(avi_process::Scheduling::Detached)
     }
 }
 

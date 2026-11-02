@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.41.4 — 2026-11-02](#0414--2026-11-02)
 - [0.41.3 — 2026-11-02](#0413--2026-11-02)
 - [0.41.2 — 2026-11-02](#0412--2026-11-02)
@@ -132,6 +133,19 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+En Windows, cada `cargo xtask clean` imprimía un aviso con jerga del sistema («Job Object», «Acceso denegado») y luego «Limpieza completa.», aunque `target/` seguía borrándose en segundo plano: primero un error que el usuario no podía resolver y después un éxito que aún no era cierto. La biblioteca de borrado diferido ahora informa cómo quedó el limpiador (separado o dependiente del proceso anfitrión) en vez de escribir por su cuenta, y cada comando compone un mensaje veraz con la remedición adecuada.
+
+### Cambiado
+
+- `cargo xtask clean` cierra con «Limpieza completada: N ruta(s).» cuando todo se borró en el acto, o con «Limpieza programada» cuando `target/` sigue borrándose en segundo plano. La nota sobre una interrupción de cargo sale solo si el limpiador no pudo separarse. Ya no imprime una línea por ruta borrada ni el aviso con jerga.
+- `self uninstall`, `self update` y `self install` informan el borrado programado y, si el limpiador depende del proceso que ejecuta el comando, indican qué hacer: borrar la ruta a mano tras `self uninstall`, o dejar que la recuperación de la siguiente operación recoja el resto tras `self update` y `self install`.
+
+### Corregido
+
+- Los mensajes de borrado programado ya no quedan pegados a la línea de fase en un terminal.
 
 ## [0.41.4] — 2026-11-02
 

@@ -49,7 +49,7 @@ use crate::progress::PhaseProgress;
 use crate::receipt::{self, InstallReceipt, PathIntegration};
 use crate::recovery::SweepPreview;
 use crate::LifecycleError;
-use avi_process::OwnerToken;
+use avi_process::{OwnerToken, Scheduling};
 use std::path::{Path, PathBuf};
 
 /// Comando de Homebrew que sustituye a la desinstalación de la copia del Cask
@@ -71,7 +71,7 @@ pub struct Options {
 /// Borrado del directorio de programa cuando el ejecutable en uso está dentro.
 ///
 /// El **mecanismo** es de plataforma y vive en el binario —en Unix es
-/// `remove_dir_all`, y en Windows el limpiador propio desacoplado—, porque el motor no
+/// `remove_dir_all`, y en Windows el limpiador propio, desacoplado cuando el anfitrión lo permite—, porque el motor no
 /// lo puede implementar sin arrastrar `avi-daemon`. Lo que sí es del motor es la
 /// **decisión**: cuándo se borra ya y cuándo se programa, y que el resultado difiera
 /// (`uninstalled` contra `removal_scheduled`). Por eso entra por un rasgo, igual
@@ -87,9 +87,10 @@ pub trait ProgramDirRemover {
     /// Programa el borrado de `target` para cuando termine el proceso `wait`,
     /// identificado por PID e inicio. `target` es el directorio de programa o, si vive
     /// dentro de contenedores que quedarían vacíos, el más externo de ellos. `Ok`
-    /// significa que el limpiador está en marcha; si no puede garantizarse, `Err`. Es el
+    /// significa que el limpiador está en marcha y dice cómo quedó (separado del
+    /// proceso anfitrión o dependiente de él); si no puede garantizarse, `Err`. Es el
     /// caso diferido del paso 8.
-    fn schedule(&self, target: &Path, wait: &OwnerToken) -> anyhow::Result<()>;
+    fn schedule(&self, target: &Path, wait: &OwnerToken) -> anyhow::Result<Scheduling>;
 }
 
 /// Plan del paso 2.
@@ -201,12 +202,17 @@ pub struct Env<'a> {
 }
 
 /// Cómo se borró el directorio de programa.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Removal {
     /// Borrado ya, de forma síncrona.
     Now,
     /// Programado para cuando termine el proceso en curso (paso 8, en Windows).
-    Scheduled,
+    Scheduled {
+        /// Ruta que borrará el limpiador.
+        target: PathBuf,
+        /// Cómo quedó el limpiador respecto al proceso anfitrión.
+        scheduling: Scheduling,
+    },
 }
 
 /// Desenlace de `self uninstall`.
@@ -421,7 +427,11 @@ pub async fn run(
                     removed.push(program_dir.display().to_string());
                     (true, "uninstalled")
                 }
-                Ok(Removal::Scheduled) => (false, "removal_scheduled"),
+                Ok(Removal::Scheduled { target, scheduling }) => {
+                    progress.close_line();
+                    eprintln!("  {}", scheduled_program_message(&target, scheduling));
+                    (false, "removal_scheduled")
+                }
                 Err(e) => {
                     progress.close_line();
                     eprintln!("  no se pudo borrar {}: {e}", program_dir.display());
@@ -1157,20 +1167,57 @@ fn remove_program_dir(
     }
     if remover.exe_lives_inside(program_dir)? {
         // Windows: el ejecutable en uso impide el borrado directo. Se pide el
-        // limpiador propio desacoplado con reintentos acotados; si no puede
+        // limpiador propio (desacoplado si el anfitrión lo permite) con reintentos acotados; si no puede
         // programarse, el error sube y el directorio queda intacto: borrar aquí
         // sería un borrado parcial con el ejecutable en uso.
         let own = avi_process::current_owner_token()?;
         let target = tail.prune.last().map_or(program_dir, PathBuf::as_path);
-        remover.schedule(target, &own)?;
-        eprintln!(
-            "  el directorio se borrará al terminar este proceso: {}",
-            target.display()
-        );
-        return Ok(Removal::Scheduled);
+        let scheduling = remover.schedule(target, &own)?;
+        return Ok(Removal::Scheduled {
+            target: target.to_path_buf(),
+            scheduling,
+        });
     }
     remover.remove_now(program_dir)?;
     Ok(Removal::Now)
+}
+
+/// Mensaje del borrado programado del directorio de programa. Si el limpiador
+/// quedó dependiente del proceso anfitrión, añade qué hacer a mano: tras
+/// desinstalar no hay una operación siguiente que recoja el resto.
+fn scheduled_program_message(target: &Path, scheduling: Scheduling) -> String {
+    let base = format!(
+        "el directorio se borrará al terminar este proceso: {}",
+        target.display()
+    );
+    match scheduling {
+        Scheduling::Detached => base,
+        Scheduling::Attached => format!(
+            "{base}. El borrado depende del proceso que ejecuta el comando; si se cierra antes de terminar, borra esa ruta a mano."
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scheduled_message_detached_has_no_manual_hint() {
+        let msg = scheduled_program_message(Path::new("C:\\avi"), Scheduling::Detached);
+        assert_eq!(
+            msg,
+            "el directorio se borrará al terminar este proceso: C:\\avi"
+        );
+    }
+
+    #[test]
+    fn scheduled_message_attached_asks_for_manual_removal() {
+        let msg = scheduled_program_message(Path::new("C:\\avi"), Scheduling::Attached);
+        assert!(msg.starts_with("el directorio se borrará al terminar este proceso: C:\\avi"));
+        assert!(msg.contains("depende del proceso que ejecuta el comando"));
+        assert!(msg.contains("borra esa ruta a mano"));
+    }
 }
 
 /// `true` si `key` es `ancestor` o cuelga de él, sobre claves canónicas.

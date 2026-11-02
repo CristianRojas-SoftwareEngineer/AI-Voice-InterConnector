@@ -245,8 +245,8 @@ impl update::PathRemover for Busy {
         &self,
         _path: &std::path::Path,
         _wait: &avi_process::OwnerToken,
-    ) -> anyhow::Result<()> {
-        Ok(())
+    ) -> anyhow::Result<avi_process::Scheduling> {
+        Ok(avi_process::Scheduling::Detached)
     }
 }
 
@@ -401,7 +401,11 @@ fn daemon_stops_before_replacement() {
     let staging = own_staging(&sandbox);
     support::write(&staging.join("package.bin"), "staging en uso");
     assert_eq!(
-        update::cleanup_staging(&staging, &Busy),
+        update::cleanup_staging(
+            &staging,
+            &Busy,
+            &mut avi_lifecycle::progress::PhaseProgress::new()
+        ),
         update::StagingCleanup::Scheduled,
         "lo que está en uso se programa, no se borra en el acto"
     );

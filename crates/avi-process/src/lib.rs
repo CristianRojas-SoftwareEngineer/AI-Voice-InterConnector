@@ -22,6 +22,17 @@ pub use windows_sys::Win32::System::Threading::{
     CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, DETACHED_PROCESS,
 };
 
+/// Cómo quedó el limpiador del borrado diferido respecto al Job Object del
+/// proceso que lo programó. Existe en todas las plataformas para que los
+/// consumidores multiplataforma lo nombren en sus firmas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scheduling {
+    /// Separado del Job del padre: sobrevive a la muerte de cualquier ancestro.
+    Detached,
+    /// Dentro del Job del padre: puede morir con él.
+    Attached,
+}
+
 #[cfg(windows)]
 mod deferred;
 #[cfg(windows)]

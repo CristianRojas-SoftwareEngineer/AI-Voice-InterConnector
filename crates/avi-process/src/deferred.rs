@@ -7,10 +7,7 @@
 //! Borrado diferido de rutas en Windows, sin copiar el ejecutable propio.
 //!
 //! Quien espera y borra es el Windows PowerShell 5.1 del sistema, que existe en
-//! toda instalación de Windows y no depende del binario que programa. Esta regla
-//! sustituye a la anterior, que prohibía PowerShell y scripts generados y
-//! obligaba a copiar el ejecutable a `%TEMP%` para relanzarlo como trabajador:
-//! esa copia nunca se podía borrar a sí misma y quedaba como resto.
+//! toda instalación de Windows y no depende del binario que programa.
 //!
 //! El script es una constante estática: nada del entorno se interpola en su
 //! texto. El destino y la identidad esperada viajan por variables de entorno del
@@ -26,17 +23,19 @@
 //!
 //! El lanzamiento intenta separar el proceso del Job Object del padre, para que
 //! sobreviva a su muerte. Si el Job no lo permite, se lanza sin separar y el
-//! aviso sale por stderr: sin separación, el script puede morir con el padre y
-//! lo no borrado queda para el barrido de la siguiente operación.
+//! resultado lo dice ([`Scheduling::Attached`]); este módulo no escribe nada por
+//! stdout ni stderr. Sin separación, el limpiador sobrevive al padre solo si el
+//! Job no mata a sus procesos al cerrarse; cada consumidor decide qué decirle al
+//! usuario.
 
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use avi_shared::OwnerToken;
 
-use crate::{CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
+use crate::{Scheduling, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW};
 
 /// Bandera de creación que separa el proceso del Job Object del padre.
 const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
@@ -98,21 +97,21 @@ fn system_powershell() -> anyhow::Result<PathBuf> {
 /// Programa el borrado de `target` para cuando muera el proceso `wait`, con el
 /// PowerShell del sistema.
 ///
-/// Devuelve `Ok` cuando el script está en marcha. Si no se puede lanzar
-/// (`powershell.exe` ausente, bloqueo de directiva como AppLocker) o termina con
-/// fallo durante la espera de arranque, devuelve error sin haber tocado el
-/// destino.
-pub fn schedule_removal(target: &Path, wait: &OwnerToken) -> anyhow::Result<()> {
+/// Devuelve `Ok` cuando el script está en marcha, y dice cómo quedó el
+/// limpiador. Si no se puede lanzar (`powershell.exe` ausente, bloqueo de
+/// directiva como AppLocker) o termina con fallo durante la espera de arranque,
+/// devuelve error sin haber tocado el destino.
+pub fn schedule_removal(target: &Path, wait: &OwnerToken) -> anyhow::Result<Scheduling> {
     schedule_removal_with(&system_powershell()?, target, wait)
 }
 
 /// Igual que [`schedule_removal`] con la ruta de `powershell.exe` inyectada, para
-/// probar el fallo de lanzamiento.
+/// probar el fallo de lanzamiento. `Ok` dice cómo quedó el limpiador.
 pub fn schedule_removal_with(
     powershell: &Path,
     target: &Path,
     wait: &OwnerToken,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Scheduling> {
     if target.parent().is_none_or(|p| p.as_os_str().is_empty()) {
         anyhow::bail!(
             "el destino del borrado diferido no tiene directorio padre: {}",
@@ -146,16 +145,8 @@ pub fn schedule_removal_with(
             .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | flags)
             .spawn()
     };
-    let mut child = match launch(CREATE_BREAKAWAY_FROM_JOB) {
-        Ok(child) => child,
-        Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
-            eprintln!(
-                "aviso: no se pudo lanzar el borrado diferido separado del Job Object del proceso ({e}); se lanza sin separar y, si el proceso padre muere antes, lo no borrado queda para el barrido"
-            );
-            launch(0).map_err(|e| launch_error(powershell, &e))?
-        }
-        Err(e) => return Err(launch_error(powershell, &e)),
-    };
+    let (mut child, scheduling) =
+        launch_detached_or_attached(launch).map_err(|e| launch_error(powershell, &e))?;
 
     // Espera de arranque fija: un script que muere enseguida con fallo no
     // programó nada.
@@ -169,7 +160,22 @@ pub fn schedule_removal_with(
         }
         std::thread::sleep(START_POLL);
     }
-    Ok(())
+    Ok(scheduling)
+}
+
+/// Lanza con `launch` pidiendo separarse del Job del padre. Si el Job lo
+/// rechaza con acceso denegado, reintenta una vez sin la bandera y lo informa
+/// como [`Scheduling::Attached`]; cualquier otro error se devuelve tal cual.
+fn launch_detached_or_attached(
+    launch: impl Fn(u32) -> std::io::Result<Child>,
+) -> std::io::Result<(Child, Scheduling)> {
+    match launch(CREATE_BREAKAWAY_FROM_JOB) {
+        Ok(child) => Ok((child, Scheduling::Detached)),
+        Err(e) if e.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
+            launch(0).map(|child| (child, Scheduling::Attached))
+        }
+        Err(e) => Err(e),
+    }
 }
 
 fn launch_error(powershell: &Path, e: &std::io::Error) -> anyhow::Error {
@@ -177,4 +183,64 @@ fn launch_error(powershell: &Path, e: &std::io::Error) -> anyhow::Error {
         "no se pudo lanzar el borrado diferido con {}: {e}",
         powershell.display()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::cell::Cell;
+
+    use super::*;
+
+    /// Lanza un proceso inocuo que termina enseguida.
+    fn harmless_child() -> std::io::Result<Child> {
+        Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+    }
+
+    #[test]
+    fn accepted_breakaway_is_detached() {
+        let calls = Cell::new(0);
+        let (mut child, scheduling) = launch_detached_or_attached(|flags| {
+            calls.set(calls.get() + 1);
+            assert_eq!(flags, CREATE_BREAKAWAY_FROM_JOB);
+            harmless_child()
+        })
+        .unwrap();
+        child.wait().unwrap();
+        assert_eq!(scheduling, Scheduling::Detached);
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn access_denied_retries_without_flag_and_is_attached() {
+        let calls = Cell::new(0);
+        let (mut child, scheduling) = launch_detached_or_attached(|flags| {
+            calls.set(calls.get() + 1);
+            if flags == CREATE_BREAKAWAY_FROM_JOB {
+                Err(std::io::Error::from_raw_os_error(ERROR_ACCESS_DENIED))
+            } else {
+                harmless_child()
+            }
+        })
+        .unwrap();
+        child.wait().unwrap();
+        assert_eq!(scheduling, Scheduling::Attached);
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[test]
+    fn other_error_fails_without_retry() {
+        let calls = Cell::new(0);
+        let result = launch_detached_or_attached(|_| {
+            calls.set(calls.get() + 1);
+            Err(std::io::Error::from_raw_os_error(2))
+        });
+        assert!(result.is_err());
+        assert_eq!(calls.get(), 1);
+    }
 }
