@@ -376,40 +376,52 @@ pub struct Outcome {
     /// publica como `models_provisioned`, y no distingue los que se descargaron de los
     /// que ya estaban: el contrato solo promete el conjunto disponible.
     pub provisioned: Vec<String>,
+    /// El usuario rechazó la confirmación; no se tocó el disco.
+    pub cancelled: bool,
 }
 
-/// Ejecuta `setup`: purga si toca y provisiona la selección.
+/// Ejecuta `setup` con la secuencia plan, confirmación única, purga, descarga y
+/// poda.
 ///
 /// Es el punto de entrada que el binario cablea. La descarga vive en
-/// [`provision`], compartida con `self install`; `run` añade la purga, la
-/// confirmación y la poda. Lo único que se
+/// [`provision`], compartida con `self install`; `run` añade el plan, la
+/// confirmación, la purga y la poda. Lo único que se
 /// queda en el binario es el envelope `--json` y la prosa, porque el parseo de la CLI y
 /// el emisor no viven en este crate.
 ///
-/// La confirmación destructiva de `--force-update` y la del tamaño pendiente se
-/// aplican aquí, con el mismo módulo `confirm` que usan `cleanup` y
-/// `self uninstall`, para que las tres operaciones destructivas del producto tengan una
-/// sola implementación de la tabla de confirmaciones.
+/// El plan es la selección completa con `--force-update` y lo pendiente sin él.
+/// Una sola confirmación cubre purga y descarga, con el mismo módulo `confirm`
+/// que usan `cleanup` y `self uninstall`. Si se rechaza, devuelve un
+/// [`Outcome`] con `cancelled` y no purga, descarga ni poda nada.
 pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Result<Outcome> {
     let mut outcome = Outcome::default();
 
-    // 1. `--force-update`: purga de la selección.
-    if options.force_update {
-        if !confirm_destructive(options)? {
-            return Ok(outcome);
+    // 1. Plan: con `--force-update` es la selección completa (se purga y se
+    //    vuelve a bajar todo); sin él, solo lo pendiente.
+    let plan = if options.force_update {
+        Pending {
+            models: selection().into_iter().map(String::from).collect(),
         }
+    } else {
+        pending(store)
+    };
+
+    // 2. Confirmación única, antes de tocar el disco: rechazarla no deja nada
+    //    purgado ni descargado.
+    if !confirm_plan(&plan, options.force_update, options)? {
+        outcome.cancelled = true;
+        return Ok(outcome);
+    }
+
+    // 3. Purga de `--force-update`, que ya está confirmada.
+    if options.force_update {
         outcome.purge = purge(store);
         for (name, reason) in &outcome.purge.failures {
             eprintln!("  no se pudo purgar {name}: {reason}");
         }
     }
 
-    // 2. Resumen previo y confirmación con el plan de lo pendiente; después,
-    //    la provisión compartida (descarga según el estado real).
-    let pending = pending(store);
-    if (options.force_update || !pending.is_empty()) && !confirm_size(&pending, options)? {
-        return Ok(outcome);
-    }
+    // 4. Provisión compartida (descarga según el estado real).
     let provisioned = provision(store, &HubProvisioner)
         .await
         .map_err(|e| match e {
@@ -419,7 +431,7 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
         })?;
     outcome.provisioned = provisioned.provisioned;
 
-    // 4. Poda tras éxito: las revisiones fuera del pin vigente.
+    // 5. Poda tras éxito: las revisiones fuera del pin vigente.
     //    Un fallo aquí no invalida lo provisionado: se informa y se sigue.
     outcome.pruned = prune_obsolete()?;
     for (name, reason) in &outcome.pruned.failures {
@@ -427,26 +439,6 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
     }
 
     Ok(outcome)
-}
-
-/// Confirmación destructiva de `--force-update`. `false` es "el usuario dijo
-/// que no", que la tabla de `reason` no cuenta como error.
-fn confirm_destructive(options: &Options) -> anyhow::Result<bool> {
-    let summary =
-        vec!["Se purgarán los modelos descargados y se volverán a descargar.".to_string()];
-    let decision = crate::confirm::confirm(
-        &crate::confirm::Confirmation {
-            kind: crate::confirm::Kind::Destructive,
-            summary: &summary,
-            entries: &[],
-            assume_yes: options.assume_yes,
-            dry_run: false,
-            stdin_is_terminal: std::io::IsTerminal::is_terminal(&std::io::stdin()),
-        },
-        &mut std::io::stdin().lock(),
-        &mut std::io::stderr(),
-    )?;
-    Ok(decision != crate::confirm::Decision::Cancelled)
 }
 
 /// Línea de la confirmación: cuántos modelos se descargan y su tamaño estimado.
@@ -458,21 +450,49 @@ fn download_summary(pending: &Pending) -> String {
     )
 }
 
-/// Confirmación del tamaño pendiente de la provisión: es no destructiva, así que sin
-/// terminal
-/// procede, y `--yes` la omite. Cuando la invoca `self install` después de su propio
-/// resumen, `called_from_lifecycle` la omite también.
-fn confirm_size(pending: &Pending, options: &Options) -> anyhow::Result<bool> {
-    if options.called_from_lifecycle {
-        return Ok(true);
+/// Compone la confirmación única de `setup` a partir del plan. Devuelve `None`
+/// cuando no hay nada que preguntar y, si no, el tipo de confirmación con su resumen.
+///
+/// - Con purga la confirmación es destructiva, la lleva la línea de purga y se
+///   pregunta siempre (también desde el ciclo de vida), porque borra datos.
+/// - Sin purga es no destructiva: sin terminal procede, y no se pregunta si el
+///   plan no descarga nada o si la invoca `self install`/`self update` tras su
+///   propio resumen (`called_from_lifecycle`).
+/// - En la confirmación destructiva la línea de descarga se omite en los mismos
+///   dos casos (plan sin tamaño o invocación desde el ciclo de vida).
+fn confirmation_summary(
+    plan: &Pending,
+    purges: bool,
+    options: &Options,
+) -> Option<(crate::confirm::Kind, Vec<String>)> {
+    let announces_download = !options.called_from_lifecycle && plan.estimated_bytes() != 0;
+    if !purges && !announces_download {
+        return None;
     }
-    if pending.estimated_bytes() == 0 {
-        return Ok(true);
+    let mut summary = Vec::new();
+    if purges {
+        summary.push("Se purgarán los modelos descargados y se volverán a descargar.".to_string());
     }
-    let summary = vec![download_summary(pending)];
+    if announces_download {
+        summary.push(download_summary(plan));
+    }
+    let kind = if purges {
+        crate::confirm::Kind::Destructive
+    } else {
+        crate::confirm::Kind::NonDestructive
+    };
+    Some((kind, summary))
+}
+
+/// Pide la confirmación única de `setup`. `false` es "el usuario dijo que no",
+/// que la tabla de `reason` no cuenta como error.
+fn confirm_plan(plan: &Pending, purges: bool, options: &Options) -> anyhow::Result<bool> {
+    let Some((kind, summary)) = confirmation_summary(plan, purges, options) else {
+        return Ok(true);
+    };
     let decision = crate::confirm::confirm(
         &crate::confirm::Confirmation {
-            kind: crate::confirm::Kind::NonDestructive,
+            kind,
             summary: &summary,
             entries: &[],
             assume_yes: options.assume_yes,
@@ -624,6 +644,64 @@ pub(crate) mod tests {
             download_summary(&all),
             "Se descargarán 6 modelo(s), unos 5,9 GB."
         );
+    }
+
+    /// Con `--force-update` la confirmación es una sola, destructiva, y su
+    /// resumen lleva la línea de purga seguida de la de descarga del plan completo.
+    #[test]
+    fn force_update_composes_one_destructive_confirmation() {
+        let all = Pending {
+            models: selection().into_iter().map(String::from).collect(),
+        };
+        let (kind, summary) = confirmation_summary(&all, true, &Options::user(true, false))
+            .expect("la purga siempre se confirma");
+        assert_eq!(kind, crate::confirm::Kind::Destructive);
+        assert_eq!(
+            summary,
+            vec![
+                "Se purgarán los modelos descargados y se volverán a descargar.".to_string(),
+                download_summary(&all),
+            ]
+        );
+    }
+
+    /// Sin `--force-update` la confirmación es no destructiva y solo anuncia la
+    /// descarga; sin nada pendiente o desde el ciclo de vida no se pregunta.
+    #[test]
+    fn plain_setup_confirms_only_the_download() {
+        let one = Pending {
+            models: vec![CLONING_MODEL.to_string()],
+        };
+        let options = Options::user(false, false);
+        let (kind, summary) =
+            confirmation_summary(&one, false, &options).expect("hay descarga que anunciar");
+        assert_eq!(kind, crate::confirm::Kind::NonDestructive);
+        assert_eq!(summary, vec![download_summary(&one)]);
+
+        assert!(confirmation_summary(&Pending::default(), false, &options).is_none());
+        let lifecycle = Options {
+            called_from_lifecycle: true,
+            ..options
+        };
+        assert!(confirmation_summary(&one, false, &lifecycle).is_none());
+    }
+
+    /// Desde el ciclo de vida la purga se sigue confirmando, pero sin la línea de
+    /// descarga, que `self install`/`self update` ya mostraron en su resumen.
+    #[test]
+    fn lifecycle_force_update_still_confirms_the_purge_only() {
+        let all = Pending {
+            models: selection().into_iter().map(String::from).collect(),
+        };
+        let options = Options {
+            force_update: true,
+            called_from_lifecycle: true,
+            ..Options::default()
+        };
+        let (kind, summary) =
+            confirmation_summary(&all, true, &options).expect("la purga siempre se confirma");
+        assert_eq!(kind, crate::confirm::Kind::Destructive);
+        assert_eq!(summary.len(), 1, "{summary:?}");
     }
 
     /// La selección es la tabla de pines completa: el modelo Base de clonado
