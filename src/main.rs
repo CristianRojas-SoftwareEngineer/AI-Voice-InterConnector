@@ -4936,8 +4936,10 @@ fn status_line(state: lifecycle::daemon_stop::DaemonState, health: Option<&Value
 
 /// Cliente `reqwest` hacia el daemon (HTTP, sin TLS: basta para
 /// localhost). La dirección destino la resuelve cada llamada el protocolo
-/// (`daemon_stop::resolve_client_addr`). Timeout de conexión breve para que el
-/// probe Auto→local sea rápido cuando el daemon no está en ejecución.
+/// (`daemon_stop::resolve_client_addr`). Solo sirve a las peticiones de trabajo
+/// y al cuerpo de `daemon status`; la sonda de vida es `daemon_stop::probe`. El
+/// timeout de conexión breve acota el `daemon_unreachable` de una petición
+/// forzada al daemon (`--daemon`) cuando no está en ejecución.
 fn daemon_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_millis(500))
