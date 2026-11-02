@@ -157,7 +157,7 @@ AI-Voice-InterConnector/
 │       └── install.ps1           # Windows (PowerShell 5.1+ y 7+)
 ├── crates/
 │   ├── avi-lifecycle/            # motor de ciclo de vida del usuario
-│   ├── avi-process/              # flags de creación de procesos y borrado diferido (Windows)
+│   ├── avi-process/              # flags de creación de procesos y borrado diferido (Windows); sondas de loopback
 │   ├── avi-shared/                # rutas canonicas (fuente unica)
 │   └── avi-store/                # VoiceStore, SpeechStore, ModelStore
 ├── src/main.rs                   # cablea `self …`, `cleanup`, `setup`, `doctor`

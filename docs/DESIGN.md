@@ -81,7 +81,7 @@ AI-Voice-InterConnector/
 │   ├── avi-audio/                      # AudioService (cpal, hound)
 │   ├── avi-tts/                        # Qwen3TtsEngine, GenerationOptions, resident
 │   ├── avi-shared/                     # Fuente única de rutas y canonicalización (la consumen los crates directamente)
-│   ├── avi-process/                    # Flags de creación de procesos y borrado diferido (Windows)
+│   ├── avi-process/                    # Flags de creación de procesos y borrado diferido (Windows); sondas de loopback
 │   ├── avi-store/                      # VoiceStore, SpeechStore, ModelStore (hf-hub; progreso por observador, sin dibujo; cache_dir propio; los pines `MODEL_REVISIONS` viven en avi-shared)
 │   │   └── assets/default/             # reference.qvoice de la voz de fábrica `default` (huella de timbre), embebido
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)

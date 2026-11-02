@@ -95,7 +95,7 @@ La duración `0` y `--mic` sin duración fuera de TTY producen exit 2 `usage_err
 
 `route_to_daemon` (`src/main.rs`): `ForceDaemon` siempre delega (el POST
 falla con `daemon_unreachable` si no hay daemon corriendo); `ForceDirect`
-nunca delega; `Auto` delega solo si `GET /health` responde dentro del plazo de `probe_health` (`src/main.rs`).
+nunca delega; `Auto` delega solo si `GET /health` responde dentro del plazo de la sonda del daemon (`PROBE_TIMEOUT`, `crates/avi-lifecycle/src/daemon_stop.rs`).
 
 **Precarga en caliente (warm-on-clone), solo en la ruta daemon.** El campo
 `precomputed` del envelope depende de la ruta: la **ruta daemon** dispara, tras

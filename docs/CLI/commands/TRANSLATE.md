@@ -32,10 +32,11 @@ Definición del subcomando: `Commands::Translate` (`src/main.rs`).
 El vocabulario de idioma de la CLI es `es|en` en todos los comandos: `clap` rechaza cualquier otro valor con exit 2 antes de llegar al handler. El daemon acepta las mismas claves `source_language`/`target_language` con los mismos valores. `translate` no tiene límite de longitud.
 
 Sin `--daemon`/`--no-daemon` el modo es `Auto` (`DaemonMode::Auto`,
-`src/main.rs`): se hace un probe de `GET /health` con el timeout de `probe_health`
-(`probe_health`, `src/main.rs`, vía `daemon_active` en
-`src/main.rs`) y, si responde, se delega al
-daemon; si no, se ejecuta local.
+`src/main.rs`): se hace un probe de `GET /health` con la sonda del daemon
+(`lifecycle::daemon_stop::probe`, con el plazo `PROBE_TIMEOUT`, vía
+`daemon_active` en `src/main.rs`) y, si responde, se delega al
+daemon; si no, se ejecuta local. Sin daemon, el rechazo de la conexión es
+inmediato en todas las plataformas y la ejecución local no espera.
 
 **La fase `translating` se repinta mientras espera.** El endpoint `/translate`
 devuelve JSON plano y no emite eventos, así que sin repintado la fase
