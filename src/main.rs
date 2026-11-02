@@ -1317,7 +1317,7 @@ async fn handle_translate(
     let client = daemon_client();
     if route_to_daemon(daemon_mode).await? {
         let mut progress = PhaseProgress::new();
-        progress.phase("translating", "Traduciendo texto (daemon)…");
+        progress.phase("translating", TRANSLATE_PHASES.translating);
         let result = translate_via_daemon(&client, text, source, target, &progress).await;
         let _elapsed = progress.close();
         let (translated, source, target) = result?;
@@ -1356,7 +1356,7 @@ async fn handle_translate(
     #[cfg(feature = "native-translation")]
     {
         let mut progress = PhaseProgress::new();
-        progress.phase("translating", "Traduciendo texto…");
+        progress.phase("translating", TRANSLATE_PHASES.translating);
         progress.tick();
         // Patrón de bloque externo: el trabajo que puede fallar vive en un
         // bloque, y el cierre del indicador —que consume el indicador— se hace
@@ -1511,7 +1511,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     if !use_daemon && !force && voice_store.exists(&name).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))? {
                         return Err(CliError::new(ExitCode::StateConflict, "voice_exists", format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name)));
                     }
-                    progress.phase("capturing", "Capturando audio del micrófono…");
+                    progress.phase("capturing", CLONE_PHASES.capturing);
                     progress.close_line();
                     let mut pcm = capture_mic_pcm(duration, avi_core::MAX_CLONE_REFERENCE_SECS).await?;
                     truncate_clone_pcm(&mut pcm);
@@ -1615,7 +1615,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 let tmp_qvoice = avi_process::scratch::tempfile("avi_clone_", ".qvoice")
                     .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?
                     .into_temp_path();
-                progress.phase("cloning", "Clonando voz… (puede tardar varios minutos)");
+                progress.phase("cloning", CLONE_PHASES.cloning);
                 progress.tick();
                 // El clonado es trabajo **síncrono**: bloquea el hilo mientras
                 // dura, así que el indicador no puede repintar durante él y el
@@ -1624,7 +1624,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 let cloned =
                     avi_tts::clone_voice(model_dir, speech_path.as_path(), &tmp_qvoice, &name)
                         .and_then(|()| {
-                        progress.phase("saving", "Guardando referencia de voz…");
+                        progress.phase("saving", CLONE_PHASES.saving);
                         voice_store.save_reference(&name, &tmp_qvoice)
                     });
                 let saved_qvoice = cloned.map_err(|e| {
@@ -2111,7 +2111,7 @@ struct LocalResynthesizer<'a> {
 impl PlayResynthesizer for LocalResynthesizer<'_> {
     async fn resynthesize(&mut self, seed: u64) -> Result<(), CliError> {
         self.progress
-            .phase("synthesizing", "Sintetizando otra toma…");
+            .phase("synthesizing", RETAKE_PHASES.synthesizing);
         self.progress.tick();
         let result = synthesize_voice_directly(
             self.engine,
@@ -2149,6 +2149,7 @@ impl PlayResynthesizer for DaemonResynthesizer<'_> {
         // La fase «Sintetizando…» la pinta el consumo del stream del daemon.
         let result = daemon_synthesize_wav(
             self.progress,
+            &RETAKE_PHASES,
             self.client,
             self.text,
             self.voice,
@@ -2495,9 +2496,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     progress.phase(
                         if mic { "capturing" } else { "reading" },
                         if mic {
-                            "Capturando audio del micrófono…"
+                            TRANSCRIBE_PHASES.capturing
                         } else {
-                            "Leyendo archivo de audio…"
+                            TRANSCRIBE_PHASES.reading
                         },
                     );
                     if mic {
@@ -2520,7 +2521,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
                     )?;
 
-                    progress.phase("transcribing", "Transcribiendo audio…");
+                    progress.phase("transcribing", TRANSCRIBE_PHASES.transcribing);
                     progress.close_line();
                     let engine_result = STT_HOLDER.get_or_try_init(stt_dir).map_err(|e| {
                         CliError::new(
@@ -2687,12 +2688,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 let engine = engine_result?;
                 // Traducción opt-in antes de sintetizar (passthrough si coinciden).
                 let final_text = if source_eff != target_language {
-                    progress.phase("translating", "Traduciendo texto…");
+                    progress.phase("translating", SYNTHESIZE_PHASES.translating);
                     translate_if_different(&text, source_eff, &target_language)?
                 } else {
                     text.clone()
                 };
-                progress.phase("synthesizing", "Sintetizando voz…");
+                progress.phase("synthesizing", SYNTHESIZE_PHASES.synthesizing);
                 progress.tick();
                 // La síntesis es trabajo **síncrono**: bloquea el hilo mientras
                 // dura, así que el indicador no puede repintar durante ella y el
@@ -2748,7 +2749,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         }
                     }
                 } else {
-                    progress.phase("saving", "Guardando locución…");
+                    progress.phase("saving", SYNTHESIZE_PHASES.saving);
                     speech_store
                         .save(&voice, &label, &final_text, &tmp_wav)
                         .map_err(|e| {
@@ -2835,12 +2836,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 let engine = engine_result?;
                 // Traducción opt-in antes de sintetizar (passthrough si coinciden).
                 let final_text = if source_eff != target_language {
-                    progress.phase("translating", "Traduciendo texto…");
+                    progress.phase("translating", SAY_PHASES.translating);
                     translate_if_different(&text, source_eff, &target_language)?
                 } else {
                     text.clone()
                 };
-                progress.phase("synthesizing", "Sintetizando voz doblada…");
+                progress.phase("synthesizing", SAY_PHASES.synthesizing);
                 progress.tick();
                 // La síntesis es trabajo **síncrono**: bloquea el hilo mientras
                 // dura, así que el indicador no puede repintar durante ella y el
@@ -2856,7 +2857,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     &target_language,
                     tmp_wav.path(),
                 )?;
-                progress.phase("playing", "Reproduciendo…");
+                progress.phase("playing", SAY_PHASES.playing);
                 audio::AudioService::new()
                     .play_wav(tmp_wav.path())
                     .map_err(|e| {
@@ -2984,9 +2985,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // los `?` del pipeline deja la fase abierta.
                 let result = async {
                     if mic {
-                        progress.phase("capturing", "Capturando audio del micrófono…");
+                        progress.phase("capturing", DUB_PHASES.capturing);
                     } else {
-                        progress.phase("reading", "Leyendo archivo de audio…");
+                        progress.phase("reading", DUB_PHASES.reading);
                     }
                     if mic {
                         progress.close_line();
@@ -3055,7 +3056,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                             pcm
                         }
                     };
-                    progress.phase("transcribing", "Transcribiendo audio…");
+                    progress.phase("transcribing", DUB_PHASES.transcribing);
                     progress.tick();
                     progress.close_line();
                     let stt_result = STT_HOLDER.get_or_try_init(stt_dir).map_err(|e| {
@@ -3088,7 +3089,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     let final_text = if source == target {
                         transcribed.clone()
                     } else {
-                        progress.phase("translating", "Traduciendo texto transcrito…");
+                        progress.phase("translating", DUB_PHASES.translating);
                         let model_name = format!("opus-mt-{}", translation_pair(source));
                         let model_store = open_model_store()?;
                         let ct2_dir = model_store.model_dir(&model_name);
@@ -3147,7 +3148,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     let engine_result = direct_tts_engine();
                     progress.repaint();
                     let engine = engine_result?;
-                    progress.phase("synthesizing", "Sintetizando voz doblada…");
+                    progress.phase("synthesizing", DUB_PHASES.synthesizing);
                     progress.tick();
                     synthesize_voice_directly(
                         &engine,
@@ -3159,7 +3160,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &target_language,
                         tmp_wav.path(),
                     )?;
-                    progress.phase("playing", "Reproduciendo doblaje…");
+                    progress.phase("playing", DUB_PHASES.playing);
                     audio::AudioService::new()
                         .play_wav(tmp_wav.path())
                         .map_err(|e| {
@@ -5132,9 +5133,9 @@ async fn transcribe_via_daemon(
     progress.phase(
         if mic { "capturing" } else { "reading" },
         if mic {
-            "Capturando audio del micrófono…"
+            TRANSCRIBE_PHASES.capturing
         } else {
-            "Leyendo archivo de audio…"
+            TRANSCRIBE_PHASES.reading
         },
     );
     if mic {
@@ -5150,7 +5151,7 @@ async fn transcribe_via_daemon(
         "El audio de la transcripción",
         avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
     )?;
-    progress.phase("transcribing", "Transcribiendo audio (daemon)…");
+    progress.phase("transcribing", TRANSCRIBE_PHASES.transcribing);
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let mut payload =
@@ -5297,6 +5298,7 @@ struct DaemonSynthesis {
 #[allow(clippy::too_many_arguments)]
 async fn daemon_synthesize_wav(
     progress: &mut PhaseProgress,
+    texts: &PhaseTexts,
     client: &reqwest::Client,
     text: &str,
     voice: &str,
@@ -5329,7 +5331,7 @@ async fn daemon_synthesize_wav(
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
-    let val = consume_ndjson_stream(resp, StreamResult::Synthesize, progress).await?;
+    let val = consume_ndjson_stream(resp, StreamResult::Synthesize, texts, progress).await?;
     let b64 = val["audio_b64"].as_str().ok_or_else(|| {
         CliError::new(
             ExitCode::Error,
@@ -5387,6 +5389,167 @@ impl StreamResult {
     }
 }
 
+/// Textos de progreso de un comando, uno por fase o etapa que el comando puede
+/// anunciar. La ruta directa y la del daemon leen la misma tabla, así que una
+/// fase dice lo mismo por cualquier vía. Un campo cuya fase no ocurre en el
+/// comando conserva el texto común y nunca se anuncia.
+struct PhaseTexts {
+    /// Evento `started` del stream del daemon (inicio de la operación).
+    started: &'static str,
+    /// Lectura de un archivo de audio.
+    reading: &'static str,
+    /// Captura de audio del micrófono.
+    capturing: &'static str,
+    /// Limpieza de ruido (etapa `denoise` del daemon).
+    denoising: &'static str,
+    /// Transcripción (etapa `transcribe`).
+    transcribing: &'static str,
+    /// Traducción (etapa `translate`).
+    translating: &'static str,
+    /// Síntesis de voz (etapa `synthesis`).
+    synthesizing: &'static str,
+    /// Clonación de voz (etapa `clone`).
+    cloning: &'static str,
+    /// Guardado del resultado.
+    saving: &'static str,
+    /// Reproducción del resultado.
+    playing: &'static str,
+    /// Calentamiento del motor (etapa `warming`).
+    warming: &'static str,
+    /// Espera de turno del motor de síntesis (etapa `queued`).
+    queued: &'static str,
+    /// Precarga en caliente (etapa `warmup`).
+    warmup: &'static str,
+    /// Espera de turno de la limpieza de ruido (etapa `denoise_queue`).
+    denoise_queue: &'static str,
+}
+
+/// Textos de `speech synthesize`.
+const SYNTHESIZE_PHASES: PhaseTexts = PhaseTexts {
+    started: "Iniciando síntesis…",
+    reading: "Leyendo archivo de audio…",
+    capturing: "Capturando audio del micrófono…",
+    denoising: "Limpiando ruido del audio…",
+    transcribing: "Transcribiendo audio…",
+    translating: "Traduciendo texto…",
+    synthesizing: "Sintetizando voz…",
+    cloning: "Clonando voz… (puede tardar varios minutos)",
+    saving: "Guardando locución…",
+    playing: "Reproduciendo…",
+    warming: "Calentando motor de síntesis…",
+    queued: "En cola de síntesis…",
+    warmup: "Iniciando precarga en caliente…",
+    denoise_queue: "Esperando turno para limpiar el ruido…",
+};
+
+/// Textos de la regeneración de una toma desde el menú de `--play`.
+const RETAKE_PHASES: PhaseTexts = PhaseTexts {
+    started: "Preparando otra toma…",
+    reading: "Leyendo archivo de audio…",
+    capturing: "Capturando audio del micrófono…",
+    denoising: "Limpiando ruido del audio…",
+    transcribing: "Transcribiendo audio…",
+    translating: "Traduciendo texto…",
+    synthesizing: "Sintetizando otra toma…",
+    cloning: "Clonando voz… (puede tardar varios minutos)",
+    saving: "Guardando locución…",
+    playing: "Reproduciendo…",
+    warming: "Calentando motor de síntesis…",
+    queued: "En cola de síntesis…",
+    warmup: "Iniciando precarga en caliente…",
+    denoise_queue: "Esperando turno para limpiar el ruido…",
+};
+
+/// Textos de `speech say`.
+const SAY_PHASES: PhaseTexts = PhaseTexts {
+    started: "Iniciando síntesis…",
+    reading: "Leyendo archivo de audio…",
+    capturing: "Capturando audio del micrófono…",
+    denoising: "Limpiando ruido del audio…",
+    transcribing: "Transcribiendo audio…",
+    translating: "Traduciendo texto…",
+    synthesizing: "Sintetizando voz…",
+    cloning: "Clonando voz… (puede tardar varios minutos)",
+    saving: "Guardando locución…",
+    playing: "Reproduciendo…",
+    warming: "Calentando motor de síntesis…",
+    queued: "En cola de síntesis…",
+    warmup: "Iniciando precarga en caliente…",
+    denoise_queue: "Esperando turno para limpiar el ruido…",
+};
+
+/// Textos de `speech dub`.
+const DUB_PHASES: PhaseTexts = PhaseTexts {
+    started: "Doblando audio…",
+    reading: "Leyendo archivo de audio…",
+    capturing: "Capturando audio del micrófono…",
+    denoising: "Limpiando ruido del audio…",
+    transcribing: "Transcribiendo audio…",
+    translating: "Traduciendo texto transcrito…",
+    synthesizing: "Sintetizando voz doblada…",
+    cloning: "Clonando voz… (puede tardar varios minutos)",
+    saving: "Guardando locución…",
+    playing: "Reproduciendo doblaje…",
+    warming: "Calentando motor de síntesis…",
+    queued: "En cola de síntesis…",
+    warmup: "Iniciando precarga en caliente…",
+    denoise_queue: "Esperando turno para limpiar el ruido…",
+};
+
+/// Textos de `voice clone`.
+const CLONE_PHASES: PhaseTexts = PhaseTexts {
+    started: "Iniciando clonación…",
+    reading: "Leyendo archivo de audio…",
+    capturing: "Capturando audio del micrófono…",
+    denoising: "Limpiando ruido del audio…",
+    transcribing: "Transcribiendo audio…",
+    translating: "Traduciendo texto…",
+    synthesizing: "Sintetizando voz…",
+    cloning: "Clonando voz… (puede tardar varios minutos)",
+    saving: "Guardando referencia de voz…",
+    playing: "Reproduciendo…",
+    warming: "Calentando motor de síntesis…",
+    queued: "En cola de síntesis…",
+    warmup: "Iniciando precarga en caliente…",
+    denoise_queue: "Esperando turno para limpiar el ruido…",
+};
+
+/// Textos de `speech transcribe`.
+const TRANSCRIBE_PHASES: PhaseTexts = PhaseTexts {
+    started: "Iniciando transcripción…",
+    reading: "Leyendo archivo de audio…",
+    capturing: "Capturando audio del micrófono…",
+    denoising: "Limpiando ruido del audio…",
+    transcribing: "Transcribiendo audio…",
+    translating: "Traduciendo texto…",
+    synthesizing: "Sintetizando voz…",
+    cloning: "Clonando voz… (puede tardar varios minutos)",
+    saving: "Guardando locución…",
+    playing: "Reproduciendo…",
+    warming: "Calentando motor de síntesis…",
+    queued: "En cola de síntesis…",
+    warmup: "Iniciando precarga en caliente…",
+    denoise_queue: "Esperando turno para limpiar el ruido…",
+};
+
+/// Textos de `translate`.
+const TRANSLATE_PHASES: PhaseTexts = PhaseTexts {
+    started: "Iniciando traducción…",
+    reading: "Leyendo archivo de audio…",
+    capturing: "Capturando audio del micrófono…",
+    denoising: "Limpiando ruido del audio…",
+    transcribing: "Transcribiendo audio…",
+    translating: "Traduciendo texto…",
+    synthesizing: "Sintetizando voz…",
+    cloning: "Clonando voz… (puede tardar varios minutos)",
+    saving: "Guardando locución…",
+    playing: "Reproduciendo…",
+    warming: "Calentando motor de síntesis…",
+    queued: "En cola de síntesis…",
+    warmup: "Iniciando precarga en caliente…",
+    denoise_queue: "Esperando turno para limpiar el ruido…",
+};
+
 /// Consume un stream NDJSON del daemon (`started` → latidos → `result`/`error`)
 /// con timeout de inactividad + failsafe total. Retorna el evento final
 /// `result`; el evento `error` se mapea a `CliError` con la tabla única.
@@ -5395,6 +5558,7 @@ impl StreamResult {
 async fn consume_ndjson_stream(
     mut resp: reqwest::Response,
     expected: StreamResult,
+    texts: &PhaseTexts,
     progress: &mut PhaseProgress,
 ) -> Result<Value, CliError> {
     let deadline = tokio::time::Instant::now() + STREAM_TOTAL_DEADLINE;
@@ -5473,8 +5637,8 @@ async fn consume_ndjson_stream(
                     format!("NDJSON inválido del daemon: {}", e),
                 )
             })?;
-            if let Some((label, msg)) = command_stream_phase(&ev, expected) {
-                progress.phase(label, &msg);
+            if let Some((label, msg)) = stream_event_phase(&ev, texts) {
+                progress.phase(label, msg);
             }
             match ev.get("event").and_then(|v| v.as_str()) {
                 Some("result") => return Ok(ev),
@@ -5576,51 +5740,33 @@ fn process_stream_line(line: &str) -> Result<Option<Value>, CliError> {
     }
 }
 
-/// Decide la etiqueta de racionado y el texto de un evento intermedio, sin
-/// escribir ni consultar el reloj. Los eventos desconocidos no anuncian fase.
-fn ndjson_progress_phase(ev: &Value) -> Option<(&'static str, String)> {
+/// Traduce un evento intermedio del stream a la etiqueta canónica de la fase y
+/// su texto en la tabla del comando, sin escribir ni consultar el reloj. La
+/// etiqueta es la clave de racionado: `progress` y `heartbeat` de una misma
+/// etapa comparten etiqueta. Solo se leen `event` y `stage`; los eventos y las
+/// etapas desconocidos no anuncian fase.
+///
+/// Etapa del daemon → etiqueta: `warming`, `queued`, `warmup` y `denoise_queue`
+/// se conservan; `denoise` → `denoising`, `synthesis` → `synthesizing`,
+/// `clone` → `cloning`, `transcribe` → `transcribing`, `translate` →
+/// `translating`.
+fn stream_event_phase(ev: &Value, texts: &PhaseTexts) -> Option<(&'static str, &'static str)> {
     match ev.get("event").and_then(Value::as_str) {
-        Some("started") => {
-            let op = ev
-                .get("operation")
-                .and_then(Value::as_str)
-                .unwrap_or("operación");
-            Some(("started", format!("Iniciando {op}…")))
-        }
-        Some(event @ ("progress" | "heartbeat")) => {
-            let (label, msg) = match ev.get("stage").and_then(Value::as_str) {
-                Some("warming") => ("warming", "Calentando motor de síntesis…"),
-                Some("queued") => ("queued", "En cola de síntesis…"),
-                Some("synthesis") => ("synthesis", "Sintetizando voz…"),
-                Some("warmup") => ("warmup", "Iniciando precarga en caliente…"),
-                Some("clone") => ("clone", "Clonando voz… (puede tardar varios minutos)"),
-                Some("transcribe") => ("transcribe", "Transcribiendo audio…"),
-                Some("translate") => ("translate", "Traduciendo texto…"),
-                _ => return None,
-            };
-            let msg = if event == "progress" {
-                ev.get("message").and_then(Value::as_str).unwrap_or(msg)
-            } else {
-                msg
-            };
-            Some((label, msg.to_string()))
-        }
+        Some("started") => Some(("started", texts.started)),
+        Some("progress" | "heartbeat") => match ev.get("stage").and_then(Value::as_str) {
+            Some("warming") => Some(("warming", texts.warming)),
+            Some("queued") => Some(("queued", texts.queued)),
+            Some("warmup") => Some(("warmup", texts.warmup)),
+            Some("denoise_queue") => Some(("denoise_queue", texts.denoise_queue)),
+            Some("denoise") => Some(("denoising", texts.denoising)),
+            Some("synthesis") => Some(("synthesizing", texts.synthesizing)),
+            Some("clone") => Some(("cloning", texts.cloning)),
+            Some("transcribe") => Some(("transcribing", texts.transcribing)),
+            Some("translate") => Some(("translating", texts.translating)),
+            _ => None,
+        },
         _ => None,
     }
-}
-
-/// Traduce el evento real a la fase canónica del comando cuando la etapa
-/// corresponde a una fase local; conserva las etapas de detalle del motor.
-fn command_stream_phase(ev: &Value, expected: StreamResult) -> Option<(&'static str, String)> {
-    let (label, msg) = ndjson_progress_phase(ev)?;
-    let canonical = match (expected, label) {
-        (StreamResult::Synthesize | StreamResult::Dub, "synthesis") => "synthesizing",
-        (StreamResult::Clone, "clone") => "cloning",
-        (StreamResult::Dub, "transcribe") => "transcribing",
-        (StreamResult::Synthesize | StreamResult::Dub, "translate") => "translating",
-        _ => label,
-    };
-    Some((canonical, msg))
 }
 
 /// `synthesize` vía daemon: persiste el WAV en `SpeechStore` y respeta
@@ -5660,6 +5806,7 @@ async fn synthesize_via_daemon(
     }
     let first_take = daemon_synthesize_wav(
         progress,
+        &SYNTHESIZE_PHASES,
         client,
         text,
         voice,
@@ -5713,7 +5860,7 @@ async fn synthesize_via_daemon(
             None => return Ok(None),
         }
     } else {
-        progress.phase("saving", "Guardando locución…");
+        progress.phase("saving", SYNTHESIZE_PHASES.saving);
         speech_store
             .save(voice, &label_lower, final_text, &tmp)
             .map_err(|e| CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()))?
@@ -5735,6 +5882,7 @@ async fn say_via_daemon(
 ) -> Result<(), CliError> {
     let wav = daemon_synthesize_wav(
         progress,
+        &SAY_PHASES,
         client,
         text,
         voice,
@@ -5750,7 +5898,7 @@ async fn say_via_daemon(
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
     std::fs::write(tmp.path(), &wav)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-    progress.phase("playing", "Reproduciendo…");
+    progress.phase("playing", SAY_PHASES.playing);
     audio::AudioService::new()
         .play_wav(tmp.path())
         .map_err(|e| {
@@ -5769,7 +5917,7 @@ async fn clone_via_daemon(
     denoise: bool,
     progress: &mut PhaseProgress,
 ) -> Result<(String, String, bool), CliError> {
-    progress.phase("cloning", "Clonando voz (daemon).");
+    progress.phase("cloning", CLONE_PHASES.cloning);
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
     let mut payload = serde_json::json!({
         "name": name,
@@ -5807,7 +5955,8 @@ async fn clone_via_daemon(
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
-    let val: Value = consume_ndjson_stream(resp, StreamResult::Clone, progress).await?;
+    let val: Value =
+        consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, progress).await?;
     let cloned_name = val["name"].as_str().ok_or_else(|| {
         CliError::new(
             ExitCode::Error,
@@ -5926,9 +6075,9 @@ async fn dub_via_daemon(
     progress.phase(
         if mic { "capturing" } else { "reading" },
         if mic {
-            "Capturando audio del micrófono…"
+            DUB_PHASES.capturing
         } else {
-            "Leyendo archivo de audio…"
+            DUB_PHASES.reading
         },
     );
     if mic {
@@ -5947,7 +6096,7 @@ async fn dub_via_daemon(
         ));
     }
     ensure_pcm_within_limit(&pcm, "El audio del doblaje", avi_core::MAX_DUB_AUDIO_SECS)?;
-    progress.phase("dubbing", "Doblando audio (daemon)…");
+    progress.phase("started", DUB_PHASES.started);
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let mut payload = serde_json::json!({
@@ -5997,7 +6146,7 @@ async fn dub_via_daemon(
     // {status:"dubbed", text, translated, audio_b64, voice}, donde `text` es la
     // transcripción y `translated` el texto que se sintetiza; los eventos `error`
     // del stream se traducen con la misma tabla única.
-    let val: Value = consume_ndjson_stream(resp, StreamResult::Dub, progress).await?;
+    let val: Value = consume_ndjson_stream(resp, StreamResult::Dub, &DUB_PHASES, progress).await?;
     let audio_b64_resp = val["audio_b64"].as_str().ok_or_else(|| {
         CliError::new(
             ExitCode::Error,
@@ -6020,7 +6169,7 @@ async fn dub_via_daemon(
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
     std::fs::write(tmp_wav.path(), &wav_bytes)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-    progress.phase("playing", "Reproduciendo doblaje…");
+    progress.phase("playing", DUB_PHASES.playing);
     audio::AudioService::new()
         .play_wav(tmp_wav.path())
         .map_err(|e| {
@@ -6752,7 +6901,7 @@ mod tests {
             .await
             .expect("el doble debe responder");
         let mut progress = PhaseProgress::new();
-        let val = consume_ndjson_stream(resp, StreamResult::Clone, &mut progress)
+        let val = consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, &mut progress)
             .await
             .expect("la secuencia de éxito entrega el final");
         assert_eq!(val["event"], "result");
@@ -6769,8 +6918,7 @@ mod tests {
                 r#"{"event":"started","voice":"v"}"#.to_string(),
                 r#"{"event":"heartbeat","stage":"warming"}"#.to_string(),
                 r#"{"event":"heartbeat","stage":"warming"}"#.to_string(),
-                r#"{"event":"progress","stage":"synthesis","message":"Síntesis en curso."}"#
-                    .to_string(),
+                r#"{"event":"progress","stage":"synthesis"}"#.to_string(),
                 r#"{"event":"heartbeat","stage":"synthesis"}"#.to_string(),
                 r#"{"event":"result","audio_b64":"UklGRg=="}"#.to_string(),
             ],
@@ -6787,6 +6935,7 @@ mod tests {
         let mut stream = Box::pin(consume_ndjson_stream(
             resp,
             StreamResult::Synthesize,
+            &SYNTHESIZE_PHASES,
             &mut progress,
         ));
         assert!(
@@ -6806,110 +6955,158 @@ mod tests {
         let _elapsed = progress.close();
     }
 
-    /// La traducción pura fija la etiqueta y el mensaje de cada etapa; los
-    /// eventos de avance conservan su mensaje y los latidos usan el de la CLI.
+    /// La traducción pura fija la etiqueta canónica y el texto de la tabla del
+    /// comando para cada etapa; `progress` y `heartbeat` de una misma etapa
+    /// comparten etiqueta (clave de racionado) y texto.
     #[test]
-    fn ndjson_progress_phase_maps_stages_and_rate_limits_by_stage() {
+    fn stream_event_phase_maps_stages_and_rate_limits_by_stage() {
         let cases = [
-            ("warming", "Calentando motor de síntesis…"),
-            ("queued", "En cola de síntesis…"),
-            ("synthesis", "Sintetizando voz…"),
-            ("warmup", "Iniciando precarga en caliente…"),
-            ("clone", "Clonando voz… (puede tardar varios minutos)"),
-            ("transcribe", "Transcribiendo audio…"),
-            ("translate", "Traduciendo texto…"),
+            ("warming", "warming", DUB_PHASES.warming),
+            ("queued", "queued", DUB_PHASES.queued),
+            ("warmup", "warmup", DUB_PHASES.warmup),
+            ("denoise_queue", "denoise_queue", DUB_PHASES.denoise_queue),
+            ("denoise", "denoising", DUB_PHASES.denoising),
+            ("synthesis", "synthesizing", DUB_PHASES.synthesizing),
+            ("clone", "cloning", DUB_PHASES.cloning),
+            ("transcribe", "transcribing", DUB_PHASES.transcribing),
+            ("translate", "translating", DUB_PHASES.translating),
         ];
-        for (stage, msg) in cases {
+        for (stage, expected_label, expected_text) in cases {
             let heartbeat = json!({ "event": "heartbeat", "stage": stage });
-            let progress_event =
-                json!({ "event": "progress", "stage": stage, "message": "avance" });
-            let (label, text) = ndjson_progress_phase(&heartbeat).expect("etapa conocida");
-            let (progress_label, progress_text) =
-                ndjson_progress_phase(&progress_event).expect("avance conocido");
-            assert_eq!(label, stage);
-            assert_eq!(text, msg);
-            assert_eq!(progress_label, label, "ambos eventos racionan por etapa");
-            assert_eq!(progress_text, "avance", "se conserva el mensaje del daemon");
+            let progress_event = json!({ "event": "progress", "stage": stage });
+            assert_eq!(
+                stream_event_phase(&heartbeat, &DUB_PHASES),
+                Some((expected_label, expected_text)),
+                "latido de {stage}"
+            );
+            assert_eq!(
+                stream_event_phase(&progress_event, &DUB_PHASES),
+                stream_event_phase(&heartbeat, &DUB_PHASES),
+                "ambos eventos racionan por etapa"
+            );
         }
-        assert!(
-            ndjson_progress_phase(&json!({ "event": "heartbeat", "stage": "unknown" })).is_none()
-        );
-        assert!(ndjson_progress_phase(
-            &json!({ "event": "progress", "stage": "unknown", "message": "x" })
-        )
-        .is_none());
-        assert!(ndjson_progress_phase(&json!({ "event": "result" })).is_none());
-        assert_eq!(
-            ndjson_progress_phase(&json!({ "event": "started" })),
-            Some(("started", "Iniciando operación…".to_string()))
-        );
-        assert_eq!(
-            ndjson_progress_phase(&json!({ "event": "started", "operation": "doblaje" })),
-            Some(("started", "Iniciando doblaje…".to_string()))
-        );
-    }
-
-    /// El evento `started` nombra la operación cuando el daemon manda la clave.
-    ///
-    /// El daemon envía `operation` en sus tres emisoras, así que la CLI
-    /// anuncia «Iniciando síntesis…», «Iniciando clonación…» o «Iniciando
-    /// doblaje…» en vez de una operación genérica.
-    #[test]
-    fn started_names_the_operation_the_daemon_reports() {
-        for operation in ["síntesis", "clonación", "doblaje"] {
-            let event = json!({ "event": "started", "operation": operation });
-            let (label, text) = ndjson_progress_phase(&event).expect("el evento se anuncia");
-            assert_eq!(label, "started");
-            assert_eq!(text, format!("Iniciando {operation}…"));
-        }
-    }
-
-    /// Sin la clave `operation`, la CLI no se queda muda: anuncia una
-    /// operación genérica.
-    ///
-    /// Es la red de seguridad para un daemon anterior que no manda la clave. El
-    /// texto genérico no se confunde con el de una operación concreta: el
-    /// concreto dice cuál es.
-    #[test]
-    fn started_without_the_operation_key_falls_back_to_a_generic_operation() {
-        let (label, text) =
-            ndjson_progress_phase(&json!({ "event": "started" })).expect("el evento se anuncia");
-        assert_eq!(label, "started");
-        assert_eq!(text, "Iniciando operación…");
-        assert_ne!(
-            text,
-            ndjson_progress_phase(&json!({ "event": "started", "operation": "síntesis" }))
-                .expect("el evento se anuncia")
-                .1,
-            "el texto genérico se distingue del concreto"
-        );
-    }
-
-    /// Los latidos del daemon pintan las etiquetas canónicas de la vía local;
-    /// los detalles del motor no se confunden con las fases del comando.
-    #[test]
-    fn command_stream_phase_uses_local_labels_for_real_events() {
-        let cases = [
-            (StreamResult::Synthesize, "synthesis", "synthesizing"),
-            (StreamResult::Synthesize, "translate", "translating"),
-            (StreamResult::Clone, "clone", "cloning"),
-            (StreamResult::Dub, "transcribe", "transcribing"),
-            (StreamResult::Dub, "translate", "translating"),
-            (StreamResult::Dub, "synthesis", "synthesizing"),
-            (StreamResult::Dub, "warming", "warming"),
-            (StreamResult::Clone, "warmup", "warmup"),
-            (StreamResult::Synthesize, "queued", "queued"),
-        ];
-        for (route, stage, expected) in cases {
-            let event = json!({ "event": "heartbeat", "stage": stage });
-            assert_eq!(command_stream_phase(&event, route).unwrap().0, expected);
-        }
-        assert!(command_stream_phase(&json!({ "event": "result" }), StreamResult::Dub).is_none());
-        assert!(command_stream_phase(
+        assert!(stream_event_phase(
             &json!({ "event": "heartbeat", "stage": "unknown" }),
-            StreamResult::Dub
+            &DUB_PHASES
         )
         .is_none());
+        assert!(stream_event_phase(
+            &json!({ "event": "progress", "stage": "unknown" }),
+            &DUB_PHASES
+        )
+        .is_none());
+        assert!(stream_event_phase(&json!({ "event": "result" }), &DUB_PHASES).is_none());
+    }
+
+    /// El evento `started` anuncia el texto de inicio del comando, sin leer
+    /// ninguna clave de la operación.
+    #[test]
+    fn started_names_the_operation_of_the_command() {
+        let cases = [
+            (&SYNTHESIZE_PHASES, "Iniciando síntesis…"),
+            (&CLONE_PHASES, "Iniciando clonación…"),
+            (&DUB_PHASES, "Doblando audio…"),
+        ];
+        for (texts, expected) in cases {
+            let event = json!({ "event": "started", "operation": "otra cosa" });
+            assert_eq!(
+                stream_event_phase(&event, texts),
+                Some(("started", expected))
+            );
+        }
+    }
+
+    /// La regeneración de una toma por el stream del daemon anuncia lo mismo
+    /// que la regeneración local, no el texto de la síntesis inicial.
+    #[test]
+    fn retake_stream_shows_the_same_text_as_the_local_retake() {
+        let event = json!({ "event": "progress", "stage": "synthesis" });
+        assert_eq!(
+            stream_event_phase(&event, &RETAKE_PHASES),
+            Some(("synthesizing", "Sintetizando otra toma…"))
+        );
+        assert_eq!(RETAKE_PHASES.synthesizing, "Sintetizando otra toma…");
+        assert_ne!(
+            stream_event_phase(&event, &SYNTHESIZE_PHASES),
+            stream_event_phase(&event, &RETAKE_PHASES)
+        );
+    }
+
+    /// `say` sintetiza con «Sintetizando voz…» (el doblaje usa su propio texto).
+    #[test]
+    fn say_stream_shows_plain_synthesis_text() {
+        let event = json!({ "event": "heartbeat", "stage": "synthesis" });
+        assert_eq!(
+            stream_event_phase(&event, &SAY_PHASES),
+            Some(("synthesizing", "Sintetizando voz…"))
+        );
+        assert_eq!(DUB_PHASES.synthesizing, "Sintetizando voz doblada…");
+    }
+
+    /// El daemon es un detalle de ruta: ningún texto de ninguna tabla lo
+    /// menciona y todos terminan en «…» o en el aviso de duración.
+    #[test]
+    fn no_phase_text_mentions_the_daemon() {
+        let tables = [
+            &SYNTHESIZE_PHASES,
+            &RETAKE_PHASES,
+            &SAY_PHASES,
+            &DUB_PHASES,
+            &CLONE_PHASES,
+            &TRANSCRIBE_PHASES,
+            &TRANSLATE_PHASES,
+        ];
+        for t in tables {
+            let texts = [
+                t.started,
+                t.reading,
+                t.capturing,
+                t.denoising,
+                t.transcribing,
+                t.translating,
+                t.synthesizing,
+                t.cloning,
+                t.saving,
+                t.playing,
+                t.warming,
+                t.queued,
+                t.warmup,
+                t.denoise_queue,
+            ];
+            for text in texts {
+                assert!(
+                    !text.contains("(daemon)"),
+                    "texto con sufijo de ruta: {text}"
+                );
+                assert!(
+                    text.ends_with('…') || text.ends_with("minutos)"),
+                    "texto sin cierre «…»: {text}"
+                );
+            }
+        }
+    }
+
+    /// Las etapas del daemon pintan las etiquetas canónicas del comando, igual
+    /// en todas las rutas; los detalles del motor conservan su propia etiqueta.
+    #[test]
+    fn stream_event_phase_uses_command_labels_for_real_events() {
+        let cases = [
+            (&SYNTHESIZE_PHASES, "synthesis", "synthesizing"),
+            (&SYNTHESIZE_PHASES, "translate", "translating"),
+            (&CLONE_PHASES, "clone", "cloning"),
+            (&CLONE_PHASES, "denoise_queue", "denoise_queue"),
+            (&DUB_PHASES, "transcribe", "transcribing"),
+            (&DUB_PHASES, "translate", "translating"),
+            (&DUB_PHASES, "synthesis", "synthesizing"),
+            (&DUB_PHASES, "denoise", "denoising"),
+            (&DUB_PHASES, "warming", "warming"),
+            (&CLONE_PHASES, "warmup", "warmup"),
+            (&SYNTHESIZE_PHASES, "queued", "queued"),
+        ];
+        for (texts, stage, expected) in cases {
+            let event = json!({ "event": "heartbeat", "stage": stage });
+            assert_eq!(stream_event_phase(&event, texts).unwrap().0, expected);
+        }
     }
 
     /// El evento de fallo del stream se mapea por reason (doble con
@@ -6932,7 +7129,7 @@ mod tests {
             .expect("el doble debe responder");
         let start = std::time::Instant::now();
         let mut progress = PhaseProgress::new();
-        let e = consume_ndjson_stream(resp, StreamResult::Clone, &mut progress)
+        let e = consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, &mut progress)
             .await
             .expect_err("el evento de fallo debe fallar");
         assert_eq!(e.code, ExitCode::StateConflict);
@@ -6957,7 +7154,7 @@ mod tests {
             .expect("el doble debe responder cabeceras");
         let start = std::time::Instant::now();
         let mut progress = PhaseProgress::new();
-        let e = consume_ndjson_stream(resp, StreamResult::Clone, &mut progress)
+        let e = consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, &mut progress)
             .await
             .expect_err("el atasco debe fallar");
         assert_eq!(e.code, ExitCode::DaemonUnreachable);
@@ -6989,7 +7186,7 @@ mod tests {
             .await
             .expect("el doble debe responder");
         let mut progress = PhaseProgress::new();
-        let e = consume_ndjson_stream(resp, StreamResult::Clone, &mut progress)
+        let e = consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, &mut progress)
             .await
             .expect_err("el truncado debe fallar");
         assert_eq!(e.code, ExitCode::Error);
