@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.40.1 — 2026-11-01](#0401--2026-11-01)
 - [0.40.0 — 2026-11-01](#0400--2026-11-01)
 - [0.39.0 — 2026-11-01](#0390--2026-11-01)
 - [0.38.1 — 2026-10-31](#0381--2026-10-31)
@@ -128,7 +128,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.40.1] — 2026-11-01
 
 La prueba de la espera con repintado fallaba de forma intermitente en la CI de Windows: comparaba un plazo real de 50 ms con el intervalo de repintado de 5 ms, y una pausa del hilo en una máquina cargada bastaba para que ambos vencieran a la vez y el repintado no ocurriera. Además, `cargo doc` informaba cuatro avisos de enlaces de documentación mal formados en el crate `denoise`. Ahora la prueba corre con el reloj de tokio detenido, de modo que su resultado no depende de la carga de la máquina y el recuento de repintados es exacto, y la documentación no produce avisos.
 
@@ -3830,3 +3830,4 @@ estado con el que nace el producto.
 [0.38.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.38.0...v0.38.1
 [0.39.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.38.1...v0.39.0
 [0.40.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.39.0...v0.40.0
+[0.40.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.40.0...v0.40.1
