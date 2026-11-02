@@ -1518,10 +1518,14 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 }
                 let client = daemon_client();
                 let use_daemon = route_to_daemon(routing.mode()).await?;
+                // El cliente y el daemon comparten el directorio de datos, así
+                // que una voz existente se rechaza antes de abrir el micrófono
+                // o leer la referencia, en las dos rutas; el daemon conserva su
+                // propia comprobación como defensa.
+                if !force && voice_store.exists(&name).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))? {
+                    return Err(CliError::new(ExitCode::StateConflict, "voice_exists", format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name)));
+                }
                 let (speech_path, daemon_audio, mic_scratch) = if mic {
-                    if !use_daemon && !force && voice_store.exists(&name).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))? {
-                        return Err(CliError::new(ExitCode::StateConflict, "voice_exists", format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name)));
-                    }
                     progress.phase("capturing", CLONE_PHASES.capturing);
                     let mut pcm = capture_mic_with_progress(&mut progress, duration, avi_core::MAX_CLONE_REFERENCE_SECS).await?;
                     truncate_clone_pcm(&mut pcm);
@@ -1552,22 +1556,6 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 let speech_path = speech_path.expect("ruta local");
                 if !mic && !speech_path.is_file() {
                     return Err(CliError::new(ExitCode::NotFound, "audio_not_found", format!("El audio de referencia '{}' no existe.", speech_path.display())));
-                }
-                if !mic
-                    && !use_daemon
-                    && !force
-                    && voice_store
-                        .exists(&name)
-                        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
-                {
-                    return Err(CliError::new(
-                        ExitCode::StateConflict,
-                        "voice_exists",
-                        format!(
-                            "La voz '{}' ya existe (usa --force para sobrescribirla).",
-                            name
-                        ),
-                    ));
                 }
                 // Limpieza de ruido de referencia (opt-in) antes del clonado
                 // directo. Resuelve el modelo y verifica integridad antes de
@@ -2980,6 +2968,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     avi_core::MAX_DUB_AUDIO_SECS,
                 )?;
             }
+            // El cliente y el daemon comparten el directorio de datos, así que
+            // una voz inexistente se rechaza antes de abrir el micrófono o leer
+            // el audio, en las dos rutas; el daemon conserva su propia
+            // comprobación como defensa.
+            ensure_voice_exists(&voice)?;
             // Despacho 3 modos: delega a POST /dub si daemon activo
             {
                 let client = daemon_client();
@@ -3168,16 +3161,6 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     // El texto traducido puede exceder el tope aunque el transcrito no.
                     avi_core::validate_synthesis_text(&final_text)?;
                     let voice_store = open_voice_store()?;
-                    if !voice_store
-                        .exists(&voice)
-                        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
-                    {
-                        return Err(CliError::new(
-                            ExitCode::NotFound,
-                            "voice_not_found",
-                            format!("La voz '{}' no existe.", voice),
-                        ));
-                    }
                     // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
                     let tmp_wav = avi_process::scratch::temp_wav("avi_dub_")
                         .map_err(|e| {
@@ -5290,22 +5273,11 @@ async fn translate_via_daemon(
         .json(&payload)
         .send();
     // La espera se repinta con el indicador: `/translate` devuelve JSON plano
-    // y no emite eventos, así que sin esto la fase parecería congelada. El
-    // timeout de 1500 ms del endpoint se conserva: solo cambia lo que se ve
-    // mientras espera.
-    let resp = tokio::time::timeout(
-        std::time::Duration::from_millis(1500),
-        await_with_progress(progress, fut),
-    )
-    .await
-    .map_err(|_| {
-        CliError::new(
-            ExitCode::DaemonUnreachable,
-            "daemon_unreachable",
-            format!("Daemon inalcanzable en {} (timeout 1500ms)", client_addr),
-        )
-    })?
-    .map_err(|e| {
+    // y no emite eventos, así que sin esto la fase parecería congelada. No hay
+    // un tope total propio: la petición incluye la inferencia, cuya duración
+    // crece con el texto, así que sigue el mismo criterio que `/transcribe`
+    // (el timeout de conexión y el failsafe global del cliente del daemon).
+    let resp = await_with_progress(progress, fut).await.map_err(|e| {
         CliError::new(
             ExitCode::DaemonUnreachable,
             "daemon_unreachable",

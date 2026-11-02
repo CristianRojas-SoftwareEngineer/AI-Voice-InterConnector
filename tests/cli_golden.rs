@@ -1935,6 +1935,13 @@ struct FakeDaemon {
 impl FakeDaemon {
     /// Arranca el servidor; toda ruta distinta de `/health` responde `status` con `body`.
     fn start(status: u16, body: Value) -> Self {
+        Self::start_with_delay(status, body, Duration::ZERO)
+    }
+
+    /// Como [`FakeDaemon::start`], pero toda ruta distinta de `/health` espera
+    /// `delay` antes de responder: simula una inferencia lenta tras una
+    /// conexión inmediata.
+    fn start_with_delay(status: u16, body: Value, delay: Duration) -> Self {
         use std::io::Read;
         use std::sync::atomic::Ordering;
         use std::sync::{Arc, Mutex};
@@ -1992,6 +1999,7 @@ impl FakeDaemon {
                         }),
                     )
                 } else {
+                    std::thread::sleep(delay);
                     (status, body.clone())
                 };
                 let payload = payload.to_string();
@@ -4519,6 +4527,86 @@ mod tts {
         let actual: Value = serde_json::from_slice(&output.stdout).expect("envelope JSON");
         assert_eq!(output.status.code(), Some(6), "{actual}");
         assert_eq!(actual["reason"], "voice_exists", "{actual}");
+    }
+
+    /// Por la ruta del daemon, una voz existente también se rechaza antes de
+    /// abrir el micrófono: el cliente y el daemon comparten el directorio de
+    /// datos, así que la comprobación no espera a la respuesta del daemon, que
+    /// no recibe ninguna petición de clonado.
+    #[test]
+    fn voice_clone_mic_duplicate_is_rejected_before_capture_via_daemon() {
+        let (sandbox, envs) = contract_sandbox("clone_mic_duplicate_daemon");
+        let data_dir = sandbox.path().join("data");
+        let store = avi_store::VoiceStore::at(data_dir.join("voices"));
+        store.ensure_initialized().expect("inicializar store");
+        let name = "mic_duplicate";
+        let reference = sandbox.path().join("reference.qvoice");
+        std::fs::write(&reference, b"voice").expect("crear referencia");
+        store
+            .save_reference(name, &reference)
+            .expect("guardar voz de prueba");
+        let fake = FakeDaemon::start(500, serde_json::json!({ "reason": "daemon_error" }));
+        fake.publish_in(&data_dir);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "voice",
+                "clone",
+                "--daemon",
+                "--name",
+                name,
+                "--mic",
+                "--duration",
+                "1",
+            ],
+            &envs,
+        );
+        assert_eq!(code, 6, "{actual}");
+        assert_eq!(actual["reason"], "voice_exists", "{actual}");
+        assert!(
+            !fake.requested_paths().iter().any(|p| p == "/voices/clone"),
+            "el daemon no debe recibir el clonado: {:?}",
+            fake.requested_paths()
+        );
+    }
+
+    /// `speech dub` con una voz inexistente sale con `voice_not_found` antes de
+    /// capturar o leer el audio, en las dos rutas: por la del daemon no llega
+    /// ninguna petición de doblaje, y por la directa no hacen falta modelos.
+    #[test]
+    fn dub_unknown_voice_is_rejected_before_capture_in_both_routes() {
+        let (sandbox, envs) = contract_sandbox("dub_unknown_voice");
+        let fake = FakeDaemon::start(500, serde_json::json!({ "reason": "daemon_error" }));
+        fake.publish_in(&sandbox.path().join("data"));
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        for route in ["--daemon", "--no-daemon"] {
+            let (code, actual) = run_json_env(
+                &[
+                    "--json",
+                    "speech",
+                    "dub",
+                    route,
+                    "--voice",
+                    "voz_inexistente",
+                    "--mic",
+                    "--duration",
+                    "1",
+                    "--source-language",
+                    "es",
+                    "--target-language",
+                    "es",
+                ],
+                &envs,
+            );
+            assert_eq!(code, 3, "{route}: {actual}");
+            assert_eq!(actual["reason"], "voice_not_found", "{route}: {actual}");
+        }
+        assert!(
+            !fake.requested_paths().iter().any(|p| p == "/dub"),
+            "el daemon no debe recibir el doblaje: {:?}",
+            fake.requested_paths()
+        );
     }
 
     #[test]
@@ -8441,6 +8529,51 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
         residue.is_empty(),
         "el guardián debe borrar el temporal del dub también cuando la reproducción \
          falla: {residue:?}"
+    );
+}
+
+/// `translate --daemon` espera la inferencia aunque tarde más de 1,5 s: la
+/// petición incluye la traducción, cuya duración crece con el texto, así que no
+/// tiene un tope total propio y solo la limitan el timeout de conexión y el
+/// failsafe global del cliente. El daemon falso acepta la conexión al instante
+/// y responde a los 2 s.
+#[test]
+fn translate_daemon_waits_for_a_slow_inference() {
+    let (sandbox, envs) = contract_sandbox("translate-slow");
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start_with_delay(
+        200,
+        serde_json::json!({
+            "translated": "Hello. How are you?",
+            "source_language": "es",
+            "target_language": "en",
+        }),
+        Duration::from_secs(2),
+    );
+    fake.publish_in(&dir.join("data"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "translate",
+            "--daemon",
+            "--text",
+            "Hola. ¿Cómo estás?",
+            "--source-language",
+            "es",
+            "--target-language",
+            "en",
+        ],
+        &envs,
+    );
+    assert_eq!(
+        code, 0,
+        "una inferencia de 2 s no debe confundirse con un daemon inalcanzable: {actual}"
+    );
+    assert_eq!(
+        actual["translated"],
+        Value::String("Hello. How are you?".to_string()),
+        "el envelope lleva la traducción del daemon: {actual}"
     );
 }
 
