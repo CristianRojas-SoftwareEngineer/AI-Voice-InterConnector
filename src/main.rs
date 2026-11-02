@@ -1523,8 +1523,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                         return Err(CliError::new(ExitCode::StateConflict, "voice_exists", format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name)));
                     }
                     progress.phase("capturing", CLONE_PHASES.capturing);
-                    progress.close_line();
-                    let mut pcm = capture_mic_pcm(duration, avi_core::MAX_CLONE_REFERENCE_SECS).await?;
+                    let mut pcm = capture_mic_with_progress(&mut progress, duration, avi_core::MAX_CLONE_REFERENCE_SECS).await?;
                     truncate_clone_pcm(&mut pcm);
                     let wav = avi_audio::encode_pcm_16k_mono_wav(&pcm).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
                     if use_daemon {
@@ -1992,21 +1991,78 @@ fn ensure_clone_reference_within_limit(path: &std::path::Path) -> Result<(), Cli
     }
 }
 
-/// Obtiene el PCM 16 kHz mono desde el micrófono o desde un WAV, y traduce los
-/// fallos al contrato: archivo ausente exit 3, WAV inválido exit 2, error de
-/// E/S exit 1; en la captura, sin entrada predeterminada o sin backend de audio
-/// exit 3, audio vacío exit 2 y el resto exit 10 (`transcription_failed`). `max_secs` es el techo de la
-/// captura push-to-talk. Con `mic == false`, `audio` debe ser `Some`.
-async fn acquire_pcm(
+/// Indica si la captura del micrófono necesita la línea de la terminal para
+/// sí: solo el push-to-talk (`--mic` sin `--duration`) escribe sus
+/// instrucciones en la terminal. Con duración fija el audio no escribe nada y
+/// la línea de la fase debe seguir viva para que el tiempo avance.
+fn yields_line(mic: bool, duration: Option<u64>) -> bool {
+    mic && duration.is_none()
+}
+
+/// Valida el PCM adquirido: un PCM vacío se rechaza con exit 2
+/// (`empty_audio`) y uno que supera `max_secs` segundos con exit 2
+/// (`audio_too_long`); `subject` es el sujeto de la frase del límite.
+fn validate_acquired_pcm(pcm: &[i16], max_secs: u64, subject: &str) -> Result<(), CliError> {
+    if pcm.is_empty() {
+        return Err(CliError::new(
+            ExitCode::InvalidInput,
+            "empty_audio",
+            "No se capturó audio; pulsa Enter después de hablar o verifica el micrófono.",
+        ));
+    }
+    ensure_pcm_within_limit(pcm, subject, max_secs)
+}
+
+/// Captura PCM del micrófono manteniendo el indicador de la fase: en
+/// push-to-talk cede la línea (`close_line`) mientras el usuario ve las
+/// instrucciones y la recupera (`repaint`) al terminar; en otro caso espera
+/// repintando la fase para que su tiempo avance. Los fallos son los de
+/// [`capture_mic_pcm`].
+async fn capture_mic_with_progress(
+    progress: &mut PhaseProgress,
+    duration: Option<u64>,
+    max_secs: u64,
+) -> Result<Vec<i16>, CliError> {
+    if yields_line(true, duration) {
+        progress.close_line();
+        let captured = capture_mic_pcm(duration, max_secs).await;
+        progress.repaint();
+        captured
+    } else {
+        await_with_progress(&*progress, capture_mic_pcm(duration, max_secs)).await
+    }
+}
+
+/// Obtiene el PCM 16 kHz mono desde el micrófono o desde un WAV pintando la
+/// fase `capturing` o `reading` de `texts`, y lo valida con
+/// [`validate_acquired_pcm`] (vacío y límite de `max_secs` con el sujeto
+/// `subject`). Con `mic == false`, `audio` debe ser `Some`. Traduce los fallos
+/// al contrato: archivo ausente exit 3, WAV inválido exit 2, error de E/S
+/// exit 1; en la captura, sin entrada predeterminada o sin backend de audio
+/// exit 3, audio vacío exit 2 y el resto exit 10 (`transcription_failed`).
+/// `max_secs` es también el techo de la captura push-to-talk.
+async fn acquire_pcm_with_progress(
+    progress: &mut PhaseProgress,
+    texts: &PhaseTexts,
     audio: Option<&str>,
     mic: bool,
     duration: Option<u64>,
     max_secs: u64,
+    subject: &str,
 ) -> Result<Vec<i16>, CliError> {
-    if mic {
-        return capture_mic_pcm(duration, max_secs).await;
-    }
-    let path = audio.expect("validado arriba");
+    let pcm = if mic {
+        progress.phase("capturing", texts.capturing);
+        capture_mic_with_progress(progress, duration, max_secs).await?
+    } else {
+        progress.phase("reading", texts.reading);
+        read_wav_pcm(audio.expect("validado arriba"))?
+    };
+    validate_acquired_pcm(&pcm, max_secs, subject)?;
+    Ok(pcm)
+}
+
+/// Lee un WAV como PCM 16 kHz mono y traduce los fallos al contrato.
+fn read_wav_pcm(path: &str) -> Result<Vec<i16>, CliError> {
     avi_audio::load_wav_16k_mono_pcm(std::path::Path::new(path)).map_err(|e| match e {
         avi_audio::WavLoadError::NotFound => {
             CliError::new(ExitCode::NotFound, "audio_not_found", e.to_string())
@@ -2504,33 +2560,16 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // un bloque y el cierre del indicador —que consume el indicador—
                 // se hace fuera, sobre el resultado ya obtenido.
                 let result = async {
-                    progress.phase(
-                        if mic { "capturing" } else { "reading" },
-                        if mic {
-                            TRANSCRIBE_PHASES.capturing
-                        } else {
-                            TRANSCRIBE_PHASES.reading
-                        },
-                    );
-                    if mic {
-                        progress.close_line();
-                    }
-                    let acquired = acquire_pcm(
+                    let pcm = acquire_pcm_with_progress(
+                        &mut progress,
+                        &TRANSCRIBE_PHASES,
                         audio.as_deref(),
                         mic,
                         duration,
                         avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
-                    )
-                    .await;
-                    if mic {
-                        progress.repaint();
-                    }
-                    let pcm = acquired?;
-                    ensure_pcm_within_limit(
-                        &pcm,
                         "El audio de la transcripción",
-                        avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
-                    )?;
+                    )
+                    .await?;
 
                     progress.phase("transcribing", TRANSCRIBE_PHASES.transcribing);
                     progress.close_line();
@@ -2995,36 +3034,16 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // se hace fuera, sobre el resultado ya obtenido. Así ninguno de
                 // los `?` del pipeline deja la fase abierta.
                 let result = async {
-                    if mic {
-                        progress.phase("capturing", DUB_PHASES.capturing);
-                    } else {
-                        progress.phase("reading", DUB_PHASES.reading);
-                    }
-                    if mic {
-                        progress.close_line();
-                    }
-                    // La captura del micrófono es trabajo **síncrono** en su
-                    // fondo: bloquea el hilo mientras espera al Enter, así que
-                    // el indicador no puede repintar durante ella y el tiempo
-                    // de la fase queda congelado. La línea se cede antes para
-                    // que el aviso de captura no quede pegado a la fase. No es
-                    // un defecto: el trabajo total lo aporta el mensaje final.
-                    let acquired = acquire_pcm(
+                    let pcm = acquire_pcm_with_progress(
+                        &mut progress,
+                        &DUB_PHASES,
                         audio.as_deref(),
                         mic,
                         duration,
                         avi_core::MAX_DUB_AUDIO_SECS,
-                    )
-                    .await;
-                    if mic {
-                        progress.repaint();
-                    }
-                    let pcm = acquired?;
-                    ensure_pcm_within_limit(
-                        &pcm,
                         "El audio del doblaje",
-                        avi_core::MAX_DUB_AUDIO_SECS,
-                    )?;
+                    )
+                    .await?;
                     let pcm_for_stt = {
                         #[cfg(feature = "native-denoise")]
                         let denoised = if denoise {
@@ -3040,6 +3059,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                                         format!("Modelo de limpieza no provisionado: {e}"),
                                     )
                                 })?;
+                            progress.phase("denoising", DUB_PHASES.denoising);
                             run_blocking_with_progress(&progress, || {
                                 models.denoise_pcm16_mono(
                                     &pcm,
@@ -5196,27 +5216,16 @@ async fn transcribe_via_daemon(
     // El POST apunta a la dirección descubierta (fallback idéntico sin
     // pidfile).
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
-    progress.phase(
-        if mic { "capturing" } else { "reading" },
-        if mic {
-            TRANSCRIBE_PHASES.capturing
-        } else {
-            TRANSCRIBE_PHASES.reading
-        },
-    );
-    if mic {
-        progress.close_line();
-    }
-    let acquired = acquire_pcm(audio, mic, duration, avi_core::MAX_TRANSCRIBE_AUDIO_SECS).await;
-    if mic {
-        progress.repaint();
-    }
-    let pcm = acquired?;
-    ensure_pcm_within_limit(
-        &pcm,
-        "El audio de la transcripción",
+    let pcm = acquire_pcm_with_progress(
+        progress,
+        &TRANSCRIBE_PHASES,
+        audio,
+        mic,
+        duration,
         avi_core::MAX_TRANSCRIBE_AUDIO_SECS,
-    )?;
+        "El audio de la transcripción",
+    )
+    .await?;
     progress.phase("transcribing", TRANSCRIBE_PHASES.transcribing);
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -6138,30 +6147,16 @@ async fn dub_via_daemon(
     voice: &str,
 ) -> Result<DubOutcome, CliError> {
     // Captura/lectura PCM y encode a base64 para POST /dub
-    progress.phase(
-        if mic { "capturing" } else { "reading" },
-        if mic {
-            DUB_PHASES.capturing
-        } else {
-            DUB_PHASES.reading
-        },
-    );
-    if mic {
-        progress.close_line();
-    }
-    let acquired = acquire_pcm(audio, mic, duration, avi_core::MAX_DUB_AUDIO_SECS).await;
-    if mic {
-        progress.repaint();
-    }
-    let pcm = acquired?;
-    if pcm.is_empty() {
-        return Err(CliError::new(
-            ExitCode::InvalidInput,
-            "empty_audio",
-            "No se capturó audio; pulsa Enter después de hablar o verifica el micrófono.",
-        ));
-    }
-    ensure_pcm_within_limit(&pcm, "El audio del doblaje", avi_core::MAX_DUB_AUDIO_SECS)?;
+    let pcm = acquire_pcm_with_progress(
+        progress,
+        &DUB_PHASES,
+        audio,
+        mic,
+        duration,
+        avi_core::MAX_DUB_AUDIO_SECS,
+        "El audio del doblaje",
+    )
+    .await?;
     progress.phase("started", DUB_PHASES.started);
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -7852,5 +7847,101 @@ mod tests {
             "la espera asíncrona sí pide repintar: {}",
             progress.repaints()
         );
+    }
+
+    /// Solo el push-to-talk cede la línea; con duración fija o con archivo
+    /// la fase sigue viva.
+    #[test]
+    fn only_push_to_talk_yields_the_line() {
+        assert!(yields_line(true, None), "push-to-talk cede la línea");
+        assert!(
+            !yields_line(true, Some(5)),
+            "con duración fija no se cede la línea"
+        );
+        assert!(!yields_line(false, None), "un archivo no cede la línea");
+    }
+
+    /// Un PCM vacío se rechaza como `empty_audio`.
+    #[test]
+    fn empty_pcm_is_rejected_as_empty_audio() {
+        let error =
+            validate_acquired_pcm(&[], 10, "El audio").expect_err("un PCM vacío debe rechazarse");
+        assert_eq!(error.reason, "empty_audio");
+    }
+
+    /// Un PCM que supera el límite falla con la razón de límite existente.
+    #[test]
+    fn pcm_over_the_limit_is_rejected_as_audio_too_long() {
+        let pcm = vec![1i16; 2 * 16_000 + 1];
+        let error = validate_acquired_pcm(&pcm, 2, "El audio")
+            .expect_err("un PCM demasiado largo debe rechazarse");
+        assert_eq!(error.reason, "audio_too_long");
+        validate_acquired_pcm(&pcm[..2 * 16_000], 2, "El audio")
+            .expect("el límite exacto es válido");
+    }
+
+    /// Escribe `pcm` en un WAV temporal y devuelve su guarda.
+    fn temp_wav_with(pcm: &[i16]) -> avi_shared::temp_wav::TempWav {
+        let guard = avi_process::scratch::temp_wav("avi_acquire_test_").expect("WAV temporal");
+        let wav = avi_audio::encode_pcm_16k_mono_wav(pcm).expect("codificar WAV");
+        std::fs::write(guard.path(), wav).expect("escribir WAV");
+        guard
+    }
+
+    /// El ayudante completo lee un WAV, pinta la fase de lectura y devuelve
+    /// el PCM sin necesidad de micrófono.
+    #[tokio::test]
+    async fn acquire_reads_a_wav_without_a_microphone() {
+        let pcm: Vec<i16> = (0..1_600).map(|i| (i % 100) as i16 + 1).collect();
+        let guard = temp_wav_with(&pcm);
+        let path = guard.path().to_string_lossy().into_owned();
+        let mut progress = PhaseProgress::new();
+        let acquired = acquire_pcm_with_progress(
+            &mut progress,
+            &DUB_PHASES,
+            Some(&path),
+            false,
+            None,
+            10,
+            "El audio",
+        )
+        .await
+        .expect("lectura válida");
+        assert_eq!(acquired.len(), pcm.len());
+    }
+
+    /// El ayudante completo rechaza un WAV vacío y uno que supera el límite.
+    #[tokio::test]
+    async fn acquire_rejects_empty_and_too_long_wavs() {
+        let mut progress = PhaseProgress::new();
+        let empty = temp_wav_with(&[]);
+        let empty_path = empty.path().to_string_lossy().into_owned();
+        let error = acquire_pcm_with_progress(
+            &mut progress,
+            &DUB_PHASES,
+            Some(&empty_path),
+            false,
+            None,
+            10,
+            "El audio",
+        )
+        .await
+        .expect_err("un WAV vacío debe rechazarse");
+        assert_eq!(error.reason, "empty_audio");
+
+        let long = temp_wav_with(&vec![1i16; 2 * 16_000 + 1]);
+        let long_path = long.path().to_string_lossy().into_owned();
+        let error = acquire_pcm_with_progress(
+            &mut progress,
+            &DUB_PHASES,
+            Some(&long_path),
+            false,
+            None,
+            2,
+            "El audio",
+        )
+        .await
+        .expect_err("un WAV demasiado largo debe rechazarse");
+        assert_eq!(error.reason, "audio_too_long");
     }
 }
