@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.42.0 — 2026-11-02](#0420--2026-11-02)
 - [0.41.4 — 2026-11-02](#0414--2026-11-02)
 - [0.41.3 — 2026-11-02](#0413--2026-11-02)
 - [0.41.2 — 2026-11-02](#0412--2026-11-02)
@@ -134,7 +134,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.42.0] — 2026-11-02
 
 En Windows, cada `cargo xtask clean` imprimía un aviso con jerga del sistema («Job Object», «Acceso denegado») y luego «Limpieza completa.», aunque `target/` seguía borrándose en segundo plano: primero un error que el usuario no podía resolver y después un éxito que aún no era cierto. La biblioteca de borrado diferido ahora informa cómo quedó el limpiador (separado o dependiente del proceso anfitrión) en vez de escribir por su cuenta, y cada comando compone un mensaje veraz con la remedición adecuada.
 
@@ -3932,3 +3932,4 @@ estado con el que nace el producto.
 [0.41.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.1...v0.41.2
 [0.41.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.2...v0.41.3
 [0.41.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.3...v0.41.4
+[0.42.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.4...v0.42.0
