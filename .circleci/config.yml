@@ -1023,6 +1023,7 @@ jobs:
     executor:
       name: win/server-2022
       version: << pipeline.parameters.windows_image_pin >>
+      size: large
     # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
     # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
     environment:
@@ -1433,6 +1434,7 @@ jobs:
     executor:
       name: win/server-2022
       version: << pipeline.parameters.windows_image_pin >>
+      size: large
     steps:
       - checkout
       - cache_root
@@ -1532,6 +1534,7 @@ jobs:
     executor:
       name: win/server-2022
       version: << pipeline.parameters.windows_image_pin >>
+      size: large
     # Límite de sccache a nivel de job: PowerShell no tiene $BASH_ENV (ver
     # sccache_setup_unix) y el paso de compilación no interpola parámetros de pipeline.
     environment:

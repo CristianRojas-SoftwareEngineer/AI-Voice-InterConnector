@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.41.3 — 2026-11-02](#0413--2026-11-02)
 - [0.41.2 — 2026-11-02](#0412--2026-11-02)
 - [0.41.1 — 2026-11-02](#0411--2026-11-02)
@@ -131,6 +132,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+En la CI, los jobs de Windows (`build-windows-x64`, `test-windows` y `test-bootstrap-windows`) eran la ruta crítica del pipeline de release: el tag v0.41.3 tardó 29 min, de los que `build-windows-x64` ocupó 21,5 min en el executor `medium`. Los tres jobs pasan al tamaño `large` del executor `win/server-2022` para medir cuánto acorta el camino crítico un executor con más CPU.
+
+### Cambiado
+
+- Los jobs de Windows de la CI usan el executor `win/server-2022` de tamaño `large` en lugar de `medium`.
 
 ## [0.41.3] — 2026-11-02
 
