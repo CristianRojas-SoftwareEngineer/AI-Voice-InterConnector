@@ -142,15 +142,28 @@ En Windows, cada `cargo xtask clean` imprimía un aviso con jerga del sistema (�
 
 - `cargo xtask clean` cierra con «Limpieza completada: N ruta(s).» cuando todo se borró en el acto, o con «Limpieza programada» cuando `target/` sigue borrándose en segundo plano. La nota sobre una interrupción de cargo sale solo si el limpiador no pudo separarse. Ya no imprime una línea por ruta borrada ni el aviso con jerga.
 - `self uninstall`, `self update` y `self install` informan el borrado programado y, si el limpiador depende del proceso que ejecuta el comando, indican qué hacer: borrar la ruta a mano tras `self uninstall`, o dejar que la recuperación de la siguiente operación recoja el resto tras `self update` y `self install`.
-- **Cambio incompatible del protocolo del daemon:** `DAEMON_SCHEMA_VERSION` sube a `"6"`. El `result` de `/synthesize` ya no incluye `t3_time` ni `s3gen_time` (siempre `0.0`, heredadas de un motor anterior) e incluye `translated`, el texto realmente sintetizado; además acepta un `seed` opcional (entero entre 0 e `i32::MAX`, `usage_error` 400 si no cumple). Un daemon de la versión anterior en ejecución debe reiniciarse tras actualizar.
+- **Cambio incompatible del protocolo del daemon:** `DAEMON_SCHEMA_VERSION` sube a `"6"`. El `result` de `/synthesize` ya no incluye `t3_time` ni `s3gen_time` (siempre `0.0`, heredadas de un motor anterior) e incluye `translated`, el texto realmente sintetizado; además acepta un `seed` opcional (entero entre 0 e `i32::MAX`, `usage_error` 400 si no cumple). Los eventos de los streams NDJSON (`/synthesize`, `/dub`, `/voices/clone`) dejan de llevar texto humano y claves inertes: `progress` pierde `message` y `percent`, y `started` pierde `operation`; la etapa viaja solo en `stage` y el cliente es el dueño de los textos. Un daemon de la versión anterior en ejecución debe reiniciarse tras actualizar.
+- Cada comando con modelos muestra los mismos textos de fase en la ruta directa y en la del daemon, salidos de una única tabla del cliente; ninguna fase lleva ya el sufijo «(daemon)».
+- En las rutas directas (`--no-daemon`), el tiempo de la fase avanza durante la síntesis, el clonado, la transcripción, la traducción y la limpieza de ruido, en lugar de quedarse congelado hasta que el trabajo termina.
+- `setup` pide una sola confirmación antes de tocar el disco. Con `--force-update`, esa confirmación es destructiva y reúne la purga y el tamaño de la descarga. Al cancelar no imprime «Setup completado», y con `--json` emite `status:"cancelled"`.
+- `translate --daemon` ya no tiene un tope total de 1500 ms que incluía la inferencia: usa el mismo criterio que `speech transcribe` (conexión de 500 ms y el plazo global del cliente).
 - El menú de `speech synthesize --play` imprime las cuatro opciones del contrato («Reproducir otra vez», «Aceptar y guardar», «Rechazar y regenerar», «Rechazar y descartar»).
 
 ### Corregido
 
 - Los mensajes de borrado programado ya no quedan pegados a la línea de fase en un terminal.
 - «Rechazar y regenerar» en `speech synthesize --play` produce una toma distinta: la primera conserva el seed de producción y cada regeneración usa un seed nuevo, en la ruta directa y en la del daemon.
-- La regeneración de `--play` muestra «Sintetizando otra toma…» y deja la línea de progreso cerrada antes del menú.
+- La regeneración de `--play` muestra «Sintetizando otra toma…» en la ruta directa y en la del daemon, y deja la línea de progreso cerrada antes del menú.
+- La misma entrada se traduce igual por la ruta directa y por la del daemon: el daemon traducía el texto completo como una sola oración, y ahora segmenta en oraciones y párrafos como la ruta directa, también en textos de varias oraciones y párrafos.
 - `speech synthesize --daemon` guarda en el sidecar el texto traducido, igual que la ruta directa.
+- `/synthesize` traduce fuera del runtime del daemon y con latidos `translate`, y anuncia la etapa de síntesis solo cuando la síntesis empieza.
+- `speech say` muestra «Sintetizando voz…» en lugar de «Sintetizando voz doblada…».
+- Con `--mic --duration N`, la fase de captura sigue visible y su tiempo avanza durante la grabación; antes la línea se borraba y la terminal quedaba en silencio.
+- `speech dub` muestra una fase de limpieza de ruido en las dos rutas, y `voice clone` muestra la espera de turno de la limpieza.
+- `speech dub` informa `voice_not_found` y `voice clone --mic` informa `voice_exists` antes de capturar o leer el audio, en las dos rutas.
+- `setup --force-update` ya no purga los modelos si se rechaza la confirmación.
+- Los avisos de las bibliotecas ya no quedan pegados a la línea de fase en un terminal.
+- Tres mensajes del daemon sobre la limpieza de ruido se mostraban con caracteres de reemplazo (U+FFFD) en lugar de tildes; `cargo xtask comments --check` rechaza ahora ese carácter en las fuentes y en la documentación Markdown.
 
 ## [0.41.4] — 2026-11-02
 

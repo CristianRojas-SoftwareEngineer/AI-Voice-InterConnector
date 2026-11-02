@@ -318,7 +318,7 @@ async fn clone_via_daemon(
     denoise: bool,
     progress: &mut PhaseProgress,
 ) -> Result<(String, String, bool), CliError> {
-    progress.phase("cloning", "Clonando voz (daemon)…");
+    progress.phase("cloning", CLONE_PHASES.cloning); // «Clonando voz… (puede tardar varios minutos)», el mismo texto que la ruta directa
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
     let mut payload = serde_json::json!({
         "name": name,

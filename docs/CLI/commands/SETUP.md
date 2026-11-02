@@ -14,8 +14,8 @@ ai-voice-interconnector setup [--force-update] [--yes|-y] [--json]
 
 | Flag | Default | Descripción |
 |---|---|---|
-| `--force-update` | `false` | Purga la **selección** y la vuelve a provisionar. Es una operación destructiva: pide su propia confirmación |
-| `--yes`, `-y` | `false` | Omite la confirmación de la purga y la del tamaño pendiente |
+| `--force-update` | `false` | Purga la **selección** y la vuelve a provisionar. Es una operación destructiva: su confirmación única lo advierte |
+| `--yes`, `-y` | `false` | Omite la confirmación única (la destructiva de `--force-update` o la de tamaño) |
 | `--json` | `false` | Global; emite el payload en stdout |
 
 No existen `--with-stt` (`parakeet-tdt-v3` se provisiona siempre) ni `--with-voice-cloning` (el modelo Base de clonado `qwen3-tts-0.6b-base` se provisiona siempre): pasarlos falla como argumento desconocido con exit 2. Tampoco existe `--language`: el conjunto provisionado es fijo (es+en offline completo desde el primer uso), así que la provisión es determinista para la instalación por defecto.
@@ -25,10 +25,11 @@ No existen `--with-stt` (`parakeet-tdt-v3` se provisiona siempre) ni `--with-voi
 ## Flujo de provisión
 
 1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio del registro con un directorio por voz de fábrica (`default`, `ryan`, `vivian`) y escribe el `reference.qvoice` embebido solo en `default` si aún no existe; `ryan` y `vivian` quedan sin archivo, porque son presets del motor (ver [el modelo de voces de dos niveles](../../DESIGN.md#modelo-de-voces-de-dos-niveles)).
-2. **`--force-update`**: confirmación destructiva (salvo `--yes` o sin terminal) y purga de **la misma selección** que se va a provisionar: todos los modelos, el de clonado incluido. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas, y la misma confirmación— y no por purgas ad hoc.
-3. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación de tamaño; no decide qué se ejecuta. Con terminal y sin `--yes`, pide confirmación con el tamaño estimado; desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (ver [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)).
-4. **Descargar** lo pendiente, repo a repo, en la revisión fijada, con la vista de progreso por stderr (ver abajo).
-5. **Envelope `--json`** o mensaje humano.
+2. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación; no decide qué se ejecuta. Con `--force-update`, la selección completa es lo que se purga y se vuelve a descargar.
+3. **Una sola confirmación.** Con `--force-update` es destructiva: su resumen incluye «Se purgarán los modelos descargados y se volverán a descargar.» y la línea de tamaño de la selección completa. Sin él es no destructiva: solo muestra el tamaño y se omite si no hay nada que descargar o con `--yes`; sin terminal procede. La confirmación destructiva sin terminal y sin `--yes` es un error, igual que en `cleanup`. Desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (ver [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)). Si el usuario cancela, no se purga ni se descarga nada: en texto solo aparece «Cancelado.» y con `--json` el envelope es `{ "status": "cancelled", "models_provisioned": [] }` con exit 0.
+4. **Purga** (solo con `--force-update`) de **la misma selección** que se va a provisionar: todos los modelos, el de clonado incluido. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas— y no por purgas ad hoc.
+5. **Descargar** lo pendiente, repo a repo, en la revisión fijada, con la vista de progreso por stderr (ver abajo), y **podar** después las revisiones propias obsoletas.
+6. **Envelope `--json`** o mensaje humano.
 
 La traducción es **obligatoria**: `setup` siempre provisiona `opus-mt-es-en` y `opus-mt-en-es`, que son modelos CTranslate2 int8 ya convertidos y publicados, sin pasos locales de conversión. Cada uno se lee directo del snapshot de HuggingFace y se valida por presencia de sus cinco ficheros (`config.json`, `model.bin`, `shared_vocabulary.json`, `source.spm`, `target.spm`), todos con tamaño mayor que cero.
 
@@ -127,7 +128,7 @@ La selección es siempre la tabla de pines completa: no hay modelos opcionales, 
 
 | Clave | Tipo | Significado |
 |---|---|---|
-| `status` | string | `"completed"` |
+| `status` | string | `"completed"`, o `"cancelled"` si el usuario cancela la confirmación (exit 0, `models_provisioned` vacío y nada purgado ni descargado) |
 | `models_provisioned` | array de strings | Los modelos de la selección disponibles tras la ejecución |
 
 No hay clave `language`. Los mensajes de progreso, la purga y los avisos van a stderr, reservando stdout para el JSON; `schema_version` lo inyecta el emisor ([las dos versiones de esquema](../CONTRACT.md#las-dos-versiones-de-esquema)).

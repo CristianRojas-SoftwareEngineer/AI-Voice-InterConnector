@@ -219,7 +219,7 @@ esperaba respuesta — si colisiona en ese instante, también exit 6. Rechazar y
 descartar (opción 4) o Ctrl-D terminan con exit 0 sin persistir nada; solo
 aceptar (opción 2) persiste la toma que sonó. La primera toma usa el seed de
 producción; cada regeneración (opción 3) usa un seed nuevo, distinto de los
-anteriores, y muestra «Sintetizando otra toma…» sin dejar la línea de progreso
+anteriores, y muestra «Sintetizando otra toma…» (en las dos rutas) sin dejar la línea de progreso
 pegada al menú. `--play` es incompatible con
 `--json` (exit 2 si se combinan) y exige terminal interactiva en la entrada
 estándar (exit 2 sin TTY, antes de sintetizar).
@@ -248,7 +248,7 @@ el NDJSON y decodifica `audio_b64` y `translated` del evento `result`; un
 aplica el mismo bucle de `--play` (o persiste directo sin él; cada
 regeneración envía un `seed` explícito) y expone la ruta del WAV persistido.
 El sidecar guarda el texto realmente sintetizado (`translated`), igual que la
-rama local — el mismo contrato de salida y de persistencia.
+rama local — el mismo contrato de salida y de persistencia. Cuando los idiomas difieren, el daemon traduce con la misma segmentación (oraciones y párrafos, por lotes) que la ruta directa, así que la misma entrada produce el mismo texto por las dos rutas, y la CLI muestra la fase `translating` también por esta vía.
 
 ### Contrato `--json`
 
@@ -278,7 +278,7 @@ incondicional.
 
 Despacho: `say_via_daemon` si aplica, o rama directa con
 `require_model_provisioned` + `VoiceStore::exists` + `translate_if_different` +
-`Qwen3TtsEngine::synthesize_with_options` + `AudioService::play_wav`.
+`Qwen3TtsEngine::synthesize_with_options` + `AudioService::play_wav`. Con idiomas distintos, ambas rutas muestran la fase `translating` y traducen igual.
 
 ### Contrato `--json`
 
@@ -333,6 +333,10 @@ Validaciones puras (en este orden):
  captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (exit 0
  al vencer). No hay panic por `duration` ausente en este caso.
 3. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
+ La voz destino se comprueba también antes de abrir el micrófono o leer el
+ audio, en las dos vías: una voz inexistente sale con exit 3
+ `voice_not_found` sin capturar nada (el daemon conserva su propia
+ comprobación como defensa).
 4. Duración del audio: el audio de entrada dura como máximo `MAX_DUB_AUDIO_SECS`
  ([`limits.rs`](../../../crates/avi-core/src/limits.rs)). Un WAV que
  lo supera, o un `--duration` mayor, sale con exit 2 `audio_too_long`;
@@ -372,13 +376,15 @@ Handler `dub_handler`. Acepta
 (todos obligatorios salvo `temperature`, todos `es`/`en` en idiomas).
 Tras validar barato en JSON
 plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
-(`application/x-ndjson`) emitiendo `{"event":"started", "operation": "doblaje", "voice":"..."}`. La clave `operation` nombra el trabajo, de modo que el cliente anuncia «Iniciando doblaje…» en vez de una operación genérica.
+(`application/x-ndjson`) emitiendo `{"event":"started", "voice":"..."}`, sin `operation` ni `message`: el cliente es el dueño de los textos y anuncia «Doblando audio…» por su cuenta.
 
 Pipeline interno con latidos (`with_heartbeats`, periodo `STREAM_HEARTBEAT` entre `heartbeat`; ante desconexión,
 `AbortHandle` descarta el resultado de la transcripción y la traducción, que terminan en segundo
-plano; la cancelación del trabajo en el motor solo aplica a la síntesis):
+plano; la cancelación del trabajo en el motor solo aplica a la síntesis).
+La limpieza de ruido de `--denoise` la hace el cliente antes de despachar y
+se muestra como la fase `denoising`, igual que en la ruta directa:
 1. Transcribe en `spawn_blocking` con el motor STT residente del estado de inferencia (fase `"transcribe"`).
-2. Si `source != target`, traduce en `spawn_blocking` con el motor CT2 residente del par; nunca carga modelos bajo demanda (fase `"translate"`).
+2. Si `source != target`, traduce en `spawn_blocking` con el motor CT2 residente del par; nunca carga modelos bajo demanda (latidos `"translate"`, con la misma segmentación de oraciones y párrafos, por lotes, que la ruta directa).
 3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` sobre `spawn_blocking` (fase `"synthesis"`). Mientras espera el lock emite latidos `warming` (el daemon aún calienta el motor) o `queued` (otra síntesis retiene el lock). El plazo es el presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) del texto traducido, más un margen interno; si vence, emite evento `error` con `synthesis_timeout` y cancela el trabajo en el motor TTS residente, que queda caliente para la siguiente petición. Si el cliente se desconecta durante la síntesis, el trabajo se cancela igual.
 
 Antes del stream, un audio que supera `MAX_DUB_AUDIO_SECS` se rechaza con HTTP 400 `audio_too_long`; un texto traducido que supera `MAX_TEXT_LENGTH` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) emite un evento `error` `text_too_long`.
@@ -479,7 +485,18 @@ rechaza un `source_language`/`target_language` distinto de `es` y `en` con `usag
 
 ## El progreso por stderr
 
-Los subcomandos de este grupo pintan la fase del trabajo por stderr, con la forma `… <mensaje> (<tiempo>)`, y ceden la línea antes de que el producto escriba el aviso de captura del micrófono o el menú de `--play`. El **resultado** —el texto o el envelope `--json`— va por stdout, y lo dice **una sola vez**, con la duración de la operación.
+Los subcomandos de este grupo pintan la fase del trabajo por stderr, con la forma `… <mensaje> (<tiempo>)`, y ceden la línea antes de que el producto escriba las instrucciones del push-to-talk (`--mic` sin `--duration`) o el menú de `--play`; con `--mic --duration N` la fase «Capturando audio del micrófono…» permanece y su tiempo avanza durante la grabación. Los textos son idénticos en la ruta directa y en la del daemon y ninguna fase lleva un sufijo de ruta; en TTY el tiempo avanza también durante el trabajo bloqueante de la ruta directa (síntesis, transcripción, traducción, limpieza de ruido), porque un hilo repinta la línea mientras el trabajo corre. Los avisos de las bibliotecas pasan por un canal de consola que borra la línea de fase abierta antes de escribir; el indicador la repinta en su siguiente repintado.
+
+Los textos por subcomando, además de «Leyendo archivo de audio…», «Capturando audio del micrófono…», «Limpiando ruido del audio…», «Transcribiendo audio…» y «Traduciendo texto…» (comunes a las rutas que los usan):
+
+| Subcomando | Arranque | Fases propias |
+|---|---|---|
+| `synthesize` | «Iniciando síntesis…» | «Sintetizando voz…», «Guardando locución…», «Reproduciendo…» (con `--play`); en la regeneración, «Preparando otra toma…» y «Sintetizando otra toma…» |
+| `say` | «Iniciando síntesis…» | «Sintetizando voz…», «Reproduciendo…» |
+| `dub` | «Doblando audio…» | «Traduciendo texto transcrito…», «Sintetizando voz doblada…», «Reproduciendo doblaje…» |
+| `transcribe` | «Iniciando transcripción…» | — |
+
+Del daemon llegan además las esperas «Calentando motor de síntesis…», «En cola de síntesis…» y «Esperando turno para limpiar el ruido…». El **resultado** —el texto o el envelope `--json`— va por stdout, y lo dice **una sola vez**, con la duración de la operación.
 
 `AVI_NO_PROGRESS=1` silencia todo el progreso por stderr —la fase y la actividad—, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.
 
@@ -556,7 +573,8 @@ stderr: … Validando texto y voz… (0 s)
 
 # speech transcribe
 stdout: <el texto transcrito>
-stderr: … Transcribiendo audio… (0 s)
+stderr: … Leyendo archivo de audio… (0 s)
+        … Transcribiendo audio… (1 s)
 
 # speech dub
 stdout: Transcripción: <el texto transcrito>
@@ -566,7 +584,7 @@ stderr: … Leyendo archivo de audio… (0 s)
         … Transcribiendo audio… (2 s)
         … Traduciendo texto transcrito… (5 s)
         … Sintetizando voz doblada… (6 s)
-        … Reproduciendo… (9 s)
+        … Reproduciendo doblaje… (9 s)
 
 # speech play
 stdout: Reproduciendo locución 'saludo' de la voz 'default' (2 s).

@@ -203,6 +203,8 @@ ai-voice-interconnector voice list
 
 **Esperado**: `clone` registra la voz (aparece en `voice list`), **exit 0**; `say`/`synthesize --voice mi_voz` usan su timbre; `remove` la elimina y deja de aparecer, **exit 0**. Intentar `voice remove` sobre una voz de fábrica (`default`/`ryan`/`vivian`) sale con **exit 2**.
 
+**Clonado: progreso y comprobaciones previas.** Repite `voice clone` con `--no-daemon` y con `--daemon` en una terminal real y comprueba en **stderr**: (1) el tiempo de «Clonando voz… (puede tardar varios minutos)» **avanza** también en la ruta directa; (2) ninguna fase muestra «(daemon)»; (3) por el daemon, con `--denoise`, aparece la espera «Esperando turno para limpiar el ruido…» si otra limpieza retiene el turno. Con la voz ya registrada y sin `--force`, `voice clone --mic --name mi_voz` sale con **exit 6** (`voice_exists`) **antes** de abrir el micrófono, en las dos rutas.
+
 ## 7. Gestión de habla sintética
 
 🧠 · reproducir requiere 🔊
@@ -252,6 +254,8 @@ ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --ta
 ```
 
 **Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`), **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce, **exit 0**. Un `--audio` inexistente sale con **exit 3**, igual que un `--mic` sin entrada predeterminada (`no_input_device`) o un `dub` sin salida predeterminada (`no_output_device`); un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
+
+**Doblaje y traducción: paridad y progreso.** Con `speech dub` en una terminal real, repite con `--no-daemon` y `--daemon`: el tiempo de cada fase (incluida «Limpiando ruido del audio…» con `--denoise`) avanza en la ruta directa, y ninguna fase muestra «(daemon)». Un `dub` con una voz inexistente sale con **exit 3** (`voice_not_found`) antes de leer el audio o abrir el micrófono, en las dos rutas. La paridad del texto traducido se comprueba con una entrada de dos oraciones y dos párrafos: `translate --text "<texto>" --source-language es --target-language en` con `--no-daemon` y con `--daemon` debe dar el **mismo** texto, igual que el sidecar de `speech synthesize --text "<texto>" --label p --source-language es --target-language en` (`speech list --json`) por las dos rutas. `translate --daemon` no tiene un tope total de 1500 ms: usa el mismo criterio que `speech transcribe --daemon`, y sin daemon sale con **exit 5** (`daemon_unreachable`).
 
 ### Limpieza de ruido (`--denoise`)
 
@@ -316,7 +320,7 @@ ai-voice-interconnector speech transcribe --mic --source-language es < /dev/null
 ```bash
 ai-voice-interconnector speech transcribe --mic --duration 3 --source-language es ; echo "exit=$?"
 ```
-**Esperado**: graba 3 s fijos y transcribe a **stdout**, **exit 0**; sin panic.
+**Esperado**: graba 3 s fijos y transcribe a **stdout**, **exit 0**; sin panic. Durante la grabación la fase «Capturando audio del micrófono…» **permanece** en stderr y su tiempo avanza (no se cede la línea: solo el push-to-talk la cede para sus instrucciones y la recupera al terminar).
 
 **Ruta feliz push-to-talk** — en una terminal interactiva real:
 
@@ -365,7 +369,7 @@ Opción [1-4]:
 ```
 Prueba cada opción:
 - **`1`** → vuelve a reproducir la **misma** toma (sin re-sintetizar) y reaparece el menú.
-- **`3`** → muestra «Sintetizando otra toma…», **re-sintetiza** una toma nueva, la reproduce y reaparece el menú sin que la línea de progreso quede pegada a él. Elige `3` varias veces: **cada toma debe sonar distinta** de las anteriores. Repite todo el procedimiento con `--no-daemon` y con `--daemon` para cubrir la ruta directa y la del daemon.
+- **`3`** → muestra «Sintetizando otra toma…», **re-sintetiza** una toma nueva, la reproduce y reaparece el menú sin que la línea de progreso quede pegada a él. Elige `3` varias veces: **cada toma debe sonar distinta** de las anteriores. Repite todo el procedimiento con `--no-daemon` y con `--daemon` para cubrir la ruta directa y la del daemon: en las dos debe decir «Sintetizando otra toma…», el tiempo de la fase debe avanzar en la ruta directa y ninguna fase debe mostrar «(daemon)». Con `--source-language es --target-language en` aparece además la fase «Traduciendo texto…» también por el daemon.
 - **`2`** → guarda la locución (**exit 0**); verifícalo con `ai-voice-interconnector speech list --json` (debe aparecer `demo_loop`).
 - **`4`** o **Ctrl-D (EOF)** → imprime `Descartado.` y sale **exit 0** **sin** guardar nada.
 
@@ -587,10 +591,13 @@ ai-voice-interconnector self update
 ```
 
 **Esperado**: durante la descarga, el tiempo de la fase **avanza** —los
-segundos suben en la terminal— y no se queda congelado en `(0 s)`. Es la
-comprobación que distingue una espera viva de una congelada.
+segundos suben en la terminal— y no se queda en `(0 s)`. Es la
+comprobación que distingue una espera viva de una detenida.
 
-**Excepción declarada**: durante la síntesis, el clonado local y la
-captura del micrófono, el trabajo bloquea el hilo y la fase **no** puede
-repintar: el tiempo se queda congelado hasta que el trabajo acaba, y el
-tiempo total lo da el mensaje final. Eso no es un defecto.
+**También en las rutas directas**: lo mismo debe verse durante el trabajo
+bloqueante —síntesis, clonado, transcripción, traducción y limpieza de
+ruido con `--no-daemon`— y durante la grabación de `--mic --duration N`,
+porque un hilo repinta la línea mientras el trabajo corre. No hay excepción
+de reloj detenido. Si una biblioteca escribe un aviso mientras la fase está
+abierta, el aviso aparece en su propia línea y la fase se vuelve a pintar en
+el siguiente repintado.

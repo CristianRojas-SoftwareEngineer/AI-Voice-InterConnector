@@ -40,12 +40,12 @@ inmediato en todas las plataformas y la ejecución local no espera.
 
 **La fase `translating` se repinta mientras espera.** El endpoint `/translate`
 devuelve JSON plano y no emite eventos, así que sin repintado la fase
-quedaría congelada mientras el motor traduce. Con `AVI_NO_PROGRESS=1` el
+quedaría sin avance visible mientras el motor traduce. Con `AVI_NO_PROGRESS=1` el
 progreso por stderr se silencia entero —la fase incluida—, y nada más: el
 texto traducido por stdout, el envelope `--json` y los códigos de salida no
 cambian. El indicador se repinta con su
 propio reloj durante la espera, de modo que el tiempo visible avanza. El
-timeout de 1500 ms del endpoint no cambia: lo que cambia es lo que se ve
+plazo de la petición no cambia: lo que cambia es lo que se ve
 mientras espera.
 
 ---
@@ -137,12 +137,12 @@ ningún modelo (`src/main.rs`).
 ## Despacho al daemon
 
 `translate_via_daemon` (`src/main.rs`) hace `POST /translate` con
-`{text, source_language, target_language}` y el timeout de inactividad del cliente; un timeout o fallo de conexión mapea
+`{text, source_language, target_language}` y usa el mismo criterio que `speech transcribe`: un timeout de conexión de 500 ms y el plazo global (failsafe) del cliente, sin tope total más corto; un error de conexión mapea
 a `ExitCode::DaemonUnreachable` (`daemon_unreachable`). El endpoint
 `translate_handler` (`crates/avi-daemon/src/lib.rs`) replica la misma
 validación (`empty_text` → 400,
 `model_missing` → 404 si el modelo se borra tras arrancar) y traduce con el
-motor CT2 residente del par, cargado obligatoriamente antes de servir peticiones.
+motor CT2 residente del par, cargado obligatoriamente antes de servir peticiones, con la misma segmentación (oraciones y párrafos, por lotes) que la ruta directa: la misma entrada se traduce igual por las dos rutas.
 Un estado de contrato sin motores responde `daemon_error`, nunca carga modelos
 bajo demanda. El CLI mapea el `reason` del cuerpo de error del
 daemon al mismo `ExitCode` que produciría la ruta local
@@ -212,11 +212,11 @@ El **resultado** —el texto traducido o el envelope `--json`— va por stdout y
 ```text
 # translate
 stdout: <el texto traducido>
-stderr: … Traduciendo texto (daemon)… (0 s)
+stderr: … Traduciendo texto… (0 s)
 
 # translate --json
 stdout: {"translated": "…", "source_language": "es", "target_language": "en"}
-stderr: … Traduciendo texto (daemon)… (0 s)
+stderr: … Traduciendo texto… (0 s)
 ```
 
-La fase se repinta con su propio reloj durante la espera del daemon, de modo que el tiempo visible avanza en vez de quedarse congelado en `(0 s)`. Con `AVI_NO_PROGRESS=1` el progreso por stderr se silencia entero, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.
+La fase se repinta con su propio reloj durante la espera del daemon, de modo que el tiempo visible avanza en vez de quedarse en `(0 s)`; lo mismo ocurre en la ruta directa, donde un hilo repinta la línea mientras el motor traduce. Con `AVI_NO_PROGRESS=1` el progreso por stderr se silencia entero, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.

@@ -91,7 +91,7 @@ final de una instalación, el programa **queda instalado** y el comando sale con
 basta reintentar con `setup`; si Hugging Face rechaza un modelo fijado
 (`model_unavailable`), reintentar no lo resuelve y hace falta una versión que vuelva a
 fijarlo. `setup` no requiere cuenta: descarga sin credenciales e ignora `HF_TOKEN`,
-`HF_TOKEN_PATH` y el token guardado. La limpieza
+`HF_TOKEN_PATH` y el token guardado. Pide una sola confirmación antes de actuar: con `--force-update` es destructiva (anuncia que se purgarán los modelos descargados y el tamaño de la selección completa; sin terminal exige `--yes`) y sin él solo informa el tamaño; si la cancelas no se purga ni se descarga nada y solo aparece «Cancelado.». La limpieza
 posterior corresponde a `cleanup` (datos) o `self uninstall` (además programa y PATH).
 
 > **Importante**: hasta que los modelos estén provisionados, `speech say` y `daemon start`
@@ -237,7 +237,7 @@ una respuesta válida y sale como payload, no como texto.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | `"completed"` |
+| `status` | string | `"completed"`, o `"cancelled"` si cancelas la confirmación (exit 0, `models_provisioned` vacío, nada purgado ni descargado) |
 | `models_provisioned` | array de strings | Los 6 modelos (`qwen3-tts-0.6b`, `opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`, `dpdfnet8`) |
 
 **`cleanup --json` / `self uninstall --json`**
@@ -403,7 +403,7 @@ necesitan un modelo cargado):** tres modos, iguales a los de `voice clone`:
   degradar.
 - `--no-daemon`: fuerza el modo directo, sin sondear.
 
-En las operaciones pesadas (`synthesize`, `say`, `voice clone` y `dub`), la comunicación con el daemon opera mediante streaming NDJSON con latidos periódicos cada 500 ms y timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`), evitando cuelgues o timeouts prematuros en tareas de larga duración.
+En las operaciones pesadas (`synthesize`, `say`, `voice clone` y `dub`), la comunicación con el daemon opera mediante streaming NDJSON con latidos periódicos cada 500 ms y timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`), evitando cuelgues o timeouts prematuros en tareas de larga duración. Los eventos del stream no llevan texto humano (solo `event`, `stage` y datos de la petición): el cliente traduce cada etapa a su fase, con los mismos textos que en la ruta directa.
 
 `--daemon` y `--no-daemon` son mutuamente excluyentes: combinarlos sale con
 exit **2** antes de cualquier trabajo. `speech play`, `speech list` y `speech
@@ -461,7 +461,7 @@ Opción [1-4]:
 
 - **Reproducir otra vez**: repite el mismo WAV temporal, sin volver a sintetizar.
 - **Aceptar y guardar**: persiste la toma que acabas de oír y termina con exit 0.
-- **Rechazar y regenerar**: sintetiza una toma nueva (suena distinta de las anteriores), muestra «Sintetizando otra toma…» y vuelve a preguntar.
+- **Rechazar y regenerar**: sintetiza una toma nueva (suena distinta de las anteriores), muestra «Sintetizando otra toma…» (también vía daemon) y vuelve a preguntar.
 - **Rechazar y descartar**: termina con exit 0 sin guardar nada.
 
 Ctrl-D en la pregunta equivale a «rechazar y descartar». `speech synthesize
@@ -1052,7 +1052,7 @@ ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 **Qué esperar** con el daemon activo: `speech say` omite la carga del modelo y
 la síntesis empieza de inmediato. Mientras sintetiza, el daemon mantiene viva la
 conexión con latidos NDJSON (ver [docs/CLI/CONTRACT.md](docs/CLI/CONTRACT.md#transporte-streaming-ndjson-y-presupuesto-de-inactividad));
-el cliente no muestra progreso intermedio. Al terminar la reproducción imprime lo
+el cliente muestra cada etapa como una fase con su tiempo (calentando, en cola, traduciendo, sintetizando). Al terminar la reproducción imprime lo
 mismo que en modo directo, sin ruta:
 
 ```
