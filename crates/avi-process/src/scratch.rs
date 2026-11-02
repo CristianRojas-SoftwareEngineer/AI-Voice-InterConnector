@@ -97,10 +97,10 @@ fn sweep_siblings(
         match std::fs::remove_dir_all(entry.path()) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => eprintln!(
+            Err(e) => avi_shared::console::warn(format_args!(
                 "aviso: no se pudo borrar el scratch huérfano '{}': {e}",
                 entry.path().display()
-            ),
+            )),
         }
     }
     Ok(())
@@ -139,10 +139,10 @@ pub fn release() {
     match std::fs::remove_dir_all(&path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => eprintln!(
+        Err(e) => avi_shared::console::warn(format_args!(
             "aviso: no se pudo borrar el scratch '{}': {e}",
             path.display()
-        ),
+        )),
     }
 }
 

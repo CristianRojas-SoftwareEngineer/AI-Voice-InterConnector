@@ -29,7 +29,7 @@
 use std::io::{IsTerminal, Write};
 #[cfg(test)]
 use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -196,10 +196,6 @@ pub struct PhaseProgress {
     /// nueva se anuncia siempre, y una repetición de la misma fase no abre
     /// línea nueva.
     announced: Option<&'static str>,
-    /// ¿Hay una línea pintada en la terminal que otro escritor pueda pisar?
-    /// Un `AtomicBool` porque `tick` solo consulta el indicador y aun así
-    /// tiene que dejar constancia de que la línea quedó abierta.
-    line_open: AtomicBool,
     /// ¿Se abrió ya el bloque (la línea en blanco inicial)? Solo el primer
     /// `phase` la escribe.
     block_opened: bool,
@@ -232,7 +228,6 @@ impl PhaseProgress {
             enabled: !disabled,
             current: None,
             announced: None,
-            line_open: AtomicBool::new(false),
             block_opened: false,
             #[cfg(test)]
             renders: Arc::new(AtomicUsize::new(0)),
@@ -254,7 +249,6 @@ impl PhaseProgress {
             enabled: !silenced_by(no_progress_value),
             current: None,
             announced: None,
-            line_open: AtomicBool::new(false),
             block_opened: false,
             renders: Arc::new(AtomicUsize::new(0)),
             closing_lines: Arc::new(AtomicUsize::new(0)),
@@ -317,10 +311,11 @@ impl PhaseProgress {
     /// Actualiza la línea de la fase actual con el tiempo transcurrido
     /// actualizado. Útil en bucles de espera.
     ///
-    /// En TTY repinta sobre la misma línea. En no-TTY no abre línea nueva: la
-    /// actividad repetida dentro de la misma fase se raciona. El repintado se
-    /// cuenta en cualquier modo, porque es el trabajo que el indicador hace
-    /// aunque en no-TTY no produzca línea.
+    /// En TTY repinta sobre la misma línea, y si un aviso del canal de consola
+    /// la había cedido, la recupera debajo del aviso. En no-TTY no abre línea
+    /// nueva: la actividad repetida dentro de la misma fase se raciona. El
+    /// repintado se cuenta en cualquier modo, porque es el trabajo que el
+    /// indicador hace aunque en no-TTY no produzca línea.
     pub fn tick(&self) {
         if !self.enabled || self.current.is_none() {
             return;
@@ -338,24 +333,22 @@ impl PhaseProgress {
     ///
     /// En TTY borra la línea de la fase y deja el cursor al principio; en
     /// no-TTY no hay línea que ceder y no escribe nada. Es idempotente: ceder
-    /// una línea ya cedida no hace nada.
+    /// una línea ya cedida, también la que cedió un aviso del canal de
+    /// consola, no hace nada.
     pub fn close_line(&mut self) {
-        if !self.enabled {
+        if !self.enabled || !self.tty {
             return;
         }
-        if !self.line_open.swap(false, Ordering::Relaxed) {
+        if !avi_shared::console::take_phase_line() {
             return;
         }
         #[cfg(test)]
         self.closing_lines.fetch_add(1, Ordering::Relaxed);
-        if self.tty {
-            eprint!("\r\x1b[2K");
-            #[expect(
-                clippy::let_underscore_must_use,
-                reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
-            )]
-            let _ = std::io::stderr().flush();
-        }
+        #[expect(
+            clippy::let_underscore_must_use,
+            reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
+        )]
+        let _ = std::io::stderr().flush();
     }
 
     /// Vuelve a pintar la fase actual sobre la línea, si la había.
@@ -381,8 +374,9 @@ impl PhaseProgress {
         elapsed
     }
 
-    /// Pinta la fase actual. En TTY la repinta sobre la misma línea y deja la
-    /// línea abierta; en no-TTY escribe una línea propia.
+    /// Pinta la fase actual. En TTY la repinta sobre la misma línea y publica
+    /// en el canal de consola que la línea queda abierta, para que un aviso la
+    /// ceda antes de escribir; en no-TTY escribe una línea propia.
     fn paint(&self) {
         let Some((_, msg)) = &self.current else {
             return;
@@ -392,7 +386,7 @@ impl PhaseProgress {
         self.renders.fetch_add(1, Ordering::Relaxed);
         if self.tty {
             eprint!("\r\x1b[2K{line}");
-            self.line_open.store(true, Ordering::Relaxed);
+            avi_shared::console::set_phase_line_open(true);
             #[expect(
                 clippy::let_underscore_must_use,
                 reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
@@ -540,6 +534,9 @@ pub fn clock(elapsed: Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Serializa las pruebas en TTY: la línea de fase abierta es estado global
+    // del proceso, compartido con el canal de avisos de la consola.
+    use crate::test_support::ENV_LOCK;
 
     #[test]
     fn watchdog_heartbeat_survives_disabled_visible_progress() {
@@ -804,6 +801,7 @@ mod tests {
     /// Es la idempotencia medida, en la rama que cede de verdad.
     #[test]
     fn close_line_in_tty_is_idempotent() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut progress = PhaseProgress::for_test(None, true);
         progress.phase("cleaning", "Limpiando datos…");
         progress.close_line();
@@ -818,6 +816,7 @@ mod tests {
     /// Tras ceder la línea, `repaint` vuelve a pintar la fase vigente.
     #[test]
     fn repaint_after_close_line_paints_the_phase_again() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut progress = PhaseProgress::for_test(None, true);
         progress.phase("cleaning", "Limpiando datos…");
         assert_eq!(progress.renders(), 1, "la fase se pinta al abrirla");
@@ -829,6 +828,25 @@ mod tests {
         );
         progress.repaint();
         assert_eq!(progress.renders(), 2, "tras ceder la línea, se repinta");
+    }
+
+    /// Un aviso del canal de consola cede la línea abierta del indicador: la
+    /// cesión siguiente del indicador ya no tiene nada que borrar, y el
+    /// repintado vuelve a abrirla debajo del aviso.
+    #[test]
+    fn a_console_warning_takes_the_line_and_repaint_reopens_it() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut progress = PhaseProgress::for_test(None, true);
+        progress.phase("cleaning", "Limpiando datos…");
+        assert!(avi_shared::console::phase_line_open());
+        avi_shared::console::warn("Aviso: prueba de cesión por aviso");
+        assert!(!avi_shared::console::phase_line_open());
+        progress.close_line();
+        assert_eq!(progress.closing_lines(), 0, "la línea ya la cedió el aviso");
+        progress.repaint();
+        assert!(avi_shared::console::phase_line_open());
+        assert_eq!(progress.renders(), 2, "el repintado recupera la línea");
+        progress.close_line();
     }
 
     /// `AVI_NO_PROGRESS` con cualquier valor no vacío silencia toda salida:

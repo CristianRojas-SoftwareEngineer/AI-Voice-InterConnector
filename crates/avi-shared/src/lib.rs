@@ -78,7 +78,7 @@ mod human_bytes_tests {
 /// avisa por stderr con `Aviso:` y el contexto, que nombra lo que no se limpió.
 pub fn best_effort(result: std::io::Result<()>, context: impl std::fmt::Display) {
     if let Some(warning) = best_effort_warning(result, context) {
-        eprintln!("{warning}");
+        console::warn(warning);
     }
 }
 

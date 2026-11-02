@@ -342,11 +342,11 @@ fn warn_cwd_vendor_ignored(vendored: &Path) {
     }
     #[cfg(test)]
     CWD_VENDOR_WARNING_COUNT.fetch_add(1, Ordering::Relaxed);
-    eprintln!(
+    avi_shared::console::warn(format_args!(
         "Aviso: se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
         vendored.display(),
         CWD_VENDOR_OPT_IN
-    );
+    ));
 }
 
 /// Resolución del binario del motor por capas:
@@ -449,11 +449,11 @@ fn resolve_named_model_dir(
         if cwd_vendor_allowed() {
             return Ok(Some(vendored));
         }
-        eprintln!(
+        avi_shared::console::warn(format_args!(
             "Aviso: se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
             vendored.display(),
             CWD_VENDOR_OPT_IN
-        );
+        ));
     }
     Ok(None)
 }
@@ -624,18 +624,18 @@ impl Qwen3TtsEngine {
                 || avi_process::observe_identity(pid),
             );
             if state == avi_process::registry::Registered::Unknown {
-                eprintln!(
+                avi_shared::console::warn(format_args!(
                     "Aviso: no se puede observar al residente (pid {pid}); se conserva anotado"
-                );
+                ));
                 *lock_live(&self.live) = Some((pid, identity));
                 return;
             }
             if state == avi_process::registry::Registered::Ours {
                 crate::resident::kill_tree_resident_by_pid(pid);
                 if !self.wait_resident_gone(pid) {
-                    eprintln!(
+                    avi_shared::console::warn(format_args!(
                         "Aviso: el residente (pid {pid}) sigue vivo tras el plazo de cierre; se conserva anotado"
-                    );
+                    ));
                     *lock_live(&self.live) = Some((pid, identity));
                     return;
                 }
@@ -740,8 +740,8 @@ impl Qwen3TtsEngine {
             // del residente, así que se registra la traza y la decisión
             // reutilizar/arrancar se sigue tomando sobre el guard recuperado.
             let mut guard = self.resident.lock().unwrap_or_else(|poisoned| {
-                eprintln!(
-                    "Aviso: mutex del residente poisoned; se sigue sobre el estado recuperado"
+                avi_shared::console::warn(
+                    "Aviso: mutex del residente poisoned; se sigue sobre el estado recuperado",
                 );
                 poisoned.into_inner()
             });
@@ -757,9 +757,9 @@ impl Qwen3TtsEngine {
                 .health_check(HEALTH_OBS_RETRIES, HEALTH_OBS_INTERVAL_MS)
             {
                 // Residente degradado (crash o hang): rearranque determinista.
-                eprintln!(
+                avi_shared::console::warn(format_args!(
                     "Aviso: el residente de síntesis está degradado ({health_error}); se rearranca"
-                );
+                ));
                 let pid = guard
                     .as_ref()
                     .expect("residente reutilizado")

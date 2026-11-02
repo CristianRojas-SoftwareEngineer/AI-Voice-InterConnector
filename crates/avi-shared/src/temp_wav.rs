@@ -51,10 +51,10 @@ impl Drop for TempWav {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             // `Drop` no puede propagar ni hacer pánico: el fallo queda visible
             // por stderr con la ruta que se queda en disco.
-            Err(e) => eprintln!(
+            Err(e) => crate::console::warn(format_args!(
                 "aviso: no se pudo borrar el temporal '{}': {e}",
                 self.path.display()
-            ),
+            )),
         }
     }
 }
