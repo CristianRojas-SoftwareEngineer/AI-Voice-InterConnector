@@ -100,7 +100,7 @@ fn version_major(first_line: &str) -> Option<u32> {
 
 /// Verifica que `ffmpeg` sea versión 6+ mediante `ffmpeg -version`. Acepta los
 /// artefactos que el paquete distribuye en las tres plataformas, cuya línea de
-/// versión reconoce [`version_major`].
+/// versión reconoce `version_major`.
 pub fn verify_ffmpeg(ffmpeg: &Path) -> Result<String, E> {
     let output = Command::new(ffmpeg)
         .arg("-version")

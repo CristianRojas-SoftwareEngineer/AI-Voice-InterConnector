@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.40.0 — 2026-11-01](#0400--2026-11-01)
 - [0.39.0 — 2026-11-01](#0390--2026-11-01)
 - [0.38.1 — 2026-10-31](#0381--2026-10-31)
@@ -126,6 +127,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La prueba de la espera con repintado fallaba de forma intermitente en la CI de Windows: comparaba un plazo real de 50 ms con el intervalo de repintado de 5 ms, y una pausa del hilo en una máquina cargada bastaba para que ambos vencieran a la vez y el repintado no ocurriera. Además, `cargo doc` informaba cuatro avisos de enlaces de documentación mal formados en el crate `denoise`. Ahora la prueba corre con el reloj de tokio detenido, de modo que su resultado no depende de la carga de la máquina y el recuento de repintados es exacto, y la documentación no produce avisos.
+
+### Corregido
+
+- Las pruebas de la espera con progreso (`await_with_progress_*`) usan `start_paused` con la característica `test-util` de `tokio` como dependencia de desarrollo: el tiempo avanza solo cuando el ejecutor queda ocioso. La prueba del futuro lento afirma el recuento exacto de repintados en lugar de «al menos uno».
+- La documentación del crate `denoise` escapa los corchetes que rustdoc interpretaba como enlaces (`state_in`, `state_out`, la ventana de Vorbis) y deja de enlazar a la función privada `version_major`; `cargo doc --workspace` no informa avisos.
 
 ## [0.40.0] — 2026-11-01
 

@@ -44,7 +44,7 @@ pub const WNORM: f32 = 1.0;
 pub const INV_FFT_SCALE: f32 = 1.0 / FFT_SIZE as f32;
 
 /// Genera la ventana Vorbis de tamaño 960.
-/// w[i] = sin( pi/2 * sin^2( pi * (i + 0.5) / N ) )
+/// w\[i\] = sin( pi/2 * sin^2( pi * (i + 0.5) / N ) )
 pub fn vorbis_window(n: usize) -> Vec<f32> {
     let mut win = Vec::with_capacity(n);
     let n_f = n as f32;

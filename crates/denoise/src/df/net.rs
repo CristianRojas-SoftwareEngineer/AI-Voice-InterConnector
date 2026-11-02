@@ -4,9 +4,9 @@
 //!
 //! Interfaz ONNX verificada (metadatos del propio modelo):
 //! - entrada `spec` : f32 [1, 1, 481, 2] (un frame, espectro complejo real/imag)
-//! - entrada `state_in`: f32 [90228]
+//! - entrada `state_in`: f32 \[90228\]
 //! - salida `spec_e` : f32 [1, 1, 481, 2]
-//! - salida `state_out`: f32 [90228]
+//! - salida `state_out`: f32 \[90228\]
 //!
 //! El grafo es *stateful*: cada frame debe encadenarse con el `state_out` del
 //! anterior (igual que `OfflineSpeechDenoiserDpdfNetImpl` de sherpa-onnx, que
