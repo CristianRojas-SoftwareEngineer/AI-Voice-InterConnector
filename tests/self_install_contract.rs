@@ -43,8 +43,8 @@
 //!
 //! - **Sin red real**: se escriben en la raíz de modelos del sandbox los repos de la selección
 //!   con los archivos que `is_provisioned` exige, salvo `opus-mt-es-en`, y `HF_ENDPOINT`
-//!   apunta a un puerto local cerrado. Lo único que queda por hacer es descargar ese pin, y
-//!   falla con `network_error` de forma independiente de la máquina.
+//!   apunta a un endpoint local que cierra la conexión. Lo único que queda por hacer es
+//!   descargar ese pin, y falla con `network_error` de forma independiente de la máquina.
 //! - **Sin `PATH`**: `--no-modify-path` en las dos, porque en Windows la integración escribe
 //!   en `HKCU\Environment` y una puerta no puede tocar el entorno de quien la ejecuta.
 //! - **Sin el temporal de la máquina**: la tabla de rutas no declara variable de
@@ -143,6 +143,22 @@ impl ReservedPort {
             _socket: socket,
         }
     }
+}
+
+/// URL `http://127.0.0.1:<puerto>` de un oyente que acepta cada conexión y la
+/// cierra sin responder, durante toda la prueba: el cliente HTTP falla al
+/// instante con un error de transporte. No se usa un puerto cerrado porque
+/// Windows tarda ~2 s en rechazar cada intento de conexión, ni uno retenido sin
+/// oyente porque en macOS la conexión cuelga hasta el timeout TCP.
+fn closing_endpoint() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("se enlaza un puerto");
+    let addr = listener.local_addr().expect("dirección local");
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            drop(stream);
+        }
+    });
+    format!("http://{addr}")
 }
 
 /// Siembra en `data_dir` un `daemon.pid` señuelo: su dirección apunta a un
@@ -273,14 +289,13 @@ impl Sandbox {
             }
         }
 
-        // Endpoint de HuggingFace en un puerto local que se reserva y se libera
-        // de inmediato: la descarga del pin sin sembrar debe fallar de inmediato
-        // y sin tocar la red real. El puerto se libera a propósito, no se retiene:
-        // en macOS, conectar contra un puerto retenido sin oyente cuelga hasta el
-        // timeout TCP (~76 s por intento; con los reintentos de `hf-hub` son ~7,6 min
-        // en este test), mientras que contra un puerto libre el sistema rechaza al
-        // instante en todas las plataformas (medido en CI: 0,2 ms).
-        let hf_port = ReservedPort::reserve().port;
+        // Endpoint de HuggingFace en un oyente local que cierra cada conexión:
+        // la descarga del pin sin sembrar debe fallar de inmediato y sin tocar la
+        // red real, en todas las plataformas. Un puerto retenido sin oyente
+        // colgaría en macOS hasta el timeout TCP (~76 s por intento; con los
+        // reintentos de `hf-hub`, ~7,6 min en este test), y uno libre tardaría en
+        // Windows ~2 s por intento en rechazarse.
+        let hf_endpoint = closing_endpoint();
 
         let exe = staging.join(section.executable_path());
         let value = |p: &Path| p.display().to_string();
@@ -302,10 +317,7 @@ impl Sandbox {
             ("TMPDIR".to_string(), value(&temp)),
             // Puerto efímero: la parada del daemon no tiene que poder tocar nada.
             ("AVI_DAEMON_PORT".to_string(), "0".to_string()),
-            (
-                "HF_ENDPOINT".to_string(),
-                format!("http://127.0.0.1:{hf_port}"),
-            ),
+            ("HF_ENDPOINT".to_string(), hf_endpoint),
         ];
         envs.sort();
         Self {

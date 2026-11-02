@@ -1437,12 +1437,18 @@ mod tests {
                 "{status} se arregla reintentando"
             );
         }
-        // Puerto sin servidor: fallo de transporte (`HFError::Request`).
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0")
+        // Oyente que acepta cada conexión y la cierra sin responder: fallo de
+        // transporte (`HFError::Request`) inmediato en todas las plataformas. Un
+        // puerto cerrado tardaría en Windows ~2 s en rechazar la conexión.
+        let closing = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("se reserva un puerto local");
-        let endpoint = format!("http://{}", closed.local_addr().expect("dirección local"));
-        drop(closed);
+        let endpoint = format!("http://{}", closing.local_addr().expect("dirección local"));
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = closing.accept().await {
+                drop(stream);
+            }
+        });
         let cache = tempfile::tempdir().expect("directorio temporal de la caché");
         let client = hub_client_builder(
             download_http_client_with(std::time::Duration::from_secs(5))
@@ -1460,14 +1466,14 @@ mod tests {
                 .maybe_revision(Some(PINNED_COMMIT.to_string()))
                 .send()
                 .await
-                .expect_err("no hay servidor en el puerto"),
+                .expect_err("el oyente cierra la conexión sin responder"),
         );
         assert!(
             matches!(
                 transport.downcast_ref::<hf_hub::HFError>(),
                 Some(hf_hub::HFError::Request { .. })
             ),
-            "un puerto cerrado es un fallo de transporte: {transport:?}"
+            "una conexión cerrada sin respuesta es un fallo de transporte: {transport:?}"
         );
         assert!(!is_download_rejected(&transport));
         assert!(!is_download_rejected(&anyhow::anyhow!("fallo sin HFError")));

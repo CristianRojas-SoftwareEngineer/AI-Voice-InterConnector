@@ -572,8 +572,9 @@ fn no_setup_provisions_nothing() {
 /// instalado y termina con `setup_failed`.
 ///
 /// El fallo se provoca **sin red real**: se provisionan en el sandbox los repos de la
-/// selección salvo uno, y `HF_ENDPOINT` apunta a un puerto local cerrado. Lo único que
-/// queda por hacer es descargar ese modelo, y falla de forma independiente de la máquina.
+/// selección salvo uno, y `HF_ENDPOINT` apunta a un endpoint local que cierra la conexión.
+/// Lo único que queda por hacer es descargar ese modelo, y falla de forma independiente de
+/// la máquina.
 ///
 /// Se afirman **dos** cosas. El programa instalado se comprueba contra el disco. El
 /// `reason` se comprueba sobre [`install::Outcome::lifecycle_error`], que es el punto único
@@ -581,8 +582,8 @@ fn no_setup_provisions_nothing() {
 /// la tabla cerrada, que es lo que la tabla de reasons declara como **éxito parcial** y lo
 /// que el cableado convierte en código de salida. Y se afirma también la separación de los
 /// dos `reason`, que es lo que `self update` necesita: el de la **operación** es
-/// `setup_failed` y el del **fallo de provisión** viaja anidado, y en este caso (un puerto
-/// cerrado, fallo de transporte) es `network_error`.
+/// `setup_failed` y el del **fallo de provisión** viaja anidado, y en este caso (una
+/// conexión cerrada sin respuesta, fallo de transporte) es `network_error`.
 ///
 /// El resumen en texto se afirma por las dos mitades —el estado de los modelos y el aviso
 /// con el motivo de la causa y la instrucción de reintentar—, porque es la otra salida de
@@ -594,19 +595,15 @@ fn setup_failure_keeps_install() {
     sandbox.seed_env();
     provision_selection(&sandbox);
 
-    // Un solo pin sin sembrar y el endpoint de HuggingFace en un puerto local cerrado:
-    // la descarga falla sin tocar la red real.
+    // Un solo pin sin sembrar y el endpoint de HuggingFace en un endpoint local que
+    // cierra la conexión: la descarga falla sin tocar la red real.
     let unseeded = MODEL_REVISIONS
         .iter()
         .find(|pin| pin.name == UNSEEDED_PIN)
         .expect("el pin sin sembrar existe");
     std::fs::remove_dir_all(sandbox.models_dir.join(repo::repo_dir(unseeded.repo)))
         .expect("se quita el snapshot del pin");
-    let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .expect("se reserva un puerto local")
-        .port();
-    std::env::set_var("HF_ENDPOINT", format!("http://127.0.0.1:{closed_port}"));
+    std::env::set_var("HF_ENDPOINT", net::closing_endpoint());
 
     // No vacuidad del camino de fallo: solo queda por descargar ese pin.
     let pending = setup::pending(&ModelStore::new().unwrap());
