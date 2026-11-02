@@ -3605,6 +3605,11 @@ async fn handle_daemon(
 /// Todo el cuerpo —la purga por plan y la idempotencia por presencia del snapshot—
 /// vive en `lifecycle::setup`. Aquí solo queda la prosa y el envelope, porque el parseo
 /// de la CLI y el emisor no están en ese crate.
+///
+/// Si el usuario rechaza la confirmación, el motor no toca el disco: en modo
+/// texto no se imprime nada más (el «Cancelado.» ya lo escribió la
+/// confirmación, y el estado se dice una sola vez) y en `--json` el envelope
+/// lleva `status:"cancelled"` sin modelos. En ambos casos sale con 0.
 async fn handle_setup(json_mode: bool, force_update: bool, yes: bool) -> Result<(), CliError> {
     let model_store = open_model_store()?;
     let voice_store = open_voice_store()?;
@@ -3619,7 +3624,14 @@ async fn handle_setup(json_mode: bool, force_update: bool, yes: bool) -> Result<
         .await
         .map_err(lifecycle_error_to_cli)?;
 
-    if json_mode {
+    if outcome.cancelled {
+        if json_mode {
+            emit_raw_json(json!({
+                "status": "cancelled",
+                "models_provisioned": []
+            }));
+        }
+    } else if json_mode {
         emit_raw_json(json!({
             "status": "completed",
             "models_provisioned": outcome.provisioned
