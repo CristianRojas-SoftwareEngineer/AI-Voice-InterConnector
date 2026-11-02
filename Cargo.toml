@@ -1,6 +1,6 @@
 [package]
 name = "ai-voice-interconnector"
-version = "0.41.1"
+version = "0.41.2"
 edition = "2021"
 license = "MPL-2.0"
 publish = false

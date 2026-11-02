@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.41.2 — 2026-11-02](#0412--2026-11-02)
 - [0.41.1 — 2026-11-02](#0411--2026-11-02)
 - [0.41.0 — 2026-11-02](#0410--2026-11-02)
 - [0.40.1 — 2026-11-01](#0401--2026-11-01)
@@ -131,7 +131,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.41.2] — 2026-11-02
 
 La primera corrida de 0.41.1 con las cachés calientes mostró que `build-linux-x64` seguía descargando FFmpeg y las dependencias de cargo aunque sus cachés acertaban. CircleCI restaura cada caché en la ruta absoluta desde la que se guardó, y ese build (manylinux como root, `/root/project`) compartía clave con `test-linux` (`cimg/rust` como `circleci`, `/home/circleci/project`): lo restaurado se extraía donde el build no lo busca. Las demás familias se libraban solo porque su clave llevaba el sistema operativo o la plataforma. Ahora toda clave de caché incluye las rutas del job, así que un acierto siempre llega donde se usa, también en familias futuras.
 
@@ -3876,3 +3876,4 @@ estado con el que nace el producto.
 [0.40.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.40.0...v0.40.1
 [0.41.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.40.1...v0.41.0
 [0.41.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.0...v0.41.1
+[0.41.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.1...v0.41.2
