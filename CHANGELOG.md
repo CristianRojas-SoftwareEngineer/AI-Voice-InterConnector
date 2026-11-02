@@ -141,6 +141,10 @@ Tras reorganizar el pipeline en 0.41.0, varios documentos y comentarios seguían
 - `cargo_save_target` y `msys2_save_cache` fijan `when: on_success` en lugar de recibirlo como parámetro, y la prueba de contrato comprueba ese valor en ambos commands.
 - `forward_stft` e `inverse_stft` de `denoise` solo se compilan en pruebas, donde sirven de oráculo de `process_streaming`.
 
+### Corregido
+
+- `build-windows-x64` podía fallar al retirar `target/cargo-timings` antes de guardar `target/`, porque la subida del artefacto aún mantenía abiertos los informes de `--timings` (`Device or resource busy`). Bastaba con que la caché semanal de `sccache` ya existiera, porque entonces no hay subida que se interponga entre el artefacto y la limpieza. Ahora los cuatro builds vacían esos informes antes de compilar y los mueven fuera de `target/` al terminar, así que se suben desde fuera y la caché no los guarda.
+
 ## [0.41.0] — 2026-11-02
 
 El pipeline de release de 0.40.1 tardó casi 30 minutos, y buena parte de ese tiempo no aportaba nada: los cuatro builds esperaban a que terminaran todas las puertas aunque no consumen nada de ellas, `test-windows` compilaba dos veces la cadena de C de `cc` porque la suite y los pasos de `xtask` usaban entornos MSVC distintos, `sccache` subía 3 GiB por variante en cada corrida, cada job descargaba y descomprimía FFmpeg y PowerShell 7 de nuevo, `xtask` comprimía el paquete con un deflate sin optimizar y los jobs pequeños compilaban `xtask` desde cero. Ahora los builds corren en paralelo con las puertas, que siguen bloqueando la publicación, y cada job reutiliza lo que ya verificó, sin quitar ninguna validación.

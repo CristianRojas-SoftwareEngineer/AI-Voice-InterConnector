@@ -2997,6 +2997,39 @@ mod tests {
         }
     }
 
+    /// Los informes de `--timings` salen de `target/` en el mismo paso que los
+    /// genera: vaciados antes del build (la caché de `target/` puede traer los de
+    /// otra corrida) y movidos fuera al terminar. Así la caché no los guarda y la
+    /// limpieza previa al guardado no tiene que borrarlos mientras la subida del
+    /// artefacto aún los mantiene abiertos, que en Windows hace fallar `rm`.
+    #[test]
+    fn test_cargo_timings_leave_target_before_upload() {
+        let cfg = read_ci_config();
+        let command = "cargo build --release --features full --verbose --timings";
+        let builds: Vec<&str> = cfg
+            .split("- run:")
+            .filter(|step| step.contains(command))
+            .collect();
+        assert_eq!(builds.len(), 4, "se esperaban 4 builds con --timings");
+        for step in builds {
+            let build = step.find(command).unwrap();
+            let clear = step
+                .find("rm -rf -- target/cargo-timings")
+                .or_else(|| step.find("Remove-Item -Recurse -Force target\\cargo-timings"));
+            let moved = step
+                .find("mv target/cargo-timings cargo-timings")
+                .or_else(|| step.find("Move-Item target\\cargo-timings cargo-timings"));
+            assert!(
+                clear.is_some_and(|i| i < build) && moved.is_some_and(|i| i > build),
+                "el paso con --timings debe vaciar target/cargo-timings antes de compilar y moverlo fuera de target/ después:\n{step}"
+            );
+        }
+        assert!(
+            !cfg.contains("path: target/cargo-timings"),
+            "los informes de --timings se suben desde fuera de target/"
+        );
+    }
+
     /// Sección de la definición de un job (hasta el siguiente job).
     fn build_section<'a>(cfg: &'a str, job: &str) -> &'a str {
         ci_jobs(cfg)
