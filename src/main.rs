@@ -1361,13 +1361,15 @@ async fn handle_translate(
         // Patrón de bloque externo: el trabajo que puede fallar vive en un
         // bloque, y el cierre del indicador —que consume el indicador— se hace
         // fuera, sobre el resultado ya obtenido.
-        let result = translation::translate(text, &ct2_dir).map_err(|e| {
-            CliError::new(
-                ExitCode::TranslationFailed,
-                "translation_failed",
-                e.to_string(),
-            )
-        });
+        let result =
+            run_blocking_with_progress(&progress, || translation::translate(text, &ct2_dir))
+                .map_err(|e| {
+                    CliError::new(
+                        ExitCode::TranslationFailed,
+                        "translation_failed",
+                        e.to_string(),
+                    )
+                });
         let _elapsed = progress.close();
         let translated = match result {
             Ok(translated) => translated,
@@ -1385,8 +1387,14 @@ async fn handle_translate(
 }
 
 /// Traducción opt-in previa a la síntesis: passthrough si origen y destino
-/// coinciden; exit 4 si falta el modelo, exit 9 si falla la traducción.
-fn translate_if_different(text: &str, source: &str, target: &str) -> Result<String, CliError> {
+/// coinciden; exit 4 si falta el modelo, exit 9 si falla la traducción. La fase
+/// ya la abrió quien llama; aquí solo se repinta mientras dura la traducción.
+fn translate_if_different(
+    text: &str,
+    source: &str,
+    target: &str,
+    progress: &PhaseProgress,
+) -> Result<String, CliError> {
     if source == target {
         return Ok(text.to_string());
     }
@@ -1406,6 +1414,7 @@ fn translate_if_different(text: &str, source: &str, target: &str) -> Result<Stri
     }
     #[cfg(not(feature = "native-translation"))]
     {
+        let _ = progress;
         Err(CliError::new(
             ExitCode::Error,
             "translation_unsupported",
@@ -1414,13 +1423,15 @@ fn translate_if_different(text: &str, source: &str, target: &str) -> Result<Stri
     }
     #[cfg(feature = "native-translation")]
     {
-        translation::translate(text, &ct2_dir).map_err(|e| {
-            CliError::new(
-                ExitCode::TranslationFailed,
-                "translation_failed",
-                e.to_string(),
-            )
-        })
+        run_blocking_with_progress(progress, || translation::translate(text, &ct2_dir)).map_err(
+            |e| {
+                CliError::new(
+                    ExitCode::TranslationFailed,
+                    "translation_failed",
+                    e.to_string(),
+                )
+            },
+        )
     }
 }
 
@@ -1571,20 +1582,21 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     let work_dir = avi_process::scratch::tempdir("avi_clone_denoise_")
                         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
                     let cleaned_path = work_dir.path().join("reference_clean.wav");
-                    denoise::service::ServiceModels::resolve()
-                        .map_err(|e| {
-                            CliError::new(
-                                ExitCode::ModelMissing,
-                                "model_missing",
-                                format!("Modelo de limpieza no provisionado: {e}"),
-                            )
-                        })?
-                        .denoise_wav_file(
+                    let models = denoise::service::ServiceModels::resolve().map_err(|e| {
+                        CliError::new(
+                            ExitCode::ModelMissing,
+                            "model_missing",
+                            format!("Modelo de limpieza no provisionado: {e}"),
+                        )
+                    })?;
+                    run_blocking_with_progress(&progress, || {
+                        models.denoise_wav_file(
                             speech_path.as_path(),
                             &cleaned_path,
                             denoise::service::DenoiseUseCase::Clone,
                             work_dir.path(),
                         )
+                    })
                         .map_err(|e| {
                             let reason = match e {
                                 denoise::errors::E::EModelMissing(_) => "model_missing",
@@ -1617,16 +1629,13 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     .into_temp_path();
                 progress.phase("cloning", CLONE_PHASES.cloning);
                 progress.tick();
-                // El clonado es trabajo **síncrono**: bloquea el hilo mientras
-                // dura, así que el indicador no puede repintar durante él y el
-                // tiempo de la fase queda congelado. No es un defecto: el
-                // trabajo total lo aporta el mensaje final.
-                let cloned =
+                let cloned = run_blocking_with_progress(&progress, || {
                     avi_tts::clone_voice(model_dir, speech_path.as_path(), &tmp_qvoice, &name)
-                        .and_then(|()| {
-                        progress.phase("saving", CLONE_PHASES.saving);
-                        voice_store.save_reference(&name, &tmp_qvoice)
-                    });
+                })
+                .and_then(|()| {
+                    progress.phase("saving", CLONE_PHASES.saving);
+                    voice_store.save_reference(&name, &tmp_qvoice)
+                });
                 let saved_qvoice = cloned.map_err(|e| {
                     // Una referencia ilegible se clasifica igual que en transcripción.
                     match e.downcast_ref::<avi_audio::WavLoadError>() {
@@ -2113,16 +2122,18 @@ impl PlayResynthesizer for LocalResynthesizer<'_> {
         self.progress
             .phase("synthesizing", RETAKE_PHASES.synthesizing);
         self.progress.tick();
-        let result = synthesize_voice_directly(
-            self.engine,
-            self.voice_store,
-            self.final_text,
-            self.voice,
-            self.temperature,
-            Some(seed),
-            self.target_language,
-            self.tmp_wav,
-        );
+        let result = run_blocking_with_progress(&*self.progress, || {
+            synthesize_voice_directly(
+                self.engine,
+                self.voice_store,
+                self.final_text,
+                self.voice,
+                self.temperature,
+                Some(seed),
+                self.target_language,
+                self.tmp_wav,
+            )
+        });
         // La línea de progreso se cede antes de que escriba el menú, también si
         // la síntesis falla.
         self.progress.close_line();
@@ -2543,29 +2554,31 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                                 .map_err(|e| {
                                     CliError::new(ExitCode::Error, "io_error", format!("{e:#}"))
                                 })?;
-                            denoise::service::ServiceModels::resolve()
-                                .map_err(|e| {
+                            let models =
+                                denoise::service::ServiceModels::resolve().map_err(|e| {
                                     CliError::new(
                                         ExitCode::ModelMissing,
                                         "model_missing",
                                         format!("Modelo de limpieza no provisionado: {e}"),
                                     )
-                                })?
-                                .denoise_pcm16_mono(
+                                })?;
+                            run_blocking_with_progress(&progress, || {
+                                models.denoise_pcm16_mono(
                                     &pcm,
                                     16_000,
                                     denoise::service::DenoiseUseCase::Stt,
                                     work_dir.path(),
                                 )
-                                .map_err(|e| {
-                                    let reason = match e {
-                                        denoise::errors::E::EModelMissing(_) => "model_missing",
-                                        denoise::errors::E::EInvalidInput(_) => "invalid_audio",
-                                        denoise::errors::E::EIo(_) => "io_error",
-                                        _ => "denoise_failed",
-                                    };
-                                    CliError::new(ExitCode::Error, reason, e.to_string())
-                                })?
+                            })
+                            .map_err(|e| {
+                                let reason = match e {
+                                    denoise::errors::E::EModelMissing(_) => "model_missing",
+                                    denoise::errors::E::EInvalidInput(_) => "invalid_audio",
+                                    denoise::errors::E::EIo(_) => "io_error",
+                                    _ => "denoise_failed",
+                                };
+                                CliError::new(ExitCode::Error, reason, e.to_string())
+                            })?
                         } else {
                             pcm.clone()
                         };
@@ -2573,13 +2586,15 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         let denoised = pcm;
                         denoised
                     };
-                    let text = engine.transcribe(&pcm_for_stt).map_err(|e| {
-                        CliError::new(
-                            ExitCode::TranscriptionFailed,
-                            "transcription_failed",
-                            e.to_string(),
-                        )
-                    })?;
+                    let text =
+                        run_blocking_with_progress(&progress, || engine.transcribe(&pcm_for_stt))
+                            .map_err(|e| {
+                            CliError::new(
+                                ExitCode::TranscriptionFailed,
+                                "transcription_failed",
+                                e.to_string(),
+                            )
+                        })?;
                     Ok(text)
                 }
                 .await;
@@ -2689,26 +2704,24 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // Traducción opt-in antes de sintetizar (passthrough si coinciden).
                 let final_text = if source_eff != target_language {
                     progress.phase("translating", SYNTHESIZE_PHASES.translating);
-                    translate_if_different(&text, source_eff, &target_language)?
+                    translate_if_different(&text, source_eff, &target_language, &progress)?
                 } else {
                     text.clone()
                 };
                 progress.phase("synthesizing", SYNTHESIZE_PHASES.synthesizing);
                 progress.tick();
-                // La síntesis es trabajo **síncrono**: bloquea el hilo mientras
-                // dura, así que el indicador no puede repintar durante ella y el
-                // tiempo de la fase queda congelado. No es un defecto: el
-                // trabajo total lo aporta el mensaje final.
-                synthesize_voice_directly(
-                    &engine,
-                    &voice_store,
-                    &final_text,
-                    &voice,
-                    temperature,
-                    None,
-                    &target_language,
-                    &tmp_wav,
-                )?;
+                run_blocking_with_progress(&progress, || {
+                    synthesize_voice_directly(
+                        &engine,
+                        &voice_store,
+                        &final_text,
+                        &voice,
+                        temperature,
+                        None,
+                        &target_language,
+                        &tmp_wav,
+                    )
+                })?;
 
                 let saved = if play {
                     // Bucle interactivo, reemplaza la reproducción y el guardado
@@ -2837,26 +2850,24 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // Traducción opt-in antes de sintetizar (passthrough si coinciden).
                 let final_text = if source_eff != target_language {
                     progress.phase("translating", SAY_PHASES.translating);
-                    translate_if_different(&text, source_eff, &target_language)?
+                    translate_if_different(&text, source_eff, &target_language, &progress)?
                 } else {
                     text.clone()
                 };
                 progress.phase("synthesizing", SAY_PHASES.synthesizing);
                 progress.tick();
-                // La síntesis es trabajo **síncrono**: bloquea el hilo mientras
-                // dura, así que el indicador no puede repintar durante ella y el
-                // tiempo de la fase queda congelado. No es un defecto: el
-                // trabajo total lo aporta el mensaje final.
-                synthesize_voice_directly(
-                    &engine,
-                    &voice_store,
-                    &final_text,
-                    &voice,
-                    temperature,
-                    None,
-                    &target_language,
-                    tmp_wav.path(),
-                )?;
+                run_blocking_with_progress(&progress, || {
+                    synthesize_voice_directly(
+                        &engine,
+                        &voice_store,
+                        &final_text,
+                        &voice,
+                        temperature,
+                        None,
+                        &target_language,
+                        tmp_wav.path(),
+                    )
+                })?;
                 progress.phase("playing", SAY_PHASES.playing);
                 audio::AudioService::new()
                     .play_wav(tmp_wav.path())
@@ -3021,20 +3032,22 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                                 .map_err(|e| {
                                     CliError::new(ExitCode::Error, "io_error", format!("{e:#}"))
                                 })?;
-                            denoise::service::ServiceModels::resolve()
-                                .map_err(|e| {
+                            let models =
+                                denoise::service::ServiceModels::resolve().map_err(|e| {
                                     CliError::new(
                                         ExitCode::ModelMissing,
                                         "model_missing",
                                         format!("Modelo de limpieza no provisionado: {e}"),
                                     )
-                                })?
-                                .denoise_pcm16_mono(
+                                })?;
+                            run_blocking_with_progress(&progress, || {
+                                models.denoise_pcm16_mono(
                                     &pcm,
                                     16_000,
                                     denoise::service::DenoiseUseCase::Stt,
                                     work_dir.path(),
                                 )
+                            })
                                 .map_err(|e| {
                                     let reason = match e {
                                         denoise::errors::E::EModelMissing(_) => "model_missing",
@@ -3068,7 +3081,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     });
                     progress.repaint();
                     let stt = stt_result?;
-                    let transcribed = stt.transcribe(&pcm_for_stt).map_err(|e| {
+                    let transcribed = run_blocking_with_progress(&progress, || {
+                        stt.transcribe(&pcm_for_stt)
+                    })
+                    .map_err(|e| {
                         CliError::new(
                             ExitCode::TranscriptionFailed,
                             "transcription_failed",
@@ -3116,7 +3132,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         }
                         #[cfg(feature = "native-translation")]
                         {
-                            translation::translate(&transcribed, &ct2_dir).map_err(|e| {
+                            run_blocking_with_progress(&progress, || {
+                                translation::translate(&transcribed, &ct2_dir)
+                            })
+                            .map_err(|e| {
                                 CliError::new(
                                     ExitCode::TranslationFailed,
                                     "translation_failed",
@@ -3150,16 +3169,18 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     let engine = engine_result?;
                     progress.phase("synthesizing", DUB_PHASES.synthesizing);
                     progress.tick();
-                    synthesize_voice_directly(
-                        &engine,
-                        &voice_store,
-                        &final_text,
-                        &voice,
-                        temperature,
-                        None,
-                        &target_language,
-                        tmp_wav.path(),
-                    )?;
+                    run_blocking_with_progress(&progress, || {
+                        synthesize_voice_directly(
+                            &engine,
+                            &voice_store,
+                            &final_text,
+                            &voice,
+                            temperature,
+                            None,
+                            &target_language,
+                            tmp_wav.path(),
+                        )
+                    })?;
                     progress.phase("playing", DUB_PHASES.playing);
                     audio::AudioService::new()
                         .play_wav(tmp_wav.path())
@@ -5096,6 +5117,51 @@ where
             Err(_elapsed) => progress.repaint(),
         }
     }
+}
+
+/// Ejecuta un trabajo bloqueante reponiendo el indicador mientras dura.
+///
+/// El trabajo corre en el hilo actual, así que no necesita ser `Send` ni su
+/// resultado tampoco; un hilo auxiliar repinta la fase cada
+/// [`PROGRESS_REPAINT_INTERVAL`] hasta que el trabajo termina. El indicador
+/// se comparte por referencia (`tick` solo consulta el estado), por eso el
+/// trabajo no puede tomarlo de forma mutable.
+fn run_blocking_with_progress<P, T>(progress: &P, work: impl FnOnce() -> T) -> T
+where
+    P: ProgressTicker + Sync + ?Sized,
+{
+    run_blocking_with_progress_every(progress, PROGRESS_REPAINT_INTERVAL, work)
+}
+
+/// Igual que [`run_blocking_with_progress`], pero con el intervalo del
+/// repintado elegido por quien llama.
+///
+/// Al terminar el trabajo (o al abortar por pánico) el hilo auxiliar se
+/// despierta de inmediato y se espera su fin antes de volver, de modo que no
+/// queda ningún repintado posterior al retorno.
+fn run_blocking_with_progress_every<P, T>(
+    progress: &P,
+    interval: std::time::Duration,
+    work: impl FnOnce() -> T,
+) -> T
+where
+    P: ProgressTicker + Sync + ?Sized,
+{
+    let (stop, stopped) = std::sync::mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            // Solo un `Timeout` implica que el trabajo sigue en marcha; al
+            // cerrarse el canal (el emisor se suelta) se sale sin repintar.
+            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                stopped.recv_timeout(interval)
+            {
+                progress.repaint();
+            }
+        });
+        // El emisor se suelta al salir del cierre, incluso por pánico.
+        let _stop = stop;
+        work()
+    })
 }
 
 /// Probe de vida sobre la dirección descubierta (pidfile o, sin él, la dirección
@@ -7735,28 +7801,43 @@ mod tests {
         progress.tick();
     }
 
-    /// El trabajo síncrono es la excepción declarada al repintado.
-    ///
-    /// La síntesis, el clonado local y la captura del micrófono bloquean el
-    /// hilo mientras duran, así que el indicador no puede repintar: no hay
-    /// forma de que el tiempo visible avance durante ellos. La excepción está
-    /// escrita en el punto de llamada de cada uno, y esta prueba fija la
-    /// regla que la hace verdadera: **el indicador solo repinta cuando se lo
-    /// pide**, y el trabajo síncrono no lo pide porque bloquea el hilo.
-    ///
-    /// La prueba no invoca la síntesis —que necesita el motor—: comprueba la
-    /// regla que la hace verdadera, que el repintado es una petición
-    /// explícita y no un efecto del trabajo.
+    /// Un trabajo bloqueante instantáneo devuelve su valor sin repintar.
     #[test]
-    fn synchronous_work_is_declared_as_the_exception_to_repainting() {
-        let counter = CountingProgress::default();
-        // El repintado no ocurre por sí solo: sin espera asíncrona que lo
-        // pida, el contador no se mueve. Es lo que hace que el trabajo
-        // síncrono sea una excepción declarada y no un defecto de la espera.
+    fn run_blocking_with_progress_returns_the_value_of_instant_work() {
+        let progress = CountingProgress::default();
+        let value = run_blocking_with_progress_every(
+            &progress,
+            std::time::Duration::from_millis(200),
+            || 7u32,
+        );
+        assert_eq!(value, 7);
+        assert_eq!(progress.repaints(), 0, "un trabajo inmediato no repinta");
+    }
+
+    /// Un trabajo bloqueante de varios intervalos se repinta mientras dura y
+    /// el repintado se detiene en cuanto termina.
+    #[test]
+    fn run_blocking_with_progress_repaints_during_work_and_stops_after() {
+        let progress = CountingProgress::default();
+        let value = run_blocking_with_progress_every(
+            &progress,
+            std::time::Duration::from_millis(10),
+            || {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                3u32
+            },
+        );
+        assert_eq!(value, 3);
+        let at_return = progress.repaints();
+        assert!(
+            at_return >= 1,
+            "el trabajo largo debe repintar: {at_return}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
         assert_eq!(
-            counter.repaints(),
-            0,
-            "nadie ha pedido repintar: el indicador no repinta solo"
+            progress.repaints(),
+            at_return,
+            "no debe haber repintados tras terminar el trabajo"
         );
     }
 
