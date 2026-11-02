@@ -74,6 +74,31 @@ pub(crate) fn relative(base: &Path, file: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Documentación propia en Markdown que queda fuera de las raíces de código: el árbol
+/// `docs` y los `.md` de la raíz del repositorio, ordenados y sin repetidos. La usan
+/// los controles de texto que el usuario lee igual en la documentación que en el
+/// código.
+pub(crate) fn collect_documentation(base: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let docs = base.join("docs");
+    if docs.is_dir() {
+        walk(&docs, &["md"], &mut files)?;
+    }
+    let entries = std::fs::read_dir(base)
+        .map_err(|e| anyhow!("no se pudo leer {}: {}", base.display(), e))?;
+    for entry in entries {
+        let path = entry
+            .map_err(|e| anyhow!("no se pudo leer una entrada de {}: {}", base.display(), e))?
+            .path();
+        if path.is_file() && wanted(&path, &["md"])? {
+            files.push(path);
+        }
+    }
+    files.sort();
+    files.dedup();
+    Ok(files)
+}
+
 /// Recorrido en profundidad con las exclusiones aplicadas.
 fn walk(dir: &Path, kinds: &[&str], files: &mut Vec<PathBuf>) -> Result<()> {
     let entries =
