@@ -466,4 +466,4 @@ La matriz se ejecuta en cada host y plataforma accesibles con micrófono, modelo
 - `AI-Voice-InterConnector/docs/CLI/commands/VOICE.md` — Comando `voice clone`.
 - `AI-Voice-InterConnector/docs/CLI/commands/SPEECH.md` — Implementación de `--mic` en `transcribe` y `dub`.
 - `AI-Voice-InterConnector/crates/avi-audio/src/lib.rs` — Servicio de captura `AudioService`.
-- `Agent-Voice-InterConnector/docs/specs/VOICE_CLONING.md` — Especificación contraparte desde la perspectiva del plugin.
+- `EvolutiveX-Agents/docs/specs/VOICE_CLONING.md` — Especificación contraparte desde la perspectiva del plugin.
