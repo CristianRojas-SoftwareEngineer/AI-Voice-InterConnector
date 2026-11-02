@@ -80,6 +80,10 @@ Un cambio en el código fuente no invalida ninguna caché y siempre se compila; 
 
 El `variant` de la clave (`test`, `cov`, `full`, `xtask`) separa conjuntos de features distintos y el `os` separa los targets: sin ellos, jobs distintos compartirían una entrada incompatible. La variante `xtask` es la de los jobs pequeños que solo ejecutan `cargo xtask` (`validate-licenses`, que la guarda, y `publish-release` y `publish-metadata`, que la restauran): con ella `xtask` solo recompila los crates propios, y esos jobs no restauran `sccache`.
 
+### Raíz del job en la clave
+
+CircleCI restaura cada caché en la ruta absoluta desde la que se guardó. Los jobs Linux x86_64 corren en dos ejecutores con raíces distintas: `test-linux`, `coverage` y los jobs pequeños usan `cimg/rust` como usuario `circleci` (`/home/circleci/project`), y `build-linux-x64` usa manylinux como root (`/root/project`). Con una clave común, el acierto de uno se extraería donde el otro no lo busca, y el job volvería a descargar FFmpeg y las dependencias aunque la caché acertara. Por eso el command `cache_root` escribe `.cache-root` con `HOME` y el directorio de trabajo antes de restaurar, y las claves de `cargo-v2` y de `ffmpeg` incluyen su checksum: solo comparten entrada los jobs cuyas rutas coinciden. Las demás familias ya separan esos ejecutores por `os` o por plataforma en la clave. La vigila `test_shared_caches_are_keyed_by_job_root`.
+
 ### Clave normalizada de `Cargo.lock`
 
 Las claves de `cargo-v2` y de la caché de `target/` no usan `Cargo.lock` directamente, sino `Cargo.lock.cachekey`, que genera el command `cargo_lock_cachekey` como primer paso de la restauración. Reemplaza la versión del propio crate por `0.0.0` con `perl` (disponible en los tres executors con `shell: bash`). Cada release cambia esa versión; sin la normalización, la clave cambiaría en cada corte aunque las dependencias fueran las mismas, y la caché de `target/`, que no tiene fallback, partiría siempre en frío.

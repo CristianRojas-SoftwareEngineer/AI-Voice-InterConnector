@@ -2206,11 +2206,11 @@ mod tests {
                 "{job}: la caché de ffmpeg-bundle/ debe restaurarse antes de su primer uso y guardarse después"
             );
         }
-        let key = "ffmpeg-v1-<< parameters.triple >>-{{ checksum \"packaging/pins.json\" }}";
+        let key = "ffmpeg-v1-<< parameters.triple >>-{{ checksum \".cache-root\" }}-{{ checksum \"packaging/pins.json\" }}";
         assert_eq!(
             cfg.matches(key).count(),
             2,
-            "la restauración y el guardado deben usar la misma clave por triple y pins.json"
+            "la restauración y el guardado deben usar la misma clave por triple, raíz del job y pins.json"
         );
         let commands = cfg
             .split("\n  ffmpeg_restore_cache:")
@@ -2995,6 +2995,51 @@ mod tests {
                 "{command} no debe exponer `when` como parámetro"
             );
         }
+    }
+
+    /// CircleCI restaura cada caché en la ruta absoluta desde la que se guardó, y
+    /// los jobs Linux x86_64 corren en ejecutores con `HOME` y directorio de
+    /// trabajo distintos (`cimg/rust` frente a manylinux). Las cachés que esos
+    /// jobs comparten (registry y ffmpeg) llevan en la clave el checksum de
+    /// `.cache-root`, escrito antes de restaurar, para que un acierto solo venga
+    /// de un job con las mismas rutas.
+    #[test]
+    fn test_shared_caches_are_keyed_by_job_root() {
+        let cfg = read_ci_config();
+        let root_key = "{{ checksum \".cache-root\" }}";
+        for prefix in ["cargo-v2-", "ffmpeg-v1-"] {
+            let keys: Vec<&str> = cfg
+                .lines()
+                .map(str::trim)
+                .filter(|line| {
+                    line.trim_start_matches("- ")
+                        .trim_start_matches("key: ")
+                        .starts_with(prefix)
+                })
+                .collect();
+            assert!(!keys.is_empty(), "debe existir la caché {prefix}");
+            for key in keys {
+                assert!(
+                    key.contains(root_key),
+                    "la clave {key} debe incluir la raíz del job"
+                );
+            }
+        }
+        for command in ["cargo_restore_caches", "ffmpeg_restore_cache"] {
+            let block = cfg.split(&format!("\n  {command}:\n")).nth(1).unwrap_or("");
+            let root = block
+                .find("- cache_root")
+                .unwrap_or_else(|| panic!("{command} debe escribir .cache-root"));
+            let restore = block.find("- restore_cache:").unwrap();
+            assert!(
+                root < restore,
+                "{command} debe escribir .cache-root antes de restaurar"
+            );
+        }
+        assert!(
+            cfg.contains("printf '%s\\n%s\\n' \"$HOME\" \"$(pwd)\" > .cache-root"),
+            ".cache-root debe registrar HOME y el directorio de trabajo"
+        );
     }
 
     /// Los informes de `--timings` salen de `target/` en el mismo paso que los

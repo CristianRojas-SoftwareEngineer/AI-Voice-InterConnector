@@ -123,8 +123,8 @@ parameters:
 # no la encuentra exactamente una vez). Así el bump de cada release no cambia la
 # clave; solo la cambian dependencias reales.
 # Invalidación por familia de caché:
-#   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock;
-#     conserva fallback por prefijo.
+#   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock y con la
+#     raíz del job (`.cache-root`); conserva fallback por prefijo.
 #   - target (v6): por variant (test, cov, full y xtask, la de los jobs pequeños
 #     que solo compilan `xtask`); cambia con dependencias reales en Cargo.lock y con el tree hash
 #     git de cada crate parcheado de `vendor/*/Cargo.toml`. Clave exacta SIN
@@ -139,7 +139,7 @@ parameters:
 #     verificado; más las cinco DLL de VC++ en Windows), incluido el marcador
 #     `.ort-version` que exige para reutilizarlo.
 #   - ffmpeg (v1): cambia con packaging/pins.json (los 4 jobs de prueba y los 4
-#     builds, clave por triple). Guarda `ffmpeg-bundle/`, que `xtask` reutiliza
+#     builds, clave por triple y por raíz del job, `.cache-root`). Guarda `ffmpeg-bundle/`, que `xtask` reutiliza
 #     solo si su marcador `.ffmpeg-sha256` coincide con el pin y el ejecutable
 #     pasa el humo.
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey (+ msys2
@@ -165,6 +165,25 @@ commands:
             set -euo pipefail
             perl -0777 -pe '$n = s/^(name = "ai-voice-interconnector"\nversion = ")[^"]+/${1}0.0.0/mg; END { $? = 1 if $n != 1 }' Cargo.lock > Cargo.lock.cachekey \
               || { echo "Cargo.lock no declara exactamente una vez el paquete ai-voice-interconnector seguido de su version: no se puede normalizar la clave de caché"; exit 1; }
+  # CircleCI restaura cada caché en la ruta absoluta desde la que se guardó. Los
+  # jobs Linux x86_64 corren en dos ejecutores con raíces distintas: `cimg/rust`
+  # como `circleci` (/home/circleci/project) y manylinux como root
+  # (/root/project). Con una clave común, el acierto de uno se extrae donde el
+  # otro no lo busca, y este vuelve a descargar. `.cache-root` registra `HOME` y
+  # el directorio de trabajo, y las claves de las cachés que comparten esos jobs
+  # (registry y ffmpeg) incluyen su checksum: solo comparten entrada los jobs
+  # cuyas rutas coinciden. Va antes de restaurar porque la clave se forma en
+  # tiempo de config.
+  cache_root:
+    description: Escribe .cache-root (HOME y directorio de trabajo) para las claves de caché
+    steps:
+      - run:
+          name: Registrar la raíz de las cachés (HOME y directorio de trabajo)
+          shell: bash
+          command: |
+            set -euo pipefail
+            printf '%s\n%s\n' "$HOME" "$(pwd)" > .cache-root
+            echo "Raíz de las cachés: $(tr '\n' ' ' < .cache-root)"
   cargo_restore_caches:
     description: Restaura caché de registry/git y de target/ (clave exacta, sin fallback)
     # `variant` discrimina el feature set del target/ (test featureless, full con
@@ -200,6 +219,7 @@ commands:
         default: "linux"
     steps:
       - cargo_lock_cachekey
+      - cache_root
       - run:
           name: Calcular identidad de contenido de los parches vendorizados (clave de target/)
           shell: bash
@@ -220,8 +240,8 @@ commands:
             [ "$(grep -Ec '^[0-9a-f]{40}$' .vendor-patches.tree)" = "$(wc -l < .vendor-patches.list | tr -d ' ')" ] || { echo "tree hash inválido en los parches vendorizados (se esperaba una línea de 40 hex por parche)"; exit 1; }
       - restore_cache:
           keys:
-            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
-            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-
+            - cargo-v2-{{ arch }}-{{ checksum ".cache-root" }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
+            - cargo-v2-{{ arch }}-{{ checksum ".cache-root" }}-<< pipeline.parameters.rust_pin >>-
       - restore_cache:
           keys:
             - target-v6-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
@@ -242,7 +262,7 @@ commands:
     description: Guarda registry/git antes de compilar (un fallo de test no pierde descargas)
     steps:
       - save_cache:
-          key: cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
+          key: cargo-v2-{{ arch }}-{{ checksum ".cache-root" }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
           paths:
             - ~/.cargo/registry
             - ~/.cargo/git
@@ -714,9 +734,10 @@ commands:
       triple:
         type: string
     steps:
+      - cache_root
       - restore_cache:
           keys:
-            - ffmpeg-v1-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
+            - ffmpeg-v1-<< parameters.triple >>-{{ checksum ".cache-root" }}-{{ checksum "packaging/pins.json" }}
   ffmpeg_save_cache:
     description: Guarda ffmpeg-bundle/ (clave inmutable por triple y packaging/pins.json)
     parameters:
@@ -724,7 +745,7 @@ commands:
         type: string
     steps:
       - save_cache:
-          key: ffmpeg-v1-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
+          key: ffmpeg-v1-<< parameters.triple >>-{{ checksum ".cache-root" }}-{{ checksum "packaging/pins.json" }}
           paths:
             - ffmpeg-bundle
           when: on_success
