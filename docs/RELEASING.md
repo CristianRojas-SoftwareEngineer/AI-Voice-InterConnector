@@ -250,16 +250,16 @@ validar. No avances al tag hasta que todas las comprobaciones pasen.
 del diseño y las cachés está en [docs/CI.md](CI.md), y la definición ejecutable
 en `.circleci/config.yml`. Con el tag publicado, ejecuta sin intervención:
 
-1. **Puertas.** Todas son requisito de los builds; si alguna falla, no se compila
-   ni se publica.
+1. **Puertas.** Todas son requisito de `publish-release`, junto con los builds y
+   las verificaciones de portabilidad; si alguna falla, no se publica. Los
+   builds no las esperan y corren en paralelo con ellas.
 
    | Puerta | Qué comprueba |
    |---|---|
    | `test-linux`, `test-windows`, `test-macos` | `cargo nextest run --all` en cada SO nativo |
    | `coverage` | Cobertura de la suite, con todas las pruebas de un binario en un mismo proceso (arnés de `cargo test`) |
    | `test-bootstrap-linux`, `test-bootstrap-windows`, `test-bootstrap-macos` | Suites de `tests/bootstrap/`: bats contra `openssl s_server` y Pester contra `Serve.ps1` |
-   | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render desde los pines, el inventario y los avisos de `THIRD-PARTY-LICENSES.md` con las dependencias distribuidas, y todo archivo propio lleva la cabecera MPL-2.0 (`headers --check`) |
-   | `validate-changelog` | Sección `[X.Y.Z]`, entrada del índice/ancla, enlace de comparación, sin `TODO: curar` ni `[No publicado]` |
+   | `validate-licenses` | `SOURCE-OFFER.md` coincide con su render desde los pines, el inventario y los avisos de `THIRD-PARTY-LICENSES.md` con las dependencias distribuidas, y todo archivo propio lleva la cabecera MPL-2.0 (`headers --check`); y, con `changelog --check`, que `CHANGELOG.md` tenga la sección `[X.Y.Z]`, su entrada del índice/ancla y su enlace de comparación, sin `TODO: curar` ni `[No publicado]` |
 
 2. **Builds.** `build-windows-x64`, `build-linux-x64`, `build-linux-arm64` y
    `build-darwin-arm64`:

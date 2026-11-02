@@ -28,13 +28,13 @@ Este documento explica **por qué** el pipeline de CircleCI tiene la forma que t
 
 ### Por qué un pipeline y no dos
 
-La publicación es irreversible, así que debe estar condicionada a los tests por una dependencia real, no por confianza. CircleCI no encadena pipelines distintas: un job solo puede depender de otro dentro del mismo workflow. La única forma de que los tests **bloqueen** el release es tenerlos en el grafo de `requires:` de los builds, es decir, en el mismo pipeline (`build-all`, disparado solo por tags `v*`). Las puertas (tests por SO, cobertura, suites de bootstrap y validaciones de licencias y changelog) son `requires:` de todos los builds nativos.
+La publicación es irreversible, así que debe estar condicionada a los tests por una dependencia real, no por confianza. CircleCI no encadena pipelines distintas: un job solo puede depender de otro dentro del mismo workflow. La única forma de que los tests **bloqueen** el release es tenerlos en el grafo de `requires:` de la publicación, es decir, en el mismo pipeline (`build-all`, disparado solo por tags `v*`). Las puertas (tests por SO, cobertura, suites de bootstrap y la validación de licencias y changelog) son `requires:` de `publish-release`, junto con los builds y las verificaciones de portabilidad. Los builds nativos no consumen nada de las puertas, así que no las esperan: corren en paralelo con ellas y la ruta crítica deja de sumar la suite más lenta al build más lento.
 
 Se descartó un pipeline de rama `validate`. Como el corte empuja commit y tag juntos, ese workflow disparaba una segunda pipeline que re-ejecutaba la misma suite sobre el mismo commit, en paralelo con `build-all`: no adelantaba la señal ni aportaba cobertura única. Con las puertas dentro del pipeline de release, los tests corren una vez por release y bloquean de verdad la publicación.
 
 ### Feedback pre-release
 
-El repo es trunk-based sobre `main`, sin ramas de larga vida, y los commits de rama no disparan CI. La red de seguridad es la puerta al taggear: si la suite falla, los builds no corren y nada se publica (se corrige hacia adelante o se revierte y se vuelve a taggear). No existe un estado de `main` sin tag que publique, así que no hace falta *branch protection* estricta para sostener la garantía «commit taggeado probado».
+El repo es trunk-based sobre `main`, sin ramas de larga vida, y los commits de rama no disparan CI. La red de seguridad es la puerta al taggear: si la suite falla, nada se publica (se corrige hacia adelante o se revierte y se vuelve a taggear). Como los builds corren en paralelo con las puertas, un test fallido no evita que se ejecuten: ese tiempo de executor se gasta en una release que no se publica, a cambio de no esperar a la suite en cada release que sí se publica. No existe un estado de `main` sin tag que publique, así que no hace falta *branch protection* estricta para sostener la garantía «commit taggeado probado».
 
 ### Simetría de puertas y builds
 
@@ -78,7 +78,7 @@ Intervienen dos mecanismos independientes. Distinguirlos explica por qué un cam
 
 Un cambio en el código fuente no invalida ninguna caché y siempre se compila; su costo es solo el de recompilar los crates afectados. Lo que alarga el pipeline es un cambio de clave de la caché de `target/` (dependencias reales o parche vendorizado), porque entonces `target/` parte vacío y las dependencias externas se recompilan con la ayuda de `sccache`.
 
-El `variant` de la clave (`test`, `cov`, `full`) separa conjuntos de features distintos y el `os` separa los targets: sin ellos, jobs distintos compartirían una entrada incompatible.
+El `variant` de la clave (`test`, `cov`, `full`, `xtask`) separa conjuntos de features distintos y el `os` separa los targets: sin ellos, jobs distintos compartirían una entrada incompatible. La variante `xtask` es la de los jobs pequeños que solo ejecutan `cargo xtask` (`validate-licenses`, que la guarda, y `publish-release` y `publish-metadata`, que la restauran): con ella `xtask` solo recompila los crates propios, y esos jobs no restauran `sccache`.
 
 ### Clave normalizada de `Cargo.lock`
 
@@ -104,8 +104,8 @@ Se usa git y no `find | sort` porque en el executor de Windows `sort` resuelve a
 
 ### Guardado inmutable frente a rolling
 
-- **La caché de `target/` es inmutable.** `save_cache` solo escribe si la clave no existe, así que la entrada refleja la primera corrida que la creó. Los builds la guardan solo si el job tuvo éxito, para no persistir un `target/` a medio compilar bajo una clave que ya no se puede reescribir. Los jobs de test y `coverage` la guardan siempre, porque ahí un fallo suele ser un test y no una compilación incompleta.
-- **`sccache` es rolling.** Cada job pesado guarda una entrada nueva en cada corrida, incluso con fallos, y la restauración toma la más reciente. No hay guardado condicional: los fallos de una corrida son objetos que `sccache` acaba de compilar, y omitir el guardado haría que la siguiente los volviera a fallar. Cada cambio de `Cargo.lock` agrega objetos que ya nadie usa, así que el tamaño se acota con el parámetro de pipeline `sccache_cache_size`, dimensionado por encima del working set del job más grande. Al superarlo, `sccache` desaloja por LRU: un acierto actualiza el `mtime` de la entrada, también en una caché recién restaurada desde el tar de CircleCI, así que se desalojan los objetos sin uso y no los vigentes.
+- **La caché de `target/` es inmutable.** `save_cache` solo escribe si la clave no existe, así que la entrada refleja la primera corrida que la creó. Todos los jobs la guardan solo si tuvieron éxito, para no persistir un `target/` vacío o a medio compilar bajo una clave que ya no se puede reescribir.
+- **`sccache` se guarda en un cubo semanal.** La clave de guardado lleva la semana ISO UTC (`.sccache-week`, que se escribe antes de restaurar porque la clave se forma en tiempo de config) y la restauración es por prefijo, así que toma la entrada más reciente. Cada variante sube su caché como mucho una vez por semana, en lugar de en cada corrida, y aun así se renueva frente a la retención. El coste es que los objetos que compilen las demás corridas de la semana no se guardan: la siguiente vuelve a compilarlos mientras `target/` no los cubra. El guardado ocurre solo si el job tiene éxito: la primera corrida que guarda ocupa la clave toda la semana, y un job que falla antes de compilar la ocuparía con lo restaurado sin cambios y bloquearía el guardado de la corrida corregida. Cada cambio de `Cargo.lock` agrega objetos que ya nadie usa, así que el tamaño se acota con el parámetro de pipeline `sccache_cache_size`, dimensionado por encima del working set del job más grande. Al superarlo, `sccache` desaloja por LRU: un acierto actualiza el `mtime` de la entrada, también en una caché recién restaurada desde el tar de CircleCI, así que se desalojan los objetos sin uso y no los vigentes.
 
 ### Cobertura de `sccache`
 
@@ -114,6 +114,8 @@ Se usa git y no `find | sort` porque en el executor de Windows `sort` resuelve a
 - **Ninja como generador** (`CMAKE_GENERATOR=Ninja`): el generador Visual Studio, el que el crate `cmake` elige por defecto con MSVC, ignora los launchers. Ninja se descarga en cada corrida con la versión fijada por el parámetro `ninja_pin`, fuera de toda caché, y se verifica su versión.
 - **Entorno de MSVC**: Ninja no carga `INCLUDE`/`LIB` por sí mismo (el generador Visual Studio sí), así que el paso localiza Visual Studio con `vswhere`, importa `vcvars64.bat` y solo después antepone Ninja y `.cargo\bin` al `PATH`.
 - **`CC`/`CXX` con la ruta absoluta de `cl.exe`**: el crate `cc` solo usa `RUSTC_WRAPPER` como wrapper en MSVC cuando el compilador es la ruta de un ejecutable existente.
+
+Por eso en Windows el C de `cc` solo se cachea en `build-windows-x64`. `test-windows` no importa `vcvars64` ni fija `CC`/`CXX`: los build scripts de `cc` (`aws-lc-sys`, `blake3`) vigilan esas variables y las de MSVC, y sus pasos de `xtask` compilan sin ellas, así que importarlas solo en la suite recompilaría toda la cadena de `cc` dos veces por corrida. Con un único entorno en el job, `cc` y `rustc` localizan la toolchain por sí mismos; solo se pierde `sccache` para ese C cuando `target/` parte vacío.
 
 `CARGO_INCREMENTAL=0` está en el `environment:` de cada job que usa cargo, porque `sccache` no cachea compilaciones incrementales y el estado incremental no debe viajar en la caché de `target/`; lo vigila `test_cargo_jobs_disable_incremental_at_job_level`. En `test-windows`, `RUSTFLAGS` también vive ahí: entra en el fingerprint de cargo y reemplaza los `rustflags` del target de `.cargo/config.toml` en todo el job, de modo que las puertas y la suite comparten flags y `target/`. Como el reemplazo es completo, repite `+crt-static` para que las pruebas enlacen el CRT estático igual que el binario de release; `rust-lld` solo acelera el enlace.
 
@@ -130,6 +132,8 @@ De menor a mayor costo en los `build-*`:
 | Escenario | Cachés que se invalidan | Efecto |
 |-----------|-------------------------|--------|
 | Cambio en el código fuente del workspace, bump de versión de una release, documentación o `CHANGELOG.md` | Ninguna | Todas aciertan. Cargo recompila los crates del workspace (siempre `Dirty` por `mtime`): `sccache` devuelve los que no cambiaron y compila de verdad los editados y el binario final. Es el caso más barato. |
+| Cambio de `[profile.*]` en `Cargo.toml` | Ninguna (ninguna clave incluye `Cargo.toml`) | Todas aciertan, pero cargo recompila las unidades cuyo perfil cambió, con ayuda de `sccache`, en cada corrida hasta el próximo cambio de clave de `target/`. |
+| Cambio de `packaging/pins.json` (por ejemplo, el pin de FFmpeg) | `ffmpeg` | Una descarga nueva de FFmpeg en cada job de prueba y de build, que cachea su propio triple. Un cambio de otro pin del JSON también renueva esta caché. |
 | Cambio de `ort_pin` (con su SHA-256) | `ort-bundle` | Una descarga nueva de ONNX Runtime en cada build, que cachea su propio triple. |
 | Cambio de fuentes del motor TTS | `tts` | Solo se recompila el motor TTS; el resto acierta. |
 | Cambio de los pines de MSYS2, gcc, openblas o make | `msys2` y, con gcc u openblas, `tts` | Reinstalación de MSYS2 y recompilación del motor TTS en Windows. |
@@ -141,8 +145,9 @@ De menor a mayor costo en los `build-*`:
 
 Invalidan sin que cambie ningún archivo:
 
-- **Cambio de `{{ arch }}` del executor.** Todas las claves llevan `{{ arch }}`, y en los executors Linux x86-64 ese valor incluye la familia y el modelo de CPU. Si CircleCI asigna un hardware distinto, todas las familias de ese job fallan y la corrida es fría.
-- **Expiración por retención.** CircleCI borra las cachés según la política de retención de la organización. Tras un período sin corridas más largo que la retención, la siguiente es fría. Las familias rolling (`sccache`) se renuevan en cada corrida; las inmutables (`target/`) solo existen mientras no expiren.
+- **Cambio de semana.** La clave de guardado de `sccache` lleva la semana ISO: la primera corrida de cada semana sube una entrada nueva por variante, restaurada por prefijo desde la de la semana anterior.
+- **Cambio de `{{ arch }}` del executor.** Las claves de cargo, `toolchain`, `msys2`, `sccache` y `tts` llevan `{{ arch }}`, y en los executors Linux x86-64 ese valor incluye la familia y el modelo de CPU. Si CircleCI asigna un hardware distinto, todas esas familias fallan en ese job y la corrida es fría; `ffmpeg`, `ort-bundle` y `pwsh` se identifican por triple o por pin y no dependen de la CPU.
+- **Expiración por retención.** CircleCI borra las cachés según la política de retención de la organización. Tras un período sin corridas más largo que la retención, la siguiente es fría. `sccache` se renueva con la primera corrida de cada semana; las familias inmutables (`target/`, `ffmpeg`, `ort-bundle`) solo existen mientras no expiren, y al expirar la siguiente corrida las vuelve a crear.
 - **Actualización de la imagen del executor.** Una versión nueva del compilador (Xcode/clang, gcc) cambia la identidad del compilador que `sccache` hashea: la clave restaura, pero la primera corrida no obtiene aciertos C/C++ y vuelve a sembrar la caché. La imagen de Windows no cambia sola: los tres jobs de Windows la toman de `windows_image_pin` (espejo de la clave `windows_image` de `packaging/pins.json`, vigilado por `cargo xtask pins --check`), así que subir MSVC y su redist es un cambio deliberado de ese pin, con el mismo efecto sobre `sccache` en la primera corrida. Ninja no se cachea: se descarga en cada corrida con la versión de `ninja_pin`.
 
 ## 4. Determinismo de releases

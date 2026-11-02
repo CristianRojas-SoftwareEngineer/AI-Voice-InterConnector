@@ -1,10 +1,11 @@
 # Pipeline CircleCI Tier 1 — Rust nativo 3 SO (Linux/Windows/macOS)
 # UN pipeline de release (`build-all`), disparado SOLO en tags v* (ver
 # `workflows:`): la triple puerta `cargo nextest run --all` por plataforma
-# (test-linux/windows/macos) es gate mecánico de los 4 builds, de modo que la
+# (test-linux/windows/macos), `coverage`, las suites de instaladores y la puerta
+# de licencias/changelog son requisito de `publish-release`, de modo que la
 # publicación queda condicionada a los tests dentro de la MISMA pipeline
-# (CircleCI no encadena pipelines distintas). Empaquetado + publicación tras
-# los gates + `coverage` + instaladores + licencias/changelog.
+# (CircleCI no encadena pipelines distintas). Los 4 builds y su empaquetado
+# corren en paralelo con esos gates.
 # El trabajo diario vive en `main` (trunk-based); sus commits no disparan CI.
 # Artefactos: archivos comprimidos (tar.gz/zip) con binario Rust, FFmpeg y los
 # documentos de licencia, más la configuración de build de FFmpeg de cada target.
@@ -124,17 +125,23 @@ parameters:
 # Invalidación por familia de caché:
 #   - registry (cargo-v2): cambia con dependencias reales en Cargo.lock;
 #     conserva fallback por prefijo.
-#   - target (v6): cambia con dependencias reales en Cargo.lock y con el tree hash
+#   - target (v6): por variant (test, cov, full y xtask, la de los jobs pequeños
+#     que solo compilan `xtask`); cambia con dependencias reales en Cargo.lock y con el tree hash
 #     git de cada crate parcheado de `vendor/*/Cargo.toml`. Clave exacta SIN
 #     fallback: un acierto garantiza que lo compilado corresponde a los parches
 #     actuales, así que su mtime se fija tras restaurar y cargo no los marca Dirty.
 #   - toolchain (v1): cambia con rust_pin.
 #   - msys2 (v1): cambia con los pines de versión MSYS2 (solo build-windows-x64).
-#   - sccache (v1): rolling con epoch, por variant.
+#   - sccache (v1): cubo semanal por variant (semana ISO en la clave de
+#     guardado, restauración por prefijo): una subida por variante y semana.
 #   - ort-bundle (v4): cambia con ort_pin (los 4 builds, clave por triple de
 #     target). Guarda el `ort-bundle/` que arma `xtask package` (con su SHA-256
-#     verificado; más las cuatro DLL de VC++ en Windows), incluido el marcador
+#     verificado; más las cinco DLL de VC++ en Windows), incluido el marcador
 #     `.ort-version` que exige para reutilizarlo.
+#   - ffmpeg (v1): cambia con packaging/pins.json (los 4 jobs de prueba y los 4
+#     builds, clave por triple). Guarda `ffmpeg-bundle/`, que `xtask` reutiliza
+#     solo si su marcador `.ffmpeg-sha256` coincide con el pin y el ejecutable
+#     pasa el humo.
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey (+ msys2
 #     gcc/openblas en Windows; os+arch en Unix). Clave exacta sin fallback.
 commands:
@@ -161,7 +168,7 @@ commands:
   cargo_restore_caches:
     description: Restaura caché de registry/git y de target/ (clave exacta, sin fallback)
     # `variant` discrimina el feature set del target/ (test featureless, full con
-    # C++, cov instrumentado): sin él, jobs de distinta variante colisionan en una
+    # C++, cov instrumentado, xtask solo la herramienta de desarrollo): sin él, jobs de distinta variante colisionan en una
     # clave inmutable (first-write-wins) y se envenenan mutuamente. El registry
     # (cargo-v2-…) NO lleva variante: es independiente del feature set.
     # `os` discrimina el sistema operativo: target/ es triple-específico
@@ -243,8 +250,8 @@ commands:
     description: Guarda target/ — la clave es inmutable, solo se escribe si aún no existe
     # `variant` debe coincidir con el pasado a cargo_restore_caches en el mismo job.
     # `os` debe coincidir también: target/ es OS-específico.
-    # Usado por test-windows/test-linux/test-macos/coverage (variant test/test/test/cov)
-    # y build-* (variant full). build-* combina sccache (Rust por contenido) + target
+    # Usado por test-windows/test-linux/test-macos/coverage (variant test/test/test/cov),
+    # validate-licenses (variant xtask) y build-* (variant full). build-* combina sccache (Rust por contenido) + target
     # (C++ OUT_DIR de ct2rs/oneDNN): el bump de VERSION en el crate raíz ya
     # invalida su propio fingerprint de cargo (mtime del checkout + `-C metadata`
     # derivado de la versión del paquete) sin necesidad de limpiarlo a mano, y
@@ -271,6 +278,9 @@ commands:
     steps:
       # TMP/TEMP/TMPDIR apuntan a target/ (ver `.cargo/config.toml`): los restos de
       # una prueba abortada quedan dentro de target/ y no deben viajar en la caché.
+      # Los informes de `--timings` (target/cargo-timings) ya se publicaron como
+      # artefacto: en la caché, cada corrida volvería a publicar los de la corrida
+      # que la creó.
       - run:
           name: Retirar temporales confinados de target/
           shell: bash
@@ -283,22 +293,13 @@ commands:
             target/avi_daemon_clone_operation_* target/lifecycle-test-* target/xtask_clean_*
             target/xtask-comments-* target/xtask-language-* target/xtask_doctor_*
             target/xtask_install_* target/xtask_package_* target/xtask-package-*
-            target/xtask_pins_*
+            target/xtask_pins_* target/cargo-timings
           when: << parameters.when >>
       - save_cache:
           key: target-v6-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
           paths:
             - target
           when: << parameters.when >>
-
-  cargo_restore_registry:
-    description: Restaura solo registry/git (sin target) — para los jobs pequeños xtask/changelog-gate (validate-licenses, validate-changelog, publish-metadata); test-linux/test-macos/test-windows/coverage y build-* usan cargo_restore_caches con la caché de target/
-    steps:
-      - cargo_lock_cachekey
-      - restore_cache:
-          keys:
-            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-{{ checksum "Cargo.lock.cachekey" }}
-            - cargo-v2-{{ arch }}-<< pipeline.parameters.rust_pin >>-
 
   # Caché de toolchain: ~/.rustup (toolchain + componentes) y ~/.cargo/bin
   # (binarios instalados: rustup, cargo, cargo-llvm-cov). Clave sin checksum —
@@ -360,11 +361,12 @@ commands:
   # ruta absoluta de cl.exe, ver build-windows-x64) y los proyectos CMake
   # (ct2rs/CTranslate2, onednn-src, sentencepiece-sys) vía
   # CMAKE_<LANG>_COMPILER_LAUNCHER, con el generador Ninja en Windows (ver
-  # native_sccache_setup_*). Clave de caché rolling: guarda con {{ epoch }}
-  # (siempre escribe) y restaura por prefijo (último estado de la misma
-  # variante en el mismo arch+toolchain).
+  # native_sccache_setup_*). Clave de caché por cubo semanal: guarda con la
+  # semana ISO en la clave, así que cada variante sube su caché como mucho una
+  # vez por semana, y restaura por prefijo (último estado de la misma variante
+  # en el mismo arch+toolchain).
   sccache_restore_cache:
-    description: Restaura el directorio de sccache (rolling, fallback por prefijo, OS-específico)
+    description: Restaura el directorio de sccache (cubo semanal, fallback por prefijo, OS-específico)
     parameters:
       os:
         type: string
@@ -373,11 +375,28 @@ commands:
         type: string
         default: "test"
     steps:
+      # Va ANTES de restore_cache: la clave de CircleCI se forma en tiempo de
+      # config, así que `.sccache-week` debe existir cuando `sccache_save_cache`
+      # calcule su checksum. Se escribe aquí para que todo job que restaura
+      # disponga de él al guardar.
+      - run:
+          name: Calcular la semana ISO de la clave de sccache
+          shell: bash
+          command: |
+            set -euo pipefail
+            date -u +%G-W%V > .sccache-week
+            grep -Eqx '[0-9]{4}-W[0-9]{2}' .sccache-week || { echo "semana ISO inválida en .sccache-week: $(cat .sccache-week)"; exit 1; }
+            echo "Cubo semanal de sccache: $(cat .sccache-week)"
       - restore_cache:
           keys:
             - sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-
   sccache_save_cache:
-    description: Guarda el directorio de sccache (clave rolling con epoch, OS-específico)
+    description: Guarda el directorio de sccache (clave por semana ISO, OS-específico)
+    # `when: on_success`: con una clave por semana, la primera corrida que guarda
+    # ocupa la clave toda la semana. Un job que falla antes de compilar la
+    # ocuparía con lo restaurado sin cambios y bloquearía el guardado de la
+    # corrida corregida; lo que compile un job fallido se recompila en el
+    # reintento, que sí guarda.
     parameters:
       os:
         type: string
@@ -387,10 +406,10 @@ commands:
         default: "test"
     steps:
       - save_cache:
-          key: sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ epoch }}
+          key: sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum ".sccache-week" }}
           paths:
             - ~/.cache/sccache
-          when: always
+          when: on_success
 
   sccache_setup_unix:
     description: Instala sccache (pin) y lo activa como RUSTC_WRAPPER (bash)
@@ -427,7 +446,7 @@ commands:
             # sccache aborta al no encontrar su temporal.
             mkdir -p target
             echo 'export SCCACHE_DIR=$HOME/.cache/sccache' >> "$BASH_ENV"
-            # Límite de la caché rolling: sin él rige el máximo por defecto (10 GiB)
+            # Límite de la caché de sccache: sin él rige el máximo por defecto (10 GiB)
             # y cada cambio de Cargo.lock acumula objetos que ya nadie usa. Al
             # superarlo, sccache desaloja por LRU (un acierto refresca el mtime de
             # la entrada, también tras restaurar la caché desde el tar).
@@ -693,6 +712,32 @@ commands:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host $version
             Write-Host "[STEP] Aprovisionar FFmpeg - FIN"
+  # Caché de `ffmpeg-bundle/` por triple, compartida por los jobs de prueba y los
+  # builds. La clave depende del checksum de packaging/pins.json, donde viven la
+  # versión, la URL y el SHA-256 de FFmpeg, y no repite ninguno de esos datos.
+  # Es segura aunque la entrada no corresponda al pin: `xtask` solo reutiliza un
+  # bundle cuyo marcador `.ffmpeg-sha256` coincide con el SHA-256 fijado y cuyo
+  # ejecutable pasa el humo; si no, lo descarga y verifica de nuevo.
+  ffmpeg_restore_cache:
+    description: Restaura ffmpeg-bundle/ por triple y packaging/pins.json
+    parameters:
+      triple:
+        type: string
+    steps:
+      - restore_cache:
+          keys:
+            - ffmpeg-v1-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
+  ffmpeg_save_cache:
+    description: Guarda ffmpeg-bundle/ (clave inmutable por triple y packaging/pins.json)
+    parameters:
+      triple:
+        type: string
+    steps:
+      - save_cache:
+          key: ffmpeg-v1-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
+          paths:
+            - ffmpeg-bundle
+          when: on_success
   # Precarga de dependencias al registry (todos los SO): `shell: bash` existe en
   # los tres executors (nativo Linux/macOS, Git-bash en Windows) y `validate_pins`
   # ya lo usa en Windows, así que un solo command cubre los 8 usos.
@@ -890,7 +935,11 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
+      - ffmpeg_restore_cache:
+          triple: x86_64-unknown-linux-gnu
       - provision_ffmpeg_unix
+      - ffmpeg_save_cache:
+          triple: x86_64-unknown-linux-gnu
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -945,6 +994,9 @@ jobs:
     # (x86_64-pc-windows-msvc): el orden del PATH —FFmpeg aprovisionado,
     # rustup, heredado— es un invariante y no un detalle, porque el cargo GNU de
     # Chocolatey que viaja en lo heredado compila otro target.
+    # El job no importa el entorno de MSVC (vcvars64) ni fija CC/CXX: `cc` y
+    # `rustc` localizan la toolchain por sí mismos, y un entorno distinto entre
+    # pasos recompila la cadena de `cc` en cada uno.
     # Caché: registry + target/ + sccache autoconsistente (cargo_restore_caches
     # os: windows variant: test; sccache os: windows variant: test). La caché de
     # target/ tiene coste de I/O NTFS significativo en restore/save, pero sin ella
@@ -994,7 +1046,11 @@ jobs:
       - sccache_setup_windows
       - validate_pins
       - validate_features
+      - ffmpeg_restore_cache:
+          triple: x86_64-pc-windows-msvc
       - provision_ffmpeg_windows
+      - ffmpeg_save_cache:
+          triple: x86_64-pc-windows-msvc
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -1015,22 +1071,10 @@ jobs:
           no_output_timeout: 25m
           command: |
             Write-Host "[STEP] Ejecutar suite con nextest - INICIO"
-            # Entorno MSVC (vcvars64) importado ANTES de anteponer directorios:
-            # vcvars fija INCLUDE/LIB y la ruta de cl.exe/link.exe, y un prepend
-            # posterior no los desplaza.
-            $VsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-            $VsPath = & $VsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-            if (-not $VsPath) { throw "vswhere no encontró una instalación con MSVC x64" }
-            $VcVars = "$VsPath\VC\Auxiliary\Build\vcvars64.bat"
-            cmd /c "call `"$VcVars`" >nul 2>&1 && set" | ForEach-Object {
-              if ($_ -match '^([^=]+)=(.*)$') { Set-Item -Path "env:$($Matches[1])" -Value $Matches[2] }
-            }
-            # CC/CXX = ruta absoluta de cl.exe: solo así el crate `cc` usa
-            # RUSTC_WRAPPER=sccache como wrapper en MSVC.
-            $Cl = (Get-Command cl.exe -ErrorAction Stop).Source
-            $env:CC = $Cl
-            $env:CXX = $Cl
-            Write-Host "cl: $Cl"
+            # La suite usa el mismo entorno que los pasos de `xtask` del job, sin
+            # el entorno de MSVC: los build scripts de `cc` (aws-lc-sys, blake3)
+            # vigilan CC, CXX, INCLUDE, LIB y las variables de vcvars, y un
+            # entorno distinto entre pasos recompila toda la cadena de `cc`.
             # Orden del PATH, que es un invariante y no un detalle: primero el
             # FFmpeg aprovisionado (la matriz de egressión ejecuta sus
             # codificadores), después `~\.cargo\bin` (el toolchain MSVC que fija
@@ -1165,7 +1209,11 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
+      - ffmpeg_restore_cache:
+          triple: aarch64-apple-darwin
       - provision_ffmpeg_unix
+      - ffmpeg_save_cache:
+          triple: aarch64-apple-darwin
       - run:
           name: Instalar cargo-nextest (pineado << pipeline.parameters.nextest_pin >>)
           command: |
@@ -1246,7 +1294,11 @@ jobs:
       - sccache_setup_unix
       - validate_pins
       - validate_features
+      - ffmpeg_restore_cache:
+          triple: x86_64-unknown-linux-gnu
       - provision_ffmpeg_unix
+      - ffmpeg_save_cache:
+          triple: x86_64-unknown-linux-gnu
       - run:
           name: Ejecutar suite con cobertura (cargo llvm-cov)
           command: |
@@ -1276,9 +1328,14 @@ jobs:
     # la versión vigente (cargo xtask source-offer --check), que THIRD-PARTY-
     # LICENSES.md esté en sincronía con las dependencias distribuidas (cargo xtask
     # licenses --check) y que todo archivo propio lleve la cabecera MPL-2.0 (cargo
-    # xtask headers --check), además de las demás puertas de política.
-    # Corre solo en tags v* como gate de los builds (ver workflow build-all).
-    # Caché: registry + sccache (sin target) — xtask es pequeño, sccache basta.
+    # xtask headers --check), además de las demás puertas de política y de que
+    # CHANGELOG.md tenga la sección ## [X.Y.Z] de la versión bumpeada (cargo
+    # xtask changelog --check), que publish-release necesita para las notas.
+    # Corre solo en tags v* como requisito de publish-release (ver workflow
+    # build-all).
+    # Caché: registry + target/ propio de `xtask` (variant: xtask), que este job
+    # guarda y que restauran publish-release y publish-metadata: `xtask` solo
+    # recompila los crates propios, sin sccache.
     docker:
       - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
     environment:
@@ -1286,10 +1343,9 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - checkout
-      - cargo_restore_registry
-      - sccache_restore_cache:
+      - cargo_restore_caches:
           os: linux
-      - sccache_setup_unix
+          variant: xtask
       - validate_pins
       - validate_features
       - run:
@@ -1316,32 +1372,15 @@ jobs:
             echo "[STEP] Verificar cabeceras de licencia - INICIO"
             cargo --quiet xtask headers --check
             echo "[STEP] Verificar cabeceras de licencia - FIN"
-
-  validate-changelog:
-    # Gate de CHANGELOG: verifica que exista la sección ## [X.Y.Z] para la
-    # versión bumppeada antes del tag, evitando el fallo silencioso de
-    # publish-release (~14 min de pipeline deshechos). Corre en tags v* como
-    # gate de los builds (ver workflow build-all).
-    # Caché: registry + sccache (sin target) — coherente con los jobs pequeños/xtask.
-    docker:
-      - image: cimg/rust:1.96.0@sha256:4ad3037ddf8d339118f7d5911d14395786b9da38b97553990306e34d7b137463
-    environment:
-      # Sin estado incremental: sccache no lo cachea y no debe viajar en la caché de target/.
-      CARGO_INCREMENTAL: "0"
-    steps:
-      - checkout
-      - cargo_restore_registry
-      - sccache_restore_cache:
-          os: linux
-      - sccache_setup_unix
-      - validate_pins
-      - validate_features
       - run:
           name: Verificar sección de CHANGELOG
           command: |
             echo "[STEP] Verificar CHANGELOG - INICIO"
             cargo --quiet xtask changelog --check
             echo "[STEP] Verificar CHANGELOG - FIN"
+      - cargo_save_target:
+          os: linux
+          variant: xtask
 
   # ──────────────────────────────────────────────────────────────
   # Suites del bootstrap de primera instalación (bats + Pester)
@@ -1377,18 +1416,31 @@ jobs:
       version: << pipeline.parameters.windows_image_pin >>
     steps:
       - checkout
+      - restore_cache:
+          keys:
+            - pwsh-v1-<< pipeline.parameters.pwsh_pin >>
       - run:
           name: Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>)
           command: |
             Write-Host "[STEP] Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>) - INICIO"
             $ErrorActionPreference = "Stop"
             $pin = "<< pipeline.parameters.pwsh_pin >>"
-            $zip = Join-Path $env:TEMP "PowerShell-$pin-win-x64.zip"
-            Invoke-WebRequest -Uri "https://github.com/PowerShell/PowerShell/releases/download/v$pin/PowerShell-$pin-win-x64.zip" -OutFile $zip
-            Expand-Archive -Path $zip -DestinationPath "C:\pwsh" -Force
+            # La caché de C:\pwsh solo evita la descarga, no la comprobación: la
+            # versión se verifica contra el pin tanto si viene de la caché como
+            # si se acaba de expandir.
+            if (-not (Test-Path C:\pwsh\pwsh.exe)) {
+              $zip = Join-Path $env:TEMP "PowerShell-$pin-win-x64.zip"
+              Invoke-WebRequest -Uri "https://github.com/PowerShell/PowerShell/releases/download/v$pin/PowerShell-$pin-win-x64.zip" -OutFile $zip
+              Expand-Archive -Path $zip -DestinationPath "C:\pwsh" -Force
+            }
             $got = & C:\pwsh\pwsh.exe -NoProfile -Command '$PSVersionTable.PSVersion.ToString()'
             if ($got -ne $pin) { throw "pwsh: $got != $pin" }
             Write-Host "[STEP] Instalar PowerShell 7 (pineado << pipeline.parameters.pwsh_pin >>) - FIN"
+      - save_cache:
+          key: pwsh-v1-<< pipeline.parameters.pwsh_pin >>
+          paths:
+            - C:\pwsh
+          when: on_success
       - run:
           name: Instalar Pester (pineado << pipeline.parameters.pester_pin >>)
           command: |
@@ -1452,8 +1504,8 @@ jobs:
   # Builds nativos Rust — 4 targets de distribución (cargo build --release)
   # Cada build hace smoke test (version + voice list), empaqueta con
   # `xtask package` y prueba lo empaquetado con `self install` en un sandbox
-  # antes de persistirlo al workspace para publish-release. Requieren triple
-  # puerta + coverage + bootstrap (ver workflow build-all).
+  # antes de persistirlo al workspace para publish-release. Corren en paralelo
+  # con los gates, que son requisito de publish-release (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
   build-windows-x64:
     # Windows x64: binario + smoke test nativo. No usa Inno Setup aún.
@@ -1674,6 +1726,8 @@ jobs:
       - restore_cache:
           keys:
             - ort-v4-win-x64-<< pipeline.parameters.ort_pin >>
+      - ffmpeg_restore_cache:
+          triple: x86_64-pc-windows-msvc
       - run:
           # Empaquetado canónico: `xtask package` monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
@@ -1698,6 +1752,8 @@ jobs:
           paths:
             - ort-bundle
           when: on_success
+      - ffmpeg_save_cache:
+          triple: x86_64-pc-windows-msvc
       - run:
           # Humo de instalación: instala el artefacto empaquetado en un
           # sandbox con las cuatro raíces reubicadas y comprueba que el
@@ -1829,6 +1885,8 @@ jobs:
       - restore_cache:
           keys:
             - ort-v4-linux-x64-<< pipeline.parameters.ort_pin >>
+      - ffmpeg_restore_cache:
+          triple: x86_64-unknown-linux-gnu
       - run:
           # Empaquetado canónico: `xtask package` monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
@@ -1850,6 +1908,8 @@ jobs:
           paths:
             - ort-bundle
           when: on_success
+      - ffmpeg_save_cache:
+          triple: x86_64-unknown-linux-gnu
       - sandbox_install_unix:
           artifact_glob: "ai-voice-interconnector-*-x86_64-linux.tar.gz"
       - run:
@@ -1951,6 +2011,8 @@ jobs:
       - restore_cache:
           keys:
             - ort-v4-linux-arm64-<< pipeline.parameters.ort_pin >>
+      - ffmpeg_restore_cache:
+          triple: aarch64-unknown-linux-gnu
       - run:
           # Empaquetado canónico: `xtask package` monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
@@ -1972,6 +2034,8 @@ jobs:
           paths:
             - ort-bundle
           when: on_success
+      - ffmpeg_save_cache:
+          triple: aarch64-unknown-linux-gnu
       - sandbox_install_unix:
           artifact_glob: "ai-voice-interconnector-*-arm64-linux.tar.gz"
       - run:
@@ -2098,6 +2162,8 @@ jobs:
       - restore_cache:
           keys:
             - ort-v4-darwin-arm64-<< pipeline.parameters.ort_pin >>
+      - ffmpeg_restore_cache:
+          triple: aarch64-apple-darwin
       - run:
           # Empaquetado canónico: `xtask package` monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
@@ -2120,6 +2186,8 @@ jobs:
           paths:
             - ort-bundle
           when: on_success
+      - ffmpeg_save_cache:
+          triple: aarch64-apple-darwin
       - sandbox_install_unix:
           artifact_glob: "ai-voice-interconnector-*-arm64-macos.tar.gz"
       - run:
@@ -2227,10 +2295,11 @@ jobs:
       - checkout
       - attach_workspace:
           at: artifacts
-      - cargo_restore_registry
-      - sccache_restore_cache:
+      # Caché: registry + target/ de la variante xtask, que guarda
+      # validate-licenses; `xtask` solo recompila los crates propios, sin sccache.
+      - cargo_restore_caches:
           os: linux
-      - sccache_setup_unix
+          variant: xtask
       - validate_pins
       - validate_features
       - install_gh_cli
@@ -2322,11 +2391,11 @@ jobs:
       CARGO_INCREMENTAL: "0"
     steps:
       - checkout
-      # Caché: registry + sccache (sin target xtask) — coherente con los jobs pequeños/xtask.
-      - cargo_restore_registry
-      - sccache_restore_cache:
+      # Caché: registry + target/ de la variante xtask, que guarda
+      # validate-licenses; `xtask` solo recompila los crates propios, sin sccache.
+      - cargo_restore_caches:
           os: linux
-      - sccache_setup_unix
+          variant: xtask
       - validate_pins
       - validate_features
       - install_gh_cli:
@@ -2388,15 +2457,18 @@ jobs:
 # UN pipeline de release (`build-all`), disparado SOLO en tags `v*`:
 #
 #   La triple puerta de tests por plataforma (test-linux/windows/macos) corre
-#   como gate mecánico de los 4 builds DENTRO de esta misma pipeline. Así la
+#   como gate mecánico de publish-release DENTRO de esta misma pipeline. Así la
 #   publicación (publish-release, irreversible) queda condicionada al resultado
 #   completo de la suite sobre el commit taggeado, sin depender de disciplina
 #   humana ni de una pipeline de rama que corra en paralelo: CircleCI no puede
 #   encadenar pipelines distintas, de modo que la única garantía mecánica es
 #   tener los tests en el grafo de dependencias del release.
 #
-#   `coverage`, instaladores y licencias/changelog completan los gates de los 4
-#   builds nativos, que compilan las 4 plataformas en modo release.
+#   `coverage`, instaladores y licencias/changelog completan los gates de
+#   publish-release. Los 4 builds nativos, que compilan las 4 plataformas en
+#   modo release, no consumen nada de los gates y arrancan en paralelo con
+#   ellos: si un test falla, los builds ya se habrán ejecutado, pero nada se
+#   publica.
 # ══════════════════════════════════════════════════════════════════════
 workflows:
   # Ningún job declara versión, URL ni hash de FFmpeg: los cuatro jobs de prueba
@@ -2409,19 +2481,13 @@ workflows:
   build-all:
     # CircleCI NO ejecuta un job en un tag salvo que el job Y todas sus
     # dependencias declaren `filters.tags`; por eso el filtro `v*` se propaga
-    # por toda la cadena (tests/gates → builds → publish-*).
+    # por toda la cadena (tests/gates y builds → publish-*).
     # Todos los jobs declaran además `branches: ignore /.*/`: esta pipeline corre
     # SOLO en tags `v*`, nunca en pushes de rama.
     jobs:
       # ── Triple suite (gate) + cobertura + instaladores + licencias ──
-      # Los 4 builds requieren estos 9 gates verdes en la misma pipeline.
+      # publish-release requiere estos 8 gates verdes en la misma pipeline.
       - validate-licenses:
-          filters:
-            tags:
-              only: /^v.*/
-            branches:
-              ignore: /.*/
-      - validate-changelog:
           filters:
             tags:
               only: /^v.*/
@@ -2469,46 +2535,31 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
-      # ── Builds nativos Rust (requieren triple suite + cobertura + instaladores) ──
+      # ── Builds nativos Rust (sin requisitos: corren en paralelo con los gates) ──
       - build-windows-x64:
           filters:
             tags:
               only: /^v.*/
             branches:
               ignore: /.*/
-          # Puertas de los 4 builds (ancla única): añadir un gate aquí lo exige
-          # en todos; no repetir la lista a mano (divergencia silenciosa).
-          requires: &build-gates
-            - test-linux
-            - test-windows
-            - test-macos
-            - test-bootstrap-linux
-            - test-bootstrap-windows
-            - test-bootstrap-macos
-            - coverage
-            - validate-licenses
-            - validate-changelog
       - build-linux-x64:
           filters:
             tags:
               only: /^v.*/
             branches:
               ignore: /.*/
-          requires: *build-gates
       - build-linux-arm64:
           filters:
             tags:
               only: /^v.*/
             branches:
               ignore: /.*/
-          requires: *build-gates
       - build-darwin-arm64:
           filters:
             tags:
               only: /^v.*/
             branches:
               ignore: /.*/
-          requires: *build-gates
       # ── Verificación de portabilidad de los artefactos Linux (AlmaLinux 8 y Debian stable-slim) ──
       # Entradas explícitas (sin matriz): el `name` no puede derivar una etiqueta
       # corta de `matrix.image` (trae el digest) y dos listas paralelas harían
@@ -2570,7 +2621,19 @@ workflows:
               only: /^v.*/
             branches:
               ignore: /.*/
+          # Única puerta de la publicación: exige los 8 gates de prueba y
+          # validación, los 4 builds y las 4 verificaciones de portabilidad. Los
+          # builds no esperan a los gates, así que un test fallido no impide
+          # compilar, pero sí publicar.
           requires:
+            - test-linux
+            - test-windows
+            - test-macos
+            - coverage
+            - test-bootstrap-linux
+            - test-bootstrap-windows
+            - test-bootstrap-macos
+            - validate-licenses
             - build-windows-x64
             - build-linux-x64
             - build-linux-arm64

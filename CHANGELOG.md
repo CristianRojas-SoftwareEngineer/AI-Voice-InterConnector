@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.40.1 — 2026-11-01](#0401--2026-11-01)
 - [0.40.0 — 2026-11-01](#0400--2026-11-01)
 - [0.39.0 — 2026-11-01](#0390--2026-11-01)
@@ -127,6 +128,21 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+El pipeline de release de 0.40.1 tardó casi 30 minutos, y buena parte de ese tiempo no aportaba nada: los cuatro builds esperaban a que terminaran todas las puertas aunque no consumen nada de ellas, `test-windows` compilaba dos veces la cadena de C de `cc` porque la suite y los pasos de `xtask` usaban entornos MSVC distintos, `sccache` subía 3 GiB por variante en cada corrida, cada job descargaba y descomprimía FFmpeg y PowerShell 7 de nuevo, `xtask` comprimía el paquete con un deflate sin optimizar y los jobs pequeños compilaban `xtask` desde cero. Ahora los builds corren en paralelo con las puertas, que siguen bloqueando la publicación, y cada job reutiliza lo que ya verificó, sin quitar ninguna validación.
+
+### Cambiado
+
+- Los cuatro builds del workflow `build-all` ya no esperan a las puertas: corren en paralelo con ellas, y `publish-release` es la única puerta de la publicación, que exige los ocho gates de prueba y validación, los cuatro builds y las cuatro verificaciones de portabilidad. Si un test falla, nada se publica, aunque los builds ya se hayan ejecutado.
+- `test-windows` compila con un solo entorno en todos sus pasos: la suite ya no importa `vcvars64` ni fija `CC`/`CXX`, porque los build scripts de `aws-lc-sys` y `blake3` vigilan esas variables y recompilaban la cadena de `cc` entre los pasos de `xtask` y la suite.
+- `ffmpeg-bundle/` se cachea por triple en los cuatro jobs de prueba y en los cuatro builds, con una clave que depende de `packaging/pins.json`. `xtask` solo reutiliza lo restaurado si su marcador `.ffmpeg-sha256` coincide con el SHA-256 fijado y el ejecutable pasa el humo; si no, lo descarga y verifica de nuevo.
+- La caché de `sccache` se guarda con un cubo semanal (la semana ISO en la clave) y solo si el job tiene éxito: cada variante sube su caché como mucho una vez por semana, y la restauración sigue siendo por prefijo.
+- `validate-licenses` absorbe la comprobación del CHANGELOG (`cargo xtask changelog --check`) y el job `validate-changelog` desaparece. `validate-licenses`, `publish-release` y `publish-metadata` usan una variante `xtask` de la caché de `target/`, que guarda `validate-licenses`, en lugar de compilar `xtask` desde cero, y no restauran `sccache`.
+- `test-bootstrap-windows` cachea `C:\pwsh` por `pwsh_pin` y solo descarga PowerShell 7 si falta; la comprobación de la versión contra el pin se mantiene.
+- El perfil `dev` compila `miniz_oxide` con `opt-level = 3`, así que `cargo xtask package` comprime el gzip y el zip del paquete unas cuatro veces más rápido sin optimizar el resto de `xtask`.
+- La caché de `target/` ya no guarda los informes de `--timings`, que cada corrida volvía a publicar como artefacto junto con los de la corrida que creó la caché.
 
 ## [0.40.1] — 2026-11-01
 

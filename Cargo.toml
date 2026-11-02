@@ -101,3 +101,11 @@ ct2rs = { path = "vendor/ct2rs-0.10.0" }
 # `dnnl`, según su configuración de CMake y como indican `CXXSTDLIB_<target>` y
 # `GOMPLIB_<target>`.
 onednn-src = { path = "vendor/onednn-src-0.1.15" }
+
+# `cargo xtask` compila en perfil `dev`, y el empaquetado comprime el gzip y el
+# zip del bundle con `miniz_oxide`, que sin optimizar es unas cuatro veces más
+# lento. Solo se optimiza ese crate: optimizar también `xtask` alargaría su
+# compilación en cada corrida, y optimizar `lzma-rs` no acelera de forma
+# apreciable la descompresión xz.
+[profile.dev.package.miniz_oxide]
+opt-level = 3

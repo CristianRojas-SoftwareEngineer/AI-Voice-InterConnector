@@ -385,9 +385,15 @@ antes de publicar el artefacto, ejecuta en este orden:
 Los cuatro jobs de prueba aprovisionan ese mismo FFmpeg antes de su suite, con
 `cargo xtask ffmpeg`: el pipeline no declara versión, URL ni hash, así que no
 puede divergir de `packaging/pins.json`, y `test-windows` ejecuta la suite sobre
-el target MSVC que el paquete distribuye. `ffmpeg-bundle/` no se cachea: la
-descarga del artefacto fijado es de segundos y repetirla es la comprobación de
-que la URL fijada sigue sirviendo el binario esperado.
+el target MSVC que el paquete distribuye. `ffmpeg-bundle/` se cachea por triple
+en los cuatro jobs de prueba y en los cuatro builds, con una clave que depende
+de `packaging/pins.json`: se restaura antes de su primer uso y se guarda después.
+Lo restaurado solo se reutiliza si su marcador `.ffmpeg-sha256` coincide con el
+SHA-256 fijado y el ejecutable pasa el humo de versión y de codificadores; si
+no, `xtask` lo descarga y lo verifica de nuevo. Así se evita descargar y
+descomprimir el artefacto en cada corrida, a cambio de que la descarga ya no
+compruebe en cada release que la URL fijada sigue sirviéndolo: lo comprueba la
+primera corrida tras cambiar `packaging/pins.json` o tras expirar la caché.
 
 `version` y `voice list` **no cargan el modelo** (las voces de fábrica viajan
 embebidas en el binario vía `crates/avi-store/assets/`), así que el chequeo es

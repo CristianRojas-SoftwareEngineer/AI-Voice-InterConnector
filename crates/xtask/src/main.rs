@@ -2115,6 +2115,123 @@ mod tests {
         }
     }
 
+    /// Los builds no esperan a los gates y `publish-release` es la única puerta de
+    /// la publicación: exige todo job de prueba y validación del workflow, los
+    /// builds y las verificaciones de portabilidad. Un gate nuevo que no entre en
+    /// sus `requires:` dejaría publicar sin él.
+    #[test]
+    fn test_workflow_builds_run_in_parallel_and_gate_publish_release() {
+        let cfg = read_ci_config();
+        let entries = workflow_entries(&cfg);
+        let builds = [
+            "build-windows-x64",
+            "build-linux-x64",
+            "build-linux-arm64",
+            "build-darwin-arm64",
+        ];
+        for build in builds {
+            let (_, requires) = entries
+                .iter()
+                .find(|(name, _)| name == build)
+                .unwrap_or_else(|| panic!("build-all debe incluir {build}"));
+            assert!(requires.is_empty(), "{build} no debe declarar requires:");
+        }
+        let (_, publish) = entries
+            .iter()
+            .find(|(name, _)| name == "publish-release")
+            .expect("build-all debe incluir publish-release");
+        let expected: Vec<&str> = entries
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| !name.starts_with("publish-"))
+            .collect();
+        assert!(
+            expected.iter().any(|n| n.starts_with("test-"))
+                && expected.contains(&"coverage")
+                && expected.contains(&"validate-licenses")
+                && expected
+                    .iter()
+                    .any(|n| n.starts_with("verify-portability-")),
+            "build-all debe incluir gates, builds y verificaciones: {expected:?}"
+        );
+        for name in &expected {
+            assert!(
+                publish.iter().any(|r| r == name),
+                "publish-release debe requerir {name}"
+            );
+        }
+        assert_eq!(
+            publish.len(),
+            expected.len(),
+            "publish-release solo requiere gates, builds y verificaciones: {publish:?}"
+        );
+    }
+
+    /// `ffmpeg-bundle/` se restaura antes de su primer uso en los ocho jobs que
+    /// aseguran FFmpeg, y la clave solo depende del triple y de
+    /// `packaging/pins.json`: la caché es segura porque `xtask` reutiliza el
+    /// bundle solo si su marcador coincide con el SHA-256 fijado, y repetir en la
+    /// clave la versión, la URL o el hash de FFmpeg los duplicaría fuera de la
+    /// fuente única de pines.
+    #[test]
+    fn test_ffmpeg_bundle_is_cached_before_first_use() {
+        let cfg = read_ci_config();
+        let tests = &["- provision_ffmpeg_unix", "- provision_ffmpeg_windows"][..];
+        let builds = &["name: Empaquetar bundle con xtask package"][..];
+        let jobs = [
+            ("test-linux", tests),
+            ("coverage", tests),
+            ("test-macos", tests),
+            ("test-windows", tests),
+            ("build-windows-x64", builds),
+            ("build-linux-x64", builds),
+            ("build-linux-arm64", builds),
+            ("build-darwin-arm64", builds),
+        ];
+        for (job, first_use) in jobs {
+            let section = build_section(&cfg, job);
+            let restore = section
+                .find("- ffmpeg_restore_cache:")
+                .unwrap_or_else(|| panic!("{job} debe restaurar la caché de ffmpeg-bundle/"));
+            let used = first_use
+                .iter()
+                .filter_map(|marker| section.find(marker))
+                .min()
+                .unwrap_or_else(|| panic!("{job} debe asegurar FFmpeg"));
+            let save = section
+                .find("- ffmpeg_save_cache:")
+                .unwrap_or_else(|| panic!("{job} debe guardar la caché de ffmpeg-bundle/"));
+            assert!(
+                restore < used && used < save,
+                "{job}: la caché de ffmpeg-bundle/ debe restaurarse antes de su primer uso y guardarse después"
+            );
+        }
+        let key = "ffmpeg-v1-<< parameters.triple >>-{{ checksum \"packaging/pins.json\" }}";
+        assert_eq!(
+            cfg.matches(key).count(),
+            2,
+            "la restauración y el guardado deben usar la misma clave por triple y pins.json"
+        );
+        let commands = cfg
+            .split("\n  ffmpeg_restore_cache:")
+            .nth(1)
+            .and_then(|s| s.split("\n  cargo_fetch:").next())
+            .expect("deben existir ffmpeg_restore_cache y ffmpeg_save_cache");
+        let pins = crate::doctor::load_pins(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .expect("se cargan los pines");
+        for (literal, what) in [
+            (pins.ffmpeg.as_str(), "la versión"),
+            ("https://", "una URL"),
+            ("sha256", "un hash"),
+        ] {
+            assert!(
+                !commands.contains(literal),
+                "la clave de la caché de FFmpeg no debe repetir {what} de FFmpeg"
+            );
+        }
+        assert!(commands.contains("- ffmpeg-bundle\n") && commands.contains("when: on_success"));
+    }
+
     /// El paso de MSYS2 no compara versiones por su cuenta: la regla estricta vive en
     /// `build-engine`.
     #[test]
@@ -2296,13 +2413,59 @@ mod tests {
             .collect()
     }
 
-    /// Jobs que usan cargo: los que restauran `target/` o el registry.
+    /// Entradas del workflow `build-all` como pares (nombre efectivo, `requires:`).
+    /// El nombre efectivo es el `name:` de la entrada cuando lo declara (las
+    /// instancias de un job parametrizado) y, si no, el del job.
+    fn workflow_entries(cfg: &str) -> Vec<(String, Vec<String>)> {
+        let body = cfg
+            .split("\n  build-all:\n")
+            .nth(1)
+            .expect("debe existir el workflow build-all")
+            .split("\n    jobs:\n")
+            .nth(1)
+            .expect("build-all debe declarar jobs:");
+        let mut entries: Vec<(String, Vec<String>)> = Vec::new();
+        let mut in_requires = false;
+        for line in body.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            let depth = indent(line);
+            if depth < 6 {
+                break;
+            }
+            if depth == 6 {
+                let job = trimmed
+                    .strip_prefix("- ")
+                    .and_then(|s| s.strip_suffix(':'))
+                    .unwrap_or_else(|| panic!("entrada de build-all inesperada: `{line}`"));
+                entries.push((job.to_string(), Vec::new()));
+                in_requires = false;
+                continue;
+            }
+            let entry = entries
+                .last_mut()
+                .expect("toda línea pertenece a una entrada");
+            if depth == 10 {
+                in_requires = trimmed == "requires:";
+                if let Some(name) = trimmed.strip_prefix("name: ") {
+                    entry.0 = name.to_string();
+                }
+            } else if in_requires {
+                if let Some(req) = trimmed.strip_prefix("- ") {
+                    entry.1.push(req.to_string());
+                }
+            }
+        }
+        entries
+    }
+
+    /// Jobs que usan cargo: los que restauran el registry y `target/`.
     fn cargo_jobs(cfg: &str) -> Vec<(&str, &str)> {
         ci_jobs(cfg)
             .into_iter()
-            .filter(|(_, s)| {
-                s.contains("- cargo_restore_caches") || s.contains("- cargo_restore_registry")
-            })
+            .filter(|(_, s)| s.contains("- cargo_restore_caches"))
             .collect()
     }
 
@@ -2310,7 +2473,8 @@ mod tests {
     /// extraída sobre un `target/` ya poblado mezcla el estado de dos ejecuciones,
     /// y una compilación anterior al entorno completo no usa el registry ni el
     /// `sccache` del job. Las puertas `validate_*` son la primera compilación del
-    /// workspace, juntas y tras la configuración de `sccache`.
+    /// workspace, juntas y, en los jobs que restauran `sccache`, tras su
+    /// configuración.
     #[test]
     fn test_cargo_jobs_compile_only_after_cache_restore() {
         let cfg = read_ci_config();
@@ -2337,10 +2501,7 @@ mod tests {
                 .collect();
             let restore = lines
                 .iter()
-                .position(|l| {
-                    l.starts_with("- cargo_restore_caches")
-                        || l.starts_with("- cargo_restore_registry")
-                })
+                .position(|l| l.starts_with("- cargo_restore_caches"))
                 .unwrap_or_else(|| panic!("{job} debe restaurar cachés de cargo"));
             for l in &lines[..restore] {
                 assert!(
@@ -2361,12 +2522,18 @@ mod tests {
                 Some(&"- validate_features"),
                 "{job}: validate_features debe ir inmediatamente después de validate_pins"
             );
+            if !lines
+                .iter()
+                .any(|l| l.starts_with("- sccache_restore_cache"))
+            {
+                continue;
+            }
             let last_sccache = lines
                 .iter()
                 .rposition(|l| {
                     l.starts_with("- sccache_setup_") || l.starts_with("- native_sccache_setup_")
                 })
-                .unwrap_or_else(|| panic!("{job} debe configurar sccache"));
+                .unwrap_or_else(|| panic!("{job} restaura sccache y debe configurarlo"));
             assert!(
                 pins > last_sccache,
                 "{job}: las puertas validate_* deben ir después de la configuración de sccache"
@@ -2405,31 +2572,73 @@ mod tests {
     }
 
     #[test]
-    fn test_pipeline_heterogeneous_and_unconditional_sccache() {
+    fn test_pipeline_heterogeneous_and_weekly_sccache() {
         let cfg = read_ci_config();
-        // Modelo vigente (post remediación de caché): test-linux, test-windows, test-macos,
-        // coverage y build-* usan cargo_restore_caches (registry + caché de target/) y sccache
-        // autoconsistente por variante (cada job pesado restaura y guarda su propio blob).
-        // Los jobs pequeños (validate-licenses/validate-changelog/publish-metadata) usan
-        // cargo_restore_registry (solo registry + sccache restore-only), por lo que ambos
-        // comandos coexisten.
+        // Modelo vigente: test-linux, test-windows, test-macos, coverage y build-* usan
+        // cargo_restore_caches (registry + caché de target/) y sccache autoconsistente por
+        // variante (cada job pesado restaura y guarda su propio blob). Los jobs pequeños
+        // (validate-licenses, publish-release y publish-metadata) usan la variante xtask de la
+        // caché de target/, que guarda validate-licenses, y no restauran sccache: `xtask` solo
+        // recompila los crates propios.
+        for job in ["validate-licenses", "publish-release", "publish-metadata"] {
+            let section = build_section(&cfg, job);
+            assert!(
+                section.contains(
+                    "- cargo_restore_caches:\n          os: linux\n          variant: xtask\n"
+                ),
+                "{job} debe restaurar la variante xtask de la caché de target/"
+            );
+            assert!(
+                !section.contains("sccache_restore_cache")
+                    && !section.contains("sccache_setup_unix"),
+                "{job} no debe restaurar ni configurar sccache"
+            );
+        }
         assert!(
-            cfg.contains("cargo_restore_caches") && cfg.contains("cargo_restore_registry"),
-            "debe existir ambos comandos cargo_restore_caches y cargo_restore_registry para modelo heterogéneo"
+            build_section(&cfg, "validate-licenses")
+                .contains("- cargo_save_target:\n          os: linux\n          variant: xtask\n"),
+            "validate-licenses debe guardar la variante xtask de la caché de target/"
         );
-        // sccache se guarda de forma INCONDICIONAL: no existe comando condicional por hit-rate.
+        // El guardado de sccache no depende de la tasa de aciertos: no existe comando condicional.
         assert!(
             !cfg.contains("sccache_save_cache_conditional"),
             "no debe existir sccache_save_cache_conditional (guardado condicional por hit-rate eliminado)"
         );
-        // El guardado vigente es sccache_save_cache con clave rolling por {{ epoch }} y when: always.
+        // El guardado vigente es sccache_save_cache con clave por semana ISO y when: on_success:
+        // la primera corrida de la semana ocupa la clave, y un job fallido no debe ocuparla con
+        // lo restaurado sin cambios.
+        let save = cfg
+            .split("\n  sccache_save_cache:")
+            .nth(1)
+            .and_then(|s| s.split("\n  sccache_setup_unix:").next())
+            .expect("debe existir el comando sccache_save_cache");
         assert!(
-            cfg.contains("sccache_save_cache:"),
-            "debe existir el comando sccache_save_cache (guardado incondicional)"
+            save.contains("key: sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum \".sccache-week\" }}"),
+            "sccache_save_cache debe usar clave por semana ISO segmentada por variante"
         );
         assert!(
-            cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ epoch }}"),
-            "sccache_save_cache debe usar clave rolling por epoch segmentada por variante"
+            save.contains("when: on_success") && !save.contains("when: always"),
+            "sccache_save_cache debe guardar solo si el job tiene éxito"
+        );
+        // La semana se escribe antes de restaurar: la clave se forma en tiempo de config y
+        // `.sccache-week` debe existir cuando el guardado calcula su checksum.
+        let restore = cfg
+            .split("\n  sccache_restore_cache:")
+            .nth(1)
+            .and_then(|s| s.split("\n  sccache_save_cache:").next())
+            .expect("debe existir el comando sccache_restore_cache");
+        let week = restore
+            .find("date -u +%G-W%V > .sccache-week")
+            .expect("sccache_restore_cache debe escribir la semana ISO en .sccache-week");
+        assert!(
+            restore.contains("grep -Eqx '[0-9]{4}-W[0-9]{2}' .sccache-week"),
+            "sccache_restore_cache debe fallar si la semana no tiene la forma AAAA-WNN"
+        );
+        assert!(
+            week < restore
+                .find("- restore_cache:")
+                .expect("sccache_restore_cache restaura"),
+            "la semana debe escribirse antes de restaurar la caché de sccache"
         );
         assert!(
             cfg.contains("sccache-v1-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-"),
@@ -2562,8 +2771,8 @@ mod tests {
         }
     }
 
-    /// `Cargo.lock.cachekey` se genera en un único command, que usan las dos
-    /// restauraciones, y que falla si la versión del propio crate no se
+    /// `Cargo.lock.cachekey` se genera en un único command, que usa la
+    /// restauración de cachés de cargo, y que falla si la versión del propio crate no se
     /// sustituye exactamente una vez: un lock con otro formato no puede dejar en
     /// silencio una clave que cambie con cada release.
     #[test]
@@ -2585,17 +2794,15 @@ mod tests {
                 && command.contains("set -euo pipefail"),
             "cargo_lock_cachekey debe fallar si la sustitución no ocurre exactamente una vez"
         );
-        for restore in ["cargo_restore_caches", "cargo_restore_registry"] {
-            let steps = cfg
-                .split(&format!("\n  {restore}:"))
-                .nth(1)
-                .and_then(|s| s.split("\n    steps:\n").nth(1))
-                .unwrap_or_else(|| panic!("{restore} debe tener pasos"));
-            assert!(
-                steps.starts_with("      - cargo_lock_cachekey\n"),
-                "{restore} debe generar la clave antes de restaurar"
-            );
-        }
+        let steps = cfg
+            .split("\n  cargo_restore_caches:")
+            .nth(1)
+            .and_then(|s| s.split("\n    steps:\n").nth(1))
+            .expect("cargo_restore_caches debe tener pasos");
+        assert!(
+            steps.starts_with("      - cargo_lock_cachekey\n"),
+            "cargo_restore_caches debe generar la clave antes de restaurar"
+        );
     }
 
     #[test]
@@ -2619,7 +2826,7 @@ mod tests {
             .split("  cargo_save_target:")
             .nth(1)
             .unwrap_or("")
-            .split("\n  cargo_restore_registry:")
+            .split("\n  toolchain_restore_cache:")
             .next()
             .unwrap_or("");
 
@@ -2756,9 +2963,7 @@ mod tests {
     /// La caché de `target/` usa clave inmutable (el primer `save_cache` gana): en
     /// build-* (variant: full), guardar con `when: always` persistiría para
     /// siempre un `target/` incompleto si `cargo build --release` falla a
-    /// medias (ya ocurrió con linux-x64 en v0.20.9). test-*/coverage sí
-    /// conservan `when: always` porque ahí un fallo del job suele ser un test
-    /// que falló, no una compilación incompleta.
+    /// medias (ya ocurrió con linux-x64 en v0.20.9).
     #[test]
     fn test_cargo_save_target_on_success_in_build_variant_full() {
         let cfg = read_ci_config();
@@ -2844,6 +3049,22 @@ mod tests {
             windows.contains("cargo nextest run --all\n"),
             "la corrida de la suite debe ser la de producción, sin filtros:\n{windows}"
         );
+    }
+
+    /// `test-windows` compila con un único entorno en todos sus pasos: los build
+    /// scripts de `cc` (aws-lc-sys, blake3) vigilan CC, CXX y las variables que
+    /// fija vcvars64, así que importarlo solo en la suite recompila toda la
+    /// cadena de `cc` entre los pasos de `xtask` y la suite.
+    #[test]
+    fn test_test_windows_compiles_with_one_environment() {
+        let cfg = read_ci_config();
+        let windows = build_section(&cfg, "test-windows");
+        for forbidden in ["vcvars64.bat", "$env:CC", "$env:CXX"] {
+            assert!(
+                !windows.contains(forbidden),
+                "test-windows no debe contener `{forbidden}`: cambiaría el entorno de `cc` entre pasos"
+            );
+        }
     }
 
     /// La instrumentación de diagnóstico es permanente y acotada: solo cuatro
