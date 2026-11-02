@@ -2,14 +2,6 @@
 
 Sistema de voz con IA **100% local** en español e inglés: transcripción, texto a voz con clonación de voz y traducción de voz a voz. Corre en CPU, sin GPU ni APIs externas, y funciona sin conexión una vez descargados los modelos. La síntesis usa el motor Qwen3-TTS 0.6B ([QwenLM/Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS)), la transcripción Parakeet TDT 0.6B v3 y la traducción opus-mt. Se distribuye como un único archivo por plataforma, para Windows x64, Linux x64/ARM64 y macOS con Apple Silicon.
 
-- **Transcripción**: [`speech transcribe`](USAGE.md#speech-transcribe) convierte voz a texto desde un archivo WAV o el micrófono.
-- **Texto a voz**: síntesis en español o en inglés con [`speech say`](USAGE.md#speech-say) (reproducción al momento) o [`speech synthesize`](USAGE.md#speech-synthesize) (guardado como WAV).
-- **Clonación de voz**: [`voice clone`](USAGE.md#voice-clone) crea una voz a partir de unos 10 segundos de audio (archivo WAV o micrófono) y úsala para hablar en español o en inglés.
-- **Traducción**: [`translate`](USAGE.md#translate) traduce texto entre español e inglés.
-- **Traducción de voz a voz** (doblaje): [`speech dub`](USAGE.md#speech-dub) transcribe lo que dices, lo traduce y lo reproduce con una voz clonada; no genera un archivo.
-- **Limpieza de ruido**: [`speech denoise`](USAGE.md#speech-denoise) limpia archivos de audio y la pista de audio de un vídeo, sin tocar su imagen.
-- **Invocable desde cualquier lenguaje**: cada comando acepta `--json` para leer su resultado desde otro programa, y un daemon opcional mantiene los motores cargados entre invocaciones.
-
 ## Tabla de contenidos
 
 - [Uso ético y responsable](#uso-ético-y-responsable)
@@ -171,6 +163,8 @@ ai-voice-interconnector doctor
 
 ### Síntesis
 
+Síntesis en español o en inglés con [`speech say`](USAGE.md#speech-say) (reproducción al momento) o [`speech synthesize`](USAGE.md#speech-synthesize) (guardado como WAV).
+
 ```bash
 ai-voice-interconnector speech say --text "Hola mundo"
 ai-voice-interconnector speech say --text "Hello world" --target-language en
@@ -180,6 +174,8 @@ ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo
 `speech say` reproduce sin guardar; `speech synthesize` guarda el WAV y muestra su ruta. Sin `--voice` se usa la voz de fábrica `default`, que viene incluida en el programa.
 
 ### Clonación de voz
+
+[`voice clone`](USAGE.md#voice-clone) crea una voz a partir de unos 10 segundos de audio (archivo WAV o micrófono) y úsala para hablar en español o en inglés.
 
 ```bash
 ai-voice-interconnector voice clone --name mi_voz --speech-reference referencia.wav
@@ -191,6 +187,8 @@ La referencia ideal es un solo audio de unos 10 segundos de habla limpia, en arc
 
 ### Transcripción y traducción
 
+[`speech transcribe`](USAGE.md#speech-transcribe) convierte voz a texto desde un archivo WAV o el micrófono. [`translate`](USAGE.md#translate) traduce texto entre español e inglés.
+
 ```bash
 ai-voice-interconnector speech transcribe --audio grabacion.wav --source-language es
 ai-voice-interconnector speech transcribe --mic --source-language en
@@ -198,6 +196,8 @@ ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --source-langua
 ```
 
 ### Traducción de voz a voz
+
+[`speech dub`](USAGE.md#speech-dub) transcribe lo que dices, lo traduce y lo reproduce con una voz clonada; no genera un archivo.
 
 ```bash
 ai-voice-interconnector speech dub --mic --source-language es --target-language en -v mi_voz
@@ -208,6 +208,8 @@ ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --
 
 ### Limpieza de audio y vídeo
 
+[`speech denoise`](USAGE.md#speech-denoise) limpia archivos de audio y la pista de audio de un vídeo, sin tocar su imagen.
+
 ```bash
 ai-voice-interconnector speech denoise entrevista.mp4
 ai-voice-interconnector speech denoise voz.wav --preset default
@@ -217,7 +219,7 @@ ai-voice-interconnector speech denoise voz.wav --preset default
 
 ### Invocación desde cualquier lenguaje
 
-El programa se invoca como cualquier proceso externo. Con la opción global `--json`, cada comando escribe su resultado como JSON en stdout, de modo que no hace falta interpretar texto. Por ejemplo, en Python:
+Cada comando acepta `--json` para leer su resultado desde otro programa, y un daemon opcional mantiene los motores cargados entre invocaciones. El programa se invoca como cualquier proceso externo. Con la opción global `--json`, cada comando escribe su resultado como JSON en stdout, de modo que no hace falta interpretar texto. Por ejemplo, en Python:
 
 ```python
 import json, subprocess
