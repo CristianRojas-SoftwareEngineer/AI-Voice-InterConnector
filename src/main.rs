@@ -5055,8 +5055,10 @@ fn daemon_client() -> reqwest::Client {
 /// Intervalo con el que el indicador se repinta durante una espera.
 ///
 /// Es la cadencia con la que la fase actualizada llega a verse en la terminal:
-/// un intervalo largo haría que el tiempo pareciera congelado entre paint y
-/// paint, y uno corto gastaría la CPU en pintar sin que nadie lo note.
+/// un intervalo largo haría que el tiempo parezca congelado entre repintados
+/// si no hay hilo de repintado, y uno corto gastaría la CPU en pintar sin que
+/// nadie lo note. Durante el trabajo bloqueante un hilo auxiliar repinta con
+/// este intervalo mediante `run_blocking_with_progress`.
 const PROGRESS_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Algo que puede repintar la fase mientras se espera.
@@ -5218,7 +5220,9 @@ async fn transcribe_via_daemon(
         payload["denoise"] = serde_json::json!(true);
     }
     // La espera se repinta con el indicador: `/transcribe` devuelve JSON plano
-    // y no emite eventos, así que sin esto la fase parecería congelada.
+    // y no emite eventos, así que sin el repintado la fase se quedaría
+    // con el mismo tiempo. `await_with_progress` repinta cada
+    // `PROGRESS_REPAINT_INTERVAL` mientras la petición está pendiente.
     let resp = await_with_progress(
         progress,
         client
@@ -5273,7 +5277,9 @@ async fn translate_via_daemon(
         .json(&payload)
         .send();
     // La espera se repinta con el indicador: `/translate` devuelve JSON plano
-    // y no emite eventos, así que sin esto la fase parecería congelada. No hay
+    // y no emite eventos, así que sin el repintado la fase se quedaría
+    // con el mismo tiempo. `await_with_progress` repinta cada
+    // `PROGRESS_REPAINT_INTERVAL` mientras la petición está pendiente. No hay
     // un tope total propio: la petición incluye la inferencia, cuya duración
     // crece con el texto, así que sigue el mismo criterio que `/transcribe`
     // (el timeout de conexión y el failsafe global del cliente del daemon).
