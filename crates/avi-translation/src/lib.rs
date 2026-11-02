@@ -14,11 +14,12 @@
 
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
-// Estos símbolos solo los consume el motor real (`Ct2TranslationEngine` y
-// `translate`), gateado tras `native-translation`; sin el feature quedarían sin
-// uso, por eso el import se gatea junto con ellos.
+use avi_core::engine::{HierarchicalSegmenter, Segmenter};
+// Estos símbolos solo los consume el motor real (`Ct2TranslationEngine`),
+// gateado tras `native-translation`; sin el feature quedarían sin uso, por eso
+// el import se gatea junto con él.
 #[cfg(feature = "native-translation")]
-use avi_core::engine::{available_threads, HierarchicalSegmenter, Segmenter, TranslationEngine};
+use avi_core::engine::{available_threads, TranslationEngine};
 #[cfg(feature = "native-translation")]
 use ct2rs::{ComputeType, Config, Translator};
 
@@ -90,11 +91,13 @@ impl Ct2TranslationEngine {
 #[cfg(feature = "native-translation")]
 impl TranslationEngine for Ct2TranslationEngine {
     fn translate(&self, text: &str) -> anyhow::Result<String> {
-        // El texto único se traduce como lote de una sola oración:
-        // `translate_sentence_batch` anexa `</s>`, aplica las opciones del
-        // motor y sanea la hipótesis.
-        let mut hypothesis = self.translate_sentence_batch(&[text.to_string()])?;
-        Ok(hypothesis.remove(0))
+        // Esta ruta y la función libre `translate` comparten la segmentación:
+        // el texto se parte en párrafos y oraciones, se traduce por lotes con
+        // `translate_sentence_batch` (que anexa `</s>`, aplica las opciones del
+        // motor y sanea la hipótesis) y se reensambla igual en ambas.
+        translate_segmented(text, &|sentences: &[String]| {
+            self.translate_sentence_batch(sentences)
+        })
     }
 }
 
@@ -132,6 +135,26 @@ fn translate_batches_by_paragraph(
     Ok(result)
 }
 
+/// Segmenta `text` jerárquicamente, traduce cada párrafo por lotes con
+/// `translator` (una llamada por lote, ver `translate_batches_by_paragraph`) y
+/// reensambla: oraciones unidas con espacio dentro de cada párrafo y párrafos
+/// unidos con `"\n\n"`. Es la única traducción segmentada: la comparten la
+/// función libre `translate` y el motor que usa el daemon.
+#[cfg_attr(not(feature = "native-translation"), allow(dead_code))]
+#[allow(clippy::type_complexity)]
+fn translate_segmented(
+    text: &str,
+    translator: &dyn Fn(&[String]) -> anyhow::Result<Vec<String>>,
+) -> anyhow::Result<String> {
+    let paragraphs = HierarchicalSegmenter::default().segment(text);
+    let translated = translate_batches_by_paragraph(paragraphs, translator)?;
+    Ok(translated
+        .into_iter()
+        .map(|sentences| sentences.join(" "))
+        .collect::<Vec<_>>()
+        .join("\n\n"))
+}
+
 /// Traduce `text` con el modelo de `model_dir` (que fija la dirección del par)
 /// segmentando jerárquicamente y reensamblando el resultado: segmentos unidos
 /// con espacio dentro de cada párrafo y párrafos unidos con `"\n\n"`.
@@ -140,22 +163,9 @@ fn translate_batches_by_paragraph(
 #[cfg(feature = "native-translation")]
 pub fn translate(text: &str, model_dir: impl AsRef<std::path::Path>) -> anyhow::Result<String> {
     let engine = Ct2TranslationEngine::new(model_dir)?;
-    let segmenter = HierarchicalSegmenter::default();
-    let paragraphs = segmenter.segment(text);
-
-    // Cada párrafo se traduce en una sola llamada al motor (partida en grupos
-    // de `MAX_SENTENCES_PER_BATCH` cuando excede el tope), en vez de una llamada
-    // por oración; el reensamblado conserva el orden de párrafos y oraciones.
-    let translated: Vec<Vec<String>> =
-        translate_batches_by_paragraph(paragraphs, &|sentences: &[String]| {
-            engine.translate_sentence_batch(sentences)
-        })?;
-
-    Ok(translated
-        .into_iter()
-        .map(|segments| segments.join(" "))
-        .collect::<Vec<_>>()
-        .join("\n\n"))
+    translate_segmented(text, &|sentences: &[String]| {
+        engine.translate_sentence_batch(sentences)
+    })
 }
 
 #[cfg(test)]
@@ -520,6 +530,39 @@ mod tests {
                 .map(|i| format!("T:Oración número {} de la prueba.", i))
                 .collect::<Vec<_>>()],
             "el orden de las oraciones debe preservarse"
+        );
+    }
+
+    #[test]
+    fn translate_segmented_batches_per_paragraph_and_reassembles() {
+        let batches = RefCell::new(Vec::<Vec<String>>::new());
+        let uppercase = |batch: &[String]| -> anyhow::Result<Vec<String>> {
+            batches.borrow_mut().push(batch.to_vec());
+            Ok(batch.iter().map(|s| s.to_uppercase()).collect())
+        };
+
+        // El primer párrafo excede la longitud máxima del segmentador (512) y
+        // se parte en 20 oraciones; el segundo cabe entero y es un solo
+        // segmento.
+        let long_paragraph = paragraph_of_n_sentences(20);
+        let text = format!("{}\n\nHola mundo. Adiós ahora.", long_paragraph.join(" "));
+
+        let result = super::translate_segmented(&text, &uppercase)
+            .expect("la traducción segmentada no debe fallar");
+
+        assert_eq!(
+            *batches.borrow(),
+            vec![
+                long_paragraph[..10].to_vec(),
+                long_paragraph[10..].to_vec(),
+                vec!["Hola mundo. Adiós ahora.".to_string()],
+            ],
+            "el párrafo largo se traduce en lotes de 10 y el corto en uno propio"
+        );
+        assert_eq!(
+            result,
+            text.to_uppercase(),
+            "oraciones unidas con espacio y párrafos con salto doble"
         );
     }
 
