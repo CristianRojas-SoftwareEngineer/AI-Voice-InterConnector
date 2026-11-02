@@ -5489,112 +5489,45 @@ const SYNTHESIZE_PHASES: PhaseTexts = PhaseTexts {
     denoise_queue: "Esperando turno para limpiar el ruido…",
 };
 
+// Las demás tablas parten de la de `speech synthesize` y sustituyen solo los
+// textos propios de su comando.
+
 /// Textos de la regeneración de una toma desde el menú de `--play`.
 const RETAKE_PHASES: PhaseTexts = PhaseTexts {
     started: "Preparando otra toma…",
-    reading: "Leyendo archivo de audio…",
-    capturing: "Capturando audio del micrófono…",
-    denoising: "Limpiando ruido del audio…",
-    transcribing: "Transcribiendo audio…",
-    translating: "Traduciendo texto…",
     synthesizing: "Sintetizando otra toma…",
-    cloning: "Clonando voz… (puede tardar varios minutos)",
-    saving: "Guardando locución…",
-    playing: "Reproduciendo…",
-    warming: "Calentando motor de síntesis…",
-    queued: "En cola de síntesis…",
-    warmup: "Iniciando precarga en caliente…",
-    denoise_queue: "Esperando turno para limpiar el ruido…",
+    ..SYNTHESIZE_PHASES
 };
 
-/// Textos de `speech say`.
-const SAY_PHASES: PhaseTexts = PhaseTexts {
-    started: "Iniciando síntesis…",
-    reading: "Leyendo archivo de audio…",
-    capturing: "Capturando audio del micrófono…",
-    denoising: "Limpiando ruido del audio…",
-    transcribing: "Transcribiendo audio…",
-    translating: "Traduciendo texto…",
-    synthesizing: "Sintetizando voz…",
-    cloning: "Clonando voz… (puede tardar varios minutos)",
-    saving: "Guardando locución…",
-    playing: "Reproduciendo…",
-    warming: "Calentando motor de síntesis…",
-    queued: "En cola de síntesis…",
-    warmup: "Iniciando precarga en caliente…",
-    denoise_queue: "Esperando turno para limpiar el ruido…",
-};
+/// Textos de `speech say`: los mismos que `speech synthesize`.
+const SAY_PHASES: PhaseTexts = SYNTHESIZE_PHASES;
 
 /// Textos de `speech dub`.
 const DUB_PHASES: PhaseTexts = PhaseTexts {
     started: "Doblando audio…",
-    reading: "Leyendo archivo de audio…",
-    capturing: "Capturando audio del micrófono…",
-    denoising: "Limpiando ruido del audio…",
-    transcribing: "Transcribiendo audio…",
     translating: "Traduciendo texto transcrito…",
     synthesizing: "Sintetizando voz doblada…",
-    cloning: "Clonando voz… (puede tardar varios minutos)",
-    saving: "Guardando locución…",
     playing: "Reproduciendo doblaje…",
-    warming: "Calentando motor de síntesis…",
-    queued: "En cola de síntesis…",
-    warmup: "Iniciando precarga en caliente…",
-    denoise_queue: "Esperando turno para limpiar el ruido…",
+    ..SYNTHESIZE_PHASES
 };
 
 /// Textos de `voice clone`.
 const CLONE_PHASES: PhaseTexts = PhaseTexts {
     started: "Iniciando clonación…",
-    reading: "Leyendo archivo de audio…",
-    capturing: "Capturando audio del micrófono…",
-    denoising: "Limpiando ruido del audio…",
-    transcribing: "Transcribiendo audio…",
-    translating: "Traduciendo texto…",
-    synthesizing: "Sintetizando voz…",
-    cloning: "Clonando voz… (puede tardar varios minutos)",
     saving: "Guardando referencia de voz…",
-    playing: "Reproduciendo…",
-    warming: "Calentando motor de síntesis…",
-    queued: "En cola de síntesis…",
-    warmup: "Iniciando precarga en caliente…",
-    denoise_queue: "Esperando turno para limpiar el ruido…",
+    ..SYNTHESIZE_PHASES
 };
 
 /// Textos de `speech transcribe`.
 const TRANSCRIBE_PHASES: PhaseTexts = PhaseTexts {
     started: "Iniciando transcripción…",
-    reading: "Leyendo archivo de audio…",
-    capturing: "Capturando audio del micrófono…",
-    denoising: "Limpiando ruido del audio…",
-    transcribing: "Transcribiendo audio…",
-    translating: "Traduciendo texto…",
-    synthesizing: "Sintetizando voz…",
-    cloning: "Clonando voz… (puede tardar varios minutos)",
-    saving: "Guardando locución…",
-    playing: "Reproduciendo…",
-    warming: "Calentando motor de síntesis…",
-    queued: "En cola de síntesis…",
-    warmup: "Iniciando precarga en caliente…",
-    denoise_queue: "Esperando turno para limpiar el ruido…",
+    ..SYNTHESIZE_PHASES
 };
 
 /// Textos de `translate`.
 const TRANSLATE_PHASES: PhaseTexts = PhaseTexts {
     started: "Iniciando traducción…",
-    reading: "Leyendo archivo de audio…",
-    capturing: "Capturando audio del micrófono…",
-    denoising: "Limpiando ruido del audio…",
-    transcribing: "Transcribiendo audio…",
-    translating: "Traduciendo texto…",
-    synthesizing: "Sintetizando voz…",
-    cloning: "Clonando voz… (puede tardar varios minutos)",
-    saving: "Guardando locución…",
-    playing: "Reproduciendo…",
-    warming: "Calentando motor de síntesis…",
-    queued: "En cola de síntesis…",
-    warmup: "Iniciando precarga en caliente…",
-    denoise_queue: "Esperando turno para limpiar el ruido…",
+    ..SYNTHESIZE_PHASES
 };
 
 /// Consume un stream NDJSON del daemon (`started` → latidos → `result`/`error`)
