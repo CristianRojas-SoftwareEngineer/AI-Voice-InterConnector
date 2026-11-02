@@ -163,7 +163,7 @@ ai-voice-interconnector doctor
 
 ### Síntesis
 
-Síntesis en español o en inglés con [`speech say`](USAGE.md#speech-say) (reproducción al momento) o [`speech synthesize`](USAGE.md#speech-synthesize) (guardado como WAV).
+Síntesis en español o en inglés con [`speech say`](USAGE.md#speech-say) (reproducción al momento) o [`speech synthesize`](USAGE.md#speech-synthesize) (guardado como WAV). `speech say` reproduce sin guardar; `speech synthesize` guarda el WAV y muestra su ruta. Sin `--voice` se usa la voz de fábrica `default`, que viene incluida en el programa.
 
 ```bash
 ai-voice-interconnector speech say --text "Hola mundo"
@@ -171,19 +171,15 @@ ai-voice-interconnector speech say --text "Hello world" --target-language en
 ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo
 ```
 
-`speech say` reproduce sin guardar; `speech synthesize` guarda el WAV y muestra su ruta. Sin `--voice` se usa la voz de fábrica `default`, que viene incluida en el programa.
-
 ### Clonación de voz
 
-[`voice clone`](USAGE.md#voice-clone) crea una voz a partir de unos 10 segundos de audio (archivo WAV o micrófono) y úsala para hablar en español o en inglés.
+[`voice clone`](USAGE.md#voice-clone) crea una voz a partir de unos 10 segundos de audio (archivo WAV o micrófono) y úsala para hablar en español o en inglés. La referencia ideal es un solo audio de unos 10 segundos de habla limpia, en archivo WAV o grabado con `--mic`. `--duration` fija la grabación entre 1 y 30 segundos; sin ella, en una terminal interactiva se graba hasta que pulsas Enter. El recorrido completo está en [USAGE.md](USAGE.md#clonación-de-voz-recorrido-completo).
 
 ```bash
 ai-voice-interconnector voice clone --name mi_voz --speech-reference referencia.wav
 ai-voice-interconnector voice clone --name mi_voz --mic --duration 10
 ai-voice-interconnector speech say --text "Hola mundo" -v mi_voz
 ```
-
-La referencia ideal es un solo audio de unos 10 segundos de habla limpia, en archivo WAV o grabado con `--mic`. `--duration` fija la grabación entre 1 y 30 segundos; sin ella, en una terminal interactiva se graba hasta que pulsas Enter. El recorrido completo está en [USAGE.md](USAGE.md#clonación-de-voz-recorrido-completo).
 
 ### Transcripción y traducción
 
@@ -197,29 +193,25 @@ ai-voice-interconnector translate --text "Hola, ¿cómo estás?" --source-langua
 
 ### Traducción de voz a voz
 
-[`speech dub`](USAGE.md#speech-dub) transcribe lo que dices, lo traduce y lo reproduce con una voz clonada; no genera un archivo.
+[`speech dub`](USAGE.md#speech-dub) transcribe lo que dices, lo traduce si los idiomas difieren y lo reproduce con una voz clonada (`default` si no pasas `-v`); muestra la transcripción y la traducción, y no genera ni guarda ningún archivo.
 
 ```bash
 ai-voice-interconnector speech dub --mic --source-language es --target-language en -v mi_voz
 ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --target-language es
 ```
 
-`speech dub` transcribe lo que dices, lo traduce si los idiomas difieren y lo reproduce con la voz elegida (`default` si no pasas `-v`). Muestra la transcripción y la traducción, y no guarda ningún archivo.
-
 ### Limpieza de audio y vídeo
 
-[`speech denoise`](USAGE.md#speech-denoise) limpia archivos de audio y la pista de audio de un vídeo, sin tocar su imagen.
+[`speech denoise`](USAGE.md#speech-denoise) limpia archivos de audio y la pista de audio de un vídeo, sin tocar su imagen ni procesar el vídeo. Usa el preset `studio` por omisión; `--preset default` aplica el perfil original, sin normalización. Opciones, formatos y límites en la [referencia de `speech denoise`](docs/CLI/commands/SPEECH.md#speech-denoise).
 
 ```bash
 ai-voice-interconnector speech denoise entrevista.mp4
 ai-voice-interconnector speech denoise voz.wav --preset default
 ```
 
-`speech denoise` limpia archivos de audio o la pista de audio de un vídeo, sin procesar la imagen. Usa el preset `studio` por omisión; `--preset default` aplica el perfil original, sin normalización. Opciones, formatos y límites en la [referencia de `speech denoise`](docs/CLI/commands/SPEECH.md#speech-denoise).
-
 ### Invocación desde cualquier lenguaje
 
-Cada comando acepta `--json` para leer su resultado desde otro programa, y un daemon opcional mantiene los motores cargados entre invocaciones. El programa se invoca como cualquier proceso externo. Con la opción global `--json`, cada comando escribe su resultado como JSON en stdout, de modo que no hace falta interpretar texto. Por ejemplo, en Python:
+El programa se invoca como cualquier proceso externo. Cada comando acepta `--json` para escribir su resultado como JSON en stdout, de modo que no hace falta interpretar texto, y un daemon opcional mantiene los motores cargados entre invocaciones. Por ejemplo, en Python:
 
 ```python
 import json, subprocess
