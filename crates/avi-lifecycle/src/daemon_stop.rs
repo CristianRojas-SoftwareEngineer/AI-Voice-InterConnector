@@ -30,6 +30,7 @@
 //! lectura de la línea de estado bastan, sin las dependencias de un cliente.
 
 use crate::LifecycleError;
+use avi_process::loopback::Connection;
 use avi_process::registry::{
     observe_pid_file, parse_ready_record, pid_path, PidFile, PidFileObservation, Registered,
     READY_FILE,
@@ -647,9 +648,12 @@ fn remove_ready_file(data_dir: &Path) -> std::io::Result<()> {
 }
 
 /// Sondea `GET /health` con deadline corto. `false` en cualquier fallo, incluido
-/// el de conexión rechazada, que es el caso de "no hay daemon".
+/// el de conexión rechazada, que es el caso de "no hay daemon". El rechazo es
+/// inmediato en todas las plataformas; el plazo solo acota a un oyente que no
+/// responde.
 pub async fn probe(addr: &str) -> bool {
-    match tokio::time::timeout(PROBE_TIMEOUT, request(addr, "GET", "/health")).await {
+    let health = request(addr, "GET", "/health", Connection::Probe);
+    match tokio::time::timeout(PROBE_TIMEOUT, health).await {
         Ok(Ok(line)) => status_is_success(&line),
         _ => false,
     }
@@ -658,7 +662,9 @@ pub async fn probe(addr: &str) -> bool {
 /// `POST /shutdown` acotado. El cuerpo de la respuesta se ignora: lo que importa
 /// es que el daemon lo haya recibido, y la verificación es el paso 3.
 pub async fn post_shutdown(addr: &str) -> std::io::Result<()> {
-    request(addr, "POST", "/shutdown").await.map(|_| ())
+    request(addr, "POST", "/shutdown", Connection::Work)
+        .await
+        .map(|_| ())
 }
 
 /// Una petición HTTP/1.1 y la línea de estado de la respuesta.
@@ -668,11 +674,45 @@ pub async fn post_shutdown(addr: &str) -> std::io::Result<()> {
 /// primer salto bastan para ambos usos. Con `Connection: close` el servidor cierra
 /// después de responder, así que una sola lectura alcanza para tener la línea de
 /// estado sin esperar a un cuerpo que puede no llegar.
-async fn request(addr: &str, method: &str, path: &str) -> std::io::Result<String> {
+///
+/// `connection` decide cómo se conecta: una sonda falla al instante si nadie
+/// escucha; una petición de trabajo conserva los reintentos de conexión del
+/// sistema. Se prueban por orden las direcciones a las que resuelve `addr` y se
+/// devuelve el error de la última si ninguna conecta.
+async fn request(
+    addr: &str,
+    method: &str,
+    path: &str,
+    connection: Connection,
+) -> std::io::Result<String> {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpStream;
+    use tokio::net::TcpSocket;
 
-    let mut stream = TcpStream::connect(addr).await?;
+    let mut last_error = None;
+    let mut connected = None;
+    for resolved in tokio::net::lookup_host(addr).await? {
+        let socket = if resolved.is_ipv4() {
+            TcpSocket::new_v4()?
+        } else {
+            TcpSocket::new_v6()?
+        };
+        avi_process::loopback::prepare(&socket, connection)?;
+        match socket.connect(resolved).await {
+            Ok(stream) => {
+                connected = Some(stream);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let Some(mut stream) = connected else {
+        return Err(last_error.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrNotAvailable,
+                format!("{addr} no resuelve a ninguna dirección"),
+            )
+        }));
+    };
     let request = format!(
         "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     );
@@ -788,6 +828,20 @@ mod tests {
             .enable_all()
             .build()
             .expect("se construye el runtime de la prueba")
+    }
+
+    /// Sin daemon, la sonda contesta al instante. En Windows un rechazo sin fallo
+    /// rápido tarda ~2 s y consumiría el plazo entero de la sonda.
+    #[tokio::test]
+    async fn probe_to_dead_port_fails_fast() {
+        let addr = dead_port();
+        let started = std::time::Instant::now();
+        assert!(!probe(&addr).await, "sin oyente no hay daemon");
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "la sonda tardó {elapsed:?}"
+        );
     }
 
     /// Sin pidfile ni daemon, la parada es un no-op verificable: no es un error,
