@@ -73,6 +73,9 @@ avi-audio = { path = "crates/avi-audio", features = ["test-support"] }
 # `cargo test --all` disponga del punto de inyección de fallo sin que
 # `cargo build --release` lo lleve.
 avi-lifecycle = { path = "crates/avi-lifecycle", features = ["faults"] }
+# Solo para los tests: `start_paused` detiene el reloj de tokio, de modo que
+# las pruebas de temporización no dependen de la carga de la máquina.
+tokio = { version = "1.35", features = ["test-util"] }
 
 [patch.crates-io]
 cmake = { path = "vendor/cmake-0.1.58" }
