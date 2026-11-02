@@ -70,7 +70,7 @@ Las familias de caché, sus contenidos y sus claves exactas están comentadas en
 
 Intervienen dos mecanismos independientes. Distinguirlos explica por qué un cambio de código siempre llega al binario publicado y, aun así, el pipeline puede ser rápido.
 
-1. **Qué restaura CircleCI.** Ninguna clave depende del código fuente del workspace: dependen de las dependencias de `Cargo.lock`, de la versión de Rust, del SO, de la variante de compilación y de los pines de herramientas. Editar `src/` o `crates/*` no cambia ninguna clave, así que se restaura el mismo `target/` y la misma caché de `sccache`.
+1. **Qué restaura CircleCI.** Ninguna clave depende del código fuente del workspace: dependen de la raíz del job, de las dependencias de `Cargo.lock`, de la versión de Rust, del SO, de la variante de compilación y de los pines de herramientas. Editar `src/` o `crates/*` no cambia ninguna clave, así que se restaura el mismo `target/` y la misma caché de `sccache`.
 2. **Qué recompila cargo dentro de lo restaurado.** Cargo decide unidad por unidad con su *fingerprint*:
    - Las dependencias de crates.io se identifican por versión y checksum; si no cambiaron quedan `Fresh`. Eso incluye la cadena nativa C++ (CTranslate2, oneDNN, SentencePiece, aws-lc), la parte más cara.
    - Los crates del workspace se identifican por la fecha de modificación (`mtime`). El checkout de CI les da la fecha actual, posterior a la de `target/`, así que quedan `Dirty` y se recompilan en cada corrida, se hayan editado o no.

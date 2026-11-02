@@ -144,6 +144,8 @@ parameters:
 #     builds, clave por triple). Guarda `ffmpeg-bundle/`, que `xtask` reutiliza
 #     solo si su marcador `.ffmpeg-sha256` coincide con el pin y el ejecutable
 #     pasa el humo.
+#   - pwsh (v1): cambia con pwsh_pin (solo test-bootstrap-windows). Guarda
+#     C:\pwsh; la versión se comprueba contra el pin tras restaurar.
 #   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey (+ msys2
 #     gcc/openblas en Windows; os+arch en Unix). Clave exacta sin fallback.
 commands:
@@ -310,7 +312,8 @@ commands:
             target/avi_daemon_clone_operation_* target/lifecycle-test-* target/xtask_clean_*
             target/xtask-comments-* target/xtask-language-* target/xtask_doctor_*
             target/xtask_install_* target/xtask_package_* target/xtask-package-*
-            target/xtask_pins_*
+            target/xtask_pins_* target/xtask-ffmpeg-* target/xtask-first-party-*
+            target/xtask-headers-* target/xtask-ort-*
           when: on_success
       - save_cache:
           key: target-v6-{{ checksum ".cache-root" }}-{{ arch }}-<< parameters.os >>-<< pipeline.parameters.rust_pin >>-<< parameters.variant >>-{{ checksum "Cargo.lock.cachekey" }}-{{ checksum ".vendor-patches.tree" }}
@@ -319,9 +322,9 @@ commands:
           when: on_success
 
   # Caché de toolchain: ~/.rustup (toolchain + componentes) y ~/.cargo/bin
-  # (binarios instalados: rustup, cargo, cargo-llvm-cov). Clave sin checksum —
-  # solo depende de arch + rust_pin — así que es inmutable y se reconstruye
-  # al bumpear rust_pin. Evita rustup-init (Win/macOS) y el `cargo install
+  # (binarios instalados: rustup, cargo, cargo-llvm-cov). Clave sin checksum de
+  # contenido —depende de la raíz del job, arch, os y rust_pin—, así que es
+  # inmutable y se reconstruye al bumpear rust_pin. Evita rustup-init (Win/macOS) y el `cargo install
   # cargo-llvm-cov --locked` (coverage) en cada corrida.
   toolchain_restore_cache:
     description: Restaura ~/.rustup y ~/.cargo/bin por arch + rust_pin + OS
@@ -726,13 +729,14 @@ commands:
             Write-Host $version
             Write-Host "[STEP] Aprovisionar FFmpeg - FIN"
   # Caché de `ffmpeg-bundle/` por triple, compartida por los jobs de prueba y los
-  # builds. La clave depende del checksum de packaging/pins.json, donde viven la
-  # versión, la URL y el SHA-256 de FFmpeg, y no repite ninguno de esos datos.
+  # builds con la misma raíz (`.cache-root`). Además de esa raíz, la clave depende
+  # del checksum de packaging/pins.json, donde viven la versión, la URL y el
+  # SHA-256 de FFmpeg, y no repite ninguno de esos datos.
   # Es segura aunque la entrada no corresponda al pin: `xtask` solo reutiliza un
   # bundle cuyo marcador `.ffmpeg-sha256` coincide con el SHA-256 fijado y cuyo
   # ejecutable pasa el humo; si no, lo descarga y verifica de nuevo.
   ffmpeg_restore_cache:
-    description: Restaura ffmpeg-bundle/ por triple y packaging/pins.json
+    description: Restaura ffmpeg-bundle/ por raíz del job, triple y packaging/pins.json
     parameters:
       triple:
         type: string
@@ -741,7 +745,7 @@ commands:
           keys:
             - ffmpeg-v1-{{ checksum ".cache-root" }}-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
   ffmpeg_save_cache:
-    description: Guarda ffmpeg-bundle/ (clave inmutable por triple y packaging/pins.json)
+    description: Guarda ffmpeg-bundle/ (clave inmutable por raíz del job, triple y packaging/pins.json)
     parameters:
       triple:
         type: string

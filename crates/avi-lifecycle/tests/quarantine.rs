@@ -311,7 +311,7 @@ fn seed_quarantine(root: &Path) -> Vec<PathBuf> {
 /// todo lo que **conserva** el atributo.
 ///
 /// El oráculo entra por parámetro, y esa es la decisión que hace que la función sea
-/// comprobable en todas las plataformas: en macOS se le pasa `quarantine::plataforma()`,
+/// comprobable en todas las plataformas: en macOS se le pasa `quarantine::platform()`,
 /// que es la implementación de `xattr`, y fuera se le puede pasar una implementación que
 /// registre. El recorrido —el código que la limpieza evalúa— es el mismo en los dos
 /// casos, así que un error de recorrido no puede esconderse hasta la puerta de macOS.

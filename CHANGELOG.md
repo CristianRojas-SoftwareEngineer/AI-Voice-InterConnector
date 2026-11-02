@@ -137,8 +137,9 @@ La primera corrida de 0.41.1 con las cachés calientes mostró que `build-linux-
 
 ### Corregido
 
-- Toda clave de caché del pipeline (`cargo-v2`, `target-v6`, `toolchain`, `msys2`, `sccache`, `ffmpeg`, `pwsh`, `tts` y `ort-bundle`) lleva, justo tras su prefijo, el checksum de `.cache-root`, que registra `HOME` y el directorio de trabajo. Cada job con cachés lo escribe tras `checkout`, antes de su primera restauración. `build-linux-x64` deja de reutilizar entradas de `test-linux` que se extraían en `/home/circleci`, y que en la corrida anterior le costaron 124 s de empaquetado frente a 14 s en arm64. Una prueba de contrato recorre todas las claves y todos los jobs para que ninguna familia nueva repita el defecto.
+- Toda clave de caché del pipeline (familias `registry`, `target`, `toolchain`, `msys2`, `sccache`, `ffmpeg`, `pwsh`, `tts` y `ort-bundle`) lleva, justo tras su prefijo, el checksum de `.cache-root`, que registra `HOME` y el directorio de trabajo. Cada job con cachés lo escribe tras `checkout`, antes de su primera restauración. `build-linux-x64` deja de reutilizar entradas de `test-linux` que se extraían en `/home/circleci`, y que en la corrida anterior le costaron 124 s de empaquetado frente a 14 s en arm64. Una prueba de contrato recorre todas las claves y todos los jobs para que ninguna familia nueva repita el defecto.
 - El cambio de clave invalida una vez todas las cachés: la primera corrida tras esta versión las vuelve a sembrar.
+- Un comentario de las pruebas de `avi-lifecycle` citaba `quarantine::plataforma()`, que no existe; la función es `quarantine::platform()`. La limpieza de `target/` previa a guardar su caché retira también los temporales de `xtask-ffmpeg-`, `xtask-first-party-`, `xtask-headers-` y `xtask-ort-`, y `.gitignore` ignora los ficheros de clave que el pipeline escribe en la raíz (`.cache-root`, `.sccache-week`, `.vendor-patches.*`) y `cargo-timings/`.
 
 ## [0.41.1] — 2026-11-02
 
