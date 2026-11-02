@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.41.2 — 2026-11-02](#0412--2026-11-02)
 - [0.41.1 — 2026-11-02](#0411--2026-11-02)
 - [0.41.0 — 2026-11-02](#0410--2026-11-02)
@@ -130,6 +131,17 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+En Windows, una conexión a un puerto local sin oyente tarda unos 2 s en rechazarse, porque el sistema reintenta el SYN tras el rechazo. El producto hace esas conexiones de forma rutinaria para saber si el daemon o el motor TTS residente responden, y cada sonda negativa agotaba su plazo completo: medio segundo de más en cada comando delegable sin daemon, 1,5 s o más en la parada del daemon de las operaciones de ciclo de vida y el doble del presupuesto real en el arranque del residente. Ahora las sondas desactivan ese reintento y fallan al instante, mientras las peticiones de trabajo conservan la conexión normal, así que en Windows esas esperas desaparecen sin cambiar cómo se entrega el trabajo.
+
+### Corregido
+
+- El modo Auto de `speech`, `translate` y `voice`, `daemon status` y la parada del daemon que hacen `daemon start`, `daemon stop`, `self install`, `self uninstall`, `self update` y `cleanup` ya no esperan ~2 s por rechazo en Windows cuando no hay daemon: la sonda del daemon es una sola (`daemon_stop::probe`), compartida por la CLI y el motor de ciclo de vida, y su rechazo es inmediato en todas las plataformas. `daemon status` sondea primero y solo pide el cuerpo de `/health` si el daemon responde.
+- El arranque del motor TTS residente respeta su presupuesto real de 30 s en Windows, donde cada intento fallido de salud consumía el doble y el presupuesto se convertía en ~60 s, y un residente muerto se detecta y rearranca ~2 s antes.
+- Solo las sondas fallan rápido. El `POST /shutdown` al daemon y la síntesis en el residente conservan los reintentos de conexión del sistema, que son los que dejan entrar en una cola de conexiones que se vacía.
+- Las pruebas que simulan la falta de red de HuggingFace apuntan a un endpoint local que acepta y cierra la conexión, en lugar de a un puerto cerrado: el fallo de transporte es inmediato en las tres plataformas y la suite de Windows deja de pagar ~2 s por cada reintento de descarga.
 
 ## [0.41.2] — 2026-11-02
 
