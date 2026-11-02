@@ -6,8 +6,8 @@
 
 //! Primitivas de procesos del sistema operativo.
 //!
-//! Responsabilidad: flags de creación de procesos en Windows y borrado diferido
-//! de rutas. Es la definición única para el binario y para `xtask`; ningún otro
+//! Responsabilidad: flags de creación de procesos en Windows, borrado diferido
+//! de rutas y sondas de loopback con fallo rápido. Es la definición única para el binario y para `xtask`; ningún otro
 //! crate escribe flags como literales ni reimplementa el borrado diferido.
 
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
@@ -29,6 +29,7 @@ pub use deferred::{schedule_removal, schedule_removal_with};
 
 pub use avi_shared::{OwnerState, OwnerToken};
 
+pub mod loopback;
 pub mod registry;
 pub mod restricted_spawn;
 pub mod scratch;

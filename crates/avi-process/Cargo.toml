@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
 publish = false
-description = "Primitivas de procesos del sistema operativo: flags de creación y borrado diferido"
+description = "Primitivas de procesos del sistema operativo: flags de creación, borrado diferido y sondas de loopback"
 
 [dependencies]
 anyhow = "1.0"
@@ -12,6 +12,9 @@ anyhow = "1.0"
 avi-shared = { path = "../avi-shared" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# Configura el socket antes de conectar, cosa que la biblioteca estándar no
+# permite (`loopback`).
+socket2 = "0.6"
 # Temporales dentro del scratch por proceso (`scratch`).
 tempfile = "3"
 
@@ -23,5 +26,7 @@ libc = "0.2"
 
 # Único crate que fija flags de creación de procesos: el resto del repositorio
 # las importa de aquí con los nombres oficiales de `windows-sys`.
+# `Win32_Networking_WinSock` y `Win32_System_IO` dan `WSAIoctl`, con la que
+# `loopback` desactiva los reintentos de SYN de una conexión de sonda.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Diagnostics_Debug", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_Pipes", "Win32_System_Diagnostics_Debug", "Win32_System_IO", "Win32_Networking_WinSock", "Win32_UI_WindowsAndMessaging"] }
