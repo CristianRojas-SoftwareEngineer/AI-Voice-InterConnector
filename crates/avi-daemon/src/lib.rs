@@ -555,10 +555,13 @@ async fn health_handler(State(state): State<SharedState>) -> Json<Value> {
 
 /// POST /synthesize — síntesis con streaming NDJSON de progreso
 ///
-/// Contrato NDJSON vigente: `started` → `progress`(N)
-/// → `result`{`audio_b64`,`translated`,`work_ms`} OR `error`{`reason`,`message`}.
-/// El motor `TtsEngine` no expone callback de progreso, por lo que se emite un
-/// único marcador `progress` genérico antes de sintetizar.
+/// Contrato NDJSON vigente, sin texto humano en los eventos de avance:
+/// `started` (con `voice` y `text_length`) → `heartbeat`{`stage`: `translate`}
+/// durante la traducción (solo si hay par distinto) → `progress`{`stage`:
+/// `synthesis`} → `result`{`audio_b64`,`translated`,`work_ms`} OR
+/// `error`{`reason`,`message`}. El motor `TtsEngine` no expone callback de
+/// progreso, por lo que se emite un único marcador `progress` de fase tras
+/// traducir y antes de sintetizar.
 async fn synthesize_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
@@ -625,7 +628,6 @@ async fn synthesize_handler(
             &tx,
             json!({
                 "event": "started",
-                "operation": "síntesis",
                 "voice": voice_owned,
                 "text_length": text_owned.chars().count(),
             }),
@@ -667,42 +669,12 @@ async fn synthesize_handler(
             return;
         }
 
-        // Marcador genérico de fase (el motor no reporta progreso interno).
-        emit_ndjson(
-            &tx,
-            json!({
-                "event": "progress",
-                "stage": "synthesis",
-                "percent": 0,
-                "message": "Síntesis en curso.",
-            }),
-        )
-        .await;
-
         // Traducción opt-in con el motor residente: passthrough si coinciden.
         let source_iso = source_owned.clone();
         let target_iso = target_owned.clone();
         let text_final = if source_iso == target_iso {
             text_owned.clone()
         } else {
-            // Ambos idiomas son `es` o `en` y distintos: el par queda determinado.
-            let pair = translation_pair_for(&source_iso);
-            let model_name = format!("opus-mt-{pair}");
-            let ct2_dir = state.model_store.model_dir(&model_name);
-            // El modelo puede borrarse del disco después del arranque; detectar
-            // esa pérdida evita informar una traducción exitosa con recursos ausentes.
-            if !state.model_store.is_provisioned(&model_name) {
-                emit_ndjson(
-                    &tx,
-                    json!({
-                        "event": "error",
-                        "reason": "model_missing",
-                        "message": format!("El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.", model_name, ct2_dir.display()),
-                    }),
-                )
-                .await;
-                return;
-            }
             #[cfg(not(feature = "native-translation"))]
             {
                 emit_ndjson(
@@ -718,22 +690,37 @@ async fn synthesize_handler(
             }
             #[cfg(feature = "native-translation")]
             {
-                let Some(engines) = state.inference_engines.as_ref() else {
-                    emit_ndjson(&tx, json!({"event": "error", "reason": "daemon_error", "message": "El estado de contrato no puede traducir."})).await;
+                // Ambos idiomas son `es` o `en` y distintos: el par queda determinado.
+                let pair = translation_pair_for(&source_iso);
+                let worker_state = state.clone();
+                let worker_text = text_owned.clone();
+                let handle = tokio::task::spawn_blocking(move || {
+                    translate_resident(&worker_state, pair, &worker_text)
+                });
+                let Some(joined) = with_heartbeats(&tx, "translate", handle).await else {
                     return;
                 };
-                use avi_core::engine::TranslationEngine;
-                let translated =
-                    engines.ct2_engines[usize::from(pair == "en-es")].translate(&text_owned);
-                match translated {
-                    Ok(t) => t,
-                    Err(e) => {
+                match joined {
+                    Ok(Ok(t)) => t,
+                    Ok(Err(e)) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": e.reason,
+                                "message": e.message,
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                    Err(join_err) => {
                         emit_ndjson(
                             &tx,
                             json!({
                                 "event": "error",
                                 "reason": "translation_failed",
-                                "message": e.to_string(),
+                                "message": format!("El hilo de traducción falló: {}", join_err),
                             }),
                         )
                         .await;
@@ -742,6 +729,9 @@ async fn synthesize_handler(
                 }
             }
         };
+
+        // Marcador genérico de fase (el motor no reporta progreso interno).
+        emit_ndjson(&tx, json!({ "event": "progress", "stage": "synthesis" })).await;
 
         // Perfil de voz: .qvoice si la voz está clonada; el motor resuelve el
         // preset vía `resolve_voice_engine` a partir del nombre.
@@ -1222,12 +1212,48 @@ pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
 /// Par de traducción CT2 (`es-en` o `en-es`) que corresponde a un idioma de
 /// origen ya validado (`es` o `en`) cuando origen y destino difieren. Es el
 /// único punto del daemon que elige el modelo `opus-mt-<par>`.
+#[cfg(any(feature = "native-stt", feature = "native-translation"))]
 fn translation_pair_for(source: &str) -> &'static str {
     if source == "es" {
         "es-en"
     } else {
         "en-es"
     }
+}
+
+/// Traduce `text` con el motor CT2 residente del par `pair` (`es-en` o
+/// `en-es`). Es bloqueante: los handlers la ejecutan en `spawn_blocking`.
+/// Clasifica los fallos en `model_missing` (el snapshot se borró tras el
+/// arranque), `daemon_error` (estado sin motores) y `translation_failed`.
+#[cfg(feature = "native-translation")]
+fn translate_resident(state: &DaemonState, pair: &str, text: &str) -> Result<String, InputError> {
+    let model_name = format!("opus-mt-{pair}");
+    // El snapshot puede borrarse tras cargar el residente; se informa la
+    // pérdida del recurso sin reconstruir el motor bajo demanda.
+    if !state.model_store.is_provisioned(&model_name) {
+        let ct2_dir = state.model_store.model_dir(&model_name);
+        return Err(InputError {
+            reason: "model_missing",
+            message: format!(
+                "El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.",
+                model_name,
+                ct2_dir.display()
+            ),
+        });
+    }
+    let Some(engines) = state.inference_engines.as_ref() else {
+        return Err(InputError {
+            reason: "daemon_error",
+            message: "El estado de contrato no puede traducir.".to_string(),
+        });
+    };
+    use avi_core::engine::TranslationEngine;
+    engines.ct2_engines[usize::from(pair == "en-es")]
+        .translate(text)
+        .map_err(|e| InputError {
+            reason: "translation_failed",
+            message: e.to_string(),
+        })
 }
 
 /// Valida el cuerpo de `/translate`: texto no vacío e idiomas de origen y
@@ -1282,43 +1308,48 @@ async fn translate_handler(
     };
     let text = payload["text"].as_str().unwrap_or_default().to_string();
     let pair = translation_pair_for(&source);
-    let model_name = format!("opus-mt-{pair}");
-    let ct2_dir = state.model_store.model_dir(&model_name);
-    // El snapshot puede borrarse tras cargar el residente; la petición informa
-    // la pérdida del recurso sin reconstruir el motor bajo demanda.
-    if !state.model_store.is_provisioned(&model_name) {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(with_sv(json!({
-                "error": "model_missing",
-                "reason": "model_missing",
-                "message": format!("El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.", model_name, ct2_dir.display()),
-            }))),
-        )
-            .into_response();
-    }
-    let Some(engines) = state.inference_engines.as_ref() else {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(with_sv(json!({
-            "error": "daemon_error", "reason": "daemon_error", "message": "El estado de contrato no puede traducir."
-        })))).into_response();
+    // La inferencia es bloqueante: corre fuera del runtime async para no
+    // detener a los demás handlers mientras traduce.
+    let worker_state = state.clone();
+    let joined =
+        tokio::task::spawn_blocking(move || translate_resident(&worker_state, pair, &text)).await;
+    let outcome = match joined {
+        Ok(outcome) => outcome,
+        Err(join_err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(with_sv(json!({
+                    "error": "translation_failed",
+                    "reason": "translation_failed",
+                    "message": format!("El hilo de traducción falló: {}", join_err),
+                }))),
+            )
+                .into_response();
+        }
     };
-    use avi_core::engine::TranslationEngine;
-    match engines.ct2_engines[usize::from(pair == "en-es")].translate(&text) {
+    match outcome {
         Ok(translated) => Json(with_sv(json!({
             "translated": translated,
             "source_language": source,
             "target_language": target,
         })))
         .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(with_sv(json!({
-                "error": "translation_failed",
-                "reason": "translation_failed",
-                "message": e.to_string(),
-            }))),
-        )
-            .into_response(),
+        Err(e) => {
+            let status = if e.reason == "model_missing" {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            (
+                status,
+                Json(with_sv(json!({
+                    "error": e.reason,
+                    "reason": e.reason,
+                    "message": e.message,
+                }))),
+            )
+                .into_response()
+        }
     }
 }
 
@@ -1510,11 +1541,7 @@ async fn voices_clone_handler(
     // «precarga en caliente iniciada»). Sin almacén de trabajos ni expiración.
     let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
     tokio::spawn(async move {
-        emit_ndjson(
-            &tx,
-            json!({ "event": "started", "operation": "clonación", "name": name }),
-        )
-        .await;
+        emit_ndjson(&tx, json!({ "event": "started", "name": name })).await;
         #[cfg(feature = "native-denoise")]
         let mut permit = match denoise_admission {
             None => None,
@@ -1658,15 +1685,7 @@ async fn voices_clone_handler(
             )]
             let _ = warm_voice_engine(&warm_state, &warm_name);
         });
-        emit_ndjson(
-            &tx,
-            json!({
-                "event": "progress",
-                "stage": "warmup",
-                "message": "Precarga en caliente iniciada.",
-            }),
-        )
-        .await;
+        emit_ndjson(&tx, json!({ "event": "progress", "stage": "warmup" })).await;
         emit_ndjson(
             &tx,
             json!({
@@ -1797,7 +1816,7 @@ async fn dub_handler(
     if denoise {
         return denoise_unsupported_response();
     }
-    // Validaciones baratas ANTES del stream (JSON plano con los c�digos de
+    // Validaciones baratas ANTES del stream (JSON plano con los códigos de
     // siempre; `started` solo se emite cuando el trabajo pesado va a arrancar).
     // Los chequeos por parámetros (par, CT2, feature, modelo, voz) corren antes
     // de transcribir: con varios fallos a la vez gana el más barato de detectar,
@@ -1902,13 +1921,9 @@ async fn dub_handler(
         // contractual actual (`status: "dubbed"`). Sin almacén de trabajos.
         let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
         tokio::spawn(async move {
-            emit_ndjson(
-                &tx,
-                json!({ "event": "started", "operation": "doblaje", "voice": voice }),
-            )
-            .await;
+            emit_ndjson(&tx, json!({ "event": "started", "voice": voice })).await;
             // Limpieza de ruido DPDFNet (opt-in) antes de STT: toma de turno,
-            // conversi�n a 48 kHz, inferencia y vuelta a 16 kHz. El turno cubre
+            // conversión a 48 kHz, inferencia y vuelta a 16 kHz. El turno cubre
             // solo la inferencia DSP; se suelta antes de transcribir. Esta fase
             // emite heartbeats para que el cliente no la confunda con un atasco.
             #[cfg(feature = "native-denoise")]
@@ -1924,7 +1939,7 @@ async fn dub_handler(
                                 json!({
                                     "event": "error",
                                     "reason": "denoise_busy",
-                                    "message": "La limpieza de ruido est� ocupada; reintenta cuando termine la solicitud en curso.",
+                                    "message": "La limpieza de ruido está ocupada; reintenta cuando termine la solicitud en curso.",
                                 }),
                             )
                             .await;
@@ -1938,7 +1953,7 @@ async fn dub_handler(
                             json!({
                                 "event": "error",
                                 "reason": "denoise_busy",
-                                "message": "La limpieza de ruido est� ocupada; reintenta cuando termine la solicitud en curso.",
+                                "message": "La limpieza de ruido está ocupada; reintenta cuando termine la solicitud en curso.",
                             }),
                         )
                         .await;
@@ -1993,7 +2008,7 @@ async fn dub_handler(
                             json!({
                                 "event": "error",
                                 "reason": "denoise_failed",
-                                "message": format!("El hilo de limpieza fall�: {}", join_err),
+                                "message": format!("El hilo de limpieza falló: {}", join_err),
                             }),
                         )
                         .await;
@@ -2003,8 +2018,8 @@ async fn dub_handler(
             } else {
                 pcm
             };
-            // Transcripci�n en `spawn_blocking` con latidos (fase pesada: STT
-            // sobre el audio completo, ya limpio si se pidi� denoise).
+            // Transcripción en `spawn_blocking` con latidos (fase pesada: STT
+            // sobre el audio completo, ya limpio si se pidió denoise).
             let stt_state = state.clone();
             let stt_work = tokio::task::spawn_blocking(move || {
                 stt_state
@@ -2084,25 +2099,18 @@ async fn dub_handler(
                     let ct2_state = state.clone();
                     let text = transcribed.clone();
                     let translation_work = tokio::task::spawn_blocking(move || {
-                        use avi_core::engine::TranslationEngine;
-                        ct2_state.inference_engines.as_ref().map(|engines| {
-                            engines.ct2_engines[usize::from(pair == "en-es")].translate(&text)
-                        })
+                        translate_resident(&ct2_state, &pair, &text)
                     });
                     match with_heartbeats(&tx, "translate", translation_work).await {
                         None => return,
-                        Some(Ok(Some(Ok(t)))) => t,
-                        Some(Ok(None)) => {
-                            emit_ndjson(&tx, json!({"event": "error", "reason": "daemon_error", "message": "El estado de contrato no puede traducir."})).await;
-                            return;
-                        }
-                        Some(Ok(Some(Err(e)))) => {
+                        Some(Ok(Ok(t))) => t,
+                        Some(Ok(Err(e))) => {
                             emit_ndjson(
                                 &tx,
                                 json!({
                                     "event": "error",
-                                    "reason": "translation_failed",
-                                    "message": e.to_string(),
+                                    "reason": e.reason,
+                                    "message": e.message,
                                 }),
                             )
                             .await;
@@ -3174,6 +3182,53 @@ mod tests {
         (state, tmp)
     }
 
+    /// `translate_resident` clasifica los fallos sin motores: con el modelo ausente
+    /// del almacén informa `model_missing`; con el modelo provisionado pero un
+    /// estado sin motores residentes informa `daemon_error`. El almacén de
+    /// modelos es un directorio temporal propio, no la caché del usuario.
+    #[cfg(feature = "native-translation")]
+    #[test]
+    fn translate_resident_classifies_missing_model_and_missing_engines() {
+        let tmp = tempfile::tempdir().expect("directorio temporal");
+        let models = tmp.path().join("models");
+        let state_with = |store: ModelStore| {
+            DaemonState::assemble(
+                VoiceStore::at(tmp.path().join("voices")),
+                SpeechStore::at(tmp.path().join("speech")),
+                store,
+                DaemonEngines {
+                    tts_engine: Qwen3TtsEngine::new(None).expect("motor TTS sin binario"),
+                    registry: Arc::new(registry::DaemonRegistry::new(tmp.path().join("daemon"))),
+                    inference_engines: None,
+                },
+            )
+            .expect("estado de prueba")
+        };
+
+        let missing =
+            translate_resident(&state_with(ModelStore::at(models.clone())), "es-en", "hola")
+                .expect_err("sin snapshot no se puede traducir");
+        assert_eq!(missing.reason, "model_missing");
+
+        let store = ModelStore::at(models);
+        let snapshot = store
+            .model_snapshot_path("opus-mt-es-en")
+            .expect("el modelo tiene pin");
+        std::fs::create_dir_all(&snapshot).expect("snapshot de prueba");
+        for file in [
+            "config.json",
+            "model.bin",
+            "shared_vocabulary.json",
+            "source.spm",
+            "target.spm",
+        ] {
+            std::fs::write(snapshot.join(file), b"x").expect("fichero del snapshot");
+        }
+        let no_engines = translate_resident(&state_with(store), "es-en", "hola")
+            .expect_err("sin motores residentes no se puede traducir");
+        assert_eq!(no_engines.reason, "daemon_error");
+    }
+
     /// Router expone `/health` y endpoints `/translate`, `/voices/clone`, `/dub` (7 rutas públicas)
     #[test]
     fn build_router_exposes_new_endpoints() {
@@ -3859,11 +3914,8 @@ mod tests {
 
     /// El evento `started` de `/synthesize` mide `text_length` en caracteres: «canción»
     /// tiene 7 caracteres y 8 bytes. La temperatura fuera de rango cierra el stream
-    /// sin llegar al motor.
-    ///
-    /// El evento nombra además la operación con la clave `operation`, que es
-    /// lo que permite al cliente decir «Iniciando síntesis…» en vez de
-    /// anunciar una operación genérica.
+    /// sin llegar al motor. El evento no lleva texto humano: solo `event` y los
+    /// datos de la petición.
     #[tokio::test]
     async fn synthesize_start_event_counts_chars() {
         let (_, bytes) = post_json(
@@ -3881,7 +3933,8 @@ mod tests {
             .find(|ev| ev["event"] == "started")
             .expect("el stream emite el evento started");
         assert_eq!(start["text_length"], 7);
-        assert_eq!(start["operation"], "síntesis");
+        assert!(start.get("operation").is_none());
+        assert!(start.get("message").is_none());
     }
 
     /// Ningún mensaje del daemon lleva el prefijo que el cliente ya añade al

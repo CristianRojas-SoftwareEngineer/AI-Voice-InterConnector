@@ -479,14 +479,7 @@ async fn synthesize_emits_contract_ndjson_stream() {
         "el stream NDJSON debe comenzar con `started`"
     );
 
-    // Invariante: `started` nombra la operación con la clave `operation`, que
-    // es lo que permite al cliente anunciar «Iniciando síntesis…» en vez de
-    // una operación genérica.
-    assert_eq!(
-        events.first().unwrap()["operation"],
-        Value::String("síntesis".to_string()),
-        "`started` nombra la operación"
-    );
+    assert_events_carry_no_human_text(&events);
 
     // Invariante: evento final `error` por falta de motor.
     // El estado de contrato no tiene binario del motor, así que el evento final
@@ -663,18 +656,17 @@ async fn voices_clone_reference_over_limit_is_audio_too_long() {
     assert_eq!(actual["reason"], "audio_too_long");
 }
 
-/// El `started` de `/voices/clone` nombra la operación con la clave
-/// `operation`, que es lo que permite al cliente anunciar «Iniciando
-/// clonación…».
+/// El `started` de `/voices/clone` nombra la voz y no lleva texto humano: el
+/// cliente es el dueño de los textos de fase, así que no hay `operation` ni
+/// `message` que mostrar.
 ///
 /// La emisión del `started` ocurre **antes** del trabajo pesado, así que la
 /// prueba no necesita el motor: monta un estado con un modelo Base presente
 /// —su contenido no se usa, porque el clonado acabará fallando— y lee el
-/// primer evento del stream. Es la cobertura que falta para que la clave
-/// `operation` de esta ruta esté verificada fuera de la puerta que exige el
-/// modelo provisioned.
+/// primer evento del stream. Así la forma de `started` de esta ruta queda
+/// verificada fuera de la puerta que exige el modelo provisioned.
 #[tokio::test]
-async fn voices_clone_names_the_operation_in_the_started_event() {
+async fn voices_clone_started_event_names_the_voice_without_human_text() {
     let tmp = tempfile::Builder::new()
         .prefix("avi_daemon_clone_operation_")
         .tempdir()
@@ -719,16 +711,41 @@ async fn voices_clone_names_the_operation_in_the_started_event() {
         Value::String("started".to_string()),
         "el stream debe comenzar con `started`"
     );
-    assert_eq!(
-        started["operation"],
-        Value::String("clonación".to_string()),
-        "`started` nombra la operación"
-    );
+    assert_events_carry_no_human_text(&events);
     assert_eq!(
         started["name"],
         Value::String("viva_clonacion".to_string()),
         "`started` nombra la voz"
     );
+}
+
+/// Invariante del protocolo: los eventos del stream no llevan texto humano. El
+/// cliente es el dueño de los textos de fase, así que `started` no nombra la
+/// operación y ningún `progress` lleva `message` ni un `percent` inerte; solo
+/// la etapa en `stage`.
+fn assert_events_carry_no_human_text(events: &[Value]) {
+    for e in events {
+        match e["event"].as_str() {
+            Some("started") => {
+                assert!(
+                    e.get("operation").is_none(),
+                    "`started` sin `operation`: {e:?}"
+                );
+                assert!(e.get("message").is_none(), "`started` sin `message`: {e:?}");
+            }
+            Some("progress") => {
+                assert!(
+                    e.get("message").is_none(),
+                    "`progress` sin `message`: {e:?}"
+                );
+                assert!(
+                    e.get("percent").is_none(),
+                    "`progress` sin `percent`: {e:?}"
+                );
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Un WAV de un segundo de silencio: la cabecera que el handler mide antes
@@ -822,13 +839,7 @@ async fn voices_clone_daemon_precomputed_true() {
         Value::String("started".to_string()),
         "el stream debe comenzar con `started`"
     );
-    // `started` nombra la operación con la clave `operation`, que es lo que
-    // permite al cliente anunciar «Iniciando clonación…».
-    assert_eq!(
-        events.first().unwrap()["operation"],
-        Value::String("clonación".to_string()),
-        "`started` nombra la operación"
-    );
+    assert_events_carry_no_human_text(&events);
     assert_eq!(events.first().unwrap()["name"], Value::String(name.clone()));
     // Evento final `result` con la forma contractual actual (`precomputed: true`).
     let final_event = events.last().unwrap();
@@ -1244,11 +1255,10 @@ async fn dub_invalid_fields_return_usage_error() {
     }
 }
 
-/// `/dub` emite un stream NDJSON cuyo primer evento nombra la operación con
-/// la clave `operation`.
+/// `/dub` emite un stream NDJSON que empieza por `started` y cuyos eventos no
+/// llevan texto humano: el cliente es el dueño de los textos de fase.
 ///
-/// La clave permite al cliente decir «Iniciando doblaje…» en vez de
-/// anunciar una operación genérica. El motor TTS y la voz deben figurar como
+/// El motor TTS y la voz deben figurar como
 /// presentes para que `/dub` abra el stream; sus rutas ficticias impiden lanzar
 /// el motor real si la transcripción llega a la síntesis.
 ///
@@ -1258,7 +1268,7 @@ async fn dub_invalid_fields_return_usage_error() {
 /// contrato no carga Parakeet.
 #[cfg(feature = "native-stt")]
 #[tokio::test]
-async fn dub_emits_contract_ndjson_stream_naming_the_operation() {
+async fn dub_emits_contract_ndjson_stream_without_human_text() {
     let tmp = tempfile::tempdir().expect("directorio temporal del estado");
     let mut state = contract_state(tmp.path());
     let missing_engine = tmp.path().join("motor-inexistente");
@@ -1314,18 +1324,15 @@ async fn dub_emits_contract_ndjson_stream_naming_the_operation() {
         );
     }
 
-    // Invariante: el primer evento es `started` y nombra la operación.
+    // Invariante: el primer evento es `started`, y ningún evento lleva texto
+    // humano.
     let first = events.first().expect("debe haber un primer evento");
     assert_eq!(
         first["event"],
         Value::String("started".to_string()),
         "el stream NDJSON debe comenzar con `started`"
     );
-    assert_eq!(
-        first["operation"],
-        Value::String("doblaje".to_string()),
-        "`started` nombra la operación"
-    );
+    assert_events_carry_no_human_text(&events);
     let last = events.last().expect("debe haber un evento final");
     assert_eq!(last["reason"], "daemon_error");
 }
