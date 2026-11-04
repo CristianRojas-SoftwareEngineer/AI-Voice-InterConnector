@@ -30,16 +30,14 @@ use crate::faults::{self, FaultPoint};
 use crate::progress::PhaseProgress;
 use crate::removal::{retire, PathRemover, Retirement};
 use crate::{setup, LifecycleError};
-use avi_process::{
-    spawn_with_allowlist_env, OwnerToken, RestrictedSpawnRequest, Scheduling, StdinSpec,
-};
+use avi_process::{spawn_with_allowlist_env, RestrictedSpawnRequest, Scheduling, StdinSpec};
 use std::path::{Path, PathBuf};
 
 /// Variable interna con el PID del `self update` que lanza el traspaso.
 ///
-/// El `self install` del traspaso la lee para esperar a ese proceso al
-/// programar los restos del aparcado: es quien retiene los ficheros
-/// aparcados, porque su imagen sigue cargada desde el directorio de programa.
+/// El `self install` del traspaso la lee para esperar a ese proceso al retirar
+/// el aparcado: es quien lo retiene, porque su imagen sigue cargada desde el
+/// ejecutable aparcado.
 /// Interna: no figura en ninguna ayuda ni contrato.
 pub const HANDOVER_PARENT_PID_ENV: &str = "AVI_HANDOVER_PARENT_PID";
 
@@ -336,47 +334,11 @@ pub fn scheduled_staging_message(staging: &Path, scheduling: Scheduling) -> Stri
     }
 }
 
-/// Resultado de programar los restos del aparcado con el limpiador.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ScheduledLeftovers {
-    /// Rutas programadas con el limpiador, en el orden recibido.
-    pub scheduled: Vec<PathBuf>,
-    /// `true` si algún resto quedó dependiente del proceso anfitrión
-    /// ([`Scheduling::Attached`]) y puede sobrevivir a su cierre.
-    pub attached: bool,
-}
-
-/// Programa los restos del aparcado que sobrevivieron al commit con el
-/// limpiador propio, en vez de descartarlos.
-///
-/// `wait` es el proceso cuya muerte libera los restos (el viejo en el
-/// traspaso, el propio en el staging). Lo que el limpiador no borre queda para
-/// el barrido de la siguiente operación y su red (`doctor --repair`).
-pub fn schedule_leftovers(
-    leftovers: &[PathBuf],
-    remover: &dyn PathRemover,
-    wait: &OwnerToken,
-) -> ScheduledLeftovers {
-    // Programar no falla la operación: lo que el limpiador no acepte queda
-    // para el barrido de la siguiente operación, como el staging `Kept`.
-    let mut scheduled = Vec::with_capacity(leftovers.len());
-    let mut attached = false;
-    for leftover in leftovers {
-        if let Ok(scheduling) = remover.schedule(leftover, wait) {
-            scheduled.push(leftover.clone());
-            attached |= scheduling == Scheduling::Attached;
-        }
-    }
-    ScheduledLeftovers {
-        scheduled,
-        attached,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use avi_core::exit_codes::ExitCode;
+    use avi_process::OwnerToken;
 
     /// Un modelo rechazado por el Hub no se arregla reintentando: el mensaje no lo
     /// promete.
@@ -560,26 +522,6 @@ mod tests {
         let attached = scheduled_staging_message(staging, Scheduling::Attached);
         assert!(attached.starts_with(&detached));
         assert!(attached.contains("recuperación de la siguiente operación"));
-    }
-
-    /// Los restos del aparcado se programan con el limpiador en vez de
-    /// descartarse: lo programado es exactamente la lista que la
-    /// transacción no pudo borrar.
-    #[test]
-    fn transaction_leftovers_are_scheduled_not_discarded() {
-        let leftovers = vec![std::path::PathBuf::from("/program/.old-tx/old.exe")];
-        let scheduled = super::schedule_leftovers(
-            &leftovers,
-            &FakeRemover {
-                remove_ok: false,
-                schedule: Ok(()),
-            },
-            &OwnerToken::new(1234, "abc123").expect("token válido"),
-        );
-        assert_eq!(
-            scheduled.scheduled, leftovers,
-            "los restos deben programarse, no descartarse"
-        );
     }
 
     /// Los puntos del traspaso tienen nombre estable para las pruebas de

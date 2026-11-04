@@ -56,7 +56,7 @@ async fn install_twice_is_idempotent() {
     let options = Sandbox::install_options();
 
     // ── Primera instalación ─────────────────────────────────────────────────────
-    let first = install::install(&env, &options, &Inert)
+    let first = install::install(&env, &options, &Inert, &crate::install_env::RemovesNow)
         .await
         .expect("la primera instalación se completa");
     assert_eq!(first.mode, Mode::Install);
@@ -129,7 +129,7 @@ async fn install_twice_is_idempotent() {
     // primera pasada dejó de tener alrededor al mover el bundle.
     let _exe = sandbox.write_bundle(&sandbox.staging());
     let content_after_first = listing::list(&sandbox.program_dir);
-    let second = install::install(&env, &options, &Inert)
+    let second = install::install(&env, &options, &Inert, &crate::install_env::RemovesNow)
         .await
         .expect("la segunda instalación se completa");
 
@@ -235,6 +235,7 @@ async fn install_sets_bundled_ffmpeg_executable() {
         &sandbox.install_env(&exe),
         &Sandbox::install_options(),
         &Inert,
+        &crate::install_env::RemovesNow,
     )
     .await
     .expect("la instalación se completa");
@@ -318,9 +319,14 @@ async fn repair_from_inside_program_dir_copies_nothing() {
     let exe = sandbox.write_bundle(&sandbox.staging());
     let options = Sandbox::install_options();
 
-    install::install(&sandbox.install_env(&exe), &options, &Inert)
-        .await
-        .expect("la instalación inicial se completa");
+    install::install(
+        &sandbox.install_env(&exe),
+        &options,
+        &Inert,
+        &crate::install_env::RemovesNow,
+    )
+    .await
+    .expect("la instalación inicial se completa");
 
     // Se borra la integración: es exactamente lo que una reparación tiene que
     // reaplicar, y lo que un usuario ve cuando su perfil se sobrescribió.
@@ -354,7 +360,7 @@ async fn repair_from_inside_program_dir_copies_nothing() {
         Mode::Repair,
         "dentro del directorio de programa, el modo es reparación"
     );
-    let repair = install::install(&env, &options, &Inert)
+    let repair = install::install(&env, &options, &Inert, &crate::install_env::RemovesNow)
         .await
         .expect("la reparación se completa");
 
@@ -408,6 +414,7 @@ async fn bundle_outside_program_parent_is_installed_from_own_staging_copy() {
         &sandbox.install_env(&exe),
         &Sandbox::install_options(),
         &Inert,
+        &crate::install_env::RemovesNow,
     )
     .await
     .expect("la instalación desde un bundle ajeno se completa");
@@ -455,6 +462,7 @@ async fn bundle_without_required_files_is_rejected() {
         &sandbox.install_env(&exe),
         &Sandbox::install_options(),
         &Inert,
+        &crate::install_env::RemovesNow,
     )
     .await
     .expect_err("un bundle sin los archivos obligatorios no se instala");
@@ -497,9 +505,14 @@ async fn no_modify_path_leaves_path_untouched() {
         ..Sandbox::install_options()
     };
 
-    let outcome = install::install(&sandbox.install_env(&exe), &options, &Inert)
-        .await
-        .expect("la instalación se completa");
+    let outcome = install::install(
+        &sandbox.install_env(&exe),
+        &options,
+        &Inert,
+        &crate::install_env::RemovesNow,
+    )
+    .await
+    .expect("la instalación se completa");
     assert_eq!(outcome.path_integration, PathIntegration::none());
     assert!(!outcome.path_changed(), "no se cambió el `PATH`");
     assert!(
@@ -535,7 +548,7 @@ async fn integrated_install_announces_no_path_change() {
         "antes de integrar hay algo que anunciar"
     );
 
-    install::install(&before, &options, &Inert)
+    install::install(&before, &options, &Inert, &crate::install_env::RemovesNow)
         .await
         .expect("la primera instalación se completa");
 
@@ -548,7 +561,7 @@ async fn integrated_install_announces_no_path_change() {
         install::plan_path(&env, &options).is_noop(),
         "con la integración hecha no hay nada que cambiar"
     );
-    let second = install::install(&env, &options, &Inert)
+    let second = install::install(&env, &options, &Inert, &crate::install_env::RemovesNow)
         .await
         .expect("la segunda instalación se completa");
     let expected = if cfg!(windows) {
@@ -599,6 +612,7 @@ async fn foreign_path_is_conflict_and_installs_nothing() {
         &sandbox.install_env(&exe),
         &Sandbox::install_options(),
         &Inert,
+        &crate::install_env::RemovesNow,
     )
     .await
     .expect_err("una ruta ajena es conflicto");
@@ -669,9 +683,14 @@ async fn install_honors_and_releases_the_lifecycle_lock() {
     let usage = avi_lifecycle::lock::acquire_shared(&sandbox.program_dir)
         .expect("el comando de uso toma el bloqueo compartido");
     let before = state(&sandbox.root);
-    let err = install::install(&env, &Sandbox::install_options(), &Inert)
-        .await
-        .expect_err("la instalación no corre con un uso en curso");
+    let err = install::install(
+        &env,
+        &Sandbox::install_options(),
+        &Inert,
+        &crate::install_env::RemovesNow,
+    )
+    .await
+    .expect_err("la instalación no corre con un uso en curso");
     let failure = err
         .downcast_ref::<avi_lifecycle::LifecycleError>()
         .unwrap_or_else(|| panic!("el fallo declara un `reason`: {err:#}"));
@@ -679,11 +698,95 @@ async fn install_honors_and_releases_the_lifecycle_lock() {
     assert_eq!(state(&sandbox.root), before, "nada modificado");
     drop(usage);
 
-    install::install(&env, &Sandbox::install_options(), &Inert)
-        .await
-        .expect("sin uso en curso la instalación se completa");
+    install::install(
+        &env,
+        &Sandbox::install_options(),
+        &Inert,
+        &crate::install_env::RemovesNow,
+    )
+    .await
+    .expect("sin uso en curso la instalación se completa");
     drop(
         avi_lifecycle::lock::acquire_exclusive(&sandbox.program_dir)
             .expect("al terminar, el bloqueo exclusivo queda libre"),
+    );
+}
+
+/// Removedor que no puede borrar ya y registra cada programación con su destino y
+/// el proceso al que espera.
+#[cfg(windows)]
+#[derive(Default)]
+struct RecordingRemover {
+    scheduled: std::sync::Mutex<Vec<(std::path::PathBuf, avi_process::OwnerToken)>>,
+}
+
+#[cfg(windows)]
+impl avi_lifecycle::removal::PathRemover for RecordingRemover {
+    fn remove_now(&self, _path: &Path) -> anyhow::Result<()> {
+        anyhow::bail!("en uso")
+    }
+    fn schedule(
+        &self,
+        path: &Path,
+        wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<avi_process::Scheduling> {
+        self.scheduled
+            .lock()
+            .unwrap()
+            .push((path.to_path_buf(), wait.clone()));
+        Ok(avi_process::Scheduling::Detached)
+    }
+}
+
+/// Con un ejecutable del programa en uso, la instalación retira el aparcado como
+/// unidad: una sola programación, sobre la carpeta `.old-*` y esperando al proceso
+/// que la retiene, nunca una por archivo.
+#[cfg(windows)]
+#[tokio::test]
+async fn install_retires_the_parked_dir_once() {
+    let sandbox = Sandbox::new("aparcado-en-uso");
+    let exe = sandbox.write_bundle(&sandbox.staging());
+    install::install(
+        &sandbox.install_env(&exe),
+        &Sandbox::install_options(),
+        &Inert,
+        &crate::install_env::RemovesNow,
+    )
+    .await
+    .expect("la primera instalación se completa");
+    // Una imagen en ejecución dentro del programa: se puede aparcar, no borrar.
+    let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let holder = sandbox.program_dir.join("holder.exe");
+    std::fs::copy(
+        Path::new(&system).join("System32").join("ping.exe"),
+        &holder,
+    )
+    .unwrap();
+    let mut child = std::process::Command::new(&holder)
+        .args(["-n", "60", "127.0.0.1"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let exe = sandbox.write_bundle(&sandbox.staging());
+    let env = sandbox.install_env(&exe);
+    let remover = RecordingRemover::default();
+    let outcome = install::install(&env, &Sandbox::install_options(), &Inert, &remover).await;
+    let _ = child.kill();
+    let _ = child.wait();
+    let outcome = outcome.expect("la reinstalación se completa");
+
+    let scheduled = remover.scheduled.into_inner().unwrap();
+    assert_eq!(scheduled.len(), 1, "una sola retirada: {scheduled:?}");
+    let (target, wait) = &scheduled[0];
+    let name = target.file_name().unwrap().to_string_lossy().to_string();
+    assert_eq!(target.parent().unwrap(), sandbox.program_dir);
+    assert!(name.starts_with(".old-"), "se retira el aparcado: {name}");
+    assert_eq!(wait, &env.parked_holder, "espera al proceso que lo retiene");
+    assert_eq!(
+        outcome.parked,
+        Some(avi_lifecycle::removal::Retirement::Scheduled(
+            avi_process::Scheduling::Detached
+        ))
     );
 }

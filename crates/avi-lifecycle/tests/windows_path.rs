@@ -120,6 +120,7 @@ fn windows_install_uninstall_preserves_path_type_and_vars() {
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la instalación se completa");
     assert!(outcome.path_integrated(), "el `PATH` quedó integrado");

@@ -3906,10 +3906,10 @@ fn compose_update_status_envelope(
     })
 }
 
-/// Identidad del proceso por cuyo término espera el limpiador de los restos del
-/// aparcado. Lo fija `self update` al lanzar el traspaso (variable con su PID,
-/// cuyo inicio se observa aquí); sin traspaso (variable ausente) es el propio
-/// proceso, que termina enseguida. Una variable presente con un valor que no es
+/// Identidad del proceso que retiene el aparcado del reemplazo, por cuyo término
+/// espera su retirada. Lo fija `self update` al lanzar el traspaso (variable con
+/// su PID, cuyo inicio se observa aquí); sin traspaso (variable ausente) es el
+/// propio proceso, que termina enseguida. Una variable presente con un valor que no es
 /// un PID, o cuyo proceso ya no se puede observar, es un error: no se sustituye
 /// por el proceso propio.
 fn handover_wait_token() -> Result<avi_process::OwnerToken, CliError> {
@@ -3959,11 +3959,11 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
         } => {
             // Se valida antes de instalar nada: un valor inválido no deja una
             // instalación a medias.
-            let wait_token = handover_wait_token()?;
+            let parked_holder = handover_wait_token()?;
             let exe = std::env::current_exe().map_err(|e| {
                 CliError::new(ExitCode::Error, "self_install_failed", e.to_string())
             })?;
-            let env = lifecycle::install::Env::from_current_exe(exe, VERSION)
+            let env = lifecycle::install::Env::from_current_exe(exe, VERSION, parked_holder)
                 .map_err(lifecycle_error_to_cli)?;
             let options = lifecycle::install::Options {
                 assume_yes: yes,
@@ -3971,40 +3971,10 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 no_modify_path,
                 force,
             };
-            let outcome = lifecycle::install::install(&env, &options, &ProductProcesses)
-                .await
-                .map_err(lifecycle_error_to_cli)?;
-            // Restos del aparcado: el reemplazo no pudo borrarlos
-            // por estar en uso —los retiene el `self update` que lanzó este
-            // traspaso— y se programan con el limpiador en vez de descartarse.
-            // Sin traspaso no hay retenedor conocido: se espera al propio
-            // proceso, que termina enseguida, y lo no programado cae al barrido.
-            if !outcome.parked_leftovers.is_empty() {
-                let scheduled = lifecycle::update::schedule_leftovers(
-                    &outcome.parked_leftovers,
-                    &PlatformRemoval,
-                    &wait_token,
-                );
-                if scheduled.scheduled.len() == outcome.parked_leftovers.len() {
-                    eprintln!(
-                        "  el aparcado anterior se borrará al terminar el proceso que lo \
-                         retiene ({} ruta(s) programadas){}",
-                        scheduled.scheduled.len(),
-                        if scheduled.attached {
-                            ". Si el proceso que ejecuta el comando se cierra antes, lo \
-                             recoge la recuperación de la siguiente operación."
-                        } else {
-                            ""
-                        }
-                    );
-                } else {
-                    eprintln!(
-                        "  no se pudieron programar {} resto(s) del aparcado: los recogerá \
-                         la recuperación de la siguiente operación",
-                        outcome.parked_leftovers.len() - scheduled.scheduled.len()
-                    );
-                }
-            }
+            let outcome =
+                lifecycle::install::install(&env, &options, &ProductProcesses, &PlatformRemoval)
+                    .await
+                    .map_err(lifecycle_error_to_cli)?;
             // `setup_failed` es un **éxito parcial** —el programa está instalado y
             // lo único que falta es la provisión—, con código propio. No es un `CliError`:
             // el resumen final y el envelope se emiten igual, y lo único que cambia es

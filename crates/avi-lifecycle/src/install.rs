@@ -33,8 +33,10 @@ use crate::manifest;
 use crate::path_unix;
 use crate::progress::PhaseProgress;
 use crate::receipt::{self, InstallReceipt, PathIntegration, Roots};
+use crate::removal::{retire, PathRemover, Retirement};
 use crate::transaction;
 use crate::{confirm, privileges, quarantine, setup, target, LifecycleError};
+use avi_process::{OwnerToken, Scheduling};
 use std::path::{Path, PathBuf};
 
 /// Los dos modos de ejecución por posición del ejecutable. El tercero —
@@ -116,6 +118,10 @@ pub struct Env {
     /// Dirección a la que se conecta el protocolo de parada cuando no hay pidfile.
     /// Parámetro por lo mismo que en `daemon_stop::stop`.
     pub daemon_addr: String,
+    /// Proceso que retiene el aparcado del reemplazo: el `self update` viejo en un
+    /// traspaso, que sigue corriendo desde su ejecutable aparcado, o el propio en
+    /// una instalación directa. La retirada del aparcado espera a que termine.
+    pub parked_holder: OwnerToken,
 }
 
 impl Env {
@@ -131,7 +137,11 @@ impl Env {
     /// que `detect_mode` reconoce el directorio de programa aunque las dos rutas lleguen
     /// en formas distintas. Normalizarlo aquí además duplicaría esa regla y la dejaría
     /// fuera de sitio el día que aparezca otro consumidor.
-    pub fn from_current_exe(exe: PathBuf, product_version: &str) -> anyhow::Result<Self> {
+    pub fn from_current_exe(
+        exe: PathBuf,
+        product_version: &str,
+        parked_holder: OwnerToken,
+    ) -> anyhow::Result<Self> {
         let target = target::host_triple();
         target::ensure_supported(target)?;
         let program_dir = crate::install_dir().map_err(path_error)?;
@@ -168,6 +178,7 @@ impl Env {
             #[cfg(unix)]
             link_state,
             daemon_addr: daemon_stop::default_addr(),
+            parked_holder,
         })
     }
 }
@@ -322,10 +333,10 @@ pub struct Outcome {
     pub foreign_in_path: Option<PathBuf>,
     /// Archivos que la recuperación no pudo limpiar.
     pub recovery_kept: Vec<PathBuf>,
-    /// Restos del aparcado que el reemplazo transaccional (paso 6) no pudo
-    /// borrar por estar en uso. El llamador los programa con el limpiador;
-    /// vacío en reparación (sin reemplazo) y cuando nada quedó pendiente.
-    pub parked_leftovers: Vec<PathBuf>,
+    /// Cómo quedó el aparcado que el reemplazo transaccional (paso 6) no pudo
+    /// borrar por tener algo en uso, tras retirarlo como unidad. `None` en
+    /// reparación (sin reemplazo) y cuando nada quedó pendiente.
+    pub parked: Option<Retirement>,
 }
 
 impl Outcome {
@@ -398,7 +409,7 @@ impl Outcome {
             daemon: StopOutcome::default(),
             foreign_in_path: None,
             recovery_kept: Vec::new(),
-            parked_leftovers: Vec::new(),
+            parked: None,
         }
     }
 }
@@ -570,6 +581,7 @@ pub async fn install(
     env: &Env,
     options: &Options,
     control: &dyn ProcessControl,
+    remover: &dyn PathRemover,
 ) -> anyhow::Result<Outcome> {
     // Ninguna operación pide elevación: en Unix `sudo` aborta aquí, antes
     // de tocar el disco, y en Windows se avisa por stderr.
@@ -662,7 +674,7 @@ pub async fn install(
         // ── Paso 6. Reemplazo transaccional ───────────────────────────────────
         // En reparación **no se copia nada**: se reaplican integración, permisos,
         // cuarentena y recibo sobre lo que ya está.
-        let mut parked_leftovers = Vec::new();
+        let mut parked = None;
         if mode == Mode::Install {
             progress.phase("replacing", "Reemplazando el programa…");
             // El reemplazo parte siempre de un staging propio junto al programa, para
@@ -670,7 +682,17 @@ pub async fn install(
             // este bloque, haya salido bien o mal.
             let staged = OwnStaging::prepare(&env.program_dir, &bundle, &files)?;
             let outcome = transaction::replace(&env.program_dir, staged.dir())?;
-            parked_leftovers = outcome.leftovers;
+            // El aparcado que algo en uso impidió borrar se retira como unidad:
+            // lo retiene `parked_holder`, y cuando termine el limpiador borra la
+            // carpeta entera.
+            if let Some(dir) = outcome.pending_parked {
+                let retirement = retire(&dir, remover, &env.parked_holder);
+                if let Some(message) = parked_message(&dir, retirement) {
+                    progress.close_line();
+                    eprintln!("  {message}");
+                }
+                parked = Some(retirement);
+            }
         }
 
         // ── Paso 7. Cuarentena, en macOS ──────────────────────────────────────
@@ -712,7 +734,7 @@ pub async fn install(
         receipt::write_to(&receipt, &env.program_dir)?;
         Ok((
             daemon,
-            parked_leftovers,
+            parked,
             quarantine,
             path_integration,
             path_rewritten,
@@ -722,7 +744,7 @@ pub async fn install(
     .await;
     // El cierre no imprime estado: el mensaje final lo compone el propio flujo.
     let elapsed = progress.close();
-    let (daemon, parked_leftovers, quarantine, path_integration, path_rewritten, receipt) = work?;
+    let (daemon, parked, quarantine, path_integration, path_rewritten, receipt) = work?;
 
     // ── Paso 10. `setup` en el mismo proceso, salvo `--no-setup` ──────────────
     // El bloqueo exclusivo se retiene hasta aquí: `setup` descarga y purga modelos, y
@@ -764,8 +786,33 @@ pub async fn install(
         daemon,
         foreign_in_path,
         recovery_kept: recovery.kept,
-        parked_leftovers,
+        parked,
     })
+}
+
+/// Aviso de la retirada del aparcado, o `None` si se borró ya. Si el limpiador
+/// quedó dependiente del proceso anfitrión, añade que la recuperación de la
+/// siguiente operación recoge el resto.
+fn parked_message(parked: &Path, retirement: Retirement) -> Option<String> {
+    match retirement {
+        Retirement::Removed => None,
+        Retirement::Scheduled(scheduling) => {
+            let base = format!(
+                "el aparcado anterior se borrará al terminar el proceso que lo retiene: {}",
+                parked.display()
+            );
+            Some(match scheduling {
+                Scheduling::Detached => base,
+                Scheduling::Attached => format!(
+                    "{base}. Si el proceso que ejecuta el comando se cierra antes, lo recoge la recuperación de la siguiente operación."
+                ),
+            })
+        }
+        Retirement::Kept => Some(format!(
+            "no se pudo borrar {}: lo recogerá la recuperación de la siguiente operación",
+            parked.display()
+        )),
+    }
 }
 
 /// Aplica la tabla de confirmaciones. `stdin` y `stderr` se toman aquí porque son la
@@ -1494,8 +1541,12 @@ mod tests {
     /// del crate de librería: con una versión ficticia se distingue el origen.
     #[test]
     fn from_current_exe_stamps_product_version() {
-        let env = Env::from_current_exe(PathBuf::from("/opt/staging/exe"), "9.9.9")
-            .expect("el entorno se construye");
+        let env = Env::from_current_exe(
+            PathBuf::from("/opt/staging/exe"),
+            "9.9.9",
+            avi_process::current_owner_token().unwrap(),
+        )
+        .expect("el entorno se construye");
         assert_eq!(env.version, "9.9.9");
         assert_ne!(env.version, env!("CARGO_PKG_VERSION"));
     }
@@ -1558,6 +1609,7 @@ mod tests {
             #[cfg(unix)]
             link_state: path_unix::Existing::Absent,
             daemon_addr: "127.0.0.1:1".to_string(),
+            parked_holder: avi_process::current_owner_token().unwrap(),
         }
     }
 

@@ -403,6 +403,7 @@ fn interrupted_transaction_is_recovered_next_run() {
                 &s2.install_env(&exe),
                 &Sandbox::install_options(),
                 &Inert,
+                &crate::install_env::RemovesNow,
             ))
             .expect("la operación siguiente se completa");
         assert_eq!(
@@ -484,6 +485,7 @@ fn interrupted_install_recovers_next_run() {
                 &sandbox.install_env(&exe),
                 &Sandbox::install_options(),
                 &Inert,
+                &crate::install_env::RemovesNow,
             ))
             .expect_err("el punto inyectado hace fallar la operación");
         drop(window);
@@ -517,6 +519,7 @@ fn interrupted_install_recovers_next_run() {
                 &sandbox.install_env(&exe),
                 &Sandbox::install_options(),
                 &Inert,
+                &crate::install_env::RemovesNow,
             ))
             .expect("la operación siguiente se completa");
         assert_eq!(installed.status, "installed");
@@ -560,6 +563,7 @@ fn fault_injection_is_inert_without_the_feature() {
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("sin el feature, armar un punto no interrumpe nada");
     drop(window);

@@ -19,9 +19,10 @@
 //!    renombrado —el staging es hermano del directorio de programa, luego es el
 //!    mismo volumen, y es de uso exclusivo de esta operación—, salvo el ejecutable que está corriendo, que se copia.
 //! 3. **Ajustar permisos**: en Unix, 0755 para ejecutables y 0644 para el resto.
-//! 4. **Confirmar**: marcar el diario como confirmado y borrar el aparcado.
-//!    Lo que no se pueda borrar por estar en uso queda para el borrado diferido
-//!    (borrado diferido), que impide que el commit falle por un archivo abierto.
+//! 4. **Confirmar**: marcar el diario como confirmado y borrar el aparcado. Si
+//!    algo de dentro sigue en uso, el aparcado se devuelve entero como pendiente
+//!    y quien lo retira es el llamador, como unidad: un archivo abierto no hace
+//!    fallar el commit.
 //! 5. **Revertir** si falla el paso 2 o el 3: retirar lo colocado, restaurar lo
 //!    aparcado, borrar el diario → `rolled_back`.
 //!
@@ -94,9 +95,9 @@ pub struct ReplaceOutcome {
     pub program_dir: PathBuf,
     /// Rutas relativas colocadas, en el orden en que se colocaron.
     pub placed: Vec<String>,
-    /// Del aparcado que no se pudo borrar por estar en uso. No es un fallo: queda
-    /// para el borrado diferido y la recuperación lo recoge.
-    pub leftovers: Vec<PathBuf>,
+    /// El aparcado, si no se pudo borrar por tener algo en uso. No es un fallo:
+    /// el llamador lo retira como unidad y, si no puede, lo recoge la recuperación.
+    pub pending_parked: Option<PathBuf>,
 }
 
 /// Ruta del diario en el directorio de programa.
@@ -214,17 +215,10 @@ fn run(
     journal.state = JournalState::Committed;
     write_journal(program_dir, journal)?;
 
-    let mut leftovers = Vec::new();
-    if parked.exists() {
-        match std::fs::remove_dir_all(parked) {
-            Ok(()) => {}
-            Err(_) => {
-                // Borrado diferido: lo que el SO no deja borrar, por estar
-                // en uso, no impide el commit.
-                leftovers = leftovers_in(parked);
-            }
-        }
-    }
+    // Lo que el SO no deja borrar, por estar en uso, no impide el commit: el
+    // aparcado entero queda pendiente para el llamador.
+    let pending_parked =
+        (parked.exists() && std::fs::remove_dir_all(parked).is_err()).then(|| parked.to_path_buf());
     // La transacción ya está confirmada: un diario que no se pueda borrar no la
     // revierte. Se avisa, y la recuperación lo completa como commit.
     if let Err(e) = remove_journal(program_dir) {
@@ -238,7 +232,7 @@ fn run(
         txid: journal.txid.clone(),
         program_dir: program_dir.to_path_buf(),
         placed,
-        leftovers,
+        pending_parked,
     })
 }
 
@@ -358,19 +352,6 @@ fn fix_permissions(program_dir: &Path, placed: &[String]) -> anyhow::Result<()> 
 #[cfg(not(unix))]
 fn fix_permissions(_program_dir: &Path, _placed: &[String]) -> anyhow::Result<()> {
     Ok(())
-}
-
-/// Devuelve lo que queda dentro de un directorio que no se pudo borrar, para
-/// informarlo como borrado diferido.
-fn leftovers_in(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            out.push(entry.path());
-        }
-    }
-    out.sort();
-    out
 }
 
 /// Revierte la transacción: retira lo colocado, restaura lo aparcado y borra el
@@ -569,6 +550,53 @@ mod tests {
         out
     }
 
+    /// Un ejecutable en ejecución dentro del programa se puede aparcar pero no
+    /// borrar: el commit no falla y devuelve el aparcado entero como pendiente,
+    /// no los archivos de dentro.
+    #[cfg(windows)]
+    #[test]
+    fn running_executable_leaves_whole_parked_dir_pending() {
+        let dir = scratch("txn-in-use");
+        let triple = target::host_triple();
+        let executable = manifest::target_section(triple).unwrap().executable;
+        let program = dir.join("program");
+        let source = dir.join("staging");
+        std::fs::create_dir_all(&program).unwrap();
+        bundle(&source, "v2");
+        write_file(&program.join(&executable), "v1");
+        // Una imagen en ejecución admite renombrarse y no borrarse, como el
+        // `self update` viejo que retiene su ejecutable durante el traspaso.
+        let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let holder = program.join("holder.exe");
+        std::fs::copy(
+            Path::new(&system).join("System32").join("ping.exe"),
+            &holder,
+        )
+        .unwrap();
+        let mut child = std::process::Command::new(&holder)
+            .args(["-n", "60", "127.0.0.1"])
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+
+        let outcome = replace(&program, &source);
+        // Se libera la imagen antes de comprobar, también si `replace` falló.
+        let _ = child.kill();
+        let _ = child.wait();
+        let outcome = outcome.unwrap();
+        let parked_dirs = parked(&program);
+        assert_eq!(parked_dirs.len(), 1, "queda exactamente un aparcado");
+        assert_eq!(
+            outcome.pending_parked,
+            Some(program.join(&parked_dirs[0])),
+            "pendiente es el aparcado como unidad"
+        );
+        assert_eq!(
+            std::fs::read_to_string(program.join(&executable)).unwrap(),
+            "v2"
+        );
+    }
+
     /// Un reemplazo confirmado deja el bundle nuevo completo, sin aparcado y sin
     /// diario, y el origen se queda vacío porque la colocación es un renombrado.
     #[test]
@@ -584,7 +612,7 @@ mod tests {
         write_file(&program.join("LICENSE"), "licencia vieja");
 
         let outcome = replace(&program, &source).unwrap();
-        assert!(outcome.leftovers.is_empty(), "el SO no tiene nada en uso");
+        assert_eq!(outcome.pending_parked, None, "el SO no tiene nada en uso");
         assert!(outcome.placed.contains(&executable));
         assert!(parked(&program).is_empty(), "sin aparcados");
         assert_eq!(
@@ -713,7 +741,7 @@ mod tests {
             // cerró al terminar la aserción del fallo inyectado, así que este
             // reintento corre sin ningún punto armado.
             let outcome = replace(&program, &source).unwrap();
-            assert!(outcome.leftovers.is_empty());
+            assert_eq!(outcome.pending_parked, None);
             assert_eq!(
                 std::fs::read_to_string(program.join(&executable)).unwrap(),
                 "v2",

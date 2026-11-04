@@ -227,6 +227,7 @@ fn install_places_only_the_manifest_files_from_a_cluttered_bundle_dir() {
             &sandbox.install_env(&exe),
             &options,
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la instalación se completa");
     assert_eq!(outcome.status, "installed");
@@ -270,6 +271,7 @@ fn install_twice_is_idempotent() {
             &sandbox.install_env(&exe),
             &options,
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la primera instalación se completa");
     assert_eq!(first.status, "installed", "la primera pasada instala");
@@ -293,6 +295,7 @@ fn install_twice_is_idempotent() {
             &sandbox.install_env(&exe),
             &options,
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la segunda instalación se completa");
 
@@ -409,6 +412,7 @@ fn final_summary_reports_the_path_state_once() {
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la primera instalación se completa");
     assert!(
@@ -445,6 +449,7 @@ fn final_summary_reports_the_path_state_once() {
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la segunda instalación se completa");
     assert!(!second.path_changed());
@@ -473,6 +478,7 @@ fn final_summary_reports_the_path_state_once() {
                 ..Sandbox::install_options()
             },
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la instalación con `--no-modify-path` se completa");
     let lines = summary_lines(&without_path.summary);
@@ -527,6 +533,7 @@ fn no_setup_provisions_nothing() {
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la instalación se completa");
 
@@ -624,6 +631,7 @@ fn setup_failure_keeps_install() {
             &sandbox.install_env(&exe),
             &options,
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("un fallo de `setup` no es un fallo de la instalación");
 
@@ -789,6 +797,7 @@ fn successful_provisioning_has_no_reason() {
                 ..Sandbox::install_options()
             },
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la instalación se completa");
 
@@ -867,6 +876,7 @@ fn uninstall_leaves_no_residue() {
             &sandbox.install_env(&exe),
             &options,
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la instalación se completa");
     assert_eq!(installed.status, "installed");

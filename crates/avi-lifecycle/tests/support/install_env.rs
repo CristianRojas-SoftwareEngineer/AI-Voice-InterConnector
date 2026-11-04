@@ -63,6 +63,28 @@ impl Sandbox {
             ),
             // Puerto donde no hay nada: la parada del daemon es un no-op.
             daemon_addr: dead_port(),
+            // Sin traspaso: el aparcado lo retiene el propio proceso.
+            parked_holder: avi_process::current_owner_token().expect("token del proceso"),
         }
+    }
+}
+
+/// Removedor que borra ya y no sabe programar: en las pruebas nada queda en uso,
+/// así que el aparcado siempre se borra en el acto.
+pub struct RemovesNow;
+
+impl avi_lifecycle::removal::PathRemover for RemovesNow {
+    fn remove_now(&self, path: &Path) -> anyhow::Result<()> {
+        if path.exists() {
+            std::fs::remove_dir_all(path)?;
+        }
+        Ok(())
+    }
+    fn schedule(
+        &self,
+        _path: &Path,
+        _wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<avi_process::Scheduling> {
+        anyhow::bail!("las pruebas no programan borrados diferidos")
     }
 }

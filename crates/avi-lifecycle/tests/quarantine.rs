@@ -382,6 +382,7 @@ async fn install_strips_quarantine_from_whole_program_dir() {
             ..Sandbox::install_options()
         },
         &Inert,
+        &crate::install_env::RemovesNow,
     )
     .await
     .expect("la instalación se completa");

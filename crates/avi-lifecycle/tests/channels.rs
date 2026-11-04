@@ -104,6 +104,7 @@ fn channels_behave_per_spec() {
             &sandbox.install_env(&from_staging),
             &Sandbox::install_options(),
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("`self install` desde fuera de una instalación instala");
     assert_eq!(
@@ -119,6 +120,7 @@ fn channels_behave_per_spec() {
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la segunda pasada se completa");
     assert_eq!(second.receipt.channel, Channel::Script);

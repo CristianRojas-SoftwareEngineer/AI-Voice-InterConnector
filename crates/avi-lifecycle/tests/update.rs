@@ -520,6 +520,7 @@ fn interrupted_update_leaves_installed_version_operational() {
             &sandbox.install_env(&exe),
             &Sandbox::install_options(),
             &Inert,
+            &crate::install_env::RemovesNow,
         ))
         .expect("la operación siguiente se completa");
     assert_eq!(installed.receipt.version, "0.24.0");
