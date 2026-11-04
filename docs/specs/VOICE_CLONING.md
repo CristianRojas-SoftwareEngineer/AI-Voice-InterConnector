@@ -365,7 +365,8 @@ async fn clone_via_daemon(
         CliError::new(ExitCode::Error, "daemon_protocol_error", "Falta campo 'speech'")
     })?;
     let precomputed = val["precomputed"].as_bool().ok_or_else(|| CliError::new(ExitCode::Error, "daemon_error", "El daemon no devolvió 'precomputed' en la clonación."))?;
-    Ok((cloned_name.to_string(), cloned_speech.to_string(), precomputed))
+    let removed_speech = string_array(&val["removed_speech"]).ok_or_else(|| CliError::new(ExitCode::Error, "daemon_error", "El daemon no devolvió 'removed_speech' en la clonación."))?;
+    Ok((cloned_name.to_string(), cloned_speech.to_string(), precomputed, removed_speech))
 }
 ```
 
