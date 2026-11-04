@@ -57,7 +57,7 @@ cargo run -- voice list
 los gestores del sistema (con `sudo` o UAC), así que solo se usa cuando se pide
 de forma explícita.
 
-El origen de las voces se explica en [docs/DESIGN.md](docs/DESIGN.md#modelo-de-voces-de-dos-niveles).
+El origen de las voces se explica en [docs/DESIGN.md](docs/DESIGN.md#modelo-de-voces).
 
 ### Hooks de git (`core.hooksPath`, opt-in por clon)
 

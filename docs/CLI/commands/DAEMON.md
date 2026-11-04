@@ -18,6 +18,8 @@ El daemon es un servidor `Axum` (`crates/avi-daemon`) que mantiene los modelos Q
 
 **`--warm-voice <nombre>` (default `default`):** selecciona qué voz precalienta el daemon al arranque en vez de forzar `default` (el residente TTS es de una sola voz). `start` lo propaga al `serve` que respawnea (`spawn_background` anexa `--warm-voice`); `restart` calienta siempre `default`. Validación *temprana*: el arranque valida la voz y enlaza el puerto **antes de cargar los modelos**. Si la voz no existe sale con exit 3 `voice_not_found` (no degrada en silencio ni cae a `default`); si el puerto está ocupado sale con exit 6 `port_in_use`; en ambos casos al instante, sin esperar el deadline de arranque.
 
+**Qué voz tiene cargada el residente y cuándo se reutiliza.** El residente TTS carga una sola voz. Cada petición de síntesis (`/synthesize`, `/dub` y el precalentamiento) resuelve la voz en el almacén con `VoiceStore::resolve`, que devuelve la referencia clonada con la identidad de su contenido: la ruta del `reference.qvoice` y su huella sha256. El residente se reutiliza solo si la voz pedida es el mismo preset o una voz clonada con la misma identidad de contenido; con cualquier otra, incluida la misma voz re-clonada con el mismo nombre (misma ruta, otra huella), se termina el residente anterior y se arranca otro con `--load-voice`. Calcular la huella lee el `reference.qvoice` completo en cada resolución: con un `.qvoice` de 16,8 MB cuesta 14 ms de media en el build release (de 11 a 12 ms con el archivo en la caché del sistema y unos 34 ms en la primera lectura). El residente no se desaloja al eliminar una voz: la siguiente síntesis de otra voz lo reemplaza.
+
 ## Despacho del handler
 
 `handle_daemon(json_mode, action)` (despachador principal del daemon):

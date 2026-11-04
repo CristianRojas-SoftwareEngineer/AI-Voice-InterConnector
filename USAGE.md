@@ -282,6 +282,9 @@ clave sería redundante.
 | `name` | string | Nombre de la voz registrada |
 | `speech` | string | Ruta absoluta del `.qvoice` generado (`reference.qvoice`) |
 | `precomputed` | boolean | Ruta local: siempre `false` (motor efímero, sin residente que calentar). Ruta daemon: `true` (warm-on-clone iniciado; completitud en `GET /health`) |
+| `removed_speech` | array de strings | Etiquetas de las locuciones que se borraron al sobrescribir la voz con `--force` (`[]` si no tenía) |
+
+Si el usuario cancela la confirmación de `--force`, la salida es `{"status": "cancelled", "name": "<nombre>", "removed_speech": []}`.
 
 **`voice remove --json`**
 
@@ -441,10 +444,15 @@ Síntesis completada: <ruta del WAV persistido> (N s).
 - `--json`: Emite `{status, audio_path, voice}`
 
 **Colisión de etiqueta:** sin `--force`, guardar sobre una etiqueta que ya
-existe para la voz sale con exit **6**, sin pagar la síntesis (la comprobación es
-previa). Con `--play`, la etiqueta se revalida también al
-aceptar, por si quedó ocupada mientras el bucle esperaba una respuesta;
-`--force` sobre una etiqueta libre es un no-op.
+existe para la voz sale con exit **6** y `reason` `label_exists`, sin pagar la
+síntesis (la comprobación es previa). La etiqueta se revalida también al guardar,
+por si quedó ocupada mientras se sintetizaba o el bucle de `--play` esperaba una
+respuesta; `--force` sobre una etiqueta libre es un no-op.
+
+**Voz cambiada durante la síntesis:** la locución se guarda solo si la voz sigue
+siendo la misma con la que se sintetizó. Si se re-clonó o se eliminó mientras
+tanto, no se guarda nada y sale con exit **6** y `reason` `voice_changed`: repite
+la síntesis.
 
 **El bucle de `--play`:** con `--play`, tras sintetizar el audio se reproduce
 y aparece un menú de cuatro opciones (por stderr; `--json` es incompatible con
@@ -498,12 +506,14 @@ no dice ruta; quien quiera el fichero en disco usa `speech synthesize`, que lo
 persiste y sí devuelve su `audio_path`. `say` es humo de punta a punta, sin
 puerta de calidad sobre lo que sonó.
 
-**Orígenes de voz (resolución usuario→fábrica):**
-- **Fábrica**: voz `default` embebida en el binario (`crates/avi-store/assets/default/`),
-  materializada en el primer uso; de solo lectura.
-- **Usuario**: voces registradas con `voice clone` (`.qvoice`), escribibles,
-  guardadas en `data_dir()/voices/<nombre>/`. Una voz de usuario con el mismo
-  nombre que una de fábrica la sobrescribe.
+**Orígenes de voz:** todas las voces viven en `data_dir()/voices/<nombre>/`, en
+un único nivel.
+- **Fábrica**: `default`, clonada, cuyo `reference.qvoice` va embebido en el
+  binario (`crates/avi-store/assets/default/`) y se materializa en el primer uso,
+  y los presets `ryan` y `vivian`, sin referencia. No se pueden eliminar.
+- **Usuario**: voces registradas con `voice clone` (`reference.qvoice`).
+  `voice clone --force` con el nombre de una voz existente, de fábrica incluida,
+  sustituye su referencia en el mismo directorio.
 
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
@@ -773,7 +783,16 @@ desde disco, sin volver a procesar los audios de referencia. Por eso `voice clon
 requiere el modelo Base provisionado (`ai-voice-interconnector setup`).
 Si hay un [daemon](#modo-daemon) activo, el clonado corre en él y además precalienta
 la voz nueva en segundo plano (`"precomputed": true` con `--json`); en modo directo
-`precomputed` es siempre `false`.
+`precomputed` es siempre `false`. El daemon reutiliza su motor residente solo
+mientras la voz conserva el mismo contenido, así que una voz re-clonada con el
+mismo nombre se recarga en la siguiente síntesis.
+
+**Re-clonar una voz reemplaza también sus locuciones.** Las locuciones guardadas
+con `speech synthesize` se grabaron con el contenido anterior de la voz, así que
+`--force` las borra y el resultado las nombra (`removed_speech` con `--json`). Si
+la voz tiene locuciones, el comando muestra el plan y pide confirmación antes de
+capturar o clonar; sin terminal exige `--yes`, y sin él sale con exit 2
+(`confirmation_required`) sin cambiar nada.
 
 Si la referencia no es un WAV válido o está truncada, el comando termina con el
 código `invalid_audio` (exit 2) y no registra la voz; si falla la lectura del
@@ -782,7 +801,8 @@ archivo, con `io_error` (exit 1); si falla el propio clonado, con `voice_clone_f
 **Opciones:**
 - `--name, -n` (requerido): Nombre para la voz
 - `--speech-reference, -s` (requerido): Audio de referencia de habla (10+ segundos de habla limpia); es el único audio de referencia
-- `--force, -f`: Sobrescribir la voz si ya existe (incluida una de fábrica homónima)
+- `--force, -f`: Sobrescribir la voz si ya existe (incluida una de fábrica homónima); borra también sus locuciones guardadas
+- `--yes, -y`: No pedir confirmación al borrar las locuciones de la voz sobrescrita
 - `--daemon` / `--no-daemon`: igual que en las sub-acciones de `speech`;
   con `--daemon` el precómputo aprovecha el modelo caliente; sin flags se
   sondea el daemon y se usa solo si responde
@@ -1022,7 +1042,7 @@ Puerto ocupado: si otro proceso usa o reserva el puerto del daemon, `daemon star
 
 Trazas y logs: `RUST_LOG` (sintaxis de `tracing`) fija el nivel de traza de la CLI y de `daemon serve` y manda sobre los valores por defecto; sin ella, la CLI muestra `warn` y superiores (trazas `info`, como la descarga de `setup`, se piden con `RUST_LOG=info`) y el daemon registra `info` de los crates propios. Cada `daemon start`/`restart` escribe `data/logs/daemon_<pid>_<ms>.log` (con el PID del daemon hijo) y, si el arranque falla, el error termina con `Log del daemon: <ruta>`. El motor de síntesis escribe en `data/logs/qwen3-tts_<pid>_<ms>.log`, y la salida de `voice clone` no se vuelca en la terminal. Se conservan los 10 logs más recientes de cada familia, y un log cuyo PID corresponde a un proceso vivo se conserva siempre.
 
-Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior.
+Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz y se reutiliza solo con el mismo preset o con una voz clonada del mismo contenido: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior, y re-clonar una voz con el mismo nombre la recarga.
 
 `daemon stop` responde `Señal de apagado enviada al daemon en <addr> (N s).` —o `No había daemon que detener (N s).` si no había ninguno en marcha, porque decir que se detuvo algo que no corría sería mentir— (parada unificada de daemon y residente con verificación y borrado de `daemon.pid` y `daemon.ready`; si el residente registrado sigue vivo, la parada no se da por completa y sale por veredicto con `still_running` y exit 5, sin borrar la pista) y `daemon restart` hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo.
 
@@ -1078,7 +1098,7 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav
 
 # 2b. Con --json, el único artefacto que se guarda
 ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav --json
-# → {"name":"mi_voz","speech":"…/voices/mi_voz/reference.qvoice","precomputed":false}
+# → {"name":"mi_voz","speech":"…/voices/mi_voz/reference.qvoice","precomputed":false,"removed_speech":[]}
 
 # 3. Verifica que aparece
 ai-voice-interconnector voice list
@@ -1220,6 +1240,9 @@ ai-voice-interconnector voice list
 ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav --force
 ```
 
+Si la voz tiene locuciones guardadas, `--force` las borra con ella y pide
+confirmación; en un script, añade `--yes`.
+
 ### "El modelo Base de clonado TTS no está provisionado"
 
 `voice clone` requiere el modelo Base, que `setup` provisiona siempre. Sin
@@ -1234,8 +1257,8 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.w
 
 Las voces de fábrica (`default`, `ryan`, `vivian`) no pueden eliminarse con
 `voice remove`: el comando sale con exit 2 y el código `cannot_remove_default`.
-Si quieres reemplazar su sonido, clona una voz de usuario con el mismo nombre
-usando `voice clone --force`: la tuya toma precedencia.
+Si quieres reemplazar su sonido, vuelve a clonarla con el mismo nombre usando
+`voice clone --force`: su referencia se sustituye en el mismo directorio.
 
 ### Sin audio de salida
 

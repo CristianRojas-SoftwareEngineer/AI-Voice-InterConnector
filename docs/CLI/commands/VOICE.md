@@ -19,7 +19,7 @@ contra `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`).
 
 ```
 ai-voice-interconnector voice list
-ai-voice-interconnector voice clone --name NAME (--speech-reference FILE | --mic [--duration SECONDS]) [--force] [--denoise] [--daemon|--no-daemon]
+ai-voice-interconnector voice clone --name NAME (--speech-reference FILE | --mic [--duration SECONDS]) [--force [--yes]] [--denoise] [--daemon|--no-daemon]
 ai-voice-interconnector voice remove --name NAME [--yes]
 ```
 
@@ -36,7 +36,8 @@ ai-voice-interconnector voice remove --name NAME [--yes]
 | `--mic` | flag | una fuente | Captura PCM a 16 kHz mono int16 desde el micrófono |
 | `--duration` | segundos | no | Solo con `--mic`; 1–30 segundos. Sin duración requiere TTY y usa push-to-talk con límite de 30 s si `AVI_PUSH_TO_TALK_MAX_SECS` no está definida; un valor explícito inválido produce `usage_error` y mayor de 30 produce `audio_too_long` |
 | `--denoise` | flag | no | Limpia la referencia antes de extraer la huella vocal; requiere `native-denoise` y el modelo DPDFNet provisionado. La opción no garantiza por sí misma preservación de identidad vocal; esa calidad no ha sido evaluada en una prueba humana controlada |
-| `--force, -f` | flag | no | Sobrescribe una voz existente con el mismo nombre |
+| `--force, -f` | flag | no | Sobrescribe una voz existente con el mismo nombre y borra sus locuciones guardadas, grabadas con el contenido anterior |
+| `--yes, -y` | flag | no | Omite la confirmación cuando la voz sobrescrita tiene locuciones guardadas |
 | `--daemon` / `--no-daemon` | flag | no | Despacho tri-modal; mutuamente excluyentes |
 
 **`voice remove`** (`src/main.rs`):
@@ -70,7 +71,10 @@ Validar nombre y la fuente según su origen
     ▼
 Resolver destino una vez
     │
-    └─ Mic + !force (local o daemon): VoiceStore::exists antes de capturar (voice_exists)
+    ├─ !force (archivo o mic, local o daemon): VoiceStore::exists antes de capturar (voice_exists)
+    │
+    └─ force con locuciones guardadas (local o daemon): confirmación destructiva
+                  antes de capturar (sin terminal y sin --yes → confirmation_required)
     │
     ▼
 Capturar PCM (mic), recortar sobre 480000 muestras y codificar WAV 16 kHz mono int16
@@ -78,19 +82,21 @@ Capturar PCM (mic), recortar sobre 480000 muestras y codificar WAV 16 kHz mono i
     ├─ Daemon ─► bytes WAV en memoria / archivo original → base64 → POST /voices/clone
     │               denoise: true cuando aplica; sin fallback a local
     │               HTTP/NDJSON y errores conservan el contrato existente
-    │               resultado {name, speech, precomputed:true}
+    │               resultado {name, speech, precomputed:true, removed_speech}
     │
     └─ Local ──► mic: avi_process::scratch::temp_wav con guard RAII
                   archivo: ruta WAV original
                   denoise CLI una vez, si se solicitó
                   require_model_provisioned() → avi_tts::clone_voice
-                  voice_store.save_reference → reference.qvoice
-                  resultado {name, speech, precomputed:false}
+                  avi_store::replace_voice → reference.qvoice + borra speech/<voz>/
+                  resultado {name, speech, precomputed:false, removed_speech}
 ```
 
 **La salida del motor no se vuelca en la terminal**, ni en la ruta directa ni en la del daemon: el motor de clonado escribe en `data/logs/qwen3-tts_<token>_<ms>.log` (`<token>` identifica al proceso que lo crea: la CLI en la ruta directa, el daemon en la otra), con retención de los 10 más recientes. Cuando el clonado falla, el error `voice_clone_failed` termina con `Log del motor: <ruta>`.
 
-La duración `0` y `--mic` sin duración fuera de TTY producen exit 2 `usage_error`; más de 30 s produce exit 2 `audio_too_long`. Con `--mic` y sin `--force`, una colisión del `VoiceStore` se detecta antes de abrir el micrófono, en las dos rutas, con exit 6 `voice_exists`; el daemon conserva su propia comprobación (`409`) como defensa. `--denoise` se aplica en CLI para local y en el servidor para daemon, una sola vez.
+La duración `0` y `--mic` sin duración fuera de TTY producen exit 2 `usage_error`; más de 30 s produce exit 2 `audio_too_long`. Sin `--force`, una colisión del `VoiceStore` se detecta con cualquier fuente antes de abrir el micrófono o leer la referencia, en las dos rutas, con exit 6 `voice_exists`; el daemon conserva su propia comprobación (`409`) como defensa.
+
+**Re-clonar reemplaza la voz y sus locuciones.** Las locuciones de `speech/<voz>/` se grabaron con el contenido anterior de la voz, así que `--force` las borra junto con él. Si la voz sobrescrita tiene locuciones, la CLI aplica la misma confirmación que `voice remove` antes de capturar o clonar, en las dos rutas: imprime a stderr el plan (la voz y sus locuciones, con rutas y tamaños) y, con terminal, pregunta `[s/N]`. Sin terminal exige `--yes`; sin él sale con exit 2 `confirmation_required` y no cambia nada. Responder que no sale con exit 0 e imprime `Cancelado.` por stderr; con `--json` emite `{"status": "cancelled", "name": "<nombre>", "removed_speech": []}`. El daemon no confirma nada: la confirmación es de la CLI. El reemplazo lo hace `avi_store::replace_voice` (`crates/avi-store/src/lib.rs`), con el orden preparar la referencia nueva → leer las etiquetas → borrar `speech/<voz>/` → publicar la referencia: si algo falla antes de publicar, queda la voz anterior sin locuciones, y nunca la voz nueva con locuciones de la anterior. El envelope informa las etiquetas borradas en `removed_speech`. `--denoise` se aplica en CLI para local y en el servidor para daemon, una sola vez.
 
 `route_to_daemon` (`src/main.rs`): `ForceDaemon` siempre delega (el POST
 falla con `daemon_unreachable` si no hay daemon corriendo); `ForceDirect`
@@ -99,7 +105,9 @@ nunca delega; `Auto` delega solo si `GET /health` responde dentro del plazo de l
 **Precarga en caliente (warm-on-clone), solo en la ruta daemon.** El campo
 `precomputed` del envelope depende de la ruta: la **ruta daemon** dispara, tras
 clonar, el precalentamiento en segundo plano de la voz recién clonada (evicciona
-la voz caliente previa; el residente TTS es de una sola voz) y responde
+la voz caliente previa; el residente TTS es de una sola voz). Como el residente
+se reutiliza solo con la misma identidad de contenido (huella del
+`reference.qvoice`), re-clonar una voz con el mismo nombre la recarga de verdad. Responde
 `precomputed: true` con la semántica «precarga en caliente iniciada» —la
 completitud real se refleja en `GET /health` (`warm`). La **ruta local** responde
 siempre `precomputed: false`: su motor TTS es efímero por proceso, no hay
@@ -116,6 +124,8 @@ clonado: el daemon no expone ninguna ruta aparte para precargar voces.
 { "name": "...", "audio_b64": "...", "force": false }
 ```
 
+Con `force: true` el daemon reemplaza la voz y sus locuciones; la CLI ya resolvió la confirmación antes de enviar la petición.
+
 La referencia dura como máximo `MAX_CLONE_REFERENCE_SECS` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)). En ruta daemon la CLI conserva el WAV de archivo intacto y envía el WAV generado desde PCM de micrófono en memoria; el daemon valida duración por cabecera WAV y el límite de cuerpo con `body_limit_for` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)), y un exceso de cuerpo recibe 413 aunque dure menos. La ruta de archivo conserva su orden de validaciones actual; la duración del micrófono se valida antes de resolver destino y capturar.
 
 `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`):
@@ -126,8 +136,8 @@ La referencia dura como máximo `MAX_CLONE_REFERENCE_SECS` ([`limits.rs`](../../
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
 5. Tras superar las validaciones baratas anteriores, el handler abre una respuesta streaming NDJSON (`application/x-ndjson`) emitiendo el evento inicial `{"event":"started", "name": "..."}`, sin `operation` ni `message`: el cliente es el dueño de los textos y anuncia «Iniciando clonación…» por su cuenta.
 6. El clonado pesado corre en `spawn_blocking(avi_tts::clone_voice)` envuelto en `with_heartbeats`: el daemon emite latidos periódicos (`{"event":"heartbeat", "stage":"clone"}`) con la cadencia de `STREAM_HEARTBEAT` (`crates/avi-daemon/src/lib.rs`). Si el cliente se desconecta, el daemon descarta el resultado; el clonado termina en segundo plano. Si la referencia no se puede cargar, el clonado se interrumpe y emite `{"event":"error", "reason":"invalid_audio", "message": "..."}` (WAV inválido o truncado) o `{"event":"error", "reason":"io_error", "message": "..."}` (fallo de lectura); si falla el propio clonado o el guardado, emite `{"event":"error", "reason":"voice_clone_failed", "message": "..."}`.
-7. Al completar el clonado, `voice_store.save_reference(name, tmp_qvoice)` persiste `reference.qvoice` (único archivo que el motor consulta; sin copia de los WAV de entrada).
-8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`, sin `message` ni `percent`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "precomputed": true}` + `schema_version`. El calentamiento (acotado por el arranque del residente más el presupuesto del testigo) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada».
+7. Al completar el clonado, `avi_store::replace_voice(voice_store, speech_store, name, tmp_qvoice)` persiste `reference.qvoice` (único archivo que el motor consulta; sin copia de los WAV de entrada) y borra las locuciones del contenido anterior, si las había.
+8. Lanza en segundo plano el warm-on-clone de la voz recién clonada (`warm_voice_engine`, emitiendo `{"event":"progress", "stage":"warmup"}`, sin `message` ni `percent`) y emite el evento final `{"event":"result", "name": "...", "speech": "...", "precomputed": true, "removed_speech": ["<etiqueta>", ...]}` + `schema_version`. El calentamiento (acotado por el arranque del residente más el presupuesto del testigo) no bloquea el flujo: `precomputed: true` significa «precarga en caliente iniciada».
 
 El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_stream` con un timeout de inactividad entre latidos (`STREAM_INACTIVITY_TIMEOUT`) y un deadline failsafe (`STREAM_TOTAL_DEADLINE`, el `REQUEST_FAILSAFE` de [`limits.rs`](../../../crates/avi-core/src/limits.rs)), mapeando `reason` a exit code con la tabla única
 `ExitCode::from_reason`, tanto en las respuestas no 2xx como en los eventos
@@ -199,7 +209,7 @@ Siempre local: no declara `--daemon` ni `--no-daemon`. Flujo
 | Subcomando | Payload (más `schema_version`) |
 |---|---|
 | `voice list` | `{ "voices": ["default", "ryan", "vivian", ...] }` |
-| `voice clone` | `{ "name": "...", "speech": "<ruta a reference.qvoice>", "precomputed": <bool> }` |
+| `voice clone` | `{ "name": "...", "speech": "<ruta a reference.qvoice>", "precomputed": <bool>, "removed_speech": ["<etiqueta>", ...] }`; `removed_speech` lista las locuciones borradas al sobrescribir la voz y es `[]` si no había. Cancelada la confirmación: `{ "status": "cancelled", "name": "<nombre>", "removed_speech": [] }` |
 | `voice remove` | `{ "status": "removed", "voice": "<nombre>", "removed_speech": ["<etiqueta>", ...] }`; `removed_speech` es `[]` si la voz no tenía locuciones. Cancelada la confirmación: `{ "status": "cancelled", "voice": "<nombre>", "removed_speech": [] }` |
 
 `precomputed` depende de la ruta: `true` en la ruta daemon (warm-on-clone
@@ -230,7 +240,8 @@ una voz clonada al listar o al intentar eliminarlas.
 El WAV de entrada (`--speech-reference`) se consume
 para producir el perfil y no se copia al almacén: `reference.qvoice` es lo
 único que el motor de síntesis consulta
-(`VoiceStore::find_reference`, `crates/avi-store/src/lib.rs`): su presencia
+(`VoiceStore::resolve`, `crates/avi-store/src/lib.rs`, que lo devuelve como
+`VoiceReference` con su huella sha256): su presencia
 determina la rama «clonada» en `avi_tts::resolve_voice_engine`; sin él, la voz
 resuelve como preset del motor. Toda voz clonada se sintetiza con el modelo
 Base (`qwen3-tts-0.6b-base`) y `--graft`, que aplica solo la huella de timbre y
@@ -242,16 +253,17 @@ clonada (`default` incluida) sale con `model_missing` (exit 4; en el daemon, com
 `FACTORY_DEFAULT_QVOICE`, también con solo la huella de timbre). Se generó con la
 ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav`
 (~10 s), copiando al asset el `reference.qvoice` que deja en el almacén
-`ai-voice-interconnector voice clone --no-daemon --name default --force --speech-reference "assets/audios/Speech Sampler.wav"`
-(`--force` porque `default` ya existe como voz de fábrica).
+`ai-voice-interconnector voice clone --no-daemon --name default --force --yes --speech-reference "assets/audios/Speech Sampler.wav"`
+(`--force` porque `default` ya existe como voz de fábrica; `--yes` porque también
+borra sus locuciones guardadas, si las hay).
 `ryan`/`vivian` son presets puros del motor Qwen3-TTS, sin
 `reference.qvoice`. Las tres hablan `es` y `en`: el idioma nativo de un
 preset (`ryan`: inglés; `vivian`: chino) es informativo, porque los nueve
 locutores del motor son multilingües.
 
-`voice_store.save_reference` (`crates/avi-store/src/lib.rs`) escribe con
-temporal + `rename` (sin dejar un `.qvoice` parcial ante fallo a mitad de
-copia).
+`avi_store::replace_voice` (`crates/avi-store/src/lib.rs`) prepara la referencia
+en un temporal y la publica con `rename` (sin dejar un `.qvoice` parcial ante
+fallo a mitad de copia).
 
 ---
 
@@ -269,6 +281,7 @@ copia).
 | Audio de referencia inexistente | clone (ruta local) | 3 | `audio_not_found` |
 | Modelo de síntesis (`qwen3-tts-0.6b`) no provisionado | clone (ruta local) | 4 | `model_missing` |
 | Voz ya existe sin `--force` | clone | 6 | `voice_exists` |
+| `--force` sobre una voz con locuciones, sin terminal y sin `--yes` (no se cambia nada) | clone | 2 | `confirmation_required` |
 | Modelo Base de clonado no provisionado | clone (ruta local) | 4 | `model_missing` |
 | Referencia que no es un WAV válido, está truncada o declara una frecuencia de muestreo nula | clone | 2 | `invalid_audio` |
 | Fallo de E/S al leer la referencia | clone | 1 | `io_error` |
@@ -276,7 +289,7 @@ copia).
 | `--mic` en un sistema sin backend de audio (en Linux, falta ALSA, `libasound.so.2`, o no define alguna función que se usa) | clone | 3 | `audio_backend_unavailable` |
 | `--mic` terminó la captura sin ninguna muestra | clone | 2 | `empty_audio` |
 | Otro fallo de la captura de `--mic`, no atribuible al entorno | clone | 10 | `transcription_failed` |
-| Falla el motor de `avi_tts::clone_voice` o `save_reference` (el mensaje termina con `Log del motor: <ruta>` a `data/logs/qwen3-tts_*.log`) | clone | 1 | `voice_clone_failed` |
+| Falla el motor de `avi_tts::clone_voice` o `replace_voice` (el mensaje termina con `Log del motor: <ruta>` a `data/logs/qwen3-tts_*.log`) | clone | 1 | `voice_clone_failed` |
 | Daemon inalcanzable (inactividad / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
 | Voz de fábrica (`default`/`ryan`/`vivian`) | remove | 2 | `cannot_remove_default` |
@@ -295,6 +308,7 @@ ai-voice-interconnector voice list
 ai-voice-interconnector --json voice list
 ai-voice-interconnector voice clone --name locutor --speech-reference ref.wav
 ai-voice-interconnector voice clone -n locutor -s ref.wav --force
+ai-voice-interconnector voice clone -n locutor -s ref.wav --force --yes   # sin preguntar, también borra sus locuciones
 ai-voice-interconnector voice clone --daemon -n locutor -s ref.wav   # exige daemon vivo; exit 5 si no responde
 ai-voice-interconnector voice clone -n locutor --mic --duration 10 --no-daemon
 ai-voice-interconnector voice clone -n locutor --mic                 # push-to-talk en TTY
@@ -316,9 +330,12 @@ stderr: … Validando referencia y nombre… (0 s)
         … Clonando voz… (puede tardar varios minutos) (1 s)
         … Guardando referencia de voz… (24 s)
 
+# voice clone --force --yes sobre una voz con locuciones
+stdout: Voz 'mi_voz' clonada; se eliminaron sus 2 locución(es) anteriores: hola, adios (24 s).
+
 # voice remove
 stdout: Voz 'mi_voz' eliminada (1 s).
 stderr: … Eliminando voz y locuciones… (0 s)
 ```
 
-Cancelar la confirmación de `voice remove` imprime `Cancelado.` **por stderr y una sola vez** —solo lo escribe el motor de confirmación— y sale con 0. Con `--json`, stdout lleva **solo** el envelope —`{"name", "speech", "precomputed"}`, `{"status": "removed", "voice", "removed_speech"}`— y el resultado en texto no sale.
+Cancelar la confirmación de `voice remove` o de `voice clone --force` imprime `Cancelado.` **por stderr y una sola vez** —solo lo escribe el motor de confirmación— y sale con 0. Con `--json`, stdout lleva **solo** el envelope —`{"name", "speech", "precomputed", "removed_speech"}`, `{"status": "removed", "voice", "removed_speech"}`— y el resultado en texto no sale.

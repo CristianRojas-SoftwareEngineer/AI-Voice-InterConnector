@@ -214,7 +214,7 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 aceptar y guardar / rechazar y regenerar / rechazar y descartar), con menú y
 prompts por stderr. Sin `--force`, la colisión de etiqueta se comprueba dos
 veces: antes de sintetizar (fast-fail, exit 6 sin pagar la síntesis) y de nuevo al
-aceptar (opción 2), por si la etiqueta quedó ocupada mientras el bucle
+guardar, por si la etiqueta quedó ocupada mientras se sintetizaba o el bucle
 esperaba respuesta — si colisiona en ese instante, también exit 6. Rechazar y
 descartar (opción 4) o Ctrl-D terminan con exit 0 sin persistir nada; solo
 aceptar (opción 2) persiste la toma que sonó. La primera toma usa el seed de
@@ -238,11 +238,27 @@ Validaciones y flujo local:
  (passthrough si `source == target`; si no, exige el modelo de traducción
  provisionado, exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_options` → sin
  `--play`, persiste directamente; con `--play`, entra al bucle de 4
- opciones y persiste solo al aceptar (con recomprobación de colisión).
- La CLI imprime la ruta calculada del WAV persistido.
+ opciones y persiste solo al aceptar. La CLI imprime la ruta calculada del
+ WAV persistido.
+
+**Persistencia.** Toda locución se guarda con `avi_store::persist_locution`
+(`crates/avi-store/src/lib.rs`), la única forma de escribir en `SpeechStore`, en
+las dos rutas, con y sin `--play`. La CLI resuelve la identidad de la voz
+(`VoiceStore::resolve`: la ruta del `reference.qvoice` y su huella sha256; un
+preset no tiene) antes de sintetizar, y `persist_locution` la comprueba justo
+antes de escribir, junto con la colisión de etiqueta:
+
+- Si la voz cambió entre la resolución y el guardado (se re-clonó o se eliminó
+  mientras se sintetizaba), no se guarda nada y sale con exit 6
+  `voice_changed`: la toma se grabó con un contenido que la voz ya no tiene.
+- Sin `--force`, si la etiqueta ya existe, sale con exit 6 `label_exists`.
+
+El WAV y su ficha `.json` se publican cada uno con temporal + `rename`. Entre la
+comprobación y la escritura queda una ventana de milisegundos que se acepta.
 
 La rama vía daemon repite las mismas validaciones de etiqueta/duplicado en el
-cliente antes de despachar la síntesis al daemon (`POST /synthesize`, consume
+cliente y resuelve la identidad de la voz en el almacén compartido antes de
+despachar la síntesis al daemon (`POST /synthesize`, consume
 el NDJSON y decodifica `audio_b64` y `translated` del evento `result`; un
 `result` sin `translated` es `synthesis_failed`), guarda el WAV temporal,
 aplica el mismo bucle de `--play` (o persiste directo sin él; cada
@@ -522,6 +538,7 @@ Del daemon llegan además las esperas «Calentando motor de síntesis…», «En
 | `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`); una voz clonada exige además `qwen3-tts-0.6b-base` |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
+| `voice_changed` | 6 | `synthesize`: la voz se re-clonó o se eliminó mientras se sintetizaba; la locución no se guarda |
 | `lifecycle_locked` | 17 | Todos los subcomandos: hay una operación de ciclo de vida en curso (`self install`, `self update`, `self uninstall`, `cleanup`, `doctor --repair`) y el comando no llega a ejecutarse |
 | `stt_unsupported` | 1 | Binario compilado sin el feature `native-stt` (transcribe/dub) |
 | `translation_unsupported` | 1 | Binario compilado sin el feature `native-translation`, con par no-passthrough |

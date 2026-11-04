@@ -13,7 +13,7 @@
 - [Flujo de síntesis](#flujo-de-síntesis)
 - [UX de audio interactivo](#ux-de-audio-interactivo)
 - [Salida en terminal](#salida-en-terminal)
-- [Modelo de voces de dos niveles](#modelo-de-voces-de-dos-niveles)
+- [Modelo de voces](#modelo-de-voces)
 - [Comandos CLI](#comandos-cli)
 - [Compilación Rust (cargo)](#compilación-rust-cargo)
 - [Extensibilidad](#extensibilidad)
@@ -163,19 +163,23 @@ El `--json` global emite JSONL, una línea por evento, y conserva progreso y res
 1. Usuario: ai-voice-interconnector speech say --text "Hola" -v mi_voz
                      │
                      ▼
-2. CLI parsea args y resuelve VoiceStore (default embebida o clonada)
+2. CLI parsea args y resuelve la voz con VoiceStore::resolve → VoiceReference
+   (ruta de reference.qvoice + huella sha256), o None si es un preset
                      │
                      ▼
-3. Qwen3TtsEngine::synthesize_with_options(texto, VoiceProfile, GenerationOptions con idioma) → resolve_voice_engine
-   - default → Clonada (reference.qvoice embebido en el binario)
+3. Qwen3TtsEngine::synthesize_with_options(texto, VoiceProfile { name, reference }, GenerationOptions con idioma) → resolve_voice_engine
+   - default → Cloned(VoiceReference) (reference.qvoice embebido en el binario)
    - ryan/vivian → Preset (voces puras del motor, sin qvoice)
-   - clonada → Clonada(PathBuf) con reference.qvoice
+   - clonada → Cloned(VoiceReference) con reference.qvoice
+   El residente se reutiliza solo si la voz resuelta es igual a la que tiene
+   cargada: el mismo preset o la misma identidad de contenido
                      │
                      ▼
 4. Residente HTTP en loopback (puerto efímero anotado en `daemon.pid`), único camino de síntesis
                      │
                      ▼
-5. PCM → WAV (hound) → AudioService::play_wav (cpal) o guardado en SpeechStore
+5. PCM → WAV (hound) → AudioService::play_wav (cpal) o guardado con
+   avi_store::persist_locution, que comprueba la identidad de la voz y la colisión
                      │
                      ▼
 6. Usuario escucha habla en español con voz clonada
@@ -209,7 +213,7 @@ Las rutas de captura de `transcribe` y `dub`, directas y vía daemon, convergen 
 
 ### Bucle de revisión (`src/main.rs`)
 
-`synthesize_play_loop(...)` recibe la primera toma (WAV temporal) más el contexto (voz, etiqueta, `force`, almacén, texto final) y una clausura `resynthesize` que produce una toma nueva. La ruta directa y la del daemon comparten el bucle, que vive en el cliente porque la reproducción y los prompts son client-side. La opción 3 (regenerar) invoca la clausura, que re-despacha la síntesis por la misma vía que el camino no interactivo, de modo que traducción y daemon se heredan sin lógica especial. La toma se conserva en el cliente para las opciones 1 y 2. La recomprobación de colisión al aceptar reutiliza `speech_store.find(&voice, &label)` en el punto de guardar. Las precondiciones (`--play` con `--json`, `--play` sin TTY) se validan al inicio del brazo `Synthesize`, antes de sintetizar.
+`synthesize_play_loop(...)` recibe la primera toma (WAV temporal) más el contexto (voz, etiqueta, `force`, almacenes, referencia resuelta de la voz, texto final) y devuelve una decisión; su llamador, `play_menu_loop`, resuelve la opción 3 con una implementación del rasgo `PlayResynthesizer` (`LocalResynthesizer` o `DaemonResynthesizer`) que produce una toma nueva sobre el mismo temporal. La ruta directa y la del daemon comparten el bucle, que vive en el cliente porque la reproducción y los prompts son client-side. La re-síntesis re-despacha la síntesis por la misma vía que el camino no interactivo, de modo que traducción y daemon se heredan sin lógica especial. La toma se conserva en el cliente para las opciones 1 y 2. Al aceptar, la locución se guarda con `avi_store::persist_locution`, que recomprueba en el punto de guardar la identidad de la voz (`voice_changed`) y la colisión de etiqueta (`label_exists`). Las precondiciones (`--play` con `--json`, `--play` sin TTY) se validan al inicio del brazo `Synthesize`, antes de sintetizar.
 
 Invariantes de eficiencia: la opción 1 no re-sintetiza; la opción 3 sintetiza exactamente una vez; se reproduce al entrar, en cada `1` y en cada `3`, nunca en `2` ni `4`.
 
@@ -239,12 +243,14 @@ Convenciones del texto para personas (prompts, progreso y avisos por stderr; res
 - **Progreso de la provisión.** `avi-store` calcula los bytes completados y el total de cada modelo a partir de los eventos de `hf-hub` y los entrega a un observador, sin dibujar. La vista (`avi-lifecycle/src/progress.rs`) abre el bloque con `Descargando N modelo(s):`, dibuja una barra por modelo (`  [3/6] opus-mt-en-es  ████████░░░░  48,0 MB/82,5 MB  12,1 MB/s  transcurrido 0:04  quedan 0:03`), la borra al terminar y deja una línea permanente (`  ✓ [1/6] qwen3-tts-0.6b  2,5 GB en 49 s (51,0 MB/s)`), y cierra con `Modelos descargados: 5,9 GB en 1 min 59 s.`. Sin terminal no hay barras, pero el encabezado, las líneas por modelo y el cierre salen igual; cada descarga activa emite una línea visible cada 15 s. `avi-store` distingue el avance por archivo y por grupo xet y filtra las muestras sin bytes nuevos; la vista transmite ese avance al watchdog de `bootstrap` como máximo una vez cada 5 s por modelo. El watchdog no usa el tamaño de los blobs, porque pueden estar preextendidos.
 - **Sin literales de contrato.** El texto nunca imprime un literal del contrato `--json` (`status`, `reason`, categorías): cada estado y cada categoría tiene su descripción en español (`describe`).
 
-## Modelo de voces de dos niveles
+## Modelo de voces
 
-Las voces se resuelven por nombre con precedencia **usuario→fábrica** (`avi-store/src/lib.rs`):
+Todas las voces viven en un único nivel, `data_dir()/voices/<nombre>/`, y se resuelven por nombre (`avi-store/src/lib.rs`):
 
-- **Fábrica**: `voices/default/` embebida en el binario (`include_bytes!`); se materializa en `data_dir()/voices/default/` en `VoiceStore::ensure_initialized()`. Solo lectura, protege `remove("default")`.
-- **Usuario**: `data_dir()/voices/<nombre>/` (escribible), registradas con `voice clone`. Homónima sobrescribe a la de fábrica.
+- **Fábrica**: `default`, clonada, cuyo `reference.qvoice` va embebido en el binario (`include_bytes!`) y se materializa en `VoiceStore::ensure_initialized()`, y los presets `ryan` y `vivian`, sin referencia. `is_factory_name` las protege de `voice remove`.
+- **Usuario**: registradas con `voice clone`. `voice clone --force` sobre un nombre existente, de fábrica incluido, sustituye su referencia en el mismo directorio.
+
+**Identidad de contenido.** `VoiceStore::resolve` devuelve la referencia de una voz clonada como `VoiceReference { path, fingerprint }`, con la huella sha256 del `reference.qvoice` completo. Todo lo derivado de una voz corresponde a su contenido actual: el residente TTS se reutiliza solo con la misma identidad; `avi_store::replace_voice` es la única forma de cambiar el contenido de una voz y borra sus locuciones antes de publicar la referencia nueva; y `avi_store::persist_locution` es la única forma de escribir una locución y comprueba que la voz conserve la identidad con la que se sintetizó.
 
 Sin `--voice` la CLI usa `default`.
 

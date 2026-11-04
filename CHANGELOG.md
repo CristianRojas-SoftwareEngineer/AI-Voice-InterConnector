@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.42.0 — 2026-11-02](#0420--2026-11-02)
 - [0.41.4 — 2026-11-02](#0414--2026-11-02)
 - [0.41.3 — 2026-11-02](#0413--2026-11-02)
@@ -133,6 +134,34 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Al re-clonar una voz con el mismo nombre, el daemon seguía sintetizando con el contenido anterior: reutilizaba su motor residente comparando la ruta del `reference.qvoice`, que no cambia al re-clonar, y las locuciones pre-sintetizadas de la voz nueva se grababan con el timbre viejo y quedaban guardadas sin aviso. El motor garantiza ahora que todo lo derivado de una voz corresponde a su contenido actual: cada voz resuelta lleva la identidad de su contenido (la huella sha256 de su `reference.qvoice`), re-clonar reemplaza la voz y sus locuciones en una sola operación, y toda locución se guarda comprobando que la voz no cambió mientras se sintetizaba.
+
+### Corregido
+
+- El daemon recarga su motor residente cuando la voz pedida se re-clonó con el mismo nombre, con `voice clone --force` o con `voice remove` seguido de `voice clone`, por cualquiera de las dos rutas. Sintetizar dos veces una voz sin cambios sigue reutilizando el residente. El precalentamiento que sigue a un clonado por el daemon carga ahora de verdad la voz nueva.
+- `voice clone --force` ya no conserva las locuciones de la voz sobrescrita, que se habían grabado con su contenido anterior.
+- Una locución sintetizada con una voz que se re-clonó o se eliminó durante la síntesis ya no se guarda.
+- La ficha `.json` de cada locución se escribe con temporal y renombrado, como el WAV, así que una interrupción no deja una ficha a medias que haría fallar `speech list`.
+
+### Cambiado
+
+- `voice clone --force` reemplaza la voz y también sus locuciones guardadas. Si la voz tiene locuciones, pide la misma confirmación que `voice remove` antes de capturar o clonar, en las dos rutas; sin terminal exige `--yes` y, sin él, sale con exit 2 `confirmation_required` sin cambiar nada.
+- `speech synthesize` sale con exit 6 y el `reason` nuevo `voice_changed` si la voz cambió mientras se sintetizaba. El exit 6 de `speech synthesize` ya no implica siempre `label_exists`: hay que mirar el `reason`.
+
+### Añadido
+
+- `voice clone` acepta `--yes/-y` para omitir la confirmación de borrar las locuciones de la voz sobrescrita.
+- El envelope `--json` de `voice clone` y el evento `result` de `POST /voices/clone` incluyen `removed_speech`, con las etiquetas de las locuciones borradas (`[]` si no había). Es una clave aditiva y no sube ninguna versión de esquema.
+
+### Notas de release
+
+- **Incompatible (API de los crates):** `avi_tts::VoiceProfile` cambia `qvoice_path` por `reference: Option<avi_store::VoiceReference>`, y `avi_tts::VoiceEngine::Cloned` lleva un `avi_store::VoiceReference` en lugar de un `PathBuf`; `resolve_voice_engine` recibe la referencia ya resuelta.
+- **Incompatible (API de los crates):** `VoiceStore::save_reference` desaparece, dividida en un paso de preparación y otro de publicación privados al crate; las voces se publican con `avi_store::replace_voice`. `VoiceStore::find_reference` pasa a ser privada y la referencia se obtiene con su identidad mediante `VoiceStore::resolve`. `SpeechStore::save` y `SpeechStore::save_metadata` pasan a ser privadas al crate: las locuciones se guardan con `avi_store::persist_locution`. `VoiceEntry` pierde `reference_path`, que nadie leía.
+- **Incompatible (CLI):** un script que re-clone con `voice clone --force` una voz con locuciones sin terminal necesita añadir `--yes`.
+- Calcular la huella lee el `reference.qvoice` completo en cada resolución de voz: 14 ms de media con un `.qvoice` de 16,8 MB en el build release.
 
 ## [0.42.0] — 2026-11-02
 

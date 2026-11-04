@@ -194,7 +194,16 @@ ai-voice-interconnector speech say --text "Esta es mi voz clonada." --voice mi_v
 # Guardar síntesis con voz registrada como locución reutilizable
 ai-voice-interconnector speech synthesize --text "Guardando con mi voz." --label saludo --voice mi_voz
 
-# Eliminar la voz de usuario
+# Re-clonar la voz con otra referencia: pide confirmación porque tiene locuciones
+ai-voice-interconnector daemon start
+ai-voice-interconnector speech say --text "Antes de re-clonar." --voice mi_voz --daemon
+ai-voice-interconnector daemon status --json
+ai-voice-interconnector voice clone --name mi_voz --speech-reference otra.wav --force --daemon
+ai-voice-interconnector speech say --text "Después de re-clonar." --voice mi_voz --daemon
+ai-voice-interconnector daemon status --json
+
+# Volver a sintetizar la locución borrada y eliminar la voz de usuario
+ai-voice-interconnector speech synthesize --text "Guardando con mi voz." --label saludo --voice mi_voz
 ai-voice-interconnector voice remove --name mi_voz
 
 # Confirmar que se eliminó
@@ -202,6 +211,8 @@ ai-voice-interconnector voice list
 ```
 
 **Esperado**: `clone` registra la voz (aparece en `voice list`), **exit 0**; `say`/`synthesize --voice mi_voz` usan su timbre; `remove` la elimina y deja de aparecer, **exit 0**. Intentar `voice remove` sobre una voz de fábrica (`default`/`ryan`/`vivian`) sale con **exit 2**.
+
+**Re-clonado.** `voice clone --force` sobre `mi_voz`, que tiene la locución `saludo`, muestra por stderr el plan (la voz y sus locuciones, con rutas y tamaños) y pregunta `[s/N]`; responder `n` sale con **exit 0**, imprime `Cancelado.` y no cambia nada. Al responder `s`, stdout dice `Voz 'mi_voz' clonada; se eliminaron sus 1 locución(es) anteriores: saludo (N s).`, `speech list --voice mi_voz` queda vacío y `--json` lleva `"removed_speech": ["saludo"]`. Sin terminal (por ejemplo, con `< /dev/null`) y sin `--yes` sale con **exit 2** (`confirmation_required`) sin cambiar nada. **El residente recarga la voz:** el `say` posterior suena con el timbre de `otra.wav`, no con el de `habla.wav`, y el `pid` del residente (`resident_pid` en `daemon.pid`) cambia respecto del anterior al re-clonado; dos `say` seguidos con la voz sin cambios conservan el mismo.
 
 **Clonado: progreso y comprobaciones previas.** Repite `voice clone` con `--no-daemon` y con `--daemon` en una terminal real y comprueba en **stderr**: (1) el tiempo de «Clonando voz… (puede tardar varios minutos)» **avanza** también en la ruta directa; (2) ninguna fase muestra «(daemon)»; (3) por el daemon, con `--denoise`, aparece la espera «Esperando turno para limpiar el ruido…» si otra limpieza retiene el turno. Con la voz ya registrada y sin `--force`, `voice clone --mic --name mi_voz` sale con **exit 6** (`voice_exists`) **antes** de abrir el micrófono, en las dos rutas.
 
