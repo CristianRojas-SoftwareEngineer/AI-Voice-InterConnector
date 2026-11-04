@@ -34,7 +34,7 @@ pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_deat
 #[cfg(feature = "native-stt")]
 use avi_core::engine::SttEngine;
 use avi_core::json_emitter;
-use avi_store::{ModelStore, SpeechStore, VoiceStore};
+use avi_store::{ModelStore, SpeechStore, VoiceName, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::ParakeetEngine;
 #[cfg(feature = "native-translation")]
@@ -595,7 +595,7 @@ async fn synthesize_handler(
     // error de uso con 400 plano, antes de abrir el stream.
     let fields = (|| {
         Ok::<_, InputError>((
-            required_str(&payload, "voice")?.to_string(),
+            required_voice(&payload)?,
             required_language(&payload, "source_language")?.to_string(),
             required_language(&payload, "target_language")?.to_string(),
             optional_temperature(&payload)?,
@@ -755,7 +755,7 @@ async fn synthesize_handler(
             }
         };
         let profile = VoiceProfile {
-            name: voice_owned.clone(),
+            name: voice_owned.to_string(),
             reference,
         };
         // Sin campos se usa la config de producción (temperature=0.35, seed de
@@ -1112,6 +1112,15 @@ fn required_str<'a>(body: &'a Value, key: &str) -> Result<&'a str, InputError> {
     })
 }
 
+/// Campo `voice` obligatorio como nombre de voz validado: un nombre ilegal es
+/// `invalid_voice_name` y se rechaza antes de tocar ningún almacén.
+fn required_voice(body: &Value) -> Result<VoiceName, InputError> {
+    VoiceName::parse(required_str(body, "voice")?).map_err(|e| InputError {
+        reason: "invalid_voice_name",
+        message: e.to_string(),
+    })
+}
+
 /// Campo de idioma obligatorio: solo `es` o `en`.
 fn required_language<'a>(body: &'a Value, key: &str) -> Result<&'a str, InputError> {
     let value = required_str(body, key)?;
@@ -1366,23 +1375,20 @@ async fn voices_clone_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
 ) -> Response {
-    let name = payload
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_lowercase();
-    // Validación de nombre con VoiceStore
-    if let Err(msg) = avi_store::VoiceStore::validate_name(&name) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "error": "invalid_voice_name",
-                "reason": "invalid_voice_name",
-                "message": msg,
-            }))),
-        )
-            .into_response();
-    }
+    let name = match VoiceName::parse(payload.get("name").and_then(|v| v.as_str()).unwrap_or("")) {
+        Ok(name) => name,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "error": "invalid_voice_name",
+                    "reason": "invalid_voice_name",
+                    "message": e.to_string(),
+                }))),
+            )
+                .into_response();
+        }
+    };
     // `force` es opcional (ausente = no sobrescribir); si viene, debe ser booleano.
     let force = match payload.get("force") {
         None => false,
@@ -1614,7 +1620,7 @@ async fn voices_clone_handler(
             };
             #[cfg(not(feature = "native-denoise"))]
             let source = tmp_wav.clone();
-            avi_tts::clone_voice(&base_model_dir, &source, &clone_qvoice, &name)
+            avi_tts::clone_voice(&base_model_dir, &source, &clone_qvoice, name.as_str())
                 .map(|()| (work_dir, name))
         });
         // `_work_dir` mantiene vivo el directorio hasta el final de la tarea.
@@ -1772,9 +1778,9 @@ fn dub_pcm(payload: &Value) -> Result<Vec<i16>, InputError> {
 }
 
 /// Voz, idiomas de origen y destino y temperatura opcional de `/dub`.
-fn dub_fields(payload: &Value) -> Result<(String, String, String, Option<f32>), InputError> {
+fn dub_fields(payload: &Value) -> Result<(VoiceName, String, String, Option<f32>), InputError> {
     Ok((
-        required_str(payload, "voice")?.to_string(),
+        required_voice(payload)?,
         required_language(payload, "source_language")?.to_string(),
         required_language(payload, "target_language")?.to_string(),
         optional_temperature(payload)?,
@@ -2182,7 +2188,7 @@ async fn dub_handler(
                 }
             };
             let profile = VoiceProfile {
-                name: voice.clone(),
+                name: voice.to_string(),
                 reference,
             };
             // Guardián del temporal: su dueño es el trabajo que escribe en él,
@@ -2404,7 +2410,7 @@ pub fn build_router() -> Router {
 /// (`ct2rs::Translator`) carga `model.bin` en `DaemonState::new` y no requiere
 /// warmup sintético; los dos pares se cargan antes de servir peticiones y
 /// `warm` (`Warming`→`Warm`) solo refleja TTS.
-pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()> {
+pub fn warm_voice_engine(state: &DaemonState, voice: &VoiceName) -> anyhow::Result<()> {
     let reference = match state.voice_store.resolve(voice) {
         Ok(reference) => reference,
         Err(e) => {
@@ -2644,7 +2650,7 @@ pub fn read_ready_signal(path: &std::path::Path) -> Option<ReadySignal> {
 /// `StartupError`.
 async fn prepare_server(
     addr: SocketAddr,
-    warm_voice: &str,
+    warm_voice: &VoiceName,
     voices: VoiceStore,
     speech: SpeechStore,
 ) -> Result<(TcpListener, SocketAddr, Arc<DaemonState>), StartupError> {
@@ -2738,7 +2744,7 @@ async fn prepare_server(
 /// arranque falla antes, se suelta al devolver el error.
 pub async fn run_daemon_server(
     addr: SocketAddr,
-    warm_voice: String,
+    warm_voice: VoiceName,
     voices: VoiceStore,
     speech: SpeechStore,
     guard: Option<Box<dyn Send>>,
@@ -2913,7 +2919,7 @@ pub async fn run_supervised(
     addr: SocketAddr,
     auto_restart: bool,
     max_retries: u32,
-    warm_voice: String,
+    warm_voice: VoiceName,
     voices: VoiceStore,
     speech: SpeechStore,
     guard: Option<Box<dyn Send>>,
@@ -4212,6 +4218,63 @@ mod tests {
         wav.extend_from_slice(&data_len.to_le_bytes());
         wav.resize(wav.len() + data_len as usize, 0);
         wav
+    }
+
+    /// Rutas relativas de todo lo que hay bajo `root`, ordenadas.
+    fn tree_of(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                out.push(path.strip_prefix(root).unwrap().to_path_buf());
+                if path.is_dir() {
+                    pending.push(path);
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// `/synthesize`, `/dub` y `/voices/clone` rechazan `.`, `..` y `../x` como
+    /// nombre de voz con 400 `invalid_voice_name`, sin tocar ningún almacén.
+    #[tokio::test]
+    async fn illegal_voice_names_are_rejected_on_every_route() {
+        use axum::body::Body;
+        use base64::Engine;
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+        let (state, dir) = test_state();
+        let app = build_router_with_state(Arc::new(state));
+        let before = tree_of(dir.path());
+        let pcm = base64::engine::general_purpose::STANDARD.encode([0u8; 4]);
+        for voice in [".", "..", "../x"] {
+            for (uri, body) in [
+                (
+                    "/synthesize",
+                    json!({ "text": "hola", "voice": voice, "source_language": "es", "target_language": "es" }),
+                ),
+                (
+                    "/dub",
+                    json!({ "audio_b64": pcm, "voice": voice, "source_language": "es", "target_language": "es" }),
+                ),
+                ("/voices/clone", json!({ "audio_b64": pcm, "name": voice })),
+            ] {
+                let req = axum::http::Request::builder()
+                    .uri(uri)
+                    .method(axum::http::Method::POST)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap();
+                let resp = app.clone().oneshot(req).await.unwrap();
+                assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{uri} {voice}");
+                let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+                let body: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(body["reason"], "invalid_voice_name", "{uri} {voice}");
+            }
+        }
+        assert_eq!(tree_of(dir.path()), before, "ningún almacén cambió");
     }
 
     /// D3: clone rechaza WAV inválido antes de crear el directorio temporal.

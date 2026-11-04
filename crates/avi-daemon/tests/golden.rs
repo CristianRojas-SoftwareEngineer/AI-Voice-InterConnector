@@ -48,6 +48,11 @@ use tower::ServiceExt;
 use avi_daemon::{build_router_with_state, DaemonState, WarmState};
 use avi_store::{SpeechStore, VoiceStore};
 
+/// Nombre de voz de prueba ya validado.
+fn vn(raw: &str) -> avi_store::VoiceName {
+    avi_store::VoiceName::parse(raw).unwrap()
+}
+
 /// Raíz temporal única de este proceso de pruebas: `<temp>/golden-avi-daemon/<pid>`.
 /// Con la configuración de cargo, `<temp>` es el temporal confinado dentro de
 /// `target/`, que vacían `cargo clean` y `cargo xtask clean`.
@@ -798,20 +803,20 @@ async fn voices_clone_daemon_precomputed_true() {
     avi_store::replace_voice(
         &seed_state.voice_store,
         &seed_state.speech_store,
-        &name,
+        &vn(&name),
         &previous,
     )
     .expect("registrar la voz previa");
     let reference = seed_state
         .voice_store
-        .resolve(&name)
+        .resolve(&vn(&name))
         .expect("resolver la voz previa");
     avi_store::persist_locution(
         &seed_state.voice_store,
         &seed_state.speech_store,
         reference.as_ref(),
-        &name,
-        "saludo",
+        &vn(&name),
+        &avi_store::Label::parse("saludo").unwrap(),
         "Hola",
         &wav,
         false,
@@ -881,7 +886,7 @@ async fn voices_clone_daemon_precomputed_true() {
     assert_eq!(final_event["precomputed"], Value::Bool(true));
     assert_eq!(final_event["removed_speech"], serde_json::json!(["saludo"]));
     assert!(
-        !seed_state.speech_store.voice_dir(&name).exists(),
+        !seed_state.speech_store.voice_dir(&vn(&name)).exists(),
         "las locuciones del contenido anterior se borran"
     );
     // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
@@ -896,7 +901,7 @@ async fn voices_clone_daemon_precomputed_true() {
         }
     }
     let state = clone_state();
-    let _ = avi_store::remove_voice(&state.voice_store, &state.speech_store, &name);
+    let _ = avi_store::remove_voice(&state.voice_store, &state.speech_store, &vn(&name));
 }
 
 /// Una referencia WAV truncada (la cabecera declara más datos de los que hay)
@@ -941,7 +946,7 @@ async fn voices_clone_truncated_wav_emits_invalid_audio() {
     assert_eq!(last["event"], Value::String("error".to_string()));
     assert_eq!(last["reason"], Value::String("invalid_audio".to_string()));
     let state = test_state();
-    let _ = avi_store::remove_voice(&state.voice_store, &state.speech_store, &name);
+    let _ = avi_store::remove_voice(&state.voice_store, &state.speech_store, &vn(&name));
 }
 
 /// Warm-voice configurable: `run_daemon_server` con una `--warm-voice`
@@ -960,7 +965,7 @@ async fn warm_voice_rejected_before_bind_and_acceptance() {
     let tmp = dir.path();
     let res = avi_daemon::run_daemon_server(
         addr,
-        nonexistent_voice.clone(),
+        vn(&nonexistent_voice),
         VoiceStore::at(tmp.join("voices")),
         SpeechStore::at(tmp.join("speech")),
         None,
@@ -987,17 +992,17 @@ async fn warm_voice_rejected_before_bind_and_acceptance() {
     avi_store::replace_voice(
         &store,
         &SpeechStore::at(ok_dir.path().join("speech")),
-        &name,
+        &vn(&name),
         &qvoice,
     )
     .expect("registrar voz de prueba");
     assert!(
-        store.exists(&name).expect("resolver la voz de prueba"),
+        store.exists(&vn(&name)).expect("resolver la voz de prueba"),
         "la voz registrada debe pasar la validación de --warm-voice"
     );
     // Un preset del motor no tiene referencia `.qvoice`, pero existe igual.
     assert!(
-        store.exists("ryan").expect("resolver el preset"),
+        store.exists(&vn("ryan")).expect("resolver el preset"),
         "un preset debe pasar la validación de --warm-voice"
     );
 }
@@ -1013,7 +1018,7 @@ async fn port_in_use_fails_before_loading_models() {
     let dir = tempfile::tempdir().expect("directorio temporal");
     let err = avi_daemon::run_daemon_server(
         busy,
-        "default".into(),
+        vn("default"),
         VoiceStore::at(dir.path().join("voices")),
         SpeechStore::at(dir.path().join("speech")),
         None,
@@ -1045,7 +1050,7 @@ async fn supervised_startup_failure_is_terminal() {
         busy,
         true,
         3,
-        "default".into(),
+        vn("default"),
         VoiceStore::at(dir.path().join("voices")),
         SpeechStore::at(dir.path().join("speech")),
         None,
@@ -1315,7 +1320,7 @@ async fn dub_emits_contract_ndjson_stream_without_human_text() {
     assert!(
         state
             .voice_store
-            .exists(voice)
+            .exists(&vn(voice))
             .expect("inicializar las voces de fábrica"),
         "la voz predeterminada debe existir"
     );

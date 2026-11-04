@@ -3885,14 +3885,14 @@ mod tts {
         let store = avi_store::SpeechStore::at(inst.dir.join("speech"));
         let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
         let reference = voices
-            .resolve("default")
+            .resolve(&avi_store::VoiceName::parse("default").unwrap())
             .expect("resolver la voz de fábrica");
         avi_store::persist_locution(
             &voices,
             &store,
             reference.as_ref(),
-            "default",
-            &label,
+            &avi_store::VoiceName::parse("default").unwrap(),
+            &avi_store::Label::parse(&label).unwrap(),
             "fabricado",
             &src,
             false,
@@ -3917,7 +3917,10 @@ mod tts {
             actual["reason"]
         );
         assert_eq!(actual["reason"], Value::String("label_exists".to_string()));
-        let _ = store.remove("default", &label);
+        let _ = store.remove(
+            &avi_store::VoiceName::parse("default").unwrap(),
+            &avi_store::Label::parse(&label).unwrap(),
+        );
     }
 
     /// Fábrica de locuciones sin síntesis: sidecar + WAV mínimo en la voz indicada,
@@ -3939,13 +3942,15 @@ mod tts {
         let src = inst.dir.join(format!("{}_min.wav", label));
         std::fs::write(&src, cursor.into_inner()).unwrap();
         let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
-        let reference = voices.resolve(voice).expect("resolver la voz");
+        let reference = voices
+            .resolve(&avi_store::VoiceName::parse(voice).unwrap())
+            .expect("resolver la voz");
         avi_store::persist_locution(
             &voices,
             &avi_store::SpeechStore::at(inst.dir.join("speech")),
             reference.as_ref(),
-            voice,
-            label,
+            &avi_store::VoiceName::parse(voice).unwrap(),
+            &avi_store::Label::parse(label).unwrap(),
             "fabricado",
             &src,
             false,
@@ -4076,7 +4081,7 @@ mod tts {
         );
     }
 
-    /// `speech list --voice` con identificador ilegal sale con 2 (InvalidInput).
+    /// `speech list --voice` con un nombre de voz ilegal sale con 2 (InvalidInput).
     #[test]
     fn speech_list_invalid_voice_exits_2() {
         let (code, actual) = run_json(&["--json", "speech", "list", "--voice", "mi voz"]);
@@ -4087,7 +4092,7 @@ mod tts {
         );
         assert_eq!(
             actual["reason"],
-            Value::String("invalid_identifier".to_string())
+            Value::String("invalid_voice_name".to_string())
         );
     }
 
@@ -4123,7 +4128,7 @@ mod tts {
     }
 
     /// `speech play` y `speech remove` validan la voz antes de buscar la etiqueta:
-    /// una voz inexistente es `voice_not_found` (3) y una ilegal `invalid_identifier` (2).
+    /// una voz inexistente es `voice_not_found` (3) y una ilegal `invalid_voice_name` (2).
     #[test]
     fn speech_play_and_remove_validate_voice() {
         let inst = IsolatedInstance::new("speech_validates_voice");
@@ -4144,8 +4149,138 @@ mod tts {
                 &a,
             );
             assert_eq!(code, 2, "speech {action}: {actual}");
-            assert_eq!(actual["reason"], "invalid_identifier");
+            assert_eq!(actual["reason"], "invalid_voice_name");
         }
+    }
+
+    /// Rutas relativas de todo lo que cuelga de `root`, con el contenido de cada
+    /// archivo: dos instantáneas iguales prueban que no se tocó nada.
+    fn data_snapshot(root: &Path) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        let mut out = Vec::new();
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                let rel = path.strip_prefix(root).unwrap().to_path_buf();
+                if path.is_dir() {
+                    out.push((rel, None));
+                    pending.push(path);
+                } else {
+                    out.push((rel, std::fs::read(&path).ok()));
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// Los ocho comandos que reciben un nombre de voz rechazan `.`, `..` y
+    /// `../voices/default` con exit 2 `invalid_voice_name`, por la ruta directa y
+    /// por la del daemon, sin tocar el directorio de datos.
+    #[test]
+    fn illegal_voice_names_exit_2_on_every_command() {
+        let inst = IsolatedInstance::new("illegal_voice_names");
+        let a = inst.contract_args();
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        create_utterance(&inst, "default", "canary");
+        let before = data_snapshot(&inst.dir);
+        let wav = "crates/avi-stt/tests/assets/parakeet_sample_16k.wav";
+        for name in [".", "..", "../voices/default"] {
+            let mut cases: Vec<Vec<&str>> = vec![
+                vec!["voice", "remove", "--name", name, "--yes"],
+                vec!["speech", "list", "--voice", name],
+                vec!["speech", "play", "--voice", name, "--label", "canary"],
+                vec!["speech", "remove", "--voice", name, "--label", "canary"],
+            ];
+            for route in ["--no-daemon", "--daemon"] {
+                cases.push(vec![
+                    "voice",
+                    "clone",
+                    route,
+                    "--name",
+                    name,
+                    "--speech-reference",
+                    wav,
+                ]);
+                cases.push(vec![
+                    "speech",
+                    "synthesize",
+                    route,
+                    "--text",
+                    "Hola",
+                    "--voice",
+                    name,
+                    "--label",
+                    "nueva",
+                ]);
+                cases.push(vec![
+                    "speech", "say", route, "--text", "Hola", "--voice", name,
+                ]);
+                cases.push(vec![
+                    "speech",
+                    "dub",
+                    route,
+                    "--source-language",
+                    "es",
+                    "--audio",
+                    wav,
+                    "--voice",
+                    name,
+                ]);
+            }
+            for case in cases {
+                let mut args = vec!["--json"];
+                args.extend(case.iter().copied());
+                let (code, actual) = run_json_env(&args, &a);
+                assert_eq!(code, 2, "{case:?}: {actual}");
+                assert_eq!(actual["reason"], "invalid_voice_name", "{case:?}: {actual}");
+            }
+        }
+        assert_eq!(
+            data_snapshot(&inst.dir),
+            before,
+            "el directorio de datos cambió"
+        );
+    }
+
+    /// Regresión: `voice remove --name . --yes` borraba `voices/` y `speech/`
+    /// completos, voces de fábrica incluidas, con exit 0.
+    #[test]
+    fn voice_remove_dot_keeps_the_stores() {
+        let inst = IsolatedInstance::new("voice_remove_dot");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        create_utterance(&inst, "default", "canary");
+        let (code, actual) = run_json_env(
+            &["--json", "voice", "remove", "--name", ".", "--yes"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "invalid_voice_name");
+        assert!(inst.dir.join("voices/default/reference.qvoice").is_file());
+        assert!(inst.dir.join("speech/default/canary.wav").is_file());
+    }
+
+    /// Regresión: `speech remove --voice .. --label canary` borraba un archivo
+    /// fuera del almacén de locuciones.
+    #[test]
+    fn speech_remove_dotdot_keeps_outside_files() {
+        let inst = IsolatedInstance::new("speech_remove_dotdot");
+        std::fs::create_dir_all(&inst.dir).unwrap();
+        let outside = inst.dir.join("canary.wav");
+        std::fs::write(&outside, b"fuera del almacen").unwrap();
+        let (code, actual) = run_json_env(
+            &[
+                "--json", "speech", "remove", "--voice", "..", "--label", "canary",
+            ],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "invalid_voice_name");
+        assert_eq!(std::fs::read(&outside).unwrap(), b"fuera del almacen");
     }
 
     /// Voz de usuario fabricada en el sandbox de `inst`: directorio de registro más
@@ -4532,7 +4667,7 @@ mod tts {
         avi_store::replace_voice(
             &store,
             &avi_store::SpeechStore::at(data_dir.join("speech")),
-            name,
+            &avi_store::VoiceName::parse(name).unwrap(),
             &reference,
         )
         .expect("guardar voz de prueba");
@@ -4572,7 +4707,7 @@ mod tts {
         avi_store::replace_voice(
             &store,
             &avi_store::SpeechStore::at(data_dir.join("speech")),
-            name,
+            &avi_store::VoiceName::parse(name).unwrap(),
             &reference,
         )
         .expect("guardar voz de prueba");
@@ -4687,7 +4822,7 @@ mod tts {
         let _ = avi_store::remove_voice(
             &avi_store::VoiceStore::at(inst.dir.join("voices")),
             &avi_store::SpeechStore::at(inst.dir.join("speech")),
-            &name,
+            &avi_store::VoiceName::parse(&name).unwrap(),
         );
     }
 
@@ -4891,7 +5026,7 @@ mod tts {
         let a = inst.contract_args();
         let name = unique_label("clone");
         let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
-        let dir = voices.voice_dir(&name);
+        let dir = voices.voice_dir(&avi_store::VoiceName::parse(&name).unwrap());
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("reference.qvoice"), b"QVCE").unwrap();
         let (code, actual) = run_json_env(
@@ -4919,8 +5054,13 @@ mod tts {
         voices.ensure_initialized().expect("inicializar store");
         let qvoice = data_dir.join(format!("{name}_seed.qvoice"));
         std::fs::write(&qvoice, b"QVCE-previa").expect("crear referencia");
-        let replaced =
-            avi_store::replace_voice(&voices, &speech, name, &qvoice).expect("registrar la voz");
+        let replaced = avi_store::replace_voice(
+            &voices,
+            &speech,
+            &avi_store::VoiceName::parse(name).unwrap(),
+            &qvoice,
+        )
+        .expect("registrar la voz");
         let wav = data_dir.join(format!("{name}_seed.wav"));
         let spec = hound::WavSpec {
             channels: 1,
@@ -4931,13 +5071,15 @@ mod tts {
         let mut w = hound::WavWriter::create(&wav, spec).unwrap();
         w.write_sample(0i16).unwrap();
         w.finalize().unwrap();
-        let reference = voices.resolve(name).expect("resolver la voz");
+        let reference = voices
+            .resolve(&avi_store::VoiceName::parse(name).unwrap())
+            .expect("resolver la voz");
         avi_store::persist_locution(
             &voices,
             &speech,
             reference.as_ref(),
-            name,
-            label,
+            &avi_store::VoiceName::parse(name).unwrap(),
+            &avi_store::Label::parse(label).unwrap(),
             "previa",
             &wav,
             false,
@@ -4973,7 +5115,7 @@ mod tts {
         assert_eq!(std::fs::read(&reference).unwrap(), b"QVCE-previa");
         assert_eq!(
             avi_store::SpeechStore::at(inst.dir.join("speech"))
-                .labels_of(&name)
+                .labels_of(&avi_store::VoiceName::parse(&name).unwrap())
                 .unwrap(),
             vec!["saludo"]
         );
@@ -5014,7 +5156,7 @@ mod tts {
         assert_eq!(std::fs::read(&reference).unwrap(), b"QVCE-previa");
         assert_eq!(
             avi_store::SpeechStore::at(data_dir.join("speech"))
-                .labels_of(name)
+                .labels_of(&avi_store::VoiceName::parse(name).unwrap())
                 .unwrap(),
             vec!["saludo"]
         );
@@ -6887,7 +7029,7 @@ mod tts {
         let _ = avi_store::remove_voice(
             &avi_store::VoiceStore::at(inst.dir.join("voices")),
             &avi_store::SpeechStore::at(inst.dir.join("speech")),
-            &name,
+            &avi_store::VoiceName::parse(&name).unwrap(),
         );
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "clone_delegates_to_daemon");
@@ -6962,13 +7104,19 @@ mod tts {
 
         let actual = clone("--daemon", second, true);
         assert_eq!(actual["removed_speech"], serde_json::json!(["a", "b"]));
-        assert!(speech.labels_of(&name).unwrap().is_empty());
+        assert!(speech
+            .labels_of(&avi_store::VoiceName::parse(&name).unwrap())
+            .unwrap()
+            .is_empty());
         let pid_b = synthesize("c");
         assert_ne!(pid_b, pid_a, "re-clonar por daemon recarga el residente");
 
         let actual = clone("--no-daemon", first, true);
         assert_eq!(actual["removed_speech"], serde_json::json!(["c"]));
-        assert!(speech.labels_of(&name).unwrap().is_empty());
+        assert!(speech
+            .labels_of(&avi_store::VoiceName::parse(&name).unwrap())
+            .unwrap()
+            .is_empty());
         let pid_c = synthesize("d");
         assert_ne!(pid_c, pid_b, "re-clonar en local recarga el residente");
 
@@ -6982,7 +7130,7 @@ mod tts {
         let _ = avi_store::remove_voice(
             &avi_store::VoiceStore::at(inst.dir.join("voices")),
             &speech,
-            &name,
+            &avi_store::VoiceName::parse(&name).unwrap(),
         );
         stop_instance(&inst, "resident_reloads_recloned_voice");
         hit_end("tts::resident_reloads_recloned_voice");
@@ -7018,7 +7166,7 @@ mod tts {
         let _ = avi_store::remove_voice(
             &avi_store::VoiceStore::at(inst.dir.join("voices")),
             &avi_store::SpeechStore::at(inst.dir.join("speech")),
-            &name,
+            &avi_store::VoiceName::parse(&name).unwrap(),
         );
         stop_instance(&inst, "clone_daemon_truncated");
         assert_eq!(code, 2, "referencia truncada por daemon → InvalidInput");

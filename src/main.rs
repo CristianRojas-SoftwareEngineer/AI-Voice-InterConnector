@@ -18,7 +18,7 @@ use avi_daemon as daemon;
 use avi_lifecycle as lifecycle;
 use avi_lifecycle::progress::PhaseProgress;
 use avi_store as store;
-use avi_store::{ModelStore, SpeechStore, VoiceStore};
+use avi_store::{Label, ModelStore, SpeechStore, VoiceName, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::EngineHolder;
 use avi_tts::{Qwen3TtsEngine, TtsEngine};
@@ -143,7 +143,7 @@ fn open_model_store() -> Result<ModelStore, CliError> {
 /// para un preset); un fallo de E/S es `io_error`.
 fn resolve_voice_reference(
     voice_store: &VoiceStore,
-    voice: &str,
+    voice: &VoiceName,
 ) -> Result<Option<avi_store::VoiceReference>, CliError> {
     voice_store
         .resolve(voice)
@@ -160,7 +160,7 @@ fn synthesize_voice_directly(
     engine: &Qwen3TtsEngine,
     reference: Option<&avi_store::VoiceReference>,
     text: &str,
-    voice: &str,
+    voice: &VoiceName,
     temperature: Option<f32>,
     seed: Option<u64>,
     language: &str,
@@ -1500,9 +1500,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             let result = async {
                 progress.phase("validating", "Validando referencia y nombre…");
                 // Orden de validaciones del contrato: el nombre se valida antes que el modelo.
-                let name = name.to_lowercase();
-                VoiceStore::validate_name(&name)
-                    .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
+                let name = VoiceName::parse(&name).map_err(invalid_name_cli_error)?;
                 // El archivo conserva el orden de validación vigente; el PCM de micrófono
                 // se limita tras la captura antes de codificarlo.
                 if !mic {
@@ -1576,7 +1574,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                             std::fs::read(reference).map_err(|e| CliError::new(ExitCode::NotFound, "audio_not_found", format!("El audio de referencia '{}' no existe: {}", reference, e)))?
                         }
                     };
-                    let (cloned_name, cloned_speech, precomputed, removed_speech) = clone_via_daemon(&client, &name, &audio_bytes, force, denoise, &mut progress).await?;
+                    let (cloned_name, cloned_speech, precomputed, removed_speech) = clone_via_daemon(&client, name.as_str(), &audio_bytes, force, denoise, &mut progress).await?;
                     return Ok(Some((cloned_name, PathBuf::from(cloned_speech), precomputed, removed_speech)));
                 }
                 let _mic_scratch = mic_scratch;
@@ -1644,7 +1642,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 progress.phase("cloning", CLONE_PHASES.cloning);
                 progress.tick();
                 let cloned = run_blocking_with_progress(&progress, || {
-                    avi_tts::clone_voice(model_dir, speech_path.as_path(), &tmp_qvoice, &name)
+                    avi_tts::clone_voice(model_dir, speech_path.as_path(), &tmp_qvoice, name.as_str())
                 })
                 .and_then(|()| {
                     progress.phase("saving", CLONE_PHASES.saving);
@@ -1662,7 +1660,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                         _ => CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()),
                     }
                 })?;
-                Ok(Some((name, replaced.reference, false, replaced.removed_speech)))
+                Ok(Some((name.to_string(), replaced.reference, false, replaced.removed_speech)))
             }
             .await;
             let elapsed = progress.close();
@@ -1705,15 +1703,14 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             Ok(())
         }
         VoiceCommands::Remove { name, yes } => {
-            VoiceStore::validate_name(&name)
-                .map_err(|e| CliError::new(ExitCode::InvalidInput, "invalid_voice_name", e))?;
+            let name = VoiceName::parse(&name).map_err(invalid_name_cli_error)?;
             // Validación estructural: fábrica protegida se rechaza antes de tocar el store,
             // sin depender del mensaje de error (evita string matching frágil).
-            if avi_store::is_factory_name(&name) {
+            if avi_store::is_factory_name(name.as_str()) {
                 return Err(CliError::new(
                     ExitCode::InvalidInput,
                     "cannot_remove_default",
-                    format!("La voz '{}' no se puede eliminar.", name.to_lowercase()),
+                    format!("La voz '{}' no se puede eliminar.", name),
                 ));
             }
             if !voice_store
@@ -1723,7 +1720,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 return Err(CliError::new(
                     ExitCode::NotFound,
                     "voice_not_found",
-                    format!("La voz '{}' no existe.", name.to_lowercase()),
+                    format!("La voz '{}' no existe.", name),
                 ));
             }
             // Las locuciones se van con su voz: si las hay, se muestra el plan y se
@@ -1739,7 +1736,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     + lifecycle::cleanup::path_size(&speech_dir);
                 let summary = vec![format!(
                     "Se eliminará la voz '{}' y sus {} locución(es): {} (~{}).",
-                    name.to_lowercase(),
+                    name,
                     labels.len(),
                     labels.join(", "),
                     avi_shared::human_bytes(total_bytes),
@@ -2200,7 +2197,7 @@ struct LocalResynthesizer<'a> {
     engine: &'a Qwen3TtsEngine,
     reference: Option<&'a avi_store::VoiceReference>,
     final_text: &'a str,
-    voice: &'a str,
+    voice: &'a VoiceName,
     temperature: Option<f32>,
     target_language: &'a str,
     tmp_wav: &'a PathBuf,
@@ -2277,8 +2274,8 @@ impl PlayResynthesizer for DaemonResynthesizer<'_> {
 // Firma ancha deliberada: cada argumento mapea 1:1 a un dato del menú.
 #[allow(clippy::too_many_arguments)]
 async fn play_menu_loop<R: PlayResynthesizer>(
-    voice: &str,
-    label: &str,
+    voice: &VoiceName,
+    label: &Label,
     force: bool,
     voice_store: &VoiceStore,
     speech_store: &SpeechStore,
@@ -2312,7 +2309,7 @@ async fn play_menu_loop<R: PlayResynthesizer>(
 
 /// Reproducción del WAV en el menú `--play`, con el servicio de audio real. Es
 /// inyectable para que las pruebas no dependan de la placa de sonido.
-fn menu_playback(label: &str) -> impl FnMut(&std::path::Path) -> Result<(), CliError> {
+fn menu_playback(label: &Label) -> impl FnMut(&std::path::Path) -> Result<(), CliError> {
     let label = label.to_string();
     move |wav: &std::path::Path| {
         audio::AudioService::new().play_wav(wav).map_err(|e| {
@@ -2337,8 +2334,8 @@ fn menu_playback(label: &str) -> impl FnMut(&std::path::Path) -> Result<(), CliE
 // Firma ancha deliberada: cada argumento mapea 1:1 a un dato del menú.
 #[allow(clippy::too_many_arguments)]
 fn synthesize_play_loop(
-    voice: &str,
-    label: &str,
+    voice: &VoiceName,
+    label: &Label,
     force: bool,
     voice_store: &VoiceStore,
     speech_store: &SpeechStore,
@@ -2431,10 +2428,20 @@ fn sidecar_cli_error(e: &anyhow::Error) -> Option<CliError> {
     })
 }
 
+/// Traduce un nombre ilegal al contrato con exit 2 y un `reason` por tipo:
+/// `invalid_voice_name` para una voz e `invalid_identifier` para una etiqueta.
+fn invalid_name_cli_error(e: avi_store::InvalidName) -> CliError {
+    let reason = match e.kind {
+        avi_store::NameKind::Voice => "invalid_voice_name",
+        avi_store::NameKind::Label => "invalid_identifier",
+    };
+    CliError::new(ExitCode::InvalidInput, reason, e.to_string())
+}
+
 /// Exige que la voz exista en el registro: `voice_not_found` (exit 3) si no. Lo
 /// comparten `speech list`, `play` y `remove`, de modo que una voz mal escrita
 /// nunca se disfrace de «sin resultados» o de etiqueta inexistente.
-fn ensure_voice_exists(voice: &str) -> Result<(), CliError> {
+fn ensure_voice_exists(voice: &VoiceName) -> Result<(), CliError> {
     if open_voice_store()?
         .exists(voice)
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
@@ -2469,9 +2476,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // de la voz (exit 3) antes de acotar la lectura al almacén.
             let items = match &voice {
                 Some(v) => {
-                    is_valid_identifier(Some(v), None)?;
-                    ensure_voice_exists(v)?;
-                    speech_store.list_by_voice(v).map_err(speech_list_error)?
+                    let v = VoiceName::parse(v).map_err(invalid_name_cli_error)?;
+                    ensure_voice_exists(&v)?;
+                    speech_store.list_by_voice(&v).map_err(speech_list_error)?
                 }
                 None => speech_store.list().map_err(speech_list_error)?,
             };
@@ -2731,6 +2738,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 validate_temperature(temperature)?;
                 // Orden de validaciones del contrato: la temperatura se comprueba antes que el texto.
                 avi_core::validate_synthesis_text(&text)?;
+                let voice = VoiceName::parse(&voice).map_err(invalid_name_cli_error)?;
+                let label = Label::parse(&label).map_err(invalid_name_cli_error)?;
                 // Origen por defecto = destino (sin traducir).
                 let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
@@ -2764,8 +2773,6 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         format!("La voz '{}' no existe.", voice),
                     ));
                 }
-                let label = label.to_lowercase();
-                is_valid_identifier(Some(&label), None)?;
                 let speech_store = open_speech_store()?;
                 if !force
                     && speech_store
@@ -2910,6 +2917,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 progress.phase("validating", "Validando texto y voz…");
                 validate_temperature(temperature)?;
                 avi_core::validate_synthesis_text(&text)?;
+                let voice = VoiceName::parse(&voice).map_err(invalid_name_cli_error)?;
                 // Origen por defecto = destino (sin traducir).
                 let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
@@ -2920,7 +2928,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &mut progress,
                         &client,
                         &text,
-                        &voice,
+                        voice.as_str(),
                         source_eff,
                         &target_language,
                         temperature,
@@ -3047,6 +3055,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // una voz inexistente se rechaza antes de abrir el micrófono o leer
             // el audio, en las dos rutas; el daemon conserva su propia
             // comprobación como defensa.
+            let voice = VoiceName::parse(&voice).map_err(invalid_name_cli_error)?;
             ensure_voice_exists(&voice)?;
             // Despacho 3 modos: delega a POST /dub si daemon activo
             {
@@ -3063,7 +3072,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &target_language,
                         temperature,
                         denoise,
-                        &voice,
+                        voice.as_str(),
                     )
                     .await;
                     let elapsed = progress.close();
@@ -3282,7 +3291,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
         }
         SpeechCommands::Play { label, voice } => {
             // Reproducción de locución persistida: local-only.
-            is_valid_identifier(Some(&voice), Some(&label))?;
+            let voice = VoiceName::parse(&voice).map_err(invalid_name_cli_error)?;
+            let label = Label::parse(&label).map_err(invalid_name_cli_error)?;
             ensure_voice_exists(&voice)?;
             let speech_store = open_speech_store()?;
             match speech_store
@@ -3331,7 +3341,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
         }
         SpeechCommands::Remove { label, voice } => {
             // Borrado de locución: local-only.
-            is_valid_identifier(Some(&voice), Some(&label))?;
+            let voice = VoiceName::parse(&voice).map_err(invalid_name_cli_error)?;
+            let label = Label::parse(&label).map_err(invalid_name_cli_error)?;
             ensure_voice_exists(&voice)?;
             open_speech_store()?
                 .remove(&voice, &label)
@@ -3367,6 +3378,7 @@ async fn handle_daemon(
             ready_file,
         } => {
             avi_shared::diag_trace::mark("child.serve_enter");
+            let warm_voice = VoiceName::parse(&warm_voice).map_err(invalid_name_cli_error)?;
             // La dirección la resuelve el protocolo (`AVI_DAEMON_PORT` con
             // reserva en la dirección por defecto); aquí solo se pasa al servidor.
             let addr: SocketAddr = resolve_daemon_addr();
@@ -3431,6 +3443,7 @@ async fn handle_daemon(
             warm_voice,
         } => {
             avi_shared::diag_trace::mark("start.enter");
+            VoiceName::parse(&warm_voice).map_err(invalid_name_cli_error)?;
             require_model_provisioned()?;
             avi_shared::diag_trace::mark("start.model_provisioned");
             // Revalidación con reclamo matar-y-rearrancar: la vida del
@@ -4736,24 +4749,6 @@ fn startup_error_to_cli(err: &daemon::StartupError) -> CliError {
     CliError::new(ExitCode::from_reason(reason), reason, err.to_string())
 }
 
-/// Valida identificadores de voz/etiqueta contra el regex del contrato
-/// (`^[A-Za-z0-9._-]+$`) → exit 2.
-fn is_valid_identifier(ids: Option<&str>, more: Option<&str>) -> Result<(), CliError> {
-    for id in ids.into_iter().chain(more) {
-        if id.is_empty()
-            || !id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
-        {
-            return Err(CliError::new(
-                ExitCode::InvalidInput,
-                "invalid_identifier",
-                format!("Identificador inválido: '{}'.", id),
-            ));
-        }
-    }
-    Ok(())
-}
 /// Raíz de datos vigente, donde vive el pidfile del daemon.
 ///
 /// Va por el motor porque el pidfile es **su** esquema: `daemon_stop` lo escribe, lo
@@ -5842,8 +5837,8 @@ async fn synthesize_via_daemon(
     progress: &mut PhaseProgress,
     client: &reqwest::Client,
     text: &str,
-    voice: &str,
-    label: &str,
+    voice: &VoiceName,
+    label: &Label,
     force: bool,
     play: bool,
     source_language: &str,
@@ -5852,11 +5847,9 @@ async fn synthesize_via_daemon(
 ) -> Result<Option<PathBuf>, CliError> {
     let speech_store = open_speech_store()?;
     let voice_store = open_voice_store()?;
-    let label_lower = label.to_lowercase();
-    is_valid_identifier(Some(&label_lower), None)?;
     if !force
         && speech_store
-            .find(voice, &label_lower)
+            .find(voice, label)
             .map_err(speech_find_error)?
             .is_some()
     {
@@ -5865,7 +5858,7 @@ async fn synthesize_via_daemon(
             "label_exists",
             format!(
                 "Ya existe una locución con la etiqueta '{}' (usa --force).",
-                label_lower
+                label
             ),
         ));
     }
@@ -5875,7 +5868,7 @@ async fn synthesize_via_daemon(
         &SYNTHESIZE_PHASES,
         client,
         text,
-        voice,
+        voice.as_str(),
         source_language,
         target_language,
         temperature,
@@ -5896,12 +5889,12 @@ async fn synthesize_via_daemon(
         // Bucle interactivo en el cliente; el bucle vive en el llamador y la
         // opción 3 re-despacha la síntesis por la misma vía daemon.
         let mut reader = menu_stdin();
-        let mut playback = menu_playback(&label_lower);
+        let mut playback = menu_playback(label);
         progress.close_line();
         let mut resynthesizer = DaemonResynthesizer {
             client,
             text,
-            voice,
+            voice: voice.as_str(),
             source_language,
             target_language,
             temperature,
@@ -5910,7 +5903,7 @@ async fn synthesize_via_daemon(
         };
         let outcome = play_menu_loop(
             voice,
-            &label_lower,
+            label,
             force,
             &voice_store,
             &speech_store,
@@ -5934,7 +5927,7 @@ async fn synthesize_via_daemon(
             &speech_store,
             reference.as_ref(),
             voice,
-            &label_lower,
+            label,
             final_text,
             &tmp,
             force,
@@ -5991,7 +5984,7 @@ async fn say_via_daemon(
 fn confirm_voice_replacement(
     voice_store: &VoiceStore,
     speech_store: &SpeechStore,
-    name: &str,
+    name: &VoiceName,
     labels: &[String],
     yes: bool,
 ) -> Result<lifecycle::confirm::Decision, CliError> {
@@ -7390,8 +7383,8 @@ mod tests {
         let mut playback = fake_playback(&plays);
 
         let decision = synthesize_play_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7408,14 +7401,23 @@ mod tests {
         match decision {
             PlayDecision::Saved(saved) => {
                 // La ruta guardada es la del almacén, no la del temporal.
-                assert_eq!(saved, store.audio_path("voz", "etiqueta"));
+                assert_eq!(
+                    saved,
+                    store.audio_path(
+                        &VoiceName::parse("voz").unwrap(),
+                        &Label::parse("etiqueta").unwrap()
+                    )
+                );
                 assert!(saved.is_file(), "la locución guardada debe existir");
             }
             other => panic!("se esperaba guardar, no: {other:?}"),
         }
         // El texto de la locución guardada es el texto final, no el de la WAV.
         let entry = store
-            .find("voz", "etiqueta")
+            .find(
+                &VoiceName::parse("voz").unwrap(),
+                &Label::parse("etiqueta").unwrap(),
+            )
             .expect("buscar la locución guardada")
             .expect("la locución debe existir");
         assert_eq!(entry.metadata.expect("sidecar").text, "texto final");
@@ -7430,8 +7432,8 @@ mod tests {
         let mut playback = fake_playback(&plays);
 
         let decision = synthesize_play_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7447,7 +7449,10 @@ mod tests {
         assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(
             store
-                .find("voz", "etiqueta")
+                .find(
+                    &VoiceName::parse("voz").unwrap(),
+                    &Label::parse("etiqueta").unwrap()
+                )
                 .expect("buscar la locución")
                 .is_none(),
             "descartar no debe persistir la locución"
@@ -7464,8 +7469,8 @@ mod tests {
         let mut playback = fake_playback(&plays);
 
         let decision = synthesize_play_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7482,7 +7487,10 @@ mod tests {
         assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(
             store
-                .find("voz", "etiqueta")
+                .find(
+                    &VoiceName::parse("voz").unwrap(),
+                    &Label::parse("etiqueta").unwrap()
+                )
                 .expect("buscar la locución")
                 .is_none(),
             "re-sintetizar no debe persistir nada"
@@ -7499,8 +7507,8 @@ mod tests {
         let mut playback = fake_playback(&plays);
 
         let decision = synthesize_play_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7515,7 +7523,10 @@ mod tests {
         assert_eq!(decision, PlayDecision::Discarded);
         assert!(
             store
-                .find("voz", "etiqueta")
+                .find(
+                    &VoiceName::parse("voz").unwrap(),
+                    &Label::parse("etiqueta").unwrap()
+                )
                 .expect("buscar la locución")
                 .is_none(),
             "el fin de la entrada no debe persistir la locución"
@@ -7532,8 +7543,8 @@ mod tests {
         let mut playback = fake_playback(&plays);
 
         let decision = synthesize_play_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7562,8 +7573,8 @@ mod tests {
             &voices,
             &store,
             None,
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             "texto previo",
             &wav,
             false,
@@ -7572,8 +7583,8 @@ mod tests {
 
         let mut reader = scripted_reader(vec!["2"]);
         let e = synthesize_play_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7596,14 +7607,16 @@ mod tests {
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut playback = fake_playback(&plays);
         let stale = avi_store::VoiceReference {
-            path: voices.voice_dir("voz").join("reference.qvoice"),
+            path: voices
+                .voice_dir(&VoiceName::parse("voz").unwrap())
+                .join("reference.qvoice"),
             fingerprint: "contenido-anterior".to_string(),
         };
 
         let mut reader = scripted_reader(vec!["2"]);
         let e = synthesize_play_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             true,
             &voices,
             &store,
@@ -7616,7 +7629,13 @@ mod tests {
         .expect_err("una voz cambiada no debe guardarse");
         assert_eq!(e.code, ExitCode::StateConflict);
         assert_eq!(e.reason, "voice_changed");
-        assert!(store.find("voz", "etiqueta").unwrap().is_none());
+        assert!(store
+            .find(
+                &VoiceName::parse("voz").unwrap(),
+                &Label::parse("etiqueta").unwrap()
+            )
+            .unwrap()
+            .is_none());
     }
 
     /// Con `--force` la colisión no impide guardar: la locución previa se
@@ -7630,8 +7649,8 @@ mod tests {
             &voices,
             &store,
             None,
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             "texto previo",
             &wav,
             false,
@@ -7640,8 +7659,8 @@ mod tests {
 
         let mut reader = scripted_reader(vec!["2"]);
         let decision = synthesize_play_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             true,
             &voices,
             &store,
@@ -7655,7 +7674,10 @@ mod tests {
 
         assert!(matches!(decision, PlayDecision::Saved(_)));
         let entry = store
-            .find("voz", "etiqueta")
+            .find(
+                &VoiceName::parse("voz").unwrap(),
+                &Label::parse("etiqueta").unwrap(),
+            )
             .expect("buscar la locución guardada")
             .expect("la locución debe existir");
         assert_eq!(entry.metadata.expect("sidecar").text, "texto final");
@@ -7698,8 +7720,8 @@ mod tests {
             CountingResynthesizer::new(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)));
 
         play_menu_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7748,8 +7770,8 @@ mod tests {
         let mut resynthesizer = CountingResynthesizer::new(resyntheses.clone());
 
         let outcome = play_menu_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7767,9 +7789,18 @@ mod tests {
         // Reproducción inicial + la de la vuelta tras re-sintetizar.
         assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 2);
         let saved = outcome.expect("la locución debe quedar guardada");
-        assert_eq!(saved, store.audio_path("voz", "etiqueta"));
+        assert_eq!(
+            saved,
+            store.audio_path(
+                &VoiceName::parse("voz").unwrap(),
+                &Label::parse("etiqueta").unwrap()
+            )
+        );
         let entry = store
-            .find("voz", "etiqueta")
+            .find(
+                &VoiceName::parse("voz").unwrap(),
+                &Label::parse("etiqueta").unwrap(),
+            )
             .expect("buscar la locución guardada")
             .expect("la locución debe existir");
         assert_eq!(entry.metadata.expect("sidecar").text, "texto final");
@@ -7787,8 +7818,8 @@ mod tests {
             CountingResynthesizer::new(std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)));
 
         let outcome = play_menu_loop(
-            "voz",
-            "etiqueta",
+            &VoiceName::parse("voz").unwrap(),
+            &Label::parse("etiqueta").unwrap(),
             false,
             &voices,
             &store,
@@ -7805,7 +7836,10 @@ mod tests {
         assert!(outcome.is_none(), "descartar no debe guardar nada");
         assert!(
             store
-                .find("voz", "etiqueta")
+                .find(
+                    &VoiceName::parse("voz").unwrap(),
+                    &Label::parse("etiqueta").unwrap()
+                )
                 .expect("buscar la locución")
                 .is_none(),
             "descartar no debe persistir la locución"

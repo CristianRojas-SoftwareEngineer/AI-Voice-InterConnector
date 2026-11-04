@@ -157,12 +157,121 @@ fn expand_path_vars(p: &Path) -> PathBuf {
     PathBuf::from(out)
 }
 
+// ─── Nombres validados ───────────────────────────────────────────────
+//
+// Los almacenes solo construyen rutas a partir de `VoiceName` y `Label`, y estos
+// tipos solo se construyen con `parse`, que aplica el único validador. La
+// validación vive en el tipo y no en cada llamador: un nombre que no la supera no
+// llega a existir, así que ningún comando puede olvidar comprobarlo ni unir a una
+// ruta un `.` o un `..` que la saque del almacén.
+
+/// Clase del nombre que no superó la validación.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameKind {
+    Voice,
+    Label,
+}
+
+/// Un nombre de voz o una etiqueta que no cumple la forma del contrato.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InvalidName {
+    pub kind: NameKind,
+    pub value: String,
+}
+
+impl std::fmt::Display for InvalidName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let subject = match self.kind {
+            NameKind::Voice => "El nombre de voz",
+            NameKind::Label => "La etiqueta",
+        };
+        write!(
+            f,
+            "{} '{}' no es válido: solo admite letras ASCII, dígitos, '.', '_' y '-', y no puede ser '.' ni '..'.",
+            subject, self.value
+        )
+    }
+}
+
+impl std::error::Error for InvalidName {}
+
+/// Único validador de nombres: no vacío, solo ASCII alfanumérico, `.`, `_` o `-`,
+/// y distinto de `.` y `..`. Devuelve el nombre normalizado a minúsculas.
+fn validated_name(kind: NameKind, raw: &str) -> Result<String, InvalidName> {
+    let legal = !raw.is_empty()
+        && raw != "."
+        && raw != ".."
+        && raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+    if legal {
+        Ok(raw.to_ascii_lowercase())
+    } else {
+        Err(InvalidName {
+            kind,
+            value: raw.to_string(),
+        })
+    }
+}
+
+/// Nombre de voz validado y normalizado a minúsculas.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct VoiceName(String);
+
+impl VoiceName {
+    pub fn parse(raw: &str) -> Result<Self, InvalidName> {
+        validated_name(NameKind::Voice, raw).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Etiqueta de locución validada y normalizada a minúsculas.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Label(String);
+
+impl Label {
+    pub fn parse(raw: &str) -> Result<Self, InvalidName> {
+        validated_name(NameKind::Label, raw).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VoiceName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::fmt::Display for Label {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for VoiceName {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl Serialize for Label {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
 // ─── VoiceStore ──────────────────────────────────────────────────────
 
 /// Una voz registrada (fábrica o de usuario)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct VoiceEntry {
-    pub name: String,
+    pub name: VoiceName,
     pub is_factory: bool,
 }
 
@@ -225,13 +334,13 @@ impl VoiceStore {
         let mut voices = Vec::new();
         for entry in std::fs::read_dir(&self.base_dir)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                let name = entry
-                    .file_name()
-                    .to_string_lossy()
-                    .to_string()
-                    .to_lowercase();
-                let is_factory = is_factory_name(&name);
+            // Un directorio cuyo nombre no es un nombre de voz válido no es una
+            // voz: ningún comando podría nombrarlo.
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            if let Ok(name) = VoiceName::parse(&entry.file_name().to_string_lossy()) {
+                let is_factory = is_factory_name(name.as_str());
                 voices.push(VoiceEntry { name, is_factory });
             }
         }
@@ -240,62 +349,34 @@ impl VoiceStore {
         Ok(voices)
     }
 
-    /// Validar un nombre de voz (regex del contrato `^[A-Za-z0-9._-]+$` +
-    /// reglas de seguridad anti-escape)
-    pub fn validate_name(name: &str) -> Result<(), String> {
-        if name.is_empty() {
-            return Err("El nombre de la voz no puede estar vacío.".into());
-        }
-        if !name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
-        {
-            return Err(format!(
-                "El nombre de voz '{}' contiene caracteres no permitidos.",
-                name
-            ));
-        }
-        if name.contains('/') || name.contains('\\') || name.contains("..") || name.contains('\0') {
-            return Err(format!(
-                "El nombre de voz '{}' contiene caracteres no permitidos.",
-                name
-            ));
-        }
-        if name.len() > 64 {
-            return Err("El nombre de la voz excede 64 caracteres.".into());
-        }
-        Ok(())
-    }
-
     /// Verificar si una voz existe, con el nombre normalizado a minúsculas, según
     /// el contrato del registro. Inicializa antes el almacén para que las voces
     /// de fábrica existan en una raíz nueva; si la inicialización falla,
     /// devuelve el error.
-    pub fn exists(&self, name: &str) -> Result<bool> {
+    pub fn exists(&self, name: &VoiceName) -> Result<bool> {
         self.ensure_initialized()?;
-        Ok(self.base_dir.join(name.to_lowercase()).is_dir())
+        Ok(self.voice_dir(name).is_dir())
     }
 
     /// Eliminar solo el registro de una voz (no permite eliminar voces de fábrica:
     /// default, ryan, vivian). No toca sus locuciones, así que no es pública: fuera
     /// del crate una voz solo se borra con [`remove_voice`], que se las lleva con ella.
-    fn remove(&self, name: &str) -> Result<(), String> {
-        let name = self.ensure_removable(name)?;
-        std::fs::remove_dir_all(self.base_dir.join(&name)).map_err(|e| e.to_string())?;
+    fn remove(&self, name: &VoiceName) -> Result<(), String> {
+        self.ensure_removable(name)?;
+        std::fs::remove_dir_all(self.voice_dir(name)).map_err(|e| e.to_string())?;
         Ok(())
     }
 
-    /// Nombre normalizado de una voz que se puede eliminar: descarta las de fábrica
-    /// y las que no existen.
-    fn ensure_removable(&self, name: &str) -> Result<String, String> {
-        let name = name.to_lowercase();
-        if is_factory_name(&name) {
+    /// Comprueba que la voz se pueda eliminar: descarta las de fábrica y las que
+    /// no existen.
+    fn ensure_removable(&self, name: &VoiceName) -> Result<(), String> {
+        if is_factory_name(name.as_str()) {
             return Err(format!("La voz '{}' no se puede eliminar.", name));
         }
-        if !self.base_dir.join(&name).is_dir() {
+        if !self.voice_dir(name).is_dir() {
             return Err(format!("La voz '{}' no existe.", name));
         }
-        Ok(name)
+        Ok(())
     }
 
     /// Buscar el archivo de referencia de una voz: `reference.qvoice`.
@@ -304,10 +385,9 @@ impl VoiceStore {
     /// Inicializa antes el almacén para que `default` exista en una raíz nueva;
     /// si la inicialización falla, devuelve el error. Fuera del crate la
     /// referencia se obtiene con su identidad mediante [`VoiceStore::resolve`].
-    fn find_reference(&self, name: &str) -> Result<Option<PathBuf>> {
+    fn find_reference(&self, name: &VoiceName) -> Result<Option<PathBuf>> {
         self.ensure_initialized()?;
-        let dir = self.base_dir.join(name.to_lowercase());
-        let path = dir.join("reference.qvoice");
+        let path = self.voice_dir(name).join("reference.qvoice");
         if path.is_file() {
             return Ok(Some(path));
         }
@@ -317,7 +397,7 @@ impl VoiceStore {
     /// Referencia clonada de una voz con la identidad de su contenido: la huella
     /// es el sha256 del `reference.qvoice` completo. `None` si la voz no tiene
     /// referencia (preset o voz inexistente); un fallo de E/S es un error.
-    pub fn resolve(&self, name: &str) -> Result<Option<VoiceReference>> {
+    pub fn resolve(&self, name: &VoiceName) -> Result<Option<VoiceReference>> {
         let Some(path) = self.find_reference(name)? else {
             return Ok(None);
         };
@@ -325,9 +405,9 @@ impl VoiceStore {
         Ok(Some(VoiceReference { path, fingerprint }))
     }
 
-    /// Directorio de una voz (nombre normalizado a minúsculas)
-    pub fn voice_dir(&self, name: &str) -> PathBuf {
-        self.base_dir.join(name.to_lowercase())
+    /// Directorio de una voz.
+    pub fn voice_dir(&self, name: &VoiceName) -> PathBuf {
+        self.base_dir.join(name.as_str())
     }
 
     /// Prepara el `.qvoice` clonado como `reference.qvoice` de la voz sin
@@ -341,7 +421,7 @@ impl VoiceStore {
     /// muere, no aparece un directorio de voz vacío que `list` mostraría y que
     /// impediría clonar de nuevo con ese nombre. Si el preparado se suelta sin
     /// publicar, el temporal se borra.
-    fn stage_reference(&self, name: &str, src: &Path) -> Result<StagedReference> {
+    fn stage_reference(&self, name: &VoiceName, src: &Path) -> Result<StagedReference> {
         let dir = self.voice_dir(name);
         let dest = dir.join("reference.qvoice");
         let staged = if dir.exists() {
@@ -359,7 +439,7 @@ impl VoiceStore {
             })?;
             let owner = avi_process::current_owner_token()?;
             let staging = parent.join(avi_shared::staging_names::voice_staging::name(
-                &name.to_lowercase(),
+                name.as_str(),
                 &owner,
             ));
             avi_shared::best_effort(
@@ -455,8 +535,8 @@ pub struct SpeechMetadata {
 /// ruta; los metadatos del sidecar son opcionales y faltan cuando no hay `.json`.
 #[derive(Debug, Clone)]
 pub struct SpeechEntry {
-    pub voice: String,
-    pub label: String,
+    pub voice: VoiceName,
+    pub label: Label,
     pub metadata: Option<SpeechMetadata>,
     pub audio_path: PathBuf,
     pub metadata_path: PathBuf,
@@ -522,37 +602,36 @@ impl SpeechStore {
         self.list_with_filter(None)
     }
 
-    /// Listar las locuciones persistidas de una sola voz (lectura
-    /// acotada por voz; la voz se normaliza a minúsculas, paridad con
-    /// `voice_dir`). Voz sin locuciones → lista vacía, sin error.
-    pub fn list_by_voice(&self, voice: &str) -> Result<Vec<SpeechEntry>> {
+    /// Listar las locuciones persistidas de una sola voz (lectura acotada por
+    /// voz). Voz sin locuciones → lista vacía, sin error.
+    pub fn list_by_voice(&self, voice: &VoiceName) -> Result<Vec<SpeechEntry>> {
         self.list_with_filter(Some(voice))
     }
 
     /// Recorrido compartido del almacén con filtro opcional por voz: enumera los
     /// WAV, que son el registro; con filtro solo se lee el directorio de la voz
     /// pedida. Una locución sin sidecar aparece sin metadatos; un sidecar
-    /// ilegible o corrupto hace fallar el recorrido con un `SidecarError`.
-    fn list_with_filter(&self, voice: Option<&str>) -> Result<Vec<SpeechEntry>> {
+    /// ilegible o corrupto hace fallar el recorrido con un `SidecarError`. Un
+    /// directorio o un WAV cuyo nombre no es un nombre válido no es una locución:
+    /// ningún comando podría nombrarlo.
+    fn list_with_filter(&self, filter: Option<&VoiceName>) -> Result<Vec<SpeechEntry>> {
         self.ensure_initialized()?;
         let mut entries = Vec::new();
         if !self.base_dir.is_dir() {
             return Ok(entries);
         }
-        // Filtro normalizado a minúsculas, paridad con `voice_dir`.
-        let filter = voice.map(|v| v.to_lowercase());
         // Iterar por directorio de voz
         for voice_dir in std::fs::read_dir(&self.base_dir)? {
             let voice_dir = voice_dir?;
             if !voice_dir.file_type()?.is_dir() {
                 continue;
             }
+            let Ok(voice) = VoiceName::parse(&voice_dir.file_name().to_string_lossy()) else {
+                continue;
+            };
             // Con filtro, acotar la lectura al directorio de la voz pedida.
-            if let Some(f) = &filter {
-                let name = voice_dir.file_name().to_string_lossy().to_lowercase();
-                if name != *f {
-                    continue;
-                }
+            if filter.is_some_and(|f| *f != voice) {
+                continue;
             }
             for file in std::fs::read_dir(voice_dir.path())? {
                 let file = file?;
@@ -560,24 +639,27 @@ impl SpeechStore {
                 if path.extension().and_then(|e| e.to_str()) != Some("wav") || !path.is_file() {
                     continue;
                 }
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                let Some(label) = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| Label::parse(s).ok())
+                else {
                     continue;
                 };
-                let voice = voice_dir.file_name().to_string_lossy().to_lowercase();
-                entries.push(Self::entry_for(voice, stem.to_lowercase(), path)?);
+                entries.push(Self::entry_for(voice.clone(), label, path)?);
             }
         }
         Ok(entries)
     }
 
     /// Entrada de un WAV existente: lee su sidecar, si lo hay.
-    fn entry_for(voice: String, label: String, audio_path: PathBuf) -> Result<SpeechEntry> {
+    fn entry_for(voice: VoiceName, label: Label, audio_path: PathBuf) -> Result<SpeechEntry> {
         let metadata_path = audio_path.with_extension("json");
         let metadata = match std::fs::read_to_string(&metadata_path) {
             Ok(content) => Some(
                 serde_json::from_str::<SpeechMetadata>(&content).map_err(|e| SidecarError {
-                    voice: voice.clone(),
-                    label: label.clone(),
+                    voice: voice.to_string(),
+                    label: label.to_string(),
                     path: metadata_path.clone(),
                     reason: e.to_string(),
                 })?,
@@ -585,8 +667,8 @@ impl SpeechStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => {
                 return Err(SidecarError {
-                    voice,
-                    label,
+                    voice: voice.to_string(),
+                    label: label.to_string(),
                     path: metadata_path,
                     reason: e.to_string(),
                 }
@@ -602,15 +684,15 @@ impl SpeechStore {
         })
     }
 
-    /// Directorio para una voz específica (nombre normalizado a minúsculas)
-    pub fn voice_dir(&self, voice: &str) -> PathBuf {
-        self.base_dir.join(voice.to_lowercase())
+    /// Directorio para una voz específica.
+    pub fn voice_dir(&self, voice: &VoiceName) -> PathBuf {
+        self.base_dir.join(voice.as_str())
     }
 
     /// Etiquetas de las locuciones de una voz, ordenadas. El WAV es el registro y
     /// no se lee ningún sidecar, de modo que un sidecar corrupto no impide
     /// conocer qué locuciones tiene la voz. Voz sin locuciones → lista vacía.
-    pub fn labels_of(&self, voice: &str) -> Result<Vec<String>> {
+    pub fn labels_of(&self, voice: &VoiceName) -> Result<Vec<String>> {
         let dir = self.voice_dir(voice);
         let mut labels = Vec::new();
         if !dir.is_dir() {
@@ -629,30 +711,32 @@ impl SpeechStore {
         Ok(labels)
     }
 
-    /// Ruta del WAV para una locución (voice/label normalizados)
-    pub fn audio_path(&self, voice: &str, label: &str) -> PathBuf {
-        self.voice_dir(voice)
-            .join(format!("{}.wav", label.to_lowercase()))
+    /// Ruta del WAV para una locución.
+    pub fn audio_path(&self, voice: &VoiceName, label: &Label) -> PathBuf {
+        self.voice_dir(voice).join(format!("{}.wav", label))
+    }
+
+    /// Ruta de la ficha `.json` de una locución.
+    fn metadata_path(&self, voice: &VoiceName, label: &Label) -> PathBuf {
+        self.voice_dir(voice).join(format!("{}.json", label))
     }
 
     /// Buscar una locución por (voz, etiqueta). La decide el WAV: sin él es
     /// `None`; sin sidecar la entrada no lleva metadatos; con sidecar ilegible o
     /// corrupto devuelve un `SidecarError`.
-    pub fn find(&self, voice: &str, label: &str) -> Result<Option<SpeechEntry>> {
-        let label = label.to_lowercase();
-        let wav_path = self.audio_path(voice, &label);
+    pub fn find(&self, voice: &VoiceName, label: &Label) -> Result<Option<SpeechEntry>> {
+        let wav_path = self.audio_path(voice, label);
         if !wav_path.is_file() {
             return Ok(None);
         }
-        Self::entry_for(voice.to_lowercase(), label, wav_path).map(Some)
+        Self::entry_for(voice.clone(), label.clone(), wav_path).map(Some)
     }
 
     /// Eliminar una locución: borra el WAV y el sidecar si existen, sin
     /// interpretar el contenido del sidecar.
-    pub fn remove(&self, voice: &str, label: &str) -> Result<(), String> {
-        let label = label.to_lowercase();
-        let wav = self.audio_path(voice, &label);
-        let meta = self.voice_dir(voice).join(format!("{}.json", label));
+    pub fn remove(&self, voice: &VoiceName, label: &Label) -> Result<(), String> {
+        let wav = self.audio_path(voice, label);
+        let meta = self.metadata_path(voice, label);
         if !wav.is_file() && !meta.is_file() {
             return Err(format!(
                 "La locución '{}' de la voz '{}' no existe.",
@@ -672,23 +756,20 @@ impl SpeechStore {
     /// que nunca queda una ficha escrita a medias.
     pub(crate) fn save_metadata(
         &self,
-        voice: &str,
-        label: &str,
+        voice: &VoiceName,
+        label: &Label,
         text: &str,
         duration_secs: f64,
     ) -> Result<PathBuf> {
-        let voice = voice.to_lowercase();
-        let label = label.to_lowercase();
-        let dir = self.voice_dir(&voice);
-        std::fs::create_dir_all(&dir)?;
+        std::fs::create_dir_all(self.voice_dir(voice))?;
         let meta = SpeechMetadata {
-            label: label.clone(),
-            voice,
+            label: label.to_string(),
+            voice: voice.to_string(),
             text: text.to_string(),
             created_at: chrono::Utc::now().to_rfc3339(),
             duration_secs,
         };
-        let meta_path = dir.join(format!("{}.json", label));
+        let meta_path = self.metadata_path(voice, label);
         let content = serde_json::to_string_pretty(&meta)?;
         let tmp_path = owned_temp_path(&meta_path)?;
         std::fs::write(&tmp_path, content)?;
@@ -702,8 +783,8 @@ impl SpeechStore {
     /// con [`persist_locution`].
     pub(crate) fn save(
         &self,
-        voice: &str,
-        label: &str,
+        voice: &VoiceName,
+        label: &Label,
         text: &str,
         wav_src: &Path,
     ) -> Result<PathBuf> {
@@ -737,15 +818,15 @@ impl SpeechStore {
 pub fn remove_voice(
     voices: &VoiceStore,
     speech: &SpeechStore,
-    name: &str,
+    name: &VoiceName,
 ) -> Result<Vec<String>, String> {
-    let name = voices.ensure_removable(name)?;
-    let labels = speech.labels_of(&name).map_err(|e| e.to_string())?;
-    let speech_dir = speech.voice_dir(&name);
+    voices.ensure_removable(name)?;
+    let labels = speech.labels_of(name).map_err(|e| e.to_string())?;
+    let speech_dir = speech.voice_dir(name);
     if speech_dir.is_dir() {
         std::fs::remove_dir_all(&speech_dir).map_err(|e| e.to_string())?;
     }
-    voices.remove(&name)?;
+    voices.remove(name)?;
     Ok(labels)
 }
 
@@ -769,7 +850,7 @@ pub struct ReplacedVoice {
 pub fn replace_voice(
     voices: &VoiceStore,
     speech: &SpeechStore,
-    name: &str,
+    name: &VoiceName,
     src: &Path,
 ) -> Result<ReplacedVoice> {
     let staged = voices.stage_reference(name, src)?;
@@ -790,9 +871,9 @@ pub fn replace_voice(
 pub enum LocutionConflict {
     /// La voz cambió (re-clonada o eliminada) entre su resolución y el guardado:
     /// la locución se sintetizó con un contenido que ya no es el de la voz.
-    VoiceChanged { voice: String },
+    VoiceChanged { voice: VoiceName },
     /// Ya existe una locución con esa etiqueta y no se pidió sobrescribirla.
-    LabelExists { voice: String, label: String },
+    LabelExists { voice: VoiceName, label: Label },
 }
 
 impl std::fmt::Display for LocutionConflict {
@@ -828,21 +909,26 @@ pub fn persist_locution(
     voices: &VoiceStore,
     speech: &SpeechStore,
     expected: Option<&VoiceReference>,
-    voice: &str,
-    label: &str,
+    voice: &VoiceName,
+    label: &Label,
     text: &str,
     wav: &Path,
     force: bool,
 ) -> Result<PathBuf> {
-    let voice = voice.to_lowercase();
-    let label = label.to_lowercase();
-    if voices.resolve(&voice)?.as_ref() != expected {
-        return Err(LocutionConflict::VoiceChanged { voice }.into());
+    if voices.resolve(voice)?.as_ref() != expected {
+        return Err(LocutionConflict::VoiceChanged {
+            voice: voice.clone(),
+        }
+        .into());
     }
-    if !force && speech.audio_path(&voice, &label).is_file() {
-        return Err(LocutionConflict::LabelExists { voice, label }.into());
+    if !force && speech.audio_path(voice, label).is_file() {
+        return Err(LocutionConflict::LabelExists {
+            voice: voice.clone(),
+            label: label.clone(),
+        }
+        .into());
     }
-    speech.save(&voice, &label, text, wav)
+    speech.save(voice, label, text, wav)
 }
 
 // ─── ModelStore ──────────────────────────────────────────────────────
@@ -2296,6 +2382,16 @@ mod tests {
         )
     }
 
+    /// Nombre de voz de prueba ya validado.
+    fn v(raw: &str) -> VoiceName {
+        VoiceName::parse(raw).unwrap()
+    }
+
+    /// Etiqueta de prueba ya validada.
+    fn l(raw: &str) -> Label {
+        Label::parse(raw).unwrap()
+    }
+
     /// Normalización de mayúsculas en todas las operaciones del almacén, según
     /// el contrato del registro.
     #[test]
@@ -2306,7 +2402,7 @@ mod tests {
         std::fs::write(&wav_src, min_wav()).unwrap();
 
         let saved = speech
-            .save("VIVIAN", "TestGreeting", "Hola", &wav_src)
+            .save(&v("VIVIAN"), &l("TestGreeting"), "Hola", &wav_src)
             .unwrap();
         let rel = saved
             .strip_prefix(dir.join("speech"))
@@ -2315,28 +2411,37 @@ mod tests {
             .to_string();
         assert_eq!(rel.replace('\\', "/"), "vivian/testgreeting.wav");
 
-        assert!(speech.find("vivian", "testgreeting").unwrap().is_some());
-        assert!(speech.find("VIVIAN", "TESTGREETING").unwrap().is_some());
+        assert!(speech
+            .find(&v("vivian"), &l("testgreeting"))
+            .unwrap()
+            .is_some());
+        assert!(speech
+            .find(&v("VIVIAN"), &l("TESTGREETING"))
+            .unwrap()
+            .is_some());
         let entries = speech.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].voice, "vivian");
-        assert_eq!(entries[0].label, "testgreeting");
+        assert_eq!(entries[0].voice.as_str(), "vivian");
+        assert_eq!(entries[0].label.as_str(), "testgreeting");
 
-        speech.remove("VIVIAN", "TESTGREETING").unwrap();
-        assert!(speech.find("vivian", "testgreeting").unwrap().is_none());
+        speech.remove(&v("VIVIAN"), &l("TESTGREETING")).unwrap();
+        assert!(speech
+            .find(&v("vivian"), &l("testgreeting"))
+            .unwrap()
+            .is_none());
 
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         voices.ensure_initialized().unwrap();
-        let vdir = voices.voice_dir("MyVoice");
+        let vdir = voices.voice_dir(&v("MyVoice"));
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("reference.qvoice"), b"QVCE").unwrap();
         assert!(
-            voices.exists("MYVOICE").unwrap(),
+            voices.exists(&v("MYVOICE")).unwrap(),
             "exists debe normalizar a minúsculas"
         );
         assert_eq!(
             voices
-                .find_reference("MYVOICE")
+                .find_reference(&v("MYVOICE"))
                 .unwrap()
                 .unwrap()
                 .file_name()
@@ -2355,21 +2460,23 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
         speech
-            .save("vivian", "farewell", "Adiós", &wav_src)
+            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .unwrap();
+        speech
+            .save(&v("vivian"), &l("farewell"), "Adiós", &wav_src)
             .unwrap();
 
-        let ryan = speech.list_by_voice("RYAN").unwrap();
+        let ryan = speech.list_by_voice(&v("RYAN")).unwrap();
         assert_eq!(ryan.len(), 1);
-        assert_eq!(ryan[0].voice, "ryan");
-        assert_eq!(ryan[0].label, "greeting");
+        assert_eq!(ryan[0].voice.as_str(), "ryan");
+        assert_eq!(ryan[0].label.as_str(), "greeting");
 
-        let vivian = speech.list_by_voice("vivian").unwrap();
+        let vivian = speech.list_by_voice(&v("vivian")).unwrap();
         assert_eq!(vivian.len(), 1);
-        assert_eq!(vivian[0].label, "farewell");
+        assert_eq!(vivian[0].label.as_str(), "farewell");
 
-        assert!(speech.list_by_voice("nonexistent").unwrap().is_empty());
+        assert!(speech.list_by_voice(&v("nonexistent")).unwrap().is_empty());
         assert_eq!(speech.list().unwrap().len(), 2);
     }
 
@@ -2381,12 +2488,12 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        speech.save("ryan", "zeta", "Z", &wav_src).unwrap();
-        speech.save("ryan", "Alfa", "A", &wav_src).unwrap();
-        std::fs::write(speech.voice_dir("ryan").join("zeta.json"), b"{roto").unwrap();
+        speech.save(&v("ryan"), &l("zeta"), "Z", &wav_src).unwrap();
+        speech.save(&v("ryan"), &l("Alfa"), "A", &wav_src).unwrap();
+        std::fs::write(speech.voice_dir(&v("ryan")).join("zeta.json"), b"{roto").unwrap();
 
-        assert_eq!(speech.labels_of("RYAN").unwrap(), vec!["alfa", "zeta"]);
-        assert!(speech.labels_of("vivian").unwrap().is_empty());
+        assert_eq!(speech.labels_of(&v("RYAN")).unwrap(), vec!["alfa", "zeta"]);
+        assert!(speech.labels_of(&v("vivian")).unwrap().is_empty());
     }
 
     /// `remove_voice` borra el registro de la voz y su namespace de locuciones y
@@ -2399,31 +2506,33 @@ mod tests {
         voices.ensure_initialized().unwrap();
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        std::fs::create_dir_all(voices.voice_dir("locutor")).unwrap();
-        std::fs::create_dir_all(voices.voice_dir("otra")).unwrap();
-        speech.save("locutor", "b", "B", &wav_src).unwrap();
-        speech.save("locutor", "a", "A", &wav_src).unwrap();
-        speech.save("otra", "c", "C", &wav_src).unwrap();
-        speech.save("default", "d", "D", &wav_src).unwrap();
+        std::fs::create_dir_all(voices.voice_dir(&v("locutor"))).unwrap();
+        std::fs::create_dir_all(voices.voice_dir(&v("otra"))).unwrap();
+        speech.save(&v("locutor"), &l("b"), "B", &wav_src).unwrap();
+        speech.save(&v("locutor"), &l("a"), "A", &wav_src).unwrap();
+        speech.save(&v("otra"), &l("c"), "C", &wav_src).unwrap();
+        speech.save(&v("default"), &l("d"), "D", &wav_src).unwrap();
 
         // Fábrica e inexistente: error y nada borrado.
-        assert!(remove_voice(&voices, &speech, "default").is_err());
-        assert!(remove_voice(&voices, &speech, "noexiste").is_err());
-        assert!(speech.find("default", "d").unwrap().is_some());
+        assert!(remove_voice(&voices, &speech, &v("default")).is_err());
+        assert!(remove_voice(&voices, &speech, &v("noexiste")).is_err());
+        assert!(speech.find(&v("default"), &l("d")).unwrap().is_some());
 
-        let labels = remove_voice(&voices, &speech, "LOCUTOR").unwrap();
+        let labels = remove_voice(&voices, &speech, &v("LOCUTOR")).unwrap();
         assert_eq!(labels, vec!["a", "b"]);
-        assert!(!voices.voice_dir("locutor").exists());
-        assert!(!speech.voice_dir("locutor").exists());
+        assert!(!voices.voice_dir(&v("locutor")).exists());
+        assert!(!speech.voice_dir(&v("locutor")).exists());
         // Las demás voces y sus locuciones quedan intactas.
-        assert!(voices.voice_dir("otra").is_dir());
-        assert!(speech.find("otra", "c").unwrap().is_some());
-        assert!(speech.find("default", "d").unwrap().is_some());
+        assert!(voices.voice_dir(&v("otra")).is_dir());
+        assert!(speech.find(&v("otra"), &l("c")).unwrap().is_some());
+        assert!(speech.find(&v("default"), &l("d")).unwrap().is_some());
 
         // Voz sin namespace de locuciones: se borra con lista vacía.
-        assert!(remove_voice(&voices, &speech, "otra").is_ok());
-        std::fs::create_dir_all(voices.voice_dir("sola")).unwrap();
-        assert!(remove_voice(&voices, &speech, "sola").unwrap().is_empty());
+        assert!(remove_voice(&voices, &speech, &v("otra")).is_ok());
+        std::fs::create_dir_all(voices.voice_dir(&v("sola"))).unwrap();
+        assert!(remove_voice(&voices, &speech, &v("sola"))
+            .unwrap()
+            .is_empty());
     }
 
     /// round-trip `save` → `find` con `duration_secs` calculada del WAV.
@@ -2434,10 +2543,12 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
 
-        let path = speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
+        let path = speech
+            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .unwrap();
         assert!(path.is_file());
         let entry = speech
-            .find("ryan", "greeting")
+            .find(&v("ryan"), &l("greeting"))
             .unwrap()
             .expect("la locución debe existir");
         let metadata = entry.metadata.expect("la locución guardada lleva sidecar");
@@ -2454,16 +2565,18 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
-        std::fs::remove_file(speech.voice_dir("ryan").join("greeting.json")).unwrap();
+        speech
+            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .unwrap();
+        std::fs::remove_file(speech.voice_dir(&v("ryan")).join("greeting.json")).unwrap();
 
         let entries = speech.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].voice, "ryan");
-        assert_eq!(entries[0].label, "greeting");
+        assert_eq!(entries[0].voice.as_str(), "ryan");
+        assert_eq!(entries[0].label.as_str(), "greeting");
         assert!(entries[0].metadata.is_none());
 
-        let found = speech.find("ryan", "greeting").unwrap().unwrap();
+        let found = speech.find(&v("ryan"), &l("greeting")).unwrap().unwrap();
         assert!(found.metadata.is_none());
     }
 
@@ -2474,11 +2587,13 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
-        std::fs::remove_file(speech.audio_path("ryan", "greeting")).unwrap();
+        speech
+            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .unwrap();
+        std::fs::remove_file(speech.audio_path(&v("ryan"), &l("greeting"))).unwrap();
 
         assert!(speech.list().unwrap().is_empty());
-        assert!(speech.find("ryan", "greeting").unwrap().is_none());
+        assert!(speech.find(&v("ryan"), &l("greeting")).unwrap().is_none());
     }
 
     /// Un sidecar corrupto hace fallar `list` y `find` con un `SidecarError` que
@@ -2489,14 +2604,16 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        speech.save("ryan", "greeting", "Hola", &wav_src).unwrap();
-        let sidecar = speech.voice_dir("ryan").join("greeting.json");
+        speech
+            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .unwrap();
+        let sidecar = speech.voice_dir(&v("ryan")).join("greeting.json");
         std::fs::write(&sidecar, b"{roto").unwrap();
 
         for err in [
             speech.list().unwrap_err(),
-            speech.list_by_voice("ryan").unwrap_err(),
-            speech.find("ryan", "greeting").unwrap_err(),
+            speech.list_by_voice(&v("ryan")).unwrap_err(),
+            speech.find(&v("ryan"), &l("greeting")).unwrap_err(),
         ] {
             let sidecar_err = err
                 .downcast_ref::<SidecarError>()
@@ -2507,28 +2624,74 @@ mod tests {
             assert!(err.to_string().contains("greeting.json"), "{err}");
         }
 
-        speech.remove("ryan", "greeting").unwrap();
+        speech.remove(&v("ryan"), &l("greeting")).unwrap();
         assert!(!sidecar.exists());
-        assert!(!speech.audio_path("ryan", "greeting").exists());
+        assert!(!speech.audio_path(&v("ryan"), &l("greeting")).exists());
     }
 
-    /// `validate_name` acepta el regex del contrato y rechaza lo demás.
+    /// El validador único acepta la forma del contrato normalizada a minúsculas y
+    /// rechaza el nombre vacío, los caracteres ilegales, `.` y `..`, con el mismo
+    /// criterio para voces y etiquetas y un error que nombra la clase.
     #[test]
-    fn validate_name_accepts_contract_regex() {
-        assert!(VoiceStore::validate_name("Mi_Voz-2").is_ok());
-        assert!(
-            VoiceStore::validate_name("mi voz").is_err(),
-            "espacios fuera del regex"
-        );
-        assert!(VoiceStore::validate_name("mi@voz").is_err());
-        assert!(VoiceStore::validate_name("").is_err());
-        assert!(VoiceStore::validate_name("a/b").is_err());
-        assert!(VoiceStore::validate_name("..").is_err());
+    fn name_validator_table() {
+        for (raw, normalized) in [
+            ("Mi_Voz-2", "mi_voz-2"),
+            ("a.b", "a.b"),
+            ("a..b", "a..b"),
+            (".oculta", ".oculta"),
+            ("...", "..."),
+            ("VIVIAN", "vivian"),
+        ] {
+            assert_eq!(VoiceName::parse(raw).unwrap().as_str(), normalized);
+            assert_eq!(Label::parse(raw).unwrap().as_str(), normalized);
+        }
+        for raw in [
+            "", ".", "..", "a/b", "../x", "a\\b", "a\0b", "mi voz", " a", "mi@voz", "ñandú",
+        ] {
+            assert_eq!(
+                VoiceName::parse(raw).unwrap_err(),
+                InvalidName {
+                    kind: NameKind::Voice,
+                    value: raw.to_string()
+                },
+                "voz {raw:?}"
+            );
+            assert_eq!(
+                Label::parse(raw).unwrap_err(),
+                InvalidName {
+                    kind: NameKind::Label,
+                    value: raw.to_string()
+                },
+                "etiqueta {raw:?}"
+            );
+        }
+        let voice = VoiceName::parse("..").unwrap_err().to_string();
+        assert!(voice.starts_with("El nombre de voz '..'"), "{voice}");
+        let label = Label::parse(".").unwrap_err().to_string();
+        assert!(label.starts_with("La etiqueta '.'"), "{label}");
+    }
+
+    /// Regresión: `voice remove --name .` borraba `voices/` y `speech/` completos.
+    /// El nombre `.` ya no se puede construir, y un directorio `.`/`..` que
+    /// aparezca en disco nunca se lista como voz.
+    #[test]
+    fn dot_names_never_reach_the_stores() {
+        assert!(VoiceName::parse(".").is_err());
+        assert!(VoiceName::parse("..").is_err());
+        let dir = temp_dir("dot_names");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let names: Vec<String> = voices
+            .list()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.name.to_string())
+            .collect();
+        assert_eq!(names, vec!["default", "ryan", "vivian"]);
     }
 
     /// Prepara y publica `src` como referencia de la voz `name`.
     fn publish_reference(voices: &VoiceStore, name: &str, src: &Path) -> Result<PathBuf> {
-        voices.stage_reference(name, src)?.publish()
+        voices.stage_reference(&v(name), src)?.publish()
     }
 
     /// Preparar y publicar escribe `reference.qvoice` con tmp+rename y
@@ -2545,14 +2708,17 @@ mod tests {
             "reference.qvoice"
         );
         assert!(saved.is_file());
-        assert_eq!(voices.find_reference("myvoice").unwrap().unwrap(), saved);
+        assert_eq!(
+            voices.find_reference(&v("myvoice")).unwrap().unwrap(),
+            saved
+        );
 
         // Sin fallback wav: solo qvoice es canónico.
-        let vdir = voices.voice_dir("other");
+        let vdir = voices.voice_dir(&v("other"));
         std::fs::create_dir_all(&vdir).unwrap();
         std::fs::write(vdir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert!(
-            voices.find_reference("OTHER").unwrap().is_none(),
+            voices.find_reference(&v("OTHER")).unwrap().is_none(),
             "sin reference.qvoice no resuelve como clonada"
         );
     }
@@ -2569,11 +2735,15 @@ mod tests {
         let missing = dir.join("missing.qvoice");
         assert!(publish_reference(&voices, "fresh", &missing).is_err());
         assert!(
-            !voices.voice_dir("fresh").exists(),
+            !voices.voice_dir(&v("fresh")).exists(),
             "un guardado fallido no debe dejar el directorio de la voz"
         );
         assert!(
-            voices.list().unwrap().iter().all(|v| v.name != "fresh"),
+            voices
+                .list()
+                .unwrap()
+                .iter()
+                .all(|e| e.name.as_str() != "fresh"),
             "un guardado fallido no debe dejar la voz en el listado"
         );
     }
@@ -2589,7 +2759,7 @@ mod tests {
         let saved = publish_reference(&voices, "existing", &src).unwrap();
         let missing = dir.join("missing.qvoice");
         assert!(publish_reference(&voices, "existing", &missing).is_err());
-        assert!(voices.voice_dir("existing").is_dir());
+        assert!(voices.voice_dir(&v("existing")).is_dir());
         assert_eq!(std::fs::read(&saved).unwrap(), b"QVCE");
     }
 
@@ -2607,24 +2777,27 @@ mod tests {
 
         publish_reference(&voices, "uno", &a).unwrap();
         publish_reference(&voices, "dos", &a).unwrap();
-        let first = voices.resolve("UNO").unwrap().unwrap();
-        let second = voices.resolve("dos").unwrap().unwrap();
+        let first = voices.resolve(&v("UNO")).unwrap().unwrap();
+        let second = voices.resolve(&v("dos")).unwrap().unwrap();
         assert_eq!(
             first.fingerprint, second.fingerprint,
             "misma huella por copia"
         );
-        assert_eq!(first.path, voices.voice_dir("uno").join("reference.qvoice"));
+        assert_eq!(
+            first.path,
+            voices.voice_dir(&v("uno")).join("reference.qvoice")
+        );
 
         publish_reference(&voices, "uno", &b).unwrap();
-        let recloned = voices.resolve("uno").unwrap().unwrap();
+        let recloned = voices.resolve(&v("uno")).unwrap().unwrap();
         assert_eq!(recloned.path, first.path, "re-clonar conserva la ruta");
         assert_ne!(recloned, first, "re-clonar cambia la identidad");
 
         assert!(
-            voices.resolve("ryan").unwrap().is_none(),
+            voices.resolve(&v("ryan")).unwrap().is_none(),
             "preset sin referencia"
         );
-        assert!(voices.resolve("nadie").unwrap().is_none());
+        assert!(voices.resolve(&v("nadie")).unwrap().is_none());
     }
 
     /// `replace_voice` publica la voz created, borra las locuciones de la anterior
@@ -2641,19 +2814,19 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
 
-        let created = replace_voice(&voices, &speech, "Locutor", &a).unwrap();
+        let created = replace_voice(&voices, &speech, &v("Locutor"), &a).unwrap();
         assert!(created.removed_speech.is_empty());
         assert_eq!(std::fs::read(&created.reference).unwrap(), b"QVCE-a");
-        speech.save("locutor", "b", "B", &wav_src).unwrap();
-        speech.save("locutor", "a", "A", &wav_src).unwrap();
-        speech.save("otra", "c", "C", &wav_src).unwrap();
+        speech.save(&v("locutor"), &l("b"), "B", &wav_src).unwrap();
+        speech.save(&v("locutor"), &l("a"), "A", &wav_src).unwrap();
+        speech.save(&v("otra"), &l("c"), "C", &wav_src).unwrap();
 
-        let replaced = replace_voice(&voices, &speech, "locutor", &b).unwrap();
+        let replaced = replace_voice(&voices, &speech, &v("locutor"), &b).unwrap();
         assert_eq!(replaced.removed_speech, vec!["a", "b"]);
         assert_eq!(std::fs::read(&replaced.reference).unwrap(), b"QVCE-b");
-        assert!(!speech.voice_dir("locutor").exists());
+        assert!(!speech.voice_dir(&v("locutor")).exists());
         assert!(
-            speech.find("otra", "c").unwrap().is_some(),
+            speech.find(&v("otra"), &l("c")).unwrap().is_some(),
             "otras voces intactas"
         );
     }
@@ -2671,17 +2844,17 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
         // Un directorio no vacío en el destino hace fallar el renombrado.
-        let blocked = voices.voice_dir("voz").join("reference.qvoice");
+        let blocked = voices.voice_dir(&v("voz")).join("reference.qvoice");
         std::fs::create_dir_all(blocked.join("bloqueo")).unwrap();
-        speech.save("voz", "vieja", "V", &wav_src).unwrap();
+        speech.save(&v("voz"), &l("vieja"), "V", &wav_src).unwrap();
 
-        assert!(replace_voice(&voices, &speech, "voz", &src).is_err());
+        assert!(replace_voice(&voices, &speech, &v("voz"), &src).is_err());
         assert!(blocked.is_dir(), "el contenido nuevo no se publicó");
         assert!(
-            !speech.voice_dir("voz").exists(),
+            !speech.voice_dir(&v("voz")).exists(),
             "las locuciones viejas se borraron"
         );
-        let leftovers: Vec<_> = std::fs::read_dir(voices.voice_dir("voz"))
+        let leftovers: Vec<_> = std::fs::read_dir(voices.voice_dir(&v("voz")))
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
@@ -2706,27 +2879,27 @@ mod tests {
         std::fs::write(&wav, min_wav()).unwrap();
         let conflict = |e: anyhow::Error| e.downcast::<LocutionConflict>().unwrap();
 
-        replace_voice(&voices, &speech, "voz", &a).unwrap();
-        let resolved = voices.resolve("voz").unwrap();
+        replace_voice(&voices, &speech, &v("voz"), &a).unwrap();
+        let resolved = voices.resolve(&v("voz")).unwrap();
         let saved = persist_locution(
             &voices,
             &speech,
             resolved.as_ref(),
-            "VOZ",
-            "Hola",
+            &v("VOZ"),
+            &l("Hola"),
             "Hola",
             &wav,
             false,
         )
         .unwrap();
-        assert_eq!(saved, speech.audio_path("voz", "hola"));
+        assert_eq!(saved, speech.audio_path(&v("voz"), &l("hola")));
 
         let e = persist_locution(
             &voices,
             &speech,
             resolved.as_ref(),
-            "voz",
-            "hola",
+            &v("voz"),
+            &l("hola"),
             "x",
             &wav,
             false,
@@ -2735,16 +2908,16 @@ mod tests {
         assert_eq!(
             conflict(e),
             LocutionConflict::LabelExists {
-                voice: "voz".into(),
-                label: "hola".into()
+                voice: v("voz"),
+                label: l("hola")
             }
         );
         persist_locution(
             &voices,
             &speech,
             resolved.as_ref(),
-            "voz",
-            "hola",
+            &v("voz"),
+            &l("hola"),
             "x",
             &wav,
             true,
@@ -2752,13 +2925,13 @@ mod tests {
         .unwrap();
 
         // La voz se re-clona entre la resolución y el guardado: no se escribe.
-        std::fs::copy(&b, voices.voice_dir("voz").join("reference.qvoice")).unwrap();
+        std::fs::copy(&b, voices.voice_dir(&v("voz")).join("reference.qvoice")).unwrap();
         let e = persist_locution(
             &voices,
             &speech,
             resolved.as_ref(),
-            "voz",
-            "otra",
+            &v("voz"),
+            &l("otra"),
             "x",
             &wav,
             true,
@@ -2766,24 +2939,29 @@ mod tests {
         .unwrap_err();
         assert_eq!(
             conflict(e),
-            LocutionConflict::VoiceChanged {
-                voice: "voz".into()
-            }
+            LocutionConflict::VoiceChanged { voice: v("voz") }
         );
-        assert!(!speech.audio_path("voz", "otra").exists());
+        assert!(!speech.audio_path(&v("voz"), &l("otra")).exists());
 
         // Un preset se guarda sin referencia; esperar una referencia que no tiene
         // es un cambio de voz.
         persist_locution(
-            &voices, &speech, None, "ryan", "saludo", "Hola", &wav, false,
+            &voices,
+            &speech,
+            None,
+            &v("ryan"),
+            &l("saludo"),
+            "Hola",
+            &wav,
+            false,
         )
         .unwrap();
         let e = persist_locution(
             &voices,
             &speech,
             resolved.as_ref(),
-            "ryan",
-            "x",
+            &v("ryan"),
+            &l("x"),
             "x",
             &wav,
             false,
@@ -2800,14 +2978,14 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav = dir.join("src.wav");
         std::fs::write(&wav, min_wav()).unwrap();
-        speech.save("ryan", "saludo", "Hola", &wav).unwrap();
-        let mut names: Vec<_> = std::fs::read_dir(speech.voice_dir("ryan"))
+        speech.save(&v("ryan"), &l("saludo"), "Hola", &wav).unwrap();
+        let mut names: Vec<_> = std::fs::read_dir(speech.voice_dir(&v("ryan")))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
         names.sort();
         assert_eq!(names, vec!["saludo.json", "saludo.wav"]);
-        let entry = speech.find("ryan", "saludo").unwrap().unwrap();
+        let entry = speech.find(&v("ryan"), &l("saludo")).unwrap().unwrap();
         assert_eq!(entry.metadata.unwrap().text, "Hola");
     }
 
@@ -2818,9 +2996,9 @@ mod tests {
         let dir = temp_dir("exists-fresh");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         for name in ["default", "ryan", "vivian"] {
-            assert!(voices.exists(name).unwrap(), "'{}' debe existir", name);
+            assert!(voices.exists(&v(name)).unwrap(), "'{}' debe existir", name);
         }
-        assert!(!voices.exists("nadie").unwrap());
+        assert!(!voices.exists(&v("nadie")).unwrap());
     }
 
     /// `ensure_initialized` registra voces de fábrica (`default` clonada
@@ -2833,10 +3011,10 @@ mod tests {
         voices.ensure_initialized().unwrap();
         // Las tres fábricas deben existir; `default` es clonada con qvoice, `ryan`/`vivian` presets puros
         for name in ["default", "ryan", "vivian"] {
-            let d = voices.voice_dir(name);
+            let d = voices.voice_dir(&v(name));
             assert!(d.is_dir(), "directorio de fábrica '{}' debe existir", name);
             assert!(
-                voices.exists(name).unwrap(),
+                voices.exists(&v(name)).unwrap(),
                 "exists('{}') debe ser true",
                 name
             );
@@ -2849,12 +3027,12 @@ mod tests {
         }
         // `default` clonada de fábrica debe tener `reference.qvoice` materializado
         assert!(
-            voices.find_reference("default").unwrap().is_some(),
+            voices.find_reference(&v("default")).unwrap().is_some(),
             "fábrica 'default' debe tener reference.qvoice"
         );
         assert_eq!(
             voices
-                .find_reference("default")
+                .find_reference(&v("default"))
                 .unwrap()
                 .unwrap()
                 .file_name()
@@ -2865,13 +3043,13 @@ mod tests {
         // `ryan`/`vivian` siguen presets puros sin referencia
         for name in ["ryan", "vivian"] {
             assert!(
-                voices.find_reference(name).unwrap().is_none(),
+                voices.find_reference(&v(name)).unwrap().is_none(),
                 "fábrica '{}' sin qvoice no debe tener referencia (preset puro)",
                 name
             );
         }
         // Idempotencia: segunda inicialización no borra directorios ni datos de usuario
-        let custom_dir = voices.voice_dir("myvoice");
+        let custom_dir = voices.voice_dir(&v("myvoice"));
         std::fs::create_dir_all(&custom_dir).unwrap();
         std::fs::write(custom_dir.join("reference.qvoice"), b"QVCE").unwrap();
         voices.ensure_initialized().unwrap();
@@ -2881,7 +3059,7 @@ mod tests {
         );
         for name in ["default", "ryan", "vivian"] {
             assert!(
-                voices.voice_dir(name).is_dir(),
+                voices.voice_dir(&v(name)).is_dir(),
                 "fábrica '{}' preservada tras 2º init",
                 name
             );
@@ -2890,8 +3068,8 @@ mod tests {
         let list = voices.list().unwrap();
         let factory_names: Vec<String> = list
             .iter()
-            .filter(|v| v.is_factory)
-            .map(|v| v.name.clone())
+            .filter(|e| e.is_factory)
+            .map(|e| e.name.to_string())
             .collect();
         assert_eq!(factory_names.len(), 3, "tres voces de fábrica");
         assert!(factory_names.contains(&"default".to_string()));
@@ -2900,17 +3078,17 @@ mod tests {
         // Todas las fábricas protegidas contra borrado
         for name in ["default", "ryan", "vivian", "DEFAULT", "RYAN"] {
             assert!(
-                voices.remove(name).is_err(),
+                voices.remove(&v(name)).is_err(),
                 "remove('{}') debe fallar (fábrica protegida)",
                 name
             );
         }
         // Voz sin qvoice no resuelve como clonada aunque tenga un wav inerte
-        let clone_dir = voices.voice_dir("other");
+        let clone_dir = voices.voice_dir(&v("other"));
         std::fs::create_dir_all(&clone_dir).unwrap();
         std::fs::write(clone_dir.join("speech-reference.wav"), b"RIFF").unwrap();
         assert!(
-            voices.find_reference("OTHER").unwrap().is_none(),
+            voices.find_reference(&v("OTHER")).unwrap().is_none(),
             "sin qvoice no resuelve como clonada"
         );
     }
@@ -2922,7 +3100,7 @@ mod tests {
         let dir = temp_dir("find_ref_fresh");
         let voices = VoiceStore::at(dir.join("voices"));
         let path = voices
-            .find_reference("default")
+            .find_reference(&v("default"))
             .unwrap()
             .expect("default debe resolver en una raíz nueva");
         assert!(path.is_file(), "el reference.qvoice debe existir en disco");
@@ -2937,7 +3115,7 @@ mod tests {
         std::fs::write(&base, b"no soy un directorio").unwrap();
         let voices = VoiceStore::at(base);
         assert!(voices.ensure_initialized().is_err());
-        assert!(voices.find_reference("default").is_err());
+        assert!(voices.find_reference(&v("default")).is_err());
     }
 
     /// `revision_of("qwen3-tts-0.6b-base")` existe con repo público confirmado y hash

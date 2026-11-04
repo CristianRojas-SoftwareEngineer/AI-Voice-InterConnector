@@ -533,12 +533,14 @@ fn collect_voices(roots: &Roots, options: &Options, collected: &mut Vec<Target>)
         if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        let name = entry.file_name().to_string_lossy().to_lowercase();
-        if avi_store::is_factory_name(&name) {
+        let raw = entry.file_name().to_string_lossy().to_lowercase();
+        if avi_store::is_factory_name(&raw) {
             continue;
         }
         push(collected, entry.path(), Category::Voices);
-        if !options.wants_speech() && name != "default" {
+        // Un directorio cuyo nombre no es un nombre de voz válido no tiene
+        // namespace de habla: el almacén nunca lo habría creado.
+        if let (false, Ok(name)) = (options.wants_speech(), avi_store::VoiceName::parse(&raw)) {
             push(collected, speech.voice_dir(&name), Category::Voices);
         }
     }
