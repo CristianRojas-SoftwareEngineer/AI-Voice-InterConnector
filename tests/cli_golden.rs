@@ -3498,7 +3498,10 @@ mod tts {
             "la tasa de error de palabras {} debe ser ≤ 0.25",
             word_error_rate
         );
-        let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
+        let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove(
+            &avi_store::VoiceName::parse("default").unwrap(),
+            &avi_store::Label::parse(&label).unwrap(),
+        );
         stop_instance(&inst, "synthesize_ok_with_label");
         hit_end("tts::synthesize_ok_with_label");
     }
@@ -3570,7 +3573,10 @@ mod tts {
             short_text,
             word_error_rate
         );
-        let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove("default", &label);
+        let _ = avi_store::SpeechStore::at(inst.dir.join("speech")).remove(
+            &avi_store::VoiceName::parse("default").unwrap(),
+            &avi_store::Label::parse(&label).unwrap(),
+        );
     }
 
     /// Medición de una síntesis: duración del WAV, tasa de error de palabras
@@ -5047,7 +5053,7 @@ mod tts {
         let _ = avi_store::remove_voice(
             &avi_store::VoiceStore::at(inst.dir.join("voices")),
             &avi_store::SpeechStore::at(inst.dir.join("speech")),
-            &name,
+            &avi_store::VoiceName::parse(&name).unwrap(),
         );
     }
 
@@ -5188,7 +5194,7 @@ mod tts {
         let _ = avi_store::remove_voice(
             &avi_store::VoiceStore::at(inst.dir.join("voices")),
             &avi_store::SpeechStore::at(inst.dir.join("speech")),
-            &name,
+            &avi_store::VoiceName::parse(&name).unwrap(),
         );
     }
 
