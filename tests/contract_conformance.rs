@@ -67,7 +67,7 @@ const ENVELOPE_MARKERS: [&str; 3] = ["envelope", "--json", "CLI"];
 /// Vocabulario cerrado de `status` por comando, derivado del código que lo emite, con
 /// la fuente de la que se copió. Los simulacros se leen como planes (`planned`),
 /// la parada toma el veredicto del motor y `say`/`dub` solo emiten su desenlace.
-const STATUS_BY_COMMAND: [(&str, &[&str], &str); 5] = [
+const STATUS_BY_COMMAND: [(&str, &[&str], &str); 6] = [
     (
         "daemon stop",
         &["not_running", "shutdown_sent", "still_running"],
@@ -88,6 +88,11 @@ const STATUS_BY_COMMAND: [(&str, &[&str], &str); 5] = [
             "removal_scheduled",
         ],
         "crates/avi-lifecycle/src/uninstall.rs",
+    ),
+    (
+        "speech synthesize",
+        &["success", "skipped", "discarded"],
+        "src/main.rs",
     ),
     ("speech say", &["reproduced"], "src/main.rs"),
     ("speech dub", &["dubbed"], "src/main.rs"),

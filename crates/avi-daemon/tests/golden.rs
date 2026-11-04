@@ -819,7 +819,7 @@ async fn voices_clone_daemon_precomputed_true() {
         &avi_store::Label::parse("saludo").unwrap(),
         "Hola",
         &wav,
-        false,
+        avi_store::CollisionPolicy::Fail,
     )
     .expect("guardar la locución previa");
     let (status, bytes) = send_to(

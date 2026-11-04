@@ -707,6 +707,9 @@ enum SpeechCommands {
         /// Sobrescribir una locución existente con la misma etiqueta
         #[arg(short, long)]
         force: bool,
+        /// Conservar la locución existente con la misma etiqueta sin sintetizar (sale con 0 y `skipped`)
+        #[arg(long, conflicts_with_all = ["force", "play"])]
+        skip_existing: bool,
         #[arg(long)]
         play: bool,
         /// Idioma del texto de entrada (por defecto igual a --target-language, sin traducir)
@@ -2112,14 +2115,72 @@ fn read_wav_pcm(path: &str) -> Result<Vec<i16>, CliError> {
 /// re-sintetiza y vuelve a entrar al menú.
 #[derive(Debug, PartialEq)]
 enum PlayDecision {
-    /// El usuario eligió guardar (opción 2): la locución quedó persistida en
-    /// esta ruta.
-    Saved(PathBuf),
+    /// El usuario eligió guardar (opción 2): este es el desenlace del guardado.
+    Saved(avi_store::Persisted),
     /// El usuario descartó (opción 4) o se agotó la entrada estándar.
     Discarded,
     /// El usuario pidió una síntesis nueva (opción 3): el llamador re-sintetiza
     /// y reentra al menú.
     Resynthesize,
+}
+
+/// Desenlace de `speech synthesize`, con un `status` registrado por variante.
+#[derive(Debug, PartialEq)]
+enum SynthesizeOutcome {
+    /// La locución se guardó en esta ruta (`success`).
+    Saved(PathBuf),
+    /// Ya existía en esta ruta y `--skip-existing` pidió conservarla (`skipped`).
+    Skipped(PathBuf),
+    /// El usuario la descartó en el menú `--play` (`discarded`).
+    Discarded,
+}
+
+impl From<avi_store::Persisted> for SynthesizeOutcome {
+    fn from(persisted: avi_store::Persisted) -> Self {
+        match persisted {
+            avi_store::Persisted::Saved(path) => Self::Saved(path),
+            avi_store::Persisted::Skipped(path) => Self::Skipped(path),
+        }
+    }
+}
+
+/// Política de colisión de `speech synthesize` a partir de sus flags, que clap
+/// hace mutuamente excluyentes. Es el único punto de conversión.
+fn collision_policy(force: bool, skip_existing: bool) -> avi_store::CollisionPolicy {
+    match (force, skip_existing) {
+        (true, _) => avi_store::CollisionPolicy::Overwrite,
+        (false, true) => avi_store::CollisionPolicy::Skip,
+        (false, false) => avi_store::CollisionPolicy::Fail,
+    }
+}
+
+/// Único punto de emisión de `speech synthesize`: traduce el desenlace a su
+/// envelope JSON o a su texto.
+fn emit_synthesize(
+    json_mode: bool,
+    voice: &str,
+    outcome: &SynthesizeOutcome,
+    elapsed: std::time::Duration,
+) {
+    match outcome {
+        SynthesizeOutcome::Saved(path) if json_mode => emit_raw_json(json!({
+            "status": "success",
+            "audio_path": path.to_string_lossy(),
+            "voice": voice,
+        })),
+        SynthesizeOutcome::Saved(path) => println!(
+            "Síntesis completada: {} ({}).",
+            path.display(),
+            avi_lifecycle::progress::format_duration(elapsed)
+        ),
+        SynthesizeOutcome::Skipped(path) if json_mode => emit_raw_json(json!({
+            "status": "skipped",
+            "audio_path": path.to_string_lossy(),
+            "voice": voice,
+        })),
+        SynthesizeOutcome::Skipped(path) => println!("Ya existe: {} (omitido).", path.display()),
+        SynthesizeOutcome::Discarded => emit_play_discarded(json_mode, voice),
+    }
 }
 
 /// Envelope de locución descartada en el menú `--play`: el mismo texto y el
@@ -2268,15 +2329,15 @@ impl PlayResynthesizer for DaemonResynthesizer<'_> {
 
 /// Bucle del llamador del menú `--play`: ofrece el menú y, ante
 /// `Resynthesize`, ejecuta la re-síntesis y reentra al menú con el mismo
-/// temporal. Termina con la ruta guardada (`Some`) o con `None` si el usuario
-/// descartó. El bucle vive en el llamador porque el menú no conoce el motor
-/// de síntesis.
+/// temporal. Termina con el desenlace del guardado o con `Discarded` si el
+/// usuario descartó. El bucle vive en el llamador porque el menú no conoce el
+/// motor de síntesis.
 // Firma ancha deliberada: cada argumento mapea 1:1 a un dato del menú.
 #[allow(clippy::too_many_arguments)]
 async fn play_menu_loop<R: PlayResynthesizer>(
     voice: &VoiceName,
     label: &Label,
-    force: bool,
+    policy: avi_store::CollisionPolicy,
     voice_store: &VoiceStore,
     speech_store: &SpeechStore,
     reference: Option<&avi_store::VoiceReference>,
@@ -2285,13 +2346,13 @@ async fn play_menu_loop<R: PlayResynthesizer>(
     reader: &mut dyn FnMut(&mut String) -> std::io::Result<usize>,
     playback: &mut dyn FnMut(&std::path::Path) -> Result<(), CliError>,
     resynthesizer: &mut R,
-) -> Result<Option<PathBuf>, CliError> {
+) -> Result<SynthesizeOutcome, CliError> {
     let mut seeds = RetakeSeeds::new();
     loop {
         match synthesize_play_loop(
             voice,
             label,
-            force,
+            policy,
             voice_store,
             speech_store,
             reference,
@@ -2300,8 +2361,8 @@ async fn play_menu_loop<R: PlayResynthesizer>(
             reader,
             playback,
         )? {
-            PlayDecision::Saved(saved) => return Ok(Some(saved)),
-            PlayDecision::Discarded => return Ok(None),
+            PlayDecision::Saved(persisted) => return Ok(persisted.into()),
+            PlayDecision::Discarded => return Ok(SynthesizeOutcome::Discarded),
             PlayDecision::Resynthesize => resynthesizer.resynthesize(seeds.next()).await?,
         }
     }
@@ -2336,7 +2397,7 @@ fn menu_playback(label: &Label) -> impl FnMut(&std::path::Path) -> Result<(), Cl
 fn synthesize_play_loop(
     voice: &VoiceName,
     label: &Label,
-    force: bool,
+    policy: avi_store::CollisionPolicy,
     voice_store: &VoiceStore,
     speech_store: &SpeechStore,
     reference: Option<&avi_store::VoiceReference>,
@@ -2382,7 +2443,7 @@ fn synthesize_play_loop(
                     label,
                     final_text,
                     wav,
-                    force,
+                    policy,
                 )
                 .map_err(persist_cli_error)?;
                 return Ok(PlayDecision::Saved(saved));
@@ -2394,21 +2455,23 @@ fn synthesize_play_loop(
     }
 }
 
-/// Error de `persist_locution` como error de la CLI: un cambio de la voz durante
-/// la síntesis es `voice_changed` y una etiqueta ocupada es `label_exists`, los
-/// dos exit 6; cualquier otro fallo al guardar es `synthesis_failed`.
+/// Conflicto de una locución como error de la CLI: un cambio de la voz durante la
+/// síntesis es `voice_changed` y una etiqueta ocupada es `label_exists`, los dos
+/// exit 6.
+fn conflict_cli_error(conflict: &avi_store::LocutionConflict) -> CliError {
+    let reason = match conflict {
+        avi_store::LocutionConflict::VoiceChanged { .. } => "voice_changed",
+        avi_store::LocutionConflict::LabelExists { .. } => "label_exists",
+    };
+    CliError::new(ExitCode::StateConflict, reason, conflict.to_string())
+}
+
+/// Error de `persist_locution` como error de la CLI: sus conflictos se traducen
+/// con [`conflict_cli_error`] y cualquier otro fallo al guardar es
+/// `synthesis_failed`.
 fn persist_cli_error(e: anyhow::Error) -> CliError {
     match e.downcast_ref::<avi_store::LocutionConflict>() {
-        Some(conflict @ avi_store::LocutionConflict::VoiceChanged { .. }) => CliError::new(
-            ExitCode::StateConflict,
-            "voice_changed",
-            conflict.to_string(),
-        ),
-        Some(conflict @ avi_store::LocutionConflict::LabelExists { .. }) => CliError::new(
-            ExitCode::StateConflict,
-            "label_exists",
-            conflict.to_string(),
-        ),
+        Some(conflict) => conflict_cli_error(conflict),
         None => CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()),
     }
 }
@@ -2462,44 +2525,24 @@ fn ensure_voice_exists(voice: &VoiceName) -> Result<(), CliError> {
 /// 1. **Invocación** (exit 2): las comprobaciones propias del comando, que recibe
 ///    `invocation`, y el nombre de la voz.
 /// 2. **Almacén**: que la voz exista (exit 3) y, en `synthesize`, la colisión de
-///    la etiqueta, que decide `collision`.
+///    la etiqueta, que decide `collision` y que puede terminar la orden sin
+///    sintetizar (`--skip-existing`).
 /// 3. **Recursos**, después de la preparación y ya decidida la ruta: el modelo
 ///    (exit 4) o el daemon (exit 5).
 ///
 /// Con dos fallos a la vez gana el del paso anterior, en los tres comandos y en
 /// las dos rutas: el cliente y el daemon comparten el directorio de datos, así
 /// que el almacén se consulta aquí aunque la síntesis la haga el daemon.
-fn prepare_synthesis<T>(
+fn prepare_synthesis<T, C>(
     invocation: impl FnOnce() -> Result<T, CliError>,
     voice: &str,
-    collision: impl FnOnce(&VoiceName, &T) -> Result<(), CliError>,
-) -> Result<(VoiceName, T), CliError> {
+    collision: impl FnOnce(&VoiceName, &T) -> Result<C, CliError>,
+) -> Result<(VoiceName, T, C), CliError> {
     let checked = invocation()?;
     let voice = VoiceName::parse(voice).map_err(invalid_name_cli_error)?;
     ensure_voice_exists(&voice)?;
-    collision(&voice, &checked)?;
-    Ok((voice, checked))
-}
-
-/// Gancho de colisión de `synthesize`: sin `force`, una etiqueta ocupada es
-/// `label_exists` (exit 6).
-fn ensure_label_free(voice: &VoiceName, label: &Label, force: bool) -> Result<(), CliError> {
-    if force
-        || open_speech_store()?
-            .find(voice, label)
-            .map_err(speech_find_error)?
-            .is_none()
-    {
-        return Ok(());
-    }
-    Err(CliError::new(
-        ExitCode::StateConflict,
-        "label_exists",
-        format!(
-            "Ya existe una locución con la etiqueta '{}' (usa --force).",
-            label
-        ),
-    ))
+    let collided = collision(&voice, &checked)?;
+    Ok((voice, checked, collided))
 }
 
 /// Error del almacén de locuciones al buscar una etiqueta.
@@ -2753,12 +2796,14 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             voice,
             label,
             force,
+            skip_existing,
             play,
             source_language,
             target_language,
             temperature,
             routing,
         } => {
+            let policy = collision_policy(force, skip_existing);
             // Precondiciones puras de --play, antes de cualquier síntesis.
             // No introducen exit codes nuevos.
             //
@@ -2768,7 +2813,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             let mut progress = PhaseProgress::new();
             let result = async {
                 progress.phase("validating", "Validando texto y voz…");
-                let (voice, label) = prepare_synthesis(
+                let (voice, label, existing) = prepare_synthesis(
                     || {
                         if play && json_mode {
                             return Err(CliError::new(
@@ -2790,8 +2835,16 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         Label::parse(&label).map_err(invalid_name_cli_error)
                     },
                     &voice,
-                    |voice, label| ensure_label_free(voice, label, force),
+                    |voice, label| {
+                        avi_store::check_locution(&open_speech_store()?, voice, label, policy)
+                            .map_err(|conflict| conflict_cli_error(&conflict))
+                    },
                 )?;
+                // `--skip-existing` sobre una etiqueta ocupada termina aquí, antes
+                // de comprobar el modelo o el daemon: no hace falta sintetizar.
+                if let Some(existing) = existing {
+                    return Ok(SynthesizeOutcome::Skipped(existing));
+                }
                 // Origen por defecto = destino (sin traducir).
                 let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
@@ -2804,7 +2857,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &text,
                         &voice,
                         &label,
-                        force,
+                        policy,
                         play,
                         source_eff,
                         &target_language,
@@ -2868,10 +2921,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         tmp_wav: &tmp_wav,
                         progress: &mut progress,
                     };
+                    // El menú devuelve el desenlace: guardado o descartado (opción 4 o
+                    // EOF), que sale con 0.
                     let outcome = play_menu_loop(
                         &voice,
                         &label,
-                        force,
+                        policy,
                         &voice_store,
                         &speech_store,
                         reference.as_ref(),
@@ -2883,13 +2938,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     )
                     .await;
                     progress.repaint();
-                    match outcome? {
-                        Some(saved) => saved,
-                        None => {
-                            // Opción 4 / EOF: descartado, exit 0.
-                            return Ok(None);
-                        }
-                    }
+                    outcome?
                 } else {
                     progress.phase("saving", SYNTHESIZE_PHASES.saving);
                     avi_store::persist_locution(
@@ -2900,32 +2949,16 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &label,
                         &final_text,
                         &tmp_wav,
-                        force,
+                        policy,
                     )
                     .map_err(persist_cli_error)?
+                    .into()
                 };
-                Ok(Some(saved))
+                Ok(saved)
             }
             .await;
             let elapsed = progress.close();
-            let saved = result?;
-            let Some(saved) = saved else {
-                emit_play_discarded(json_mode, &voice);
-                return Ok(());
-            };
-            if json_mode {
-                emit_raw_json(json!({
-                    "status": "success",
-                    "audio_path": saved.to_string_lossy(),
-                    "voice": voice,
-                }));
-            } else {
-                println!(
-                    "Síntesis completada: {} ({}).",
-                    saved.display(),
-                    avi_lifecycle::progress::format_duration(elapsed)
-                );
-            }
+            emit_synthesize(json_mode, &voice, &result?, elapsed);
             Ok(())
         }
         SpeechCommands::Say {
@@ -2942,7 +2975,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // hace fuera, sobre el resultado ya obtenido.
             let result = async {
                 progress.phase("validating", "Validando texto y voz…");
-                let (voice, ()) = prepare_synthesis(
+                let (voice, (), ()) = prepare_synthesis(
                     || {
                         validate_temperature(temperature)?;
                         avi_core::validate_synthesis_text(&text)
@@ -3052,7 +3085,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // una voz inexistente se rechaza antes de abrir el micrófono o leer
             // el audio, en las dos rutas; el daemon conserva su propia
             // comprobación como defensa.
-            let (voice, ()) = prepare_synthesis(
+            let (voice, (), ()) = prepare_synthesis(
                 || {
                     validate_temperature(temperature)?;
                     if mic && duration.is_none() && !std::io::stdin().is_terminal() {
@@ -5797,12 +5830,12 @@ async fn synthesize_via_daemon(
     text: &str,
     voice: &VoiceName,
     label: &Label,
-    force: bool,
+    policy: avi_store::CollisionPolicy,
     play: bool,
     source_language: &str,
     target_language: &str,
     temperature: Option<f32>,
-) -> Result<Option<PathBuf>, CliError> {
+) -> Result<SynthesizeOutcome, CliError> {
     let speech_store = open_speech_store()?;
     let voice_store = open_voice_store()?;
     let reference = resolve_voice_reference(&voice_store, voice)?;
@@ -5847,7 +5880,7 @@ async fn synthesize_via_daemon(
         let outcome = play_menu_loop(
             voice,
             label,
-            force,
+            policy,
             &voice_store,
             &speech_store,
             reference.as_ref(),
@@ -5859,10 +5892,7 @@ async fn synthesize_via_daemon(
         )
         .await;
         progress.repaint();
-        match outcome? {
-            Some(saved) => saved,
-            None => return Ok(None),
-        }
+        outcome?
     } else {
         progress.phase("saving", SYNTHESIZE_PHASES.saving);
         avi_store::persist_locution(
@@ -5873,11 +5903,12 @@ async fn synthesize_via_daemon(
             label,
             final_text,
             &tmp,
-            force,
+            policy,
         )
         .map_err(persist_cli_error)?
+        .into()
     };
-    Ok(Some(saved))
+    Ok(saved)
 }
 
 /// `say` vía daemon: reproduce el WAV decodificado y expone una copia efímera.
@@ -7328,7 +7359,7 @@ mod tests {
         let decision = synthesize_play_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7342,7 +7373,7 @@ mod tests {
         // Reproducción inicial + la de la opción 1.
         assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 2);
         match decision {
-            PlayDecision::Saved(saved) => {
+            PlayDecision::Saved(avi_store::Persisted::Saved(saved)) => {
                 // La ruta guardada es la del almacén, no la del temporal.
                 assert_eq!(
                     saved,
@@ -7377,7 +7408,7 @@ mod tests {
         let decision = synthesize_play_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7414,7 +7445,7 @@ mod tests {
         let decision = synthesize_play_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7452,7 +7483,7 @@ mod tests {
         let decision = synthesize_play_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7488,7 +7519,7 @@ mod tests {
         let decision = synthesize_play_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7520,7 +7551,7 @@ mod tests {
             &Label::parse("etiqueta").unwrap(),
             "texto previo",
             &wav,
-            false,
+            avi_store::CollisionPolicy::Fail,
         )
         .expect("guardar la locución previa");
 
@@ -7528,7 +7559,7 @@ mod tests {
         let e = synthesize_play_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7560,7 +7591,7 @@ mod tests {
         let e = synthesize_play_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            true,
+            avi_store::CollisionPolicy::Overwrite,
             &voices,
             &store,
             Some(&stale),
@@ -7596,7 +7627,7 @@ mod tests {
             &Label::parse("etiqueta").unwrap(),
             "texto previo",
             &wav,
-            false,
+            avi_store::CollisionPolicy::Fail,
         )
         .expect("guardar la locución previa");
 
@@ -7604,7 +7635,7 @@ mod tests {
         let decision = synthesize_play_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            true,
+            avi_store::CollisionPolicy::Overwrite,
             &voices,
             &store,
             None,
@@ -7665,7 +7696,7 @@ mod tests {
         play_menu_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7715,7 +7746,7 @@ mod tests {
         let outcome = play_menu_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7731,7 +7762,9 @@ mod tests {
         assert_eq!(resyntheses.load(std::sync::atomic::Ordering::SeqCst), 1);
         // Reproducción inicial + la de la vuelta tras re-sintetizar.
         assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 2);
-        let saved = outcome.expect("la locución debe quedar guardada");
+        let SynthesizeOutcome::Saved(saved) = outcome else {
+            panic!("la locución debe quedar guardada: {outcome:?}");
+        };
         assert_eq!(
             saved,
             store.audio_path(
@@ -7763,7 +7796,7 @@ mod tests {
         let outcome = play_menu_loop(
             &VoiceName::parse("voz").unwrap(),
             &Label::parse("etiqueta").unwrap(),
-            false,
+            avi_store::CollisionPolicy::Fail,
             &voices,
             &store,
             None,
@@ -7776,7 +7809,11 @@ mod tests {
         .await
         .expect("el bucle no debe fallar");
 
-        assert!(outcome.is_none(), "descartar no debe guardar nada");
+        assert_eq!(
+            outcome,
+            SynthesizeOutcome::Discarded,
+            "descartar no debe guardar nada"
+        );
         assert!(
             store
                 .find(

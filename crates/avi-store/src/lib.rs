@@ -867,7 +867,7 @@ pub fn replace_voice(
 }
 
 /// Conflicto que impide guardar una locución.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocutionConflict {
     /// La voz cambió (re-clonada o eliminada) entre su resolución y el guardado:
     /// la locución se sintetizó con un contenido que ya no es el de la voz.
@@ -895,14 +895,71 @@ impl std::fmt::Display for LocutionConflict {
 
 impl std::error::Error for LocutionConflict {}
 
+/// Qué hacer cuando ya existe una locución con la etiqueta pedida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionPolicy {
+    /// Negarse con [`LocutionConflict::LabelExists`].
+    Fail,
+    /// Sobrescribir la locución existente.
+    Overwrite,
+    /// Conservar la existente y no escribir nada: la síntesis es idempotente.
+    Skip,
+}
+
+/// Desenlace de guardar una locución.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Persisted {
+    /// Se escribió la locución en esta ruta.
+    Saved(PathBuf),
+    /// Ya existía en esta ruta y la política pedía conservarla.
+    Skipped(PathBuf),
+}
+
+/// Única decisión de colisión: mira solo el WAV, que es el registro, y nunca la
+/// ficha, así que una ficha corrupta no cambia la decisión. `Ok(None)` es escribir
+/// y `Ok(Some(ruta))` es omitir la locución que ya está en esa ruta.
+fn decide_collision(
+    speech: &SpeechStore,
+    voice: &VoiceName,
+    label: &Label,
+    policy: CollisionPolicy,
+) -> Result<Option<PathBuf>, LocutionConflict> {
+    let wav = speech.audio_path(voice, label);
+    if !wav.is_file() {
+        return Ok(None);
+    }
+    match policy {
+        CollisionPolicy::Overwrite => Ok(None),
+        CollisionPolicy::Skip => Ok(Some(wav)),
+        CollisionPolicy::Fail => Err(LocutionConflict::LabelExists {
+            voice: voice.clone(),
+            label: label.clone(),
+        }),
+    }
+}
+
+/// Aplica la política de colisión antes de sintetizar, para no pagar una síntesis
+/// que no se va a guardar: `Some(ruta)` si hay que omitir la locución existente.
+/// [`persist_locution`] vuelve a decidir al guardar, por si la etiqueta apareció
+/// durante la síntesis.
+pub fn check_locution(
+    speech: &SpeechStore,
+    voice: &VoiceName,
+    label: &Label,
+    policy: CollisionPolicy,
+) -> Result<Option<PathBuf>, LocutionConflict> {
+    decide_collision(speech, voice, label, policy)
+}
+
 /// Guarda una locución sintetizada con la voz `voice`, cuya referencia era
 /// `expected` al resolverla para sintetizar (`None` para un preset). Es la única
 /// forma de escribir una locución.
 ///
-/// Justo antes de escribir comprueba que la voz conserve esa identidad
-/// ([`LocutionConflict::VoiceChanged`]) y, sin `force`, que la etiqueta esté
-/// libre ([`LocutionConflict::LabelExists`]); ambos conflictos viajan tipados
-/// dentro del error. El WAV y la ficha se publican con temporal + rename.
+/// Justo antes de escribir comprueba primero que la voz conserve esa identidad
+/// ([`LocutionConflict::VoiceChanged`]) y después aplica la política de colisión,
+/// que puede negarse ([`LocutionConflict::LabelExists`]) u omitir el guardado
+/// ([`Persisted::Skipped`]); los conflictos viajan tipados dentro del error. El WAV
+/// y la ficha se publican con temporal + rename.
 // Firma ancha deliberada: cada argumento mapea 1:1 a un dato de la locución.
 #[allow(clippy::too_many_arguments)]
 pub fn persist_locution(
@@ -913,22 +970,18 @@ pub fn persist_locution(
     label: &Label,
     text: &str,
     wav: &Path,
-    force: bool,
-) -> Result<PathBuf> {
+    policy: CollisionPolicy,
+) -> Result<Persisted> {
     if voices.resolve(voice)?.as_ref() != expected {
         return Err(LocutionConflict::VoiceChanged {
             voice: voice.clone(),
         }
         .into());
     }
-    if !force && speech.audio_path(voice, label).is_file() {
-        return Err(LocutionConflict::LabelExists {
-            voice: voice.clone(),
-            label: label.clone(),
-        }
-        .into());
+    if let Some(existing) = decide_collision(speech, voice, label, policy)? {
+        return Ok(Persisted::Skipped(existing));
     }
-    speech.save(voice, label, text, wav)
+    speech.save(voice, label, text, wav).map(Persisted::Saved)
 }
 
 // ─── ModelStore ──────────────────────────────────────────────────────
@@ -2864,8 +2917,90 @@ mod tests {
         );
     }
 
-    /// `persist_locution` guarda solo si la voz conserva la identidad esperada y,
-    /// sin `force`, si la etiqueta está libre; un preset se guarda sin referencia.
+    /// Las tres políticas de colisión, con y sin WAV, antes de sintetizar y al
+    /// guardar; también cuando la etiqueta aparece durante la síntesis. Una ficha
+    /// corrupta no cambia la decisión, que solo mira el WAV.
+    #[test]
+    fn collision_policy_table() {
+        let dir = temp_dir("collision");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let wav = dir.join("src.wav");
+        std::fs::write(&wav, min_wav()).unwrap();
+        let (voice, label) = (v("ryan"), l("hola"));
+        let path = speech.audio_path(&voice, &label);
+        let conflict = |e: anyhow::Error| e.downcast::<LocutionConflict>().unwrap();
+        let exists = LocutionConflict::LabelExists {
+            voice: voice.clone(),
+            label: label.clone(),
+        };
+
+        // Sin WAV: las tres escriben.
+        for policy in [
+            CollisionPolicy::Fail,
+            CollisionPolicy::Overwrite,
+            CollisionPolicy::Skip,
+        ] {
+            assert_eq!(check_locution(&speech, &voice, &label, policy), Ok(None));
+        }
+        // La etiqueta aparece durante la síntesis: el guardado vuelve a decidir.
+        speech.save(&voice, &label, "primera", &wav).unwrap();
+        let persist =
+            |policy| persist_locution(&voices, &speech, None, &voice, &label, "x", &wav, policy);
+        assert_eq!(
+            conflict(persist(CollisionPolicy::Fail).unwrap_err()),
+            exists
+        );
+        assert_eq!(
+            persist(CollisionPolicy::Skip).unwrap(),
+            Persisted::Skipped(path.clone())
+        );
+        assert_eq!(
+            speech
+                .find(&voice, &label)
+                .unwrap()
+                .unwrap()
+                .metadata
+                .unwrap()
+                .text,
+            "primera",
+            "omitir no escribe"
+        );
+
+        // Con WAV y la ficha corrupta: la decisión solo mira el WAV.
+        std::fs::write(path.with_extension("json"), b"{roto").unwrap();
+        assert_eq!(
+            check_locution(&speech, &voice, &label, CollisionPolicy::Fail),
+            Err(exists.clone())
+        );
+        assert_eq!(
+            check_locution(&speech, &voice, &label, CollisionPolicy::Skip),
+            Ok(Some(path.clone()))
+        );
+        assert_eq!(
+            check_locution(&speech, &voice, &label, CollisionPolicy::Overwrite),
+            Ok(None)
+        );
+        assert_eq!(
+            persist(CollisionPolicy::Overwrite).unwrap(),
+            Persisted::Saved(path.clone())
+        );
+        assert_eq!(
+            speech
+                .find(&voice, &label)
+                .unwrap()
+                .unwrap()
+                .metadata
+                .unwrap()
+                .text,
+            "x",
+            "sobrescribir reemplaza la locución"
+        );
+    }
+
+    /// `persist_locution` guarda solo si la voice conserva la identidad esperada y,
+    /// con la política `Fail`, si la etiqueta está libre; un preset se guarda sin
+    /// referencia.
     #[test]
     fn persist_locution_checks_identity_and_collision() {
         let dir = temp_dir("persist");
@@ -2889,10 +3024,13 @@ mod tests {
             &l("Hola"),
             "Hola",
             &wav,
-            false,
+            CollisionPolicy::Fail,
         )
         .unwrap();
-        assert_eq!(saved, speech.audio_path(&v("voz"), &l("hola")));
+        assert_eq!(
+            saved,
+            Persisted::Saved(speech.audio_path(&v("voz"), &l("hola")))
+        );
 
         let e = persist_locution(
             &voices,
@@ -2902,7 +3040,7 @@ mod tests {
             &l("hola"),
             "x",
             &wav,
-            false,
+            CollisionPolicy::Fail,
         )
         .unwrap_err();
         assert_eq!(
@@ -2920,7 +3058,7 @@ mod tests {
             &l("hola"),
             "x",
             &wav,
-            true,
+            CollisionPolicy::Overwrite,
         )
         .unwrap();
 
@@ -2934,7 +3072,7 @@ mod tests {
             &l("otra"),
             "x",
             &wav,
-            true,
+            CollisionPolicy::Overwrite,
         )
         .unwrap_err();
         assert_eq!(
@@ -2953,7 +3091,7 @@ mod tests {
             &l("saludo"),
             "Hola",
             &wav,
-            false,
+            CollisionPolicy::Fail,
         )
         .unwrap();
         let e = persist_locution(
@@ -2964,7 +3102,7 @@ mod tests {
             &l("x"),
             "x",
             &wav,
-            false,
+            CollisionPolicy::Fail,
         )
         .unwrap_err();
         assert!(matches!(conflict(e), LocutionConflict::VoiceChanged { .. }));

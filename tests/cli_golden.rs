@@ -3922,6 +3922,114 @@ mod tts {
         }
     }
 
+    /// `--skip-existing` sobre una etiqueta existente sale con 0 y `skipped`, sin
+    /// sintetizar y sin tocar la locución, por las dos rutas aunque el modelo falte
+    /// y el daemon esté caído; en texto informa «Ya existe: <ruta> (omitido).».
+    #[test]
+    fn synthesize_skip_existing_is_an_explicit_success() {
+        let inst = IsolatedInstance::new("synth_skip_existing");
+        let a = inst.contract_args();
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        create_utterance(&inst, "default", "previa");
+        let wav = inst.dir.join("speech").join("default").join("previa.wav");
+        let before = std::fs::read(&wav).unwrap();
+        for route in ["--no-daemon", "--daemon"] {
+            let args = [
+                "speech",
+                "synthesize",
+                route,
+                "--skip-existing",
+                "--text",
+                "Hola",
+                "--label",
+                "previa",
+            ];
+            let mut json_args = vec!["--json"];
+            json_args.extend(args);
+            let (code, actual) = run_json_env(&json_args, &a);
+            assert_eq!(code, 0, "{route}: {actual}");
+            assert_eq!(actual["status"], "skipped", "{route}: {actual}");
+            assert_eq!(actual["voice"], "default", "{route}: {actual}");
+            assert_eq!(
+                std::path::PathBuf::from(actual["audio_path"].as_str().unwrap()),
+                wav,
+                "{route}: {actual}"
+            );
+            let output = bin_command()
+                .args(args)
+                .envs(a.iter().copied())
+                .stdin(std::process::Stdio::null())
+                .output()
+                .expect("ejecutar el binario");
+            assert_eq!(output.status.code(), Some(0), "{route}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                stdout.trim(),
+                format!("Ya existe: {} (omitido).", wav.display()),
+                "{route}"
+            );
+        }
+        assert_eq!(
+            std::fs::read(&wav).unwrap(),
+            before,
+            "la locución no cambió"
+        );
+    }
+
+    /// `--skip-existing` es incompatible con `--force` y con `--play`: exit 2.
+    #[test]
+    fn synthesize_skip_existing_conflicts_with_force_and_play() {
+        for other in ["--force", "--play"] {
+            let (code, actual) = run_json(&[
+                "--json",
+                "speech",
+                "synthesize",
+                "--skip-existing",
+                other,
+                "--text",
+                "Hola",
+                "--label",
+                "x",
+            ]);
+            assert_eq!(code, 2, "{other}: {actual}");
+            assert_eq!(actual["reason"], "usage_error", "{other}: {actual}");
+        }
+    }
+
+    /// La colisión solo mira el WAV: con la ficha `.json` corrupta y sin `--force`
+    /// sale `label_exists` (6), no un `io_error` por leer la ficha.
+    #[test]
+    fn synthesize_collision_ignores_a_corrupt_sidecar() {
+        let inst = IsolatedInstance::new("synth_corrupt_sidecar");
+        let a = inst.contract_args();
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        create_utterance(&inst, "default", "rota");
+        std::fs::write(
+            inst.dir.join("speech").join("default").join("rota.json"),
+            b"{roto",
+        )
+        .unwrap();
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "speech",
+                "synthesize",
+                "--no-daemon",
+                "--text",
+                "Hola",
+                "--label",
+                "rota",
+            ],
+            &a,
+        );
+        assert_eq!(code, 6, "{actual}");
+        assert_eq!(actual["reason"], "label_exists", "{actual}");
+    }
+
     /// Colisión de `--label` sin `--force` → 6. El almacén se fabrica con un
     /// sidecar + WAV mínimo (sin síntesis real).
     #[test]
@@ -3966,7 +4074,7 @@ mod tts {
             &avi_store::Label::parse(&label).unwrap(),
             "fabricado",
             &src,
-            false,
+            avi_store::CollisionPolicy::Fail,
         )
         .expect("el sidecar fabricado debe guardarse");
         let (code, actual) = run_json_env(
@@ -4024,7 +4132,7 @@ mod tts {
             &avi_store::Label::parse(label).unwrap(),
             "fabricado",
             &src,
-            false,
+            avi_store::CollisionPolicy::Fail,
         )
         .expect("el sidecar fabricado debe guardarse");
     }
@@ -5153,7 +5261,7 @@ mod tts {
             &avi_store::Label::parse(label).unwrap(),
             "previa",
             &wav,
-            false,
+            avi_store::CollisionPolicy::Fail,
         )
         .expect("guardar la locución previa");
         replaced.reference
