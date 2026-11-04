@@ -71,10 +71,10 @@ Lista las locuciones persistidas en `SpeechStore`
 |---|---|---|---|
 | `--voice`, `-v` | string | — (todas las voces) | Opcional, sin default. Con valor, acota la lectura al directorio de esa voz (`SpeechStore::list_by_voice`, filtro normalizado a minúsculas); sin el flag, lista todas (`SpeechStore::list`) |
 
-Definición: `SpeechCommands::List { voice: Option<String> }`. Con `--voice`, el handler valida el identificador
-con `is_valid_identifier` (exit 2 `invalid_identifier`) y la existencia
-de la voz con `VoiceStore::exists` (exit 3 `voice_not_found`) antes de leer;
-sin `--voice` no valida nada y devuelve todo.
+Definición: `SpeechCommands::List { voice: Option<String> }`. Con `--voice`, el handler construye el nombre de voz
+validado (`VoiceName::parse`: exit 2 `invalid_voice_name`, también con `.` o `..`) y
+comprueba la existencia de la voz con `VoiceStore::exists` (exit 3 `voice_not_found`)
+antes de leer; sin `--voice` no valida nada y devuelve todo.
 
 Salida humana: una línea por locución con voz, etiqueta, duración y texto; una
 locución sin sidecar de metadatos se muestra como `(sin metadatos)`.
@@ -196,7 +196,7 @@ Despacho:
 ## `speech synthesize`
 
 ```
-ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--voice <nombre>] [--force] [--play] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>] [--daemon|--no-daemon]
+ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--voice <nombre>] [--force | --skip-existing] [--play] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>] [--daemon|--no-daemon]
 ```
 
 | Flag | Tipo | Default | Descripción |
@@ -205,6 +205,7 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 | `--voice`, `-v` | string | `default` | Voz a usar |
 | `--label`, `-l` | string | — | Obligatorio. Etiqueta bajo la que se persiste la locución (se normaliza a minúsculas) |
 | `--force`, `-f` | flag | `false` | Sobrescribe una locución existente con la misma etiqueta |
+| `--skip-existing` | flag | `false` | Conserva la locución existente con la misma etiqueta sin sintetizar: sale con exit 0 y `status` `skipped`. Incompatible con `--force` y con `--play` (exit 2 `usage_error`) |
 | `--play` | flag | `false` | Reproduce la toma y abre el menú interactivo; solo persiste al aceptar |
 | `--source-language` | `es`\|`en` | = `target-language` | Idioma del texto de entrada |
 | `--target-language` | `es`\|`en` | `es` | Idioma/modelo de síntesis; si difiere del origen, el texto se traduce antes de sintetizar |
@@ -212,7 +213,7 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 
 **`--play` ofrece el bucle interactivo de 4 opciones** (reproducir de nuevo /
 aceptar y guardar / rechazar y regenerar / rechazar y descartar), con menú y
-prompts por stderr. Sin `--force`, la colisión de etiqueta se comprueba dos
+prompts por stderr. Sin `--force`, la colisión de etiqueta se decide dos
 veces: antes de sintetizar (fast-fail, exit 6 sin pagar la síntesis) y de nuevo al
 guardar, por si la etiqueta quedó ocupada mientras se sintetizaba o el bucle
 esperaba respuesta — si colisiona en ese instante, también exit 6. Rechazar y
@@ -224,17 +225,33 @@ pegada al menú. `--play` es incompatible con
 `--json` (exit 2 si se combinan) y exige terminal interactiva en la entrada
 estándar (exit 2 sin TTY, antes de sintetizar).
 
-Validaciones y flujo local:
-1. `validate_temperature`: exit 2 si el override está fuera de `(0, 2.0]`.
-2. Texto vacío tras `trim`: exit 2 `empty_text`.
-3. `source_eff = source_language.unwrap_or(target_language)` — sin
+**Política de colisión.** Los flags se convierten en un único punto en
+`CollisionPolicy`: sin flag es `Fail` (exit 6 `label_exists`), `--force` es
+`Overwrite` y `--skip-existing` es `Skip`. La decisión mira solo el WAV, que es el
+registro: con la ficha `.json` corrupta y sin `--force` sale `label_exists`, no un
+`io_error`. Con `--skip-existing` y la etiqueta ocupada, el comando termina con
+exit 0 y `status` `skipped` sin sintetizar ni tocar la locución, e imprime
+«Ya existe: \<ruta\> (omitido).»; como la colisión se decide antes que los
+recursos, responde así aunque el modelo falte o el daemon esté caído.
+
+**Orden de validación.** `synthesize`, `say` y `dub` comparten la preparación
+`prepare_synthesis`, con el orden «invocación → almacén → recursos» en las dos
+rutas, de modo que con dos fallos a la vez gana el del paso anterior:
+
+1. Invocación (exit 2): las reglas de `--play`, `validate_temperature` (fuera de
+ `(0, 2.0]`), el texto (`empty_text` / `text_too_long`), la etiqueta
+ (`Label::parse`: `invalid_identifier`) y la voz (`VoiceName::parse`:
+ `invalid_voice_name`); los nombres rechazan también `.` y `..`.
+2. Almacén: la voz debe existir en `VoiceStore` (exit 3 `voice_not_found`) y se
+ aplica la política de colisión con `check_locution` (exit 6 `label_exists`, o
+ exit 0 `skipped`).
+3. Recursos, ya decidida la ruta: el modelo (exit 4) o el daemon (exit 5).
+
+Flujo local:
+1. `source_eff = source_language.unwrap_or(target_language)` — sin
  `--source-language`, origen = destino (passthrough, no se traduce).
-4. Despacho: si aplica, vía daemon; si no, rama directa:
- `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b`) → la voz
- debe existir en `VoiceStore` (exit 3 `voice_not_found`) →
- `is_valid_identifier` sobre la etiqueta normalizada (exit 2
- `invalid_identifier`, regex `^[A-Za-z0-9._-]+$`) → comprobación fast-fail
- de colisión de etiqueta (exit 6 sin `--force`) → `translate_if_different`
+2. Despacho: si aplica, vía daemon; si no, rama directa:
+ `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b`) → `translate_if_different`
  (passthrough si `source == target`; si no, exige el modelo de traducción
  provisionado, exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_options` → sin
  `--play`, persiste directamente; con `--play`, entra al bucle de 4
@@ -246,18 +263,22 @@ Validaciones y flujo local:
 las dos rutas, con y sin `--play`. La CLI resuelve la identidad de la voz
 (`VoiceStore::resolve`: la ruta del `reference.qvoice` y su huella sha256; un
 preset no tiene) antes de sintetizar, y `persist_locution` la comprueba justo
-antes de escribir, junto con la colisión de etiqueta:
+antes de escribir, antes que la colisión de etiqueta:
 
 - Si la voz cambió entre la resolución y el guardado (se re-clonó o se eliminó
   mientras se sintetizaba), no se guarda nada y sale con exit 6
   `voice_changed`: la toma se grabó con un contenido que la voz ya no tiene.
-- Sin `--force`, si la etiqueta ya existe, sale con exit 6 `label_exists`.
+- Si la etiqueta ya existe, la política decide: `Fail` sale con exit 6
+  `label_exists`, `Skip` conserva la existente (`skipped`) y `Overwrite`
+  sobrescribe.
+
+El exit 6 es siempre un fallo: no se guardó nada.
 
 El WAV y su ficha `.json` se publican cada uno con temporal + `rename`. Entre la
 comprobación y la escritura queda una ventana de milisegundos que se acepta.
 
-La rama vía daemon repite las mismas validaciones de etiqueta/duplicado en el
-cliente y resuelve la identidad de la voz en el almacén compartido antes de
+La rama vía daemon pasa por la misma preparación en el cliente —nombres, voz y
+colisión, contra el almacén compartido— y resuelve la identidad de la voz antes de
 despachar la síntesis al daemon (`POST /synthesize`, consume
 el NDJSON y decodifica `audio_b64` y `translated` del evento `result`; un
 `result` sin `translated` es `synthesis_failed`), guarda el WAV temporal,
@@ -270,9 +291,12 @@ rama local — el mismo contrato de salida y de persistencia. Cuando los idiomas
 
 ```json
 { "status": "success", "audio_path": "<ruta del WAV persistido>", "voice": "<voz>" }
+{ "status": "skipped", "audio_path": "<ruta de la locución existente>", "voice": "<voz>" }
+{ "status": "discarded", "voice": "<voz>" }
 ```
 
-(Idéntico vía daemon y en la rama local.)
+`skipped` lo emite `--skip-existing` sobre una etiqueta ocupada y `discarded` el
+descarte del bucle `--play`. (Idéntico vía daemon y en la rama local.)
 
 ---
 
@@ -292,8 +316,13 @@ síntesis directa se acota al presupuesto `synthesis_budget` ([`limits.rs`](../.
 diferencia de `synthesize`, no hay flag `--play` porque la reproducción es
 incondicional.
 
+Valida con la misma preparación que `synthesize` («invocación → almacén →
+recursos»): la temperatura y el texto, el nombre de voz (exit 2
+`invalid_voice_name`) y la existencia de la voz (exit 3 `voice_not_found`), en las
+dos rutas y antes del modelo o del daemon.
+
 Despacho: `say_via_daemon` si aplica, o rama directa con
-`require_model_provisioned` + `VoiceStore::exists` + `translate_if_different` +
+`require_model_provisioned` + `translate_if_different` +
 `Qwen3TtsEngine::synthesize_with_options` + `AudioService::play_wav`. Con idiomas distintos, ambas rutas muestran la fase `translating` y traducen igual.
 
 ### Contrato `--json`
@@ -349,10 +378,6 @@ Validaciones puras (en este orden):
  captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (exit 0
  al vencer). No hay panic por `duration` ausente en este caso.
 3. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
- La voz destino se comprueba también antes de abrir el micrófono o leer el
- audio, en las dos vías: una voz inexistente sale con exit 3
- `voice_not_found` sin capturar nada (el daemon conserva su propia
- comprobación como defensa).
 4. Duración del audio: el audio de entrada dura como máximo `MAX_DUB_AUDIO_SECS`
  ([`limits.rs`](../../../crates/avi-core/src/limits.rs)). Un WAV que
  lo supera, o un `--duration` mayor, sale con exit 2 `audio_too_long`;
@@ -361,7 +386,12 @@ Validaciones puras (en este orden):
  cabecera del WAV antes de contactar con el daemon, de comprobar los modelos y
  de `stt_unsupported`, igual en las dos vías. Un WAV corrupto sale con exit 2
  `invalid_audio` y un fallo de E/S al leerlo con exit 1 `io_error`.
-5. El texto traducido, que es el que se sintetiza, no supera 500 caracteres
+5. Con la invocación validada, la misma preparación que `synthesize`: el nombre
+ de voz (exit 2 `invalid_voice_name`) y su existencia, antes de abrir el
+ micrófono o leer el audio y antes del modelo o del daemon, en las dos vías:
+ una voz inexistente sale con exit 3 `voice_not_found` sin capturar nada (el
+ daemon conserva su propia comprobación como defensa).
+6. El texto traducido, que es el que se sintetiza, no supera 500 caracteres
  Unicode: si no, exit 2 `text_too_long`.
 
 Despacho: si aplica, `dub_via_daemon` hace `POST /dub`
@@ -381,8 +411,8 @@ ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
 captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
 vacío, exit 2 `empty_text` → si `source != target`, exige el modelo de
 traducción provisionado (exit 4 `model_missing` si no); sin el feature
-`native-translation`, exit 1 `translation_unsupported` → la voz debe existir
-(exit 3 `voice_not_found`) → `Qwen3TtsEngine::synthesize_with_options` →
+`native-translation`, exit 1 `translation_unsupported` →
+`Qwen3TtsEngine::synthesize_with_options` →
 `AudioService::play_wav`.
 
 ### `POST /dub` (daemon)
@@ -448,8 +478,9 @@ ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
 ```
 
 Local-only. Busca la locución en `SpeechStore` por
-`(voice, label)` y reproduce el WAV persistido. Valida los identificadores con
-`is_valid_identifier` (exit 2 `invalid_identifier`) y la existencia de la voz con
+`(voice, label)` y reproduce el WAV persistido. Valida los nombres al construir
+`VoiceName` y `Label` (exit 2 `invalid_voice_name` para la voz e
+`invalid_identifier` para la etiqueta, también con `.` o `..`) y la existencia de la voz con
 `VoiceStore::exists` (exit 3 `voice_not_found`) antes de buscar la etiqueta; con
 la voz válida, una etiqueta inexistente es exit 3 `speech_not_found`. La existencia la decide el WAV; un sidecar corrupto sale con
 exit 1 `io_error` (el mensaje nombra el fichero y remite a `speech remove`).
@@ -470,7 +501,8 @@ ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>]
 
 Local-only. Elimina el WAV y el sidecar de la locución de `SpeechStore` sin
 interpretar el sidecar (también elimina una locución con sidecar corrupto). Valida
-los identificadores (exit 2 `invalid_identifier`) y la existencia de la voz (exit 3
+los nombres (exit 2 `invalid_voice_name` para la voz e `invalid_identifier` para la
+etiqueta, también con `.` o `..`, sin tocar ningún archivo) y la existencia de la voz (exit 3
 `voice_not_found`) antes de buscar la etiqueta; con la voz válida, si no existe
 ninguno de los dos ficheros, exit 3 `speech_not_found`. Las locuciones de una voz
 se borran con la propia voz (`voice remove`), así que toda locución guardada
@@ -522,22 +554,23 @@ Del daemon llegan además las esperas «Calentando motor de síntesis…», «En
 
 | Reason | Exit | Origen |
 |---|---|---|
-| `usage_error` | 2 | Falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
+| `usage_error` | 2 | `--skip-existing` con `--force` o con `--play`, falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
 | `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera `MAX_TEXT_LENGTH` caracteres Unicode ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `audio_too_long` | 2 | El audio de `dub` supera `MAX_DUB_AUDIO_SECS`, o `--duration` lo supera; el de `transcribe` supera `MAX_TRANSCRIBE_AUDIO_SECS`, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` lo superan ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
 | `empty_audio` | 2 | La captura de micrófono (`--mic` de transcribe y dub) terminó sin ninguna muestra |
-| `invalid_identifier` | 2 | Etiqueta o voz no cumple `^[A-Za-z0-9._-]+$` (incluye `list --voice`, `play` y `remove` con voz ilegal) |
+| `invalid_voice_name` | 2 | El nombre de voz está vacío, tiene caracteres fuera de `[A-Za-z0-9._-]` o es `.` o `..` (todos los subcomandos que toman `--voice`) |
+| `invalid_identifier` | 2 | La etiqueta está vacía, tiene caracteres fuera de `[A-Za-z0-9._-]` o es `.` o `..` (`synthesize`, `play` y `remove`) |
 | `audio_not_found` | 3 | `--audio` en `transcribe` o `dub` apunta a un archivo inexistente |
-| `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (incluye `list --voice`, `play` y `remove` sobre voz inexistente) |
+| `voice_not_found` | 3 | La voz indicada no existe en `VoiceStore` (todos los subcomandos que toman `--voice`) |
 | `speech_not_found` | 3 | `play`/`remove` sobre una etiqueta inexistente de una voz que existe |
 | `no_input_device` | 3 | `--mic` de transcribe y dub sin dispositivo de entrada predeterminado en el sistema |
 | `no_output_device` | 3 | La reproducción (`say`, `play`, `dub` y `synthesize --play`) sin dispositivo de salida predeterminado en el sistema |
 | `audio_backend_unavailable` | 3 | Captura o reproducción en un sistema sin backend de audio (en Linux, falta ALSA, `libasound.so.2`, o no define alguna función que se usa) |
 | `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`); una voz clonada exige además `qwen3-tts-0.6b-base` |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
-| `label_exists` | 6 | `synthesize` sin `--force` sobre una etiqueta ya usada |
+| `label_exists` | 6 | `synthesize` sin `--force` ni `--skip-existing` sobre una etiqueta ya usada |
 | `voice_changed` | 6 | `synthesize`: la voz se re-clonó o se eliminó mientras se sintetizaba; la locución no se guarda |
 | `lifecycle_locked` | 17 | Todos los subcomandos: hay una operación de ciclo de vida en curso (`self install`, `self update`, `self uninstall`, `cleanup`, `doctor --repair`) y el comando no llega a ejecutarse |
 | `stt_unsupported` | 1 | Binario compilado sin el feature `native-stt` (transcribe/dub) |
@@ -562,6 +595,7 @@ ai-voice-interconnector speech synthesize --text "Hello" --label greeting --sour
 ai-voice-interconnector speech say --text "Probando" --voice default
 ai-voice-interconnector speech dub --audio entrevista.wav --source-language en --target-language es --voice default
 ai-voice-interconnector speech synthesize --daemon --text "Vía daemon" --label demo
+ai-voice-interconnector speech synthesize --text "Hola mundo" --label saludo --skip-existing
 ai-voice-interconnector speech transcribe --no-daemon --audio entrada.wav --source-language es
 ai-voice-interconnector speech play --label saludo
 ai-voice-interconnector speech remove --label saludo
@@ -608,4 +642,4 @@ stdout: Reproduciendo locución 'saludo' de la voz 'default' (2 s).
 stderr: … Reproduciendo locución… (0 s)
 ```
 
-Con `--json`, stdout lleva **solo** el envelope —`{"status": "success", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`, `{"status": "dubbed", "text", "translated"}`— y el resultado en texto no sale. El progreso por stderr es el mismo.
+Con `--json`, stdout lleva **solo** el envelope —`{"status": "success"|"skipped", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`, `{"status": "dubbed", "text", "translated"}`— y el resultado en texto no sale. El progreso por stderr es el mismo.

@@ -31,7 +31,7 @@ ai-voice-interconnector voice remove --name NAME [--yes]
 
 | Flag | Tipo | Requerido | Descripción |
 |---|---|---|---|
-| `--name, -n` | string | sí | Nombre de la voz; se normaliza a minúsculas y se valida contra `VoiceStore::validate_name` |
+| `--name, -n` | string | sí | Nombre de la voz; se valida al construir `VoiceName` (no vacío, solo `[A-Za-z0-9._-]`, ni `.` ni `..`: si no, exit 2 `invalid_voice_name`) y se normaliza a minúsculas |
 | `--speech-reference, -s` | string (ruta) | una fuente | WAV de referencia; se conserva intacto y no se reempaqueta en CLI |
 | `--mic` | flag | una fuente | Captura PCM a 16 kHz mono int16 desde el micrófono |
 | `--duration` | segundos | no | Solo con `--mic`; 1–30 segundos. Sin duración requiere TTY y usa push-to-talk con límite de 30 s si `AVI_PUSH_TO_TALK_MAX_SECS` no está definida; un valor explícito inválido produce `usage_error` y mayor de 30 produce `audio_too_long` |
@@ -130,7 +130,7 @@ La referencia dura como máximo `MAX_CLONE_REFERENCE_SECS` ([`limits.rs`](../../
 
 `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`):
 
-1. `VoiceStore::validate_name(name)` → `400` `invalid_voice_name` si falla.
+1. `VoiceName::parse(name)` → `400` `invalid_voice_name` si falla (también con `.` o `..`), antes de tocar ningún almacén.
 2. `!force && voice_store.exists(name)` → `409` `voice_exists`.
 3. Falta `audio_b64` → `400` `usage_error`; no decodifica base64 → `400` `invalid_audio`; la referencia supera `MAX_CLONE_REFERENCE_SECS` (medida por su cabecera WAV) → `400` `audio_too_long`.
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
@@ -176,7 +176,7 @@ metadatos de ruta).
 Siempre local: no declara `--daemon` ni `--no-daemon`. Flujo
 (`src/main.rs`):
 
-1. `VoiceStore::validate_name(name)` → exit 2 `invalid_voice_name`.
+1. `VoiceName::parse(name)` → exit 2 `invalid_voice_name`, sin tocar ningún archivo. El validador rechaza `.` y `..`, que unidos al almacén lo nombrarían entero: `voice remove --name .` no puede borrar `voices/` ni `speech/`.
 2. `is_factory_name(name)` → exit 2 `cannot_remove_default` (nota: pese al
    nombre de la razón, protege las tres voces de fábrica —`default`, `ryan`,
    `vivian`—, no solo `default`).

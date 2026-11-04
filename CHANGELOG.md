@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.43.0 — 2026-11-04](#0430--2026-11-04)
 - [0.42.0 — 2026-11-02](#0420--2026-11-02)
 - [0.41.4 — 2026-11-02](#0414--2026-11-02)
@@ -134,6 +135,35 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Un nombre de voz no se validaba igual en todos los comandos, y `.` o `..` hacían que el motor borrara o escribiera fuera de sus almacenes: `voice remove --name . --yes` borraba `voices/` y `speech/` enteros, voces de fábrica incluidas, con exit 0. Los almacenes construyen ahora sus rutas solo a partir de nombres de voz y etiquetas validados por un único validador, así que salir de un almacén es imposible por construcción. La versión corrige además la carpeta `.old-*` vacía que dejaba `self update`, fija un orden de validación común para la familia de síntesis y añade `--skip-existing`, que hace de la pre-síntesis idempotente un éxito explícito: el exit 6 de `speech synthesize` vuelve a ser siempre un fallo.
+
+### Corregido
+
+- `voice remove`, `voice clone`, `speech list`, `play`, `remove`, `synthesize`, `say` y `dub` rechazan los nombres de voz `.` y `..` y los que llevan separadores de ruta, con exit 2 y sin tocar ningún archivo, por la CLI y por el daemon. Antes, `voice remove --name . --yes` borraba los almacenes de voces y de locuciones completos, `speech remove --voice .. --label <etiqueta>` borraba un archivo fuera del almacén, y `synthesize`, `say`, `dub` y el `/synthesize` del daemon no validaban el nombre en absoluto.
+- `self update` ya no deja una carpeta `.old-*` vacía en el directorio de programa, que `doctor` marcaba como pendiente: el aparcado que retiene el `self update` viejo se retira como unidad con un único borrado diferido, en vez de un limpiador por archivo, y el registro de un fallo queda junto al aparcado, donde la recuperación lo busca.
+- `speech synthesize` sin `--force` sobre una etiqueta con la ficha `.json` corrupta sale con exit 6 `label_exists` en vez de exit 1 `io_error`: la colisión la decide solo el WAV.
+
+### Cambiado
+
+- Un nombre de voz ilegal sale con el `reason` `invalid_voice_name` en `speech list`, `speech play` y `speech remove`, como ya hacían `voice clone` y `voice remove`; `invalid_identifier` queda solo para la etiqueta. `daemon start` y `daemon serve` rechazan igual un `--warm-voice` ilegal.
+- `speech synthesize`, `say` y `dub` validan en el mismo orden por las dos rutas: invocación (exit 2), almacén (voz inexistente, exit 3; etiqueta ocupada, exit 6) y recursos (modelo, exit 4; daemon, exit 5). Con dos fallos a la vez, `say` y `synthesize` informan ahora el primero de ese orden: por ejemplo, una voz inexistente con el modelo sin provisionar sale con 3 y no con 4, y una etiqueta ocupada con el daemon caído sale con 6 y no con 5.
+- Por la ruta del daemon, `speech synthesize` y `speech say` comprueban en el cliente que la voz exista antes de contactar con el daemon, como ya hacía `speech dub`.
+
+### Añadido
+
+- `speech synthesize --skip-existing` conserva la locución existente con la misma etiqueta sin sintetizar y sale con exit 0, `{"status": "skipped", "audio_path", "voice"}` con `--json` y «Ya existe: \<ruta\> (omitido).» en texto, también con el daemon caído o el modelo sin provisionar. Es incompatible con `--force` y con `--play` (exit 2 `usage_error`).
+- El `status` `skipped` de `speech synthesize`, que se suma a `success` y `discarded` en su vocabulario cerrado. Es un valor aditivo y no sube ninguna versión de esquema.
+
+### Notas de release
+
+- **Incompatible (API de los crates):** `avi_store` añade `VoiceName`, `Label`, `NameKind` e `InvalidName`, y toda la API de `VoiceStore`, `SpeechStore`, `remove_voice`, `replace_voice` y `persist_locution` que construye rutas recibe `&VoiceName` y `&Label` en vez de `&str`; `VoiceStore::list` y `SpeechStore::list*` devuelven los nombres tipados y omiten los directorios y WAV con nombres ilegales. `VoiceStore::validate_name` desaparece, y con él su tope de 64 caracteres.
+- **Incompatible (API de los crates):** `persist_locution` recibe una `CollisionPolicy { Fail, Overwrite, Skip }` en vez de `force: bool` y devuelve `Persisted::{Saved, Skipped}`; `check_locution` aplica la misma decisión antes de sintetizar.
+- **Incompatible (API de los crates):** el borrado del ciclo de vida tiene un solo rasgo de mecanismo, `avi_lifecycle::removal::PathRemover`, y la política `retire`; `uninstall::ProgramDirRemover` se reduce a `exe_lives_inside` sobre ese superrasgo. Desaparecen `update::PathRemover`, `update::StagingCleanup`, `update::schedule_leftovers` y `update::ScheduledLeftovers`, y `cleanup_staging` devuelve un `Retirement`.
+- **Incompatible (API de los crates):** `install::install` recibe el removedor y `install::Env` gana `parked_holder`, el proceso que retiene el aparcado; `Env::from_current_exe` lo recibe como parámetro. `install::Outcome.parked` sustituye a `parked_leftovers` y `transaction::ReplaceOutcome.pending_parked` a `leftovers`.
+- **Incompatible (CLI):** un consumidor que tratara el exit 6 `label_exists` de `speech synthesize` como «ya pre-sintetizado» debe pasar `--skip-existing` y tratar todo código distinto de 0 como fallo.
 
 ## [0.43.0] — 2026-11-04
 

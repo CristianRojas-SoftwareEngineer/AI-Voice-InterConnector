@@ -390,7 +390,7 @@ Prueba cada opción:
 ai-voice-interconnector speech synthesize --text "Otra toma." --label demo_loop --play
 # entra al bucle y elige la opción 2 (guardar)
 ```
-**Esperado**: al elegir `2`, **exit 6** (`label_exists`), sin sobrescribir — la colisión se recomprueba **en el instante de guardar**, no solo al inicio. Con `--force` en el comando, la opción `2` sí sobrescribe (**exit 0**).
+**Esperado**: al elegir `2`, **exit 6** (`label_exists`), sin sobrescribir — la colisión se recomprueba **en el instante de guardar**, no solo al inicio. Con `--force` en el comando, la opción `2` sí sobrescribe (**exit 0**). `--skip-existing` no aplica aquí: es incompatible con `--play` (**exit 2**).
 
 ### 9.3 Progreso de la instalación interactiva
 

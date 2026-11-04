@@ -34,6 +34,8 @@
 - [Formato de audio](#formato-de-audio)
 - [Variables de entorno (`AVI_*`)](#variables-de-entorno-avi_)
 - [Solución de problemas](#solución-de-problemas)
+  - ["El nombre de voz '…' no es válido" (exit 2)](#el-nombre-de-voz--no-es-válido-exit-2)
+  - [`speech synthesize` sale con exit 6 `label_exists`](#speech-synthesize-sale-con-exit-6-label_exists)
   - ["El modelo … no está provisionado. Ejecuta 'setup' primero." (exit 4)](#el-modelo--no-está-provisionado-ejecuta-setup-primero-exit-4)
   - ["GLIBC_2.28 not found" (o similar) al ejecutar el binario en Linux](#glibc_228-not-found-o-similar-al-ejecutar-el-binario-en-linux)
   - [El binario no arranca en macOS (`binary_incompatible`)](#el-binario-no-arranca-en-macos-binary_incompatible)
@@ -139,13 +141,13 @@ para que quien consume la salida de un comando lo tenga a mano sin cambiar de do
 
 **`speech synthesize --json`** — el bucle interactivo de `--play` es
 incompatible con `--json` (exit 2 si se combinan), así que bajo `--json` la
-persistencia es siempre cierta cuando la salida es 0. El payload es idéntico
+locución está en el almacén siempre que la salida sea 0. El payload es idéntico
 campo a campo en modo directo y vía daemon.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
-| `status` | string | Siempre `"success"` |
-| `audio_path` | string | Ruta del WAV en el almacén (`speech/<voz>/<etiqueta>.wav`) |
+| `status` | string | `"success"` si se guardó, o `"skipped"` si `--skip-existing` conservó la locución existente sin sintetizar |
+| `audio_path` | string | Ruta del WAV en el almacén (`speech/<voz>/<etiqueta>.wav`): la guardada o la que ya existía |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
 
 **`speech say --json`** — no persiste nada y **no informa de ruta**: el WAV va a un
@@ -438,16 +440,32 @@ Síntesis completada: <ruta del WAV persistido> (N s).
 - `--voice, -v`: Nombre de la voz a usar (default: `default`)
 - `--play`: Reproduce la toma y abre un menú interactivo; solo guarda al aceptar
 - `--force, -f`: Sobrescribe la locución si la etiqueta ya existe para la voz
+- `--skip-existing`: Si la etiqueta ya existe para la voz, la conserva sin sintetizar y sale con exit **0** (`status` `skipped` con `--json`; en texto, `Ya existe: <ruta> (omitido).`). Incompatible con `--force` y con `--play`
 - `--source-language`: Idioma del texto de entrada (`es` o `en`; por defecto igual a `--target-language`, sin traducir)
 - `--target-language`: Idioma/modelo de síntesis (`es` o `en`; default `es`; si difiere del origen, el texto se traduce antes de sintetizar)
 - `--temperature`: Override del muestreo (`0 < t <= 2.0`; sin el flag se usa la temperatura de producción)
 - `--json`: Emite `{status, audio_path, voice}`
 
-**Colisión de etiqueta:** sin `--force`, guardar sobre una etiqueta que ya
-existe para la voz sale con exit **6** y `reason` `label_exists`, sin pagar la
-síntesis (la comprobación es previa). La etiqueta se revalida también al guardar,
-por si quedó ocupada mientras se sintetizaba o el bucle de `--play` esperaba una
-respuesta; `--force` sobre una etiqueta libre es un no-op.
+**Colisión de etiqueta:** sin `--force` ni `--skip-existing`, guardar sobre una
+etiqueta que ya existe para la voz sale con exit **6** y `reason` `label_exists`,
+sin pagar la síntesis (la comprobación es previa). Con `--skip-existing`, la
+misma orden es idempotente: sale con exit **0** sin sintetizar ni tocar la
+locución existente, también con el daemon caído o el modelo sin provisionar. La
+etiqueta se revalida también al guardar, por si quedó ocupada mientras se
+sintetizaba o el bucle de `--play` esperaba una respuesta; la colisión la decide
+el WAV, así que una ficha `.json` corrupta no la cambia. `--force` o
+`--skip-existing` sobre una etiqueta libre son un no-op. El exit **6** es siempre
+un fallo: no se guardó nada.
+
+```bash
+ai-voice-interconnector speech synthesize --text "Bienvenido" --label saludo --skip-existing
+```
+
+**Orden de validación:** `synthesize`, `say` y `dub` validan en el mismo orden por
+las dos rutas: primero la invocación (exit **2**: flags, texto, nombres), después
+el almacén (la voz existe, exit **3**; la etiqueta, exit **6**) y por último los
+recursos (el modelo, exit **4**, o el daemon, exit **5**). Con dos fallos a la vez
+se informa el primero de ese orden.
 
 **Voz cambiada durante la síntesis:** la locución se guarda solo si la voz sigue
 siendo la misma con la que se sintetizó. Si se re-clonó o se eliminó mientras
@@ -550,9 +568,11 @@ ai-voice-interconnector speech play --label saludo --voice mi_voz --json
 - `--voice, -v`: Nombre de la voz (default: `default`)
 - `--json`: Emite `{"status", "voice", "label"}`
 
-Una voz con caracteres ilegales sale con exit **2** (`invalid_identifier`) y una voz
-inexistente con exit **3** (`voice_not_found`), antes de buscar la etiqueta. Una
-etiqueta inexistente de una voz que existe sale con exit **3** (`speech_not_found`).
+Una voz ilegal sale con exit **2** (`invalid_voice_name`), una etiqueta ilegal con
+exit **2** (`invalid_identifier`) y una voz inexistente con exit **3**
+(`voice_not_found`), antes de buscar la etiqueta. Son ilegales el nombre vacío,
+los caracteres fuera de `[A-Za-z0-9._-]`, `.` y `..`. Una etiqueta inexistente de
+una voz que existe sale con exit **3** (`speech_not_found`).
 
 #### `speech list`
 
@@ -584,9 +604,9 @@ o corrupto hace fallar `speech list` y `speech play` con exit **1** (`io_error`)
 el mensaje nombra el fichero y remite a `speech remove`, que borra la locución
 sin leer el sidecar.
 
-Con `--voice`, el identificador se valida antes de leer: una voz con
-caracteres ilegales sale con exit **2** (`invalid_identifier`) y una voz
-inexistente con exit **3** (`voice_not_found`).
+Con `--voice`, el nombre se valida antes de leer: una voz ilegal (vacía, con
+caracteres fuera de `[A-Za-z0-9._-]`, `.` o `..`) sale con exit **2**
+(`invalid_voice_name`) y una voz inexistente con exit **3** (`voice_not_found`).
 
 **Opciones:**
 - `--voice, -v`: Filtra por voz (default: todas las voces)
@@ -606,8 +626,9 @@ ai-voice-interconnector speech remove --label saludo --voice mi_voz
 - `--voice, -v`: Nombre de la voz (default: `default`)
 - `--json`: Emite `{"status", "voice", "label"}`
 
-Una voz con caracteres ilegales sale con exit **2** (`invalid_identifier`) y una voz
-inexistente con exit **3** (`voice_not_found`), antes de buscar la etiqueta. Una
+Una voz ilegal sale con exit **2** (`invalid_voice_name`), una etiqueta ilegal con
+exit **2** (`invalid_identifier`) y una voz inexistente con exit **3**
+(`voice_not_found`), antes de buscar la etiqueta, sin tocar ningún archivo. Una
 etiqueta inexistente de una voz que existe sale con exit **3** (`speech_not_found`). El borrado masivo es tarea de
 `cleanup --synthetic-speech` (ver más abajo).
 
@@ -859,7 +880,10 @@ con exit **2** (`confirmation_required`) y no borra nada. Si cancelas, sale con 
 **0** y `Cancelado.`. Una voz sin locuciones se elimina sin preguntar.
 
 Las voces de fábrica (como `default`) son de solo lectura y no pueden
-eliminarse; el comando lo indica y termina con error si lo intentas.
+eliminarse; el comando lo indica y termina con error si lo intentas. Un nombre
+ilegal —vacío, con caracteres fuera de `[A-Za-z0-9._-]`, `.` o `..`— sale con exit
+**2** (`invalid_voice_name`) sin tocar ningún archivo: `voice remove --name .` no
+borra el almacén.
 
 ---
 
@@ -1190,6 +1214,19 @@ Estas variables ajustan el comportamiento de la CLI. Todas son opcionales.
 | `RUST_LOG` | Filtro de trazas (`info`, `debug`, …). Sin ella, la CLI muestra `warn` y superiores. |
 
 ## Solución de problemas
+
+### "El nombre de voz '…' no es válido" (exit 2)
+
+Los nombres de voz y las etiquetas solo admiten letras ASCII, dígitos, `.`, `_` y
+`-`, y no pueden estar vacíos ni ser `.` o `..`. Una voz ilegal sale con
+`invalid_voice_name` y una etiqueta ilegal con `invalid_identifier`, sin tocar
+ningún archivo. Usa un nombre como `mi_voz` o `saludo-1`.
+
+### `speech synthesize` sale con exit 6 `label_exists`
+
+La etiqueta ya está guardada para esa voz. Para sobrescribirla, añade `--force`;
+para conservarla y que la orden sea idempotente —el caso de la pre-síntesis de
+avisos—, añade `--skip-existing`, que sale con exit 0 y `status` `skipped`.
 
 ### "El modelo … no está provisionado. Ejecuta 'setup' primero." (exit 4)
 

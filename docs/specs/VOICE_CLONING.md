@@ -242,7 +242,7 @@ enum VoiceCommands {
 ```text
 voice clone --name <nombre> [--speech-reference <wav> | --mic [--duration <N>]]
   │
-  ├─ 1. Validar nombre de voz (validate_name) ── fallo → exit 2 (invalid_voice_name)
+  ├─ 1. Construir el nombre de voz (VoiceName::parse, rechaza también . y ..) ── fallo → exit 2 (invalid_voice_name)
   ├─ 2. Archivo: conservar precedencia de validaciones actual. Mic: validar nombre, duration=0 / >30, techo PTT (>30 → audio_too_long) y no-TTY antes de abrir dispositivo.
   ├─ 3. No-TTY sin duration → usage_error antes del probe. Resolver destino una vez; en las dos rutas, colisión si !force (voice_exists) y, con force y locuciones guardadas, confirmación destructiva (confirmation_required sin terminal ni --yes)
   ├─ 4. Capturar mic, recortar >480000 muestras y codificar una vez; archivo WAV intacto
