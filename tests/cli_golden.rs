@@ -3851,6 +3851,77 @@ mod tts {
         assert_eq!(actual["reason"], Value::String("model_missing".to_string()));
     }
 
+    /// Orden común de la familia de síntesis, «invocación → almacén → recursos»,
+    /// con dos fallos a la vez en los tres comandos y las dos rutas: el modelo
+    /// está ausente (exit 4 por la ruta directa) y el daemon caído (exit 5 por la
+    /// suya), y aun así gana el fallo anterior.
+    #[test]
+    fn synthesis_family_validates_in_a_common_order() {
+        let inst = IsolatedInstance::new("synthesis_order");
+        let a = inst.contract_args();
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        create_utterance(&inst, "default", "ocupada");
+        let wav = "crates/avi-stt/tests/assets/parakeet_sample_16k.wav";
+        for route in ["--no-daemon", "--daemon"] {
+            let synthesize = |voice: &'static str, label: &'static str| {
+                vec![
+                    "speech",
+                    "synthesize",
+                    route,
+                    "--text",
+                    "Hola",
+                    "--voice",
+                    voice,
+                    "--label",
+                    label,
+                ]
+            };
+            let cases: Vec<(Vec<&str>, i32, &str)> = vec![
+                // Etiqueta ilegal con el recurso ausente: invocación.
+                (
+                    synthesize("default", "mi etiqueta"),
+                    2,
+                    "invalid_identifier",
+                ),
+                // Voz inexistente con el recurso ausente: almacén.
+                (synthesize("noexiste", "nueva"), 3, "voice_not_found"),
+                (
+                    vec![
+                        "speech", "say", route, "--text", "Hola", "--voice", "noexiste",
+                    ],
+                    3,
+                    "voice_not_found",
+                ),
+                (
+                    vec![
+                        "speech",
+                        "dub",
+                        route,
+                        "--source-language",
+                        "es",
+                        "--audio",
+                        wav,
+                        "--voice",
+                        "noexiste",
+                    ],
+                    3,
+                    "voice_not_found",
+                ),
+                // Etiqueta ocupada con el recurso ausente: almacén.
+                (synthesize("default", "ocupada"), 6, "label_exists"),
+            ];
+            for (case, code, reason) in cases {
+                let mut args = vec!["--json"];
+                args.extend(case.iter().copied());
+                let (actual_code, actual) = run_json_env(&args, &a);
+                assert_eq!(actual_code, code, "{case:?}: {actual}");
+                assert_eq!(actual["reason"], reason, "{case:?}: {actual}");
+            }
+        }
+    }
+
     /// Colisión de `--label` sin `--force` → 6. El almacén se fabrica con un
     /// sidecar + WAV mínimo (sin síntesis real).
     #[test]

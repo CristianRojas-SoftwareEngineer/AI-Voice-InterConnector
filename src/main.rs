@@ -2455,6 +2455,53 @@ fn ensure_voice_exists(voice: &VoiceName) -> Result<(), CliError> {
     ))
 }
 
+/// Preparación común de `speech synthesize`, `say` y `dub`, por las dos rutas.
+///
+/// El orden es contrato y va de lo barato y local a lo costoso:
+///
+/// 1. **Invocación** (exit 2): las comprobaciones propias del comando, que recibe
+///    `invocation`, y el nombre de la voz.
+/// 2. **Almacén**: que la voz exista (exit 3) y, en `synthesize`, la colisión de
+///    la etiqueta, que decide `collision`.
+/// 3. **Recursos**, después de la preparación y ya decidida la ruta: el modelo
+///    (exit 4) o el daemon (exit 5).
+///
+/// Con dos fallos a la vez gana el del paso anterior, en los tres comandos y en
+/// las dos rutas: el cliente y el daemon comparten el directorio de datos, así
+/// que el almacén se consulta aquí aunque la síntesis la haga el daemon.
+fn prepare_synthesis<T>(
+    invocation: impl FnOnce() -> Result<T, CliError>,
+    voice: &str,
+    collision: impl FnOnce(&VoiceName, &T) -> Result<(), CliError>,
+) -> Result<(VoiceName, T), CliError> {
+    let checked = invocation()?;
+    let voice = VoiceName::parse(voice).map_err(invalid_name_cli_error)?;
+    ensure_voice_exists(&voice)?;
+    collision(&voice, &checked)?;
+    Ok((voice, checked))
+}
+
+/// Gancho de colisión de `synthesize`: sin `force`, una etiqueta ocupada es
+/// `label_exists` (exit 6).
+fn ensure_label_free(voice: &VoiceName, label: &Label, force: bool) -> Result<(), CliError> {
+    if force
+        || open_speech_store()?
+            .find(voice, label)
+            .map_err(speech_find_error)?
+            .is_none()
+    {
+        return Ok(());
+    }
+    Err(CliError::new(
+        ExitCode::StateConflict,
+        "label_exists",
+        format!(
+            "Ya existe una locución con la etiqueta '{}' (usa --force).",
+            label
+        ),
+    ))
+}
+
 /// Error del almacén de locuciones al buscar una etiqueta.
 fn speech_find_error(e: anyhow::Error) -> CliError {
     sidecar_cli_error(&e)
@@ -2721,25 +2768,30 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             let mut progress = PhaseProgress::new();
             let result = async {
                 progress.phase("validating", "Validando texto y voz…");
-                if play && json_mode {
-                    return Err(CliError::new(
-                        ExitCode::InvalidInput,
-                        "usage_error",
-                        "--play es incompatible con --json.",
-                    ));
-                }
-                if play && !std::io::stdin().is_terminal() {
-                    return Err(CliError::new(
-                        ExitCode::InvalidInput,
-                        "usage_error",
-                        "--play requiere una terminal interactiva (TTY).",
-                    ));
-                }
-                validate_temperature(temperature)?;
-                // Orden de validaciones del contrato: la temperatura se comprueba antes que el texto.
-                avi_core::validate_synthesis_text(&text)?;
-                let voice = VoiceName::parse(&voice).map_err(invalid_name_cli_error)?;
-                let label = Label::parse(&label).map_err(invalid_name_cli_error)?;
+                let (voice, label) = prepare_synthesis(
+                    || {
+                        if play && json_mode {
+                            return Err(CliError::new(
+                                ExitCode::InvalidInput,
+                                "usage_error",
+                                "--play es incompatible con --json.",
+                            ));
+                        }
+                        if play && !std::io::stdin().is_terminal() {
+                            return Err(CliError::new(
+                                ExitCode::InvalidInput,
+                                "usage_error",
+                                "--play requiere una terminal interactiva (TTY).",
+                            ));
+                        }
+                        validate_temperature(temperature)?;
+                        // La temperatura se comprueba antes que el texto.
+                        avi_core::validate_synthesis_text(&text)?;
+                        Label::parse(&label).map_err(invalid_name_cli_error)
+                    },
+                    &voice,
+                    |voice, label| ensure_label_free(voice, label, force),
+                )?;
                 // Origen por defecto = destino (sin traducir).
                 let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
@@ -2763,32 +2815,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
 
                 require_model_provisioned()?;
                 let voice_store = open_voice_store()?;
-                if !voice_store
-                    .exists(&voice)
-                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
-                {
-                    return Err(CliError::new(
-                        ExitCode::NotFound,
-                        "voice_not_found",
-                        format!("La voz '{}' no existe.", voice),
-                    ));
-                }
                 let speech_store = open_speech_store()?;
-                if !force
-                    && speech_store
-                        .find(&voice, &label)
-                        .map_err(speech_find_error)?
-                        .is_some()
-                {
-                    return Err(CliError::new(
-                        ExitCode::StateConflict,
-                        "label_exists",
-                        format!(
-                            "Ya existe una locución con la etiqueta '{}' (usa --force).",
-                            label
-                        ),
-                    ));
-                }
 
                 // Guardián del temporal: lo borra al salir de ámbito por cualquier camino.
                 let tmp_guard = avi_process::scratch::temp_wav("avi_tts_")
@@ -2915,9 +2942,14 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // hace fuera, sobre el resultado ya obtenido.
             let result = async {
                 progress.phase("validating", "Validando texto y voz…");
-                validate_temperature(temperature)?;
-                avi_core::validate_synthesis_text(&text)?;
-                let voice = VoiceName::parse(&voice).map_err(invalid_name_cli_error)?;
+                let (voice, ()) = prepare_synthesis(
+                    || {
+                        validate_temperature(temperature)?;
+                        avi_core::validate_synthesis_text(&text)
+                    },
+                    &voice,
+                    |_, _| Ok(()),
+                )?;
                 // Origen por defecto = destino (sin traducir).
                 let source_eff = source_language.as_deref().unwrap_or(&target_language);
 
@@ -2939,16 +2971,6 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
 
                 require_model_provisioned()?;
                 let voice_store = open_voice_store()?;
-                if !voice_store
-                    .exists(&voice)
-                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?
-                {
-                    return Err(CliError::new(
-                        ExitCode::NotFound,
-                        "voice_not_found",
-                        format!("La voz '{}' no existe.", voice),
-                    ));
-                }
                 // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
                 let tmp_wav = avi_process::scratch::temp_wav("avi_say_")
                     .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
@@ -3026,37 +3048,41 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     false
                 }
             };
-            validate_temperature(temperature)?;
-            // Validaciones puras del contrato, antes del despacho:
-            if mic && duration.is_none() && !std::io::stdin().is_terminal() {
-                return Err(CliError::new(
-                    ExitCode::InvalidInput,
-                    "usage_error",
-                    "--mic requiere --duration en este host.",
-                ));
-            }
-            if duration.is_some_and(|d| d > avi_core::MAX_DUB_AUDIO_SECS) {
-                return Err(audio_too_long(
-                    "El audio del doblaje",
-                    avi_core::MAX_DUB_AUDIO_SECS,
-                ));
-            }
-            if let Some(a) = &audio {
-                validate_audio_arg(std::path::Path::new(a))?;
-                // El tope se mide por la cabecera antes de contactar con el daemon
-                // o de comprobar modelos, igual que en transcribe y clone.
-                ensure_wav_within_limit(
-                    std::path::Path::new(a),
-                    "El audio del doblaje",
-                    avi_core::MAX_DUB_AUDIO_SECS,
-                )?;
-            }
             // El cliente y el daemon comparten el directorio de datos, así que
             // una voz inexistente se rechaza antes de abrir el micrófono o leer
             // el audio, en las dos rutas; el daemon conserva su propia
             // comprobación como defensa.
-            let voice = VoiceName::parse(&voice).map_err(invalid_name_cli_error)?;
-            ensure_voice_exists(&voice)?;
+            let (voice, ()) = prepare_synthesis(
+                || {
+                    validate_temperature(temperature)?;
+                    if mic && duration.is_none() && !std::io::stdin().is_terminal() {
+                        return Err(CliError::new(
+                            ExitCode::InvalidInput,
+                            "usage_error",
+                            "--mic requiere --duration en este host.",
+                        ));
+                    }
+                    if duration.is_some_and(|d| d > avi_core::MAX_DUB_AUDIO_SECS) {
+                        return Err(audio_too_long(
+                            "El audio del doblaje",
+                            avi_core::MAX_DUB_AUDIO_SECS,
+                        ));
+                    }
+                    if let Some(a) = &audio {
+                        validate_audio_arg(std::path::Path::new(a))?;
+                        // El tope se mide por la cabecera antes de contactar con el
+                        // daemon o de comprobar modelos, igual que en transcribe y clone.
+                        ensure_wav_within_limit(
+                            std::path::Path::new(a),
+                            "El audio del doblaje",
+                            avi_core::MAX_DUB_AUDIO_SECS,
+                        )?;
+                    }
+                    Ok(())
+                },
+                &voice,
+                |_, _| Ok(()),
+            )?;
             // Despacho 3 modos: delega a POST /dub si daemon activo
             {
                 let client = daemon_client();
@@ -5779,21 +5805,6 @@ async fn synthesize_via_daemon(
 ) -> Result<Option<PathBuf>, CliError> {
     let speech_store = open_speech_store()?;
     let voice_store = open_voice_store()?;
-    if !force
-        && speech_store
-            .find(voice, label)
-            .map_err(speech_find_error)?
-            .is_some()
-    {
-        return Err(CliError::new(
-            ExitCode::StateConflict,
-            "label_exists",
-            format!(
-                "Ya existe una locución con la etiqueta '{}' (usa --force).",
-                label
-            ),
-        ));
-    }
     let reference = resolve_voice_reference(&voice_store, voice)?;
     let first_take = daemon_synthesize_wav(
         progress,
