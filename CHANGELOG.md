@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.44.0 — 2026-11-04](#0440--2026-11-04)
 - [0.43.0 — 2026-11-04](#0430--2026-11-04)
 - [0.42.0 — 2026-11-02](#0420--2026-11-02)
 - [0.41.4 — 2026-11-02](#0414--2026-11-02)
@@ -136,7 +136,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.44.0] — 2026-11-04
 
 Un nombre de voz no se validaba igual en todos los comandos, y `.` o `..` hacían que el motor borrara o escribiera fuera de sus almacenes: `voice remove --name . --yes` borraba `voices/` y `speech/` enteros, voces de fábrica incluidas, con exit 0. Los almacenes construyen ahora sus rutas solo a partir de nombres de voz y etiquetas validados por un único validador, así que salir de un almacén es imposible por construcción. La versión corrige además la carpeta `.old-*` vacía que dejaba `self update`, fija un orden de validación común para la familia de síntesis y añade `--skip-existing`, que hace de la pre-síntesis idempotente un éxito explícito: el exit 6 de `speech synthesize` vuelve a ser siempre un fallo.
 
@@ -3993,3 +3993,4 @@ estado con el que nace el producto.
 [0.41.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.3...v0.41.4
 [0.42.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.4...v0.42.0
 [0.43.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.42.0...v0.43.0
+[0.44.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.43.0...v0.44.0
