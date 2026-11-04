@@ -139,15 +139,26 @@ fn open_model_store() -> Result<ModelStore, CliError> {
     ModelStore::new().map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
 }
 
-/// Síntesis directa de una voz del almacén del comando: resuelve su referencia
-/// clonada y pide al motor el idioma de destino (token del producto) con la
+/// Referencia de una voz del almacén con la identidad de su contenido (`None`
+/// para un preset); un fallo de E/S es `io_error`.
+fn resolve_voice_reference(
+    voice_store: &VoiceStore,
+    voice: &str,
+) -> Result<Option<avi_store::VoiceReference>, CliError> {
+    voice_store
+        .resolve(voice)
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
+}
+
+/// Síntesis directa de una voz con su referencia ya resuelta (`None` para un
+/// preset): pide al motor el idioma de destino (token del producto) con la
 /// temperatura opcional ya validada y el seed opcional (`None` usa el de
 /// producción).
 // Firma ancha deliberada: cada argumento mapea 1:1 a un dato de la síntesis.
 #[allow(clippy::too_many_arguments)]
 fn synthesize_voice_directly(
     engine: &Qwen3TtsEngine,
-    voice_store: &VoiceStore,
+    reference: Option<&avi_store::VoiceReference>,
     text: &str,
     voice: &str,
     temperature: Option<f32>,
@@ -155,12 +166,9 @@ fn synthesize_voice_directly(
     language: &str,
     output_path: &PathBuf,
 ) -> Result<PathBuf, CliError> {
-    let qvoice_path = voice_store
-        .find_reference(voice)
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
     let profile = avi_tts::VoiceProfile {
         name: voice.to_string(),
-        qvoice_path,
+        reference: reference.cloned(),
     };
     let options = avi_tts::GenerationOptions::with_temperature(temperature, language)
         .with_seed_override(seed);
@@ -626,9 +634,12 @@ enum VoiceCommands {
         /// Duración fija en segundos (1–30); solo con --mic
         #[arg(long, conflicts_with = "speech_reference")]
         duration: Option<u64>,
-        /// Sobrescribir una voz existente con el mismo nombre
+        /// Sobrescribir una voz existente con el mismo nombre (borra también sus locuciones)
         #[arg(short, long)]
         force: bool,
+        /// No pedir confirmación al borrar las locuciones de la voz sobrescrita
+        #[arg(long, short)]
+        yes: bool,
         /// Limpiar ruido de fondo en la referencia antes de clonar (solo con `native-denoise`).
         #[cfg(feature = "native-denoise")]
         #[arg(long)]
@@ -1463,6 +1474,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             mic,
             duration,
             force,
+            yes,
             #[cfg(feature = "native-denoise")]
             denoise,
             routing,
@@ -1525,6 +1537,21 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 if !force && voice_store.exists(&name).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))? {
                     return Err(CliError::new(ExitCode::StateConflict, "voice_exists", format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name)));
                 }
+                // Sobrescribir la voz se lleva también sus locuciones, grabadas
+                // con el contenido anterior: si las hay, se pide la confirmación
+                // destructiva antes de capturar o clonar, en las dos rutas.
+                let speech_store = open_speech_store()?;
+                if force {
+                    let labels = speech_store.labels_of(&name).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+                    if !labels.is_empty() {
+                        progress.close_line();
+                        let decision = confirm_voice_replacement(&voice_store, &speech_store, &name, &labels, yes);
+                        progress.repaint();
+                        if decision? == lifecycle::confirm::Decision::Cancelled {
+                            return Ok(None);
+                        }
+                    }
+                }
                 let (speech_path, daemon_audio, mic_scratch) = if mic {
                     progress.phase("capturing", CLONE_PHASES.capturing);
                     let mut pcm = capture_mic_with_progress(&mut progress, duration, avi_core::MAX_CLONE_REFERENCE_SECS).await?;
@@ -1549,8 +1576,8 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                             std::fs::read(reference).map_err(|e| CliError::new(ExitCode::NotFound, "audio_not_found", format!("El audio de referencia '{}' no existe: {}", reference, e)))?
                         }
                     };
-                    let (cloned_name, cloned_speech, precomputed) = clone_via_daemon(&client, &name, &audio_bytes, force, denoise, &mut progress).await?;
-                    return Ok((cloned_name, PathBuf::from(cloned_speech), precomputed));
+                    let (cloned_name, cloned_speech, precomputed, removed_speech) = clone_via_daemon(&client, &name, &audio_bytes, force, denoise, &mut progress).await?;
+                    return Ok(Some((cloned_name, PathBuf::from(cloned_speech), precomputed, removed_speech)));
                 }
                 let _mic_scratch = mic_scratch;
                 let speech_path = speech_path.expect("ruta local");
@@ -1621,9 +1648,9 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 })
                 .and_then(|()| {
                     progress.phase("saving", CLONE_PHASES.saving);
-                    voice_store.save_reference(&name, &tmp_qvoice)
+                    avi_store::replace_voice(&voice_store, &speech_store, &name, &tmp_qvoice)
                 });
-                let saved_qvoice = cloned.map_err(|e| {
+                let replaced = cloned.map_err(|e| {
                     // Una referencia ilegible se clasifica igual que en transcripción.
                     match e.downcast_ref::<avi_audio::WavLoadError>() {
                         Some(avi_audio::WavLoadError::Invalid(_)) => {
@@ -1635,11 +1662,21 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                         _ => CliError::new(ExitCode::Error, "voice_clone_failed", e.to_string()),
                     }
                 })?;
-                Ok((name, saved_qvoice, false))
+                Ok(Some((name, replaced.reference, false, replaced.removed_speech)))
             }
             .await;
             let elapsed = progress.close();
-            let (cloned_name, saved_qvoice, precomputed) = result?;
+            let Some((cloned_name, saved_qvoice, precomputed, removed_speech)) = result? else {
+                // `confirm::confirm` ya escribió «Cancelado.» por stderr.
+                if json_mode {
+                    emit_raw_json(json!({
+                        "status": "cancelled",
+                        "name": name.to_lowercase(),
+                        "removed_speech": Vec::<String>::new(),
+                    }));
+                }
+                return Ok(());
+            };
             // La única referencia de habla produce `reference.qvoice`; el WAV de
             // entrada no se persiste. La ruta local no tiene residente TTS
             // persistente, así que `precomputed` es `false` en esa vía.
@@ -1648,11 +1685,20 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     "name": cloned_name,
                     "speech": saved_qvoice.to_string_lossy().to_string(),
                     "precomputed": precomputed,
+                    "removed_speech": removed_speech,
                 }));
-            } else {
+            } else if removed_speech.is_empty() {
                 println!(
                     "Voz '{}' clonada ({}).",
                     cloned_name,
+                    avi_lifecycle::progress::format_duration(elapsed)
+                );
+            } else {
+                println!(
+                    "Voz '{}' clonada; se eliminaron sus {} locución(es) anteriores: {} ({}).",
+                    cloned_name,
+                    removed_speech.len(),
+                    removed_speech.join(", "),
                     avi_lifecycle::progress::format_duration(elapsed)
                 );
             }
@@ -2152,7 +2198,7 @@ trait PlayResynthesizer {
 /// temporal y se encarga de su propio progreso.
 struct LocalResynthesizer<'a> {
     engine: &'a Qwen3TtsEngine,
-    voice_store: &'a VoiceStore,
+    reference: Option<&'a avi_store::VoiceReference>,
     final_text: &'a str,
     voice: &'a str,
     temperature: Option<f32>,
@@ -2169,7 +2215,7 @@ impl PlayResynthesizer for LocalResynthesizer<'_> {
         let result = run_blocking_with_progress(&*self.progress, || {
             synthesize_voice_directly(
                 self.engine,
-                self.voice_store,
+                self.reference,
                 self.final_text,
                 self.voice,
                 self.temperature,
@@ -2234,7 +2280,9 @@ async fn play_menu_loop<R: PlayResynthesizer>(
     voice: &str,
     label: &str,
     force: bool,
+    voice_store: &VoiceStore,
     speech_store: &SpeechStore,
+    reference: Option<&avi_store::VoiceReference>,
     final_text: &str,
     wav: &std::path::Path,
     reader: &mut dyn FnMut(&mut String) -> std::io::Result<usize>,
@@ -2247,7 +2295,9 @@ async fn play_menu_loop<R: PlayResynthesizer>(
             voice,
             label,
             force,
+            voice_store,
             speech_store,
+            reference,
             final_text,
             wav,
             reader,
@@ -2274,8 +2324,9 @@ fn menu_playback(label: &str) -> impl FnMut(&std::path::Path) -> Result<(), CliE
 }
 
 /// Menú interactivo `--play`: reproduce la toma y ofrece 4 opciones a stderr —
-/// 1) reproducir otra vez (sin re-síntesis), 2) aceptar y guardar
-///    (recomprobando colisión de label al guardar), 3) rechazar y regenerar
+/// 1) reproducir otra vez (sin re-síntesis), 2) aceptar y guardar con
+///    `persist_locution`, que recomprueba la identidad de la voz y la colisión
+///    de label al guardar, 3) rechazar y regenerar
 ///    (una síntesis nueva), 4) rechazar y descartar. EOF o error de lectura de
 ///    stdin también descartan; una opción inválida avisa y repite el menú.
 ///
@@ -2289,7 +2340,9 @@ fn synthesize_play_loop(
     voice: &str,
     label: &str,
     force: bool,
+    voice_store: &VoiceStore,
     speech_store: &SpeechStore,
+    reference: Option<&avi_store::VoiceReference>,
     final_text: &str,
     wav: &std::path::Path,
     reader: &mut dyn FnMut(&mut String) -> std::io::Result<usize>,
@@ -2322,34 +2375,44 @@ fn synthesize_play_loop(
                 playback(wav)?;
             }
             "2" => {
-                // La colisión se recomprueba en el instante de guardar, no
-                // solo en el fast-fail previo a sintetizar.
-                if !force
-                    && speech_store
-                        .find(voice, label)
-                        .map_err(speech_find_error)?
-                        .is_some()
-                {
-                    return Err(CliError::new(
-                        ExitCode::StateConflict,
-                        "label_exists",
-                        format!(
-                            "Ya existe una locución con la etiqueta '{}' (usa --force).",
-                            label
-                        ),
-                    ));
-                }
-                let saved = speech_store
-                    .save(voice, label, final_text, wav)
-                    .map_err(|e| {
-                        CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
-                    })?;
+                // La identidad de la voz y la colisión se recomprueban en el
+                // instante de guardar, no solo en el fast-fail previo a sintetizar.
+                let saved = avi_store::persist_locution(
+                    voice_store,
+                    speech_store,
+                    reference,
+                    voice,
+                    label,
+                    final_text,
+                    wav,
+                    force,
+                )
+                .map_err(persist_cli_error)?;
                 return Ok(PlayDecision::Saved(saved));
             }
             "3" => return Ok(PlayDecision::Resynthesize),
             "4" => return Ok(PlayDecision::Discarded),
             _ => eprintln!("Opción inválida."),
         }
+    }
+}
+
+/// Error de `persist_locution` como error de la CLI: un cambio de la voz durante
+/// la síntesis es `voice_changed` y una etiqueta ocupada es `label_exists`, los
+/// dos exit 6; cualquier otro fallo al guardar es `synthesis_failed`.
+fn persist_cli_error(e: anyhow::Error) -> CliError {
+    match e.downcast_ref::<avi_store::LocutionConflict>() {
+        Some(conflict @ avi_store::LocutionConflict::VoiceChanged { .. }) => CliError::new(
+            ExitCode::StateConflict,
+            "voice_changed",
+            conflict.to_string(),
+        ),
+        Some(conflict @ avi_store::LocutionConflict::LabelExists { .. }) => CliError::new(
+            ExitCode::StateConflict,
+            "label_exists",
+            conflict.to_string(),
+        ),
+        None => CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()),
     }
 }
 
@@ -2737,10 +2800,13 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 };
                 progress.phase("synthesizing", SYNTHESIZE_PHASES.synthesizing);
                 progress.tick();
+                // La identidad de la voz se resuelve antes de sintetizar: la
+                // locución solo se guarda si la voz la conserva al guardarla.
+                let reference = resolve_voice_reference(&voice_store, &voice)?;
                 run_blocking_with_progress(&progress, || {
                     synthesize_voice_directly(
                         &engine,
-                        &voice_store,
+                        reference.as_ref(),
                         &final_text,
                         &voice,
                         temperature,
@@ -2760,7 +2826,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     progress.close_line();
                     let mut resynthesizer = LocalResynthesizer {
                         engine: &engine,
-                        voice_store: &voice_store,
+                        reference: reference.as_ref(),
                         final_text: &final_text,
                         voice: &voice,
                         temperature,
@@ -2772,7 +2838,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &voice,
                         &label,
                         force,
+                        &voice_store,
                         &speech_store,
+                        reference.as_ref(),
                         &final_text,
                         &tmp_wav,
                         &mut reader,
@@ -2790,11 +2858,17 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     }
                 } else {
                     progress.phase("saving", SYNTHESIZE_PHASES.saving);
-                    speech_store
-                        .save(&voice, &label, &final_text, &tmp_wav)
-                        .map_err(|e| {
-                            CliError::new(ExitCode::Error, "synthesis_failed", e.to_string())
-                        })?
+                    avi_store::persist_locution(
+                        &voice_store,
+                        &speech_store,
+                        reference.as_ref(),
+                        &voice,
+                        &label,
+                        &final_text,
+                        &tmp_wav,
+                        force,
+                    )
+                    .map_err(persist_cli_error)?
                 };
                 Ok(Some(saved))
             }
@@ -2883,10 +2957,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 };
                 progress.phase("synthesizing", SAY_PHASES.synthesizing);
                 progress.tick();
+                let reference = resolve_voice_reference(&voice_store, &voice)?;
                 run_blocking_with_progress(&progress, || {
                     synthesize_voice_directly(
                         &engine,
-                        &voice_store,
+                        reference.as_ref(),
                         &final_text,
                         &voice,
                         temperature,
@@ -3172,10 +3247,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     let engine = engine_result?;
                     progress.phase("synthesizing", DUB_PHASES.synthesizing);
                     progress.tick();
+                    let reference = resolve_voice_reference(&voice_store, &voice)?;
                     run_blocking_with_progress(&progress, || {
                         synthesize_voice_directly(
                             &engine,
-                            &voice_store,
+                            reference.as_ref(),
                             &final_text,
                             &voice,
                             temperature,
@@ -5755,9 +5831,11 @@ fn stream_event_phase(ev: &Value, texts: &PhaseTexts) -> Option<(&'static str, &
     }
 }
 
-/// `synthesize` vía daemon: persiste el WAV en `SpeechStore` y respeta
+/// `synthesize` vía daemon: persiste el WAV con `persist_locution` y respeta
 /// --label/--play, devolviendo la ruta del WAV persistido (paralelo al
-/// handler local para que el envelope JSON de salida coincida).
+/// handler local para que el envelope JSON de salida coincida). La identidad
+/// de la voz se resuelve en el almacén compartido antes de pedir la síntesis,
+/// así que una voz que cambia mientras el daemon sintetiza no se guarda.
 // Firma ancha deliberada: cada argumento mapea 1:1 a un flag de `speech synthesize`.
 #[allow(clippy::too_many_arguments)]
 async fn synthesize_via_daemon(
@@ -5773,6 +5851,7 @@ async fn synthesize_via_daemon(
     temperature: Option<f32>,
 ) -> Result<Option<PathBuf>, CliError> {
     let speech_store = open_speech_store()?;
+    let voice_store = open_voice_store()?;
     let label_lower = label.to_lowercase();
     is_valid_identifier(Some(&label_lower), None)?;
     if !force
@@ -5790,6 +5869,7 @@ async fn synthesize_via_daemon(
             ),
         ));
     }
+    let reference = resolve_voice_reference(&voice_store, voice)?;
     let first_take = daemon_synthesize_wav(
         progress,
         &SYNTHESIZE_PHASES,
@@ -5832,7 +5912,9 @@ async fn synthesize_via_daemon(
             voice,
             &label_lower,
             force,
+            &voice_store,
             &speech_store,
+            reference.as_ref(),
             final_text,
             &tmp,
             &mut reader,
@@ -5847,9 +5929,17 @@ async fn synthesize_via_daemon(
         }
     } else {
         progress.phase("saving", SYNTHESIZE_PHASES.saving);
-        speech_store
-            .save(voice, &label_lower, final_text, &tmp)
-            .map_err(|e| CliError::new(ExitCode::Error, "synthesis_failed", e.to_string()))?
+        avi_store::persist_locution(
+            &voice_store,
+            &speech_store,
+            reference.as_ref(),
+            voice,
+            &label_lower,
+            final_text,
+            &tmp,
+            force,
+        )
+        .map_err(persist_cli_error)?
     };
     Ok(Some(saved))
 }
@@ -5895,6 +5985,52 @@ async fn say_via_daemon(
     Ok(())
 }
 
+/// Confirmación destructiva de sobrescribir la voz `name`, que tiene las
+/// locuciones `labels`: se borrarán con su contenido anterior. Sin terminal y sin
+/// `--yes` falla con `confirmation_required`; una cancelación no cambia nada.
+fn confirm_voice_replacement(
+    voice_store: &VoiceStore,
+    speech_store: &SpeechStore,
+    name: &str,
+    labels: &[String],
+    yes: bool,
+) -> Result<lifecycle::confirm::Decision, CliError> {
+    let voice_dir = voice_store.voice_dir(name);
+    let speech_dir = speech_store.voice_dir(name);
+    let summary = vec![format!(
+        "Se sobrescribirá la voz '{}' y se eliminarán sus {} locución(es), grabadas con su contenido anterior: {} (~{}).",
+        name,
+        labels.len(),
+        labels.join(", "),
+        avi_shared::human_bytes(lifecycle::cleanup::path_size(&speech_dir)),
+    )];
+    let entries = [
+        lifecycle::confirm::PlanEntry {
+            size: Some(lifecycle::cleanup::path_size(&voice_dir)),
+            path: voice_dir,
+        },
+        lifecycle::confirm::PlanEntry {
+            size: Some(lifecycle::cleanup::path_size(&speech_dir)),
+            path: speech_dir,
+        },
+    ];
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    lifecycle::confirm::confirm(
+        &lifecycle::confirm::Confirmation {
+            kind: lifecycle::confirm::Kind::Destructive,
+            summary: &summary,
+            entries: &entries,
+            assume_yes: yes,
+            dry_run: false,
+            stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
+        },
+        &mut input,
+        &mut std::io::stderr(),
+    )
+    .map_err(lifecycle_error_to_cli)
+}
+
 async fn clone_via_daemon(
     client: &reqwest::Client,
     name: &str,
@@ -5902,7 +6038,7 @@ async fn clone_via_daemon(
     force: bool,
     denoise: bool,
     progress: &mut PhaseProgress,
-) -> Result<(String, String, bool), CliError> {
+) -> Result<(String, String, bool, Vec<String>), CliError> {
     progress.phase("cloning", CLONE_PHASES.cloning);
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(audio_bytes);
     let mut payload = serde_json::json!({
@@ -5964,10 +6100,26 @@ async fn clone_via_daemon(
             "El daemon no devolvió 'precomputed' en la clonación.",
         )
     })?;
+    let removed_speech = val["removed_speech"]
+        .as_array()
+        .and_then(|labels| {
+            labels
+                .iter()
+                .map(|label| label.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+        })
+        .ok_or_else(|| {
+            CliError::new(
+                ExitCode::Error,
+                "daemon_error",
+                "El daemon no devolvió 'removed_speech' en la clonación.",
+            )
+        })?;
     Ok((
         cloned_name.to_string(),
         cloned_speech.to_string(),
         precomputed,
+        removed_speech,
     ))
 }
 
@@ -7214,24 +7366,25 @@ mod tests {
         }
     }
 
-    /// Prepara un almacén de locuciones aislado y un WAV temporal válido, y
-    /// devuelve los tres con el directorio temporal que los respalda.
-    fn menu_fixture() -> (tempfile::TempDir, SpeechStore, PathBuf) {
+    /// Prepara almacenes de voces y de locuciones aislados y un WAV temporal
+    /// válido, y los devuelve con el directorio temporal que los respalda.
+    fn menu_fixture() -> (tempfile::TempDir, VoiceStore, SpeechStore, PathBuf) {
         let dir = tempfile::Builder::new()
             .prefix(avi_shared::paths::MENU_SANDBOX_PREFIX)
             .tempdir()
             .expect("directorio temporal de prueba");
+        let voices = VoiceStore::at(dir.path().join("voices"));
         let store = SpeechStore::at(dir.path().join("speech"));
         let wav = dir.path().join("toma.wav");
         write_test_wav(&wav);
-        (dir, store, wav)
+        (dir, voices, store, wav)
     }
 
     /// La opción 1 reproduce de nuevo el WAV y vuelve a ofrecer el menú; la 2
     /// guarda la locución y devuelve la ruta persistida.
     #[test]
     fn play_menu_option_one_replays_and_option_two_saves() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["1", "2"]);
         let mut playback = fake_playback(&plays);
@@ -7240,7 +7393,9 @@ mod tests {
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7269,7 +7424,7 @@ mod tests {
     /// La opción 4 descarta: no persiste nada y devuelve `Discarded`.
     #[test]
     fn play_menu_option_four_discards_without_saving() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["4"]);
         let mut playback = fake_playback(&plays);
@@ -7278,7 +7433,9 @@ mod tests {
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7301,7 +7458,7 @@ mod tests {
     /// que la ejecute el llamador.
     #[test]
     fn play_menu_option_three_returns_resynthesize_to_caller() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["3"]);
         let mut playback = fake_playback(&plays);
@@ -7310,7 +7467,9 @@ mod tests {
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7334,7 +7493,7 @@ mod tests {
     /// devuelve EOF y la locución no se persiste.
     #[test]
     fn play_menu_end_of_input_discards() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec![]);
         let mut playback = fake_playback(&plays);
@@ -7343,7 +7502,9 @@ mod tests {
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7365,7 +7526,7 @@ mod tests {
     /// se atiende con normalidad.
     #[test]
     fn play_menu_invalid_option_repeats_menu() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["9", "2"]);
         let mut playback = fake_playback(&plays);
@@ -7374,7 +7535,9 @@ mod tests {
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7391,20 +7554,30 @@ mod tests {
     /// `label_exists` (exit 6) si la locución ya existe y no hay `--force`.
     #[test]
     fn play_menu_option_two_detects_label_collision() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut playback = fake_playback(&plays);
         // La locución ya existe en el almacén cuando se ofrece el menú.
-        store
-            .save("voz", "etiqueta", "texto previo", &wav)
-            .expect("guardar la locución previa");
+        avi_store::persist_locution(
+            &voices,
+            &store,
+            None,
+            "voz",
+            "etiqueta",
+            "texto previo",
+            &wav,
+            false,
+        )
+        .expect("guardar la locución previa");
 
         let mut reader = scripted_reader(vec!["2"]);
         let e = synthesize_play_loop(
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7415,23 +7588,64 @@ mod tests {
         assert_eq!(e.reason, "label_exists");
     }
 
+    /// Si la voz ya no tiene la identidad con la que se sintetizó la toma, la
+    /// opción 2 falla con `voice_changed` (exit 6) y no guarda nada.
+    #[test]
+    fn play_menu_option_two_rejects_changed_voice() {
+        let (_dir, voices, store, wav) = menu_fixture();
+        let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut playback = fake_playback(&plays);
+        let stale = avi_store::VoiceReference {
+            path: voices.voice_dir("voz").join("reference.qvoice"),
+            fingerprint: "contenido-anterior".to_string(),
+        };
+
+        let mut reader = scripted_reader(vec!["2"]);
+        let e = synthesize_play_loop(
+            "voz",
+            "etiqueta",
+            true,
+            &voices,
+            &store,
+            Some(&stale),
+            "texto final",
+            &wav,
+            &mut reader,
+            &mut playback,
+        )
+        .expect_err("una voz cambiada no debe guardarse");
+        assert_eq!(e.code, ExitCode::StateConflict);
+        assert_eq!(e.reason, "voice_changed");
+        assert!(store.find("voz", "etiqueta").unwrap().is_none());
+    }
+
     /// Con `--force` la colisión no impide guardar: la locución previa se
     /// sustituye por la nueva.
     #[test]
     fn play_menu_option_two_saves_over_existing_label_with_force() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut playback = fake_playback(&plays);
-        store
-            .save("voz", "etiqueta", "texto previo", &wav)
-            .expect("guardar la locución previa");
+        avi_store::persist_locution(
+            &voices,
+            &store,
+            None,
+            "voz",
+            "etiqueta",
+            "texto previo",
+            &wav,
+            false,
+        )
+        .expect("guardar la locución previa");
 
         let mut reader = scripted_reader(vec!["2"]);
         let decision = synthesize_play_loop(
             "voz",
             "etiqueta",
             true,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7476,7 +7690,7 @@ mod tests {
     /// distintos entre sí y distintos del seed de producción.
     #[tokio::test]
     async fn play_menu_loop_hands_distinct_seeds_to_each_retake() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["3", "3", "3", "3", "4"]);
         let mut playback = fake_playback(&plays);
@@ -7487,7 +7701,9 @@ mod tests {
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7524,7 +7740,7 @@ mod tests {
     /// ofrecer el menú; la locución final se persiste con la etiqueta correcta.
     #[tokio::test]
     async fn play_menu_loop_resynthesizes_and_offers_menu_again() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let resyntheses = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["3", "2"]);
@@ -7535,7 +7751,9 @@ mod tests {
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,
@@ -7561,7 +7779,7 @@ mod tests {
     /// tras re-sintetizar.
     #[tokio::test]
     async fn play_menu_loop_ends_on_discard_after_resynthesis() {
-        let (_dir, store, wav) = menu_fixture();
+        let (_dir, voices, store, wav) = menu_fixture();
         let plays = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut reader = scripted_reader(vec!["3", "4"]);
         let mut playback = fake_playback(&plays);
@@ -7572,7 +7790,9 @@ mod tests {
             "voz",
             "etiqueta",
             false,
+            &voices,
             &store,
+            None,
             "texto final",
             &wav,
             &mut reader,

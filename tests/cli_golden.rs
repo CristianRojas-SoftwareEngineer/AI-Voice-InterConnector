@@ -3883,9 +3883,21 @@ mod tts {
         std::fs::create_dir_all(inst.dir.join("voices").join("default"))
             .expect("crear la voz de fábrica del sandbox");
         let store = avi_store::SpeechStore::at(inst.dir.join("speech"));
-        store
-            .save("default", &label, "fabricado", &src)
-            .expect("el sidecar fabricado debe guardarse");
+        let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
+        let reference = voices
+            .resolve("default")
+            .expect("resolver la voz de fábrica");
+        avi_store::persist_locution(
+            &voices,
+            &store,
+            reference.as_ref(),
+            "default",
+            &label,
+            "fabricado",
+            &src,
+            false,
+        )
+        .expect("el sidecar fabricado debe guardarse");
         let (code, actual) = run_json_env(
             &[
                 "--json",
@@ -3926,9 +3938,19 @@ mod tts {
         }
         let src = inst.dir.join(format!("{}_min.wav", label));
         std::fs::write(&src, cursor.into_inner()).unwrap();
-        avi_store::SpeechStore::at(inst.dir.join("speech"))
-            .save(voice, label, "fabricado", &src)
-            .expect("el sidecar fabricado debe guardarse");
+        let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
+        let reference = voices.resolve(voice).expect("resolver la voz");
+        avi_store::persist_locution(
+            &voices,
+            &avi_store::SpeechStore::at(inst.dir.join("speech")),
+            reference.as_ref(),
+            voice,
+            label,
+            "fabricado",
+            &src,
+            false,
+        )
+        .expect("el sidecar fabricado debe guardarse");
     }
 
     /// Sin sidecar la locución sigue en el registro (la decide el WAV): `speech list`
@@ -4501,14 +4523,19 @@ mod tts {
             .iter()
             .find(|(key, _)| key == "AVI_DATA_DIR")
             .expect("AVI_DATA_DIR");
-        let store = avi_store::VoiceStore::at(std::path::Path::new(&data_dir.1).join("voices"));
+        let data_dir = std::path::Path::new(&data_dir.1);
+        let store = avi_store::VoiceStore::at(data_dir.join("voices"));
         store.ensure_initialized().expect("inicializar store");
         let name = "mic_duplicate";
         let reference = sandbox.path().join("reference.qvoice");
         std::fs::write(&reference, b"voice").expect("crear referencia");
-        store
-            .save_reference(name, &reference)
-            .expect("guardar voz de prueba");
+        avi_store::replace_voice(
+            &store,
+            &avi_store::SpeechStore::at(data_dir.join("speech")),
+            name,
+            &reference,
+        )
+        .expect("guardar voz de prueba");
         let output = bin_command()
             .args([
                 "--json",
@@ -4542,9 +4569,13 @@ mod tts {
         let name = "mic_duplicate";
         let reference = sandbox.path().join("reference.qvoice");
         std::fs::write(&reference, b"voice").expect("crear referencia");
-        store
-            .save_reference(name, &reference)
-            .expect("guardar voz de prueba");
+        avi_store::replace_voice(
+            &store,
+            &avi_store::SpeechStore::at(data_dir.join("speech")),
+            name,
+            &reference,
+        )
+        .expect("guardar voz de prueba");
         let fake = FakeDaemon::start(500, serde_json::json!({ "reason": "daemon_error" }));
         fake.publish_in(&data_dir);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -4718,7 +4749,13 @@ mod tts {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["name", "precomputed", "schema_version", "speech"],
+            [
+                "name",
+                "precomputed",
+                "removed_speech",
+                "schema_version",
+                "speech"
+            ],
             "{actual}"
         );
     }
@@ -4872,6 +4909,115 @@ mod tts {
         );
         assert_eq!(code, 6, "voz existente → ExitCode::StateConflict");
         assert_eq!(actual["reason"], Value::String("voice_exists".to_string()));
+    }
+
+    /// Fabrica en `data_dir` la voz `name` con un `.qvoice` mínimo y una
+    /// locución `label` grabada con ese contenido, y devuelve la referencia.
+    fn seed_voice_with_speech(data_dir: &Path, name: &str, label: &str) -> PathBuf {
+        let voices = avi_store::VoiceStore::at(data_dir.join("voices"));
+        let speech = avi_store::SpeechStore::at(data_dir.join("speech"));
+        voices.ensure_initialized().expect("inicializar store");
+        let qvoice = data_dir.join(format!("{name}_seed.qvoice"));
+        std::fs::write(&qvoice, b"QVCE-previa").expect("crear referencia");
+        let replaced =
+            avi_store::replace_voice(&voices, &speech, name, &qvoice).expect("registrar la voz");
+        let wav = data_dir.join(format!("{name}_seed.wav"));
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 24_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&wav, spec).unwrap();
+        w.write_sample(0i16).unwrap();
+        w.finalize().unwrap();
+        let reference = voices.resolve(name).expect("resolver la voz");
+        avi_store::persist_locution(
+            &voices,
+            &speech,
+            reference.as_ref(),
+            name,
+            label,
+            "previa",
+            &wav,
+            false,
+        )
+        .expect("guardar la locución previa");
+        replaced.reference
+    }
+
+    /// Re-clonar con `--force` una voz con locuciones, sin terminal y sin
+    /// `--yes`, sale con exit 2 `confirmation_required` antes de clonar: la voz
+    /// y sus locuciones quedan intactas.
+    #[test]
+    fn voice_clone_force_with_speech_requires_confirmation() {
+        let inst = IsolatedInstance::new("clone_force_confirm");
+        let name = unique_label("reclone");
+        let reference = seed_voice_with_speech(&inst.dir, &name, "saludo");
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "voice",
+                "clone",
+                "--no-daemon",
+                "--force",
+                "--name",
+                &name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "confirmation_required", "{actual}");
+        assert_eq!(std::fs::read(&reference).unwrap(), b"QVCE-previa");
+        assert_eq!(
+            avi_store::SpeechStore::at(inst.dir.join("speech"))
+                .labels_of(&name)
+                .unwrap(),
+            vec!["saludo"]
+        );
+    }
+
+    /// Por la ruta del daemon la confirmación también se resuelve en la CLI,
+    /// antes de enviar el clonado: el daemon no recibe ninguna petición.
+    #[test]
+    fn voice_clone_force_with_speech_requires_confirmation_via_daemon() {
+        let (sandbox, envs) = contract_sandbox("clone_force_confirm_daemon");
+        let data_dir = sandbox.path().join("data");
+        let name = "reclone_daemon";
+        let reference = seed_voice_with_speech(&data_dir, name, "saludo");
+        let fake = FakeDaemon::start(500, serde_json::json!({ "reason": "daemon_error" }));
+        fake.publish_in(&data_dir);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "voice",
+                "clone",
+                "--daemon",
+                "--force",
+                "--name",
+                name,
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &envs,
+        );
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "confirmation_required", "{actual}");
+        assert!(
+            !fake.requested_paths().iter().any(|p| p == "/voices/clone"),
+            "el daemon no debe recibir el clonado: {:?}",
+            fake.requested_paths()
+        );
+        assert_eq!(std::fs::read(&reference).unwrap(), b"QVCE-previa");
+        assert_eq!(
+            avi_store::SpeechStore::at(data_dir.join("speech"))
+                .labels_of(name)
+                .unwrap(),
+            vec!["saludo"]
+        );
     }
 
     /// Compila `source` con `rustc` como ejecutable nativo `name` dentro de `dir`.
@@ -6746,6 +6892,100 @@ mod tts {
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "clone_delegates_to_daemon");
         hit_end("tts::clone_delegates_to_daemon");
+    }
+
+    /// El residente se reutiliza solo con la misma identidad de contenido:
+    /// sintetizar dos veces la misma voz conserva su PID, y re-clonarla con el
+    /// mismo nombre (con `--force` por las dos rutas, o con `remove` + `clone`)
+    /// arranca uno nuevo. Re-clonar con `--yes` borra las locuciones anteriores y
+    /// las informa en `removed_speech`.
+    #[test]
+    #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario del motor"]
+    fn resident_reloads_recloned_voice() {
+        require_tts_model();
+        require_tts_base_model();
+        require_tts_binary();
+        let _tts = lock_tts();
+        hit_start_heavy("tts::resident_reloads_recloned_voice");
+        let inst = IsolatedInstance::new("resident_reclone");
+        start_instance(&inst, &[]);
+        let a = inst.args();
+        let name = unique_label("reclone");
+        let first = "assets/audios/Speech Sampler.wav";
+        let second = "crates/avi-stt/tests/assets/parakeet_sample_16k.wav";
+        let clone = |route: &str, reference: &str, force: bool| {
+            let mut args = vec![
+                "--json",
+                "voice",
+                "clone",
+                route,
+                "--name",
+                &name,
+                "--speech-reference",
+                reference,
+            ];
+            if force {
+                args.extend(["--force", "--yes"]);
+            }
+            let (code, actual) = run_json_env(&args, &a);
+            assert_eq!(code, 0, "voice clone {route}: {actual}");
+            actual
+        };
+        let synthesize = |label: &str| {
+            let (code, actual) = run_json_env(
+                &[
+                    "--json",
+                    "speech",
+                    "synthesize",
+                    "--daemon",
+                    "--voice",
+                    &name,
+                    "--text",
+                    "Hola",
+                    "--label",
+                    label,
+                ],
+                &a,
+            );
+            assert_eq!(code, 0, "speech synthesize {label}: {actual}");
+            inst.read_resident_pid()
+        };
+        let speech = avi_store::SpeechStore::at(inst.dir.join("speech"));
+
+        clone("--daemon", first, false);
+        let pid_a = synthesize("a");
+        assert_eq!(
+            synthesize("b"),
+            pid_a,
+            "la misma voz reutiliza el residente"
+        );
+
+        let actual = clone("--daemon", second, true);
+        assert_eq!(actual["removed_speech"], serde_json::json!(["a", "b"]));
+        assert!(speech.labels_of(&name).unwrap().is_empty());
+        let pid_b = synthesize("c");
+        assert_ne!(pid_b, pid_a, "re-clonar por daemon recarga el residente");
+
+        let actual = clone("--no-daemon", first, true);
+        assert_eq!(actual["removed_speech"], serde_json::json!(["c"]));
+        assert!(speech.labels_of(&name).unwrap().is_empty());
+        let pid_c = synthesize("d");
+        assert_ne!(pid_c, pid_b, "re-clonar en local recarga el residente");
+
+        let (code, actual) =
+            run_json_env(&["--json", "voice", "remove", "--name", &name, "--yes"], &a);
+        assert_eq!(code, 0, "voice remove: {actual}");
+        clone("--no-daemon", second, false);
+        let pid_d = synthesize("e");
+        assert_ne!(pid_d, pid_c, "remove + clone recarga el residente");
+
+        let _ = avi_store::remove_voice(
+            &avi_store::VoiceStore::at(inst.dir.join("voices")),
+            &speech,
+            &name,
+        );
+        stop_instance(&inst, "resident_reloads_recloned_voice");
+        hit_end("tts::resident_reloads_recloned_voice");
     }
 
     /// Referencia truncada por daemon → 2 con `invalid_audio`, igual que en local.
