@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.43.0 — 2026-11-04](#0430--2026-11-04)
 - [0.42.0 — 2026-11-02](#0420--2026-11-02)
 - [0.41.4 — 2026-11-02](#0414--2026-11-02)
 - [0.41.3 — 2026-11-02](#0413--2026-11-02)
@@ -135,7 +135,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.43.0] — 2026-11-04
 
 Al re-clonar una voz con el mismo nombre, el daemon seguía sintetizando con el contenido anterior: reutilizaba su motor residente comparando la ruta del `reference.qvoice`, que no cambia al re-clonar, y las locuciones pre-sintetizadas de la voz nueva se grababan con el timbre viejo y quedaban guardadas sin aviso. El motor garantiza ahora que todo lo derivado de una voz corresponde a su contenido actual: cada voz resuelta lleva la identidad de su contenido (la huella sha256 de su `reference.qvoice`), re-clonar reemplaza la voz y sus locuciones en una sola operación, y toda locución se guarda comprobando que la voz no cambió mientras se sintetizaba.
 
@@ -3962,3 +3962,4 @@ estado con el que nace el producto.
 [0.41.3]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.2...v0.41.3
 [0.41.4]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.3...v0.41.4
 [0.42.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.4...v0.42.0
+[0.43.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.42.0...v0.43.0
