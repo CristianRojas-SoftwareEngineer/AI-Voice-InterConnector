@@ -28,6 +28,7 @@
 
 use crate::faults::{self, FaultPoint};
 use crate::progress::PhaseProgress;
+use crate::removal::{retire, PathRemover, Retirement};
 use crate::{setup, LifecycleError};
 use avi_process::{
     spawn_with_allowlist_env, OwnerToken, RestrictedSpawnRequest, Scheduling, StdinSpec,
@@ -286,39 +287,9 @@ pub fn partial_setup_message(cause: &ModelsCause) -> String {
     )
 }
 
-/// Borrado de una ruta del ciclo cuando el ejecutable en uso puede estar
-/// dentro.
-///
-/// El **mecanismo** es de plataforma y lo implementa el binario —en Unix es
-/// `remove_dir_all`, y en Windows el limpiador propio, desacoplado cuando el anfitrión lo permite—, porque el
-/// motor no lo puede implementar sin arrastrar `avi-daemon`. Es la misma
-/// división que `uninstall::ProgramDirRemover`, pero sobre rutas arbitrarias
-/// del ciclo (staging, `.old-*`) en vez de solo el directorio de programa.
-pub trait PathRemover {
-    /// Borra la ruta ya. Una ruta ausente es éxito: el plan dice lo que tiene
-    /// que dejar de existir, y si ya no existe el objetivo está cumplido.
-    fn remove_now(&self, path: &Path) -> anyhow::Result<()>;
-    /// Programa el borrado para cuando termine el proceso `wait`, identificado por
-    /// PID e inicio. `Ok` significa que el limpiador está en marcha y dice cómo
-    /// quedó (separado del proceso anfitrión o dependiente de él). Es el caso
-    /// diferido de Windows.
-    fn schedule(&self, path: &Path, wait: &OwnerToken) -> anyhow::Result<Scheduling>;
-}
-
-/// Cómo quedó el staging tras la limpieza post-traspaso.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StagingCleanup {
-    /// Borrado ya, de forma síncrona.
-    Removed,
-    /// Programado para cuando termine el proceso en curso (Windows).
-    Scheduled,
-    /// No se pudo borrar ni programar: lo barre la recuperación de la
-    /// siguiente operación. No es un fallo del `update`.
-    Kept,
-}
-
-/// Limpieza post-traspaso: borra siempre el staging; lo que está en uso queda
-/// a diferido (Windows) o a la recuperación de la siguiente operación.
+/// Limpieza post-traspaso: retira el staging con [`retire`]; lo que está en uso
+/// por este proceso queda a diferido (Windows) o a la recuperación de la
+/// siguiente operación.
 ///
 /// Nunca falla el `update`: un staging que sobrevive es litter con prefijo
 /// propio de la tabla de rutas, que es exactamente lo que el barrido recoge.
@@ -328,28 +299,25 @@ pub fn cleanup_staging(
     staging: &Path,
     remover: &dyn PathRemover,
     progress: &mut PhaseProgress,
-) -> StagingCleanup {
-    if remover.remove_now(staging).is_ok() {
-        return StagingCleanup::Removed;
-    }
-    let scheduled =
-        avi_process::current_owner_token().and_then(|own| remover.schedule(staging, &own));
-    match scheduled {
-        Ok(scheduling) => {
+) -> Retirement {
+    let retirement = avi_process::current_owner_token()
+        .map_or(Retirement::Kept, |own| retire(staging, remover, &own));
+    match retirement {
+        Retirement::Removed => {}
+        Retirement::Scheduled(scheduling) => {
             progress.close_line();
             eprintln!("  {}", scheduled_staging_message(staging, scheduling));
-            StagingCleanup::Scheduled
         }
-        Err(_) => {
+        Retirement::Kept => {
             progress.close_line();
             eprintln!(
                 "  no se pudo borrar {}: lo recogerá la recuperación de la \
                  siguiente operación",
                 staging.display()
             );
-            StagingCleanup::Kept
         }
     }
+    retirement
 }
 
 /// Mensaje del borrado programado del staging. Si el limpiador quedó dependiente
@@ -555,7 +523,7 @@ mod tests {
                 },
                 &mut PhaseProgress::new()
             ),
-            StagingCleanup::Removed
+            Retirement::Removed
         );
         assert_eq!(
             cleanup_staging(
@@ -566,7 +534,7 @@ mod tests {
                 },
                 &mut PhaseProgress::new()
             ),
-            StagingCleanup::Scheduled
+            Retirement::Scheduled(Scheduling::Detached)
         );
         assert_eq!(
             cleanup_staging(
@@ -577,7 +545,7 @@ mod tests {
                 },
                 &mut PhaseProgress::new()
             ),
-            StagingCleanup::Kept
+            Retirement::Kept
         );
     }
 

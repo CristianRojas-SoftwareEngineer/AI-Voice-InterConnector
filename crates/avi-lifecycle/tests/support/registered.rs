@@ -22,10 +22,7 @@ use std::path::Path;
 /// desinstalación, y no es lo que se ejercita aquí.
 pub struct Now;
 
-impl uninstall::ProgramDirRemover for Now {
-    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
-        Ok(false)
-    }
+impl avi_lifecycle::removal::PathRemover for Now {
     fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()> {
         std::fs::remove_dir_all(program_dir)?;
         Ok(())
@@ -36,6 +33,12 @@ impl uninstall::ProgramDirRemover for Now {
         _wait: &avi_process::OwnerToken,
     ) -> anyhow::Result<avi_process::Scheduling> {
         Ok(avi_process::Scheduling::Detached)
+    }
+}
+
+impl uninstall::ProgramDirRemover for Now {
+    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+        Ok(false)
     }
 }
 

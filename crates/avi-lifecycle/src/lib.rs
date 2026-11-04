@@ -40,6 +40,7 @@ pub mod progress;
 pub mod quarantine;
 pub mod receipt;
 pub mod recovery;
+pub mod removal;
 pub mod setup;
 pub mod target;
 pub mod transaction;

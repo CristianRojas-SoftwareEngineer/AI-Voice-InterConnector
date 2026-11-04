@@ -3982,7 +3982,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             if !outcome.parked_leftovers.is_empty() {
                 let scheduled = lifecycle::update::schedule_leftovers(
                     &outcome.parked_leftovers,
-                    &LifecyclePaths,
+                    &PlatformRemoval,
                     &wait_token,
                 );
                 if scheduled.scheduled.len() == outcome.parked_leftovers.len() {
@@ -4085,7 +4085,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     dry_run,
                     assume_yes: yes,
                 },
-                &ProgramRemoval,
+                &PlatformRemoval,
                 &ProductProcesses,
             )
             .await
@@ -4394,7 +4394,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             })
             .await
             .map_err(lifecycle_error_to_cli)?;
-            lifecycle::update::cleanup_staging(&staged.staging, &LifecyclePaths, &mut progress);
+            lifecycle::update::cleanup_staging(&staged.staging, &PlatformRemoval, &mut progress);
             let elapsed = progress.close();
 
             // ── Resultado `anterior → nueva` ─────────────────────────────────
@@ -4614,17 +4614,46 @@ impl lifecycle::daemon_stop::ProcessControl for ProductProcesses {
     }
 }
 
-/// Borrado del directorio de programa con el mecanismo de plataforma (paso 8 de
-/// la desinstalación).
+/// Mecanismo de borrado de plataforma del ciclo de vida, el único que hay.
 ///
-/// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro —que es
-/// el caso normal, porque el comando se invoca desde la propia instalación—, el
-/// borrado directo es imposible y se programa con el limpiador propio (desacoplado si el anfitrión lo permite);
-/// el motor decide cuál de los dos casos es y cambia el
-/// desenlace a `removal_scheduled`.
-struct ProgramRemoval;
+/// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso retiene la ruta,
+/// el borrado directo es imposible y se programa con el limpiador propio
+/// (desacoplado si el anfitrión lo permite). El motor decide cuándo se borra ya y
+/// cuándo se programa, tanto para la basura del ciclo (staging y aparcado) como para
+/// el directorio de programa en uso, que cambia el desenlace a `removal_scheduled`.
+struct PlatformRemoval;
 
-impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
+impl lifecycle::removal::PathRemover for PlatformRemoval {
+    fn remove_now(&self, path: &std::path::Path) -> anyhow::Result<()> {
+        if !path.exists() {
+            return Ok(());
+        }
+        std::fs::remove_dir_all(path)?;
+        Ok(())
+    }
+
+    fn schedule(
+        &self,
+        path: &std::path::Path,
+        wait: &avi_process::OwnerToken,
+    ) -> anyhow::Result<avi_process::Scheduling> {
+        // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
+        // impide el borrado directo. En Unix no hay tal impedimento y el motor ya habría
+        // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
+        // tenga una implementación silenciosa.
+        #[cfg(windows)]
+        {
+            avi_process::schedule_removal(path, wait)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (path, wait);
+            anyhow::bail!("el borrado diferido de rutas del ciclo es de Windows")
+        }
+    }
+}
+
+impl lifecycle::uninstall::ProgramDirRemover for PlatformRemoval {
     fn exe_lives_inside(&self, program_dir: &std::path::Path) -> anyhow::Result<bool> {
         // La impedancia que justifica el borrado diferido es **de Windows**: allí el
         // ejecutable en uso impide borrar su directorio. En Unix no la hay —el proceso
@@ -4651,73 +4680,6 @@ impl lifecycle::uninstall::ProgramDirRemover for ProgramRemoval {
                 )
             })?;
             Ok(exe.starts_with(dir))
-        }
-    }
-
-    fn remove_now(&self, program_dir: &std::path::Path) -> anyhow::Result<()> {
-        if !program_dir.exists() {
-            return Ok(());
-        }
-        std::fs::remove_dir_all(program_dir)?;
-        Ok(())
-    }
-
-    fn schedule(
-        &self,
-        program_dir: &std::path::Path,
-        wait: &avi_process::OwnerToken,
-    ) -> anyhow::Result<avi_process::Scheduling> {
-        // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
-        // impide el borrado directo. En Unix no hay tal impedance y el motor ya habría
-        // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
-        // tenga una implementación silenciosa.
-        #[cfg(windows)]
-        {
-            avi_process::schedule_removal(program_dir, wait)
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (program_dir, wait);
-            anyhow::bail!("el borrado diferido del directorio de programa es de Windows")
-        }
-    }
-}
-/// Borrado de rutas del ciclo con el mecanismo de plataforma (paso 10 de la
-/// actualización).
-///
-/// En Unix es `remove_dir_all`. En Windows, si el ejecutable en uso está dentro
-/// —el staging tras el traspaso—, el borrado directo es imposible y se programa
-/// con el borrado diferido de `avi-process`; el motor decide cuál de los dos
-/// casos es. Es la contrapartida de `ProgramRemoval` para rutas arbitrarias del
-/// ciclo (staging, `.old-*`).
-struct LifecyclePaths;
-
-impl lifecycle::update::PathRemover for LifecyclePaths {
-    fn remove_now(&self, path: &std::path::Path) -> anyhow::Result<()> {
-        if !path.exists() {
-            return Ok(());
-        }
-        std::fs::remove_dir_all(path)?;
-        Ok(())
-    }
-
-    fn schedule(
-        &self,
-        path: &std::path::Path,
-        wait: &avi_process::OwnerToken,
-    ) -> anyhow::Result<avi_process::Scheduling> {
-        // El borrado diferido es un mecanismo **de Windows**: allí el ejecutable en uso
-        // impide el borrado directo. En Unix no hay tal impedimento y el motor ya habría
-        // llamado a `remove_now`; llegar aquí sería un error del motor, no un caso que
-        // tenga una implementación silenciosa.
-        #[cfg(windows)]
-        {
-            avi_process::schedule_removal(path, wait)
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (path, wait);
-            anyhow::bail!("el borrado diferido de rutas del ciclo es de Windows")
         }
     }
 }

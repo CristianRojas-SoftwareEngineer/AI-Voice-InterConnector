@@ -48,8 +48,9 @@ use crate::path_unix;
 use crate::progress::PhaseProgress;
 use crate::receipt::{self, InstallReceipt, PathIntegration};
 use crate::recovery::SweepPreview;
+use crate::removal::PathRemover;
 use crate::LifecycleError;
-use avi_process::{OwnerToken, Scheduling};
+use avi_process::Scheduling;
 use std::path::{Path, PathBuf};
 
 /// Comando de Homebrew que sustituye a la desinstalación de la copia del Cask
@@ -68,29 +69,20 @@ pub struct Options {
     pub assume_yes: bool,
 }
 
-/// Borrado del directorio de programa cuando el ejecutable en uso está dentro.
+/// Borrado del directorio de programa cuando el ejecutable en uso puede estar dentro.
 ///
-/// El **mecanismo** es de plataforma y vive en el binario —en Unix es
-/// `remove_dir_all`, y en Windows el limpiador propio, desacoplado cuando el anfitrión lo permite—, porque el motor no
-/// lo puede implementar sin arrastrar `avi-daemon`. Lo que sí es del motor es la
-/// **decisión**: cuándo se borra ya y cuándo se programa, y que el resultado difiera
-/// (`uninstalled` contra `removal_scheduled`). Por eso entra por un rasgo, igual
-/// que [`crate::daemon_stop::ProcessControl`].
-pub trait ProgramDirRemover {
+/// El mecanismo de borrado es el único del ciclo, [`PathRemover`]; este rasgo solo
+/// añade la pregunta sobre el proceso que la política del programa en uso necesita.
+/// Lo que es del motor es la **decisión**: cuándo se borra ya y cuándo se programa, y
+/// que el resultado difiera (`uninstalled` contra `removal_scheduled`). En el caso
+/// diferido el destino programado es el directorio de programa o, si vive dentro de
+/// contenedores que quedarían vacíos, el más externo de ellos.
+pub trait ProgramDirRemover: PathRemover {
     /// `true` si el ejecutable en uso está dentro de `program_dir`, que es el caso en
     /// que el borrado directo es imposible en Windows. `Err` si no puede determinarse
     /// (por ejemplo, no se resuelve la ruta del ejecutable o del directorio): no se
     /// supone ninguna de las dos respuestas.
     fn exe_lives_inside(&self, program_dir: &Path) -> anyhow::Result<bool>;
-    /// Borra el directorio ya. En Unix es lo que hace siempre.
-    fn remove_now(&self, program_dir: &Path) -> anyhow::Result<()>;
-    /// Programa el borrado de `target` para cuando termine el proceso `wait`,
-    /// identificado por PID e inicio. `target` es el directorio de programa o, si vive
-    /// dentro de contenedores que quedarían vacíos, el más externo de ellos. `Ok`
-    /// significa que el limpiador está en marcha y dice cómo quedó (separado del
-    /// proceso anfitrión o dependiente de él); si no puede garantizarse, `Err`. Es el
-    /// caso diferido del paso 8.
-    fn schedule(&self, target: &Path, wait: &OwnerToken) -> anyhow::Result<Scheduling>;
 }
 
 /// Plan del paso 2.

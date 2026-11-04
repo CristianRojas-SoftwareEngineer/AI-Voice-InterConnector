@@ -237,7 +237,7 @@ impl ProcessControl for Stubborn {
 /// ejecutable en uso de Windows sin proceso real.
 struct Busy;
 
-impl update::PathRemover for Busy {
+impl avi_lifecycle::removal::PathRemover for Busy {
     fn remove_now(&self, _path: &std::path::Path) -> anyhow::Result<()> {
         anyhow::bail!("el ejecutable está en uso")
     }
@@ -406,7 +406,7 @@ fn daemon_stops_before_replacement() {
             &Busy,
             &mut avi_lifecycle::progress::PhaseProgress::new()
         ),
-        update::StagingCleanup::Scheduled,
+        avi_lifecycle::removal::Retirement::Scheduled(avi_process::Scheduling::Detached),
         "lo que está en uso se programa, no se borra en el acto"
     );
     assert!(

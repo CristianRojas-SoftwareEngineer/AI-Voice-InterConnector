@@ -47,10 +47,7 @@ use support::{write, Sandbox};
 /// en Windows.
 struct Deferred;
 
-impl uninstall::ProgramDirRemover for Deferred {
-    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
-        Ok(true)
-    }
+impl avi_lifecycle::removal::PathRemover for Deferred {
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
     }
@@ -69,14 +66,17 @@ impl uninstall::ProgramDirRemover for Deferred {
     }
 }
 
+impl uninstall::ProgramDirRemover for Deferred {
+    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+}
+
 /// Removedor sin auxiliar disponible: el ejecutable está dentro y `schedule` falla. Es el
 /// paso 8 cuando el borrado diferido no puede garantizarse, en cualquier plataforma.
 struct Unschedulable;
 
-impl uninstall::ProgramDirRemover for Unschedulable {
-    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
-        Ok(true)
-    }
+impl avi_lifecycle::removal::PathRemover for Unschedulable {
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
     }
@@ -86,6 +86,12 @@ impl uninstall::ProgramDirRemover for Unschedulable {
         _wait: &avi_process::OwnerToken,
     ) -> anyhow::Result<avi_process::Scheduling> {
         anyhow::bail!("el auxiliar terminó sin ejecutar su script")
+    }
+}
+
+impl uninstall::ProgramDirRemover for Unschedulable {
+    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+        Ok(true)
     }
 }
 
@@ -536,10 +542,7 @@ fn uninstall_leaves_no_residue_in_exclusive_roots() {
 /// Removedor diferido que anota el destino que se le pide programar, sin borrar nada.
 struct DeferredRecording(std::sync::Mutex<Option<PathBuf>>);
 
-impl uninstall::ProgramDirRemover for DeferredRecording {
-    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
-        Ok(true)
-    }
+impl avi_lifecycle::removal::PathRemover for DeferredRecording {
     fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
         anyhow::bail!("remove_now no debe llamarse con el ejecutable dentro")
     }
@@ -550,6 +553,12 @@ impl uninstall::ProgramDirRemover for DeferredRecording {
     ) -> anyhow::Result<avi_process::Scheduling> {
         *self.0.lock().expect("se anota el destino") = Some(target.to_path_buf());
         Ok(avi_process::Scheduling::Detached)
+    }
+}
+
+impl uninstall::ProgramDirRemover for DeferredRecording {
+    fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+        Ok(true)
     }
 }
 
@@ -980,10 +989,7 @@ fn uninstall_reports_program_dir_kept_when_removal_cannot_be_scheduled() {
 #[test]
 fn uninstall_reports_program_dir_kept_when_exe_location_is_undeterminable() {
     struct Undeterminable;
-    impl uninstall::ProgramDirRemover for Undeterminable {
-        fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
-            anyhow::bail!("no se resolvió la ruta del ejecutable")
-        }
+    impl avi_lifecycle::removal::PathRemover for Undeterminable {
         fn remove_now(&self, _program_dir: &Path) -> anyhow::Result<()> {
             anyhow::bail!("remove_now no debe llamarse sin saber dónde está el ejecutable")
         }
@@ -993,6 +999,12 @@ fn uninstall_reports_program_dir_kept_when_exe_location_is_undeterminable() {
             _wait: &avi_process::OwnerToken,
         ) -> anyhow::Result<avi_process::Scheduling> {
             anyhow::bail!("schedule no debe llamarse sin saber dónde está el ejecutable")
+        }
+    }
+
+    impl uninstall::ProgramDirRemover for Undeterminable {
+        fn exe_lives_inside(&self, _program_dir: &Path) -> anyhow::Result<bool> {
+            anyhow::bail!("no se resolvió la ruta del ejecutable")
         }
     }
     let sandbox = Sandbox::new("exe-undeterminable");
