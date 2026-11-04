@@ -776,8 +776,9 @@ fn minimal_wav() -> Vec<u8> {
 /// Warm-on-clone: `POST /voices/clone` por daemon sirve un stream
 /// NDJSON (`started` → latidos → `result`), y el evento final conserva
 /// `precomputed: true` («precarga en caliente iniciada»; la completitud se
-/// refleja en `/health`). El test solo pasa si la secuencia completa llega
-/// hasta el final.
+/// refleja en `/health`). Con `force` sobre una voz que ya tiene locuciones,
+/// las borra con su contenido anterior y las informa en `removed_speech`. El
+/// test solo pasa si la secuencia completa llega hasta el final.
 /// Requiere el modelo Base de clonado: sin él el handler retorna
 /// `model_missing` en vez de clonar.
 #[tokio::test]
@@ -789,6 +790,33 @@ async fn voices_clone_daemon_precomputed_true() {
         .join("../avi-stt/tests/assets/parakeet_sample_16k.wav");
     let audio_bytes = std::fs::read(&wav).expect("el WAV de muestra debe leerse");
     let name = format!("clone_warm_{}", std::process::id());
+    // Voz previa con una locución grabada con su contenido.
+    let seed_state = clone_state();
+    let fixtures = tempfile::tempdir().expect("directorio temporal");
+    let previous = fixtures.path().join("previa.qvoice");
+    std::fs::write(&previous, b"qvoice-previa").expect("escribir fixture qvoice");
+    avi_store::replace_voice(
+        &seed_state.voice_store,
+        &seed_state.speech_store,
+        &name,
+        &previous,
+    )
+    .expect("registrar la voz previa");
+    let reference = seed_state
+        .voice_store
+        .resolve(&name)
+        .expect("resolver la voz previa");
+    avi_store::persist_locution(
+        &seed_state.voice_store,
+        &seed_state.speech_store,
+        reference.as_ref(),
+        &name,
+        "saludo",
+        "Hola",
+        &wav,
+        false,
+    )
+    .expect("guardar la locución previa");
     let (status, bytes) = send_to(
         clone_state(),
         post_json(
@@ -851,6 +879,11 @@ async fn voices_clone_daemon_precomputed_true() {
     );
     assert_eq!(final_event["name"], Value::String(name.clone()));
     assert_eq!(final_event["precomputed"], Value::Bool(true));
+    assert_eq!(final_event["removed_speech"], serde_json::json!(["saludo"]));
+    assert!(
+        !seed_state.speech_store.voice_dir(&name).exists(),
+        "las locuciones del contenido anterior se borran"
+    );
     // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
     if events.len() > 2 {
         for e in &events[1..events.len() - 1] {
@@ -951,9 +984,13 @@ async fn warm_voice_rejected_before_bind_and_acceptance() {
     let qvoice = ok_dir.path().join("warm_ok.qvoice");
     std::fs::write(&qvoice, b"qvoice-fixture").expect("escribir fixture qvoice");
     let name = format!("warm_ok_{}", std::process::id());
-    store
-        .save_reference(&name, &qvoice)
-        .expect("registrar voz de prueba");
+    avi_store::replace_voice(
+        &store,
+        &SpeechStore::at(ok_dir.path().join("speech")),
+        &name,
+        &qvoice,
+    )
+    .expect("registrar voz de prueba");
     assert!(
         store.exists(&name).expect("resolver la voz de prueba"),
         "la voz registrada debe pasar la validación de --warm-voice"

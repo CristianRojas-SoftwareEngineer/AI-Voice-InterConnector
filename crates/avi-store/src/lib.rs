@@ -29,7 +29,7 @@ pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
 /// la huella de timbre (x-vector) que se sintetiza con el modelo Base y
 /// `--graft`. Se materializa en `ensure_initialized` si falta. Se regenera
 /// copiando aquí el `reference.qvoice` que deja en el almacén de voces la orden
-/// `ai-voice-interconnector voice clone --no-daemon --name default --force
+/// `ai-voice-interconnector voice clone --no-daemon --name default --force --yes
 /// --speech-reference "assets/audios/Speech Sampler.wav"`.
 const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
 
@@ -164,8 +164,16 @@ fn expand_path_vars(p: &Path) -> PathBuf {
 pub struct VoiceEntry {
     pub name: String,
     pub is_factory: bool,
-    /// Ruta al archivo de referencia de audio (.qvoice o .wav)
-    pub reference_path: Option<PathBuf>,
+}
+
+/// Referencia clonada de una voz con la identidad de su contenido: la ruta del
+/// `reference.qvoice` y su huella sha256. Re-clonar una voz conserva la ruta y
+/// cambia la huella, así que dos referencias solo son iguales si el contenido
+/// también lo es.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceReference {
+    pub path: PathBuf,
+    pub fingerprint: String,
 }
 
 /// Almacén de voces: gestión de voces clonadas + fábrica.
@@ -224,12 +232,7 @@ impl VoiceStore {
                     .to_string()
                     .to_lowercase();
                 let is_factory = is_factory_name(&name);
-                let ref_path = self.find_reference(&name)?;
-                voices.push(VoiceEntry {
-                    name,
-                    is_factory,
-                    reference_path: ref_path,
-                });
+                voices.push(VoiceEntry { name, is_factory });
             }
         }
         // Fábrica primero (default, ryan, vivian), luego clonadas alfabéticamente
@@ -299,8 +302,9 @@ impl VoiceStore {
     /// Solo `reference.qvoice` determina la rama clonada; los presets no
     /// tienen referencia y resuelven como `Preset` en `resolve_voice_engine`.
     /// Inicializa antes el almacén para que `default` exista en una raíz nueva;
-    /// si la inicialización falla, devuelve el error.
-    pub fn find_reference(&self, name: &str) -> Result<Option<PathBuf>> {
+    /// si la inicialización falla, devuelve el error. Fuera del crate la
+    /// referencia se obtiene con su identidad mediante [`VoiceStore::resolve`].
+    fn find_reference(&self, name: &str) -> Result<Option<PathBuf>> {
         self.ensure_initialized()?;
         let dir = self.base_dir.join(name.to_lowercase());
         let path = dir.join("reference.qvoice");
@@ -310,62 +314,128 @@ impl VoiceStore {
         Ok(None)
     }
 
+    /// Referencia clonada de una voz con la identidad de su contenido: la huella
+    /// es el sha256 del `reference.qvoice` completo. `None` si la voz no tiene
+    /// referencia (preset o voz inexistente); un fallo de E/S es un error.
+    pub fn resolve(&self, name: &str) -> Result<Option<VoiceReference>> {
+        let Some(path) = self.find_reference(name)? else {
+            return Ok(None);
+        };
+        let fingerprint = sha256_file(&path)?;
+        Ok(Some(VoiceReference { path, fingerprint }))
+    }
+
     /// Directorio de una voz (nombre normalizado a minúsculas)
     pub fn voice_dir(&self, name: &str) -> PathBuf {
         self.base_dir.join(name.to_lowercase())
     }
 
-    /// Guardar el `.qvoice` clonado como `reference.qvoice` de la voz
-    /// (copia con temporal + rename; layout del contrato del registro).
+    /// Prepara el `.qvoice` clonado como `reference.qvoice` de la voz sin
+    /// publicarlo todavía: el contenido queda en un temporal y solo
+    /// [`StagedReference::publish`] lo hace visible.
     ///
-    /// Con la voz ya existente se sustituye el fichero con un renombrado atómico.
-    /// Con una voz nueva el contenido se prepara en un directorio hermano de
-    /// `voices/` (misma partición) y se renombra de una vez a `voices/<nombre>/`:
-    /// si la copia falla o el proceso muere, no aparece un directorio de voz
-    /// vacío que `list` mostraría y que impediría clonar de nuevo con ese nombre.
-    pub fn save_reference(&self, name: &str, src: &Path) -> Result<PathBuf> {
+    /// Con la voz ya existente se prepara un temporal hermano del destino, que se
+    /// publica con un renombrado atómico. Con una voz nueva el contenido se
+    /// prepara en un directorio hermano de `voices/` (misma partición) que se
+    /// renombra de una vez a `voices/<nombre>/`: si la copia falla o el proceso
+    /// muere, no aparece un directorio de voz vacío que `list` mostraría y que
+    /// impediría clonar de nuevo con ese nombre. Si el preparado se suelta sin
+    /// publicar, el temporal se borra.
+    fn stage_reference(&self, name: &str, src: &Path) -> Result<StagedReference> {
         let dir = self.voice_dir(name);
         let dest = dir.join("reference.qvoice");
-        if dir.exists() {
+        let staged = if dir.exists() {
             let tmp = owned_temp_path(&dest)?;
-            std::fs::copy(src, &tmp)?;
-            std::fs::rename(&tmp, &dest)?;
-            return Ok(dest);
-        }
-
-        let parent = self
-            .base_dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("el directorio de voces no tiene directorio padre"))?;
-        let owner = avi_process::current_owner_token()?;
-        let staging = parent.join(avi_shared::staging_names::voice_staging::name(
-            &name.to_lowercase(),
-            &owner,
-        ));
-        avi_shared::best_effort(
-            std::fs::remove_dir_all(&staging),
-            format_args!("no se pudo borrar el staging previo {}", staging.display()),
-        );
-        std::fs::create_dir_all(&staging)?;
-        let published = std::fs::copy(src, staging.join("reference.qvoice"))
-            .map_err(anyhow::Error::from)
-            .and_then(|_| {
-                std::fs::create_dir_all(&self.base_dir)?;
-                std::fs::rename(&staging, &dir).map_err(anyhow::Error::from)
-            });
-        if let Err(e) = published {
+            StagedReference {
+                pending: Some(Staged::File(tmp.clone())),
+                base_dir: self.base_dir.clone(),
+                dir,
+                dest,
+            }
+            .filled_with(src, &tmp)?
+        } else {
+            let parent = self.base_dir.parent().ok_or_else(|| {
+                anyhow::anyhow!("el directorio de voces no tiene directorio padre")
+            })?;
+            let owner = avi_process::current_owner_token()?;
+            let staging = parent.join(avi_shared::staging_names::voice_staging::name(
+                &name.to_lowercase(),
+                &owner,
+            ));
             avi_shared::best_effort(
                 std::fs::remove_dir_all(&staging),
-                format_args!("no se pudo borrar el staging {}", staging.display()),
+                format_args!("no se pudo borrar el staging previo {}", staging.display()),
             );
-            return Err(e);
-        }
-        Ok(dest)
+            std::fs::create_dir_all(&staging)?;
+            StagedReference {
+                pending: Some(Staged::Dir(staging.clone())),
+                base_dir: self.base_dir.clone(),
+                dir,
+                dest,
+            }
+            .filled_with(src, &staging.join("reference.qvoice"))?
+        };
+        Ok(staged)
     }
 
     #[cfg(test)]
     fn with_base_dir(base_dir: PathBuf) -> Self {
         Self { base_dir }
+    }
+}
+
+/// Temporal de un `reference.qvoice` preparado: un fichero hermano del destino
+/// (voz existente) o un directorio de staging completo (voz nueva).
+enum Staged {
+    File(PathBuf),
+    Dir(PathBuf),
+}
+
+/// Referencia preparada y aún no publicada. Publicarla la hace visible con un
+/// renombrado; soltarla sin publicar borra el temporal.
+struct StagedReference {
+    pending: Option<Staged>,
+    base_dir: PathBuf,
+    dir: PathBuf,
+    dest: PathBuf,
+}
+
+impl StagedReference {
+    /// Copia `src` a `tmp`, dentro del temporal ya registrado: si la copia falla,
+    /// soltar el preparado borra lo que se haya escrito.
+    fn filled_with(self, src: &Path, tmp: &Path) -> Result<Self> {
+        std::fs::copy(src, tmp)?;
+        Ok(self)
+    }
+
+    /// Publica la referencia preparada y devuelve la ruta del `reference.qvoice`.
+    /// Si el renombrado falla, el temporal sigue pendiente y se borra al soltarlo.
+    fn publish(mut self) -> Result<PathBuf> {
+        let published = match &self.pending {
+            Some(Staged::File(tmp)) => std::fs::rename(tmp, &self.dest),
+            Some(Staged::Dir(staging)) => std::fs::create_dir_all(&self.base_dir)
+                .and_then(|()| std::fs::rename(staging, &self.dir)),
+            None => unreachable!("la referencia preparada solo se publica una vez"),
+        };
+        published?;
+        self.pending = None;
+        Ok(self.dest.clone())
+    }
+}
+
+impl Drop for StagedReference {
+    fn drop(&mut self) {
+        match self.pending.take() {
+            Some(Staged::File(tmp)) => avi_shared::best_effort(
+                std::fs::remove_file(&tmp),
+                format_args!("no se pudo borrar el temporal {}", tmp.display()),
+            ),
+            Some(Staged::Dir(staging)) => avi_shared::best_effort(
+                std::fs::remove_dir_all(&staging),
+                format_args!("no se pudo borrar el staging {}", staging.display()),
+            ),
+            None => {}
+        }
     }
 }
 
@@ -598,8 +668,9 @@ impl SpeechStore {
         Ok(())
     }
 
-    /// Guardar una locución (WAV ya escrito por el motor; solo guarda los metadatos)
-    pub fn save_metadata(
+    /// Guardar la ficha `.json` de una locución con temporal + rename, de modo
+    /// que nunca queda una ficha escrita a medias.
+    pub(crate) fn save_metadata(
         &self,
         voice: &str,
         label: &str,
@@ -619,13 +690,23 @@ impl SpeechStore {
         };
         let meta_path = dir.join(format!("{}.json", label));
         let content = serde_json::to_string_pretty(&meta)?;
-        std::fs::write(&meta_path, content)?;
+        let tmp_path = owned_temp_path(&meta_path)?;
+        std::fs::write(&tmp_path, content)?;
+        std::fs::rename(&tmp_path, &meta_path)?;
         Ok(meta_path)
     }
 
     /// Guardar una locución completa: sidecar con `duration_secs` calculada del
-    /// WAV vía hound + publicación del WAV con temporal + rename.
-    pub fn save(&self, voice: &str, label: &str, text: &str, wav_src: &Path) -> Result<PathBuf> {
+    /// WAV vía hound + publicación del WAV con temporal + rename. No comprueba
+    /// nada, así que no es pública: fuera del crate una locución solo se guarda
+    /// con [`persist_locution`].
+    pub(crate) fn save(
+        &self,
+        voice: &str,
+        label: &str,
+        text: &str,
+        wav_src: &Path,
+    ) -> Result<PathBuf> {
         let reader = hound::WavReader::open(wav_src)?;
         let duration_secs = reader.duration() as f64 / f64::from(reader.spec().sample_rate);
         drop(reader);
@@ -666,6 +747,102 @@ pub fn remove_voice(
     }
     voices.remove(&name)?;
     Ok(labels)
+}
+
+/// Resultado de [`replace_voice`]: la referencia publicada y las etiquetas de las
+/// locuciones que se borraron con el contenido anterior de la voz.
+#[derive(Debug)]
+pub struct ReplacedVoice {
+    pub reference: PathBuf,
+    pub removed_speech: Vec<String>,
+}
+
+/// Publica `src` como `reference.qvoice` de la voz `name`, nueva o existente, y
+/// borra las locuciones de su contenido anterior. Es la única forma de cambiar el
+/// contenido de una voz, de modo que todo lo derivado de ella corresponde siempre
+/// a su contenido actual.
+///
+/// El orden es preparar → leer etiquetas → borrar `speech/<voz>/` → publicar, el
+/// mismo que el de [`remove_voice`]: si algo falla o el proceso muere antes de
+/// publicar, queda la voz anterior sin locuciones, que es un estado válido, y
+/// nunca la voz nueva con locuciones de la anterior.
+pub fn replace_voice(
+    voices: &VoiceStore,
+    speech: &SpeechStore,
+    name: &str,
+    src: &Path,
+) -> Result<ReplacedVoice> {
+    let staged = voices.stage_reference(name, src)?;
+    let removed_speech = speech.labels_of(name)?;
+    let speech_dir = speech.voice_dir(name);
+    if speech_dir.is_dir() {
+        std::fs::remove_dir_all(&speech_dir)?;
+    }
+    let reference = staged.publish()?;
+    Ok(ReplacedVoice {
+        reference,
+        removed_speech,
+    })
+}
+
+/// Conflicto que impide guardar una locución.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LocutionConflict {
+    /// La voz cambió (re-clonada o eliminada) entre su resolución y el guardado:
+    /// la locución se sintetizó con un contenido que ya no es el de la voz.
+    VoiceChanged { voice: String },
+    /// Ya existe una locución con esa etiqueta y no se pidió sobrescribirla.
+    LabelExists { voice: String, label: String },
+}
+
+impl std::fmt::Display for LocutionConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::VoiceChanged { voice } => write!(
+                f,
+                "La voz '{}' cambió durante la síntesis; la locución no se guardó.",
+                voice
+            ),
+            Self::LabelExists { label, .. } => write!(
+                f,
+                "Ya existe una locución con la etiqueta '{}' (usa --force).",
+                label
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LocutionConflict {}
+
+/// Guarda una locución sintetizada con la voz `voice`, cuya referencia era
+/// `expected` al resolverla para sintetizar (`None` para un preset). Es la única
+/// forma de escribir una locución.
+///
+/// Justo antes de escribir comprueba que la voz conserve esa identidad
+/// ([`LocutionConflict::VoiceChanged`]) y, sin `force`, que la etiqueta esté
+/// libre ([`LocutionConflict::LabelExists`]); ambos conflictos viajan tipados
+/// dentro del error. El WAV y la ficha se publican con temporal + rename.
+// Firma ancha deliberada: cada argumento mapea 1:1 a un dato de la locución.
+#[allow(clippy::too_many_arguments)]
+pub fn persist_locution(
+    voices: &VoiceStore,
+    speech: &SpeechStore,
+    expected: Option<&VoiceReference>,
+    voice: &str,
+    label: &str,
+    text: &str,
+    wav: &Path,
+    force: bool,
+) -> Result<PathBuf> {
+    let voice = voice.to_lowercase();
+    let label = label.to_lowercase();
+    if voices.resolve(&voice)?.as_ref() != expected {
+        return Err(LocutionConflict::VoiceChanged { voice }.into());
+    }
+    if !force && speech.audio_path(&voice, &label).is_file() {
+        return Err(LocutionConflict::LabelExists { voice, label }.into());
+    }
+    speech.save(&voice, &label, text, wav)
 }
 
 // ─── ModelStore ──────────────────────────────────────────────────────
@@ -2349,7 +2526,12 @@ mod tests {
         assert!(VoiceStore::validate_name("..").is_err());
     }
 
-    /// `save_reference` escribe `reference.qvoice` con tmp+rename y
+    /// Prepara y publica `src` como referencia de la voz `name`.
+    fn publish_reference(voices: &VoiceStore, name: &str, src: &Path) -> Result<PathBuf> {
+        voices.stage_reference(name, src)?.publish()
+    }
+
+    /// Preparar y publicar escribe `reference.qvoice` con tmp+rename y
     /// `find_reference` resuelve solo por `reference.qvoice` (sin fallback WAV).
     #[test]
     fn save_reference_qvoice_canonical_without_fallback_wav() {
@@ -2357,7 +2539,7 @@ mod tests {
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         let src = dir.join("clone.qvoice");
         std::fs::write(&src, b"QVCE").unwrap();
-        let saved = voices.save_reference("MyVoice", &src).unwrap();
+        let saved = publish_reference(&voices, "MyVoice", &src).unwrap();
         assert_eq!(
             saved.file_name().unwrap().to_string_lossy(),
             "reference.qvoice"
@@ -2385,7 +2567,7 @@ mod tests {
         std::fs::create_dir_all(&voices_dir).unwrap();
         let voices = VoiceStore::with_base_dir(voices_dir);
         let missing = dir.join("missing.qvoice");
-        assert!(voices.save_reference("fresh", &missing).is_err());
+        assert!(publish_reference(&voices, "fresh", &missing).is_err());
         assert!(
             !voices.voice_dir("fresh").exists(),
             "un guardado fallido no debe dejar el directorio de la voz"
@@ -2404,11 +2586,229 @@ mod tests {
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         let src = dir.join("clone.qvoice");
         std::fs::write(&src, b"QVCE").unwrap();
-        let saved = voices.save_reference("existing", &src).unwrap();
+        let saved = publish_reference(&voices, "existing", &src).unwrap();
         let missing = dir.join("missing.qvoice");
-        assert!(voices.save_reference("existing", &missing).is_err());
+        assert!(publish_reference(&voices, "existing", &missing).is_err());
         assert!(voices.voice_dir("existing").is_dir());
         assert_eq!(std::fs::read(&saved).unwrap(), b"QVCE");
+    }
+
+    /// `resolve` da la misma identidad a contenidos iguales aunque la ruta sea
+    /// otra, distinta a contenidos distintos en la misma ruta, y `None` sin
+    /// `reference.qvoice`.
+    #[test]
+    fn resolve_identity_follows_content() {
+        let dir = temp_dir("resolve");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let a = dir.join("a.qvoice");
+        let b = dir.join("b.qvoice");
+        std::fs::write(&a, b"QVCE-a").unwrap();
+        std::fs::write(&b, b"QVCE-b").unwrap();
+
+        publish_reference(&voices, "uno", &a).unwrap();
+        publish_reference(&voices, "dos", &a).unwrap();
+        let first = voices.resolve("UNO").unwrap().unwrap();
+        let second = voices.resolve("dos").unwrap().unwrap();
+        assert_eq!(
+            first.fingerprint, second.fingerprint,
+            "misma huella por copia"
+        );
+        assert_eq!(first.path, voices.voice_dir("uno").join("reference.qvoice"));
+
+        publish_reference(&voices, "uno", &b).unwrap();
+        let recloned = voices.resolve("uno").unwrap().unwrap();
+        assert_eq!(recloned.path, first.path, "re-clonar conserva la ruta");
+        assert_ne!(recloned, first, "re-clonar cambia la identidad");
+
+        assert!(
+            voices.resolve("ryan").unwrap().is_none(),
+            "preset sin referencia"
+        );
+        assert!(voices.resolve("nadie").unwrap().is_none());
+    }
+
+    /// `replace_voice` publica la voz created, borra las locuciones de la anterior
+    /// y devuelve sus etiquetas; con una voz created no borra nada.
+    #[test]
+    fn replace_voice_drops_previous_speech() {
+        let dir = temp_dir("replace");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let a = dir.join("a.qvoice");
+        let b = dir.join("b.qvoice");
+        std::fs::write(&a, b"QVCE-a").unwrap();
+        std::fs::write(&b, b"QVCE-b").unwrap();
+        let wav_src = dir.join("src.wav");
+        std::fs::write(&wav_src, min_wav()).unwrap();
+
+        let created = replace_voice(&voices, &speech, "Locutor", &a).unwrap();
+        assert!(created.removed_speech.is_empty());
+        assert_eq!(std::fs::read(&created.reference).unwrap(), b"QVCE-a");
+        speech.save("locutor", "b", "B", &wav_src).unwrap();
+        speech.save("locutor", "a", "A", &wav_src).unwrap();
+        speech.save("otra", "c", "C", &wav_src).unwrap();
+
+        let replaced = replace_voice(&voices, &speech, "locutor", &b).unwrap();
+        assert_eq!(replaced.removed_speech, vec!["a", "b"]);
+        assert_eq!(std::fs::read(&replaced.reference).unwrap(), b"QVCE-b");
+        assert!(!speech.voice_dir("locutor").exists());
+        assert!(
+            speech.find("otra", "c").unwrap().is_some(),
+            "otras voces intactas"
+        );
+    }
+
+    /// Si publicar falla, la voz no queda con el contenido nuevo y sus
+    /// locuciones viejas ya se borraron: nunca hay voz created con locuciones
+    /// viejas. El temporal preparado tampoco queda en el directorio de la voz.
+    #[test]
+    fn replace_voice_publish_failure_never_mixes_contents() {
+        let dir = temp_dir("replace_fail");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let src = dir.join("new.qvoice");
+        std::fs::write(&src, b"QVCE-new").unwrap();
+        let wav_src = dir.join("src.wav");
+        std::fs::write(&wav_src, min_wav()).unwrap();
+        // Un directorio no vacío en el destino hace fallar el renombrado.
+        let blocked = voices.voice_dir("voz").join("reference.qvoice");
+        std::fs::create_dir_all(blocked.join("bloqueo")).unwrap();
+        speech.save("voz", "vieja", "V", &wav_src).unwrap();
+
+        assert!(replace_voice(&voices, &speech, "voz", &src).is_err());
+        assert!(blocked.is_dir(), "el contenido nuevo no se publicó");
+        assert!(
+            !speech.voice_dir("voz").exists(),
+            "las locuciones viejas se borraron"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(voices.voice_dir("voz"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            leftovers,
+            vec![std::ffi::OsString::from("reference.qvoice")]
+        );
+    }
+
+    /// `persist_locution` guarda solo si la voz conserva la identidad esperada y,
+    /// sin `force`, si la etiqueta está libre; un preset se guarda sin referencia.
+    #[test]
+    fn persist_locution_checks_identity_and_collision() {
+        let dir = temp_dir("persist");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let a = dir.join("a.qvoice");
+        let b = dir.join("b.qvoice");
+        std::fs::write(&a, b"QVCE-a").unwrap();
+        std::fs::write(&b, b"QVCE-b").unwrap();
+        let wav = dir.join("src.wav");
+        std::fs::write(&wav, min_wav()).unwrap();
+        let conflict = |e: anyhow::Error| e.downcast::<LocutionConflict>().unwrap();
+
+        replace_voice(&voices, &speech, "voz", &a).unwrap();
+        let resolved = voices.resolve("voz").unwrap();
+        let saved = persist_locution(
+            &voices,
+            &speech,
+            resolved.as_ref(),
+            "VOZ",
+            "Hola",
+            "Hola",
+            &wav,
+            false,
+        )
+        .unwrap();
+        assert_eq!(saved, speech.audio_path("voz", "hola"));
+
+        let e = persist_locution(
+            &voices,
+            &speech,
+            resolved.as_ref(),
+            "voz",
+            "hola",
+            "x",
+            &wav,
+            false,
+        )
+        .unwrap_err();
+        assert_eq!(
+            conflict(e),
+            LocutionConflict::LabelExists {
+                voice: "voz".into(),
+                label: "hola".into()
+            }
+        );
+        persist_locution(
+            &voices,
+            &speech,
+            resolved.as_ref(),
+            "voz",
+            "hola",
+            "x",
+            &wav,
+            true,
+        )
+        .unwrap();
+
+        // La voz se re-clona entre la resolución y el guardado: no se escribe.
+        std::fs::copy(&b, voices.voice_dir("voz").join("reference.qvoice")).unwrap();
+        let e = persist_locution(
+            &voices,
+            &speech,
+            resolved.as_ref(),
+            "voz",
+            "otra",
+            "x",
+            &wav,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            conflict(e),
+            LocutionConflict::VoiceChanged {
+                voice: "voz".into()
+            }
+        );
+        assert!(!speech.audio_path("voz", "otra").exists());
+
+        // Un preset se guarda sin referencia; esperar una referencia que no tiene
+        // es un cambio de voz.
+        persist_locution(
+            &voices, &speech, None, "ryan", "saludo", "Hola", &wav, false,
+        )
+        .unwrap();
+        let e = persist_locution(
+            &voices,
+            &speech,
+            resolved.as_ref(),
+            "ryan",
+            "x",
+            "x",
+            &wav,
+            false,
+        )
+        .unwrap_err();
+        assert!(matches!(conflict(e), LocutionConflict::VoiceChanged { .. }));
+    }
+
+    /// La entry se publica con temporal + rename: tras guardar no queda ningún
+    /// temporal junto al WAV y la entry es JSON completo.
+    #[test]
+    fn save_metadata_is_atomic() {
+        let dir = temp_dir("meta_atomic");
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let wav = dir.join("src.wav");
+        std::fs::write(&wav, min_wav()).unwrap();
+        speech.save("ryan", "saludo", "Hola", &wav).unwrap();
+        let mut names: Vec<_> = std::fs::read_dir(speech.voice_dir("ryan"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["saludo.json", "saludo.wav"]);
+        let entry = speech.find("ryan", "saludo").unwrap().unwrap();
+        assert_eq!(entry.metadata.unwrap().text, "Hola");
     }
 
     /// La consulta de existencia garantiza las voces de fábrica en una raíz

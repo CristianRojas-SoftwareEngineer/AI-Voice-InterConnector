@@ -737,10 +737,10 @@ async fn synthesize_handler(
         // Marcador genérico de fase (el motor no reporta progreso interno).
         emit_ndjson(&tx, json!({ "event": "progress", "stage": "synthesis" })).await;
 
-        // Perfil de voz: .qvoice si la voz está clonada; el motor resuelve el
-        // preset vía `resolve_voice_engine` a partir del nombre.
-        let qvoice_path = match state.voice_store.find_reference(&voice_owned) {
-            Ok(path) => path,
+        // Perfil de voz: referencia con su identidad si la voz está clonada; el
+        // motor resuelve el preset vía `resolve_voice_engine` a partir del nombre.
+        let reference = match state.voice_store.resolve(&voice_owned) {
+            Ok(reference) => reference,
             Err(e) => {
                 emit_ndjson(
                     &tx,
@@ -756,7 +756,7 @@ async fn synthesize_handler(
         };
         let profile = VoiceProfile {
             name: voice_owned.clone(),
-            qvoice_path,
+            reference,
         };
         // Sin campos se usa la config de producción (temperature=0.35, seed de
         // producción); con ellos se sobrescriben la temperatura y el seed ya
@@ -1660,8 +1660,16 @@ async fn voices_clone_handler(
         if tx.is_closed() {
             return;
         }
-        let saved_qvoice = match state.voice_store.save_reference(&name, &tmp_qvoice) {
-            Ok(p) => p,
+        // Reemplaza la voz y sus locuciones: las del contenido anterior se
+        // borran antes de publicar el nuevo, de modo que ninguna locución queda
+        // grabada con un timbre que la voz ya no tiene.
+        let replaced = match avi_store::replace_voice(
+            &state.voice_store,
+            &state.speech_store,
+            &name,
+            &tmp_qvoice,
+        ) {
+            Ok(replaced) => replaced,
             Err(e) => {
                 emit_ndjson(
                     &tx,
@@ -1695,8 +1703,9 @@ async fn voices_clone_handler(
             json!({
                 "event": "result",
                 "name": name,
-                "speech": saved_qvoice.to_string_lossy().to_string(),
+                "speech": replaced.reference.to_string_lossy().to_string(),
                 "precomputed": true,
+                "removed_speech": replaced.removed_speech,
             }),
         )
         .await;
@@ -2157,8 +2166,8 @@ async fn dub_handler(
             // `queued`), acota el trabajo al presupuesto del texto, lo cancela
             // en el motor ante desconexión del cliente o vencimiento y, al
             // vencer, emite `synthesis_timeout` (nunca cierre silencioso).
-            let qvoice_path = match state.voice_store.find_reference(&voice) {
-                Ok(path) => path,
+            let reference = match state.voice_store.resolve(&voice) {
+                Ok(reference) => reference,
                 Err(e) => {
                     emit_ndjson(
                         &tx,
@@ -2174,7 +2183,7 @@ async fn dub_handler(
             };
             let profile = VoiceProfile {
                 name: voice.clone(),
-                qvoice_path,
+                reference,
             };
             // Guardián del temporal: su dueño es el trabajo que escribe en él,
             // no el ámbito del handler. La propiedad pasa al `job` bloqueante y
@@ -2396,8 +2405,8 @@ pub fn build_router() -> Router {
 /// warmup sintético; los dos pares se cargan antes de servir peticiones y
 /// `warm` (`Warming`→`Warm`) solo refleja TTS.
 pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()> {
-    let qvoice_path = match state.voice_store.find_reference(voice) {
-        Ok(path) => path,
+    let reference = match state.voice_store.resolve(voice) {
+        Ok(reference) => reference,
         Err(e) => {
             state.set_warm_failed(e.to_string());
             return Err(e);
@@ -2405,7 +2414,7 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &str) -> anyhow::Result<()>
     };
     let profile = VoiceProfile {
         name: voice.to_string(),
-        qvoice_path,
+        reference,
     };
     let _lock = state.synthesis_lock.blocking_lock();
     state.set_warming();

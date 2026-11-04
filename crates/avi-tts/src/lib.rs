@@ -181,11 +181,12 @@ pub struct EmotionOptions {
     pub emotion: Option<String>,
 }
 
-/// Perfil de voz: su nombre y, si es clonada, la ruta de su `reference.qvoice`.
+/// Perfil de voz: su nombre y, si es clonada, su referencia con la identidad de
+/// su contenido, resuelta por el almacén de voces.
 #[derive(Debug, Clone)]
 pub struct VoiceProfile {
     pub name: String,
-    pub qvoice_path: Option<PathBuf>,
+    pub reference: Option<avi_store::VoiceReference>,
 }
 
 /// Trait público del motor de síntesis TTS
@@ -216,11 +217,13 @@ pub trait TtsEngine: Send + Sync {
 
 /// Voz resuelta hacia la semántica del motor: preset del servidor (modelo
 /// CustomVoice) o voz clonada cargada al arranque con
-/// `--load-voice <qvoice> --graft` sobre el modelo Base.
+/// `--load-voice <qvoice> --graft` sobre el modelo Base. La clonada lleva la
+/// identidad de su contenido, así que dos voces son iguales solo si también lo
+/// es el contenido de su `reference.qvoice`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoiceEngine {
     Preset(String),
-    Cloned(PathBuf),
+    Cloned(avi_store::VoiceReference),
 }
 
 /// Voces de fábrica que son presets del motor (modelo CustomVoice): solo
@@ -254,12 +257,10 @@ impl std::error::Error for VoiceNotFound {}
 /// preset. Cualquier otra voz es `VoiceNotFound`.
 pub fn resolve_voice_engine(
     voice: &str,
-    qvoice: Option<&Path>,
+    reference: Option<&avi_store::VoiceReference>,
 ) -> std::result::Result<VoiceEngine, VoiceNotFound> {
-    if let Some(q) = qvoice {
-        if q.is_file() {
-            return Ok(VoiceEngine::Cloned(q.to_path_buf()));
-        }
+    if let Some(reference) = reference {
+        return Ok(VoiceEngine::Cloned(reference.clone()));
     }
     // El almacén de voces normaliza los nombres a minúsculas; el preset se
     // identifica igual para que `Ryan` y `ryan` sean la misma voz.
@@ -551,11 +552,13 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 /// sin colgar al llamador.
 const CLONE_WAIT: Duration = Duration::from_secs(600);
 
-/// Estado del servidor residente: se indexa por voz — al cambiar
-/// de voz se termina el residente anterior y se arranca otro con `--load-voice`.
+/// Estado del servidor residente y la voz que tiene cargada. Se reutiliza solo
+/// para el mismo preset o para una voz clonada con la misma identidad de
+/// contenido; con cualquier otra voz, incluida la misma voz re-clonada, se
+/// termina el residente anterior y se arranca otro con `--load-voice`.
 struct ResidentState {
     resident: resident::Qwen3TtsResident,
-    voice_key: String,
+    voice: VoiceEngine,
 }
 
 impl Qwen3TtsEngine {
@@ -673,14 +676,9 @@ impl Qwen3TtsEngine {
     /// con diagnóstico, sin dejar el hijo vivo ni el registro anotado). Ensambla
     /// el `ResidentState`. Compartido por el camino de cambio de voz y por el
     /// rearranque ante degradación del residente.
-    fn start_resident(
-        &self,
-        model_dir: &Path,
-        voice: &VoiceEngine,
-        voice_key: String,
-    ) -> Result<ResidentState> {
+    fn start_resident(&self, model_dir: &Path, voice: &VoiceEngine) -> Result<ResidentState> {
         let load_voice = match voice {
-            VoiceEngine::Cloned(p) => Some(p.as_path()),
+            VoiceEngine::Cloned(reference) => Some(reference.path.as_path()),
             VoiceEngine::Preset(_) => None,
         };
         let port = reserve_loopback_port()?;
@@ -688,7 +686,7 @@ impl Qwen3TtsEngine {
             resident::Qwen3TtsResident::spawn(model_dir, port, load_voice, &self.registration())?;
         Ok(ResidentState {
             resident: spawned,
-            voice_key,
+            voice: voice.clone(),
         })
     }
 
@@ -729,10 +727,6 @@ impl Qwen3TtsEngine {
             self.model_dir.as_deref(),
             self.base_model_dir.as_deref(),
         )?;
-        let voice_key = match voice {
-            VoiceEngine::Preset(n) => format!("preset:{}", n),
-            VoiceEngine::Cloned(p) => format!("clone:{}", p.display()),
-        };
         let url = {
             // Un hilo que murió con el mutex del residente tomado lo deja
             // poisoned; un `unwrap()` convertiría eso en un pánico que tumba
@@ -745,11 +739,11 @@ impl Qwen3TtsEngine {
                 );
                 poisoned.into_inner()
             });
-            if guard.as_ref().map(|s| s.voice_key.as_str()) != Some(voice_key.as_str()) {
+            if guard.as_ref().map(|s| &s.voice) != Some(voice) {
                 // El residente anterior se termina antes de lanzar el nuevo: el
                 // registro solo anota uno y ninguno puede vivir sin anotar.
                 *guard = None;
-                *guard = Some(self.start_resident(model_dir, voice, voice_key)?);
+                *guard = Some(self.start_resident(model_dir, voice)?);
             } else if let Err(health_error) = guard
                 .as_mut()
                 .expect("reutilización verificada arriba")
@@ -767,7 +761,7 @@ impl Qwen3TtsEngine {
                     .pid();
                 resident::kill_tree_resident_by_pid(pid);
                 *guard = None;
-                *guard = Some(self.start_resident(model_dir, voice, voice_key)?);
+                *guard = Some(self.start_resident(model_dir, voice)?);
             }
             let state = guard
                 .as_ref()
@@ -815,15 +809,10 @@ impl TtsEngine for Qwen3TtsEngine {
             .cloned()
             .unwrap_or_else(|| PathBuf::from("output.wav"));
 
-        // La voz clonada se resuelve por `reference.qvoice` (`qvoice_path`); sin
-        // él solo `ryan` y `vivian` son presets, y cualquier otra voz es
+        // La voz clonada llega con su referencia ya resuelta por el almacén; sin
+        // ella solo `ryan` y `vivian` son presets, y cualquier otra voz es
         // `VoiceNotFound`.
-        let qvoice = profile
-            .qvoice_path
-            .as_deref()
-            .filter(|q| q.is_file())
-            .map(|q| q.to_path_buf());
-        let voice = resolve_voice_engine(&profile.name, qvoice.as_deref())?;
+        let voice = resolve_voice_engine(&profile.name, profile.reference.as_ref())?;
 
         // Servidor residente gestionado por el host, con healthcheck y POST
         // acotados (este último por el presupuesto de síntesis del texto). El
@@ -2090,7 +2079,7 @@ mod tests {
         let opts = GenerationOptions::new("fr");
         let preset = VoiceEngine::Preset("ryan".to_string());
         assert!(build_tts_body("Hola", &preset, &opts, None, None).is_err());
-        let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
+        let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
         assert!(build_tts_body("Hola", &cloned, &opts, None, None).is_err());
     }
 
@@ -2157,7 +2146,7 @@ mod tests {
         let custom = PathBuf::from("modelos/qwen3-tts-0.6b");
         let base = PathBuf::from("modelos/qwen3-tts-0.6b-base");
         let preset = VoiceEngine::Preset("ryan".to_string());
-        let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
+        let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
         assert_eq!(
             select_model_dir(&preset, Some(&custom), Some(&base)).unwrap(),
             custom.as_path()
@@ -2175,7 +2164,7 @@ mod tests {
         let custom = PathBuf::from("modelos/qwen3-tts-0.6b");
         let base = PathBuf::from("modelos/qwen3-tts-0.6b-base");
         let preset = VoiceEngine::Preset("ryan".to_string());
-        let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
+        let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
         let err = select_model_dir(&cloned, Some(&custom), None).unwrap_err();
         assert!(err.to_string().contains("Base"), "mensaje: {err}");
         assert!(select_model_dir(&preset, None, Some(&base)).is_err());
@@ -2195,7 +2184,7 @@ mod tests {
         engine.base_model_dir = None;
         let profile = VoiceProfile {
             name: "clonada".to_string(),
-            qvoice_path: Some(qvoice),
+            reference: Some(test_reference(qvoice.to_str().unwrap(), "huella")),
         };
         let err = engine
             .synthesize_with_options(
@@ -2549,7 +2538,7 @@ fn main() {
         assert!(!obj.contains_key("rate"));
         assert!(!obj.contains_key("emotion"));
 
-        let cloned = VoiceEngine::Cloned(PathBuf::from("voice.qvoice"));
+        let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
         let body = build_tts_body("Hola", &cloned, &GenerationOptions::new("en"), None, None)
             .expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
@@ -2586,14 +2575,20 @@ fn main() {
         assert_eq!(obj.get("emotion").and_then(|v| v.as_str()), Some("joy"));
     }
 
-    /// Tabla de resolución voz → motor: con `reference.qvoice` la voz es
-    /// clonada (también `default`); sin él solo `ryan` y `vivian` son presets y
+    /// Referencia de prueba con la ruta y la huella dadas, sin tocar disco.
+    fn test_reference(path: &str, fingerprint: &str) -> avi_store::VoiceReference {
+        avi_store::VoiceReference {
+            path: PathBuf::from(path),
+            fingerprint: fingerprint.to_string(),
+        }
+    }
+
+    /// Tabla de resolución voz → motor: con referencia la voz es clonada
+    /// (también `default`); sin ella solo `ryan` y `vivian` son presets y
     /// cualquier otra voz es `VoiceNotFound`.
     #[test]
     fn resolve_voice_engine_table() {
-        let tmp = tempfile::tempdir().unwrap();
-        let q = tmp.path().join("reference.qvoice");
-        std::fs::write(&q, b"QVCE").unwrap();
+        let q = test_reference("reference.qvoice", "huella");
         assert_eq!(
             resolve_voice_engine("my_voice", Some(&q)),
             Ok(VoiceEngine::Cloned(q.clone()))
@@ -2618,9 +2613,17 @@ fn main() {
             let err = resolve_voice_engine(name, None).unwrap_err();
             assert_eq!(err.voice, name);
         }
-        // Una referencia inexistente en disco equivale a no tener referencia.
-        let missing = tmp.path().join("missing.qvoice");
-        assert!(resolve_voice_engine("my_voice", Some(&missing)).is_err());
+    }
+
+    /// La voz que decide si el residente se reutiliza compara la identidad del
+    /// contenido: la misma ruta con otra huella (una voz re-clonada) es otra voz.
+    #[test]
+    fn cloned_voices_differ_by_fingerprint_with_same_path() {
+        let before = VoiceEngine::Cloned(test_reference("voces/x/reference.qvoice", "aaa"));
+        let same = VoiceEngine::Cloned(test_reference("voces/x/reference.qvoice", "aaa"));
+        let recloned = VoiceEngine::Cloned(test_reference("voces/x/reference.qvoice", "bbb"));
+        assert_eq!(before, same);
+        assert_ne!(before, recloned);
     }
 
     /// La síntesis de una voz que no es preset ni tiene referencia falla con el
@@ -2632,7 +2635,7 @@ fn main() {
         let engine = Qwen3TtsEngine::new(None).expect("motor de prueba");
         let profile = VoiceProfile {
             name: "inexistente".to_string(),
-            qvoice_path: None,
+            reference: None,
         };
         let err = engine
             .synthesize_with_options(
