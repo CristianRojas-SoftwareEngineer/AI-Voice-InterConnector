@@ -1,0 +1,225 @@
+{
+  "version": 1,
+  "inicio": "2026-11-07T16:03:59.925Z",
+  "fin": "2026-11-07T16:24:04.145Z",
+  "navegador": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+  "comentario_general": "",
+  "ensayos": [
+    {
+      "n": 1,
+      "puntajes": {
+        "3ca662451ab9": 100,
+        "4e3e82c44a17": 0,
+        "d1794847f433": 75,
+        "a78d1f16c92c": 50
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 5,
+        "a78d1f16c92c": 10,
+        "3ca662451ab9": 2,
+        "d1794847f433": 11,
+        "4e3e82c44a17": 4
+      },
+      "ms": 129882
+    },
+    {
+      "n": 2,
+      "puntajes": {
+        "5a593d235373": 0,
+        "44365371dfab": 100,
+        "0cd603ea3cb4": 100,
+        "84f6cb2457f7": 50
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 3,
+        "84f6cb2457f7": 4,
+        "5a593d235373": 2,
+        "44365371dfab": 3,
+        "0cd603ea3cb4": 5
+      },
+      "ms": 133179
+    },
+    {
+      "n": 3,
+      "puntajes": {
+        "ddff496f55cf": 0,
+        "b6653aefd90d": 100,
+        "d1783fc10139": 75,
+        "4cbcc41503ee": 50
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 2,
+        "b6653aefd90d": 3,
+        "d1783fc10139": 5,
+        "ddff496f55cf": 1,
+        "4cbcc41503ee": 4
+      },
+      "ms": 103109
+    },
+    {
+      "n": 4,
+      "puntajes": {
+        "50e4a2009915": 0,
+        "cf59e81fc3fe": 100,
+        "b95f64050ae3": 90,
+        "44d6be8114b5": 75
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 5,
+        "44d6be8114b5": 4,
+        "cf59e81fc3fe": 3,
+        "b95f64050ae3": 4,
+        "50e4a2009915": 1
+      },
+      "ms": 92892
+    },
+    {
+      "n": 5,
+      "puntajes": {
+        "43b06c68f2a7": 0,
+        "75b046add880": 100,
+        "6d7f01200886": 90,
+        "a4502b2a9fcc": 50
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 3,
+        "43b06c68f2a7": 1,
+        "75b046add880": 2,
+        "a4502b2a9fcc": 2,
+        "6d7f01200886": 2
+      },
+      "ms": 58491
+    },
+    {
+      "n": 6,
+      "puntajes": {
+        "38483ef034ef": 0,
+        "4f7bc04a0129": 100,
+        "a83098b46f8e": 90,
+        "64cdb1a243f4": 75
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 3,
+        "38483ef034ef": 1,
+        "64cdb1a243f4": 3,
+        "a83098b46f8e": 4,
+        "4f7bc04a0129": 1
+      },
+      "ms": 61370
+    },
+    {
+      "n": 7,
+      "puntajes": {
+        "18f1069d1777": 0,
+        "3fd06676d041": 100,
+        "ced056d5e802": 90,
+        "cfec93c5ae86": 80
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 1,
+        "18f1069d1777": 1,
+        "ced056d5e802": 2,
+        "cfec93c5ae86": 4,
+        "3fd06676d041": 2
+      },
+      "ms": 43707
+    },
+    {
+      "n": 8,
+      "puntajes": {
+        "fe501b712325": 0,
+        "a2c27556b524": 100,
+        "d7691d53c782": 90,
+        "2a9e120d7d34": 80
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 5,
+        "a2c27556b524": 2,
+        "fe501b712325": 1,
+        "d7691d53c782": 3,
+        "2a9e120d7d34": 3
+      },
+      "ms": 156821
+    },
+    {
+      "n": 9,
+      "puntajes": {
+        "f6703304f976": 80,
+        "25da29a56b4d": 90,
+        "f65689f91ee1": 0,
+        "a6c520f4f0b5": 100
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 3,
+        "f6703304f976": 3,
+        "a6c520f4f0b5": 3,
+        "25da29a56b4d": 3,
+        "f65689f91ee1": 1
+      },
+      "ms": 75654
+    },
+    {
+      "n": 10,
+      "puntajes": {
+        "f1c76bbaba78": 0,
+        "aeb879788a92": 100,
+        "b14a7a7d88f3": 25,
+        "288459db54cb": 70
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 3,
+        "f1c76bbaba78": 1,
+        "288459db54cb": 3,
+        "aeb879788a92": 3,
+        "b14a7a7d88f3": 2
+      },
+      "ms": 77117
+    },
+    {
+      "n": 11,
+      "puntajes": {
+        "cac410ddebb9": 0,
+        "846bcb1cd512": 100,
+        "70b5d2699c2d": 90,
+        "c932a7df4599": 75
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 3,
+        "c932a7df4599": 4,
+        "846bcb1cd512": 5,
+        "cac410ddebb9": 1,
+        "70b5d2699c2d": 4
+      },
+      "ms": 71831
+    },
+    {
+      "n": 12,
+      "puntajes": {
+        "01fca4beb0d5": 0,
+        "4ca5945e029d": 100,
+        "c850e126c1ed": 80,
+        "ff90d29114d6": 70
+      },
+      "comentario": "",
+      "reproducciones": {
+        "ref_visible": 3,
+        "c850e126c1ed": 5,
+        "ff90d29114d6": 5,
+        "4ca5945e029d": 3,
+        "01fca4beb0d5": 1
+      },
+      "ms": 54380
+    }
+  ]
+}

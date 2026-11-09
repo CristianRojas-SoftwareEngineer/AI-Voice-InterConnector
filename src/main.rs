@@ -119,8 +119,13 @@ fn synthesis_cli_error(e: anyhow::Error) -> CliError {
 /// (`QWEN3_TTS_BIN`, `QWEN3_TTS_MODEL_DIR`, `QWEN3_TTS_BASE_MODEL_DIR`) que no
 /// apunta a una ruta existente, o un modelo ilegible, es `model_missing`.
 fn direct_tts_engine() -> Result<Qwen3TtsEngine, CliError> {
-    Qwen3TtsEngine::new(None)
-        .map_err(|e| CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string()))
+    Qwen3TtsEngine::new(None).map_err(|e| {
+        if e.downcast_ref::<avi_tts::InvalidTtsPrecision>().is_some() {
+            CliError::new(ExitCode::InvalidInput, "usage_error", e.to_string())
+        } else {
+            CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string())
+        }
+    })
 }
 
 /// Almacén de voces del usuario. Una raíz de datos que no se puede resolver

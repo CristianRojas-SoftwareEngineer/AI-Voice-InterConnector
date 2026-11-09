@@ -3510,7 +3510,7 @@ mod tts {
     /// breve (2-4 palabras) con voz `default` logra ≤ 0.25 vía Parakeet.
     ///
     /// Cubre el caso que la E2E `test-windows-e2e` sintetizaba sin veredicto:
-    /// texto de 2-4 palabras (`"Hola mundo"`) con voz `default` (preset ryan).
+    /// texto de 2-4 palabras (`"Hola mundo"`) con la voz clonada `default`.
     /// Verifica `WAV 24kHz mono 16-bit` y una tasa de error de palabras ≤ 0.25
     /// vía Parakeet (`native-stt`),
     /// mismo patrón que `synthesize_ok_with_label` (11 palabras): requiere
@@ -3554,7 +3554,7 @@ mod tts {
             ],
             &a,
         );
-        assert_eq!(code, 0);
+        assert_eq!(code, 0, "falló la síntesis: {actual}");
         assert_eq!(actual["schema_version"], Value::String("6".to_string()));
         assert_eq!(actual["status"], Value::String("success".to_string()));
         let audio = actual["audio_path"]
@@ -3828,6 +3828,104 @@ mod tts {
             actual["reason"],
             Value::String("voice_not_found".to_string())
         );
+    }
+
+    #[test]
+    fn invalid_tts_precision_is_a_usage_error_in_direct_routes() {
+        let inst = IsolatedInstance::new("invalid_tts_precision");
+        seed_pinned_models(
+            &inst.cache_dir(),
+            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
+        );
+        let engine = write_fake_engine(&inst.dir);
+        let engine_path = engine.to_string_lossy().to_string();
+        let mut envs = inst.contract_args();
+        envs.push(("QWEN3_TTS_BIN", engine_path.as_str()));
+        envs.push(("AVI_TTS_PRECISION", "invalid"));
+        let cases: &[&[&str]] = &[
+            &[
+                "--json",
+                "speech",
+                "synthesize",
+                "--no-daemon",
+                "--text",
+                "Hola",
+                "--voice",
+                "ryan",
+                "--label",
+                "precision",
+            ],
+            &[
+                "--json",
+                "speech",
+                "say",
+                "--no-daemon",
+                "--text",
+                "Hola",
+                "--voice",
+                "ryan",
+            ],
+            &[
+                "--json",
+                "voice",
+                "clone",
+                "--no-daemon",
+                "--name",
+                "precision",
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+        ];
+        for args in cases {
+            let (code, actual) = run_json_env(args, &envs);
+            assert_eq!(code, 2, "{args:?}: {actual}");
+            assert_eq!(actual["reason"], "usage_error", "{args:?}: {actual}");
+            let message = actual.to_string();
+            assert!(
+                message.contains("AVI_TTS_PRECISION")
+                    && message.contains("mixed")
+                    && message.contains("bf16"),
+                "{message}"
+            );
+        }
+
+        let missing_model = inst.dir.join("modelo-inexistente");
+        let missing_model = missing_model.to_string_lossy().to_string();
+        envs.push(("QWEN3_TTS_MODEL_DIR", missing_model.as_str()));
+        let (code, actual) = run_json_env(cases[0], &envs);
+        assert_eq!(code, 4, "{actual}");
+        assert_eq!(actual["reason"], "model_missing", "{actual}");
+    }
+
+    /// El doblaje llega al motor TTS después de transcribir el audio real.
+    #[cfg(feature = "native-stt")]
+    #[test]
+    #[ignore = "requiere Parakeet y ONNX Runtime"]
+    fn dub_invalid_tts_precision_is_a_usage_error() {
+        require_parakeet();
+        let inst = IsolatedInstance::new("dub_invalid_tts_precision");
+        let mut envs = inst.args();
+        envs.push(("AVI_TTS_PRECISION", "invalid"));
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "speech",
+                "dub",
+                "--no-daemon",
+                "--audio",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+                "--source-language",
+                "en",
+                "--target-language",
+                "en",
+                "--voice",
+                "ryan",
+            ],
+            &envs,
+        );
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "usage_error", "{actual}");
+        assert!(actual.to_string().contains("AVI_TTS_PRECISION"), "{actual}");
     }
 
     /// Una voz clonada (`default` lleva `reference.qvoice` de fábrica) sin el
@@ -6325,6 +6423,30 @@ mod tts {
             "el mensaje debe citar la ruta del log: {actual}"
         );
         drop(holder);
+    }
+
+    #[cfg(not(any(feature = "native-stt", feature = "native-translation")))]
+    #[test]
+    fn daemon_start_rejects_invalid_tts_precision() {
+        let inst = IsolatedInstance::new("daemon_invalid_tts_precision");
+        let names: Vec<_> = avi_shared::paths::MODEL_REVISIONS
+            .iter()
+            .filter(|pin| !pin.startup_optional)
+            .map(|pin| pin.name)
+            .collect();
+        seed_pinned_models(&inst.cache_dir(), &names);
+        let mut envs = inst.contract_args();
+        envs.push(("AVI_TTS_PRECISION", "invalid"));
+        let (code, actual) = run_json_env(&["--json", "daemon", "start"], &envs);
+        assert_eq!(code, 1, "{actual}");
+        assert_eq!(actual["reason"], "daemon_error", "{actual}");
+        let message = actual.to_string();
+        assert!(
+            message.contains("AVI_TTS_PRECISION")
+                && message.contains("mixed")
+                && message.contains("bf16"),
+            "{message}"
+        );
     }
 
     /// `daemon serve` con el puerto ocupado sale con `port_in_use` (exit 6) y
@@ -9211,7 +9333,8 @@ fn synthesize_daemon_persists_translated_text() {
         }),
     );
     fake.publish_in(&dir.join("data"));
-    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    envs.push(("AVI_TTS_PRECISION", "invalid"));
     let (code, actual) = run_json_env(
         &[
             "--json",

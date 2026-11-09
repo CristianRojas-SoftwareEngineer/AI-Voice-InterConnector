@@ -408,6 +408,26 @@ necesitan un modelo cargado):** tres modos, iguales a los de `voice clone`:
   degradar.
 - `--no-daemon`: fuerza el modo directo, sin sondear.
 
+**Precisión de síntesis:** `AVI_TTS_PRECISION` sin definir o con el valor exacto `mixed` selecciona Talker INT4 y Code Predictor INT8; `bf16` selecciona BF16 para ambos. Otros valores son inválidos. La CLI directa lee la variable al crear el motor; un daemon mantiene el perfil con el que arrancó, aunque cambie el entorno del cliente. Para cambiarlo, detén e inicia el daemon con la nueva variable:
+
+```powershell
+$env:AVI_TTS_PRECISION = 'bf16'
+ai-voice-interconnector daemon stop
+ai-voice-interconnector daemon start
+# Para volver a la cuantización mixta:
+$env:AVI_TTS_PRECISION = 'mixed'
+```
+
+```sh
+export AVI_TTS_PRECISION=bf16
+ai-voice-interconnector daemon stop
+ai-voice-interconnector daemon start
+# Para volver a la cuantización mixta:
+export AVI_TTS_PRECISION=mixed
+```
+
+Para que el daemon adopte el último cambio a `mixed`, también es necesario reiniciarlo. El perfil afecta a los pesos de síntesis, no a la extracción de la huella al clonar.
+
 En las operaciones pesadas (`synthesize`, `say`, `voice clone` y `dub`), la comunicación con el daemon opera mediante streaming NDJSON con latidos periódicos cada 500 ms y timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`), evitando cuelgues o timeouts prematuros en tareas de larga duración. Los eventos del stream no llevan texto humano (solo `event`, `stage` y datos de la petición): el cliente traduce cada etapa a su fase, con los mismos textos que en la ruta directa.
 
 `--daemon` y `--no-daemon` son mutuamente excluyentes: combinarlos sale con

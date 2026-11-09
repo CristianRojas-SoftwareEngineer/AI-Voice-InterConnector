@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.44.0 — 2026-11-04](#0440--2026-11-04)
 - [0.43.0 — 2026-11-04](#0430--2026-11-04)
 - [0.42.0 — 2026-11-02](#0420--2026-11-02)
@@ -135,6 +136,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+### Cambiado
+
+- El residente TTS selecciona por defecto cuantización mixta con cuatro hilos y admite `AVI_TTS_PRECISION=bf16` como alternativa al crear el motor. Los valores inválidos se rechazan y los ajustes del residente no modifican el entorno del clonado. La comparación auditiva y la validación integral de la adopción siguen pendientes; no se ha publicado ni desplegado el cambio.
 
 ## [0.44.0] — 2026-11-04
 

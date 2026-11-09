@@ -510,6 +510,39 @@ fn select_model_dir<'a>(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TtsPrecision {
+    Mixed,
+    Bf16,
+}
+
+/// La configuración de precisión no corresponde a ninguno de los perfiles admitidos.
+#[derive(Debug)]
+pub struct InvalidTtsPrecision;
+
+impl std::fmt::Display for InvalidTtsPrecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "AVI_TTS_PRECISION debe ser mixed o bf16")
+    }
+}
+
+impl std::error::Error for InvalidTtsPrecision {}
+
+impl TtsPrecision {
+    fn from_env() -> std::result::Result<Self, InvalidTtsPrecision> {
+        Self::parse(std::env::var_os("AVI_TTS_PRECISION").as_deref())
+    }
+
+    fn parse(value: Option<&std::ffi::OsStr>) -> std::result::Result<Self, InvalidTtsPrecision> {
+        match value {
+            None => Ok(Self::Mixed),
+            Some(value) if value == "mixed" => Ok(Self::Mixed),
+            Some(value) if value == "bf16" => Ok(Self::Bf16),
+            _ => Err(InvalidTtsPrecision),
+        }
+    }
+}
+
 /// Motor Qwen3-TTS con servidor HTTP residente gestionado por el host como
 /// único camino de síntesis (el healthcheck está acotado; el POST de síntesis
 /// se acota con el presupuesto proporcional al texto).
@@ -517,6 +550,7 @@ pub struct Qwen3TtsEngine {
     pub binary_path: Option<PathBuf>,
     pub model_dir: Option<PathBuf>,
     pub base_model_dir: Option<PathBuf>,
+    precision: TtsPrecision,
     resident: Mutex<Option<ResidentState>>,
     /// PID e identidad del proceso `qwen_tts` arrancado (`None` si no hay),
     /// observados al nacer. `shutdown` los usa para matar solo al proceso que
@@ -566,15 +600,18 @@ impl Qwen3TtsEngine {
     /// residente quede registrado desde que nace; la ruta directa pasa `None` y
     /// nunca toca el registro. Falla si `QWEN3_TTS_BIN`, `QWEN3_TTS_MODEL_DIR`
     /// o `QWEN3_TTS_BASE_MODEL_DIR` están definidas y no apuntan a una ruta
-    /// existente, o si no se puede inspeccionar un directorio de modelo.
+    /// existente, si no se puede inspeccionar un directorio de modelo o si
+    /// `AVI_TTS_PRECISION` no es `mixed` ni `bf16`.
     pub fn new(registry: Option<Arc<dyn ResidentRegistry>>) -> Result<Self> {
         let binary_path = resolve_binary()?;
         let model_dir = resolve_model_dir(binary_path.as_deref())?;
         let base_model_dir = resolve_base_model_dir(binary_path.as_deref())?;
+        let precision = TtsPrecision::from_env()?;
         Ok(Self {
             binary_path,
             model_dir,
             base_model_dir,
+            precision,
             resident: Mutex::new(None),
             live: Mutex::new(None),
             registry,
@@ -682,8 +719,13 @@ impl Qwen3TtsEngine {
             VoiceEngine::Preset(_) => None,
         };
         let port = reserve_loopback_port()?;
-        let spawned =
-            resident::Qwen3TtsResident::spawn(model_dir, port, load_voice, &self.registration())?;
+        let spawned = resident::Qwen3TtsResident::spawn(
+            model_dir,
+            port,
+            load_voice,
+            self.precision,
+            &self.registration(),
+        )?;
         Ok(ResidentState {
             resident: spawned,
             voice: voice.clone(),
@@ -1072,13 +1114,27 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
 /// quedan en el temporal del sistema.
 fn spawn_engine(
     request: avi_process::RestrictedSpawnRequest,
+    precision: Option<TtsPrecision>,
 ) -> Result<avi_process::RestrictedChild> {
     let scratch = avi_process::scratch::dir()?;
-    let env: [(&str, &std::ffi::OsStr); 3] = [
+    let mut env: Vec<(&str, &std::ffi::OsStr)> = vec![
         ("TMP", scratch.as_os_str()),
         ("TEMP", scratch.as_os_str()),
         ("TMPDIR", scratch.as_os_str()),
     ];
+    if let Some(precision) = precision {
+        let (talker, cp) = match precision {
+            TtsPrecision::Mixed => ("int4", "int8"),
+            TtsPrecision::Bf16 => ("bf16", "bf16"),
+        };
+        env.extend([
+            ("QWEN_TALKER_PREC", std::ffi::OsStr::new(talker)),
+            ("QWEN_CP_PREC", std::ffi::OsStr::new(cp)),
+            ("QWEN_CP_LMHEAD_PREC", std::ffi::OsStr::new("")),
+            ("QWEN_CP_LAYER_PREC", std::ffi::OsStr::new("")),
+            ("QWEN_CP_Q2_FFN", std::ffi::OsStr::new("")),
+        ]);
+    }
     Ok(avi_process::spawn_with_allowlist_env(request, &env)?)
 }
 
@@ -1169,7 +1225,7 @@ pub fn clone_voice(
             creation_flags,
             extra_allowed: Vec::new(),
         };
-        let mut child = spawn_engine(request)?;
+        let mut child = spawn_engine(request, None)?;
         match child.wait_timeout(CLONE_WAIT)? {
             Some(status) => Ok(status),
             None => Err(anyhow!(
@@ -1193,7 +1249,7 @@ pub fn clone_voice(
 }
 
 /// Servidor residente del motor Qwen3-TTS: spawn perezoso con
-/// `--serve <puerto> --host 127.0.0.1 -j 4 --stream --watch-stdin [--load-voice <qvoice> --graft]`,
+/// `--serve <puerto> --host 127.0.0.1 -j 4 [--quant-mixed] --stream --watch-stdin [--load-voice <qvoice> --graft]`,
 /// healthcheck `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 /// El residente guarda abierto el extremo de escritura de la tubería de entrada
 /// del motor; si el daemon muere de forma abrupta, la tubería se cierra y el
@@ -1262,19 +1318,19 @@ pub mod resident {
 
     /// Construye el argv de arranque del residente, sin I/O real:
     /// programa más argumentos `-d <model_dir> --serve <port> --host 127.0.0.1
-    /// -j 4 --stream --watch-stdin [--load-voice <qvoice> --graft]`. El llamador
+    /// -j 4 [--quant-mixed] --stream --watch-stdin [--load-voice <qvoice> --graft]`. El llamador
     /// pasa en `model_dir` el modelo Base si hay `load_voice` y CustomVoice si no.
     /// `--graft` clona por el camino solo x-vector (el motor ignora la
     /// transcripción y los códigos de referencia del `.qvoice`) y no aplica
     /// los pesos diferenciales de la voz.
     /// `--watch-stdin` hace que el motor termine al cerrarse su entrada estándar.
-    /// No lleva `--int4`: en el modelo 0.6B cuantiza el code predictor y el
-    /// residente deja de ser determinista, con salidas truncadas.
+    /// El perfil mixed añade `--quant-mixed`; bf16 no añade opciones de cuantización.
     pub(crate) fn build_resident_command(
         bin: &Path,
         model_dir: &Path,
         port: u16,
         load_voice: Option<&Path>,
+        precision: TtsPrecision,
     ) -> (PathBuf, Vec<String>) {
         let mut args = vec![
             String::from("-d"),
@@ -1285,9 +1341,11 @@ pub mod resident {
             crate::RESIDENT_HOST.to_string(),
             String::from("-j"),
             String::from("4"),
-            String::from("--stream"),
-            String::from("--watch-stdin"),
         ];
+        if precision == TtsPrecision::Mixed {
+            args.push(String::from("--quant-mixed"));
+        }
+        args.extend([String::from("--stream"), String::from("--watch-stdin")]);
         if let Some(lv) = load_voice {
             args.push(String::from("--load-voice"));
             args.push(lv.to_string_lossy().into_owned());
@@ -1306,6 +1364,7 @@ pub mod resident {
             model_dir: impl AsRef<Path>,
             port: u16,
             load_voice: Option<&Path>,
+            precision: TtsPrecision,
             registration: &Registration<'_>,
         ) -> Result<Self> {
             let bin = resolve_binary()?
@@ -1323,8 +1382,14 @@ pub mod resident {
                 &avi_process::classify_owner,
             )
             .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
-            let child =
-                launch_resident_process(&bin, model_dir.as_ref(), port, load_voice, log_file)?;
+            let child = launch_resident_process(
+                &bin,
+                model_dir.as_ref(),
+                port,
+                load_voice,
+                precision,
+                log_file,
+            )?;
             Self::spawn_with_child(child, port, log_path, 60, 500, registration)
         }
     }
@@ -1338,9 +1403,10 @@ pub mod resident {
         model_dir: &Path,
         port: u16,
         load_voice: Option<&Path>,
+        precision: TtsPrecision,
         log_file: std::fs::File,
     ) -> Result<avi_process::RestrictedChild> {
-        let (program, args) = build_resident_command(bin, model_dir, port, load_voice);
+        let (program, args) = build_resident_command(bin, model_dir, port, load_voice, precision);
         {
             // La entrada estándar es una tubería cuyo extremo de escritura queda
             // retenido dentro del hijo devuelto: mientras el residente viva,
@@ -1377,7 +1443,7 @@ pub mod resident {
                 creation_flags,
                 extra_allowed: Vec::new(),
             };
-            spawn_engine(request).map_err(|e| {
+            spawn_engine(request, Some(precision)).map_err(|e| {
                 anyhow!(
                     "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
                     bin.display(),
@@ -2094,6 +2160,7 @@ mod tests {
             Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
             45123,
             None,
+            TtsPrecision::Mixed,
         );
         assert_eq!(program, PathBuf::from("qwen_tts.exe"));
         assert_eq!(
@@ -2107,6 +2174,7 @@ mod tests {
                 "127.0.0.1",
                 "-j",
                 "4",
+                "--quant-mixed",
                 "--stream",
                 "--watch-stdin",
             ]
@@ -2117,6 +2185,7 @@ mod tests {
             Path::new("md"),
             45123,
             Some(Path::new("voice.qvoice")),
+            TtsPrecision::Mixed,
         );
         assert_eq!(program, PathBuf::from("qwen_tts.exe"));
         assert_eq!(
@@ -2130,6 +2199,7 @@ mod tests {
                 "127.0.0.1",
                 "-j",
                 "4",
+                "--quant-mixed",
                 "--stream",
                 "--watch-stdin",
                 "--load-voice",
@@ -2137,6 +2207,125 @@ mod tests {
                 "--graft",
             ]
         );
+    }
+
+    #[test]
+    fn precision_accepts_only_exact_supported_values() {
+        use std::ffi::OsStr;
+        assert_eq!(TtsPrecision::parse(None).unwrap(), TtsPrecision::Mixed);
+        assert_eq!(
+            TtsPrecision::parse(Some(OsStr::new("mixed"))).unwrap(),
+            TtsPrecision::Mixed
+        );
+        assert_eq!(
+            TtsPrecision::parse(Some(OsStr::new("bf16"))).unwrap(),
+            TtsPrecision::Bf16
+        );
+        for value in ["", " ", " mixed", "MIXED", "other"] {
+            assert!(TtsPrecision::parse(Some(OsStr::new(value))).is_err());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(TtsPrecision::parse(Some(OsStr::from_bytes(b"\xff"))).is_err());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let value = std::ffi::OsString::from_wide(&[0xd800]);
+            assert!(TtsPrecision::parse(Some(&value)).is_err());
+        }
+    }
+
+    #[test]
+    fn engine_reads_precision_once_from_child_environment() {
+        const MARKER: &str = "AVI_TEST_ENGINE_PRECISION";
+        if let Some(expected) = std::env::var_os(MARKER) {
+            let engine = Qwen3TtsEngine::new(None);
+            match expected.to_str().unwrap() {
+                "mixed" | "bf16" => {
+                    let engine = engine.unwrap();
+                    let precision = if expected == "mixed" {
+                        TtsPrecision::Mixed
+                    } else {
+                        TtsPrecision::Bf16
+                    };
+                    std::env::set_var("AVI_TTS_PRECISION", "invalid");
+                    assert_eq!(engine.precision, precision);
+                }
+                "invalid" => assert!(engine
+                    .err()
+                    .unwrap()
+                    .downcast_ref::<InvalidTtsPrecision>()
+                    .is_some()),
+                _ => panic!("caso de precisión desconocido"),
+            }
+            return;
+        }
+        let mut cases: Vec<(Option<std::ffi::OsString>, &str)> = vec![
+            (None, "mixed"),
+            (Some("mixed".into()), "mixed"),
+            (Some("bf16".into()), "bf16"),
+            (Some("".into()), "invalid"),
+            (Some(" ".into()), "invalid"),
+            (Some(" mixed".into()), "invalid"),
+            (Some("MIXED".into()), "invalid"),
+            (Some("other".into()), "invalid"),
+        ];
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            cases.push((Some(std::ffi::OsString::from_vec(vec![0xff])), "invalid"));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            cases.push((Some(std::ffi::OsString::from_wide(&[0xd800])), "invalid"));
+        }
+        for (value, expected) in cases {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "tests::engine_reads_precision_once_from_child_environment",
+            ]);
+            command.env(MARKER, expected);
+            for key in [
+                "QWEN3_TTS_BIN",
+                "QWEN3_TTS_MODEL_DIR",
+                "QWEN3_TTS_BASE_MODEL_DIR",
+            ] {
+                command.env_remove(key);
+            }
+            match value {
+                Some(value) => {
+                    command.env("AVI_TTS_PRECISION", value);
+                }
+                None => {
+                    command.env_remove("AVI_TTS_PRECISION");
+                }
+            }
+            assert!(
+                command.status().unwrap().success(),
+                "falló el caso {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn bf16_resident_never_uses_quantization_flags() {
+        for voice in [None, Some(Path::new("voice.qvoice"))] {
+            let (_, args) = resident::build_resident_command(
+                Path::new("qwen_tts"),
+                Path::new("model"),
+                45123,
+                voice,
+                TtsPrecision::Bf16,
+            );
+            for flag in ["--quant-mixed", "--int4", "--int8"] {
+                assert!(!args.iter().any(|arg| arg == flag));
+            }
+            assert_eq!(args.iter().any(|arg| arg == "--graft"), voice.is_some());
+        }
     }
 
     /// La voz clonada se sintetiza con el modelo Base y el preset con
@@ -2369,6 +2558,9 @@ const HOLD: bool = __HOLD__;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::fs::write(format!("{DIR}/args.txt"), args.join(" ")).unwrap();
+    let keys = ["TMP", "TEMP", "TMPDIR", "QWEN_TALKER_PREC", "QWEN_CP_PREC", "QWEN_CP_LMHEAD_PREC", "QWEN_CP_LAYER_PREC", "QWEN_CP_Q2_FFN"];
+    let values: Vec<_> = keys.iter().map(|key| format!("{key}={}", std::env::var(key).unwrap_or_default())).collect();
+    std::fs::write(format!("{DIR}/env.txt"), values.join("\n")).unwrap();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut byte = [0u8; 1];
@@ -2442,14 +2634,161 @@ fn main() {
         dir: tempfile::TempDir,
     ) -> (avi_process::RestrictedChild, DoubleCleanup) {
         let log_file = std::fs::File::create(dir.path().join("engine.log")).expect("log del doble");
-        let child =
-            resident::launch_resident_process(bin, Path::new("modelos"), 45123, None, log_file)
-                .expect("debe poder lanzar el motor doble");
+        let child = resident::launch_resident_process(
+            bin,
+            Path::new("modelos"),
+            45123,
+            None,
+            TtsPrecision::Mixed,
+            log_file,
+        )
+        .expect("debe poder lanzar el motor doble");
         let cleanup = DoubleCleanup {
             pid: child.id(),
             dir,
         };
         (child, cleanup)
+    }
+
+    #[test]
+    fn resident_precision_overrides_are_child_only() {
+        const MARKER: &str = "AVI_TEST_PRECISION_CHILD";
+        let keys = [
+            "QWEN_TALKER_PREC",
+            "QWEN_CP_PREC",
+            "QWEN_CP_LMHEAD_PREC",
+            "QWEN_CP_LAYER_PREC",
+            "QWEN_CP_Q2_FFN",
+        ];
+        if std::env::var_os(MARKER).is_none() {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "tests::resident_precision_overrides_are_child_only",
+                "--nocapture",
+            ]);
+            command.env(MARKER, "1");
+            for key in keys {
+                command.env(key, "conflict");
+            }
+            assert!(command.status().unwrap().success());
+            return;
+        }
+        for precision in [Some(TtsPrecision::Mixed), Some(TtsPrecision::Bf16), None] {
+            let (bin, dir) = write_engine_double("precision-env", false);
+            let log = std::fs::File::create(dir.path().join("engine.log")).unwrap();
+            let child = if let Some(profile) = precision {
+                resident::launch_resident_process(
+                    &bin,
+                    Path::new("model"),
+                    45123,
+                    None,
+                    profile,
+                    log,
+                )
+                .unwrap()
+            } else {
+                spawn_engine(
+                    avi_process::RestrictedSpawnRequest {
+                        program: bin,
+                        args: vec![],
+                        stdin: avi_process::StdinSpec::Piped,
+                        stderr_file: log.try_clone().unwrap(),
+                        stdout_file: log,
+                        creation_flags: 0,
+                        extra_allowed: Vec::new(),
+                    },
+                    None,
+                )
+                .unwrap()
+            };
+            let cleanup = DoubleCleanup {
+                pid: child.id(),
+                dir,
+            };
+            // El marcador de entrada se escribe después de completar el entorno.
+            let _ = wait_for_marker(&cleanup.dir.path().join("stdin.txt"));
+            let output = wait_for_marker(&cleanup.dir.path().join("env.txt"));
+            let env: std::collections::HashMap<_, _> = output
+                .lines()
+                .map(|line| line.split_once('=').unwrap())
+                .collect();
+            let scratch = avi_process::scratch::dir().unwrap();
+            for key in ["TMP", "TEMP", "TMPDIR"] {
+                assert_eq!(env[key], scratch.to_str().unwrap());
+            }
+            let expected = match precision {
+                Some(TtsPrecision::Mixed) => ["int4", "int8", "", "", ""],
+                Some(TtsPrecision::Bf16) => ["bf16", "bf16", "", "", ""],
+                None => ["conflict"; 5],
+            };
+            for (key, expected) in keys.iter().zip(expected) {
+                assert_eq!(env[*key], expected);
+                assert_eq!(std::env::var(key).unwrap(), "conflict");
+            }
+        }
+    }
+
+    #[test]
+    fn clone_voice_inherits_precision_environment_without_resident_overrides() {
+        const MARKER: &str = "AVI_TEST_CLONE_ENV_CHILD";
+        let keys = [
+            "QWEN_TALKER_PREC",
+            "QWEN_CP_PREC",
+            "QWEN_CP_LMHEAD_PREC",
+            "QWEN_CP_LAYER_PREC",
+            "QWEN_CP_Q2_FFN",
+        ];
+        if std::env::var_os(MARKER).is_none() {
+            let (bin, dir) = write_engine_double("clone-env", false);
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command.args([
+                "--exact",
+                "tests::clone_voice_inherits_precision_environment_without_resident_overrides",
+                "--nocapture",
+            ]);
+            command.env(MARKER, dir.path());
+            command.env("AVI_DATA_DIR", dir.path());
+            command.env("QWEN3_TTS_BIN", bin);
+            for key in keys {
+                command.env(key, "conflict");
+            }
+            assert!(command.status().unwrap().success());
+            return;
+        }
+        let dir = PathBuf::from(std::env::var_os(MARKER).unwrap());
+        let input = dir.join("reference.wav");
+        let mut wav = hound::WavWriter::create(
+            &input,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 24_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .unwrap();
+        for _ in 0..240 {
+            wav.write_sample(0i16).unwrap();
+        }
+        wav.finalize().unwrap();
+        clone_voice(&dir, &input, &dir.join("voice.qvoice"), "voice").unwrap();
+        let output = std::fs::read_to_string(dir.join("env.txt")).unwrap();
+        let env: std::collections::HashMap<_, _> = output
+            .lines()
+            .map(|line| line.split_once('=').unwrap())
+            .collect();
+        for key in keys {
+            assert_eq!(env[key], "conflict");
+            assert_eq!(std::env::var(key).unwrap(), "conflict");
+        }
+        let scratch = avi_process::scratch::dir().unwrap();
+        for key in ["TMP", "TEMP", "TMPDIR"] {
+            assert_eq!(env[key], scratch.to_str().unwrap());
+        }
+        let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
+        assert!(args.contains("--xvector-only"));
+        assert!(!args.contains("--quant-mixed"));
     }
 
     /// El arranque del residente pasa `--watch-stdin` al motor, para que

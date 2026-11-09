@@ -50,6 +50,8 @@ alguno, el parser lo rechaza como argumento desconocido (exit 2
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
 | `Auto` (sin flags) | Sondea `GET /health` (`daemon_active`) con deadline corto; si responde, delega; si no, cae a directo |
 
+En `synthesize`, `say` y `dub`, el motor directo selecciona precisión al crearse mediante `AVI_TTS_PRECISION`: ausente o `mixed` usa Talker INT4 y Code Predictor INT8; `bf16` usa BF16. Otro valor produce `usage_error` (2) si se alcanza la construcción del motor, sin alterar la precedencia de validaciones previas. En la ruta daemon se usa el perfil del servidor ya iniciado, no el entorno del cliente.
+
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
 o `avi_audio::load_wav_16k_mono_pcm`); el daemon nunca recibe una ruta de
@@ -554,7 +556,7 @@ Del daemon llegan además las esperas «Calentando motor de síntesis…», «En
 
 | Reason | Exit | Origen |
 |---|---|---|
-| `usage_error` | 2 | `--skip-existing` con `--force` o con `--play`, falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
+| `usage_error` | 2 | `AVI_TTS_PRECISION` inválida al crear el motor directo; `--skip-existing` con `--force` o con `--play`, falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
 | `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera `MAX_TEXT_LENGTH` caracteres Unicode ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `audio_too_long` | 2 | El audio de `dub` supera `MAX_DUB_AUDIO_SECS`, o `--duration` lo supera; el de `transcribe` supera `MAX_TRANSCRIBE_AUDIO_SECS`, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` lo superan ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |

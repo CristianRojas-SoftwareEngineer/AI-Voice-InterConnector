@@ -27,6 +27,8 @@ ai-voice-interconnector voice remove --name NAME [--yes]
 (`src/main.rs`), no propio de `voice`. `--daemon`/`--no-daemon` son propios de
 `voice clone` (mutuamente excluyentes) y se escriben tras el subcomando.
 
+Al clonar por la ruta directa se crea también el motor TTS: un `AVI_TTS_PRECISION` inválido produce `usage_error` (2) si se alcanza esa creación. Los valores admitidos son `mixed` y `bf16`; ausente equivale a `mixed`. El perfil no cambia los argumentos ni el entorno del proceso de extracción x-vector. La ruta daemon usa la configuración del servidor ya iniciado.
+
 **`voice clone`** (`src/main.rs`):
 
 | Flag | Tipo | Requerido | Descripción |
