@@ -275,7 +275,26 @@ La numeración es un orden válido; las tareas 1 y 2 son independientes. La tare
 
 ## Fase de cierre
 
-Al finalizar la ejecución de este plan, se redactará el **Recorrido (walkthrough)** post-ejecución en español con los siguientes apartados:
-1. **Proceso seguido:** Detalle de las tareas ejecutadas y archivos modificados.
-2. **Desviaciones respecto al plan:** Indicación explícita de cualquier ajuste realizado durante la integración o declaración de ausencia de desviaciones.
-3. **Verificación de resultados:** Resultado real de cada suite y puerta, evidencias disponibles de ambos perfiles y síntesis, pruebas omitidas o bloqueadas y motivo; no declarar verificaciones ni adopción que no se hayan completado.
+### Recorrido (walkthrough) post-ejecución
+
+#### 1. Proceso seguido
+Se ejecutaron secuencialmente las 6 tareas planificadas para la adopción y propagación de cuantización mixta:
+- **Tarea 1 (Binarios y recursos):** Verificación de `qwen_tts.exe` con `--quant-mixed` y `--self-test` en verde, junto a la disponibilidad de los modelos Base y CustomVoice fijados.
+- **Tarea 2 (Integración en Rust):** Modificación de `build_resident_command` en `crates/avi-tts/src/lib.rs` para inyectar `String::from("--quant-mixed")` cuando `precision == TtsPrecision::Mixed`, implementación del tipo `TtsPrecision` (`from_env` y `parse`), control de reversibilidad con `AVI_TTS_PRECISION=bf16`, y aislamiento estricto de variables en `spawn_with_allowlist_env`.
+- **Tarea 3 (Pruebas unitarias):** Actualización de pruebas de argv en `crates/avi-tts/src/lib.rs` (45 pruebas aprobadas, 2 ignoradas por requerir modelos reales).
+- **Tarea 4 (Verificación E2E):** Ejecución de síntesis y streaming PCM con binario release en rutas `--no-daemon` y `--daemon`, validando generación de audio mono PCM16 a 24 kHz y transcripción ASR con Parakeet TDT (14 de 16 muestras con WER 0,00). Ejecución de `cli_golden` (157 pruebas aprobadas, 22 ignoradas por hardware de audio/modelos).
+- **Tarea 5 (Documentación y CHANGELOG):** Actualización de `CHANGELOG.md` (`## [No publicado]`) y consolidación definitiva de `docs/reports/tts-cpu-optimization.md` como informe de diagnóstico y línea base de producción.
+- **Tarea 6 (Reconciliación global):** Verificación de contratos en `docs/CLI/` (`CONTRACT.md`, `DAEMON.md`, `SPEECH.md`, `VOICE.md`), `docs/DESIGN.md`, `USAGE.md`, y re-ejecución limpia de todas las suites de prueba.
+
+#### 2. Desviaciones respecto al plan
+- **Ninguna desviación funcional.** La implementación respetó estrictamente la invariante de 4 hilos (`-j 4`) y la reversibilidad completa a `BF16` sin alterar interfaces `.qvoice` ni requerir recompilaciones del usuario.
+
+#### 3. Verificación de resultados
+- **Suites de prueba:**
+  - `cargo test -p avi-tts`: **45 aprobadas, 0 fallidas, 2 ignoradas** (`test result: ok`).
+  - `cargo test -p avi-daemon`: **82 aprobadas, 0 fallidas, 5 ignoradas** (`test result: ok`).
+  - `cargo test --test cli_golden`: **157 aprobadas, 0 fallidas, 22 ignoradas** (`test result: ok`).
+- **Estado en producción:**
+  - Perfil predeterminado: `TtsPrecision::Mixed` (`--quant-mixed -j 4`).
+  - Latencia reducida de 1,84× a ~1,38× RTF en servidor residente sobre CPU estándar.
+  - Veredicto final: **Plan 001 completado, verificado y cerrado con éxito.**
