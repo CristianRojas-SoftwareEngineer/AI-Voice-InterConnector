@@ -45,15 +45,17 @@ else ifneq (,$(filter x86_64 amd64,$(UNAME_M)))
         ARCH_FLAGS = -mavx2 -mfma
     endif
 else
-    # ARM (aarch64): NEON es baseline obligatorio de ARMv8-A -> portable por defecto.
-    # -march=native acoplaria a la microarquitectura del runner (SIGILL en CPUs de
-    # campo mas viejas), el mismo fallo que off-Mac en x86. Honra SIMD como x86:
+    # ARM (aarch64): el motor exige el producto escalar entero (SDOT) de ARMv8.2,
+    # porque todas las multiplicaciones cuantizadas usan el mismo algoritmo entero
+    # en todas las plataformas; sin dotprod la compilación falla. -march=native
+    # acoplaria a la microarquitectura del runner (SIGILL en CPUs de campo mas
+    # viejas), el mismo fallo que off-Mac en x86. Honra SIMD como x86:
     #   SIMD=native -> -march=native (dev box; misma CPU build=run)
-    #   (default)   -> -march=armv8-a (portable; NEON garantizado en todo ARMv8-A)
+    #   (default)   -> -march=armv8.2-a+dotprod (portable a todo ARMv8.2 con dotprod)
     ifeq ($(SIMD),native)
         ARCH_FLAGS = -march=native
     else
-        ARCH_FLAGS = -march=armv8-a
+        ARCH_FLAGS = -march=armv8.2-a+dotprod
     endif
 endif
 
@@ -80,6 +82,8 @@ else ifeq ($(UNAME_S),Linux)
     # la declaración, gcc anterior a 14 asumía que devuelve int (y truncaba el
     # puntero a 32 bits en x86_64), y gcc 14 lo rechaza como error.
     CFLAGS_BASE += -D_GNU_SOURCE -I/usr/include/openblas
+    # Destino de clang para comprobar en check-isa las rutas ARM desde un host x86.
+    ISACHK_ARM_X = -target aarch64-linux-gnu
     # OpenBLAS se enlaza estático para que el motor distribuido no exija
     # libopenblas en el sistema. Debian/Ubuntu instalan libopenblas.a fuera de la
     # ruta del enlazador (en openblas-pthread/), y EL8 (la imagen manylinux_2_28
@@ -116,6 +120,9 @@ else
 #   por lo que paths en estilo MSYS2 (/ucrt64) no se resuelven y cblas.h no se encuentra.
 #   Ver memoria: "MinGW build path root-cause".
     UCRT64_INC := $(shell cygpath -m /ucrt64/include/openblas)
+    # Destino de clang para comprobar en check-isa las rutas ARM desde un host x86;
+    # las cabeceras de MinGW sirven también para el destino aarch64.
+    ISACHK_ARM_X = -target aarch64-w64-mingw32 -isystem $(shell cygpath -m /ucrt64/include)
     UCRT64_LIB := $(shell cygpath -m /ucrt64/lib)
     CFLAGS_BASE += -D_GNU_SOURCE -std=gnu11 \
         -I$(UCRT64_INC) -Ithird_party/ingot/mingw_shim \
@@ -652,7 +659,11 @@ bench-server: $(TARGET)
 ISACHK = $(filter-out $(ARCH_FLAGS),$(CFLAGS_BASE)) -fsyntax-only
 check-isa:
 	@echo "=== Compile-check newer-ISA paths (syntax only, not run) ==="
-ifeq ($(UNAME_M),arm64)
+ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+	@$(CC) $(ISACHK) -march=armv8.2-a+dotprod -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c \
+	  && echo "  arm armv8.2-a +dotprod    : OK (línea base ARM64: M1, Graviton2)" || echo "  arm armv8.2-a +dotprod    : FAIL"
+	@! $(CC) $(ISACHK) -march=armv8-a -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c 2>/dev/null \
+	  && echo "  arm armv8-a sin dotprod  : rechazado con #error (OK)" || echo "  arm armv8-a sin dotprod  : FAIL (debe rechazarse)"
 	@$(CC) $(ISACHK) -march=armv8.6-a+bf16+i8mm -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c \
 	  && echo "  arm armv8.6-a +bf16 +i8mm : OK (M2/M3/M4, Graviton3+)" || echo "  arm armv8.6-a +bf16 +i8mm : FAIL"
 	@$(CC) $(ISACHK) -march=armv9-a+sme2 -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c 2>/dev/null \
@@ -672,8 +683,13 @@ else
 	  && echo "  x86 avx512 +vnni +bf16   : OK (Zen4/5, Ice Lake+)" || echo "  x86 avx512 +vnni +bf16   : FAIL"
 	@$(CC) $(ISACHK) -march=sapphirerapids qwen_tts_kernels.c 2>/dev/null \
 	  && echo "  x86 sapphirerapids (AMX) : OK" || echo "  x86 sapphirerapids (AMX) : (toolchain lacks AMX — skipped)"
+	@# Rutas ARM (SDOT e i8mm) compiladas con clang cruzado desde el host x86.
+	@clang $(ISACHK_ARM_X) $(ISACHK) -march=armv8.2-a+dotprod qwen_tts_kernels.c 2>/dev/null \
+	  && echo "  arm armv8.2-a +dotprod (x-comp): OK" || echo "  arm armv8.2-a +dotprod (x-comp): (clang cruzado no disponible — omitido)"
+	@clang $(ISACHK_ARM_X) $(ISACHK) -march=armv8.6-a+bf16+i8mm qwen_tts_kernels.c 2>/dev/null \
+	  && echo "  arm armv8.6-a +bf16 +i8mm (x-comp): OK" || echo "  arm armv8.6-a +bf16 +i8mm (x-comp): (clang cruzado no disponible — omitido)"
 endif
-	@echo "  (scalar/NEON #else paths stay the always-correct fallback + --self-test oracle)"
+	@echo "  (la ruta escalar se verifica con --self-test en una compilación SIMD=scalar)"
 
 test-compose: $(TARGET)
 	@echo "=== Inline markup / --compose smoke test ==="

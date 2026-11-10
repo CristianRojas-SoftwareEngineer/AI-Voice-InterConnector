@@ -2,6 +2,12 @@
  * qwen_tts_kernels.c - Kernel implementations
  */
 
+/* En ARM64 todas las multiplicaciones cuantizadas usan el producto escalar
+ * entero SDOT de ARMv8.2; sin él no hay ruta con la que compilar el motor. */
+#if defined(__aarch64__) && !defined(__ARM_FEATURE_DOTPROD)
+#error "El motor exige ARMv8.2 con dotprod en ARM64: compila con -march=armv8.2-a+dotprod o superior."
+#endif
+
 #include <pthread.h>
 #include "qwen_tts_kernels.h"
 #include "qwen_tts_thread.h"
