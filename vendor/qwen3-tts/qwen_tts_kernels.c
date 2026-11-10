@@ -155,7 +155,7 @@ void qwen_caps_report(void *out) {
 #endif
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC)
 # if defined(__APPLE__)
-    fprintf(f, "  arm bf16 matmul:  BFMMLA compiled, default OFF on Apple (M4-measured loss on bandwidth-rich cores; QWEN_APPLE_MMLA=1 re-enables)\n");
+    fprintf(f, "  arm bf16 matmul:  BFMMLA compiled, OFF on Apple (M4-measured loss on bandwidth-rich cores; fixed choice, no switch)\n");
 # else
     fprintf(f, "  arm bf16 matmul:  BFMMLA ACTIVE (native bf16 GEMM batched matmat; QWEN_NO_BFMMLA=1 disables)\n");
 # endif
@@ -164,9 +164,9 @@ void qwen_caps_report(void *out) {
 #endif
 #if defined(__ARM_FEATURE_MATMUL_INT8)
 # if defined(__APPLE__)
-    fprintf(f, "  arm i8mm:         q4-SMMLA ACTIVE; int8-SMMLA default OFF on Apple (M4-measured loss; QWEN_APPLE_MMLA=1 re-enables)\n");
+    fprintf(f, "  arm i8mm:         q4-SMMLA ACTIVE; int8 batched matmat uses B x SDOT matvec on Apple (fixed choice, no switch)\n");
 # else
-    fprintf(f, "  arm i8mm:         SMMLA ACTIVE (native int8 GEMM batched matmat; QWEN_NO_SMMLA=1 disables)\n");
+    fprintf(f, "  arm i8mm:         SMMLA ACTIVE (native int8 and q4 GEMM batched matmat; fixed choice, no switch)\n");
 # endif
 #endif
 #if defined(__APPLE__) && defined(__BLOCKS__) && !defined(QWEN_FORCE_PTHREAD)
@@ -1246,7 +1246,7 @@ static void bf16_mm_task(size_t tid, size_t nt, void *vc) {
  * (same truncation as the KV cache) → vs the f32-activation twin expect ~1e-3
  * L2 (self-test threshold relaxed to 1e-2 under this guard). SMMLA reuses the
  * per-column int8 activation quant → integer-exact per column vs SDOT.
- * A/B kill-switches on the box: QWEN_NO_BFMMLA=1 / QWEN_NO_SMMLA=1. */
+ * Kill-switch de BFMMLA para A/B en la máquina: QWEN_NO_BFMMLA=1. */
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC)
 static inline float qbf16_to_f32(uint16_t b) {
     uint32_t u = (uint32_t)b << 16; float f; memcpy(&f, &u, 4); return f;
@@ -1325,8 +1325,8 @@ void qwen_matmat_bf16(float *Y, const uint16_t *W, const float *X, int rows, int
 #if defined(__APPLE__)
             /* M4-measured: BFMMLA batch loses on Apple (0.72-0.91× — the transpose+truncate
              * overhead doesn't pay on bandwidth-rich cores) vs 1.5× win on Graviton3 →
-             * default OFF on Apple; QWEN_APPLE_MMLA=1 re-enables (M4 Pro / M5 re-eval). */
-            if (!nb) { const char *a = getenv("QWEN_APPLE_MMLA"); nb = !(a && a[0] == '1'); }
+             * siempre desactivado en Apple (elección fija, sin interruptor). */
+            nb = 1;
 #endif
             atomic_store_explicit(&no_bfmmla, nb, memory_order_relaxed);
         }
@@ -1357,131 +1357,6 @@ void qwen_matmat_bf16(float *Y, const uint16_t *W, const float *X, int rows, int
     }
     bf16_matmat_slice(Y, W, X, 0, rows, cols, B);
 }
-
-/* ---- INT8 batched matmat twin: Y[rows,B] = (W_int8[rows,cols]*scale[rows]) @ X[cols,B]
- * Mirrors qwen_matvec_int8's ARM semantics (int8 weight -> f32, f32 activation,
- * accumulate in f32, * per-row scale). Weight-stationary: each int8 weight (half
- * the bytes of bf16) streams from DRAM once and is FMA'd into all B accumulators.
- * Same compile-time-B register-blocking discipline as bf16; generic fallback for
- * other B. The activation is kept f32 (no per-column requant) so this is bit-
- * comparable to B independent qwen_matvec_int8 calls (fp-order aside). */
-static void int8_matmat_generic(float *Y, const int8_t *W, const float *scale,
-                                const float *X, int r0, int r1, int cols, int B) {
-    for (int r = r0; r < r1; r++) {
-        const int8_t *w = W + (size_t)r * cols;
-        float *y = Y + (size_t)r * B;
-        float acc[64];
-        for (int b = 0; b < B; b++) acc[b] = 0.0f;
-        for (int k = 0; k < cols; k++) {
-            float wv = (float)w[k];
-            const float *xk = X + (size_t)k * B;
-            for (int b = 0; b < B; b++) acc[b] += wv * xk[b];
-        }
-        float s = scale[r];
-        for (int b = 0; b < B; b++) y[b] = acc[b] * s;
-    }
-}
-#define DEFINE_MATMAT_INT8_FIXED_B(BV)                                         \
-static void int8_matmat_b##BV(float *Y, const int8_t *W, const float *scale,    \
-                              const float *X, int r0, int r1, int cols) {      \
-    int r = r0;                                                               \
-    for (; r + 1 < r1; r += 2) {                                              \
-        const int8_t *w0 = W + (size_t)r * cols;                              \
-        const int8_t *w1 = W + (size_t)(r + 1) * cols;                        \
-        float *y0 = Y + (size_t)r * (BV);                                     \
-        float *y1 = Y + (size_t)(r + 1) * (BV);                               \
-        float a[BV], b[BV];                                                   \
-        for (int j = 0; j < (BV); j++) { a[j] = 0.0f; b[j] = 0.0f; }          \
-        for (int k = 0; k < cols; k++) {                                      \
-            float w0v = (float)w0[k], w1v = (float)w1[k];                     \
-            const float *xk = X + (size_t)k * (BV);                           \
-            for (int j = 0; j < (BV); j++) {                                  \
-                float xv = xk[j]; a[j] += w0v * xv; b[j] += w1v * xv;         \
-            }                                                                 \
-        }                                                                     \
-        float s0 = scale[r], s1 = scale[r + 1];                              \
-        for (int j = 0; j < (BV); j++) { y0[j] = a[j] * s0; y1[j] = b[j] * s1; } \
-    }                                                                         \
-    for (; r < r1; r++) {                                                     \
-        const int8_t *w = W + (size_t)r * cols;                              \
-        float *y = Y + (size_t)r * (BV);                                     \
-        float acc[BV];                                                        \
-        for (int j = 0; j < (BV); j++) acc[j] = 0.0f;                         \
-        for (int k = 0; k < cols; k++) {                                      \
-            float wv = (float)w[k];                                          \
-            const float *xk = X + (size_t)k * (BV);                           \
-            for (int j = 0; j < (BV); j++) acc[j] += wv * xk[j];              \
-        }                                                                     \
-        float s = scale[r];                                                  \
-        for (int j = 0; j < (BV); j++) y[j] = acc[j] * s;                     \
-    }                                                                         \
-}
-DEFINE_MATMAT_INT8_FIXED_B(2)
-DEFINE_MATMAT_INT8_FIXED_B(3)
-DEFINE_MATMAT_INT8_FIXED_B(4)
-DEFINE_MATMAT_INT8_FIXED_B(6)
-DEFINE_MATMAT_INT8_FIXED_B(8)
-DEFINE_MATMAT_INT8_FIXED_B(16)
-#undef DEFINE_MATMAT_INT8_FIXED_B
-static void int8_matmat_slice(float *Y, const int8_t *W, const float *scale,
-                              const float *X, int r0, int r1, int cols, int B) {
-    qwen_ftz_on();
-    switch (B) {
-        case 2:  int8_matmat_b2 (Y, W, scale, X, r0, r1, cols); return;
-        case 3:  int8_matmat_b3 (Y, W, scale, X, r0, r1, cols); return;
-        case 4:  int8_matmat_b4 (Y, W, scale, X, r0, r1, cols); return;
-        case 6:  int8_matmat_b6 (Y, W, scale, X, r0, r1, cols); return;
-        case 8:  int8_matmat_b8 (Y, W, scale, X, r0, r1, cols); return;
-        case 16: int8_matmat_b16(Y, W, scale, X, r0, r1, cols); return;
-        default: int8_matmat_generic(Y, W, scale, X, r0, r1, cols, B); return;
-    }
-}
-typedef struct { float *Y; const int8_t *W; const float *scale; const float *X; int rows, cols, B; } int8_mm_ctx;
-static void int8_mm_task(size_t tid, size_t nt, void *vc) {
-    int8_mm_ctx *c = (int8_mm_ctx *)vc;
-    int r0 = (int)(tid * (size_t)c->rows / nt);
-    int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
-    int8_matmat_slice(c->Y, c->W, c->scale, c->X, r0, r1, c->cols, c->B);
-}
-
-#if defined(__ARM_FEATURE_DOTPROD)
-/* ── int8 SDOT batched twin (#3) — weight-stationary native int8 dot ──────────
- * Y[rows,B] = (W_int8 @ qXt^T) · scales. Activations are pre-quantized per column
- * to int8 (qXt[b][cols], scale sx[b]); each weight 16-block is loaded ONCE and
- * SDOT-dotted against all B activation blocks. Amortizes the weight read (bandwidth)
- * AND keeps SDOT (compute) — unlike int8_matmat_slice, which dequants to f32 and
- * loses SDOT, so int8+batch was SLOWER than int8-single on M1 (long-form A/B 0.81×). */
-static void int8_matmat_sdot_slice(float *Y, const int8_t *W, const float *scale,
-                                   const int8_t *qXt, const float *sx,
-                                   int r0, int r1, int cols, int B) {
-    qwen_ftz_on();
-    for (int r = r0; r < r1; r++) {
-        const int8_t *w = W + (size_t)r * cols;
-        int32x4_t acc[16];
-        for (int b = 0; b < B; b++) acc[b] = vdupq_n_s32(0);
-        int k = 0;
-        for (; k + 15 < cols; k += 16) {
-            int8x16_t wv = vld1q_s8(w + k);              /* weight block: loaded once */
-            for (int b = 0; b < B; b++)
-                acc[b] = vdotq_s32(acc[b], wv, vld1q_s8(qXt + (size_t)b * cols + k));
-        }
-        float s = scale[r];
-        for (int b = 0; b < B; b++) {
-            int32_t sum = vaddvq_s32(acc[b]);
-            const int8_t *qb = qXt + (size_t)b * cols;
-            for (int kk = k; kk < cols; kk++) sum += (int32_t)w[kk] * qb[kk];
-            Y[(size_t)r * B + b] = (float)sum * s * sx[b];
-        }
-    }
-}
-typedef struct { float *Y; const int8_t *W; const float *scale; const int8_t *qXt; const float *sx; int rows, cols, B; } int8_smm_ctx;
-static void int8_smm_task(size_t tid, size_t nt, void *vc) {
-    int8_smm_ctx *c = (int8_smm_ctx *)vc;
-    int r0 = (int)(tid * (size_t)c->rows / nt);
-    int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
-    int8_matmat_sdot_slice(c->Y, c->W, c->scale, c->qXt, c->sx, r0, r1, c->cols, c->B);
-}
-#endif /* __ARM_FEATURE_DOTPROD */
 
 /* ── Cuantización de la activación a int8 ──
  * Contrato único de todas las familias (AVX2, NEON y C escalar), para que den
@@ -1587,6 +1462,24 @@ static int quantize_act_int8_cols(int8_t *qXt, float *sx, const float *X, int co
     free(col);
     return 0;
 }
+
+/* Fallo de memoria en un matmat agrupado: no hay ruta de respaldo que degrade en
+ * silencio, así que se informa y se aborta. Todas las ramas matmat usan estas
+ * dos funciones para reservar y cuantizar. */
+static void matmat_oom(void) {
+    fprintf(stderr, "Error: memoria insuficiente en la multiplicación matricial agrupada; se aborta.\n");
+    abort();
+}
+static inline void *matmat_alloc(size_t n) {
+    void *p = malloc(n);
+    if (!p) matmat_oom();
+    return p;
+}
+#if defined(__AVX512VNNI__) || defined(__ARM_FEATURE_MATMUL_INT8) || !defined(__ARM_FEATURE_DOTPROD)
+static inline void matmat_quantize_cols(int8_t *qXt, float *sx, const float *X, int cols, int B) {
+    if (quantize_act_int8_cols(qXt, sx, X, cols, B) != 0) matmat_oom();
+}
+#endif
 #if defined(__AVX512VNNI__)
 /* ── int8 VNNI batched matmat (the x86 int8 GEMM the SDOT comment above asks for) ──
  * Y[rows,B] = (W_int8 @ qXt^T)·scales. Weight-stationary: each 64-int8 W block is
@@ -1630,8 +1523,11 @@ static void int8_vmm_task(size_t tid, size_t nt, void *vc) {
 }
 #endif /* __AVX512VNNI__ */
 
-#if defined(__ARM_FEATURE_MATMUL_INT8)
-/* i8mm SMMLA int8 GEMM slice (see the dispatch note in qwen_matmat_int8). */
+#if defined(__ARM_FEATURE_MATMUL_INT8) && !defined(__APPLE__)
+/* Rebanada int8 con SMMLA (i8mm), activa fuera de Apple (en Apple el matmat int8
+ * pierde frente a B matvec SDOT y se usa esa vía). Cada elemento sale de la misma
+ * suma entera exacta y de la misma expresión final (float)suma * escala_fila *
+ * escala_act que el matvec SDOT, así que coincide bit a bit con B matvec. */
 static void int8_matmat_smmla_slice(float *Y, const int8_t *W, const float *scale,
                                     const int8_t *qXt, const float *sx,
                                     int r0, int r1, int cols, int B) {
@@ -1686,200 +1582,15 @@ static void int8_smmla_task(size_t tid, size_t nt, void *vc) {
     r0 &= ~1; if (tid + 1 < nt) r1 &= ~1;   /* keep 2-row tiles within one slice */
     int8_matmat_smmla_slice(c->Y, c->W, c->scale, c->qXt, c->sx, r0, r1, c->cols, c->B);
 }
-#endif /* __ARM_FEATURE_MATMUL_INT8 */
+#endif /* __ARM_FEATURE_MATMUL_INT8 && !__APPLE__ */
 
-void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
-                      const float *X, int rows, int cols, int B) {
-    if (B <= 0) return;
-    if (B > 64) B = 64;
-#if defined(__AVX512VNNI__)
-    /* x86 VNNI batched int8 GEMM — default ON (QWEN_NO_VNNI=1 disables), the right
-     * int8 matmat primitive on x86 (the ARM SDOT path below stays M1 opt-in). */
-    {
-        static atomic_int no_vnni = -1;
-        int nv = atomic_load_explicit(&no_vnni, memory_order_relaxed);
-        if (nv < 0) { const char *e = getenv("QWEN_NO_VNNI"); nv = (e && e[0] == '1'); atomic_store_explicit(&no_vnni, nv, memory_order_relaxed); }
-        if (!nv && B >= 2 && B <= 16) {
-            int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
-            float sx[16];
-            if (qXt && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
-                int nt = g_n_threads;
-                if (nt > 1 && rows >= 256) {
-                    int8_vmm_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
-                    qwen_parallel((size_t)nt, int8_vmm_task, &c);
-                } else {
-                    int8_matmat_vnni_slice(Y, W, scale, qXt, sx, 0, rows, cols, B);
-                }
-                free(qXt);
-                return;
-            }
-            free(qXt);
-        }
-    }
-#endif
-#if defined(__ARM_FEATURE_MATMUL_INT8)
-    /* i8mm SMMLA batched path — the TRUE int8 GEMM primitive the SDOT note below
-     * asks for (M2+/Neoverse-V1+/Graviton3+; compile-guarded, absent on M1).
-     * 2x2 tiles: vmmlaq_s32 does 2 rows × 2 cols × 8-deep per instruction.
-     * Reuses the per-column activation quant. QWEN_NO_SMMLA=1 opts out. */
-    {
-        static atomic_int no_smmla = -1;
-        int ns = atomic_load_explicit(&no_smmla, memory_order_relaxed);
-        if (ns < 0) {
-            const char *e = getenv("QWEN_NO_SMMLA"); ns = (e && e[0] == '1');
-#if defined(__APPLE__)
-            /* Per-platform gate (M4-measured 2026-07-11): int8-SMMLA batch LOSES to B×
-             * SDOT matvecs on Apple's bandwidth-rich cores (0.61-0.91×) while winning
-             * 2.1× on Graviton3 → default OFF on Apple. QWEN_APPLE_MMLA=1 re-enables
-             * (re-evaluate on M4 Pro / M5). The q4-SMMLA twin stays ON (wins on both). */
-            if (!ns) { const char *a = getenv("QWEN_APPLE_MMLA"); ns = !(a && a[0] == '1'); }
-#endif
-            atomic_store_explicit(&no_smmla, ns, memory_order_relaxed);
-        }
-        if (!ns && B >= 2 && B <= 16) {
-            int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
-            float sx[16];
-            if (qXt && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
-                int nt2 = g_n_threads;
-                if (nt2 > 1 && rows >= 256) {
-                    int8_smmla_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
-                    qwen_parallel((size_t)nt2, int8_smmla_task, &c);
-                } else {
-                    int8_matmat_smmla_slice(Y, W, scale, qXt, sx, 0, rows, cols, B);
-                }
-                free(qXt);
-                return;
-            }
-            free(qXt);
-        }
-    }
-#endif
-#if defined(__ARM_FEATURE_DOTPROD)
-    /* SDOT batched path (#3) — OPT-IN (QWEN_INT8_SDOT_MM=1), default OFF.
-     * MEASURED slower on M1 than the f32-accum batched twin below: SDOT contracts
-     * over the reduction dim k, but batching wants to parallelize over B, so this
-     * does B sequential vdotq per weight block (B not vectorized) and loses to the
-     * f32-accum path that vectorizes over B. Kept as a bit-exact A/B reference (it
-     * equals B×int8-matvec-SDOT, self-test L2=0) for M2+/x86, where the RIGHT int8
-     * matrix-matrix primitive is i8mm SMMLA / AVX-512 VNNI (true int8 GEMM), not a
-     * looped SDOT. On M1, int8+batch doesn't win (SDOT-seq is already near-optimal);
-     * batching pays on bf16. See PLAN batching #3 finding. */
-    {
-        static int sdot_mm = -1;
-        if (sdot_mm < 0) { const char *e = getenv("QWEN_INT8_SDOT_MM"); sdot_mm = (e && e[0] == '1'); }
-        if (sdot_mm && B >= 2 && B <= 16) {
-            int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
-            float sx[16];
-            if (qXt && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
-                int nt = g_n_threads;
-                if (nt > 1 && rows >= 256) {
-                    int8_smm_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
-                    qwen_parallel((size_t)nt, int8_smm_task, &c);
-                } else {
-                    int8_matmat_sdot_slice(Y, W, scale, qXt, sx, 0, rows, cols, B);
-                }
-                free(qXt);
-                return;
-            }
-            free(qXt);
-        }
-    }
-#endif
-    int nt = g_n_threads;
-    if (nt > 1 && rows >= 256) {
-        int8_mm_ctx c = { Y, W, scale, X, rows, cols, B };
-        qwen_parallel((size_t)nt, int8_mm_task, &c);
-        return;
-    }
-    int8_matmat_slice(Y, W, scale, X, 0, rows, cols, B);
-}
-
-/* ---- INT4 (Q4_0) batched matmat twin: Y[rows,B] = dequant(W_q4) @ X[cols,B]
- * THE big batching synergy: the per-nibble UNPACK ((qs>>shift & 0xF) - 8) * scale)
- * — which dominates the single-stream q4_0 GEMV and is REDONE per token there — is
- * done ONCE here and reused across all B columns (weight + unpack amortized over B).
- * Per the PLAN this is where batching pays most, and where int4 could become viable
- * on M1 (nibble-unpack is exactly what makes int4 slow single-stream). 1-row blocked
- * (the unpack is per-row; B accumulators stay register-resident at fixed B). */
-static void q4_matmat_generic(float *Y, const q4_0_block_t *W, const float *X,
-                              int r0, int r1, int cols, int B) {
-    int nb = cols / Q4_0_BLOCK_SIZE;
-    for (int r = r0; r < r1; r++) {
-        const q4_0_block_t *wr = W + (size_t)r * nb;
-        float *y = Y + (size_t)r * B;
-        float acc[64];
-        for (int b = 0; b < B; b++) acc[b] = 0.0f;
-        for (int bl = 0; bl < nb; bl++) {
-            float sc = qwen_f16_to_f32(wr[bl].scale_f16);
-            const uint8_t *qs = wr[bl].qs;
-            int k0 = bl * Q4_0_BLOCK_SIZE;
-            for (int i = 0; i < 16; i++) {
-                float wlo = (float)((qs[i] & 0x0F) - 8) * sc;
-                float whi = (float)((qs[i] >> 4)   - 8) * sc;
-                const float *xl = X + (size_t)(k0 + 2 * i) * B;
-                const float *xh = X + (size_t)(k0 + 2 * i + 1) * B;
-                for (int b = 0; b < B; b++) acc[b] += wlo * xl[b] + whi * xh[b];
-            }
-        }
-        for (int b = 0; b < B; b++) y[b] = acc[b];
-    }
-}
-#define DEFINE_MATMAT_Q4_FIXED_B(BV)                                           \
-static void q4_matmat_b##BV(float *Y, const q4_0_block_t *W, const float *X,    \
-                            int r0, int r1, int cols) {                        \
-    int nb = cols / Q4_0_BLOCK_SIZE;                                          \
-    for (int r = r0; r < r1; r++) {                                           \
-        const q4_0_block_t *wr = W + (size_t)r * nb;                          \
-        float *y = Y + (size_t)r * (BV);                                      \
-        float acc[BV];                                                        \
-        for (int j = 0; j < (BV); j++) acc[j] = 0.0f;                         \
-        for (int bl = 0; bl < nb; bl++) {                                     \
-            float sc = qwen_f16_to_f32(wr[bl].scale_f16);                     \
-            const uint8_t *qs = wr[bl].qs;                                    \
-            int k0 = bl * Q4_0_BLOCK_SIZE;                                    \
-            for (int i = 0; i < 16; i++) {                                    \
-                float wlo = (float)((qs[i] & 0x0F) - 8) * sc;                 \
-                float whi = (float)((qs[i] >> 4)   - 8) * sc;                 \
-                const float *xl = X + (size_t)(k0 + 2 * i) * (BV);            \
-                const float *xh = X + (size_t)(k0 + 2 * i + 1) * (BV);        \
-                for (int j = 0; j < (BV); j++) acc[j] += wlo * xl[j] + whi * xh[j]; \
-            }                                                                 \
-        }                                                                     \
-        for (int j = 0; j < (BV); j++) y[j] = acc[j];                         \
-    }                                                                         \
-}
-DEFINE_MATMAT_Q4_FIXED_B(2)
-DEFINE_MATMAT_Q4_FIXED_B(3)
-DEFINE_MATMAT_Q4_FIXED_B(4)
-DEFINE_MATMAT_Q4_FIXED_B(6)
-DEFINE_MATMAT_Q4_FIXED_B(8)
-DEFINE_MATMAT_Q4_FIXED_B(16)
-#undef DEFINE_MATMAT_Q4_FIXED_B
-static void q4_matmat_slice(float *Y, const q4_0_block_t *W, const float *X,
-                            int r0, int r1, int cols, int B) {
-    qwen_ftz_on();
-    switch (B) {
-        case 2:  q4_matmat_b2 (Y, W, X, r0, r1, cols); return;
-        case 3:  q4_matmat_b3 (Y, W, X, r0, r1, cols); return;
-        case 4:  q4_matmat_b4 (Y, W, X, r0, r1, cols); return;
-        case 6:  q4_matmat_b6 (Y, W, X, r0, r1, cols); return;
-        case 8:  q4_matmat_b8 (Y, W, X, r0, r1, cols); return;
-        case 16: q4_matmat_b16(Y, W, X, r0, r1, cols); return;
-        default: q4_matmat_generic(Y, W, X, r0, r1, cols, B); return;
-    }
-}
-typedef struct { float *Y; const q4_0_block_t *W; const float *X; int rows, cols, B; } q4_mm_ctx;
-static void q4_mm_task(size_t tid, size_t nt, void *vc) {
-    q4_mm_ctx *c = (q4_mm_ctx *)vc;
-    int r0 = (int)(tid * (size_t)c->rows / nt);
-    int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
-    q4_matmat_slice(c->Y, c->W, c->X, r0, r1, c->cols, c->B);
-}
 #if defined(__AVX512VNNI__)
 /* q4 VNNI batched matmat (mirrors int8_matmat_vnni_slice + the C7-v2 unsigned-nibble
  * trick): weight-stationary — unpack each 32-nibble W block ONCE to u8 value order,
  * dpbusd against all B pre-quantized activation columns. q4 per-block scale + per-column
- * act scale; corr[b][bl] = −8·ΣqXt[b] over block bl (precomputed once, shared across rows). */
+ * act scale; corr[b][bl] = −8·ΣqXt[b] over block bl (precomputed once, shared across rows).
+ * Los bloques se acumulan por pares, `sum += s0*d0 + s1*d1`, igual que el matvec VNNI v3
+ * (el predeterminado), con un bloque suelto al final si el número de bloques es impar. */
 static void q4_matmat_vnni_slice(float *Y, const q4_0_block_t *W, const int8_t *qXt,
                                  const float *sx, const int *corr,
                                  int r0, int r1, int cols, int B) {
@@ -1889,7 +1600,30 @@ static void q4_matmat_vnni_slice(float *Y, const q4_0_block_t *W, const int8_t *
         const q4_0_block_t *row = W + (size_t)r * nb;
         float sum[16];
         for (int b = 0; b < B; b++) sum[b] = 0.0f;
-        for (int bl = 0; bl < nb; bl++) {
+        int bl = 0;
+        for (; bl + 1 < nb; bl += 2) {
+            __m128i raw0 = _mm_loadu_si128((const __m128i *)row[bl].qs);
+            __m128i raw1 = _mm_loadu_si128((const __m128i *)row[bl + 1].qs);
+            __m128i lo0 = _mm_and_si128(raw0, lomask), lo1 = _mm_and_si128(raw1, lomask);
+            __m128i hi0 = _mm_and_si128(_mm_srli_epi16(raw0, 4), lomask);
+            __m128i hi1 = _mm_and_si128(_mm_srli_epi16(raw1, 4), lomask);
+            __m512i wv0 = _mm512_zextsi256_si512(_mm256_set_m128i(_mm_unpackhi_epi8(lo0, hi0),
+                                                                  _mm_unpacklo_epi8(lo0, hi0)));
+            __m512i wv1 = _mm512_zextsi256_si512(_mm256_set_m128i(_mm_unpackhi_epi8(lo1, hi1),
+                                                                  _mm_unpacklo_epi8(lo1, hi1)));
+            float scl0 = qwen_f16_to_f32(row[bl].scale_f16), scl1 = qwen_f16_to_f32(row[bl + 1].scale_f16);
+            for (int b = 0; b < B; b++) {
+                const int8_t *qb = qXt + (size_t)b * cols + (size_t)bl * Q4_0_BLOCK_SIZE;
+                __m512i xv0 = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i *)qb));
+                __m512i xv1 = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i *)(qb + Q4_0_BLOCK_SIZE)));
+                int dot0 = _mm512_reduce_add_epi32(_mm512_dpbusd_epi32(_mm512_setzero_si512(), wv0, xv0))
+                         + corr[(size_t)b * nb + bl];
+                int dot1 = _mm512_reduce_add_epi32(_mm512_dpbusd_epi32(_mm512_setzero_si512(), wv1, xv1))
+                         + corr[(size_t)b * nb + bl + 1];
+                sum[b] += scl0 * (float)dot0 + scl1 * (float)dot1;
+            }
+        }
+        for (; bl < nb; bl++) {                    /* bloque suelto si nb es impar */
             __m128i raw = _mm_loadu_si128((const __m128i *)row[bl].qs);
             __m128i lo = _mm_and_si128(raw, lomask);
             __m128i hi = _mm_and_si128(_mm_srli_epi16(raw, 4), lomask);
@@ -1919,7 +1653,10 @@ static void q4_vmm_task(size_t tid, size_t nt, void *vc) {
 /* q4×q8 SMMLA GEMM slice: nibbles decoded to VALUE order via the same vzip the
  * SDOT matvec uses (kept as raw 0..15, the −8 offset folded in via the per-block
  * activation sums corr), then 2×2 vmmlaq_s32 tiles, per-block fp16 weight scale
- * applied at block granularity, per-column activation scale at the end. */
+ * applied at block granularity, per-column activation scale at the end.
+ * Las sumas enteras por bloque son exactas, pero la acumulación float es escalar por
+ * bloque y no por carril como en el matvec SDOT: coincide con B matvec dentro del
+ * redondeo float (del orden de 1e-7 relativo), no bit a bit. */
 static void q4_matmat_smmla_slice(float *Y, const q4_0_block_t *W,
                                   const int8_t *qXt, const float *sx, const int *corr,
                                   int r0, int r1, int cols, int B) {
@@ -2012,108 +1749,6 @@ static void q4_smmla_task(size_t tid, size_t nt, void *vc) {
     q4_matmat_smmla_slice(c->Y, c->W, c->qXt, c->sx, c->corr, r0, r1, c->cols, c->B);
 }
 #endif /* __ARM_FEATURE_MATMUL_INT8 */
-
-void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
-                      int rows, int cols, int B) {
-    if (B <= 0) return;
-    if (B > 64) B = 64;
-#if defined(__AVX512VNNI__)
-    {
-        static atomic_int no_vnni_q4 = -1;
-        int nv = atomic_load_explicit(&no_vnni_q4, memory_order_relaxed);
-        if (nv < 0) { const char *e = getenv("QWEN_NO_VNNI"); nv = (e && e[0] == '1'); atomic_store_explicit(&no_vnni_q4, nv, memory_order_relaxed); }
-        if (!nv && B >= 2 && B <= 16 && cols % Q4_0_BLOCK_SIZE == 0) {
-            int nb = cols / Q4_0_BLOCK_SIZE;
-            int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
-            int *corr = (int *)malloc((size_t)B * nb * sizeof(int));
-            float sx[16];
-            if (qXt && corr && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
-                for (int b = 0; b < B; b++) {
-                    const int8_t *qb = qXt + (size_t)b * cols;
-                    for (int bl = 0; bl < nb; bl++) {
-                        int s = 0;
-                        for (int k = 0; k < Q4_0_BLOCK_SIZE; k++) s += qb[bl * Q4_0_BLOCK_SIZE + k];
-                        corr[(size_t)b * nb + bl] = -8 * s;
-                    }
-                }
-                int nt2 = g_n_threads;
-                if (nt2 > 1 && rows >= 256) {
-                    q4_vmm_ctx c = { Y, W, qXt, sx, corr, rows, cols, B };
-                    qwen_parallel((size_t)nt2, q4_vmm_task, &c);
-                } else {
-                    q4_matmat_vnni_slice(Y, W, qXt, sx, corr, 0, rows, cols, B);
-                }
-                free(qXt); free(corr);
-                return;
-            }
-            free(qXt); free(corr);
-        }
-    }
-#endif
-#if defined(__ARM_FEATURE_MATMUL_INT8)
-    /* q4 SMMLA twin (rental-prep follow-up, Graviton3 2026-07-11): the scalar batch
-     * below was a big LOSS on ARM (0.29× vs B×matvec on Neoverse-V1, 0.43-0.65× on
-     * M1) — decode nibbles in value order (same vzip as the SDOT matvec) and feed
-     * 2×2 vmmlaq_s32 tiles against the per-column int8-quantized activations, with
-     * the −8 offset corrected via per-block activation sums. QWEN_NO_SMMLA=1 opts out. */
-    {
-        static atomic_int no_smmla_q4 = -1;
-        int ns = atomic_load_explicit(&no_smmla_q4, memory_order_relaxed);
-        if (ns < 0) { const char *e = getenv("QWEN_NO_SMMLA"); ns = (e && e[0] == '1'); atomic_store_explicit(&no_smmla_q4, ns, memory_order_relaxed); }
-        if (!ns && B >= 2 && B <= 16 && cols % Q4_0_BLOCK_SIZE == 0) {
-            int nb = cols / Q4_0_BLOCK_SIZE;
-            int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
-            int *corr = (int *)malloc((size_t)B * nb * sizeof(int));
-            float sx[16];
-            if (qXt && corr && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
-                for (int b = 0; b < B; b++) {
-                    const int8_t *qb = qXt + (size_t)b * cols;
-                    for (int bl = 0; bl < nb; bl++) {
-                        int s = 0;
-                        for (int k = 0; k < Q4_0_BLOCK_SIZE; k++) s += qb[bl * Q4_0_BLOCK_SIZE + k];
-                        corr[(size_t)b * nb + bl] = s;
-                    }
-                }
-                int nt2 = g_n_threads;
-                if (nt2 > 1 && rows >= 256) {
-                    q4_smmla_ctx c = { Y, W, qXt, sx, corr, rows, cols, B };
-                    qwen_parallel((size_t)nt2, q4_smmla_task, &c);
-                } else {
-                    q4_matmat_smmla_slice(Y, W, qXt, sx, corr, 0, rows, cols, B);
-                }
-                free(qXt); free(corr);
-                return;
-            }
-            free(qXt); free(corr);
-        }
-    }
-#elif defined(__ARM_FEATURE_DOTPROD)
-    /* Floor fallback (M1-class ARM, no i8mm): the scalar fixed-B batch LOSES to B
-     * sequential SDOT matvecs (measured 0.43-0.65× on M1) — so just do the matvecs.
-     * Column gather/scatter is noise next to the weight sweep. */
-    if (cols % Q4_0_BLOCK_SIZE == 0) {
-        float *xcol = (float *)malloc((size_t)cols * sizeof(float));
-        float *ycol = (float *)malloc((size_t)rows * sizeof(float));
-        if (xcol && ycol) {
-            for (int b = 0; b < B; b++) {
-                for (int k = 0; k < cols; k++) xcol[k] = X[(size_t)k * B + b];
-                qwen_matvec_q4_0(ycol, W, xcol, rows, cols);
-                for (int r = 0; r < rows; r++) Y[(size_t)r * B + b] = ycol[r];
-            }
-            free(xcol); free(ycol);
-            return;
-        }
-        free(xcol); free(ycol);
-    }
-#endif
-    int nt = g_n_threads;
-    if (nt > 1 && rows >= 256) {
-        q4_mm_ctx c = { Y, W, X, rows, cols, B };
-        qwen_parallel((size_t)nt, q4_mm_task, &c);
-        return;
-    }
-    q4_matmat_slice(Y, W, X, 0, rows, cols, B);
-}
 
 /* Unified QKV matvec: single parallel-for for Q, K, V projections.
  * The concatenated [Q|K|V] row space is partitioned for balance, avoiding 3
@@ -3496,6 +3131,232 @@ void qwen_matvec_q4_0(float *y, const q4_0_block_t *W, const float *x,
         return;
     }
     q4_0_matvec_inner(y, x, W, cols, rows);
+}
+
+/* ---- Matmat agrupado: Y[rows,B] = W[rows,cols] @ X[cols,B] (X[k*B+b], Y[r*B+b]) ----
+ * Contrato: cada columna del resultado es exactamente lo que daría qwen_matvec_* sobre
+ * esa columna, para que una petición agrupada calcule igual que una individual. Por eso
+ * cada columna se cuantiza con el mismo cuantizador por vector del matvec y se multiplica
+ * con la misma función de fila; el matmat solo reutiliza la fila de pesos para las B
+ * columnas. Donde no hay núcleo matmat entero (ARM con dotprod sin i8mm, Apple en int8,
+ * B fuera del rango del núcleo, ruta en coma flotante de comparación) se hacen B llamadas
+ * a matvec con extracción y dispersión de columnas. */
+static void matmat_via_matvec_int8(float *Y, const int8_t *W, const float *scale,
+                                   const float *X, int rows, int cols, int B) {
+    float *xcol = (float *)matmat_alloc((size_t)cols * sizeof(float));
+    float *ycol = (float *)matmat_alloc((size_t)rows * sizeof(float));
+    for (int b = 0; b < B; b++) {
+        for (int k = 0; k < cols; k++) xcol[k] = X[(size_t)k * B + b];
+        qwen_matvec_int8(ycol, W, scale, xcol, rows, cols);
+        for (int r = 0; r < rows; r++) Y[(size_t)r * B + b] = ycol[r];
+    }
+    free(xcol); free(ycol);
+}
+static void matmat_via_matvec_q4_0(float *Y, const q4_0_block_t *W,
+                                   const float *X, int rows, int cols, int B) {
+    float *xcol = (float *)matmat_alloc((size_t)cols * sizeof(float));
+    float *ycol = (float *)matmat_alloc((size_t)rows * sizeof(float));
+    for (int b = 0; b < B; b++) {
+        for (int k = 0; k < cols; k++) xcol[k] = X[(size_t)k * B + b];
+        qwen_matvec_q4_0(ycol, W, xcol, rows, cols);
+        for (int r = 0; r < rows; r++) Y[(size_t)r * B + b] = ycol[r];
+    }
+    free(xcol); free(ycol);
+}
+
+#if !defined(__AVX512VNNI__) && !defined(__ARM_FEATURE_DOTPROD)
+/* Matmat entero de AVX2 / escalar: recorre las filas en baldosas de MM_TILE y, para cada
+ * columna, llama a la misma función de filas del matvec sobre la baldosa. La baldosa de
+ * pesos (unos pocos KB) se queda en caché para las B columnas y la suma entera (int8) o el
+ * orden de acumulación float por bloque (q4) es el del matvec, de modo que cada elemento
+ * sale idéntico bit a bit sea cual sea la baldosa o el reparto de filas entre hilos. */
+enum { MM_TILE = 8 };
+static void int8_matmat_int_slice(float *Y, const int8_t *W, const float *scale,
+                                  const int8_t *qXt, const float *sx,
+                                  int r0, int r1, int cols, int B) {
+    for (int r = r0; r < r1; r += MM_TILE) {
+        int n = r1 - r < MM_TILE ? r1 - r : MM_TILE;
+        for (int b = 0; b < B; b++) {
+            float yt[MM_TILE];
+#if defined(__AVX2__)
+            int8_matvec_avx2(yt, qXt + (size_t)b * cols, sx[b], W + (size_t)r * cols,
+                             scale + r, cols, n);
+#else
+            int8_matvec_scalar_int(yt, qXt + (size_t)b * cols, sx[b], W + (size_t)r * cols,
+                                   scale + r, cols, n);
+#endif
+            for (int i = 0; i < n; i++) Y[(size_t)(r + i) * B + b] = yt[i];
+        }
+    }
+}
+typedef struct { float *Y; const int8_t *W; const float *scale; const int8_t *qXt; const float *sx; int rows, cols, B; } int8_imm_ctx;
+static void int8_imm_task(size_t tid, size_t nt, void *vc) {
+    int8_imm_ctx *c = (int8_imm_ctx *)vc;
+    int r0 = (int)(tid * (size_t)c->rows / nt);
+    int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
+    int8_matmat_int_slice(c->Y, c->W, c->scale, c->qXt, c->sx, r0, r1, c->cols, c->B);
+}
+
+static void q4_matmat_int_slice(float *Y, const q4_0_block_t *W,
+                                const int8_t *qXt, const float *sx,
+                                int r0, int r1, int cols, int B) {
+    int nb = cols / Q4_0_BLOCK_SIZE;
+    for (int r = r0; r < r1; r += MM_TILE) {
+        int n = r1 - r < MM_TILE ? r1 - r : MM_TILE;
+        for (int b = 0; b < B; b++) {
+            float yt[MM_TILE];
+            q4_0_int_rows(yt, qXt + (size_t)b * cols, sx[b], W + (size_t)r * nb, cols, n);
+            for (int i = 0; i < n; i++) Y[(size_t)(r + i) * B + b] = yt[i];
+        }
+    }
+}
+typedef struct { float *Y; const q4_0_block_t *W; const int8_t *qXt; const float *sx; int rows, cols, B; } q4_imm_ctx;
+static void q4_imm_task(size_t tid, size_t nt, void *vc) {
+    q4_imm_ctx *c = (q4_imm_ctx *)vc;
+    int r0 = (int)(tid * (size_t)c->rows / nt);
+    int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
+    q4_matmat_int_slice(c->Y, c->W, c->qXt, c->sx, r0, r1, c->cols, c->B);
+}
+#endif /* !__AVX512VNNI__ && !__ARM_FEATURE_DOTPROD */
+
+void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
+                      const float *X, int rows, int cols, int B) {
+    if (B <= 0) return;
+    if (B > 64) B = 64;
+#if defined(__AVX512VNNI__)
+    /* x86 VNNI: mismo criterio de desactivación (QWEN_NO_VNNI) que el matvec int8. */
+    {
+        static atomic_int no_vnni = -1;
+        int nv = atomic_load_explicit(&no_vnni, memory_order_relaxed);
+        if (nv < 0) { const char *e = getenv("QWEN_NO_VNNI"); nv = (e && e[0] == '1'); atomic_store_explicit(&no_vnni, nv, memory_order_relaxed); }
+        if (!nv && B >= 2 && B <= 16 && cols <= Q4_QX_MAX) {
+            int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
+            float sx[16];
+            matmat_quantize_cols(qXt, sx, X, cols, B);
+            int nt = g_n_threads;
+            if (nt > 1 && rows >= 256) {
+                int8_vmm_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
+                qwen_parallel((size_t)nt, int8_vmm_task, &c);
+            } else {
+                int8_matmat_vnni_slice(Y, W, scale, qXt, sx, 0, rows, cols, B);
+            }
+            free(qXt);
+            return;
+        }
+    }
+#elif defined(__ARM_FEATURE_MATMUL_INT8) && !defined(__APPLE__)
+    /* i8mm SMMLA (fuera de Apple): mismo criterio de desactivación (QWEN_NO_SDOT) que
+     * el matvec SDOT. En Apple no se compila: el matmat int8 pierde frente a B matvec
+     * SDOT y se usa esa vía. */
+    if (!q4_sdot_disabled() && B >= 2 && B <= 16 && cols <= Q4_QX_MAX) {
+        int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
+        float sx[16];
+        matmat_quantize_cols(qXt, sx, X, cols, B);
+        int nt = g_n_threads;
+        if (nt > 1 && rows >= 256) {
+            int8_smmla_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
+            qwen_parallel((size_t)nt, int8_smmla_task, &c);
+        } else {
+            int8_matmat_smmla_slice(Y, W, scale, qXt, sx, 0, rows, cols, B);
+        }
+        free(qXt);
+        return;
+    }
+#elif !defined(__ARM_FEATURE_DOTPROD)
+    /* AVX2 / escalar: mismo criterio de desactivación que el matvec entero. */
+    if (!q4_int_disabled() && cols <= Q4_QX_MAX) {
+        int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
+        float sx[64];
+        matmat_quantize_cols(qXt, sx, X, cols, B);
+        int nt = g_n_threads;
+        if (nt > 1 && rows >= 256) {
+            int8_imm_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
+            qwen_parallel((size_t)nt, int8_imm_task, &c);
+        } else {
+            int8_matmat_int_slice(Y, W, scale, qXt, sx, 0, rows, cols, B);
+        }
+        free(qXt);
+        return;
+    }
+#endif
+    matmat_via_matvec_int8(Y, W, scale, X, rows, cols, B);
+}
+
+void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
+                      int rows, int cols, int B) {
+    if (B <= 0) return;
+    if (B > 64) B = 64;
+#if defined(__AVX512VNNI__)
+    /* x86 VNNI: mismo criterio de desactivación (QWEN_NO_SDOT) que el matvec q4. */
+    if (!q4_sdot_disabled() && B >= 2 && B <= 16 && cols <= Q4_QX_MAX && cols % Q4_0_BLOCK_SIZE == 0) {
+        int nb = cols / Q4_0_BLOCK_SIZE;
+        int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
+        int *corr = (int *)matmat_alloc((size_t)B * nb * sizeof(int));
+        float sx[16];
+        matmat_quantize_cols(qXt, sx, X, cols, B);
+        for (int b = 0; b < B; b++) {
+            const int8_t *qb = qXt + (size_t)b * cols;
+            for (int bl = 0; bl < nb; bl++) {
+                int s = 0;
+                for (int k = 0; k < Q4_0_BLOCK_SIZE; k++) s += qb[bl * Q4_0_BLOCK_SIZE + k];
+                corr[(size_t)b * nb + bl] = -8 * s;
+            }
+        }
+        int nt = g_n_threads;
+        if (nt > 1 && rows >= 256) {
+            q4_vmm_ctx c = { Y, W, qXt, sx, corr, rows, cols, B };
+            qwen_parallel((size_t)nt, q4_vmm_task, &c);
+        } else {
+            q4_matmat_vnni_slice(Y, W, qXt, sx, corr, 0, rows, cols, B);
+        }
+        free(qXt); free(corr);
+        return;
+    }
+#elif defined(__ARM_FEATURE_MATMUL_INT8)
+    /* i8mm SMMLA (siempre activo, también en Apple): mismo criterio de desactivación
+     * (QWEN_NO_SDOT) que el matvec SDOT q4. */
+    if (!q4_sdot_disabled() && B >= 2 && B <= 16 && cols <= Q4_QX_MAX && cols % Q4_0_BLOCK_SIZE == 0) {
+        int nb = cols / Q4_0_BLOCK_SIZE;
+        int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
+        int *corr = (int *)matmat_alloc((size_t)B * nb * sizeof(int));
+        float sx[16];
+        matmat_quantize_cols(qXt, sx, X, cols, B);
+        for (int b = 0; b < B; b++) {
+            const int8_t *qb = qXt + (size_t)b * cols;
+            for (int bl = 0; bl < nb; bl++) {
+                int s = 0;
+                for (int k = 0; k < Q4_0_BLOCK_SIZE; k++) s += qb[bl * Q4_0_BLOCK_SIZE + k];
+                corr[(size_t)b * nb + bl] = s;
+            }
+        }
+        int nt = g_n_threads;
+        if (nt > 1 && rows >= 256) {
+            q4_smmla_ctx c = { Y, W, qXt, sx, corr, rows, cols, B };
+            qwen_parallel((size_t)nt, q4_smmla_task, &c);
+        } else {
+            q4_matmat_smmla_slice(Y, W, qXt, sx, corr, 0, rows, cols, B);
+        }
+        free(qXt); free(corr);
+        return;
+    }
+#elif !defined(__ARM_FEATURE_DOTPROD)
+    /* AVX2 / escalar: mismo criterio de desactivación que el matvec entero q4. */
+    if (!q4_int_disabled() && cols <= Q4_QX_MAX && cols % Q4_0_BLOCK_SIZE == 0) {
+        int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
+        float sx[64];
+        matmat_quantize_cols(qXt, sx, X, cols, B);
+        int nt = g_n_threads;
+        if (nt > 1 && rows >= 256) {
+            q4_imm_ctx c = { Y, W, qXt, sx, rows, cols, B };
+            qwen_parallel((size_t)nt, q4_imm_task, &c);
+        } else {
+            q4_matmat_int_slice(Y, W, qXt, sx, 0, rows, cols, B);
+        }
+        free(qXt);
+        return;
+    }
+#endif
+    matmat_via_matvec_q4_0(Y, W, X, rows, cols, B);
 }
 
 /* QKV q4_0: partition the concatenated [Q|K|V] row space, reusing the inner
@@ -5236,9 +5097,9 @@ int qwen_kernel_selftest(void *out) {
                 argmax_ok ? "OK" : "FAIL", amax_ref, amax_got);
 
         /* ---- int8 batched matmat: Y[rows,B] vs B independent int8 matvecs ----
-         * matmat_int8 keeps the activation f32 (like the ARM matvec) and reuses the
-         * same per-row scales, so it should track B× qwen_matvec_int8 closely; allow
-         * the same activation-quant tolerance the dispatched int8 matvec needs. */
+         * El matmat y el matvec cuantizan cada columna de la activación con el mismo
+         * cuantizador por vector y calculan la misma suma entera con la misma expresión
+         * final de escalado, así que el error exigido es exactamente 0. */
         {
             const int B = 8;
             float *Xb = malloc((size_t)cols * B * sizeof(float));
@@ -5259,7 +5120,7 @@ int qwen_kernel_selftest(void *out) {
                     }
                 }
                 double l2rel = l2d > 0 ? sqrt(l2n / l2d) : 0.0;
-                int ok = l2rel < 3e-2;
+                int ok = l2rel == 0.0;
                 fprintf(f, "  [%4dx%4d] matmat_int8(B=%d) vs B*matvec_int8: L2_rel=%.2e  %s\n",
                         rows, cols, B, l2rel, ok ? "PASS" : "FAIL");
                 if (!ok) failures++;
@@ -5268,10 +5129,10 @@ int qwen_kernel_selftest(void *out) {
         }
 
         /* ---- q4_0 batched matmat: Y[rows,B] vs B independent q4_0 matvecs ----
-         * matmat_q4_0 keeps the activation f32 (nibble-dequant -> f32 FMA), while
-         * the dispatched matvec_q4_0 now uses the SDOT path (activation quantized
-         * to int8, plan_v4 B1). So they differ by the same activation-quant tolerance
-         * the int8 twin needs (was 1e-3 fp-order back when both kept f32 act). */
+         * El matmat y el matvec cuantizan cada columna con el mismo cuantizador por
+         * vector y suman los bloques con el mismo producto escalar entero; solo puede
+         * diferir el orden de acumulación float por bloque en las rutas de hardware que
+         * no comparten función de bloque, del orden de 1e-7 relativo. */
         if (cols % Q4_0_BLOCK_SIZE == 0) {
             const int B = 8;
             int nb = cols / Q4_0_BLOCK_SIZE;
@@ -5329,7 +5190,7 @@ int qwen_kernel_selftest(void *out) {
                     }
                 }
                 double l2rel = l2d > 0 ? sqrt(l2n / l2d) : 0.0;
-                int ok = l2rel < 3e-2;
+                int ok = l2rel <= 1e-6;
                 fprintf(f, "  [%4dx%4d] matmat_q4_0(B=%d) vs B*matvec_q4_0: L2_rel=%.2e  %s\n",
                         rows, cols, B, l2rel, ok ? "PASS" : "FAIL");
                 if (!ok) failures++;
