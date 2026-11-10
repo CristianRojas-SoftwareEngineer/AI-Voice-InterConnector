@@ -921,17 +921,17 @@ static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *res
                          int cur_ch, int cur_len) {
     /* LayerNorm (per-timestep) */
     for (int t = 0; t < cur_len; t++) {
-        float sum = 0, sum_sq = 0;
-        for (int ci = 0; ci < cur_ch; ci++) {
-            float val = signal[(int64_t)ci * cur_len + t];
-            sum += val; sum_sq += val * val;
+        float mean = 0, var = 0;
+        for (int c = 0; c < cur_ch; c++) mean += signal[(int64_t)c * cur_len + t];
+        mean /= cur_ch;
+        for (int c = 0; c < cur_ch; c++) {
+            float d = signal[(int64_t)c * cur_len + t] - mean;
+            var += d * d;
         }
-        float mean = sum / cur_ch;
-        float var = sum_sq / cur_ch - mean * mean;
-        float inv_std = 1.0f / sqrtf(var + 1e-5f);
-        for (int ci = 0; ci < cur_ch; ci++) {
-            float *p = &signal[(int64_t)ci * cur_len + t];
-            *p = (*p - mean) * inv_std * cn->norm_weight[ci] + cn->norm_bias[ci];
+        var = 1.0f / sqrtf(var / cur_ch + 1e-5f);
+        for (int c = 0; c < cur_ch; c++) {
+            float x = (signal[(int64_t)c * cur_len + t] - mean) * var;
+            signal[(int64_t)c * cur_len + t] = x * cn->norm_weight[c] + cn->norm_bias[c];
         }
     }
 
