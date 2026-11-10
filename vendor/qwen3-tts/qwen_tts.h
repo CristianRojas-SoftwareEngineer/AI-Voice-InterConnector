@@ -382,6 +382,39 @@ typedef struct {
     int initialized;       /* 1 after first call */
 } qwen_sd_stream_state_t;
 
+/* Espacio de trabajo persistente de la red convolucional del decodificador
+ * acústico. Cada ranura es un búfer intermedio que solo crece y se reutiliza
+ * entre bloques y entre peticiones, para no reservar y liberar decenas de MB por
+ * bloque. Mapa de ranuras (dos búferes vivos a la vez usan ranuras distintas):
+ *   A, B   señal principal; se alternan (la salida de cada operación va a la
+ *          ranura que no contiene su entrada)
+ *   RES    copia residual de cada bloque de residuo
+ *   EXT    [cola | fragmento] de la convolución con estado
+ *   FULL   salida sin recortar de la convolución con estado y de la transpuesta
+ *   WK     porción del peso por posición del kernel (convolución transpuesta)
+ *   RK     producto parcial por posición del kernel (convolución transpuesta)
+ *   COL    im2col de la convolución (con teselado)
+ *   PW1    activación intermedia de 4096 canales del MLP de ConvNeXt
+ * El contenido de una ranura no sobrevive a un crecimiento: solo se pide
+ * capacidad para un búfer cuyo contenido anterior ya está muerto. */
+typedef enum {
+    QWEN_SDW_A, QWEN_SDW_B, QWEN_SDW_RES, QWEN_SDW_EXT, QWEN_SDW_FULL,
+    QWEN_SDW_WK, QWEN_SDW_RK, QWEN_SDW_COL, QWEN_SDW_PW1,
+    QWEN_SDW_COUNT
+} qwen_sd_slot_t;
+
+typedef struct {
+    float *p;      /* búfer de la ranura (NULL si aún no se reservó) */
+    size_t cap;    /* capacidad en floats */
+} qwen_sd_slot_buf_t;
+
+typedef struct {
+    qwen_sd_slot_buf_t slot[QWEN_SDW_COUNT];
+} qwen_sd_workspace_t;
+
+/* Libera todas las ranuras del espacio de trabajo y lo deja vacío. */
+void qwen_sd_workspace_free(qwen_sd_workspace_t *ws);
+
 /* ========================================================================
  * Audio Callback (for streaming)
  * ======================================================================== */
@@ -514,6 +547,7 @@ typedef struct qwen_tts_ctx {
     /* Speech decoder */
     qwen_speech_decoder_t speech_dec;
     qwen_sd_stream_state_t sd_stream;  /* Streaming incremental decode state */
+    qwen_sd_workspace_t sd_ws;         /* Búferes intermedios persistentes de la red convolucional */
 
     /* Speaker encoder (ECAPA-TDNN, Base model only) */
     qwen_speaker_encoder_t speaker_enc;

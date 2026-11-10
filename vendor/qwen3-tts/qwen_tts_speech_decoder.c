@@ -156,8 +156,28 @@ static void conv_add_bias(float *out, const float *bias, int channels, int lengt
     }
 }
 
-/* Conv1d causal: im2col + sgemm (k>1), sgemm directo (k=1) */
-static void causal_conv1d(float *out, const float *in,
+/* Devuelve la ranura `slot` con capacidad para al menos `n` floats. Solo crece
+ * (libera el búfer anterior y reserva uno nuevo, sin conservar su contenido) y
+ * nunca encoge; devuelve NULL si la reserva falla. El contenido devuelto no está
+ * inicializado: el llamador escribe todo el tramo que lee. */
+static float *sd_ws_get(qwen_sd_workspace_t *ws, qwen_sd_slot_t slot, size_t n) {
+    qwen_sd_slot_buf_t *s = &ws->slot[slot];
+    if (n > s->cap) {
+        free(s->p);
+        s->p = (float *)aligned_malloc(n * sizeof(float));
+        s->cap = s->p ? n : 0;
+    }
+    return s->p;
+}
+
+void qwen_sd_workspace_free(qwen_sd_workspace_t *ws) {
+    for (int i = 0; i < QWEN_SDW_COUNT; i++) free(ws->slot[i].p);
+    memset(ws, 0, sizeof(*ws));
+}
+
+/* Conv1d causal: im2col + sgemm (k>1), sgemm directo (k=1). Devuelve 0, o -1 si
+ * falla la reserva del im2col en el espacio de trabajo. */
+static int causal_conv1d(qwen_sd_workspace_t *ws, float *out, const float *in,
                           const float *weight, const float *bias,
                           int in_ch, int out_ch, int length,
                           int kernel, int dilation) {
@@ -170,7 +190,7 @@ static void causal_conv1d(float *out, const float *in,
             qwen_conv1d_int8(out, in, e->q, e->scales, bias,
                              in_ch, out_ch, length, kernel, dilation,
                              e->Kp, sd_int8_blk());
-            return;
+            return 0;
         }
     }
 
@@ -182,7 +202,7 @@ static void causal_conv1d(float *out, const float *in,
                     in, length,
                     0.0f, out, length);
         conv_add_bias(out, bias, out_ch, length);
-        return;
+        return 0;
     }
 
     /* im2col + sgemm for k>1 */
@@ -194,7 +214,8 @@ static void causal_conv1d(float *out, const float *in,
     if (max_tile < 1) max_tile = 1;
     if (max_tile > length) max_tile = length;
 
-    float *col = (float *)aligned_malloc(col_rows * max_tile * sizeof(float));
+    float *col = sd_ws_get(ws, QWEN_SDW_COL, (size_t)(col_rows * max_tile));
+    if (!col) return -1;
 
     for (int ts = 0; ts < length; ts += (int)max_tile) {
         int tile = ((int64_t)ts + max_tile > length) ? length - ts : (int)max_tile;
@@ -220,12 +241,13 @@ static void causal_conv1d(float *out, const float *in,
                     0.0f, out + ts, length);
     }
 
-    free(col);
     conv_add_bias(out, bias, out_ch, length);
+    return 0;
 }
 
-/* ConvTranspose1d causal: sgemm por posición del kernel + scatter */
-static void causal_conv_transpose1d(float *out, const float *in,
+/* ConvTranspose1d causal: sgemm por posición del kernel + scatter. Devuelve 0, o
+ * -1 si falla la reserva de los búferes de trabajo. */
+static int causal_conv_transpose1d(qwen_sd_workspace_t *ws, float *out, const float *in,
                                     const float *weight, const float *bias,
                                     int in_ch, int out_ch, int in_len, int out_len,
                                     int kernel, int stride) {
@@ -236,8 +258,9 @@ static void causal_conv_transpose1d(float *out, const float *in,
      * del overlap-add. */
 
     /* Per-kernel-position: extract weight slice, sgemm, scatter */
-    float *wk = (float *)aligned_malloc((int64_t)in_ch * out_ch * sizeof(float));
-    float *rk = (float *)aligned_malloc((int64_t)out_ch * in_len * sizeof(float));
+    float *wk = sd_ws_get(ws, QWEN_SDW_WK, (size_t)in_ch * out_ch);
+    float *rk = sd_ws_get(ws, QWEN_SDW_RK, (size_t)out_ch * in_len);
+    if (!wk || !rk) return -1;
 
     for (int k = 0; k < kernel; k++) {
         /* Extract W_k[in_ch, out_ch] from weight[in_ch, out_ch, kernel] */
@@ -265,9 +288,8 @@ static void causal_conv_transpose1d(float *out, const float *in,
         }
     }
 
-    free(wk);
-    free(rk);
     conv_add_bias(out, bias, out_ch, out_len);
+    return 0;
 }
 
 /* ========================================================================
@@ -481,7 +503,7 @@ int qwen_speech_decoder_load(qwen_tts_ctx_t *ctx) {
  * Decode: codes → audio
  * ======================================================================== */
 
-static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
+static int conv_decoder_forward(qwen_tts_ctx_t *ctx, qwen_sd_workspace_t *ws,
                                  float *signal, int cur_ch, int cur_len,
                                  float **audio_out, int *n_samples_out);
 
@@ -585,8 +607,12 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
     }
 
     float *pre_conv_out = (float *)aligned_calloc((int64_t)latent_dim * n_frames, sizeof(float));
-    causal_conv1d(pre_conv_out, vq_cf, sd->pre_conv_weight, sd->pre_conv_bias,
-                  vq_hidden, latent_dim, n_frames, 3, 1);
+    /* El im2col está acotado por el teselado, así que usa el espacio de trabajo del contexto. */
+    if (causal_conv1d(&ctx->sd_ws, pre_conv_out, vq_cf, sd->pre_conv_weight, sd->pre_conv_bias,
+                      vq_hidden, latent_dim, n_frames, 3, 1) != 0) {
+        free(pre_conv_out); free(vq_cf);
+        return -1;
+    }
     free(vq_cf);
 
     /* Debug: dump pre_conv output */
@@ -863,7 +889,14 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
     /* Step 7: red convolucional (ConvNeXt, conv inicial, bloques de upsample y conv final) */
     float *audio = NULL;
     int audio_len = 0;
-    if (conv_decoder_forward(ctx, signal, latent_dim, n_frames, &audio, &audio_len) != 0)
+    /* La decodificación completa trabaja con la longitud íntegra de la frase: usa
+     * un espacio de trabajo local para no dejar en el contexto ranuras del tamaño
+     * de toda la frase una vez terminada. */
+    qwen_sd_workspace_t ws_full;
+    memset(&ws_full, 0, sizeof(ws_full));
+    int fwd_rc = conv_decoder_forward(ctx, &ws_full, signal, latent_dim, n_frames, &audio, &audio_len);
+    qwen_sd_workspace_free(&ws_full);
+    if (fwd_rc != 0)
         return -1;
 
     *audio_out = audio;
@@ -917,8 +950,8 @@ void qwen_sd_stream_free(qwen_sd_stream_state_t *st) {
  * in situ sobre `signal` [cur_ch, cur_len]. Cada paso es por instante de tiempo,
  * sin estado entre fragmentos, así que la comparten la decodificación completa
  * y la de streaming. */
-static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *residual,
-                         int cur_ch, int cur_len) {
+static int convnext_mlp(qwen_sd_workspace_t *ws, qwen_sd_convnext_t *cn, float *signal,
+                        const float *residual, int cur_ch, int cur_len) {
     /* LayerNorm (per-timestep) */
     for (int t = 0; t < cur_len; t++) {
         float mean = 0, var = 0;
@@ -937,7 +970,8 @@ static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *res
 
     /* Pointwise convs: pw1 (1024→4096, GELU), pw2 (4096→1024) */
     int pw_dim = 4096;
-    float *pw1_out = (float *)aligned_malloc((int64_t)pw_dim * cur_len * sizeof(float));
+    float *pw1_out = sd_ws_get(ws, QWEN_SDW_PW1, (size_t)pw_dim * cur_len);
+    if (!pw1_out) return -1;
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 pw_dim, cur_len, cur_ch, 1.0f,
                 cn->pwconv1_weight, cur_ch, signal, cur_len,
@@ -959,7 +993,6 @@ static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *res
         for (int o = 0; o < cur_ch; o++)
             for (int t = 0; t < cur_len; t++)
                 signal[(int64_t)o * cur_len + t] += cn->pwconv2_bias[o];
-    free(pw1_out);
 
     /* Gamma + residual */
     for (int ci = 0; ci < cur_ch; ci++) {
@@ -968,59 +1001,73 @@ static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *res
             signal[(int64_t)ci * cur_len + t] = residual[(int64_t)ci * cur_len + t]
                 + signal[(int64_t)ci * cur_len + t] * g;
     }
+    return 0;
 }
 
 /* Red convolucional completa (ConvNeXt + conv inicial + bloques de upsample +
  * conv final) sobre `signal` en formato channel-first [cur_ch, cur_len]. Toma la
  * propiedad de `signal` y devuelve el audio recortado a [-1, 1]. */
-static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
+static int conv_decoder_forward(qwen_tts_ctx_t *ctx, qwen_sd_workspace_t *ws,
                                  float *signal, int cur_ch, int cur_len,
                                  float **audio_out, int *n_samples_out) {
     qwen_speech_decoder_t *sd = &ctx->speech_dec;
+
+    /* `owned` es el búfer del llamador, del que esta función toma la propiedad y que
+     * libera en cuanto la primera operación lo ha consumido. Después la señal
+     * vive en las ranuras A/B del espacio de trabajo y `cur` apunta a la vigente;
+     * `ci` es el índice de su ranura (A=0, B=1) para alternar sin alias. */
+    float *owned = signal;
+    float *cur = signal;
+    int ci = 0;
 
     if (ctx->debug) fprintf(stderr, "[DECODER] ConvNeXt upsample...\n");
 
     /* ConvNeXt upsample (2 blocks, 2x each → 4x total) */
     for (int b = 0; b < 2; b++) {
         qwen_sd_convnext_t *cn = &sd->convnext[b];
-        if (!cn->conv_weight) { fprintf(stderr, "ERROR: ConvNeXt block %d weights missing!\n", b); free(signal); return -1; }
+        if (!cn->conv_weight) { fprintf(stderr, "ERROR: ConvNeXt block %d weights missing!\n", b); free(owned); return -1; }
 
+        /* La transpuesta va a B y la depthwise vuelve a A: la entrada de la
+         * transpuesta (el búfer del llamador o A) está muerta para la depthwise. */
         int new_len = conv_transpose1d_out_len(cur_len, 2, 2);
-        float *up_out = (float *)aligned_calloc((int64_t)cur_ch * new_len, sizeof(float));
-        causal_conv_transpose1d(up_out, signal, cn->conv_weight, cn->conv_bias,
-                                 cur_ch, cur_ch, cur_len, new_len, 2, 2);
-        free(signal); signal = up_out; cur_len = new_len;
+        float *up_out = sd_ws_get(ws, QWEN_SDW_B, (size_t)cur_ch * new_len);
+        if (!up_out || causal_conv_transpose1d(ws, up_out, cur, cn->conv_weight, cn->conv_bias,
+                                               cur_ch, cur_ch, cur_len, new_len, 2, 2) != 0) {
+            free(owned); return -1;
+        }
+        free(owned); owned = NULL;
+        cur_len = new_len;
 
         /* Depthwise conv (k=7, pad=6) */
-        float *dw_out = (float *)aligned_calloc((int64_t)cur_ch * cur_len, sizeof(float));
+        float *dw_out = sd_ws_get(ws, QWEN_SDW_A, (size_t)cur_ch * cur_len);
+        if (!dw_out) return -1;
         for (int c = 0; c < cur_ch; c++) {
             for (int t = 0; t < cur_len; t++) {
                 float sum = cn->dwconv_bias ? cn->dwconv_bias[c] : 0;
                 for (int k = 0; k < 7; k++) {
                     int in_pos = t - 6 + k;
                     if (in_pos >= 0 && in_pos < cur_len)
-                        sum += cn->dwconv_weight[c * 7 + k] * signal[(int64_t)c * cur_len + in_pos];
+                        sum += cn->dwconv_weight[c * 7 + k] * up_out[(int64_t)c * cur_len + in_pos];
                 }
                 dw_out[(int64_t)c * cur_len + t] = sum;
             }
         }
 
-        float *residual = signal; signal = dw_out;
-
-        convnext_mlp(cn, signal, residual, cur_ch, cur_len);
-        free(residual);
+        if (convnext_mlp(ws, cn, dw_out, up_out, cur_ch, cur_len) != 0) return -1;
+        cur = dw_out; ci = 0;
     }
 
     if (ctx->debug) fprintf(stderr, "[DECODER] Initial conv...\n");
 
-    /* Initial conv (1024→1536, k=7, pad_left=6) */
-    if (!sd->initial_conv_weight) { free(signal); return -1; }
+    /* Initial conv (1024→1536, k=7, pad_left=6): A -> B */
+    if (!sd->initial_conv_weight) return -1;
     int new_ch = 1536;
     int new_len = conv1d_out_len(cur_len, 7, 1, 6);
-    float *conv_out = (float *)aligned_calloc((int64_t)new_ch * new_len, sizeof(float));
-    causal_conv1d(conv_out, signal, sd->initial_conv_weight, sd->initial_conv_bias,
-                  cur_ch, new_ch, cur_len, 7, 1);
-    free(signal); signal = conv_out; cur_ch = new_ch; cur_len = new_len;
+    float *conv_out = sd_ws_get(ws, QWEN_SDW_B, (size_t)new_ch * new_len);
+    if (!conv_out || causal_conv1d(ws, conv_out, cur, sd->initial_conv_weight, sd->initial_conv_bias,
+                                   cur_ch, new_ch, cur_len, 7, 1) != 0)
+        return -1;
+    cur = conv_out; ci = 1; cur_ch = new_ch; cur_len = new_len;
 
     /* 4 Decoder upsample blocks */
     int up_rates[4] = {8, 5, 4, 3};
@@ -1035,46 +1082,50 @@ static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
 
         if (!ub->upsample.conv_weight) {
             fprintf(stderr, "ERROR: Upsample block %d weights missing!\n", b);
-            free(signal); return -1;
+            return -1;
         }
 
         if (ub->upsample.snake_alpha && ub->upsample.snake_beta)
-            snake_activation(signal, cur_ch, cur_len, ub->upsample.snake_alpha, ub->upsample.snake_beta);
+            snake_activation(cur, cur_ch, cur_len, ub->upsample.snake_alpha, ub->upsample.snake_beta);
 
+        /* Transpuesta: de la ranura vigente a la otra. */
         int up_len = conv_transpose1d_out_len(cur_len, kernel, rate);
-        float *up_out = (float *)aligned_calloc((int64_t)out_ch * up_len, sizeof(float));
-        causal_conv_transpose1d(up_out, signal, ub->upsample.conv_weight, ub->upsample.conv_bias,
-                                 cur_ch, out_ch, cur_len, up_len, kernel, rate);
-        free(signal); signal = up_out; cur_ch = out_ch; cur_len = up_len;
+        float *up_out = sd_ws_get(ws, (qwen_sd_slot_t)(ci ^ 1), (size_t)out_ch * up_len);
+        if (!up_out || causal_conv_transpose1d(ws, up_out, cur, ub->upsample.conv_weight,
+                                               ub->upsample.conv_bias,
+                                               cur_ch, out_ch, cur_len, up_len, kernel, rate) != 0)
+            return -1;
+        cur = up_out; ci ^= 1; cur_ch = out_ch; cur_len = up_len;
 
+        /* Bloque residual: la señal vigente (ranura s) y su copia RES se conservan;
+         * conv1 va a la otra ranura (o), conv2 vuelve a s y se suma con RES in situ. */
         int dilations[3] = {1, 3, 9};
+        size_t n_el = (size_t)cur_ch * cur_len;
         for (int r = 0; r < 3; r++) {
             int dil = dilations[r];
-            float *res = (float *)aligned_malloc((int64_t)cur_ch * cur_len * sizeof(float));
-            memcpy(res, signal, (int64_t)cur_ch * cur_len * sizeof(float));
+            float *res = sd_ws_get(ws, QWEN_SDW_RES, n_el);
+            float *o = sd_ws_get(ws, (qwen_sd_slot_t)(ci ^ 1), n_el);
+            if (!res || !o) return -1;
+            memcpy(res, cur, n_el * sizeof(float));
 
             if (ub->res_blocks[r].snake1_alpha && ub->res_blocks[r].snake1_beta)
-                snake_activation(signal, cur_ch, cur_len,
+                snake_activation(cur, cur_ch, cur_len,
                                   ub->res_blocks[r].snake1_alpha, ub->res_blocks[r].snake1_beta);
 
-            float *c1_out = (float *)aligned_calloc((int64_t)cur_ch * cur_len, sizeof(float));
-            causal_conv1d(c1_out, signal, ub->res_blocks[r].conv1_weight, ub->res_blocks[r].conv1_bias,
-                          cur_ch, cur_ch, cur_len, 7, dil);
-            memcpy(signal, c1_out, (int64_t)cur_ch * cur_len * sizeof(float));
-            free(c1_out);
+            if (causal_conv1d(ws, o, cur, ub->res_blocks[r].conv1_weight, ub->res_blocks[r].conv1_bias,
+                              cur_ch, cur_ch, cur_len, 7, dil) != 0)
+                return -1;
 
             if (ub->res_blocks[r].snake2_alpha && ub->res_blocks[r].snake2_beta)
-                snake_activation(signal, cur_ch, cur_len,
+                snake_activation(o, cur_ch, cur_len,
                                   ub->res_blocks[r].snake2_alpha, ub->res_blocks[r].snake2_beta);
 
-            float *c2_out = (float *)aligned_calloc((int64_t)cur_ch * cur_len, sizeof(float));
-            causal_conv1d(c2_out, signal, ub->res_blocks[r].conv2_weight, ub->res_blocks[r].conv2_bias,
-                          cur_ch, cur_ch, cur_len, 1, 1);
+            if (causal_conv1d(ws, cur, o, ub->res_blocks[r].conv2_weight, ub->res_blocks[r].conv2_bias,
+                              cur_ch, cur_ch, cur_len, 1, 1) != 0)
+                return -1;
 
-            for (int64_t i = 0; i < (int64_t)cur_ch * cur_len; i++)
-                signal[i] = res[i] + c2_out[i];
-            free(c2_out);
-            free(res);
+            for (int64_t i = 0; i < (int64_t)n_el; i++)
+                cur[i] = res[i] + cur[i];
         }
 
         if (ctx->debug) fprintf(stderr, "[DECODER]   Block %d done: ch=%d, len=%d\n", b+1, cur_ch, cur_len);
@@ -1085,24 +1136,24 @@ static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
     /* Final Snake + Conv (96→1, k=7) */
     if (!sd->final_snake.alpha || !sd->final_conv_weight) {
         fprintf(stderr, "ERROR: Final snake/conv weights missing!\n");
-        free(signal); return -1;
+        return -1;
     }
-    snake_activation(signal, cur_ch, cur_len, sd->final_snake.alpha, sd->final_snake.beta);
+    snake_activation(cur, cur_ch, cur_len, sd->final_snake.alpha, sd->final_snake.beta);
 
     int audio_len = conv1d_out_len(cur_len, 7, 1, 6);
     float *audio = (float *)aligned_calloc(audio_len, sizeof(float));
+    if (!audio) return -1;
     for (int t = 0; t < audio_len; t++) {
         float sum = sd->final_conv_bias ? sd->final_conv_bias[0] : 0;
         for (int ic = 0; ic < cur_ch; ic++) {
             for (int k = 0; k < 7; k++) {
                 int in_pos = t - (6 - k);
                 if (in_pos >= 0 && in_pos < cur_len)
-                    sum += sd->final_conv_weight[(int64_t)ic * 7 + k] * signal[(int64_t)ic * cur_len + in_pos];
+                    sum += sd->final_conv_weight[(int64_t)ic * 7 + k] * cur[(int64_t)ic * cur_len + in_pos];
             }
         }
         audio[t] = sum;
     }
-    free(signal);
 
     for (int i = 0; i < audio_len; i++) {
         if (audio[i] < -1.0f) audio[i] = -1.0f;
@@ -1158,21 +1209,22 @@ static void cs_save_tail(float *tail, const float *in, int in_ch, int len, int t
  * free -- at chunk=2 the res-block conv1 (dilation 9) has tail_cols=54 against
  * len=64, i.e. ~1.8x the convolution, all of it thrown away. It is what made
  * TTFA regress ~8% on Neoverse-N1 when the exact path landed. */
-static float *cs_conv1d(const float *in, int in_ch, int out_ch, int len,
+static float *cs_conv1d(qwen_sd_workspace_t *ws, qwen_sd_slot_t out_slot,
+                        const float *in, int in_ch, int out_ch, int len,
                         int kernel, int dilation,
                         const float *w, const float *b, float *tail, int warm) {
     int tail_cols = (kernel - 1) * dilation;
 
     if (!warm) {
-        float *out = (float *)aligned_calloc((int64_t)out_ch * len, sizeof(float));
+        float *out = sd_ws_get(ws, out_slot, (size_t)out_ch * len);
         if (!out) return NULL;
-        causal_conv1d(out, in, w, b, in_ch, out_ch, len, kernel, dilation);
+        if (causal_conv1d(ws, out, in, w, b, in_ch, out_ch, len, kernel, dilation) != 0) return NULL;
         cs_save_tail(tail, in, in_ch, len, tail_cols);
         return out;
     }
 
     int ext_len = tail_cols + len;
-    float *ext = (float *)aligned_malloc((int64_t)in_ch * ext_len * sizeof(float));
+    float *ext = sd_ws_get(ws, QWEN_SDW_EXT, (size_t)in_ch * ext_len);
     if (!ext) return NULL;
     for (int ic = 0; ic < in_ch; ic++) {
         memcpy(ext + (int64_t)ic * ext_len, tail + (int64_t)ic * tail_cols,
@@ -1186,19 +1238,17 @@ static float *cs_conv1d(const float *in, int in_ch, int out_ch, int len,
         memcpy(tail + (int64_t)ic * tail_cols, ext + (int64_t)ic * ext_len + len,
                (size_t)tail_cols * sizeof(float));
 
-    float *full = (float *)aligned_calloc((int64_t)out_ch * ext_len, sizeof(float));
-    if (!full) { free(ext); return NULL; }
-    causal_conv1d(full, ext, w, b, in_ch, out_ch, ext_len, kernel, dilation);
-    free(ext);
+    float *full = sd_ws_get(ws, QWEN_SDW_FULL, (size_t)out_ch * ext_len);
+    if (!full) return NULL;
+    if (causal_conv1d(ws, full, ext, w, b, in_ch, out_ch, ext_len, kernel, dilation) != 0) return NULL;
 
     /* Drop the first tail_cols outputs: those re-pad with zeros (wrong) and were
      * already emitted by earlier chunks. */
-    float *out = (float *)aligned_malloc((int64_t)out_ch * len * sizeof(float));
-    if (!out) { free(full); return NULL; }
+    float *out = sd_ws_get(ws, out_slot, (size_t)out_ch * len);
+    if (!out) return NULL;
     for (int oc = 0; oc < out_ch; oc++)
         memcpy(out + (int64_t)oc * len, full + (int64_t)oc * ext_len + tail_cols,
                (size_t)len * sizeof(float));
-    free(full);
     return out;
 }
 
@@ -1206,21 +1256,24 @@ static float *cs_conv1d(const float *in, int in_ch, int out_ch, int len,
  * carry into the head, emit len*stride columns (+bias), save the new
  * (kernel-stride)-column carry (bias-free partial sums).
  * carry == NULL is allowed when kernel == stride (no cross-chunk overlap). */
-static float *cs_convt(const float *in, int in_ch, int out_ch, int len,
+static float *cs_convt(qwen_sd_workspace_t *ws, qwen_sd_slot_t out_slot,
+                       const float *in, int in_ch, int out_ch, int len,
                        int kernel, int stride,
                        const float *w, const float *b, float *carry) {
     int cs = kernel - stride;
     int full_len = (len - 1) * stride + kernel;   /* = len*stride + cs */
     int out_len = len * stride;
-    float *full = (float *)aligned_calloc((int64_t)out_ch * full_len, sizeof(float));
+    float *full = sd_ws_get(ws, QWEN_SDW_FULL, (size_t)out_ch * full_len);
     if (!full) return NULL;
     /* out_len = full_len here, so causal_conv_transpose1d writes the untrimmed
      * output including the cs tail columns we need as the carry. Bias is NULL:
-     * it must not be baked into the carry (it is added once, on emit). */
-    causal_conv_transpose1d(full, in, w, NULL, in_ch, out_ch, len, full_len,
-                            kernel, stride);
-    float *out = (float *)aligned_malloc((int64_t)out_ch * out_len * sizeof(float));
-    if (!out) { free(full); return NULL; }
+     * it must not be baked into the carry (it is added once, on emit). La
+     * transpuesta pone a cero `full` por sí misma antes de acumular. */
+    if (causal_conv_transpose1d(ws, full, in, w, NULL, in_ch, out_ch, len, full_len,
+                                kernel, stride) != 0)
+        return NULL;
+    float *out = sd_ws_get(ws, out_slot, (size_t)out_ch * out_len);
+    if (!out) return NULL;
     for (int oc = 0; oc < out_ch; oc++) {
         float *f = full + (int64_t)oc * full_len;
         float *o = out + (int64_t)oc * out_len;
@@ -1235,14 +1288,14 @@ static float *cs_convt(const float *in, int in_ch, int out_ch, int len,
             for (int i = 0; i < cs; i++) cr[i] = f[out_len + i];
         }
     }
-    free(full);
     return out;
 }
 
 /* Stateful ConvNeXt depthwise conv (k=7, pad_left=6) with a 6-column tail. */
-static float *cs_dwconv(const float *in, int ch, int len,
+static float *cs_dwconv(qwen_sd_workspace_t *ws, qwen_sd_slot_t out_slot,
+                        const float *in, int ch, int len,
                         const float *w, const float *b, float *tail) {
-    float *out = (float *)aligned_malloc((int64_t)ch * len * sizeof(float));
+    float *out = sd_ws_get(ws, out_slot, (size_t)ch * len);
     if (!out) return NULL;
     for (int c = 0; c < ch; c++) {
         const float *src = in + (int64_t)c * len;
@@ -1299,34 +1352,41 @@ static int conv_decoder_forward_streaming(qwen_tts_ctx_t *ctx, qwen_sd_stream_st
                                           float *signal, int m,
                                           float **audio_out, int *n_samples_out) {
     qwen_speech_decoder_t *sd = &ctx->speech_dec;
+    qwen_sd_workspace_t *ws = &ctx->sd_ws;
     if (cs_ensure_alloc(st) != 0) { free(signal); return -1; }
     int cur_ch = 1024, cur_len = m;
+
+    /* `owned` es el búfer del llamador (se libera tras la primera operación);
+     * después la señal vive en las ranuras A/B del espacio de trabajo: `cur` es la
+     * vigente y `ci` su índice (A=0, B=1) para alternar sin alias. */
+    float *owned = signal;
+    float *cur = signal;
+    int ci = 0;
 
     /* ConvNeXt upsample (2 blocks, 2x each). k=2,s=2 → no overlap, carry-free. */
     for (int b = 0; b < 2; b++) {
         qwen_sd_convnext_t *cn = &sd->convnext[b];
-        if (!cn->conv_weight) { free(signal); return -1; }
-        float *up = cs_convt(signal, cur_ch, cur_ch, cur_len, 2, 2,
+        if (!cn->conv_weight) { free(owned); return -1; }
+        /* La transpuesta va a B y la depthwise vuelve a A (su entrada ya está muerta). */
+        float *up = cs_convt(ws, QWEN_SDW_B, cur, cur_ch, cur_ch, cur_len, 2, 2,
                              cn->conv_weight, cn->conv_bias, NULL);
-        free(signal);
+        free(owned); owned = NULL;
         if (!up) return -1;
         cur_len *= 2;
-        float *dw = cs_dwconv(up, cur_ch, cur_len, cn->dwconv_weight, cn->dwconv_bias,
+        float *dw = cs_dwconv(ws, QWEN_SDW_A, up, cur_ch, cur_len, cn->dwconv_weight, cn->dwconv_bias,
                               st->cs_cn_dw_tail[b]);
-        if (!dw) { free(up); return -1; }
-        convnext_mlp(cn, dw, up, cur_ch, cur_len);
-        free(up);
-        signal = dw;
+        if (!dw) return -1;
+        if (convnext_mlp(ws, cn, dw, up, cur_ch, cur_len) != 0) return -1;
+        cur = dw; ci = 0;
     }
 
-    /* Initial conv (1024→1536, k=7) */
-    if (!sd->initial_conv_weight) { free(signal); return -1; }
-    float *ic_out = cs_conv1d(signal, cur_ch, 1536, cur_len, 7, 1,
+    /* Initial conv (1024→1536, k=7): A -> B */
+    if (!sd->initial_conv_weight) return -1;
+    float *ic_out = cs_conv1d(ws, QWEN_SDW_B, cur, cur_ch, 1536, cur_len, 7, 1,
                               sd->initial_conv_weight, sd->initial_conv_bias,
                               st->cs_init_tail, st->cs_warm);
-    free(signal);
     if (!ic_out) return -1;
-    signal = ic_out; cur_ch = 1536;
+    cur = ic_out; ci = 1; cur_ch = 1536;
 
     /* 4 Decoder upsample blocks */
     int up_rates[4] = {8, 5, 4, 3};
@@ -1337,65 +1397,62 @@ static int conv_decoder_forward_streaming(qwen_tts_ctx_t *ctx, qwen_sd_stream_st
         int rate = up_rates[b];
         int kernel = rate * 2;
         int out_ch = out_channels[b];
-        if (!ub->upsample.conv_weight) { free(signal); return -1; }
+        if (!ub->upsample.conv_weight) return -1;
 
         if (ub->upsample.snake_alpha && ub->upsample.snake_beta)
-            snake_activation(signal, cur_ch, cur_len, ub->upsample.snake_alpha, ub->upsample.snake_beta);
+            snake_activation(cur, cur_ch, cur_len, ub->upsample.snake_alpha, ub->upsample.snake_beta);
 
-        float *up_out = cs_convt(signal, cur_ch, out_ch, cur_len, kernel, rate,
+        float *up_out = cs_convt(ws, (qwen_sd_slot_t)(ci ^ 1), cur, cur_ch, out_ch, cur_len, kernel, rate,
                                  ub->upsample.conv_weight, ub->upsample.conv_bias,
                                  st->cs_up_carry[b]);
-        free(signal);
         if (!up_out) return -1;
-        signal = up_out; cur_ch = out_ch; cur_len *= rate;
+        cur = up_out; ci ^= 1; cur_ch = out_ch; cur_len *= rate;
 
+        /* Bloque residual: la señal vigente (ranura s) y su copia RES se conservan;
+         * conv1 va a la otra ranura (o), conv2 vuelve a s y se suma con RES in situ. */
         int dilations[3] = {1, 3, 9};
+        size_t n_el = (size_t)cur_ch * cur_len;
         for (int r = 0; r < 3; r++) {
             int dil = dilations[r];
-            float *res = (float *)aligned_malloc((int64_t)cur_ch * cur_len * sizeof(float));
-            if (!res) { free(signal); return -1; }
-            memcpy(res, signal, (int64_t)cur_ch * cur_len * sizeof(float));
+            float *res = sd_ws_get(ws, QWEN_SDW_RES, n_el);
+            if (!res) return -1;
+            memcpy(res, cur, n_el * sizeof(float));
 
             if (ub->res_blocks[r].snake1_alpha && ub->res_blocks[r].snake1_beta)
-                snake_activation(signal, cur_ch, cur_len,
+                snake_activation(cur, cur_ch, cur_len,
                                  ub->res_blocks[r].snake1_alpha, ub->res_blocks[r].snake1_beta);
 
-            float *c1_out = cs_conv1d(signal, cur_ch, cur_ch, cur_len, 7, dil,
+            float *c1_out = cs_conv1d(ws, (qwen_sd_slot_t)(ci ^ 1), cur, cur_ch, cur_ch, cur_len, 7, dil,
                                       ub->res_blocks[r].conv1_weight, ub->res_blocks[r].conv1_bias,
                                       st->cs_res_tail[b][r], st->cs_warm);
-            free(signal);
-            if (!c1_out) { free(res); return -1; }
-            signal = c1_out;
+            if (!c1_out) return -1;
 
             if (ub->res_blocks[r].snake2_alpha && ub->res_blocks[r].snake2_beta)
-                snake_activation(signal, cur_ch, cur_len,
+                snake_activation(c1_out, cur_ch, cur_len,
                                  ub->res_blocks[r].snake2_alpha, ub->res_blocks[r].snake2_beta);
 
             /* conv2 is k=1: stateless */
-            float *c2_out = (float *)aligned_calloc((int64_t)cur_ch * cur_len, sizeof(float));
-            if (!c2_out) { free(res); free(signal); return -1; }
-            causal_conv1d(c2_out, signal, ub->res_blocks[r].conv2_weight, ub->res_blocks[r].conv2_bias,
-                          cur_ch, cur_ch, cur_len, 1, 1);
+            if (causal_conv1d(ws, cur, c1_out, ub->res_blocks[r].conv2_weight, ub->res_blocks[r].conv2_bias,
+                              cur_ch, cur_ch, cur_len, 1, 1) != 0)
+                return -1;
 
-            for (int64_t i = 0; i < (int64_t)cur_ch * cur_len; i++)
-                signal[i] = res[i] + c2_out[i];
-            free(c2_out);
-            free(res);
+            for (int64_t i = 0; i < (int64_t)n_el; i++)
+                cur[i] = res[i] + cur[i];
         }
     }
 
     /* Final Snake + Conv (96→1, k=7) with a 6-column input tail */
-    if (!sd->final_snake.alpha || !sd->final_conv_weight) { free(signal); return -1; }
-    snake_activation(signal, cur_ch, cur_len, sd->final_snake.alpha, sd->final_snake.beta);
+    if (!sd->final_snake.alpha || !sd->final_conv_weight) return -1;
+    snake_activation(cur, cur_ch, cur_len, sd->final_snake.alpha, sd->final_snake.beta);
 
     float *audio = (float *)aligned_calloc(cur_len, sizeof(float));
-    if (!audio) { free(signal); return -1; }
+    if (!audio) return -1;
     {
         float *tl = st->cs_final_tail;   /* [96 x 6] */
         if (sd->final_conv_bias)
             for (int t = 0; t < cur_len; t++) audio[t] = sd->final_conv_bias[0];
         for (int ic = 0; ic < cur_ch; ic++) {
-            const float *src = signal + (int64_t)ic * cur_len;
+            const float *src = cur + (int64_t)ic * cur_len;
             const float *wc  = sd->final_conv_weight + (int64_t)ic * 7;
             const float *tc  = tl + (int64_t)ic * 6;
             for (int t = 0; t < cur_len; t++) {
@@ -1410,14 +1467,13 @@ static int conv_decoder_forward_streaming(qwen_tts_ctx_t *ctx, qwen_sd_stream_st
         /* Update the tail with the last 6 (snake-activated) inputs */
         for (int ic = 0; ic < cur_ch; ic++) {
             float *tc = tl + (int64_t)ic * 6;
-            const float *src = signal + (int64_t)ic * cur_len;
+            const float *src = cur + (int64_t)ic * cur_len;
             if (cur_len >= 6) memcpy(tc, src + cur_len - 6, 6 * sizeof(float));
             else
                 for (int i = 0; i < 6; i++)
                     tc[i] = (i + cur_len < 6) ? tc[i + cur_len] : src[i + cur_len - 6];
         }
     }
-    free(signal);
 
     for (int i = 0; i < cur_len; i++) {
         if (audio[i] < -1.0f) audio[i] = -1.0f;
@@ -1531,8 +1587,11 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
 
     /* Pre-conv (512→1024, k=3, causal, pad_left=2) */
     float *pre_conv_out = (float *)aligned_calloc((int64_t)latent_dim * conv_in_len, sizeof(float));
-    causal_conv1d(pre_conv_out, vq_cf, sd->pre_conv_weight, sd->pre_conv_bias,
-                  vq_hidden, latent_dim, conv_in_len, 3, 1);
+    if (causal_conv1d(&ctx->sd_ws, pre_conv_out, vq_cf, sd->pre_conv_weight, sd->pre_conv_bias,
+                      vq_hidden, latent_dim, conv_in_len, 3, 1) != 0) {
+        free(pre_conv_out); free(vq_cf);
+        return -1;
+    }
     free(vq_cf);
 
     /* Take only the last new_frames from pre_conv output */

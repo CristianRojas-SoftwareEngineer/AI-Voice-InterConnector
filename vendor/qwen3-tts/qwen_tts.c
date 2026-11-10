@@ -749,6 +749,7 @@ void qwen_tts_unload(qwen_tts_ctx_t *ctx) {
     free(ctx->pref_gate); free(ctx->pref_proj);
     free(ctx->pref_wq_f32); free(ctx->pref_wk_f32); free(ctx->pref_wv_f32);
     free(ctx->pref_wo_f32); free(ctx->pref_gate_up_f32); free(ctx->pref_down_f32);
+    qwen_sd_workspace_free(&ctx->sd_ws);
     free(ctx->rope_cos); free(ctx->rope_sin); free(ctx->rope_inv_freq);
     free(ctx->cp_rope_cos); free(ctx->cp_rope_sin);
     free(ctx->emb_tmp1); free(ctx->emb_tmp2);
@@ -850,6 +851,9 @@ qwen_tts_ctx_t *qwen_tts_clone_for_worker(const qwen_tts_ctx_t *base) {
     w->prev_input_embeds = NULL; w->prev_prefill_len = 0;
     w->audio_buf = NULL; w->audio_samples = 0;
     memset(&w->sd_stream, 0, sizeof(w->sd_stream));
+    /* El espacio de trabajo del decodificador se copió byte a byte con los punteros
+     * del contexto base: cada worker debe reservar el suyo. */
+    memset(&w->sd_ws, 0, sizeof(w->sd_ws));
 
     /* Per-worker CP roughness buffers: `*w = *base` byte-copied base's cp_layers
      * (down_q2_rough pointers + cp_rough_built). Detach them so each worker builds
@@ -884,6 +888,7 @@ void qwen_tts_free_clone(qwen_tts_ctx_t *ctx) {
     free(ctx->pref_gate); free(ctx->pref_proj);
     free(ctx->pref_wq_f32); free(ctx->pref_wk_f32); free(ctx->pref_wv_f32);
     free(ctx->pref_wo_f32); free(ctx->pref_gate_up_f32); free(ctx->pref_down_f32);
+    qwen_sd_workspace_free(&ctx->sd_ws);
     free(ctx->emb_tmp1); free(ctx->emb_tmp2);
     emb_cache_free(ctx);
     free(ctx->logits); free(ctx->codec_codes); free(ctx->prev_tokens); free(ctx->audio_buf);
