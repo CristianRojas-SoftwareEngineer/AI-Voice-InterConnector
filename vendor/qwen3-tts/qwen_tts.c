@@ -1400,27 +1400,6 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
      * the sequential path and correctly repopulate dec_x at the last position. */
     if (delta_start >= prefill_len) delta_start = 0;
 
-#if defined(QWEN_HAVE_CUDA) || defined(QWEN_HAVE_METAL)
-    /* Issue #19 (part 2): fused GPU Talker + emotion steering. Steered steps run on the
-     * CPU path and read the HOST KV, but a fused delta-prefill writes the device KV only,
-     * so host rows [delta_start, prefill_len) may be stale from an earlier request. A
-     * steered decode would then attend to the previous request's text. Force a full fresh
-     * prefill (host + device KV both repopulated) whenever this request will steer. */
-    {
-        extern void *g_gpu_fused_owner;
-        int fused_owner = 0;
-#ifdef QWEN_HAVE_CUDA
-        { extern void *g_cuda_talker_state;
-          if (g_cuda_talker_state && ctx == g_gpu_fused_owner) fused_owner = 1; }
-#endif
-#ifdef QWEN_HAVE_METAL
-        { extern void *g_metal_talker_state;
-          if (g_metal_talker_state && ctx == g_gpu_fused_owner) fused_owner = 1; }
-#endif
-        if (fused_owner && ctx->ml_steer && ctx->ml_steer_weight != 0.0f) delta_start = 0;
-    }
-#endif
-
     /* Reset KV cache to the reusable prefix length */
     ctx->kv_len = delta_start;
 
@@ -1463,32 +1442,6 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
             }
         }
     }
-#ifdef QWEN_HAVE_CUDA
-    /* Fused GPU Talker KV sync (issue #19). The device KV is the source of truth in fused mode:
-     *  - delta_start == 0 (full CPU batched prefill): host kv_cache_k/v is freshly populated
-     *    by qwen_talker_prefill → mirror it to the device once.
-     *  - delta_start > 0 (server delta-reuse): the new tokens were stepped through the fused
-     *    GPU step, which writes the device KV DIRECTLY and skips the host KV. The matching
-     *    prefix [0, delta_start) is still valid on the device from the previous request, so
-     *    the device KV is ALREADY correct — uploading here would clobber it with the stale
-     *    host KV (the previous request's text) and make the model replay the old prompt. */
-    {
-        extern void *g_cuda_talker_state, *g_gpu_fused_owner;
-        extern void qwen_cuda_talker_upload_kv(void *, qwen_tts_ctx_t *, int);
-        if (g_cuda_talker_state && ctx == g_gpu_fused_owner && delta_start == 0 &&
-            !(ctx->ml_steer && ctx->ml_steer_w_eff != 0.0f))
-            qwen_cuda_talker_upload_kv(g_cuda_talker_state, ctx, ctx->kv_len);
-    }
-#endif
-#ifdef QWEN_HAVE_METAL
-    {
-        extern void *g_metal_talker_state, *g_gpu_fused_owner;
-        extern void qwen_metal_talker_upload_kv(void *, qwen_tts_ctx_t *, int);
-        if (g_metal_talker_state && ctx == g_gpu_fused_owner && delta_start == 0 &&
-            !(ctx->ml_steer && ctx->ml_steer_w_eff != 0.0f))
-            qwen_metal_talker_upload_kv(g_metal_talker_state, ctx, ctx->kv_len);
-    }
-#endif
     double prefill_ms = time_ms() - t_prefill;
     if (!ctx->silent) {
         if (delta_start > 0)
@@ -1606,14 +1559,6 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
      * into dt->codes during generation and are drained by a single synchronous
      * decoder_thread_fn() call at the end (done=1 → it processes all and returns). */
     int dt_no_overlap = (getenv("QWEN_NO_OVERLAP") != NULL);
-#ifdef QWEN_HAVE_CUDA
-    /* M3 scheduling — MEASURED on GB10: on ONE GPU, overlapping generation (fused Talker/CP) with
-     * the resident decoder makes it WORSE (RTF 0.78 vs 0.62) — they contend for the same SMs, so
-     * generation slows (14→20 ms/f) while the decoder overlaps. Sequential wins. So force
-     * synchronous decode when the resident decoder is on and NOT streaming (full-file: RTF matters).
-     * Streaming keeps overlap (TTFA matters — sync would push first audio to the very end). */
-    { extern int g_cuda_decoder_conv_on; if (g_cuda_decoder_conv_on && !ctx->stream) dt_no_overlap = 1; }
-#endif
     qwen_sd_stream_init(&ctx->sd_stream);
     dt_init(&dt_state, ctx, max_frames);
     if (ctx->stream && ctx->audio_cb) {
@@ -2416,19 +2361,7 @@ static void *prefill_helper_main(void *arg) {
 
 int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sink) {
     if (B < 1) B = 1;
-    /* The CPU batch path is bf16-only; the GPU batched path (QWEN_CUDA_BATCH) handles int8/q4
-     * on the device, so the bf16 requirement is waived when it will be used. */
-    int want_cuda_batch = 0;
-#ifdef QWEN_HAVE_CUDA
-    { extern void *g_cuda_talker_state, *g_cuda_cp_state;
-      want_cuda_batch = (getenv("QWEN_CUDA_BATCH") && g_cuda_talker_state && g_cuda_cp_state && B <= 8); }
-#endif
-    int want_metal_batch = 0;
-#ifdef QWEN_HAVE_METAL
-    { extern void *g_metal_talker_state;
-      want_metal_batch = (getenv("QWEN_METAL_BATCH") && g_metal_talker_state && B <= 8); }
-#endif
-    if (ctx->layers[0].wq_bf16 == NULL && !want_cuda_batch && !want_metal_batch) return -2;   /* CPU batched step is bf16 only */
+    if (ctx->layers[0].wq_bf16 == NULL) return -2;   /* CPU batched step is bf16 only */
     int h = ctx->config.hidden_size;
     int kvd = ctx->config.num_kv_heads * ctx->config.head_dim;
     int num_layers = ctx->config.num_layers;
@@ -2443,50 +2376,6 @@ int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sin
     qwen_batch_t *bb = qwen_batch_alloc(ctx, B, kv_max);
     if (!bb) return -1;
     bb->force_matvec = force_matvec;
-
-    /* ---- GPU batched Talker+CP (throughput path): opt-in via QWEN_CUDA_BATCH, needs the fused
-     * single states (QWEN_CUDA_FUSED_TALKER --backend cuda). The GPU batched steps maintain their
-     * own device KV (seeded per slot on admit); the 3 batched calls below delegate automatically. */
-    int cuda_batch = 0;
-#ifdef QWEN_HAVE_CUDA
-    extern void *g_cuda_talker_state, *g_cuda_cp_state, *g_cuda_talker_batch_state, *g_cuda_cp_batch_state;
-    extern void *qwen_cuda_talker_batch_init(void *, int);
-    extern void *qwen_cuda_cp_batch_init(void *, int);
-    extern void  qwen_cuda_talker_batch_upload_slot(void *, int, const uint16_t *, const uint16_t *, int, int);
-    extern void  qwen_cuda_talker_batch_free(void *);
-    extern void  qwen_cuda_cp_batch_free(void *);
-    if (want_cuda_batch) {
-        g_cuda_talker_batch_state = qwen_cuda_talker_batch_init(g_cuda_talker_state, B);
-        g_cuda_cp_batch_state = qwen_cuda_cp_batch_init(g_cuda_cp_state, B);
-        cuda_batch = (g_cuda_talker_batch_state && g_cuda_cp_batch_state);
-        if (cuda_batch) fprintf(stderr, "[serve] GPU batched Talker+CP ENABLED (B=%d, matvec->matmat)\n", B);
-        else fprintf(stderr, "[serve] GPU batched init failed — falling back to CPU batch path\n");
-    } else if (getenv("QWEN_CUDA_BATCH") && B > 8) {
-        fprintf(stderr, "[serve] QWEN_CUDA_BATCH: batch-size %d > 8 (QB_MAX) — using CPU batch path\n", B);
-    }
-#endif
-
-    /* Metal batched Talker+CP (throughput): opt-in QWEN_METAL_BATCH, needs the fused single Talker
-     * (QWEN_METAL_FUSED_TALKER --backend metal). Both batch states derive from g_metal_talker_state. */
-    int metal_batch = 0;
-#ifdef QWEN_HAVE_METAL
-    extern void *g_metal_talker_state, *g_metal_talker_batch_state, *g_metal_cp_batch_state;
-    extern void *qwen_metal_talker_batch_init(void *, int);
-    extern void *qwen_metal_cp_batch_init(void *, int);
-    extern void  qwen_metal_talker_batch_upload_slot(void *, int, const uint16_t *, const uint16_t *, int, int);
-    extern void  qwen_metal_talker_batch_free(void *);
-    extern void  qwen_metal_cp_batch_free(void *);
-    if (want_metal_batch) {
-        g_metal_talker_batch_state = qwen_metal_talker_batch_init(g_metal_talker_state, B);
-        if (!getenv("QWEN_METAL_BATCH_NOCP"))   /* diag: keep CP on CPU to isolate talker-batch vs CP-batch */
-            g_metal_cp_batch_state = qwen_metal_cp_batch_init(g_metal_talker_state, B);
-        metal_batch = (g_metal_talker_batch_state != NULL);
-        if (metal_batch) fprintf(stderr, "[serve] Metal batched Talker+CP ENABLED (B=%d, matvec->matmat)\n", B);
-        else fprintf(stderr, "[serve] Metal batched init failed — falling back to CPU batch path\n");
-    } else if (getenv("QWEN_METAL_BATCH") && B > 8) {
-        fprintf(stderr, "[serve] QWEN_METAL_BATCH: batch-size %d > 8 — using CPU batch path\n", B);
-    }
-#endif
 
     /* per-slot state */
     uint8_t *active = (uint8_t *)calloc(B, 1);
@@ -2513,14 +2402,6 @@ int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sin
      * we decode its frames incrementally with its own state and emit via on_chunk. */
     uint8_t *want_stream = (uint8_t *)calloc(B, 1);
     qwen_sd_stream_state_t *sstate = (qwen_sd_stream_state_t *)calloc(B, sizeof(qwen_sd_stream_state_t));
-    /* Amortized WAV decode: on the GPU-batched path, decode non-streaming slots INCREMENTALLY too
-     * (per frame, interleaved with gen) and accumulate — avoids the serial full-decode burst when
-     * a whole batch finishes together (measured ~2.4x→~3.4x at B=8, matching the streaming path).
-     * Same streaming decoder the /stream endpoint uses (ear-validated). */
-    int amort = cuda_batch && !getenv("QWEN_NO_AMORT");   /* QWEN_NO_AMORT=1 → full seam-free decode (A/B) */
-    float **acc_aud = (float **)calloc(B, sizeof(float *));
-    int *acc_n = (int *)calloc(B, sizeof(int));
-    int *acc_cap = (int *)calloc(B, sizeof(int));
     for (int b = 0; b < B; b++) {
         prev_tok[b] = (int *)malloc((size_t)GEN_CAP * sizeof(int));
         chcodes[b] = (int *)malloc((size_t)GEN_CAP * 16 * sizeof(int));
@@ -2534,12 +2415,7 @@ int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sin
         if (want_stream[b]) {                                                      \
             qwen_sd_stream_free(&sstate[b]); want_stream[b] = 0;                   \
             sink->on_done(sink->ud, tag[b], NULL, 0);                             \
-        } else if (amort) {                                                        \
-            qwen_sd_stream_free(&sstate[b]);                                       \
-            if (acc_n[b] > 0) { sink->on_done(sink->ud, tag[b], acc_aud[b], acc_n[b]); \
-                                acc_aud[b] = NULL; acc_cap[b] = 0; acc_n[b] = 0; } \
-            else sink->on_done(sink->ud, tag[b], NULL, 0);                         \
-        } else {                                                                   \
+        } else {                                                                 \
             float *aud = NULL; int an = 0;                                         \
             if (chframes[b] > 0 &&                                                 \
                 qwen_speech_decoder_decode(ctx, chcodes[b], chframes[b], &aud, &an) == 0 \
@@ -2584,18 +2460,11 @@ int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sin
                 }
                 memcpy(last_hidden + (size_t)b * h, p->last_hidden, (size_t)h * sizeof(float));
                 tcl[b] = p->tcl; pos[b] = p->pl;
-#ifdef QWEN_HAVE_CUDA
-                if (cuda_batch) qwen_cuda_talker_batch_upload_slot(g_cuda_talker_batch_state, b, bb->kv_k, bb->kv_v, kv_max, pos[b]);
-#endif
-#ifdef QWEN_HAVE_METAL
-                if (metal_batch) qwen_metal_talker_batch_upload_slot(g_metal_talker_batch_state, b, bb->kv_k, bb->kv_v, kv_max, pos[b]);
-#endif
                 p_temp[b] = p->req.temperature; p_topk[b] = p->req.top_k; p_topp[b] = p->req.top_p;
                 p_rep[b] = p->req.rep_penalty; p_gw[b] = p->req.greedy_warmup; rng[b] = p->req.seed;
                 nprev[b] = 0; chframes[b] = 0; sframe[b] = 0;
                 want_stream[b] = (p->req.want_stream && sink->on_chunk) ? 1 : 0;
-                if (want_stream[b] || amort) qwen_sd_stream_init(&sstate[b]);
-                acc_n[b] = 0;
+                if (want_stream[b]) qwen_sd_stream_init(&sstate[b]);
                 tag[b] = p->tag; active[b] = 1; n_active++;
                 prefilled_free(p);
                 continue;
@@ -2629,12 +2498,6 @@ int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sin
             qwen_rms_norm(last_hidden + (size_t)b * h, ctx->dec_x, ctx->talker_norm, 1, h, eps);
             tcl[b] = ctx->bg_text_content_len;
             pos[b] = pl;
-#ifdef QWEN_HAVE_CUDA
-            if (cuda_batch) qwen_cuda_talker_batch_upload_slot(g_cuda_talker_batch_state, b, bb->kv_k, bb->kv_v, kv_max, pos[b]);
-#endif
-#ifdef QWEN_HAVE_METAL
-            if (metal_batch) qwen_metal_talker_batch_upload_slot(g_metal_talker_batch_state, b, bb->kv_k, bb->kv_v, kv_max, pos[b]);
-#endif
             p_temp[b] = req.temperature; p_topk[b] = req.top_k; p_topp[b] = req.top_p;
             p_rep[b] = req.rep_penalty; p_gw[b] = req.greedy_warmup; rng[b] = req.seed;
             nprev[b] = 0; chframes[b] = 0; sframe[b] = 0;
@@ -2695,23 +2558,13 @@ int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sin
             }
             for (int j = 0; j < h; j++) se[j] += tts_pad[j];
 
-            /* S3: decode this frame incrementally — streaming → emit via on_chunk; amortized WAV
-             * (GPU batch) → accumulate into acc_aud[b], delivered whole at FINALIZE. Interleaving
-             * the decode with gen avoids the serial full-decode burst when the batch finishes. */
-            if (want_stream[b] || amort) {
+            /* S3: decode this frame incrementally — streaming → emit via on_chunk. */
+            if (want_stream[b]) {
                 float *aud = NULL; int an = 0;
                 if (qwen_speech_decoder_decode_streaming_st(ctx, &sstate[b],
                         chcodes[b] + (size_t)(chframes[b] - 1) * 16, 1, &aud, &an) == 0
-                    && aud && an > 0) {
-                    if (want_stream[b]) sink->on_chunk(sink->ud, tag[b], aud, an);
-                    else {   /* amortized WAV: append */
-                        if (acc_n[b] + an > acc_cap[b]) {
-                            acc_cap[b] = (acc_n[b] + an) * 2;
-                            acc_aud[b] = (float *)realloc(acc_aud[b], (size_t)acc_cap[b] * sizeof(float));
-                        }
-                        if (acc_aud[b]) { memcpy(acc_aud[b] + acc_n[b], aud, (size_t)an * sizeof(float)); acc_n[b] += an; }
-                    }
-                }
+                    && aud && an > 0)
+                    sink->on_chunk(sink->ud, tag[b], aud, an);
                 free(aud);
             }
         }
@@ -2747,24 +2600,12 @@ int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sin
         qwen_tts_free_clone(pf_ctx);
     }
 
-    for (int b = 0; b < B; b++) { if (active[b] && (want_stream[b] || amort)) qwen_sd_stream_free(&sstate[b]); free(prev_tok[b]); free(chcodes[b]); free(acc_aud[b]); }
-    free(want_stream); free(sstate); free(acc_aud); free(acc_n); free(acc_cap);
+    for (int b = 0; b < B; b++) { if (active[b] && want_stream[b]) qwen_sd_stream_free(&sstate[b]); free(prev_tok[b]); free(chcodes[b]); }
+    free(want_stream); free(sstate);
     free(active); free(tag); free(pos); free(tcl);
     free(p_temp); free(p_topk); free(p_topp); free(p_rep); free(p_gw); free(rng);
     free(nprev); free(chframes); free(sframe); free(prev_tok); free(chcodes);
     free(last_hidden); free(logits); free(step_embed); free(code0); free(cpcodes);
     qwen_batch_free(bb);
-#ifdef QWEN_HAVE_CUDA
-    if (cuda_batch) {
-        qwen_cuda_talker_batch_free(g_cuda_talker_batch_state); g_cuda_talker_batch_state = NULL;
-        qwen_cuda_cp_batch_free(g_cuda_cp_batch_state); g_cuda_cp_batch_state = NULL;
-    }
-#endif
-#ifdef QWEN_HAVE_METAL
-    if (metal_batch) {
-        qwen_metal_talker_batch_free(g_metal_talker_batch_state); g_metal_talker_batch_state = NULL;
-        qwen_metal_cp_batch_free(g_metal_cp_batch_state); g_metal_cp_batch_state = NULL;
-    }
-#endif
     return 0;
 }

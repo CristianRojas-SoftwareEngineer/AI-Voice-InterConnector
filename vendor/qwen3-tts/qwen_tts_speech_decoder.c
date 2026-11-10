@@ -55,23 +55,11 @@
 #endif
 #define CONV_TILE_MAX_BYTES (256 * 1024 * 1024)
 
-/* SD_GEMM: RowMajor sgemm that routes the decoder's big conv matmuls to cuBLAS (GPU, M3)
- * when g_cuda_decoder_on, else OpenBLAS/Accelerate. Signature drops the CblasRowMajor arg. */
-#ifdef QWEN_HAVE_CUDA
-#include "qwen_tts_cuda.h"
-static inline void SD_GEMM(int ta,int tb,int M,int N,int K,float al,const float *A,int lda,
-                           const float *B,int ldb,float be,float *C,int ldc){
-    if (g_cuda_decoder_on &&
-        qwen_cuda_sd_sgemm(ta==CblasTrans, tb==CblasTrans, M,N,K, al,A,lda,B,ldb,be,C,ldc) == 0)
-        return;   /* did it on the GPU; else fall through to CPU (too big / unsupported) */
-    cblas_sgemm(CblasRowMajor,(QWEN_CBLAS_TRANSPOSE)ta,(QWEN_CBLAS_TRANSPOSE)tb,M,N,K,al,A,lda,B,ldb,be,C,ldc);
-}
-#else
+/* SD_GEMM: sgemm RowMajor de OpenBLAS/Accelerate; la firma omite el argumento CblasRowMajor. */
 static inline void SD_GEMM(int ta,int tb,int M,int N,int K,float al,const float *A,int lda,
                            const float *B,int ldb,float be,float *C,int ldc){
     cblas_sgemm(CblasRowMajor,(QWEN_CBLAS_TRANSPOSE)ta,(QWEN_CBLAS_TRANSPOSE)tb,M,N,K,al,A,lda,B,ldb,be,C,ldc);
 }
-#endif
 #endif
 
 static const float *get_f32(void *ms, const char *name) {
@@ -1329,10 +1317,6 @@ void qwen_sd_stream_free(qwen_sd_stream_state_t *st) {
  * on a signal in channel-first format [latent_dim, n_frames].
  * Returns audio samples. This is the same pipeline as steps 7-10 in the
  * full decode, extracted as a helper to avoid duplication. */
-#ifdef QWEN_HAVE_CUDA
-extern int g_cuda_decoder_conv_on;
-extern int qwen_cuda_conv_decoder_run(void *ctx, float *signal, int cur_ch, int cur_len, float **audio_out, int *n_out);
-#endif
 
 /* ConvNeXt block tail: LayerNorm -> pw1(+GELU) -> pw2 -> gamma*x + residual,
  * in place on `signal` [cur_ch, cur_len]. Every step is per-timestep, so this is
@@ -1415,13 +1399,6 @@ static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
                                  float *signal, int cur_ch, int cur_len,
                                  float **audio_out, int *n_samples_out) {
     qwen_speech_decoder_t *sd = &ctx->speech_dec;
-#ifdef QWEN_HAVE_CUDA
-    if (g_cuda_decoder_conv_on) {   /* GPU-resident ConvNet decoder (M3): activations stay on device */
-        int rc = qwen_cuda_conv_decoder_run(ctx, signal, cur_ch, cur_len, audio_out, n_samples_out);
-        free(signal);   /* the GPU path copies signal in; free the host copy here */
-        return rc;
-    }
-#endif
 
     /* ConvNeXt upsample (2 blocks, 2x each → 4x total) */
     for (int b = 0; b < 2; b++) {
@@ -1861,12 +1838,8 @@ static int conv_decoder_forward_streaming(qwen_tts_ctx_t *ctx, qwen_sd_stream_st
 }
 
 /* Use the exact stateful conv decoder unless the caller opts back into the old
- * windowed re-decode, or the CUDA-resident conv decoder owns the conv stack
- * (which the stateful path does not implement). */
+ * windowed re-decode. */
 static int sd_exact_stream_enabled(void) {
-#ifdef QWEN_HAVE_CUDA
-    if (g_cuda_decoder_conv_on) return 0;
-#endif
     const char *e = getenv("QWEN_SD_WINDOWED");
     return !(e && *e && *e != '0');
 }

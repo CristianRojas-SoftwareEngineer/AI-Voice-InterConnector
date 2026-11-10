@@ -470,7 +470,7 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
          * one weight left permanently bf16 — [cp_h × talker_h] ≈ 4 MB re-read 16×/frame
          * (~64 MB/frame of unquantized traffic on 1.7B). Build an int8 twin (int8 even
          * under --int4: the projection feeds the whole CP residual stream, int8 is the
-         * near-lossless pick). The bf16 pointer stays valid (mmap) for the GPU paths. */
+         * near-lossless pick). The bf16 pointer stays valid (mmap). */
         if ((ctx->use_int8 || ctx->use_int4) && ctx->cp_mtp_proj_bf16) {
             cp_qz(&ctx->cp_mtp_proj_int8, &ctx->cp_mtp_proj_scale,
                   ctx->cp_mtp_proj_bf16, cp_h, talker_h);
@@ -716,42 +716,9 @@ static void cp_layer_body(qwen_tts_ctx_t *ctx, float *x, float *x_norm, int pos,
     CPB_MARK(CPB_RESNORM);
 }
 
-/* GPU-resident fused CP step (qwen_tts_cuda_talker.cu). Set alongside the fused Talker.
- * Emotion steer is a pre-step input add (done in qwen_cp_predict), so the fused step is emo-safe;
- * only cp_roughness (the q2-down blend) forces the CPU path. */
-void *g_cuda_cp_state = NULL;
-/* GPU-resident BATCHED CP step (throughput path). batch_cp_transformer_step delegates to it;
- * the per-seq argmax/embed between passes stay on CPU (in qwen_batch_cp_predict). */
-void *g_cuda_cp_batch_state = NULL;
-#ifdef QWEN_HAVE_METAL
-void *g_metal_cp_state = NULL;   /* GPU-resident fused CP step (Metal, G2) */
-void *g_metal_cp_frame_state = NULL;   /* device-frame CP (whole 16-pass loop on GPU, 1 sync/frame) */
-void *g_metal_cp_batch_state = NULL;   /* batched CP step (server throughput) */
-extern void qwen_metal_cp_batch_step(void *state, float *x, const int *pos_arr);
-#endif
-#ifdef QWEN_HAVE_CUDA
-extern void qwen_cuda_cp_step(void *state, float *x, int pos);
-extern void qwen_cuda_cp_batch_step(void *state, float *x, const int *pos_arr);
-#endif
-
 static void cp_transformer_step(qwen_tts_ctx_t *ctx, float *x, float *x_norm, int pos) {
     qwen_tts_config_t *c = &ctx->config;
     int cp_h = c->cp_hidden_size;
-
-    extern void *g_gpu_fused_owner;   /* audit MED-2: delegate only for the owning ctx */
-#ifdef QWEN_HAVE_CUDA
-    if (g_cuda_cp_state && ctx == g_gpu_fused_owner && ctx->cp_roughness <= 0.0f) {
-        qwen_cuda_cp_step(g_cuda_cp_state, x, pos);   /* x updated in place (residual stream) */
-        return;
-    }
-#endif
-#ifdef QWEN_HAVE_METAL
-    if (g_metal_cp_state && ctx == g_gpu_fused_owner && ctx->cp_roughness <= 0.0f) {
-        extern void qwen_metal_cp_step(void *, float *, int);
-        qwen_metal_cp_step(g_metal_cp_state, x, pos);
-        return;
-    }
-#endif
 
     /* First layer: standard input RMSNorm, then body produces fused norm for next */
     qwen_rms_norm(x_norm, x, ctx->cp_layers[0].input_norm, 1, cp_h, c->rms_norm_eps);
@@ -927,18 +894,6 @@ int qwen_cp_predict(qwen_tts_ctx_t *ctx, float *talker_hidden, int code0, int *o
     qwen_tts_config_t *c = &ctx->config;
     int cp_h = c->cp_hidden_size;
     int emb_dim = ctx->cp_emb_dim;  /* talker_hidden for 1.7B, cp_hidden for 0.6B */
-
-#ifdef QWEN_HAVE_METAL
-    /* Device-frame CP: whole 16-pass RVQ loop + argmax + embed on GPU, 1 sync/frame (the M1 win).
-     * Falls back to the CPU/per-pass loop for steer/roughness/teacher-forcing. */
-    { extern void *g_metal_cp_frame_state, *g_gpu_fused_owner;
-      extern void qwen_metal_cp_frame(void *, const float *, int, int *);
-      if (g_metal_cp_frame_state && ctx == g_gpu_fused_owner &&
-          ctx->cp_roughness <= 0.0f && !ctx->tf_ref_codes) {
-        qwen_metal_cp_frame(g_metal_cp_frame_state, talker_hidden, code0, out_codes);
-        return 0;
-      } }
-#endif
 
     ql_init();  /* one-time env probe (QWEN_DUMP_CODES / QWEN_FFN_SPARSITY) */
 
@@ -1130,23 +1085,6 @@ static void batch_cp_transformer_step(qwen_tts_ctx_t *ctx, qwen_batch_t *bb,
                                       float *x, float *x_norm, int pos, const uint8_t *active) {
     qwen_tts_config_t *c = &ctx->config;
     int B = bb->B, ch = bb->cp_h; float eps = c->rms_norm_eps;
-#ifdef QWEN_HAVE_CUDA
-    /* GPU batched path: the whole 5-layer step runs on device (x = [B][cp_h] residual, updated
-     * in place). Lockstep — all B at the same pos. The caller's per-seq argmax/embed stay on CPU. */
-    extern void *g_cuda_cp_batch_state;
-    if (g_cuda_cp_batch_state && B <= 16) {
-        int pos_arr[16]; for (int b = 0; b < B; b++) pos_arr[b] = pos;
-        qwen_cuda_cp_batch_step(g_cuda_cp_batch_state, x, pos_arr);
-        return;
-    }
-#endif
-#ifdef QWEN_HAVE_METAL
-    if (g_metal_cp_batch_state && B <= 8) {
-        int pos_arr[8]; for (int b = 0; b < B; b++) pos_arr[b] = pos;
-        qwen_metal_cp_batch_step(g_metal_cp_batch_state, x, pos_arr);
-        return;
-    }
-#endif
     for (int b = 0; b < B; b++) {
         if (active && !active[b]) continue;
         qwen_rms_norm(x_norm + (size_t)b * ch, x + (size_t)b * ch, ctx->cp_layers[0].input_norm, 1, ch, eps);
@@ -1161,7 +1099,7 @@ int qwen_batch_cp_predict(qwen_tts_ctx_t *ctx, qwen_batch_t *bb,
     qwen_tts_config_t *c = &ctx->config;
     int B = bb->B, ch = bb->cp_h, h = c->hidden_size, emb_dim = ctx->cp_emb_dim;
     /* Sanity: the mmapped bf16 weights must exist (they always do after a successful load —
-     * quantized runs keep the bf16 pointers as the embedding/GPU source). audit 2026-07-11:
+     * quantized runs keep the bf16 pointers as the embedding source). audit 2026-07-11:
      * the old "v1 CPU: bf16 only" framing was stale — batch_cp_layer dispatches q4>int8>bf16
      * via qwen_batch_proj_q, so the CPU batched CP has been quantization-aware for a while. */
     if (!ctx->cp_layers[0].wq_bf16 || !ctx->cp_lm_head_bf16[0]) return -2;

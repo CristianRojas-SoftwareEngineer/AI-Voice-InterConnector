@@ -507,33 +507,6 @@ int qwen_talker_load(qwen_tts_ctx_t *ctx) {
  * Single-token Talker Step
  * ======================================================================== */
 
-/* GPU-resident fused Talker step (qwen_tts_cuda_talker.cu). When set, both the decode step
- * and the sequential prefill delegate to it (it builds its OWN device KV from pos 0). Disabled
- * automatically when emotion steering is active (the fused step doesn't apply ml_steer yet). */
-void *g_cuda_talker_state = NULL;
-/* audit MED-2: the fused single-stream states above/below hold ONE device KV, so they belong to
- * exactly ONE ctx (the one they were init'd with). Guard every delegation with an owner check:
- * a clone ctx (server --workers N, batched single-worker clone) must fall through to the CPU
- * path instead of clobbering the owner's device KV mid-request (cross-request audio corruption). */
-void *g_gpu_fused_owner = NULL;   /* the qwen_tts_ctx_t* the fused states were created for */
-/* GPU-resident BATCHED Talker step (throughput path). When set, qwen_batch_talker_step_ragged
- * delegates to it (maintains its OWN device KV [B][kv_max][kvd]; seeded per slot on admit via
- * qwen_cuda_talker_batch_upload_slot). Created by qwen_tts_serve_continuous when QWEN_CUDA_BATCH=1. */
-void *g_cuda_talker_batch_state = NULL;
-#ifdef QWEN_HAVE_METAL
-/* GPU-resident fused Talker step (Metal, G2). Same delegation as CUDA. */
-void *g_metal_talker_state = NULL;
-void *g_metal_talker_batch_state = NULL;   /* batched fused Talker step (server throughput) */
-extern void qwen_metal_talker_step(void *state, const float *embed, float *hidden_out, int pos);
-extern void qwen_metal_talker_get_dec_x(void *state, float *out);
-extern void qwen_metal_talker_batch_step(void *state, const float *embeds, const int *pos_arr, float *hidden_out);
-#endif
-#ifdef QWEN_HAVE_CUDA
-extern void qwen_cuda_talker_batch_step(void *state, const float *embeds, const int *pos_arr, float *hidden_out);
-extern void qwen_cuda_talker_step(void *state, const float *embed, float *hidden_out, int pos);
-extern void qwen_cuda_talker_get_dec_x(void *state, float *out);
-#endif
-
 int qwen_talker_step(qwen_tts_ctx_t *ctx, float *embed, float *hidden_out) {
     qwen_tts_config_t *c = &ctx->config;
     int h = c->hidden_size;
@@ -542,34 +515,6 @@ int qwen_talker_step(qwen_tts_ctx_t *ctx, float *embed, float *hidden_out) {
     int inter = c->intermediate_size;
     int pos = ctx->kv_len;
     float eps = c->rms_norm_eps;
-
-    /* Fused-vs-CPU dispatch is per-REQUEST (ml_steer_weight), not per-frame (w_eff):
-     * mixing fused steps (device KV only) and CPU steered steps (host KV only) inside one
-     * request leaves each cache missing the other side's rows — a pulse schedule
-     * (--ml-frames N) would read garbage after the pulse. A steered request runs fully on
-     * the CPU path (the fused step doesn't apply ml_steer yet); qwen_tts_generate forces a
-     * full prefill for it so the host KV is coherent (issue #19 part 2). */
-#ifdef QWEN_HAVE_CUDA
-    if (g_cuda_talker_state && ctx == g_gpu_fused_owner &&
-        !(ctx->ml_steer && ctx->ml_steer_weight != 0.0f)) {
-        qwen_cuda_talker_step(g_cuda_talker_state, embed, hidden_out, pos);
-        /* The fused step skips the host state; refresh ctx->dec_x from the device residual
-         * so the prefill→decode handoff (last_hidden = rms_norm(dec_x, talker_norm)) stays
-         * correct across server delta-reuse requests and streaming chunk seeds (issue #19). */
-        qwen_cuda_talker_get_dec_x(g_cuda_talker_state, ctx->dec_x);
-        ctx->kv_len = pos + 1;
-        return 0;
-    }
-#endif
-#ifdef QWEN_HAVE_METAL
-    if (g_metal_talker_state && ctx == g_gpu_fused_owner &&
-        !(ctx->ml_steer && ctx->ml_steer_weight != 0.0f)) {
-        qwen_metal_talker_step(g_metal_talker_state, embed, hidden_out, pos);
-        qwen_metal_talker_get_dec_x(g_metal_talker_state, ctx->dec_x);
-        ctx->kv_len = pos + 1;
-        return 0;
-    }
-#endif
 
     if (kv_cache_grow(ctx, pos + 1) != 0) return -1;
 
@@ -1280,21 +1225,6 @@ int qwen_batch_talker_step(qwen_tts_ctx_t *ctx, qwen_batch_t *bb,
 int qwen_batch_talker_step_ragged(qwen_tts_ctx_t *ctx, qwen_batch_t *bb,
                                   const float *embeds, const int *pos_arr,
                                   const uint8_t *active, float *hidden_out) {
-#ifdef QWEN_HAVE_CUDA
-    /* GPU batched path: the resident device KV is authoritative (seeded per slot on admit).
-     * Processes all B rows (inactive slots' outputs are ignored by the orchestrator). */
-    extern void *g_cuda_talker_batch_state;
-    if (g_cuda_talker_batch_state) {
-        qwen_cuda_talker_batch_step(g_cuda_talker_batch_state, embeds, pos_arr, hidden_out);
-        return 0;
-    }
-#endif
-#ifdef QWEN_HAVE_METAL
-    if (g_metal_talker_batch_state) {
-        qwen_metal_talker_batch_step(g_metal_talker_batch_state, embeds, pos_arr, hidden_out);
-        return 0;
-    }
-#endif
     return batch_talker_step_impl(ctx, bb, embeds, pos_arr, active, hidden_out);
 }
 

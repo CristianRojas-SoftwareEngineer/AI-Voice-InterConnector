@@ -70,9 +70,6 @@ audit_*.md
 docs/paralinguistics-*.md
 samples/tests/
 
-# Metal/CPU bench outputs (bench_m2.sh)
-bench_out/
-
 # Compiler-generated dependency files (Makefile -MMD -MP)
 *.d
 tests/test_ingot_parity

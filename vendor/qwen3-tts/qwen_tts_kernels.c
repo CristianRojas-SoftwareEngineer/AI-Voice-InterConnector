@@ -1083,13 +1083,7 @@ static void bf16_mv_task(size_t tid, size_t nt, void *vc) {
     int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
     bf16_matvec_fused(c->y + r0, c->x, c->W + (size_t)r0 * c->cols, c->cols, r1 - r0);
 }
-/* Optional GPU offload hook: installed by the Metal/CUDA backend when --backend
- * is set. NULL = CPU default (the always-on path). Additive + opt-in — one
- * predictable, not-taken branch when GPU is off. */
-void (*g_qwen_matvec_bf16_hook)(float *, const uint16_t *, const float *, int, int) = NULL;
-
 void qwen_matvec_bf16(float *y, const uint16_t *W, const float *x, int rows, int cols) {
-    if (g_qwen_matvec_bf16_hook) { g_qwen_matvec_bf16_hook(y, W, x, rows, cols); return; }
     int nt = g_n_threads;
     if (nt > 1 && rows >= 256) {
         bf16_mv_ctx c = { y, W, x, rows, cols };
@@ -1114,7 +1108,7 @@ void qwen_matvec_bf16(float *y, const uint16_t *W, const float *x, int rows, int
  * The bf16 weight decode is scalar (a single shift, amortized over the B FMAs).
  *
  * TODO (newer ISAs, annotate-now / exploit-later): the bf16 decode + FMA could use
- *   - ARM bf16 BFDOT/BFMMLA (Apple M2+, Neoverse V1/V2, NVIDIA Grace, NVIDIA GPU) and
+ *   - ARM bf16 BFDOT/BFMMLA (Apple M2+, Neoverse V1/V2, NVIDIA Grace) and
  *     i8mm SMMLA for the int8 batched twin — NEON here does a scalar bf16->f32 shift.
  *   - ARM SVE/SVE2 (Grace/Spark): vector-length-agnostic B loop.
  *   - x86 AVX-512-BF16 (VDPBF16PS) to fuse decode+FMA; AVX-512-VNNI for int8 batched.
@@ -1246,10 +1240,6 @@ static void bf16_mm_task(size_t tid, size_t nt, void *vc) {
     int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
     bf16_matmat_slice(c->Y, c->W, c->X, r0, r1, c->cols, c->B);
 }
-/* Optional GPU offload hook for the batched matmat (server --batch-size path).
- * NULL = CPU default. This is where the GPU's matrix-unit (MMA) win lands. */
-void (*g_qwen_matmat_bf16_hook)(float *, const uint16_t *, const float *, int, int, int) = NULL;
-
 /* ── ARM MMLA batched matmat twins (rental-prep, 2026-07-11) ──────────────────
  * BFMMLA (bf16) + SMMLA (i8mm): the native 2x2-tile matrix-multiply units on
  * M2+/M3/M4, Neoverse V1/V2, Graviton3+. Compile-time guarded — on the M1 these
@@ -1325,7 +1315,6 @@ static void bfmmla_task(size_t tid, size_t nt, void *vc) {
 #endif /* __ARM_FEATURE_BF16_VECTOR_ARITHMETIC */
 
 void qwen_matmat_bf16(float *Y, const uint16_t *W, const float *X, int rows, int cols, int B) {
-    if (g_qwen_matmat_bf16_hook) { g_qwen_matmat_bf16_hook(Y, W, X, rows, cols, B); return; }
     if (B <= 0) return;
     if (B > 64) B = 64;  /* contract: B<=64 */
     int nt = g_n_threads;
@@ -2094,12 +2083,6 @@ static void bf16_qkv_task(size_t tid, size_t nt, void *vc) {
 void qwen_matvec_bf16_qkv(float *q, float *k, float *v,
                            const uint16_t *Wq, const uint16_t *Wk, const uint16_t *Wv,
                            const float *x, int in_dim, int q_dim, int kv_dim) {
-    if (g_qwen_matvec_bf16_hook) {
-        g_qwen_matvec_bf16_hook(q, Wq, x, q_dim, in_dim);
-        g_qwen_matvec_bf16_hook(k, Wk, x, kv_dim, in_dim);
-        g_qwen_matvec_bf16_hook(v, Wv, x, kv_dim, in_dim);
-        return;
-    }
     int nt = g_n_threads;
     int total_dim = q_dim + 2 * kv_dim;
     if (nt > 1 && total_dim >= 256) {

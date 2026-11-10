@@ -9,12 +9,6 @@
 #include "qwen_tts_batch.h"
 #include "qwen_tts_kernels.h"
 #include "qwen_tts_server.h"
-#if defined(QWEN_HAVE_METAL) || defined(QWEN_HAVE_CUDA)
-#include "qwen_tts_backend.h"   /* experimental GPU backends (make metal / make cuda) */
-#endif
-#if defined(QWEN_HAVE_METAL)
-#include "qwen_tts_metal.h"     /* fused Talker step + selftest */
-#endif
 
 #include <stdio.h>
 #include <lz4.h>
@@ -975,10 +969,6 @@ int main(int argc, char **argv) {
     int show_caps = 0;   /* --caps: print compiled SIMD/threading capabilities and exit */
     int run_self_test = 0; /* --self-test: kernel numeric self-test (matvec vs f32 ref) and exit */
     int run_matmat_bench = 0; /* --matmat-bench: batched matmat vs B*matvec throughput, per precision, exit */
-    int run_gpu_selftest = 0; /* --gpu-selftest: GPU-vs-CPU matvec/matmat correctness + timing, exit (GPU builds) */
-    int run_gpu_selftest_talker = 0; /* --gpu-selftest-talker: fused resident Talker step vs CPU (needs model) */
-    int run_gpu_batch_bench = 0; int gpu_batch_B = 4; /* --gpu-batch-bench N: batched Talker correctness + throughput */
-    const char *gpu_backend_str = NULL; /* --backend cpu|metal|cuda (v1: selects the --gpu-selftest target) */
     float cp_roughness = 0.0f;        /* --roughness: q2-down blend on the CP (texture knob) */
     const char *emotion_spec = NULL;  /* --emotion: mood name or preset(s), e.g. "joy", "happy:0.5,proud:0.5" */
     const char *speaker_name = NULL;  /* -s preset name kept verbatim (id discards it) for the emotion router */
@@ -1091,10 +1081,6 @@ int main(int argc, char **argv) {
         {"ml-frames",     required_argument, 0, 1048},
         {"self-test",     no_argument,       0, 1027},
         {"matmat-bench",  no_argument,       0, 1038},
-        {"gpu-selftest",  no_argument,       0, 1070},
-        {"backend",       required_argument, 0, 1071},
-        {"gpu-selftest-talker", no_argument, 0, 1072},
-        {"gpu-batch-bench", required_argument, 0, 1074},
         {"roughness",     required_argument, 0, 1028},
         {"emotion",       required_argument, 0, 1031},
         {"volume",        required_argument, 0, 1032},
@@ -1158,7 +1144,7 @@ int main(int argc, char **argv) {
             case 1055: expr_weight = atof(optarg); break;/* --expr-weight: scale factored-LoRA delta */
             case 1014: use_int8 = 1; break;
             case 1015: use_int4 = 1; break;
-            case 1073: use_int4 = 1; setenv("QWEN_CP_PREC", "int8", 1); break;  /* --quant-mixed: int4 Talker + int8 CP (best CUDA quant) */
+            case 1073: use_int4 = 1; setenv("QWEN_CP_PREC", "int8", 1); break;  /* --quant-mixed: Talker int4 + CP int8 */
             case 1022: voice_name = optarg; break;
             case 1023: { int gw = atoi(optarg); ctx_greedy_warmup = gw; } break;
             case 1024: target_cv_dir = optarg; break;
@@ -1172,10 +1158,6 @@ int main(int argc, char **argv) {
             case 1048: ml_frames = atoi(optarg); break;
             case 1027: run_self_test = 1; break;
             case 1038: run_matmat_bench = 1; break;
-            case 1070: run_gpu_selftest = 1; break;
-            case 1071: gpu_backend_str = optarg; break;
-            case 1072: run_gpu_selftest_talker = 1; break;
-            case 1074: run_gpu_batch_bench = 1; gpu_batch_B = atoi(optarg); break;
             case 1028: cp_roughness = (float)atof(optarg); roughness_set = 1; break;
             case 1031: emotion_spec = optarg; break;
             case 1032: audio_volume = (float)atof(optarg); volume_set = 1; break;
@@ -1258,7 +1240,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  --expr-weight <m>          Dose a .expr (factored LoRA AND dense): 1=as trained, 0.6=subtler, 1.5=stronger\n");
                 fprintf(stderr, "  --int8                     INT8 quantized Talker + Code Predictor\n");
                 fprintf(stderr, "  --int4                     Q4_0 quantized Talker (1.7B only, smallest memory)\n");
-                fprintf(stderr, "  --quant-mixed              int4 Talker + int8 CP (best CUDA quant: q4 Talker win, no CP degradation)\n");
+                fprintf(stderr, "  --quant-mixed              int4 Talker + int8 CP (q4 Talker win, no CP degradation)\n");
                 fprintf(stderr, "  --roughness <0..1>         Texture/roughness knob (q2-down blend on Code Predictor)\n");
                 fprintf(stderr, "  --emotion <spec>           Emotion in ONE flag (1.7B). Primaries: sad/joy/anger/fear/disgust/surprise.\n");
                 fprintf(stderr, "                             Dyads: contempt/awe/nostalgia/disapproval/remorse/outrage/despair (blended steer).\n");
@@ -1305,27 +1287,6 @@ int main(int argc, char **argv) {
         return qwen_matmat_bench(stdout);
     }
 
-    /* --gpu-selftest: compare the experimental GPU backend's matvec/matmat against
-     * the CPU reference (correctness + rough timing). GPU builds only. */
-    if (run_gpu_selftest) {
-#if defined(QWEN_HAVE_METAL) || defined(QWEN_HAVE_CUDA)
-        qwen_init_threads();
-        const char *want = gpu_backend_str;
-        if (!want) {
-#if defined(QWEN_HAVE_METAL)
-            want = "metal";
-#else
-            want = "cuda";
-#endif
-        }
-        return qwen_gpu_selftest(qwen_backend_kind_from_str(want), stdout);
-#else
-        (void)gpu_backend_str;
-        fprintf(stderr, "--gpu-selftest requires a GPU build: `make metal` or `make cuda`\n");
-        return 1;
-#endif
-    }
-
     /* Voice library management (no model loading needed) */
     if (list_voices_dir) {
         return list_voices(list_voices_dir);
@@ -1364,8 +1325,7 @@ int main(int argc, char **argv) {
     }
     /* --save-voice without --text = create voice only (no generation) */
     int create_voice_only = (save_voice && !text && serve_port <= 0);
-    if (!text && !compose_spec && serve_port <= 0 && !create_voice_only && !run_batch_test && !run_batch_bench
-        && !run_gpu_selftest_talker && !run_gpu_batch_bench) {
+    if (!text && !compose_spec && serve_port <= 0 && !create_voice_only && !run_batch_test && !run_batch_bench) {
         fprintf(stderr, "Error: --text, --compose or --serve is required\n");
         return 1;
     }
@@ -1456,230 +1416,6 @@ int main(int argc, char **argv) {
         fprintf(stderr, "Failed to load model\n");
         return 1;
     }
-
-#if defined(QWEN_HAVE_CUDA)
-    /* --gpu-selftest-talker: validate the GPU-resident fused Talker step against the CPU
-     * qwen_talker_step (same weights, same deterministic embeds, each builds its own KV).
-     * Correctness gate for the fused-forward epic (plan_v4). GPU builds only; needs the model. */
-    if (run_gpu_selftest_talker) {
-        extern int qwen_talker_step(qwen_tts_ctx_t *, float *, float *);
-        extern void *qwen_cuda_talker_init(qwen_tts_ctx_t *);
-        extern void  qwen_cuda_talker_step(void *, const float *, float *, int);
-        extern void  qwen_cuda_talker_free(void *);
-        int h = ctx->config.hidden_size, N = 6, fail = 0;
-        float *emb = (float *)malloc((size_t)N * h * sizeof(float));
-        float *hc  = (float *)malloc((size_t)N * h * sizeof(float));
-        float *hg  = (float *)malloc((size_t)N * h * sizeof(float));
-        uint64_t rng = 0x1234567ull;
-        for (int i = 0; i < N * h; i++) { rng = rng * 6364136223846793005ull + 1442695040888963407ull;
-            emb[i] = (float)((rng >> 40) / (double)(1u << 24)) * 2.0f - 1.0f; }
-        ctx->ml_steer = NULL; ctx->kv_len = 0;
-        for (int s = 0; s < N; s++) qwen_talker_step(ctx, emb + (size_t)s * h, hc + (size_t)s * h);
-        void *st = qwen_cuda_talker_init(ctx);
-        if (!st) { fprintf(stderr, "gpu-selftest-talker: init failed\n"); return 1; }
-        for (int s = 0; s < N; s++) qwen_cuda_talker_step(st, emb + (size_t)s * h, hg + (size_t)s * h, s);
-        qwen_cuda_talker_free(st);
-        for (int s = 0; s < N; s++) {
-            double mx = 0, ref = 0, se = 0, sr = 0; int argmax_c = 0, argmax_g = 0;
-            double bc = -1e30, bg = -1e30;
-            for (int i = 0; i < h; i++) {
-                double c = hc[s*h+i], g = hg[s*h+i], d = fabs(c - g);
-                if (d > mx) mx = d; if (fabs(c) > ref) ref = fabs(c);
-                se += d*d; sr += c*c;
-                if (c > bc) { bc = c; argmax_c = i; }
-                if (g > bg) { bg = g; argmax_g = i; }
-            }
-            double rel = mx / (ref + 1e-9), rmsrel = sqrt(se) / (sqrt(sr) + 1e-9);
-            printf("  step %d: max-rel=%.3e  RMS-rel=%.3e  argmax(cpu=%d gpu=%d %s)  %s\n",
-                   s, rel, rmsrel, argmax_c, argmax_g, argmax_c==argmax_g?"match":"FORK",
-                   rmsrel < 2e-3 ? "PASS" : "FAIL");
-            if (!(rmsrel < 2e-3)) fail = 1;
-        }
-        printf("gpu-selftest-talker: %s\n", fail ? "FAIL" : "PASS");
-        free(emb); free(hc); free(hg);
-        qwen_tts_unload(ctx);
-        return fail;
-    }
-    /* --gpu-batch-bench N: batched fused Talker — correctness (batched row == single) +
-     * throughput scaling (B seqs/frame vs 1). Needs the model + --int8/--quant-mixed. */
-    if (run_gpu_batch_bench) {
-        extern int qwen_cuda_batch_selftest(qwen_tts_ctx_t *, int, int);
-        int rc = qwen_cuda_batch_selftest(ctx, gpu_batch_B, 200);
-        qwen_tts_unload(ctx);
-        return rc;
-    }
-#endif
-
-#if defined(QWEN_HAVE_METAL)
-    /* --gpu-selftest-talker (Metal): GPU-resident fused Talker step vs the CPU qwen_talker_step. */
-    if (run_gpu_selftest_talker) {
-        extern int qwen_talker_step(qwen_tts_ctx_t *, float *, float *);
-        int h = ctx->config.hidden_size, N = 48, fail = 0;
-        float *emb = (float *)malloc((size_t)N * h * sizeof(float));
-        float *hc  = (float *)malloc((size_t)N * h * sizeof(float));
-        float *hg  = (float *)malloc((size_t)N * h * sizeof(float));
-        uint64_t rng = 0x1234567ull;
-        for (int i = 0; i < N * h; i++) { rng = rng * 6364136223846793005ull + 1442695040888963407ull;
-            emb[i] = (float)((rng >> 40) / (double)(1u << 24)) * 2.0f - 1.0f; }
-        ctx->ml_steer = NULL; ctx->kv_len = 0;
-        for (int s = 0; s < N; s++) qwen_talker_step(ctx, emb + (size_t)s * h, hc + (size_t)s * h);
-        void *mc = qwen_metal_init();
-        if (!mc) { fprintf(stderr, "gpu-selftest-talker(metal): metal init failed\n"); return 1; }
-        void *st = qwen_metal_talker_init(mc, ctx);
-        if (!st) { fprintf(stderr, "gpu-selftest-talker(metal): talker init failed\n"); return 1; }
-        for (int s = 0; s < N; s++) qwen_metal_talker_step(st, emb + (size_t)s * h, hg + (size_t)s * h, s);
-        /* ---- BATCHED step validation (the check that was missing last time): B replicas of the
-         * SAME stream must match the single Metal step (argmax + RMS-rel). Fresh KV, pos 0..N-1. ---- */
-        { int B = 4, bfail = 0;
-          void *bs = qwen_metal_talker_batch_init(st, B);
-          if (!bs) { fprintf(stderr, "gpu-selftest-batch(metal): batch init failed (B=%d)\n", B); fail = 1; }
-          else {
-            float *embB = (float*)malloc((size_t)B*h*sizeof(float));
-            float *hB   = (float*)malloc((size_t)B*h*sizeof(float));
-            int   *posB = (int*)malloc((size_t)B*sizeof(int));
-            double worst = 0;
-            for (int s = 0; s < N; s++) {
-                for (int b=0;b<B;b++){ posB[b]=s; memcpy(embB+(size_t)b*h, emb+(size_t)s*h, (size_t)h*sizeof(float)); }
-                qwen_metal_talker_batch_step(bs, embB, posB, hB);
-                for (int b=0;b<B;b++){
-                    double se=0, sr=0; int am_s=0, am_b=0; double bsg=-1e30, bbg=-1e30;
-                    for (int i=0;i<h;i++){ double g=hg[(size_t)s*h+i], gb=hB[(size_t)b*h+i], d=g-gb; se+=d*d; sr+=g*g;
-                        if (g>bsg){bsg=g;am_s=i;} if (gb>bbg){bbg=gb;am_b=i;} }
-                    double rmsrel = sqrt(se)/(sqrt(sr)+1e-9); if (rmsrel>worst) worst=rmsrel;
-                    /* Gate = argmax match (drives sampling). RMS-rel up to ~2e-2 is the benign fp fork
-                     * over 28 fused layers (mv_b scalar accum vs single float4) — same as single-vs-CPU. */
-                    if (am_s != am_b || rmsrel > 2.5e-2) { bfail=1;
-                        printf("  BATCH step %d slot %d: RMS-rel=%.3e argmax(single=%d batch=%d) FAIL\n", s, b, rmsrel, am_s, am_b); }
-                }
-            }
-            printf("gpu-selftest-batch (metal, B=%d): worst RMS-rel=%.3e  %s\n", B, worst, bfail?"FAIL":"PASS");
-            if (bfail) fail = 1;
-            free(embB); free(hB); free(posB);
-            qwen_metal_talker_batch_free(bs);
-          }
-        }
-        /* ---- PROMPT-KV test: reproduce the SERVER flow — seed a prompt KV, then ONE decode step.
-         * single(upload_kv) vs batch(upload_slot, slot 0) must match. This exercises upload_slot +
-         * the batch step reading pre-seeded prompt KV (the path --gpu-selftest-talker's fresh-KV run
-         * does NOT cover). If this FORKs, the bug is upload_slot/batch-step; if it matches, it's the
-         * server integration around them. ---- */
-        {
-            int pl = 20, Ln = ctx->config.num_layers, kvd = ctx->config.num_kv_heads*ctx->config.head_dim, kvm = ctx->kv_max;
-            uint64_t r2 = 0xBEEF1234ull;
-            for (int l=0;l<Ln;l++) for (int p=0;p<pl;p++) for (int i=0;i<kvd;i++) {
-                r2 = r2*6364136223846793005ull+1442695040888963407ull; float fv=(float)((r2>>40)/(double)(1u<<24))*2.0f-1.0f;
-                uint32_t u; memcpy(&u,&fv,4); ctx->kv_cache_k[(size_t)l*kvm*kvd+(size_t)p*kvd+i]=(uint16_t)(u>>16);
-                r2 = r2*6364136223846793005ull+1442695040888963407ull; float fw=(float)((r2>>40)/(double)(1u<<24))*2.0f-1.0f;
-                memcpy(&u,&fw,4); ctx->kv_cache_v[(size_t)l*kvm*kvd+(size_t)p*kvd+i]=(uint16_t)(u>>16);
-            }
-            void *ss = qwen_metal_talker_init(mc, ctx);
-            qwen_metal_talker_upload_kv(ss, ctx, pl);
-            float *he = (float*)malloc((size_t)h*sizeof(float));
-            qwen_metal_talker_step(ss, emb, he, pl);
-            void *bs2 = qwen_metal_talker_batch_init(ss, 2);
-            qwen_metal_talker_batch_upload_slot(bs2, 0, ctx->kv_cache_k, ctx->kv_cache_v, kvm, pl);
-            float *embB2=(float*)calloc((size_t)2*h,sizeof(float)); memcpy(embB2, emb, (size_t)h*sizeof(float));
-            int posB2[2]={pl,0}; float *hB2=(float*)malloc((size_t)2*h*sizeof(float));
-            qwen_metal_talker_batch_step(bs2, embB2, posB2, hB2);
-            double se2=0, sr2=0; int am_s=0, am_b=0; double bsg=-1e30, bbg=-1e30;
-            for (int i=0;i<h;i++){ double a=he[i], bc2=hB2[i], d=a-bc2; se2+=d*d; sr2+=a*a;
-                if(a>bsg){bsg=a;am_s=i;} if(bc2>bbg){bbg=bc2;am_b=i;} }
-            double rr = sqrt(se2)/(sqrt(sr2)+1e-9);
-            printf("gpu-selftest-batch-promptKV (pl=%d): RMS-rel=%.3e argmax(single=%d batch=%d) %s\n",
-                   pl, rr, am_s, am_b, (am_s==am_b && rr<2.5e-2)?"PASS":"FAIL");
-            if (!(am_s==am_b && rr<2.5e-2)) fail=1;
-            free(he); free(embB2); free(hB2);
-            qwen_metal_talker_batch_free(bs2); qwen_metal_talker_free(ss);
-        }
-        qwen_metal_talker_free(st); qwen_metal_free(mc);
-        for (int s = 0; s < N; s++) {
-            double mx = 0, ref = 0, se = 0, sr = 0; int argmax_c = 0, argmax_g = 0; double bc = -1e30, bg = -1e30;
-            for (int i = 0; i < h; i++) {
-                double c = hc[s*h+i], g = hg[s*h+i], d = fabs(c - g);
-                if (d > mx) mx = d; if (fabs(c) > ref) ref = fabs(c); se += d*d; sr += c*c;
-                if (c > bc) { bc = c; argmax_c = i; } if (g > bg) { bg = g; argmax_g = i; }
-            }
-            double rel = mx / (ref + 1e-9), rmsrel = sqrt(se) / (sqrt(sr) + 1e-9);
-            /* Gate = ARGMAX match (drives sampling); RMS-rel ~6-8e-3 is benign fp-accumulation
-             * fork over 28 deep fused layers (same magnitude as the CUDA path). */
-            int ok = (argmax_c == argmax_g) && (rmsrel < 1.5e-2);
-            printf("  step %d: max-rel=%.3e  RMS-rel=%.3e  argmax(cpu=%d gpu=%d %s)  %s\n",
-                   s, rel, rmsrel, argmax_c, argmax_g, argmax_c==argmax_g?"match":"FORK",
-                   ok ? "PASS" : "FAIL");
-            if (!ok) fail = 1;
-        }
-        printf("gpu-selftest-talker (metal): %s\n", fail ? "FAIL" : "PASS");
-        free(emb); free(hc); free(hg);
-        qwen_tts_unload(ctx);
-        return fail;
-    }
-#endif
-
-#if defined(QWEN_HAVE_METAL) || defined(QWEN_HAVE_CUDA)
-    /* Optional GPU offload (opt-in): route the bf16 matvec hot path through the
-     * selected backend. CPU stays the default everywhere else; passing no
-     * --backend (or --backend cpu) leaves the engine 100% on the CPU path. */
-    if (gpu_backend_str) {
-        qwen_backend_kind_t bk = qwen_backend_kind_from_str(gpu_backend_str);
-        if (bk != QWEN_BACKEND_CPU) {
-            qwen_backend_t *gpu_backend = qwen_backend_init(bk);
-            /* When a fused resident step is active it owns the GPU work; the per-op matvec hook
-             * would only slow the OTHER components (e.g. CP) with sync round-trips → skip it. */
-            int metal_fused = 0;
-#if defined(QWEN_HAVE_METAL)
-            metal_fused = (bk == QWEN_BACKEND_METAL && getenv("QWEN_METAL_FUSED_TALKER") != NULL);
-#endif
-            if (!metal_fused) qwen_backend_install_global(gpu_backend);
-            fprintf(stderr, "GPU offload: bf16 matvec via '%s' backend "
-                            "(EXPERIMENTAL; CPU stays default elsewhere)\n", gpu_backend->name);
-#if defined(QWEN_HAVE_CUDA)
-            /* Fused-forward epic (M1b): QWEN_CUDA_FUSED_TALKER=1 → run the WHOLE Talker step
-             * GPU-resident (weights+KV on device, one sync/step) instead of the per-op matvec
-             * hook. Decode-only; prefill stays CPU-batched + KV uploaded. Off = per-op path. */
-            if (bk == QWEN_BACKEND_CUDA && getenv("QWEN_CUDA_FUSED_TALKER")) {
-                extern void *g_cuda_talker_state, *g_cuda_cp_state, *g_gpu_fused_owner;
-                extern void *qwen_cuda_talker_init(qwen_tts_ctx_t *);
-                extern void *qwen_cuda_cp_init(qwen_tts_ctx_t *);
-                g_cuda_talker_state = qwen_cuda_talker_init(ctx);
-                g_cuda_cp_state = qwen_cuda_cp_init(ctx);
-                g_gpu_fused_owner = ctx;   /* audit MED-2: fused states delegate only for this ctx */
-                if (g_cuda_talker_state && g_cuda_cp_state)
-                    fprintf(stderr, "GPU fused Talker+CP steps ENABLED (resident, 1 sync/step each)\n");
-            }
-            /* M3: route the Speech-decoder convs to cuBLAS (big matmuls) — QWEN_CUDA_DECODER=1. */
-            if (bk == QWEN_BACKEND_CUDA && getenv("QWEN_CUDA_DECODER")) {
-                extern int g_cuda_decoder_on;
-                g_cuda_decoder_on = 1;
-                fprintf(stderr, "GPU Speech-decoder convs via cuBLAS ENABLED\n");
-            }
-            /* M3 (real): GPU-RESIDENT ConvNet decoder — QWEN_CUDA_CONVDEC=1. */
-            if (bk == QWEN_BACKEND_CUDA && getenv("QWEN_CUDA_CONVDEC")) {
-                extern int g_cuda_decoder_conv_on;
-                g_cuda_decoder_conv_on = 1;
-                fprintf(stderr, "GPU-RESIDENT ConvNet decoder ENABLED\n");
-            }
-#endif
-#if defined(QWEN_HAVE_METAL)
-            /* G2: QWEN_METAL_FUSED_TALKER=1 → run the whole Talker step GPU-resident on Metal
-             * (weights+KV in MTLBuffers, one command buffer/step) instead of the per-op hook. */
-            if (bk == QWEN_BACKEND_METAL && getenv("QWEN_METAL_FUSED_TALKER")) {
-                extern void *g_metal_talker_state, *g_metal_cp_state, *g_metal_cp_frame_state;
-                extern void *g_gpu_fused_owner;
-                g_metal_talker_state = qwen_metal_talker_init(gpu_backend->impl, ctx);
-                g_gpu_fused_owner = ctx;   /* audit MED-2: fused states delegate only for this ctx */
-                /* CP: device-frame (1 sync/frame — the M1 win) by default; QWEN_METAL_CP_PERPASS = old path. */
-                if (getenv("QWEN_METAL_CP_PERPASS"))
-                    g_metal_cp_state = qwen_metal_cp_init(gpu_backend->impl, ctx);
-                else
-                    g_metal_cp_frame_state = qwen_metal_cp_frame_init(gpu_backend->impl, ctx);
-                if (g_metal_talker_state && (g_metal_cp_state || g_metal_cp_frame_state))
-                    fprintf(stderr, "GPU fused Talker+CP ENABLED (Metal, resident%s)\n",
-                            g_metal_cp_frame_state ? ", CP device-frame" : "");
-            }
-#endif
-        }
-    }
-#endif
 
     /* Multi-layer emotion steer (.qlsteer), if requested */
     if (ml_steer_path) {

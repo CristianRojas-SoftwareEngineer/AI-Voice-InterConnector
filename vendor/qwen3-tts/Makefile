@@ -249,98 +249,6 @@ endif
 
 blas: $(TARGET)
 
-# ── Experimental GPU backends (opt-in; `make blas` is NEVER affected) ──────────
-# These add the backend seam (qwen_tts_backend) + one GPU TU and rebuild a fresh
-# qwen_tts with -DQWEN_HAVE_{METAL,CUDA}. Clean rebuild so GPU/CPU .o never mix.
-# See plan_v4 §E4 / docs/gpu-accel-analysis.md. Metal is dev-testable on M1;
-# CUDA is cuBLAS-first (no nvcc for v1) and RTF-measured on the DGX/5090.
-GPU_OBJS = qwen_tts_backend.o qwen_tts_cuda.o
-
-# CUDA toolkit location — AUTO-DETECTED, because distros disagree: the NVIDIA
-# .run/.deb installers use /usr/local/cuda, Arch Linux's `cuda` package uses
-# /opt/cuda, and module/conda environments use neither. Order: an nvcc already on
-# PATH wins (covers modules/conda/custom prefixes), then the two common locations.
-# Override explicitly when needed: `make cuda CUDA_HOME=/path/to/cuda`.
-CUDA_HOME ?= $(shell \
-	if command -v nvcc >/dev/null 2>&1; then dirname "$$(dirname "$$(command -v nvcc)")"; \
-	elif [ -x /usr/local/cuda/bin/nvcc ]; then echo /usr/local/cuda; \
-	elif [ -x /opt/cuda/bin/nvcc ]; then echo /opt/cuda; \
-	else echo /usr/local/cuda; fi)
-# lib64 on x86_64 distro packages; lib on aarch64/Tegra and some prefixes.
-CUDA_LIBDIR ?= $(shell \
-	if [ -d "$(CUDA_HOME)/lib64" ]; then echo "$(CUDA_HOME)/lib64"; \
-	else echo "$(CUDA_HOME)/lib"; fi)
-
-.PHONY: metal cuda metal_build cuda_build
-
-# Metal (macOS): clang compiles the one ObjC TU; gcc the rest; +Metal/Foundation.
-metal:
-	$(MAKE) clean
-	$(MAKE) metal_build
-metal_build: EXTRA_CFLAGS += -DQWEN_HAVE_METAL
-metal_build: $(OBJS) $(GPU_OBJS) qwen_tts_metal.o $(INGOT_LIB)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS) $(GPU_OBJS) qwen_tts_metal.o $(INGOT_LIB) $(LDLIBS) \
-		-framework Metal -framework Foundation
-	@echo ""
-	@echo "Built ./$(TARGET) with Metal backend. Try: ./$(TARGET) --gpu-selftest --backend metal"
-
-# The ObjC TU is clang-only (gcc can't build ObjC); ARC manages the Metal objects.
-qwen_tts_metal.o: qwen_tts_metal.m
-	clang -fobjc-arc -O3 -Wall -Wextra -Ivendor -MMD -MP -c -o $@ $<
-
-# CUDA (Linux/DGX): cuBLAS-first + custom .cu kernels (nvcc). Needs the CUDA
-# toolkit on the build box. NVCC_ARCH overrides the gencode (default sm_80 = Ampere+,
-# bf16 tensor cores). qwen_tts_cuda_kernels.cu is compiled by nvcc, the rest by gcc.
-NVCC ?= $(CUDA_HOME)/bin/nvcc
-# PORTABLE multi-arch default: native cubins for the common CUDA GPUs + a PTX
-# fallback so it also runs (via JIT) on archs not listed — old AND new cards, not
-# just the DGX. Ampere sm_80/86 (A100/3090/3060), Ada sm_89 (40xx), Blackwell
-# sm_120 (5090/5070) + compute_120 PTX (JITs onto sm_121 GB10 and future archs).
-# Override for a single-arch fast build, e.g. `make cuda NVCC_ARCH="-arch=sm_121"`.
-NVCC_ARCH ?= -gencode arch=compute_80,code=sm_80 \
-             -gencode arch=compute_86,code=sm_86 \
-             -gencode arch=compute_89,code=sm_89 \
-             -gencode arch=compute_120,code=sm_120 \
-             -gencode arch=compute_120,code=compute_120
-cuda:
-	@if [ ! -x "$(NVCC)" ]; then \
-		echo "ERROR: nvcc not found at $(NVCC) (CUDA_HOME=$(CUDA_HOME))."; \
-		echo "Install the CUDA toolkit, or point CUDA_HOME at it explicitly:"; \
-		echo "  make cuda CUDA_HOME=/opt/cuda        # Arch Linux (cuda package)"; \
-		echo "  make cuda CUDA_HOME=/usr/local/cuda  # NVIDIA .run/.deb installer"; \
-		exit 1; \
-	fi
-	@echo "CUDA toolkit: $(CUDA_HOME) (libs: $(CUDA_LIBDIR))"
-	$(MAKE) clean
-	$(MAKE) cuda_build
-cuda_build: EXTRA_CFLAGS += -DQWEN_HAVE_CUDA -I$(CUDA_HOME)/include
-cuda_build: $(OBJS) $(GPU_OBJS) qwen_tts_cuda_kernels.o qwen_tts_cuda_talker.o qwen_tts_cuda_decoder.o $(INGOT_LIB)
-	$(CC) $(CFLAGS) -o $(TARGET) $(OBJS) $(GPU_OBJS) qwen_tts_cuda_kernels.o qwen_tts_cuda_talker.o qwen_tts_cuda_decoder.o $(INGOT_LIB) $(LDLIBS) \
-		-L$(CUDA_LIBDIR) -lcublas -lcudart -lstdc++
-	@# -lstdc++: the nvcc-compiled .cu object pulls in C++ ABI (__cxa_guard*/libstdc++);
-	@#          the final link is driven by gcc, which doesn't add it automatically.
-	@echo ""
-	@echo "Built ./$(TARGET) with CUDA backend. Try: ./$(TARGET) --gpu-selftest --backend cuda"
-
-# The .cu compute kernels are nvcc-only (host code stays gcc/cuBLAS).
-# NOTE: these three had NO header prerequisites at all, yet _talker.cu and
-# _decoder.cu include qwen_tts.h and embed qwen_tts_ctx_t — so a struct change
-# left them stale and silently corrupting (same class of bug as the .c list;
-# see the -MMD -MP comment above). Listed explicitly for now; switch to nvcc's
-# `-MMD -MP` + `-include *.d` on a box where the CUDA build can be tested.
-qwen_tts_cuda_kernels.o: qwen_tts_cuda_kernels.cu
-	$(NVCC) $(NVCC_ARCH) -O3 -c -o $@ $<
-
-# GPU-resident fused Talker step + resident decoder. --default-stream per-thread so the
-# main-thread (Talker/CP) and the background decoder thread use INDEPENDENT default streams
-# → the GPU overlaps generation and decode instead of serializing them (RTF win).
-qwen_tts_cuda_talker.o: qwen_tts_cuda_talker.cu qwen_tts.h qwen_tts_kernels.h
-	$(NVCC) $(NVCC_ARCH) -O3 --default-stream per-thread -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
-# GPU-resident ConvNet speech decoder (M3).
-qwen_tts_cuda_decoder.o: qwen_tts_cuda_decoder.cu qwen_tts.h qwen_tts_kernels.h
-	$(NVCC) $(NVCC_ARCH) -O3 --default-stream per-thread -I. -I$(CUDA_HOME)/include -c -o $@ $<
-
 # CP micro-benchmark: separate binary instrumented with -DCP_MICROBENCH.
 # Partitions per-frame Code Predictor time among sub-ops (QKV/attn/FFN/norm/lm_head).
 # Clean rebuild into qwen_tts_cpbench so instrumented and normal .o never mix.
@@ -374,13 +282,11 @@ qwen_tts_speech_encoder.o: qwen_tts_speech_encoder.c
 
 # Header dependencies: auto-generated by -MMD -MP into <obj>.d, pulled in here.
 # (`-` so a first, .d-less build does not warn.)
--include $(OBJS:.o=.d) qwen_tts_backend.d qwen_tts_cuda.d qwen_tts_metal.d
+-include $(OBJS:.o=.d)
 
-# Clean (also the opt-in GPU objects, which are NOT in $(OBJS) — else a stale
-# stub .o from a `make metal` build would silently be reused by `make cuda`).
 clean:
-	rm -f $(OBJS) $(OBJS:.o=.d) $(TARGET) qwen_tts_backend.o qwen_tts_cuda.o qwen_tts_metal.o qwen_tts_cuda_kernels.o
-	rm -f qwen_tts_backend.d qwen_tts_cuda.d qwen_tts_metal.d vendor/lz4.d
+	rm -f $(OBJS) $(OBJS:.o=.d) $(TARGET)
+	rm -f vendor/lz4.d
 	rm -f test_decoder_standalone.o test_decoder_standalone.d qwen_tts_decoder_tool
 
 # Debug build
