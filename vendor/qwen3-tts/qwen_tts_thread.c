@@ -6,12 +6,44 @@
  *   _WIN32 (and not QWEN_USE_PTHREADS) -> Win32 threads + condition variables
  *   else                           -> pthread persistent pool (Linux, WSL, BSD)
  *
+ * Los pools Win32 y pthread esperan activamente antes de dormir en la variable
+ * de condición; el presupuesto de iteraciones se ajusta con QWEN_POOL_SPIN.
+ *
  * To exercise the pthread path on macOS for testing, build with
  * -DQWEN_FORCE_PTHREAD (overrides the GCD backend).
  */
 
 #include "qwen_tts_thread.h"
 #include "qwen_tts_kernels.h"   /* qwen_ftz_on() */
+#include <stdlib.h>
+
+/* Espera activa común a los pools Win32 y pthread: antes de dormir en la variable
+ * de condición, un worker (o el hilo principal esperando la finalización) relee
+ * el estado hasta `qwen_pool_spin()` veces. Cada fotograma lanza cientos de
+ * despachos y el siguiente suele llegar en pocos µs, así que esperar activamente
+ * evita el coste de dormir y despertar en cada uno. QWEN_POOL_SPIN ajusta el
+ * presupuesto; 0 = dormir de inmediato. Bájalo cuando la síntesis comparta CPU
+ * con otro trabajo pesado, para que la espera ociosa no le robe núcleos. El
+ * backend GCD no los usa, de ahí `unused`. */
+#define QWEN_POOL_SPIN_DEFAULT 4096
+__attribute__((unused)) static int qwen_pool_spin(void) {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = getenv("QWEN_POOL_SPIN");
+        v = e ? atoi(e) : QWEN_POOL_SPIN_DEFAULT;
+        if (v < 0) v = 0;
+    }
+    return v;
+}
+__attribute__((unused)) static inline void qwen_cpu_relax(void) {
+#if defined(__aarch64__) || defined(__arm__)
+    __asm__ __volatile__("yield" ::: "memory");
+#elif defined(__x86_64__) || defined(__i386__)
+    __asm__ __volatile__("pause" ::: "memory");
+#else
+    __asm__ __volatile__("" ::: "memory");
+#endif
+}
 
 /* -------------------------------------------------------------------------
  * macOS / GCD
@@ -41,6 +73,8 @@ int qwen_parallel_is_reentrant(void) { return 1; }  /* GCD: concurrent callers s
 
 #include <windows.h>
 
+/* Igual que el pool pthread, workers y hilo principal esperan activamente
+ * (QWEN_POOL_SPIN) antes de dormir en las variables de condición. */
 typedef struct {
     qwen_task_fn fn;
     void *ctx;
@@ -76,6 +110,17 @@ static DWORD WINAPI worker_main(LPVOID arg) {
      * done at first schedule: a submit racing thread startup would be missed → hang. */
     unsigned long seen = (unsigned long)(ULONG_PTR)arg;
     for (;;) {
+        /* Espera activa fuera de la sección crítica antes de dormir. Solo decide
+         * si vale la pena dormir; la corrección la da el bucle bajo el candado. */
+        if (!P.stop && P.generation == seen) {
+            LeaveCriticalSection(&P.mtx);
+            int budget = qwen_pool_spin();
+            while (budget-- > 0 &&
+                   *(volatile unsigned long *)&P.generation == seen &&
+                   !*(volatile int *)&P.stop)
+                qwen_cpu_relax();
+            EnterCriticalSection(&P.mtx);
+        }
         while (!P.stop && P.generation == seen)
             SleepConditionVariableCS(&P.wake, &P.mtx, INFINITE);
         if (P.stop) break;
@@ -150,6 +195,12 @@ void qwen_parallel(size_t nt, qwen_task_fn fn, void *ctx) {
 
     run_chunks(&job);              /* main participates */
 
+    /* Espera activa a los workers antes de dormir. Cada worker incrementa
+     * `completed` bajo el candado y señaliza al llegar a nworkers; el bucle
+     * bajo candado de abajo sigue cubriendo el despertar perdido. */
+    int budget = qwen_pool_spin();
+    while (budget-- > 0 && *(volatile int *)&P.completed != P.nworkers)
+        qwen_cpu_relax();
     EnterCriticalSection(&P.mtx);
     while (P.completed != P.nworkers)
         SleepConditionVariableCS(&P.complete, &P.mtx, INFINITE);
@@ -168,7 +219,6 @@ int qwen_parallel_is_reentrant(void) { return 0; }
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
-#include <stdlib.h>
 
 typedef struct {
     qwen_task_fn fn;
@@ -198,33 +248,6 @@ static struct {
     _Atomic int stop;          /* read in the worker spin loop outside the mutex → atomic */
 } P;
 static int g_inited = 0;
-
-/* Spin budget: how many generation re-reads a worker (or the main thread's
- * completion wait) does before parking on the condvar. The POSIX pool used to
- * pay a futex round-trip per dispatch (~7300/frame, per PR #17). Spinning first
- * skips the syscall when the next job lands within a few µs — which it does at
- * every frame boundary. QWEN_POOL_SPIN overrides; 0 = never spin (park at once).
- * Lower it when synthesis overlaps other CPU-heavy work so idle spin does not
- * steal those cores. */
-#define QWEN_POOL_SPIN_DEFAULT 4096
-static int qwen_pool_spin(void) {
-    static int v = -1;
-    if (v < 0) {
-        const char *e = getenv("QWEN_POOL_SPIN");
-        v = e ? atoi(e) : QWEN_POOL_SPIN_DEFAULT;
-        if (v < 0) v = 0;
-    }
-    return v;
-}
-static inline void qwen_cpu_relax(void) {
-#if defined(__aarch64__) || defined(__arm__)
-    __asm__ __volatile__("yield" ::: "memory");
-#elif defined(__x86_64__) || defined(__i386__)
-    __asm__ __volatile__("pause" ::: "memory");
-#else
-    __asm__ __volatile__("" ::: "memory");
-#endif
-}
 
 static void run_chunks(qwen_job_t *job) {
     size_t i;
