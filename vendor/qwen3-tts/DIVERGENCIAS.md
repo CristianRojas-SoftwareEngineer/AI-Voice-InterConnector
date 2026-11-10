@@ -131,3 +131,10 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Qué cambia**: antes de crear los pools de hilos, el proceso se restringe con `SetProcessAffinityMask` a un hilo lógico por núcleo físico. La máscara sale de la topología (`GetLogicalProcessorInformationEx`; p. ej. `0x5555` en un Ryzen 7 5825U), se interseca con la afinidad heredada y no se fija nada si hay varios grupos de procesadores.
 - **Por qué**: con SMT el planificador de Windows coloca a veces dos hilos pesados en el mismo núcleo y el RTF salta de ~1,1 a 1,3-1,5 de forma intermitente; el audio no cambia.
 - **Si se pierde**: reaparece ese estado lento intermitente en equipos Windows con SMT.
+
+### Enlace de `test-decoder-tool` con ingot
+
+- **Archivos**: `Makefile` (target `test-decoder-tool`).
+- **Qué cambia**: el target enlaza `libingot.a`, igual que el binario principal.
+- **Por qué**: el codificador y el decodificador leen los pesos con las funciones de ingot, y sin la librería el enlace de `qwen_tts_decoder_tool` fallaba con referencias sin resolver.
+- **Si se pierde**: `make test-decoder-tool` deja de enlazar y no se puede validar la decodificación completa con un volcado fijo de códigos.

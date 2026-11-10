@@ -260,7 +260,7 @@ cp-microbench:
 
 # Standalone speech-decoder tool: decode a QWEN_DUMP_CODES text dump (16 ints/line)
 # through the decoder alone (fixed input, no sampling) — A/B the decoder across changes.
-test-decoder-tool: $(filter-out main.o,$(OBJS)) test_decoder_standalone.o
+test-decoder-tool: $(filter-out main.o,$(OBJS)) test_decoder_standalone.o $(INGOT_LIB)
 	$(CC) $(CFLAGS) -o qwen_tts_decoder_tool $^ $(LDLIBS)
 	@echo "Built ./qwen_tts_decoder_tool  (usage: ./qwen_tts_decoder_tool codes.txt [model_dir] [out.wav])"
 
