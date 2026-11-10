@@ -19,7 +19,7 @@
 #include <sys/time.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <stdatomic.h>   /* leaks-audit #6: _Atomic flag for the cross-thread cb_aborted */
+#include <stdatomic.h>   /* indicador _Atomic para cb_aborted, compartido entre hilos */
 
 int qwen_verbose = 0;
 
@@ -114,14 +114,14 @@ static int load_config(qwen_tts_ctx_t *ctx) {
     const char *tc_end = json_match_brace(p + 1, 1);
     
     long tc_len = tc_end - p; char *tc_json = (char *)malloc(tc_len + 1);
-    if (!tc_json) { free(json); return -1; }            /* leaks-audit #9: OOM NULL-check */
+    if (!tc_json) { free(json); return -1; }            /* sin memoria: se comprueba NULL */
     memcpy(tc_json, p, tc_len); tc_json[tc_len] = '\0';
     
     /* Build a flat version of talker_config with nested objects removed.
      * This prevents json_find_key from matching keys inside nested objects
      * like code_predictor_config (whose fields shadow talker-level fields). */
     char *talker_only_json = strdup(tc_json);
-    if (!talker_only_json) { free(tc_json); free(json); return -1; }   /* leaks-audit #9 */
+    if (!talker_only_json) { free(tc_json); free(json); return -1; }   /* sin memoria: se comprueba NULL */
     {
         /* Repeatedly find and blank out nested {...} blocks */
         char *scan = talker_only_json;
@@ -173,7 +173,7 @@ static int load_config(qwen_tts_ctx_t *ctx) {
             const char *cp_close = strchr(cp_open, '}');
             if (cp_close) {
                 long cp_len = cp_close - cp_open + 1; char *cp_json = (char *)malloc(cp_len + 1);
-                if (!cp_json) { free(tc_json); free(json); return -1; }  /* leaks-audit #9 (talker_only_json already freed at line 152) */
+                if (!cp_json) { free(tc_json); free(json); return -1; }  /* sin memoria: se comprueba NULL (talker_only_json ya se liberó antes) */
                 memcpy(cp_json, cp_open, cp_len); cp_json[cp_len] = '\0';
                 c->cp_hidden_size = json_get_int(cp_json, "hidden_size", 1024);
                 c->cp_num_layers = json_get_int(cp_json, "num_hidden_layers", 5);
@@ -201,7 +201,7 @@ static int load_config(qwen_tts_ctx_t *ctx) {
             if (dc_open) {
                 const char *dc_close = json_match_brace(dc_open + 1, 1);
                 long dc_len = dc_close - dc_open; char *dc_json = (char *)malloc(dc_len + 1);
-                if (!dc_json) { free(json); return -1; }            /* leaks-audit #9: OOM NULL-check */
+                if (!dc_json) { free(json); return -1; }            /* sin memoria: se comprueba NULL */
                 memcpy(dc_json, dc_open, dc_len); dc_json[dc_len] = '\0';
                 c->dec_hidden_size = json_get_int(dc_json, "hidden_size", 512);
                 c->dec_num_layers = json_get_int(dc_json, "num_hidden_layers", 8);
@@ -389,8 +389,8 @@ typedef struct {
     /* Streaming callback (if set, audio goes to callback instead of buffer) */
     qwen_tts_audio_cb audio_cb;
     void *audio_cb_userdata;
-    _Atomic int cb_aborted; /* set to 1 if callback returns non-zero (leaks-audit #6: read by the
-                             * main thread + written by the decoder thread → atomic, not a plain int) */
+    _Atomic int cb_aborted; /* se pone a 1 si el callback devuelve distinto de cero (lo lee el hilo
+                             * principal y lo escribe el hilo del decodificador, por eso es atómico y no un int simple) */
 
     /* Context for decoder */
     qwen_tts_ctx_t *ctx;
@@ -699,7 +699,7 @@ qwen_tts_ctx_t *qwen_tts_load(const char *model_dir) {
     return qwen_tts_load_ex(model_dir, 0, 0, 0);
 }
 
-/* Leaks-audit #3: record a malloc'd override buffer so unload frees it. Growable list. */
+/* Registra un buffer de override reservado con malloc para que unload lo libere. Lista ampliable. */
 void qwen_track_override(qwen_tts_ctx_t *ctx, void *ptr) {
     if (!ctx || !ptr) return;
     if (ctx->n_owned_overrides >= ctx->cap_owned_overrides) {
@@ -714,9 +714,9 @@ void qwen_track_override(qwen_tts_ctx_t *ctx, void *ptr) {
 
 void qwen_tts_unload(qwen_tts_ctx_t *ctx) {
     if (!ctx) return;
-    /* Leaks-audit #3: free the WDELTA/WOVR/--expr override buffers that replaced mmap pointers.
-     * A worker clone shares this list (shallow copy) and must be freed BEFORE its base, so only
-     * the base reaches here with the list populated. */
+    /* Libera los buffers de override WDELTA/WOVR/--expr que reemplazaron punteros mmap.
+     * Un clon de worker comparte esta lista (copia superficial) y debe liberarse ANTES que su
+     * base, así que solo la base llega aquí con la lista poblada. */
     for (int i = 0; i < ctx->n_owned_overrides; i++) free(ctx->owned_overrides[i]);
     free(ctx->owned_overrides);
     /* Free malloc'd fused weights (gate_up are the only malloc'd weight copies) */
@@ -1009,7 +1009,7 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
     if (!text_tokens || text_token_len == 0) {
         fprintf(stderr, "Error: text tokenization failed\n");
         free(text_tokens);
-        free(instruct_tokens);   /* audit #7: were leaked on this error path */
+        free(instruct_tokens);   /* se liberan también en esta ruta de error */
         free(ref_text_tokens);
         return -1;
     }
@@ -1413,9 +1413,9 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
      * so a server-reused ctx doesn't inherit the previous request's effective weight. */
     ctx->ml_steer_w_eff = 0.0f;
 
-    /* Leaks-audit #3 MED: the RoPE cos/sin cache holds rope_cache_len (8192) positions.
-     * Prefill applies RoPE at positions [0, prefill_len); a longer prompt would index past
-     * the cache -> heap overread -> garbage rotations/audio. Refuse it rather than corrupt. */
+    /* La caché cos/sin de RoPE contiene rope_cache_len (8192) posiciones.
+     * El prefill aplica RoPE en las posiciones [0, prefill_len); un prompt más largo indexaría
+     * fuera de la caché (lectura fuera de límites del heap, rotaciones y audio basura). Se rechaza. */
     if (prefill_len > ctx->rope_cache_len) {
         fprintf(stderr, "Error: prompt too long (%d tokens > RoPE cache %d); shorten the text.\n",
                 prefill_len, ctx->rope_cache_len);
@@ -1488,9 +1488,9 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
 
     /* Autoregressive generation */
     int max_frames = ctx->max_tokens;
-    /* Leaks-audit #3 MED: generation RoPE position = prefill_len + frame; cap frames so the
-     * last position stays within the RoPE cache (prefill_len <= rope_cache_len is guaranteed
-     * by the prefill guard above). Without this, a run to max_tokens past 8192 reads OOB. */
+    /* La posición RoPE de generación es prefill_len + frame; se acota el número de frames para que
+     * la última posición quede dentro de la caché de RoPE (prefill_len <= rope_cache_len lo
+     * garantiza la guarda del prefill de arriba). Sin esto, llegar a max_tokens más allá de 8192 leería fuera de límites. */
     if (max_frames > ctx->rope_cache_len - prefill_len)
         max_frames = ctx->rope_cache_len - prefill_len;
     ctx->codec_codes = (int *)realloc(ctx->codec_codes, (int64_t)max_frames * 16 * sizeof(int));
@@ -1593,9 +1593,9 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
          * oversubscription wins, because our pool has serial stretches in which
          * the cores must be free to go to the decoder. */
         int nt = qwen_get_threads();
-        /* rental-prep (pr17 §5.5): the per-mode OPENBLAS optimum on N1 differs (file=2,
-         * stream=3 at 4 vCPU) — QWEN_BLAS_GEN_THREADS overrides the generation-phase
-         * default so the box can sweep it without rebuilds. No-op on Accelerate. */
+        /* El óptimo de OPENBLAS por modo en N1 difiere (archivo=2, stream=3 con 4 vCPU):
+         * QWEN_BLAS_GEN_THREADS reemplaza el valor por defecto de la fase de generación
+         * para que la máquina pueda barrerlo sin recompilar. No hace nada en Accelerate. */
         int gen_blas = nt > 1 ? nt - 1 : 1;
         { const char *e = getenv("QWEN_BLAS_GEN_THREADS");
           if (e && atoi(e) > 0) gen_blas = atoi(e); }

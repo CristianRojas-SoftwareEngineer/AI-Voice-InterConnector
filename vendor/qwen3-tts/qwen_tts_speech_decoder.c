@@ -1647,12 +1647,12 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
                 hidden[(int64_t)f * dec_hidden + o] += sd->input_proj_bias[o];
 
     /* === Step 4: Pre-transformer with KV cache === */
-    /* plan_v4 D2: cap the KV cache at O(window+chunk) instead of the full stream.
-     * Physical frames needed = (kv_len + new_frames) - kv_base. When that exceeds
-     * the allocation, first COMPACT: the next queries only read back to
-     * kv_len-window+1, so drop everything older and memmove the live tail (<window
-     * frames) to physical slot 0, rebasing kv_base. Only if a single chunk is
-     * larger than the cap do we then grow (rare). physical index = abs - kv_base. */
+    /* Acota la caché KV a O(window+chunk) en vez del stream completo.
+     * Tramas físicas necesarias = (kv_len + new_frames) - kv_base. Cuando eso supera
+     * la reserva, primero se COMPACTA: las próximas consultas solo leen hacia atrás hasta
+     * kv_len-window+1, así que se descarta todo lo anterior y se mueve con memmove la cola viva (<window
+     * tramas) a la posición física 0, reajustando kv_base. Solo si un único bloque
+     * supera el tope se crece (raro). índice físico = abs - kv_base. */
     int need = (st->kv_len + new_frames) - st->kv_base;
     if (need > st->kv_alloc) {
         int keep_from = st->kv_len - (window - 1);

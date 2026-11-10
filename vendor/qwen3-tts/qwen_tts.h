@@ -342,11 +342,11 @@ typedef struct {
     float *v_cache[QWEN_SD_STREAM_MAX_LAYERS];
     int kv_len;         /* total frames processed (absolute, monotonic) */
     int kv_alloc;       /* allocated PHYSICAL capacity in frames */
-    int kv_base;        /* plan_v4 D2: absolute frame stored at physical slot 0.
-                         * Attention only ever reads the last `window` (72) frames,
-                         * so the cache is compacted to O(window+chunk) instead of
-                         * growing with total stream length. physical = abs - kv_base;
-                         * RoPE is relative so the continuous abs timeline is unchanged. */
+    int kv_base;        /* trama absoluta almacenada en la posición física 0.
+                         * La atención solo lee las últimas `window` (72) tramas,
+                         * así que la caché se compacta a O(window+chunk) en vez de
+                         * crecer con la longitud total del stream. física = abs - kv_base;
+                         * RoPE es relativo, por lo que la línea de tiempo absoluta no cambia. */
 
     /* Pre-transformer output cache (latent_out): row-major [alloc × latent_dim] */
     float *latent_cache;   /* [latent_alloc, 1024] */
@@ -483,22 +483,22 @@ typedef struct qwen_tts_ctx {
     char *ref_audio_path;        /* Path to reference audio file */
     char *ref_text;              /* Reference text for ICL mode */
 
-    /* --emo-ref: EMOTION BY EXAMPLE (works on CustomVoice too, unlike voice clone).
-     * The reference contributes ONLY its codec tokens (the ICL prosody anchor) — the speaker
-     * identity keeps coming from wherever it already came from (preset -s, or a loaded clone).
-     * Rationale: the speech tokenizer is bit-identical across 0.6B/1.7B, so a codec sequence is
-     * the one exact channel between models — an emotional reference rendered by the 1.7B (or any
-     * emotional audio at all) transfers its STYLE to the 0.6B, which has no steerable emotion
-     * subspace of its own. See plan_06b_emo.md §E1. */
+    /* --emo-ref: EMOCIÓN POR EJEMPLO (funciona también con CustomVoice, a diferencia del clonado).
+     * La referencia aporta SOLO sus tokens de códec (el ancla de prosodia ICL); la identidad
+     * del hablante sigue viniendo de donde ya venía (preset -s o un clon cargado).
+     * Motivo: el tokenizador de voz es idéntico bit a bit entre 0.6B y 1.7B, así que una secuencia
+     * de códec es el único canal exacto entre modelos: una referencia emocional renderizada por el
+     * 1.7B (o cualquier audio emocional) transfiere su ESTILO al 0.6B, que no tiene un
+     * subespacio de emoción dirigible propio. */
     char *emo_ref_path;          /* Path to the emotional reference audio (style donor) */
     char *emo_ref_text;          /* Its transcript — required by the ICL prompt format */
 
     /* Cached ICL data (for .qvoice save/load) */
     int *cached_ref_codes;       /* [cached_ref_n_frames × 16] codec tokens from speech encoder */
     int cached_ref_n_frames;     /* Number of reference codec frames */
-    /* Override weight buffers (WDELTA/WOVR/--expr) that REPLACED mmap pointers — tracked so unload
-     * frees them (leaks-audit #3). A worker clone shares this list via the shallow `*w=*base` copy;
-     * only the base's unload frees it (qwen_tts_free_clone leaves it). */
+    /* Buffers de pesos de override (WDELTA/WOVR/--expr) que REEMPLAZARON punteros mmap; se registran para que unload
+     * los libere. Un clon de worker comparte esta lista mediante la copia superficial `*w=*base`;
+     * solo el unload de la base la libera (qwen_tts_free_clone la deja intacta). */
     void **owned_overrides;
     int    n_owned_overrides;
     int    cap_owned_overrides;
@@ -658,11 +658,11 @@ typedef struct qwen_tts_ctx {
                               *        (texture "roughness" knob; 0 = off). */
     int    cp_rough_built;   /* lazy-build guard for the per-layer down_q2_rough copies. */
 
-    /* Multi-layer Talker steering (emotion identity lives at late layers, not the
-     * single cp_x point). ml_steer is [num_layers+1][hidden]: after Talker layer L
-     * the residual stream gets dec_x += ml_steer_weight * ml_steer[L]. Layers outside
-     * [ml_steer_l0, ml_steer_l1] are skipped (zero vectors or range gate). Built from
-     * two QWEN_ACT_MAP captures (emotion − neutral); see tests/act_map_steer.py. */
+    /* Dirección multicapa del Talker (la identidad emocional vive en las capas tardías, no en el
+     * único punto cp_x). ml_steer es [num_layers+1][hidden]: tras la capa L del Talker
+     * el flujo residual recibe dec_x += ml_steer_weight * ml_steer[L]. Las capas fuera de
+     * [ml_steer_l0, ml_steer_l1] se omiten (vectores nulos o filtro de rango). Se construye a partir de
+     * dos capturas QWEN_ACT_MAP (emoción − neutro). */
     float *ml_steer;         /* [(num_layers+1) * hidden] per-layer steer, or NULL. */
     int    ml_steer_layers;  /* num_layers+1 */
     int    ml_steer_dim;     /* hidden */
@@ -722,8 +722,8 @@ qwen_tts_ctx_t *qwen_tts_load_ex(const char *model_dir, int silent, int use_int8
 /* Unload model and free resources */
 void qwen_tts_unload(qwen_tts_ctx_t *ctx);
 
-/* Track a malloc'd weight-override buffer (WDELTA/WOVR/--expr) so qwen_tts_unload frees it
- * (leaks-audit #3). No-op on NULL. */
+/* Registra un buffer de override de pesos (WDELTA/WOVR/--expr) reservado con malloc para que
+ * qwen_tts_unload lo libere. No hace nada con NULL. */
 void qwen_track_override(qwen_tts_ctx_t *ctx, void *ptr);
 
 /* Concurrent server support: clone a loaded context into an independent worker

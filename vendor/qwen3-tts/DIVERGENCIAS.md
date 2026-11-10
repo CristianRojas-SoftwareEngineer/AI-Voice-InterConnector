@@ -76,12 +76,13 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Por qué**: reducir el tamaño del snapshot.
 - **Si se pierde**: no aplica; los objetivos del `Makefile` y los enlaces del `README.md` que dependían de esos directorios se podaron (ver «Poda de objetivos del `Makefile`, archivos vacíos y enlaces»).
 
-### Corrección de la afirmación sobre AVX2 en `CLAUDE.md`
+### Corrección de la afirmación sobre AVX2 en `AGENTS.md`
 
-- **Archivos**: `CLAUDE.md`.
+- **Archivos**: `AGENTS.md`.
 - **Qué cambia**: la descripción de `qwen_tts_kernels.c` indica que los bucles calientes sí contienen AVX2 y que las multiplicaciones cuantizadas usan un producto escalar entero (AVX2 `maddubs`, VNNI `dpbusd`, SDOT o bucle escalar entero) en todas las plataformas.
 - **Por qué**: el texto original afirmaba que no había AVX2 en los bucles calientes.
 - **Si se pierde**: la guía vuelve a describir mal los kernels; no afecta al binario.
+- **Nota**: el original documentaba esto en `CLAUDE.md`, que no forma parte del snapshot; la descripción corregida vive en `AGENTS.md`.
 
 ### Eliminación de los backends GPU CUDA y Metal
 

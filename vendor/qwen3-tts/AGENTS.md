@@ -1,26 +1,16 @@
-> ## ⚓ CONTINUITY PROTOCOL — DO THIS FIRST, EVERY SESSION
-> Before acting, READ: **`docs/PROJECT-COMPASS.md`** (mission, how-we-work, quality criteria, the ACTIVE epic
-> + experiment trail) → then the auto-memory `MEMORY.md` index → then the active plan (`plan_emo_v3.md`).
-> The reasoning behind what we do — objectives, WHY, methodology, what's already decided/tried — lives there,
-> not just in code. Do NOT re-derive from scratch or re-ask what was settled days ago. Keep the thread.
-> When you finish a meaningful thread or experiment, UPDATE the Compass experiment-index + the relevant memory.
->
-> 🎯 **EMOTION IS SOLVED — THE recipe is `docs/emotion-THE-recipe.md` (single source of truth, mirrored in
-> `main.c`).** ONE rule: **preset voice → pure STEER `ryan_<emo>` @ w12** (clean, every language); **cloned voice
+> 🎯 **EMOTION RECIPE — the single source of truth is `resolve_emotion_recipe` in `main.c`.**
+> ONE rule: **preset voice → pure STEER `ryan_<emo>` @ w12** (clean, every language); **cloned voice
 > → COMBINE** (language `.expr` + steer). Use the **native preset per language** (JA `ono_anna`, KO `sohee`, ZH
-> `vivian`, EN/Romance `ryan`). Exposed as the `--emotion <sad|joy|anger|fear|disgust|surprise>` flag. Ear-validated
-> 2026-06-29, committed + pushed. Paralinguistics = inline `[laugh]`/`[sigh]` tags. **Do NOT re-derive from the old
-> abandoned methods** (graft/x-vector/τ-vectors/`.vec`/dense-FT/per-language EXPR-COMBINE — all archived in
-> `docs/archive/`). Read THE recipe, don't re-spelunk weeks of experiments.
+> `vivian`, EN/Romance `ryan`). Exposed as the `--emotion <sad|joy|anger|fear|disgust|surprise>` flag.
+> Paralinguistics = inline `[laugh]`/`[sigh]` tags.
 >
-> 🔬 **PARALINGUISTIC `[tag]` METHOD + TEST LOG — read `docs/para-experiments.md` BEFORE any para experiment.**
+> 🔬 **PARALINGUISTIC `[tag]` METHOD.**
 > ONE method only: **INLINE native-trigger** (onomatopoeia inside the sentence, ONE generation → event in the
 > voice's own timbre, mixed in). ❌ **NEVER the split-span / steering-span "splice"** (separate cold-prefill span
-> = sounds like a different voice — rejected by ear 2026-07-01). The doc is the durable WIN/KO table by
-> onomatopoeia × seed × language × emotion × speaker — do NOT re-run a KO combo; promote WINs into the `[tag]`
-> map. Companion **`docs/para-target.md`** = the desiderata menu (what pros do, what we want, variants).
+> = sounds like a different voice). The `[tag]` → onomatopoeia map lives in `qwen_tts_compose.c`
+> (`para_pick` / `qwen_compose_para_substitute`).
 > Shipped mapping: `[laugh]`→`哈哈哈` s7 (universal); `[sigh]`→`唉` s42 (ryan/clone) / `ahh` s7 (vivian); comma-
-> delimited inline, one generation, seed pinned per-tag. The split-span "splice" is DELETED — never bring it back.
+> delimited inline, one generation, seed pinned per-tag.
 
 This file is the practical guide for agents working on this repository.
 It is intentionally implementation-oriented: what to change, where, how to test,
@@ -43,7 +33,6 @@ CPU-only inference (BLAS is required, plus architecture-specific SIMD paths). Th
 ## Active Branches
 
 - **`main`**: Stable, production-ready code
-- **`feat/labs`**: Experimental branch for architecture tweaks, performance experiments, mixed optimizations, and general R&D. Use this for testing before merging to main.
 
 ## CI/CD (planned, not yet implemented)
 
@@ -53,7 +42,6 @@ After implementation, GitHub Actions will provide:
 - **ASan/UBSan**: Auto on PR to main (runtime memory safety with real model)
 - **Benchmarks**: Per-runner CPU dump + ms/f breakdown as JSON artifacts
 - **Releases**: Static binaries per platform on tag push (`v*`)
-- See PLAN.md Phase 9 for full details
 
 ## Source Of Truth
 
@@ -133,8 +121,6 @@ From `qwen_tts_load()` and CLI:
   - temperature, top-k, top-p, repetition penalty
 - `qwen_tts_tokenizer.c`
   - tokenizer encode (text to token IDs)
-- `qwen_tts_safetensors.c`
-  - safetensors loading and mmap
 - `qwen_tts_kernels.c`
   - ALL actual kernels live here (inline `#ifdef __ARM_NEON / __AVX2__ / else-scalar`),
     plus common math, threading (GCD, macOS-only), BLAS paths
@@ -256,21 +242,21 @@ prompts (e.g. different codec token counts), making outputs non-comparable.
 
 ## Expressivity Plugins: Emotion vs Paralinguistics (Design Contract)
 
-> ✅ **Emotion shipped (2026-06-29): the recipe is `docs/emotion-THE-recipe.md` — preset → STEER w12, clone →
+> ✅ **Emotion shipped: the recipe lives in `resolve_emotion_recipe` (`main.c`) — preset → STEER w12, clone →
 > COMBINE, native preset per language, via `--emotion`.** The notes below are the para-vs-emo design contract
-> (still relevant for the paralinguistics FT, future work); the emotion side is DONE — follow THE recipe.
+> (still relevant for the paralinguistics FT, future work); the emotion side is DONE — follow the recipe.
 
 Emotion and paralinguistics (`[laugh]`/`[sigh]`/`[cough]`/`[breath]`…) are **SEPARATE, COMPOSABLE plugin fine-tunes**, NOT one model:
 
 - The emotion plugin (CSP `.expr` FT band ~16-26 **+** `--ml-steer` L21-25 steering, applied TOGETHER) is the hard-won TOP WIN for both **presets AND cloned voices**. Adding paralinguistics MUST NOT regress, overwrite, or modify it.
 - Paralinguistics is an **EXTRA training-data set augmenting a DIFFERENT characteristic** that *couples* with emotion — a user who wants both loads para + emo together and quality improves, never degrades.
 - Therefore the para FT must target layers **DISJOINT from the emotion plugin's layers** (few layers, CSP-style) so the two `.expr` write different `talker.model.layers.N.` tensors and compose by summation with no interference.
-- Do **NOT** use a para band that overlaps emotion (e.g. 0-27 or 16-26) — it clobbers emotion. See memory `feedback_para_ft_band` + `project_para_recipe` and `plan_emo_v3.md` §9.11.
+- Do **NOT** use a para band that overlaps emotion (e.g. 0-27 or 16-26) — it clobbers emotion.
 
 ## Experiment Tracking (Senior Rule — Do Not Skip)
 
 Every test/experiment gets its OWN dated folder + `README.md`, created with the run (not after):
-`samples/tests/YYYY-MM-DD_<short-name>/` containing the audio + a `README.md` that records:
+`/tmp/qwen_tts_tests/YYYY-MM-DD_<short-name>/` (the `TEST_DIR` of the `Makefile`) containing the audio + a `README.md` that records:
 1. **Date + short name**
 2. **Hypothesis** — what we want to prove
 3. **Why** — the prior result that motivates it
@@ -279,19 +265,15 @@ Every test/experiment gets its OWN dated folder + `README.md`, created with the 
 6. **What to validate** — the specific ear/objective check
 7. **Result + verdict** — filled after the ear verdict
 
-Why: across a long session we run many tests; the per-test README is the durable trail of WHY/HOW/what-it-proved, so we can decide to follow or abandon a path. See memory `feedback_experiment_tracking`.
+Why: across a long session we run many tests; the per-test README is the durable trail of WHY/HOW/what-it-proved, so we can decide to follow or abandon a path.
 
 ## Local-Only Artifacts (Do Not Depend On In Commits)
 
 Common local directories/files are intentionally ignored:
 - `qwen3-tts-0.6b/`, `qwen3-tts-1.7b/`
-- `samples/tests/` (see below), `TODO.md`, `PLAN.md` / `plan_emo_*.md` (private notes), virtualenv folders
+- `voices/`, `*.qvoice`, `TODO.md`, virtualenv folders
 
-### ⚠️ Where audio test outputs go — NEVER loose in `samples/`
-`samples/` is NOT fully gitignored: it holds a few historical sample WAVs that are LINKED from README/blog, plus
-the git-tracked `samples/voice_clone_refs/**`. So a stray `git add -A` would commit GBs of audio. **Rule:**
-- ALL generated audio for tests/experiments → **`samples/tests/<YYYY-MM-DD_short-name>/`** (this IS gitignored) or `/tmp`.
-- NEVER write test WAVs directly under `samples/` (e.g. `samples/emotion_demo/` was wrong → use `samples/tests/emotion_demo/`).
-- NEVER `git add -A` / `git add samples` — always stage files explicitly; `samples/` and `samples/voice_clone_refs/`
-  contain README-linked assets you must not touch.
+### Where audio test outputs go
+Generated audio is NOT versioned (`*.wav` is gitignored). **Rule:**
+- ALL generated audio for tests/experiments → **`/tmp/qwen_tts_tests/<YYYY-MM-DD_short-name>/`** (the `TEST_DIR` of the `Makefile`).
 - The scratchpad dir (per-session, isolated) is also fine for throwaway audio.

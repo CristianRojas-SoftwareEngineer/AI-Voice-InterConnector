@@ -51,7 +51,7 @@ qvoice_find() {
     # Find first .qvoice file for a given model size pattern (e.g., "06b", "17b")
     local pattern="$1"
     local found=""
-    for f in *.qvoice voices/*.qvoice samples/*.qvoice; do
+    for f in *.qvoice voices/*.qvoice; do
         [ -f "$f" ] || continue
         if echo "$f" | grep -qi "$pattern"; then
             found="$f"
@@ -60,7 +60,7 @@ qvoice_find() {
     done
     # If no pattern match, try any .qvoice
     if [ -z "$found" ]; then
-        for f in *.qvoice voices/*.qvoice samples/*.qvoice; do
+        for f in *.qvoice voices/*.qvoice; do
             [ -f "$f" ] && found="$f" && break
         done
     fi

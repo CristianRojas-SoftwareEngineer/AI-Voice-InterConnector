@@ -41,8 +41,8 @@ qwen_tokenizer_t *qwen_tokenizer_load_files(const char *vocab_path, const char *
 /* Encode text to token IDs */
 int32_t *qwen_tokenizer_encode(qwen_tokenizer_t *tok, const char *text, int *out_len);
 
-/* Encode text, rewriting paralinguistic [tag] markers to atomic reserved special-token ids
- * (see training/expressivity-lora/para_tag_map.json). Non-tag spans BPE-encoded normally. */
+/* Codifica el texto reescribiendo los marcadores paralingüísticos [tag] como ids atómicos de
+ * tokens especiales reservados. Los tramos sin etiqueta se codifican con BPE normalmente. */
 int32_t *qwen_tokenizer_encode_para(qwen_tokenizer_t *tok, const char *text, int *out_len);
 
 /* Encode text with special tokens (BOS/EOS) */

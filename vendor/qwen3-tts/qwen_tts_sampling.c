@@ -8,16 +8,17 @@
 #include <string.h>
 #include <math.h>
 
-/* Pre-allocated work buffers (avoids malloc per sample call).
- * __thread (per-thread, like g_seed below): concurrent synthesis is a real,
- * supported config — `--serve --workers N` on macOS/GCD runs qwen_tts_generate
- * on N persistent worker threads in parallel (g_serialize_synth==0), and the
- * --batch-size scheduler thread synthesizes concurrently with the single-job
- * clone worker. Process-global buffers here would (a) data-race the memcpy +
- * quickselect -> corrupt the top-k threshold -> wrong sampling distribution, and
- * (b) let ensure_work_buffers() free()/realloc a buffer another thread is mid-use
- * (UAF/double-free). Per-thread buffers are allocated once per persistent worker
- * (reachable-at-exit, harmless — same tradeoff as g_seed). Leaks-audit #2 HIGH. */
+/* Búferes de trabajo preasignados (evita un malloc por llamada de muestreo).
+ * __thread (por hilo, como g_seed más abajo): la síntesis concurrente es una
+ * configuración real y soportada: `--serve --workers N` en macOS/GCD ejecuta
+ * qwen_tts_generate en N hilos worker persistentes en paralelo (g_serialize_synth==0),
+ * y el hilo planificador de --batch-size sintetiza a la vez que el worker clon de
+ * trabajo único. Unos búferes globales del proceso provocarían (a) una carrera de
+ * datos en el memcpy y el quickselect, que corrompería el umbral top-k y la
+ * distribución de muestreo, y (b) que ensure_work_buffers() liberara o reasignara
+ * con free()/realloc un búfer que otro hilo está usando (uso tras liberación o
+ * doble liberación). Los búferes por hilo se reservan una vez por worker persistente
+ * (alcanzables al salir, inocuos; mismo compromiso que g_seed). */
 static __thread float *g_topk_tmp = NULL;
 static __thread int   *g_topp_idx = NULL;
 static __thread int    g_work_cap = 0;

@@ -69,9 +69,9 @@ static char *json_extract_string(const char *json, const char *key) {
     p++;
     const char *end = p;
     while (*end && *end != '"') {
-        /* Leaks-audit #4 MED: only skip the escaped char if it isn't the NUL
-         * terminator. A body ending in a trailing backslash (\\\0) used to step
-         * over the NUL and walk out-of-bounds heap -> crash / huge len. */
+        /* Solo se salta el carácter escapado si no es el terminador NUL.
+         * Un cuerpo que termina en una barra invertida final (\\\0) saltaría
+         * el NUL y recorrería el heap fuera de límites (fallo o longitud enorme). */
         if (*end == '\\' && end[1]) end++;
         end++;
     }
@@ -118,10 +118,10 @@ static int read_request(int fd, char *buf, int buf_size) {
                 char *cl = strcasestr(buf, "Content-Length:");
                 if (cl) content_length = atoi(cl + 15);
                 else content_length = 0;
-                /* leaks-audit #10: clamp the untrusted Content-Length. The buffer is fixed
-                 * (buf_size), so a body that can't fit is capped rather than waited on (limits a
-                 * slowloris-style hold); a negative/garbage value is treated as 0. A full fix would
-                 * also set a socket read timeout (SO_RCVTIMEO) at accept time — follow-up. */
+                /* Se acota el Content-Length no confiable. El búfer es fijo (buf_size),
+                 * así que un cuerpo que no cabe se limita en vez de esperarlo (acota una retención
+                 * tipo slowloris); un valor negativo o basura se trata como 0. Una solución completa
+                 * también fijaría un timeout de lectura del socket (SO_RCVTIMEO) al aceptar la conexión. */
                 if (content_length < 0) content_length = 0;
                 if (content_length > buf_size - 1) content_length = buf_size - 1;
             }
@@ -913,8 +913,8 @@ static char *parse_batch_req(qwen_tts_ctx_t *ctx, int def_speaker_id, int def_la
     if (!text) text = json_extract_string(body, "input");
     if (!text || text[0] == '\0' || strlen(text) > MAX_TTS_TEXT) { free(text); return NULL; }
 
-    /* defaults (mirror reset_request_state). audit #5: use the start-of-server snapshot,
-     * NOT live ctx->speaker_id/language_id which the scheduler mutates per admission. */
+    /* valores por defecto (reflejan reset_request_state). Se usa la instantánea tomada al
+     * arrancar el servidor, NO ctx->speaker_id/language_id en vivo, que el planificador muta en cada admisión. */
     if (ctx->voice_clone) { req->speaker_id = def_speaker_id; req->language_id = def_language_id; }
     else { req->speaker_id = 3061 /*ryan*/; req->language_id = 2050 /*English*/; }
     req->temperature = 0.5f; req->top_k = 50; req->top_p = 1.0f; req->rep_penalty = 1.05f;
@@ -959,10 +959,10 @@ static void respond_wav(int fd, const float *audio, int n_samples) {
 
 /* Reader thread: pop a client fd, read+route. Synthesis is deferred to jobs;
  * only non-synth endpoints answer inline. */
-/* def_speaker_id/def_language_id: audit #5 — snapshot of the ctx voice-clone defaults
- * taken ONCE at server start (single-threaded). Readers must NOT read ctx->speaker_id/
- * language_id live: the scheduler transiently overwrites+restores those per admission,
- * so a concurrent read would race and pick a wrong default. */
+/* def_speaker_id/def_language_id: instantánea de los valores por defecto de clonación de voz
+ * del ctx, tomada UNA vez al arrancar el servidor (monohilo). Los lectores NO deben leer
+ * ctx->speaker_id/language_id en vivo: el planificador los sobrescribe y restaura de forma
+ * transitoria en cada admisión, así que una lectura concurrente competiría y elegiría un valor erróneo. */
 typedef struct { qwen_tts_ctx_t *ctx; conn_queue_t *cq; job_queue_t *jq; job_queue_t *jq_single;
                  int def_speaker_id; int def_language_id; } reader_arg_t;
 
@@ -1113,11 +1113,11 @@ static void *scheduler_main(void *arg) {
     return NULL;
 }
 
-/* Single-job worker: streaming / instruct / voice_design on a CLONE ctx so it
- * never stalls the batch. audit #6: if the clone allocation failed (reject=1) we do
- * NOT fall back to the shared scheduler ctx — that ctx is synthesizing continuously,
- * so two threads on it would corrupt KV/dec_x. Instead we drain the queue with 503
- * (clean error) rather than serve corrupted audio. */
+/* Worker de trabajo único: streaming / instruct / voice_design sobre un ctx CLON para que
+ * nunca detenga el lote. Si falló la reserva del clon (reject=1) NO se recurre al ctx
+ * compartido del planificador: ese ctx sintetiza de forma continua, así que dos hilos sobre
+ * él corromperían KV/dec_x. En su lugar se vacía la cola con 503 (error limpio) en vez de
+ * servir audio corrupto. */
 typedef struct { qwen_tts_ctx_t *ctx; job_queue_t *jq; int reject; } single_arg_t;
 static void *single_worker_main(void *arg) {
     single_arg_t *sw = (single_arg_t *)arg;
@@ -1153,8 +1153,8 @@ int qwen_tts_serve_batched(qwen_tts_ctx_t *ctx, const char *host, int port, int 
 
     pthread_t *readers = (pthread_t *)calloc(n_readers, sizeof(pthread_t));
     reader_arg_t *rargs = (reader_arg_t *)calloc(n_readers, sizeof(reader_arg_t));
-    /* audit #5: snapshot the voice-clone defaults now, before the scheduler (which
-     * mutates ctx->speaker_id/language_id per admission) starts. */
+    /* Instantánea de los valores por defecto de clonación de voz, antes de que arranque el
+     * planificador (que muta ctx->speaker_id/language_id en cada admisión). */
     int def_spk = ctx->speaker_id, def_lang = ctx->language_id;
     for (int i = 0; i < n_readers; i++) {
         rargs[i].ctx = ctx; rargs[i].cq = &cq; rargs[i].jq = &jq; rargs[i].jq_single = &jq_single;
@@ -1169,8 +1169,8 @@ int qwen_tts_serve_batched(qwen_tts_ctx_t *ctx, const char *host, int port, int 
      * (clone shares weights+voice; NULL → fall back to shared ctx). */
     qwen_tts_ctx_t *single_ctx = qwen_tts_clone_for_worker(ctx);
     pthread_t single_thr;
-    /* audit #6: on clone failure, run the worker in reject mode (503) rather than share
-     * the scheduler's ctx (which would corrupt in-flight batch synthesis). */
+    /* Si falla el clon, el worker corre en modo rechazo (503) en vez de compartir el ctx
+     * del planificador (lo que corrompería la síntesis del lote en curso). */
     single_arg_t swarg = { .ctx = single_ctx ? single_ctx : ctx, .jq = &jq_single, .reject = (single_ctx == NULL) };
     pthread_create(&single_thr, NULL, single_worker_main, &swarg);
 

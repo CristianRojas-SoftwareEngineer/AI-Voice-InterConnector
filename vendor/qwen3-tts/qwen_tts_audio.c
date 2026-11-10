@@ -143,13 +143,13 @@ int qwen_tts_write_wav(const char *path, const float *samples, int n_samples, in
         float s = samples[i];
         if (fade_in  > 0 && i < fade_in)                 s *= (float)i / (float)fade_in;
         if (fade_out > 0 && i >= n_samples - fade_out)   s *= (float)(n_samples - 1 - i) / (float)fade_out;
-        if (s != s) s = 0;  /* leaks-audit #7: NaN guard (NaN passes both clamps → UB int16 cast) */
+        if (s != s) s = 0;  /* guarda contra NaN: NaN pasa ambos recortes y la conversión a int16 sería comportamiento indefinido */
         if (s < -1) s = -1; if (s > 1) s = 1;
         int16_t sample = (int16_t)(s * 32767);
         fwrite(&sample, 2, 1, f);
     }
-    /* leaks-audit #8: detect a short write / disk-full instead of returning success on a
-     * silently-truncated WAV. ferror() catches any failed fwrite above; fclose flushes. */
+    /* Detecta una escritura corta o disco lleno en vez de devolver éxito con un WAV
+     * truncado en silencio. ferror() atrapa cualquier fwrite fallido de arriba; fclose vuelca el búfer. */
     int werr = ferror(f);
     if (fclose(f) != 0 || werr) return -1;
     return 0;

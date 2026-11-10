@@ -753,16 +753,16 @@ static inline void qwen_acc_wt_bf16_avx2(float *o, const uint16_t *v, float w, i
 
 
 #if defined(__AVX512BF16__)
-/* ── C4 (plan_v4): bf16 matvec via VDPBF16PS (_mm512_dpbf16_ps) ──
- * Fuses the bf16→f32 widen INTO the FMA: 32 bf16 pairs per instruction (2× the
- * width of the shift+FMA __AVX512F__ path below) and no shift/convert uops on
- * the weight stream. The ACTIVATION is rounded to bf16 once per call (same
- * numeric class as the ARM BFMMLA batched path: ~1e-3 L2 vs the f32-activation
- * reference — activation-rounding, not a defect; weights are bf16 anyway).
- * Runtime kill-switch: QWEN_NO_BF16DOT=1 falls back to the widen+FMA path so
- * the box can A/B speed AND mel-corr without a rebuild.
- * ⚠️ COMPILE-CHECKED ONLY on M1 (make check-isa) — validate on real
- * avx512_bf16 silicon (Zen4/5, Cooper Lake+) before trusting. */
+/* ── matvec bf16 mediante VDPBF16PS (_mm512_dpbf16_ps) ──
+ * Fusiona la ampliación bf16→f32 DENTRO del FMA: 32 pares bf16 por instrucción (el doble de
+ * ancho que la ruta de desplazamiento+FMA de __AVX512F__ de más abajo) y sin uops de
+ * desplazamiento/conversión sobre el flujo de pesos. La ACTIVACIÓN se redondea a bf16 una vez por llamada
+ * (misma clase numérica que la ruta por lotes BFMMLA de ARM: ~1e-3 de L2 frente a la
+ * referencia con activación f32; es redondeo de la activación, no un defecto; los pesos ya son bf16).
+ * Interruptor en ejecución: QWEN_NO_BF16DOT=1 vuelve a la ruta ampliar+FMA para que
+ * la máquina pueda comparar velocidad Y mel-corr sin recompilar.
+ * ⚠️ SOLO VERIFICADO POR COMPILACIÓN en M1 (make check-isa): valídese en silicio
+ * avx512_bf16 real (Zen4/5, Cooper Lake+) antes de fiarse. */
 enum { QWEN_BF16DOT_XMAX = 8192 };
 static int qwen_bf16dot_disabled(void) {
     static atomic_int off = -1;
@@ -1090,27 +1090,27 @@ void qwen_matvec_bf16(float *y, const uint16_t *W, const float *x, int rows, int
     bf16_matvec_fused(y, x, W, cols, rows);
 }
 
-/* ---- Batched matmat: Y[rows,B] = W[rows,cols] @ X[cols,B] (the batching /
- * spec-decode-verify primitive). Each weight element is loaded ONCE and FMA'd
- * into all B accumulators, so W streams from DRAM exactly once regardless of B
- * (X[k][0..B] is contiguous).
+/* ---- Matmat por lotes: Y[rows,B] = W[rows,cols] @ X[cols,B] (la primitiva de
+ * batching / verificación de decodificación especulativa). Cada elemento de peso se carga UNA vez
+ * y se acumula con FMA en los B acumuladores, de modo que W se lee de DRAM exactamente una vez
+ * sea cual sea B (X[k][0..B] es contiguo).
  *
- * Two implementations, dispatched on B by bf16_matmat_slice():
- *  - FIXED-B specializations (B in {1..8,16}) = the production-quality path:
- *    accumulators are register-resident (named scalars, the compile-time inner
- *    loop unrolls), rows blocked 2 at a time, broadcast-FMA auto-vectorized to
- *    the target ISA by -march=native. This is where the weight-stationary win is.
- *  - GENERIC fallback (other B) = explicit NEON/AVX2/AVX-512 over the B lanes but
- *    with an L1-resident acc[] (slower; correctness safety net only).
- * The bf16 weight decode is scalar (a single shift, amortized over the B FMAs).
+ * Dos implementaciones, despachadas según B por bf16_matmat_slice():
+ *  - Especializaciones de B FIJO (B en {1..8,16}) = la ruta de calidad de producción:
+ *    los acumuladores viven en registros (escalares con nombre, el bucle interno de tiempo de
+ *    compilación se desenrolla), filas de 2 en 2, FMA con difusión autovectorizado al
+ *    ISA de destino por -march=native. Aquí está la ganancia de pesos estacionarios.
+ *  - Ruta GENÉRICA (otras B) = NEON/AVX2/AVX-512 explícito sobre las lanes de B pero
+ *    con un acc[] residente en L1 (más lenta; solo red de seguridad de corrección).
+ * La decodificación de pesos bf16 es escalar (un solo desplazamiento, amortizado sobre los B FMA).
  *
- * TODO (newer ISAs, annotate-now / exploit-later): the bf16 decode + FMA could use
- *   - ARM bf16 BFDOT/BFMMLA (Apple M2+, Neoverse V1/V2, NVIDIA Grace) and
- *     i8mm SMMLA for the int8 batched twin — NEON here does a scalar bf16->f32 shift.
- *   - ARM SVE/SVE2 (Grace/Spark): vector-length-agnostic B loop.
- *   - x86 AVX-512-BF16 (VDPBF16PS) to fuse decode+FMA; AVX-512-VNNI for int8 batched.
- * Add an int8/int4 batched twin (qwen_matmat_int8/_int4) — that's where batching
- * pays most (it amortizes the unpack). See docs/batching.md. */
+ * TODO (ISAs más nuevos, anotar ahora / aprovechar después): la decodificación bf16 + FMA podría usar
+ *   - ARM bf16 BFDOT/BFMMLA (Apple M2+, Neoverse V1/V2, NVIDIA Grace) e
+ *     i8mm SMMLA para el gemelo int8 por lotes; NEON aquí hace un desplazamiento bf16->f32 escalar.
+ *   - ARM SVE/SVE2 (Grace/Spark): bucle sobre B independiente de la longitud de vector.
+ *   - x86 AVX-512-BF16 (VDPBF16PS) para fusionar decodificación y FMA; AVX-512-VNNI para int8 por lotes.
+ * Añadir un gemelo int8/int4 por lotes (qwen_matmat_int8/_int4): ahí el batching
+ * rinde más (amortiza el desempaquetado). */
 /* Generic batched matmat (any B up to 64). Vectorizes over the B (accumulator)
  * dimension. Used as the FALLBACK for B values without a compile-time
  * specialization below. NOTE: `acc[64]` is indexed by a runtime b, so it lives
@@ -2223,11 +2223,11 @@ int qwen_argmax_matvec_int8(const float *x, const int8_t *W, const float *scale,
     return best;
 }
 
-/* Argmax over a Q4_0 matvec (CP lm_head with --int4). Reuses the optimized
- * (multi-threaded, SIMD) q4_0 matvec into a small scratch buffer, then argmaxes.
- * The scratch is a per-thread grow-on-demand buffer (plan_v4 #8): the CP calls
- * this 15×/frame, so a fresh malloc/free each time is pure churn. __thread keeps
- * it race-free under concurrent server synthesis (mirrors sampling.c's buffers). */
+/* Argmax sobre un matvec Q4_0 (lm_head del CP con --int4). Reutiliza el matvec q4_0
+ * optimizado (multihilo, SIMD) hacia un pequeño búfer temporal y luego toma el argmax.
+ * El búfer temporal es uno por hilo que crece bajo demanda: el CP llama a esto 15 veces
+ * por trama, así que un malloc/free nuevo cada vez es puro desperdicio. __thread lo mantiene
+ * libre de carreras bajo síntesis concurrente del servidor (igual que los búferes de sampling.c). */
 int qwen_argmax_matvec_q4_0(const float *x, const q4_0_block_t *W, int in_dim, int out_dim) {
     static __thread float *y = NULL;
     static __thread int y_cap = 0;
@@ -4618,12 +4618,12 @@ int qwen_kernel_selftest(void *out) {
             if (wq && Xb && Yb && xb && yc) {
                 qwen_quantize_bf16_to_q4_0(wb, rows, cols, wq);
 
-                /* ---- q4_0 matvec vs exact dequant reference (plan_v4 C7 gate) ----
-                 * Reference: dequantized-W · x with the activation kept f32. The
-                 * dispatched matvec (SDOT/VNNI/AVX2/escalar) quantizes the activation
-                 * to int8 → same global-L2 tolerance class as int8 above. This is
-                 * the case that catches a broken VNNI offset/scale on real silicon
-                 * (per-row max-rel is meaningless near ref≈0, see int8 comment). */
+                /* ---- matvec q4_0 frente a la referencia de descuantización exacta ----
+                 * Referencia: W descuantizada · x con la activación en f32. El
+                 * matvec despachado (SDOT/VNNI/AVX2/escalar) cuantiza la activación
+                 * a int8, por lo que cae en la misma clase de tolerancia de L2 global que el int8 de arriba.
+                 * Este es el caso que detecta un desplazamiento/escala de VNNI roto en silicio real
+                 * (el máximo relativo por fila no sirve cerca de ref≈0, véase el comentario de int8). */
                 {
                     for (int r = 0; r < rows; r++) {
                         const q4_0_block_t *row = wq + (size_t)r * nb;

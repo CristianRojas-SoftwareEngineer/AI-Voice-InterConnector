@@ -20,13 +20,13 @@
 
 /* aligned_malloc/aligned_calloc now in qwen_tts_kernels.h */
 
-/* ── Activation-map capture (QWEN_ACT_MAP=path) ──────────────────────────────
- * Read-only diagnostic for the emotion/instruct representation analysis: over a
- * whole generation, accumulate the MEAN of the Talker residual stream after EACH
- * layer (plus the final-norm hidden) — a [num_layers+1 × hidden] fingerprint of
- * where, layer by layer, an instruct/emotion shifts the activations. Contrast two
- * runs (neutral-instruct vs emotion-instruct) with tests/act_map_diff.py. Off
- * unless QWEN_ACT_MAP is set; zero cost otherwise. */
+/* ── Captura del mapa de activaciones (QWEN_ACT_MAP=ruta) ──────────────────────────────
+ * Diagnóstico de solo lectura para analizar la representación de emoción/instruct: a lo largo de
+ * toda una generación, acumula la MEDIA del flujo residual del Talker tras CADA
+ * capa (más el oculto de la norma final): una huella de [num_layers+1 × hidden] que muestra
+ * dónde, capa por capa, un instruct/emoción desplaza las activaciones. Se contrastan dos
+ * ejecuciones (instruct neutro frente a instruct emocional). Desactivado
+ * salvo que se defina QWEN_ACT_MAP; coste nulo en caso contrario. */
 static const char *g_actmap_path   = NULL;
 static double    **g_actmap_acc    = NULL;   /* [num_layers+1][hidden] */
 static int         g_actmap_layers = 0;      /* num_layers + 1 (final hidden) */
@@ -653,14 +653,14 @@ int qwen_talker_step(qwen_tts_ctx_t *ctx, float *embed, float *hidden_out) {
  * Prefill (multi-token)
  * ======================================================================== */
 
-/* plan_v4 D1: prefill projection straight off bf16 weights, no per-layer
- * bf16->f32 conversion. Y[seq][out] = Xn[seq][in] @ W_bf16^T via qwen_matmat_bf16
- * (weight streamed once per <=16-col tile, bf16 = half the DRAM of the f32 convert).
- * matmat wants X as [in][B] and Y as [out][B], B<=16 (the fixed-B fast path caps at
- * 16), so tile seq into <=16 chunks and transpose in/out — cheap O(seq*dim) vs the
- * O(seq*dim*dim) gemm. Env-gated (QWEN_PREFILL_MATMAT=1) so we can A/B vs BLAS: on
- * M1 Accelerate sgemm rides the AMX coprocessor, so this only wins where BLAS is
- * weak/absent (the #else scalar path, Linux OpenBLAS) or when the convert dominates. */
+/* Proyección del prefill directamente sobre pesos bf16, sin conversión bf16->f32 por capa.
+ * Y[seq][out] = Xn[seq][in] @ W_bf16^T mediante qwen_matmat_bf16
+ * (el peso se lee una vez por tesela de <=16 columnas; bf16 = la mitad de DRAM que la conversión a f32).
+ * matmat espera X como [in][B] e Y como [out][B], con B<=16 (la ruta rápida de B fijo llega
+ * a 16), así que se parte seq en bloques de <=16 y se transpone entrada/salida: es barato, O(seq*dim)
+ * frente al gemm de O(seq*dim*dim). Se activa por entorno (QWEN_PREFILL_MATMAT=1) para comparar con BLAS: en
+ * M1 el sgemm de Accelerate usa el coprocesador AMX, así que esto solo gana donde BLAS es
+ * débil o no existe (la ruta escalar del #else, OpenBLAS en Linux) o cuando domina la conversión. */
 static void prefill_proj_matmat(float *Y, const uint16_t *W, const float *Xn,
                                 int seq, int in_dim, int out_dim,
                                 float *xT, float *yT) {
@@ -944,7 +944,7 @@ static void batch_scatter(float *dst, const float *Yt, int B, int rows) {
  * falls back to B per-column matvecs — bit-matches single-stream; a diagnostic to isolate
  * the matmat from the wiring. Xt/Yt are caller-provided scratch ([cols*B] / [rows*B]).
  * Shared by the batched Talker AND Code Predictor (different dims). */
-static atomic_int g_batch_nomatmul = -1;  /* audit #10: race-free one-time env cache */
+static atomic_int g_batch_nomatmul = -1;  /* caché única de la variable de entorno, sin carreras */
 void qwen_batch_proj(float *dst, const uint16_t *W, const float *src,
                      int rows, int cols, int srcstride, int B, int force_matvec,
                      float *Xt, float *Yt) {

@@ -94,9 +94,10 @@ static bool ht_get(const hash_table_t *ht, const char *key, int key_len, int32_t
  * Remaining bytes (0-32, 127-160, 173) map to U+0100..U+0143. */
 static uint32_t byte_to_unicode[256];
 static uint8_t  unicode_to_byte[512]; /* codepoints up to ~U+0143 */
-/* audit #10: atomic flag with acquire/release so a worker that lazily loads its own
- * tokenizer concurrently either sees the flag set (with all table writes visible) or
- * runs the idempotent init itself — no torn read of the byte_to_unicode arrays. */
+/* Indicador atómico con acquire/release para que un worker que carga de forma perezosa su
+ * propio tokenizador en paralelo vea el indicador activo (con todas las escrituras de las
+ * tablas visibles) o ejecute él mismo la inicialización idempotente, sin lecturas rotas de
+ * los arreglos byte_to_unicode. */
 static atomic_bool byte_tables_initialized = false;
 
 static void init_byte_tables(void) {
@@ -222,8 +223,8 @@ static char *parse_json_string(const char *json, int *pos) {
                 case 'f':  out[o++] = '\f'; break;
                 case 'u': {
                     (*pos)++;
-                    /* audit #8: a truncated "\uXX"+NUL must not read past the terminator.
-                     * Require all 4 hex digits to be present; otherwise bail to end. */
+                    /* un "\uXX"+NUL truncado no debe leer más allá del terminador.
+                     * Se exigen los 4 dígitos hexadecimales; si faltan, se salta al final. */
                     if (!json[*pos] || !json[*pos+1] || !json[*pos+2] || !json[*pos+3]) {
                         while (json[*pos]) (*pos)++;   /* jump to NUL; outer loop stops */
                         break;
@@ -237,8 +238,8 @@ static char *parse_json_string(const char *json, int *pos) {
                         else if (c >= 'A' && c <= 'F') cp |= 10 + c - 'A';
                     }
                     *pos += 3; /* will be incremented by 1 below */
-                    /* Handle surrogate pairs (audit #8: also require the low \uXXXX's 4 hex
-                     * digits to be present before reading them). */
+                    /* Maneja pares sustitutos (también se exige que estén presentes los 4 dígitos
+                     * hexadecimales del \uXXXX bajo antes de leerlos). */
                     if (cp >= 0xD800 && cp <= 0xDBFF && json[*pos + 1] == '\\' && json[*pos + 2] == 'u' &&
                         json[*pos+3] && json[*pos+4] && json[*pos+5] && json[*pos+6]) {
                         *pos += 3; /* skip \u */
@@ -866,11 +867,11 @@ int32_t *qwen_tokenizer_encode_with_special(qwen_tokenizer_t *tok, const char *t
     return qwen_tokenizer_encode(tok, text, out_len);
 }
 
-/* PARALINGUISTIC TAG carve-out. Canonical map: training/expressivity-lora/para_tag_map.json.
- * Each [tag] is rewritten to a SINGLE reserved Qwen special-token id (LLM vision/box/tool/fim
- * slots the TTS path never uses; the para LoRA re-binds them). Without this, the BPE splits
- * "[sigh]" into "[","sigh","]" and the model reads it literally / falls back to laughter.
- * Non-tag spans are BPE-encoded normally; tag ids are emitted atomically in place. */
+/* Extracción de ETIQUETAS PARALINGÜÍSTICAS. Cada [tag] se reescribe como UN SOLO id de token
+ * especial reservado de Qwen (huecos de visión/caja/herramienta/fim del LLM que la ruta TTS
+ * nunca usa; el LoRA paralingüístico los reasigna). Sin esto, el BPE parte
+ * "[sigh]" en "[","sigh","]" y el modelo lo lee literalmente o recurre a la risa.
+ * Los tramos sin etiqueta se codifican con BPE normalmente; los ids de etiqueta se emiten atómicamente en su sitio. */
 int32_t *qwen_tokenizer_encode_para(qwen_tokenizer_t *tok, const char *text, int *out_len) {
     static const struct { const char *tag; int32_t id; } PARA_TAGS[] = {
         {"[laugh]",151646},{"[sigh]",151647},{"[cough]",151648},{"[breath]",151649},

@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # ============================================================================================
-# download_assets.sh — fetch the VALIDATED expressivity .expr weight-deltas that `--emotion` needs.
+# download_assets.sh — descarga los deltas de pesos .expr de expresividad VALIDADOS que `--emotion` necesita.
 #
-# WHY: .expr files are 140-210MB each → NOT committed to git. They are hosted on Hugging Face
-# (gabrione/qwen3-tts-italian-expr) and fetched on demand. The tiny steering vectors
-# (presets/steer/**) ARE committed — no download needed for those.
+# POR QUÉ: cada .expr pesa 140-210 MB, así que no se versiona en git. Están alojados en Hugging Face
+# (gabrione/qwen3-tts-italian-expr) y se descargan bajo demanda. Este script NO descarga los vectores
+# de dirección (presets/steer/**): `--emotion` los espera ya presentes en esa ruta.
 #
-# THE recipe (docs/emotion-THE-recipe.md) uses ONLY the 3 ESSENTIAL packs below — that's the default.
-# italian_csp_topk6 also covers Spanish/Japanese/Korean/Russian (the IT pack renders them). The LEGACY
-# packs are older A/B + research artifacts, not used by --emotion → fetched only with --all.
+# La receta de `--emotion` usa SOLO los 3 paquetes ESSENTIAL de abajo, que es lo que se baja por defecto.
+# italian_csp_topk6 cubre también español/japonés/coreano/ruso (el paquete IT los renderiza). Los
+# paquetes LEGACY son artefactos antiguos de A/B e investigación que `--emotion` no usa: solo se bajan con --all.
 #
-# Usage:   bash download_assets.sh            # the 3 .expr --emotion needs + ASK about the CC0 voices  (~720 MB)
-#          bash download_assets.sh --voices   # also fetch the 4 reference voices, no prompt (CI)
-#          bash download_assets.sh --no-voices# .expr only, never prompt
-#          bash download_assets.sh --all      # + the 6 legacy/experimental .expr packs                (~1.4 GB)
-#          bash download_assets.sh --verify   # only sha256-verify the files already present
-#          BASE_URL=<url> bash download_assets.sh   # mirror elsewhere
-# (Reference voices come from a separate repo via download_voices.sh — invoked automatically when you opt in.)
+# Uso:     bash download_assets.sh            # los 3 .expr de --emotion + PREGUNTA por las voces CC0 (~720 MB)
+#          bash download_assets.sh --voices   # baja además las 4 voces de referencia, sin preguntar (CI)
+#          bash download_assets.sh --no-voices# solo .expr, nunca pregunta
+#          bash download_assets.sh --all      # + los 6 paquetes .expr legacy/experimentales            (~1.4 GB)
+#          bash download_assets.sh --verify   # solo verifica el sha256 de los archivos ya presentes
+#          BASE_URL=<url> bash download_assets.sh   # usar otro espejo
+# (Las voces de referencia vienen de otro repo mediante download_voices.sh, que se invoca solo si aceptas.)
 # ============================================================================================
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -24,7 +24,7 @@ DEST=presets/expr
 BASE_URL="${BASE_URL:-https://huggingface.co/gabrione/qwen3-tts-italian-expr/resolve/main}"
 mkdir -p "$DEST"
 
-# ESSENTIAL — the only packs THE --emotion recipe needs (filename  sha256). See presets/expr/MANIFEST.md.
+# ESSENTIAL — los únicos paquetes que necesita la receta de --emotion (archivo  sha256).
 read -r -d '' ESSENTIAL <<'EOF'
 italian_csp_topk6.expr            9315f80a9181b18db6148574b92946ec2fa0af3234a3c2e72cdb5bd066cc58d9
 german_csp_k6.expr                f77d471da62fff068222da7f9961b0ef037c20c62ff33ee0e59919bfea1533fe
@@ -51,7 +51,7 @@ if [ "$MODE" != verify ]; then
   echo " qwen3-tts assets — replicable download"
   echo "   emotion .expr packs  : ~620 MB  (the 3 packs --emotion needs; --all = ~1.4 GB)"
   echo "   CC0 reference voices : ~100 MB  (4 clones IT/ES/EN/FR, gabrione/qwen3-tts-voices)"
-  echo "   steering vectors     : already in this repo (presets/steer/**) — no download"
+  echo "   steering vectors     : not downloaded here (--emotion expects them in presets/steer/**)"
   echo "   → estimated total this run: ~720 MB (essential .expr + voices)"
   echo "================================================================================"
 fi
@@ -71,7 +71,7 @@ echo "$ASSETS" | while read -r name want; do
       mv "$f.part" "$f"
       got=$(sha "$f"); [ "$got" = "$want" ] && echo "  verified" || echo "  WARNING sha mismatch after download"
     else
-      echo "  FAILED (set BASE_URL to the real host; see presets/expr/MANIFEST.md)"; rm -f "$f.part"
+      echo "  FAILED (set BASE_URL to the real host)"; rm -f "$f.part"
     fi
   fi
 done
@@ -96,4 +96,4 @@ if [ "$MODE" != verify ]; then
     bash "$(dirname "$0")/download_voices.sh"
   fi
 fi
-echo "steering vectors in presets/steer/** are committed — no download needed. Recipe: docs/emotion-THE-recipe.md"
+echo "steering vectors are not downloaded here: --emotion expects them in presets/steer/**."

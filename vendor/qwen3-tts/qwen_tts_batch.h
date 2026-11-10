@@ -52,14 +52,14 @@ void qwen_batch_proj_q(float *dst,
  * so the batched self-test can use it as the reference. */
 int qwen_cp_predict(qwen_tts_ctx_t *ctx, float *talker_hidden, int code0, int *out_codes);
 
-/* One batched Code Predictor: for B frames, talker_hidden[B*hidden] + code0[B] ->
- * out_codes[B*15]. Reuses the CP layer math, batching the matvecs. Returns 0 ok,
- * -2 if non-bf16. (kv reset internally; B sequences in lockstep.)
- * `active` (may be NULL = all active): slot compaction (rental-prep, audit MED-5) —
- * inactive slots skip ALL per-slot vector work (mtp projection, lm_head argmax,
- * rope/attn/norm/swiglu); their out_codes are zeroed. The batched matmats still run
- * full-B width (near-free on bandwidth-bound ARM; the B_eff-gather deep cut is the
- * x86 follow-up, see plan_v4). */
+/* Un Code Predictor por lotes: para B tramas, talker_hidden[B*hidden] + code0[B] ->
+ * out_codes[B*15]. Reutiliza la matemática de capas del CP, agrupando los matvec. Devuelve 0 si va bien,
+ * -2 si no es bf16. (El kv se reinicia internamente; B secuencias avanzan al unísono.)
+ * `active` (puede ser NULL = todas activas): compactación de slots:
+ * los slots inactivos omiten TODO el trabajo vectorial por slot (proyección mtp, argmax de lm_head,
+ * rope/attn/norm/swiglu); sus out_codes quedan a cero. Los matmat por lotes siguen ejecutándose
+ * con el ancho B completo (casi gratis en ARM limitado por ancho de banda; el corte profundo
+ * con recolección de B_eff queda para x86). */
 int qwen_batch_cp_predict(qwen_tts_ctx_t *ctx, qwen_batch_t *bb,
                           const float *talker_hidden, const int *code0, int *out_codes,
                           const uint8_t *active);

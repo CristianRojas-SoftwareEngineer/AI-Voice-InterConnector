@@ -202,7 +202,7 @@ scalar fallback ALWAYS; AVX512/VNNI optional on top.** Plan:
   reports `AVX2 (2-row fused, FMA)` + pthread pool, output coherent by ear. **Measured (0.6B,
   4-thread): AVX2 only ~6% over `SIMD=scalar`** (hot path is DRAM-bandwidth-bound, not compute) —
   so the SIMD twin is correct but not a miracle; **int4 multi-threaded is the real x86 lever: RTF
-  2.81→2.02 (−28%)**. Full numbers in `docs/building.md` "Performance notes (x86 / WSL2)".
+  2.81→2.02 (−28%)**.
 - [~] `[HIGH]` **Drop `-march=native` off-Mac + runtime ISA guard** — DONE (the SIGILL bug).
   Makefile now: Linux x86 default `-mavx2 -mfma` (portable Haswell+), `SIMD=scalar` for
   pre-AVX2, `SIMD=avx512` opt-in; macOS/ARM keep `-march=native`. `qwen_check_runtime_isa()`
@@ -351,7 +351,7 @@ one falsely said "int4 is loaded but never used"; DEBUNKED, `talker.c:397-450` d
   rely on `$!`/`wait` — a blocked curl hangs the script and orphans the server).
 - [x] **Voice-clone 24kHz ref audio — RESOLVED as documented-by-design 2026-06-03 (commit 33c11a0).**
   Decision (user): do NOT bundle a resampler (ffmpeg does it better, keeps zero-dep; mel features need
-  24kHz). The requirement is now documented in docs/voice-cloning.md + `--help` + a clear runtime error
+  24kHz). The requirement is now documented in `--help` + a clear runtime error
   (`ffmpeg -i in -ar 24000 -ac 1 out.wav`). The misleading "TODO: resample" comment was rewritten.
 - [x] **Robustness: tokenizer `fread()` — FIXED 2026-06-03 (commit 33c11a0).** Both vocab.json +
   merges.txt loads now check the read length (short read → error + free, was silently ignored).
@@ -374,8 +374,7 @@ one falsely said "int4 is loaded but never used"; DEBUNKED, `talker.c:397-450` d
   `inet_ntop` replaces thread-unsafe `inet_ntoa`. **VALIDATED on M1 (GCD): 2 workers, 2 concurrent
   requests, both bit-identical to the single-worker reference (mel-corr 1.00000) across
   {bf16, int8, int4, voice silvio_06b+int8}; concurrent timing ~equal (true overlap, not
-  serialized); clean kill-by-name teardown, no orphans.** `make test-serve-concurrent` +
-  `tests/test_parallel.sh`. ⚠ On the pthread/Win32 backend (the VPS) concurrent synthesis is
+  serialized); clean kill-by-name teardown, no orphans.** ⚠ On the pthread/Win32 backend (the VPS) concurrent synthesis is
   CORRECT but serialized (no overlap) until the pool is made reentrant — tracked below.
   ⚠ Memory: clones share weights, so extra cost ≈ N×(KV + work buffers), NOT N×model.
 
@@ -393,7 +392,7 @@ one falsely said "int4 is loaded but never used"; DEBUNKED, `talker.c:397-450` d
 - [ ] **Re-run ALL server RTF benchmarks** (cold/warm, bf16/int8/int4, `.qvoice`) now that the 0.6B Talker
   is int8 under `--int8` — the README server RTF table (1.33/1.34) predates this and is stale.
 - **NEW concurrency tests (for the batching work):**
-  - [x] (a) **parallel-request test — DONE** (`make test-serve-concurrent`, `tests/test_parallel.sh`):
+  - [x] (a) **parallel-request test — DONE**:
     2 concurrent curls at a `--workers 2` server, each output compared to a single-worker reference via
     mel-corr (≥0.98), across {bf16, int8, int4, voice+int8}. All corr=1.00000 on M1. Timeout+pkill harness.
   - [ ] (b) **race detector — `make test-serve-race` under TSan** (`-fsanitize=thread`) + concurrent load.
@@ -424,7 +423,7 @@ one falsely said "int4 is loaded but never used"; DEBUNKED, `talker.c:397-450` d
 > happened before". Built under WSL2 with portable `-mavx2`, `--caps` confirms AVX2 + pthread pool,
 > output coherent. Findings: hot path is DRAM-bandwidth-bound → AVX2 only +6% over scalar; **int4
 > multi-threaded is the x86 lever (RTF 2.81→2.02, −28%)**; 4 threads sweet spot (8 regresses); High-
-> performance Windows power plan matters. Full writeup in `docs/building.md`. **STILL OWED: AVX-512/
+> performance Windows power plan matters. **STILL OWED: AVX-512/
 > VNNI** (code written, 6800H is AVX-512-less) → **rent a Zen4+/Intel VPS** more powerful than the
 > mini PC, build `SIMD=avx512vnni`, validate golden mel-corr + measure RTF (Intel SDE in CI first).
 
@@ -483,11 +482,6 @@ PASSED. Closed the worst gaps:
 
 ## OPEN FUTURE TASKS (compact — nothing dropped)
 
-- [ ] `[LOW, AFTER fixes]` **Correct the BLOG docs' false x86/AVX claims.** `blog/optimization-notes.md`
-  (and related) repeat "NEON on ARM, AVX on x86" for matvecs/attention — FALSE (only rms_norm +
-  bf16_accum have AVX2). Authoritative docs (README/CLAUDE/docs/*) fixed 2026-06-03 (commit 7aa0f9b);
-  the blog narrative is deferred until AFTER the real fixes + fresh measurements land, so it's
-  rewritten once against true numbers rather than patched twice.
 - [x] **Server warm-request reproducibility bug — FIXED 2026-06-03 (commit cbfa979).** See 21.6 for
   the verified root cause (stale `ctx->dec_x` on full prefix match) + fix (full match → `delta_start=0`).
   `test-serve-bench` now PASSES. (The md5-bit-identical assertion turned out fine once the bug was
@@ -586,13 +580,13 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   {vec, steer_weight, roughness, volume, rate}. Explicit flags override. Language-aware resolver (IT→`it_centered/`).
 > - **`--volume` (PCM gain) + `--rate` (in-engine WSOLA, pitch-preserving, no ffmpeg)** in `qwen_tts_audio.c`.
 > - **`--compose` + INLINE `[tag]` MARKUP** (ElevenLabs/Bark style, English tags, auto-detected in `--text`): per-span
->   emotion switch, `[pause:400ms]`, paralinguistic fillers. `parse_markup`→`render_spans`. docs/markup.md.
+>   emotion switch, `[pause:400ms]`, paralinguistic fillers. `parse_markup`→`render_spans`.
 > - **🐛 CROSS-SPAN LEAK FIXED (user-caught by ear):** compose's repeated `generate` calls reused the prev span's KV
 >   via delta-prefill → a `[sad]` rendered differently in a mix vs alone. Fix `ctx->prev_prefill_len=0` per span →
 >   each span bit-identical to standalone (corr 1.0). LESSON: delta-prefill is a SERVER opt, wrong for compose.
 > - **PARALINGUISTIC LIBRARY** (ear-validated macros, no-steer soft prosody): `[sigh]`=Hah…, `[hmm]`=Hmmm…, `[mmm]`=嗯,
 >   `[mah]`,`[uhm]`,`[hmpf]`,`[ahh]`/`[relief]`=Haaa…,`[phew]`=Uao…,`[laugh]`=Eheh…(IT),`[haha]`(EN),`[heh]`,
->   `[ouch]`(EN)/`[ahi]`(IT). `tests/sound_suite.sh` = the discovery workflow (mass-gen→listen→bake; CLI per line).
+>   `[ouch]`(EN)/`[ahi]`(IT).
 > KEY DISCOVERIES (validated): `Hah...`=sigh / `Hah`=laugh (the "…" makes the breathy sigh; bare = a dry laugh);
 > **Chinese phonetic chars are a clean sound source even under IT**: 哈哈/嘿嘿/呵呵=laughs, 唉=weary sigh, 嗯=mmm;
 > 😂 leaks a faint sigh; "Ahahah 😆"→"AHI!" pain. RULES baked in: macro rate ≥0.90 (slower=metallic WSOLA on a short
@@ -606,14 +600,14 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 > the no-steer fillers + per-span cold-prefill need ear-checking on a real clone)**; (4) server-side volume/rate/compose
 > (CLI-only today); (5) merge feat/expressivity→feat/labs.
 > KNOWN: server doesn't have volume/rate/compose; true breaths absent (no <breath> token); model occasionally
-> over-elongates short words (intermittent, model-side). Local-only (not git): `samples/` (all audio), `voices/galatea_06b.qvoice`.
-> Stray `analisi_leak*.md` still untracked (NOT ours). BACKLOG below: int2/int3 quant, clone+preset speed/quality bench, emoji map.
+> over-elongates short words (intermittent, model-side). Local-only (not git): `voices/galatea_06b.qvoice`.
+> BACKLOG below: int2/int3 quant, clone+preset speed/quality bench, emoji map.
 >
-> **▶ RESUME 2026-06-07 (earlier in session — kept for detail; see `docs/expressivity-recipes.md`).**
+> **▶ RESUME 2026-06-07 (earlier in session — kept for detail).**
 > Session 2026-06-06 was long & productive. WHERE WE LANDED:
 > - **Galatea = the IT demo voice** (`voices/galatea_06b.qvoice`, CC LibriVox, better than Silvio). Centered IT
->   palette (`presets/emotions/it_centered/`) = the one to use (collinearity fixed, +88% contrast).
-> - **Validated recipe doc committed: `docs/expressivity-recipes.md`** (joy=excited NOT happy, sad=slow+pauses,
+>   palette = the one to use (collinearity fixed, +88% contrast).
+> - **Validated recipe** (joy=excited NOT happy, sad=slow+pauses,
 >   annoyed=angry+roughness, news=proud; per-language map; dead-ends; emergent-basin map + the ES "eeem"/sbuffo reproducer).
 > - **Settled with proof:** think=language-slot (our RE correct, vs official source); instruct is Chinese-tuned/weak-on-EU
 >   & not exposed for clones → CP-steering is the only emotion path for cloned EU voices. Closed dead-ends: full rage,
@@ -632,7 +626,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   (qwen_apply_emotion re-entrant + render_spans + parse_markup), ElevenLabs/Bark-style English square-bracket tags
 >   auto-detected in --text: `[sad]/[excited]` mid-text emotion, `[sigh]/[huff]/[ugh]/[groan]/[hmm]` paralinguistic
 >   fillers (generated NOT spliced — the slow+sad recipe elongates "Ehh.."/"Uff.." vowels), `[pause:400ms]/[break:1s]`.
->   Spans model-generated → seamless concat (NOT the dead-end ref-splice). `make test-compose`; docs/markup.md.
+>   Spans model-generated → seamless concat (NOT the dead-end ref-splice). `make test-compose`.
 >   KEY SERENDIPITY: slow+sad config = a controllable paralinguistic GENERATOR (user idea). STILL TODO: server-side
 >   volume/rate/compose (CLI-only); true breaths still absent; tune macro recipes; EN/other-lang sigh quality.
 > (3) optional: dedicated ES palette capture (ES inverts everything); retry sbuffo at lower weight; more macros.
@@ -676,7 +670,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   could even make int4 viable on M1 (where nibble-unpack is the slowness today). Cross-CPU prediction: every x86 box
 >   ≥ M1 (Ryzen mini-PC >2×+int4 sweet-spot; EPYC Turin VPS ~2-4×/core × core-scaling = the throughput play; Zen5+VNNI
 >   best target). VALIDATION ORDER: M1 → Ryzen mini-PC (Zen2/3, RDP) → Turin VPS (AVX-512) → ONLY THEN discuss w/ Leo.
->   Full prototype scope in docs/batching.md (B per-seq KV, GEMM step kernels Talker+CP, ragged-EOS, chunk scheduler,
+>   Prototype scope: (B per-seq KV, GEMM step kernels Talker+CP, ragged-EOS, chunk scheduler,
 >   reuse render_spans for concat). Commits on feat/batching: d175eb1, 5027490, 190a8f7, f34766d, +.
 >   **NON-NEGOTIABLE CONSTRAINTS (user 2026-06-07):** (1) ADDITIVE flow — `if(--batch){new}else{exactly as today}`;
 >   NEVER zap/rewrite the working single-stream path; reuse where possible, new code for batched parts; golden bit-identical.
@@ -716,7 +710,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   int8 SEQUENTIAL uses fast SDOT and the twin accumulates f32 (throws SDOT away) → TODO: integer-dot int8 twin
 >   (SDOT ARM / VNNI x86)**. NEXT: (1) per-stream sampling + ragged-EOS + chunk scheduler (split text / keep batch full /
 >   re-stitch via render_spans) → wire `--batch` (works at bf16 today, pair with int4); (1b) the int8-SDOT twin; (3)
->   validate on Ryzen/Turin. See docs/batching.md "CORRECTION (2026-06-08)" + "int8/int4 twins MEASURED".
+>   validate on Ryzen/Turin.
 > - **`--batch` MILESTONE A DONE (2026-06-08, commit after 720e939): long-form chunked synthesis CLI.** Sentence-aware
 >   splitter (top-player practice: segment on `.!?;`/newline with decimal + abbreviation guards — "18.30"/"Sig."/"Ecc."
 >   NOT split — then greedy-pack sentences up to `--batch-words` N (default 16, min N/3), merge sub-min trailing
@@ -767,8 +761,8 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >     to parallelize over B → B sequential vdotq per weight block, B not vectorized. The ARM dotprod
 >     `matmat` therefore runs B × SDOT matvec (fixed choice). VERDICT: int8+batch on M1 is break-even (SDOT-seq already near-optimal,
 >     int8 weights already halve bandwidth); **batching pays on bf16, not int8, on M1**. The real int8+batch win = **i8mm
->     SMMLA (M2+) / AVX-512 VNNI (x86)** true int8 GEMM → write those guarded twins on rented hardware (§7 roadmap +
->     real-HW campaign). The f32-accum batched int8 reading weights ONCE across B should still pay on bandwidth-bound x86.
+>     SMMLA (M2+) / AVX-512 VNNI (x86)** true int8 GEMM → write those guarded twins on rented hardware (real-HW
+>     campaign). The f32-accum batched int8 reading weights ONCE across B should still pay on bandwidth-bound x86.
 > - **TODO (later, this branch) — `--batch` × {server, streaming} interaction. EMPIRICAL STATUS CHECKED 2026-06-08:**
 >   `--batch` + `--serve` → the server **ignores --batch** (serve runs its own serial single-stream request loop; batching
 >   of CONCURRENT requests is NOT implemented). `--batch` + `--stream` → if the text splits to 1 chunk it falls back to
@@ -778,11 +772,11 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   stream chunk-1-first (measure); (b) is batched-streaming worth wiring (emit chunk-0's audio as soon as it EOSes while
 >   the rest keep stepping)? (c) server-side request batching = the real throughput play for `--serve` (separate, bigger
 >   feature — see next bullet). Likely doc outcome: **batching = throughput/long-form lever; streaming = latency lever —
->   pick per use-case.** Test via `bench_matrix.sh --full`. DESIGN DECISION (user 2026-06-08, agreed): **streaming stays
+>   pick per use-case.** DESIGN DECISION (user 2026-06-08, agreed): **streaming stays
 >   single-stream** (latency lever, one progressive sequence — nothing to batch within one request); batching belongs in
 >   the SERVER as concurrent-request batching (below).
 > - **★★ S1+S2+S3 DONE (2026-06-08, branch feat/server-batching) — SERVER REQUEST-BATCHING, FULL vLLM-style stack
->   built + correctness-validated on M1.** docs/server-batching.md. Engine + server + per-request streaming, all green.
+>   built + correctness-validated on M1.** Engine + server + per-request streaming, all green.
 >   - **S1 engine** `qwen_tts_generate_batch_multi()`: N independent requests (own text/speaker/language/sampling/seed) →
 >     N SEPARATE outputs, per-slot params + per-slot RNG (swap g_seed in/out per slot per frame via new `qwen_get_seed()`)
 >     → reproduces single-stream bit-for-bit. `--batch-multi-test N` CLI harness.
@@ -804,7 +798,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 > - **TODO (BIG — the real server throughput feature) — SERVER REQUEST-BATCHING (continuous/dynamic batching).** User's
 >   idea (2026-06-08) and the intended use of the batched kernels: N concurrent requests from DIFFERENT users (different
 >   text/voice/params) stepped TOGETHER through Talker+CP (weight-stationary) → ~N× server throughput on bandwidth-bound
->   boxes (memory §B: 2.3–3.7× at N≥6–8). **The hard part is DONE**: `qwen_batch_talker_step_ragged` (per-seq pos) +
+>   boxes (see §B: 2.3–3.7× at N≥6–8). **The hard part is DONE**: `qwen_batch_talker_step_ragged` (per-seq pos) +
 >   per-stream sampling/EOS + independent per-seq prefill are exactly this — `qwen_tts_generate_batch` is ~90% reusable
 >   (the B sequences come from different requests instead of chunks of one text). **What's missing = the SCHEDULER +
 >   concurrent server** (today `--serve` is serial single-thread): (1) concurrent accept + request queue; (2) batch
@@ -840,7 +834,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   bf16+i8mm+SVE, or NVIDIA Grace = SVE2). For each: caps fires? self-test PASS (native+fallback)? RTF single/batch/
 >   stream/server × bf16/int8/int4? Then write the newer-ISA twin and re-measure. This is the standing perf loop:
 >   **M1 dev → check-isa → rent → bench → fix → loop.**
-> - **SPECULATIVE DECODING analysis (TODO, user 2026-06-07) — docs/speculative-decoding-analysis.md.** Model has an
+> - **SPECULATIVE DECODING analysis (TODO, user 2026-06-07).** Model has an
 >   INTRA-frame MTP (the Code Predictor = `small_to_mtp_projection`, 15 RVQ residual passes), NOT a next-frame
 >   speculator. Ideas: (A) cross-model draft 0.6B→1.7B `code0` + batched verify; (B) training-free lookahead/Jacobi on
 >   code0 (Medusa/Eagle OUT — need trained heads); (C) CP residual spec (risky, quality-sensitive); (D) spec-decode ⊂
@@ -857,14 +851,14 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   (3) **Would it help SPECULATIVE DECODING / speed?** IF there is any next-frame-predictive capacity in the MTP head,
 >   it could draft the next frame's code0 for a batched verify (spec-decode ⊂ batching — see the bullet above). IF it's
 >   purely the intra-frame residual predictor, it does NOT give free next-frame drafts and the spec-decode lever stays
->   the cross-model 0.6B→1.7B code0 idea. Deliverable: `docs/mtp-analysis.md` + a verdict line in PLAN. Cheap, instrument-
+>   the cross-model 0.6B→1.7B code0 idea. Deliverable: a verdict line in PLAN. Cheap, instrument-
 >   /read-only; gate the spec-decode work on its conclusion. Don't conflate with the `feat/batching` matmat work.
 > - **Quant:** int2 / int3 where we know it's viable (q2 already exists for the roughness path — extend as a
 >   real quant tier?). Measure quality cliff per codebook (the CP teacher-forcing rails measure it). NOTE: int4+batching
 >   synergy (above) raises the value of a solid int4 path.
 > - **Speed+quality benchmark of voice CLONE and preset voices** (systematic A/B: RTF + mel-corr + ear, per voice).
 > - **Expressivity — EMOJI in the prompt:** what does the model do with 😄 😂 😢 🤔 / "lol"/"ahah"? Does it unlock
->   laughs/cries? (first quick test 2026-06-07: no error, tokenizer eats them as UTF-8 — needs ear check; samples/emoji/).
+>   laughs/cries? (first quick test 2026-06-07: no error, tokenizer eats them as UTF-8 — needs ear check).
 > - **Expressivity — SOUND-DISCOVERY SUITE:** a labeled grid (id → {text, lang, voice, steer/rate/vol}) that mass-
 >   generates onomatopoeia/vowel/emoji combos PER LANGUAGE × PER PRESET VOICE; user listens + annotates the best by id;
 >   bake the winners into a reusable paralinguistic library (macros). Goal: map which strings→sounds (laughs, cries,
@@ -877,8 +871,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >     a 2nd spurious vocalization; "metallic" = WSOLA over-stretch.
 > - **Known model quirk (note):** occasionally elongates the letters of short words intermittently (model-side,
 >   not the sad recipe) — "Che fatica" drew out even at neutral rate 1.0. Investigate if it becomes a problem.
-> Uncommitted at stop: none of the repo (all committed: 52a1cf8→62da9ed→7b60e75→0c8ce04). Local-only: `voices/galatea_06b.qvoice`,
-> `samples/emergent/` (sbuffo audio), `/tmp/qwen3tts_src` (official source, ephemeral). Two stray `analisi_leak*.md` left untracked (not ours — decide later).
+> Uncommitted at stop: none of the repo (all committed: 52a1cf8→62da9ed→7b60e75→0c8ce04). Local-only: `voices/galatea_06b.qvoice`.
 
 > **Status 2026-06-05:** built + ear-validated on branch `feat/expressivity` (6 commits, NOT merged).
 > Two levers ship; the feature WORKS and is a real differentiator, but it is a **v1, not the ceiling** —
@@ -890,9 +883,9 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 **SHIPPED (works):**
 - **`--roughness <0..1>`** — per-frame blend of a q2 copy of CP `down` into the high-prec output
   (`down` = causal driver of the q2 "death-metal" texture). Continuous grit/anger knob, ear-validated TOP.
-- **`--emotion <name>`** — calibrated control-vector presets (`presets/emotions/` EN + `it/`): 9 tones
+- **`--emotion <name>`** — calibrated control-vector presets (EN + IT): 9 tones
   (happy/excited/eager/proud/sad/gloomy/news/dramatic/calm), weight baked in, **blendable**
-  (`happy:0.5,proud:0.5`), global `--steer-weight` dial. Capture via `QWEN_STEER_CAPTURE` + `tests/steer_make.py`
+  (`happy:0.5,proud:0.5`), global `--steer-weight` dial. Capture via `QWEN_STEER_CAPTURE`
   (diff mean(instruct)−mean(neutral) at the single Talker→CP injection point `code_predictor.c:731`).
   **Cross-model** (CP identical 0.6B/1.7B). Default-off → golden mel-corr 1.0.
 - **Voice-clone auto-trim** (`qwen_trim_trailing_silence`) — drops a faded ref tail so clones don't learn a decrescendo.
@@ -904,7 +897,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
   voice-bounded; need to detect/flag this, or a non-additive method (pitch/energy contour control?).
 - [ ] **Directions are voice-specific & over-steer differently per voice** (Silvio excited TOP@0.7, voice-drift@1.4;
   ryan happy needs 1.4). No systematic ryan↔voice calibration map yet — today it's hand-tuned per voice
-  (`presets/emotions/<voice>/`). Want an auto-calibration pass (sweep + pick the clean knee per voice).
+  (one palette per voice). Want an auto-calibration pass (sweep + pick the clean knee per voice).
 - [ ] **Steering is crude additive `cp_x += w·vec` at ONE point.** Likely better: per-CP-layer injection,
   normalization to stay on-manifold (over-steer → metallic), contrastive/mean-centered directions captured
   over MANY sentences+speakers (current = 1 voice, ~100-150 frames), or steering the late codebooks (c11-15 =
@@ -924,7 +917,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
   "I-am-being-instructed-vs-neutral" common mode; the emotion-specific part is only the residual (happy 86%,
   but gloomy/news/dramatic only 46-55%). Fix = **mean-center the palette** then renormalize:
   `vec' = β·mean_all + γ·(vec − mean_all)`, renorm to original per-emotion norm. β=0 γ=2 →
-  **mean pairwise cosine +0.57 → −0.09** (near-orthogonal), same magnitudes. Tooling: `tests/steer_center.py`.
+  **mean pairwise cosine +0.57 → −0.09** (near-orthogonal), same magnitudes.
   → bake this as the shipped palette (or a `--decorrelate` build step); also re-capture over MANY
   sentences+speakers so the common mode is weaker at the source. Directly closes the "crude additive / not
   contrastive" gap above. STILL TODO: ear-validate the centered palette is more distinct AND still natural
@@ -965,9 +958,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
     forceful control). Adding low roughness (0.25–0.40) + agitation (atempo 1.12) gets to **"annoyed/stern/light
     irritation"** ("tired prof telling the class: hey, meeting tomorrow!") — useful and credible, but NOT furious
     rage. Real anger needs tense/strained phonation + irregular bursts that additive single-point CP steering
-    can't impose. → ship as `annoyed`/`stern`, document rage as a known hard case. Artifacts persisted in
-    `presets/emotions/it_centered/` (decorrelated palette + `angry.vec` + README with the recipe table).
-
+    can't impose. → ship as `annoyed`/`stern`, document rage as a known hard case.
 - [ ] **VoiceDesign expressivity — INVESTIGATE (Leo Yu 2026-06-06).** Leo reports CustomVoice/clone "not as
   emotional/expressive even with good instruct prompting" while **VoiceDesign is very expressive but can't lock a
   voice identity** — the exact CustomVoice-vs-VoiceDesign tradeoff our steering work bridges. TASK: downloaded
@@ -1043,8 +1034,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
     on EU even on preset voices (our test: ZH +45Hz vs IT +1.5Hz). (c) 1.7B > 0.6B for emotion control.
   - **CONCLUSION: the model genuinely offers no more via instruct for cloned EU voices → CP-steering (our control-vectors)
     is the ONLY path for emotion on a cloned Italian voice. All alt levers (think / hidden tags / relax-identity / ref-breath
-    sighs) are closed with proof. Ship what works: centered palette + tempo + pauses.** Official src at /tmp/qwen3tts_src (ephemeral).
-
+    sighs) are closed with proof. Ship what works: centered palette + tempo + pauses.**
 - [x] **Cross-LANGUAGE steering validation (2026-06-06, ear-confirmed, ES/FR/DE/JA/KO, centered palette on preset voices).**
   The IT/EN-captured steering does NOT transfer uniformly across languages (refines the old "presets are cross-lingual"
   belief → cross-MODEL yes, cross-LANGUAGE only partial): **JA = best** (angry/sad/happy all credible), **DE = weak**
@@ -1057,8 +1047,6 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
   Lesson re-confirmed: acoustic ΔF0 proxy ≠ perceived emotion (proxy said DE clean, ear said weak) — ear is truth.
 - [ ] **`--volume` knob (trivial, not yet exposed):** no `--volume` flag exists; volume is pure PCM gain (qwen_tts_audio.c
   one-liner) or ffmpeg post — unlike pitch (identity-clamped), volume has no obstacle. Fold into the compound-emotion manifest.
-
-See [[project_expressivity]] for the full build log, the cross-voice map, and the Silvio re-clone saga.
 
 ### A2. Cross-CPU PERF — Leo Yu 9950X3D (Zen5 V-Cache) report, 2026-06-06 — VERIFIED LEADS
 > Leo benchmarked pure-C v0.9.0 on a Ryzen 9 9950X3D (CCD0=96MB V-Cache, CCD1=32MB) across Docker/WSL2 +
@@ -1111,8 +1099,7 @@ The `--workers N` pool runs N INDEPENDENT GEMVs, each re-reading the weights →
 bf16 workload that's N× the DRAM demand → contention, not reuse. Bench (3-sentence text, full vs 3
 concurrent reqs on `--workers 3`, 0.6B M1): per-chunk latency TRIPLED (~6s→~17s), aggregate throughput
 +8% only, total wall-clock WORSE (17.7 vs 16.4s). A single 4-thread synthesis already saturates M1
-bandwidth. **So the worker-pool is correctness-validated but NOT a throughput win on M1.** See
-[[project_split_parallel_bench]] + `docs/pipeline.md`. The fix is TRUE batching (the N current-frame
+bandwidth. **So the worker-pool is correctness-validated but NOT a throughput win on M1.** The fix is TRUE batching (the N current-frame
 vectors stacked into ONE GEMM `Y=W·X`, weight read ONCE) — a different code path from the worker pool
 (needs a batch-dim in the step functions; the matvecs become GEMMs like prefill already does, attention
 stays per-stream since each request has its own KV — but attention is <1% so the 90% matvec slice
@@ -1219,7 +1206,7 @@ KV cache, so per-codebook drift conflates step sensitivity + intra-frame KV accu
 but not a pure per-step isolate). Good enough for the decisions above.
 
 **DECOMPOSITION EXPERIMENTS — ✅ DONE 2026-06-04 (commit pending; env knobs QWEN_TALKER_PREC /
-QWEN_CP_LMHEAD_PREC / QWEN_CP_LAYER_PREC / QWEN_DUMP_CODE0; script `/tmp/ql_decomp.sh`).**
+QWEN_CP_LMHEAD_PREC / QWEN_CP_LAYER_PREC / QWEN_DUMP_CODE0).**
 Tested the user's "low-bit early codebooks / high-bit late delicate ones" hybrid hypothesis. Verdict:
 **the hybrid has NO sweet spot — the int4 cost is in the SHARED transformer, spread evenly.**
 

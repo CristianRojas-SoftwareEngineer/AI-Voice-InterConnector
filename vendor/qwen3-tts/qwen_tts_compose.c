@@ -48,19 +48,19 @@ static const cmacro_t COMPOSE_MACROS[] = {
     { NULL, NULL, 0.0f, 0.0f, 0.0f }
 };
 
-/* ── Inline paralinguistic EVENTS via a validated onomatopoeia (the shipped [laugh]/[sigh]) ──
- * The tag becomes an onomatopoeia INSIDE the sentence, so the event is produced in the active
- * voice's own timbre within ONE generation — never a separate "splice" span. Mapping is
- * universal across voices/languages; sigh differs per voice (唉 s42 ryan/clone, ahh s7 vivian).
- * [yawn] 哈啊 is vocal + cross-voice (preset s7 / clone s42). [moan]/[throat] stay ryan-only (unshipped,
- * see docs/para-experiments.md 2026-07-07); cry is decoder-ceiling-blocked (needs FT). */
+/* ── Eventos paralingüísticos en línea mediante una onomatopeya validada ([laugh]/[sigh] publicados) ──
+ * La etiqueta se convierte en una onomatopeya DENTRO de la frase, de modo que el evento se produce
+ * con el timbre propio de la voz activa en UNA sola generación, nunca en un tramo «empalmado» aparte.
+ * El mapeo es universal entre voces e idiomas; el suspiro cambia por voz (唉 s42 ryan/clon, ahh s7 vivian).
+ * [yawn] 哈啊 es vocal y válido entre voces (preset s7 / clon s42). [moan]/[throat] quedan solo para ryan
+ * (no publicados); el llanto lo bloquea el techo del decodificador (requeriría fine-tuning). */
 static void para_pick(const char *tag, int voice_class, int small_model,
                       const char **onom, int *seed, float *temp) {
-    /* voice_class: 0 = ryan / other preset · 1 = vivian · 2 = clone (--load-voice).
-     * small_model: 1 = 0.6B. The seeds below were tuned on the 1.7B and DO NOT transfer — on the
-     * 0.6B the (onomatopoeia × seed) cells land on different attractors of the vocal family, so the
-     * small model gets its own branch (ear-validated 2026-08-05, docs/para-experiments.md).
-     * *temp = the per-tag validated temperature (default 1.1; a tag may soften it). */
+    /* voice_class: 0 = ryan / otro preset · 1 = vivian · 2 = clon (--load-voice).
+     * small_model: 1 = 0.6B. Las semillas de abajo se ajustaron en el 1.7B y NO se transfieren: en el
+     * 0.6B las celdas (onomatopeya × semilla) caen en otros atractores de la familia vocal, así que el
+     * modelo pequeño tiene su propia rama (validada de oído).
+     * *temp = la temperatura validada por etiqueta (por defecto 1.1; una etiqueta puede suavizarla). */
     *onom = NULL; *seed = 7; *temp = 1.1f;
 
     if (small_model) {

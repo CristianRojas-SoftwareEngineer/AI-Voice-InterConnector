@@ -154,14 +154,14 @@ static int posix_fadvise(int fd, off_t off, off_t len, int adv) { (void)fd; (voi
  */
 /* posix_memalign: ni msvcrt ni UCRT exportan aligned_alloc, y el motor/ingot
  * libera estos buffers con free() plano (ingot_aligned_free(){ free(ptr) }).
- * _aligned_malloc NO es free()-compatible → descartado por §2.4 del plan.
+ * _aligned_malloc NO es free()-compatible → descartado.
  * VirtualAlloc NO es free()-compatible → requeriría editar cpu.c.
- * El plan (PLAN-DE-MIGRACIÓN §2.4 ítem 2) resuelve esto: caer a malloc simple,
+ * La solución adoptada es caer a malloc simple,
  * perdiendo la alineación a 64B como OPTIMIZACIÓN, no como requisito de
  * correctitud para el motor (buffers de trabajo SIMD, no estructuras de datos
  * con requisitos de packing). free() sobre heap malloc es válido. */
 static int posix_memalign(void **memptr, size_t alignment, size_t size) {
-    (void)alignment;   /* intencional: malloc garantiza ≤16B; plan lo acepta */
+    (void)alignment;   /* intencional: malloc garantiza ≤16B; se acepta */
     void *p = malloc(size ? size : 1);
     if (!p) return ENOMEM;
     *memptr = p; return 0;

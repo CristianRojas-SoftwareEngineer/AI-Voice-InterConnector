@@ -115,12 +115,11 @@ else ifeq ($(UNAME_S),Linux)
     LDLIBS += $(OPENBLAS_A) -Wl,-Bstatic $(FORTRAN_STATIC) -Wl,-Bdynamic -lm -lpthread
 else
 # ——— MinGW-w64/UCRT64 (MSYS2): vendoring-local shims POSIX ———
-#   sys/mman.h + unistd.h stubs live in third_party/ingot/mingw_shim/ (§2.4 plan).
+#   sys/mman.h + unistd.h stubs live in third_party/ingot/mingw_shim/.
 #   openblas package: mingw-w64-ucrt-x86_64-openblas (headers en /ucrt64).
 #   cygpath -m traduce /ucrt64/... → C:/msys64/ucrt64/...: gcc de MinGW (invocado por
 #   mingw32-make, un binario Windows nativo) NO pasa por el runtime MSYS2 mount-table,
 #   por lo que paths en estilo MSYS2 (/ucrt64) no se resuelven y cblas.h no se encuentra.
-#   Ver memoria: "MinGW build path root-cause".
     UCRT64_INC := $(shell cygpath -m /ucrt64/include/openblas)
     # Destino de clang para comprobar en check-isa las rutas ARM desde un host x86;
     # las cabeceras de MinGW sirven también para el destino aarch64.
@@ -510,13 +509,12 @@ test-emotion: $(TARGET)
 	@echo "PASS: expressivity/emotion smoke"
 	@echo ""
 
-# Emotion fine-tune (.expr graft) SMOKE — the CSP Italian emotion FT this branch ships.
-# The WOW recipe: 1.7B + EN instruct + T1.1 + the dense .expr applied on a preset and on an
-# --icl-only clone graft. 2 short renders (seed 42 = stable; some seeds glitch). Asserts the
-# pack loads (N tensors applied) + non-empty audio. The .expr packs are local-only (large),
-# so SKIP cleanly when absent instead of failing a fresh checkout. Pack override: EXPR_FT=...
-# The shipped WIN pack (was italian_csp.expr — stale name, the test silently SKIPped;
-# caught 2026-07-11 auditing a "too fast" test-all).
+# SMOKE del fine-tune de emoción (.expr graft) — el FT de emoción CSP italiano que se publica.
+# La receta WOW: 1.7B + instruct en inglés + T1.1 + el .expr denso aplicado a un preset y a un
+# graft de clon --icl-only. 2 renders cortos (semilla 42 = estable; algunas semillas fallan). Comprueba que el
+# paquete se carga (N tensores aplicados) y que el audio no está vacío. Los paquetes .expr son solo locales (grandes),
+# así que se OMITE sin fallar cuando faltan, en vez de romper un checkout limpio. Reemplazar el paquete: EXPR_FT=...
+# El paquete GANADOR publicado.
 EXPR_FT ?= presets/expr/italian_csp_topk6.expr
 EMO_FT_INSTR = Speak with warm, bright happiness, smiling through the words.
 EMO_FT_TEXT  = Che bella notizia, sono davvero felicissimo oggi!
@@ -609,10 +607,9 @@ test-compose: $(TARGET)
 		--text "Che bella notizia! [pause:400ms] [sad] Devo andare... [sigh] [neutral] Ciao." \
 		-o $(TEST_DIR)/mk_inline.wav 2>$(TEST_DIR)/mk_inline.log
 	@grep -qi "Inline markup detected" $(TEST_DIR)/mk_inline.log || { echo "FAIL: inline markup not auto-detected in --text"; cat $(TEST_DIR)/mk_inline.log; exit 1; }
-	@# 3 spans: neutral / sad / neutral. [sigh] is an INLINE para tag -> folded as an
-	@# onomatopoeia into the adjacent (sad) span's text (one generation, voice-native
-	@# timbre), NOT a separate span. The old split/steering-span "splice" that made it a
-	@# 4th span was rejected & deleted (CLAUDE.md para protocol) — so 3 is correct here.
+	@# 3 tramos: neutral / sad / neutral. [sigh] es una etiqueta paralingüística INLINE: se pliega
+	@# como onomatopeya en el texto del tramo adyacente (sad) (una sola generación, con el
+	@# timbre nativo de la voz), NO es un tramo aparte; por eso 3 tramos es lo correcto aquí.
 	@grep -qi "composed 3 spans" $(TEST_DIR)/mk_inline.log || { echo "FAIL: expected 3 spans (neutral/sad+[sigh]/neutral)"; cat $(TEST_DIR)/mk_inline.log; exit 1; }
 	@grep -qi "inline \[tag\]->onomatopoeia" $(TEST_DIR)/mk_inline.log || { echo "FAIL: [sigh] not folded inline as onomatopoeia"; cat $(TEST_DIR)/mk_inline.log; exit 1; }
 	@grep -qi "pause 0.40s" $(TEST_DIR)/mk_inline.log || { echo "FAIL: [pause:400ms] not parsed"; cat $(TEST_DIR)/mk_inline.log; exit 1; }
@@ -956,7 +953,7 @@ test-voice-design: $(TARGET)
 # Usage:
 #   make demo-clone REF=my_voice.wav             (REF es obligatorio: audio de referencia)
 #   make demo-clone REF=my_voice.wav TEXT="Hi!"  (custom text too)
-# Output saved to samples/ for easy listening.
+# Output saved to $(TEST_DIR)/ for easy listening.
 
 TEXT ?= I love programming in C, it gives you complete control over the machine.
 TEXT_IT ?= Buongiorno, questa e una dimostrazione della clonazione vocale.
@@ -974,7 +971,7 @@ demo-clone: $(TARGET)
 		echo "Usage: make demo-clone REF=your_audio.wav"; \
 		exit 1; \
 	fi
-	@mkdir -p samples
+	@mkdir -p $(TEST_DIR)
 	@echo ""
 	@echo "Reference audio: $(REF)"
 	@echo ""
@@ -983,22 +980,22 @@ demo-clone: $(TARGET)
 		--text "$(TEXT)" \
 		--ref-audio "$(REF)" \
 		--xvector-only \
-		-o samples/clone_output_en.wav
+		-o $(TEST_DIR)/clone_output_en.wav
 	@echo ""
 	@echo "--- Cloning voice (Italian) ---"
 	./$(TARGET) -d $(MODEL_BASE_SMALL) -l Italian \
 		--text "$(TEXT_IT)" \
 		--ref-audio "$(REF)" \
 		--xvector-only \
-		-o samples/clone_output_it.wav
+		-o $(TEST_DIR)/clone_output_it.wav
 	@echo ""
 	@echo "=== Demo complete ==="
-	@echo "Output saved to samples/"
+	@echo "Output saved to $(TEST_DIR)/"
 	@echo ""
 	@echo "Listen:"
 	@echo "  Reference:  afplay $(REF)"
-	@echo "  English:    afplay samples/clone_output_en.wav"
-	@echo "  Italian:    afplay samples/clone_output_it.wav"
+	@echo "  English:    afplay $(TEST_DIR)/clone_output_en.wav"
+	@echo "  Italian:    afplay $(TEST_DIR)/clone_output_it.wav"
 
 # Legacy aliases
 test-en: test-small-en

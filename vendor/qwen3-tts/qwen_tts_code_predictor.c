@@ -71,20 +71,20 @@ void qwen_cp_microbench_report(int frames) {
 #endif
 
 /* ========================================================================
- * Quant-ladder instrumentation (env-gated; truly zero overhead when off).
+ * Instrumentación de la escalera de cuantización (activada por entorno; sin coste alguno si está apagada).
  *
- *   QWEN_DUMP_CODES=<path>  append one line "code0 c1 c2 ... c15" per frame
- *                           (the 16 codebook tokens). Run the synth at each
- *                           CP precision (see QWEN_CP_PREC) → one file each →
- *                           tests/quant_ladder.py computes the per-codebook
- *                           argmax-agreement matrix across {bf16,int8,int4,q2}.
- *   QWEN_FFN_SPARSITY[=eps]  count post-SwiGLU activations with |x| < eps
- *                           (default 1e-4) → contextual-sparsity headroom %.
- *                           Reported to stderr at process exit.
+ *   QWEN_DUMP_CODES=<ruta>  añade una línea "code0 c1 c2 ... c15" por trama
+ *                           (los 16 tokens de libro de códigos). Se sintetiza con cada
+ *                           precisión del CP (véase QWEN_CP_PREC) → un archivo por precisión →
+ *                           con ellos se calcula la matriz de coincidencia de argmax por
+ *                           libro de códigos entre {bf16,int8,int4,q2}.
+ *   QWEN_FFN_SPARSITY[=eps]  cuenta las activaciones post-SwiGLU con |x| < eps
+ *                           (por defecto 1e-4) → % de margen de dispersión contextual.
+ *                           Se informa por stderr al salir del proceso.
  *
- * This is the cheap "measure first" instrument behind PLAN.md future-research C:
- * it tells us WHERE and HOW MUCH int4 drifts vs int8/bf16 before we build any
- * speculative-decode / sparsity / roughness machinery.
+ * Es un instrumento barato para medir antes de construir: indica DÓNDE y CUÁNTO se desvía
+ * int4 frente a int8/bf16, y cuánta dispersión contextual hay en las activaciones, antes de
+ * invertir en cualquier maquinaria de decodificación especulativa, dispersión o aspereza.
  * ======================================================================== */
 static FILE  *ql_codes_fp   = NULL;
 static int    ql_init_done  = 0;

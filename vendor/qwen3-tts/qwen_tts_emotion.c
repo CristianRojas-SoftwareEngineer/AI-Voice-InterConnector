@@ -1,19 +1,19 @@
-/* qwen_tts_emotion.c - compound-emotion manifest (see qwen_tts_emotion.h)
+/* qwen_tts_emotion.c - manifiesto de emociones compuestas (ver qwen_tts_emotion.h)
  *
- * Each row is an ear-validated recipe from docs/expressivity-recipes.md.
- * KEY findings baked in here:
- *   - joy = `excited` (NOT `happy`) pushed hard + faster + louder. `happy`
- *     loses energy when pushed because neutral is already upbeat.
- *   - down-moods (sad/gloomy/calm) = rate&volume DOWN, not more steering weight
- *     (a single-point CP injection can't impose tempo/energy; DSP does).
- *   - annoyed/stern = `angry` direction + roughness grit + slightly faster/louder.
- *     Full furious rage is out of reach (the model forces it to proud/forceful).
- *   - news/announcer = `proud` (reads as authoritative anchor).
+ * Cada fila es una receta validada de oído.
+ * Hallazgos CLAVE incorporados aquí:
+ *   - joy = `excited` (NO `happy`) empujado fuerte + más rápido + más fuerte. `happy`
+ *     pierde energía al empujarlo porque el neutro ya es animado.
+ *   - los ánimos bajos (sad/gloomy/calm) = rate y volume A LA BAJA, no más peso de dirección
+ *     (una inyección del CP en un solo punto no puede imponer tempo ni energía; lo hace el DSP).
+ *   - annoyed/stern = dirección `angry` + aspereza (roughness) + algo más rápido y fuerte.
+ *     La furia total está fuera de alcance (el modelo la fuerza hacia proud/forceful).
+ *   - news/announcer = `proud` (se lee como ancla de autoridad).
  *
- * `vec_spec` is resolved through the normal emotion resolver (language-aware:
- * Italian prefers the centered palette). If a recipe's vector is missing for the
- * active language, the caller degrades gracefully — the prosodic knobs
- * (roughness/volume/rate) still apply.
+ * `vec_spec` se resuelve con el resolvedor normal de emociones (según el idioma:
+ * el italiano prefiere la paleta centrada). Si el vector de una receta falta para el
+ * idioma activo, quien llama degrada con elegancia: las perillas prosódicas
+ * (roughness/volume/rate) se siguen aplicando.
  */
 #include "qwen_tts_emotion.h"
 #include "qwen_tts.h"

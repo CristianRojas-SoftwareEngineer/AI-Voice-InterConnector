@@ -165,7 +165,7 @@ void qwen_threadpool_start(int n_threads) {
     qwen_threadpool_stop();
     if (want == 0) return;
     P.threads = (HANDLE *)malloc(sizeof(HANDLE) * (size_t)want);
-    if (!P.threads) { P.nworkers = 0; return; }  /* audit #9: fall back to serial */
+    if (!P.threads) { P.nworkers = 0; return; }  /* sin memoria: se ejecuta en serie */
     int created = 0;
     unsigned long gen0 = P.generation;  /* workers' initial `seen` (see worker_main) */
     for (int i = 0; i < want; i++) {
@@ -343,9 +343,9 @@ void qwen_threadpool_start(int n_threads) {
     qwen_threadpool_stop();
     if (want == 0) return;
     P.threads = (pthread_t *)malloc(sizeof(pthread_t) * (size_t)want);
-    if (!P.threads) { P.nworkers = 0; return; }  /* audit #9: fall back to serial */
-    /* audit #9: cap nworkers to threads actually created; qwen_parallel runs
-     * serially when nworkers==0 and correctly with a partial pool otherwise. */
+    if (!P.threads) { P.nworkers = 0; return; }  /* sin memoria: se ejecuta en serie */
+    /* Se acota nworkers a los hilos realmente creados; qwen_parallel corre
+     * en serie cuando nworkers==0 y correctamente con un pool parcial en otro caso. */
     int created = 0;
     /* Hand each worker the CURRENT generation as its initial `seen`: any bump after
      * this point (first possible submit is after start() returns) is then observable. */

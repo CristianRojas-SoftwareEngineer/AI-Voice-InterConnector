@@ -187,7 +187,7 @@ static int stream_audio_callback(const float *samples, int n_samples, void *user
     if (!st->file) return -1;
     for (int i = 0; i < n_samples; i++) {
         float s = samples[i] * st->volume;
-        if (s != s) s = 0.0f;               /* leaks-audit #7: NaN passes both clamps → (int16_t)(NaN*32767) UB */
+        if (s != s) s = 0.0f;               /* guarda contra NaN: NaN pasa ambos recortes y (int16_t)(NaN*32767) sería comportamiento indefinido */
         if (s < -1.0f) s = -1.0f;
         if (s > 1.0f) s = 1.0f;
         int16_t sample = (int16_t)(s * 32767);
@@ -372,56 +372,48 @@ static int load_ml_steer(qwen_tts_ctx_t *ctx, const char *path, float weight, in
  * (shared with the server). `cspan_t` is the local alias kept for the batch/compose call sites. */
 typedef qwen_cspan_t cspan_t;
 
-/* Paralinguistic events rendered via a STEERING VECTOR (the validated win, plan §8.9-DONE/§9.13):
- * the inline [tag] becomes a native-trigger onomatopoeia ANCHOR (which the model performs) and the
- * vector SHAPES it into the real event. VOCAL family only (laugh/sigh — articulatory events hit the
- * decoder ceiling). RAW vectors, inject L21-25. Default weight ~8 (ryan over-steers a bit at 8, wants
- * ~6). Checked BEFORE COMPOSE_MACROS so laugh/sigh use the vector path, not the old DSP filler. */
-/* NOTE (2026-07-01): the paralinguistic STEERING-VECTOR split-span ("splice") for [laugh]/[sigh] was
- * REMOVED — it rendered the event as a separate cold-prefill span with its own vector, which mixed
- * voices (sounded like a different speaker on clones). Replaced by INLINE substitution (para_pick /
- * para_inline_substitute above): the tag becomes a validated onomatopoeia IN the sentence, one
- * generation, event in the active voice's own timbre. Do NOT reintroduce the split-span. */
+/* Los eventos paralingüísticos NUNCA se renderizan como un tramo aparte con su propio vector de
+ * dirección («empalme»): ese tramo arrancaba en frío con su propio vector, mezclaba voces (sonaba como
+ * otro hablante en los clones). La sustitución es EN LÍNEA (para_pick / para_inline_substitute, ver
+ * más abajo): la etiqueta se convierte en una onomatopeya validada DENTRO de la frase, en una sola
+ * generación, con el evento en el timbre propio de la voz activa. No reintroducir el tramo aparte. */
 
-/* INLINE paralinguistics — the shipped method (2026-07-01, docs/para-experiments.md). A `[laugh]`/`[sigh]`
- * is replaced by a validated ONOMATOPOEIA *inside* the sentence, so the event is produced in the active
- * voice's own timbre within ONE generation — NEVER a separate "splice" span (which mixed voices). The
- * mapping is universal across voices AND languages (ear-validated on ryan EN/IT, vivian IT, galatea clone):
- *   [laugh]→哈哈哈  [sigh]→唉/ahh  [yawn]→哈啊(preset s7/clone s42)  [wow]→哇 s7  [giggle]→嘿嘿 s42  [scoff]→切 s42(T1.0)
- * and seed 7 makes laugh fire (哈哈哈 s7 laughs / s42 hyperventilates). SHORT form only (哈哈哈 not longer;
- * long over-laughs into a pant); no event-instruct (goes metallic). [yawn] added 2026-07-07 via the E1
- * discovery harness. Robustness gate 2026-07-08: [wow]/[yawn]/[scoff] SHIP (scoff re-pinned s7→s42);
- * [giggle] SHIPS standalone-only (do NOT stack with --emotion joy — over-laughs); [phew] PARKED (only IT
- * clean, metallic/literal on EN). See the doc for the full WIN/KO trail + the ryan-only/parked events. */
+/* Paralingüística EN LÍNEA: un `[laugh]`/`[sigh]` se sustituye por una ONOMATOPEYA validada
+ * *dentro* de la frase, de modo que el evento se produce con el timbre propio de la voz activa
+ * en UNA sola generación, NUNCA en un tramo «empalmado» aparte (que mezclaba voces). El
+ * mapeo es universal entre voces E idiomas (validado de oído en ryan EN/IT, vivian IT, clon galatea):
+ *   [laugh]→哈哈哈  [sigh]→唉/ahh  [yawn]→哈啊(preset s7/clon s42)  [wow]→哇 s7  [giggle]→嘿嘿 s42  [scoff]→切 s42(T1.0)
+ * y la semilla 7 hace que la risa se dispare (哈哈哈 s7 ríe / s42 hiperventila). Solo forma CORTA (哈哈哈, no más
+ * larga; una larga ríe de más hasta jadear); sin event-instruct (suena metálico). Publicados:
+ * [wow]/[yawn]/[scoff]; [giggle] se publica solo suelto (NO apilar con --emotion joy: ríe de más);
+ * [phew] APARCADO (solo limpio en IT, metálico/literal en EN). */
 /* para_pick / para_inline_substitute / is_para_event_tag moved to qwen_tts_compose.c
  * (shared with the server). Use qwen_compose_para_substitute / qwen_compose_is_para_event_tag. */
 
-/* ── --emotion auto-router (1.7B): the ear-validated per-(voice×emotion) recipe ────────────────
- * `--emotion <name>` reproduces the weeks-long shippable recipe table (plan_emo_v3 §8.3 recipe_final,
- * CLEAN+decay default, user-validated 2026-06-24): ONE flag instead of hand-wiring --expr/--ml-steer.
- * CRUCIAL: it is NOT "always combine". Each (voice,emotion) cell has a specific MODE —
- *   EXPR-only  (e.g. ryan/vivian anger — steer goes metallic, the FT carries it),
- *   STEER-only (most cells — the clean steer @ L21-25 IS the emotion; adding expr SOFTENS it → e.g.
- *               galatea anger went "sad" when expr was wrongly added),
- *   COMBINE    (ryan/vivian joy, galatea disgust/fear — expr renders + steer pushes).
- * Plus the PRIMARY levers (memory): a default English instruct + temp 1.1(preset)/1.3(clone), set early.
- * Cross-language (§8.6): for FAR languages (ZH/JA/KO/RU) the IT expr is added as a stabilizer even on
- * STEER cells. Manual --expr/--ml-steer override. 0.6B keeps the legacy .vec path. */
+/* ── Enrutador automático de --emotion (1.7B): la receta validada de oído ────────────────
+ * `--emotion <nombre>` aplica la receta de resolve_emotion_recipe con UNA sola bandera en vez de
+ * cablear a mano --expr/--ml-steer.
+ * NO es «combinar siempre»: cada celda tiene un MODO concreto —
+ *   solo EXPR   (el FT lleva la emoción),
+ *   solo STEER  (el steer limpio en L21-25 ES la emoción; añadir expr la SUAVIZA),
+ *   COMBINE     (expr renderiza + steer empuja).
+ * Más las palancas PRIMARIAS: un instruct en inglés por defecto + temperatura 1.1, fijados antes.
+ * --expr/--ml-steer manuales lo reemplazan. El 0.6B sigue otra ruta (ver más abajo). */
 /* Canonical filename token for an --emotion spec, or NULL if it isn't a routed emotion.
  * Single source of truth = qwen_tts_emotion.c (the name/dyad table), shared with the compose
  * per-span path and the server. */
 static const char *emotion_tok(const char *spec) {
     return qwen_emotion_name_to_tok(spec);
 }
-/* The shippable per-(voice×emotion) recipe (plan §8.3). use_expr/use_steer pick the cell's MODE. */
+/* La receta publicable por celda. use_expr/use_steer eligen el MODO de la celda. */
 typedef struct { const char *voice; const char *tok; int use_expr; float expr_w; int use_steer; float steer_w; } emo_cell_t;
-/* THE emotion recipe (docs/emotion-THE-recipe.md, ear-validated 2026-06-29 across ALL languages):
- * pure STEER WINS everywhere, clean, timbre intact — `ryan_<emo>` @ **w12** (w10 also good) — so the recipe is
- * DEAD SIMPLE. The earlier per-(voice×emotion) cells and per-language EXPR/COMBINE policy are SUPERSEDED.
- *   PRESET voice → STEER ryan_<emo> @ w12 (no expr, no instruct). Use the NATIVE preset per language.
- *   CLONE  voice → COMBINE: the language .expr @1.0 renders/stabilizes + STEER @ w12 + EN instruct
- *                  (the one easy clone recipe — expr keeps a cross-language clone clean).
- * anger/fear confirmed best at w12; the rest win at w10 or w12 → w12 everywhere is the single safe default. */
+/* LA receta de emoción (validada de oído en TODOS los idiomas):
+ * el STEER puro GANA en todas partes, limpio y con el timbre intacto — `ryan_<emo>` @ **w12** (w10 también sirve) —
+ * así que la receta es SENCILLÍSIMA.
+ *   voz PRESET → STEER ryan_<emo> @ w12 (sin expr, sin instruct). Usar el preset NATIVO de cada idioma.
+ *   voz CLON   → COMBINE: el .expr del idioma @1.0 renderiza/estabiliza + STEER @ w12 + instruct en inglés
+ *                (la única receta fácil de clon: expr mantiene limpio un clon entre idiomas).
+ * anger/fear resultan mejor con w12; el resto ganan con w10 o w12 → w12 en todas partes es el único valor seguro por defecto. */
 static void resolve_emotion_recipe(const char *language, const char *voice_key, int is_clone,
                                    const char *tok, emo_cell_t *cell, float *temp) {
     (void)language; (void)voice_key;
@@ -444,9 +436,9 @@ static const char *recommended_voice_for_language(const char *language) {
         return "ryan";
     return NULL;
 }
-/* Pick the .qlsteer for an emotion. The validated recipe (recipe_final.sh) uses the **ryan_<tok>**
- * CLEAN palette for ALL voices incl. clones — the `*_ft` voice-native dirs were an idea-2 experiment
- * that did NOT win (galatea_ang_ft is weaker/sad-ish, captured WITH expr). So: always ryan_<tok>. */
+/* Elige el .qlsteer de una emoción. La receta validada usa la paleta LIMPIA **ryan_<tok>**
+ * para TODAS las voces, clones incluidos: los vectores nativos de cada voz no ganaron
+ * (más débiles y tirando a tristes, capturados CON expr). Por tanto: siempre ryan_<tok>. */
 static int resolve_emotion_qlsteer(const char *voice_key, const char *tok, char *out, size_t outsz) {
     (void)voice_key;
     snprintf(out, outsz, "presets/steer/emotion/ryan_%s.qlsteer", tok);
@@ -474,14 +466,14 @@ static const char *emotion_voice_key(int is_clone, const char *load_voice, const
     }
     return speaker_name;   /* preset name (NULL = default → ryan palette) */
 }
-/* Default vivid ENGLISH instruct per routed emotion. The instruct (in English/Chinese, the model's
- * training languages) is the PRIMARY emotion lever (memory: temp + EN-instruct >> steer alone) — without
- * it `--emotion` renders flat. The model follows it verbatim while speaking the target `-l` language.
- * Returns NULL for non-routed moods. A user `--instruct` always overrides this. */
+/* Instruct vívido en INGLÉS por defecto para cada emoción enrutada. El instruct (en inglés/chino, los idiomas
+ * de entrenamiento del modelo) es la palanca PRIMARIA de emoción (temperatura + instruct en inglés >> steer solo): sin
+ * él `--emotion` suena plano. El modelo lo sigue al pie de la letra mientras habla el idioma `-l` de destino.
+ * Devuelve NULL para ánimos no enrutados. Un `--instruct` del usuario siempre lo reemplaza. */
 static const char *default_emotion_instruct(const char *spec) {
     const char *tok = emotion_tok(spec);
     if (!tok) return NULL;
-    /* The exact validated instructs from recipe_final.sh (ear-validated 2026-06-24). */
+    /* Los instruct exactos validados de oído. */
     if (!strcmp(tok, "sad"))      return "Speak in a sad, sorrowful, gloomy and downcast tone, voice low and heavy, on the verge of tears.";
     if (!strcmp(tok, "joy"))      return "Speak with bright, radiant joy, light and warm, smiling through every word.";
     if (!strcmp(tok, "ang"))      return "Speak in a furious, seething, enraged tone, voice sharp and hard, barely holding back the rage.";
@@ -703,9 +695,9 @@ static int apply_expr_file(qwen_tts_ctx_t *ctx, const char *path, float expr_wei
         fprintf(stderr, "Error: %s is not a valid .expr file (bad magic)\n", path);
         fclose(f); return -1;
     }
-    /* audit #8: check the header freads (a truncated file must not proceed with garbage).
-     * The tensor DATA itself is integrity-guarded by download_assets.sh's sha256 vs
-     * presets/expr/MANIFEST.md, so per-tensor size validation is covered upstream. */
+    /* Se comprueban las lecturas de la cabecera (un archivo truncado no debe seguir con basura).
+     * Los DATOS de los tensores los protege download_assets.sh con su sha256,
+     * así que la validación del tamaño por tensor queda cubierta aguas arriba. */
     if (fread(&version, sizeof(uint32_t), 1, f) != 1 ||
         fread(lang, 1, 16, f) != 16 ||
         fread(&reserved, sizeof(uint32_t), 1, f) != 1) {
@@ -719,7 +711,7 @@ static int apply_expr_file(qwen_tts_ctx_t *ctx, const char *path, float expr_wei
     }
     uint32_t target_h = 0, n_tensors = 0;
     if (fread(&target_h, sizeof(uint32_t), 1, f) != 1 ||
-        fread(&n_tensors, sizeof(uint32_t), 1, f) != 1) { fclose(f); return -1; }  /* audit #8 */
+        fread(&n_tensors, sizeof(uint32_t), 1, f) != 1) { fclose(f); return -1; }  /* cabecera truncada: se rechaza el archivo */
     if ((int)target_h != ctx->config.hidden_size) {
         fprintf(stderr, "Error: .expr is for hidden=%u but model has hidden=%d (model/.expr mismatch)\n",
                 target_h, ctx->config.hidden_size);
@@ -737,9 +729,9 @@ static int apply_expr_file(qwen_tts_ctx_t *ctx, const char *path, float expr_wei
         if (name_len >= 256) break;
         uint32_t data_bytes = 0, comp_size = 0;
         uint8_t dtype_flag = 0;
-        /* audit #8: check the per-record metadata freads; a truncated record must not feed
-         * garbage sizes into the mallocs below. Cap sizes to a sane bound (256 MB) so a
-         * corrupt length can't trigger an absurd allocation. */
+        /* se comprueban los fread de metadatos de cada registro: un registro truncado no debe
+         * pasar tamaños basura a los malloc de abajo. Los tamaños se acotan a un máximo
+         * razonable (256 MB) para que una longitud corrupta no provoque una reserva absurda. */
         if (fread(tname, 1, name_len, f) != name_len ||
             fread(&data_bytes, sizeof(uint32_t), 1, f) != 1 ||
             fread(&dtype_flag, 1, 1, f) != 1 ||
@@ -1472,10 +1464,10 @@ int main(int argc, char **argv) {
                     ml_decay, ml_frames);
     }
 
-    /* --emotion DEFAULTS — match recipe_final.sh exactly: temperature 1.1 for ALL (preset AND clone), and
-     * a vivid English instruct ONLY on EXPR/COMBINE cells (validated STEER cells use NO instruct — the steer
-     * vector carries the emotion). instruct + temperature are CONSUMED before the late router, so set them
-     * here. The user's -I / -T always override. 1.7B routed emotions only. */
+    /* VALORES POR DEFECTO de --emotion — igual que la receta: temperatura 1.1 para TODAS (preset Y clon), y
+     * un instruct vívido en inglés SOLO en las celdas EXPR/COMBINE (las celdas STEER validadas NO usan instruct:
+     * el vector de steer lleva la emoción). instruct y temperatura se CONSUMEN antes del enrutador tardío, así que se fijan
+     * aquí. -I / -T del usuario siempre los reemplazan. Solo emociones enrutadas del 1.7B. */
     /* INLINE paralinguistics (shipped 2026-07-01): rewrite [laugh]/[sigh] → onomatopoeia IN the text so the
      * event renders in the voice's own timbre in ONE generation (no "splice" span). Done BEFORE the emotion
      * router / compose / seed so the tags become plain text and the whole sentence is one --emotion take.
@@ -1590,11 +1582,11 @@ int main(int argc, char **argv) {
         }
         ctx->voice_design = 1;
     }
-    /* ── --emotion on the 0.6B: the emotion rides on the VOICE ──────────────────────────────
-     * The small model has no steerable emotion subspace (steer/expr/COMBINE all fail — see
-     * docs/emotion-06b-recipe.md), but it clones very well. So --emotion here resolves an
-     * emotional voice asset built once from emotional audio of that same voice, and loads it
-     * through the normal clone path. Presets and clones both work. */
+    /* ── --emotion en el 0.6B: la emoción viaja en la VOZ ──────────────────────────────
+     * El modelo pequeño no tiene un subespacio de emoción dirigible (steer/expr/COMBINE fallan
+     * todos), pero clona muy bien. Por eso --emotion resuelve aquí un asset de voz
+     * emocional construido una vez a partir de audio emocional de esa misma voz, y lo carga
+     * por la ruta normal de clonado. Funcionan tanto presets como clones. */
     static char emo06b_path[1024];
     const char *emo06b_dir_tok = NULL;   /* set when we fall back to the generic direction */
     if (emotion_spec && ctx->config.hidden_size < 2048 && !compose_spec) {
@@ -1638,7 +1630,7 @@ int main(int argc, char **argv) {
             } else {
                 if (dp) fclose(dp);
                 fprintf(stderr, "Error: no '%s' voice asset for '%s' on the 0.6B.\n", tok, key);
-                fprintf(stderr, "  On the small model the emotion rides on the VOICE (docs/emotion-06b-recipe.md).\n");
+                fprintf(stderr, "  On the small model the emotion rides on the VOICE.\n");
                 fprintf(stderr, "  Build this one cell by hand:\n");
                 fprintf(stderr, "    ./qwen_tts -d qwen3-tts-1.7b -s %s -l <LANG> --emotion %s \\\n", key, emotion_spec);
                 fprintf(stderr, "        --text \"<~25 s of text>\" -o donor.wav\n");
@@ -1655,12 +1647,12 @@ int main(int argc, char **argv) {
         emotion_spec = NULL;   /* consumed — do not fall through to the 1.7B steer router */
     }
 
-    /* --emo-ref: EMOTION BY EXAMPLE. Independent of voice cloning — it only contributes the
-     * reference's codec frames as the ICL prosody anchor, so it composes with a preset speaker
-     * (-s ryan) on CustomVoice AND with a loaded clone. This is the emotion lever for the 0.6B,
-     * where --emotion is a no-op (no steerable emotion subspace); it works because the speech
-     * tokenizer is bit-identical across model sizes, so codec frames mean the same thing
-     * everywhere. See plan_06b_emo.md §E1. */
+    /* --emo-ref: EMOCIÓN POR EJEMPLO. Independiente del clonado de voz: solo aporta las
+     * tramas de códec de la referencia como ancla de prosodia ICL, de modo que se combina con un hablante preset
+     * (-s ryan) en CustomVoice Y con un clon cargado. Es la palanca de emoción del 0.6B,
+     * que no tiene un subespacio de emoción dirigible; funciona porque el tokenizador de voz
+     * es idéntico bit a bit entre tamaños de modelo, así que las tramas de códec significan lo mismo
+     * en todas partes. */
     if (emo_ref) {
         if (!emo_ref_text) {
             fprintf(stderr, "Error: --emo-ref requires --emo-ref-text (the reference's transcript)\n");
@@ -1910,8 +1902,8 @@ int main(int argc, char **argv) {
                                 ctx->text_proj_fc1_bias = fc1_b;
                                 ctx->text_proj_fc2_bf16 = fc2;
                                 ctx->text_proj_fc2_bias = fc2_b;
-                                /* leaks-audit #3: these malloc'd overrides replace mmap ptrs → unload must free them
-                                 * (the fail-path `else` below frees them only when NOT assigned → no double-free). */
+                                /* estos overrides reservados con malloc reemplazan punteros mmap, así que unload debe liberarlos
+                                 * (el `else` de fallo de abajo solo los libera si NO se asignaron, sin doble liberación). */
                                 qwen_track_override(ctx, fc1);  qwen_track_override(ctx, fc1_b);
                                 qwen_track_override(ctx, fc2);  qwen_track_override(ctx, fc2_b);
                                 /* Override codec_embedding: need owned copy since original is mmap'd */
@@ -1923,7 +1915,7 @@ int main(int argc, char **argv) {
                                     /* Override codebook entries 0-2047 with source model's */
                                     int copy_entries = cv < full_codec_vocab ? cv : full_codec_vocab;
                                     memcpy(ce_full, ce, (size_t)copy_entries * h * sizeof(uint16_t));
-                                    ctx->codec_embedding_bf16 = ce_full; qwen_track_override(ctx, ce_full);  /* leaks-audit #3 */
+                                    ctx->codec_embedding_bf16 = ce_full; qwen_track_override(ctx, ce_full);  /* unload lo libera */
                                 }
                                 free(ce);
                                 /* Recompute tts_pad/bos/eos with new text_projection
@@ -2212,7 +2204,7 @@ int main(int argc, char **argv) {
                                                 result[i] = main_f32_to_bf16(vc + a * (vcl - vc));
                                             }
                                         }
-                                        *target_ptr = result; qwen_track_override(ctx, result);  /* leaks-audit #3 */
+                                        *target_ptr = result; qwen_track_override(ctx, result);  /* unload lo libera */
                                         loaded++;
                                         wfull_bytes += compressed_size;
                                     } else {
@@ -2234,7 +2226,7 @@ int main(int argc, char **argv) {
                                     /* WFULL: raw data, just read and replace */
                                     void *buf = malloc(compressed_size);
                                     if (buf && fread(buf, 1, compressed_size, vf) == compressed_size) {
-                                        *target_ptr = buf; qwen_track_override(ctx, buf);  /* leaks-audit #3 */
+                                        *target_ptr = buf; qwen_track_override(ctx, buf);  /* unload lo libera */
                                         loaded++;
                                         wfull_bytes += compressed_size;
                                     } else {
@@ -2721,21 +2713,20 @@ int main(int argc, char **argv) {
         return 0;
     }
 
-    /* --emotion AUTO-ROUTER: on 1.7B, --emotion <sad|joy|anger|fear|disgust|surprise> applies the
-     * ear-validated per-(voice×emotion) recipe CELL (plan §8.3) — NOT a blanket combine. Each cell's
-     * mode (EXPR-only / STEER-only / COMBINE) is chosen by use_expr/use_steer; adding expr to a STEER
-     * cell softens the emotion (galatea anger → "sad"). Runs here (voice+lang+ctx known). Manual
-     * --expr/--ml-steer override; instruct+temp were defaulted earlier. Also runs when compose mode was
-     * auto-entered from inline [tags] in --text (compose_from_text) so `--emotion` + e.g. [laugh]/[sigh]
-     * still emotes the spoken spans — the per-span compose loop preserves this global steer/expr. */
+    /* ENRUTADOR AUTOMÁTICO de --emotion: en 1.7B, --emotion <sad|joy|anger|fear|disgust|surprise> aplica la
+     * celda de receta validada de oído — NO una combinación indiscriminada. El modo de cada celda
+     * (solo EXPR / solo STEER / COMBINE) lo elige use_expr/use_steer; añadir expr a una celda STEER
+     * suaviza la emoción. Se ejecuta aquí (ya se conocen voz, idioma y ctx). --expr/--ml-steer
+     * manuales lo reemplazan; instruct y temperatura se fijaron antes. También se ejecuta cuando el modo compose se
+     * activó solo a partir de [tags] en línea de --text (compose_from_text), de modo que `--emotion` + p. ej. [laugh]/[sigh]
+     * sigue dando emoción a los tramos hablados: el bucle compose por tramo conserva este steer/expr global. */
     if (emotion_spec && (!compose_spec || compose_from_text) && ctx->config.hidden_size >= 2048) {
         const char *tok = emotion_tok(emotion_spec);
         if (tok) {
             char vkbuf[64];
             const char *voice_key = emotion_voice_key(ctx->voice_clone, load_voice, speaker_name,
                                                       vkbuf, sizeof(vkbuf));
-            /* THE recipe — per-language policy (DE/FR/ZH/JA/KO/RU/ES) or per-(voice×emotion) for IT/EN.
-             * docs/emotion-THE-recipe.md is the aligned single source of truth. */
+            /* La receta: resolve_emotion_recipe es la única fuente de verdad. */
             emo_cell_t cell; float rtemp;
             resolve_emotion_recipe(language, voice_key, ctx->voice_clone, tok, &cell, &rtemp);
             /* PARA+EMO: when a paralinguistic [tag] is active, force COMBINE even on a preset STEER cell —
