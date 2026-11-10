@@ -142,6 +142,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 ### Cambiado
 
 - El residente TTS selecciona por defecto cuantización mixta con cuatro hilos y admite `AVI_TTS_PRECISION=bf16` como alternativa al crear el motor. Los valores inválidos se rechazan y los ajustes del residente no modifican el entorno del clonado. La comparación auditiva y la validación integral de la adopción siguen pendientes; no se ha publicado ni desplegado el cambio.
+- El motor TTS sintetiza un 20 % más rápido en CLI con 4 hilos y un 23 % más rápido en el daemon (RTF mediano de 1,55 a 1,24 y de 1,60 a 1,235 en el texto de referencia de 18 s, medidos de forma alternada en un Ryzen 7 5825U), con unos 100 MB más de memoria y sin pérdida de calidad. El decodificador acústico reutiliza un espacio de trabajo persistente, hace la convolución transpuesta con un solo GEMM y la convolución causal sin im2col.
+- En Windows el motor se restringe al arrancar a un hilo lógico por núcleo físico, con la máscara derivada de la topología, y lo registra en su log. Así desaparece el estado lento intermitente en que dos hilos pesados compartían núcleo SMT. Con varios grupos de procesadores no se fija ninguna máscara.
+
+### Eliminado
+
+- **Incompatible (motor TTS):** desaparecen los backends GPU experimentales CUDA y Metal del motor, con los targets `make cuda` y `make metal`, los flags `--gpu-selftest`, `--gpu-selftest-talker`, `--gpu-batch-bench` y `--backend` y los scripts de benchmark de Apple Silicon. El motor solo se compila con `make blas`.
+- **Incompatible (motor TTS):** el motor deja de admitir compilaciones sin BLAS; desaparecen las convoluciones y multiplicaciones escalares alternativas y los defines `USE_BLAS` y `USE_OPENBLAS`.
+- **Incompatible (motor TTS):** desaparece la variable de entorno `QWEN_SD_WINDOWED` y el streaming por ventanas del decodificador; solo queda el streaming exacto.
 
 ## [0.44.0] — 2026-11-04
 

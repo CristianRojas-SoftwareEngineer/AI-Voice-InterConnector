@@ -16,6 +16,7 @@
    - [4.1. Rendimiento y latencia](#41-rendimiento-y-latencia)
    - [4.2. Calidad acústica e inteligibilidad](#42-calidad-acústica-e-inteligibilidad)
    - [4.3. Evaluación subjetiva de escucha ciega](#43-evaluación-subjetiva-de-escucha-ciega)
+   - [4.4. Optimización del decodificador acústico y afinidad](#44-optimización-del-decodificador-acústico-y-afinidad)
 5. [Arquitectura de integración en el producto](#5-arquitectura-de-integración-en-el-producto)
    - [5.1. Perfil predeterminado y reversibilidad (`AVI_TTS_PRECISION`)](#51-perfil-predeterminado-y-reversibilidad-avi_tts_precision)
    - [5.2. Aislamiento del entorno del residente](#52-aislamiento-del-entorno-del-residente)
@@ -45,6 +46,8 @@ Tras una campaña exhaustiva de medición y evaluación de calidad, se adoptó f
 
 *\*Nota: El perfil con 6 hilos se evaluó como pico de hardware en Ryzen 7, pero se adoptaron 4 hilos por diseño de compatibilidad universal.*
 
+Sobre ese perfil se aplicaron después cuatro optimizaciones del motor que no cambian el modelo: un espacio de trabajo persistente del decodificador acústico, la convolución transpuesta con un solo GEMM, la convolución causal sin im2col y la afinidad de un hilo lógico por núcleo físico en Windows. Medidas de forma alternada contra el motor anterior en el mismo equipo, reducen el RTF un **20 %** en CLI con 4 hilos y un **23 %** en el daemon, con **~100 MB** más de memoria y sin pérdida de calidad (detalle en la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad)).
+
 ---
 
 ## 2. Diagnóstico experimental y descarte de alternativas
@@ -59,6 +62,12 @@ Durante la campaña se evaluaron de forma aislada múltiples factores sobre el m
 | **Pool de hilos Win32 con espera activa** | **DESCARTADO** | Razón de tiempo 0,979; no alcanza el umbral de mejora y eleva la latencia mediana de 1,69 s a 2,03 s en 4 hilos. |
 | **Proyecciones QKV INT8 fusionadas** | **DESCARTADO** | Aceleración despreciable (0,996) e inconsistencias numéricas dependientes del número de hilos. |
 | **Prefill B=2 del Code Predictor / `matmat_bf16`** | **DESCARTADO** | Impacto neutro o negativo en procesadores sin extensiones AVX-512 / VNNI. |
+| **Espacio de trabajo persistente del decodificador** | **ADOPTADA** | Evita cientos de reservas de ≥ 1 MiB por frase, cuyas páginas nuevas Windows pone a cero en cada bloque; audio bit a bit idéntico. |
+| **Convolución transpuesta con un solo GEMM** | **ADOPTADA** | Multiplica sobre la vista contigua `[entrada][salida·k]` de los pesos y dispersa en orden de k: sin reordenar pesos por llamada ni RAM adicional. |
+| **Convolución causal sin im2col** | **ADOPTADA** | k GEMM acumulados sobre la entrada desplazada, con pesos `W_k` reordenados al cargar (~116 MB compartidos entre workers); desaparece la tabla im2col y su troceo. |
+| **Afinidad de un hilo lógico por núcleo físico (Windows)** | **ADOPTADA** | Elimina el estado lento intermitente en que dos hilos pesados comparten núcleo SMT; aplicada desde el motor, la reciben CLI y daemon. |
+| **Convolución transpuesta con pesos reordenados en caché** | **DESCARTADO** | ~750 ms por frase frente a ~1.620 ms del original, pero más lenta que el GEMM único (~590 ms) y con ~107 MB de RAM adicional. |
+| **Hilos dedicados a la activación Snake** | **DESCARTADO** | Sin ganancia con 4 hilos (RTF 1,06/1,06/1,04 frente a 1,04/1,06/1,04 sin ellos) y resultado mixto con 6. |
 
 ---
 
@@ -95,6 +104,24 @@ En la prueba formal de preferencia forzada por pares (24 ensayos pareados con co
 - **BF16 vs. `--quant-mixed`:** 5 preferencias para BF16, 5 para cuantización mixta y 2 empates.
 - **Control cruzado (BF16 semilla 4 vs. BF16 semilla 7):** 4 preferencias para semilla 4, 6 para semilla 7 y 2 empates.
 - **Veredicto estadístico:** Prueba de Fisher unilateral con $p = 0,50$. No se detectó ninguna degradación perceptible atribuible a la cuantización mixta.
+
+### 4.4. Optimización del decodificador acústico y afinidad
+Medición del 10 de noviembre de 2026 en el hardware de referencia (corriente, plan Equilibrado), con voz clonada, `--quant-mixed`, semilla 42 y sin afinidad externa. Cada configuración se ejecutó alternando el motor anterior y el optimizado para que la carga de fondo del equipo, que varía entre ejecuciones, afecte por igual a ambos. Los valores absolutos dependen de esa carga; la comparación válida es la relativa.
+
+| Escenario | Motor anterior (mediana) | Motor optimizado (mediana) | Cambio |
+|---|---|---|---|
+| CLI, texto de 18 s, `-j 4` (3 ejecuciones) | 1,55 (1,54–1,69) | **1,24** (1,21–1,36) | −20 % |
+| CLI, texto de 18 s, `-j 6` (3 ejecuciones) | 1,42 (1,42–1,45) | **1,19** (1,17–1,36) | −16 % |
+| Daemon, frase corta de ~3 s (4 peticiones) | 1,72 (1,66–1,78) | **1,32** (1,25–1,38) | −23 % |
+| Daemon, frase media de ~6 s (4 peticiones) | 1,61 (1,55–1,65) | **1,20** (1,17–1,26) | −25 % |
+| Daemon, frase larga de 18 s (4 peticiones) | 1,60 (1,53–1,62) | **1,235** (1,23–1,27) | −23 % |
+| Pico de memoria del daemon tras 4 peticiones | 2.810–2.813 MB | 2.911–2.913 MB | +100 MB |
+
+- **Memoria:** el aumento son los pesos `W_k` de la convolución sin im2col (~116 MB, compartidos entre workers) más el espacio de trabajo persistente, menos las reservas por bloque que desaparecen.
+- **Estabilidad:** el log de cada ejecución registra la máscara `0x5555`, y en ninguna ejecución del motor optimizado reapareció el salto bimodal característico del estado SMT. Con la carga de fondo de esta medición, varias ejecuciones superaron igualmente RTF 1,3 (máximo 1,38 en el daemon), así que el criterio «sin ejecuciones ≥ 1,3» no se pudo verificar en estas condiciones.
+- **Objetivo de tiempo real:** con la carga de fondo de esta medición, el motor anterior quedó en 1,55 (frente a 1,37–1,40 en mediciones previas con el equipo más libre), y el optimizado no alcanza el objetivo de RTF ≤ 1,05 con 4 hilos. En la validación previa sobre una copia instrumentada del motor, con el equipo más libre, el texto largo pasó de 1,37–1,40 a 1,03–1,04 con `-j 4`; la mejora relativa medida aquí (−20 % a −25 %) es coherente con esa reducción.
+
+**Procedimiento de validación de calidad.** Los cambios que no alteran el cálculo (eliminación de código muerto, red unificada, espacio de trabajo, afinidad) se aceptaron con md5 idéntico del WAV frente al paso anterior, siempre con el mismo número de hilos, porque el md5 depende de `-j`. El corpus fue de 15 frases (10 en español y 5 en inglés) más el texto largo, en streaming, y la decodificación completa de un volcado fijo de códigos (`QWEN_DUMP_CODES`) con `qwen_tts_decoder_tool`. Los cambios que reordenan sumas en coma flotante (las dos convoluciones) se aceptaron con SNR ≥ 90 dB, diferencia ≤ 2 LSB, WER sin cambios (faster-whisper large-v3-turbo) y similitud WavLM-SV ≥ 0,999 sobre el mismo corpus. Resultado: SNR de 96,6 a 98,6 dB, 1 LSB como máximo, WER de 3,57 % en ambos motores, similitud WavLM de 1,00000 en todas las frases y salida determinista entre ejecuciones. Al unificar la red convolucional, la decodificación completa adoptó la LayerNorm de dos pasadas del streaming (SNR 100,9 dB, 1 LSB), para que el audio de producción conservara su md5.
 
 ---
 
@@ -134,6 +161,8 @@ Para proteger la inferencia de variables de entorno heredadas que pudieran corro
 La adopción de `--quant-mixed` representó una ganancia inmediata y gratuita de ~25–36 % de velocidad en CPU sin degradación acústica. Sin embargo, **establece el límite de lo que puede lograrse mediante cuantización de pesos y parámetros de servidor**:
 
 $$\text{RTF actual en producción: } \mathbf{\sim 1,38\times} \quad (\text{Sintetizar 1 s de audio toma } \sim 1,38\text{ s})$$
+
+Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restan otro 20–25 % sin tocar el modelo, pero no cambian el reparto del tiempo: el Code Predictor sigue siendo la parte dominante de cada fotograma.
 
 ### El cuello de botella estructural
 El análisis detallado de tiempos por fotograma reveló que el pipeline genera audio a 12,5 Hz (80 ms por fotograma). En cada fotograma:
