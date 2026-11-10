@@ -138,8 +138,8 @@ From `qwen_tts_load()` and CLI:
 - `qwen_tts_kernels.c`
   - ALL actual kernels live here (inline `#ifdef __ARM_NEON / __AVX2__ / else-scalar`),
     plus common math, threading (GCD, macOS-only), BLAS paths
-  - los bucles calientes **sí contienen AVX2** (`_mm256_fmadd_ps`, `__AVX512BF16__`/`_mm512_dpbf16_ps`) en `qwen_rms_norm` (AVX2 16-wide), `bf16_matvec_fused` (AVX2 2-row fused con FMA) y `qwen_dot_f32_*` (AVX2/FMA 4 accumulators), además de `rms/bf16-conv` y `matvec+attn` (ver `qwen_caps_report`).
-  - todas las multiplicaciones cuantizadas (int8 y q4_0: matvec, argmax, QKV y matmat) usan el mismo producto escalar entero en todas las plataformas: AVX2 `maddubs`, VNNI `dpbusd`, ARM SDOT (i8mm en el matmat) o un bucle escalar con acumulación int32. La activación se cuantiza con los cuantizadores únicos `quantize_act_int8_ref`, `quantize_act_int8` y `quantize_act_int8_cols`
+  - the hot loops **do contain AVX2** (`_mm256_fmadd_ps`, `__AVX512BF16__`/`_mm512_dpbf16_ps`) in `qwen_rms_norm` (AVX2 16-wide), `bf16_matvec_fused` (AVX2 2-row fused with FMA) and `qwen_dot_f32_*` (AVX2/FMA 4 accumulators), plus `rms/bf16-conv` and `matvec+attn` (see `qwen_caps_report`).
+  - every quantized multiplication (int8 and q4_0: matvec, argmax, QKV and matmat) uses the same integer dot product on every platform (see "Kernel/Optimization Rules").
 - `download_model.sh`
   - interactive small/large model downloader
 

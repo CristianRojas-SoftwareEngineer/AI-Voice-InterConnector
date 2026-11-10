@@ -30,9 +30,10 @@ else ifneq (,$(filter x86_64 amd64,$(UNAME_M)))
     ifeq ($(SIMD),scalar)
         ARCH_FLAGS =
     else ifeq ($(SIMD),avx512bf16)
-        # AVX-512 + VNNI + BF16 (native int8 dot + native bf16 dot VDPBF16PS).
-        # Zen4/Zen5 (EPYC 9xx4/9xx5, Ryzen 7xxx+), Cooper Lake, Sapphire Rapids.
-        # Check `--caps` runtime line for avx512bf16 BEFORE using this build.
+        # AVX-512 + VNNI + BF16 (producto escalar int8 nativo y producto bf16 nativo
+        # VDPBF16PS). Zen4/Zen5 (EPYC 9xx4/9xx5, Ryzen 7xxx+), Cooper Lake, Sapphire
+        # Rapids. Comprueba la línea de ejecución de `--caps` para avx512bf16 ANTES de
+        # usar esta compilación.
         # -mavx512dq: gcc exige que el objetivo coincida con el de los intrinsics
         # always_inline de DQ (la compilación cruzada con clang no lo exige). Toda CPU
         # de la era VNNI tiene DQ.
@@ -480,9 +481,9 @@ test-errors: $(TARGET)
 test-emotion: $(TARGET)
 	@echo "=== Expressivity / emotion (STEER) smoke test ==="
 	@mkdir -p $(TEST_DIR)
-	@# Emotion is a 1.7B qlsteer-STEER feature (the legacy .vec mood-palette manifest was
-	@# retired 2026-07-08); the recipe weight (w12) is authoritative. 0.6B emotion is
-	@# parked-neutral. Source of truth: resolve_emotion_recipe en main.c.
+	@# La emoción es una función qlsteer-STEER del modelo 1.7B; el peso de la receta (w12)
+	@# es el que manda, y en el 0.6B la emoción queda neutra. La fuente de verdad es
+	@# resolve_emotion_recipe en main.c.
 	@if [ -d $(MODEL_LARGE) ]; then \
 	   ./$(TARGET) -d $(MODEL_LARGE) -j1 -T 0 --seed 42 -s ryan -l Italian --emotion joy \
 	     --text "La riunione inizia domani mattina." -o $(TEST_DIR)/em_joy.wav 2>$(TEST_DIR)/em_joy.log; \
@@ -560,21 +561,19 @@ matmat-bench: $(TARGET)
 	@echo "=== (single thread = compute-bound reference) ==="
 	@./$(TARGET) --matmat-bench -j 1
 
-# Compile-check the newer-ISA kernel paths that are #ifdef'd OUT on M1 (so their
-# syntax is verified NOW, before any M2+/AVX-512 hardware). Forces the -march so the
-# guarded BFMMLA/SMMLA/VNNI/BF16 paths actually compile; does NOT run (the host may
-# not execute them). The workflow guard for "develop on M1, deploy elsewhere".
-# Solo comprueba la sintaxis: rápido, sin objetos.
-# Hereda las definiciones e includes de la plataforma (OpenBLAS, shims MinGW,
-# _GNU_SOURCE) y sustituye solo las banderas de ISA por las de cada comprobación.
+# Compila las rutas de kernels de ISA que el host no activa (BFMMLA/SMMLA/VNNI/BF16 y
+# las ARM desde x86) forzando su -march, para detectar errores de sintaxis sin
+# hardware que las ejecute; no ejecuta nada. Solo comprueba la sintaxis: rápido, sin
+# objetos. ISACHK hereda las definiciones e includes de la plataforma (OpenBLAS, shims
+# MinGW, _GNU_SOURCE) y sustituye solo las banderas de ISA por las de cada comprobación.
 ISACHK = $(filter-out $(ARCH_FLAGS),$(CFLAGS_BASE)) -fsyntax-only
 check-isa:
 	@echo "=== Compile-check newer-ISA paths (syntax only, not run) ==="
 ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
 	@$(CC) $(ISACHK) -march=armv8.2-a+dotprod -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c \
-	  && echo "  arm armv8.2-a +dotprod    : OK (línea base ARM64: M1, Graviton2)" || echo "  arm armv8.2-a +dotprod    : FAIL"
+	  && echo "  arm armv8.2-a +dotprod    : OK (ARM64 baseline: M1, Graviton2)" || echo "  arm armv8.2-a +dotprod    : FAIL"
 	@! $(CC) $(ISACHK) -march=armv8-a -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c 2>/dev/null \
-	  && echo "  arm armv8-a sin dotprod  : rechazado con #error (OK)" || echo "  arm armv8-a sin dotprod  : FAIL (debe rechazarse)"
+	  && echo "  arm armv8-a no dotprod   : rejected by #error (OK)" || echo "  arm armv8-a no dotprod   : FAIL (must be rejected)"
 	@$(CC) $(ISACHK) -march=armv8.6-a+bf16+i8mm -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c \
 	  && echo "  arm armv8.6-a +bf16 +i8mm : OK (M2/M3/M4, Graviton3+)" || echo "  arm armv8.6-a +bf16 +i8mm : FAIL"
 	@$(CC) $(ISACHK) -march=armv9-a+sme2 -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c 2>/dev/null \
@@ -596,9 +595,9 @@ else
 	  && echo "  x86 sapphirerapids (AMX) : OK" || echo "  x86 sapphirerapids (AMX) : (toolchain lacks AMX — skipped)"
 	@# Rutas ARM (SDOT e i8mm) compiladas con clang cruzado desde el host x86.
 	@clang $(ISACHK_ARM_X) $(ISACHK) -march=armv8.2-a+dotprod qwen_tts_kernels.c 2>/dev/null \
-	  && echo "  arm armv8.2-a +dotprod (x-comp): OK" || echo "  arm armv8.2-a +dotprod (x-comp): (clang cruzado no disponible — omitido)"
+	  && echo "  arm armv8.2-a +dotprod (x-comp): OK" || echo "  arm armv8.2-a +dotprod (x-comp): (clang cross lacks target — skipped)"
 	@clang $(ISACHK_ARM_X) $(ISACHK) -march=armv8.6-a+bf16+i8mm qwen_tts_kernels.c 2>/dev/null \
-	  && echo "  arm armv8.6-a +bf16 +i8mm (x-comp): OK" || echo "  arm armv8.6-a +bf16 +i8mm (x-comp): (clang cruzado no disponible — omitido)"
+	  && echo "  arm armv8.6-a +bf16 +i8mm (x-comp): OK" || echo "  arm armv8.6-a +bf16 +i8mm (x-comp): (clang cross lacks target — skipped)"
 endif
 	@echo "  (la ruta escalar se verifica con --self-test en una compilación SIMD=scalar)"
 
@@ -693,12 +692,12 @@ test-caps: $(TARGET)
 	@echo ""
 
 # ── Kernel numeric self-test (matvec correctness vs f32 reference) ──
-# Cross-ISA correctness gate for the SIMD matvecs (bf16/int8/argmax) that does NOT depend
-# on a full-pipeline golden, so it's immune to the greedy-decode trajectory fork that makes
-# end-to-end audio mel-corr a FALSE ALARM cross-ISA.
-# Ejecuta una sola pasada sobre la ruta compilada para la ISA de la compilación. On the
-# AVX-512 VPS this is THE proof the VNNI int8 dot + __m512 bf16 matvec are correct.
-# Needs no model — fast, run anywhere.
+# Prueba de corrección entre ISA de las multiplicaciones SIMD (bf16, int8, argmax, q4_0 y
+# sus matmat). No depende de un audio de referencia completo, así que no le afecta la
+# bifurcación de trayectoria de la decodificación voraz, que convierte la comparación de
+# audio entre ISA en una falsa alarma. Ejecuta una sola pasada sobre la ruta compilada
+# para la ISA de la compilación; en una máquina AVX-512 es la prueba de que el producto
+# int8 VNNI y el matvec bf16 de __m512 son correctos. No necesita modelo: rápida.
 test-selftest: $(TARGET)
 	@echo "=== Kernel self-test ==="
 	@./$(TARGET) --self-test || { echo "FAIL: kernel self-test"; exit 1; }

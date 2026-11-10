@@ -1,16 +1,16 @@
 /*
- * qwen_tts_thread.c - Cross-OS parallel-for (PLAN 21.2)
+ * qwen_tts_thread.c - bucle paralelo multiplataforma
  *
- * Backend selection:
- *   __APPLE__ + __BLOCKS__         -> GCD dispatch_apply
- *   _WIN32 (and not QWEN_USE_PTHREADS) -> Win32 threads + condition variables
- *   else                           -> pthread persistent pool (Linux, WSL, BSD)
+ * Selección de backend:
+ *   __APPLE__ + __BLOCKS__              -> GCD dispatch_apply
+ *   _WIN32 (y sin QWEN_USE_PTHREADS)    -> hilos Win32 + variables de condición
+ *   en otro caso                        -> pool persistente pthread (Linux, WSL, BSD)
  *
  * Los pools Win32 y pthread esperan activamente antes de dormir en la variable
  * de condición; el presupuesto de iteraciones se ajusta con QWEN_POOL_SPIN.
  *
- * To exercise the pthread path on macOS for testing, build with
- * -DQWEN_FORCE_PTHREAD (overrides the GCD backend).
+ * Para probar la ruta pthread en macOS, compila con -DQWEN_FORCE_PTHREAD (sustituye
+ * al backend GCD).
  */
 
 #include "qwen_tts_thread.h"

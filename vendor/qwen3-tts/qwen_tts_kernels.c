@@ -125,8 +125,8 @@ void qwen_caps_report(void *out) {
 #else
     fprintf(f, "  arch:             (other)\n");
 #endif
-    /* Hot path: bf16/int8/q4 matvecs + attention (~90%% of decode). Both NEON and
-     * AVX2 son kernels de 2 filas con varios acumuladores y prefetch. */
+    /* Ruta caliente: matvecs bf16/int8/q4 y atención (~90 % de la decodificación).
+     * NEON y AVX2 son kernels de 2 filas con varios acumuladores y prefetch. */
 #ifdef __ARM_NEON
     fprintf(f, "  matvec + attn:    NEON (2-row fused)\n");
 #elif defined(__AVX512F__)
@@ -141,14 +141,14 @@ void qwen_caps_report(void *out) {
 #elif defined(__AVX512VNNI__)
     fprintf(f, "  int8 dot:         VNNI _mm512_dpbusd_epi32 (native)\n");
 #elif defined(__AVX2__)
-    fprintf(f, "  int8 dot:         AVX2 _mm256_maddubs_epi16 (entero, sin VNNI)\n");
+    fprintf(f, "  int8 dot:         AVX2 _mm256_maddubs_epi16 (integer, no VNNI)\n");
 #else
-    fprintf(f, "  int8 dot:         escalar (bucle entero con acumulación int32)\n");
+    fprintf(f, "  int8 dot:         scalar (integer loop, int32 accumulation)\n");
 #endif
 #if defined(__AVX512BF16__)
     fprintf(f, "  bf16 dot:         VDPBF16PS _mm512_dpbf16_ps (native; QWEN_NO_BF16DOT=1 disables)\n");
 #elif defined(__x86_64__)
-    fprintf(f, "  bf16 dot:         conversión bf16->f32 + FMA (sin AVX-512-BF16)\n");
+    fprintf(f, "  bf16 dot:         bf16->f32 conversion + FMA (no AVX-512-BF16)\n");
 #endif
 #if defined(__AVX512F__)
     fprintf(f, "  rms/bf16-conv:    AVX-512\n");
@@ -210,9 +210,9 @@ void qwen_caps_report(void *out) {
             __builtin_cpu_supports("avx512bf16") ? " avx512bf16"   : "",
             amx_str);
     fprintf(f, "  lever (x86):      %s\n",
-            __builtin_cpu_supports("avx512vnni") ? "producto escalar entero VNNI dpbusd (nativo) para int8 y q4_0"
-          : __builtin_cpu_supports("avx2")       ? "producto escalar entero AVX2 maddubs (sin VNNI) para int8 y q4_0"
-          :                                        "sin AVX2: producto escalar entero escalar; recompila con SIMD=scalar");
+            __builtin_cpu_supports("avx512vnni") ? "VNNI dpbusd integer dot (native) for int8 and q4_0"
+          : __builtin_cpu_supports("avx2")       ? "AVX2 maddubs integer dot (no VNNI) for int8 and q4_0"
+          :                                        "no AVX2: scalar integer dot; rebuild SIMD=scalar");
 #if defined(__AVX2__)
     if (!__builtin_cpu_supports("avx2"))
         fprintf(f, "  WARNING: built with AVX2 but this CPU lacks it -> will SIGILL. "
@@ -1237,16 +1237,17 @@ static void bf16_mm_task(size_t tid, size_t nt, void *vc) {
     int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
     bf16_matmat_slice(c->Y, c->W, c->X, r0, r1, c->cols, c->B);
 }
-/* ── ARM MMLA batched matmat twins (rental-prep, 2026-07-11) ──────────────────
- * BFMMLA (bf16) + SMMLA (i8mm): the native 2x2-tile matrix-multiply units on
- * M2+/M3/M4, Neoverse V1/V2, Graviton3+. Compile-time guarded — on the M1 these
- * guards are false and the scalar/NEON twins below stay the path; `make
- * check-isa` (-march=armv8.6-a+bf16+i8mm) keeps them compiling from the M1.
- * Numerics: BFMMLA computes bf16×bf16→f32 with the ACTIVATION truncated to bf16
- * (same truncation as the KV cache) → vs the f32-activation twin expect ~1e-3
- * L2 (self-test threshold relaxed to 1e-2 under this guard). SMMLA reuses the
- * per-column int8 activation quant → integer-exact per column vs SDOT.
- * Kill-switch de BFMMLA para A/B en la máquina: QWEN_NO_BFMMLA=1. */
+/* ── matmat agrupado con las unidades MMLA de ARM ──────────────────────────────
+ * BFMMLA (bf16) y SMMLA (i8mm): las unidades nativas de multiplicación de matrices
+ * en teselas de 2x2 de M2+/M3/M4, Neoverse V1/V2 y Graviton3+. Están protegidas en
+ * compilación: en M1 las guardas son falsas y la ruta es la escalar/NEON de abajo;
+ * `make check-isa` (-march=armv8.6-a+bf16+i8mm) las mantiene compilando.
+ * Numérica: BFMMLA calcula bf16×bf16→f32 con la ACTIVACIÓN truncada a bf16 (el mismo
+ * truncado que la caché KV), así que frente a la variante con activación f32 cabe
+ * esperar ~1e-3 de L2 (el autotest relaja el umbral a 1e-2 bajo esta guarda). SMMLA
+ * reutiliza la cuantización int8 por columna de la activación, de modo que por
+ * columna es exacta en enteros frente a SDOT.
+ * BFMMLA se desactiva para comparar en la máquina con QWEN_NO_BFMMLA=1. */
 #if defined(__ARM_FEATURE_BF16_VECTOR_ARITHMETIC)
 static inline float qbf16_to_f32(uint16_t b) {
     uint32_t u = (uint32_t)b << 16; float f; memcpy(&f, &u, 4); return f;
@@ -1587,11 +1588,12 @@ static void int8_smmla_task(size_t tid, size_t nt, void *vc) {
 #endif /* __ARM_FEATURE_MATMUL_INT8 && !__APPLE__ */
 
 #if defined(__AVX512VNNI__)
-/* q4 VNNI batched matmat (mirrors int8_matmat_vnni_slice + the C7-v2 unsigned-nibble
- * trick): weight-stationary — unpack each 32-nibble W block ONCE to u8 value order,
- * dpbusd against all B pre-quantized activation columns. q4 per-block scale + per-column
- * act scale; corr[b][bl] = −8·ΣqXt[b] over block bl (precomputed once, shared across rows).
- * Los bloques se acumulan por pares, `sum += s0*d0 + s1*d1`, igual que el matvec VNNI v3
+/* matmat q4 agrupado con VNNI (como int8_matmat_vnni_slice, con los nibbles sin signo):
+ * los pesos permanecen fijos; cada bloque de 32 nibbles de W se desempaqueta UNA vez a
+ * u8 en orden de valor y se multiplica con dpbusd contra las B columnas de activación
+ * ya cuantizadas. Escala q4 por bloque y escala de activación por columna;
+ * corr[b][bl] = −8·ΣqXt[b] sobre el bloque bl (precalculado una vez y compartido entre
+ * filas). Los bloques se acumulan por pares, `sum += s0*d0 + s1*d1`, igual que el matvec VNNI v3
  * (el predeterminado), con un bloque suelto al final si el número de bloques es impar. */
 static void q4_matmat_vnni_slice(float *Y, const q4_0_block_t *W, const int8_t *qXt,
                                  const float *sx, const int *corr,
@@ -1652,10 +1654,10 @@ static void q4_vmm_task(size_t tid, size_t nt, void *vc) {
 }
 #endif /* __AVX512VNNI__ */
 #if defined(__ARM_FEATURE_MATMUL_INT8)
-/* q4×q8 SMMLA GEMM slice: nibbles decoded to VALUE order via the same vzip the
- * SDOT matvec uses (kept as raw 0..15, the −8 offset folded in via the per-block
- * activation sums corr), then 2×2 vmmlaq_s32 tiles, per-block fp16 weight scale
- * applied at block granularity, per-column activation scale at the end.
+/* Trozo de GEMM q4×q8 con SMMLA: los nibbles se decodifican en orden de VALOR con el
+ * mismo vzip que el matvec SDOT (se dejan en 0..15 y el desplazamiento −8 se aplica con
+ * las sumas de activación por bloque, corr); después, teselas vmmlaq_s32 de 2×2, la
+ * escala fp16 del peso por bloque y, al final, la escala de activación por columna.
  * Las sumas enteras por bloque son exactas, pero la acumulación float es escalar por
  * bloque y no por carril como en el matvec SDOT: coincide con B matvec dentro del
  * redondeo float (del orden de 1e-7 relativo), no bit a bit. */
