@@ -924,6 +924,51 @@ static void *watch_stdin_thread(void *arg) {
     return NULL;
 }
 
+#if defined(_WIN32)
+/* Restringe el proceso a un hilo lógico por núcleo físico. Con SMT el planificador
+ * de Windows coloca a veces dos hilos pesados del motor en el mismo núcleo y el RTF
+ * salta de ~1,1 a 1,3-1,5 sin control; con un solo hilo lógico por núcleo ese
+ * estado desaparece sin cambiar el audio. La máscara sale de la topología real (el
+ * bit lógico más bajo de cada núcleo) y se interseca con la afinidad heredada. Con
+ * varios grupos de procesadores la máscara de proceso no los abarca, así que no se
+ * fija nada. Se aplica antes de crear los pools de hilos; SetProcessAffinityMask
+ * alcanza también a los hilos ya creados por OpenBLAS. */
+static void pin_one_thread_per_core(void) {
+    if (GetActiveProcessorGroupCount() > 1) {
+        fprintf(stderr, "Afinidad: varios grupos de procesadores; no se restringe a un hilo por núcleo\n");
+        return;
+    }
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    char *buf = (char *)malloc(len);
+    if (!buf) return;
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore,
+                                          (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &len)) {
+        free(buf);
+        return;
+    }
+    DWORD_PTR mask = 0;
+    int cores = 0;
+    for (DWORD off = 0; off < len;) {
+        PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)(buf + off);
+        KAFFINITY m = e->Processor.GroupMask[0].Mask;
+        if (e->Processor.GroupMask[0].Group == 0 && m) {
+            mask |= m & (~m + 1);
+            cores++;
+        }
+        off += e->Size;
+    }
+    free(buf);
+    DWORD_PTR proc_mask = 0, sys_mask = 0;
+    if (!GetProcessAffinityMask(GetCurrentProcess(), &proc_mask, &sys_mask)) return;
+    mask &= proc_mask;
+    if (!mask || mask == proc_mask) return;
+    if (SetProcessAffinityMask(GetCurrentProcess(), mask))
+        fprintf(stderr, "Afinidad: un hilo lógico por núcleo físico (%d núcleos, máscara 0x%llx)\n",
+                cores, (unsigned long long)mask);
+}
+#endif
+
 int main(int argc, char **argv) {
 #if defined(_WIN32)
     /* Inicializa winsock antes de cualquier llamada socket()/bind() del servidor.
@@ -935,6 +980,7 @@ int main(int argc, char **argv) {
     if (ws_res != 0 && ws_res != WSAEALREADY) {
         fprintf(stderr, "WSAStartup failed: %d (continuing)\n", ws_res);
     }
+    pin_one_thread_per_core();
 #endif
     const char *model_dir = NULL;
     const char *text = NULL;
