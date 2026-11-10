@@ -11,16 +11,18 @@
 
 1. [Resumen ejecutivo y estado de producción](#1-resumen-ejecutivo-y-estado-de-producción)
 2. [Diagnóstico experimental y descarte de alternativas](#2-diagnóstico-experimental-y-descarte-de-alternativas)
+   - [2.1. Reparto del tiempo del Code Predictor y techo de ancho de banda](#21-reparto-del-tiempo-del-code-predictor-y-techo-de-ancho-de-banda)
 3. [Metodología de medición y evaluación de calidad](#3-metodología-de-medición-y-evaluación-de-calidad)
 4. [Resultados empíricos consolidados](#4-resultados-empíricos-consolidados)
    - [4.1. Rendimiento y latencia](#41-rendimiento-y-latencia)
    - [4.2. Calidad acústica e inteligibilidad](#42-calidad-acústica-e-inteligibilidad)
    - [4.3. Evaluación subjetiva de escucha ciega](#43-evaluación-subjetiva-de-escucha-ciega)
    - [4.4. Optimización del decodificador acústico y afinidad](#44-optimización-del-decodificador-acústico-y-afinidad)
+   - [4.5. Producto escalar entero en los kernels cuantizados](#45-producto-escalar-entero-en-los-kernels-cuantizados)
 5. [Arquitectura de integración en el producto](#5-arquitectura-de-integración-en-el-producto)
    - [5.1. Perfil predeterminado y reversibilidad (`AVI_TTS_PRECISION`)](#51-perfil-predeterminado-y-reversibilidad-avi_tts_precision)
    - [5.2. Aislamiento del entorno del residente](#52-aislamiento-del-entorno-del-residente)
-6. [Límites de la optimización y puente hacia el Plan 002](#6-límites-de-la-optimización-y-puente-hacia-el-plan-002)
+6. [Límites de la optimización y margen restante](#6-límites-de-la-optimización-y-margen-restante)
 
 ---
 
@@ -46,7 +48,17 @@ Tras una campaña exhaustiva de medición y evaluación de calidad, se adoptó f
 
 *\*Nota: El perfil con 6 hilos se evaluó como pico de hardware en Ryzen 7, pero se adoptaron 4 hilos por diseño de compatibilidad universal.*
 
+Estado final con el producto escalar entero (`mixed -j 4`, CLI, texto largo en español, mediana de 3 ejecuciones alternadas contra el motor anterior):
+
+| Condición | RTF motor anterior | RTF motor final | Memoria máxima del daemon |
+|---|---|---|---|
+| Equipo libre | 0,93 | **0,76** | 2.912 MB (sin cambio) |
+| 4 procesos ocupando la CPU | 1,10 | **0,88** | — |
+| 2 hilos saturando el ancho de banda de memoria | 1,70 | **1,47** | — |
+
 Sobre ese perfil se aplicaron después cuatro optimizaciones del motor que no cambian el modelo: un espacio de trabajo persistente del decodificador acústico, la convolución transpuesta con un solo GEMM, la convolución causal sin im2col y la afinidad de un hilo lógico por núcleo físico en Windows. Medidas de forma alternada contra el motor anterior en el mismo equipo, llevan la síntesis por debajo de tiempo real con el equipo libre (RTF **0,93** en CLI con 4 hilos y **0,945** en el daemon con frases largas, frente a 1,04 y 1,065; −11 %). Con carga de fondo en el equipo, la reducción llega al **20–23 %** (de 1,55 a 1,24 en CLI). Cuestan **~100 MB** más de memoria y no pierden calidad (detalle en la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad)).
+
+Por último, todas las multiplicaciones de pesos cuantizados del motor (int8 del Code Predictor y q4_0 del Talker) pasaron a usar producto escalar entero en todas las arquitecturas. Medido de forma alternada contra el motor anterior en el mismo equipo (Ryzen 7 5825U, `-j 4`, voz clonada, texto largo en español), el RTF mediano baja de 0,93 a **0,76** con el equipo libre y de 1,10 a **0,88** con cuatro procesos ocupando la CPU, sin reentrenar el modelo y con la misma calidad medida (WER 3,55 % en ambos, similitud de voz media de 0,978). Con dos hilos saturando el ancho de banda de memoria el RTF baja de 1,70 a 1,47 y sigue por encima de 1, porque el Code Predictor queda limitado por memoria (detalle en la [sección 4.5](#45-producto-escalar-entero-en-los-kernels-cuantizados)).
 
 ---
 
@@ -59,15 +71,36 @@ Durante la campaña se evaluaron de forma aislada múltiples factores sobre el m
 | **Cuantización mixta (`--quant-mixed`)** | **ADOPTADA** | Acelera un ~25 % en servidor (4 hilos) y ~36 % en CLI directa. Cero degradación perceptible en escucha ciega ($p = 0,5$). Cero truncamientos en >150 peticiones continuas. |
 | **Cuantización INT4 global (`--int4`)** | **DESCARTADA** | En el modelo 0.6B, cuantizar el Code Predictor a INT4 genera salidas no deterministas y truncamientos severos de audio. |
 | **Truncamiento de codebooks ($K=12, 10, 8$)** | **DESCARTADO** | $K=12$ y $K=10$ degradan la inteligibilidad (WER +1,55 pp y +2,78 pp) y alteran la identidad vocal. $K=8$ no termina de sintetizar en 10 de cada 100 casos (caídas de hasta 0 puntos en MUSHRA). |
-| **Pool de hilos Win32 con espera activa** | **DESCARTADO** | Razón de tiempo 0,979; no alcanza el umbral de mejora y eleva la latencia mediana de 1,69 s a 2,03 s en 4 hilos. |
-| **Proyecciones QKV INT8 fusionadas** | **DESCARTADO** | Aceleración despreciable (0,996) e inconsistencias numéricas dependientes del número de hilos. |
-| **Prefill B=2 del Code Predictor / `matmat_bf16`** | **DESCARTADO** | Impacto neutro o negativo en procesadores sin extensiones AVX-512 / VNNI. |
+| **Pool de hilos Win32 con espera activa** | **ADOPTADA** (revisa un descarte previo) | La primera prueba (razón de tiempo 0,979, latencia mediana de 1,69 s a 2,03 s en 4 hilos) se hizo con el kernel anterior. Con el kernel entero, el pool espera activamente un presupuesto acotado antes de dormir, y como el Code Predictor despacha unas 495 tareas al pool por fotograma, esa espera elimina el coste de despertar hilos: sin carga el RTF pasa de 0,79 (sin espera) a 0,76 (presupuesto de 4096 iteraciones) y con 4 núcleos ocupados de 0,91 a 0,87. |
+| **Presupuesto de espera activa de 20000 iteraciones** | **DESCARTADO** | No mejora sobre 4096: 0,76 sin carga y 0,90 con 4 núcleos ocupados (0,87 con 4096). |
+| **Proyecciones QKV INT8 fusionadas con acumulación en coma flotante** | **DESCARTADO** | Aceleración despreciable (0,996) e inconsistencias numéricas dependientes del número de hilos. Con el producto escalar entero la suma es exacta y el resultado no depende del reparto entre hilos. |
+| **`matmat_bf16`** | **DESCARTADO** | Impacto neutro o negativo en procesadores sin extensiones AVX-512 / VNNI. |
+| **Matmat B=2 en coma flotante en AVX2** | **DESCARTADO** | Sin ganancia medible en el Code Predictor. |
+| **Prefill B=2 del Code Predictor cuantizado (PREFILL2)** | **ADOPTADA** | Con el matmat entero, igual a dos matvec, deja de ser una variante opcional: es la única ruta. |
+| **Producto escalar entero en todas las rutas cuantizadas** | **ADOPTADA** | Diagnóstico en la sección 2.1 y resultados en la 4.5. |
+| **q4_0 en el Code Predictor con el kernel anterior** | **DESCARTADO** | El kernel q4_0 de AVX2 estaba limitado por cálculo, no por memoria, y con `-j 4` no daba ganancia. |
 | **Espacio de trabajo persistente del decodificador** | **ADOPTADA** | Evita cientos de reservas de ≥ 1 MiB por frase, cuyas páginas nuevas Windows pone a cero en cada bloque; audio bit a bit idéntico. |
 | **Convolución transpuesta con un solo GEMM** | **ADOPTADA** | Multiplica sobre la vista contigua `[entrada][salida·k]` de los pesos y dispersa en orden de k: sin reordenar pesos por llamada ni RAM adicional. |
 | **Convolución causal sin im2col** | **ADOPTADA** | k GEMM acumulados sobre la entrada desplazada, con pesos `W_k` reordenados al cargar (~116 MB compartidos entre workers); desaparece la tabla im2col y su troceo. |
 | **Afinidad de un hilo lógico por núcleo físico (Windows)** | **ADOPTADA** | Elimina el estado lento intermitente en que dos hilos pesados comparten núcleo SMT; aplicada desde el motor, la reciben CLI y daemon. |
 | **Convolución transpuesta con pesos reordenados en caché** | **DESCARTADO** | ~750 ms por frase frente a ~1.620 ms del original, pero más lenta que el GEMM único (~590 ms) y con ~107 MB de RAM adicional. |
 | **Hilos dedicados a la activación Snake** | **DESCARTADO** | Sin ganancia con 4 hilos (RTF 1,06/1,06/1,04 frente a 1,04/1,06/1,04 sin ellos) y resultado mixto con 6. |
+
+### 2.1. Reparto del tiempo del Code Predictor y techo de ancho de banda
+
+Medido con una copia instrumentada del motor en el hardware de referencia (AVX2, `-j 4`), las multiplicaciones de pesos suponen el **96 %** del tiempo del Code Predictor (52 ms por fotograma antes de la mejora):
+
+| Parte del Code Predictor | Cuota |
+|---|---|
+| MLP: proyecciones gate y up | 37 % |
+| Proyecciones QKV | 27 % |
+| MLP: proyección down | 17 % |
+| Proyección de salida O | 13 % |
+| `lm_head` | 2,5 % |
+| SwiGLU | 1,7 % |
+| Atención | 1 % |
+
+Cada fotograma requiere unos 495 despachos de tareas al pool de hilos. La lectura máxima de memoria medida en el equipo es de unos 37–41 GB/s, y el paso del Code Predictor aislado en int8 iba a 31 GB/s (84 % de ese techo): lo acotaba el cálculo, porque el kernel AVX2 int8 ensanchaba los pesos a coma flotante antes de la FMA y el kernel q4_0 de AVX2 tenía el mismo defecto. De ahí que la vía fuera abaratar el cálculo por byte leído, no reducir bytes. La competencia con el decodificador acústico por la CPU cuesta además ~8 ms por fotograma.
 
 ---
 
@@ -79,6 +112,15 @@ La campaña de validación empleó un corpus estructurado de 35 textos (25 en es
 - **Inteligibilidad (ASR WER):** Transcripción automática con Parakeet TDT v3 (minúsculas, sin diacríticos).
 - **Identidad vocal (WavLM-SV / ECAPA):** Similitud coseno mediante `microsoft/wavlm-base-plus-sv` y el extractor ECAPA nativo del motor.
 - **Duración y F0:** Variación de duración en muestras y contorno fundamental en semitonos mediante `librosa.pyin`.
+
+### Procedimiento para el producto escalar entero
+- **Corpus:** 15 frases (español e inglés) con semillas 42 y 43, y un texto largo en español de unos 18 s para los tiempos.
+- **Inteligibilidad:** WER con faster-whisper large-v3-turbo sobre texto normalizado.
+- **Identidad vocal:** similitud coseno con `microsoft/wavlm-base-plus-sv` frente al audio del motor anterior, con un control del propio motor anterior sintetizado con otra semilla para saber cuánto varía la similitud sin ningún cambio de código.
+- **Condiciones de carga:** equipo libre; cuatro procesos `yes` que ocupan la CPU; y dos hilos que leen memoria con un bucle AVX2 y saturan el ancho de banda. Tras cada bloque con carga se comprueba que no queda ningún generador de carga en ejecución.
+- **Tiempos:** ejecuciones alternadas motor anterior/final dentro de cada condición, con la mediana de 3 y el rango; el RTF se calcula sobre la duración de cada WAV.
+- **Identidad de la salida:** en los cambios sin efecto numérico (por ejemplo, el prefetch) el criterio es el md5 idéntico del WAV, con el mismo `-j`.
+- **Autotest de kernels:** `--self-test` del motor con `SIMD=auto` y con `SIMD=scalar`, que compara cada kernel con su referencia escalar.
 
 ### Archivos de evidencia empírica
 - `docs/reports/mushra_results.json`: 12 ensayos controlados de degradación auditiva por truncamiento de codebooks.
@@ -144,6 +186,52 @@ Por fotograma, en CLI: Talker de 20,5–21,3 a 18,6–19,9 ms y Code Predictor d
 
 **Procedimiento de validación de calidad.** Los cambios que no alteran el cálculo (eliminación de código muerto, red unificada, espacio de trabajo, afinidad) se aceptaron con md5 idéntico del WAV frente al paso anterior, siempre con el mismo número de hilos, porque el md5 depende de `-j`. El corpus fue de 15 frases (10 en español y 5 en inglés) más el texto largo, en streaming, y la decodificación completa de un volcado fijo de códigos (`QWEN_DUMP_CODES`) con `qwen_tts_decoder_tool`. Los cambios que reordenan sumas en coma flotante (las dos convoluciones) se aceptaron con SNR ≥ 90 dB, diferencia ≤ 2 LSB, WER sin cambios (faster-whisper large-v3-turbo) y similitud WavLM-SV ≥ 0,999 sobre el mismo corpus. Resultado: SNR de 96,6 a 98,6 dB, 1 LSB como máximo, WER de 3,57 % en ambos motores, similitud WavLM de 1,00000 en todas las frases y salida determinista entre ejecuciones. Al unificar la red convolucional, la decodificación completa adoptó la LayerNorm de dos pasadas del streaming (SNR 100,9 dB, 1 LSB), para que el audio de producción conservara su md5.
 
+### 4.5. Producto escalar entero en los kernels cuantizados
+
+**Estrategias adoptadas** (motor `vendor/qwen3-tts`):
+- **Producto escalar entero en todas las rutas cuantizadas y en todas las arquitecturas.** El int8 del Code Predictor y el q4_0 del Talker multiplican con enteros (AVX2 en x86, SDOT en ARM64, referencia escalar) y aplican las escalas una vez por bloque, en lugar de ensanchar los pesos a coma flotante. Las rutas de coma flotante cuantizada y sus interruptores de entorno desaparecen.
+- **Cuantizadores de activación únicos.** Una sola función cuantiza las activaciones a int8 para todas las rutas, de modo que todas las plataformas reciben exactamente los mismos enteros.
+- **Matmat exacto, igual a B×matvec.** Como la suma entera es exacta y el matmat reutiliza los kernels de fila del matvec, en AVX2 y en la compilación escalar da bit a bit lo mismo que B matvec, y una petición agrupada produce el mismo audio que la individual. En VNNI el int8 también es exacto; el q4 de i8mm difiere ~1e-7 por el orden de acumulación en coma flotante. Las plataformas comparten la misma cuantización y la misma suma entera, pero no son bit a bit iguales entre sí: la acumulación de las escalas en coma flotante sigue un orden propio de cada ISA.
+- **PREFILL2 como ruta única** del Code Predictor cuantizado, sin interruptor.
+- **Espera activa en el pool de hilos de Windows** antes de dormir (presupuesto de 4096 iteraciones).
+- **ARM64 exige `dotprod`:** una compilación sin él falla con `#error`.
+- **Comprobación de dimensiones al cargar:** un modelo con matrices cuantizadas de más de 8192 columnas o con columnas no múltiplo de 32 falla al cargar con un error claro, en lugar de producir resultados erróneos.
+- **Prefetch del kernel q4_0 de AVX2.** El kernel entero consume los pesos tan deprisa que dependía de la latencia de memoria: procesa dos filas intercaladas sin prefetch por software, y con el bus saturado el prefetch por hardware no cubría ambos flujos, de modo que cada bloque esperaba un fallo de caché. Sin prefetch, con carga de memoria el Talker empeoraba frente al motor anterior (de 28,7 a 41,2 ms por fotograma). Anticipar 16 bloques en las dos filas lo corrige sin cambio numérico (md5 idéntico): con carga de memoria el Talker queda en 25,7 ms por fotograma, frente a 27,7 del motor anterior en la misma tanda, y sin carga baja de 17,1 a 14,8 ms por fotograma frente a la versión sin prefetch.
+
+**RTF del texto largo** (mediana y rango de 3 ejecuciones alternadas; el audio del motor final dura 17,5 s y el anterior 18,2 s):
+
+| Condición | Motor | Talker ms/f | Code Predictor ms/f | RTF |
+|---|---|---|---|---|
+| Equipo libre | anterior | 19,0 (18,8–19,1) | 51,5 (50,6–52,7) | 0,93 (0,92–0,96) |
+| Equipo libre | final | 14,6 (14,4–14,6) | 41,3 (41,3–41,6) | **0,76** (0,76–0,76) |
+| 4 procesos `yes` | anterior | 26,2 (25,1–28,4) | 57,4 (54,3–59,9) | 1,10 (1,05–1,16) |
+| 4 procesos `yes` | final | 20,7 (19,1–20,9) | 44,3 (43,7–45,3) | **0,88** (0,85–0,89) |
+| 2 hilos de lectura de memoria | anterior | 27,7 (27,5–29,7) | 102,7 (102,2–104,1) | 1,70 (1,69–1,75) |
+| 2 hilos de lectura de memoria | final | 25,7 (25,0–27,3) | 85,8 (85,5–89,7) | **1,47** (1,46–1,55) |
+
+**Daemon** (motor final, 2 peticiones por frase, RTF de la primera y la segunda):
+
+| Frase | Audio | RTF |
+|---|---|---|
+| Corta | 3,1 s | 0,89 / 0,86 |
+| Media | 6,2–8,3 s | 0,76 / 0,75 |
+| Larga | 17,5–17,9 s | 0,77 / 0,76 |
+
+El daemon queda al nivel de la línea de comandos. El pico de memoria es de 2.912,5 MB, igual que antes.
+
+**Calidad** (15 frases, 10 en español y 5 en inglés, semillas 42 y 43; el control es el motor anterior con la semilla 43):
+
+| Condición | WER | Similitud media | Similitud mínima | Relación de duración |
+|---|---|---|---|---|
+| Motor anterior | 3,55 % | 1,0000 | 1,0000 | 1,000 |
+| Control (anterior, semilla 43) | 3,55 % | 0,9767 | 0,9460 | 1,079 |
+| Final, semilla 42 | 3,55 % | 0,9784 | 0,9531 | 1,052 |
+| Final, semilla 43 | 3,55 % | 0,9783 | 0,9586 | 1,042 |
+
+Las frases con errores de transcripción son las mismas en todas las condiciones y con el mismo recuento. La similitud del motor final con el anterior es la misma que la de dos semillas distintas del propio motor anterior: la diferencia es de muestreo, no de calidad. En una escucha de frases del corpus (anterior frente a final) la calidad resultó buena, con timbre e identidad mantenidos y sin palabras ininteligibles.
+
+**Con memoria saturada.** El Code Predictor pasa de 41,3 a 85,8 ms por fotograma al saturar el ancho de banda: sigue limitado por memoria, y el producto escalar entero reduce el cálculo pero no los bytes leídos. El Talker, sin el prefetch, empeoraba con esa carga; con él mejora un 7 %, aunque queda casi al doble de su coste libre.
+
 ---
 
 ## 5. Arquitectura de integración en el producto
@@ -177,19 +265,20 @@ Para proteger la inferencia de variables de entorno heredadas que pudieran corro
 
 ---
 
-## 6. Límites de la optimización y puente hacia el Plan 002
+## 6. Límites de la optimización y margen restante
 
-La adopción de `--quant-mixed` representó una ganancia inmediata y gratuita de ~25–36 % de velocidad en CPU sin degradación acústica. Sin embargo, **establece el límite de lo que puede lograrse mediante cuantización de pesos y parámetros de servidor**:
+La adopción de `--quant-mixed` dio una ganancia de ~25–36 % de velocidad en CPU sin degradación acústica, con un RTF de producción de ~1,38×. Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restaron otro 11–25 % y el producto escalar entero de la [sección 4.5](#45-producto-escalar-entero-en-los-kernels-cuantizados) otro 18–20 %, sin tocar el modelo:
 
-$$\text{RTF actual en producción: } \mathbf{\sim 1,38\times} \quad (\text{Sintetizar 1 s de audio toma } \sim 1,38\text{ s})$$
+| Condición | RTF final (`mixed -j 4`) |
+|---|---|
+| Equipo libre | **0,76** |
+| 4 procesos ocupando la CPU | **0,88** |
+| 2 hilos saturando el ancho de banda de memoria | 1,47 |
 
-Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restan otro 11–14 % con el equipo libre y un 20–25 % con carga de fondo, sin tocar el modelo, y dejan la síntesis en RTF 0,93 con 4 hilos en un equipo libre. No cambian el reparto del tiempo: el Code Predictor sigue siendo la parte dominante de cada fotograma (~70 %), y con carga de fondo el RTF vuelve a superar 1, así que reducirlo sigue siendo la vía para mantener el tiempo real en equipos ocupados.
+### Reparto del tiempo por fotograma
+El pipeline genera audio a 12,5 Hz (80 ms por fotograma). En cada fotograma el Talker genera 1 código acústico (`code0`) y el Code Predictor (CP) de 5 capas genera secuencialmente los 15 códigos residuales (`code1` a `code15`), con **16 × 5 = 80 evaluaciones de capa por fotograma**. Con el kernel entero, en el texto largo y el equipo libre, el Talker tarda 14,6 ms y el CP 41,3 ms por fotograma (antes 19,0 y 51,5): el CP sigue siendo la parte dominante (~74 % de ambos), y dentro de él las multiplicaciones de pesos siguen siendo la mayor parte del tiempo.
 
-### El cuello de botella estructural
-El análisis detallado de tiempos por fotograma reveló que el pipeline genera audio a 12,5 Hz (80 ms por fotograma). En cada fotograma:
-- El Talker genera 1 código acústico (`code0`).
-- El **Code Predictor (CP)** de 5 capas genera secuencialmente los 15 códigos residuales (`code1` a `code15`), requiriendo **$16 \times 5 = 80$ evaluaciones de capa por fotograma**.
-- El CP consume **61 a 70 ms por fotograma**, representando más del **60–68 % del tiempo total de cómputo**.
-
-### Conclusión y hoja de ruta
-Para alcanzar el objetivo definitivo de síntesis en tiempo real (**$\text{RTF} < 1,0$**) en CPU de consumo, no es viable aplicar más cuantización ni truncar codebooks. La solución matemática y algorítmica requerida es **reducir la profundidad del Code Predictor de 5 a 3 capas Transformer** mediante destilación de conocimiento a costo $0, tal como prescribe el **Plan 002** (`.work/plans/plan-002-cp-3layers-distillation.md`).
+### Conclusión y margen restante
+- **El RTF < 1 con carga de CPU se logra sin reentrenar:** 0,88 con cuatro núcleos ocupados y 0,76 sin carga. La destilación del Code Predictor de 5 a 3 capas deja de ser condición necesaria para ese objetivo.
+- **Con el ancho de banda de memoria saturado el RTF sigue por encima de 1 (1,47).** Aquí el CP queda limitado por memoria (85,8 ms por fotograma frente a 41,3 sin carga) y el producto escalar entero no reduce los bytes leídos por fotograma. Ni más cuantización ni truncar codebooks son opciones viables (secciones 2 y 4).
+- **La destilación del CP de 5 a 3 capas queda como margen adicional** (`.work/plans/plan-002-cp-3layers-distillation.md`): al leer menos pesos por fotograma reduce justamente el tráfico de memoria que limita el caso saturado, y da más holgura bajo carga de CPU.

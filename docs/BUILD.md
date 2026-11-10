@@ -483,16 +483,23 @@ versión instalada difiere de su pin.
 |---|---|---|---|---|
 | Windows UCRT64 | `-mavx2 -mfma` (Haswell 2013+, `SIMD=auto`; `SIMD=scalar` vacía) | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `-static -L$(UCRT64_LIB) -lopenblas -lgomp -lws2_32 -lwinpthread -lm` (autocontenido) | `third_party/ingot/mingw_shim/unistd.h`, `sys/mman.h` vía `-include` |
 | Linux x86_64 | `-mavx2 -mfma` | `-Wall -Wextra -O3 $(ARCH_FLAGS) -ffast-math` | `libopenblas.a -Wl,-Bstatic -lgfortran -lquadmath -Wl,-Bdynamic -lm -lpthread` (solo glibc dinámica) | — |
-| Linux ARM64 | `-march=armv8-a` (portable; NEON baseline ARMv8-A. `SIMD=native` → `-march=native`) | idem | `libopenblas.a -Wl,-Bstatic -lgfortran -Wl,-Bdynamic -lm -lpthread` (solo glibc dinámica) | — |
+| Linux ARM64 | `-march=armv8.2-a+dotprod` (portable; exige el producto escalar entero SDOT. `SIMD=native` → `-march=native`) | idem | `libopenblas.a -Wl,-Bstatic -lgfortran -Wl,-Bdynamic -lm -lpthread` (solo glibc dinámica) | — |
 | macOS (arm64) | `-mcpu=apple-m1` (portable; `SIMD=native` → `-march=native`) | idem; `MACOSX_DEPLOYMENT_TARGET` igual a `min_os` del manifiesto en CI | `-framework Accelerate` | — |
 
 > **Baseline portable en ARM y macOS.** Las ramas ARM y Darwin del `Makefile`
-> honran `SIMD` como x86: por defecto `-march=armv8-a` en Linux ARM (NEON
-> garantizado en todo ARMv8-A) y `-mcpu=apple-m1` en macOS (M1, el chip más
+> honran `SIMD` como x86: por defecto `-march=armv8.2-a+dotprod` en Linux ARM
+> y `-mcpu=apple-m1` en macOS (M1, el chip más
 > antiguo que soporta la versión mínima de macOS), no `-march=native`, que
 > acoplaría el codegen a la microarquitectura del runner y
 > haría `SIGILL` en CPUs más antiguas. `SIMD=native` recupera `-march=native`
 > para compilar y ejecutar en la misma CPU.
+>
+> **Requisito de `dotprod` en Linux ARM64.** Todas las multiplicaciones
+> cuantizadas del motor (int8 y q4_0) usan el producto escalar entero SDOT, de
+> modo que una compilación ARM64 sin la extensión `dotprod` falla con `#error`
+> en lugar de caer a una ruta más lenta. Quedan fuera las CPUs ARMv8.0 y
+> ARMv8.1 sin esa extensión (Cortex-A72 de la Raspberry Pi 4, por ejemplo);
+> AWS Graviton2 y Apple M1 sí la tienen.
 
 > **OpenBLAS estático en Linux.** Debian y Ubuntu instalan `libopenblas.a`
 > (paquete `libopenblas-dev`) en `/usr/lib/<multiarch>/openblas-pthread/`, fuera
