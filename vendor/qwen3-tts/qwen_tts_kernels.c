@@ -27,12 +27,10 @@
 #include <immintrin.h>
 #endif
 
-#ifdef USE_BLAS
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 #else
 #include <cblas.h>
-#endif
 #endif
 
 /* Flush-to-zero for denormals. INT8 dequant can drive activations into the
@@ -178,12 +176,10 @@ void qwen_caps_report(void *out) {
 #else
     fprintf(f, "  matvec threads:   pthread pool (%d threads)\n", qwen_get_threads());
 #endif
-#if defined(USE_BLAS) && defined(__APPLE__)
+#if defined(__APPLE__)
     fprintf(f, "  BLAS (prefill):   Accelerate\n");
-#elif defined(USE_BLAS)
-    fprintf(f, "  BLAS (prefill):   OpenBLAS\n");
 #else
-    fprintf(f, "  BLAS (prefill):   none\n");
+    fprintf(f, "  BLAS (prefill):   OpenBLAS\n");
 #endif
     /* ---- Runtime ISA actually present on THIS CPU (independent of how the binary
      * was compiled above). This is the "does the extension fire?" check — run it on
@@ -3845,7 +3841,7 @@ void qwen_swiglu_inplace(float *gate_up, float *tmp, int n) {
     /* 2. Batch exp: tmp[i] = exp(-g[i])
      * On macOS, vvexpf computes vectorized exp via Accelerate/vForce.
      * On other platforms, scalar loop (compiler auto-vectorizes with -ffast-math). */
-#if defined(__APPLE__) && defined(USE_BLAS)
+#if defined(__APPLE__)
     vvexpf(tmp, tmp, &n);
 #else
     for (int i = 0; i < n; i++)
@@ -4379,7 +4375,7 @@ void qwen_gemm_int8(float *out, int out_ld,
  * NEON and AVX2 twins: the __AVX2__ branch of the snake had the exact same
  * scalar-sinf-per-lane problem the NEON branch did, and PR #17 only fixed NEON.
  * ------------------------------------------------------------------------ */
-#if (defined(__ARM_NEON) || defined(__AVX2__)) && !(defined(__APPLE__) && defined(USE_BLAS))
+#if (defined(__ARM_NEON) || defined(__AVX2__)) && !defined(__APPLE__)
 #define QWEN_SIN_POLY_MAX 8192.0f
 #define QWEN_SIN_C1  (-1.0f / 6.0f)
 #define QWEN_SIN_C2  ( 1.0f / 120.0f)
@@ -4404,7 +4400,7 @@ static int qwen_sin_poly_off(void) {
 }
 #endif
 
-#if defined(__ARM_NEON) && !(defined(__APPLE__) && defined(USE_BLAS))
+#if defined(__ARM_NEON) && !defined(__APPLE__)
 static inline float32x4_t qwen_vsin2q_f32(float32x4_t y) {
     const float32x4_t inv_pi = vdupq_n_f32(QWEN_INV_PI);
     const float32x4_t pi_hi  = vdupq_n_f32(QWEN_PI_HI);
@@ -4425,7 +4421,7 @@ static inline float32x4_t qwen_vsin2q_f32(float32x4_t y) {
 }
 #endif /* __ARM_NEON */
 
-#if defined(__AVX2__) && !(defined(__APPLE__) && defined(USE_BLAS))
+#if defined(__AVX2__) && !defined(__APPLE__)
 /* AVX2 twin of qwen_vsin2q_f32 (8 lanes). Same reduction and coefficients.
  * _mm256_round_ps with NEAREST|NO_EXC == round-to-nearest-even; the ½-ULP
  * difference from NEON's ties-away is immaterial after the u¹¹ series + square. */
@@ -4454,7 +4450,7 @@ static inline __m256 qwen_vsin2_avx2(__m256 y) {
  * dispatcher callable from the decoder thread -- which sd_pool_run is. */
 static void snake_row(float *data, int c, int length,
                       const float *log_alpha, const float *log_beta) {
-#if (defined(__ARM_NEON) || defined(__AVX2__)) && !(defined(__APPLE__) && defined(USE_BLAS))
+#if (defined(__ARM_NEON) || defined(__AVX2__)) && !defined(__APPLE__)
     const int sin_poly = !qwen_sin_poly_off();
 #endif
     {
@@ -4462,7 +4458,7 @@ static void snake_row(float *data, int c, int length,
         float inv_b = expf(-log_beta[c]);
         float *row = data + (int64_t)c * length;
 
-#if defined(__APPLE__) && defined(USE_BLAS)
+#if defined(__APPLE__)
         /* Use Accelerate vForce for vectorized sin — fast on Apple Silicon */
         {
             int n = length;

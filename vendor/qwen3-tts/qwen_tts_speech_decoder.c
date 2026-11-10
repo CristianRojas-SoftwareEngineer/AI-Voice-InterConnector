@@ -42,7 +42,6 @@
 
 /* aligned_malloc/aligned_calloc now in qwen_tts_kernels.h */
 
-#ifdef USE_BLAS
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 /* Modern Accelerate (ACCELERATE_NEW_LAPACK, cblas_new.h) declares `enum CBLAS_TRANSPOSE`
@@ -60,7 +59,6 @@ static inline void SD_GEMM(int ta,int tb,int M,int N,int K,float al,const float 
                            const float *B,int ldb,float be,float *C,int ldc){
     cblas_sgemm(CblasRowMajor,(QWEN_CBLAS_TRANSPOSE)ta,(QWEN_CBLAS_TRANSPOSE)tb,M,N,K,al,A,lda,B,ldb,be,C,ldc);
 }
-#endif
 
 static const float *get_f32(void *ms, const char *name) {
     const ingot_st_tensor *t = ingot_st_find((ingot_st *)ms, name);
@@ -80,65 +78,6 @@ static int conv_transpose1d_out_len(int in_len, int kernel, int stride) {
 /* Snake activation dispatched through qwen_snake_activation() kernel
  * (NEON/Accelerate-optimized in qwen_tts_kernels.c) */
 #define snake_activation qwen_snake_activation
-
-#ifndef USE_BLAS
-/* Naive causal Conv1d: [out_ch, in_ch, kernel], pad_left=(kernel-1)*dilation */
-static void causal_conv1d_naive(float *out, const float *in,
-                                const float *weight, const float *bias,
-                                int in_ch, int out_ch, int length,
-                                int kernel, int dilation) {
-    int pad_left = (kernel - 1) * dilation;
-    for (int oc = 0; oc < out_ch; oc++) {
-        float b = bias ? bias[oc] : 0;
-        for (int t = 0; t < length; t++) {
-            float sum = b;
-            for (int ic = 0; ic < in_ch; ic++) {
-                for (int k = 0; k < kernel; k++) {
-                    int in_pos = t - pad_left + k * dilation;
-                    if (in_pos >= 0 && in_pos < length) {
-                        sum += weight[((int64_t)oc * in_ch + ic) * kernel + k]
-                             * in[(int64_t)ic * length + in_pos];
-                    }
-                }
-            }
-            out[(int64_t)oc * length + t] = sum;
-        }
-    }
-}
-
-/* Naive causal ConvTranspose1d: [in_ch, out_ch, kernel], stride, trim right by (kernel-stride) */
-static void causal_conv_transpose1d_naive(float *out, const float *in,
-                                          const float *weight, const float *bias,
-                                          int in_ch, int out_ch, int in_len, int out_len,
-                                          int kernel, int stride) {
-    memset(out, 0, (int64_t)out_ch * out_len * sizeof(float));
-    /* The right trim is expressed by out_len alone: one-shot callers pass
-     * out_len = in_len*stride = full_len - (kernel-stride), which drops the tail
-     * columns exactly as before. The streaming path passes out_len = full_len to
-     * keep those columns as the overlap-add carry. */
-
-    for (int ic = 0; ic < in_ch; ic++) {
-        for (int t = 0; t < in_len; t++) {
-            float x = in[(int64_t)ic * in_len + t];
-            for (int k = 0; k < kernel; k++) {
-                int out_pos = t * stride + k;
-                if (out_pos < out_len) {
-                    for (int oc = 0; oc < out_ch; oc++) {
-                        out[(int64_t)oc * out_len + out_pos] +=
-                            x * weight[((int64_t)ic * out_ch + oc) * kernel + k];
-                    }
-                }
-            }
-        }
-    }
-    if (bias) {
-        for (int oc = 0; oc < out_ch; oc++)
-            for (int t = 0; t < out_len; t++)
-                out[(int64_t)oc * out_len + t] += bias[oc];
-    }
-}
-#endif /* !USE_BLAS */
-
 
 /* ========================================================================
  * INT8 conv path for the decoder (PR #17 sub-change B, ported)
@@ -206,7 +145,6 @@ static sd_wq_entry_t *sd_wq_get_conv(const float *w, int out_ch, int K) {
     return e;
 }
 
-#ifdef USE_BLAS
 /* Add bias to channel-first output [channels, length] */
 static void conv_add_bias(float *out, const float *bias, int channels, int length) {
     if (!bias) return;
@@ -218,11 +156,11 @@ static void conv_add_bias(float *out, const float *bias, int channels, int lengt
     }
 }
 
-/* BLAS causal Conv1d: im2col + sgemm (k>1), direct sgemm (k=1) */
-static void causal_conv1d_blas(float *out, const float *in,
-                               const float *weight, const float *bias,
-                               int in_ch, int out_ch, int length,
-                               int kernel, int dilation) {
+/* Conv1d causal: im2col + sgemm (k>1), sgemm directo (k=1) */
+static void causal_conv1d(float *out, const float *in,
+                          const float *weight, const float *bias,
+                          int in_ch, int out_ch, int length,
+                          int kernel, int dilation) {
     /* int8 only for the upsample-block res convs: the latent-domain convs
      * (pre-conv 512->1024, ConvNeXt) are quality-sensitive and cheap, so they
      * stay fp32. Same scoping as the author's. */
@@ -286,13 +224,16 @@ static void causal_conv1d_blas(float *out, const float *in,
     conv_add_bias(out, bias, out_ch, length);
 }
 
-/* BLAS causal ConvTranspose1d: per-kernel sgemm + scatter */
-static void causal_conv_transpose1d_blas(float *out, const float *in,
-                                         const float *weight, const float *bias,
-                                         int in_ch, int out_ch, int in_len, int out_len,
-                                         int kernel, int stride) {
+/* ConvTranspose1d causal: sgemm por posición del kernel + scatter */
+static void causal_conv_transpose1d(float *out, const float *in,
+                                    const float *weight, const float *bias,
+                                    int in_ch, int out_ch, int in_len, int out_len,
+                                    int kernel, int stride) {
     memset(out, 0, (int64_t)out_ch * out_len * sizeof(float));
-    /* Right trim is carried by out_len alone — see causal_conv_transpose1d_naive. */
+    /* El recorte derecho lo fija solo out_len: las llamadas de una pasada pasan
+     * out_len = in_len*stride (descarta las columnas de cola) y la ruta de streaming
+     * pasa out_len = longitud completa para conservar esas columnas como acarreo
+     * del overlap-add. */
 
     /* Per-kernel-position: extract weight slice, sgemm, scatter */
     float *wk = (float *)aligned_malloc((int64_t)in_ch * out_ch * sizeof(float));
@@ -327,30 +268,6 @@ static void causal_conv_transpose1d_blas(float *out, const float *in,
     free(wk);
     free(rk);
     conv_add_bias(out, bias, out_ch, out_len);
-}
-#endif /* USE_BLAS */
-
-/* Dispatch wrappers */
-static void causal_conv1d(float *out, const float *in,
-                           const float *weight, const float *bias,
-                           int in_ch, int out_ch, int length,
-                           int kernel, int dilation) {
-#ifdef USE_BLAS
-    causal_conv1d_blas(out, in, weight, bias, in_ch, out_ch, length, kernel, dilation);
-#else
-    causal_conv1d_naive(out, in, weight, bias, in_ch, out_ch, length, kernel, dilation);
-#endif
-}
-
-static void causal_conv_transpose1d(float *out, const float *in,
-                                     const float *weight, const float *bias,
-                                     int in_ch, int out_ch, int in_len, int out_len,
-                                     int kernel, int stride) {
-#ifdef USE_BLAS
-    causal_conv_transpose1d_blas(out, in, weight, bias, in_ch, out_ch, in_len, out_len, kernel, stride);
-#else
-    causal_conv_transpose1d_naive(out, in, weight, bias, in_ch, out_ch, in_len, out_len, kernel, stride);
-#endif
 }
 
 /* ========================================================================
@@ -612,7 +529,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
     }
 
     /* Batched projection: vq_out[n_frames, vq_hidden] = emb[n_frames, cb_dim] × W^T[cb_dim, vq_hidden] */
-#ifdef USE_BLAS
     if (sd->rvq_first_output_proj) {
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     n_frames, vq_hidden, cb_dim, 1.0f,
@@ -625,28 +541,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
                     emb_rest, cb_dim, sd->rvq_rest_output_proj, cb_dim,
                     1.0f, vq_out, vq_hidden);  /* accumulate */
     }
-#else
-    for (int f = 0; f < n_frames; f++) {
-        if (sd->rvq_first_output_proj) {
-            const float *emb = emb_first + (int64_t)f * cb_dim;
-            for (int o = 0; o < vq_hidden; o++) {
-                float sum = 0;
-                for (int i = 0; i < cb_dim; i++)
-                    sum += sd->rvq_first_output_proj[(int64_t)o * cb_dim + i] * emb[i];
-                vq_out[(int64_t)f * vq_hidden + o] += sum;
-            }
-        }
-        if (sd->rvq_rest_output_proj) {
-            const float *rest = emb_rest + (int64_t)f * cb_dim;
-            for (int o = 0; o < vq_hidden; o++) {
-                float sum = 0;
-                for (int i = 0; i < cb_dim; i++)
-                    sum += sd->rvq_rest_output_proj[(int64_t)o * cb_dim + i] * rest[i];
-                vq_out[(int64_t)f * vq_hidden + o] += sum;
-            }
-        }
-    }
-#endif
     free(emb_first); free(emb_rest);
 
     /* Debug: dump first frame's RVQ output */
@@ -702,7 +596,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
     /* Step 3: Transpose to row-major + input_proj (1024→512) */
     int dec_hidden = 512;
     float *hidden = (float *)aligned_malloc((int64_t)n_frames * dec_hidden * sizeof(float));
-#ifdef USE_BLAS
     /* Transpose pre_conv_out from channel-first [1024, n_frames] to row-major [n_frames, 1024] */
     float *pre_conv_rm = (float *)aligned_malloc((int64_t)n_frames * latent_dim * sizeof(float));
     for (int f = 0; f < n_frames; f++)
@@ -721,17 +614,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
             for (int o = 0; o < dec_hidden; o++)
                 hidden[(int64_t)f * dec_hidden + o] += sd->input_proj_bias[o];
     }
-#else
-    for (int f = 0; f < n_frames; f++) {
-        for (int o = 0; o < dec_hidden; o++) {
-            float sum = sd->input_proj_bias ? sd->input_proj_bias[o] : 0;
-            for (int i = 0; i < latent_dim; i++)
-                sum += sd->input_proj_weight[(int64_t)o * latent_dim + i] * pre_conv_out[(int64_t)i * n_frames + f];
-            hidden[(int64_t)f * dec_hidden + o] = sum;
-        }
-    }
-    free(pre_conv_out);
-#endif
 
     /* Debug: dump input_proj output */
     if (ctx->debug) {
@@ -767,7 +649,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
         }
 
         /* QKV projections */
-#ifdef USE_BLAS
         /* x_norm[n_frames, dec_hidden] × W^T = out[n_frames, qkv_dim] */
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     n_frames, qkv_dim, dec_hidden, 1.0f,
@@ -778,23 +659,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     n_frames, qkv_dim, dec_hidden, 1.0f,
                     x_norm, dec_hidden, l->attn_v, dec_hidden, 0.0f, vv, qkv_dim);
-#else
-        for (int s = 0; s < n_frames; s++) {
-            const float *xs = x_norm + s * dec_hidden;
-            float *qs = q + s * qkv_dim;
-            float *ks = kk + s * qkv_dim;
-            float *vs = vv + s * qkv_dim;
-            for (int o = 0; o < qkv_dim; o++) {
-                float sum_q = 0, sum_k = 0, sum_v = 0;
-                for (int i = 0; i < dec_hidden; i++) {
-                    sum_q += l->attn_q[(int64_t)o * dec_hidden + i] * xs[i];
-                    sum_k += l->attn_k[(int64_t)o * dec_hidden + i] * xs[i];
-                    sum_v += l->attn_v[(int64_t)o * dec_hidden + i] * xs[i];
-                }
-                qs[o] = sum_q; ks[o] = sum_k; vs[o] = sum_v;
-            }
-        }
-#endif
 
         /* Debug QKV for layer 0 */
         if (ctx->debug && layer == 0) {
@@ -870,7 +734,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
                                         head_dim, scale, 0, window);
 
         /* Output proj + layer_scale + residual */
-#ifdef USE_BLAS
         {
             /* proj[n_frames, dec_hidden] = attn_out[n_frames, qkv_dim] × attn_o^T */
             float *oproj = x_norm; /* reuse x_norm as temp (same size: n_frames * dec_hidden) */
@@ -890,20 +753,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
                 }
             }
         }
-#else
-        for (int s = 0; s < n_frames; s++) {
-            float *xs = hidden + s * dec_hidden;
-            const float *attn = attn_out + s * qkv_dim;
-            for (int o = 0; o < dec_hidden; o++) {
-                float sum = 0;
-                for (int i = 0; i < qkv_dim; i++)
-                    sum += l->attn_o[(int64_t)o * qkv_dim + i] * attn[i];
-                if (l->attn_layer_scale)
-                    sum *= l->attn_layer_scale[o];
-                xs[o] += sum;
-            }
-        }
-#endif
 
         /* Debug after attention + residual */
         if (ctx->debug && layer == 0) {
@@ -915,7 +764,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
         qwen_rms_norm(x_norm, hidden, l->ffn_norm, n_frames, dec_hidden, eps);
 
         /* SwiGLU FFN: down_proj(SiLU(gate_proj(x)) * up_proj(x)) + layer_scale + residual */
-#ifdef USE_BLAS
         {
             float *ffn_gate = (float *)aligned_malloc((int64_t)n_frames * dec_inter * sizeof(float));
             float *ffn_up = (float *)aligned_malloc((int64_t)n_frames * dec_inter * sizeof(float));
@@ -953,34 +801,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
             }
             free(ffn_down_out);
         }
-#else
-        for (int s = 0; s < n_frames; s++) {
-            const float *xs = x_norm + s * dec_hidden;
-            float *hs = hidden + s * dec_hidden;
-
-            /* gate and up projections */
-            float gate_up[dec_inter * 2]; /* VLA */
-            for (int o = 0; o < dec_inter; o++) {
-                float sum_g = 0, sum_u = 0;
-                for (int i = 0; i < dec_hidden; i++) {
-                    sum_g += l->ffn_gate[(int64_t)o * dec_hidden + i] * xs[i];
-                    sum_u += l->ffn_up[(int64_t)o * dec_hidden + i] * xs[i];
-                }
-                /* SiLU on gate, multiply by up */
-                gate_up[o] = (sum_g / (1.0f + expf(-sum_g))) * sum_u;
-            }
-
-            /* down projection + layer_scale + residual */
-            for (int o = 0; o < dec_hidden; o++) {
-                float sum = 0;
-                for (int i = 0; i < dec_inter; i++)
-                    sum += l->ffn_down[(int64_t)o * dec_inter + i] * gate_up[i];
-                if (l->ffn_layer_scale)
-                    sum *= l->ffn_layer_scale[o];
-                hs[o] += sum;
-            }
-        }
-#endif
 
         /* Per-layer debug */
         if (ctx->debug) {
@@ -1008,7 +828,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
     }
 
     float *latent_out = (float *)aligned_malloc((int64_t)n_frames * latent_dim * sizeof(float));
-#ifdef USE_BLAS
     /* latent_out[n_frames, 1024] = hidden[n_frames, 512] × W^T[512, 1024] */
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                 n_frames, latent_dim, dec_hidden, 1.0f,
@@ -1020,16 +839,6 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
             for (int o = 0; o < latent_dim; o++)
                 latent_out[(int64_t)f * latent_dim + o] += sd->output_proj_bias[o];
     }
-#else
-    for (int f = 0; f < n_frames; f++) {
-        for (int o = 0; o < latent_dim; o++) {
-            float sum = sd->output_proj_bias ? sd->output_proj_bias[o] : 0;
-            for (int i = 0; i < dec_hidden; i++)
-                sum += sd->output_proj_weight[(int64_t)o * dec_hidden + i] * hidden[(int64_t)f * dec_hidden + i];
-            latent_out[(int64_t)f * latent_dim + o] = sum;
-        }
-    }
-#endif
     free(hidden);
 
     /* Step 6: Transpose to channel-first [1024, n_frames] */
@@ -1102,23 +911,12 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
         /* PW1: 1024→4096 (pointwise = 1x1 conv = matmul per timestep) */
         int pw_dim = cur_ch * 4;
         float *pw1_out = (float *)aligned_malloc((int64_t)pw_dim * cur_len * sizeof(float));
-#ifdef USE_BLAS
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     pw_dim, cur_len, cur_ch,
                     1.0f, cn->pwconv1_weight, cur_ch,
                     signal, cur_len,
                     0.0f, pw1_out, cur_len);
         conv_add_bias(pw1_out, cn->pwconv1_bias, pw_dim, cur_len);
-#else
-        for (int t = 0; t < cur_len; t++) {
-            for (int o = 0; o < pw_dim; o++) {
-                float sum = cn->pwconv1_bias ? cn->pwconv1_bias[o] : 0;
-                for (int i = 0; i < cur_ch; i++)
-                    sum += cn->pwconv1_weight[(int64_t)o * cur_ch + i] * signal[(int64_t)i * cur_len + t];
-                pw1_out[(int64_t)o * cur_len + t] = sum;
-            }
-        }
-#endif
 
         /* Exact GELU: x * 0.5 * (1 + erf(x / sqrt(2))) */
         for (int64_t i = 0; i < (int64_t)pw_dim * cur_len; i++) {
@@ -1127,23 +925,12 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
         }
 
         /* PW2: 4096→1024 */
-#ifdef USE_BLAS
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                     cur_ch, cur_len, pw_dim,
                     1.0f, cn->pwconv2_weight, pw_dim,
                     pw1_out, cur_len,
                     0.0f, signal, cur_len);
         conv_add_bias(signal, cn->pwconv2_bias, cur_ch, cur_len);
-#else
-        for (int t = 0; t < cur_len; t++) {
-            for (int o = 0; o < cur_ch; o++) {
-                float sum = cn->pwconv2_bias ? cn->pwconv2_bias[o] : 0;
-                for (int i = 0; i < pw_dim; i++)
-                    sum += cn->pwconv2_weight[(int64_t)o * pw_dim + i] * pw1_out[(int64_t)i * cur_len + t];
-                signal[(int64_t)o * cur_len + t] = sum;
-            }
-        }
-#endif
         free(pw1_out);
 
         /* Gamma + residual */
@@ -1343,7 +1130,6 @@ static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *res
     /* Pointwise convs: pw1 (1024→4096, GELU), pw2 (4096→1024) */
     int pw_dim = 4096;
     float *pw1_out = (float *)aligned_malloc((int64_t)pw_dim * cur_len * sizeof(float));
-#ifdef USE_BLAS
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 pw_dim, cur_len, cur_ch, 1.0f,
                 cn->pwconv1_weight, cur_ch, signal, cur_len,
@@ -1352,21 +1138,11 @@ static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *res
         for (int i = 0; i < pw_dim; i++)
             for (int t = 0; t < cur_len; t++)
                 pw1_out[(int64_t)i * cur_len + t] += cn->pwconv1_bias[i];
-#else
-    for (int o = 0; o < pw_dim; o++)
-        for (int t = 0; t < cur_len; t++) {
-            float sum = cn->pwconv1_bias ? cn->pwconv1_bias[o] : 0;
-            for (int i = 0; i < cur_ch; i++)
-                sum += cn->pwconv1_weight[(int64_t)o * cur_ch + i] * signal[(int64_t)i * cur_len + t];
-            pw1_out[(int64_t)o * cur_len + t] = sum;
-        }
-#endif
     /* Exact GELU */
     for (int64_t i = 0; i < (int64_t)pw_dim * cur_len; i++)
         pw1_out[i] = 0.5f * pw1_out[i] * (1.0f + erff(pw1_out[i] * 0.7071067811865476f));
 
     /* pw2 (sgemm writes with beta=0, so no memset needed) */
-#ifdef USE_BLAS
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
                 cur_ch, cur_len, pw_dim, 1.0f,
                 cn->pwconv2_weight, pw_dim, pw1_out, cur_len,
@@ -1375,15 +1151,6 @@ static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *res
         for (int o = 0; o < cur_ch; o++)
             for (int t = 0; t < cur_len; t++)
                 signal[(int64_t)o * cur_len + t] += cn->pwconv2_bias[o];
-#else
-    for (int o = 0; o < cur_ch; o++)
-        for (int t = 0; t < cur_len; t++) {
-            float sum = cn->pwconv2_bias ? cn->pwconv2_bias[o] : 0;
-            for (int i = 0; i < pw_dim; i++)
-                sum += cn->pwconv2_weight[(int64_t)o * pw_dim + i] * pw1_out[(int64_t)i * cur_len + t];
-            signal[(int64_t)o * cur_len + t] = sum;
-        }
-#endif
     free(pw1_out);
 
     /* Gamma + residual */
@@ -1952,7 +1719,6 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
 
     /* === Step 3: Input proj on new frames (1024→512, row-major) === */
     float *hidden = (float *)aligned_malloc((int64_t)new_frames * dec_hidden * sizeof(float));
-#ifdef USE_BLAS
     /* Transpose new portion [1024, new_frames] → [new_frames, 1024] */
     float *pre_conv_rm = (float *)aligned_malloc((int64_t)new_frames * latent_dim * sizeof(float));
     for (int f = 0; f < new_frames; f++)
@@ -1969,18 +1735,6 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
         for (int f = 0; f < new_frames; f++)
             for (int o = 0; o < dec_hidden; o++)
                 hidden[(int64_t)f * dec_hidden + o] += sd->input_proj_bias[o];
-#else
-    for (int f = 0; f < new_frames; f++) {
-        for (int o = 0; o < dec_hidden; o++) {
-            float sum = sd->input_proj_bias ? sd->input_proj_bias[o] : 0;
-            for (int i = 0; i < latent_dim; i++)
-                sum += sd->input_proj_weight[(int64_t)o * latent_dim + i]
-                     * pre_conv_out[(int64_t)i * conv_in_len + pad_frames + f];
-            hidden[(int64_t)f * dec_hidden + o] = sum;
-        }
-    }
-    free(pre_conv_out);
-#endif
 
     /* === Step 4: Pre-transformer with KV cache === */
     /* plan_v4 D2: cap the KV cache at O(window+chunk) instead of the full stream.
@@ -2030,7 +1784,6 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
         qwen_rms_norm(x_norm, hidden, l->attn_norm, new_frames, dec_hidden, eps);
 
         /* QKV projections for new frames */
-#ifdef USE_BLAS
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     new_frames, qkv_dim, dec_hidden, 1.0f,
                     x_norm, dec_hidden, l->attn_q, dec_hidden, 0.0f, q, qkv_dim);
@@ -2040,23 +1793,6 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     new_frames, qkv_dim, dec_hidden, 1.0f,
                     x_norm, dec_hidden, l->attn_v, dec_hidden, 0.0f, new_v, qkv_dim);
-#else
-        for (int s = 0; s < new_frames; s++) {
-            const float *xs = x_norm + s * dec_hidden;
-            float *qs = q + s * qkv_dim;
-            float *ks = new_k + s * qkv_dim;
-            float *vs = new_v + s * qkv_dim;
-            for (int o = 0; o < qkv_dim; o++) {
-                float sum_q = 0, sum_k = 0, sum_v = 0;
-                for (int i = 0; i < dec_hidden; i++) {
-                    sum_q += l->attn_q[(int64_t)o * dec_hidden + i] * xs[i];
-                    sum_k += l->attn_k[(int64_t)o * dec_hidden + i] * xs[i];
-                    sum_v += l->attn_v[(int64_t)o * dec_hidden + i] * xs[i];
-                }
-                qs[o] = sum_q; ks[o] = sum_k; vs[o] = sum_v;
-            }
-        }
-#endif
 
         /* NeoX split-half RoPE using absolute positions */
         for (int s = 0; s < new_frames; s++) {
@@ -2128,7 +1864,6 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
         }
 
         /* Output proj + layer_scale + residual */
-#ifdef USE_BLAS
         {
             float *oproj = x_norm;
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
@@ -2145,25 +1880,11 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
                 }
             }
         }
-#else
-        for (int s = 0; s < new_frames; s++) {
-            float *xs = hidden + s * dec_hidden;
-            const float *attn = attn_out + s * qkv_dim;
-            for (int o = 0; o < dec_hidden; o++) {
-                float sum = 0;
-                for (int i = 0; i < qkv_dim; i++)
-                    sum += l->attn_o[(int64_t)o * qkv_dim + i] * attn[i];
-                if (l->attn_layer_scale) sum *= l->attn_layer_scale[o];
-                xs[o] += sum;
-            }
-        }
-#endif
 
         /* Post-attn RMSNorm (NEON-optimized) */
         qwen_rms_norm(x_norm, hidden, l->ffn_norm, new_frames, dec_hidden, eps);
 
         /* SwiGLU FFN */
-#ifdef USE_BLAS
         {
             float *ffn_gate = (float *)aligned_malloc((int64_t)new_frames * dec_inter * sizeof(float));
             float *ffn_up = (float *)aligned_malloc((int64_t)new_frames * dec_inter * sizeof(float));
@@ -2195,28 +1916,6 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
             }
             free(ffn_down_out);
         }
-#else
-        for (int s = 0; s < new_frames; s++) {
-            const float *xs = x_norm + s * dec_hidden;
-            float *hs = hidden + s * dec_hidden;
-            float gate_up[dec_inter * 2];
-            for (int o = 0; o < dec_inter; o++) {
-                float sum_g = 0, sum_u = 0;
-                for (int i = 0; i < dec_hidden; i++) {
-                    sum_g += l->ffn_gate[(int64_t)o * dec_hidden + i] * xs[i];
-                    sum_u += l->ffn_up[(int64_t)o * dec_hidden + i] * xs[i];
-                }
-                gate_up[o] = (sum_g / (1.0f + expf(-sum_g))) * sum_u;
-            }
-            for (int o = 0; o < dec_hidden; o++) {
-                float sum = 0;
-                for (int i = 0; i < dec_inter; i++)
-                    sum += l->ffn_down[(int64_t)o * dec_inter + i] * gate_up[i];
-                if (l->ffn_layer_scale) sum *= l->ffn_layer_scale[o];
-                hs[o] += sum;
-            }
-        }
-#endif
     }
 
     /* Update KV cache length (after all layers processed) */
@@ -2255,7 +1954,6 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
 
     /* Output proj new frames → append to latent cache [row-major: frames × 1024] */
     float *lat_dst = st->latent_cache + (int64_t)(st->latent_frames - st->latent_base) * latent_dim;
-#ifdef USE_BLAS
     cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                 new_frames, latent_dim, dec_hidden, 1.0f,
                 hidden, dec_hidden,
@@ -2265,16 +1963,6 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
         for (int f = 0; f < new_frames; f++)
             for (int o = 0; o < latent_dim; o++)
                 lat_dst[(int64_t)f * latent_dim + o] += sd->output_proj_bias[o];
-#else
-    for (int f = 0; f < new_frames; f++) {
-        for (int o = 0; o < latent_dim; o++) {
-            float sum = sd->output_proj_bias ? sd->output_proj_bias[o] : 0;
-            for (int i = 0; i < dec_hidden; i++)
-                sum += sd->output_proj_weight[(int64_t)o * dec_hidden + i] * hidden[(int64_t)f * dec_hidden + i];
-            lat_dst[(int64_t)f * latent_dim + o] = sum;
-        }
-    }
-#endif
     st->latent_frames += new_frames;
     free(hidden);
 

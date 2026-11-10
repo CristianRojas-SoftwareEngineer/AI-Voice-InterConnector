@@ -73,13 +73,13 @@ CFLAGS_BASE += -Ivendor
 
 # BLAS (Accelerate on macOS, OpenBLAS on Linux, OpenBLAS+shims on MSYS2/MinGW)
 ifeq ($(UNAME_S),Darwin)
-    CFLAGS_BASE += -DUSE_BLAS -DACCELERATE_NEW_LAPACK
+    CFLAGS_BASE += -DACCELERATE_NEW_LAPACK
     LDLIBS += -framework Accelerate
 else ifeq ($(UNAME_S),Linux)
     # _GNU_SOURCE: glibc solo declara extensiones como strcasestr con ella. Sin
     # la declaración, gcc anterior a 14 asumía que devuelve int (y truncaba el
     # puntero a 32 bits en x86_64), y gcc 14 lo rechaza como error.
-    CFLAGS_BASE += -DUSE_BLAS -DUSE_OPENBLAS -D_GNU_SOURCE -I/usr/include/openblas
+    CFLAGS_BASE += -D_GNU_SOURCE -I/usr/include/openblas
     # OpenBLAS se enlaza estático para que el motor distribuido no exija
     # libopenblas en el sistema. Debian/Ubuntu instalan libopenblas.a fuera de la
     # ruta del enlazador (en openblas-pthread/), y EL8 (la imagen manylinux_2_28
@@ -117,7 +117,7 @@ else
 #   Ver memoria: "MinGW build path root-cause".
     UCRT64_INC := $(shell cygpath -m /ucrt64/include/openblas)
     UCRT64_LIB := $(shell cygpath -m /ucrt64/lib)
-    CFLAGS_BASE += -DUSE_BLAS -DUSE_OPENBLAS -D_GNU_SOURCE -std=gnu11 \
+    CFLAGS_BASE += -D_GNU_SOURCE -std=gnu11 \
         -I$(UCRT64_INC) -Ithird_party/ingot/mingw_shim \
         -include third_party/ingot/mingw_shim/unistd.h \
         -include third_party/ingot/mingw_shim/sys/mman.h
@@ -651,19 +651,19 @@ ISACHK = -Wall -Wextra -O3 -Ivendor -ffast-math -fsyntax-only
 check-isa:
 	@echo "=== Compile-check newer-ISA paths (syntax only, not run) ==="
 ifeq ($(UNAME_M),arm64)
-	@$(CC) $(ISACHK) -march=armv8.6-a+bf16+i8mm -DUSE_BLAS -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c \
+	@$(CC) $(ISACHK) -march=armv8.6-a+bf16+i8mm -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c \
 	  && echo "  arm armv8.6-a +bf16 +i8mm : OK (M2/M3/M4, Graviton3+)" || echo "  arm armv8.6-a +bf16 +i8mm : FAIL"
-	@$(CC) $(ISACHK) -march=armv9-a+sme2 -DUSE_BLAS -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c 2>/dev/null \
+	@$(CC) $(ISACHK) -march=armv9-a+sme2 -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c 2>/dev/null \
 	  && echo "  arm armv9-a +sme2        : OK (M4/M5)" || echo "  arm armv9-a +sme2        : (toolchain lacks SME2 — skipped)"
 	@# Cross-compile the x86 AVX-512-VNNI paths (incl. the C7 q4 VNNI matvec) from the ARM
 	@# Mac via clang -target, so x86 kernel breakage is caught here without a rented box.
 	@clang -target x86_64-apple-macos13 $(ISACHK) -march=x86-64-v3 -mavx512f -mavx512bw -mavx512dq -mavx512vnni -mavx512bf16 \
-	  -DUSE_BLAS qwen_tts_kernels.c 2>/dev/null \
+	  qwen_tts_kernels.c 2>/dev/null \
 	  && echo "  x86 avx512 +vnni (x-comp) : OK (Zen4/5, Ice Lake+; C7 q4-VNNI)" || echo "  x86 avx512 +vnni (x-comp) : (clang cross lacks target — skipped)"
 	@# talker.c carries the AVX-512 bf16<->f32 bulk-conversion paths (avx512-parity) —
 	@# compile-check it for x86 too (needs the ingot include).
 	@clang -target x86_64-apple-macos13 $(ISACHK) -Ithird_party/ingot/include -march=x86-64-v3 \
-	  -mavx512f -mavx512bw -mavx512dq -mavx512vnni -mavx512bf16 -DUSE_BLAS qwen_tts_talker.c 2>/dev/null \
+	  -mavx512f -mavx512bw -mavx512dq -mavx512vnni -mavx512bf16 qwen_tts_talker.c 2>/dev/null \
 	  && echo "  x86 avx512 talker (x-comp): OK (bf16 conv paths)" || echo "  x86 avx512 talker (x-comp): (clang cross lacks target — skipped)"
 else
 	@$(CC) $(ISACHK) -march=x86-64-v3 -mavx512f -mavx512bw -mavx512dq -mavx512vnni -mavx512bf16 qwen_tts_kernels.c \

@@ -78,12 +78,10 @@ static inline void actmap_accum(int layer, const float *x, int h) {
 #include <immintrin.h>
 #endif
 
-#ifdef USE_BLAS
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 #else
 #include <cblas.h>
-#endif
 #endif
 
 /* ========================================================================
@@ -680,22 +678,16 @@ int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
     int inter = c->intermediate_size;
     float eps = c->rms_norm_eps;
 
-    /* plan_v4 D1: route the prefill projections through qwen_matmat_bf16 (direct
-     * bf16 weights, no per-layer f32 conversion). MEASURED on M1: Accelerate's
-     * sgemm rides the AMX matrix coprocessor and beats NEON matmat ~4.7× for the
-     * prefill gemm, so with USE_BLAS this LOSES (kept off by default). Without BLAS
-     * it replaces the naive scalar triple-loop (a large win) AND drops the f32
-     * convert, so it's the default there. QWEN_PREFILL_MATMAT=1/0 forces either way
-     * (e.g. to bench a weak-BLAS Linux box where matmat may win). */
+    /* Las proyecciones del prefill pueden ir por qwen_matmat_bf16 (pesos bf16
+     * directos, sin convertir cada capa a f32), pero el sgemm de BLAS es el camino
+     * por defecto: en M1 el de Accelerate usa el coprocesador AMX y supera unas
+     * 4,7 veces al matmat NEON. QWEN_PREFILL_MATMAT=1/0 fuerza uno u otro (p. ej.
+     * para medir en una máquina Linux con BLAS débil, donde matmat podría ganar). */
     static __thread int mm_env = -1;
     if (mm_env < 0) {
         const char *e = getenv("QWEN_PREFILL_MATMAT");
         if (e) mm_env = (e[0] == '1');
-#ifdef USE_BLAS
         else mm_env = 0;   /* AMX/BLAS sgemm wins on M1; keep it */
-#else
-        else mm_env = 1;   /* no BLAS: matmat_bf16 >> scalar, and skips the convert */
-#endif
     }
     int use_matmat = mm_env;
     static __thread float *pp_xT = NULL, *pp_yT = NULL;
@@ -795,7 +787,6 @@ int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
             prefill_proj_matmat(pref_k, l->wk_bf16, pref_x_norm, seq_len, h, kv_dim, pp_xT, pp_yT);
             prefill_proj_matmat(pref_v, l->wv_bf16, pref_x_norm, seq_len, h, kv_dim, pp_xT, pp_yT);
         } else {
-#ifdef USE_BLAS
         /* x_norm[seq_len, h] × W^T[h, out_dim] = out[seq_len, out_dim] */
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     seq_len, q_dim, h, 1.0f,
@@ -806,32 +797,6 @@ int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     seq_len, kv_dim, h, 1.0f,
                     pref_x_norm, h, wv_f32, h, 0.0f, pref_v, kv_dim);
-#else
-        for (int s = 0; s < seq_len; s++) {
-            const float *xs = pref_x_norm + (int64_t)s * h;
-            float *qs = pref_q + (int64_t)s * q_dim;
-            float *ks = pref_k + (int64_t)s * kv_dim;
-            float *vs = pref_v + (int64_t)s * kv_dim;
-            for (int o = 0; o < q_dim; o++) {
-                float sum = 0.0f;
-                const float *row = wq_f32 + (int64_t)o * h;
-                for (int i = 0; i < h; i++) sum += row[i] * xs[i];
-                qs[o] = sum;
-            }
-            for (int o = 0; o < kv_dim; o++) {
-                float sum = 0.0f;
-                const float *row = wk_f32 + (int64_t)o * h;
-                for (int i = 0; i < h; i++) sum += row[i] * xs[i];
-                ks[o] = sum;
-            }
-            for (int o = 0; o < kv_dim; o++) {
-                float sum = 0.0f;
-                const float *row = wv_f32 + (int64_t)o * h;
-                for (int i = 0; i < h; i++) sum += row[i] * xs[i];
-                vs[o] = sum;
-            }
-        }
-#endif
         }
 
         /* 3. Q/K RMSNorm per-head */
@@ -864,24 +829,11 @@ int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
             for (int64_t i = 0; i < (int64_t)seq_len * h; i++)
                 residual[i] += pref_proj[i];
         } else {
-#ifdef USE_BLAS
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     seq_len, h, q_dim, 1.0f,
                     pref_attn_out, q_dim, wo_f32, q_dim, 0.0f, pref_proj, h);
         for (int64_t i = 0; i < (int64_t)seq_len * h; i++)
             residual[i] += pref_proj[i];
-#else
-        for (int s = 0; s < seq_len; s++) {
-            float *xs = residual + (int64_t)s * h;
-            const float *attn = pref_attn_out + (int64_t)s * q_dim;
-            for (int o = 0; o < h; o++) {
-                float sum = 0.0f;
-                const float *row = wo_f32 + (int64_t)o * q_dim;
-                for (int i = 0; i < q_dim; i++) sum += row[i] * attn[i];
-                xs[o] += sum;
-            }
-        }
-#endif
         }
 
         /* 8. Post-attention RMSNorm */
@@ -891,23 +843,10 @@ int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
         if (use_matmat) {
             prefill_proj_matmat(pref_gate, l->gate_up_fused_bf16, pref_x_norm, seq_len, h, 2 * inter, pp_xT, pp_yT);
         } else {
-#ifdef USE_BLAS
         /* Single sgemm: output is [seq_len, 2*inter] interleaved */
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     seq_len, 2 * inter, h, 1.0f,
                     pref_x_norm, h, gate_up_f32, h, 0.0f, pref_gate, 2 * inter);
-#else
-        for (int s = 0; s < seq_len; s++) {
-            const float *xs = pref_x_norm + (int64_t)s * h;
-            float *out = pref_gate + (int64_t)s * 2 * inter;
-            for (int o = 0; o < 2 * inter; o++) {
-                float sum = 0.0f;
-                const float *row = gate_up_f32 + (int64_t)o * h;
-                for (int i = 0; i < h; i++) sum += row[i] * xs[i];
-                out[o] = sum;
-            }
-        }
-#endif
         }
 
         /* SiLU(gate) * up on interleaved pairs, compact to stride=inter.
@@ -927,24 +866,11 @@ int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
             for (int64_t i = 0; i < (int64_t)seq_len * h; i++)
                 residual[i] += pref_proj[i];
         } else {
-#ifdef USE_BLAS
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     seq_len, h, inter, 1.0f,
                     pref_gate, inter, down_f32, inter, 0.0f, pref_proj, h);
         for (int64_t i = 0; i < (int64_t)seq_len * h; i++)
             residual[i] += pref_proj[i];
-#else
-        for (int s = 0; s < seq_len; s++) {
-            float *xs = residual + (int64_t)s * h;
-            const float *gs = pref_gate + (int64_t)s * inter;
-            for (int o = 0; o < h; o++) {
-                float sum = 0.0f;
-                const float *row = down_f32 + (int64_t)o * inter;
-                for (int i = 0; i < inter; i++) sum += row[i] * gs[i];
-                xs[o] += sum;
-            }
-        }
-#endif
         }
 
         if (ctx->debug) {

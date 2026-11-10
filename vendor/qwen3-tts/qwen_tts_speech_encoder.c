@@ -31,12 +31,10 @@
 #include <string.h>
 #include <math.h>
 
-#ifdef USE_BLAS
 #ifdef __APPLE__
 #include <Accelerate/Accelerate.h>
 #else
 #include <cblas.h>
-#endif
 #endif
 
 /* ========================================================================
@@ -73,7 +71,6 @@ static void enc_causal_conv1d(float *out, const float *in,
     if (stride > 1) pad_left = kernel - stride; /* for strided convs */
     int out_len = (in_len + pad_left - (kernel - 1) * dilation - 1) / stride + 1;
 
-#ifdef USE_BLAS
     if (kernel == 1 && stride == 1) {
         /* k=1: direct matmul */
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
@@ -85,7 +82,6 @@ static void enc_causal_conv1d(float *out, const float *in,
                     out[(int64_t)oc * out_len + t] += bias[oc];
         return;
     }
-#endif
 
     memset(out, 0, (int64_t)out_ch * out_len * sizeof(float));
     for (int oc = 0; oc < out_ch; oc++) {
@@ -403,7 +399,6 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
         }
 
         /* QKV projections */
-#ifdef USE_BLAS
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     n_seq, qkv_dim, hidden, 1.0f,
                     x_norm, hidden, enc->transformer[layer].attn_q, hidden, 0.0f, q, qkv_dim);
@@ -413,22 +408,6 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     n_seq, qkv_dim, hidden, 1.0f,
                     x_norm, hidden, enc->transformer[layer].attn_v, hidden, 0.0f, vv, qkv_dim);
-#else
-        for (int s = 0; s < n_seq; s++) {
-            const float *xs = x_norm + s * hidden;
-            for (int o = 0; o < qkv_dim; o++) {
-                float sq = 0, sk = 0, sv = 0;
-                for (int i = 0; i < hidden; i++) {
-                    sq += enc->transformer[layer].attn_q[(int64_t)o * hidden + i] * xs[i];
-                    sk += enc->transformer[layer].attn_k[(int64_t)o * hidden + i] * xs[i];
-                    sv += enc->transformer[layer].attn_v[(int64_t)o * hidden + i] * xs[i];
-                }
-                q[s * qkv_dim + o] = sq;
-                kk[s * qkv_dim + o] = sk;
-                vv[s * qkv_dim + o] = sv;
-            }
-        }
-#endif
 
         /* NeoX split-half RoPE */
         for (int s = 0; s < n_seq; s++) {
@@ -492,7 +471,6 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
         }
 
         /* Output proj + layer_scale + residual */
-#ifdef USE_BLAS
         {
             float *oproj = x_norm; /* reuse as temp */
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
@@ -510,20 +488,6 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
                 }
             }
         }
-#else
-        for (int s = 0; s < n_seq; s++) {
-            float *xs = h_buf + s * hidden;
-            const float *attn = attn_out + s * qkv_dim;
-            for (int o = 0; o < hidden; o++) {
-                float sum = 0;
-                for (int i = 0; i < qkv_dim; i++)
-                    sum += enc->transformer[layer].attn_o[(int64_t)o * qkv_dim + i] * attn[i];
-                const float *ls = enc->transformer[layer].attn_layer_scale;
-                if (ls) sum *= ls[o];
-                xs[o] += sum;
-            }
-        }
-#endif
 
         /* Post-attn LayerNorm */
         for (int s = 0; s < n_seq; s++) {
@@ -543,7 +507,6 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
         }
 
         /* GELU MLP: fc1→GELU→fc2 + layer_scale + residual */
-#ifdef USE_BLAS
         {
             float *fc1_out = (float *)aligned_malloc((int64_t)n_seq * inter * sizeof(float));
             cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
@@ -573,28 +536,6 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
             }
             free(fc2_out);
         }
-#else
-        for (int s = 0; s < n_seq; s++) {
-            const float *xs = x_norm + s * hidden;
-            float *hs = h_buf + s * hidden;
-            float *fc1 = (float *)aligned_malloc(inter * sizeof(float));
-            for (int o = 0; o < inter; o++) {
-                float sum = 0;
-                for (int i = 0; i < hidden; i++)
-                    sum += enc->transformer[layer].ffn_fc1[(int64_t)o * hidden + i] * xs[i];
-                fc1[o] = 0.5f * sum * (1.0f + erff(sum * 0.7071067811865476f));
-            }
-            for (int o = 0; o < hidden; o++) {
-                float sum = 0;
-                for (int i = 0; i < inter; i++)
-                    sum += enc->transformer[layer].ffn_fc2[(int64_t)o * inter + i] * fc1[i];
-                const float *ls = enc->transformer[layer].ffn_layer_scale;
-                if (ls) sum *= ls[o];
-                hs[o] += sum;
-            }
-            free(fc1);
-        }
-#endif
 
         if (ctx->debug && layer == 0)
             fprintf(stderr, "[ENC] Transformer L0 out [:5]: [%.6f, %.6f, %.6f, %.6f, %.6f]\n",
@@ -647,20 +588,10 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
         /* Project: [n_frames, 512] → [n_frames, 256] using encoder's semantic input_proj */
         float *projected = (float *)aligned_malloc((int64_t)n_frames * cb_dim * sizeof(float));
         const float *proj_w = enc->rvq_semantic_input_proj; /* [256, 512, 1] = [256, 512] */
-#ifdef USE_BLAS
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     n_frames, cb_dim, hidden, 1.0f,
                     enc_hidden, hidden, proj_w, hidden,
                     0.0f, projected, cb_dim);
-#else
-        for (int f = 0; f < n_frames; f++)
-            for (int o = 0; o < cb_dim; o++) {
-                float sum = 0;
-                for (int i = 0; i < hidden; i++)
-                    sum += proj_w[(int64_t)o * hidden + i] * enc_hidden[(int64_t)f * hidden + i];
-                projected[(int64_t)f * cb_dim + o] = sum;
-            }
-#endif
 
         /* Nearest neighbor in codebook 0 */
         const float *codebook = sd->codebook[0]; /* [2048, 256] */
@@ -705,20 +636,10 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
         /* Re-project using encoder's acoustic input_proj for the residual */
         float *residual = (float *)aligned_malloc((int64_t)n_frames * cb_dim * sizeof(float));
         const float *rest_proj_w = enc->rvq_acoustic_input_proj;
-#ifdef USE_BLAS
         cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
                     n_frames, cb_dim, hidden, 1.0f,
                     enc_hidden, hidden, rest_proj_w, hidden,
                     0.0f, residual, cb_dim);
-#else
-        for (int f = 0; f < n_frames; f++)
-            for (int o = 0; o < cb_dim; o++) {
-                float sum = 0;
-                for (int i = 0; i < hidden; i++)
-                    sum += rest_proj_w[(int64_t)o * hidden + i] * enc_hidden[(int64_t)f * hidden + i];
-                residual[(int64_t)f * cb_dim + o] = sum;
-            }
-#endif
 
         /* Subtract the semantic codebook's quantized contribution from residual */
         /* Wait — actually the rvq_first and rvq_rest operate on independent projections.
