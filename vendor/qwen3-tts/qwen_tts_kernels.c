@@ -2599,6 +2599,13 @@ static void q4_0_matvec_avx2(float *y, const int8_t *qx, float sx,
         __m256 s0 = _mm256_setzero_ps(), s1 = _mm256_setzero_ps();
         for (int b = 0; b < nb; b++) {
             __m256i a = _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE));
+            /* Prefetch por software ~288 bytes por delante en cada una de las dos filas:
+             * el núcleo entero consume los pesos mucho más rápido que el de coma flotante
+             * y, con el bus de memoria saturado por otros procesos, el prefetch hardware
+             * no cubre la latencia de dos flujos intercalados. Anticipar las líneas evita
+             * esperar un fallo de caché por bloque. Prefetch más allá del final es inocuo. */
+            _mm_prefetch((const char *)&r0[b + 16], _MM_HINT_T0);
+            _mm_prefetch((const char *)&r1[b + 16], _MM_HINT_T0);
             s0 = q4_0_avx2_block(s0, &r0[b], a, sumq[b]);
             s1 = q4_0_avx2_block(s1, &r1[b], a, sumq[b]);
         }
