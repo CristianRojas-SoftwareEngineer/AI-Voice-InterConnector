@@ -1928,16 +1928,21 @@ void qwen_quantize_bf16_to_int8(const uint16_t *src_bf16, int rows, int cols,
     }
 }
 
-/* Comprobación del tamaño de la activación que consumen las multiplicaciones
- * cuantizadas: la activación se cuantiza en un búfer de pila de `max` elementos y
- * q4_0 exige además columnas múltiplo del bloque (`mult`). No hay ruta de
- * respaldo para tamaños mayores: se informa y se aborta. */
-static void quant_cols_check(const char *op, int cols, int max, int mult) {
-    if (cols > max || cols % mult != 0) {
-        fprintf(stderr, "Error: %s no admite cols=%d (máximo %d, múltiplo de %d); se aborta.\n",
-                op, cols, max, mult);
-        abort();
+/* Máximo de columnas de una matriz cuantizada: las multiplicaciones cuantizan la
+ * activación en un búfer de pila de este tamaño. */
+enum { QWEN_QACT_MAX = 8192 };
+
+/* Comprueba al cargar los pesos que una matriz cuantizada tiene un número de
+ * columnas que las multiplicaciones soportan: múltiplo del bloque de 32 y como
+ * máximo QWEN_QACT_MAX. Las multiplicaciones no vuelven a comprobarlo. */
+int qwen_quant_shape_check(const char *name, int cols) {
+    if (cols <= 0 || cols > QWEN_QACT_MAX || cols % Q4_0_BLOCK_SIZE != 0) {
+        fprintf(stderr, "error: la matriz cuantizada %s tiene %d columnas; "
+                "el motor exige un múltiplo de 32 y como máximo %d\n",
+                name, cols, QWEN_QACT_MAX);
+        return -1;
     }
+    return 0;
 }
 
 #if defined(__ARM_FEATURE_DOTPROD)
@@ -2150,9 +2155,7 @@ void qwen_matvec_int8(float *y, const int8_t *W, const float *scale,
      * entero (VNNI, SDOT, AVX2 o escalar según la ISA compilada). qx_buf es un búfer
      * de pila de tamaño fijo; qwen_parallel es síncrono, así que los workers del pool
      * lo leen con seguridad durante la llamada. */
-    enum { QX_MAX = 8192 };
-    quant_cols_check("qwen_matvec_int8", cols, QX_MAX, 1);
-    int8_t qx_buf[QX_MAX];
+    int8_t qx_buf[QWEN_QACT_MAX];
     float sx = quantize_act_int8(qx_buf, x, cols);
     int nt = g_n_threads;
 #if defined(__AVX512VNNI__)
@@ -2390,8 +2393,6 @@ static void q4_0_sdot_task(size_t tid, size_t nt, void *vc) {
 }
 #endif /* __ARM_FEATURE_DOTPROD */
 
-enum { Q4_QX_MAX = 8192 };
-
 #if defined(__AVX512VNNI__)
 /* x86 AVX-512-VNNI q4_0 matvec (plan_v4 C7) — the x86 twin of the ARM q4_0_matvec_sdot.
  * Quantize the shared activation to int8 once (caller), then per 32-weight block:
@@ -2416,7 +2417,7 @@ static void q4_0_matvec_vnni(float *y, const int8_t *qx, float sx,
      * and −8·Σqx depends only on the (shared) activation → precompute it ONCE per block.
      * So the row loop is ONE dpbusd + ONE reduce per block (v1 did two of each + a
      * broadcast +128 add). qx is shared across all out_dim rows → the precompute amortizes. */
-    int corr[Q4_QX_MAX / Q4_0_BLOCK_SIZE];
+    int corr[QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
     for (int b = 0; b < nb; b++) {
         __m512i xv = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE)));
         corr[b] = -8 * _mm512_reduce_add_epi32(_mm512_dpbusd_epi32(_mm512_setzero_si512(), ones, xv));
@@ -2479,7 +2480,7 @@ static void q4_0_matvec_vnni_v3(float *y, const int8_t *qx, float sx,
     int nb = cols / Q4_0_BLOCK_SIZE;
     const __m512i ones = _mm512_set1_epi8(1);
     /* Per-block −8·Σqx correction, shared across all rows (like v2). */
-    int corr[Q4_QX_MAX / Q4_0_BLOCK_SIZE];
+    int corr[QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
     for (int b = 0; b < nb; b++) {
         __m512i xv = _mm512_zextsi256_si512(
             _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE)));
@@ -2587,7 +2588,7 @@ static void q4_0_matvec_avx2(float *y, const int8_t *qx, float sx,
     qwen_ftz_on();  /* se ejecuta en cada worker del pool */
     int nb = cols / Q4_0_BLOCK_SIZE;
     const __m256i ones8 = _mm256_set1_epi8(1), ones16 = _mm256_set1_epi16(1);
-    int sumq[Q4_QX_MAX / Q4_0_BLOCK_SIZE];
+    int sumq[QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
     for (int b = 0; b < nb; b++) {
         __m256i a = _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE));
         sumq[b] = int8_hsum_epi32(_mm256_madd_epi16(_mm256_maddubs_epi16(ones8, a), ones16));
@@ -2662,8 +2663,7 @@ void qwen_matvec_q4_0(float *y, const q4_0_block_t *W, const float *x,
                        int rows, int cols) {
     /* Se cuantiza la activación compartida a int8 una vez y se hace el producto
      * escalar entero por bloque de nibbles (VNNI, SDOT, AVX2 o escalar según la ISA). */
-    quant_cols_check("qwen_matvec_q4_0", cols, Q4_QX_MAX, Q4_0_BLOCK_SIZE);
-    int8_t qx_buf[Q4_QX_MAX];
+    int8_t qx_buf[QWEN_QACT_MAX];
     float sx = quantize_act_int8(qx_buf, x, cols);
     int nt = g_n_threads;
 #if defined(__AVX512VNNI__)
@@ -2783,7 +2783,6 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
 #if defined(__AVX512VNNI__)
     /* x86 VNNI: núcleo matmat para B entre 2 y 16; fuera de ese rango, B matvec. */
     if (B >= 2 && B <= 16) {
-        quant_cols_check("qwen_matmat_int8", cols, Q4_QX_MAX, 1);
         int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
         float sx[16];
         matmat_quantize_cols(qXt, sx, X, cols, B);
@@ -2802,7 +2801,6 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
      * En Apple no se compila: el matmat int8 pierde frente a B matvec SDOT y se usa
      * esa vía. */
     if (B >= 2 && B <= 16) {
-        quant_cols_check("qwen_matmat_int8", cols, Q4_QX_MAX, 1);
         int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
         float sx[16];
         matmat_quantize_cols(qXt, sx, X, cols, B);
@@ -2819,7 +2817,6 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
 #elif !defined(__ARM_FEATURE_DOTPROD)
     /* AVX2 / escalar. */
     {
-        quant_cols_check("qwen_matmat_int8", cols, Q4_QX_MAX, 1);
         int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
         float sx[64];
         matmat_quantize_cols(qXt, sx, X, cols, B);
@@ -2844,7 +2841,6 @@ void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
 #if defined(__AVX512VNNI__)
     /* x86 VNNI: núcleo matmat para B entre 2 y 16; fuera de ese rango, B matvec. */
     if (B >= 2 && B <= 16) {
-        quant_cols_check("qwen_matmat_q4_0", cols, Q4_QX_MAX, Q4_0_BLOCK_SIZE);
         int nb = cols / Q4_0_BLOCK_SIZE;
         int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
         int *corr = (int *)matmat_alloc((size_t)B * nb * sizeof(int));
@@ -2871,7 +2867,6 @@ void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
 #elif defined(__ARM_FEATURE_MATMUL_INT8)
     /* i8mm SMMLA (también en Apple) para B entre 2 y 16; fuera de ese rango, B matvec. */
     if (B >= 2 && B <= 16) {
-        quant_cols_check("qwen_matmat_q4_0", cols, Q4_QX_MAX, Q4_0_BLOCK_SIZE);
         int nb = cols / Q4_0_BLOCK_SIZE;
         int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
         int *corr = (int *)matmat_alloc((size_t)B * nb * sizeof(int));
@@ -2898,7 +2893,6 @@ void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
 #elif !defined(__ARM_FEATURE_DOTPROD)
     /* AVX2 / escalar. */
     {
-        quant_cols_check("qwen_matmat_q4_0", cols, Q4_QX_MAX, Q4_0_BLOCK_SIZE);
         int8_t *qXt = (int8_t *)matmat_alloc((size_t)B * cols);
         float sx[64];
         matmat_quantize_cols(qXt, sx, X, cols, B);
@@ -3026,8 +3020,7 @@ void qwen_matvec_q4_0_qkv(float *q, float *k, float *v,
                             const q4_0_block_t *Wq, const q4_0_block_t *Wk,
                             const q4_0_block_t *Wv,
                             const float *x, int in_dim, int q_dim, int kv_dim) {
-    quant_cols_check("qwen_matvec_q4_0_qkv", in_dim, Q4_QX_MAX, Q4_0_BLOCK_SIZE);
-    int8_t qx_buf[Q4_QX_MAX];
+    int8_t qx_buf[QWEN_QACT_MAX];
     float sx = quantize_act_int8(qx_buf, x, in_dim);
     int nt = g_n_threads;
 #if defined(__AVX512VNNI__)

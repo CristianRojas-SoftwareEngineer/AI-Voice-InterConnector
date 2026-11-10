@@ -320,6 +320,14 @@ int qwen_talker_load(qwen_tts_ctx_t *ctx) {
     int q_dim = c->num_heads * c->head_dim;
     int kv_dim = c->num_kv_heads * c->head_dim;
 
+    /* Dimensiones de entrada de las matrices que se pueden cuantizar (también en
+     * la recuantización posterior a un override de pesos): hidden (q/k/v, gate/up),
+     * q_dim (o_proj) e intermediate (down). */
+    if (qwen_quant_shape_check("talker hidden_size", h) != 0 ||
+        qwen_quant_shape_check("talker q_dim", q_dim) != 0 ||
+        qwen_quant_shape_check("talker intermediate_size", c->intermediate_size) != 0)
+        return -1;
+
     if (!ctx->silent)
         fprintf(stderr, "Loading Talker weights (hidden=%d, head_dim=%d, layers=%d)...\n",
                 h, c->head_dim, c->num_layers);

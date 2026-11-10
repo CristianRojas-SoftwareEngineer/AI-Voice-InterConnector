@@ -148,6 +148,13 @@ int qwen_argmax_matvec_int8(const float *x, const int8_t *W, const float *scale,
 void qwen_quantize_bf16_to_int8(const uint16_t *src_bf16, int rows, int cols,
                                  int8_t *dst_int8, float *dst_scale);
 
+/* Comprueba al cargar los pesos que una matriz cuantizada (int8 o q4_0) tiene
+ * `cols` columnas (la dimensión de entrada) soportadas por las multiplicaciones:
+ * múltiplo de 32 y como máximo 8192. Devuelve 0 si es válida; si no, imprime un
+ * error con el nombre de la matriz por stderr y devuelve -1. Las multiplicaciones
+ * cuantizadas no vuelven a comprobar el tamaño: hay que llamarla antes de cuantizar. */
+int qwen_quant_shape_check(const char *name, int cols);
+
 /* fp16 (IEEE binary16) <-> f32 for the q4_0 block scale. Storage-only: all math
  * stays f32 — one convert per 32-weight block on kernels that are bandwidth-bound,
  * so the cost is noise while the block shrinks 20 -> 18 bytes (-10% q4 traffic;

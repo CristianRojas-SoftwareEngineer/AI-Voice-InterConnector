@@ -396,6 +396,17 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
     int cp_q_dim = c->cp_num_heads * c->cp_head_dim;
     int cp_kv_dim = c->cp_num_kv_heads * c->cp_head_dim;
 
+    /* Dimensiones de entrada de las matrices que se pueden cuantizar (por precisión
+     * global, por capa, por lm_head o en la recuantización posterior a un override):
+     * cp_hidden (q/k/v, gate/up, lm_heads), cp_q_dim (o_proj), cp_intermediate (down)
+     * y, si existe la proyección MTP, hidden_size del Talker. */
+    if (qwen_quant_shape_check("code predictor cp_hidden_size", cp_h) != 0 ||
+        qwen_quant_shape_check("code predictor cp_q_dim", cp_q_dim) != 0 ||
+        qwen_quant_shape_check("code predictor cp_intermediate_size", c->cp_intermediate_size) != 0 ||
+        (c->hidden_size != cp_h &&
+         qwen_quant_shape_check("proyeccion MTP hidden_size", c->hidden_size) != 0))
+        return -1;
+
     if (!ctx->silent)
         fprintf(stderr, "Loading Code Predictor weights (hidden=%d, layers=%d)...\n",
                 cp_h, c->cp_num_layers);
