@@ -481,6 +481,10 @@ int qwen_speech_decoder_load(qwen_tts_ctx_t *ctx) {
  * Decode: codes → audio
  * ======================================================================== */
 
+static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
+                                 float *signal, int cur_ch, int cur_len,
+                                 float **audio_out, int *n_samples_out);
+
 int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_frames,
                                 float **audio_out, int *n_samples) {
     qwen_speech_decoder_t *sd = &ctx->speech_dec;
@@ -855,204 +859,12 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
                 signal[2 * n_frames + 0], signal[3 * n_frames + 0],
                 signal[4 * n_frames + 0]);
     }
-    if (ctx->debug) fprintf(stderr, "[DECODER] ConvNeXt upsample...\n");
-    int cur_ch = latent_dim;
-    int cur_len = n_frames;
 
-    /* Step 7: ConvNeXt upsample (2 blocks, 2x each) */
-    for (int b = 0; b < 2; b++) {
-        qwen_sd_convnext_t *cn = &sd->convnext[b];
-        if (!cn->conv_weight) { fprintf(stderr, "ERROR: ConvNeXt block %d weights missing!\n", b); free(signal); return -1; }
-
-        int new_len = conv_transpose1d_out_len(cur_len, 2, 2);
-
-        /* Full ConvTranspose1d 2x upsample: [1024, 1024, 2] */
-        float *up_out = (float *)aligned_calloc((int64_t)cur_ch * new_len, sizeof(float));
-        causal_conv_transpose1d(up_out, signal, cn->conv_weight, cn->conv_bias,
-                                 cur_ch, cur_ch, cur_len, new_len, 2, 2);
-        free(signal); signal = up_out; cur_len = new_len;
-
-        /* ConvNeXt block: DW conv → LayerNorm → PW1 → GELU → PW2 → gamma → residual */
-        float *residual = (float *)aligned_malloc((int64_t)cur_ch * cur_len * sizeof(float));
-        memcpy(residual, signal, (int64_t)cur_ch * cur_len * sizeof(float));
-
-        /* Depthwise conv (k=7, groups=cur_ch, pad_left=6) */
-        float *dw_out = (float *)aligned_calloc((int64_t)cur_ch * cur_len, sizeof(float));
-        for (int ci = 0; ci < cur_ch; ci++) {
-            for (int t = 0; t < cur_len; t++) {
-                float sum = cn->dwconv_bias ? cn->dwconv_bias[ci] : 0;
-                for (int k = 0; k < 7; k++) {
-                    int in_pos = t - (6 - k);
-                    if (in_pos >= 0 && in_pos < cur_len)
-                        sum += cn->dwconv_weight[(int64_t)ci * 7 + k] * signal[(int64_t)ci * cur_len + in_pos];
-                }
-                dw_out[(int64_t)ci * cur_len + t] = sum;
-            }
-        }
-        memcpy(signal, dw_out, (int64_t)cur_ch * cur_len * sizeof(float));
-        free(dw_out);
-
-        /* LayerNorm per timestep (over channels) */
-        for (int t = 0; t < cur_len; t++) {
-            float sum = 0, sum_sq = 0;
-            for (int ci = 0; ci < cur_ch; ci++) {
-                float val = signal[(int64_t)ci * cur_len + t];
-                sum += val; sum_sq += val * val;
-            }
-            float mean = sum / cur_ch;
-            float var = sum_sq / cur_ch - mean * mean;
-            float inv_std = 1.0f / sqrtf(var + 1e-5f);
-            for (int ci = 0; ci < cur_ch; ci++) {
-                float *p = &signal[(int64_t)ci * cur_len + t];
-                *p = (*p - mean) * inv_std * cn->norm_weight[ci] + cn->norm_bias[ci];
-            }
-        }
-
-        /* PW1: 1024→4096 (pointwise = 1x1 conv = matmul per timestep) */
-        int pw_dim = cur_ch * 4;
-        float *pw1_out = (float *)aligned_malloc((int64_t)pw_dim * cur_len * sizeof(float));
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    pw_dim, cur_len, cur_ch,
-                    1.0f, cn->pwconv1_weight, cur_ch,
-                    signal, cur_len,
-                    0.0f, pw1_out, cur_len);
-        conv_add_bias(pw1_out, cn->pwconv1_bias, pw_dim, cur_len);
-
-        /* Exact GELU: x * 0.5 * (1 + erf(x / sqrt(2))) */
-        for (int64_t i = 0; i < (int64_t)pw_dim * cur_len; i++) {
-            float x = pw1_out[i];
-            pw1_out[i] = 0.5f * x * (1.0f + erff(x * 0.7071067811865476f));
-        }
-
-        /* PW2: 4096→1024 */
-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans,
-                    cur_ch, cur_len, pw_dim,
-                    1.0f, cn->pwconv2_weight, pw_dim,
-                    pw1_out, cur_len,
-                    0.0f, signal, cur_len);
-        conv_add_bias(signal, cn->pwconv2_bias, cur_ch, cur_len);
-        free(pw1_out);
-
-        /* Gamma + residual */
-        for (int ci = 0; ci < cur_ch; ci++) {
-            float g = cn->gamma[ci];
-            for (int t = 0; t < cur_len; t++)
-                signal[(int64_t)ci * cur_len + t] = residual[(int64_t)ci * cur_len + t]
-                    + signal[(int64_t)ci * cur_len + t] * g;
-        }
-        free(residual);
-    }
-
-    if (ctx->debug) fprintf(stderr, "[DECODER] Initial conv...\n");
-
-    /* Step 8: Initial conv (1024→1536, k=7, pad_left=6) */
-    if (!sd->initial_conv_weight) { free(signal); return -1; }
-    int new_ch = 1536;
-    int new_len = conv1d_out_len(cur_len, 7, 1, 6);
-    float *conv_out = (float *)aligned_calloc((int64_t)new_ch * new_len, sizeof(float));
-    causal_conv1d(conv_out, signal, sd->initial_conv_weight, sd->initial_conv_bias,
-                  cur_ch, new_ch, cur_len, 7, 1);
-    free(signal); signal = conv_out; cur_ch = new_ch; cur_len = new_len;
-
-    /* Step 9: 4 Decoder upsample blocks */
-    int up_rates[4] = {8, 5, 4, 3};
-    int out_channels[4] = {768, 384, 192, 96};
-
-    if (ctx->debug) fprintf(stderr, "[DECODER] Upsample blocks...\n");
-    for (int b = 0; b < 4; b++) {
-        qwen_sd_upsample_block_t *ub = &sd->upsample_blocks[b];
-        int rate = up_rates[b];
-        int kernel = rate * 2;
-        int out_ch = out_channels[b];
-
-        if (!ub->upsample.conv_weight) {
-            fprintf(stderr, "ERROR: Upsample block %d weights missing!\n", b);
-            free(signal); return -1;
-        }
-
-        /* Snake activation before upsample */
-        if (ub->upsample.snake_alpha && ub->upsample.snake_beta)
-            snake_activation(signal, cur_ch, cur_len, ub->upsample.snake_alpha, ub->upsample.snake_beta);
-
-        /* ConvTranspose1d upsample: [in_ch, out_ch, kernel] */
-        int up_len = conv_transpose1d_out_len(cur_len, kernel, rate);
-        float *up_out = (float *)aligned_calloc((int64_t)out_ch * up_len, sizeof(float));
-        causal_conv_transpose1d(up_out, signal, ub->upsample.conv_weight, ub->upsample.conv_bias,
-                                 cur_ch, out_ch, cur_len, up_len, kernel, rate);
-        free(signal); signal = up_out; cur_ch = out_ch; cur_len = up_len;
-
-        /* 3 residual blocks with dilations [1, 3, 9] */
-        int dilations[3] = {1, 3, 9};
-        for (int r = 0; r < 3; r++) {
-            int dil = dilations[r];
-
-            float *res = (float *)aligned_malloc((int64_t)cur_ch * cur_len * sizeof(float));
-            memcpy(res, signal, (int64_t)cur_ch * cur_len * sizeof(float));
-
-            /* Snake 1 */
-            if (ub->res_blocks[r].snake1_alpha && ub->res_blocks[r].snake1_beta)
-                snake_activation(signal, cur_ch, cur_len,
-                                  ub->res_blocks[r].snake1_alpha, ub->res_blocks[r].snake1_beta);
-
-            /* Conv1 (k=7, dilation, causal): [ch, ch, 7] */
-            float *c1_out = (float *)aligned_calloc((int64_t)cur_ch * cur_len, sizeof(float));
-            causal_conv1d(c1_out, signal, ub->res_blocks[r].conv1_weight, ub->res_blocks[r].conv1_bias,
-                          cur_ch, cur_ch, cur_len, 7, dil);
-            memcpy(signal, c1_out, (int64_t)cur_ch * cur_len * sizeof(float));
-            free(c1_out);
-
-            /* Snake 2 */
-            if (ub->res_blocks[r].snake2_alpha && ub->res_blocks[r].snake2_beta)
-                snake_activation(signal, cur_ch, cur_len,
-                                  ub->res_blocks[r].snake2_alpha, ub->res_blocks[r].snake2_beta);
-
-            /* Conv2 (k=1): [ch, ch, 1] */
-            float *c2_out = (float *)aligned_calloc((int64_t)cur_ch * cur_len, sizeof(float));
-            causal_conv1d(c2_out, signal, ub->res_blocks[r].conv2_weight, ub->res_blocks[r].conv2_bias,
-                          cur_ch, cur_ch, cur_len, 1, 1);
-
-            /* Residual add */
-            for (int64_t i = 0; i < (int64_t)cur_ch * cur_len; i++)
-                signal[i] = res[i] + c2_out[i];
-            free(c2_out);
-            free(res);
-        }
-
-        if (ctx->debug) fprintf(stderr, "[DECODER]   Block %d done: ch=%d, len=%d\n", b+1, cur_ch, cur_len);
-    }
-
-    if (ctx->debug) fprintf(stderr, "[DECODER] Final conv...\n");
-
-    /* Step 10: Final Snake + Conv (96→1, k=7) */
-    if (!sd->final_snake.alpha || !sd->final_conv_weight) {
-        fprintf(stderr, "ERROR: Final snake/conv weights missing!\n");
-        free(signal); return -1;
-    }
-
-    /* Final snake activation */
-    snake_activation(signal, cur_ch, cur_len, sd->final_snake.alpha, sd->final_snake.beta);
-
-    /* Final conv: [1, 96, 7] */
-    int audio_len = conv1d_out_len(cur_len, 7, 1, 6);
-    float *audio = (float *)aligned_calloc(audio_len, sizeof(float));
-    for (int t = 0; t < audio_len; t++) {
-        float sum = sd->final_conv_bias ? sd->final_conv_bias[0] : 0;
-        for (int ic = 0; ic < cur_ch; ic++) {
-            for (int k = 0; k < 7; k++) {
-                int in_pos = t - (6 - k);
-                if (in_pos >= 0 && in_pos < cur_len)
-                    sum += sd->final_conv_weight[(int64_t)ic * 7 + k] * signal[(int64_t)ic * cur_len + in_pos];
-            }
-        }
-        audio[t] = sum;
-    }
-    free(signal);
-
-    /* Clamp to [-1, 1] */
-    for (int i = 0; i < audio_len; i++) {
-        if (audio[i] < -1.0f) audio[i] = -1.0f;
-        if (audio[i] > 1.0f) audio[i] = 1.0f;
-    }
+    /* Step 7: red convolucional (ConvNeXt, conv inicial, bloques de upsample y conv final) */
+    float *audio = NULL;
+    int audio_len = 0;
+    if (conv_decoder_forward(ctx, signal, latent_dim, n_frames, &audio, &audio_len) != 0)
+        return -1;
 
     *audio_out = audio;
     *n_samples = audio_len;
@@ -1067,12 +879,13 @@ int qwen_speech_decoder_decode(qwen_tts_ctx_t *ctx, const int *codes, int n_fram
 /* ========================================================================
  * Streaming Incremental Decode
  *
- * Instead of re-decoding ALL accumulated frames each streaming chunk (O(n²)),
- * this processes only NEW frames through VQ → pre-transformer (with KV cache),
- * caches the latent output, and runs the conv decoder on a small window
- * (context + new frames) for O(1) per chunk.
+ * En lugar de redecodificar todas las tramas acumuladas en cada fragmento
+ * (O(n²)), se procesan solo las tramas NUEVAS por VQ → pre-transformer (con
+ * caché KV), se guarda la salida latente y se ejecuta la red convolucional con
+ * estado sobre las tramas nuevas, con coste O(1) por fragmento.
  *
- * Audio output is exactly 1920 samples per codec frame (by design: 4×480× upsample).
+ * La salida de audio es exactamente de 1920 muestras por trama del códec (por
+ * diseño: upsample 4×480×).
  * ======================================================================== */
 
 /* Initialize/reset streaming state */
@@ -1100,30 +913,25 @@ void qwen_sd_stream_free(qwen_sd_stream_state_t *st) {
     memset(st, 0, sizeof(*st));
 }
 
-/* Run conv decoder (ConvNeXt + initial conv + upsample blocks + final conv)
- * on a signal in channel-first format [latent_dim, n_frames].
- * Returns audio samples. This is the same pipeline as steps 7-10 in the
- * full decode, extracted as a helper to avoid duplication. */
-
-/* ConvNeXt block tail: LayerNorm -> pw1(+GELU) -> pw2 -> gamma*x + residual,
- * in place on `signal` [cur_ch, cur_len]. Every step is per-timestep, so this is
- * identical for the one-shot and the streaming decode (no cross-chunk state) —
- * hence shared by both. */
+/* Cola de un bloque ConvNeXt: LayerNorm -> pw1(+GELU) -> pw2 -> gamma*x + residual,
+ * in situ sobre `signal` [cur_ch, cur_len]. Cada paso es por instante de tiempo,
+ * sin estado entre fragmentos, así que la comparten la decodificación completa
+ * y la de streaming. */
 static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *residual,
                          int cur_ch, int cur_len) {
     /* LayerNorm (per-timestep) */
     for (int t = 0; t < cur_len; t++) {
-        float mean = 0, var = 0;
-        for (int c = 0; c < cur_ch; c++) mean += signal[(int64_t)c * cur_len + t];
-        mean /= cur_ch;
-        for (int c = 0; c < cur_ch; c++) {
-            float d = signal[(int64_t)c * cur_len + t] - mean;
-            var += d * d;
+        float sum = 0, sum_sq = 0;
+        for (int ci = 0; ci < cur_ch; ci++) {
+            float val = signal[(int64_t)ci * cur_len + t];
+            sum += val; sum_sq += val * val;
         }
-        var = 1.0f / sqrtf(var / cur_ch + 1e-5f);
-        for (int c = 0; c < cur_ch; c++) {
-            float x = (signal[(int64_t)c * cur_len + t] - mean) * var;
-            signal[(int64_t)c * cur_len + t] = x * cn->norm_weight[c] + cn->norm_bias[c];
+        float mean = sum / cur_ch;
+        float var = sum_sq / cur_ch - mean * mean;
+        float inv_std = 1.0f / sqrtf(var + 1e-5f);
+        for (int ci = 0; ci < cur_ch; ci++) {
+            float *p = &signal[(int64_t)ci * cur_len + t];
+            *p = (*p - mean) * inv_std * cn->norm_weight[ci] + cn->norm_bias[ci];
         }
     }
 
@@ -1162,15 +970,20 @@ static void convnext_mlp(qwen_sd_convnext_t *cn, float *signal, const float *res
     }
 }
 
+/* Red convolucional completa (ConvNeXt + conv inicial + bloques de upsample +
+ * conv final) sobre `signal` en formato channel-first [cur_ch, cur_len]. Toma la
+ * propiedad de `signal` y devuelve el audio recortado a [-1, 1]. */
 static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
                                  float *signal, int cur_ch, int cur_len,
                                  float **audio_out, int *n_samples_out) {
     qwen_speech_decoder_t *sd = &ctx->speech_dec;
 
+    if (ctx->debug) fprintf(stderr, "[DECODER] ConvNeXt upsample...\n");
+
     /* ConvNeXt upsample (2 blocks, 2x each → 4x total) */
     for (int b = 0; b < 2; b++) {
         qwen_sd_convnext_t *cn = &sd->convnext[b];
-        if (!cn->conv_weight) { free(signal); return -1; }
+        if (!cn->conv_weight) { fprintf(stderr, "ERROR: ConvNeXt block %d weights missing!\n", b); free(signal); return -1; }
 
         int new_len = conv_transpose1d_out_len(cur_len, 2, 2);
         float *up_out = (float *)aligned_calloc((int64_t)cur_ch * new_len, sizeof(float));
@@ -1198,6 +1011,8 @@ static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
         free(residual);
     }
 
+    if (ctx->debug) fprintf(stderr, "[DECODER] Initial conv...\n");
+
     /* Initial conv (1024→1536, k=7, pad_left=6) */
     if (!sd->initial_conv_weight) { free(signal); return -1; }
     int new_ch = 1536;
@@ -1211,13 +1026,17 @@ static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
     int up_rates[4] = {8, 5, 4, 3};
     int out_channels[4] = {768, 384, 192, 96};
 
+    if (ctx->debug) fprintf(stderr, "[DECODER] Upsample blocks...\n");
     for (int b = 0; b < 4; b++) {
         qwen_sd_upsample_block_t *ub = &sd->upsample_blocks[b];
         int rate = up_rates[b];
         int kernel = rate * 2;
         int out_ch = out_channels[b];
 
-        if (!ub->upsample.conv_weight) { free(signal); return -1; }
+        if (!ub->upsample.conv_weight) {
+            fprintf(stderr, "ERROR: Upsample block %d weights missing!\n", b);
+            free(signal); return -1;
+        }
 
         if (ub->upsample.snake_alpha && ub->upsample.snake_beta)
             snake_activation(signal, cur_ch, cur_len, ub->upsample.snake_alpha, ub->upsample.snake_beta);
@@ -1257,10 +1076,17 @@ static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
             free(c2_out);
             free(res);
         }
+
+        if (ctx->debug) fprintf(stderr, "[DECODER]   Block %d done: ch=%d, len=%d\n", b+1, cur_ch, cur_len);
     }
 
+    if (ctx->debug) fprintf(stderr, "[DECODER] Final conv...\n");
+
     /* Final Snake + Conv (96→1, k=7) */
-    if (!sd->final_snake.alpha || !sd->final_conv_weight) { free(signal); return -1; }
+    if (!sd->final_snake.alpha || !sd->final_conv_weight) {
+        fprintf(stderr, "ERROR: Final snake/conv weights missing!\n");
+        free(signal); return -1;
+    }
     snake_activation(signal, cur_ch, cur_len, sd->final_snake.alpha, sd->final_snake.beta);
 
     int audio_len = conv1d_out_len(cur_len, 7, 1, 6);
@@ -1289,19 +1115,20 @@ static int conv_decoder_forward(qwen_tts_ctx_t *ctx,
 }
 
 /* ========================================================================
- * Exact streaming conv decoder (ported from external PR #17, TrinityTF)
+ * Red convolucional de streaming exacto
  *
- * Same math as conv_decoder_forward, but consumes ONLY the new latent frames
- * and carries the causal state across calls:
- *   - conv1d (k>1): keep the last pad_left = (k-1)*dilation input columns. A
- *     zero-initialized tail is exactly the causal zero padding of chunk 0.
- *   - ConvTranspose: keep the (kernel-stride) untrimmed partial output columns
- *     and overlap-add them into the next chunk (bias is added on emit only, so
- *     the carry stays a pure partial sum).
- *   - snake / LayerNorm / pointwise / GELU / k=1 conv: per-timestep, stateless.
- * Chunked output therefore equals the one-shot decode. The old windowed path
- * re-decoded conv_rf=20 context frames per chunk (3x the work at chunk=10) and
- * only approximated the boundary; it is kept behind QWEN_SD_WINDOWED=1.
+ * Mismo cálculo que conv_decoder_forward, pero consume SOLO las tramas latentes
+ * nuevas y arrastra el estado causal entre llamadas:
+ *   - conv1d (k>1): conserva las últimas pad_left = (k-1)*dilation columnas de
+ *     entrada. Una cola inicializada a cero es exactamente el relleno causal de
+ *     ceros del primer fragmento.
+ *   - ConvTranspose: conserva las (kernel-stride) columnas parciales de salida
+ *     sin recortar y las suma por solapamiento en el fragmento siguiente (el
+ *     sesgo se añade solo al emitir, de modo que el acarreo sea una suma parcial
+ *     pura).
+ *   - snake / LayerNorm / pointwise / GELU / conv k=1: por instante, sin estado.
+ * La salida por fragmentos es por tanto igual a la decodificación completa, y
+ * cada fragmento cuesta trabajo proporcional solo a sus propias tramas.
  * ======================================================================== */
 
 /* Save the last tail_cols columns of [tail | chunk] back into tail. When the
@@ -1604,16 +1431,10 @@ static int conv_decoder_forward_streaming(qwen_tts_ctx_t *ctx, qwen_sd_stream_st
     return 0;
 }
 
-/* Use the exact stateful conv decoder unless the caller opts back into the old
- * windowed re-decode. */
-static int sd_exact_stream_enabled(void) {
-    const char *e = getenv("QWEN_SD_WINDOWED");
-    return !(e && *e && *e != '0');
-}
-
-/* Incremental streaming decode: process only new_frames through VQ→pre-transformer
- * (using KV cache), cache latent output, run conv decoder on windowed latent.
- * Returns only NEW audio samples (not previously emitted ones). */
+/* Decodificación incremental en streaming: procesa solo new_frames por
+ * VQ→pre-transformer (con caché KV), guarda la salida latente y ejecuta la red
+ * convolucional con estado sobre las tramas nuevas. Devuelve solo las muestras
+ * NUEVAS (no las emitidas antes). */
 /* Explicit-state variant: streams using the caller-owned `st` instead of the
  * single ctx->sd_stream. Lets the continuous-batching driver keep B independent
  * per-slot streaming decoder states (weights in ctx->speech_dec + ctx->config are
@@ -1928,21 +1749,15 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
         qwen_rms_norm(hidden, hidden, sd->final_norm_weight, new_frames, dec_hidden, eps);
     }
 
-    /* Grow/compact latent cache (plan_v4 D2): the conv decoder (Step 6) only reads
-     * the last conv_rf+chunk frames, so cap the cache instead of keeping the whole
-     * stream — same base-offset trim as the KV cache. */
+    /* Caché latente: el decodificador convolucional (Paso 6) solo lee las tramas
+     * nuevas del fragmento en curso, así que al agotarse la capacidad se descarta
+     * todo lo anterior en vez de conservar el flujo completo. Índice físico =
+     * absoluto - latent_base. */
     int lat_need = (st->latent_frames + new_frames) - st->latent_base;
     if (lat_need > st->latent_alloc) {
-        int lkeep_from = st->latent_frames - QWEN_SD_STREAM_CONV_RF;  /* context the next chunk needs */
-        if (lkeep_from < 0) lkeep_from = 0;
-        if (lkeep_from > st->latent_base && st->latent_frames > st->latent_base) {
-            int lkeep = st->latent_frames - lkeep_from;
-            int lshift = lkeep_from - st->latent_base;
-            if (lkeep > 0)
-                memmove(st->latent_cache, st->latent_cache + (int64_t)lshift * latent_dim,
-                        (int64_t)lkeep * latent_dim * sizeof(float));
-            st->latent_base = lkeep_from;
-            lat_need = (st->latent_frames + new_frames) - st->latent_base;
+        if (st->latent_frames > st->latent_base) {
+            st->latent_base = st->latent_frames;
+            lat_need = new_frames;
         }
         if (lat_need > st->latent_alloc) {
             int new_alloc = lat_need + 256;
@@ -1967,80 +1782,27 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
     free(hidden);
 
     /* === Step 6: conv decoder === */
-    /* Exact path: feed ONLY the new frames; the per-conv tails/carries in `st`
-     * hold everything the causal stack needs from the past. Emits exactly
-     * new_frames*1920 samples, equal to the corresponding slice of a one-shot
-     * decode. NOTE the physical index must be rebased by latent_base (D2 cache
-     * compaction) — the upstream PR reads without it and lands out of bounds
-     * once the cache has been trimmed. */
-    if (sd_exact_stream_enabled()) {
-        float *signal = (float *)aligned_malloc((int64_t)latent_dim * new_frames * sizeof(float));
-        if (!signal) return -1;
-        const float *lat_new = st->latent_cache
-            + (int64_t)(st->latent_frames - new_frames - st->latent_base) * latent_dim;
-        for (int f = 0; f < new_frames; f++)
-            for (int d = 0; d < latent_dim; d++)
-                signal[(int64_t)d * new_frames + f] = lat_new[(int64_t)f * latent_dim + d];
-
-        float *new_audio = NULL;
-        int new_samples = 0;
-        int ret = conv_decoder_forward_streaming(ctx, st, signal, new_frames,
-                                                 &new_audio, &new_samples);
-        if (ret != 0) return ret;
-
-        st->frames_decoded += new_frames;
-        st->samples_produced += new_samples;
-        *audio_out = new_audio;
-        *n_samples = new_samples;
-        return 0;
-    }
-
-    /* Legacy windowed path (QWEN_SD_WINDOWED=1): re-decode conv_rf context
-     * frames per chunk and throw them away. Approximate at the seams. */
-    /* Take last (RF + new_frames) from latent cache, or all if fewer */
-    int conv_rf = QWEN_SD_STREAM_CONV_RF;
-    int window_frames = st->latent_frames;
-    int context_frames = 0;
-    if (window_frames > conv_rf + new_frames) {
-        context_frames = conv_rf;
-        window_frames = conv_rf + new_frames;
-    } else {
-        context_frames = window_frames - new_frames;
-    }
-    int window_start = st->latent_frames - window_frames;
-
-    /* Transpose window to channel-first [1024, window_frames] for conv decoder */
-    float *signal = (float *)aligned_malloc((int64_t)latent_dim * window_frames * sizeof(float));
-    const float *lat_src = st->latent_cache + (int64_t)(window_start - st->latent_base) * latent_dim;
-    for (int f = 0; f < window_frames; f++)
+    /* Se alimenta solo con las tramas nuevas: las colas y acarreos de cada
+     * convolución guardados en `st` contienen todo lo que la pila causal necesita
+     * del pasado. Emite exactamente new_frames*1920 muestras, iguales a la porción
+     * correspondiente de una decodificación completa. El índice físico se rebasa
+     * con latent_base porque la caché latente se descarta al agotarse. */
+    float *signal = (float *)aligned_malloc((int64_t)latent_dim * new_frames * sizeof(float));
+    if (!signal) return -1;
+    const float *lat_new = st->latent_cache
+        + (int64_t)(st->latent_frames - new_frames - st->latent_base) * latent_dim;
+    for (int f = 0; f < new_frames; f++)
         for (int d = 0; d < latent_dim; d++)
-            signal[(int64_t)d * window_frames + f] = lat_src[(int64_t)f * latent_dim + d];
+            signal[(int64_t)d * new_frames + f] = lat_new[(int64_t)f * latent_dim + d];
 
-    /* Run conv decoder (ConvNeXt + initial conv + upsample blocks + final conv) */
-    float *full_audio = NULL;
-    int full_samples = 0;
-    int ret = conv_decoder_forward(ctx, signal, latent_dim, window_frames,
-                                    &full_audio, &full_samples);
+    float *new_audio = NULL;
+    int new_samples = 0;
+    int ret = conv_decoder_forward_streaming(ctx, st, signal, new_frames,
+                                             &new_audio, &new_samples);
     if (ret != 0) return ret;
-
-    /* Extract only the new audio (skip context portion) */
-    /* Audio is exactly 1920 samples per latent frame */
-    int context_samples = context_frames * 1920;
-    int new_samples = full_samples - context_samples;
-    if (new_samples <= 0) {
-        free(full_audio);
-        *audio_out = NULL;
-        *n_samples = 0;
-        return 0;
-    }
-
-    float *new_audio = (float *)aligned_malloc(new_samples * sizeof(float));
-    memcpy(new_audio, full_audio + context_samples, new_samples * sizeof(float));
-    free(full_audio);
 
     st->frames_decoded += new_frames;
     st->samples_produced += new_samples;
-
     *audio_out = new_audio;
     *n_samples = new_samples;
     return 0;

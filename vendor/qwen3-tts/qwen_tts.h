@@ -332,7 +332,6 @@ typedef struct {
 
 /* Speech decoder streaming state (incremental decode) */
 #define QWEN_SD_STREAM_MAX_LAYERS 8
-#define QWEN_SD_STREAM_CONV_RF 20  /* Conv decoder receptive field in latent frames */
 
 typedef struct {
     /* Pre-transformer KV cache: [n_layers][alloc × qkv_dim], row-major */
@@ -350,20 +349,22 @@ typedef struct {
     float *latent_cache;   /* [latent_alloc, 1024] */
     int latent_frames;     /* total latent frames produced (absolute, monotonic) */
     int latent_alloc;      /* allocated PHYSICAL capacity in frames */
-    int latent_base;       /* plan_v4 D2: absolute frame at physical slot 0. The
-                            * conv decoder only reads the last conv_rf+chunk frames,
-                            * so trim like the KV cache. physical = abs - latent_base. */
+    int latent_base;       /* trama absoluta almacenada en la posición física 0. El
+                            * decodificador convolucional solo lee las tramas del
+                            * fragmento en curso, así que la caché se descarta al
+                            * agotarse. físico = absoluto - latent_base. */
 
     /* Pre-conv left padding: last 2 timesteps of VQ output, channel-first [512, 2] */
     float *vq_pad;
     int vq_pad_valid;
 
-    /* Exact streaming conv-decoder state (PR #17 sub-change C, ported): per-conv
-     * input tails (the pad_left columns; zero-init == the causal zero padding the
-     * one-shot decode sees at t=0) and per-ConvTranspose overlap-add carries (the
-     * kernel-stride untrimmed output columns). With these the chunked decode
-     * consumes only the NEW frames and still equals the one-shot output, replacing
-     * the windowed conv_rf re-decode. Allocated lazily, per streaming slot. */
+    /* Estado de la red convolucional de streaming exacto: colas de entrada por
+     * convolución (las columnas pad_left; a cero equivalen al relleno causal de
+     * ceros que ve la decodificación completa en t=0) y acarreos de solapamiento
+     * por ConvTranspose (las columnas de salida sin recortar kernel-stride). Con
+     * ellos la decodificación por fragmentos consume solo las tramas NUEVAS y
+     * iguala la salida de la decodificación completa. Se reserva de forma
+     * perezosa, por ranura de streaming. */
     float *cs_cn_dw_tail[2];   /* ConvNeXt dwconv tails      [1024 x 6]        */
     float *cs_init_tail;       /* initial conv tail          [1024 x 6]        */
     float *cs_up_carry[4];     /* upsample convT carries     [out_ch x (k-s)]  */

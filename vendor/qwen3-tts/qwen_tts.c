@@ -486,10 +486,10 @@ static void *decoder_thread_fn(void *arg) {
     for (;;) {
         int avail, is_done;
         pthread_mutex_lock(&dt->mutex);
-        /* Ramped chunking: in streaming mode, emit a small FIRST chunk for low
-         * TTFA, then fall back to the full chunk size for throughput. The
-         * one-time small chunk costs a little extra decode (conv_rf recompute)
-         * but only once, so overall RTF is unaffected. */
+        /* Fragmentación escalonada: en modo streaming se emite un PRIMER
+         * fragmento pequeño para reducir el TTFA y después se vuelve al tamaño
+         * completo para mantener el rendimiento. El fragmento pequeño ocurre
+         * una sola vez, así que el RTF global no se ve afectado. */
         int target = dt->chunk_frames;
         if (dt->first_chunk_ms == 0 && dt->ctx->stream && target > 2)
             target = 2;
