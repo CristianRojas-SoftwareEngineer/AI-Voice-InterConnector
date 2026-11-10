@@ -273,6 +273,7 @@ typedef struct {
     struct {
         const float *conv1_weight;   /* [ch, ch, 7] */
         const float *conv1_bias;
+        float *conv1_wk;             /* conv1_weight reordenado a [7][ch][ch] (copia propia) */
         const float *conv2_weight;   /* [ch, ch, 1] */
         const float *conv2_bias;
         const float *snake1_alpha;   /* [ch] (log-space) */
@@ -296,7 +297,8 @@ typedef struct {
     /* Pre-conv */
     const float *pre_conv_weight;  /* [1024, 512, 3] */
     const float *pre_conv_bias;    /* [1024] */
-    
+    float *pre_conv_wk;            /* pre_conv_weight reordenado a [3][1024][512] (copia propia) */
+
     /* Pre-transformer */
     qwen_sd_pre_layer_t *pre_layers;  /* 8 layers */
     const float *input_proj_weight;   /* [512, 1024] */
@@ -315,6 +317,7 @@ typedef struct {
     /* Initial conv */
     const float *initial_conv_weight;  /* [1536, 1024, 7] */
     const float *initial_conv_bias;    /* [1536] */
+    float *initial_conv_wk;            /* initial_conv_weight reordenado a [7][1536][1024] (copia propia) */
     
     /* Decoder upsample blocks */
     qwen_sd_upsample_block_t upsample_blocks[4];
@@ -391,15 +394,16 @@ typedef struct {
  *   RES    copia residual de cada bloque de residuo
  *   EXT    [cola | fragmento] de la convolución con estado
  *   FULL   salida sin recortar de la convolución con estado y de la transpuesta
- *   WK     porción del peso por posición del kernel (convolución transpuesta)
- *   RK     producto parcial por posición del kernel (convolución transpuesta)
- *   COL    im2col de la convolución (con teselado)
+ *   CT     producto [out_ch*kernel, in_len] de la convolución transpuesta, antes
+ *          de dispersarlo sobre la salida
+ *   XP     entrada de la convolución causal con el relleno izquierdo de ceros
+ *          ya materializado ([in_ch, pad_left + length])
  *   PW1    activación intermedia de 4096 canales del MLP de ConvNeXt
  * El contenido de una ranura no sobrevive a un crecimiento: solo se pide
  * capacidad para un búfer cuyo contenido anterior ya está muerto. */
 typedef enum {
     QWEN_SDW_A, QWEN_SDW_B, QWEN_SDW_RES, QWEN_SDW_EXT, QWEN_SDW_FULL,
-    QWEN_SDW_WK, QWEN_SDW_RK, QWEN_SDW_COL, QWEN_SDW_PW1,
+    QWEN_SDW_CT, QWEN_SDW_XP, QWEN_SDW_PW1,
     QWEN_SDW_COUNT
 } qwen_sd_slot_t;
 
@@ -414,6 +418,11 @@ typedef struct {
 
 /* Libera todas las ranuras del espacio de trabajo y lo deja vacío. */
 void qwen_sd_workspace_free(qwen_sd_workspace_t *ws);
+
+/* Libera las copias reordenadas de los pesos de las convoluciones de kernel > 1
+ * (pre_conv_wk, initial_conv_wk, conv1_wk). Las crea la carga y las comparten los
+ * clones de worker, así que solo la descarga del contexto base debe llamarla. */
+void qwen_speech_decoder_free_conv_weights(qwen_speech_decoder_t *sd);
 
 /* ========================================================================
  * Audio Callback (for streaming)

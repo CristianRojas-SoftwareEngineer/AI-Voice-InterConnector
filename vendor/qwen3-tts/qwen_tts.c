@@ -728,6 +728,7 @@ void qwen_tts_unload(qwen_tts_ctx_t *ctx) {
     /* Free malloc'd codebooks (EMA-reconstructed, not from safetensors) */
     for (int i = 0; i < 16; i++) free(ctx->speech_dec.codebook[i]);
     free(ctx->speech_dec.pre_layers);
+    qwen_speech_decoder_free_conv_weights(&ctx->speech_dec);
     free(ctx->speech_dec.rope_cos); free(ctx->speech_dec.rope_sin);
     /* Close safetensors (all get_bf16/get_f32 pointers point into this data) */
     ingot_st_close(ctx->safetensors);
