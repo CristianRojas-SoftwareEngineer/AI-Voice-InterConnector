@@ -785,15 +785,13 @@ test-caps: $(TARGET)
 # Cross-ISA correctness gate for the SIMD matvecs (bf16/int8/argmax) that does NOT depend
 # on a full-pipeline golden, so it's immune to the greedy-decode trajectory fork that makes
 # end-to-end audio mel-corr a FALSE ALARM cross-ISA (the test-golden cross-ISA caveat).
-# Runs the dispatched path AND the scalar/widen fallback (QWEN_NO_SDOT/QWEN_NO_VNNI). On the
+# Ejecuta una sola pasada sobre la ruta compilada para la ISA de la compilación. On the
 # AVX-512 VPS this is THE proof the VNNI int8 dot + __m512 bf16 matvec are correct.
 # Needs no model — fast, run anywhere.
 test-selftest: $(TARGET)
-	@echo "=== Kernel self-test (dispatched path) ==="
-	@./$(TARGET) --self-test || { echo "FAIL: kernel self-test (dispatched)"; exit 1; }
-	@echo "=== Kernel self-test (scalar/widen fallback: QWEN_NO_SDOT=1 QWEN_NO_VNNI=1) ==="
-	@QWEN_NO_SDOT=1 QWEN_NO_VNNI=1 ./$(TARGET) --self-test || { echo "FAIL: kernel self-test (fallback)"; exit 1; }
-	@echo "PASS: kernel self-test (both paths numerically correct)"
+	@echo "=== Kernel self-test ==="
+	@./$(TARGET) --self-test || { echo "FAIL: kernel self-test"; exit 1; }
+	@echo "PASS: kernel self-test (numerically correct)"
 	@echo ""
 
 # ── Golden-reference correctness (mel-correlation + duration) ──
@@ -866,7 +864,7 @@ quant-ladder: $(TARGET)
 # ── Mode matrix: quant × delivery (the combinations real usage hits) ──
 # Each combination must RUN and produce coherent audio (non-empty + frames). Numeric
 # correctness for the deterministic configs is covered by test-golden; here we assert the
-# CROSS-PRODUCT works: int8/bf16 × normal/stream, plus SDOT on/off. One shell so a failure
+# CROSS-PRODUCT works: int8/bf16 × normal/stream. One shell so a failure
 # stops cleanly. Reloads the model each run (natural gap → reliable, unlike rapid-fire).
 test-modes: $(TARGET)
 	@echo "=== Mode matrix (quant × delivery) 0.6B ==="
@@ -877,10 +875,9 @@ test-modes: $(TARGET)
 	   echo "  PASS: $$2 ($$sz B)"; }; \
 	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_bf.wav >$(TEST_DIR)/m_bf.wav.log 2>&1; chk $(TEST_DIR)/m_bf.wav "bf16 normal"; \
 	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --stream --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_bfs.wav >$(TEST_DIR)/m_bfs.wav.log 2>&1; chk $(TEST_DIR)/m_bfs.wav "bf16 stream"; \
-	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --int8 --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_i8.wav >$(TEST_DIR)/m_i8.wav.log 2>&1; chk $(TEST_DIR)/m_i8.wav "int8 normal (SDOT)"; \
+	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --int8 --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_i8.wav >$(TEST_DIR)/m_i8.wav.log 2>&1; chk $(TEST_DIR)/m_i8.wav "int8 normal"; \
 	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --int8 --stream --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_i8s.wav >$(TEST_DIR)/m_i8s.wav.log 2>&1; chk $(TEST_DIR)/m_i8s.wav "int8 stream"; \
-	 QWEN_NO_SDOT=1 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --int8 --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_i8n.wav >$(TEST_DIR)/m_i8n.wav.log 2>&1; chk $(TEST_DIR)/m_i8n.wav "int8 normal (SDOT off)"; \
-	 echo "PASS: mode matrix (5 combinations)"
+	 echo "PASS: mode matrix (4 combinations)"
 	@echo ""
 
 # ── Custom voice (.qvoice) — skip-if-absent (voices/ is gitignored / local-only) ──

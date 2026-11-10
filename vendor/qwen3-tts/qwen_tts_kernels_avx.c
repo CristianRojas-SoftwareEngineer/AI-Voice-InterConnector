@@ -7,7 +7,7 @@
  *
  * ACTUAL AVX2 coverage (PLAN 21.3, 2026-06-03 — every NEON hot op now twinned):
  * HOT PATH (~90% of decode) — #elif defined(__AVX2__), 2-row fused / FMA:
- * - bf16_matvec_fused, int8_matvec_fused, q4_0_matvec_inner
+ * - bf16_matvec_fused, int8_matvec_avx2, q4_0_matvec_avx2 (producto escalar entero)
  * - qwen_argmax_matvec_bf16, qwen_argmax_matvec_int8
  * - qwen_causal_attention (+ _windowed, _bf16kv): score dot + online-softmax
  *   accumulators (qwen_acc_corr/wt/scale_avx2) + bf16-KV variants

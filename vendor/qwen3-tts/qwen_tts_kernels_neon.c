@@ -10,7 +10,6 @@
  *
  * Active NEON optimizations (in qwen_tts_kernels.c):
  * - bf16_matvec_fused: 2-row fused matvec, 32-element/iter, 8 accumulators
- * - int8_matvec_fused: 2-row fused INT8 matvec, 16-element/iter
  * - qwen_rms_norm: 8-element vectorized sum-of-squares + normalize
  * - qwen_causal_attention: 16-element unrolled dot-product, 4 accumulators
  * - qwen_causal_attention_windowed: same with sliding window
