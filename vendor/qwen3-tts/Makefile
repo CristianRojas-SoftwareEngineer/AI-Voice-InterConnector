@@ -4,7 +4,7 @@ UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 CC = gcc
 
-# Architecture / SIMD baseline (PLAN 21.3).
+# Línea base de arquitectura / SIMD.
 #   - macOS:      -mcpu=apple-m1 portable por defecto: M1 es el chip más antiguo
 #                 que soporta la versión mínima de macOS del producto, y todo Mac
 #                 con Apple Silicon posterior ejecuta su código. -march=native
@@ -16,8 +16,9 @@ CC = gcc
 #                 "AVX-512 Ryzen ran our scalar/illegal build" bug). Override with:
 #                   SIMD=scalar  -> no AVX2 (pre-2013 CPUs; uses portable C fallback)
 #                   SIMD=avx512  -> add AVX-512 (validate with Intel SDE / real HW)
-#   - Linux ARM:  -march=armv8-a portable por defecto (NEON es baseline de ARMv8-A);
-#                 SIMD=native -> -march=native solo para compilar y ejecutar en la misma CPU
+#   - Linux ARM:  -march=armv8.2-a+dotprod por defecto (el motor exige dotprod: SDOT es
+#                 la base del producto escalar entero); SIMD=native -> -march=native solo
+#                 para compilar y ejecutar en la misma CPU
 SIMD ?= auto
 ifeq ($(UNAME_S),Darwin)
     ifeq ($(SIMD),native)
@@ -32,9 +33,9 @@ else ifneq (,$(filter x86_64 amd64,$(UNAME_M)))
         # AVX-512 + VNNI + BF16 (native int8 dot + native bf16 dot VDPBF16PS).
         # Zen4/Zen5 (EPYC 9xx4/9xx5, Ryzen 7xxx+), Cooper Lake, Sapphire Rapids.
         # Check `--caps` runtime line for avx512bf16 BEFORE using this build.
-        # -mavx512dq: _mm512_insertf32x8 (C7v4 scale-vec) is a DQ intrinsic — gcc
-        # enforces the always_inline target match (clang cross-compile does not;
-        # caught on the EPYC 2026-08-04). Every VNNI-era CPU has DQ.
+        # -mavx512dq: gcc exige que el objetivo coincida con el de los intrinsics
+        # always_inline de DQ (la compilación cruzada con clang no lo exige). Toda CPU
+        # de la era VNNI tiene DQ.
         ARCH_FLAGS = -mavx512f -mavx512bw -mavx512vl -mavx512dq -mavx512vnni -mavx512bf16 -mavx2 -mfma
     else ifeq ($(SIMD),avx512vnni)
         # AVX-512 + VNNI (native int8 dot). Cascade Lake+/Ice Lake/Zen4+ (e.g. Ryzen 9950X3D).
@@ -481,7 +482,7 @@ test-emotion: $(TARGET)
 	@mkdir -p $(TEST_DIR)
 	@# Emotion is a 1.7B qlsteer-STEER feature (the legacy .vec mood-palette manifest was
 	@# retired 2026-07-08); the recipe weight (w12) is authoritative. 0.6B emotion is
-	@# parked-neutral. Source of truth: docs/emotion-THE-recipe.md + resolve_emotion_recipe.
+	@# parked-neutral. Source of truth: resolve_emotion_recipe en main.c.
 	@if [ -d $(MODEL_LARGE) ]; then \
 	   ./$(TARGET) -d $(MODEL_LARGE) -j1 -T 0 --seed 42 -s ryan -l Italian --emotion joy \
 	     --text "La riunione inizia domani mattina." -o $(TEST_DIR)/em_joy.wav 2>$(TEST_DIR)/em_joy.log; \
@@ -563,7 +564,7 @@ matmat-bench: $(TARGET)
 # syntax is verified NOW, before any M2+/AVX-512 hardware). Forces the -march so the
 # guarded BFMMLA/SMMLA/VNNI/BF16 paths actually compile; does NOT run (the host may
 # not execute them). The workflow guard for "develop on M1, deploy elsewhere".
-# See docs/hardware-testing.md §7. Syntax-only -> fast, no objects.
+# Solo comprueba la sintaxis: rápido, sin objetos.
 # Hereda las definiciones e includes de la plataforma (OpenBLAS, shims MinGW,
 # _GNU_SOURCE) y sustituye solo las banderas de ISA por las de cada comprobación.
 ISACHK = $(filter-out $(ARCH_FLAGS),$(CFLAGS_BASE)) -fsyntax-only
@@ -578,11 +579,11 @@ ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
 	  && echo "  arm armv8.6-a +bf16 +i8mm : OK (M2/M3/M4, Graviton3+)" || echo "  arm armv8.6-a +bf16 +i8mm : FAIL"
 	@$(CC) $(ISACHK) -march=armv9-a+sme2 -DACCELERATE_NEW_LAPACK qwen_tts_kernels.c 2>/dev/null \
 	  && echo "  arm armv9-a +sme2        : OK (M4/M5)" || echo "  arm armv9-a +sme2        : (toolchain lacks SME2 — skipped)"
-	@# Cross-compile the x86 AVX-512-VNNI paths (incl. the C7 q4 VNNI matvec) from the ARM
+	@# Cross-compile the x86 AVX-512-VNNI paths (incl. the q4 VNNI matvec) from the ARM
 	@# Mac via clang -target, so x86 kernel breakage is caught here without a rented box.
 	@clang -target x86_64-apple-macos13 $(ISACHK) -march=x86-64-v3 -mavx512f -mavx512bw -mavx512dq -mavx512vnni -mavx512bf16 \
 	  qwen_tts_kernels.c 2>/dev/null \
-	  && echo "  x86 avx512 +vnni (x-comp) : OK (Zen4/5, Ice Lake+; C7 q4-VNNI)" || echo "  x86 avx512 +vnni (x-comp) : (clang cross lacks target — skipped)"
+	  && echo "  x86 avx512 +vnni (x-comp) : OK (Zen4/5, Ice Lake+; q4-VNNI)" || echo "  x86 avx512 +vnni (x-comp) : (clang cross lacks target — skipped)"
 	@# talker.c carries the AVX-512 bf16<->f32 bulk-conversion paths (avx512-parity) —
 	@# compile-check it for x86 too (needs the ingot include).
 	@clang -target x86_64-apple-macos13 $(ISACHK) -Ithird_party/ingot/include -march=x86-64-v3 \
@@ -671,7 +672,7 @@ test-all: test-small test-large test-regression test-errors test-emotion test-em
 # false "we have AVX2/threading" belief can't survive: the binary states the truth and this
 # test enforces it. On ARM it MUST report NEON; on x86 it MUST report AVX2 (default build) or
 # scalar (SIMD=scalar) for matvec — a regression to the old un-wired SCALAR fails loudly. The
-# threads line must report an active pool (GCD/pthread/Win32), never SINGLE-THREAD (PLAN 21.2).
+# threads line must report an active pool (GCD/pthread/Win32), never SINGLE-THREAD.
 # Pure introspection, no model needed.
 
 test-caps: $(TARGET)

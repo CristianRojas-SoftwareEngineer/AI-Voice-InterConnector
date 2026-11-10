@@ -41,9 +41,9 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 ### Ramas MinGW/UCRT64 y ARM del `Makefile`
 
 - **Archivos**: `Makefile`.
-- **Qué cambia**: rama MinGW/UCRT64 (shims, OpenBLAS de `/ucrt64`, enlazado `-static` con `-lws2_32`) y rama ARM aarch64 que honra `SIMD` (`native`, etc.) con NEON como línea base portable. Deja anotado que las variantes deterministas de flags (`-ffp-contract=off`, con y sin `-ffast-math`) se evaluaron y se descartaron porque degradan el WER de `dub` corto; se mantiene `-ffast-math`.
-- **Por qué**: obtener un `qwen_tts.exe` autocontenido en Windows y binarios portables en ARM.
-- **Si se pierde**: no compila en Windows, o el binario ARM no es portable a CPUs más antiguas.
+- **Qué cambia**: rama MinGW/UCRT64 (shims, OpenBLAS de `/ucrt64`, enlazado `-static` con `-lws2_32`) y rama ARM aarch64 que honra `SIMD` (`native`, etc.) con `-march=armv8.2-a+dotprod` como línea base: el motor exige `dotprod` (ver «Exigencia de `dotprod` en Linux ARM64»). Deja anotado que las variantes deterministas de flags (`-ffp-contract=off`, con y sin `-ffast-math`) se evaluaron y se descartaron porque degradan el WER de `dub` corto; se mantiene `-ffast-math`.
+- **Por qué**: obtener un `qwen_tts.exe` autocontenido en Windows y binarios ARM portables a toda CPU ARMv8.2 con `dotprod`.
+- **Si se pierde**: no compila en Windows, o el binario ARM se compila sin `dotprod` y falla con `#error` o deja de ser portable a las CPUs de campo.
 
 ### Manifiesto UTF-8 incrustado en `qwen_tts.exe` (Windows)
 
@@ -74,13 +74,13 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Archivos**: se eliminaron `blog/`, `docs/` (parcial), `tests/`, `tools/` y `training/`.
 - **Qué cambia**: solo se conserva lo necesario para compilar y ejecutar el motor.
 - **Por qué**: reducir el tamaño del snapshot.
-- **Si se pierde**: no aplica, pero quedan rotos los enlaces del `README.md` a `docs/server.md` y similares, y los objetivos `test-serve-repro` y `bench-server` del `Makefile`.
+- **Si se pierde**: no aplica; los objetivos del `Makefile` y los enlaces del `README.md` que dependían de esos directorios se podaron (ver «Poda de objetivos del `Makefile`, archivos vacíos y enlaces»).
 
 ### Corrección de la afirmación sobre AVX2 en `CLAUDE.md`
 
 - **Archivos**: `CLAUDE.md`.
-- **Qué cambia**: la descripción de `qwen_tts_kernels.c` indica que los bucles calientes sí contienen AVX2 (verificado el 2026-08-24).
-- **Por qué**: el texto original afirmaba lo contrario.
+- **Qué cambia**: la descripción de `qwen_tts_kernels.c` indica que los bucles calientes sí contienen AVX2 y que las multiplicaciones cuantizadas usan un producto escalar entero (AVX2 `maddubs`, VNNI `dpbusd`, SDOT o bucle escalar entero) en todas las plataformas.
+- **Por qué**: el texto original afirmaba que no había AVX2 en los bucles calientes.
 - **Si se pierde**: la guía vuelve a describir mal los kernels; no afecta al binario.
 
 ### Eliminación de los backends GPU CUDA y Metal
@@ -138,3 +138,59 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Qué cambia**: el target enlaza `libingot.a`, igual que el binario principal.
 - **Por qué**: el codificador y el decodificador leen los pesos con las funciones de ingot, y sin la librería el enlace de `qwen_tts_decoder_tool` fallaba con referencias sin resolver.
 - **Si se pierde**: `make test-decoder-tool` deja de enlazar y no se puede validar la decodificación completa con un volcado fijo de códigos.
+
+### Espera activa del pool de hilos en Windows
+
+- **Archivos**: `qwen_tts_thread.c` (pool Win32, `qwen_pool_spin`, `qwen_cpu_relax`).
+- **Qué cambia**: los workers del pool Win32 giran sobre la generación del trabajo durante `QWEN_POOL_SPIN` iteraciones (4096 por defecto) antes de dormir en el evento, igual que el pool pthread; `qwen_pool_spin()` y `qwen_cpu_relax()` son comunes a ambos pools.
+- **Por qué**: las multiplicaciones cuantizadas duran microsegundos y despertar un hilo dormido en Windows cuesta más que la propia tarea; sin espera activa el reparto entre hilos se pierde en latencia de despertar.
+- **Si se pierde**: el pool Win32 vuelve a dormir en cada tarea y el Talker y el Code Predictor son más lentos en Windows, sin cambio de audio.
+
+### Producto escalar entero en AVX2 y en la ruta escalar
+
+- **Archivos**: `qwen_tts_kernels.c` (`quantize_act_int8_ref`, `quantize_act_int8`, `quantize_act_int8_cols`, `int8_matvec_avx2`, `q4_0_matvec_avx2`, sus equivalentes escalares y `qwen_caps_report`), `qwen_tts_kernels.h`.
+- **Qué cambia**: `qwen_matvec_int8`, `qwen_argmax_matvec_int8`, `qwen_matvec_q4_0` y `qwen_matvec_q4_0_qkv` cuantizan la activación a int8 con un único cuantizador (escala máx|x|/127, redondeo al par, saturación a [-128,127]; versiones AVX2, NEON y C con resultado idéntico) y multiplican con producto escalar entero en todas las ISA: AVX2 `maddubs` (int8 con `sign` + `maddubs` + `madd`, dos filas a la vez; q4 con nibbles sin signo × activación con signo, corrección de 8·Σqa y escala fp16 por bloque), VNNI `dpbusd`, SDOT y, sin SIMD, un bucle con acumulación int32. El núcleo q4 de AVX2 hace prefetch por software de 16 bloques por delante en cada una de las dos filas. `--caps` declara el producto escalar entero por ISA.
+- **Por qué**: el original dequantizaba cada peso a float y multiplicaba con FMA, lo que dejaba el cómputo por encima del ancho de banda en CPUs sin VNNI ni SDOT. El producto entero reduce el cómputo (en un Ryzen 7 5825U con Talker Q4_0 y Code Predictor INT8 el RTF sin carga baja de 0,93 a 0,76) y todas las plataformas comparten el mismo algoritmo. El prefetch evita que el núcleo q4, ahora más rápido que el flujo de memoria, espere un fallo de caché por bloque cuando el bus está saturado; no cambia ningún valor numérico.
+- **Si se pierde**: vuelve el producto en coma flotante, más lento y con resultados distintos según la ISA; sin el prefetch el Talker empeora con el bus de memoria ocupado.
+
+### `matmat` entero y elección fija de kernel en ARM
+
+- **Archivos**: `qwen_tts_kernels.c` (`qwen_matmat_int8`, `qwen_matmat_q4_0`, `matmat_via_matvec_*`, `matmat_alloc`, `matmat_oom`), `qwen_tts_kernels.h`.
+- **Qué cambia**: `qwen_matmat_int8` y `qwen_matmat_q4_0` cuantizan cada columna con el cuantizador por vector del matvec y multiplican con producto escalar entero. En AVX2 y escalar cada columna es bit a bit la de B llamadas a matvec (int8 y q4); en VNNI int8 es exacto y q4 acumula por pares de bloques; ARM con dotprod sin i8mm (y Apple en int8) hace B matvec; i8mm int8 se usa fuera de Apple y no en Apple, y q4 i8mm se usa siempre (difiere ~1e-7 de SDOT por el orden de acumulación). La elección es fija en tiempo de compilación, sin interruptores de entorno. Un fallo de memoria en un matmat agrupado imprime un error y llama a `abort()`.
+- **Por qué**: con el mismo cuantizador y la misma función de fila, una petición agrupada calcula igual que una individual (el audio no depende del tamaño del lote), y no hay rutas de respaldo que degraden el resultado sin avisar.
+- **Si se pierde**: el matmat agrupado da resultados distintos del matvec según la ISA y vuelven las rutas elegibles por entorno.
+
+### PREFILL2 como ruta única instrumentada
+
+- **Archivos**: `qwen_tts_code_predictor.c` (`cp_prefill2_mode`, macro `CPB_MARK`).
+- **Qué cambia**: el prefill del Code Predictor usa siempre la ruta PREFILL2 con CP uniforme int8 o q4 (`cp_prefill2_mode` devuelve 1, 2 o 0 si no aplica), sin la variable `QWEN_CP_PREFILL2`, y sus fases están instrumentadas con `CPB_MARK`.
+- **Por qué**: como matmat equivale a B matvec, la ruta agrupada da el mismo resultado que la secuencial y puede ser la única; la instrumentación permite medir cada fase.
+- **Si se pierde**: reaparece una segunda ruta de prefill seleccionable por entorno y sin garantía de igualdad con la vigente.
+
+### Exigencia de `dotprod` en Linux ARM64
+
+- **Archivos**: `Makefile` (`ARCH_FLAGS`, `ISACHK`, `check-isa`), `qwen_tts_kernels.c` (`#error` inicial).
+- **Qué cambia**: en Linux ARM64 el motor se compila por defecto con `-march=armv8.2-a+dotprod` (`SIMD=native` usa `-march=native`) y `qwen_tts_kernels.c` emite `#error` en ARM64 sin `__ARM_FEATURE_DOTPROD`. `check-isa` reconoce `arm64` y `aarch64`, comprueba la línea base `dotprod` y el rechazo de `armv8-a`, y desde x86 compila las rutas ARM con clang cruzado (`ISACHK_ARM_X`); `ISACHK` hereda las banderas de plataforma de `CFLAGS_BASE`.
+- **Por qué**: todas las multiplicaciones cuantizadas de ARM usan SDOT; no existe ruta de respaldo sin él, así que la ausencia debe fallar al compilar y no degradar en silencio.
+- **Si se pierde**: una compilación para `armv8-a` deja de fallar con un error claro y `check-isa` no detecta el fallo.
+
+### Comprobación de dimensiones al cargar el modelo
+
+- **Archivos**: `qwen_tts_kernels.c` y `qwen_tts_kernels.h` (`qwen_quant_shape_check`), `qwen_tts_talker.c` (`qwen_talker_load`), `qwen_tts_code_predictor.c` (`qwen_cp_load`).
+- **Qué cambia**: al cargar el modelo se comprueba, de forma incondicional, que las dimensiones de entrada de las matrices cuantizadas (tamaño oculto, dimensión de Q e intermedia del Talker y del Code Predictor) sean múltiplo de 32 y no mayores que 8192 (`QWEN_QACT_MAX`); si no, la carga falla con un error que nombra la dimensión. Las multiplicaciones no comprueban nada por llamada y cuantizan la activación en un búfer de pila de ese tamaño.
+- **Por qué**: un modelo con otras dimensiones desbordaría el búfer de pila o leería bloques incompletos; fallar una vez al cargar es más barato y más claro que comprobar en cada llamada.
+- **Si se pierde**: un modelo con dimensiones no soportadas corrompe la pila o da resultados erróneos sin error.
+
+### Eliminación de la coma flotante, de los interruptores y de la escalera VNNI
+
+- **Archivos**: `qwen_tts_kernels.c`, `qwen_tts_code_predictor.c`, `Makefile`.
+- **Qué cambia**: se eliminaron los kernels en coma flotante de int8 y q4 (`int8_matvec_fused`, `q4_0_matvec_inner` y similares), las variables de entorno `QWEN_NO_SDOT`, `QWEN_NO_VNNI`, `QWEN_NO_VNNI_QKV`, `QWEN_INT8_SDOT_MM`, `QWEN_NO_SMMLA`, `QWEN_APPLE_MMLA`, `QWEN_CP_PREFILL2`, `QWEN_Q4_VNNI_V3` y `QWEN_Q4_VNNI_V4`, y la escalera de versiones VNNI de q4: queda v3 (cuatro filas, dos bloques por `dpbusd`), con v2 para las filas sobrantes. `test-selftest` se ejecuta en una pasada y `test-modes` comprueba 4 combinaciones. Se conservan `QWEN_NO_BF16DOT`, `QWEN_NO_BFMMLA` y `QWEN_NO_SIN_POLY`.
+- **Por qué**: cada interruptor y cada versión alternativa dejaba una ruta sin cubrir por las pruebas y capaz de degradar en silencio; una sola ruta entera por ISA es la que se valida y se mide.
+- **Si se pierde**: reaparecen rutas alternativas seleccionables por entorno con numérica distinta de la validada.
+
+### Poda de objetivos del `Makefile`, archivos vacíos y enlaces
+
+- **Archivos**: `Makefile`, `README.md`, `qwen_tts_kernels_avx.c`, `qwen_tts_kernels_neon.c`, `qwen_tts_kernels_generic.c` y `qwen_tts_kernels_impl.h` (eliminados).
+- **Qué cambia**: se eliminaron veinte objetivos del `Makefile` sin fuentes en el snapshot (`emotion-demo`, `emotion-para-demo`, `emovoice`, `emo-06b-demo`, `para-demo`, `emo-suite`, `test-lora-it`, `emotion-seeds`, `batching-bench`, `bench-matrix`, `bench-matrix-full`, `bench-server`, `test-golden`, `golden-update`, `quant-ladder`, `test-serve-concurrent`, `test-serve-repro`, `test-serve-batch`, `test-serve-continuous`, `test-serve-stream-batch`), los archivos `qwen_tts_kernels_{avx,neon,generic}.c` y `qwen_tts_kernels_impl.h` (sin código) y los enlaces del `README.md` a `docs/`, `blog/` y `samples/` (se conservan las URLs externas a `raw/main/samples/`). `demo-clone` exige `REF=`.
+- **Por qué**: el snapshot no contiene las fuentes ni los documentos de esos objetivos y enlaces, de modo que fallaban o apuntaban a la nada.
+- **Si se pierde**: reaparecen objetivos que no pueden ejecutarse y archivos vacíos que aparentan una estructura de kernels que no existe.

@@ -531,11 +531,11 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
      * The old cp_h>=2048 gate was a workaround for the denormal hang (fixed June
      * 2026 via FTZ + fused int8 qkv). CP is hidden=1024 on BOTH models and is the
      * per-frame bottleneck (~90% matvec), so quantizing it helps 0.6B and 1.7B. */
-    /* CP precision normally follows --int8/--int4, which ALSO quantize the Talker.
-     * QWEN_CP_PREC={bf16|int8|int4} DECOUPLES the CP precision from the Talker so the
-     * quant-ladder measurement can hold the Talker (hence code0) fixed and vary ONLY
-     * the CP — otherwise code0 drifts run-to-run and the per-codebook agreement is
-     * contaminated by Talker quantization. No env → unchanged --int8/--int4 behavior. */
+    /* La precisión del CP sigue normalmente a --int8/--int4, que TAMBIÉN cuantizan el Talker.
+     * QWEN_CP_PREC={bf16|int8|int4} DESACOPLA la precisión del CP de la del Talker para que
+     * una medición mantenga fijo el Talker (y con él code0) y varíe SOLO el CP; si no,
+     * code0 deriva entre ejecuciones y la coincidencia por codebook se contamina con la
+     * cuantización del Talker. Sin la variable, el comportamiento de --int8/--int4 no cambia. */
     int cp_do_int8 = ctx->use_int8;
     int cp_do_int4 = ctx->use_int4;
     const char *cp_prec = getenv("QWEN_CP_PREC");
@@ -964,9 +964,9 @@ int qwen_cp_predict(qwen_tts_ctx_t *ctx, float *talker_hidden, int code0, int *o
 
     /* Steps 2-15: generate codebooks 2-15. */
     for (int g = 1; g < 15; g++) {
-        /* Teacher-forcing (quant-ladder): feed the REFERENCE prev code, not this
-         * precision's own prediction, so step g sees identical inputs across all
-         * precisions → its disagreement is pure step-g quant drift. */
+        /* Teacher forcing: se alimenta el código previo de REFERENCIA, no la predicción de
+         * esta precisión, de modo que el paso g ve entradas idénticas en todas las
+         * precisiones y su discrepancia es pura deriva de cuantización del paso g. */
         int prev_code = ctx->tf_ref_codes ? ctx->tf_ref_codes[g - 1] : out_codes[g - 1];
         int pos = g + 1;
 

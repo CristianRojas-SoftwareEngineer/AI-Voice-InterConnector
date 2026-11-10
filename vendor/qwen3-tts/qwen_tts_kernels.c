@@ -126,7 +126,7 @@ void qwen_caps_report(void *out) {
     fprintf(f, "  arch:             (other)\n");
 #endif
     /* Hot path: bf16/int8/q4 matvecs + attention (~90%% of decode). Both NEON and
-     * AVX2 are full 2-row, multi-accumulator, prefetching kernels (PLAN 21.3). */
+     * AVX2 son kernels de 2 filas con varios acumuladores y prefetch. */
 #ifdef __ARM_NEON
     fprintf(f, "  matvec + attn:    NEON (2-row fused)\n");
 #elif defined(__AVX512F__)
@@ -141,14 +141,14 @@ void qwen_caps_report(void *out) {
 #elif defined(__AVX512VNNI__)
     fprintf(f, "  int8 dot:         VNNI _mm512_dpbusd_epi32 (native)\n");
 #elif defined(__AVX2__)
-    fprintf(f, "  int8 dot:         widen->FMA (AVX2; no VNNI)\n");
+    fprintf(f, "  int8 dot:         AVX2 _mm256_maddubs_epi16 (entero, sin VNNI)\n");
 #else
-    fprintf(f, "  int8 dot:         dequant->FMA (no SDOT/VNNI)\n");
+    fprintf(f, "  int8 dot:         escalar (bucle entero con acumulación int32)\n");
 #endif
 #if defined(__AVX512BF16__)
     fprintf(f, "  bf16 dot:         VDPBF16PS _mm512_dpbf16_ps (native; QWEN_NO_BF16DOT=1 disables)\n");
 #elif defined(__x86_64__)
-    fprintf(f, "  bf16 dot:         widen->FMA (no AVX-512-BF16)\n");
+    fprintf(f, "  bf16 dot:         conversión bf16->f32 + FMA (sin AVX-512-BF16)\n");
 #endif
 #if defined(__AVX512F__)
     fprintf(f, "  rms/bf16-conv:    AVX-512\n");
@@ -190,8 +190,7 @@ void qwen_caps_report(void *out) {
     /* ---- Runtime ISA actually present on THIS CPU (independent of how the binary
      * was compiled above). This is the "does the extension fire?" check — run it on
      * a freshly-rented box to see what the CPU offers before deciding the build/kernel
-     * path. A gap vs the compiled features is the "compiled past the CPU -> SIGILL" trap.
-     * See docs/hardware-testing.md for the per-platform plan. */
+     * path. A gap vs the compiled features is the "compiled past the CPU -> SIGILL" trap. */
 #if defined(__x86_64__)
     __builtin_cpu_init();
     /* clang's __builtin_cpu_supports rejects the "amx-int8" feature string (gcc-only) →
@@ -211,9 +210,9 @@ void qwen_caps_report(void *out) {
             __builtin_cpu_supports("avx512bf16") ? " avx512bf16"   : "",
             amx_str);
     fprintf(f, "  lever (x86):      %s\n",
-            __builtin_cpu_supports("avx512vnni") ? "VNNI int8 dot (native) — int8/int4 + batching is the throughput play"
-          : __builtin_cpu_supports("avx2")       ? "AVX2 only (no VNNI) — int8 via widen+FMA; bandwidth-bound, batching helps"
-          :                                        "no AVX2 — scalar; rebuild SIMD=scalar");
+            __builtin_cpu_supports("avx512vnni") ? "producto escalar entero VNNI dpbusd (nativo) para int8 y q4_0"
+          : __builtin_cpu_supports("avx2")       ? "producto escalar entero AVX2 maddubs (sin VNNI) para int8 y q4_0"
+          :                                        "sin AVX2: producto escalar entero escalar; recompila con SIMD=scalar");
 #if defined(__AVX2__)
     if (!__builtin_cpu_supports("avx2"))
         fprintf(f, "  WARNING: built with AVX2 but this CPU lacks it -> will SIGILL. "
@@ -1243,7 +1242,6 @@ static void bf16_mm_task(size_t tid, size_t nt, void *vc) {
  * M2+/M3/M4, Neoverse V1/V2, Graviton3+. Compile-time guarded — on the M1 these
  * guards are false and the scalar/NEON twins below stay the path; `make
  * check-isa` (-march=armv8.6-a+bf16+i8mm) keeps them compiling from the M1.
- * These are exactly the "AVAILABLE but UNUSED (PLAN 21.3b)" paths in --caps.
  * Numerics: BFMMLA computes bf16×bf16→f32 with the ACTIVATION truncated to bf16
  * (same truncation as the KV cache) → vs the f32-activation twin expect ~1e-3
  * L2 (self-test threshold relaxed to 1e-2 under this guard). SMMLA reuses the
@@ -1483,11 +1481,13 @@ static inline void matmat_quantize_cols(int8_t *qXt, float *sx, const float *X, 
 }
 #endif
 #if defined(__AVX512VNNI__)
-/* ── int8 VNNI batched matmat (the x86 int8 GEMM the SDOT comment above asks for) ──
- * Y[rows,B] = (W_int8 @ qXt^T)·scales. Weight-stationary: each 64-int8 W block is
- * loaded ONCE and dpbusd'd against all B pre-quantized activation columns. VNNI is
- * unsigned×signed → activations passed pre-offset as ua = qXt+128 (unsigned), corrected
- * −128·Σw per row (ws = dpbusd(ones,w)), exactly like the single-stream int8_matvec_vnni. */
+/* ── matmat int8 agrupado con VNNI ──
+ * Y[rows,B] = (W_int8 @ qXt^T)·escalas. Los pesos permanecen fijos: cada bloque de
+ * 64 int8 de W se carga UNA vez y se multiplica con dpbusd contra las B columnas de
+ * activación ya cuantizadas. VNNI multiplica sin signo × con signo, así que la
+ * activación se pasa desplazada (ua = qXt+128) y se corrige con −128·Σw por fila
+ * (ws = dpbusd(unos, w)), igual que int8_matvec_vnni. El resultado es exacto: coincide
+ * con B llamadas a qwen_matvec_int8. */
 static void int8_matmat_vnni_slice(float *Y, const int8_t *W, const float *scale,
                                    const int8_t *qXt, const float *sx,
                                    int r0, int r1, int cols, int B) {
@@ -1982,10 +1982,9 @@ static void int8_matvec_sdot(float *y, const int8_t *qx, float sx,
 #endif /* __ARM_FEATURE_DOTPROD */
 
 #if defined(__AVX512VNNI__)
-/* ── x86 native int8 dot via AVX-512 VNNI (the SDOT analog for x86) ──
- * UNVALIDATED ON HARDWARE — written for a rented AVX-512-VNNI VPS (e.g. Zen4/Zen5
- * 9950X3D, Cascade Lake+). Cross-compiles clean; validate with `--self-test`
- * on the VPS before trusting. */
+/* ── Producto escalar entero en x86 con AVX-512 VNNI (el análogo de SDOT) ──
+ * Compila en cruzado pero no se ha ejecutado en hardware con VNNI: se valida con
+ * `--self-test` en una máquina que lo tenga. */
 
 /* y[o] = scale[o]*sx * Σ_k W[o][k]·qx[k], via _mm512_dpbusd_epi32.
  * VNNI multiplies UNSIGNED u8 × SIGNED s8, but qx is signed. Use ua = qx+128
@@ -2201,12 +2200,10 @@ void qwen_matvec_int8_qkv(float *q, float *k, float *v,
 
 /* Argmax sobre un matvec INT8 (lm_head del CP con --int8 / quant-mixed; 15×/frame).
  * Hereda la ruta entera de qwen_matvec_int8 en todas las ISA (VNNI, SDOT, AVX2 y
- * escalar): no tiene ruta propia en coma flotante.
- * Reuses the optimized (multi-threaded, SDOT/VNNI) int8 matvec into a per-thread
- * scratch, then argmaxes — mirrors qwen_argmax_matvec_q4_0 below. The old body was
- * the only hot int8 kernel still doing single-threaded widen-to-f32 FMA (audit
- * 2026-07-11, perf item 4). __thread keeps the scratch race-free under concurrent
- * server synthesis (mirrors sampling.c's buffers). */
+ * escalar): no tiene ruta propia en coma flotante. El resultado del matvec va a un
+ * búfer temporal por hilo (como qwen_argmax_matvec_q4_0 más abajo) y después se
+ * toma el argmax. __thread evita carreras cuando el servidor sintetiza en
+ * paralelo. */
 int qwen_argmax_matvec_int8(const float *x, const int8_t *W, const float *scale,
                             int in_dim, int out_dim) {
     static __thread float *y = NULL;
@@ -2316,16 +2313,13 @@ void qwen_quantize_bf16_to_q4_0(const uint16_t *src_bf16, int rows, int cols,
 }
 
 #if defined(__ARM_FEATURE_DOTPROD)
-/* SDOT-native q4_0 matvec (the "int4 viable on ARM" kernel, plan_v4 B1 / perf #3).
- * Dequantizing every nibble to f32 and FMAing against an f32 activation makes the
- * nibble-unpack dominate (on M1 int4 would lose to int8 despite
- * half the bytes). Here we do the llama.cpp q4_0×q8_0 trick instead: quantize the
- * SHARED activation x to int8 once (per-vector scale sx, done by the caller), then
- * per block unpack the 32 nibbles into int8 *value order* [w0,w1,...,w31] and dot
- * them against the int8 activation with vdotq_s32 (4 int8×int8 MACs/instr, no
- * per-weight f32 convert). q4_0 has a PER-BLOCK scale, so each block's int32 dot is
- * scaled and summed in f32 (unlike int8's single per-row scale). 2-row fused to
- * amortize the qx loads, mirroring int8_matvec_sdot. */
+/* Matvec q4_0 con SDOT. La activación compartida x se cuantiza a int8 una sola vez
+ * (escala sx por vector, a cargo del llamador); por bloque se desempaquetan los 32
+ * nibbles a int8 en orden de valor [w0,w1,...,w31] y se multiplican con la activación
+ * mediante vdotq_s32 (4 MAC int8×int8 por instrucción, sin convertir cada peso a
+ * float). q4_0 tiene una escala POR BLOQUE, así que el producto int32 de cada bloque
+ * se escala y se suma en float (a diferencia de int8, con una sola escala por fila).
+ * Dos filas a la vez para amortizar la carga de qx, como int8_matvec_sdot. */
 static void q4_0_matvec_sdot(float *y, const int8_t *qx, float sx,
                              const q4_0_block_t *W, int cols, int out_dim) {
     int nb = cols / Q4_0_BLOCK_SIZE;   /* blocks per row */
@@ -2394,29 +2388,24 @@ static void q4_0_sdot_task(size_t tid, size_t nt, void *vc) {
 #endif /* __ARM_FEATURE_DOTPROD */
 
 #if defined(__AVX512VNNI__)
-/* x86 AVX-512-VNNI q4_0 matvec (plan_v4 C7) — the x86 twin of the ARM q4_0_matvec_sdot.
- * Quantize the shared activation to int8 once (caller), then per 32-weight block:
- * unpack the 16 nibble-bytes to 32 signed int8 in value order (nibble−8, the SAME
- * layout as the tested AVX2 q4 path — value order [lo0,hi0,lo1,hi1,…]), and dot against
- * the int8 activation with _mm512_dpbusd_epi32. VNNI is unsigned×signed, so (mirroring
- * the validated int8_matvec_vnni) make the activation unsigned via ua = qx+128 and
- * correct: Σ w·qx = Σ w·ua − 128·Σw (Σw via dpbusd(ones, w)). q4_0 has a PER-BLOCK
- * scale, so each block's int32 dot is scaled and summed in f32 (like the ARM twin).
- * The 32-wide block is zero-extended into the 512-bit dpbusd (upper half → 0); packing
- * 2 blocks per 512-bit op + 2-row fusion are the obvious throughput follow-ups.
- * ⚠️ COMPILE-CHECKED ONLY (`make check-isa`) — NOT yet validated on real AVX-512-VNNI
- * silicon (Zen4/SPR). See the plan_v4 C7 rental TODO before trusting it. */
+/* Matvec q4_0 de una fila por bloque con AVX-512 VNNI (el análogo x86 de
+ * q4_0_matvec_sdot). Se usa para las filas sobrantes de q4_0_matvec_vnni_v3.
+ * La activación compartida se cuantiza a int8 una vez (llamador); por bloque de 32
+ * pesos se desempaquetan los 16 bytes de nibbles en orden de valor [lo0,hi0,lo1,hi1,…]
+ * y se multiplican con la activación con _mm512_dpbusd_epi32 (el bloque de 32 se
+ * extiende con ceros a 512 bits). q4_0 tiene escala POR BLOQUE, así que el producto
+ * int32 de cada bloque se escala y se suma en float. Compila en cruzado
+ * (`make check-isa`) pero no se ha ejecutado en hardware con VNNI. */
 static void q4_0_matvec_vnni(float *y, const int8_t *qx, float sx,
                              const q4_0_block_t *W, int cols, int out_dim) {
     int nb = cols / Q4_0_BLOCK_SIZE;
     const __m128i lomask = _mm_set1_epi8(0x0F);
     const __m512i ones   = _mm512_set1_epi8(1);
-    /* Key opt (plan_v4 C7 v2): the q4 nibbles are ALREADY unsigned (0..15), so
-     * dpbusd(nibble_u8, qx_s8) = Σ nibble·qx DIRECTLY — no `−8` on the weight, no `+128`
-     * offset trick. Since w = scale·(nibble−8), Σ w·qx = scale·(Σ nibble·qx − 8·Σqx),
-     * and −8·Σqx depends only on the (shared) activation → precompute it ONCE per block.
-     * So the row loop is ONE dpbusd + ONE reduce per block (v1 did two of each + a
-     * broadcast +128 add). qx is shared across all out_dim rows → the precompute amortizes. */
+    /* Los nibbles q4 ya son sin signo (0..15), así que dpbusd(nibble_u8, qx_s8) =
+     * Σ nibble·qx directamente, sin restar 8 al peso ni desplazar la activación.
+     * Como w = escala·(nibble−8), Σ w·qx = escala·(Σ nibble·qx − 8·Σqx), y −8·Σqx solo
+     * depende de la activación compartida: se precalcula una vez por bloque. El bucle
+     * de filas hace un dpbusd y una reducción por bloque. */
     int corr[QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
     for (int b = 0; b < nb; b++) {
         __m512i xv = _mm512_zextsi256_si512(_mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE)));
@@ -2439,24 +2428,18 @@ static void q4_0_matvec_vnni(float *y, const int8_t *qx, float sx,
         y[o] = sum * sx;
     }
 }
-/* v3 (throughput-packing): the two follow-ups the v2 comment names.
- *
- * v2 wasted half the datapath (a 32-int8 block zero-extended into a 512-bit
- * dpbusd) and put a cross-lane _mm512_reduce_add_epi32 on the critical path
- * every block. On EPYC 9555P that made int4-VNNI ~37% SLOWER than int8
- * (project_x86_epyc_vnni_validation). v3:
- *   - packs 2 blocks per 512-bit dpbusd (64 int8 = full width): the low 256-bit
- *     half is block b, the high half is block b+1, and the activation load is a
- *     single _mm512_loadu of qx[b*32 .. b*32+63];
- *   - unrolls 4 output rows with independent dpbusd accumulator chains, so the
- *     per-block reduces from different rows overlap and hide dpbusd's ~4-5c
- *     latency instead of serializing.
- * Per-block q4 scale still forces a scalar dot per block (like the ARM SDOT
- * twin), but the two block-dots come out of ONE dpbusd as the two 256-bit-half
- * sums, and the FMA into the float accumulator carries the scale.
- *
- * ⚠️ COMPILE-CHECKED ONLY here (cross-compile + Rosetta numeric spot-check);
- * the SPEED claim is a hypothesis until measured on real Zen4/SPR silicon. */
+/* Matvec q4_0 con VNNI empaquetado (versión v3), la ruta principal. Aprovecha todo
+ * el ancho de datos y evita una reducción entre carriles en cada bloque:
+ *   - empaqueta 2 bloques por dpbusd de 512 bits (64 int8): la mitad baja de 256
+ *     bits es el bloque b, la alta el bloque b+1, y la activación se carga con un
+ *     único _mm512_loadu de qx[b*32 .. b*32+63];
+ *   - desenrolla 4 filas de salida con cadenas dpbusd de acumulador independiente,
+ *     de modo que las reducciones por bloque de filas distintas se solapan y ocultan
+ *     la latencia de dpbusd (~4-5 ciclos) en lugar de serializarse.
+ * La escala por bloque obliga a un producto escalar por bloque, pero los dos
+ * productos salen de UN dpbusd como las sumas de cada mitad de 256 bits, y el FMA
+ * sobre el acumulador float aplica la escala. Compila en cruzado, pero no se ha
+ * medido en hardware con VNNI. */
 static inline int q4_hsum256(__m256i v) {           /* Σ of 8 int32 lanes */
     __m128i lo = _mm256_castsi256_si128(v);
     __m128i hi = _mm256_extracti128_si256(v, 1);
@@ -2918,10 +2901,9 @@ void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
 }
 
 #if defined(__ARM_FEATURE_DOTPROD)
-/* SDOT fused-QKV (plan_v4 B1 + #7): quantize the shared activation to int8 ONCE,
- * then SDOT for Q/K/V. Keeps single-stream int4 QKV consistent with the standalone
- * q4 matvec (and with the batched path). Partitions the concatenated [Q|K|V]
- * rows across the threads. */
+/* QKV fusionado con SDOT: cuantiza la activación compartida a int8 UNA vez y aplica
+ * SDOT a Q, K y V, con el mismo núcleo que el matvec q4 individual. Reparte las filas
+ * concatenadas [Q|K|V] entre los hilos. */
 typedef struct {
     float *q, *k, *v;
     const q4_0_block_t *Wq, *Wk, *Wv;
@@ -2954,9 +2936,9 @@ static void q4_0_qkv_sdot_task(size_t tid, size_t nt, void *vc) {
 }
 #endif
 #if defined(__AVX512VNNI__)
-/* VNNI fused-QKV (the x86 twin of the SDOT one above):
- * quantize the shared activation to int8 ONCE, then VNNI for Q/K/V, partitioning
- * the concatenated [Q|K|V] row space like the SDOT twin. */
+/* QKV fusionado con VNNI (el análogo x86 del de SDOT): cuantiza la activación
+ * compartida a int8 UNA vez y aplica VNNI a Q, K y V, repartiendo las filas
+ * concatenadas [Q|K|V] igual que el de SDOT. */
 typedef struct {
     float *q, *k, *v;
     const q4_0_block_t *Wq, *Wk, *Wv;
@@ -4424,16 +4406,13 @@ int qwen_argmax_matvec_bf16(const float *x, const uint16_t *W_bf16, int in_dim, 
 /* ========================================================================
  * Kernel numeric self-test (`./qwen_tts --self-test`)
  *
- * Cross-ISA correctness proof for the matvec kernels that does NOT depend on a
- * full-pipeline golden — immune to the greedy-decode trajectory fork that makes
- * cross-ISA / cross-precision audio mel-corr drop benignly. Runs each dispatched
- * matvec (bf16 / int8 / argmax-int8) against an independent f32 reference on
- * deterministic pseudo-random data and checks the error is within tolerance.
- *
- * On x86 with SIMD=avx512vnni this exercises the VNNI int8 dot (`_mm512_dpbusd`)
- * and the __m512 bf16 matvec (the two UNVALIDATED AVX-512 paths). On ARM it
- * exercises SDOT/NEON — useful as a methodology check before trusting the VPS run.
- * Returns 0 on PASS, non-zero on FAIL (so it can gate CI / `make test-selftest`).
+ * Prueba de corrección de los kernels que no depende de una salida de audio de
+ * referencia completa: ejecuta cada multiplicación despachada (bf16, int8,
+ * argmax-int8, q4_0 y sus matmat) contra una referencia independiente en float, con
+ * datos pseudoaleatorios deterministas, y comprueba que el error cae dentro de la
+ * tolerancia. Ejercita el producto escalar entero de la ISA compilada (AVX2
+ * maddubs, VNNI dpbusd, SDOT o escalar) y la igualdad matmat = B matvec.
+ * Devuelve 0 si pasa y distinto de 0 si falla (para `make test-selftest`).
  * ======================================================================== */
 int qwen_kernel_selftest(void *out) {
     FILE *f = out ? (FILE *)out : stdout;
@@ -4552,13 +4531,14 @@ int qwen_kernel_selftest(void *out) {
             ref[r] = sc[r] * s;   /* dequant-W · x  (activation kept f32 in the reference) */
         }
         qwen_matvec_int8(y, wi, sc, x, rows, cols);
-        /* int8 dispatch (SDOT/VNNI) quantizes the ACTIVATION -> a roughly-CONSTANT
-         * absolute error per row, so a per-row *relative* error explodes on the rows
-         * where ref[r]≈0 (random dots cluster near zero) and means nothing. The right,
-         * near-zero-robust metric is the GLOBAL L2 relative error ||y-ref|| / ||ref||:
-         * activation-quant noise lands it ~0.7% for a correct kernel; a broken VNNI
-         * offset would blow it up. (bf16 has only fp accumulation-order drift -> tiny,
-         * so max-rel is fine there.) */
+        /* El producto escalar entero cuantiza la ACTIVACIÓN, lo que deja un error
+         * absoluto casi constante por fila; el error relativo por fila se dispara en las
+         * filas con ref[r]≈0 (los productos aleatorios se agrupan cerca de cero) y no
+         * significa nada. La métrica robusta cerca de cero es el error relativo L2
+         * GLOBAL ||y-ref|| / ||ref||: el ruido de cuantización de la activación lo deja
+         * en ~0,7 % en un kernel correcto; un desplazamiento VNNI roto lo dispararía.
+         * (bf16 solo tiene deriva por el orden de acumulación, minúscula, así que ahí
+         * basta el máximo relativo.) */
         double l2_num = 0.0, l2_den = 0.0;
         for (int r = 0; r < rows; r++) {
             double d = (double)y[r] - ref[r];

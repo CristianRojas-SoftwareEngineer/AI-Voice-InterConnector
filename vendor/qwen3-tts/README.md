@@ -43,7 +43,7 @@ make blas
 ## Features
 
 - **Pure C, minimal dependencies** — Only requires a C compiler and BLAS. No Python runtime needed.
-- **Runs on macOS, Linux and Windows/WSL2 (ARM/x86)** — the hot matvec/attention kernels have **NEON+SDOT (ARM), AVX2 and AVX-512/VNNI/BF16 (x86)** twins with a scalar fallback + runtime ISA guard, and decode threading runs on a **cross-OS pool** (GCD on macOS, pthread elsewhere). Validated on Apple M1, Ryzen 7 6800H, and EPYC 9555P (Zen5). Single-stream RTF is memory/cache-bound, so the chip's cache matters most (see [Performance](#performance)); measure yours with `bash tests/x86_bench.sh`.
+- **Runs on macOS, Linux and Windows/WSL2 (ARM/x86)** — the hot matvec/attention kernels have **NEON+SDOT (ARM, ARMv8.2 with dotprod required), AVX2 and AVX-512/VNNI/BF16 (x86)** twins with a scalar fallback + runtime ISA guard; every quantized (int8/q4_0) multiplication uses the same **integer dot product** on all platforms (AVX2 `maddubs`, VNNI `dpbusd`, ARM SDOT, an int32-accumulating scalar loop), and decode threading runs on a **cross-OS pool** (GCD on macOS, pthread elsewhere). Validated on Apple M1, Ryzen 7 6800H, Ryzen 7 5825U and EPYC 9555P (Zen5). Single-stream RTF is memory/cache-bound, so the chip's cache matters most (see [Performance](#performance)).
 - **CPU only (`make blas`)** — a single build target that links against BLAS; the engine runs entirely on the CPU and requires BLAS. Server request-batching adds throughput for concurrent users. → [Performance](#performance)
 - **Both model sizes** — Automatically detects 0.6B or 1.7B from weight files.
 - **9 preset voices** — `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`.
@@ -53,7 +53,7 @@ make blas
 - **Style control** — `--instruct` for emotion/style on 1.7B: angry, whisper, cheerful, and more.
 - **Emotion in one flag** (🧪 **beta**; paralinguistics `[laugh]`/`[sigh]` 🧪 **alpha**) — `--emotion <sad\|joy\|anger\|fear\|disgust\|surprise>` (1.7B) auto-applies the ear-validated recipe (per-language fine-tune `.expr` + steering vector + a default English instruct + temperature), on presets **and** cloned voices, in every Qwen language. **Plus 7 blended "dyads"** (`contempt`, `awe`, `nostalgia`, `disapproval`, `remorse`, `outrage`, `despair`) and **inline `[emotion]` switching** — many emotions from one prompt in a single generation. A vivid English `--instruct` and `-T` override. Pitch-preserving `--rate`/`--volume` and a `--roughness` grit knob are still available.- **The small 0.6B is expressive too — and stays sub-realtime** 🆕 — for a long time `--emotion` did nothing on the 0.6B: unlike the 1.7B it has no steerable emotion subspace. It does, however, clone voices very well — so on the small model **the emotion rides on the voice**. **All 9 presets ship ready** (240 KB of 4 KB voice assets) and **any cloned voice emotes with zero setup** via six shipped emotion directions — so the small model has the whole expressive stack out of the box: **6 emotions + inline `[tag]` paralinguistics + voice cloning, together, at RTF ≈ 0.8** under `--int8` on an M1.- **Inline markup for audiobooks** — write one text with ElevenLabs/Bark-style tags and get a multi-emotion take in one pass: `--text "I won! [joy] ...amazing! [pause:500ms] [sad] But it's over. [sigh]"`. Mid-text emotion switches, `[pause:400ms]`/`[break:1s]` pauses, and `[sigh]`/`[huff]` paralinguistic fillers — auto-detected in `--text` (no flag) or explicit via `--compose`. Spans are model-generated and concatenated seamlessly.- **VoiceDesign** — Create new voices from text descriptions.
 - **HTTP server** — `/v1/tts`, `/v1/tts/stream`, OpenAI-compatible `/v1/audio/speech`; JSON body takes `emotion`/`instruct`/`volume`/`rate` (same recipe as the CLI). **Inline `[mood]` markup works over the API too** — one request can switch emotion sentence-by-sentence (`"text":"[joy] Great news! [sad] But I must go."`), auto-detected and streamed span-by-span.- **Streaming** — Real-time audio via `--stream` (WAV) or `--stdout` (raw PCM).
-- **INT8 / INT4 quantization** — `--int8` / `--int4` quantize Talker + Code Predictor (native SDOT on ARM, AVX-512/VNNI on x86), near-bf16 quality, and work with presets **and** custom `.qvoice` voices. On cache-rich Apple Silicon **both go sub-realtime** (0.6B best **0.52 int4 / 0.69 int8**; 1.7B best **~1.53** quant-mixed); on memory-starved x86, int8+VNNI wins the wall clock. See [Performance](#performance).
+- **INT8 / INT4 quantization** — `--int8` / `--int4` quantize Talker + Code Predictor (the activation is quantized to int8 and multiplied with an integer dot product: SDOT on ARM, VNNI `dpbusd` or AVX2 `maddubs` on x86), near-bf16 quality, and work with presets **and** custom `.qvoice` voices. On cache-rich Apple Silicon **both go sub-realtime** (0.6B best **0.52 int4 / 0.69 int8**; 1.7B best **~1.53** quant-mixed); on memory-starved x86, int8+VNNI wins the wall clock. See [Performance](#performance).
 - **Configurable sampling** — Temperature, top-k, top-p, and repetition penalty.
 - **24 kHz WAV output** — 16-bit PCM, mono.
 
@@ -90,7 +90,7 @@ Optional:
   --voice-design             VoiceDesign mode (create voice from --instruct)
   --stream                   Stream audio (decode chunks during generation)
   --stdout                   Output raw s16le PCM to stdout (implies --stream)
-  --int8                     INT8 quantized (0.6B & 1.7B; faster, ~same quality) — recommended; uses VNNI on AVX-512 x86, SDOT on ARM
+  --int8                     INT8 quantized (0.6B & 1.7B; faster, ~same quality) — recommended; integer dot product on every platform (VNNI on AVX-512 x86, AVX2 maddubs on other x86, SDOT on ARM; ARM needs ARMv8.2 with dotprod)
   --int4                     Q4_0 quantized (experimental; slower than --int8 on CPU)
   -j, --threads <n>          Worker threads (default: 4)
   --silent                   Suppress status output
@@ -453,7 +453,7 @@ only **~0.09 RTF** over the bare model:
 | bare 0.6B (reference) | 1.17 | 0.69 | — |
 
 RTF = processing_time / audio_duration; **< 1.0 = faster than real-time**. Quantization reads fewer weight bytes
-per frame (native SDOT on ARM, AVX-512/VNNI on x86): **0.6B ~1.5 (bf16) → 0.69 (int8) → 0.52 (int4)**; **1.7B
+per frame and multiply them with an integer dot product (SDOT on ARM, VNNI or AVX2 `maddubs` on x86): **0.6B ~1.5 (bf16) → 0.69 (int8) → 0.52 (int4)**; **1.7B
 ~2.0 (bf16) → 1.79 (int8) → ~1.53 (quant-mixed: int4 Talker + int8 CP, the fastest 1.7B config on M1)** — no
 perceptible quality loss, works with `.qvoice` voices.
 
@@ -471,7 +471,7 @@ make bench-full         # + server, instruct, INT8, .qvoice
 ./qwen_tts --self-test  # are the kernels numerically correct on this ISA?
 ```
 
-**Cross-device CPU (single-stream 0.6B, this repo's best config — reproduce with `bash tests/x86_bench.sh`):**
+**Cross-device CPU (single-stream 0.6B, this repo's best config):**
 
 | Device | SIMD + threads | RAM | Best 0.6B RTF | Config |
 |---|---|---|---|---|
@@ -480,6 +480,7 @@ make bench-full         # + server, instruct, INT8, .qvoice
 | **Graviton3** (Neoverse-V1, AWS c7g.2xlarge) | NEON + SDOT + **i8mm SMMLA + BFMMLA**, pthread 4-thread | 16 GB / 8 vCPU | **0.66** (1.7B int8: **0.95**, sub-RT!) | `--int8 -j4` |
 | **Apple M4** (Mac mini, Scaleway) | NEON + SDOT + i8mm + bf16 + SME | 16 GB / 10-core | **0.32** (1.7B qm: **0.57**!) | `--int4 -j4` |
 | **Ryzen 7 6800H** (Zen3+, 16 MB L3, bare metal) | AVX2 + FMA, pthread 4-thread | 32 GB | **2.02** | `--int4 -j4` |
+| **Ryzen 7 5825U** (Zen3, AVX2 integer dot product `maddubs`, Windows 11, cloned voice) | AVX2 + FMA, Win32 pool 4-thread | — | **0.76** idle; **0.88** with 4 cores busy; **1.47** with 2 threads loading memory | `--quant-mixed -j4 --stream` (Talker q4_0 + Code Predictor int8) |
 | **EPYC 9555P** (Zen5, AVX-512+VNNI+BF16, Scaleway VM) | AVX-512 attention + VNNI + VDPBF16PS, pthread 4-thread | 16 GB / 4 vCPU | **0.95** (int4 = int8; -j1: int4 **1.05** beats int8 1.21) | `--int4 -j4`, `SIMD=avx512bf16` |
 
 Numbers refreshed 2026-08-04 after the AVX-512 parity round (16-wide attention/rms/conversions,

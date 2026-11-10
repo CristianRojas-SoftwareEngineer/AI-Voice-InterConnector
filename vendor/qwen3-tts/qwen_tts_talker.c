@@ -397,10 +397,10 @@ int qwen_talker_load(qwen_tts_ctx_t *ctx) {
         #undef LOAD_F32
     }
 
-    /* Talker precision normally follows --int8/--int4. QWEN_TALKER_PREC={bf16|int8|int4}
-     * DECOUPLES it from the CP so the quant-ladder can hold the CP at bf16 and vary ONLY
-     * the Talker — measuring how much Talker quant moves code0 (= the WORDS). No env →
-     * unchanged behavior. (int8 still no-ops on 0.6B per the hidden>=2048 gate below.) */
+    /* La precisión del Talker sigue normalmente a --int8/--int4. QWEN_TALKER_PREC={bf16|int8|int4}
+     * la DESACOPLA de la del CP para que una medición mantenga el CP en bf16 y varíe SOLO
+     * el Talker, midiendo cuánto mueve code0 (= las PALABRAS) su cuantización. Sin la variable,
+     * el comportamiento no cambia. (int8 sigue sin efecto en 0.6B por la puerta hidden>=2048 de abajo.) */
     int tk_do_int8 = ctx->use_int8;
     int tk_do_int4 = ctx->use_int4;
     const char *tk_prec = getenv("QWEN_TALKER_PREC");

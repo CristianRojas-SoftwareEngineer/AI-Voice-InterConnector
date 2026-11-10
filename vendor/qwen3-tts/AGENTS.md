@@ -66,7 +66,7 @@ When docs and code disagree, trust these files first:
 - Speech tokenizer decoder (ConvNet): `qwen_tts_speech_decoder.c`
 - Sampling strategies: `qwen_tts_sampling.c`
 - WAV output: `qwen_tts_audio.c`
-- Kernel dispatch and hot loops: `qwen_tts_kernels*.c`, `qwen_tts_kernels_impl.h`
+- Kernel dispatch and hot loops: `qwen_tts_kernels.c`
 - Build targets: `Makefile`
 
 Architecture/background references:
@@ -138,12 +138,8 @@ From `qwen_tts_load()` and CLI:
 - `qwen_tts_kernels.c`
   - ALL actual kernels live here (inline `#ifdef __ARM_NEON / __AVX2__ / else-scalar`),
     plus common math, threading (GCD, macOS-only), BLAS paths
-  - realidad (verificada 2026-08-24, `qwen_tts_kernels.c:26-28,349-375,758-840,1003-1063`): hot loops **sí contienen AVX2** (`_mm256_fmadd_ps`, `__AVX512BF16__`/`_mm512_dpbf16_ps`) en `qwen_rms_norm` (AVX2 16-wide), `bf16_matvec_fused` (AVX2 2-row fused con FMA) y `qwen_dot_f32_*` (AVX2/FMA 4 accumulators), además de `rms/bf16-conv` y `matvec+attn` vía `qwen_caps_report:130-152`. SDOT int8 nativo es ARM-only; en x86 es `widen->FMA` (AVX2) o VNNI (`__AVX512VNNI__`). Ver `qwen_tts_kernels.c` y `Makefile:17-40`.
-- `qwen_tts_kernels_generic.c`, `qwen_tts_kernels_neon.c`, `qwen_tts_kernels_avx.c`
-  - **EMPTY placeholder TUs** (reserved for future split). NOT where kernels live today —
-    everything is inline in `qwen_tts_kernels.c`. `_avx.c` in particular has 0 AVX code.
-- `qwen_tts_kernels_impl.h`
-  - architecture dispatch macros (currently a stub; dispatch is via #ifdef in kernels.c)
+  - los bucles calientes **sí contienen AVX2** (`_mm256_fmadd_ps`, `__AVX512BF16__`/`_mm512_dpbf16_ps`) en `qwen_rms_norm` (AVX2 16-wide), `bf16_matvec_fused` (AVX2 2-row fused con FMA) y `qwen_dot_f32_*` (AVX2/FMA 4 accumulators), además de `rms/bf16-conv` y `matvec+attn` (ver `qwen_caps_report`).
+  - todas las multiplicaciones cuantizadas (int8 y q4_0: matvec, argmax, QKV y matmat) usan el mismo producto escalar entero en todas las plataformas: AVX2 `maddubs`, VNNI `dpbusd`, ARM SDOT (i8mm en el matmat) o un bucle escalar con acumulación int32. La activación se cuantiza con los cuantizadores únicos `quantize_act_int8_ref`, `quantize_act_int8` y `quantize_act_int8_cols`
 - `download_model.sh`
   - interactive small/large model downloader
 
@@ -172,7 +168,12 @@ lookahead. Not implemented in phase 1.
 
 ## Kernel/Optimization Rules
 
-- Architecture dispatch is centralized in `qwen_tts_kernels_impl.h`.
+- Architecture dispatch is done with `#ifdef` inside `qwen_tts_kernels.c`.
+- Quantized (int8/q4_0) multiplications have ONE integer numerics: the activation is quantized by the
+  single quantizers (`quantize_act_int8_ref`, `quantize_act_int8`, `quantize_act_int8_cols`: scale
+  max|x|/127, round-half-even, saturate to [-128,127]) and multiplied with an integer dot product per ISA
+  (AVX2 `maddubs`, VNNI `dpbusd`, ARM SDOT/i8mm, int32-accumulating scalar loop). There are no float
+  fallbacks and no environment switches to select a quantized path; a batched `matmat` must equal B × `matvec`.
 - Keep generic/NEON/AVX variants functionally equivalent.
 - If you optimize one path, verify no regression on others.
 - Favor meaningful speedups; avoid complexity for tiny wins.
@@ -192,17 +193,12 @@ performance/new-SIMD epic, the loop is:
    the one-command harness, read the numbers, **fix, loop**. This is expected — perf/SIMD epics
    are *not* done until measured on real silicon.
 
-**The testing/benchmark make targets** (document any new one here + in `docs/hardware-testing.md`):
-- `make bench-matrix` / `make bench-matrix-full` — full per-box report: `--caps` + `--self-test`
-  (native + scalar fallback) + `--matmat-bench` + RTF matrix (single/batch[/stream/server] ×
-  bf16/int8/int4). Copy onto any rented ARM/x86 box. Quiet machine only.
+**The testing/benchmark make targets** (document any new one here):
 - `make matmat-bench` — batched matmat twins (`qwen_matmat_{bf16,int8,q4_0}`) vs B×matvec, per
   precision/threads (no model needed).
 - `make check-isa` — compile-check the newer-ISA kernel paths (above).
 - `./qwen_tts --caps` — runtime SIMD-extension detection ("does it fire?"): ARM dotprod/bf16/i8mm/
   SVE/SME, x86 AVX-512/VNNI/BF16/AMX. `./qwen_tts --self-test` — cross-ISA kernel correctness oracle.
-- Reference: **`docs/hardware-testing.md`** (which box, where to rent, the §7 per-ISA optimization
-  roadmap, the fill-in RTF matrix). Keep it updated as boxes are tested.
 
 Use **RTF + mel-corr** (not wall-clock, not md5) to compare across ISAs — fp-order differs benignly.
 

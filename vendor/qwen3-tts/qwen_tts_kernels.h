@@ -63,11 +63,12 @@ void qwen_check_runtime_isa(void);
  * `out` may be NULL -> stderr. */
 void qwen_caps_report(void *out);
 
-/* Kernel numeric self-test: runs the dispatched matvecs (bf16/int8/argmax-int8)
- * against an f32 reference on deterministic random data. Cross-ISA correctness
- * proof for the SIMD kernels (esp. the AVX-512/VNNI paths) that does NOT depend
- * on a full-pipeline golden, so it's immune to the greedy trajectory fork.
- * `out` may be NULL -> stdout. Returns 0 on PASS, >0 = number of failed cases. */
+/* Autotest numérico de los kernels: ejecuta las multiplicaciones despachadas (bf16,
+ * int8, argmax-int8, q4_0, sus matmat y el QKV q4_0) contra una referencia en float
+ * con datos aleatorios deterministas, y comprueba que el error cae dentro de la
+ * tolerancia; incluye la igualdad matmat = B matvec. No depende de una salida de
+ * audio completa de referencia.
+ * `out` puede ser NULL -> stdout. Devuelve 0 si pasa; >0 = número de casos fallidos. */
 int qwen_kernel_selftest(void *out);
 
 /* Batched matmat throughput microbench: times the real qwen_matmat_{bf16,int8,q4_0}
@@ -108,10 +109,12 @@ void qwen_matvec_bf16(float *y, const uint16_t *W, const float *x, int rows, int
  * Threaded by row-slice, matching qwen_matvec_bf16. With B==1 it equals matvec. */
 void qwen_matmat_bf16(float *Y, const uint16_t *W, const float *X, int rows, int cols, int B);
 
-/* INT8 batched matmat twin (Y[rows,B] = (W_int8*scale) @ X[cols,B]). Low precision
- * is where batching pays MOST: int8 halves the weight read. Same compile-time-B
- * register-blocking as bf16. X is f32 [cols,B]; weights are the existing int8
- * per-row-scale format. B<=64. (q4_0 twin declared after the q4_0_block_t typedef.) */
+/* matmat int8 agrupado (Y[rows,B] = (W_int8*scale) @ X[cols,B]). X es float
+ * [cols,B]; los pesos usan el formato int8 con escala por fila. B<=64. Cada columna
+ * se cuantiza como lo hace qwen_matvec_int8 y se multiplica con producto escalar
+ * entero: el resultado de cada columna coincide con qwen_matvec_int8 sobre ella
+ * (bit a bit en AVX2, escalar y VNNI; en i8mm fuera de Apple difiere por el orden
+ * de acumulación). El gemelo q4_0 se declara tras el typedef de q4_0_block_t. */
 void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
                       const float *X, int rows, int cols, int B);
 
@@ -128,8 +131,10 @@ void qwen_linear_nobias_bf16(float *y, const float *x,
 void qwen_linear(float *y, const float *x, const float *W, const float *bias,
                  int seq, int in_dim, int out_dim);
 
-/* INT8 matvec: y[rows] = (W_int8[rows,cols] * scale[rows]) @ x[cols]
- * Per-row absmax dequantization. NEON-optimized + multi-threaded. */
+/* Matvec INT8: y[rows] = (W_int8[rows,cols] * scale[rows]) @ x[cols], con escala
+ * absmax por fila. La activación x se cuantiza a int8 (escala máx|x|/127) y se
+ * multiplica con producto escalar entero (VNNI, SDOT, AVX2 maddubs o escalar), con
+ * hilos. `cols` debe ser válido según qwen_quant_shape_check. */
 void qwen_matvec_int8(float *y, const int8_t *W, const float *scale,
                       const float *x, int rows, int cols);
 
@@ -216,18 +221,22 @@ typedef struct {
 void qwen_quantize_bf16_to_q4_0(const uint16_t *src_bf16, int rows, int cols,
                                  q4_0_block_t *dst);
 
-/* Q4_0 matvec: y[rows] = dequant(W_q4[rows, cols/32 blocks]) @ x[cols]
- * NEON-optimized + multi-threaded. */
+/* Matvec Q4_0: y[rows] = dequant(W_q4[rows, cols/32 blocks]) @ x[cols]. La
+ * activación x se cuantiza a int8 y cada bloque se multiplica con producto escalar
+ * entero (nibbles × activación), se escala con la escala fp16 del bloque y se
+ * acumula en float; con hilos. `cols` debe ser válido según qwen_quant_shape_check. */
 void qwen_matvec_q4_0(float *y, const q4_0_block_t *W, const float *x,
                        int rows, int cols);
 
-/* Q4_0 batched matmat twin: Y[rows,B] = dequant(W_q4) @ X[cols,B]. The nibble
- * unpack is done once and reused across the B columns (amortized) — where int4
- * batching pays most. X is f32 [cols,B]. B<=64. */
+/* matmat Q4_0 agrupado: Y[rows,B] = dequant(W_q4) @ X[cols,B]. X es float [cols,B];
+ * B<=64. Cada columna se cuantiza como en qwen_matvec_q4_0 y el resultado coincide
+ * con ese matvec sobre la columna (bit a bit en AVX2 y escalar; en VNNI acumula por
+ * pares de bloques; en i8mm difiere ~1e-7 por el orden de acumulación). */
 void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
                       int rows, int cols, int B);
 
-/* Unified QKV matvec (Q4_0 variant) */
+/* QKV unificado (variante Q4_0): cuantiza la activación una vez y resuelve Q, K y V
+ * con el mismo núcleo que qwen_matvec_q4_0, en un solo reparto entre hilos. */
 void qwen_matvec_q4_0_qkv(float *q, float *k, float *v,
                             const q4_0_block_t *Wq, const q4_0_block_t *Wk,
                             const q4_0_block_t *Wv,

@@ -80,7 +80,7 @@ Two structural facts drive the map:
     57→**67 ms/f (+14-18%)**. (microbench stable ~4%; single-shot wall RTF is noisy — trust the
     per-op slots, not RTF.)
   - Quality: audio rms 0.085→**0.063 (−26%)**, peak 0.72→0.53, greedy codes flipped (119→123 frames).
-  - Two causes: (1) `q4_0_matvec_inner` is **1-row, not 2-row-fused** like int8 → 2× the x-loads +
+  - Two causes: (1) the q4_0 kernel of that experiment was **1-row, not 2-row-fused** like int8 → 2× the x-loads +
     nibble-unpack overhead masks the 30MB-vs-60MB bandwidth saving; (2) per-block-32 absmax int4 is
     **too coarse for the CP** — quality loss is *independent of kernel maturity*. Even a perfect
     2-row q4_0 kernel would not fix the −26% rms. **This is NOT a DS4-style "no quality loss" win.**
@@ -89,9 +89,8 @@ Two structural facts drive the map:
 - [x] **EXPERIMENT #2 — SDOT native int8 dot: WON (2026-06-01, `feat/int8-sdot`).** Replaced int8
   dequant→f32→FMA with `vdotq_s32` (4 int8×int8 MACs/instr, 2-row fused) + dynamic per-vector int8
   quant of activation `x` (`quantize_act_int8`). Apple clang defines `__ARM_FEATURE_DOTPROD` by
-  default on Apple Silicon (no flag; `make` CC=gcc → /usr/bin/gcc = Apple clang). Runtime opt-out
-  `QWEN_NO_SDOT=1` kept as safety fallback + A/B knob. Validated across the matrix (seed 42, IT,
-  cp-microbench, A/B via the env toggle):
+  default on Apple Silicon (no flag; `make` CC=gcc → /usr/bin/gcc = Apple clang). Validated across the matrix
+  (seed 42, IT, cp-microbench):
   | Model / voice | speed | quality |
   |---|---|---|
   | 0.6B preset (CP int8) | FFN gate_up −25%, down −28%, **CP TOTAL −24%**, **RTF→0.98** | clean (listened) |
@@ -180,32 +179,14 @@ the bench numbers purely from running 1 core.
 
 ### 21.3 x86 enablement (logic/ops we support there too)
 
-**STEP 0 deep re-audit DONE (2026-06-03, verified by reading every guard + the AVX2
-intrinsic tally, not a single grep).** The prior "x86 is all scalar" was *substantively*
-correct but mis-framed — the truth is sharper:
-
-**AVX2 exists, but ONLY on 5 auxiliary/elementwise ops** (the `<3%`-of-time overhead):
-`qwen_rms_norm`, `qwen_rms_norm_residual`, `qwen_rms_norm_per_head`, `qwen_bf16_accum_f32`,
-`qwen_bf16_to_f32_vec`. All 56 `_mm256_*` intrinsics in the repo live in these 5 (all in
-`qwen_tts_kernels.c`; `qwen_tts_kernels_avx.c` is genuinely 0 lines of code).
-
-**Everything on the HOT path falls to scalar on x86** (2-way `#ifdef __ARM_NEON … #else`
-blocks, NO `#elif __AVX2__`):
-- matvecs: `bf16_matvec_fused` (314), `int8_matvec_fused` (584), `q4_0_matvec_inner` (869),
-  `qwen_argmax_matvec_bf16` (1624) / `_int8` — **the 90.7% of decode per the microbench**
-- `int8_matvec_sdot` + `quantize_act_int8` are `#if __ARM_FEATURE_DOTPROD` → **don't exist
-  at all on x86** (no scalar equiv either; callers fall back to `int8_matvec_fused` scalar)
-- attention: `qwen_causal_attention` / `_windowed` / `_bf16kv`
-- inline NEON-only (no AVX2) elsewhere: f32→bf16 pack + bf16→f32 + NeoX RoPE in
-  `talker.c`/`code_predictor.c`/`speech_decoder.c`, `qwen_apply_rope_interleaved`,
-  `qwen_swiglu`/`silu`/`add`/`mul`/`vec_scale`, `qwen_snake_activation` (decoder)
-- decode-step calls the hand matvecs (`qwen_matvec_*`), NOT BLAS → scalar; only **prefill**
-  uses `cblas_sgemm` (OpenBLAS) so prefill is the one fast thing on x86.
-
-> ⚠️ **The comments in `qwen_tts_kernels_avx.c` are FALSE/stale** — they list "bf16_matvec_fused:
-> AVX2", "int8_matvec_fused: AVX2", "qwen_causal_attention: AVX2", "qwen_snake_activation: AVX2"
-> as "Active AVX optimizations". NONE of those have AVX2. This stale doc is very likely what made
-> us believe x86 was covered. **Fix the comments (and `_neon.c`'s, which over-claim too).**
+**Current state.** All the kernels live in `qwen_tts_kernels.c` (inline `#ifdef` dispatch per ISA;
+there are no per-architecture kernel files). The decode-step matvecs (`qwen_matvec_*`, the 90.7% of
+decode per the microbench), the argmax matvecs and the attention variants all have an AVX2 branch
+(2-row fused, FMA). Every quantized (int8/q4_0) multiplication quantizes the activation with the single
+quantizers and uses an integer dot product on every ISA (AVX2 `maddubs`, VNNI `dpbusd`, ARM SDOT, an
+int32-accumulating scalar loop). Only **prefill** uses `cblas_sgemm` (OpenBLAS). Still scalar on x86:
+the NEON-only inline f32<->bf16 pack + NeoX RoPE in `talker.c`/`code_predictor.c`/`speech_decoder.c`
+and `qwen_snake_activation`.
 
 **Goal (user, 2026-06-03): every NEON-accelerated op must have at least an AVX2 twin + a
 scalar fallback ALWAYS; AVX512/VNNI optional on top.** Plan:
@@ -242,14 +223,12 @@ scalar fallback ALWAYS; AVX512/VNNI optional on top.** Plan:
   next x86 step is to **rent a Zen4+/Intel AVX-512 VPS**. **VALIDATION TOOLING READY (2026-06-05):**
   `./qwen_tts --self-test` + `make test-selftest` = a model-free kernel numeric gate (matvec
   bf16/int8/argmax vs f32 reference, `qwen_kernel_selftest` in kernels.c) — **immune to the greedy
-  trajectory fork that makes cross-ISA `test-golden` a false alarm** (the right way to prove VNNI:
-  correct → int8 rel_L2 ~4e-3, broken offset → blows up). One-shot `bash tests/vps_validate.sh
-  [model]` drives the whole VPS run (cpuinfo check, build avx512vnni, `--caps` asserts VNNI,
-  self-test, int8/int4 ×{-j1,-j4} RTF, VNNI-on-vs-off A/B). Validated on M1 (SDOT path rel_L2
-  3.8e-3, fallback 1.8e-7, both PASS). Verify ISA with Intel SDE in CI before trusting perf on HW.
+  trajectory fork that makes cross-ISA audio comparison a false alarm** (the right way to prove VNNI:
+  correct → int8 rel_L2 ~4e-3, broken offset → blows up). Validated on M1 (SDOT path, PASS).
+  Verify ISA with Intel SDE in CI before trusting perf on HW.
 - [~] `[LOW]` **AVX-512 bf16 matvec** (`__m512` 16-wide) — **WRITTEN 2026-06-04 (commit b89f30e),
-  UNVALIDATED**, `SIMD=avx512` build. Same rented-box gate. (Note: this is the `__m512` widen-FMA
-  path, not yet the native `_mm512_dpbf16_ps` AVX512-BF16 dot — that's a further upgrade.)
+  UNVALIDATED**, `SIMD=avx512` build. Same rented-box gate. (Note: this is the `__m512` bf16->f32
+  conversion + FMA path; the native `_mm512_dpbf16_ps` AVX512-BF16 dot is the `SIMD=avx512bf16` build.)
 - **Order**: ARM NEON headroom (21.3b, dev HW measurable now); x86 AVX2+threading+int4 ✅ DONE on
   the Ryzen box; **only AVX-512/VNNI remains → rented Zen4+/Intel VPS** (can't run AVX-512 on M1
   or the 6800H).
@@ -260,8 +239,8 @@ Just like SDOT was *missing on NEON* until 2026-06-01, the NEON matvecs still le
 table on **post-M1 ARM** (M2/M3/M4, Graviton3/4) — all behind `#if __ARM_FEATURE_*` with a
 NEON→scalar fallback, so M1 and x86 are unaffected:
 
-- [ ] `[MED]` **bf16 native dot** — `bf16_matvec_fused` does dequant(`vshll`)→FMA. ARMv8.6
-  (`__ARM_FEATURE_BF16`: M2+) has `vbfdot`/`vbfmmla` for native bf16 MACs → skips the widen.
+- [ ] `[MED]` **bf16 native dot** — `bf16_matvec_fused` converts bf16->f32 (`vshll`) then FMA. ARMv8.6
+  (`__ARM_FEATURE_BF16`: M2+) has `vbfdot`/`vbfmmla` for native bf16 MACs → skips the conversion.
 - [ ] `[MED]` **int8 i8mm** — SDOT (`vdotq_s32`) is 1×vector; `smmla` (`__ARM_FEATURE_MATMUL_INT8`:
   M2+, Graviton3+) does a 2×2 int8 matmul per instr → ~2× on the int8 matvecs. The 2-row-fused
   layout already half-fits smmla's shape.
@@ -277,9 +256,8 @@ NEON→scalar fallback, so M1 and x86 are unaffected:
 >   test these (lacks the features); they're written behind `#if __ARM_FEATURE_*` with NEON fallback.
 > - **M4** (ARMv9.2) → also SME/SME2. Likely back-compatible (runs the M1 NEON+SDOT path unchanged),
 >   so it doubles as a "does v0.9.0 still scream on the newest Apple chip" RTF check.
-> - Reuse `tests/x86_bench.sh`'s spirit: a small `bash tests/arm_bench.sh` (TODO) + `--caps` +
->   `--self-test` (the self-test is ISA-agnostic → it already gates a new ARM kernel for correctness).
-> - Validate each new ARM kernel with `make test-golden` (same-ISA) + `--self-test` before trusting.
+> - Use `--caps` + `--self-test` (the self-test is ISA-agnostic → it already gates a new ARM kernel
+>   for correctness) before trusting a new ARM kernel.
 
 ### 21.3c Non-Apple ARM — are we safe? (the same question x86 answered)
 
@@ -298,7 +276,7 @@ Ryzen/EPYC runs.
   x86 runtime ISA guard + portable `-mavx2` default; **ARM needs the same** (portable baseline +
   `qwen_check_runtime_isa()` for ARM features + runtime step-down i8mm/bf16→SDOT→NEON→scalar).
 - [ ] `[MED]` **Validate the NEON+SDOT path on a non-Apple ARM box.** Scaleway has **COPARM = Ampere
-  Altra** (Neoverse-N1, ARMv8.2, has DOTPROD) — rent it, `--caps`/`--self-test`/`test-golden` + RTF,
+  Altra** (Neoverse-N1, ARMv8.2, has DOTPROD) — rent it, `--caps`/`--self-test` + RTF,
   same flow as the EPYC run. Confirms "ARM-everywhere" the way the EPYC confirmed "x86-everywhere".
 - [ ] `[LOW]` **ARM runtime ISA guard + portable build** (GAP 2 above) for a shippable non-native ARM binary.
 - **NVIDIA DGX Spark (GB10)** is a concrete future target: 20× Arm Neoverse (ARMv9.2 → NEON+SDOT+**i8mm+
@@ -458,24 +436,16 @@ talker.c forward). "x86 FTZ incomplete" and ".qvoice v1 enc_dim hardcoded" — `
 The old suite only proved the pipeline RUNS (`validate_wav` = non-empty WAV + ≥1 frame + no MISSING
 weights) — it never checked the audio was CORRECT. A numerically-broken kernel that still emits audio
 PASSED. Closed the worst gaps:
-- [x] **`test-golden`** (commit d987c4b/d987... + gitignore fix) — regen deterministically (`-j1
-  temp0 seed42`) and compare to committed `tests/golden/*.wav` via **mel-spectrogram correlation
-  (≥0.99) + duration (≤5%)** (`tests/compare_audio.py`, librosa). Covers 0.6B en/it/int8 + 1.7B en.
-  Wired into `test-all`. `make golden-update` regenerates after an intended change. **mel-corr (not
-  md5)**: md5 flakes even at `-j1 temp0` (±1 LSB decoder noise, verified). **⚠ CORRECTION (Ryzen
-  2026-06-04): mel-corr is NOT a valid CROSS-ISA gate.** Greedy `-j1 temp0` decode forks the whole
-  trajectory on a single epsilon-different logit across ISAs → x86 golden scored mel 0.55–0.85 vs the
-  ARM golden despite producing perfectly coherent speech (confirmed by ear). The old "must stay 0.99+
-  cross-ISA" assumption is NAIVE for greedy autoregression — retracted. Same-ISA it's still the safety
-  net. **The real cross-ISA correctness gate is now `make test-selftest`** (kernel numeric, below).
-- [x] **`test-selftest`** (2026-06-05, `qwen_kernel_selftest` + `--self-test`) — **the cross-ISA gate
-  that test-golden can't be.** Compares the dispatched matvecs (bf16/int8/argmax-int8) to an f32
-  reference on deterministic random data → catches a broken SIMD kernel (esp. the AVX-512/VNNI int8
+- [x] **mel-corr is NOT a valid CROSS-ISA gate.** Greedy `-j1 temp0` decode forks the whole
+  trajectory on a single epsilon-different logit across ISAs → an x86 run scored mel 0.55–0.85 vs an
+  ARM run despite producing perfectly coherent speech (confirmed by ear). Comparing audio across ISAs
+  is naive for greedy autoregression. **The cross-ISA correctness gate is `make test-selftest`** (kernel numeric).
+- [x] **`test-selftest`** (`qwen_kernel_selftest` + `--self-test`) — **the cross-ISA gate.**
+  Compares the dispatched multiplications (bf16/int8/argmax-int8/q4_0, their matmat and the q4_0 QKV)
+  to a reference on deterministic random data → catches a broken SIMD kernel (esp. the AVX-512/VNNI int8
   dot + `__m512` bf16 matvec) WITHOUT running the pipeline, so the greedy trajectory fork can't mask
-  it. Runs the dispatched path AND the scalar/widen fallback (`QWEN_NO_SDOT/QWEN_NO_VNNI`). int8 uses
-  a near-zero-robust L2-relative metric (act-quant → ~4e-3 correct, blows up if broken). Wired into
-  `test-all`; `tests/vps_validate.sh` drives the full AVX-512 VPS run around it.
-- [x] **`test-serve-repro`** — 3 identical requests bit-identical (catches cross-request state leaks).
+  it. int8 uses a near-zero-robust L2-relative metric (act-quant → ~4e-3 correct, blows up if broken).
+  Wired into `test-all`.
 - [x] **`test-voice-design`** now SKIPs cleanly (was failing on absent model — double bug: dir-only
   check + per-line `exit 0` that didn't stop the recipe).
 - [x] **`--caps` + `test-caps`** — the binary reports its ACTUAL compiled SIMD/threading (NEON/AVX2/
@@ -700,7 +670,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 > **BACKLOG / IDEAS TO ANALYZE+VALIDATE (user, 2026-06-07):**
 > - **BATCHING (branch `feat/batching` off feat/expressivity, started 2026-06-07):** OPT-IN alternative path
 >   (vLLM-style — default = today's single-stream, untouched, golden bit-identical). Premise TESTED via
->   `make batching-bench` (`tests/batching_bench.c`, docs/batching.md): batched GEMM(16) vs 16× GEMV →
+>   a batching microbench: batched GEMM(16) vs 16× GEMV →
 >   **~2× on M1 at bf16** (single-stream is compute-bound there, the FLOOR); **batching is worth MORE at lower
 >   precision** (int4/int2 amortize the costly per-token nibble/bit UNPACK) → **pair batching with int4/int8, not bf16**;
 >   could even make int4 viable on M1 (where nibble-unpack is the slowness today). Cross-CPU prediction: every x86 box
@@ -794,8 +764,8 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   - **#3 int8-SDOT batched twin — DONE, MEASURED, conclusion: DEAD-END on M1.** Built `int8_matmat_sdot_slice`
 >     (weight-stationary, bit-exact: self-test L2=0 vs B×int8-matvec-SDOT). matmat-bench: SDOT-batched 0.40-0.60ms LOSES to
 >     f32-accum-batched 0.33-0.44ms AND to SDOT-seq 0.23-0.46ms. Reason: SDOT contracts over reduction-dim k, batching wants
->     to parallelize over B → B sequential vdotq per weight block, B not vectorized. **Gated OPT-IN `QWEN_INT8_SDOT_MM=1`,
->     default stays f32-accum (no regression).** VERDICT: int8+batch on M1 is break-even (SDOT-seq already near-optimal,
+>     to parallelize over B → B sequential vdotq per weight block, B not vectorized. The ARM dotprod
+>     `matmat` therefore runs B × SDOT matvec (fixed choice). VERDICT: int8+batch on M1 is break-even (SDOT-seq already near-optimal,
 >     int8 weights already halve bandwidth); **batching pays on bf16, not int8, on M1**. The real int8+batch win = **i8mm
 >     SMMLA (M2+) / AVX-512 VNNI (x86)** true int8 GEMM → write those guarded twins on rented hardware (§7 roadmap +
 >     real-HW campaign). The f32-accum batched int8 reading weights ONCE across B should still pay on bandwidth-bound x86.
@@ -861,21 +831,21 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   in the batched path, and can we mix emotions cleanly across a long text? (the batched step reuses the same Talker/CP;
 >   steering is applied where? confirm it flows through). A/B: silvio_17b.qvoice on 1.7B + a 0.6B qvoice, single vs --batch,
 >   plain + with emotion. 2-in-1: qvoice-correctness AND emotion-in-batch.
-> - **TODO (perf epic) — REAL-HARDWARE validation campaign (needs rented/borrowed boxes; see docs/hardware-testing.md).**
+> - **TODO (perf epic) — REAL-HARDWARE validation campaign (needs rented/borrowed boxes).**
 >   The cross-CPU/SIMD optimizations (BFMMLA/SMMLA/SME on ARM, VNNI/BF16/AMX on x86) can only be validated off-M1. Run
->   `make bench-matrix` + `--caps` on each and paste results into docs/hardware-testing.md §5. Target boxes, in order of
->   access: (1) **user's Ryzen 6800H mini-PC** (Zen3, AVX2 — already on LAN, `tests/x86_bench.sh`); (2) **AMD server VPS**
+>   `--caps` + `--self-test` + `make bench` on each. Target boxes, in order of
+>   access: (1) **user's Ryzen 6800H mini-PC** (Zen3, AVX2 — already on LAN); (2) **AMD server VPS**
 >   (Scaleway EPYC Genoa/Turin = AVX-512+VNNI+BF16 — user has used Scaleway 9555P before); (3) **Mac mini M4** (rent/buy —
 >   bf16+i8mm+SME, the biggest untested ARM lever); (4) **a powerful ARM with max SIMD we support** (AWS Graviton3/4 =
 >   bf16+i8mm+SVE, or NVIDIA Grace = SVE2). For each: caps fires? self-test PASS (native+fallback)? RTF single/batch/
->   stream/server × bf16/int8/int4? Then fill in the §7 newer-ISA twin and re-measure. This is the standing perf loop:
->   **M1 dev → check-isa → rent → bench-matrix → fix → loop.**
+>   stream/server × bf16/int8/int4? Then write the newer-ISA twin and re-measure. This is the standing perf loop:
+>   **M1 dev → check-isa → rent → bench → fix → loop.**
 > - **SPECULATIVE DECODING analysis (TODO, user 2026-06-07) — docs/speculative-decoding-analysis.md.** Model has an
 >   INTRA-frame MTP (the Code Predictor = `small_to_mtp_projection`, 15 RVQ residual passes), NOT a next-frame
 >   speculator. Ideas: (A) cross-model draft 0.6B→1.7B `code0` + batched verify; (B) training-free lookahead/Jacobi on
 >   code0 (Medusa/Eagle OUT — need trained heads); (C) CP residual spec (risky, quality-sensitive); (D) spec-decode ⊂
 >   batching (the parallel-verify IS a batched forward → build batching first). **DECISION NUMBER = 0.6B↔1.7B code0
->   acceptance rate** — cheap instrument-only experiment (reuse quant-ladder teacher-forcing rails) to run FIRST.
+>   acceptance rate** — cheap instrument-only experiment (reuse the CP teacher-forcing rails) to run FIRST.
 > - **MTP DEEP-DIVE (TODO, user 2026-06-08) — a dedicated analysis task, NOT this session.** Question to answer
 >   precisely, with code citations: (1) **What MTP is in THIS model and how it works** — the weights contain a
 >   `small_to_mtp_projection` + the Code Predictor (15 RVQ residual passes/frame). Is that a true Multi-Token-Prediction
@@ -890,7 +860,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   the cross-model 0.6B→1.7B code0 idea. Deliverable: `docs/mtp-analysis.md` + a verdict line in PLAN. Cheap, instrument-
 >   /read-only; gate the spec-decode work on its conclusion. Don't conflate with the `feat/batching` matmat work.
 > - **Quant:** int2 / int3 where we know it's viable (q2 already exists for the roughness path — extend as a
->   real quant tier?). Measure quality cliff per codebook (we have the quant-ladder instrument). NOTE: int4+batching
+>   real quant tier?). Measure quality cliff per codebook (the CP teacher-forcing rails measure it). NOTE: int4+batching
 >   synergy (above) raises the value of a solid int4 path.
 > - **Speed+quality benchmark of voice CLONE and preset voices** (systematic A/B: RTF + mel-corr + ear, per voice).
 > - **Expressivity — EMOJI in the prompt:** what does the model do with 😄 😂 😢 🤔 / "lol"/"ahah"? Does it unlock
@@ -1198,7 +1168,7 @@ diverges too much (we saw it does for audio quality) acceptance may be low. (NB:
 intermediate neurons meaningfully fire per token, compute only those rows → fewer weight bytes
 read → bandwidth win, single-stream. Needs a cheap predictor of which neurons fire.
 
-**FIRST STEP = MEASURE — ✅ DONE 2026-06-04 (`make quant-ladder` + `tests/quant_ladder.py`).**
+**FIRST STEP = MEASURE — ✅ DONE 2026-06-04 (per-codebook agreement measurement with teacher forcing).**
 
 **⚠ Architectural finding that reshaped the measurement:** the CP output (codebooks 1-15)
 FEEDS BACK into the Talker's next-step input embedding (`qwen_tts.c:1300-1310`:
@@ -1271,7 +1241,7 @@ Tested the user's "low-bit early codebooks / high-bit late delicate ones" hybrid
 - **Only safe low-bit hybrid: int4 on the 15 lm_heads** (84% agreement) → memory saving (60→15 MB),
   but heads are 4.3% of CP time → negligible speed. Marginal, clean, optional.
 - [ ] **OPEN QUESTION (added 2026-06-04): can int4 shed the "anger" and become the TRUE default, or not?**
-  int4 introduced slight aggression (ear), q2 strong "death-metal" — the quant-ladder localised it to
+  int4 introduced slight aggression (ear), q2 strong "death-metal" — the per-codebook measurement localised it to
   the LATE/fine CP codebooks (c11-c15: int4 23-27% vs bf16) that carry texture/prosody. The anger is
   the SAME perturbation as the prosody knob (track A), just uncontrolled. Question: is there an int4
   variant that keeps the speed/memory but NOT the roughness? Candidates to test: (a) **int4 transformer
@@ -1281,7 +1251,7 @@ Tested the user's "low-bit early codebooks / high-bit late delicate ones" hybrid
   everywhere EXCEPT the FFN `down` (kept int8/bf16)** — `down` is the causal driver of the roughness
   (q2-on-down = death-metal), so int8-down + int4-rest might remove the anger at most of the speed. If
   any (b)/(c) yields int4-speed + int8-quality → int4 becomes the real default; if not, int8 stays the
-  default and int4 lives only as the deliberate `--roughness` knob. MEASURE with the quant-ladder (code0
+  default and int4 lives only as the deliberate `--roughness` knob. MEASURE with the per-codebook agreement (code0
   + per-codebook agreement) AND by ear. Decide the `.qvoice`-save-quantized design (test backlog) after.
 - **Speed must come from compute throughput, not byte-cutting:** the CP is COMPUTE-bound after
   SDOT (the workflow corrected our "bandwidth-bound" framing — int8 weight → one vdotq_s32 vs
