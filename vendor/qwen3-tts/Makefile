@@ -647,7 +647,9 @@ bench-server: $(TARGET)
 # guarded BFMMLA/SMMLA/VNNI/BF16 paths actually compile; does NOT run (the host may
 # not execute them). The workflow guard for "develop on M1, deploy elsewhere".
 # See docs/hardware-testing.md §7. Syntax-only -> fast, no objects.
-ISACHK = -Wall -Wextra -O3 -Ivendor -ffast-math -fsyntax-only
+# Hereda las definiciones e includes de la plataforma (OpenBLAS, shims MinGW,
+# _GNU_SOURCE) y sustituye solo las banderas de ISA por las de cada comprobación.
+ISACHK = $(filter-out $(ARCH_FLAGS),$(CFLAGS_BASE)) -fsyntax-only
 check-isa:
 	@echo "=== Compile-check newer-ISA paths (syntax only, not run) ==="
 ifeq ($(UNAME_M),arm64)
