@@ -499,7 +499,7 @@ At 12.5 frames/second: **~1,288 layer evaluations per second of output audio**.
 2. Talker SwiGLU FFN gate/up/down (28 layers, largest matrices)
 3. Code Predictor QKV + FFN (75 evaluations per frame)
 4. Pre-transform attention layers (8 layers per batch of frames)
-5. ConvNet upsampling (moderate, can use im2col + sgemm)
+5. ConvNet decoder (moderate: each transposed conv is one GEMM plus a scatter in kernel order; each causal conv is k accumulated GEMMs over the left-padded input, with no im2col)
 
 ---
 

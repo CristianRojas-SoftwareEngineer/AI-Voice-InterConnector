@@ -304,8 +304,8 @@ Ryzen/EPYC runs.
 - **NVIDIA DGX Spark (GB10)** is a concrete future target: 20× Arm Neoverse (ARMv9.2 → NEON+SDOT+**i8mm+
   bf16+SVE2** all present) + 128 GB unified LPDDR5X. Our **CPU path runs correctly today** (NEON+SDOT+
   pthread) but leaves i8mm/bf16/SVE2 unused; the unified memory is M1-like (good for the 16×-reread →
-  possibly strong RTF). The GB10 **Blackwell GPU is out of scope** (would need a CUDA backend — separate
-  large effort). So on a DGX Spark we're "safe + correct on CPU, with headroom", not "optimal".
+  possibly strong RTF). The engine is CPU-only, so on a DGX Spark we're "safe + correct on CPU, with
+  headroom", not "optimal".
 
 ### 21.4 INT8 productization
 
@@ -531,15 +531,13 @@ PASSED. Closed the worst gaps:
 - **AVX512 hand-kernels** (old 20.5): defer. BLAS already dispatches AVX512 at runtime; our hand
   kernels are memory-bound. Only add `#ifdef __AVX512F__` paths (fallback + SDE-verified in CI) if
   profiling on real HW shows the aux kernels hot. `[LOW]`
-- **Metal GPU / MLX** (old Phase 16): was 1.3× slower on M1 (unified-memory bandwidth ceiling).
-  Revisit only on M3/M4 (higher bandwidth + Metal 4 tensor support). `[LOW]`
 - **Windows native** (old Phase 15): mmap→MapViewOfFile, threads (covered by 21.2). WSL2 works
   today and is the recommended path. Only if real demand. `[LOW]`
 - **Server per-request voice switching**: accept voice path in JSON (WDELTA too heavy for hot-swap
   today; needs a lighter per-request mechanism). `[LOW]`
 - **KV cache prefix caching eval** (old Phase 12): is a ~50MB KV prefix dump worth it vs WDELTA?
   Likely no (WDELTA is bit-identical + portable), but un-evaluated. `[LOW]`
-- **CUDA/HIP backend stubs**, **top-p partial sort with early exit** (only when top_p<1.0). `[LOW]`
+- **Top-p partial sort with early exit** (only when top_p<1.0). `[LOW]`
 
 ---
 
@@ -570,7 +568,6 @@ Baseline: CP 86.6 ms/f (74%), Talker 30.6 (26%), sampling 0.35 (negligible), pre
 decoder overlapped. RTF 1.76.
 
 ### Experiments that DID NOT work (don't re-litigate)
-- **Metal GPU**: 1.3× slower on M1 (unified-memory bandwidth ceiling). Removed.
 - **pthread thread pool vs GCD on macOS**: −8% (GCD is kernel-optimized). → keep GCD on Mac, but
   pthread is the right call OFF Mac (see 21.2).
 - **4-row fused matvec**: −7% vs 2-row (register spill). Threading threshold 2048: −3%.

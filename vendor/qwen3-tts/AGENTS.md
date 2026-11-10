@@ -32,7 +32,7 @@ Pure C inference engine for Qwen3-TTS text-to-speech models:
 - `Qwen3-TTS-12Hz-0.6B-CustomVoice`
 - `Qwen3-TTS-12Hz-1.7B-CustomVoice`
 
-Primary target is CPU inference (BLAS + architecture-specific SIMD paths).
+CPU-only inference (BLAS is required, plus architecture-specific SIMD paths). The single build target is `make blas`.
 
 ## Current Status
 
@@ -121,7 +121,12 @@ From `qwen_tts_load()` and CLI:
   - speech tokenizer decoder load + forward
   - codebook embedding lookup + RVQ sum
   - pre-transformer layers
-  - ConvNet upsampling blocks
+  - ConvNet upsampling blocks: one network (`conv_decoder_forward`) for full decoding and
+    one exact-streaming path; both use a two-pass ConvNeXt LayerNorm
+  - decoder performance: a persistent per-context workspace (`qwen_sd_workspace_t`, slots that
+    only grow, cleared in worker clones); transposed conv as a single GEMM plus a scatter in k
+    order; causal conv as k accumulated GEMMs over the left-padded input (no im2col), with
+    `W_k` reordered once at load and shared by workers. `QWEN_SD_INT8` (experimental) keeps its own im2col path
 - `qwen_tts_audio.c`
   - WAV writer (24 kHz, 16-bit PCM, mono)
 - `qwen_tts_sampling.c`

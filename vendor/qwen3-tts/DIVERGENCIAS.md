@@ -82,3 +82,52 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Qué cambia**: la descripción de `qwen_tts_kernels.c` indica que los bucles calientes sí contienen AVX2 (verificado el 2026-08-24).
 - **Por qué**: el texto original afirmaba lo contrario.
 - **Si se pierde**: la guía vuelve a describir mal los kernels; no afecta al binario.
+
+### Eliminación de los backends GPU CUDA y Metal
+
+- **Archivos**: se borraron `qwen_tts_cuda*`, `qwen_tts_metal*`, `qwen_tts_backend.{c,h}`, `bench_m2.sh`, `bootstrap_m2.sh` y `setup_m2.sh`; se retiraron los bloques `QWEN_HAVE_CUDA`/`QWEN_HAVE_METAL` y los hooks de GPU de `main.c`, `qwen_tts.c`, `qwen_tts_talker.c`, `qwen_tts_code_predictor.c`, `qwen_tts_speech_decoder.c`, `qwen_tts_kernels.{c,h}` y del `Makefile`.
+- **Qué cambia**: el motor es solo CPU y su único target es `make blas`. Desaparecen los targets `make metal` y `make cuda` y los flags `--backend`, `--gpu-selftest`, `--gpu-selftest-talker` y `--gpu-batch-bench`.
+- **Por qué**: ni el producto ni la CI compilaban esos backends y no se pueden compilar en el equipo de referencia, de modo que cualquier cambio de firma del decodificador los habría roto sin aviso. Una sola ruta de CPU permite optimizar el decodificador con el audio idéntico.
+- **Si se pierde**: una actualización que reincorpore los backends añade código no compilable ni probado y obliga a mantener sus firmas sincronizadas con el decodificador de CPU; el lanzador no usa ninguno de esos flags.
+
+### Eliminación de las ramas sin BLAS
+
+- **Archivos**: `qwen_tts_speech_decoder.c`, `qwen_tts_kernels.c`, `qwen_tts_talker.c`, `qwen_tts_speech_encoder.c`, `Makefile`, `.github/workflows/codeql.yml`.
+- **Qué cambia**: se retiraron las convoluciones `_naive`, los bucles escalares alternativos y los defines `USE_BLAS` y `USE_OPENBLAS`. El motor exige BLAS (Accelerate u OpenBLAS) y no existe una compilación sin él.
+- **Por qué**: la ruta sin BLAS no se compilaba en el producto y duplicaba la lógica del decodificador, de modo que cada optimización había que escribirla dos veces.
+- **Si se pierde**: reaparecen rutas muertas que divergen de la vigente y obligan a mantener dos implementaciones de cada convolución.
+
+### Red convolucional unificada y streaming exacto único
+
+- **Archivos**: `qwen_tts_speech_decoder.c`, `qwen_tts.h`.
+- **Qué cambia**: la red convolucional del decodificador (ConvNeXt, convolución inicial, bloques de upsample y convolución final) era una copia inline en la decodificación completa, otra función usada solo por el streaming por ventanas y una tercera en el streaming exacto. Ahora la decodificación completa usa `conv_decoder_forward` y existe una única ruta de streaming con estado (colas de entrada por convolución y acarreos de solapamiento por convolución transpuesta), exacta respecto a la decodificación completa. Se eliminaron el streaming por ventanas, la variable `QWEN_SD_WINDOWED` y `QWEN_SD_STREAM_CONV_RF`. La cola del bloque ConvNeXt, `convnext_mlp`, es común a ambas rutas y su LayerNorm es de dos pasadas (media y luego varianza centrada).
+- **Por qué**: el streaming por ventanas era aproximado en las uniones y hacía el triple de trabajo; con una sola red las optimizaciones se aplican una vez y el audio de producción (el streaming exacto) no cambia. La varianza de una pasada (`E[x²] - media²`) de la antigua copia inline habría alterado el audio del streaming.
+- **Si se pierde**: vuelven tres copias de la red que pueden divergir entre sí; una LayerNorm de una pasada en `convnext_mlp` cambia el audio de producción respecto al validado.
+
+### Espacio de trabajo persistente del decodificador
+
+- **Archivos**: `qwen_tts.h` (`qwen_sd_workspace_t`, campo `sd_ws` del contexto), `qwen_tts_speech_decoder.c`, `qwen_tts.c`.
+- **Qué cambia**: los búferes intermedios de la red convolucional viven en ranuras que solo crecen y se reutilizan entre bloques y entre peticiones, en lugar de reservarse y liberarse por bloque. La decodificación completa usa un espacio local, liberado al terminar, para no dejar ranuras del tamaño de toda la frase en el contexto. Los clones de worker lo inicializan a cero y tienen el suyo propio.
+- **Por qué**: reservar y liberar decenas de MB por bloque obligaba en Windows a recibir páginas nuevas del sistema y a pagar su puesta a cero y su primer acceso en cada fragmento de streaming.
+- **Si se pierde**: el decodificador vuelve a reservar memoria por bloque (más lento, mismo audio); compartir el espacio entre workers, en cambio, sería una condición de carrera.
+
+### Convolución transpuesta con un solo GEMM
+
+- **Archivos**: `qwen_tts_speech_decoder.c` (`causal_conv_transpose1d`).
+- **Qué cambia**: la convolución transpuesta causal calcula un único GEMM sobre el peso `[entrada][salida·k]` (contiguo tal como está en el archivo) y dispersa el producto sobre la salida con zancada en orden ascendente de `k`.
+- **Por qué**: la versión original reordenaba una copia de los pesos en cada llamada antes de multiplicar. Con una sola multiplicación sobre la vista contigua desaparece ese trabajo y su consumo de ancho de banda; el audio varía como máximo 1 LSB (SNR 96,6-98,6 dB, con WER y similitud WavLM idénticos).
+- **Si se pierde**: el decodificador es más lento y le quita ancho de banda de memoria al Code Predictor; el audio es inaudiblemente distinto.
+
+### Convolución causal sin im2col con pesos `W_k` precalculados
+
+- **Archivos**: `qwen_tts_speech_decoder.c` (`causal_conv1d`, `conv_reorder_weight`, `qwen_speech_decoder_free_conv_weights`), `qwen_tts.h` (`pre_conv_wk`, `initial_conv_wk`, `conv1_wk`), `qwen_tts.c` (la descarga del contexto base libera los pesos reordenados).
+- **Qué cambia**: la convolución causal de kernel mayor que 1 acumula k GEMM sobre la entrada con relleno izquierdo de ceros, sin materializar la matriz im2col. Los pesos se reordenan una vez al cargar a `[k][salida][entrada]` (14 matrices, unos 116 MB) y los clones de worker los comparten. La ruta INT8 experimental (`QWEN_SD_INT8`) conserva su propio im2col.
+- **Por qué**: la versión original copiaba la entrada una vez por posición del kernel en una tabla im2col troceada. Esa copia y el troceo (`CONV_TILE_MAX_BYTES`) desaparecen; el audio coincide con 1 LSB como máximo.
+- **Si se pierde**: la convolución vuelve a ser más lenta y a consumir ancho de banda de memoria; si un worker liberase los pesos compartidos, los demás leerían memoria liberada.
+
+### Afinidad de un hilo lógico por núcleo físico en Windows
+
+- **Archivos**: `main.c` (`pin_one_thread_per_core`, bloque `_WIN32`).
+- **Qué cambia**: antes de crear los pools de hilos, el proceso se restringe con `SetProcessAffinityMask` a un hilo lógico por núcleo físico. La máscara sale de la topología (`GetLogicalProcessorInformationEx`; p. ej. `0x5555` en un Ryzen 7 5825U), se interseca con la afinidad heredada y no se fija nada si hay varios grupos de procesadores.
+- **Por qué**: con SMT el planificador de Windows coloca a veces dos hilos pesados en el mismo núcleo y el RTF salta de ~1,1 a 1,3-1,5 de forma intermitente; el audio no cambia.
+- **Si se pierde**: reaparece ese estado lento intermitente en equipos Windows con SMT.

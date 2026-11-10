@@ -50,7 +50,7 @@ make blas
 
 - **Pure C, minimal dependencies** — Only requires a C compiler and BLAS. No Python runtime needed.
 - **Runs on macOS, Linux and Windows/WSL2 (ARM/x86)** — the hot matvec/attention kernels have **NEON+SDOT (ARM), AVX2 and AVX-512/VNNI/BF16 (x86)** twins with a scalar fallback + runtime ISA guard, and decode threading runs on a **cross-OS pool** (GCD on macOS, pthread elsewhere). Validated on Apple M1, Ryzen 7 6800H, and EPYC 9555P (Zen5). Single-stream RTF is memory/cache-bound, so the chip's cache matters most (see [Performance](#performance)); measure yours with `bash tests/x86_bench.sh`.
-- **Optional GPU backends (opt-in)** — **Apple Metal** (`make metal`) and **NVIDIA CUDA** (`make cuda`) run the whole fused pipeline resident on the GPU (**0.28 RTF** for 0.6B on an M4; ~0.44 for 1.7B on a mainstream NVIDIA GPU), plus server request-batching for throughput. CPU stays the default. → [Performance § GPU backends](#performance) · [docs/hardware-testing.md](docs/hardware-testing.md) (Metal) · [docs/cuda-performance.md](docs/cuda-performance.md) (CUDA).
+- **CPU only (`make blas`)** — a single build target that links against BLAS; the engine runs entirely on the CPU and requires BLAS. Server request-batching adds throughput for concurrent users. → [Performance](#performance)
 - **Both model sizes** — Automatically detects 0.6B or 1.7B from weight files.
 - **9 preset voices** — `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`.
 - **10 languages** — English, Chinese, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
@@ -571,57 +571,16 @@ total throughput on bandwidth-bound boxes. Measure it on your CPU with `make ben
 
 5–7x faster than Python on CPU, and **faster than real-time with `--int8`** — on a 2020 laptop with no GPU.
 
-> Per-component breakdown, full GPU table, optimization history → [docs/performance.md](docs/performance.md)
+> Per-component breakdown, optimization history → [docs/performance.md](docs/performance.md)
 > x86 AVX2/AVX-512/VNNI findings + how to benchmark your CPU → [docs/x86-optimization.md](docs/x86-optimization.md)
-
-### 🖥️ GPU backends — Apple Metal & NVIDIA CUDA (opt-in)
-
-Optional `--backend metal|cuda` runs the **whole fused pipeline resident on the GPU** (weights + KV +
-activations on device, one command buffer / step). The CPU path stays the default — GPU is purely additive.
-Full numbers: [Metal / Apple Silicon](docs/hardware-testing.md) · [CUDA / NVIDIA](docs/cuda-performance.md).
-
-**Apple Metal** — `make metal CC=clang`, then `QWEN_METAL_FUSED_TALKER=1 ./qwen_tts --backend metal`.
-**Single-stream latency** (one request — CLI, or a warm `--serve` server; the two match):
-
-| Device | 0.6B RTF | 1.7B RTF | Streaming TTFA (single client) |
-|---|---|---|---|
-| **Apple M1** 8-core (dev box) | ~0.60 (int4) | — | **469 ms** (0.6B) |
-| **Apple M2 Pro** 16-core GPU | 0.36–0.39 | 0.48–0.53 | **314 ms** / 517 ms |
-| **Apple M4** 10-core GPU | **0.28** (int4) | **0.41** (int4) | — |
-
-RTF = processing_time ÷ audio_duration (**< 1.0 = faster than real time**); TTFA = time to first audio for a
-single `--stream` client, **warm server** (the first request after startup pays a one-time weight→GPU-buffer
-upload — e.g. ~3.6 s cold vs 469 ms warm on M1-0.6B). Metal beats the native M2 CPU path ~1.5–2×; **int8 is the sweet spot** on Apple Silicon
-(bandwidth-rich → int4's nibble-unpack doesn't pay). Resident decode is bit-identical to the CPU path.
-*(Multi-user concurrency → the batching table below.)*
-
-**NVIDIA CUDA** — `make cuda` (resident fused + cuBLAS pointwise convs + CUDA graphs). One multi-arch
-binary (Ampere/Ada/Blackwell). The CUDA toolkit is auto-detected (`nvcc` on `PATH`, else `/usr/local/cuda`,
-else `/opt/cuda` — Arch Linux); point at a different prefix with `make cuda CUDA_HOME=/path/to/cuda`.
-**Single-stream latency** (one request), measured:
-
-| GPU | Config | RTF (single stream) |
-|---|---|---|
-| RTX 4060-class (~270 GB/s) | 1.7B `--quant-mixed` | **0.44** |
-| **A100-SXM4-40GB** (cloud) | 0.6B (bf16 or int4) | **0.39** |
-| **A100-SXM4-40GB** (cloud) | 1.7B `--quant-mixed` + `QWEN_CUDA_DP4A=1` | **0.50** |
-
-`QWEN_CUDA_DP4A=1` (new, opt-in) runs int4 weights against int8-quantized activations with integer
-`__dp4a` dots: **1.7B Talker −33% ms/f on the A100**, ear-validated. Note the honest scaling limit:
-decode is bandwidth-bound only up to a point — past it, single-stream becomes **launch-latency-bound**
-(the A100's 5–6× bandwidth did not translate to 5× RTF), so big cards pay off in **batching**, not
-single-stream. Details → [docs/cuda-performance.md](docs/cuda-performance.md).
 
 **Throughput — server request-batching** (`--serve --batch-size N`, continuous batching + per-request
 streaming). Batching is a **throughput / parallelism** lever, *not* a per-request speedup — it serves N
 concurrent users in roughly the time of one by reading each weight once for all B sequences (matvec → matmat).
-**CPU, CUDA and Metal all batch:**
+**The CPU path batches:**
 
 | Backend | Batch speedup | Notes |
 |---|---|---|
-| **CUDA** (RTX 4060-class) | **~3.35× at B=8** | per-step (Talker 4.1× · CP 2.7×), ~3× end-to-end; output bit-identical solo-vs-batch |
-| **CUDA** (A100, cloud) | **aggregate RTF 0.47 at B=8** | 8 concurrent users, all served faster than real-time (1.7B; ~2.1× throughput) |
-| **Apple Metal** (M2 Pro) | **~2.8× at B=4** | 0.6B 2.81× · 1.7B 2.82× (consistent); batch output bit-identical to single-stream |
 | **CPU x86** | ~N on bandwidth-bound servers | ~1× on cache-rich M1 (single-stream is already fast) |
 | **CPU ARM** (Graviton3+, i8mm) | **int8 batch matmat 2.1×, int4 1.6×** (native SMMLA GEMM) | e2e batched server −19% wall @ B=4 vs the pre-SMMLA twin; bf16 1.5× (BFMMLA) |
 
@@ -639,7 +598,7 @@ concurrent users in roughly the time of one by reading each weight once for all 
 | [Expressivity packs `.expr`](docs/expressivity-lora.md) | Per-language emotion LoRA: which layers, why it's ~16–63 MB, file format, `--expr`/`--expr-weight`, per-voice rank. Train your own: [`training/expressivity-lora/`](training/expressivity-lora/) |
 | [Inline markup](docs/markup.md) | Audiobook/podcast tags in `--text`: `[sad]`/`[joy]` mid-text emotion switches, `[sigh]`/`[huff]` fillers, `[pause:400ms]` |
 | [Quantization](docs/quantization.md) | INT8/INT4, comparison table, recommendations |
-| [Performance](docs/performance.md) | RTF benchmarks, component breakdown, CPU vs GPU, optimization history |
+| [Performance](docs/performance.md) | RTF benchmarks, component breakdown, optimization history |
 | [x86 optimization](docs/x86-optimization.md) | AVX2 / AVX-512 / VNNI findings, why it's memory-bound, how to benchmark your CPU |
 | [Hardware testing / benchmark your CPU](docs/hardware-testing.md) | One-command per-box report (`make bench-matrix`), which CPU has which SIMD, where to rent ARM/x86, the RTF + throughput matrix to fill in |
 | [Building](docs/building.md) | All platforms, build targets, testing (golden-reference test needs Python + `librosa`) |
