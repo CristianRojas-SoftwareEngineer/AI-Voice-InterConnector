@@ -3039,8 +3039,8 @@ static void q4_0_mv_task(size_t tid, size_t nt, void *vc) {
     q4_0_matvec_inner(c->y + r0, c->x, c->W + (size_t)r0 * c->blocks_per_row,
                       c->cols, r1 - r0);
 }
-#if defined(__ARM_FEATURE_DOTPROD) || defined(__AVX512VNNI__)
 enum { Q4_QX_MAX = 8192 };
+#if defined(__ARM_FEATURE_DOTPROD) || defined(__AVX512VNNI__)
 /* Shared one-time QWEN_NO_SDOT cache (audit #10 race-free). 1 = force the legacy
  * f32-dequant q4 path (the A/B bench + quant-ladder gate); shared by the ARM SDOT and
  * x86 VNNI q4 paths and the fused QKV so single-stream stays self-consistent. */
@@ -3320,8 +3320,142 @@ static void q4_0_vnni_task(size_t tid, size_t nt, void *vc) {
 }
 #endif
 
+#if !defined(__AVX512VNNI__) && !defined(__ARM_FEATURE_DOTPROD)
+/* QWEN_NO_VNNI=1 o QWEN_NO_SDOT=1 desactivan la ruta entera q4 de AVX2 / escalar
+ * (modo comparativo en coma flotante), igual que en la ruta entera de int8. */
+static int q4_int_disabled(void) {
+    static atomic_int off = -1;
+    int v = atomic_load_explicit(&off, memory_order_relaxed);
+    if (v < 0) {
+        const char *ev = getenv("QWEN_NO_VNNI"), *es = getenv("QWEN_NO_SDOT");
+        v = (ev && ev[0] == '1') || (es && es[0] == '1');
+        atomic_store_explicit(&off, v, memory_order_relaxed);
+    }
+    return v;
+}
+
+#if defined(__AVX2__)
+/* Acumula en `acc` (8 lanas float) la contribución de un bloque q4_0 de una fila.
+ * Los 16 bytes se desempaquetan en 32 nibbles sin signo (0..15) en orden de valor:
+ * el nibble bajo del byte i es el peso 2i y el alto el 2i+1, por eso
+ * unpacklo/unpackhi de (bajos, altos) los deja en [lo0,hi0,lo1,hi1,...].
+ * _mm256_maddubs_epi16 multiplica nibble (u8) por activación (s8) sin saturar
+ * (15·127·2 < 32767) y _mm256_madd_epi16 con unos lo ensancha a 8 sumas int32
+ * parciales. Como w = nibble − 8, Σ w·qa = Σ nibble·qa − 8·Σqa: se resta el Σqa
+ * del bloque (precalculado una vez por activación) a cada una de las 8 lanas, lo
+ * que descuenta exactamente 8·Σqa del total. Las lanas se convierten a float, se
+ * escalan con la escala fp16 del bloque y se acumulan con FMA; la reducción
+ * horizontal se hace una sola vez por fila. Ambos núcleos (dos filas y una fila)
+ * usan esta misma función, así que cada fila da el mismo resultado bit a bit sea
+ * cual sea el núcleo que la procese. */
+static inline __m256 q4_0_avx2_block(__m256 acc, const q4_0_block_t *blk, __m256i a, int sumq) {
+    const __m128i lomask = _mm_set1_epi8(0x0F);
+    __m128i raw = _mm_loadu_si128((const __m128i *)blk->qs);
+    __m128i lo = _mm_and_si128(raw, lomask);
+    __m128i hi = _mm_and_si128(_mm_srli_epi16(raw, 4), lomask);
+    __m256i w = _mm256_set_m128i(_mm_unpackhi_epi8(lo, hi), _mm_unpacklo_epi8(lo, hi));
+    __m256i p = _mm256_madd_epi16(_mm256_maddubs_epi16(w, a), _mm256_set1_epi16(1));
+    p = _mm256_sub_epi32(p, _mm256_set1_epi32(sumq));
+    return _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), _mm256_set1_ps(qwen_f16_to_f32(blk->scale_f16)), acc);
+}
+
+/* Producto escalar entero q4_0 en AVX2: y[o] = sx · Σ_bloques escala_b · (Σ w·qa).
+ * Dos filas a la vez para reutilizar la carga de la activación; la fila sobrante
+ * usa la misma función de bloque. */
+static void q4_0_matvec_avx2(float *y, const int8_t *qx, float sx,
+                             const q4_0_block_t *W, int cols, int out_dim) {
+    qwen_ftz_on();  /* se ejecuta en cada worker del pool */
+    int nb = cols / Q4_0_BLOCK_SIZE;
+    const __m256i ones8 = _mm256_set1_epi8(1), ones16 = _mm256_set1_epi16(1);
+    int sumq[Q4_QX_MAX / Q4_0_BLOCK_SIZE];
+    for (int b = 0; b < nb; b++) {
+        __m256i a = _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE));
+        sumq[b] = int8_hsum_epi32(_mm256_madd_epi16(_mm256_maddubs_epi16(ones8, a), ones16));
+    }
+    int o = 0;
+    for (; o + 1 < out_dim; o += 2) {
+        const q4_0_block_t *r0 = W + (size_t)o * nb, *r1 = r0 + nb;
+        __m256 s0 = _mm256_setzero_ps(), s1 = _mm256_setzero_ps();
+        for (int b = 0; b < nb; b++) {
+            __m256i a = _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE));
+            s0 = q4_0_avx2_block(s0, &r0[b], a, sumq[b]);
+            s1 = q4_0_avx2_block(s1, &r1[b], a, sumq[b]);
+        }
+        y[o]     = qwen_hsum256_ps(s0) * sx;
+        y[o + 1] = qwen_hsum256_ps(s1) * sx;
+    }
+    if (o < out_dim) {
+        const q4_0_block_t *r0 = W + (size_t)o * nb;
+        __m256 s0 = _mm256_setzero_ps();
+        for (int b = 0; b < nb; b++) {
+            __m256i a = _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE));
+            s0 = q4_0_avx2_block(s0, &r0[b], a, sumq[b]);
+        }
+        y[o] = qwen_hsum256_ps(s0) * sx;
+    }
+}
+#else
+/* Producto escalar entero q4_0 portable: por bloque acumula (nibble − 8)·qa en
+ * int32, lo escala con la escala fp16 del bloque y suma en float; al final aplica
+ * la escala de la activación. */
+static void q4_0_matvec_scalar_int(float *y, const int8_t *qx, float sx,
+                                   const q4_0_block_t *W, int cols, int out_dim) {
+    qwen_ftz_on();  /* se ejecuta en cada worker del pool */
+    int nb = cols / Q4_0_BLOCK_SIZE;
+    for (int o = 0; o < out_dim; o++) {
+        const q4_0_block_t *row = W + (size_t)o * nb;
+        float sum = 0.0f;
+        for (int b = 0; b < nb; b++) {
+            const int8_t *xb = qx + (size_t)b * Q4_0_BLOCK_SIZE;
+            int32_t dot = 0;
+            for (int i = 0; i < 16; i++) {
+                dot += ((int32_t)(row[b].qs[i] & 0x0F) - 8) * xb[2 * i];
+                dot += ((int32_t)(row[b].qs[i] >> 4) - 8) * xb[2 * i + 1];
+            }
+            sum += qwen_f16_to_f32(row[b].scale_f16) * (float)dot;
+        }
+        y[o] = sum * sx;
+    }
+}
+#endif /* __AVX2__ */
+
+static inline void q4_0_int_rows(float *y, const int8_t *qx, float sx,
+                                 const q4_0_block_t *W, int cols, int rows) {
+#if defined(__AVX2__)
+    q4_0_matvec_avx2(y, qx, sx, W, cols, rows);
+#else
+    q4_0_matvec_scalar_int(y, qx, sx, W, cols, rows);
+#endif
+}
+
+typedef struct { float *y; const int8_t *qx; float sx; const q4_0_block_t *W; int rows, cols; } q4_0_int_ctx;
+static void q4_0_int_task(size_t tid, size_t nt, void *vc) {
+    q4_0_int_ctx *c = (q4_0_int_ctx *)vc;
+    int r0 = (int)(tid * (size_t)c->rows / nt);
+    int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
+    q4_0_int_rows(c->y + r0, c->qx, c->sx,
+                  c->W + (size_t)r0 * (c->cols / Q4_0_BLOCK_SIZE), c->cols, r1 - r0);
+}
+#endif /* !__AVX512VNNI__ && !__ARM_FEATURE_DOTPROD */
+
 void qwen_matvec_q4_0(float *y, const q4_0_block_t *W, const float *x,
                        int rows, int cols) {
+#if !defined(__AVX512VNNI__) && !defined(__ARM_FEATURE_DOTPROD)
+    /* Ruta entera AVX2 / escalar: cuantiza la activación compartida a int8 una vez
+     * y hace el producto escalar entero por bloque. */
+    if (!q4_int_disabled() && cols <= Q4_QX_MAX && cols % Q4_0_BLOCK_SIZE == 0) {
+        int8_t qx_buf[Q4_QX_MAX];
+        float sx = quantize_act_int8(qx_buf, x, cols);
+        int nt = g_n_threads;
+        if (nt > 1 && rows >= 256) {
+            q4_0_int_ctx c = { y, qx_buf, sx, W, rows, cols };
+            qwen_parallel((size_t)nt, q4_0_int_task, &c);
+            return;
+        }
+        q4_0_int_rows(y, qx_buf, sx, W, cols, rows);
+        return;
+    }
+#endif
 #if defined(__AVX512VNNI__)
     /* VNNI-native q4 path (plan_v4 C7), the x86 twin of the ARM SDOT-q4: quantize the
      * shared activation to int8 once, then unpack nibbles→int8 + dpbusd per block. */
@@ -3472,17 +3606,63 @@ static void q4_0_qkv_vnni_task(size_t tid, size_t nt, void *vc) {
     }
 }
 #endif
+#if !defined(__AVX512VNNI__) && !defined(__ARM_FEATURE_DOTPROD)
+/* QKV entero AVX2 / escalar: cuantiza la activación compartida una sola vez y reparte
+ * las filas concatenadas [Q|K|V] entre los hilos, con el mismo núcleo que
+ * qwen_matvec_q4_0 para que el resultado coincida bit a bit con tres matvec. */
+typedef struct {
+    float *q, *k, *v;
+    const q4_0_block_t *Wq, *Wk, *Wv;
+    const int8_t *qx; float sx;
+    int in_dim, q_dim, kv_dim;
+} q4_0_qkv_int_ctx;
+static void q4_0_qkv_int_task(size_t tid, size_t nt, void *vc) {
+    q4_0_qkv_int_ctx *c = (q4_0_qkv_int_ctx *)vc;
+    int total = c->q_dim + 2 * c->kv_dim;
+    int nb = c->in_dim / Q4_0_BLOCK_SIZE;
+    int r0 = (int)(tid * (size_t)total / nt);
+    int r1 = (int)((tid + 1) * (size_t)total / nt);
+    for (int r = r0; r < r1; ) {
+        if (r < c->q_dim) {
+            int end = r1 < c->q_dim ? r1 : c->q_dim;
+            q4_0_int_rows(c->q + r, c->qx, c->sx, c->Wq + (size_t)r * nb, c->in_dim, end - r);
+            r = end;
+        } else if (r < c->q_dim + c->kv_dim) {
+            int local = r - c->q_dim;
+            int end = r1 < c->q_dim + c->kv_dim ? r1 : c->q_dim + c->kv_dim;
+            q4_0_int_rows(c->k + local, c->qx, c->sx, c->Wk + (size_t)local * nb, c->in_dim, (end - c->q_dim) - local);
+            r = end;
+        } else {
+            int local = r - c->q_dim - c->kv_dim;
+            int local_end = r1 - c->q_dim - c->kv_dim;
+            q4_0_int_rows(c->v + local, c->qx, c->sx, c->Wv + (size_t)local * nb, c->in_dim, local_end - local);
+            r = r1;
+        }
+    }
+}
+#endif
 void qwen_matvec_q4_0_qkv(float *q, float *k, float *v,
                             const q4_0_block_t *Wq, const q4_0_block_t *Wk,
                             const q4_0_block_t *Wv,
                             const float *x, int in_dim, int q_dim, int kv_dim) {
+#if !defined(__AVX512VNNI__) && !defined(__ARM_FEATURE_DOTPROD)
+    if (!q4_int_disabled() && in_dim <= Q4_QX_MAX && in_dim % Q4_0_BLOCK_SIZE == 0) {
+        int8_t qx_buf[Q4_QX_MAX];
+        float sx = quantize_act_int8(qx_buf, x, in_dim);
+        int nt = g_n_threads;
+        if (nt > 1) {
+            q4_0_qkv_int_ctx c = { q, k, v, Wq, Wk, Wv, qx_buf, sx, in_dim, q_dim, kv_dim };
+            qwen_parallel((size_t)nt, q4_0_qkv_int_task, &c);
+            return;
+        }
+        q4_0_int_rows(q, qx_buf, sx, Wq, in_dim, q_dim);
+        q4_0_int_rows(k, qx_buf, sx, Wk, in_dim, kv_dim);
+        q4_0_int_rows(v, qx_buf, sx, Wv, in_dim, kv_dim);
+        return;
+    }
+#endif
 #if defined(__AVX512VNNI__)
-    /* QWEN_NO_VNNI_QKV=1 isolates THIS lever in the box A/B (falls back to the
-     * f32-dequant QKV below while the standalone q4 matvec stays VNNI). */
-    static atomic_int qkv_off = -1;
-    int qkv_o = atomic_load_explicit(&qkv_off, memory_order_relaxed);
-    if (qkv_o < 0) { const char *e = getenv("QWEN_NO_VNNI_QKV"); qkv_o = (e && e[0] == '1'); atomic_store_explicit(&qkv_off, qkv_o, memory_order_relaxed); }
-    if (!qkv_o && !q4_sdot_disabled() && in_dim <= Q4_QX_MAX && in_dim % Q4_0_BLOCK_SIZE == 0) {
+    if (!q4_sdot_disabled() && in_dim <= Q4_QX_MAX && in_dim % Q4_0_BLOCK_SIZE == 0) {
         int8_t qx_buf[Q4_QX_MAX];
         float sx = quantize_act_int8(qx_buf, x, in_dim);
         int nt = g_n_threads;
@@ -5153,6 +5333,31 @@ int qwen_kernel_selftest(void *out) {
                 fprintf(f, "  [%4dx%4d] matmat_q4_0(B=%d) vs B*matvec_q4_0: L2_rel=%.2e  %s\n",
                         rows, cols, B, l2rel, ok ? "PASS" : "FAIL");
                 if (!ok) failures++;
+
+                /* ---- QKV q4_0 fusionado vs tres matvec individuales: Q = mitad de las
+                 * filas, K = V = un cuarto cada una. Ambos usan la misma ruta y el mismo
+                 * núcleo por fila, así que el error exigido es exactamente 0. ---- */
+                {
+                    int qd = rows / 2, kvd = rows / 4;
+                    const q4_0_block_t *wk = wq + (size_t)qd * nb, *wv = wk + (size_t)kvd * nb;
+                    qwen_matvec_q4_0_qkv(y, y + qd, y + qd + kvd, wq, wk, wv, x, cols, qd, kvd);
+                    qwen_matvec_q4_0(yc, wq, x, qd, cols);
+                    qwen_matvec_q4_0(yc + qd, wk, x, kvd, cols);
+                    qwen_matvec_q4_0(yc + qd + kvd, wv, x, kvd, cols);
+                    int ok = memcmp(y, yc, (size_t)(qd + 2 * kvd) * sizeof(float)) == 0;
+                    fprintf(f, "  [%4dx%4d] qkv_q4_0 vs 3*matvec_q4_0: %s\n",
+                            rows, cols, ok ? "PASS (exacto)" : "FAIL");
+                    if (!ok) failures++;
+                    /* La fila 0 sola (núcleo de una fila) debe coincidir bit a bit con la
+                     * misma fila procesada dentro del matvec completo (núcleo de dos filas). */
+                    float y0;
+                    qwen_matvec_q4_0(&y0, wq, x, 1, cols);
+                    qwen_matvec_q4_0(yc, wq, x, rows, cols);
+                    ok = memcmp(&y0, yc, sizeof(float)) == 0;
+                    fprintf(f, "  [%4dx%4d] matvec_q4_0 fila sola vs en bloque: %s\n",
+                            rows, cols, ok ? "PASS (exacto)" : "FAIL");
+                    if (!ok) failures++;
+                }
             }
             free(wq); free(Xb); free(Yb); free(xb); free(yc);
         }
