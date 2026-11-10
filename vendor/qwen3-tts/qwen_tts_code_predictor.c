@@ -736,31 +736,17 @@ static void cp_transformer_step(qwen_tts_ctx_t *ctx, float *x, float *x_norm, in
  * - After each step: apply final norm, compute logits via lm_head, sample
  * ======================================================================== */
 
-/* ── CP 2-token prefill (perf item 3, 2026-07-11) ────────────────────────────
- * Frame positions 0 (projected talker hidden) and 1 (code0 embed) are BOTH known
- * before the RVQ loop starts — the only legal intra-frame batching the sequential
- * argmax feedback permits. Run them as ONE B=2 matmat pass per projection so each
- * 5-layer weight matrix is read from DRAM once instead of twice (−1 of 16 full
- * weight sweeps ≈ −6% CP traffic). QUANTIZED-CP ONLY (uniform int8 or q4 across
- * all 5 layers): the bf16 path keeps the sequential steps so the bf16 golden
- * trajectory (the quality anchor) is untouched. matmat fp-order differs from
- * matvec → the quantized trajectories fork (same class of intentional fork as
- * the int8-SDOT argmax). Per-pos attention/rope/norm use the exact kernels the
- * sequential path uses. Kill-switch: QWEN_CP_PREFILL2=0. */
-static int cp_prefill2_mode(qwen_tts_ctx_t *ctx) {   /* 0=off, 1=int8, 2=q4 (weights+env only) */
-    static __thread int cached = -2;                 /* -2 = unprobed */
-    if (cached != -2) return cached;
-    /* DEFAULT: ON under AVX-512/VNNI (EPYC Turin measured 2026-07-11: CP −6-8% ms/f,
-     * RTF −3% — the B=2 matmat rides the VNNI GEMM; QWEN_CP_PREFILL2=0 opts out).
-     * OFF elsewhere (M1 measured NEUTRAL — SDOT-seq is already near-optimal;
-     * QWEN_CP_PREFILL2=1 opts in). Bonus with pf2 ON: teacher-forced gold-agreement
-     * IMPROVES (int8 78.2 -> 82.2% — f32-act matmat is MORE precise on pos 0/1). */
-    const char *e = getenv("QWEN_CP_PREFILL2");
-#if defined(__AVX512VNNI__)
-    if (e && e[0] == '0') return cached = 0;
-#else
-    if (!(e && e[0] == '1')) return cached = 0;
-#endif
+/* ── Prefill fusionado de 2 posiciones del Code Predictor ────────────────────
+ * Las posiciones 0 (hidden del Talker proyectado) y 1 (embedding de code0) de
+ * cada fotograma se conocen antes de empezar el bucle RVQ. Se procesan juntas
+ * con un matmat de B=2 por proyección, de modo que cada matriz de pesos de las
+ * 5 capas se lee de DRAM una sola vez en lugar de dos.
+ * La ruta es exacta: el matmat cuantizado da bit a bit lo mismo que B llamadas
+ * a matvec, y las normas, RoPE y atención usan los mismos kernels que la ruta
+ * secuencial; el resultado no depende de que se use una u otra.
+ * Solo aplica si las 5 capas están en int8 (modo 1) o todas en q4 (modo 2);
+ * con bf16 o precisión mixta por capa se usa la ruta secuencial (modo 0). */
+static int cp_prefill2_mode(qwen_tts_ctx_t *ctx) {
     int all8 = 1, all4 = 1;
     for (int l = 0; l < ctx->config.cp_num_layers; l++) {
         qwen_cp_layer_t *L = &ctx->cp_layers[l];
@@ -770,7 +756,7 @@ static int cp_prefill2_mode(qwen_tts_ctx_t *ctx) {   /* 0=off, 1=int8, 2=q4 (wei
         if (!(L->wq_q4 && L->wk_q4 && L->wv_q4 && L->wo_q4 &&
               L->gate_up_fused_q4 && L->down_q4)) all4 = 0;
     }
-    return cached = all8 ? 1 : (all4 ? 2 : 0);
+    return all8 ? 1 : (all4 ? 2 : 0);
 }
 
 static inline void cp_ilv2(float *X2, const float *a, const float *b, int n) {
@@ -816,32 +802,40 @@ static void cp_prefill2(qwen_tts_ctx_t *ctx, int mode, float *x0, float *x1) {
         qwen_rms_norm(xn0, x0, l->input_norm, 1, cp_h, eps);
         qwen_rms_norm(xn1, x1, l->input_norm, 1, cp_h, eps);
         cp_ilv2(X2, xn0, xn1, cp_h);
+        CPB_MARK(CPB_INNORM);
         { const float *X2loc = X2;
           CP_MM2(Q2, l->wq_int8, l->wq_scale, l->wq_q4, qd,  cp_h);
           CP_MM2(K2, l->wk_int8, l->wk_scale, l->wk_q4, kvd, cp_h);
           CP_MM2(V2, l->wv_int8, l->wv_scale, l->wv_q4, kvd, cp_h); }
+        CPB_MARK(CPB_QKV);
 
         for (int p = 0; p < 2; p++) {
             float *q = ctx->cp_dec_q, *k = ctx->cp_dec_k, *v = ctx->cp_dec_v;
             cp_dcol2(q, Q2, qd, p); cp_dcol2(k, K2, kvd, p); cp_dcol2(v, V2, kvd, p);
+            CPB_MARK(CPB_QKV);
             qwen_rms_norm_per_head(q, l->q_norm, 1, c->cp_num_heads, c->cp_head_dim, eps);
             qwen_rms_norm_per_head(k, l->k_norm, 1, c->cp_num_kv_heads, c->cp_head_dim, eps);
+            CPB_MARK(CPB_QKNORM);
             apply_rope_neox(q, c->cp_num_heads, c->cp_head_dim, ctx->cp_rope_cos, ctx->cp_rope_sin, p);
             apply_rope_neox(k, c->cp_num_kv_heads, c->cp_head_dim, ctx->cp_rope_cos, ctx->cp_rope_sin, p);
+            CPB_MARK(CPB_ROPE);
             int64_t kv_off = (int64_t)layer * ctx->cp_kv_max * kvd + (int64_t)p * kvd;
             f32_to_bf16_vec(ctx->cp_kv_k + kv_off, k, kvd);
             f32_to_bf16_vec(ctx->cp_kv_v + kv_off, v, kvd);
+            CPB_MARK(CPB_KVSTORE);
             uint16_t *layer_k = ctx->cp_kv_k + (int64_t)layer * ctx->cp_kv_max * kvd;
             uint16_t *layer_v = ctx->cp_kv_v + (int64_t)layer * ctx->cp_kv_max * kvd;
             qwen_causal_attention_bf16kv(p == 0 ? attn0 : ctx->cp_dec_attn_out, q,
                                          layer_k, layer_v, 1, p + 1,
                                          c->cp_num_heads, c->cp_num_kv_heads,
                                          c->cp_head_dim, attn_scale, p);
+            CPB_MARK(CPB_ATTN);
         }
 
         cp_ilv2(A2, attn0, ctx->cp_dec_attn_out, qd);
         { const float *X2loc = A2;
           CP_MM2(P2, l->wo_int8, l->wo_scale, l->wo_q4, cp_h, qd); }
+        CPB_MARK(CPB_OPROJ);
         for (int p = 0; p < 2; p++) {
             float *x = xs[p];
             for (int i = 0; i < cp_h; i++) x[i] += P2[2 * i + p];
@@ -850,20 +844,25 @@ static void cp_prefill2(qwen_tts_ctx_t *ctx, int mode, float *x0, float *x1) {
         qwen_rms_norm(xn0, x0, l->post_attn_norm, 1, cp_h, eps);
         qwen_rms_norm(xn1, x1, l->post_attn_norm, 1, cp_h, eps);
         cp_ilv2(X2, xn0, xn1, cp_h);
+        CPB_MARK(CPB_RESNORM);
         { const float *X2loc = X2;
           CP_MM2(G2, l->gate_up_fused_int8, l->gate_up_fused_scale, l->gate_up_fused_q4,
                  2 * inter, cp_h); }
+        CPB_MARK(CPB_FFN_GU);
         cp_dcol2(g0, G2, 2 * inter, 0);
         cp_dcol2(ctx->cp_dec_gate, G2, 2 * inter, 1);
         qwen_swiglu_inplace(g0, ctx->swiglu_tmp, inter);
         qwen_swiglu_inplace(ctx->cp_dec_gate, ctx->swiglu_tmp, inter);
         cp_ilv2(GI2, g0, ctx->cp_dec_gate, inter);
+        CPB_MARK(CPB_SWIGLU);
         { const float *X2loc = GI2;
           CP_MM2(D2, l->down_int8, l->down_scale, l->down_q4, cp_h, inter); }
+        CPB_MARK(CPB_FFN_DOWN);
         for (int p = 0; p < 2; p++) {
             float *x = xs[p];
             for (int i = 0; i < cp_h; i++) x[i] += D2[2 * i + p];
         }
+        CPB_MARK(CPB_RESNORM);
     }
 #undef CP_MM2
 }
@@ -927,12 +926,10 @@ int qwen_cp_predict(qwen_tts_ctx_t *ctx, float *talker_hidden, int code0, int *o
     }
     CPB_MARK(CPB_EMBED);
 
-    /* Fused 2-token prefill (quantized CP only; see cp_prefill2). Roughness blends
-     * per-step → sequential path. CP_MICROBENCH keeps the per-step marks meaningful. */
+    /* Prefill fusionado de 2 posiciones (solo CP cuantizado; ver cp_prefill2).
+     * La rugosidad mezcla en cada paso, así que usa la ruta secuencial. */
     int pf2 = 0;
-#ifndef CP_MICROBENCH
     if (ctx->cp_roughness <= 0.0f) pf2 = cp_prefill2_mode(ctx);
-#endif
     if (pf2) {
         cp_prefill2(ctx, pf2, cp_x, x1in);
         memcpy(cp_x, x1in, (size_t)cp_h * sizeof(float));   /* continue on pos-1's stream */
