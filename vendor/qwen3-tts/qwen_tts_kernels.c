@@ -2530,6 +2530,95 @@ static void int8_vnni_task(size_t tid, size_t nt, void *vc) {
 }
 #endif /* __AVX512VNNI__ */
 
+#if !defined(__AVX512VNNI__) && !defined(__ARM_FEATURE_DOTPROD)
+#if defined(__AVX2__)
+/* Suma de las 8 lanas int32 de un registro de 256 bits. */
+static inline int int8_hsum_epi32(__m256i v) {
+    __m128i s = _mm_add_epi32(_mm256_castsi256_si128(v), _mm256_extracti128_si256(v, 1));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0x4E));
+    s = _mm_add_epi32(s, _mm_shuffle_epi32(s, 0xB1));
+    return _mm_cvtsi128_si32(s);
+}
+
+/* Producto escalar entero en AVX2: y[o] = scale[o]*sx * Σ_k W[o][k]·qx[k].
+ * _mm256_maddubs_epi16 multiplica u8 por s8, así que se usa |w| (sign(w,w)) como
+ * operando sin signo y se traslada el signo de w a la activación (sign(a,w)); el
+ * producto |w|·(a·sgn(w)) es exactamente w·a. Cada par adyacente suma como mucho
+ * 128·127·2 = 32512 y no satura int16; _mm256_madd_epi16 con unos lo ensancha a
+ * int32. Dos filas a la vez para amortizar la carga de la activación; la cola de
+ * columnas (no múltiplo de 32) se acumula en escalar. */
+static void int8_matvec_avx2(float *y, const int8_t *qx, float sx,
+                             const int8_t *W, const float *scale,
+                             int in_dim, int out_dim) {
+    qwen_ftz_on();  /* se ejecuta en cada worker del pool */
+    const __m256i ones = _mm256_set1_epi16(1);
+    int o = 0;
+    for (; o + 1 < out_dim; o += 2) {
+        const int8_t *w0 = W + (size_t)o * in_dim;
+        const int8_t *w1 = W + (size_t)(o + 1) * in_dim;
+        __m256i acc0 = _mm256_setzero_si256(), acc1 = _mm256_setzero_si256();
+        int k = 0;
+        for (; k + 32 <= in_dim; k += 32) {
+            __m256i a  = _mm256_loadu_si256((const __m256i *)(qx + k));
+            __m256i v0 = _mm256_loadu_si256((const __m256i *)(w0 + k));
+            __m256i v1 = _mm256_loadu_si256((const __m256i *)(w1 + k));
+            __m256i p0 = _mm256_maddubs_epi16(_mm256_sign_epi8(v0, v0), _mm256_sign_epi8(a, v0));
+            __m256i p1 = _mm256_maddubs_epi16(_mm256_sign_epi8(v1, v1), _mm256_sign_epi8(a, v1));
+            acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(p0, ones));
+            acc1 = _mm256_add_epi32(acc1, _mm256_madd_epi16(p1, ones));
+        }
+        int32_t s0 = int8_hsum_epi32(acc0), s1 = int8_hsum_epi32(acc1);
+        for (; k < in_dim; k++) { s0 += (int32_t)w0[k] * qx[k]; s1 += (int32_t)w1[k] * qx[k]; }
+        y[o]     = (float)s0 * scale[o]     * sx;
+        y[o + 1] = (float)s1 * scale[o + 1] * sx;
+    }
+    if (o < out_dim) {
+        const int8_t *w0 = W + (size_t)o * in_dim;
+        __m256i acc0 = _mm256_setzero_si256();
+        int k = 0;
+        for (; k + 32 <= in_dim; k += 32) {
+            __m256i a  = _mm256_loadu_si256((const __m256i *)(qx + k));
+            __m256i v0 = _mm256_loadu_si256((const __m256i *)(w0 + k));
+            __m256i p0 = _mm256_maddubs_epi16(_mm256_sign_epi8(v0, v0), _mm256_sign_epi8(a, v0));
+            acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(p0, ones));
+        }
+        int32_t s0 = int8_hsum_epi32(acc0);
+        for (; k < in_dim; k++) s0 += (int32_t)w0[k] * qx[k];
+        y[o] = (float)s0 * scale[o] * sx;
+    }
+}
+#else
+/* Producto escalar entero portable: acumula w·qx en int32 y aplica las escalas al final. */
+static void int8_matvec_scalar_int(float *y, const int8_t *qx, float sx,
+                                   const int8_t *W, const float *scale,
+                                   int in_dim, int out_dim) {
+    qwen_ftz_on();  /* se ejecuta en cada worker del pool */
+    for (int o = 0; o < out_dim; o++) {
+        const int8_t *row = W + (size_t)o * in_dim;
+        int32_t s = 0;
+        for (int k = 0; k < in_dim; k++) s += (int32_t)row[k] * qx[k];
+        y[o] = (float)s * scale[o] * sx;
+    }
+}
+#endif /* __AVX2__ */
+
+typedef struct {
+    float *y; const int8_t *qx; float sx; const int8_t *W; const float *scale; int rows, cols;
+} int8_int_ctx;
+static void int8_int_task(size_t tid, size_t nt, void *vc) {
+    int8_int_ctx *c = (int8_int_ctx *)vc;
+    int r0 = (int)(tid * (size_t)c->rows / nt);
+    int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
+#if defined(__AVX2__)
+    int8_matvec_avx2(c->y + r0, c->qx, c->sx, c->W + (size_t)r0 * c->cols,
+                     c->scale + r0, c->cols, r1 - r0);
+#else
+    int8_matvec_scalar_int(c->y + r0, c->qx, c->sx, c->W + (size_t)r0 * c->cols,
+                           c->scale + r0, c->cols, r1 - r0);
+#endif
+}
+#endif /* !__AVX512VNNI__ && !__ARM_FEATURE_DOTPROD */
+
 typedef struct {
     float *y; const float *x; const int8_t *W; const float *scale; int rows, cols;
 } int8_mv_ctx;
@@ -2597,6 +2686,35 @@ void qwen_matvec_int8(float *y, const int8_t *W, const float *scale,
         return;
     }
 #endif
+#if !defined(__AVX512VNNI__) && !defined(__ARM_FEATURE_DOTPROD)
+    /* Ruta entera AVX2 / escalar: misma cuantización de la activación y mismo
+     * reparto de filas que las ramas VNNI y SDOT. QWEN_NO_VNNI=1 o QWEN_NO_SDOT=1
+     * la desactivan para forzar la ruta en coma flotante del modo comparativo. */
+    enum { QXI_MAX = 8192 };
+    static atomic_int int_off = -1;
+    int int_o = atomic_load_explicit(&int_off, memory_order_relaxed);
+    if (int_o < 0) {
+        const char *ev = getenv("QWEN_NO_VNNI"), *es = getenv("QWEN_NO_SDOT");
+        int_o = (ev && ev[0] == '1') || (es && es[0] == '1');
+        atomic_store_explicit(&int_off, int_o, memory_order_relaxed);
+    }
+    if (!int_o && cols <= QXI_MAX) {
+        int8_t qx_buf[QXI_MAX];
+        float sx = quantize_act_int8(qx_buf, x, cols);
+        int nt = g_n_threads;
+        if (nt > 1 && rows >= 256) {
+            int8_int_ctx c = { y, qx_buf, sx, W, scale, rows, cols };
+            qwen_parallel((size_t)nt, int8_int_task, &c);
+            return;
+        }
+#if defined(__AVX2__)
+        int8_matvec_avx2(y, qx_buf, sx, W, scale, cols, rows);
+#else
+        int8_matvec_scalar_int(y, qx_buf, sx, W, scale, cols, rows);
+#endif
+        return;
+    }
+#endif
     int nt = g_n_threads;
     if (nt > 1 && rows >= 256) {
         int8_mv_ctx c = { y, x, W, scale, rows, cols };
@@ -2619,7 +2737,9 @@ void qwen_matvec_int8_qkv(float *q, float *k, float *v,
     qwen_matvec_int8(v, Wv, sv, x, kv_dim, in_dim);
 }
 
-/* Argmax over an INT8 matvec (CP lm_head with --int8 / quant-mixed; runs 15×/frame).
+/* Argmax sobre un matvec INT8 (lm_head del CP con --int8 / quant-mixed; 15×/frame).
+ * Hereda la ruta entera de qwen_matvec_int8 en todas las ISA (VNNI, SDOT, AVX2 y
+ * escalar): no tiene ruta propia en coma flotante.
  * Reuses the optimized (multi-threaded, SDOT/VNNI) int8 matvec into a per-thread
  * scratch, then argmaxes — mirrors qwen_argmax_matvec_q4_0 below. The old body was
  * the only hot int8 kernel still doing single-threaded widen-to-f32 FMA (audit
