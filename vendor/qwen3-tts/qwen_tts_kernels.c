@@ -1984,7 +1984,7 @@ static void int8_matvec_sdot(float *y, const int8_t *qx, float sx,
 #if defined(__AVX512VNNI__)
 /* ── x86 native int8 dot via AVX-512 VNNI (the SDOT analog for x86) ──
  * UNVALIDATED ON HARDWARE — written for a rented AVX-512-VNNI VPS (e.g. Zen4/Zen5
- * 9950X3D, Cascade Lake+). Cross-compiles clean; validate with `make test-golden`
+ * 9950X3D, Cascade Lake+). Cross-compiles clean; validate with `--self-test`
  * on the VPS before trusting. */
 
 /* y[o] = scale[o]*sx * Σ_k W[o][k]·qx[k], via _mm512_dpbusd_epi32.

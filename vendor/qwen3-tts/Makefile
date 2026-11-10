@@ -151,9 +151,6 @@ SRCS = main.c \
        qwen_tts_speech_decoder.c \
        qwen_tts_kernels.c \
        qwen_tts_thread.c \
-       qwen_tts_kernels_generic.c \
-       qwen_tts_kernels_neon.c \
-       qwen_tts_kernels_avx.c \
        qwen_tts_audio.c \
        qwen_tts_emotion.c \
        qwen_tts_compose.c \
@@ -220,14 +217,9 @@ help:
 	@echo "  make test-large-int8 - Run 1.7B INT8 tests (Italian + English, seed 42)"
 	@echo "  make test-large-int4 - Run 1.7B INT4 tests (Italian + English, seed 42)"
 	@echo "  make test-large-quant - Run all 1.7B quantization tests (INT8 + INT4)"
-	@echo "  make emotion-demo    - Render ryan through ALL mapped emotions via --emotion (1.7B); prints the output folder"
-	@echo "  make emotion-para-demo - Emotion + inline paralinguistic [tag] ([laugh]/[sigh]/...) across langs/speakers (1.7B)"
-	@echo "  make para-demo       - Shipped inline [tag]s ([wow]/[yawn]/[scoff]/[giggle]/[laugh]/[sigh]) on natural sentences (1.7B)"
 	@echo "  make test-emotion-ft - Emotion fine-tune (.expr graft) smoke: CSP Italian on 1.7B (preset+clone, seed 42)"
-	@echo "  make test-lora-it    - Emotion×voice×temp listening matrix (L16-26 LoRA; afplay links + full cmds)"
-	@echo "  make emotion-seeds   - Seed-finder palette → docs/emotion-seeds.md (recommended seeds/lang/voice/emo; SLOW)"
 	@echo "  make test-clone      - Voice clone e2e (generate ref → clone → stream)"
-	@echo "  make demo-clone      - Voice clone demo using sample WAV"
+	@echo "  make demo-clone      - Voice clone demo (requires REF=<reference.wav>)"
 	@echo "  make test-regression - Cross-model regression checks"
 	@echo "  make test-all        - Run everything (0.6B + 1.7B + regression)"
 	@echo ""
@@ -552,80 +544,12 @@ test-emotion-ft: $(TARGET)
 	 echo "PASS: emotion fine-tune (.expr) smoke"
 	@echo ""
 
-# Emotion DEMO for new users: render the validated `--emotion` recipe across emotions, LANGUAGES and a
-# clone, using the WIN texts (recipe_final.sh / crosslang_emo.sh). The engine's --emotion auto-router
-# picks expr/steer/instruct/temp itself, so the win can't get lost. Logic lives in tests/emotion_demo.sh
-# (richer than a Makefile loop). Needs 1.7B + the .expr packs (`bash download_assets.sh`). Override: EMO_DEMO_DIR=...
-emotion-demo: $(TARGET)
-	@bash tests/emotion_demo.sh
-
-# Emotion + PARALINGUISTIC demo: like emotion-demo, but each clip embeds an inline para [tag]
-# ([laugh]/[sigh]/[huff]/[ugh]) in a real emotional sentence, across languages/speakers/emotions.
-# Same one-flag --emotion router as emotion-demo (preset→STEER, clone→COMBINE), which now composes
-# with the inline [tag] (engine fix 2026-06-30: the routed emotion steer is preserved on the spoken
-# spans). Logic in tests/emotion_para_demo.sh. Needs 1.7B (+ .expr packs only for the galatea
-# COMBINE clip). Override: EMO_PARA_DEMO_DIR=...
-emotion-para-demo: $(TARGET)
-	@bash tests/emotion_para_demo.sh
-
-# ── The SMALL model (0.6B) expressivity stack — emotion + para + clone, sub-realtime ──────────
-# On the 0.6B `--emotion` used to be a no-op: the model has no steerable emotion subspace. Since
-# 2026-08-05 the emotion rides on the VOICE instead (docs/emotion-06b-recipe.md) — you build one
-# 4 KB voice asset per emotion, once, and the small model gets the full expressive stack at RTF<1.
-#
-# make emovoice VOICE=ryan                                     # build the 6 assets for a preset
-# make emovoice VOICE=galatea LOAD=voices/galatea_graft.qvoice  # ... for a cloned voice
-# make emovoice VOICE=ryan GRAFT=voices/galatea_06b_graft.qvoice # ... + 16.8MB grafts (best for anger)
-#   (language: TTS_LANG=English — NOT LANG, which is the shell's own locale variable)
-emovoice: $(TARGET)
-	@bash tests/emovoice_build.sh
-
-# make emo-06b-demo — the showcase: 6 emotions + 5 [tag]s + both together + a clone, all on the
-# 0.6B under --int8, with the RTF printed for each. Needs `make emovoice VOICE=<v>` first.
-emo-06b-demo: $(TARGET)
-	@bash tests/emo_06b_demo.sh
-
-# make para-demo — shipped inline paralinguistic [tag]s on natural sentences (post 2026-07-08 gate:
-# wow/yawn/scoff + laugh/sigh, scoff s42, giggle standalone; phew parked). Prints afplay links.
-para-demo: $(TARGET)
-	@bash tests/para_demo.sh
-
-# Ordered emotion TEST SUITE (tests/emo_suite.sh): per-LANGUAGE subfolders, emotion-MATCHED prompts, a steer
-# weight sweep (w6/w8/w10) + a COMBINE variant per (lang×emotion), filenames that encode voice/mode/weight,
-# plus a galatea-clone cross-language folder. For finding/confirming the per-language win. Scope it:
-#   make emo-suite                      # all languages (long)
-#   LANGS="de fr es" make emo-suite     # subset of languages
-#   EMOS="anger sad" make emo-suite     # subset of emotions
-emo-suite: $(TARGET)
-	@bash tests/emo_suite.sh
-
-# Emotion × voice × temp LISTENING matrix for the L16-26 emotion LoRA. Prints, per clip,
-# a comment (voice/emotion/temp/.expr + instruct) + the FULL command + a `cd ... && afplay` link,
-# so you can verify what produced each sound (e.g. SMALL ICL file, NOT the heavy qvoice WDELTA).
-# All 7 EMOVO emotions (incl. disgust/fear/surprise) on { galatea SMALL-ICL clone, ryan preset }
-# × { T0.9, T1.1 }. Override the pack with EXPR=... (e.g. the r32 instead of r64).
-EXPR ?= presets/expr/italian_l1626_r64.expr
-test-lora-it: $(TARGET)
-	@bash tests/lora_matrix.sh Italian $(EXPR)
-
-# Emotion seed-finder → recommended-seeds palette doc (docs/emotion-seeds.md). For each
-# (language × voice × emotion) renders N seeds with --seed-audition --audition-keep, records the
-# auto-pick (glitch+dur) + every take, and writes a usage doc with afplay links + full commands.
-# Opt-in + SLOW (full IT+ES+clone matrix on 1.7B). Override scope via env: LANGS/VOICES_IT/EMOS_IT/N.
-emotion-seeds: $(TARGET)
-	@bash tests/emotion_seed_finder.sh $(if $(OUT_MD),$(OUT_MD),docs/emotion-seeds.md) $(if $(N),$(N),5)
-
 test-batch: $(TARGET)
 	@echo "=== Batched Talker step correctness (opt-in path vs single-stream) ==="
 	@./$(TARGET) -d $(MODEL_SMALL) -j1 --batch-test 2>&1 | grep -E "probe|wiring|matmat path|batch-test"
 	@./$(TARGET) -d $(MODEL_SMALL) -j1 --batch-test >/dev/null 2>&1 || { echo "FAIL: batched wiring not bit-exact vs single-stream"; exit 1; }
 	@echo "  PASS: batched Talker step wiring is bit-exact; matmat path is a valid fp-order variant"
 	@echo ""
-
-batching-bench:
-	@echo "=== Batching premise microbench (GEMV xB vs GEMM B) ==="
-	$(CC) $(CFLAGS_BASE) -o /tmp/batching_bench tests/batching_bench.c -lm
-	@/tmp/batching_bench
 
 # Real-kernel batched matmat throughput: qwen_matmat_{bf16,int8,q4_0} vs B*matvec,
 # per precision, at the current thread count (override with QWEN_BATCH_B / -j via THREADS).
@@ -634,20 +558,6 @@ matmat-bench: $(TARGET)
 	@./$(TARGET) --matmat-bench
 	@echo "=== (single thread = compute-bound reference) ==="
 	@./$(TARGET) --matmat-bench -j 1
-
-# Full per-box SIMD-check + RTF matrix (docs/hardware-testing.md). Copy onto any
-# rented ARM/x86 box. `make bench-matrix` = caps+self-test+matmat-bench+single/batch
-# RTF; `make bench-matrix-full` adds streaming + server. Quiet machine only.
-bench-matrix: $(TARGET)
-	@bash tests/bench_matrix.sh $(MODEL_SMALL)
-bench-matrix-full: $(TARGET)
-	@bash tests/bench_matrix.sh $(MODEL_SMALL) --full
-
-# Server request-batching THROUGHPUT (the x86/ARM lever from this session): M
-# concurrent clients vs single-stream, per precision (bf16/int8/int4). Speedup ~N
-# on a bandwidth-bound box, ~1 on bandwidth-rich M1. Quiet machine only.
-bench-server: $(TARGET)
-	@bash tests/serve_batch_bench.sh $(MODEL_SMALL)
 
 # Compile-check the newer-ISA kernel paths that are #ifdef'd OUT on M1 (so their
 # syntax is verified NOW, before any M2+/AVX-512 hardware). Forces the -march so the
@@ -750,7 +660,7 @@ test-regression:
 
 # ── Combined ──
 
-test-all: test-small test-large test-regression test-errors test-emotion test-emotion-ft test-compose test-caps test-selftest test-golden test-serve-repro
+test-all: test-small test-large test-regression test-errors test-emotion test-emotion-ft test-compose test-caps test-selftest
 	@echo ""
 	@echo "========================================="
 	@echo "  All tests passed (0.6B + 1.7B)"
@@ -784,7 +694,7 @@ test-caps: $(TARGET)
 # ── Kernel numeric self-test (matvec correctness vs f32 reference) ──
 # Cross-ISA correctness gate for the SIMD matvecs (bf16/int8/argmax) that does NOT depend
 # on a full-pipeline golden, so it's immune to the greedy-decode trajectory fork that makes
-# end-to-end audio mel-corr a FALSE ALARM cross-ISA (the test-golden cross-ISA caveat).
+# end-to-end audio mel-corr a FALSE ALARM cross-ISA.
 # Ejecuta una sola pasada sobre la ruta compilada para la ISA de la compilación. On the
 # AVX-512 VPS this is THE proof the VNNI int8 dot + __m512 bf16 matvec are correct.
 # Needs no model — fast, run anywhere.
@@ -794,77 +704,11 @@ test-selftest: $(TARGET)
 	@echo "PASS: kernel self-test (numerically correct)"
 	@echo ""
 
-# ── Golden-reference correctness (mel-correlation + duration) ──
-# Regenerates output deterministically (-j1 --temperature 0 --seed 42) and compares to the
-# committed golden WAVs in tests/golden/ via mel-spectrogram correlation (>=0.99) + duration
-# (<=5%). Unlike validate_wav (which only checks "non-empty + frames"), this catches NUMERICAL
-# regressions — a broken kernel that still emits audio fails here. mel-corr (not md5) is robust
-# to benign +-1 LSB noise AND is the correct cross-ISA check for the future AVX2/x86 work
-# (x86 won't be bit-identical to the ARM golden, but a correct build must still score ~0.99+).
-# Requires python3 + librosa (numpy/scipy). RUN ON A QUIET MACHINE (heavy load can perturb
-# the trajectory). Regenerate goldens after an INTENDED output change: make golden-update.
 GOLDEN_EN = The quick brown fox jumps over the lazy dog on a sunny afternoon.
-GOLDEN_IT = Buongiorno a tutti, questa è una dimostrazione del sistema di sintesi vocale.
-GOLDEN_DET = -j1 --temperature 0 --seed 42
-
-test-golden: $(TARGET)
-	@echo "=== Golden-reference correctness test (mel-corr + duration) ==="
-	@if ! python3 -c "import librosa" 2>/dev/null; then echo "SKIP: python3 librosa not installed (pip install librosa)"; exit 0; fi
-	@mkdir -p $(TEST_DIR)
-	@FAIL=0; \
-	 ./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --text "$(GOLDEN_EN)" -o $(TEST_DIR)/gold_06b_en.wav >/dev/null 2>&1; \
-	 python3 tests/compare_audio.py tests/golden/golden_06b_en.wav $(TEST_DIR)/gold_06b_en.wav --label "0.6B en" || FAIL=1; \
-	 ./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l Italian --text "$(GOLDEN_IT)" -o $(TEST_DIR)/gold_06b_it.wav >/dev/null 2>&1; \
-	 python3 tests/compare_audio.py tests/golden/golden_06b_it.wav $(TEST_DIR)/gold_06b_it.wav --label "0.6B it" || FAIL=1; \
-	 ./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --int8 --text "$(GOLDEN_EN)" -o $(TEST_DIR)/gold_06b_en_int8.wav >/dev/null 2>&1; \
-	 python3 tests/compare_audio.py tests/golden/golden_06b_en_int8.wav $(TEST_DIR)/gold_06b_en_int8.wav --label "0.6B en int8" || FAIL=1; \
-	 if [ -d $(MODEL_LARGE) ]; then \
-	   ./$(TARGET) -d $(MODEL_LARGE) $(GOLDEN_DET) -s ryan -l English --text "$(GOLDEN_EN)" -o $(TEST_DIR)/gold_17b_en.wav >/dev/null 2>&1; \
-	   python3 tests/compare_audio.py tests/golden/golden_17b_en.wav $(TEST_DIR)/gold_17b_en.wav --label "1.7B en" || FAIL=1; \
-	 else echo "SKIP: 1.7B (model absent)"; fi; \
-	 if [ "$$FAIL" -ne 0 ]; then echo "FAIL: golden-reference mismatch (numerical regression?)"; exit 1; fi; \
-	 echo "PASS: all golden references match"
-	@echo ""
-
-# Regenerate the committed golden WAVs (run after an INTENTIONAL, reviewed output change).
-golden-update: $(TARGET)
-	@echo "=== Regenerating golden references (review the diff before committing!) ==="
-	@mkdir -p tests/golden
-	./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --text "$(GOLDEN_EN)" -o tests/golden/golden_06b_en.wav
-	./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l Italian --text "$(GOLDEN_IT)" -o tests/golden/golden_06b_it.wav
-	./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --int8 --text "$(GOLDEN_EN)" -o tests/golden/golden_06b_en_int8.wav
-	@if [ -d $(MODEL_LARGE) ]; then ./$(TARGET) -d $(MODEL_LARGE) $(GOLDEN_DET) -s ryan -l English --text "$(GOLDEN_EN)" -o tests/golden/golden_17b_en.wav; fi
-	@echo "Done. git diff tests/golden/ and commit if intended."
-
-# ── Quant-ladder: per-codebook argmax-agreement across CP precisions ──
-# The cheap "measure first" instrument (PLAN.md future-research C). The CP output
-# (codebooks 1-15) FEEDS BACK into the Talker, so a free-running precision sweep
-# forks the whole trajectory (different code0, different length) and measures
-# nothing. So this TEACHER-FORCES: phase A runs bf16 to lay down reference "rails"
-# (the 16-codes-per-frame stream); phase B replays those rails (QWEN_TF_CODES) at
-# each CP precision (QWEN_CP_PREC, Talker stays bf16) so every precision sees
-# bit-identical per-step inputs → the recorded argmax disagreement is PURE CP quant
-# drift. quant_ladder.py then reports WHERE and HOW MUCH int4 drifts vs int8/bf16
-# (per codebook index). Phase A also prints FFN activation sparsity %.
-QL_DIR  = /tmp/qwen_qladder
-QL_TEXT = The quick brown fox jumps over the lazy dog on a sunny afternoon, and then it ran across the wide green field without stopping.
-quant-ladder: $(TARGET)
-	@echo "=== Quant-ladder: teacher-forced CP precision sweep (Talker bf16) ==="
-	@mkdir -p $(QL_DIR)
-	@echo "  phase A: bf16 reference rails (+ FFN sparsity)"
-	@QWEN_CP_PREC=bf16 QWEN_FFN_SPARSITY=1e-4 QWEN_DUMP_CODES=$(QL_DIR)/ref.codes ./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --text "$(QL_TEXT)" -o $(QL_DIR)/ref.wav 2>&1 | grep -i "sparsity" || true
-	@echo "  phase B: teacher-forced replay at each CP precision"
-	@QWEN_TF_CODES=$(QL_DIR)/ref.codes QWEN_CP_PREC=bf16 QWEN_DUMP_CODES=$(QL_DIR)/bf16.codes ./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --text "$(QL_TEXT)" -o $(QL_DIR)/bf16.wav --silent
-	@QWEN_TF_CODES=$(QL_DIR)/ref.codes QWEN_CP_PREC=int8 QWEN_DUMP_CODES=$(QL_DIR)/int8.codes ./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --text "$(QL_TEXT)" -o $(QL_DIR)/int8.wav --silent
-	@QWEN_TF_CODES=$(QL_DIR)/ref.codes QWEN_CP_PREC=int4 QWEN_DUMP_CODES=$(QL_DIR)/int4.codes ./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --text "$(QL_TEXT)" -o $(QL_DIR)/int4.wav --silent
-	@QWEN_TF_CODES=$(QL_DIR)/ref.codes QWEN_CP_PREC=int4 QWEN_CP_Q2_FFN=down QWEN_DUMP_CODES=$(QL_DIR)/q2down.codes ./$(TARGET) -d $(MODEL_SMALL) $(GOLDEN_DET) -s ryan -l English --text "$(QL_TEXT)" -o $(QL_DIR)/q2down.wav --silent
-	@echo ""
-	@python3 tests/quant_ladder.py ref:$(QL_DIR)/ref.codes bf16:$(QL_DIR)/bf16.codes int8:$(QL_DIR)/int8.codes int4:$(QL_DIR)/int4.codes q2:$(QL_DIR)/q2down.codes
 
 # ── Mode matrix: quant × delivery (the combinations real usage hits) ──
-# Each combination must RUN and produce coherent audio (non-empty + frames). Numeric
-# correctness for the deterministic configs is covered by test-golden; here we assert the
-# CROSS-PRODUCT works: int8/bf16 × normal/stream. One shell so a failure
+# Each combination must RUN and produce coherent audio (non-empty + frames). Here we
+# assert the CROSS-PRODUCT works: int8/bf16 × normal/stream. One shell so a failure
 # stops cleanly. Reloads the model each run (natural gap → reliable, unlike rapid-fire).
 test-modes: $(TARGET)
 	@echo "=== Mode matrix (quant × delivery) 0.6B ==="
@@ -893,7 +737,7 @@ test-qvoice: $(TARGET)
 	@echo ""
 
 # ── E2E: ONE command that runs EVERYTHING available (skips missing models/voices) ──
-# This is the comprehensive regression: small/large/regression/errors/caps/golden +
+# This is the comprehensive regression: small/large/regression/errors/caps +
 # quant (int8/int4) + mode matrix + custom voice + clone + voice-design + server suite.
 e2e: $(TARGET)
 	@echo "######################## E2E FULL REGRESSION ########################"
@@ -1021,56 +865,9 @@ test-serve-parallel: $(TARGET)
 	 echo "PASS: 2 parallel requests served"
 	@echo ""
 
-# ── True concurrent worker-pool test (--workers 2) ──
-# Unlike test-serve-parallel (single-worker server → serialized), this exercises
-# the concurrent worker pool: it fires 2 simultaneous requests at a 2-worker
-# server and verifies each output matches a single-worker reference via mel-corr
-# (proving per-worker clones share weights correctly and don't corrupt state),
-# across {bf16, int8, int4, voice+int8}. Kills the server BY NAME (runaway-safe).
-
-test-serve-concurrent: $(TARGET)
-	@MODEL=$(MODEL_SMALL) bash tests/test_parallel.sh
-	@echo ""
-
-# ── Server reproducibility regression (delta-prefill stale dec_x bug, fixed cbfa979) ──
-# Two+ IDENTICAL consecutive requests MUST produce bit-identical output. Runs -j1
-# --temperature 0 for full determinism (no threading FP noise / no sampling butterfly),
-# so any difference is a real state-leak bug, not benign +-1 LSB.
-
-test-serve-repro: $(TARGET)
-	@echo "=== Server Reproducibility test (3 identical requests, -j1 temp0) ==="
-	@mkdir -p $(TEST_DIR)
-	@./$(TARGET) -d $(MODEL_SMALL) -j1 --serve 8094 &>/dev/null & SERVER_PID=$$!; \
-	 sleep 4; \
-	 REQ='{"text":"The quick brown fox jumps over the lazy dog on a sunny afternoon.","speaker":"ryan","language":"English","seed":42,"temperature":0}'; \
-	 for n in 1 2 3; do \
-	   curl -s -X POST http://localhost:8094/v1/tts -H "Content-Type: application/json" \
-	     -d "$$REQ" -o $(TEST_DIR)/repro_$$n.wav; \
-	 done; \
-	 kill $$SERVER_PID 2>/dev/null; \
-	 S1=$$(stat -f%z $(TEST_DIR)/repro_1.wav 2>/dev/null || stat -c%s $(TEST_DIR)/repro_1.wav 2>/dev/null); \
-	 if [ "$$S1" -le 44 ]; then echo "FAIL: empty WAV"; exit 1; fi; \
-	 python3 tests/compare_repro.py $(TEST_DIR)/repro_1.wav $(TEST_DIR)/repro_2.wav $(TEST_DIR)/repro_3.wav
-	@echo ""
-
 # ── Combined server tests ──
 
-# vLLM-style request-batching server: per-request correctness (force_matvec mel 1.0),
-# zero cross-talk, real batching ([BATCH] N req), production matmat + stream fallback.
-test-serve-batch: $(TARGET)
-	@bash tests/serve_batch.sh $(MODEL_SMALL)
-
-# Continuous admission: N=6 requests at max_batch=2 must all complete as the
-# scheduler refills slots freed by EOS'd requests (peak admitted > batch width).
-test-serve-continuous: $(TARGET)
-	@bash tests/serve_continuous_stress.sh $(MODEL_SMALL) 8786 6 2
-
-# Per-request streaming composed with batching (vLLM-style): concurrent /v1/tts/stream
-# requests batched AND streamed; streamed PCM mel-corr ~1.0 vs single-stream.
-test-serve-stream-batch: $(TARGET)
-	@bash tests/serve_stream_batch.sh $(MODEL_SMALL)
-
-test-serve-all: test-serve test-serve-bench test-serve-repro test-serve-openai test-serve-parallel test-serve-concurrent test-serve-batch test-serve-continuous test-serve-stream-batch
+test-serve-all: test-serve test-serve-bench test-serve-openai test-serve-parallel
 	@echo "=== All server tests passed ==="
 
 # ── RTF Benchmarks ──
@@ -1157,16 +954,15 @@ test-voice-design: $(TARGET)
 
 # Voice Clone Demo
 # Usage:
-#   make demo-clone                              (uses default sample)
-#   make demo-clone REF=my_voice.wav             (use your own audio)
+#   make demo-clone REF=my_voice.wav             (REF es obligatorio: audio de referencia)
 #   make demo-clone REF=my_voice.wav TEXT="Hi!"  (custom text too)
 # Output saved to samples/ for easy listening.
 
-REF ?= samples/voice_clone_english.wav
 TEXT ?= I love programming in C, it gives you complete control over the machine.
 TEXT_IT ?= Buongiorno, questa e una dimostrazione della clonazione vocale.
 
 demo-clone: $(TARGET)
+	@test -n "$(REF)" || { echo "demo-clone: indica el audio de referencia con REF=<ruta.wav>" >&2; exit 1; }
 	@echo "=== Voice Clone Demo ==="
 	@if [ ! -d $(MODEL_BASE_SMALL) ]; then \
 		echo "Error: $(MODEL_BASE_SMALL) not found"; \
@@ -1208,9 +1004,8 @@ demo-clone: $(TARGET)
 test-en: test-small-en
 test-it-ryan: test-small-it
 
-.PHONY: all help blas clean debug info serve cp-microbench batching-bench test-batch test-errors test-emotion test-emotion-ft emotion-demo emo-suite emotion-seeds test-compose test-caps test-selftest test-golden golden-update emovoice emo-06b-demo quant-ladder test-modes test-qvoice e2e \
-        emotion-para-demo para-demo \
-        test-serve test-serve-bench test-serve-repro test-serve-openai test-serve-parallel test-serve-concurrent test-serve-batch test-serve-continuous test-serve-stream-batch test-serve-all \
+.PHONY: all help blas clean debug info serve cp-microbench test-batch test-errors test-emotion test-emotion-ft test-compose test-caps test-selftest test-modes test-qvoice e2e \
+        test-serve test-serve-bench test-serve-openai test-serve-parallel test-serve-all \
         test-clone test-voice-design \
         demo-clone \
         test-small test-small-en test-small-it test-small-vivian test-small-stream test-small-stdout \

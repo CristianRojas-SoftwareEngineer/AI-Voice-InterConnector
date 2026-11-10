@@ -8,8 +8,6 @@ A lightweight, cross-platform C inference engine for [Qwen3-TTS](https://github.
 
 The engine runs the complete TTS pipeline: BPE tokenization, a 28-layer causal transformer (Talker), a multi-pass code predictor, and a convolutional speech decoder. Weights are memory-mapped directly from safetensors files in BF16, so loading is near-instant and memory usage stays low.
 
-> 📍 **Where does a voice live in the model?** See **[`docs/speaker-map.md`](docs/speaker-map.md)** for a readable map of which layers/stages carry timbre vs language/prosody vs emotion (and how the preset voices like `ryan` work). Essential background for voice cloning and expressivity.
-
 ## Audio Samples
 
 All samples generated with the 0.6B model — sub-realtime on a 2020 Apple M1 CPU (**RTF 0.52 `--int4` / 0.69 `--int8`**, no GPU; see [Performance](#performance)):
@@ -25,8 +23,6 @@ All samples generated with the 0.6B model — sub-realtime on a 2020 Apple M1 CP
 | German | ryan | [listen](https://github.com/gabriele-mastrapasqua/qwen3-tts/releases/download/v0.1-samples/german_ryan.wav) | *Guten Tag, dies ist eine Demonstration des Sprachsynthesesystems.* |
 | Japanese | Ono_Anna | [listen](https://github.com/gabriele-mastrapasqua/qwen3-tts/releases/download/v0.1-samples/japanese_ono_anna.wav) | *こんにちは、私の名前はアンナです。今日はとても良い天気ですね。東京の桜がとても綺麗です。* |
 | Japanese | Ono_Anna | [listen](https://github.com/gabriele-mastrapasqua/qwen3-tts/releases/download/v0.1-samples/ganbatte_andrea.wav) | *頑張れ、アンドレア！あなたならできるよ。毎日少しずつ前に進もう。夢を諦めないで。応援してるよ！* |
-
-> Clone and play locally: `afplay samples/english_ryan.wav` (macOS) or `aplay samples/english_ryan.wav` (Linux)
 
 ## Quick Start
 
@@ -44,8 +40,6 @@ make blas
 ```
 
 > **Dependencies:** Only a C compiler and BLAS (Accelerate on macOS, OpenBLAS on Linux).
-> See [docs/building.md](docs/building.md) for Linux, Windows/WSL2, and other build targets.
-
 ## Features
 
 - **Pure C, minimal dependencies** — Only requires a C compiler and BLAS. No Python runtime needed.
@@ -55,15 +49,10 @@ make blas
 - **9 preset voices** — `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`.
 - **10 languages** — English, Chinese, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
 - **Memory-mapped weights** — BF16 safetensors mmap'd directly. 0.6B ~3 GB, 1.7B ~8 GB.
-- **Voice cloning** — Clone any voice from a short WAV clip. Ship it as a compact **~25 MB graft `.qvoice`** (`tests/qvoice_to_graft.py` → `--icl-only`): keeps the CustomVoice weights so emotion levers (`--instruct`, `--expr`, `--ml-steer`) all work, with full prosody (sighs/pauses). An 8 KB `--xvector-only` `.bin` is the ultra-lean alternative (identity only). See `docs/icl-graft-portability.md`.
-- **Voice management** — List, inspect, delete `.qvoice` profiles (`--list-voices`, `--delete-voice`). No model required.
+- **Voice cloning** — Clone any voice from a short WAV clip. Ship it as a compact **~25 MB graft `.qvoice`** (`tests/qvoice_to_graft.py` → `--icl-only`): keeps the CustomVoice weights so emotion levers (`--instruct`, `--expr`, `--ml-steer`) all work, with full prosody (sighs/pauses). An 8 KB `--xvector-only` `.bin` is the ultra-lean alternative (identity only).- **Voice management** — List, inspect, delete `.qvoice` profiles (`--list-voices`, `--delete-voice`). No model required.
 - **Style control** — `--instruct` for emotion/style on 1.7B: angry, whisper, cheerful, and more.
-- **Emotion in one flag** (🧪 **beta**; paralinguistics `[laugh]`/`[sigh]` 🧪 **alpha**) — `--emotion <sad\|joy\|anger\|fear\|disgust\|surprise>` (1.7B) auto-applies the ear-validated recipe (per-language fine-tune `.expr` + steering vector + a default English instruct + temperature), on presets **and** cloned voices, in every Qwen language. **Plus 7 blended "dyads"** (`contempt`, `awe`, `nostalgia`, `disapproval`, `remorse`, `outrage`, `despair`) and **inline `[emotion]` switching** — many emotions from one prompt in a single generation. A vivid English `--instruct` and `-T` override. Pitch-preserving `--rate`/`--volume` and a `--roughness` grit knob are still available. See [docs/emotion-THE-recipe.md](docs/emotion-THE-recipe.md).
-- **The small 0.6B is expressive too — and stays sub-realtime** 🆕 — for a long time `--emotion` did nothing on the 0.6B: unlike the 1.7B it has no steerable emotion subspace. It does, however, clone voices very well — so on the small model **the emotion rides on the voice**. **All 9 presets ship ready** (240 KB of 4 KB voice assets) and **any cloned voice emotes with zero setup** via six shipped emotion directions — so the small model has the whole expressive stack out of the box: **6 emotions + inline `[tag]` paralinguistics + voice cloning, together, at RTF ≈ 0.8** under `--int8` on an M1. Try it with **`make emo-06b-demo`**. See [docs/emotion-06b-recipe.md](docs/emotion-06b-recipe.md).
-- **Inline markup for audiobooks** — write one text with ElevenLabs/Bark-style tags and get a multi-emotion take in one pass: `--text "I won! [joy] ...amazing! [pause:500ms] [sad] But it's over. [sigh]"`. Mid-text emotion switches, `[pause:400ms]`/`[break:1s]` pauses, and `[sigh]`/`[huff]` paralinguistic fillers — auto-detected in `--text` (no flag) or explicit via `--compose`. Spans are model-generated and concatenated seamlessly. See [docs/markup.md](docs/markup.md).
-- **VoiceDesign** — Create new voices from text descriptions.
-- **HTTP server** — `/v1/tts`, `/v1/tts/stream`, OpenAI-compatible `/v1/audio/speech`; JSON body takes `emotion`/`instruct`/`volume`/`rate` (same recipe as the CLI). **Inline `[mood]` markup works over the API too** — one request can switch emotion sentence-by-sentence (`"text":"[joy] Great news! [sad] But I must go."`), auto-detected and streamed span-by-span. See [docs/server.md](docs/server.md).
-- **Streaming** — Real-time audio via `--stream` (WAV) or `--stdout` (raw PCM).
+- **Emotion in one flag** (🧪 **beta**; paralinguistics `[laugh]`/`[sigh]` 🧪 **alpha**) — `--emotion <sad\|joy\|anger\|fear\|disgust\|surprise>` (1.7B) auto-applies the ear-validated recipe (per-language fine-tune `.expr` + steering vector + a default English instruct + temperature), on presets **and** cloned voices, in every Qwen language. **Plus 7 blended "dyads"** (`contempt`, `awe`, `nostalgia`, `disapproval`, `remorse`, `outrage`, `despair`) and **inline `[emotion]` switching** — many emotions from one prompt in a single generation. A vivid English `--instruct` and `-T` override. Pitch-preserving `--rate`/`--volume` and a `--roughness` grit knob are still available.- **The small 0.6B is expressive too — and stays sub-realtime** 🆕 — for a long time `--emotion` did nothing on the 0.6B: unlike the 1.7B it has no steerable emotion subspace. It does, however, clone voices very well — so on the small model **the emotion rides on the voice**. **All 9 presets ship ready** (240 KB of 4 KB voice assets) and **any cloned voice emotes with zero setup** via six shipped emotion directions — so the small model has the whole expressive stack out of the box: **6 emotions + inline `[tag]` paralinguistics + voice cloning, together, at RTF ≈ 0.8** under `--int8` on an M1.- **Inline markup for audiobooks** — write one text with ElevenLabs/Bark-style tags and get a multi-emotion take in one pass: `--text "I won! [joy] ...amazing! [pause:500ms] [sad] But it's over. [sigh]"`. Mid-text emotion switches, `[pause:400ms]`/`[break:1s]` pauses, and `[sigh]`/`[huff]` paralinguistic fillers — auto-detected in `--text` (no flag) or explicit via `--compose`. Spans are model-generated and concatenated seamlessly.- **VoiceDesign** — Create new voices from text descriptions.
+- **HTTP server** — `/v1/tts`, `/v1/tts/stream`, OpenAI-compatible `/v1/audio/speech`; JSON body takes `emotion`/`instruct`/`volume`/`rate` (same recipe as the CLI). **Inline `[mood]` markup works over the API too** — one request can switch emotion sentence-by-sentence (`"text":"[joy] Great news! [sad] But I must go."`), auto-detected and streamed span-by-span.- **Streaming** — Real-time audio via `--stream` (WAV) or `--stdout` (raw PCM).
 - **INT8 / INT4 quantization** — `--int8` / `--int4` quantize Talker + Code Predictor (native SDOT on ARM, AVX-512/VNNI on x86), near-bf16 quality, and work with presets **and** custom `.qvoice` voices. On cache-rich Apple Silicon **both go sub-realtime** (0.6B best **0.52 int4 / 0.69 int8**; 1.7B best **~1.53** quant-mixed); on memory-starved x86, int8+VNNI wins the wall clock. See [Performance](#performance).
 - **Configurable sampling** — Temperature, top-k, top-p, and repetition penalty.
 - **24 kHz WAV output** — 16-bit PCM, mono.
@@ -139,8 +128,6 @@ Clone any voice from a reference audio clip. Requires a Base model.
     --text "Hello, this is my cloned voice." -o cloned.wav
 ```
 
-> Full guide: reference audio tips, model comparison, samples → [docs/voice-cloning.md](docs/voice-cloning.md)
-
 **Ready-to-use reference voices (CC0 / Public Domain).** Four lite ~25 MB graft `.qvoice` clones of LibriVox
 public-domain readers (Italian, Spanish, English, French) so the demos/tests run out of the box and you have
 voices to listen to and reuse:
@@ -179,7 +166,7 @@ weight-delta files):
 ./qwen_tts --list-voices ./my_voices/
 ```
 
-**Other formats** → [docs/custom-voices.md](docs/custom-voices.md): **8 KB `.bin` x-vector** (`--xvector-only`,
+**Other formats:** **8 KB `.bin` x-vector** (`--xvector-only`,
 tiniest & cleanest) · **heavy WDELTA** (`--target-cv`, ~0.8–3 GB, bit-identical — only if you need exact fidelity).
 
 **Voice clone samples** — cloned voices on 0.6B CustomVoice (25 MB grafts):
@@ -191,8 +178,6 @@ tiniest & cleanest) · **heavy WDELTA** (`--target-cv`, ~0.8–3 GB, bit-identic
 | English | Peter (M) | [LibriTTS-R](https://www.openslr.org/141/) CC-BY | [listen](https://github.com/gabriele-mastrapasqua/qwen3-tts/releases/download/v0.1-samples/clone_peter_english_06b.wav) | *I love reading books aloud, there is something magical about bringing stories to life with your voice.* |
 | French | Baudelaire Reader | [LibriVox](https://librivox.org/) Public Domain | [listen](https://github.com/gabriele-mastrapasqua/qwen3-tts/releases/download/v0.1-samples/clone_french_06b.wav) | *Bonjour a tous, ceci est une demonstration du clonage vocal avec un profil de voix personnalise.* |
 | Spanish | Lu | [LibriVox](https://librivox.org/) Public Domain | [listen](https://github.com/gabriele-mastrapasqua/qwen3-tts/releases/download/v0.1-samples/clone_spanish_06b.wav) | *Buenos dias a todos, esta es una demostracion de la clonacion de voz con un perfil de voz personalizado.* |
-
-> Full guide: delta vs standard, format internals, troubleshooting → [docs/custom-voices.md](docs/custom-voices.md)
 
 ### Emotion & expressivity (1.7B) · 🧪 Beta
 
@@ -228,8 +213,7 @@ Chinese** `--instruct` on top is optional but **recommended** — it drives the 
     --text "Allora, lascia che ti spieghi come stanno le cose." -o sad.wav
 ```
 
-**🔊 Hear it** — committed examples in [`samples/emotion_examples/`](samples/emotion_examples) (play after clone:
-`afplay samples/emotion_examples/<file>.wav`, or click to download):
+**🔊 Hear it** — click to download the examples:
 
 | Language | Voice | Emotion | Text | Listen |
 |----------|-------|---------|------|--------|
@@ -258,9 +242,7 @@ Chinese** `--instruct` on top is optional but **recommended** — it drives the 
   work too) — **plus 7 blended "dyads"** (below).
 - **The recipe:** a **preset voice** → pure **STEER** (the steering vector @ w12, clean in every language); a
   **cloned voice** → **COMBINE** (the language `.expr` + steer). Use the **native preset per language** (JA
-  `ono_anna`, KO `sohee`, ZH `vivian`, EN/Romance `ryan`); the engine prints a hint. Full recipe →
-  [docs/emotion-THE-recipe.md](docs/emotion-THE-recipe.md).
-- **Works in every Qwen3-TTS language** (EN, IT, DE, ZH, RU, KO, JA, ES, FR, PT) — just set `-l <Language>`.
+  `ono_anna`, KO `sohee`, ZH `vivian`, EN/Romance `ryan`); the engine prints a hint.- **Works in every Qwen3-TTS language** (EN, IT, DE, ZH, RU, KO, JA, ES, FR, PT) — just set `-l <Language>`.
 
 #### Blended emotions (dyads) · new
 
@@ -294,8 +276,6 @@ sentence in a single generation**, clean at the seams, one output file. `[neutra
   -o switch.wav
 ```
 
-> 🔊 Switch-inside-one-prompt audio examples (EN + IT) → **[docs/emotion-THE-recipe.md](docs/emotion-THE-recipe.md)**.
-
 - **Paralinguistics → inline `[tags]`, also automatic · 🧪 Alpha.** Write `[laugh]`, `[sigh]`, `[yawn]`, `[wow]`, `[giggle]` or `[scoff]` in
   `--text` and the engine performs the event (it picks the onomatopoeia anchor + the right seed per voice for
   you) — no flags. `[wow]`/`[yawn]`/`[scoff]` compose well with the matching `--emotion`; `[giggle]` is best
@@ -318,17 +298,8 @@ preset pure-emotion needs none): a stronger, more vivid instruct pushes emotion 
 `"speak faster/slower"` shifts pacing (~±15 %). **Don't** use a slot template (`Tempo:+40%` comes out *slower* —
 Qwen doesn't parse it); plain prose wins.
 
-> 🔊 Emotion+`[tag]` audio examples, the per-emotion `strong`/`very-strong` instruct library, and the manual
-> override flags (`--expr` / `--ml-steer` — you normally never touch them) → **[docs/emotion-THE-recipe.md](docs/emotion-THE-recipe.md)**
-> · [docs/emotion-instruct-control.md](docs/emotion-instruct-control.md).
-
 **Assets:** `bash download_assets.sh` fetches the `.expr` packs; `--verify` re-checks integrity. Full set ≈ 1.4 GB;
 Italian-only emotion needs just `italian_csp_topk6.expr` (203 MB).
-
-**Deeper docs:** [docs/expressivity-assets.md](docs/expressivity-assets.md) (asset catalog + recipes) ·
-[docs/csp-ft-emotion.md](docs/csp-ft-emotion.md) (how the `.expr` packs were trained, cross-language transfer) ·
-[docs/expressivity-lora.md](docs/expressivity-lora.md) (which layers, the `.expr` format, train your own) ·
-[docs/paralinguistics-tags.md](docs/paralinguistics-tags.md) (laugh/sigh tags + vectors).
 
 ### Emotion & expressivity on the **small 0.6B** · 🆕
 
@@ -368,27 +339,8 @@ a preset needs no setup either:
     --text "[sigh] Non è possibile che succeda sempre la stessa cosa." -o sad_sigh.wav
 ```
 
-**Optional upgrade — a dedicated asset per (voice × emotion).** The generic direction is instant and
-needs nothing; a *dedicated* asset, rendered from ~25 s of that voice actually performing the emotion,
-is stronger and more faithful. One command builds all six and caches them — you never map anything
-by hand:
-
-```bash
-make emovoice VOICE=vivian                                      # another preset
-make emovoice VOICE=galatea LOAD=voices/galatea_graft.qvoice    # your own cloned voice
-make emovoice VOICE=ryan TTS_LANG=English                       # another language
-```
-
-This route needs the 1.7B and the 0.6B Base model present (the first renders the emotional donor
-audio, the second extracts the 4 KB voice), one-time and offline. **It is an upgrade, not a
-prerequisite** — without it a cloned voice still emotes via the generic direction. When a dedicated
-asset exists the engine prefers it automatically.
-
 **Resolution order** for `--emotion` on the 0.6B: dedicated asset → generic direction on the loaded
 x-vector → an explicit error naming the missing piece. It never silently falls back to neutral.
-
-🎧 **`make emo-06b-demo`** renders the whole stack (6 emotions + 5 `[tag]`s + both together + a clone)
-and prints the RTF of each.
 
 **Speed** — M1, `-j4`, quiet machine. The full expressive stack costs ~0.09 RTF over the bare model:
 
@@ -403,8 +355,6 @@ and prints the RTF of each.
 4 KB x-vector the high-arousal delivery compresses and can swallow a short word; the graft's prosody
 scaffolding holds it together, at the same speed. The `[tag]` seeds differ from the 1.7B's (the engine
 picks the right table per model automatically).
-
-→ Full recipe, limits and what was tried and rejected: [docs/emotion-06b-recipe.md](docs/emotion-06b-recipe.md)
 
 ### HTTP Server
 
@@ -434,8 +384,6 @@ curl -s http://localhost:8080/v1/audio/speech \
 ```
 
 > The server listens only on `127.0.0.1` by default and has no authentication. Exposing it to the network requires an explicit `--host 0.0.0.0`.
-
-> Full guide: all endpoints, request body, performance → [docs/server.md](docs/server.md)
 
 ### Streaming
 
@@ -507,7 +455,7 @@ only **~0.09 RTF** over the bare model:
 RTF = processing_time / audio_duration; **< 1.0 = faster than real-time**. Quantization reads fewer weight bytes
 per frame (native SDOT on ARM, AVX-512/VNNI on x86): **0.6B ~1.5 (bf16) → 0.69 (int8) → 0.52 (int4)**; **1.7B
 ~2.0 (bf16) → 1.79 (int8) → ~1.53 (quant-mixed: int4 Talker + int8 CP, the fastest 1.7B config on M1)** — no
-perceptible quality loss, works with `.qvoice` voices ([details](docs/quantization.md)).
+perceptible quality loss, works with `.qvoice` voices.
 
 ### 📊 Benchmark *your* CPU
 
@@ -521,13 +469,7 @@ make bench-full         # + server, instruct, INT8, .qvoice
 # Per-CPU report (copy onto any rented ARM/x86 box):
 ./qwen_tts --caps       # what SIMD your CPU actually has (NEON/SDOT/bf16/i8mm/SVE • AVX2/AVX-512/VNNI/AMX)
 ./qwen_tts --self-test  # are the kernels numerically correct on this ISA?
-make bench-matrix       # caps + self-test + RTF matrix (single vs batch × bf16/int8/int4)
-make bench-matrix-full  # + streaming + server + request-batching throughput
-make bench-server       # concurrent-request throughput alone (N users vs single-stream, per precision)
 ```
-
-The full cross-hardware workflow (which boxes have which SIMD, where to rent, what to measure) lives in
-[docs/hardware-testing.md](docs/hardware-testing.md).
 
 **Cross-device CPU (single-stream 0.6B, this repo's best config — reproduce with `bash tests/x86_bench.sh`):**
 
@@ -557,9 +499,7 @@ can step their requests **together** through the model (vLLM-style): weights are
 and reused across all in-flight requests, instead of re-read per user. A continuous scheduler keeps the
 batch full (a finished request's slot is refilled immediately) and **streaming composes** — each user
 still gets their own progressive audio stream. This trades a little per-request latency for much higher
-total throughput on bandwidth-bound boxes. Measure it on your CPU with `make bench-server`; details in
-[docs/server-batching.md](docs/server-batching.md).
-
+total throughput on bandwidth-bound boxes.
 **vs other implementations:**
 
 | Hardware | 0.6B RTF | Notes |
@@ -571,9 +511,6 @@ total throughput on bandwidth-bound boxes. Measure it on your CPU with `make ben
 
 5–7x faster than Python on CPU, and **faster than real-time with `--int8`** — on a 2020 laptop with no GPU.
 
-> Per-component breakdown, optimization history → [docs/performance.md](docs/performance.md)
-> x86 AVX2/AVX-512/VNNI findings + how to benchmark your CPU → [docs/x86-optimization.md](docs/x86-optimization.md)
-
 **Throughput — server request-batching** (`--serve --batch-size N`, continuous batching + per-request
 streaming). Batching is a **throughput / parallelism** lever, *not* a per-request speedup — it serves N
 concurrent users in roughly the time of one by reading each weight once for all B sequences (matvec → matmat).
@@ -583,35 +520,6 @@ concurrent users in roughly the time of one by reading each weight once for all 
 |---|---|---|
 | **CPU x86** | ~N on bandwidth-bound servers | ~1× on cache-rich M1 (single-stream is already fast) |
 | **CPU ARM** (Graviton3+, i8mm) | **int8 batch matmat 2.1×, int4 1.6×** (native SMMLA GEMM) | e2e batched server −19% wall @ B=4 vs the pre-SMMLA twin; bf16 1.5× (BFMMLA) |
-
-## Documentation
-
-| Guide | Contents |
-|-------|----------|
-| [Voice Cloning](docs/voice-cloning.md) | Reference audio tips, ECAPA-TDNN internals, model comparison, samples |
-| [Custom Voices](docs/custom-voices.md) | `.qvoice` format, delta vs standard, managing profiles, troubleshooting |
-| [HTTP Server](docs/server.md) | All endpoints, request body, streaming, server performance |
-| [Server request-batching](docs/server-batching.md) | vLLM-style `--batch-size N`: serve N concurrent users together, continuous batching, per-request streaming |
-| [VoiceDesign](docs/voice-design.md) | Creating voices from text descriptions |
-| [Emotion — THE recipe](docs/emotion-THE-recipe.md) | The one-and-only `--emotion` recipe: preset → STEER @ w12, clone → COMBINE; native preset per language. Single source of truth |
-| [Emotion on the small 0.6B](docs/emotion-06b-recipe.md) | 🆕 The small model has no steerable emotion subspace — so the emotion rides on the **voice** (4 KB asset per emotion, `make emovoice`). Emotion + paralinguistics + cloning at RTF ≈ 0.8 |
-| [Expressivity packs `.expr`](docs/expressivity-lora.md) | Per-language emotion LoRA: which layers, why it's ~16–63 MB, file format, `--expr`/`--expr-weight`, per-voice rank. Train your own: [`training/expressivity-lora/`](training/expressivity-lora/) |
-| [Inline markup](docs/markup.md) | Audiobook/podcast tags in `--text`: `[sad]`/`[joy]` mid-text emotion switches, `[sigh]`/`[huff]` fillers, `[pause:400ms]` |
-| [Quantization](docs/quantization.md) | INT8/INT4, comparison table, recommendations |
-| [Performance](docs/performance.md) | RTF benchmarks, component breakdown, optimization history |
-| [x86 optimization](docs/x86-optimization.md) | AVX2 / AVX-512 / VNNI findings, why it's memory-bound, how to benchmark your CPU |
-| [Hardware testing / benchmark your CPU](docs/hardware-testing.md) | One-command per-box report (`make bench-matrix`), which CPU has which SIMD, where to rent ARM/x86, the RTF + throughput matrix to fill in |
-| [Building](docs/building.md) | All platforms, build targets, testing (golden-reference test needs Python + `librosa`) |
-
-### Blog Posts
-
-| Post | Topic |
-|------|-------|
-| [Voice Cloning Internals](blog/voice-cloning-internals.md) | ECAPA-TDNN architecture deep-dive |
-| [Cross-Model Voice Analysis](blog/cross-model-voice-analysis.md) | Why delta format works (weight analysis) |
-| [Optimization Notes](blog/optimization-notes.md) | RTF 3.5 → 1.3: the full M1 bf16 optimization story |
-| [Emotion on the Small Model](blog/emotion-on-the-small-model.md) | Why steering and fine-tuning both failed on the 0.6B, the cosine≈0 measurement that killed transfer, and the reframe that solved it: emotion as a property of the voice |
-| [Fast on Every CPU](blog/making-qwen3-tts-fast-on-every-cpu.md) | SDOT (sub-1.0 on M1) + AVX2/AVX-512/VNNI on x86; why it's memory-bound |
 
 ## Credits & Acknowledgments
 

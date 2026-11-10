@@ -1639,9 +1639,7 @@ int main(int argc, char **argv) {
                 if (dp) fclose(dp);
                 fprintf(stderr, "Error: no '%s' voice asset for '%s' on the 0.6B.\n", tok, key);
                 fprintf(stderr, "  On the small model the emotion rides on the VOICE (docs/emotion-06b-recipe.md).\n");
-                if (!load_voice)
-                    fprintf(stderr, "  Presets need their own asset — build it once with:  make emovoice VOICE=%s\n", key);
-                fprintf(stderr, "  Or build this one cell by hand:\n");
+                fprintf(stderr, "  Build this one cell by hand:\n");
                 fprintf(stderr, "    ./qwen_tts -d qwen3-tts-1.7b -s %s -l <LANG> --emotion %s \\\n", key, emotion_spec);
                 fprintf(stderr, "        --text \"<~25 s of text>\" -o donor.wav\n");
                 fprintf(stderr, "    ./qwen_tts -d qwen3-tts-0.6b-base --ref-audio donor.wav \\\n");
