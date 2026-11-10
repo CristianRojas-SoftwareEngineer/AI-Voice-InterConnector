@@ -390,6 +390,39 @@ void qwen_cp_quantize_q4(qwen_tts_ctx_t *ctx) {
             cp_qz_q4(&ctx->cp_lm_head_q4[g], ctx->cp_lm_head_bf16[g], c->codebook_size, cp_h);
 }
 
+/* Precisión uniforme de las capas del CP según los pesos realmente cuantizados:
+ * 1 si las 5 capas están enteras en int8, 2 si están enteras en q4_0 y 0 si hay
+ * bf16, q2 o precisión mixta por capa. Es independiente de la precisión del Talker
+ * (QWEN_CP_PREC y los ajustes por capa la desacoplan). */
+static int cp_uniform_quant(const qwen_tts_ctx_t *ctx) {
+    int all8 = 1, all4 = 1;
+    for (int l = 0; l < ctx->config.cp_num_layers; l++) {
+        const qwen_cp_layer_t *L = &ctx->cp_layers[l];
+        if (L->gate_up_fused_q2 || L->down_q2) { all8 = 0; all4 = 0; break; }
+        if (!(L->wq_int8 && L->wk_int8 && L->wv_int8 && L->wo_int8 &&
+              L->gate_up_fused_int8 && L->down_int8)) all8 = 0;
+        if (!(L->wq_q4 && L->wk_q4 && L->wv_q4 && L->wo_q4 &&
+              L->gate_up_fused_q4 && L->down_q4)) all4 = 0;
+    }
+    return all8 ? 1 : (all4 ? 2 : 0);
+}
+
+/* Etiqueta del log de carga con la precisión efectiva de las capas del CP. */
+static const char *cp_prec_label(const qwen_tts_ctx_t *ctx) {
+    switch (cp_uniform_quant(ctx)) {
+    case 1: return "INT8";
+    case 2: return "Q4_0";
+    default: break;
+    }
+    for (int l = 0; l < ctx->config.cp_num_layers; l++) {
+        const qwen_cp_layer_t *L = &ctx->cp_layers[l];
+        if (L->wq_int8 || L->wq_q4 || L->gate_up_fused_int8 || L->gate_up_fused_q4 ||
+            L->gate_up_fused_q2 || L->down_int8 || L->down_q4 || L->down_q2)
+            return "mixed";
+    }
+    return "BF16";
+}
+
 int qwen_cp_load(qwen_tts_ctx_t *ctx) {
     qwen_tts_config_t *c = &ctx->config;
     int cp_h = c->cp_hidden_size;
@@ -592,9 +625,8 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
     }
 
     if (!ctx->silent)
-        fprintf(stderr, "  Code Predictor: %d layers loaded, q_dim=%d kv_dim=%d%s\n",
-                c->cp_num_layers, cp_q_dim, cp_kv_dim,
-                ctx->use_int4 ? " [INT4]" : (ctx->use_int8 ? " [INT8]" : ""));
+        fprintf(stderr, "  Code Predictor: %d layers loaded, q_dim=%d kv_dim=%d [%s]\n",
+                c->cp_num_layers, cp_q_dim, cp_kv_dim, cp_prec_label(ctx));
 
     return 0;
 }
@@ -755,20 +787,8 @@ static void cp_transformer_step(qwen_tts_ctx_t *ctx, float *x, float *x_norm, in
  * La ruta es exacta: el matmat cuantizado da bit a bit lo mismo que B llamadas
  * a matvec, y las normas, RoPE y atención usan los mismos kernels que la ruta
  * secuencial; el resultado no depende de que se use una u otra.
- * Solo aplica si las 5 capas están en int8 (modo 1) o todas en q4 (modo 2);
- * con bf16 o precisión mixta por capa se usa la ruta secuencial (modo 0). */
-static int cp_prefill2_mode(qwen_tts_ctx_t *ctx) {
-    int all8 = 1, all4 = 1;
-    for (int l = 0; l < ctx->config.cp_num_layers; l++) {
-        qwen_cp_layer_t *L = &ctx->cp_layers[l];
-        if (L->gate_up_fused_q2 || L->down_q2) { all8 = 0; all4 = 0; break; }
-        if (!(L->wq_int8 && L->wk_int8 && L->wv_int8 && L->wo_int8 &&
-              L->gate_up_fused_int8 && L->down_int8)) all8 = 0;
-        if (!(L->wq_q4 && L->wk_q4 && L->wv_q4 && L->wo_q4 &&
-              L->gate_up_fused_q4 && L->down_q4)) all4 = 0;
-    }
-    return all8 ? 1 : (all4 ? 2 : 0);
-}
+ * Solo aplica si cp_uniform_quant indica las 5 capas en int8 (modo 1) o todas en
+ * q4 (modo 2); con bf16 o precisión mixta por capa se usa la ruta secuencial (modo 0). */
 
 static inline void cp_ilv2(float *X2, const float *a, const float *b, int n) {
     for (int i = 0; i < n; i++) { X2[2 * i] = a[i]; X2[2 * i + 1] = b[i]; }
@@ -940,7 +960,7 @@ int qwen_cp_predict(qwen_tts_ctx_t *ctx, float *talker_hidden, int code0, int *o
     /* Prefill fusionado de 2 posiciones (solo CP cuantizado; ver cp_prefill2).
      * La rugosidad mezcla en cada paso, así que usa la ruta secuencial. */
     int pf2 = 0;
-    if (ctx->cp_roughness <= 0.0f) pf2 = cp_prefill2_mode(ctx);
+    if (ctx->cp_roughness <= 0.0f) pf2 = cp_uniform_quant(ctx);
     if (pf2) {
         cp_prefill2(ctx, pf2, cp_x, x1in);
         memcpy(cp_x, x1in, (size_t)cp_h * sizeof(float));   /* continue on pos-1's stream */

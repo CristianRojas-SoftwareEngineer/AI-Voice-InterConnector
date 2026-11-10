@@ -163,10 +163,17 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 
 ### PREFILL2 como ruta única instrumentada
 
-- **Archivos**: `qwen_tts_code_predictor.c` (`cp_prefill2_mode`, macro `CPB_MARK`).
-- **Qué cambia**: el prefill del Code Predictor usa siempre la ruta PREFILL2 con CP uniforme int8 o q4 (`cp_prefill2_mode` devuelve 1, 2 o 0 si no aplica), sin la variable `QWEN_CP_PREFILL2`, y sus fases están instrumentadas con `CPB_MARK`.
+- **Archivos**: `qwen_tts_code_predictor.c` (`cp_uniform_quant`, macro `CPB_MARK`).
+- **Qué cambia**: el prefill del Code Predictor usa siempre la ruta PREFILL2 con CP uniforme int8 o q4 (`cp_uniform_quant` devuelve 1, 2 o 0 si no aplica), sin la variable `QWEN_CP_PREFILL2`, y sus fases están instrumentadas con `CPB_MARK`.
 - **Por qué**: como matmat equivale a B matvec, la ruta agrupada da el mismo resultado que la secuencial y puede ser la única; la instrumentación permite medir cada fase.
 - **Si se pierde**: reaparece una segunda ruta de prefill seleccionable por entorno y sin garantía de igualdad con la vigente.
+
+### Precisión del Code Predictor en el log de carga
+
+- **Archivos**: `qwen_tts_code_predictor.c` (`cp_prec_label`, línea `Code Predictor: N layers loaded`).
+- **Qué cambia**: la etiqueta de la línea de carga del Code Predictor muestra la precisión que tienen realmente sus capas (`INT8`, `Q4_0`, `mixed` o `BF16`), calculada con `cp_uniform_quant` sobre los pesos cuantizados. El original la derivaba de las banderas del Talker, de modo que con `--quant-mixed` (Talker q4_0 y CP int8) el CP aparecía como `[INT4]`.
+- **Por qué**: la precisión del CP se desacopla de la del Talker (`--quant-mixed`, `QWEN_CP_PREC`, `QWEN_CP_LAYER_PREC`), y un log que informa otra precisión induce a error al medir o depurar.
+- **Si se pierde**: el log vuelve a mostrar la precisión del Talker como si fuera la del CP.
 
 ### Exigencia de `dotprod` en Linux ARM64
 
