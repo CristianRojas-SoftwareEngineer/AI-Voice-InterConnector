@@ -1483,19 +1483,109 @@ static void int8_smm_task(size_t tid, size_t nt, void *vc) {
 }
 #endif /* __ARM_FEATURE_DOTPROD */
 
-/* Quantize column b of the [cols][B] activation matrix X to int8 (per-column absmax).
- * Plain C — shared by the x86 VNNI matmat AND the ARM i8mm SMMLA matmat (rental-prep),
- * so it lives OUTSIDE the ISA guards (it was VNNI-guarded; check-isa caught the ARM use). */
-static float quantize_act_int8_col(int8_t *qb, const float *X, int cols, int B, int b) {
+/* ── Cuantización de la activación a int8 ──
+ * Contrato único de todas las familias (AVX2, NEON y C escalar), para que den
+ * exactamente los mismos códigos y la misma escala: amax = máx|x|; si amax == 0
+ * la escala es 0 y todos los códigos 0; si no, escala = amax / 127, inv = 127 / amax
+ * y q[i] = saturar_a_[-128,127](redondear_al_par(x[i] * inv)). El redondeo al par
+ * lo hacen cvtps (AVX2), vcvtnq (NEON) y lrintf (C, con el modo de redondeo por
+ * defecto), así que las tres coinciden bit a bit. */
+
+/* Referencia escalar de C puro; también es la implementación de la familia escalar. */
+static float quantize_act_int8_ref(int8_t *qx, const float *x, int n) {
     float amax = 0.0f;
-    for (int k = 0; k < cols; k++) { float a = fabsf(X[(size_t)k * B + b]); if (a > amax) amax = a; }
-    if (amax == 0.0f) { memset(qb, 0, (size_t)cols); return 0.0f; }
+    for (int i = 0; i < n; i++) { float a = fabsf(x[i]); if (a > amax) amax = a; }
+    if (amax == 0.0f) { memset(qx, 0, (size_t)n); return 0.0f; }
     float inv = 127.0f / amax;
-    for (int k = 0; k < cols; k++) {
-        int v = (int)lrintf(X[(size_t)k * B + b] * inv);
-        qb[k] = (int8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
+    for (int i = 0; i < n; i++) {
+        int v = (int)lrintf(x[i] * inv);
+        qx[i] = (int8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
     }
     return amax / 127.0f;
+}
+
+#if defined(__AVX2__)
+/* Familia AVX2 (también la usa la ruta VNNI). */
+static float quantize_act_int8(int8_t *qx, const float *x, int n) {
+    const __m256 sign = _mm256_set1_ps(-0.0f);
+    __m256 vmax = _mm256_setzero_ps();
+    int i = 0;
+    for (; i + 8 <= n; i += 8)
+        vmax = _mm256_max_ps(vmax, _mm256_andnot_ps(sign, _mm256_loadu_ps(x + i)));
+    __m128 m4 = _mm_max_ps(_mm256_castps256_ps128(vmax), _mm256_extractf128_ps(vmax, 1));
+    m4 = _mm_max_ps(m4, _mm_movehl_ps(m4, m4));
+    m4 = _mm_max_ss(m4, _mm_shuffle_ps(m4, m4, 1));
+    float amax = _mm_cvtss_f32(m4);
+    for (; i < n; i++) { float a = fabsf(x[i]); if (a > amax) amax = a; }
+    if (amax == 0.0f) { memset(qx, 0, (size_t)n); return 0.0f; }
+    float inv = 127.0f / amax;
+    const __m256 vinv = _mm256_set1_ps(inv);
+    /* packs_* empaqueta por carril de 128 bits: tras los dos pasos los dwords salen en el
+     * orden [q0 lo, q1 lo, q2 lo, q3 lo, q0 hi, q1 hi, q2 hi, q3 hi]; esta permutación
+     * de dwords devuelve el orden natural. */
+    const __m256i fix = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
+    i = 0;
+    for (; i + 32 <= n; i += 32) {
+        __m256i q0 = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_loadu_ps(x + i),      vinv));
+        __m256i q1 = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_loadu_ps(x + i + 8),  vinv));
+        __m256i q2 = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_loadu_ps(x + i + 16), vinv));
+        __m256i q3 = _mm256_cvtps_epi32(_mm256_mul_ps(_mm256_loadu_ps(x + i + 24), vinv));
+        __m256i p = _mm256_packs_epi16(_mm256_packs_epi32(q0, q1), _mm256_packs_epi32(q2, q3));
+        _mm256_storeu_si256((__m256i *)(qx + i), _mm256_permutevar8x32_epi32(p, fix));
+    }
+    for (; i < n; i++) {
+        int v = (int)lrintf(x[i] * inv);
+        qx[i] = (int8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
+    }
+    return amax / 127.0f;
+}
+#elif defined(__ARM_FEATURE_DOTPROD)
+/* Familia NEON (vcvtnq: redondeo al más cercano con empate a par). */
+static float quantize_act_int8(int8_t *qx, const float *x, int n) {
+    float amax = 0.0f;
+    int i = 0;
+    float32x4_t vmax = vdupq_n_f32(0);
+    for (; i + 3 < n; i += 4)
+        vmax = vmaxq_f32(vmax, vabsq_f32(vld1q_f32(x + i)));
+    amax = vmaxvq_f32(vmax);
+    for (; i < n; i++) { float a = fabsf(x[i]); if (a > amax) amax = a; }
+    if (amax == 0.0f) { memset(qx, 0, (size_t)n); return 0.0f; }
+    float inv = 127.0f / amax;
+    float32x4_t vinv = vdupq_n_f32(inv);
+    i = 0;
+    for (; i + 15 < n; i += 16) {
+        int32x4_t q0 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(x + i),      vinv));
+        int32x4_t q1 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(x + i + 4),  vinv));
+        int32x4_t q2 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(x + i + 8),  vinv));
+        int32x4_t q3 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(x + i + 12), vinv));
+        int16x8_t s01 = vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1));
+        int16x8_t s23 = vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3));
+        vst1q_s8(qx + i, vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
+    }
+    for (; i < n; i++) {
+        int v = (int)lrintf(x[i] * inv);
+        qx[i] = (int8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
+    }
+    return amax / 127.0f;
+}
+#else
+/* Familia escalar: es la propia referencia. */
+#define quantize_act_int8 quantize_act_int8_ref
+#endif
+
+/* Cuantiza por columna la matriz de activaciones X[cols][B] (fila k, columna b en
+ * X[k*B + b]): extrae cada columna a un búfer contiguo y le aplica el cuantizador
+ * por vector, de modo que el resultado es idéntico bit a bit a cuantizar esa columna
+ * como vector. Escribe qXt[b*cols + k] y sx[b]. Devuelve 0, o -1 si falta memoria. */
+static int quantize_act_int8_cols(int8_t *qXt, float *sx, const float *X, int cols, int B) {
+    float *col = (float *)malloc((size_t)cols * sizeof(float));
+    if (!col) return -1;
+    for (int b = 0; b < B; b++) {
+        for (int k = 0; k < cols; k++) col[k] = X[(size_t)k * B + b];
+        sx[b] = quantize_act_int8(qXt + (size_t)b * cols, col, cols);
+    }
+    free(col);
+    return 0;
 }
 #if defined(__AVX512VNNI__)
 /* ── int8 VNNI batched matmat (the x86 int8 GEMM the SDOT comment above asks for) ──
@@ -1611,10 +1701,8 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
         if (nv < 0) { const char *e = getenv("QWEN_NO_VNNI"); nv = (e && e[0] == '1'); atomic_store_explicit(&no_vnni, nv, memory_order_relaxed); }
         if (!nv && B >= 2 && B <= 16) {
             int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
-            if (qXt) {
-                float sx[16];
-                for (int b = 0; b < B; b++)
-                    sx[b] = quantize_act_int8_col(qXt + (size_t)b * cols, X, cols, B, b);
+            float sx[16];
+            if (qXt && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
                 int nt = g_n_threads;
                 if (nt > 1 && rows >= 256) {
                     int8_vmm_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
@@ -1625,6 +1713,7 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
                 free(qXt);
                 return;
             }
+            free(qXt);
         }
     }
 #endif
@@ -1649,10 +1738,8 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
         }
         if (!ns && B >= 2 && B <= 16) {
             int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
-            if (qXt) {
-                float sx[16];
-                for (int b = 0; b < B; b++)
-                    sx[b] = quantize_act_int8_col(qXt + (size_t)b * cols, X, cols, B, b);
+            float sx[16];
+            if (qXt && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
                 int nt2 = g_n_threads;
                 if (nt2 > 1 && rows >= 256) {
                     int8_smmla_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
@@ -1663,6 +1750,7 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
                 free(qXt);
                 return;
             }
+            free(qXt);
         }
     }
 #endif
@@ -1681,20 +1769,8 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
         if (sdot_mm < 0) { const char *e = getenv("QWEN_INT8_SDOT_MM"); sdot_mm = (e && e[0] == '1'); }
         if (sdot_mm && B >= 2 && B <= 16) {
             int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
-            if (qXt) {
-                float sx[16];
-                for (int b = 0; b < B; b++) {
-                    float amax = 0.0f;
-                    for (int k = 0; k < cols; k++) { float a = fabsf(X[(size_t)k * B + b]); if (a > amax) amax = a; }
-                    int8_t *qb = qXt + (size_t)b * cols;
-                    if (amax == 0.0f) { memset(qb, 0, (size_t)cols); sx[b] = 0.0f; continue; }
-                    float inv = 127.0f / amax;
-                    for (int k = 0; k < cols; k++) {
-                        int v = (int)lrintf(X[(size_t)k * B + b] * inv);
-                        qb[k] = (int8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
-                    }
-                    sx[b] = amax / 127.0f;
-                }
+            float sx[16];
+            if (qXt && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
                 int nt = g_n_threads;
                 if (nt > 1 && rows >= 256) {
                     int8_smm_ctx c = { Y, W, scale, qXt, sx, rows, cols, B };
@@ -1705,6 +1781,7 @@ void qwen_matmat_int8(float *Y, const int8_t *W, const float *scale,
                 free(qXt);
                 return;
             }
+            free(qXt);
         }
     }
 #endif
@@ -1949,10 +2026,9 @@ void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
             int nb = cols / Q4_0_BLOCK_SIZE;
             int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
             int *corr = (int *)malloc((size_t)B * nb * sizeof(int));
-            if (qXt && corr) {
-                float sx[16];
+            float sx[16];
+            if (qXt && corr && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
                 for (int b = 0; b < B; b++) {
-                    sx[b] = quantize_act_int8_col(qXt + (size_t)b * cols, X, cols, B, b);
                     const int8_t *qb = qXt + (size_t)b * cols;
                     for (int bl = 0; bl < nb; bl++) {
                         int s = 0;
@@ -1988,10 +2064,9 @@ void qwen_matmat_q4_0(float *Y, const q4_0_block_t *W, const float *X,
             int nb = cols / Q4_0_BLOCK_SIZE;
             int8_t *qXt = (int8_t *)malloc((size_t)B * cols);
             int *corr = (int *)malloc((size_t)B * nb * sizeof(int));
-            if (qXt && corr) {
-                float sx[16];
+            float sx[16];
+            if (qXt && corr && quantize_act_int8_cols(qXt, sx, X, cols, B) == 0) {
                 for (int b = 0; b < B; b++) {
-                    sx[b] = quantize_act_int8_col(qXt + (size_t)b * cols, X, cols, B, b);
                     const int8_t *qb = qXt + (size_t)b * cols;
                     for (int bl = 0; bl < nb; bl++) {
                         int s = 0;
@@ -2354,38 +2429,6 @@ static void int8_matvec_fused(float *y, const float *x, const int8_t *W,
 }
 
 #if defined(__ARM_FEATURE_DOTPROD)
-/* Dynamically quantize an f32 activation vector to int8 (per-vector absmax).
- * Returns the scale (amax/127); writes int8 codes into qx[n]. This is the
- * activation half that native int8 dot (SDOT) needs: SDOT multiplies int8×int8,
- * so x must be int8 too (the current dequant→f32→FMA path kept x in f32). */
-static float quantize_act_int8(int8_t *qx, const float *x, int n) {
-    float amax = 0.0f;
-    int i = 0;
-    float32x4_t vmax = vdupq_n_f32(0);
-    for (; i + 3 < n; i += 4)
-        vmax = vmaxq_f32(vmax, vabsq_f32(vld1q_f32(x + i)));
-    amax = vmaxvq_f32(vmax);
-    for (; i < n; i++) { float a = fabsf(x[i]); if (a > amax) amax = a; }
-    if (amax == 0.0f) { memset(qx, 0, (size_t)n); return 0.0f; }
-    float inv = 127.0f / amax;
-    float32x4_t vinv = vdupq_n_f32(inv);
-    i = 0;
-    for (; i + 15 < n; i += 16) {
-        int32x4_t q0 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(x + i),      vinv));
-        int32x4_t q1 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(x + i + 4),  vinv));
-        int32x4_t q2 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(x + i + 8),  vinv));
-        int32x4_t q3 = vcvtnq_s32_f32(vmulq_f32(vld1q_f32(x + i + 12), vinv));
-        int16x8_t s01 = vcombine_s16(vqmovn_s32(q0), vqmovn_s32(q1));
-        int16x8_t s23 = vcombine_s16(vqmovn_s32(q2), vqmovn_s32(q3));
-        vst1q_s8(qx + i, vcombine_s8(vqmovn_s16(s01), vqmovn_s16(s23)));
-    }
-    for (; i < n; i++) {
-        int v = (int)lrintf(x[i] * inv);
-        qx[i] = (int8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
-    }
-    return amax / 127.0f;
-}
-
 /* Native int8 dot matvec via SDOT: y[o] = scale[o] * sx * Σ_k W[o][k]·qx[k].
  * 4 int8×int8 MACs per vdotq_s32 instruction — no per-weight dequant. 2-row
  * fused to amortize the qx loads (matches the bf16/int8 2-row pattern). */
@@ -2426,20 +2469,6 @@ static void int8_matvec_sdot(float *y, const int8_t *qx, float sx,
  * UNVALIDATED ON HARDWARE — written for a rented AVX-512-VNNI VPS (e.g. Zen4/Zen5
  * 9950X3D, Cascade Lake+). Cross-compiles clean; validate with `make test-golden`
  * on the VPS before trusting. Opt out at runtime with QWEN_NO_VNNI=1. */
-
-/* f32 activation -> signed int8 (per-vector absmax). Scalar inner (n is small,
- * e.g. hidden=1024); correctness-first — vectorize later if it shows up. */
-static float quantize_act_int8_x86(int8_t *qx, const float *x, int n) {
-    float amax = 0.0f;
-    for (int i = 0; i < n; i++) { float a = fabsf(x[i]); if (a > amax) amax = a; }
-    if (amax == 0.0f) { memset(qx, 0, (size_t)n); return 0.0f; }
-    float inv = 127.0f / amax;
-    for (int i = 0; i < n; i++) {
-        int v = (int)lrintf(x[i] * inv);
-        qx[i] = (int8_t)(v > 127 ? 127 : (v < -128 ? -128 : v));
-    }
-    return amax / 127.0f;
-}
 
 /* y[o] = scale[o]*sx * Σ_k W[o][k]·qx[k], via _mm512_dpbusd_epi32.
  * VNNI multiplies UNSIGNED u8 × SIGNED s8, but qx is signed. Use ua = qx+128
@@ -2535,7 +2564,7 @@ void qwen_matvec_int8(float *y, const int8_t *W, const float *scale,
     if (vnni_o < 0) { const char *e = getenv("QWEN_NO_VNNI"); vnni_o = (e && e[0] == '1'); atomic_store_explicit(&vnni_off, vnni_o, memory_order_relaxed); }
     if (!vnni_o && cols <= QXV_MAX) {
         int8_t qx_buf[QXV_MAX];
-        float sx = quantize_act_int8_x86(qx_buf, x, cols);
+        float sx = quantize_act_int8(qx_buf, x, cols);
         int nt = g_n_threads;
         if (nt > 1 && rows >= 256) {
             int8_vnni_ctx c = { y, qx_buf, sx, W, scale, rows, cols };
@@ -3178,7 +3207,7 @@ void qwen_matvec_q4_0(float *y, const q4_0_block_t *W, const float *x,
      * shared activation to int8 once, then unpack nibbles→int8 + dpbusd per block. */
     if (!q4_sdot_disabled() && cols <= Q4_QX_MAX && cols % Q4_0_BLOCK_SIZE == 0) {
         int8_t qx_buf[Q4_QX_MAX];
-        float sx = quantize_act_int8_x86(qx_buf, x, cols);
+        float sx = quantize_act_int8(qx_buf, x, cols);
         int nt = g_n_threads;
         if (nt > 1 && rows >= 256) {
             q4_0_vnni_ctx c = { y, qx_buf, sx, W, rows, cols };
@@ -3335,7 +3364,7 @@ void qwen_matvec_q4_0_qkv(float *q, float *k, float *v,
     if (qkv_o < 0) { const char *e = getenv("QWEN_NO_VNNI_QKV"); qkv_o = (e && e[0] == '1'); atomic_store_explicit(&qkv_off, qkv_o, memory_order_relaxed); }
     if (!qkv_o && !q4_sdot_disabled() && in_dim <= Q4_QX_MAX && in_dim % Q4_0_BLOCK_SIZE == 0) {
         int8_t qx_buf[Q4_QX_MAX];
-        float sx = quantize_act_int8_x86(qx_buf, x, in_dim);
+        float sx = quantize_act_int8(qx_buf, x, in_dim);
         int nt = g_n_threads;
         if (nt > 1) {
             q4_0_qkv_vnni_ctx c = { q, k, v, Wq, Wk, Wv, qx_buf, sx, in_dim, q_dim, kv_dim };
@@ -5009,6 +5038,62 @@ int qwen_kernel_selftest(void *out) {
         }
 
         free(x); free(wf); free(wb); free(wi); free(sc); free(ref); free(y);
+    }
+
+    /* ---- cuantizadores de activación: el compilado de la familia (por vector y por
+     * columna) debe coincidir bit a bit, en códigos y escala, con la referencia escalar.
+     * Con amax = 127 la escala de cuantización es exactamente 1, así que los valores
+     * 2.5, 3.5, -2.5 y 0.5 caen justo en .5 y ejercitan el empate a par. ---- */
+    {
+        static const int qn[] = { 1024, 3072, 320 };
+        const int QB = 5;
+        for (int qi = 0; qi < (int)(sizeof(qn) / sizeof(qn[0])); qi++) {
+            const int n = qn[qi];
+            float  *xv = malloc((size_t)n * sizeof(float));
+            float  *XC = malloc((size_t)n * QB * sizeof(float));
+            float  *xc = malloc((size_t)n * sizeof(float));
+            int8_t *qa = malloc((size_t)n), *qr = malloc((size_t)n);
+            int8_t *qc = malloc((size_t)n * QB);
+            float   sc5[5];
+            if (!xv || !XC || !xc || !qa || !qr || !qc) {
+                fprintf(f, "  [quantize n=%d] OOM, skipped\n", n);
+                free(xv); free(XC); free(xc); free(qa); free(qr); free(qc);
+                continue;
+            }
+            for (int k = 0; k < n; k++) xv[k] = NEXT_F * 100.0f;
+            xv[0] = 127.0f; xv[1] = 2.5f; xv[2] = 3.5f; xv[3] = -2.5f; xv[4] = 0.5f;
+
+            /* vector aleatorio con empates */
+            float sa = quantize_act_int8(qa, xv, n);
+            float sr = quantize_act_int8_ref(qr, xv, n);
+            int bad = (memcmp(qa, qr, (size_t)n) != 0) || memcmp(&sa, &sr, sizeof(float)) != 0;
+            fprintf(f, "  [quantize n=%4d] vector vs referencia escalar (bit a bit): %s\n", n, bad ? "FAIL" : "PASS");
+            if (bad) failures++;
+
+            /* vector todo ceros */
+            for (int k = 0; k < n; k++) xc[k] = 0.0f;
+            sa = quantize_act_int8(qa, xc, n);
+            sr = quantize_act_int8_ref(qr, xc, n);
+            bad = (memcmp(qa, qr, (size_t)n) != 0) || memcmp(&sa, &sr, sizeof(float)) != 0;
+            fprintf(f, "  [quantize n=%4d] ceros vs referencia escalar (bit a bit): %s\n", n, bad ? "FAIL" : "PASS");
+            if (bad) failures++;
+
+            /* por columnas: la columna 0 es el vector con empates, la 1 un vector escalado,
+             * la 4 toda ceros y el resto aleatorias */
+            for (int k = 0; k < n; k++)
+                for (int b = 0; b < QB; b++)
+                    XC[(size_t)k * QB + b] = (b == 0) ? xv[k] : (b == 1) ? xv[k] * 0.37f : (b == 4) ? 0.0f : NEXT_F * (1.0f + b);
+            bad = quantize_act_int8_cols(qc, sc5, XC, n, QB) != 0;
+            for (int b = 0; b < QB && !bad; b++) {
+                for (int k = 0; k < n; k++) xc[k] = XC[(size_t)k * QB + b];
+                sr = quantize_act_int8_ref(qr, xc, n);
+                if (memcmp(qc + (size_t)b * n, qr, (size_t)n) != 0 || memcmp(&sc5[b], &sr, sizeof(float)) != 0) bad = 1;
+            }
+            fprintf(f, "  [quantize n=%4d] columnas (B=%d) vs referencia escalar (bit a bit): %s\n", n, QB, bad ? "FAIL" : "PASS");
+            if (bad) failures++;
+
+            free(xv); free(XC); free(xc); free(qa); free(qr); free(qc);
+        }
     }
     #undef NEXT_F
     fprintf(f, "\n%s (%d case%s failed)\n", failures ? "SELF-TEST FAILED" : "SELF-TEST PASSED",
