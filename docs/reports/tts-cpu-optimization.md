@@ -46,7 +46,7 @@ Tras una campaña exhaustiva de medición y evaluación de calidad, se adoptó f
 
 *\*Nota: El perfil con 6 hilos se evaluó como pico de hardware en Ryzen 7, pero se adoptaron 4 hilos por diseño de compatibilidad universal.*
 
-Sobre ese perfil se aplicaron después cuatro optimizaciones del motor que no cambian el modelo: un espacio de trabajo persistente del decodificador acústico, la convolución transpuesta con un solo GEMM, la convolución causal sin im2col y la afinidad de un hilo lógico por núcleo físico en Windows. Medidas de forma alternada contra el motor anterior en el mismo equipo, reducen el RTF un **20 %** en CLI con 4 hilos y un **23 %** en el daemon, con **~100 MB** más de memoria y sin pérdida de calidad (detalle en la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad)).
+Sobre ese perfil se aplicaron después cuatro optimizaciones del motor que no cambian el modelo: un espacio de trabajo persistente del decodificador acústico, la convolución transpuesta con un solo GEMM, la convolución causal sin im2col y la afinidad de un hilo lógico por núcleo físico en Windows. Medidas de forma alternada contra el motor anterior en el mismo equipo, llevan la síntesis por debajo de tiempo real con el equipo libre (RTF **0,93** en CLI con 4 hilos y **0,945** en el daemon con frases largas, frente a 1,04 y 1,065; −11 %). Con carga de fondo en el equipo, la reducción llega al **20–23 %** (de 1,55 a 1,24 en CLI). Cuestan **~100 MB** más de memoria y no pierden calidad (detalle en la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad)).
 
 ---
 
@@ -106,7 +106,27 @@ En la prueba formal de preferencia forzada por pares (24 ensayos pareados con co
 - **Veredicto estadístico:** Prueba de Fisher unilateral con $p = 0,50$. No se detectó ninguna degradación perceptible atribuible a la cuantización mixta.
 
 ### 4.4. Optimización del decodificador acústico y afinidad
-Medición del 10 de noviembre de 2026 en el hardware de referencia (corriente, plan Equilibrado), con voz clonada, `--quant-mixed`, semilla 42 y sin afinidad externa. Cada configuración se ejecutó alternando el motor anterior y el optimizado para que la carga de fondo del equipo, que varía entre ejecuciones, afecte por igual a ambos. Los valores absolutos dependen de esa carga; la comparación válida es la relativa.
+Medición del 10 de noviembre de 2026 en el hardware de referencia (corriente, plan Equilibrado), con voz clonada, `--quant-mixed`, semilla 42 y sin afinidad externa, en dos condiciones del equipo:
+
+- **Equipo libre:** sin Chrome ni Visual Studio Code abiertos; carga de CPU entre el 1 % y el 12 % durante la medición.
+- **Equipo con carga de fondo:** Chrome, Visual Studio Code y otras herramientas abiertas; carga de CPU entre el 24 % y el 33 % en reposo.
+
+En cada condición se alternaron el motor anterior y el optimizado, para que la carga, que varía entre ejecuciones, afecte por igual a ambos. El RTF del daemon es el que registra el propio servidor por petición con el equipo libre, y el cociente entre el tiempo total de la petición HTTP y la duración del audio con carga; ambos miden lo mismo, porque el envío del WAV cuesta menos de 1 ms.
+
+**Equipo libre**
+
+| Escenario | Motor anterior (mediana) | Motor optimizado (mediana) | Cambio |
+|---|---|---|---|
+| CLI, texto de 18 s, `-j 4` (3 ejecuciones) | 1,04 (1,03–1,07) | **0,93** (0,92–0,96) | −11 % |
+| CLI, texto de 18 s, `-j 6` (3 ejecuciones) | 1,01 (1,00–1,02) | **0,87** (0,86–0,92) | −14 % |
+| Daemon, frase corta de ~3 s (4 peticiones) | 1,19 (1,17–1,22) | **1,02** (1,00–1,03) | −14 % |
+| Daemon, frase media de ~6 s (4 peticiones) | 1,08 (1,05–1,11) | **0,945** (0,93–0,95) | −13 % |
+| Daemon, frase larga de 18 s (4 peticiones) | 1,065 (1,04–1,12) | **0,945** (0,93–0,96) | −11 % |
+| Pico de memoria del daemon tras 6 peticiones | 2.813 MB | 2.912 MB | +99 MB |
+
+Por fotograma, en CLI: Talker de 20,5–21,3 a 18,6–19,9 ms y Code Predictor de 54–60 a 47–54 ms.
+
+**Equipo con carga de fondo**
 
 | Escenario | Motor anterior (mediana) | Motor optimizado (mediana) | Cambio |
 |---|---|---|---|
@@ -117,9 +137,10 @@ Medición del 10 de noviembre de 2026 en el hardware de referencia (corriente, p
 | Daemon, frase larga de 18 s (4 peticiones) | 1,60 (1,53–1,62) | **1,235** (1,23–1,27) | −23 % |
 | Pico de memoria del daemon tras 4 peticiones | 2.810–2.813 MB | 2.911–2.913 MB | +100 MB |
 
+- **Objetivo de tiempo real:** con el equipo libre, el motor optimizado sintetiza por debajo de tiempo real en CLI con 4 y 6 hilos y en el daemon con frases medias y largas. La frase corta queda en ~1,0 por el coste fijo del prefill (~0,5–0,7 s), que pesa más cuanto más corto es el audio.
+- **Sensibilidad a la carga:** la carga de fondo empeora el RTF de ambos motores entre un 30 % y un 50 %; el mismo motor anterior pasa de 1,04 a 1,55. La mejora relativa es mayor con carga (−16 % a −25 %) que con el equipo libre (−11 % a −14 %), porque sin carga el motor anterior apenas cae en el estado lento por SMT que corrige la afinidad.
+- **Estabilidad:** el log de cada ejecución registra la máscara `0x5555`, y en ninguna ejecución del motor optimizado reapareció el salto bimodal característico del estado SMT. Con el equipo libre, ninguna ejecución del motor optimizado superó RTF 1,03; con carga, varias superaron 1,3 (máximo 1,38 en el daemon) por la carga ajena.
 - **Memoria:** el aumento son los pesos `W_k` de la convolución sin im2col (~116 MB, compartidos entre workers) más el espacio de trabajo persistente, menos las reservas por bloque que desaparecen.
-- **Estabilidad:** el log de cada ejecución registra la máscara `0x5555`, y en ninguna ejecución del motor optimizado reapareció el salto bimodal característico del estado SMT. Con la carga de fondo de esta medición, varias ejecuciones superaron igualmente RTF 1,3 (máximo 1,38 en el daemon), así que el criterio «sin ejecuciones ≥ 1,3» no se pudo verificar en estas condiciones.
-- **Objetivo de tiempo real:** con la carga de fondo de esta medición, el motor anterior quedó en 1,55 (frente a 1,37–1,40 en mediciones previas con el equipo más libre), y el optimizado no alcanza el objetivo de RTF ≤ 1,05 con 4 hilos. En la validación previa sobre una copia instrumentada del motor, con el equipo más libre, el texto largo pasó de 1,37–1,40 a 1,03–1,04 con `-j 4`; la mejora relativa medida aquí (−20 % a −25 %) es coherente con esa reducción.
 
 **Procedimiento de validación de calidad.** Los cambios que no alteran el cálculo (eliminación de código muerto, red unificada, espacio de trabajo, afinidad) se aceptaron con md5 idéntico del WAV frente al paso anterior, siempre con el mismo número de hilos, porque el md5 depende de `-j`. El corpus fue de 15 frases (10 en español y 5 en inglés) más el texto largo, en streaming, y la decodificación completa de un volcado fijo de códigos (`QWEN_DUMP_CODES`) con `qwen_tts_decoder_tool`. Los cambios que reordenan sumas en coma flotante (las dos convoluciones) se aceptaron con SNR ≥ 90 dB, diferencia ≤ 2 LSB, WER sin cambios (faster-whisper large-v3-turbo) y similitud WavLM-SV ≥ 0,999 sobre el mismo corpus. Resultado: SNR de 96,6 a 98,6 dB, 1 LSB como máximo, WER de 3,57 % en ambos motores, similitud WavLM de 1,00000 en todas las frases y salida determinista entre ejecuciones. Al unificar la red convolucional, la decodificación completa adoptó la LayerNorm de dos pasadas del streaming (SNR 100,9 dB, 1 LSB), para que el audio de producción conservara su md5.
 
@@ -162,7 +183,7 @@ La adopción de `--quant-mixed` representó una ganancia inmediata y gratuita de
 
 $$\text{RTF actual en producción: } \mathbf{\sim 1,38\times} \quad (\text{Sintetizar 1 s de audio toma } \sim 1,38\text{ s})$$
 
-Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restan otro 20–25 % sin tocar el modelo, pero no cambian el reparto del tiempo: el Code Predictor sigue siendo la parte dominante de cada fotograma.
+Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restan otro 11–14 % con el equipo libre y un 20–25 % con carga de fondo, sin tocar el modelo, y dejan la síntesis en RTF 0,93 con 4 hilos en un equipo libre. No cambian el reparto del tiempo: el Code Predictor sigue siendo la parte dominante de cada fotograma (~70 %), y con carga de fondo el RTF vuelve a superar 1, así que reducirlo sigue siendo la vía para mantener el tiempo real en equipos ocupados.
 
 ### El cuello de botella estructural
 El análisis detallado de tiempos por fotograma reveló que el pipeline genera audio a 12,5 Hz (80 ms por fotograma). En cada fotograma:
