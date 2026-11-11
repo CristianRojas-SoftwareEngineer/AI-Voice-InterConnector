@@ -400,11 +400,17 @@ int qwen_talker_load(qwen_tts_ctx_t *ctx) {
     /* La precisión del Talker sigue normalmente a --int8/--int4. QWEN_TALKER_PREC={bf16|int8|int4}
      * la DESACOPLA de la del CP para que una medición mantenga el CP en bf16 y varíe SOLO
      * el Talker, midiendo cuánto mueve code0 (= las PALABRAS) su cuantización. Sin la variable,
-     * el comportamiento no cambia. (int8 sigue sin efecto en 0.6B por la puerta hidden>=2048 de abajo.) */
+     * el comportamiento no cambia. Los valores válidos son bf16, int8 e int4; cualquier
+     * otro valor no vacío detiene la carga con un error, para no sintetizar con una
+     * precisión distinta de la pedida. */
     int tk_do_int8 = ctx->use_int8;
     int tk_do_int4 = ctx->use_int4;
     const char *tk_prec = getenv("QWEN_TALKER_PREC");
     if (tk_prec && *tk_prec) {
+        if (strcmp(tk_prec, "bf16") && strcmp(tk_prec, "int8") && strcmp(tk_prec, "int4")) {
+            fprintf(stderr, "error: QWEN_TALKER_PREC=%s no es válido; use bf16, int8 o int4\n", tk_prec);
+            return -1;
+        }
         tk_do_int8 = !strcmp(tk_prec, "int8");
         tk_do_int4 = !strcmp(tk_prec, "int4");
         if (!ctx->silent)

@@ -677,6 +677,38 @@ static int run_compose(qwen_tts_ctx_t *ctx, const char *spec, const char *langua
     return rc;
 }
 
+/* Una sobrescritura de pesos (voz .qvoice con WDELTA o --expr) cambia los pesos bf16
+ * del Talker, y las copias cuantizadas que usan las multiplicaciones se construyeron
+ * antes a partir de los pesos anteriores. Solo las copias int8 se rehacen después de
+ * la sobrescritura; con copias q4_0 activas la sobrescritura no llegaría a los pesos
+ * que se usan, así que se rechaza. Devuelve 1 si alguna capa del Talker o del Code
+ * Predictor tiene pesos q4_0. */
+static int weights_have_q4(const qwen_tts_ctx_t *ctx) {
+    for (int i = 0; i < ctx->config.num_layers; i++)
+        if (ctx->layers[i].wq_q4 || ctx->layers[i].gate_up_fused_q4) return 1;
+    for (int i = 0; i < ctx->config.cp_num_layers; i++)
+        if (ctx->cp_layers[i].wq_q4 || ctx->cp_layers[i].gate_up_fused_q4) return 1;
+    return 0;
+}
+
+/* Rehace desde los pesos bf16 sobrescritos las copias int8 que ya existían: las del
+ * Talker si sus capas están en int8 y las del Code Predictor si las suyas lo están.
+ * No crea copias nuevas, para que la precisión de cada parte no cambie (por ejemplo,
+ * con QWEN_TALKER_PREC o QWEN_CP_PREC distintos de --int8). */
+static void requantize_int8_after_override(qwen_tts_ctx_t *ctx, const char *source, int silent) {
+    extern void qwen_talker_quantize_int8(qwen_tts_ctx_t *ctx);
+    extern void qwen_cp_quantize_int8(qwen_tts_ctx_t *ctx);
+    int tk = ctx->config.num_layers > 0 && ctx->layers[0].wq_int8;
+    int cp = ctx->config.cp_num_layers > 0 && ctx->cp_layers[0].wq_int8;
+    if (!tk && !cp) return;
+    if (!silent) fprintf(stderr, "  Re-quantizing INT8 from %s-overridden weights...\n", source);
+    int save = ctx->use_int8;
+    ctx->use_int8 = 1;  /* las dos funciones solo cuantizan con use_int8 activo */
+    if (tk) qwen_talker_quantize_int8(ctx);
+    if (cp) qwen_cp_quantize_int8(ctx);
+    ctx->use_int8 = save;
+}
+
 /* Apply a `<lang>.expr` micro-file: an additive emotion/expressivity weight delta
  * (the fine-tune's L16-26 attn+gate change) on TOP of the currently-loaded talker
  * weights. The file body is a standard "WDLT" stream (same encoding as the .qvoice
@@ -880,19 +912,16 @@ static int apply_expr_file(qwen_tts_ctx_t *ctx, const char *path, float expr_wei
         }
     }
 
-    /* In INT8 mode the quantized weights were built from the pre-delta bf16 —
-     * re-quantize from the overridden bf16 so the delta is honored (mirrors the
-     * .qvoice WDELTA path). NOTE: int4 (Q4_0) re-quant after weight override is not
-     * yet wired here — .expr in --int4 mode would ignore the delta (TODO). */
-    if (loaded > 0 && ctx->use_int8) {
-        extern void qwen_talker_quantize_int8(qwen_tts_ctx_t *ctx);
-        extern void qwen_cp_quantize_int8(qwen_tts_ctx_t *ctx);
-        if (!silent) fprintf(stderr, "  Re-quantizing INT8 from .expr-overridden weights...\n");
-        qwen_talker_quantize_int8(ctx);
-        qwen_cp_quantize_int8(ctx);
-    } else if (loaded > 0 && ctx->use_int4 && !silent) {
-        fprintf(stderr, "  Warning: --expr in --int4 mode does not yet re-quantize; delta ignored.\n");
+    /* Las copias cuantizadas se construyeron con los pesos anteriores al delta: con
+     * pesos q4_0 activos el delta no se puede aplicar y la carga falla; las copias
+     * int8 se rehacen desde los pesos sobrescritos (igual que en la ruta WDELTA de la
+     * voz .qvoice). */
+    if (loaded > 0 && weights_have_q4(ctx)) {
+        fprintf(stderr, "error: --expr sobrescribe pesos que están cuantizados en q4_0 y no se "
+                        "pueden recuantizar; use bf16 o --int8\n");
+        return -1;
     }
+    if (loaded > 0) requantize_int8_after_override(ctx, ".expr", silent);
 
     if (!silent)
         fprintf(stderr, "Expressivity: applied %d/%u tensors from %s (lang=%s)\n",
@@ -2279,19 +2308,19 @@ int main(int argc, char **argv) {
                             embed_one_text_token_compute(ctx, 151673, ctx->cached_tts_eos_embed);
                         }
 
-                        /* WDELTA override swapped the bf16 weights (CV -> Base).
-                         * In INT8 mode the int8 weights were quantized at load
-                         * from the CV weights, so re-quantize from the new Base
-                         * bf16 — otherwise int8 ignores the override (voice loses
-                         * fidelity / ~half volume). */
-                        if (loaded > 0 && ctx->use_int8) {
-                            extern void qwen_talker_quantize_int8(qwen_tts_ctx_t *ctx);
-                            extern void qwen_cp_quantize_int8(qwen_tts_ctx_t *ctx);
-                            if (!silent)
-                                fprintf(stderr, "  Re-quantizing INT8 from WDELTA-overridden weights...\n");
-                            qwen_talker_quantize_int8(ctx);
-                            qwen_cp_quantize_int8(ctx);
+                        /* La sección WDELTA cambió los pesos bf16 (CV -> Base) y las
+                         * copias cuantizadas se construyeron al cargar con los pesos
+                         * CV. Con pesos q4_0 activos la voz no se puede aplicar y la
+                         * carga falla; las copias int8 se rehacen desde los pesos Base
+                         * (si no, la voz pierde fidelidad y volumen). */
+                        if (loaded > 0 && weights_have_q4(ctx)) {
+                            fprintf(stderr, "error: la voz .qvoice (WDELTA) sobrescribe pesos que están "
+                                            "cuantizados en q4_0 y no se pueden recuantizar; use bf16 o --int8\n");
+                            fclose(vf);
+                            qwen_tts_unload(ctx);
+                            return 1;
                         }
+                        if (loaded > 0) requantize_int8_after_override(ctx, "WDELTA", silent);
 
                         if (!silent && loaded > 0)
                             fprintf(stderr, "  Loaded %d/%u source talker tensors (%.1f MB) — full weight override\n",
@@ -2744,9 +2773,11 @@ int main(int argc, char **argv) {
                 FILE *ef = fopen(ep, "rb");
                 if (ef) {
                     fclose(ef);
-                    if (apply_expr_file(ctx, ep, ew, silent) != 0)
-                        fprintf(stderr, "Warning: --emotion: failed to apply %s\n", ep);
-                    else if (!silent)
+                    if (apply_expr_file(ctx, ep, ew, silent) != 0) {
+                        fprintf(stderr, "Error: --emotion: failed to apply %s\n", ep);
+                        qwen_tts_unload(ctx);
+                        return 1;
+                    } else if (!silent)
                         fprintf(stderr, "Emotion '%s': +expr %s (weight %.1f)\n", emotion_spec, ep, ew);
                 } else if (!silent) {
                     fprintf(stderr, "Note: --emotion: %s missing — run `bash download_assets.sh`\n", ep);

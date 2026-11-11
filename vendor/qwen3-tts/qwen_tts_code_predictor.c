@@ -500,11 +500,17 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
      * QWEN_CP_PREC={bf16|int8|int4} DESACOPLA la precisión del CP de la del Talker para que
      * una medición mantenga fijo el Talker (y con él code0) y varíe SOLO el CP; si no,
      * code0 deriva entre ejecuciones y la coincidencia por codebook se contamina con la
-     * cuantización del Talker. Sin la variable, el comportamiento de --int8/--int4 no cambia. */
+     * cuantización del Talker. Sin la variable, el comportamiento de --int8/--int4 no cambia.
+     * Los valores válidos son bf16, int8 e int4; cualquier otro valor no vacío detiene la
+     * carga con un error, para no sintetizar con una precisión distinta de la pedida. */
     int cp_do_int8 = ctx->use_int8;
     int cp_do_int4 = ctx->use_int4;
     const char *cp_prec = getenv("QWEN_CP_PREC");
     if (cp_prec && *cp_prec) {
+        if (strcmp(cp_prec, "bf16") && strcmp(cp_prec, "int8") && strcmp(cp_prec, "int4")) {
+            fprintf(stderr, "error: QWEN_CP_PREC=%s no es válido; use bf16, int8 o int4\n", cp_prec);
+            return -1;
+        }
         cp_do_int8 = !strcmp(cp_prec, "int8");
         cp_do_int4 = !strcmp(cp_prec, "int4");
         if (!ctx->silent)
