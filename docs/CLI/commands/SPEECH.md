@@ -50,7 +50,7 @@ alguno, el parser lo rechaza como argumento desconocido (exit 2
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
 | `Auto` (sin flags) | Sondea `GET /health` (`daemon_active`) con deadline corto; si responde, delega; si no, cae a directo |
 
-En `synthesize`, `say` y `dub`, el motor directo selecciona precisión al crearse mediante `AVI_TTS_PRECISION`: ausente o `mixed` usa Talker INT4 y Code Predictor INT8; `bf16` usa BF16. Otro valor produce `usage_error` (2) si se alcanza la construcción del motor, sin alterar la precedencia de validaciones previas. En la ruta daemon se usa el perfil del servidor ya iniciado, no el entorno del cliente.
+En `synthesize`, `say` y `dub`, el motor directo selecciona precisión al crearse mediante `AVI_TTS_PRECISION`: ausente o `mixed` usa el Talker en INT4 y el Code Predictor con la atención en INT8 y las FFN en Q4_0; `bf16` usa BF16. Otro valor produce `usage_error` (2) si se alcanza la construcción del motor, sin alterar la precedencia de validaciones previas. En la ruta daemon se usa el perfil del servidor ya iniciado, no el entorno del cliente.
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`

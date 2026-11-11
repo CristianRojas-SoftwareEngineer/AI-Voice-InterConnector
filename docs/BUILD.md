@@ -526,7 +526,7 @@ bundle de ONNX Runtime (`ort-bundle/`) tiene su propia caché y se guarda tras
 desconocida, `cargo xtask doctor` marca `Mismatch` y `cargo xtask package`
 vuelve a descargar. Las claves exactas están en `.circleci/config.yml`.
 
-Ver `vendor/qwen3-tts/CLAUDE.md` y `crates/avi-tts/src/lib.rs` para el contrato
+Ver `vendor/qwen3-tts/README.md` y `crates/avi-tts/src/lib.rs` para el contrato
 de invocación del motor.
 
 ---

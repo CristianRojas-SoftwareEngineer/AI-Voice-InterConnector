@@ -408,7 +408,7 @@ necesitan un modelo cargado):** tres modos, iguales a los de `voice clone`:
   degradar.
 - `--no-daemon`: fuerza el modo directo, sin sondear.
 
-**Precisión de síntesis:** `AVI_TTS_PRECISION` sin definir o con el valor exacto `mixed` selecciona Talker INT4 y Code Predictor INT8; `bf16` selecciona BF16 para ambos. Otros valores son inválidos. La CLI directa lee la variable al crear el motor; un daemon mantiene el perfil con el que arrancó, aunque cambie el entorno del cliente. Para cambiarlo, detén e inicia el daemon con la nueva variable:
+**Precisión de síntesis:** `AVI_TTS_PRECISION` sin definir o con el valor exacto `mixed` selecciona el Talker en INT4 y el Code Predictor con la atención en INT8 y las FFN en Q4_0; `bf16` selecciona BF16 para ambos. Otros valores son inválidos. La CLI directa lee la variable al crear el motor; un daemon mantiene el perfil con el que arrancó, aunque cambie el entorno del cliente. Para cambiarlo, detén e inicia el daemon con la nueva variable:
 
 ```powershell
 $env:AVI_TTS_PRECISION = 'bf16'
