@@ -390,11 +390,25 @@ void qwen_cp_quantize_q4(qwen_tts_ctx_t *ctx) {
             cp_qz_q4(&ctx->cp_lm_head_q4[g], ctx->cp_lm_head_bf16[g], c->codebook_size, cp_h);
 }
 
-/* Precisión uniforme de las capas del CP según los pesos realmente cuantizados:
- * 1 si las 5 capas están enteras en int8, 2 si están enteras en q4_0 y 0 si hay
- * bf16, q2 o precisión mixta por capa. Es independiente de la precisión del Talker
- * (QWEN_CP_PREC y los ajustes por capa la desacoplan). */
-static int cp_uniform_quant(const qwen_tts_ctx_t *ctx) {
+/* PREFILL2 exige que cada matriz de las 5 capas del CP (wq, wk, wv, wo,
+ * gate_up_fused y down) exista en int8 o en q4_0, en cualquier combinación,
+ * porque CP_MM2 elige el kernel matmat de cada matriz por separado. Devuelve 1
+ * si es así y 0 si alguna matriz queda en bf16. Se decide con los pesos realmente
+ * cuantizados, sea cual sea la precisión del Talker. */
+static int cp_all_quantized(const qwen_tts_ctx_t *ctx) {
+    for (int l = 0; l < ctx->config.cp_num_layers; l++) {
+        const qwen_cp_layer_t *L = &ctx->cp_layers[l];
+        if (!((L->wq_int8 || L->wq_q4) && (L->wk_int8 || L->wk_q4) &&
+              (L->wv_int8 || L->wv_q4) && (L->wo_int8 || L->wo_q4) &&
+              (L->gate_up_fused_int8 || L->gate_up_fused_q4) &&
+              (L->down_int8 || L->down_q4)))
+            return 0;
+    }
+    return 1;
+}
+
+/* Etiqueta del log de carga con la precisión efectiva de las capas del CP. */
+static const char *cp_prec_label(const qwen_tts_ctx_t *ctx) {
     int all8 = 1, all4 = 1;
     for (int l = 0; l < ctx->config.cp_num_layers; l++) {
         const qwen_cp_layer_t *L = &ctx->cp_layers[l];
@@ -404,16 +418,8 @@ static int cp_uniform_quant(const qwen_tts_ctx_t *ctx) {
         if (!(L->wq_q4 && L->wk_q4 && L->wv_q4 && L->wo_q4 &&
               L->gate_up_fused_q4 && L->down_q4)) all4 = 0;
     }
-    return all8 ? 1 : (all4 ? 2 : 0);
-}
-
-/* Etiqueta del log de carga con la precisión efectiva de las capas del CP. */
-static const char *cp_prec_label(const qwen_tts_ctx_t *ctx) {
-    switch (cp_uniform_quant(ctx)) {
-    case 1: return "INT8";
-    case 2: return "Q4_0";
-    default: break;
-    }
+    if (all8) return "INT8";
+    if (all4) return "Q4_0";
     for (int l = 0; l < ctx->config.cp_num_layers; l++) {
         const qwen_cp_layer_t *L = &ctx->cp_layers[l];
         if (L->wq_int8 || L->wq_q4 || L->gate_up_fused_int8 || L->gate_up_fused_q4 ||
@@ -787,8 +793,9 @@ static void cp_transformer_step(qwen_tts_ctx_t *ctx, float *x, float *x_norm, in
  * La ruta es exacta: el matmat cuantizado da bit a bit lo mismo que B llamadas
  * a matvec, y las normas, RoPE y atención usan los mismos kernels que la ruta
  * secuencial; el resultado no depende de que se use una u otra.
- * Solo aplica si cp_uniform_quant indica las 5 capas en int8 (modo 1) o todas en
- * q4 (modo 2); con bf16 o precisión mixta por capa se usa la ruta secuencial (modo 0). */
+ * Aplica cuando todas las matrices de las 5 capas están cuantizadas, en int8, en
+ * q4_0 o mezcladas, y el kernel matmat se elige por matriz; si alguna queda en
+ * bf16 se usa la ruta secuencial. */
 
 static inline void cp_ilv2(float *X2, const float *a, const float *b, int n) {
     for (int i = 0; i < n; i++) { X2[2 * i] = a[i]; X2[2 * i + 1] = b[i]; }
@@ -797,7 +804,7 @@ static inline void cp_dcol2(float *dst, const float *Y2, int n, int p) {
     for (int i = 0; i < n; i++) dst[i] = Y2[2 * i + p];
 }
 
-static void cp_prefill2(qwen_tts_ctx_t *ctx, int mode, float *x0, float *x1) {
+static void cp_prefill2(qwen_tts_ctx_t *ctx, float *x0, float *x1) {
     qwen_tts_config_t *c = &ctx->config;
     int cp_h  = c->cp_hidden_size;
     int qd    = c->cp_num_heads * c->cp_head_dim;
@@ -821,9 +828,9 @@ static void cp_prefill2(qwen_tts_ctx_t *ctx, int mode, float *x0, float *x1) {
     float *g0 = G2 + 4*inter,  *GI2 = g0 + 2*inter, *D2 = GI2 + 2*inter;
     float *xn0 = D2 + 2*cp_h,  *xn1 = xn0 + cp_h;
 
-#define CP_MM2(Y, W8, S8, W4, ROWS, COLS) do {                                   \
-        if (mode == 1) qwen_matmat_int8((Y), (W8), (S8), X2loc, (ROWS), (COLS), 2); \
-        else           qwen_matmat_q4_0((Y), (W4), X2loc, (ROWS), (COLS), 2);       \
+#define CP_MM2(Y, W8, S8, W4, ROWS, COLS) do {                              \
+        if (W4) qwen_matmat_q4_0((Y), (W4), X2loc, (ROWS), (COLS), 2);       \
+        else    qwen_matmat_int8((Y), (W8), (S8), X2loc, (ROWS), (COLS), 2); \
     } while (0)
 
     float *xs[2] = { x0, x1 };
@@ -957,12 +964,11 @@ int qwen_cp_predict(qwen_tts_ctx_t *ctx, float *talker_hidden, int code0, int *o
     }
     CPB_MARK(CPB_EMBED);
 
-    /* Prefill fusionado de 2 posiciones (solo CP cuantizado; ver cp_prefill2).
-     * La rugosidad mezcla en cada paso, así que usa la ruta secuencial. */
-    int pf2 = 0;
-    if (ctx->cp_roughness <= 0.0f) pf2 = cp_uniform_quant(ctx);
-    if (pf2) {
-        cp_prefill2(ctx, pf2, cp_x, x1in);
+    /* Prefill fusionado de 2 posiciones, si todas las matrices del CP están
+     * cuantizadas (ver cp_all_quantized). La rugosidad mezcla en cada paso, así
+     * que usa la ruta secuencial. */
+    if (ctx->cp_roughness <= 0.0f && cp_all_quantized(ctx)) {
+        cp_prefill2(ctx, cp_x, x1in);
         memcpy(cp_x, x1in, (size_t)cp_h * sizeof(float));   /* continue on pos-1's stream */
     } else {
         cp_transformer_step(ctx, cp_x, x_norm, 0);
