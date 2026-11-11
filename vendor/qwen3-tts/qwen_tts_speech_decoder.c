@@ -1228,16 +1228,17 @@ static void cs_save_tail(float *tail, const float *in, int in_ch, int len, int t
     }
 }
 
-/* Stateful causal conv1d on one chunk: prepend the saved tail, convolve, emit
- * [out_ch x len], update the tail. Returns a freshly allocated output.
+/* Conv1d causal con estado sobre un fragmento: antepone la cola guardada, calcula
+ * las [out_ch x len] salidas nuevas y actualiza la cola. Devuelve la salida en la
+ * ranura out_slot del espacio de trabajo.
  *
- * `warm` = 0 on the very first chunk of a stream, when the tail is still all
- * zeros. An all-zero prepended tail is *exactly* the causal zero padding that
- * causal_conv1d already applies on its own, so we skip building `ext` and
- * convolve the chunk directly: same output, none of the work. That work was not
- * free -- at chunk=2 the res-block conv1 (dilation 9) has tail_cols=54 against
- * len=64, i.e. ~1.8x the convolution, all of it thrown away. It is what made
- * TTFA regress ~8% on Neoverse-N1 when the exact path landed. */
+ * `warm` = 0 en el primer fragmento del flujo, cuando la cola aún es toda ceros:
+ * una cola de ceros antepuesta es exactamente el relleno causal que causal_conv1d
+ * ya aplica, así que se convoluciona el fragmento directamente, sin construir
+ * `ext`. Con contexto (`warm` = 1) solo se calculan las len columnas válidas sobre
+ * [cola | fragmento]: con la dilatación 9 la cola tiene 54 columnas, y calcular
+ * también sus salidas para descartarlas casi duplicaba la convolución en los
+ * fragmentos cortos. */
 static float *cs_conv1d(qwen_sd_workspace_t *ws, qwen_sd_slot_t out_slot,
                         const float *in, int in_ch, int out_ch, int len,
                         int kernel, int dilation,
@@ -1267,17 +1268,35 @@ static float *cs_conv1d(qwen_sd_workspace_t *ws, qwen_sd_slot_t out_slot,
         memcpy(tail + (int64_t)ic * tail_cols, ext + (int64_t)ic * ext_len + len,
                (size_t)tail_cols * sizeof(float));
 
-    float *full = sd_ws_get(ws, QWEN_SDW_FULL, (size_t)out_ch * ext_len);
-    if (!full) return NULL;
-    if (causal_conv1d(ws, full, ext, w, wk, b, in_ch, out_ch, ext_len, kernel, dilation) != 0) return NULL;
-
-    /* Drop the first tail_cols outputs: those re-pad with zeros (wrong) and were
-     * already emitted by earlier chunks. */
     float *out = sd_ws_get(ws, out_slot, (size_t)out_ch * len);
     if (!out) return NULL;
-    for (int oc = 0; oc < out_ch; oc++)
-        memcpy(out + (int64_t)oc * len, full + (int64_t)oc * ext_len + tail_cols,
-               (size_t)len * sizeof(float));
+
+    if (sd_int8_enabled()) {
+        /* La convolución int8 experimental (QWEN_SD_INT8) solo admite la forma causal
+         * con relleno: se convoluciona [cola | fragmento] entero y se descartan las
+         * tail_cols primeras salidas, que rellenan con ceros y ya se emitieron. */
+        float *full = sd_ws_get(ws, QWEN_SDW_FULL, (size_t)out_ch * ext_len);
+        if (!full) return NULL;
+        if (causal_conv1d(ws, full, ext, w, wk, b, in_ch, out_ch, ext_len, kernel, dilation) != 0) return NULL;
+        for (int oc = 0; oc < out_ch; oc++)
+            memcpy(out + (int64_t)oc * len, full + (int64_t)oc * ext_len + tail_cols,
+                   (size_t)len * sizeof(float));
+        return out;
+    }
+
+    /* Solo las len salidas nuevas: out[:, t] = Σ_k W_k · ext[:, t + k·dilation], con
+     * ext = [cola | fragmento]. Son las mismas sumas, en el mismo orden de k, que
+     * calcularía causal_conv1d sobre ext con relleno para sus últimas len columnas,
+     * pero sin copiar ext a un búfer con relleno ni calcular las tail_cols salidas
+     * que se descartarían; ese recálculo era la mayor parte del coste extra de
+     * procesar por tramos (cs_res_tiled) y de cada fragmento con contexto. */
+    for (int k = 0; k < kernel; k++)
+        SD_GEMM(CblasNoTrans, CblasNoTrans,
+                    out_ch, len, in_ch,
+                    1.0f, wk + (int64_t)k * out_ch * in_ch, in_ch,
+                    ext + (int64_t)k * dilation, ext_len,
+                    k ? 1.0f : 0.0f, out, len);
+    conv_add_bias(out, b, out_ch, len);
     return out;
 }
 
@@ -1386,6 +1405,13 @@ static int cs_ensure_alloc(qwen_sd_stream_state_t *st) {
  * dilatada vuelve a calcular por tramo no pesen; con tramos menores ese recálculo
  * domina. Se aplica desde el bloque SD_TILE_FROM_BLOCK (up2), porque las dos
  * últimas etapas, con la señal más larga, concentran el tráfico.
+ * Aun calculando solo las columnas válidas (ver cs_conv1d), cada tramo copia su
+ * entrada, su cola y su salida, y relee las columnas de cola, así que los tramos
+ * añaden trabajo al decodificador y solo compensan mientras otra generación
+ * compite por la memoria: se usan únicamente con st->cs_tile activo, que el hilo del
+ * decodificador fija mientras la generación sigue en marcha. Al drenar los
+ * fotogramas finales, en la decodificación sin paralelismo y en la ruta por
+ * lotes, el bloque residual se calcula entero.
  * Las colas con estado de cada convolución dilatada (cs_res_tail) encadenan los
  * tramos igual que encadenan los fragmentos del flujo: la cola avanza tramo a
  * tramo, y solo el primer tramo del primer fragmento arranca sin contexto.
@@ -1491,11 +1517,11 @@ static int conv_decoder_forward_streaming(qwen_tts_ctx_t *ctx, qwen_sd_stream_st
         if (!up_out) return -1;
         cur = up_out; ci ^= 1; cur_ch = out_ch; cur_len *= rate;
 
-        /* Bloque residual. Desde SD_TILE_FROM_BLOCK se procesa por tramos de tiempo
-         * (ver cs_res_tiled). En los bloques anteriores, la señal vigente (ranura s) y
-         * su copia RES se conservan; conv1 va a la otra ranura (o), conv2 vuelve a s
-         * y se suma con RES in situ. */
-        if (b >= SD_TILE_FROM_BLOCK) {
+        /* Bloque residual. Con st->cs_tile activo, desde SD_TILE_FROM_BLOCK se procesa
+         * por tramos de tiempo (ver cs_res_tiled). En otro caso, la señal vigente
+         * (ranura s) y su copia RES se conservan; conv1 va a la otra ranura (o), conv2
+         * vuelve a s y se suma con RES in situ. */
+        if (st->cs_tile && b >= SD_TILE_FROM_BLOCK) {
             if (cs_res_tiled(ws, st, ub, b, cur, cur_ch, cur_len, (qwen_sd_slot_t)(ci ^ 1)) != 0)
                 return -1;
         } else {

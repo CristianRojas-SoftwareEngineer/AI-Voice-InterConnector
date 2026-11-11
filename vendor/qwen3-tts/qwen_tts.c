@@ -482,6 +482,7 @@ static void *decoder_thread_fn(void *arg) {
     /* ctx->sd_stream is initialized by main thread before launching us.
      * We are the sole user of sd_stream during generation — main thread
      * only touches Talker/CP state, never speech decoder state. */
+    int drain_wide = 0;  /* 1 cuando el drenaje ya recuperó todos los hilos de BLAS */
 
     for (;;) {
         int avail, is_done;
@@ -514,6 +515,18 @@ static void *decoder_thread_fn(void *arg) {
 
         if (dt->cb_aborted) { dt->read_pos += avail; continue; }
 
+        /* Al drenar, el decodificador usa lo que libera la generación. Los tramos solo
+         * compensan mientras la generación sigue en marcha y compite por la memoria,
+         * así que al drenar (o sin paralelismo, cuando este bucle corre tras terminar
+         * la generación) se decodifica sin tramos. Y la generación cedió a BLAS un
+         * hilo menos que -j para dejar un núcleo a su pool; terminada, el decodificador
+         * es el único usuario de BLAS y recupera todos los hilos. Lo hace este mismo
+         * hilo, entre dos llamadas propias, para no cambiarlos con una en curso. */
+        ctx->sd_stream.cs_tile = !is_done;
+        if (is_done && !drain_wide) {
+            qwen_blas_set_threads(qwen_get_threads());
+            drain_wide = 1;
+        }
         if (qwen_speech_decoder_decode_streaming(ctx, chunk_codes, avail,
                                                    &chunk_audio, &chunk_samples) == 0) {
             if (chunk_samples > 0 && chunk_audio) {
