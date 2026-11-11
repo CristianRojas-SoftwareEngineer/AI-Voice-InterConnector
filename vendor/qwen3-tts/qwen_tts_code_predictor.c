@@ -273,7 +273,8 @@ static void cp_qz_q4(q4_0_block_t **dst, const uint16_t *src, int rows, int cols
     if (*dst) qwen_quantize_bf16_to_q4_0(src, rows, cols, *dst);
 }
 
-/* Q2_0 variant for the hybrid FFN path (QWEN_CP_Q2_FFN=1). */
+/* Reserva el búfer Q2_0 si falta y lo (re)cuantiza desde el puntero bf16 actual;
+ * construye la copia q2 de down que usa --roughness. */
 static void cp_qz_q2(q2_0_block_t **dst, const uint16_t *src, int rows, int cols) {
     int bpr = cols / Q2_0_BLOCK_SIZE;
     if (!*dst) *dst = (q2_0_block_t *)aligned_malloc((size_t)rows * bpr * sizeof(q2_0_block_t));
@@ -295,69 +296,6 @@ static void cp_build_roughness(qwen_tts_ctx_t *ctx) {
     ctx->cp_rough_built = 1;
 }
 
-/* ---- Quant-ladder decomposition knobs (env-gated; reset-then-quantize fix-ups
- * applied AFTER the uniform QWEN_CP_PREC pass). Let us answer "is the late-codebook
- * drift in the shared transformer or the per-codebook lm_heads?" (QWEN_CP_LMHEAD_PREC)
- * and "which LAYERS tolerate low bits?" (QWEN_CP_LAYER_PREC) — the per-tensor/per-layer
- * mixed-precision (DeepSeek-style) feasibility test. ---- */
-#define CP_FREE(p) do { if (p) { free(p); (p) = NULL; } } while (0)
-
-/* Reset one CP layer's quant buffers → bf16 dispatch (frees q4/q2/int8 + scales). */
-static void cp_layer_to_bf16(qwen_cp_layer_t *l) {
-    CP_FREE(l->wq_q4); CP_FREE(l->wk_q4); CP_FREE(l->wv_q4); CP_FREE(l->wo_q4);
-    CP_FREE(l->gate_up_fused_q4); CP_FREE(l->down_q4);
-    CP_FREE(l->gate_up_fused_q2); CP_FREE(l->down_q2);
-    CP_FREE(l->wq_int8); CP_FREE(l->wq_scale);
-    CP_FREE(l->wk_int8); CP_FREE(l->wk_scale);
-    CP_FREE(l->wv_int8); CP_FREE(l->wv_scale);
-    CP_FREE(l->wo_int8); CP_FREE(l->wo_scale);
-    CP_FREE(l->gate_up_fused_int8); CP_FREE(l->gate_up_fused_scale);
-    CP_FREE(l->down_int8); CP_FREE(l->down_scale);
-}
-
-/* (Re)quantize one CP layer to a named precision {bf16|int8|int4}. */
-static void cp_layer_quantize(qwen_tts_ctx_t *ctx, int layer, const char *prec) {
-    qwen_tts_config_t *c = &ctx->config;
-    int cp_h = c->cp_hidden_size;
-    int cp_q_dim = c->cp_num_heads * c->cp_head_dim;
-    int cp_kv_dim = c->cp_num_kv_heads * c->cp_head_dim;
-    int cp_inter = c->cp_intermediate_size;
-    qwen_cp_layer_t *l = &ctx->cp_layers[layer];
-    cp_layer_to_bf16(l);
-    if (!strcmp(prec, "int4")) {
-        cp_qz_q4(&l->wq_q4, l->wq_bf16, cp_q_dim, cp_h);
-        cp_qz_q4(&l->wk_q4, l->wk_bf16, cp_kv_dim, cp_h);
-        cp_qz_q4(&l->wv_q4, l->wv_bf16, cp_kv_dim, cp_h);
-        cp_qz_q4(&l->wo_q4, l->wo_bf16, cp_h, cp_q_dim);
-        cp_qz_q4(&l->gate_up_fused_q4, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
-        cp_qz_q4(&l->down_q4, l->down_bf16, cp_h, cp_inter);
-    } else if (!strcmp(prec, "int8")) {
-        cp_qz(&l->wq_int8, &l->wq_scale, l->wq_bf16, cp_q_dim, cp_h);
-        cp_qz(&l->wk_int8, &l->wk_scale, l->wk_bf16, cp_kv_dim, cp_h);
-        cp_qz(&l->wv_int8, &l->wv_scale, l->wv_bf16, cp_kv_dim, cp_h);
-        cp_qz(&l->wo_int8, &l->wo_scale, l->wo_bf16, cp_h, cp_q_dim);
-        cp_qz(&l->gate_up_fused_int8, &l->gate_up_fused_scale, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
-        cp_qz(&l->down_int8, &l->down_scale, l->down_bf16, cp_h, cp_inter);
-    } /* "bf16" → leave reset */
-}
-
-/* (Re)quantize all 15 lm_heads to a named precision {bf16|int8|int4}. */
-static void cp_lmhead_quantize(qwen_tts_ctx_t *ctx, const char *prec) {
-    qwen_tts_config_t *c = &ctx->config;
-    int cp_h = c->cp_hidden_size;
-    for (int g = 0; g < 15; g++) {
-        CP_FREE(ctx->cp_lm_head_q4[g]);
-        CP_FREE(ctx->cp_lm_head_int8[g]);
-        CP_FREE(ctx->cp_lm_head_scale[g]);
-        if (!ctx->cp_lm_head_bf16[g]) continue;
-        if (!strcmp(prec, "int4"))
-            cp_qz_q4(&ctx->cp_lm_head_q4[g], ctx->cp_lm_head_bf16[g], c->codebook_size, cp_h);
-        else if (!strcmp(prec, "int8"))
-            cp_qz(&ctx->cp_lm_head_int8[g], &ctx->cp_lm_head_scale[g],
-                  ctx->cp_lm_head_bf16[g], c->codebook_size, cp_h);
-    }
-}
-
 /* (Re)quantize Code Predictor weights (+ lm_heads) to Q4_0 from current bf16.
  * This is THE bandwidth lever on memory-bound CPUs: q4 weights are ¼ the bytes of
  * bf16, halving DRAM traffic vs int8 on the CP (re-read 16×/frame). --int4 only. */
@@ -368,22 +306,14 @@ void qwen_cp_quantize_q4(qwen_tts_ctx_t *ctx) {
     int cp_q_dim = c->cp_num_heads * c->cp_head_dim;
     int cp_kv_dim = c->cp_num_kv_heads * c->cp_head_dim;
     int cp_inter = c->cp_intermediate_size;
-    /* Hybrid: optionally drop the big FFN matrices to 2-bit to shrink the working set
-     * below int4. Granular & experimental: QWEN_CP_Q2_FFN = both|1 / gateup / down —
-     * lets us find WHICH matrix tolerates q2 (they have different sensitivity). */
-    const char *e = getenv("QWEN_CP_Q2_FFN");
-    int q2_gateup = e && (!strcmp(e, "1") || !strcmp(e, "both") || !strcmp(e, "gateup"));
-    int q2_down   = e && (!strcmp(e, "1") || !strcmp(e, "both") || !strcmp(e, "down"));
     for (int i = 0; i < c->cp_num_layers; i++) {
         qwen_cp_layer_t *l = &ctx->cp_layers[i];
         cp_qz_q4(&l->wq_q4, l->wq_bf16, cp_q_dim, cp_h);
         cp_qz_q4(&l->wk_q4, l->wk_bf16, cp_kv_dim, cp_h);
         cp_qz_q4(&l->wv_q4, l->wv_bf16, cp_kv_dim, cp_h);
         cp_qz_q4(&l->wo_q4, l->wo_bf16, cp_h, cp_q_dim);
-        if (q2_gateup) cp_qz_q2(&l->gate_up_fused_q2, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
-        else           cp_qz_q4(&l->gate_up_fused_q4, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
-        if (q2_down)   cp_qz_q2(&l->down_q2, l->down_bf16, cp_h, cp_inter);
-        else           cp_qz_q4(&l->down_q4, l->down_bf16, cp_h, cp_inter);
+        cp_qz_q4(&l->gate_up_fused_q4, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
+        cp_qz_q4(&l->down_q4, l->down_bf16, cp_h, cp_inter);
     }
     for (int g = 0; g < 15; g++)
         if (ctx->cp_lm_head_bf16[g])
@@ -407,12 +337,14 @@ static int cp_all_quantized(const qwen_tts_ctx_t *ctx) {
     return 1;
 }
 
-/* Etiqueta del log de carga con la precisión efectiva de las capas del CP. */
+/* Etiqueta del log de carga con la precisión efectiva de las capas del CP:
+ * INT8 si las 5 capas están enteras en int8, Q4_0 si están enteras en q4_0 y
+ * BF16 si no hay matrices cuantizadas, que son las únicas configuraciones que
+ * QWEN_CP_PREC, --int8 y --int4 pueden producir. */
 static const char *cp_prec_label(const qwen_tts_ctx_t *ctx) {
     int all8 = 1, all4 = 1;
     for (int l = 0; l < ctx->config.cp_num_layers; l++) {
         const qwen_cp_layer_t *L = &ctx->cp_layers[l];
-        if (L->gate_up_fused_q2 || L->down_q2) { all8 = 0; all4 = 0; break; }
         if (!(L->wq_int8 && L->wk_int8 && L->wv_int8 && L->wo_int8 &&
               L->gate_up_fused_int8 && L->down_int8)) all8 = 0;
         if (!(L->wq_q4 && L->wk_q4 && L->wv_q4 && L->wo_q4 &&
@@ -420,12 +352,6 @@ static const char *cp_prec_label(const qwen_tts_ctx_t *ctx) {
     }
     if (all8) return "INT8";
     if (all4) return "Q4_0";
-    for (int l = 0; l < ctx->config.cp_num_layers; l++) {
-        const qwen_cp_layer_t *L = &ctx->cp_layers[l];
-        if (L->wq_int8 || L->wq_q4 || L->gate_up_fused_int8 || L->gate_up_fused_q4 ||
-            L->gate_up_fused_q2 || L->down_int8 || L->down_q4 || L->down_q2)
-            return "mixed";
-    }
     return "BF16";
 }
 
@@ -435,8 +361,8 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
     int cp_q_dim = c->cp_num_heads * c->cp_head_dim;
     int cp_kv_dim = c->cp_num_kv_heads * c->cp_head_dim;
 
-    /* Dimensiones de entrada de las matrices que se pueden cuantizar (por precisión
-     * global, por capa, por lm_head o en la recuantización posterior a un override):
+    /* Dimensiones de entrada de las matrices que se pueden cuantizar (al cargar o en
+     * la recuantización posterior a un override):
      * cp_hidden (q/k/v, gate/up, lm_heads), cp_q_dim (o_proj), cp_intermediate (down)
      * y, si existe la proyección MTP, hidden_size del Talker. */
     if (qwen_quant_shape_check("code predictor cp_hidden_size", cp_h) != 0 ||
@@ -607,29 +533,6 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
             fprintf(stderr, "  Q4_0 quantization done (%d layers + 15 lm_heads)\n", c->cp_num_layers);
     }
 
-    /* Decomposition fix-ups (applied after the uniform pass above). Exp 1: override
-     * lm_head precision independently of the shared transformer (QWEN_CP_LMHEAD_PREC).
-     * Exp 2: per-layer precision (QWEN_CP_LAYER_PREC=p0,p1,p2,p3,p4). Both {bf16|int8|int4}. */
-    {
-        const char *lmh = getenv("QWEN_CP_LMHEAD_PREC");
-        if (lmh && *lmh) {
-            if (!ctx->silent)
-                fprintf(stderr, "  [QWEN_CP_LMHEAD_PREC=%s] lm_head precision decoupled from transformer\n", lmh);
-            cp_lmhead_quantize(ctx, lmh);
-        }
-        const char *lp = getenv("QWEN_CP_LAYER_PREC");
-        if (lp && *lp) {
-            char buf[256];
-            strncpy(buf, lp, sizeof(buf) - 1); buf[sizeof(buf) - 1] = 0;
-            int li = 0;
-            for (char *tok = strtok(buf, ","); tok && li < c->cp_num_layers; tok = strtok(NULL, ","), li++) {
-                if (!ctx->silent)
-                    fprintf(stderr, "  [QWEN_CP_LAYER_PREC] layer %d -> %s\n", li, tok);
-                cp_layer_quantize(ctx, li, tok);
-            }
-        }
-    }
-
     if (!ctx->silent)
         fprintf(stderr, "  Code Predictor: %d layers loaded, q_dim=%d kv_dim=%d [%s]\n",
                 c->cp_num_layers, cp_q_dim, cp_kv_dim, cp_prec_label(ctx));
@@ -712,9 +615,7 @@ static void cp_layer_body(qwen_tts_ctx_t *ctx, float *x, float *x_norm, int pos,
     CPB_MARK(CPB_RESNORM);
 
     /* Fused gate+up SwiGLU FFN (single matvec, x loaded once) */
-    if (l->gate_up_fused_q2)
-        qwen_matvec_q2_0(ctx->cp_dec_gate, l->gate_up_fused_q2, x_norm, 2 * cp_inter, cp_h);
-    else if (l->gate_up_fused_q4)
+    if (l->gate_up_fused_q4)
         qwen_matvec_q4_0(ctx->cp_dec_gate, l->gate_up_fused_q4, x_norm, 2 * cp_inter, cp_h);
     else if (l->gate_up_fused_int8)
         qwen_matvec_int8(ctx->cp_dec_gate, l->gate_up_fused_int8, l->gate_up_fused_scale,
@@ -736,9 +637,7 @@ static void cp_layer_body(qwen_tts_ctx_t *ctx, float *x, float *x_norm, int pos,
     }
 
     /* Down projection */
-    if (l->down_q2)
-        qwen_matvec_q2_0(proj, l->down_q2, ctx->cp_dec_gate, cp_h, cp_inter);
-    else if (l->down_q4)
+    if (l->down_q4)
         qwen_matvec_q4_0(proj, l->down_q4, ctx->cp_dec_gate, cp_h, cp_inter);
     else if (l->down_int8)
         qwen_matvec_int8(proj, l->down_int8, l->down_scale, ctx->cp_dec_gate, cp_h, cp_inter);

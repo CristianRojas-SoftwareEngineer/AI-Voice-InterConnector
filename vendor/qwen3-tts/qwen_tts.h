@@ -217,11 +217,6 @@ typedef struct {
     q4_0_block_t *gate_up_fused_q4;   /* [2*inter, hidden/32 blocks] */
     q4_0_block_t *down_q4;            /* [hidden, inter/32 blocks] */
 
-    /* Q2_0 FFN (EXPERIMENTAL hybrid: --int4 + QWEN_CP_Q2_FFN=1). Shrinks the
-     * biggest, most quant-tolerant matrices below int4 to reduce DRAM bytes. */
-    q2_0_block_t *gate_up_fused_q2;   /* [2*inter, hidden/32 blocks] */
-    q2_0_block_t *down_q2;            /* [hidden, inter/32 blocks] */
-
     /* Q2_0 copy of down used ONLY by the --roughness knob (feat/expressivity):
      * built lazily from down_bf16 independent of the active quant mode, blended
      * into the high-precision down output to dial in texture roughness. */
