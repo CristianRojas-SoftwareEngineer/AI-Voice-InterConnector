@@ -162,6 +162,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - **Incompatible (motor TTS):** desaparecen las variables de entorno experimentales `QWEN_CP_LAYER_PREC`, `QWEN_CP_LMHEAD_PREC` y `QWEN_CP_Q2_FFN`, con sus rutas de precisión por capa, por cabeza de salida y de FFN en 2 bits; el residente deja de recibirlas.
 - **Incompatible (motor TTS):** un valor desconocido de `QWEN_CP_PREC` (válidos: `bf16`, `int8`, `int4`, `mixed`) o de `QWEN_TALKER_PREC` (`bf16`, `int8`, `int4`) detiene la carga con un error en lugar de dejar esa parte en BF16.
 - **Incompatible (motor TTS):** una sobrescritura de pesos (`--expr`, voz `.qvoice` con WDELTA o el `.expr` de `--emotion`) con pesos Q4_0 activos (`--int4`, `--quant-mixed`) detiene el motor con un error en lugar de ignorarse; tras una sobrescritura solo se rehacen las copias INT8 existentes. Un fallo al aplicar el `.expr` de `--emotion` y `--expr` con un modelo distinto del 1.7B también terminan con error.
+- **Incompatible (motor TTS):** desaparece la variable de entorno `QWEN_Q4_NAIVE` y el cuantizador q4_0 por máximo absoluto que restauraba; una voz `.qvoice` cuya sección WDELTA no lleva el tamaño del modelo (formato anterior) falla al cargar con un error, y desaparecen los alias `test-en` y `test-it-ryan` del `Makefile` del motor.
 
 ## [0.44.0] — 2026-11-04
 
