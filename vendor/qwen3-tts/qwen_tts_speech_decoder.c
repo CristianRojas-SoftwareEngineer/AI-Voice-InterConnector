@@ -1375,6 +1375,60 @@ static int cs_ensure_alloc(qwen_sd_stream_state_t *st) {
     return 0;
 }
 
+/* Unidades residuales por tramos de tiempo en el decodificador en streaming.
+ * En los bloques de sobremuestreo finales, cada una de las 3 unidades residuales
+ * recorre varias veces la señal entera del bloque (copia, Snake, convolución
+ * dilatada, Snake, convolución k=1 y suma), y esa señal ocupa varios MB que no
+ * caben en la caché L2: el tráfico a memoria resultante compite con el Talker y el
+ * Code Predictor. Procesar las 3 unidades sobre tramos de SD_TILE_BYTES por búfer
+ * deja los datos de cada tramo en la L2. Con 256 KB el tramo cabe en la L2 y, a la
+ * vez, es lo bastante largo para que las columnas de cola que cada convolución
+ * dilatada vuelve a calcular por tramo no pesen; con tramos menores ese recálculo
+ * domina. Se aplica desde el bloque SD_TILE_FROM_BLOCK (up2), porque las dos
+ * últimas etapas, con la señal más larga, concentran el tráfico.
+ * Las colas con estado de cada convolución dilatada (cs_res_tail) encadenan los
+ * tramos igual que encadenan los fragmentos del flujo: la cola avanza tramo a
+ * tramo, y solo el primer tramo del primer fragmento arranca sin contexto.
+ * Las ranuras QWEN_SDW_PW1 y QWEN_SDW_CT están libres en este punto (cs_conv1d usa
+ * QWEN_SDW_EXT, QWEN_SDW_FULL y QWEN_SDW_XP), así que guardan el tramo y su copia
+ * residual; free_slot es la ranura alterna de la señal vigente `cur`. */
+enum { SD_TILE_BYTES = 256 * 1024, SD_TILE_FROM_BLOCK = 2 };
+
+static int cs_res_tiled(qwen_sd_workspace_t *ws, qwen_sd_stream_state_t *st,
+                        qwen_sd_upsample_block_t *ub, int b, float *cur, int cur_ch, int cur_len,
+                        qwen_sd_slot_t free_slot) {
+    static const int dilations[3] = {1, 3, 9};
+    int T = SD_TILE_BYTES / (4 * cur_ch);
+    if (T < 16) T = 16;
+    for (int t0 = 0, ti = 0; t0 < cur_len; t0 += T, ti++) {
+        int n = cur_len - t0 < T ? cur_len - t0 : T;
+        float *tin = sd_ws_get(ws, QWEN_SDW_PW1, (size_t)cur_ch * n);
+        float *res = sd_ws_get(ws, QWEN_SDW_CT, (size_t)cur_ch * n);
+        if (!tin || !res) return -1;
+        for (int c = 0; c < cur_ch; c++)
+            memcpy(tin + (size_t)c * n, cur + (size_t)c * cur_len + t0, (size_t)n * sizeof(float));
+        int warm = st->cs_warm || ti > 0;
+        for (int r = 0; r < 3; r++) {
+            memcpy(res, tin, (size_t)cur_ch * n * sizeof(float));
+            if (ub->res_blocks[r].snake1_alpha && ub->res_blocks[r].snake1_beta)
+                snake_activation(tin, cur_ch, n, ub->res_blocks[r].snake1_alpha, ub->res_blocks[r].snake1_beta);
+            float *c1 = cs_conv1d(ws, free_slot, tin, cur_ch, cur_ch, n, 7, dilations[r],
+                                  ub->res_blocks[r].conv1_weight, ub->res_blocks[r].conv1_wk,
+                                  ub->res_blocks[r].conv1_bias, st->cs_res_tail[b][r], warm);
+            if (!c1) return -1;
+            if (ub->res_blocks[r].snake2_alpha && ub->res_blocks[r].snake2_beta)
+                snake_activation(c1, cur_ch, n, ub->res_blocks[r].snake2_alpha, ub->res_blocks[r].snake2_beta);
+            if (causal_conv1d(ws, tin, c1, ub->res_blocks[r].conv2_weight, NULL, ub->res_blocks[r].conv2_bias,
+                              cur_ch, cur_ch, n, 1, 1) != 0)
+                return -1;
+            for (int64_t i = 0; i < (int64_t)cur_ch * n; i++) tin[i] = res[i] + tin[i];
+        }
+        for (int c = 0; c < cur_ch; c++)
+            memcpy(cur + (size_t)c * cur_len + t0, tin + (size_t)c * n, (size_t)n * sizeof(float));
+    }
+    return 0;
+}
+
 /* Streaming conv decoder: consumes `signal` [1024 x m] (takes ownership),
  * emits exactly m*1920 samples. Mirrors conv_decoder_forward stage by stage. */
 static int conv_decoder_forward_streaming(qwen_tts_ctx_t *ctx, qwen_sd_stream_state_t *st,
@@ -1437,37 +1491,44 @@ static int conv_decoder_forward_streaming(qwen_tts_ctx_t *ctx, qwen_sd_stream_st
         if (!up_out) return -1;
         cur = up_out; ci ^= 1; cur_ch = out_ch; cur_len *= rate;
 
-        /* Bloque residual: la señal vigente (ranura s) y su copia RES se conservan;
-         * conv1 va a la otra ranura (o), conv2 vuelve a s y se suma con RES in situ. */
-        int dilations[3] = {1, 3, 9};
-        size_t n_el = (size_t)cur_ch * cur_len;
-        for (int r = 0; r < 3; r++) {
-            int dil = dilations[r];
-            float *res = sd_ws_get(ws, QWEN_SDW_RES, n_el);
-            if (!res) return -1;
-            memcpy(res, cur, n_el * sizeof(float));
-
-            if (ub->res_blocks[r].snake1_alpha && ub->res_blocks[r].snake1_beta)
-                snake_activation(cur, cur_ch, cur_len,
-                                 ub->res_blocks[r].snake1_alpha, ub->res_blocks[r].snake1_beta);
-
-            float *c1_out = cs_conv1d(ws, (qwen_sd_slot_t)(ci ^ 1), cur, cur_ch, cur_ch, cur_len, 7, dil,
-                                      ub->res_blocks[r].conv1_weight, ub->res_blocks[r].conv1_wk,
-                                      ub->res_blocks[r].conv1_bias,
-                                      st->cs_res_tail[b][r], st->cs_warm);
-            if (!c1_out) return -1;
-
-            if (ub->res_blocks[r].snake2_alpha && ub->res_blocks[r].snake2_beta)
-                snake_activation(c1_out, cur_ch, cur_len,
-                                 ub->res_blocks[r].snake2_alpha, ub->res_blocks[r].snake2_beta);
-
-            /* conv2 is k=1: stateless */
-            if (causal_conv1d(ws, cur, c1_out, ub->res_blocks[r].conv2_weight, NULL, ub->res_blocks[r].conv2_bias,
-                              cur_ch, cur_ch, cur_len, 1, 1) != 0)
+        /* Bloque residual. Desde SD_TILE_FROM_BLOCK se procesa por tramos de tiempo
+         * (ver cs_res_tiled). En los bloques anteriores, la señal vigente (ranura s) y
+         * su copia RES se conservan; conv1 va a la otra ranura (o), conv2 vuelve a s
+         * y se suma con RES in situ. */
+        if (b >= SD_TILE_FROM_BLOCK) {
+            if (cs_res_tiled(ws, st, ub, b, cur, cur_ch, cur_len, (qwen_sd_slot_t)(ci ^ 1)) != 0)
                 return -1;
+        } else {
+            int dilations[3] = {1, 3, 9};
+            size_t n_el = (size_t)cur_ch * cur_len;
+            for (int r = 0; r < 3; r++) {
+                int dil = dilations[r];
+                float *res = sd_ws_get(ws, QWEN_SDW_RES, n_el);
+                if (!res) return -1;
+                memcpy(res, cur, n_el * sizeof(float));
 
-            for (int64_t i = 0; i < (int64_t)n_el; i++)
-                cur[i] = res[i] + cur[i];
+                if (ub->res_blocks[r].snake1_alpha && ub->res_blocks[r].snake1_beta)
+                    snake_activation(cur, cur_ch, cur_len,
+                                     ub->res_blocks[r].snake1_alpha, ub->res_blocks[r].snake1_beta);
+
+                float *c1_out = cs_conv1d(ws, (qwen_sd_slot_t)(ci ^ 1), cur, cur_ch, cur_ch, cur_len, 7, dil,
+                                          ub->res_blocks[r].conv1_weight, ub->res_blocks[r].conv1_wk,
+                                          ub->res_blocks[r].conv1_bias,
+                                          st->cs_res_tail[b][r], st->cs_warm);
+                if (!c1_out) return -1;
+
+                if (ub->res_blocks[r].snake2_alpha && ub->res_blocks[r].snake2_beta)
+                    snake_activation(c1_out, cur_ch, cur_len,
+                                     ub->res_blocks[r].snake2_alpha, ub->res_blocks[r].snake2_beta);
+
+                /* conv2 is k=1: stateless */
+                if (causal_conv1d(ws, cur, c1_out, ub->res_blocks[r].conv2_weight, NULL, ub->res_blocks[r].conv2_bias,
+                                  cur_ch, cur_ch, cur_len, 1, 1) != 0)
+                    return -1;
+
+                for (int64_t i = 0; i < (int64_t)n_el; i++)
+                    cur[i] = res[i] + cur[i];
+            }
         }
     }
 
