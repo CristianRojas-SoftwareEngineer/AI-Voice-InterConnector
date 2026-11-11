@@ -1124,15 +1124,12 @@ fn spawn_engine(
     ];
     if let Some(precision) = precision {
         let (talker, cp) = match precision {
-            TtsPrecision::Mixed => ("int4", "int8"),
+            TtsPrecision::Mixed => ("int4", "mixed"),
             TtsPrecision::Bf16 => ("bf16", "bf16"),
         };
         env.extend([
             ("QWEN_TALKER_PREC", std::ffi::OsStr::new(talker)),
             ("QWEN_CP_PREC", std::ffi::OsStr::new(cp)),
-            ("QWEN_CP_LMHEAD_PREC", std::ffi::OsStr::new("")),
-            ("QWEN_CP_LAYER_PREC", std::ffi::OsStr::new("")),
-            ("QWEN_CP_Q2_FFN", std::ffi::OsStr::new("")),
         ]);
     }
     Ok(avi_process::spawn_with_allowlist_env(request, &env)?)
@@ -2558,7 +2555,7 @@ const HOLD: bool = __HOLD__;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::fs::write(format!("{DIR}/args.txt"), args.join(" ")).unwrap();
-    let keys = ["TMP", "TEMP", "TMPDIR", "QWEN_TALKER_PREC", "QWEN_CP_PREC", "QWEN_CP_LMHEAD_PREC", "QWEN_CP_LAYER_PREC", "QWEN_CP_Q2_FFN"];
+    let keys = ["TMP", "TEMP", "TMPDIR", "QWEN_TALKER_PREC", "QWEN_CP_PREC"];
     let values: Vec<_> = keys.iter().map(|key| format!("{key}={}", std::env::var(key).unwrap_or_default())).collect();
     std::fs::write(format!("{DIR}/env.txt"), values.join("\n")).unwrap();
     let (tx, rx) = mpsc::channel();
@@ -2653,13 +2650,7 @@ fn main() {
     #[test]
     fn resident_precision_overrides_are_child_only() {
         const MARKER: &str = "AVI_TEST_PRECISION_CHILD";
-        let keys = [
-            "QWEN_TALKER_PREC",
-            "QWEN_CP_PREC",
-            "QWEN_CP_LMHEAD_PREC",
-            "QWEN_CP_LAYER_PREC",
-            "QWEN_CP_Q2_FFN",
-        ];
+        let keys = ["QWEN_TALKER_PREC", "QWEN_CP_PREC"];
         if std::env::var_os(MARKER).is_none() {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command.args([
@@ -2718,9 +2709,9 @@ fn main() {
                 assert_eq!(env[key], scratch.to_str().unwrap());
             }
             let expected = match precision {
-                Some(TtsPrecision::Mixed) => ["int4", "int8", "", "", ""],
-                Some(TtsPrecision::Bf16) => ["bf16", "bf16", "", "", ""],
-                None => ["conflict"; 5],
+                Some(TtsPrecision::Mixed) => ["int4", "mixed"],
+                Some(TtsPrecision::Bf16) => ["bf16", "bf16"],
+                None => ["conflict"; 2],
             };
             for (key, expected) in keys.iter().zip(expected) {
                 assert_eq!(env[*key], expected);
@@ -2732,13 +2723,7 @@ fn main() {
     #[test]
     fn clone_voice_inherits_precision_environment_without_resident_overrides() {
         const MARKER: &str = "AVI_TEST_CLONE_ENV_CHILD";
-        let keys = [
-            "QWEN_TALKER_PREC",
-            "QWEN_CP_PREC",
-            "QWEN_CP_LMHEAD_PREC",
-            "QWEN_CP_LAYER_PREC",
-            "QWEN_CP_Q2_FFN",
-        ];
+        let keys = ["QWEN_TALKER_PREC", "QWEN_CP_PREC"];
         if std::env::var_os(MARKER).is_none() {
             let (bin, dir) = write_engine_double("clone-env", false);
             let mut command = Command::new(std::env::current_exe().unwrap());
