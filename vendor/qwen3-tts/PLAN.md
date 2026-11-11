@@ -1205,8 +1205,7 @@ Caveat: teacher-forcing fixes the TOKEN feedback but each precision still builds
 KV cache, so per-codebook drift conflates step sensitivity + intra-frame KV accumulation (realistic,
 but not a pure per-step isolate). Good enough for the decisions above.
 
-**DECOMPOSITION EXPERIMENTS — ✅ DONE 2026-06-04 (commit pending; env knobs QWEN_TALKER_PREC /
-QWEN_CP_LMHEAD_PREC / QWEN_CP_LAYER_PREC / QWEN_DUMP_CODE0).**
+**DECOMPOSITION EXPERIMENTS — ✅ DONE 2026-06-04 (commit pending; env knobs QWEN_TALKER_PREC / QWEN_DUMP_CODE0).**
 Tested the user's "low-bit early codebooks / high-bit late delicate ones" hybrid hypothesis. Verdict:
 **the hybrid has NO sweet spot — the int4 cost is in the SHARED transformer, spread evenly.**
 

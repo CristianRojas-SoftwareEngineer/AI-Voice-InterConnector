@@ -163,16 +163,16 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 
 ### PREFILL2 como ruta única instrumentada
 
-- **Archivos**: `qwen_tts_code_predictor.c` (`cp_uniform_quant`, macro `CPB_MARK`).
-- **Qué cambia**: el prefill del Code Predictor usa siempre la ruta PREFILL2 con CP uniforme int8 o q4 (`cp_uniform_quant` devuelve 1, 2 o 0 si no aplica), sin la variable `QWEN_CP_PREFILL2`, y sus fases están instrumentadas con `CPB_MARK`.
+- **Archivos**: `qwen_tts_code_predictor.c` (`cp_all_quantized`, `cp_prefill2`, macro `CPB_MARK`).
+- **Qué cambia**: el prefill del Code Predictor usa siempre la ruta PREFILL2 cuando todas sus matrices están cuantizadas (`cp_all_quantized`: cada matriz de las 5 capas en int8 o en q4_0, en cualquier combinación), sin la variable `QWEN_CP_PREFILL2`, y sus fases están instrumentadas con `CPB_MARK`.
 - **Por qué**: como matmat equivale a B matvec, la ruta agrupada da el mismo resultado que la secuencial y puede ser la única; la instrumentación permite medir cada fase.
 - **Si se pierde**: reaparece una segunda ruta de prefill seleccionable por entorno y sin garantía de igualdad con la vigente.
 
 ### Precisión del Code Predictor en el log de carga
 
 - **Archivos**: `qwen_tts_code_predictor.c` (`cp_prec_label`, línea `Code Predictor: N layers loaded`).
-- **Qué cambia**: la etiqueta de la línea de carga del Code Predictor muestra la precisión que tienen realmente sus capas (`INT8`, `Q4_0`, `mixed` o `BF16`), calculada con `cp_uniform_quant` sobre los pesos cuantizados. El original la derivaba de las banderas del Talker, de modo que con `--quant-mixed` (Talker q4_0 y CP int8) el CP aparecía como `[INT4]`.
-- **Por qué**: la precisión del CP se desacopla de la del Talker (`--quant-mixed`, `QWEN_CP_PREC`, `QWEN_CP_LAYER_PREC`), y un log que informa otra precisión induce a error al medir o depurar.
+- **Qué cambia**: la etiqueta de la línea de carga del Code Predictor muestra la precisión que tienen realmente sus capas, calculada sobre los pesos cuantizados: `INT8` (las 5 capas enteras en int8), `Q4_0` (enteras en q4_0), `INT8+Q4_0-FFN` (atención en int8 y FFN en q4_0, el perfil de `--quant-mixed`) o `BF16` (sin matrices cuantizadas). El original la derivaba de las banderas del Talker, de modo que con `--quant-mixed` el CP aparecía como `[INT4]`.
+- **Por qué**: la precisión del CP se desacopla de la del Talker (`--quant-mixed`, `QWEN_CP_PREC`), y un log que informa otra precisión induce a error al medir o depurar.
 - **Si se pierde**: el log vuelve a mostrar la precisión del Talker como si fuera la del CP.
 
 ### Exigencia de `dotprod` en Linux ARM64
@@ -192,7 +192,7 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 ### Eliminación de la coma flotante, de los interruptores y de la escalera VNNI
 
 - **Archivos**: `qwen_tts_kernels.c`, `qwen_tts_code_predictor.c`, `Makefile`.
-- **Qué cambia**: se eliminaron los kernels en coma flotante de int8 y q4 (`int8_matvec_fused`, `q4_0_matvec_inner` y similares), las variables de entorno `QWEN_NO_SDOT`, `QWEN_NO_VNNI`, `QWEN_NO_VNNI_QKV`, `QWEN_INT8_SDOT_MM`, `QWEN_NO_SMMLA`, `QWEN_APPLE_MMLA`, `QWEN_CP_PREFILL2`, `QWEN_Q4_VNNI_V3` y `QWEN_Q4_VNNI_V4`, y la escalera de versiones VNNI de q4: queda v3 (cuatro filas, dos bloques por `dpbusd`), con v2 para las filas sobrantes. `test-selftest` se ejecuta en una pasada y `test-modes` comprueba 4 combinaciones. Se conservan `QWEN_NO_BF16DOT`, `QWEN_NO_BFMMLA` y `QWEN_NO_SIN_POLY`.
+- **Qué cambia**: se eliminaron los kernels en coma flotante de int8 y q4 (`int8_matvec_fused`, `q4_0_matvec_inner` y similares), las variables de entorno `QWEN_NO_SDOT`, `QWEN_NO_VNNI`, `QWEN_NO_VNNI_QKV`, `QWEN_INT8_SDOT_MM`, `QWEN_NO_SMMLA`, `QWEN_APPLE_MMLA`, `QWEN_CP_PREFILL2`, `QWEN_Q4_VNNI_V3` y `QWEN_Q4_VNNI_V4`, y la escalera de versiones VNNI de q4: queda v3 (cuatro filas, dos bloques por `dpbusd`), con v2 para las filas sobrantes. `test-selftest` se ejecuta en una pasada. Se conservan `QWEN_NO_BF16DOT`, `QWEN_NO_BFMMLA` y `QWEN_NO_SIN_POLY`.
 - **Por qué**: cada interruptor y cada versión alternativa dejaba una ruta sin cubrir por las pruebas y capaz de degradar en silencio; una sola ruta entera por ISA es la que se valida y se mide.
 - **Si se pierde**: reaparecen rutas alternativas seleccionables por entorno con numérica distinta de la validada.
 
@@ -202,3 +202,45 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Qué cambia**: se eliminaron veinte objetivos del `Makefile` sin fuentes en el snapshot (`emotion-demo`, `emotion-para-demo`, `emovoice`, `emo-06b-demo`, `para-demo`, `emo-suite`, `test-lora-it`, `emotion-seeds`, `batching-bench`, `bench-matrix`, `bench-matrix-full`, `bench-server`, `test-golden`, `golden-update`, `quant-ladder`, `test-serve-concurrent`, `test-serve-repro`, `test-serve-batch`, `test-serve-continuous`, `test-serve-stream-batch`), los archivos `qwen_tts_kernels_{avx,neon,generic}.c` y `qwen_tts_kernels_impl.h` (sin código) y los enlaces del `README.md` a `docs/`, `blog/` y `samples/` (se conservan las URLs externas a `raw/main/samples/`). `demo-clone` exige `REF=`.
 - **Por qué**: el snapshot no contiene las fuentes ni los documentos de esos objetivos y enlaces, de modo que fallaban o apuntaban a la nada.
 - **Si se pierde**: reaparecen objetivos que no pueden ejecutarse y archivos vacíos que aparentan una estructura de kernels que no existe.
+
+### Anticipación de lecturas en los kernels int8
+
+- **Archivos**: `qwen_tts_kernels.c` (`QWEN_INT8_PF_DIST`, `int8_matvec_avx2`, `int8_matvec_sdot`).
+- **Qué cambia**: el bucle de dos filas de los kernels int8 AVX2 y SDOT pide a la CPU, en cada iteración, los pesos de ambas filas 5120 bytes por delante de la posición actual (`__builtin_prefetch`). El kernel VNNI y el escalar no cambian. La anticipación no altera el cálculo.
+- **Por qué**: con la memoria compartida con otros procesos, el kernel int8 pedía cada peso del Code Predictor justo al usarlo y esperaba a la RAM. En un Ryzen 7 5825U la anticipación bajó el RTF un 3,8 % sin carga de memoria y un 14,1 % con dos hilos de carga, con el mismo audio. 5120 bytes es la distancia que dio el menor RTF con carga; anticipar más allá del final de la matriz no produce fallos ni en x86 ni en ARM.
+- **Si se pierde**: el Code Predictor vuelve a esperar a la memoria en cada fila y el RTF con carga de memoria sube.
+
+### PREFILL2 con cualquier Code Predictor cuantizado
+
+- **Archivos**: `qwen_tts_code_predictor.c` (`cp_all_quantized`, `cp_prefill2`, macro `CP_MM2`, `qwen_cp_predict`).
+- **Qué cambia**: PREFILL2 se usa cuando cada matriz de las 5 capas del Code Predictor está en int8 o en q4_0, en cualquier combinación, y `CP_MM2` elige el kernel matmat por matriz (q4_0 si existe la copia q4_0, int8 en otro caso). Antes exigía las 5 capas enteras en int8 o enteras en q4_0.
+- **Por qué**: PREFILL2 lee cada matriz una vez para las posiciones 0 y 1 en lugar de dos; con la regla uniforme, cualquier precisión mixta perdía ese ahorro. El matmat cuantizado da lo mismo que la ruta secuencial, así que el audio no cambia.
+- **Si se pierde**: el perfil de `--quant-mixed` vuelve a la ruta secuencial y lee dos veces los pesos de las dos primeras posiciones de cada fotograma.
+
+### Perfil `mixed` del Code Predictor
+
+- **Archivos**: `qwen_tts_code_predictor.c` (`qwen_cp_quantize_mixed`, `qwen_cp_load`, `cp_prec_label`), `main.c` (`--quant-mixed`), `Makefile` (`test-modes`).
+- **Qué cambia**: `QWEN_CP_PREC=mixed` cuantiza la atención (`wq`, `wk`, `wv`, `wo`) y las 15 cabezas de salida en int8 y las FFN (`gate_up_fused` y `down`) directamente en q4_0, sin copias int8. `--quant-mixed` es Talker q4_0 más este Code Predictor (antes, Code Predictor entero en int8), y la línea de carga lo identifica con `[INT8+Q4_0-FFN]`. `test-modes` comprueba 5 combinaciones, la última `--quant-mixed --stream` con su etiqueta.
+- **Por qué**: las FFN son la mayor parte de los bytes que el Code Predictor lee 15 veces por fotograma y toleran q4_0. Con el modelo 0.6B la calidad no cambió de forma medible (WER 3,85 % frente a 4,14 %, similitud WavLM media 0,976, sin finales perdidos, entonación y duración dentro de la variación entre semillas) ni audible, y la memoria del Code Predictor cuantizado baja de ~47 MB a ~26 MB. Con PREFILL2, el RTF baja un 8-10 %.
+- **Si se pierde**: `--quant-mixed` vuelve a leer las FFN del Code Predictor en int8, con más tráfico de memoria por fotograma.
+
+### Decodificador por tramos en streaming
+
+- **Archivos**: `qwen_tts_speech_decoder.c` (`SD_TILE_BYTES`, `SD_TILE_FROM_BLOCK`, `cs_res_tiled`, `cs_conv1d`, `conv_decoder_forward_streaming`), `qwen_tts.h` (`cs_tile` en `qwen_sd_stream_state_t`), `qwen_tts.c` (`decoder_thread_fn`).
+- **Qué cambia**: mientras la generación sigue en marcha, el hilo del decodificador en streaming procesa las 3 unidades residuales de los bloques de sobremuestreo `up2` y `up3` por tramos de tiempo de 256 KB por búfer, encadenados por las colas con estado de cada convolución dilatada (`cs_tile`). Al drenar los fotogramas finales, sin paralelismo y en la ruta por lotes del servidor no se usan tramos, y al empezar el drenaje el decodificador recupera todos los hilos de BLAS (durante la generación usa uno menos que `-j`). Con contexto previo, `cs_conv1d` calcula solo las columnas de salida nuevas sobre `[cola | fragmento]`, sin el relleno de ceros ni las salidas que antes se calculaban y descartaban (la convolución int8 experimental de `QWEN_SD_INT8` conserva la forma con relleno). Los bloques `up0` y `up1` no usan tramos y la ruta sin streaming (`conv_decoder_forward`) no cambia.
+- **Por qué**: en esas dos etapas la señal ocupa varios MB y cada unidad residual la recorría entera varias veces, sin que cupiera en la L2; el tráfico competía por la memoria con el Talker y el Code Predictor. Los tramos solo compensan mientras hay generación con la que competir, y con el recálculo de las columnas de cola añadían un ~20 % de trabajo al decodificador, que alargaba el drenaje final de ~200 a ~350 ms por frase. Calcular solo las columnas válidas, no usar tramos al drenar y drenar con todos los hilos dejan el drenaje en ~230–250 ms; lo que queda sobre los ~200 ms del motor anterior se debe a que la generación es más rápida y el decodificador tiene menos tiempo libre, mientras la frase completa termina entre 3 y 8 s antes. El audio tiene SNR ≥ 100 dB frente al cálculo sin tramos.
+- **Si se pierde**: el decodificador vuelve a recorrer señales mayores que la L2 y su tráfico frena al resto del motor; o, si se pierde solo la restricción al drenaje o el cálculo de columnas válidas, el drenaje final vuelve a alargarse.
+
+### Eliminación de las variables experimentales de precisión del Code Predictor
+
+- **Archivos**: `qwen_tts_code_predictor.c` (`qwen_cp_quantize_q4`, `qwen_cp_load`, `cp_layer_body`, `cp_prec_label`), `qwen_tts.h` (`qwen_cp_layer_t`).
+- **Qué cambia**: el motor ya no lee las variables de precisión por capa, por cabeza de salida ni de FFN en 2 bits del Code Predictor, y desaparecen sus funciones de recuantización y los campos q2 de las FFN. `--int4` cuantiza siempre las FFN en q4_0. Se conserva la copia q2 de `down` (`down_q2_rough`) que usa `--roughness`.
+- **Por qué**: esas variables sirvieron para explorar qué partes del Code Predictor toleran menos bits; la exploración terminó y su código mantenía rutas de despacho y etiquetas para mezclas que nadie usa.
+- **Si se pierde**: reaparecen interruptores de precisión sin cobertura de pruebas que cambian la numérica del Code Predictor.
+
+### Errores ante precisiones desconocidas y sobrescrituras de pesos con q4_0
+
+- **Archivos**: `qwen_tts_code_predictor.c` y `qwen_tts_talker.c` (validación de `QWEN_CP_PREC` y `QWEN_TALKER_PREC`), `main.c` (`weights_have_q4`, `requantize_int8_after_override`, `apply_expr_file`, carga de `.qvoice` con WDELTA, `--emotion`).
+- **Qué cambia**: un valor no vacío de `QWEN_CP_PREC` distinto de `bf16`, `int8`, `int4` y `mixed`, o de `QWEN_TALKER_PREC` distinto de `bf16`, `int8` e `int4`, detiene la carga con un error. Si `--expr` o una voz `.qvoice` con WDELTA sobrescribe pesos con pesos q4_0 activos en el Talker o en el Code Predictor, la carga falla con un error que pide bf16 o `--int8`; tras una sobrescritura se rehacen solo las copias int8 que ya existían. Un fallo al aplicar el `.expr` de `--emotion` termina el motor con error, igual que `--expr` con un modelo distinto del 1.7B, que antes se ignoraba con un aviso.
+- **Por qué**: el original dejaba en bf16 cualquier valor desconocido y no recuantizaba los pesos q4_0 tras una sobrescritura, de modo que una errata o una voz con WDELTA sintetizaban con una configuración distinta de la pedida sin avisar.
+- **Si se pierde**: una errata en la precisión o una sobrescritura con pesos q4_0 vuelve a cambiar en silencio la velocidad, la numérica o la voz.

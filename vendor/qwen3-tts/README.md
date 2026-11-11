@@ -49,11 +49,11 @@ make blas
 - **9 preset voices** — `ryan`, `vivian`, `serena`, `aiden`, `eric`, `dylan`, `uncle_fu`, `ono_anna`, `sohee`.
 - **10 languages** — English, Chinese, Japanese, Korean, German, French, Russian, Portuguese, Spanish, Italian.
 - **Memory-mapped weights** — BF16 safetensors mmap'd directly. 0.6B ~3 GB, 1.7B ~8 GB.
-- **Voice cloning** — Clone any voice from a short WAV clip. Ship it as a compact **~25 MB graft `.qvoice`** (load it with `--icl-only`): keeps the CustomVoice weights so emotion levers (`--instruct`, `--expr`, `--ml-steer`) all work, with full prosody (sighs/pauses). An 8 KB `--xvector-only` `.bin` is the ultra-lean alternative (identity only).- **Voice management** — List, inspect, delete `.qvoice` profiles (`--list-voices`, `--delete-voice`). No model required.
+- **Voice cloning** — Clone any voice from a short WAV clip. Ship it as a compact **~25 MB graft `.qvoice`** (load it with `--icl-only`): keeps the CustomVoice weights so emotion levers (`--instruct`, `--expr`, `--ml-steer`) all work, with full prosody (sighs/pauses). An 8 KB `--xvector-only` `.bin` is the ultra-lean alternative (identity only). `--expr` and heavy WDELTA voices overwrite weights and require bf16 or `--int8`.- **Voice management** — List, inspect, delete `.qvoice` profiles (`--list-voices`, `--delete-voice`). No model required.
 - **Style control** — `--instruct` for emotion/style on 1.7B: angry, whisper, cheerful, and more.
 - **Emotion in one flag** (🧪 **beta**; paralinguistics `[laugh]`/`[sigh]` 🧪 **alpha**) — `--emotion <sad\|joy\|anger\|fear\|disgust\|surprise>` (1.7B) auto-applies the ear-validated recipe (per-language fine-tune `.expr` + steering vector + a default English instruct + temperature), on presets **and** cloned voices, in every Qwen language. **Plus 7 blended "dyads"** (`contempt`, `awe`, `nostalgia`, `disapproval`, `remorse`, `outrage`, `despair`) and **inline `[emotion]` switching** — many emotions from one prompt in a single generation. A vivid English `--instruct` and `-T` override. Pitch-preserving `--rate`/`--volume` and a `--roughness` grit knob are still available.- **The small 0.6B is expressive too — and stays sub-realtime** 🆕 — for a long time `--emotion` did nothing on the 0.6B: unlike the 1.7B it has no steerable emotion subspace. It does, however, clone voices very well — so on the small model **the emotion rides on the voice**. **All 9 presets ship ready** (240 KB of 4 KB voice assets) and **any cloned voice emotes with zero setup** via six shipped emotion directions — so the small model has the whole expressive stack out of the box: **6 emotions + inline `[tag]` paralinguistics + voice cloning, together, at RTF ≈ 0.8** under `--int8` on an M1.- **Inline markup for audiobooks** — write one text with ElevenLabs/Bark-style tags and get a multi-emotion take in one pass: `--text "I won! [joy] ...amazing! [pause:500ms] [sad] But it's over. [sigh]"`. Mid-text emotion switches, `[pause:400ms]`/`[break:1s]` pauses, and `[sigh]`/`[huff]` paralinguistic fillers — auto-detected in `--text` (no flag) or explicit via `--compose`. Spans are model-generated and concatenated seamlessly.- **VoiceDesign** — Create new voices from text descriptions.
 - **HTTP server** — `/v1/tts`, `/v1/tts/stream`, OpenAI-compatible `/v1/audio/speech`; JSON body takes `emotion`/`instruct`/`volume`/`rate` (same recipe as the CLI). **Inline `[mood]` markup works over the API too** — one request can switch emotion sentence-by-sentence (`"text":"[joy] Great news! [sad] But I must go."`), auto-detected and streamed span-by-span.- **Streaming** — Real-time audio via `--stream` (WAV) or `--stdout` (raw PCM).
-- **INT8 / INT4 quantization** — `--int8` / `--int4` quantize Talker + Code Predictor (the activation is quantized to int8 and multiplied with an integer dot product: SDOT on ARM, VNNI `dpbusd` or AVX2 `maddubs` on x86), near-bf16 quality, and work with presets **and** custom `.qvoice` voices. On cache-rich Apple Silicon **both go sub-realtime** (0.6B best **0.52 int4 / 0.69 int8**; 1.7B best **~1.53** quant-mixed); on memory-starved x86, int8+VNNI wins the wall clock. See [Performance](#performance).
+- **INT8 / INT4 quantization** — `--int8` / `--int4` quantize Talker + Code Predictor (the activation is quantized to int8 and multiplied with an integer dot product: SDOT on ARM, VNNI `dpbusd` or AVX2 `maddubs` on x86), near-bf16 quality, and work with presets **and** custom `.qvoice` voices. `--quant-mixed` is the Talker in q4_0 plus a Code Predictor with INT8 attention and output heads and Q4_0 FFN (log label `[INT8+Q4_0-FFN]`; quality validated on the 0.6B model). On cache-rich Apple Silicon **both go sub-realtime** (0.6B best **0.52 int4 / 0.69 int8**); on memory-starved x86, int8+VNNI wins the wall clock. See [Performance](#performance).
 - **Configurable sampling** — Temperature, top-k, top-p, and repetition penalty.
 - **24 kHz WAV output** — 16-bit PCM, mono.
 
@@ -168,6 +168,8 @@ weight-delta files):
 
 **Other formats:** **8 KB `.bin` x-vector** (`--xvector-only`,
 tiniest & cleanest) · **heavy WDELTA** (`--target-cv`, ~0.8–3 GB, bit-identical — only if you need exact fidelity).
+Loading a WDELTA voice (without `--icl-only`) or an `--expr` file overwrites Talker weights, so it requires bf16 or
+`--int8`: with Q4_0 weights active (`--int4`, `--quant-mixed`) the engine stops with an error instead of ignoring the override.
 
 **Voice clone samples** — cloned voices on 0.6B CustomVoice (25 MB grafts):
 
@@ -454,7 +456,7 @@ only **~0.09 RTF** over the bare model:
 
 RTF = processing_time / audio_duration; **< 1.0 = faster than real-time**. Quantization reads fewer weight bytes
 per frame and multiply them with an integer dot product (SDOT on ARM, VNNI or AVX2 `maddubs` on x86): **0.6B ~1.5 (bf16) → 0.69 (int8) → 0.52 (int4)**; **1.7B
-~2.0 (bf16) → 1.79 (int8) → ~1.53 (quant-mixed: int4 Talker + int8 CP, the fastest 1.7B config on M1)** — no
+~2.0 (bf16) → 1.79 (int8)** — no
 perceptible quality loss, works with `.qvoice` voices.
 
 ### 📊 Benchmark *your* CPU
@@ -478,9 +480,9 @@ make bench-full         # + server, instruct, INT8, .qvoice
 | **Apple M1** 8-core | NEON + SDOT int8/int4, GCD 4-thread | 16 GB | **0.52 int4 / 0.69 int8** | `--int4 -j4` |
 | **Neoverse-N1** (Ampere Altra Max, Scaleway) | NEON + SDOT, pthread 4-thread | 16 GB / 4 vCPU | **1.28** stream int4 + conv-int8 (**1.49** default) | `--int4 --stream` |
 | **Graviton3** (Neoverse-V1, AWS c7g.2xlarge) | NEON + SDOT + **i8mm SMMLA + BFMMLA**, pthread 4-thread | 16 GB / 8 vCPU | **0.66** (1.7B int8: **0.95**, sub-RT!) | `--int8 -j4` |
-| **Apple M4** (Mac mini, Scaleway) | NEON + SDOT + i8mm + bf16 + SME | 16 GB / 10-core | **0.32** (1.7B qm: **0.57**!) | `--int4 -j4` |
+| **Apple M4** (Mac mini, Scaleway) | NEON + SDOT + i8mm + bf16 + SME | 16 GB / 10-core | **0.32** | `--int4 -j4` |
 | **Ryzen 7 6800H** (Zen3+, 16 MB L3, bare metal) | AVX2 + FMA, pthread 4-thread | 32 GB | **2.02** | `--int4 -j4` |
-| **Ryzen 7 5825U** (Zen3, AVX2 integer dot product `maddubs`, Windows 11, cloned voice) | AVX2 + FMA, Win32 pool 4-thread | — | **0.76** idle; **0.88** with 4 cores busy; **1.47** with 2 threads loading memory | `--quant-mixed -j4 --stream` (Talker q4_0 + Code Predictor int8) |
+| **Ryzen 7 5825U** (Zen3, AVX2 integer dot product `maddubs`, Windows 11, cloned voice) | AVX2 + FMA, Win32 pool 4-thread | — | **0.66** idle; **0.84** with 1 thread loading memory; **1.10** with 2 threads loading memory (0.6B) | `--quant-mixed -j4 --stream` (Talker q4_0 + Code Predictor INT8 attention / Q4_0 FFN) |
 | **EPYC 9555P** (Zen5, AVX-512+VNNI+BF16, Scaleway VM) | AVX-512 attention + VNNI + VDPBF16PS, pthread 4-thread | 16 GB / 4 vCPU | **0.95** (int4 = int8; -j1: int4 **1.05** beats int8 1.21) | `--int4 -j4`, `SIMD=avx512bf16` |
 
 Numbers refreshed 2026-08-04 after the AVX-512 parity round (16-wide attention/rms/conversions,
@@ -489,8 +491,7 @@ on Zen5, and **int4 now beats int8 single-thread on x86 0.6B** for the first tim
 **memory/cache-bound** (the Code Predictor re-reads its weights 16×/frame): SIMD width and thread count
 matter less than fewer weight bytes (`--int8`/`--int4`) and a cache that fits the working set (Apple's
 SLC, an X3D chip's V-cache). On cache-rich Apple Silicon **int4 is the fastest lever**; on x86 it now
-depends on the model: **0.6B → `--int4`**, **1.7B → `--int8`** (still the 1.7B wall-clock king; pure
-`--int8` beats `--quant-mixed`, which is the Apple-silicon config). Many-core servers are best for
+depends on the model: **0.6B → `--int4`**, **1.7B → `--int8`** (still the 1.7B wall-clock king). Many-core servers are best for
 **throughput** (concurrent requests), not single-stream latency. Check yours: `./qwen_tts --caps` (on
 x86, build with `make blas SIMD=avx512bf16` on Zen4/5 / Cooper Lake+, or `SIMD=avx512vnni` if the CPU
 lacks `avx512bf16` — the default build is portable AVX2).
