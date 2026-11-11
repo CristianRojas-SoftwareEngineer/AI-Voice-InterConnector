@@ -33,8 +33,8 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 
 ### Shims POSIX para Windows
 
-- **Archivos**: `third_party/ingot/mingw_shim/` (`unistd.h`, `sys/mman.h`, `sys/socket.h`, `arpa/inet.h`, `netinet/in.h`) y `posix_shim_win.h`.
-- **Qué cambia**: definen sobre Win32 los símbolos POSIX que el motor asume (`mmap`, `pread`, `posix_memalign`, `setenv`, sockets). El `Makefile` usa `third_party/ingot/mingw_shim/`; `posix_shim_win.h` es una adición local que el `Makefile` no referencia.
+- **Archivos**: `third_party/ingot/mingw_shim/` (`unistd.h`, `sys/mman.h`, `sys/socket.h`, `arpa/inet.h`, `netinet/in.h`).
+- **Qué cambia**: definen sobre Win32 los símbolos POSIX que el motor asume (`mmap`, `pread`, `posix_memalign`, `setenv`, sockets) como funciones `static inline`, para que las unidades de compilación que no las usan no generen avisos. El `Makefile` los incluye en todas las unidades con `-include`.
 - **Por qué**: el motor asume Linux y hay que compilarlo con MinGW/UCRT64.
 - **Si se pierde**: el motor no compila en Windows.
 
@@ -244,3 +244,10 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Qué cambia**: un valor no vacío de `QWEN_CP_PREC` distinto de `bf16`, `int8`, `int4` y `mixed`, o de `QWEN_TALKER_PREC` distinto de `bf16`, `int8` e `int4`, detiene la carga con un error. Si `--expr` o una voz `.qvoice` con WDELTA sobrescribe pesos con pesos q4_0 activos en el Talker o en el Code Predictor, la carga falla con un error que pide bf16 o `--int8`; tras una sobrescritura se rehacen solo las copias int8 que ya existían. Un fallo al aplicar el `.expr` de `--emotion` termina el motor con error, igual que `--expr` con un modelo distinto del 1.7B, que antes se ignoraba con un aviso.
 - **Por qué**: el original dejaba en bf16 cualquier valor desconocido y no recuantizaba los pesos q4_0 tras una sobrescritura, de modo que una errata o una voz con WDELTA sintetizaban con una configuración distinta de la pedida sin avisar.
 - **Si se pierde**: una errata en la precisión o una sobrescritura con pesos q4_0 vuelve a cambiar en silencio la velocidad, la numérica o la voz.
+
+### Sin rutas de compatibilidad con cuantizadores y formatos antiguos
+
+- **Archivos**: `qwen_tts_kernels.c` (`qwen_quantize_bf16_to_q4_0`), `main.c` (carga de `.qvoice` con WDELTA), `Makefile` (alias de objetivos de prueba).
+- **Qué cambia**: el cuantizador q4_0 por mínimos cuadrados ponderados es el único, sin la variable `QWEN_Q4_NAIVE` que restauraba el redondeo por máximo absoluto. La sección WDELTA de una `.qvoice` exige el campo de tamaño del modelo (1024 o 2048) y, si falta o no es válido, la carga falla con un error en lugar de reinterpretarlo como el formato anterior sin ese campo. Desaparecen los alias `test-en` y `test-it-ryan` del `Makefile`.
+- **Por qué**: el motor no tiene usuarios externos ni voces creadas con el formato anterior, y esas rutas solo servían para reproducir comportamientos ya sustituidos; la variable además contradecía la regla de que ningún interruptor de entorno selecciona la numérica cuantizada.
+- **Si se pierde**: vuelve a existir una segunda numérica q4_0 sin pruebas y una voz WDELTA corrupta podría cargarse leyendo como número de tensores lo que es otro campo.

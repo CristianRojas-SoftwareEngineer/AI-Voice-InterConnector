@@ -550,7 +550,8 @@ static int qwen_split_sentences(const char *text, char ***out, int *out_n) {
     if (start < len) if (qwen_push_str(&arr, &n, &cap, text + start, len - start) < 0) goto oom;
     *out = arr; *out_n = n; return 0;
 oom:
-    for (int i = 0; i < n; i++) free(arr[i]); free(arr); return -1;
+    for (int i = 0; i < n; i++) free(arr[i]);
+    free(arr); return -1;
 }
 /* Split long text into chunks: pack sentences up to ~target_words, merge a
  * trailing sub-min_words fragment into the previous chunk. */
@@ -589,12 +590,15 @@ static int qwen_split_text_for_batch(const char *text, int target_words, int min
     }
     #undef ACC_APPEND
     free(acc);
-    for (int i = 0; i < ns; i++) free(sent[i]); free(sent);
+    for (int i = 0; i < ns; i++) free(sent[i]);
+    free(sent);
     *out = chunks; *out_n = nc; return 0;
 oom:
     free(acc);
-    for (int i = 0; i < ns; i++) free(sent[i]); free(sent);
-    for (int i = 0; i < nc; i++) free(chunks[i]); free(chunks);
+    for (int i = 0; i < ns; i++) free(sent[i]);
+    free(sent);
+    for (int i = 0; i < nc; i++) free(chunks[i]);
+    free(chunks);
     return -1;
 }
 
@@ -628,7 +632,8 @@ static int run_batch(qwen_tts_ctx_t *ctx, const char *text, int target_words, in
             if (rc == 0 && !silent)
                 fprintf(stderr, "Wrote %s (%d samples, %.2fs) [batched %d chunks]\n", output, n, (double)n / QWEN_TTS_SAMPLE_RATE, nc);
             free(audio);
-            for (int i = 0; i < nc; i++) free(chunks[i]); free(chunks);
+            for (int i = 0; i < nc; i++) free(chunks[i]);
+            free(chunks);
             return rc;
         }
         free(audio);
@@ -649,7 +654,8 @@ static int run_batch(qwen_tts_ctx_t *ctx, const char *text, int target_words, in
     }
     rc = render_spans(ctx, spans, nc, language, chunk_pause, output, silent);
     free(spans);
-    for (int i = 0; i < nc; i++) free(chunks[i]); free(chunks);
+    for (int i = 0; i < nc; i++) free(chunks[i]);
+    free(chunks);
     return rc;
 }
 
@@ -2024,17 +2030,13 @@ int main(int argc, char **argv) {
                         if (!silent)
                             fprintf(stderr, "  --icl-only: skipping WDELTA weight-swap (ICL prefix only, CV weights intact)\n");
                     } else if ((magic_read == 5 && memcmp(wfull_magic, "WFULL", 5) == 0) || is_wdelta) {
-                        /* WDELTA: validate target model.
-                         * Format v2: "WDLT" + target_hidden_size(u32) + n_tensors(u32) + ...
-                         * Format v1 (legacy): "WDLT" + n_tensors(u32) + ... (no target_h)
-                         * Detect: valid hidden_size is 1024 or 2048; n_tensors is ~402/404 */
-                        int wdelta_has_target_h = 0;
+                        /* WDELTA: validar el modelo de destino. El formato es
+                         * "WDLT" + target_hidden_size(u32) + n_tensors(u32) + ...; un
+                         * target_hidden_size distinto de 1024 o 2048 detiene la carga. */
                         if (is_wdelta) {
                             uint32_t target_h;
                             if (fread(&target_h, sizeof(uint32_t), 1, vf) == 1) {
                                 if (target_h == 1024 || target_h == 2048) {
-                                    /* New format with target_hidden_size field */
-                                    wdelta_has_target_h = 1;
                                     if (ctx->is_base_model) {
                                         fprintf(stderr, "ERROR: this .qvoice contains weight deltas for CustomVoice,\n");
                                         fprintf(stderr, "  but you're loading it on a Base model. This would corrupt weights.\n");
@@ -2051,9 +2053,9 @@ int main(int argc, char **argv) {
                                         fclose(vf); qwen_tts_unload(ctx); return 1;
                                     }
                                 } else {
-                                    /* Legacy format: what we read as target_h is actually n_tensors.
-                                     * Seek back so the next read picks it up as n_tensors. */
-                                    fseek(vf, -4, SEEK_CUR);
+                                    fprintf(stderr, "error: la sección WDELTA de %s no tiene un tamaño de modelo "
+                                                    "válido (hidden=%u); vuelva a crear la voz\n", load_voice, target_h);
+                                    fclose(vf); qwen_tts_unload(ctx); return 1;
                                 }
                             }
                         }
@@ -2063,10 +2065,7 @@ int main(int argc, char **argv) {
                         int zlib_warned = 0;
                         int64_t wfull_bytes = 0;
                         int h = ctx->config.hidden_size;
-                        int th = ctx->config.text_hidden_size;
                         int nl = ctx->config.num_layers;
-                        int q_dim = ctx->config.num_heads * ctx->config.head_dim;
-                        int kv_dim = ctx->config.num_kv_heads * ctx->config.head_dim;
                         int inter = ctx->config.intermediate_size;
 
                         for (uint32_t t = 0; t < n_tensors; t++) {
@@ -2080,7 +2079,6 @@ int main(int argc, char **argv) {
 
                             /* Match tensor name to ctx field and replace */
                             void **target_ptr = NULL;
-                            int is_f32 = 0;
 
                             /* Global tensors */
                             if (strcmp(tname, "talker.model.text_embedding.weight") == 0)
@@ -2088,24 +2086,24 @@ int main(int argc, char **argv) {
                             else if (strcmp(tname, "talker.text_projection.linear_fc1.weight") == 0)
                                 target_ptr = (void **)&ctx->text_proj_fc1_bf16;
                             else if (strcmp(tname, "talker.text_projection.linear_fc1.bias") == 0)
-                                { target_ptr = (void **)&ctx->text_proj_fc1_bias; is_f32 = 1; }
+                                target_ptr = (void **)&ctx->text_proj_fc1_bias;
                             else if (strcmp(tname, "talker.text_projection.linear_fc2.weight") == 0)
                                 target_ptr = (void **)&ctx->text_proj_fc2_bf16;
                             else if (strcmp(tname, "talker.text_projection.linear_fc2.bias") == 0)
-                                { target_ptr = (void **)&ctx->text_proj_fc2_bias; is_f32 = 1; }
+                                target_ptr = (void **)&ctx->text_proj_fc2_bias;
                             else if (strcmp(tname, "talker.model.codec_embedding.weight") == 0)
                                 target_ptr = (void **)&ctx->codec_embedding_bf16;
                             else if (strcmp(tname, "talker.codec_head.weight") == 0)
                                 target_ptr = (void **)&ctx->codec_head_bf16;
                             else if (strcmp(tname, "talker.model.norm.weight") == 0)
-                                { target_ptr = (void **)&ctx->talker_norm; is_f32 = 1; }
+                                target_ptr = (void **)&ctx->talker_norm;
                             /* Code Predictor tensors */
                             else if (strstr(tname, "code_predictor.model.norm.weight"))
-                                { target_ptr = (void **)&ctx->cp_norm; is_f32 = 1; }
+                                target_ptr = (void **)&ctx->cp_norm;
                             else if (strstr(tname, "code_predictor.small_to_mtp_projection.weight"))
                                 target_ptr = (void **)&ctx->cp_mtp_proj_bf16;
                             else if (strstr(tname, "code_predictor.small_to_mtp_projection.bias"))
-                                { target_ptr = (void **)&ctx->cp_mtp_proj_bias; is_f32 = 1; }
+                                target_ptr = (void **)&ctx->cp_mtp_proj_bias;
                             else if (strstr(tname, "code_predictor.model.codec_embedding.")) {
                                 int ci = -1;
                                 sscanf(tname, "talker.code_predictor.model.codec_embedding.%d.", &ci);
@@ -2138,13 +2136,13 @@ int main(int argc, char **argv) {
                                         else if (strstr(suffix, "o_proj.weight"))
                                             target_ptr = (void **)&cl->wo_bf16;
                                         else if (strstr(suffix, "q_norm.weight"))
-                                            { target_ptr = (void **)&cl->q_norm; is_f32 = 1; }
+                                            target_ptr = (void **)&cl->q_norm;
                                         else if (strstr(suffix, "k_norm.weight"))
-                                            { target_ptr = (void **)&cl->k_norm; is_f32 = 1; }
+                                            target_ptr = (void **)&cl->k_norm;
                                         else if (strstr(suffix, "input_layernorm.weight"))
-                                            { target_ptr = (void **)&cl->input_norm; is_f32 = 1; }
+                                            target_ptr = (void **)&cl->input_norm;
                                         else if (strstr(suffix, "post_attention_layernorm.weight"))
-                                            { target_ptr = (void **)&cl->post_attn_norm; is_f32 = 1; }
+                                            target_ptr = (void **)&cl->post_attn_norm;
                                         else if (strstr(suffix, "gate_proj.weight"))
                                             target_ptr = (void **)&cl->gate_bf16;
                                         else if (strstr(suffix, "up_proj.weight"))
@@ -2174,13 +2172,13 @@ int main(int argc, char **argv) {
                                         else if (strstr(suffix, "o_proj.weight"))
                                             target_ptr = (void **)&l->wo_bf16;
                                         else if (strstr(suffix, "q_norm.weight"))
-                                            { target_ptr = (void **)&l->q_norm; is_f32 = 1; }
+                                            target_ptr = (void **)&l->q_norm;
                                         else if (strstr(suffix, "k_norm.weight"))
-                                            { target_ptr = (void **)&l->k_norm; is_f32 = 1; }
+                                            target_ptr = (void **)&l->k_norm;
                                         else if (strstr(suffix, "input_layernorm.weight"))
-                                            { target_ptr = (void **)&l->input_norm; is_f32 = 1; }
+                                            target_ptr = (void **)&l->input_norm;
                                         else if (strstr(suffix, "post_attention_layernorm.weight"))
-                                            { target_ptr = (void **)&l->post_attn_norm; is_f32 = 1; }
+                                            target_ptr = (void **)&l->post_attn_norm;
                                         else if (strstr(suffix, "gate_proj.weight"))
                                             target_ptr = (void **)&l->gate_bf16;
                                         else if (strstr(suffix, "up_proj.weight"))

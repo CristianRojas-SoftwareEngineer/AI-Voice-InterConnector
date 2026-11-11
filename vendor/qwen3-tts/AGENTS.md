@@ -114,7 +114,9 @@ From `qwen_tts_load()` and CLI:
   - decoder performance: a persistent per-context workspace (`qwen_sd_workspace_t`, slots that
     only grow, cleared in worker clones); transposed conv as a single GEMM plus a scatter in k
     order; causal conv as k accumulated GEMMs over the left-padded input (no im2col), with
-    `W_k` reordered once at load and shared by workers. `QWEN_SD_INT8` (experimental) keeps its own im2col path
+    `W_k` reordered once at load and shared by workers. With prior context, the streaming causal conv
+    computes only the new output columns over `[tail | chunk]`; while generation runs, the residual units
+    of `up2`/`up3` are processed in 256 KB time tiles (`cs_res_tiled`). `QWEN_SD_INT8` (experimental) keeps its own im2col path
 - `qwen_tts_audio.c`
   - WAV writer (24 kHz, 16-bit PCM, mono)
 - `qwen_tts_sampling.c`

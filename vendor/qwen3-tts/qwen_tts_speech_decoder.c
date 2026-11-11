@@ -1984,7 +1984,7 @@ int qwen_speech_decoder_decode_streaming_st(qwen_tts_ctx_t *ctx, qwen_sd_stream_
     return 0;
 }
 
-/* Back-compat wrapper: stream using the single ctx->sd_stream state. */
+/* Streaming con el estado único ctx->sd_stream (la ruta de una sola voz). */
 int qwen_speech_decoder_decode_streaming(qwen_tts_ctx_t *ctx,
                                           const int *new_codes, int new_frames,
                                           float **audio_out, int *n_samples) {

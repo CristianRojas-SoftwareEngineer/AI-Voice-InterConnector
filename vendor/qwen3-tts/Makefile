@@ -1000,10 +1000,6 @@ demo-clone: $(TARGET)
 	@echo "  English:    afplay $(TEST_DIR)/clone_output_en.wav"
 	@echo "  Italian:    afplay $(TEST_DIR)/clone_output_it.wav"
 
-# Legacy aliases
-test-en: test-small-en
-test-it-ryan: test-small-it
-
 .PHONY: all help blas clean debug info serve cp-microbench test-batch test-errors test-emotion test-emotion-ft test-compose test-caps test-selftest test-modes test-qvoice e2e \
         test-serve test-serve-bench test-serve-openai test-serve-parallel test-serve-all \
         test-clone test-voice-design \
@@ -1011,4 +1007,4 @@ test-it-ryan: test-small-it
         test-small test-small-en test-small-it test-small-vivian test-small-stream test-small-stdout \
         test-large test-large-en test-large-it test-large-config test-large-instruct \
         test-large-int8 test-large-int4 test-large-quant \
-        test-regression test-all test-en test-it-ryan
+        test-regression test-all

@@ -2273,9 +2273,7 @@ void qwen_quantize_bf16_to_q4_0(const uint16_t *src_bf16, int rows, int cols,
      * rescale s* = Σw·v·q / Σw·q² with w = v². Measured on the TF harness (0.6B,
      * 143 frames): Talker code0 (words) 83.9% → 92.3%, CP c1-15 46.3% → 48.9%,
      * at identical load cost (one pass + one MAC pair per weight).
-     * QWEN_Q4_NAIVE=1 restores the old absmax RTN (A/B + regression hunting). */
-    static int naive = -1;
-    if (naive < 0) { const char *e = getenv("QWEN_Q4_NAIVE"); naive = (e && *e) ? 1 : 0; }
+     * Es el único cuantizador q4_0: no hay variable de entorno que seleccione otro. */
     int blocks_per_row = cols / Q4_0_BLOCK_SIZE;
     for (int r = 0; r < rows; r++) {
         const uint16_t *row = src_bf16 + (size_t)r * cols;
@@ -2286,7 +2284,7 @@ void qwen_quantize_bf16_to_q4_0(const uint16_t *src_bf16, int rows, int cols,
 
             /* Convert bf16 block to f32 and find the signed max-|.| value */
             float vals[Q4_0_BLOCK_SIZE];
-            float amax = 0.0f, vmax = 0.0f;
+            float amax = 0.0f, vmax = 0.0f;   /* amax = |vmax| */
             for (int i = 0; i < Q4_0_BLOCK_SIZE; i++) {
                 uint32_t bits = (uint32_t)blk[i] << 16;
                 memcpy(&vals[i], &bits, sizeof(float));
@@ -2294,34 +2292,21 @@ void qwen_quantize_bf16_to_q4_0(const uint16_t *src_bf16, int rows, int cols,
                 if (a > amax) { amax = a; vmax = vals[i]; }
             }
 
-            float s;
+            /* q4_0s1: máximo con signo → -8 y reescalado por mínimos cuadrados
+             * ponderados (w = v²) */
             int q[Q4_0_BLOCK_SIZE];
-            if (naive) {
-                /* legacy: absmax → ±7, plain RTN against the roundtripped scale */
-                s = amax / 7.0f;
-                uint16_t s16 = qwen_f32_to_f16(s);
-                s = qwen_f16_to_f32(s16);
-                float inv_s = (s > 0) ? 1.0f / s : 0.0f;
-                for (int i = 0; i < Q4_0_BLOCK_SIZE; i++) {
-                    int v = (int)roundf(vals[i] * inv_s);
-                    q[i] = v < -8 ? -8 : (v > 7 ? 7 : v);
-                }
-                dst_row[b].scale_f16 = s16;
-            } else {
-                /* q4_0s1: signed max → -8, then weighted-LSQ rescale (w = v²) */
-                float isc = (vmax != 0.0f) ? -8.0f / vmax : 0.0f;
-                double num = 0.0, den = 0.0;
-                for (int i = 0; i < Q4_0_BLOCK_SIZE; i++) {
-                    int v = (int)roundf(vals[i] * isc);
-                    v = v < -8 ? -8 : (v > 7 ? 7 : v);
-                    q[i] = v;
-                    double w = (double)vals[i] * vals[i];
-                    num += w * vals[i] * v;
-                    den += w * (double)v * v;
-                }
-                s = (den > 0.0) ? (float)(num / den) : 0.0f;
-                dst_row[b].scale_f16 = qwen_f32_to_f16(s);
+            float isc = (vmax != 0.0f) ? -8.0f / vmax : 0.0f;
+            double num = 0.0, den = 0.0;
+            for (int i = 0; i < Q4_0_BLOCK_SIZE; i++) {
+                int v = (int)roundf(vals[i] * isc);
+                v = v < -8 ? -8 : (v > 7 ? 7 : v);
+                q[i] = v;
+                double w = (double)vals[i] * vals[i];
+                num += w * vals[i] * v;
+                den += w * (double)v * v;
             }
+            float s = (den > 0.0) ? (float)(num / den) : 0.0f;
+            dst_row[b].scale_f16 = qwen_f32_to_f16(s);
 
             /* Store as unsigned [0, 15] nibbles */
             for (int i = 0; i < 16; i++)

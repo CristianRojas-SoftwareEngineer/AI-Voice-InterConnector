@@ -968,11 +968,6 @@ void qwen_batch_proj(float *dst, const uint16_t *W, const float *src,
         batch_scatter(dst, Yt, B, rows);
     }
 }
-/* thin wrapper for the Talker step (uses bb's own scratch/width) */
-static void batch_proj(qwen_batch_t *bb, float *dst, const uint16_t *W,
-                       const float *src, int rows, int cols, int srcstride) {
-    qwen_batch_proj(dst, W, src, rows, cols, srcstride, bb->B, bb->force_matvec, bb->Xt, bb->Yt);
-}
 
 /* Precision-aware batched projection (B2): picks the kernel by which weight set is
  * present, mirroring the single-stream dispatch — q4 (Wq) > int8 (Wi+Wscale) > bf16

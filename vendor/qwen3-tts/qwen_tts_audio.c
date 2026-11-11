@@ -144,7 +144,8 @@ int qwen_tts_write_wav(const char *path, const float *samples, int n_samples, in
         if (fade_in  > 0 && i < fade_in)                 s *= (float)i / (float)fade_in;
         if (fade_out > 0 && i >= n_samples - fade_out)   s *= (float)(n_samples - 1 - i) / (float)fade_out;
         if (s != s) s = 0;  /* guarda contra NaN: NaN pasa ambos recortes y la conversión a int16 sería comportamiento indefinido */
-        if (s < -1) s = -1; if (s > 1) s = 1;
+        if (s < -1) s = -1;
+        if (s > 1) s = 1;
         int16_t sample = (int16_t)(s * 32767);
         fwrite(&sample, 2, 1, f);
     }

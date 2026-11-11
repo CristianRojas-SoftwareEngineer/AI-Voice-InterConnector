@@ -522,12 +522,10 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
     }
     ctx->cp_rope_cache_len = cp_kv_max;
 
-    /* INT8 quantization of CP weights (optional, enabled by --int8 flag).
-     * The old cp_h>=2048 gate was a workaround for the denormal hang (fixed June
-     * 2026 via FTZ + fused int8 qkv). CP is hidden=1024 on BOTH models and is the
-     * per-frame bottleneck (~90% matvec), so quantizing it helps 0.6B and 1.7B. */
     /* La precisión del CP sigue normalmente a --int8/--int4, que TAMBIÉN cuantizan el Talker.
-     * QWEN_CP_PREC={bf16|int8|int4} DESACOPLA la precisión del CP de la del Talker para que
+     * El CP tiene hidden=1024 en ambos modelos y es el cuello de botella por fotograma
+     * (~90 % matvec), así que cuantizarlo acelera tanto el 0.6B como el 1.7B.
+     * QWEN_CP_PREC={bf16|int8|int4|mixed} DESACOPLA la precisión del CP de la del Talker para que
      * una medición mantenga fijo el Talker (y con él code0) y varíe SOLO el CP; si no,
      * code0 deriva entre ejecuciones y la coincidencia por codebook se contamina con la
      * cuantización del Talker. Sin la variable, el comportamiento de --int8/--int4 no cambia.
