@@ -2809,8 +2809,12 @@ int main(int argc, char **argv) {
      * weights. After the voice block + before any generation/serve dispatch, so single,
      * batch and server paths all use the expressivity-enhanced backbone. 1.7B only. */
     if (expr_path) {
+        /* --expr solo existe para el modelo 1.7B: con otro modelo se rechaza en lugar de
+         * sintetizar sin la expresividad pedida. */
         if (ctx->config.hidden_size < 2048) {
-            fprintf(stderr, "Warning: --expr is only supported on the 1.7B model (ignored)\n");
+            fprintf(stderr, "Error: --expr is only supported on the 1.7B model\n");
+            qwen_tts_unload(ctx);
+            return 1;
         } else if (apply_expr_file(ctx, expr_path, expr_weight, silent) != 0) {
             fprintf(stderr, "Error: failed to apply --expr file %s\n", expr_path);
             qwen_tts_unload(ctx);
