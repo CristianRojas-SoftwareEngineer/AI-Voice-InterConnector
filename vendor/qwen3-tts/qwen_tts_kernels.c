@@ -1947,10 +1947,21 @@ int qwen_quant_shape_check(const char *name, int cols) {
     return 0;
 }
 
+/* Distancia, en bytes, a la que los kernels int8 de dos filas anticipan la
+ * lectura de cada fila de pesos. Con la memoria compartida con otros procesos,
+ * pedir los pesos justo al usarlos deja al núcleo esperando a la RAM; pedirlos
+ * 5120 bytes por delante cubre esa latencia sin expulsar de la caché los datos
+ * que aún se van a usar (es la distancia que dio el menor RTF con carga de
+ * memoria en un Zen3). La anticipación no cambia el cálculo. Anticipar más allá
+ * del final de la matriz no produce fallos: prefetch es una pista que la CPU
+ * descarta si la dirección no es válida, tanto en x86 como en ARM. */
+#define QWEN_INT8_PF_DIST 5120
+
 #if defined(__ARM_FEATURE_DOTPROD)
-/* Native int8 dot matvec via SDOT: y[o] = scale[o] * sx * Σ_k W[o][k]·qx[k].
- * 4 int8×int8 MACs per vdotq_s32 instruction — no per-weight dequant. 2-row
- * fused to amortize the qx loads (matches the bf16/int8 2-row pattern). */
+/* Producto escalar entero con SDOT: y[o] = scale[o] * sx * Σ_k W[o][k]·qx[k].
+ * Cada vdotq_s32 hace 4 productos int8×int8 por lana, sin descuantizar pesos.
+ * Procesa dos filas a la vez para amortizar la carga de qx y anticipa la
+ * lectura de ambas filas QWEN_INT8_PF_DIST bytes por delante. */
 static void int8_matvec_sdot(float *y, const int8_t *qx, float sx,
                              const int8_t *W, const float *scale,
                              int in_dim, int out_dim) {
@@ -1961,6 +1972,8 @@ static void int8_matvec_sdot(float *y, const int8_t *qx, float sx,
         int32x4_t a0 = vdupq_n_s32(0), a1 = vdupq_n_s32(0);
         int k = 0;
         for (; k + 15 < in_dim; k += 16) {
+            __builtin_prefetch(w0 + k + QWEN_INT8_PF_DIST, 0, 3);
+            __builtin_prefetch(w1 + k + QWEN_INT8_PF_DIST, 0, 3);
             int8x16_t xv = vld1q_s8(qx + k);
             a0 = vdotq_s32(a0, vld1q_s8(w0 + k), xv);
             a1 = vdotq_s32(a1, vld1q_s8(w1 + k), xv);
@@ -2064,7 +2077,8 @@ static inline int int8_hsum_epi32(__m256i v) {
  * producto |w|·(a·sgn(w)) es exactamente w·a. Cada par adyacente suma como mucho
  * 128·127·2 = 32512 y no satura int16; _mm256_madd_epi16 con unos lo ensancha a
  * int32. Dos filas a la vez para amortizar la carga de la activación; la cola de
- * columnas (no múltiplo de 32) se acumula en escalar. */
+ * columnas (no múltiplo de 32) se acumula en escalar. El bucle de dos filas
+ * anticipa la lectura de ambas filas QWEN_INT8_PF_DIST bytes por delante. */
 static void int8_matvec_avx2(float *y, const int8_t *qx, float sx,
                              const int8_t *W, const float *scale,
                              int in_dim, int out_dim) {
@@ -2077,6 +2091,8 @@ static void int8_matvec_avx2(float *y, const int8_t *qx, float sx,
         __m256i acc0 = _mm256_setzero_si256(), acc1 = _mm256_setzero_si256();
         int k = 0;
         for (; k + 32 <= in_dim; k += 32) {
+            __builtin_prefetch(w0 + k + QWEN_INT8_PF_DIST, 0, 3);
+            __builtin_prefetch(w1 + k + QWEN_INT8_PF_DIST, 0, 3);
             __m256i a  = _mm256_loadu_si256((const __m256i *)(qx + k));
             __m256i v0 = _mm256_loadu_si256((const __m256i *)(w0 + k));
             __m256i v1 = _mm256_loadu_si256((const __m256i *)(w1 + k));
