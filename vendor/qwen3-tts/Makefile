@@ -703,10 +703,12 @@ test-selftest: $(TARGET)
 
 GOLDEN_EN = The quick brown fox jumps over the lazy dog on a sunny afternoon.
 
-# ── Mode matrix: quant × delivery (the combinations real usage hits) ──
-# Each combination must RUN and produce coherent audio (non-empty + frames). Here we
-# assert the CROSS-PRODUCT works: int8/bf16 × normal/stream. One shell so a failure
-# stops cleanly. Reloads the model each run (natural gap → reliable, unlike rapid-fire).
+# ── Matriz de modos: cuantización × entrega (las combinaciones que usa el uso real) ──
+# Cada combinación debe ejecutarse y producir audio coherente (no vacío y con fotogramas).
+# Cubre el producto cruzado int8/bf16 × normal/stream y el perfil de producción
+# (--quant-mixed --stream), que además debe informar la etiqueta [INT8+Q4_0-FFN] del Code
+# Predictor. Un único shell para que un fallo detenga la prueba limpiamente. Recarga el
+# modelo en cada ejecución (la pausa natural entre cargas la hace fiable).
 test-modes: $(TARGET)
 	@echo "=== Mode matrix (quant × delivery) 0.6B ==="
 	@mkdir -p $(TEST_DIR)
@@ -718,7 +720,8 @@ test-modes: $(TARGET)
 	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --stream --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_bfs.wav >$(TEST_DIR)/m_bfs.wav.log 2>&1; chk $(TEST_DIR)/m_bfs.wav "bf16 stream"; \
 	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --int8 --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_i8.wav >$(TEST_DIR)/m_i8.wav.log 2>&1; chk $(TEST_DIR)/m_i8.wav "int8 normal"; \
 	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --int8 --stream --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_i8s.wav >$(TEST_DIR)/m_i8s.wav.log 2>&1; chk $(TEST_DIR)/m_i8s.wav "int8 stream"; \
-	 echo "PASS: mode matrix (4 combinations)"
+	 ./$(TARGET) -d $(MODEL_SMALL) -j1 --seed 42 -s ryan -l English --quant-mixed --stream --text "$(GOLDEN_EN)" -o $(TEST_DIR)/m_qm.wav >$(TEST_DIR)/m_qm.wav.log 2>&1; chk $(TEST_DIR)/m_qm.wav "quant-mixed stream"; grep -q "\[INT8+Q4_0-FFN\]" $(TEST_DIR)/m_qm.wav.log || { echo "FAIL: quant-mixed CP label"; exit 1; }; \
+	 echo "PASS: mode matrix (5 combinations)"
 	@echo ""
 
 # ── Custom voice (.qvoice) — skip-if-absent (voices/ is gitignored / local-only) ──

@@ -320,6 +320,33 @@ void qwen_cp_quantize_q4(qwen_tts_ctx_t *ctx) {
             cp_qz_q4(&ctx->cp_lm_head_q4[g], ctx->cp_lm_head_bf16[g], c->codebook_size, cp_h);
 }
 
+/* Cuantización mixta del Code Predictor (QWEN_CP_PREC=mixed, la que fija
+ * --quant-mixed): la atención (wq, wk, wv, wo) y las 15 cabezas de salida en int8,
+ * y las FFN (gate_up_fused y down) en q4_0. Las FFN son la mayor parte de los bytes
+ * que el CP lee 15 veces por fotograma y toleran q4_0 sin pérdida de calidad
+ * medible, mientras que la atención y las cabezas quedan en int8. Las FFN se
+ * cuantizan directamente a q4_0, sin copias int8. */
+void qwen_cp_quantize_mixed(qwen_tts_ctx_t *ctx) {
+    qwen_tts_config_t *c = &ctx->config;
+    int cp_h = c->cp_hidden_size;
+    int cp_q_dim = c->cp_num_heads * c->cp_head_dim;
+    int cp_kv_dim = c->cp_num_kv_heads * c->cp_head_dim;
+    int cp_inter = c->cp_intermediate_size;
+    for (int i = 0; i < c->cp_num_layers; i++) {
+        qwen_cp_layer_t *l = &ctx->cp_layers[i];
+        cp_qz(&l->wq_int8, &l->wq_scale, l->wq_bf16, cp_q_dim, cp_h);
+        cp_qz(&l->wk_int8, &l->wk_scale, l->wk_bf16, cp_kv_dim, cp_h);
+        cp_qz(&l->wv_int8, &l->wv_scale, l->wv_bf16, cp_kv_dim, cp_h);
+        cp_qz(&l->wo_int8, &l->wo_scale, l->wo_bf16, cp_h, cp_q_dim);
+        cp_qz_q4(&l->gate_up_fused_q4, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
+        cp_qz_q4(&l->down_q4, l->down_bf16, cp_h, cp_inter);
+    }
+    for (int g = 0; g < 15; g++)
+        if (ctx->cp_lm_head_bf16[g])
+            cp_qz(&ctx->cp_lm_head_int8[g], &ctx->cp_lm_head_scale[g],
+                  ctx->cp_lm_head_bf16[g], c->codebook_size, cp_h);
+}
+
 /* PREFILL2 exige que cada matriz de las 5 capas del CP (wq, wk, wv, wo,
  * gate_up_fused y down) exista en int8 o en q4_0, en cualquier combinación,
  * porque CP_MM2 elige el kernel matmat de cada matriz por separado. Devuelve 1
@@ -338,20 +365,23 @@ static int cp_all_quantized(const qwen_tts_ctx_t *ctx) {
 }
 
 /* Etiqueta del log de carga con la precisión efectiva de las capas del CP:
- * INT8 si las 5 capas están enteras en int8, Q4_0 si están enteras en q4_0 y
- * BF16 si no hay matrices cuantizadas, que son las únicas configuraciones que
- * QWEN_CP_PREC, --int8 y --int4 pueden producir. */
+ * INT8 si las 5 capas están enteras en int8, Q4_0 si están enteras en q4_0,
+ * INT8+Q4_0-FFN si la atención está en int8 y las FFN en q4_0 (QWEN_CP_PREC=mixed)
+ * y BF16 si no hay matrices cuantizadas, que son las únicas configuraciones que
+ * QWEN_CP_PREC, --int8, --int4 y --quant-mixed pueden producir. */
 static const char *cp_prec_label(const qwen_tts_ctx_t *ctx) {
-    int all8 = 1, all4 = 1;
+    int all8 = 1, all4 = 1, mix = 1;
     for (int l = 0; l < ctx->config.cp_num_layers; l++) {
         const qwen_cp_layer_t *L = &ctx->cp_layers[l];
-        if (!(L->wq_int8 && L->wk_int8 && L->wv_int8 && L->wo_int8 &&
-              L->gate_up_fused_int8 && L->down_int8)) all8 = 0;
+        int att8 = L->wq_int8 && L->wk_int8 && L->wv_int8 && L->wo_int8;
+        if (!(att8 && L->gate_up_fused_int8 && L->down_int8)) all8 = 0;
         if (!(L->wq_q4 && L->wk_q4 && L->wv_q4 && L->wo_q4 &&
               L->gate_up_fused_q4 && L->down_q4)) all4 = 0;
+        if (!(att8 && L->gate_up_fused_q4 && L->down_q4)) mix = 0;
     }
     if (all8) return "INT8";
     if (all4) return "Q4_0";
+    if (mix) return "INT8+Q4_0-FFN";
     return "BF16";
 }
 
@@ -501,20 +531,31 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
      * una medición mantenga fijo el Talker (y con él code0) y varíe SOLO el CP; si no,
      * code0 deriva entre ejecuciones y la coincidencia por codebook se contamina con la
      * cuantización del Talker. Sin la variable, el comportamiento de --int8/--int4 no cambia.
-     * Los valores válidos son bf16, int8 e int4; cualquier otro valor no vacío detiene la
-     * carga con un error, para no sintetizar con una precisión distinta de la pedida. */
+     * El valor mixed (el que fija --quant-mixed) cuantiza la atención y las cabezas en int8
+     * y las FFN en q4_0 (ver qwen_cp_quantize_mixed). Los valores válidos son bf16, int8,
+     * int4 y mixed; cualquier otro valor no vacío detiene la carga con un error, para no
+     * sintetizar con una precisión distinta de la pedida. */
     int cp_do_int8 = ctx->use_int8;
     int cp_do_int4 = ctx->use_int4;
+    int cp_do_mixed = 0;
     const char *cp_prec = getenv("QWEN_CP_PREC");
     if (cp_prec && *cp_prec) {
-        if (strcmp(cp_prec, "bf16") && strcmp(cp_prec, "int8") && strcmp(cp_prec, "int4")) {
-            fprintf(stderr, "error: QWEN_CP_PREC=%s no es válido; use bf16, int8 o int4\n", cp_prec);
+        if (strcmp(cp_prec, "bf16") && strcmp(cp_prec, "int8") && strcmp(cp_prec, "int4") &&
+            strcmp(cp_prec, "mixed")) {
+            fprintf(stderr, "error: QWEN_CP_PREC=%s no es válido; use bf16, int8, int4 o mixed\n", cp_prec);
             return -1;
         }
         cp_do_int8 = !strcmp(cp_prec, "int8");
         cp_do_int4 = !strcmp(cp_prec, "int4");
+        cp_do_mixed = !strcmp(cp_prec, "mixed");
         if (!ctx->silent)
             fprintf(stderr, "  [QWEN_CP_PREC=%s] CP precision decoupled from Talker\n", cp_prec);
+    }
+
+    if (cp_do_mixed) {
+        if (!ctx->silent)
+            fprintf(stderr, "  Quantizing CP weights: attention INT8 + FFN Q4_0...\n");
+        qwen_cp_quantize_mixed(ctx);
     }
 
     if (cp_do_int8) {

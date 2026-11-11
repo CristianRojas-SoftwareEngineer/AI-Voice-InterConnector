@@ -1211,7 +1211,7 @@ int main(int argc, char **argv) {
             case 1055: expr_weight = atof(optarg); break;/* --expr-weight: scale factored-LoRA delta */
             case 1014: use_int8 = 1; break;
             case 1015: use_int4 = 1; break;
-            case 1073: use_int4 = 1; setenv("QWEN_CP_PREC", "int8", 1); break;  /* --quant-mixed: Talker int4 + CP int8 */
+            case 1073: use_int4 = 1; setenv("QWEN_CP_PREC", "mixed", 1); break;  /* --quant-mixed: Talker int4 + CP con atención int8 y FFN q4_0 */
             case 1022: voice_name = optarg; break;
             case 1023: { int gw = atoi(optarg); ctx_greedy_warmup = gw; } break;
             case 1024: target_cv_dir = optarg; break;
@@ -1307,7 +1307,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "  --expr-weight <m>          Dose a .expr (factored LoRA AND dense): 1=as trained, 0.6=subtler, 1.5=stronger\n");
                 fprintf(stderr, "  --int8                     INT8 quantized Talker + Code Predictor\n");
                 fprintf(stderr, "  --int4                     Q4_0 quantized Talker (1.7B only, smallest memory)\n");
-                fprintf(stderr, "  --quant-mixed              int4 Talker + int8 CP (q4 Talker win, no CP degradation)\n");
+                fprintf(stderr, "  --quant-mixed              int4 Talker + CP with INT8 attention and Q4_0 FFN\n");
                 fprintf(stderr, "  --roughness <0..1>         Texture/roughness knob (q2-down blend on Code Predictor)\n");
                 fprintf(stderr, "  --emotion <spec>           Emotion in ONE flag (1.7B). Primaries: sad/joy/anger/fear/disgust/surprise.\n");
                 fprintf(stderr, "                             Dyads: contempt/awe/nostalgia/disapproval/remorse/outrage/despair (blended steer).\n");
