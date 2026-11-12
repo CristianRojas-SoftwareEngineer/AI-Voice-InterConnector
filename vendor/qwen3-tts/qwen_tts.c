@@ -770,7 +770,7 @@ void qwen_tts_unload(qwen_tts_ctx_t *ctx) {
     free(ctx->cached_tts_pad_embed); free(ctx->cached_tts_bos_embed); free(ctx->cached_tts_eos_embed);
     emb_cache_free(ctx);
     free(ctx->logits); free(ctx->codec_codes); free(ctx->prev_tokens); free(ctx->audio_buf);
-    free(ctx->prev_input_embeds); free(ctx->cached_ref_codes);
+    free(ctx->cached_ref_codes);
     if (ctx->cached_tokenizer) qwen_tokenizer_free((qwen_tokenizer_t *)ctx->cached_tokenizer);
     free(ctx);
 }
@@ -782,13 +782,13 @@ void qwen_tts_unload(qwen_tts_ctx_t *ctx) {
  * voice's overridden/quantized weights + speaker embedding, precomputed
  * special-token embeddings) but owns FRESH copies of every buffer that the
  * generation path mutates (KV caches, per-step work buffers, the embedding
- * LRU cache, the delta-prefill cache, sampling params). This lets N server
+ * LRU cache, sampling params). This lets N server
  * workers each run a synthesis concurrently without aliasing each other's
  * state, while paying the weight memory only once.
  *
  * Sizes mirror the allocation sites in qwen_talker_load / qwen_cp_load /
  * qwen_tts_load_ex exactly (config is identical across clones). The lazily
- * grown buffers (pref_*, logits, codec_codes, prev_tokens, prev_input_embeds,
+ * grown buffers (pref_*, logits, codec_codes, prev_tokens,
  * sd_stream.*) start NULL and are realloc'd per worker on first request.
  *
  * Free a clone with qwen_tts_free_clone (frees ONLY the per-worker buffers —
@@ -862,7 +862,6 @@ qwen_tts_ctx_t *qwen_tts_clone_for_worker(const qwen_tts_ctx_t *base) {
     w->logits = NULL;
     w->codec_codes = NULL; w->codec_frames = 0; w->codec_frames_cap = 0;
     w->prev_tokens = NULL; w->n_prev_tokens = 0; w->prev_tokens_cap = 0;
-    w->prev_input_embeds = NULL; w->prev_prefill_len = 0;
     w->audio_buf = NULL; w->audio_samples = 0;
     memset(&w->sd_stream, 0, sizeof(w->sd_stream));
     /* El espacio de trabajo del decodificador se copió byte a byte con los punteros
@@ -906,7 +905,6 @@ void qwen_tts_free_clone(qwen_tts_ctx_t *ctx) {
     free(ctx->emb_tmp1); free(ctx->emb_tmp2);
     emb_cache_free(ctx);
     free(ctx->logits); free(ctx->codec_codes); free(ctx->prev_tokens); free(ctx->audio_buf);
-    free(ctx->prev_input_embeds);
     /* Per-worker lazily-built CP roughness buffers (NULL unless cp_roughness>0 used). */
     for (int i = 0; i < ctx->config.cp_num_layers; i++) free(ctx->cp_layers[i].down_q2_rough);
     free(ctx->instruct);
@@ -1392,35 +1390,9 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
         fprintf(stderr, "[CORR] pre-prefill: pre_conv_w[0]=%.6f\n", ctx->speech_dec.pre_conv_weight[0]);
     }
 
-    /* Delta prefill: compare with previous embeddings to find reusable KV prefix.
-     * For server mode, consecutive calls with the same speaker/language share
-     * the role+codec prefix (~8-9 tokens), so we skip re-prefilling those. */
-    int delta_start = 0;
-    if (ctx->prev_input_embeds && ctx->prev_prefill_len > 0) {
-        int max_match = (prefill_len < ctx->prev_prefill_len) ? prefill_len : ctx->prev_prefill_len;
-        for (int t = 0; t < max_match; t++) {
-            if (memcmp(input_embeds + (int64_t)t * h,
-                       ctx->prev_input_embeds + (int64_t)t * h,
-                       h * sizeof(float)) != 0)
-                break;
-            delta_start = t + 1;
-        }
-    }
-
-    /* BUGFIX (2026-06-03): a FULL prefix match (delta_start == prefill_len) — i.e. two
-     * identical consecutive server requests — skipped the `if (delta_start < prefill_len)`
-     * block entirely, so NO prefill/step ran and ctx->dec_x (read below to seed
-     * last_hidden = the first generated frame) stayed STALE from the PREVIOUS request's
-     * last token step. Identical requests therefore diverged (verified: 3 identical reqs
-     * -> 291884/311084/257324 B, even -j1 temp0). Fix: on a full match, do a full fresh
-     * prefill (delta_start = 0) so the request is bit-identical to a cold run. The
-     * delta-prefill optimization is preserved for PARTIAL matches (the real server case:
-     * same speaker/language prefix, different text) — those re-step the new tokens via
-     * the sequential path and correctly repopulate dec_x at the last position. */
-    if (delta_start >= prefill_len) delta_start = 0;
-
-    /* Reset KV cache to the reusable prefix length */
-    ctx->kv_len = delta_start;
+    /* Cada petición hace el prefill completo desde la posición 0, sin heredar nada de la anterior:
+     * así el resultado depende solo de la petición. */
+    ctx->kv_len = 0;
 
     /* No emotion steering during prefill (the gen loop sets w_eff per frame). Reset here
      * so a server-reused ctx doesn't inherit the previous request's effective weight. */
@@ -1437,48 +1409,15 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
     }
 
     double t_prefill = time_ms();
-    if (delta_start < prefill_len) {
-        if (delta_start > 0) {
-            /* Sequential prefill only for the server delta-reuse case (the BLAS
-             * batch prefill assumes it processes the full sequence from pos 0).
-             * NOTE: quantized (int8/int4) mode also uses the BATCHED path now —
-             * the bf16 weights are still mmap-resident (quantization doesn't free
-             * them), so the batched sgemm prefill works and is ~2x faster than the
-             * sequential int8 step path (cuts TTFA). Generation still uses int8. */
-            float *dummy_hidden = (float *)malloc(h * sizeof(float));
-            for (int t = delta_start; t < prefill_len; t++) {
-                if (qwen_talker_step(ctx, input_embeds + (int64_t)t * h, dummy_hidden) != 0) {
-                    free(input_embeds); free(dummy_hidden);
-                    return -1;
-                }
-            }
-            free(dummy_hidden);
-        } else {
-            /* Full BLAS batch prefill (first call, no delta, no quantization) */
-            if (qwen_talker_prefill(ctx, input_embeds, prefill_len) != 0) {
-                free(input_embeds);
-                return -1;
-            }
-        }
+    /* Prefill por lotes con BLAS sobre los pesos BF16 mapeados: sigue siendo la ruta rápida aunque
+     * el Talker esté cuantizado, porque la cuantización no libera los BF16. */
+    if (qwen_talker_prefill(ctx, input_embeds, prefill_len) != 0) {
+        free(input_embeds);
+        return -1;
     }
     double prefill_ms = time_ms() - t_prefill;
-    if (!ctx->silent) {
-        if (delta_start > 0)
-            fprintf(stderr, "  Prefill: %.0f ms (delta: %d new tokens, %d cached)\n",
-                    prefill_ms, prefill_len - delta_start, delta_start);
-        else
-            fprintf(stderr, "  Prefill: %.0f ms\n", prefill_ms);
-    }
-
-    /* Cache current embeddings for delta prefill on next call */
-    if (!ctx->prev_input_embeds || ctx->prev_prefill_len < prefill_len) {
-        free(ctx->prev_input_embeds);
-        ctx->prev_input_embeds = (float *)malloc((int64_t)prefill_len * h * sizeof(float));
-    }
-    if (ctx->prev_input_embeds) {
-        memcpy(ctx->prev_input_embeds, input_embeds, (int64_t)prefill_len * h * sizeof(float));
-        ctx->prev_prefill_len = prefill_len;
-    }
+    if (!ctx->silent)
+        fprintf(stderr, "  Prefill: %.0f ms (%d tokens)\n", prefill_ms, prefill_len);
 
     free(input_embeds);
 
@@ -1937,7 +1876,6 @@ int qwen_tts_generate_batch(qwen_tts_ctx_t *ctx, char **chunks, int nc,
         int maxpl = 0, ok = 1;
         ctx->prefill_only = 1;
         for (int b = 0; b < B && ok; b++) {
-            ctx->prev_prefill_len = 0;   /* cold prefill (no cross-chunk KV reuse) */
             if (qwen_tts_generate(ctx, chunks[g0 + b], NULL, NULL) != 0) { ok = 0; break; }
             int pl = ctx->kv_len; prompt_len[b] = pl; tcl[b] = ctx->bg_text_content_len;
             qwen_rms_norm(seed_hidden + (size_t)b * h, ctx->dec_x, ctx->talker_norm, 1, h, eps);
@@ -2120,7 +2058,6 @@ int qwen_tts_generate_batch_multi(qwen_tts_ctx_t *ctx,
             const qwen_batch_req_t *rq = &reqs[g0 + b];
             ctx->speaker_id = rq->speaker_id;
             ctx->language_id = rq->language_id;
-            ctx->prev_prefill_len = 0;   /* cold prefill per request */
             if (qwen_tts_generate(ctx, rq->text, NULL, NULL) != 0) { ok = 0; break; }
             int pl = ctx->kv_len; prompt_len[b] = pl; tcl[b] = ctx->bg_text_content_len;
             qwen_rms_norm(seed_hidden + (size_t)b * h, ctx->dec_x, ctx->talker_norm, 1, h, eps);
@@ -2346,7 +2283,7 @@ static void *prefill_helper_main(void *arg) {
         qwen_batch_req_t req; void *tag = NULL;
         if (!a->sink->next_job(a->sink->ud, &req, &tag, 1)) break;  /* shutdown + drained */
         pf->speaker_id = req.speaker_id; pf->language_id = req.language_id;
-        pf->prev_prefill_len = 0; pf->prefill_only = 1;
+        pf->prefill_only = 1;
         int prc = qwen_tts_generate(pf, req.text, NULL, NULL);
         pf->prefill_only = 0;
         int pl = pf->kv_len;
@@ -2500,7 +2437,7 @@ int qwen_tts_serve_continuous(qwen_tts_ctx_t *ctx, int B, qwen_batch_sink_t *sin
             /* prefill this request (single-stream prefill_only), capture KV into slot b */
             int sv_spk = ctx->speaker_id, sv_lang = ctx->language_id;
             ctx->speaker_id = req.speaker_id; ctx->language_id = req.language_id;
-            ctx->prev_prefill_len = 0; ctx->prefill_only = 1;
+            ctx->prefill_only = 1;
             int prc = qwen_tts_generate(ctx, req.text, NULL, NULL);
             ctx->prefill_only = 0;
             ctx->speaker_id = sv_spk; ctx->language_id = sv_lang;

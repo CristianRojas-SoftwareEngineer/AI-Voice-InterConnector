@@ -336,10 +336,6 @@ static int synth_one_span(qwen_tts_ctx_t *ctx, const qwen_cspan_t *sp, const cha
     if (sp->volume > 0.0f) vol  = sp->volume;
     if (!silent) fprintf(stderr, "Span %d: [%s] \"%s\"\n", idx, mood ? mood : "neutral", sp->text);
 
-    /* Each span is an INDEPENDENT synthesis: force a cold prefill so the previous span's
-     * KV/trajectory can't leak in via delta-prefill (ear-caught 2026-06-07). */
-    ctx->prev_prefill_len = 0;
-
     float *audio = NULL; int n = 0;
     int grc = qwen_tts_generate(ctx, sp->text, &audio, &n);
 
