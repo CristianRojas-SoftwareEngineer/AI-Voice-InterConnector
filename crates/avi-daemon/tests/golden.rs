@@ -350,7 +350,7 @@ async fn health_matches_fixture() {
     let fixture_val = fixture("daemon_health.json");
     assert_eq!(actual["status"], fixture_val["status"]);
     assert_eq!(actual["warm"], fixture_val["warm"]);
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(actual["schema_version"], Value::String("7".to_string()));
     // Las claves aditivas `ct2` y `stt` no cambian `schema_version`.
     assert_eq!(actual["engine"], fixture_val["engine"]);
 }
@@ -472,7 +472,7 @@ async fn synthesize_emits_contract_ndjson_stream() {
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("6".to_string()),
+            Value::String("7".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -862,7 +862,7 @@ async fn voices_clone_daemon_precomputed_true() {
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("6".to_string()),
+            Value::String("7".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -1361,7 +1361,7 @@ async fn dub_emits_contract_ndjson_stream_without_human_text() {
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("6".to_string()),
+            Value::String("7".to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -1393,7 +1393,7 @@ async fn voices_clone_non_boolean_force_returns_usage_error() {
 }
 
 /// `/dub` procesa el mismo PCM ruidoso con y sin Denoise, transcribe, traduce
-/// y devuelve un WAV en ambos casos sin dejar temporales de síntesis.
+/// y entrega el audio doblado por eventos `audio` en ambos casos.
 /// Usa el router con motores reales, no un proceso daemon HTTP independiente.
 #[cfg(all(
     feature = "native-stt",
@@ -1402,8 +1402,7 @@ async fn voices_clone_non_boolean_force_returns_usage_error() {
 ))]
 #[tokio::test]
 #[ignore = "requiere Parakeet, DPDFNet y el binario del motor Qwen3-TTS"]
-async fn dub_control_and_denoise_deliver_wav_without_temporary() {
-    let _temporaries = lock_temporaries().await;
+async fn dub_control_and_denoise_deliver_audio_events() {
     let _registry = lock_registry().await;
     require_clone_binary();
     let state = resource_state();
@@ -1446,31 +1445,12 @@ async fn dub_control_and_denoise_deliver_wav_without_temporary() {
                 "Denoise prolongado debe mantener vivo el stream"
             );
         }
-        let wav = result_audio(&events);
-        let output = tempfile::NamedTempFile::new().expect("WAV temporal de verificación");
-        std::fs::write(output.path(), &wav).expect("guardar WAV para validarlo");
-        let decoded = avi_audio::load_wav_24k_mono_pcm(output.path())
-            .expect("el doblaje debe devolver un WAV decodificable");
-        assert!(!decoded.is_empty(), "el doblaje no debe estar vacío");
-        assert!(
-            temp_wavs("avi_daemon_dub_").is_empty(),
-            "quedó un WAV temporal"
-        );
+        let pcm = delivered_pcm(&events);
+        assert!(!pcm.is_empty(), "el doblaje no debe estar vacío");
     }
 }
 
-// ─── barrido de temporales del daemon ───────────────────────────────────
-
-/// Las pruebas que barren los temporales del daemon se serializan entre sí: el
-/// binario de pruebas corre en paralelo y el barrido de residuo de una vería el
-/// temporal en vuelo de otra. Cerrojo asíncrono para no retener un
-/// `std::sync::MutexGuard` a través de un `await`.
-static TEMPORARIES_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Toma el cerrojo de temporales del binario de pruebas.
-async fn lock_temporaries() -> tokio::sync::MutexGuard<'static, ()> {
-    TEMPORARIES_LOCK.lock().await
-}
+// ─── síntesis con el motor real ─────────────────────────────────────────
 
 /// Exige `model.safetensors` del snapshot del modelo CustomVoice de los
 /// presets: lo provisiona `ai-voice-interconnector setup`.
@@ -1488,32 +1468,6 @@ fn require_custom_voice_model() {
     });
 }
 
-/// Temporales del daemon con el prefijo dado en el scratch resuelto para
-/// este proceso.
-fn temp_wavs(prefix: &str) -> Vec<PathBuf> {
-    std::fs::read_dir(avi_process::scratch::dir().expect("scratch"))
-        .expect("el scratch debe poder leerse")
-        .map(|e| e.expect("entrada del scratch").path())
-        .filter(|p| {
-            p.file_name()
-                .is_some_and(|n| n.to_string_lossy().starts_with(prefix))
-        })
-        .collect()
-}
-
-/// Sondea cada 20 ms hasta que `cond` sea cierta; falla con `what` si vence
-/// `limit`.
-async fn wait_until(what: &str, limit: std::time::Duration, mut cond: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + limit;
-    while std::time::Instant::now() < deadline {
-        if cond() {
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-    assert!(cond(), "no se cumplió a tiempo: {what}");
-}
-
 /// Eventos NDJSON de un cuerpo de respuesta.
 fn ndjson_events(bytes: &[u8]) -> Vec<Value> {
     String::from_utf8(bytes.to_vec())
@@ -1524,24 +1478,34 @@ fn ndjson_events(bytes: &[u8]) -> Vec<Value> {
         .collect()
 }
 
-/// Audio decodificado del evento `result` de una síntesis; falla si el evento
-/// final no es un resultado.
-fn result_audio(events: &[Value]) -> Vec<u8> {
+/// PCM (16 bits, 24 kHz, mono) que entregan los eventos `audio` de una síntesis, en
+/// orden. Exige que el evento final sea un `result` sin `audio_b64`: el audio ya no
+/// viaja en el resultado.
+fn delivered_pcm(events: &[Value]) -> Vec<u8> {
     let result = events.last().expect("debe haber un evento final");
     assert_eq!(result["event"], "result", "evento final: {result:?}");
-    base64::engine::general_purpose::STANDARD
-        .decode(result["audio_b64"].as_str().expect("audio_b64"))
-        .expect("el audio_b64 debe decodificar")
+    assert!(
+        result.get("audio_b64").is_none(),
+        "el resultado no lleva el audio: {result:?}"
+    );
+    let mut pcm = Vec::new();
+    for event in events.iter().filter(|e| e["event"] == "audio") {
+        let chunk = base64::engine::general_purpose::STANDARD
+            .decode(event["pcm_b64"].as_str().expect("pcm_b64"))
+            .expect("pcm_b64 debe decodificar");
+        assert_eq!(chunk.len() % 2, 0, "un fragmento de PCM de 16 bits es par");
+        pcm.extend(chunk);
+    }
+    pcm
 }
 
 /// Camino feliz de `/synthesize` con el motor real: un preset se sintetiza en el
-/// residente, el handler entrega un WAV no vacío y no deja temporal.
+/// residente y el handler entrega el audio por eventos `audio`.
 #[tokio::test]
 #[ignore = "requiere el binario del motor y el modelo CustomVoice"]
-async fn synthesize_preset_delivers_audio_and_leaves_no_temporary() {
+async fn synthesize_preset_delivers_audio_events() {
     require_clone_binary();
     require_custom_voice_model();
-    let _temporaries = lock_temporaries().await;
     let (status, bytes) = send_to(
         clone_state(),
         post_json(
@@ -1555,22 +1519,23 @@ async fn synthesize_preset_delivers_audio_and_leaves_no_temporary() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let events = ndjson_events(&bytes);
-    let audio = result_audio(&events);
-    assert!(audio.starts_with(b"RIFF"), "se esperaba un WAV");
-    assert!(audio.len() > 44, "el WAV no debe estar vacío");
+    let audio = delivered_pcm(&events);
+    assert!(!audio.is_empty(), "el audio no debe estar vacío");
     // Mismo idioma de origen y destino: `translated` es el texto de la petición.
     let result = events.last().expect("evento final");
     assert_eq!(result["translated"], "Hola, esto es una prueba.");
     assert!(result.get("t3_time").is_none());
     assert!(result.get("s3gen_time").is_none());
-    assert!(
-        temp_wavs("avi_daemon_synth_").is_empty(),
-        "la ruta feliz no debe dejar temporal"
-    );
 
     // El seed enviado gobierna la toma: mismo seed, mismo audio; otro seed, otro audio.
+    // Un único residente para las tres tomas, calentado con una petición previa. El
+    // motor con varios hilos (`-j 4`) puede producir, de forma intermitente, un audio
+    // distinto para la misma petición (variación ajena al seed y anterior a la entrega
+    // en streaming), así que la igualdad de las tomas con el mismo seed no está
+    // garantizada al 100 %.
+    let seed_state = clone_state();
     let with_seed = |seed: u64| {
-        let state = clone_state();
+        let state = seed_state.clone();
         async move {
             let (status, bytes) = send_to(
                 state,
@@ -1585,9 +1550,10 @@ async fn synthesize_preset_delivers_audio_and_leaves_no_temporary() {
             )
             .await;
             assert_eq!(status, StatusCode::OK);
-            result_audio(&ndjson_events(&bytes))
+            delivered_pcm(&ndjson_events(&bytes))
         }
     };
+    let _warmup = with_seed(10).await;
     let a = with_seed(11).await;
     let b = with_seed(11).await;
     let c = with_seed(12).await;
@@ -1605,7 +1571,6 @@ async fn synthesize_preset_delivers_audio_and_leaves_no_temporary() {
 async fn synthesize_announces_translation_and_matches_the_direct_route() {
     require_clone_binary();
     require_custom_voice_model();
-    let _temporaries = lock_temporaries().await;
     prepare_shared_env();
     let root = process_root().join("translated-synthesis");
     let mut state = DaemonState::with_stores(
@@ -1665,7 +1630,6 @@ async fn synthesize_announces_translation_and_matches_the_direct_route() {
 async fn synthesize_preset_in_each_language_delivers_audio() {
     require_clone_binary();
     require_custom_voice_model();
-    let _temporaries = lock_temporaries().await;
     for (token, text) in [
         ("es", "Hola, esto es una prueba."),
         ("en", "Hello, this is a test."),
@@ -1682,50 +1646,63 @@ async fn synthesize_preset_in_each_language_delivers_audio() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "idioma {token}");
-        let audio = result_audio(&ndjson_events(&bytes));
+        let audio = delivered_pcm(&ndjson_events(&bytes));
         assert!(
-            audio.len() > 44,
-            "idioma {token}: el WAV no debe estar vacío"
+            !audio.is_empty(),
+            "idioma {token}: el audio no debe estar vacío"
         );
     }
 }
 
-/// Recorrido común de la salida por desconexión: espera a que la fase cree su
-/// temporal, el cliente corta el stream sin leerlo hasta el final y se afirma
-/// que, al terminar el trabajo bloqueante, no queda ningún temporal propio.
-async fn disconnect_leaves_no_temporary(prefix: &str, response: axum::response::Response) {
+/// Recorrido común de la salida por desconexión: el cliente lee hasta el primer evento
+/// `audio` (la síntesis ya entrega), corta el stream y se afirma que la cancelación
+/// libera el motor: una segunda síntesis sobre el mismo estado termina bien.
+async fn disconnect_cancels_synthesis(state: Arc<DaemonState>, response: axum::response::Response) {
     assert_eq!(response.status(), StatusCode::OK);
     let mut body = response.into_body();
-    // Primer fotograma (`started`): la fase ya validó y está en marcha.
-    body.frame()
-        .await
-        .expect("el stream debe emitir al menos un fotograma")
-        .expect("el fotograma debe leerse");
-    wait_until(
-        "la fase crea su temporal",
-        std::time::Duration::from_secs(120),
-        || !temp_wavs(prefix).is_empty(),
-    )
-    .await;
-    // El cliente corta a mitad del trabajo.
+    let mut delivering = false;
+    while let Some(frame) = body.frame().await {
+        let frame = frame.expect("el fotograma debe leerse");
+        if frame
+            .data_ref()
+            .is_some_and(|data| String::from_utf8_lossy(data).contains("\"event\":\"audio\""))
+        {
+            delivering = true;
+            break;
+        }
+    }
+    assert!(delivering, "la síntesis debe llegar a entregar audio");
+    // El cliente corta a mitad de la entrega.
     drop(body);
-    wait_until(
-        "el trabajo bloqueante termina y borra su temporal",
+    let (status, bytes) = tokio::time::timeout(
         std::time::Duration::from_secs(180),
-        || temp_wavs(prefix).is_empty(),
+        send_to(
+            state,
+            post_json(
+                "/synthesize",
+                serde_json::json!({
+                    "text": "Hola.", "voice": "ryan",
+                    "source_language": "es", "target_language": "es"
+                }),
+            ),
+        ),
     )
-    .await;
+    .await
+    .expect("la cancelación debe liberar el motor para la siguiente síntesis");
+    assert_eq!(status, StatusCode::OK);
+    let events = ndjson_events(&bytes);
+    assert!(!delivered_pcm(&events).is_empty());
 }
 
-/// Al cortar el cliente el stream de `/synthesize`, el WAV temporal desaparece
-/// cuando termina el trabajo bloqueante y no queda residuo.
+/// Al cortar el cliente el stream de `/synthesize`, la síntesis se cancela y el
+/// motor queda libre para la siguiente.
 #[tokio::test]
 #[ignore = "requiere el binario del motor y el modelo CustomVoice"]
-async fn synthesize_disconnect_removes_temporary_when_blocking_work_ends() {
+async fn synthesize_disconnect_cancels_the_engine_work() {
     require_clone_binary();
     require_custom_voice_model();
-    let _temporaries = lock_temporaries().await;
-    let response = build_router_with_state(clone_state())
+    let state = clone_state();
+    let response = build_router_with_state(state.clone())
         .oneshot(post_json(
             "/synthesize",
             serde_json::json!({
@@ -1736,24 +1713,23 @@ async fn synthesize_disconnect_removes_temporary_when_blocking_work_ends() {
         ))
         .await
         .expect("el router debe responder");
-    disconnect_leaves_no_temporary("avi_daemon_synth_", response).await;
+    disconnect_cancels_synthesis(state, response).await;
 }
 
-/// En `/dub`: misma salida por desconexión sobre la ruta de doblaje, con su
-/// prefijo de temporal. `/dub` transcribe antes de sintetizar.
+/// En `/dub`: misma salida por desconexión sobre la ruta de doblaje, que transcribe
+/// antes de sintetizar.
 #[cfg(feature = "native-stt")]
 #[tokio::test]
 #[ignore = "requiere Parakeet, el binario del motor y el modelo CustomVoice"]
-async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
+async fn dub_disconnect_cancels_the_engine_work() {
     let state = resource_state();
     require_clone_binary();
     require_custom_voice_model();
-    let _temporaries = lock_temporaries().await;
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
     let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_responses_16k.wav"))
         .expect("el WAV corpus debe cargarse");
     let audio: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
-    let response = build_router_with_state(state)
+    let response = build_router_with_state(state.clone())
         .oneshot(post_json(
             "/dub",
             serde_json::json!({
@@ -1765,7 +1741,7 @@ async fn dub_disconnect_removes_temporary_when_blocking_work_ends() {
         ))
         .await
         .expect("el router debe responder");
-    disconnect_leaves_no_temporary("avi_daemon_dub_", response).await;
+    disconnect_cancels_synthesis(state, response).await;
 }
 
 /// Eventos NDJSON de la respuesta de `/synthesize` para `voice`, con un estado
