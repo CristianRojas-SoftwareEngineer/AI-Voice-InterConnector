@@ -150,13 +150,15 @@ campo a campo en modo directo y vía daemon.
 | `audio_path` | string | Ruta del WAV en el almacén (`speech/<voz>/<etiqueta>.wav`): la guardada o la que ya existía |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
 
-**`speech say --json`** — no persiste nada y **no informa de ruta**: el WAV va a un
-temporal autogestionado que se borra al terminar.
+**`speech say --json`** — no persiste nada y **no informa de ruta**: el audio suena
+según se sintetiza y no pasa por ningún archivo.
 
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `status` | string | Siempre `"reproduced"` |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
+| `first_audio_ms` | número | Milisegundos desde el inicio de la fase de síntesis hasta que suena la primera muestra (por la ruta directa incluye el arranque del motor) |
+| `stalls` | número | Veces que la cola de reproducción se vació con la entrega en curso y la voz se pausó; `0` si sonó continua |
 
 **`speech play --json`** / **`speech remove --json`** — identifican la locución y el resultado.
 
@@ -492,9 +494,10 @@ siendo la misma con la que se sintetizó. Si se re-clonó o se eliminó mientras
 tanto, no se guarda nada y sale con exit **6** y `reason` `voice_changed`: repite
 la síntesis.
 
-**El bucle de `--play`:** con `--play`, tras sintetizar el audio se reproduce
-y aparece un menú de cuatro opciones (por stderr; `--json` es incompatible con
-`--play`):
+**El bucle de `--play`:** con `--play`, la toma suena mientras se sintetiza
+(sin esperar a que termine) y, al terminar, aparece un menú de cuatro opciones
+(por stderr; `--json` es incompatible con `--play`). El menú no repite la toma al
+entrar:
 
 ```
 ¿Qué quieres hacer con esta toma?
@@ -505,9 +508,9 @@ y aparece un menú de cuatro opciones (por stderr; `--json` es incompatible con
 Opción [1-4]:
 ```
 
-- **Reproducir otra vez**: repite el mismo WAV temporal, sin volver a sintetizar.
+- **Reproducir otra vez**: repite el mismo WAV temporal completo, sin volver a sintetizar.
 - **Aceptar y guardar**: persiste la toma que acabas de oír y termina con exit 0.
-- **Rechazar y regenerar**: sintetiza una toma nueva (suena distinta de las anteriores), muestra «Sintetizando otra toma…» (también vía daemon) y vuelve a preguntar.
+- **Rechazar y regenerar**: sintetiza una toma nueva (suena distinta de las anteriores y también suena mientras se sintetiza), muestra «Sintetizando otra toma…» (también vía daemon) y vuelve a preguntar. Si la síntesis falla con la toma ya sonando, se corta la reproducción y el comando termina con error: la toma incompleta no se ofrece ni se guarda.
 - **Rechazar y descartar**: termina con exit 0 sin guardar nada.
 
 Ctrl-D en la pregunta equivale a «rechazar y descartar». `speech synthesize
@@ -516,8 +519,8 @@ sale con exit 2 antes de sintetizar.
 
 #### `speech say`
 
-Sintetiza texto y reproduce el audio inmediatamente por los altavoces, sin
-guardar nada en el almacén.
+Sintetiza texto y reproduce el audio por los altavoces a la vez, sin esperar a
+que termine la síntesis (entrega en streaming), sin guardar nada en el almacén.
 
 Sin `--voice`, `speech say` usa la voz de fábrica **`default`** (empaquetada,
 de solo lectura), por lo que el ejemplo mínimo funciona recién instalado, sin
@@ -532,16 +535,19 @@ ai-voice-interconnector speech say --text "Hola mundo" --voice mi_voz
 ```
 
 **Qué esperar:** en modo directo (sin daemon) se resuelve la voz, se sintetiza
-con Qwen3-TTS y el audio suena por los altavoces. Con el daemon activo, el CLI
-delega vía HTTP y el modelo ya está caliente en memoria. Salida típica (stdout):
+con Qwen3-TTS y el audio suena por los altavoces según se genera: la voz empieza
+en torno a un segundo tras la síntesis (más el arranque del motor en modo
+directo), no al final. Con el daemon activo, el CLI delega vía HTTP y el modelo
+ya está caliente en memoria. Salida típica (stdout):
 
 ```
 Reproduciendo (N s).
 ```
 
-El WAV va a un temporal autogestionado que se borra al terminar, así que el texto
-no dice ruta; quien quiera el fichero en disco usa `speech synthesize`, que lo
-persiste y sí devuelve su `audio_path`. `say` es humo de punta a punta, sin
+El audio no pasa por ningún archivo, así que el texto no dice ruta; quien quiera
+el fichero en disco usa `speech synthesize`, que lo persiste y sí devuelve su
+`audio_path`. Si la síntesis falla con la voz ya sonando, se corta la
+reproducción y el comando termina con error. `say` es humo de punta a punta, sin
 puerta de calidad sobre lo que sonó.
 
 **Orígenes de voz:** todas las voces viven en `data_dir()/voices/<nombre>/`, en
@@ -746,9 +752,9 @@ de síntesis; no guarda nada en el almacén (no tiene `--label`). En modo texto
 imprime siempre tres líneas por stdout: `Transcripción: <texto>`,
 `Traducción: <texto>` y `Doblaje reproducido (N s).` (con origen igual a
 destino, las dos primeras llevan el mismo texto). Con `--json` emite
-`{"status":"dubbed","text","translated"}`, donde `text` es la transcripción y
-`translated` el texto sintetizado (siempre presente), y **sin `audio_path`**:
-el WAV es un temporal que se borra al terminar. Como `say`,
+`{"status":"dubbed","text","translated","first_audio_ms","stalls"}`, donde `text` es la
+transcripción y `translated` el texto sintetizado (siempre presente), y **sin
+`audio_path`**: el audio suena según se sintetiza y no se guarda. Como `say`,
 `dub` es humo sin puerta de calidad sobre lo que sonó.
 
 `--audio` y `--mic` son **mutuamente excluyentes y exactamente una de las dos
@@ -764,7 +770,7 @@ ai-voice-interconnector speech dub --audio grabacion.wav --source-language en --
 ```
 
 **Qué esperar:** transcribe tu habla al texto, lo traduce si procede y
-reproduce la síntesis con la voz (`default` si no pasas `-v`). Con `--mic` y
+reproduce la síntesis con la voz (`default` si no pasas `-v`) mientras se genera. Con `--mic` y
 sin `--duration`, el comando avisa por stderr al iniciar la grabación y
 captura en modo push-to-talk hasta que presiones Enter (o hasta el techo
 `AVI_PUSH_TO_TALK_MAX_SECS`) antes de transcribir.
@@ -1116,7 +1122,7 @@ ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 **Qué esperar** con el daemon activo: `speech say` omite la carga del modelo y
 la síntesis empieza de inmediato. Mientras sintetiza, el daemon mantiene viva la
 conexión con latidos NDJSON (ver [docs/CLI/CONTRACT.md](docs/CLI/CONTRACT.md#transporte-streaming-ndjson-y-presupuesto-de-inactividad));
-el cliente muestra cada etapa como una fase con su tiempo (calentando, en cola, traduciendo, sintetizando). Al terminar la reproducción imprime lo
+el cliente muestra cada etapa como una fase con su tiempo (calentando, en cola, traduciendo, sintetizando) y, en cuanto suena la primera muestra, «Reproduciendo…»: el daemon envía el audio en eventos `audio` del mismo flujo, que el cliente reproduce según llegan. Al terminar la reproducción imprime lo
 mismo que en modo directo, sin ruta:
 
 ```
@@ -1124,7 +1130,7 @@ Reproduciendo (N s).
 ```
 
 Con `--json`, en lugar de esa línea emite el payload
-`{"status":"reproduced","voice":…}` en stdout.
+`{"status":"reproduced","voice":…,"first_audio_ms":…,"stalls":…}` en stdout.
 
 ---
 

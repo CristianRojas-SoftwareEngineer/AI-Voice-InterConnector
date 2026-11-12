@@ -139,6 +139,13 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+### Añadido
+
+- **Entrega en streaming:** `speech say`, `speech dub` y `speech synthesize --play` (también cada toma nueva del menú) reproducen el audio mientras se sintetiza, por la ruta directa y por el daemon, en lugar de esperar a que termine toda la síntesis: con una frase larga de 450 caracteres (26 s de audio) la voz pasa de empezar a los 18 s a empezar en torno a 1 s. Toda síntesis usa `POST /v1/tts/stream` del motor con fragmentos de 4 fotogramas, y el reproductor incremental espera 300 ms de audio en cola antes de sonar y, si la cola se vacía con la entrega en curso, pausa y reanuda. Si la síntesis falla o vence su plazo con la voz ya sonando, se corta la reproducción y el comando termina con `synthesis_failed` o `synthesis_timeout`.
+- `speech say --json` y `speech dub --json` añaden las claves `first_audio_ms` (milisegundos desde el inicio de la fase de síntesis hasta la primera muestra entregada al dispositivo) y `stalls` (veces que la cola de reproducción se vació con la entrega en curso). Son claves nuevas: la versión del envelope de la CLI sigue en `"6"`.
+- Los streams NDJSON de `/synthesize` y `/dub` del daemon emiten un evento `audio` por fragmento, `{"event":"audio","pcm_b64":…}`, con PCM de 16 bits, 24 kHz, mono, en base64.
+- El motor TTS añade el objetivo `make test-serve-stream`, que comprueba la entrega por partes, las validaciones, la reproducibilidad y la cancelación.
+
 ### Cambiado
 
 - El residente TTS selecciona por defecto cuantización mixta con cuatro hilos y admite `AVI_TTS_PRECISION=bf16` como alternativa al crear el motor. Los valores inválidos se rechazan y los ajustes del residente no modifican el entorno del clonado. La comparación auditiva y la validación integral de la adopción siguen pendientes; no se ha publicado ni desplegado el cambio.
@@ -149,8 +156,16 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - En Windows el pool de hilos del motor espera activamente un presupuesto acotado antes de dormir, lo que reduce el coste de los unos 495 despachos por fotograma del Code Predictor.
 - El perfil TTS por defecto (`mixed`, `--quant-mixed`) mantiene el Talker en q4_0 y pasa el Code Predictor a atención y cabezas de salida en INT8 con las FFN en Q4_0 (etiqueta de log `[INT8+Q4_0-FFN]`). Además, el prefill de dos posiciones se usa con cualquier Code Predictor cuantizado, los kernels INT8 de AVX2 y SDOT anticipan la lectura de pesos y el decodificador procesa por tramos sus etapas finales mientras se genera. En un Ryzen 7 5825U con el texto largo de referencia, el RTF mediano baja de 0,79 a 0,66 sin carga, de 1,06 a 0,84 con un hilo de carga de memoria y de 1,45 a 1,10 con dos (todos los pares a favor), y en el daemon mejora en todas las frases. El tiempo hasta el primer audio no cambia, el drenaje final del decodificador queda unos 40 ms por encima y la frase completa termina entre 3 y 8 s antes. La calidad (WER, similitud de voz, finales, entonación y duración) y la escucha no cambian; validado con el modelo 0.6B.
 
+- El motor TTS hace siempre el prefill completo: desaparece la reutilización del prefill entre peticiones, que recalculaba el resto del prompt con los pesos q4_0 y daba audios distintos según la petición anterior. El audio de una petición que seguía a otra con texto distinto cambia, y el primer audio llega antes en el caso habitual (1,27–1,37 s frente a 0,98–1,03 s en las mediciones previas).
+- Una respuesta de `/v1/tts/stream` solo se cierra con su fragmento final si la generación terminó bien: si falla, queda sin cierre y el cliente la reconoce como entrega truncada; la desconexión del cliente se comprueba en cada fotograma, como en la entrega completa.
+- El menú de `speech synthesize --play` ya no repite la toma al entrar: la toma ya sonó mientras se sintetizaba, y «Reproducir otra vez» reproduce el WAV temporal completo.
+
 ### Eliminado
 
+- **Incompatible (daemon):** el evento `result` de `/synthesize` y `/dub` ya no lleva `audio_b64`: el audio llega en los eventos `audio`. `DAEMON_SCHEMA_VERSION` pasa de `"6"` a `"7"`.
+- **Incompatible (motor TTS):** el servidor responde 400, con la causa, a un texto en blanco, un idioma o un `speaker` desconocidos, una `temperature`, `top_k`, `top_p` o `rep_penalty` fuera de rango y un `rate` distinto de 1 en `/v1/tts/stream`, en el modo normal y en el modo por lotes; antes sustituía por los valores por defecto o recortaba sin avisar. La CLI del motor termina con error ante `-s` o `-l` desconocidos y ante `--rate` distinto de 1 con `--stream`, que antes solo avisaba.
+- **Incompatible (motor TTS):** la aplicación lanza el residente sin la opción `--stream` y deja de llamar a `POST /v1/tts`.
+- **Incompatible (API de los crates):** `avi-tts` elimina el trait `TtsEngine` y sus métodos `synthesize_cancellable` y `synthesize_with_options`, y los tipos `ProsodyOptions` y `EmotionOptions`; `Qwen3TtsEngine` expone `synthesize_streaming` y `synthesize_to_wav`. `avi-audio` añade `AudioService::stream_player` y `encode_pcm_mono_wav`.
 - **Incompatible (motor TTS):** desaparecen las variables de entorno `QWEN_NO_SDOT`, `QWEN_NO_VNNI`, `QWEN_NO_VNNI_QKV`, `QWEN_INT8_SDOT_MM`, `QWEN_NO_SMMLA`, `QWEN_APPLE_MMLA`, `QWEN_CP_PREFILL2`, `QWEN_Q4_VNNI_V3` y `QWEN_Q4_VNNI_V4` junto con las rutas alternativas que seleccionaban: solo queda el producto escalar entero.
 - **Incompatible (motor TTS):** desaparecen los objetivos del `Makefile` del motor `emotion-demo`, `emotion-para-demo`, `emovoice`, `emo-06b-demo`, `para-demo`, `emo-suite`, `test-lora-it`, `emotion-seeds`, `batching-bench`, `bench-matrix`, `bench-matrix-full`, `bench-server`, `test-golden`, `golden-update`, `quant-ladder`, `test-serve-concurrent`, `test-serve-repro`, `test-serve-batch`, `test-serve-continuous` y `test-serve-stream-batch`; `demo-clone` exige `REF=`.
 - **Incompatible (motor TTS):** el motor deja de compilar en Linux ARM64 sin la extensión `dotprod` (ahora `-march=armv8.2-a+dotprod`); quedan fuera las CPUs ARMv8.0 y ARMv8.1 como el Cortex-A72 de la Raspberry Pi 4.

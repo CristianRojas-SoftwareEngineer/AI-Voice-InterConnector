@@ -170,7 +170,7 @@ ai-voice-interconnector speech synthesize --text "Guardando a archivo." --label 
 ai-voice-interconnector speech say --text "Modo directo." --no-daemon
 ```
 
-**Esperado**: en `say` se oye el audio y **no** queda locución (no aparece en `speech list`), **exit 0**. En `synthesize` sin `--play` se persiste la locución `prueba` (aparece en `speech list`), **exit 0**. `--no-daemon` produce el mismo resultado por la vía directa.
+**Esperado**: en `say` se oye el audio **empezando antes de que termine la síntesis** (con el daemon, en torno a 1 s; en modo directo, un poco más por el arranque del motor), continuo y sin cortes, y **no** queda locución (no aparece en `speech list`), **exit 0**. En `synthesize` sin `--play` se persiste la locución `prueba` (aparece en `speech list`), **exit 0**. `--no-daemon` produce el mismo resultado por la vía directa.
 
 ## 6. Gestión de voces
 
@@ -264,7 +264,7 @@ ai-voice-interconnector speech transcribe --audio clip.wav --source-language es 
 ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --target-language es --voice mi_voz
 ```
 
-**Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`), **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce, **exit 0**. Un `--audio` inexistente sale con **exit 3**, igual que un `--mic` sin entrada predeterminada (`no_input_device`) o un `dub` sin salida predeterminada (`no_output_device`); un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
+**Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`), **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce **mientras sintetiza** (la voz empieza antes de que termine la síntesis y suena continua), **exit 0**. Un `--audio` inexistente sale con **exit 3**, igual que un `--mic` sin entrada predeterminada (`no_input_device`) o un `dub` sin salida predeterminada (`no_output_device`); un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
 
 **Doblaje y traducción: paridad y progreso.** Con `speech dub` en una terminal real, repite con `--no-daemon` y `--daemon`: el tiempo de cada fase (incluida «Limpiando ruido del audio…» con `--denoise`) avanza en la ruta directa, y ninguna fase muestra «(daemon)». Un `dub` con una voz inexistente sale con **exit 3** (`voice_not_found`) antes de leer el audio o abrir el micrófono, en las dos rutas. La paridad del texto traducido se comprueba con una entrada de dos oraciones y dos párrafos: `translate --text "<texto>" --source-language es --target-language en` con `--no-daemon` y con `--daemon` debe dar el **mismo** texto, igual que el sidecar de `speech synthesize --text "<texto>" --label p --source-language es --target-language en` (`speech list --json`) por las dos rutas. `translate --daemon` no tiene un tope total de 1500 ms: usa el mismo criterio que `speech transcribe --daemon`, y sin daemon sale con **exit 5** (`daemon_unreachable`).
 
@@ -369,7 +369,7 @@ ai-voice-interconnector speech synthesize --text "hola" --label p1 --play < /dev
 ```bash
 ai-voice-interconnector speech synthesize --text "Prueba del bucle interactivo." --label demo_loop --play
 ```
-**Esperado**: sintetiza **una vez**, reproduce la toma, y en **stderr** muestra:
+**Esperado**: sintetiza **una vez** y la toma **suena mientras se sintetiza** (la voz empieza antes de que termine la síntesis y suena continua); al terminar no se repite al entrar al menú, y en **stderr** se muestra:
 ```
 ¿Qué quieres hacer con esta toma?
   1) Reproducir otra vez
@@ -380,7 +380,7 @@ Opción [1-4]:
 ```
 Prueba cada opción:
 - **`1`** → vuelve a reproducir la **misma** toma (sin re-sintetizar) y reaparece el menú.
-- **`3`** → muestra «Sintetizando otra toma…», **re-sintetiza** una toma nueva, la reproduce y reaparece el menú sin que la línea de progreso quede pegada a él. Elige `3` varias veces: **cada toma debe sonar distinta** de las anteriores. Repite todo el procedimiento con `--no-daemon` y con `--daemon` para cubrir la ruta directa y la del daemon: en las dos debe decir «Sintetizando otra toma…», el tiempo de la fase debe avanzar en la ruta directa y ninguna fase debe mostrar «(daemon)». Con `--source-language es --target-language en` aparece además la fase «Traduciendo texto…» también por el daemon.
+- **`3`** → muestra «Sintetizando otra toma…», **re-sintetiza** una toma nueva que también suena mientras se sintetiza, y reaparece el menú sin que la línea de progreso quede pegada a él. Elige `3` varias veces: **cada toma debe sonar distinta** de las anteriores. Repite todo el procedimiento con `--no-daemon` y con `--daemon` para cubrir la ruta directa y la del daemon: en las dos debe decir «Sintetizando otra toma…», el tiempo de la fase debe avanzar en la ruta directa y ninguna fase debe mostrar «(daemon)». Con `--source-language es --target-language en` aparece además la fase «Traduciendo texto…» también por el daemon.
 - **`2`** → guarda la locución (**exit 0**); verifícalo con `ai-voice-interconnector speech list --json` (debe aparecer `demo_loop`).
 - **`4`** o **Ctrl-D (EOF)** → imprime `Descartado.` y sale **exit 0** **sin** guardar nada.
 

@@ -4,7 +4,7 @@ Síntesis, transcripción, doblaje voz→voz y limpieza local de archivos de aud
 [despacho al daemon](../CONTRACT.md#5-el-despacho-al-daemon).
 
 Implementación: enum `SpeechCommands`, `handle_speech` para las demás acciones y `handle_denoise` desde `main` para el veredicto de archivos. Helpers de despacho al daemon: `route_to_daemon`, `transcribe_via_daemon`,
-`daemon_synthesize_wav`, `synthesize_via_daemon`, `say_via_daemon`, `dub_via_daemon`.
+`daemon_synthesize_streaming`, `synthesize_via_daemon`, `say_via_daemon`, `dub_via_daemon`.
 
 ---
 
@@ -255,10 +255,11 @@ Flujo local:
 2. Despacho: si aplica, vía daemon; si no, rama directa:
  `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b`) → `translate_if_different`
  (passthrough si `source == target`; si no, exige el modelo de traducción
- provisionado, exit 4 si falta) → `Qwen3TtsEngine::synthesize_with_options` → sin
- `--play`, persiste directamente; con `--play`, entra al bucle de 4
- opciones y persiste solo al aceptar. La CLI imprime la ruta calculada del
- WAV persistido.
+ provisionado, exit 4 si falta) → entrega en streaming con `Qwen3TtsEngine`: sin
+ `--play`, acumula el audio, escribe el WAV temporal y persiste; con `--play`, la
+ toma suena mientras se sintetiza, se acumula en el WAV temporal y entra al bucle
+ de 4 opciones, que persiste solo al aceptar y no repite la reproducción al
+ entrar. La CLI imprime la ruta calculada del WAV persistido.
 
 **Persistencia.** Toda locución se guarda con `avi_store::persist_locution`
 (`crates/avi-store/src/lib.rs`), la única forma de escribir en `SpeechStore`, en
@@ -282,9 +283,10 @@ comprobación y la escritura queda una ventana de milisegundos que se acepta.
 La rama vía daemon pasa por la misma preparación en el cliente —nombres, voz y
 colisión, contra el almacén compartido— y resuelve la identidad de la voz antes de
 despachar la síntesis al daemon (`POST /synthesize`, consume
-el NDJSON y decodifica `audio_b64` y `translated` del evento `result`; un
-`result` sin `translated` es `synthesis_failed`), guarda el WAV temporal,
-aplica el mismo bucle de `--play` (o persiste directo sin él; cada
+el NDJSON: acumula el PCM de los eventos `audio`, que con `--play` suena según
+llega, y lee `translated` del evento `result`; un `result` sin `translated` es
+`synthesis_failed`, y un evento `audio` inválido, `daemon_error`), guarda el WAV
+temporal, aplica el mismo bucle de `--play` (o persiste directo sin él; cada
 regeneración envía un `seed` explícito) y expone la ruta del WAV persistido.
 El sidecar guarda el texto realmente sintetizado (`translated`), igual que la
 rama local — el mismo contrato de salida y de persistencia. Cuando los idiomas difieren, el daemon traduce con la misma segmentación (oraciones y párrafos, por lotes) que la ruta directa, así que la misma entrada produce el mismo texto por las dos rutas, y la CLI muestra la fase `translating` también por esta vía.
@@ -298,7 +300,12 @@ rama local — el mismo contrato de salida y de persistencia. Cuando los idiomas
 ```
 
 `skipped` lo emite `--skip-existing` sobre una etiqueta ocupada y `discarded` el
-descarte del bucle `--play`. (Idéntico vía daemon y en la rama local.)
+descarte del bucle `--play`. (Idéntico vía daemon y en la rama local.) El
+envelope de `synthesize` no lleva `first_audio_ms` ni `stalls`: `--play`, el único
+modo en que la toma suena, es incompatible con `--json`. Si la síntesis falla o
+vence su plazo con la voz de `--play` ya sonando, se corta la reproducción, la
+toma no se ofrece en el menú ni se guarda, y el comando sale con 1
+`synthesis_failed` o `synthesis_timeout`.
 
 ---
 
@@ -308,15 +315,20 @@ descarte del bucle `--play`. (Idéntico vía daemon y en la rama local.)
 ai-voice-interconnector speech say --text <texto> [--voice <nombre>] [--source-language <es|en>] [--target-language <es|en>] [--temperature <0<t<=2.0>] [--daemon|--no-daemon]
 ```
 
-Sintetiza y reproduce sin persistir en `SpeechStore` (no tiene `--label`).
+Sintetiza y reproduce a la vez, en streaming, sin persistir en `SpeechStore` (no tiene `--label`): la voz empieza a sonar en cuanto hay audio suficiente, sin esperar a que termine la síntesis.
 El texto debe ser no vacío y de hasta 500 caracteres Unicode (exit 2
 `empty_text` / `text_too_long`, validado antes de cualquier despacho). La
 síntesis directa se acota al presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)); al vencer, exit 1
 `synthesis_timeout`. Mismas reglas de `--source-language`/`--target-language`/`--temperature` que
-`synthesize`. Escribe el WAV en un archivo temporal del scratch del proceso
-(con prefijo `avi_say_`) y siempre lo reproduce (`AudioService::play_wav`); a
+`synthesize`. No escribe ningún archivo: reproduce el audio según llega con
+`AudioService::stream_player`, que espera 300 ms de audio en cola antes de sonar y,
+si la cola se vacía con la entrega en curso, pausa y reanuda al recuperarlos; a
 diferencia de `synthesize`, no hay flag `--play` porque la reproducción es
-incondicional.
+incondicional. El dispositivo de salida se abre antes de pedir la síntesis: sin
+salida de audio el comando sale con 3 sin sintetizar. Si la síntesis falla o vence
+su plazo con la voz ya sonando, se corta la reproducción y sale con 1
+`synthesis_failed` o `synthesis_timeout`; un fallo del dispositivo durante la
+reproducción es `playback_failed` y cancela la síntesis.
 
 Valida con la misma preparación que `synthesize` («invocación → almacén →
 recursos»): la temperatura y el texto, el nombre de voz (exit 2
@@ -325,21 +337,23 @@ dos rutas y antes del modelo o del daemon.
 
 Despacho: `say_via_daemon` si aplica, o rama directa con
 `require_model_provisioned` + `translate_if_different` +
-`Qwen3TtsEngine::synthesize_with_options` + `AudioService::play_wav`. Con idiomas distintos, ambas rutas muestran la fase `translating` y traducen igual.
+`Qwen3TtsEngine::synthesize_streaming` + `AudioService::stream_player`. Con idiomas distintos, ambas rutas muestran la fase `translating` y traducen igual.
 
 ### Contrato `--json`
 
 ```json
-{ "status": "reproduced", "voice": "<voz>" }
+{ "status": "reproduced", "voice": "<voz>", "first_audio_ms": 1180, "stalls": 0 }
 ```
 
-(Mismo envelope en la rama local y vía daemon.)
+(Mismo envelope en la rama local y vía daemon.) `first_audio_ms` son los
+milisegundos desde el inicio de la fase de síntesis hasta la primera muestra
+entregada al dispositivo (por la ruta directa incluye el arranque del motor), y
+`stalls` el número de veces que la cola de reproducción se vació con la entrega en
+curso.
 
-**No hay `audio_path`.** La síntesis va a un WAV temporal con dueño
-(`TempWav`, `crates/avi-shared/src/temp_wav.rs`), que lo borra al salir de
-ámbito: al terminar la reproducción, pero también si la reproducción falla, que
-era el camino por el que el fichero se quedaba. El texto humano dice
-«Reproduciendo (N s).» —con la duración de la operación— y sin ruta. Quien
+**No hay `audio_path`.** El audio no pasa por ningún archivo: suena según llega.
+El texto humano dice «Reproduciendo (N s).» —con la duración de la operación— y
+sin ruta. Quien
 quiera el fichero en disco usa `speech synthesize`, que sí lo persiste y sí
 devuelve su `audio_path`.
 `say` es humo de punta a punta, sin puerta de calidad sobre lo que sonó; la
@@ -414,8 +428,8 @@ captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito est�
 vacío, exit 2 `empty_text` → si `source != target`, exige el modelo de
 traducción provisionado (exit 4 `model_missing` si no); sin el feature
 `native-translation`, exit 1 `translation_unsupported` →
-`Qwen3TtsEngine::synthesize_with_options` →
-`AudioService::play_wav`.
+`Qwen3TtsEngine::synthesize_streaming` →
+`AudioService::stream_player`: el doblaje suena mientras se sintetiza.
 
 ### `POST /dub` (daemon)
 
@@ -437,38 +451,46 @@ se muestra como la fase `denoising`, igual que en la ruta directa:
 
 Antes del stream, un audio que supera `MAX_DUB_AUDIO_SECS` se rechaza con HTTP 400 `audio_too_long`; un texto traducido que supera `MAX_TEXT_LENGTH` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) emite un evento `error` `text_too_long`.
 
-Al finalizar, emite el evento `result`:
+Durante la síntesis emite un evento `audio` por cada fragmento del motor, intercalado con los latidos:
 
 ```json
-{ "event": "result", "status": "dubbed", "text": "<transcrito>", "translated": "<texto final tras traducir/passthrough>", "audio_b64": "<WAV base64>", "voice": "<voz>", "work_ms": 1234 }
+{ "event": "audio", "pcm_b64": "<PCM s16le, 24 kHz, mono, en base64>" }
 ```
+
+Al finalizar, emite el evento `result`, que ya no lleva el audio:
+
+```json
+{ "event": "result", "status": "dubbed", "text": "<transcrito>", "translated": "<texto final tras traducir/passthrough>", "voice": "<voz>", "work_ms": 1234 }
+```
+
+Un fallo a mitad de la entrega emite `error` (`synthesis_failed` o `synthesis_timeout`) después de los eventos `audio` ya enviados.
 
 En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo>", "message": "..."}` con el mapeo contractual correspondiente (`usage_error`/`invalid_audio`/`audio_too_long`/`empty_text`/`text_too_long` → exit 2, `model_missing` → exit 4, `voice_not_found` → exit 3, `transcription_failed` → exit 10, `translation_failed` → exit 9, `synthesis_failed`/`synthesis_timeout`/`stt_unsupported`/`translation_unsupported` → exit 1).
 
 ### Contrato `--json` (CLI)
 
 ```json
-{ "status": "dubbed", "text": "<transcripción>", "translated": "<texto sintetizado>" }
+{ "status": "dubbed", "text": "<transcripción>", "translated": "<texto sintetizado>", "first_audio_ms": 1180, "stalls": 0 }
 ```
 
 (Mismo envelope en las dos rutas —local y vía `/dub`—.) Los nombres son los del
 evento `result` del daemon: `text` es la transcripción del audio de entrada y
 `translated` el texto que se sintetizó, que coincide con `text` cuando el
 idioma de origen y el de destino son el mismo. `translated` está siempre
-presente. En la vía daemon, si al evento `result` le falta `text` o
-`translated`, la CLI sale con exit 1 `daemon_error`, sin valores por defecto.
+presente. `first_audio_ms` y `stalls` son los de la entrega en streaming, con el mismo
+significado que en `say`. En la vía daemon, si al evento `result` le falta `text` o
+`translated`, la CLI sale con exit 1 `daemon_error`, sin valores por defecto; un evento
+`audio` inválido sale igual con `daemon_error`.
 
 En modo texto (sin `--json`), `dub` imprime siempre tres líneas por stdout, en
 este orden: `Transcripción: <texto>`, `Traducción: <texto>` y
 `Doblaje reproducido (N s).`. Con origen igual a destino, las dos primeras
 llevan el mismo texto.
 
-**No hay `audio_path`, por la misma razón que en `say`.** El WAV temporal que
-el daemon sintetiza para el doblaje lo borra su dueño al salir de ámbito, y en
-el CLI el que reproduce es otro temporal con el mismo mecanismo. En el lado del
-daemon el borrado cubre también el caso de que falle la lectura del WAV
-sintetizado: el temporal se iba antes. Quien quiera conservar el audio del
-doblaje usa `speech synthesize` con el texto traducido. Como `say`, `dub` es
+**No hay `audio_path`, por la misma razón que en `say`.** El audio doblado no
+pasa por ningún archivo, ni en el daemon ni en la CLI: suena según llega. Quien
+quiera conservar el audio del doblaje usa `speech synthesize` con el texto
+traducido. Como `say`, `dub` es
 humo sin puerta de calidad sobre lo que sonó.
 
 ---
@@ -541,9 +563,9 @@ Los textos por subcomando, además de «Leyendo archivo de audio…», «Captura
 
 | Subcomando | Arranque | Fases propias |
 |---|---|---|
-| `synthesize` | «Iniciando síntesis…» | «Sintetizando voz…», «Guardando locución…», «Reproduciendo…» (con `--play`); en la regeneración, «Preparando otra toma…» y «Sintetizando otra toma…» |
-| `say` | «Iniciando síntesis…» | «Sintetizando voz…», «Reproduciendo…» |
-| `dub` | «Doblando audio…» | «Traduciendo texto transcrito…», «Sintetizando voz doblada…», «Reproduciendo doblaje…» |
+| `synthesize` | «Iniciando síntesis…» | «Sintetizando voz…», «Guardando locución…», «Reproduciendo…» (con `--play`, desde que suena la primera muestra); en la regeneración, «Preparando otra toma…» y «Sintetizando otra toma…» |
+| `say` | «Iniciando síntesis…» | «Sintetizando voz…» hasta el primer sonido, «Reproduciendo…» desde ahí |
+| `dub` | «Doblando audio…» | «Traduciendo texto transcrito…», «Sintetizando voz doblada…» hasta el primer sonido, «Reproduciendo doblaje…» desde ahí |
 | `transcribe` | «Iniciando transcripción…» | — |
 
 Del daemon llegan además las esperas «Calentando motor de síntesis…», «En cola de síntesis…» y «Esperando turno para limpiar el ruido…». El **resultado** —el texto o el envelope `--json`— va por stdout, y lo dice **una sola vez**, con la duración de la operación.
@@ -579,7 +601,7 @@ Del daemon llegan además las esperas «Calentando motor de síntesis…», «En
 | `translation_unsupported` | 1 | Binario compilado sin el feature `native-translation`, con par no-passthrough |
 | `transcription_failed` | 10 | Fallo del motor Parakeet o de la captura no atribuible al entorno (la falta de micrófono o de backend sale con 3 y la captura vacía con 2; la lectura de un `--audio` ausente, corrupto o con error de E/S sale con 3, 2 y 1) |
 | `translation_failed` | 9 | Fallo del motor CT2 |
-| `synthesis_failed` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS o de una reproducción no atribuible al entorno (la falta de salida o de backend sale con 3) |
+| `synthesis_failed` / `playback_failed` | 1 | Fallo del motor Qwen3-TTS (incluida una entrega cortada a mitad) o de una reproducción no atribuible al entorno (la falta de salida o de backend sale con 3). Un fallo con la voz ya sonando corta la reproducción |
 | `synthesis_timeout` | 1 | La síntesis superó su presupuesto (`synthesis_budget`, [`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `io_error` | 1 | Fallo de E/S al leer el WAV (`--audio` de transcribe y dub, referencia de `voice clone`) |
 

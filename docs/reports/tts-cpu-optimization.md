@@ -276,6 +276,28 @@ El tiempo hasta el primer audio no cambia (947 frente a 966 ms sin carga). El dr
 
 Las cifras de calidad y velocidad corresponden al modelo 0.6B; solo AVX2 se midió en hardware, y la ruta SDOT se comprueba con la compilación cruzada y con el `--self-test` de la CI.
 
+### 4.7. Entrega en streaming
+
+**Causa.** La aplicación esperaba el WAV completo antes de reproducir: con una frase larga (450 caracteres, 26 s de audio) la voz empezaba a los 18 s, aunque el motor tuviera el primer audio listo en torno a 1 s. El motor ya ofrecía `POST /v1/tts/stream` (PCM s16le, 24 kHz, mono, por partes: un primer fragmento de 2 fotogramas, 160 ms, y después fragmentos de `chunk_frames`), y la aplicación pasó a usarlo como único camino de síntesis, con un reproductor incremental.
+
+**Mediciones previas** (Ryzen 7 5825U, Windows 11, perfil `mixed`, voz clonada con `--graft`, semilla 4; «un hilo de carga» es un proceso que lee sin parar 512 MB de RAM):
+
+| Medida | Resultado |
+|---|---|
+| Frase larga con entrega completa | 18 s hasta poder reproducir |
+| Primer fragmento por `/v1/tts/stream`, sin carga | 0,58 s (frase corta), 0,68 s (media), 0,96 s (larga) |
+| Hueco tras el primer fragmento con `chunk_frames` 10 / 4 / 2 | 0,58 / 0,12 / 0,02 s sin carga; 0,81 / 0,19 / 0,10 s con un hilo de carga |
+| RTF de la frase larga con `chunk_frames` 10 / 4 / 2 | 0,70 / 0,72 / 0,74 sin carga; 0,91 / 0,95 / 0,99 con un hilo de carga |
+| Prototipo de reproducción incremental (4 fotogramas, colchón de 300 ms) | Primer sonido a 1,23 s sin carga y 1,45 s con un hilo de carga; ningún vaciado de la cola |
+| Mismo audio por `/v1/tts` y `/v1/tts/stream` | Misma longitud, SNR 98–103 dB |
+| Cancelación al cerrar la conexión | Motor libre en 0,5–0,8 s; el residente sigue vivo |
+
+**Decisiones.** Fragmentos de 4 fotogramas: el hueco tras el primer fragmento baja de 0,58 s a 0,12 s a cambio de un 4 % de RTF. Colchón de 300 ms: cubre ese hueco, medido en 0,12–0,19 s; si la cola se vacía con la entrega en curso, la reproducción se pausa y se reanuda al recuperarlo, y se cuenta en `stalls`.
+
+**Cambios del motor ligados a la entrega.** El prefill es siempre completo: la reutilización del prefill entre peticiones recalculaba el resto del prompt con los pesos q4_0, daba audios distintos según la petición anterior y retrasaba el primer audio (1,27–1,37 s frente a 0,98–1,03 s). Una respuesta por partes sin su fragmento final es un fallo, y las peticiones inválidas reciben un error 400.
+
+**Medición final de punta a punta** (`speech say`, frase larga): pendiente de la medición de la entrega.
+
 ---
 
 ## 5. Arquitectura de integración en el producto

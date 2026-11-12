@@ -134,7 +134,7 @@ El motor ya cuenta con los componentes necesarios:
 | **Push-to-talk** | Modo de grabación interactiva donde el sistema graba desde el micrófono hasta que el usuario pulsa Enter en la terminal. |
 | **`MAX_CLONE_REFERENCE_SECS`** | Límite superior estricto para el audio de referencia de clonación (constante: 30 segundos). |
 | **`AVI_PUSH_TO_TALK_MAX_SECS`** | Techo configurable. Si falta, clonado usa 30 s; otras capturas conservan el default general de 300 s. En clonado, un valor explícito mayor de 30 produce `audio_too_long` antes de abrir el dispositivo. |
-| **`warm-on-clone`** | Proceso en segundo plano del daemon que precarga el modelo TTS con la voz recién clonada para eliminar la latencia de la primera síntesis. |
+| **`warm-on-clone`** | Proceso en segundo plano del daemon que precarga el modelo TTS con la voz recién clonada para eliminar la latencia de la primera síntesis: sintetiza un texto de calentamiento por la entrega en streaming y descarta el audio. |
 | **`cpal`** | Backend de audio multiplataforma en Rust usado por `avi-audio` para interactuar con CoreAudio, ALSA o WASAPI. |
 
 ---
@@ -165,7 +165,7 @@ El motor ya cuenta con los componentes necesarios:
 | ID | Requisito |
 | --- | --- |
 | **RNF-01** | **Cero dependencias externas adicionales**: Reutilizar `avi-audio` y `cpal` existentes sin añadir crates nuevos. |
-| **RNF-02** | **Estabilidad del protocolo IPC**: el clonado no altera el protocolo IPC del daemon ni su versión de esquema. El endpoint `POST /voices/clone` sigue recibiendo `audio_b64`. |
+| **RNF-02** | **Estabilidad del protocolo IPC**: el clonado no altera el protocolo IPC del daemon ni su versión de esquema. El endpoint `POST /voices/clone` sigue recibiendo `audio_b64`, que es audio de **entrada**; el `audio_b64` que sí desapareció del protocolo es el de **salida** de `/synthesize` y `/dub`, sustituido por eventos `audio`, y no afecta a este endpoint. |
 | **RNF-03** | El WAV scratch local se limpia por RAII en salidas controladas. Una terminación forzosa o un fallo del filesystem puede dejar residuos para el barrido posterior; el WAV no se guarda en `VoiceStore`. |
 | **RNF-04** | La captura ocurre en CLI; en destino daemon, el WAV se transmite al daemon mediante `POST /voices/clone`. No se conserva el WAV en `VoiceStore`; `reference.qvoice` sí es un dato derivado persistente. |
 | **RNF-05** | **Paridad multiplataforma**: La captura mantiene el mismo contrato CLI; la disponibilidad de dispositivos y E2E se verifica en las plataformas accesibles. |

@@ -135,7 +135,9 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 (`PRODUCTION_SEED`, primera toma; las regeneraciones de `--play` lo sustituyen con `with_seed_override`) |
 
-Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/README.md` para el contrato de invocación: el residente se lanza como `--serve <puerto> --host 127.0.0.1 -j 4 [--quant-mixed] --stream --watch-stdin` (más `--load-voice <qvoice> --graft` para una voz clonada), y el clonado por proceso local como `-d <modelo> --ref-audio <wav> --xvector-only --save-voice <out> --voice-name <nombre> --watch-stdin`. El idioma del producto (`es`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error.
+Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/README.md` para el contrato de invocación: el residente se lanza como `--serve <puerto> --host 127.0.0.1 -j 4 [--quant-mixed] --watch-stdin` (más `--load-voice <qvoice> --graft` para una voz clonada), y el clonado por proceso local como `-d <modelo> --ref-audio <wav> --xvector-only --save-voice <out> --voice-name <nombre> --watch-stdin`. El idioma del producto (`es`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error.
+
+**Entrega en streaming.** Toda síntesis usa `POST /v1/tts/stream` del residente, que entrega PCM s16le de 24 kHz mono por partes: el primer fragmento es de 2 fotogramas (160 ms de audio; un fotograma son 80 ms) y los siguientes de 4. `avi-tts` los entrega a quien llama (`synthesize_streaming`) o los acumula en un WAV (`synthesize_to_wav`); una respuesta que se corta sin su fragmento final de tamaño cero es `SynthesisTruncated`, nunca un audio corto válido. Cuatro fotogramas por fragmento dejan un hueco de ~0,12 s tras el primer fragmento, frente a ~0,58 s con 10, a cambio de un 4 % de factor de tiempo real. El reproductor incremental (`StreamPlayer`, en `avi-audio`) remuestrea cada fragmento a la tasa del dispositivo y espera 300 ms de audio en cola antes de sonar, lo que cubre el hueco entre el primer y el segundo fragmento (medido en 0,12–0,19 s); si la cola se vacía con la entrega en curso, pausa y reanuda al recuperar el colchón, y cuenta un corte (`stalls`). `first_audio_ms` son los milisegundos desde el inicio de la fase de síntesis hasta la primera muestra entregada al dispositivo. Por el daemon, el audio viaja en eventos `audio` del flujo NDJSON. La CLI abre el dispositivo de salida antes de pedir la síntesis y, si esta falla con la voz ya sonando, corta la reproducción y termina con error.
 
 **Precisión del residente.** `AVI_TTS_PRECISION` ausente o exactamente `mixed` selecciona con `--quant-mixed` el Talker en INT4 (Q4_0) y el Code Predictor con la atención y las cabezas de salida en INT8 y las FFN en Q4_0; `bf16` selecciona ambos en BF16 sin opciones de cuantización. Cualquier otro valor, incluso vacío o no Unicode, es un error. La lectura ocurre al crear el motor: la CLI directa lo crea por operación y el daemon fija su perfil al arrancar, por lo que cambiarlo exige reiniciar el daemon. La configuración del cliente de un daemon activo no lo modifica. La resolución de rutas de modelos anterior a la creación del perfil conserva su precedencia de error.
 
@@ -183,13 +185,14 @@ El `--json` global emite JSONL, una línea por evento, y conserva progreso y res
    cargada: el mismo preset o la misma identidad de contenido
                      │
                      ▼
-4. Residente HTTP en loopback (puerto efímero anotado en `daemon.pid`), único camino de síntesis
+4. Residente HTTP en loopback (puerto efímero anotado en `daemon.pid`), único camino de síntesis:
+   `POST /v1/tts/stream` con fragmentos de 4 fotogramas (entrega en streaming)
                      │
                      ▼
-5. PCM → WAV (hound) → AudioService::play_wav (cpal) o guardado con
-   avi_store::persist_locution, que comprueba la identidad de la voz y aplica
-   la CollisionPolicy; el desenlace es un SynthesizeOutcome (success, skipped
-   o discarded)
+5. Fragmentos PCM → StreamPlayer (cpal), que suena con 300 ms de colchón, y/o
+   acumulados en un WAV (hound) que se guarda con avi_store::persist_locution,
+   que comprueba la identidad de la voz y aplica la CollisionPolicy; el
+   desenlace es un SynthesizeOutcome (success, skipped o discarded)
                      │
                      ▼
 6. Usuario escucha habla en español con voz clonada
@@ -223,9 +226,9 @@ Las rutas de captura de `transcribe` y `dub`, directas y vía daemon, convergen 
 
 ### Bucle de revisión (`src/main.rs`)
 
-`synthesize_play_loop(...)` recibe la primera toma (WAV temporal) más el contexto (voz, etiqueta, política de colisión, almacenes, referencia resuelta de la voz, texto final) y devuelve una decisión; su llamador, `play_menu_loop`, resuelve la opción 3 con una implementación del rasgo `PlayResynthesizer` (`LocalResynthesizer` o `DaemonResynthesizer`) que produce una toma nueva sobre el mismo temporal. La ruta directa y la del daemon comparten el bucle, que vive en el cliente porque la reproducción y los prompts son client-side. La re-síntesis re-despacha la síntesis por la misma vía que el camino no interactivo, de modo que traducción y daemon se heredan sin lógica especial. La toma se conserva en el cliente para las opciones 1 y 2. Al aceptar, la locución se guarda con `avi_store::persist_locution`, que recomprueba en el punto de guardar la identidad de la voz (`voice_changed`) y aplica la política de colisión (`label_exists` con `Fail`). Las precondiciones (`--play` con `--json`, `--play` sin TTY, `--play` con `--skip-existing`) se validan en la invocación, antes de sintetizar.
+`synthesize_play_loop(...)` recibe la primera toma (WAV temporal, que ya sonó mientras se sintetizaba) más el contexto (voz, etiqueta, política de colisión, almacenes, referencia resuelta de la voz, texto final) y devuelve una decisión; su llamador, `play_menu_loop`, resuelve la opción 3 con una implementación del rasgo `PlayResynthesizer` (`LocalResynthesizer` o `DaemonResynthesizer`) que produce una toma nueva, reproducida en streaming mientras se sintetiza, sobre el mismo temporal. La ruta directa y la del daemon comparten el bucle, que vive en el cliente porque la reproducción y los prompts son client-side. La re-síntesis re-despacha la síntesis por la misma vía que el camino no interactivo, de modo que traducción y daemon se heredan sin lógica especial. La toma se conserva en el cliente para las opciones 1 y 2. Al aceptar, la locución se guarda con `avi_store::persist_locution`, que recomprueba en el punto de guardar la identidad de la voz (`voice_changed`) y aplica la política de colisión (`label_exists` con `Fail`). Las precondiciones (`--play` con `--json`, `--play` sin TTY, `--play` con `--skip-existing`) se validan en la invocación, antes de sintetizar.
 
-Invariantes de eficiencia: la opción 1 no re-sintetiza; la opción 3 sintetiza exactamente una vez; se reproduce al entrar, en cada `1` y en cada `3`, nunca en `2` ni `4`.
+Invariantes de eficiencia: la opción 1 no re-sintetiza; la opción 3 sintetiza exactamente una vez; la toma suena mientras se sintetiza (la primera y cada regeneración), el menú no la repite al entrar, y la reproducción del archivo ocurre solo en cada `1`, nunca en `2` ni `4`.
 
 ### Verificación
 
