@@ -451,6 +451,309 @@ fn default_host() -> std::result::Result<cpal::Host, AudioBackendUnavailable> {
     Ok(cpal::default_host())
 }
 
+/// Audio en cola, en milisegundos, que el reproductor incremental espera antes de
+/// empezar a sonar. Cubre el hueco entre el primer fragmento del motor (160 ms de
+/// audio) y el segundo, que se midió en 0,12–0,19 s: con menos colchón la cola se
+/// vaciaría justo tras empezar.
+pub const STREAM_PREBUFFER_MS: u64 = 300;
+
+/// Tiempo que se deja correr el dispositivo tras consumir la última muestra de la
+/// cola, para que el audio que ya está en su búfer interno no se corte al soltar el
+/// flujo.
+const STREAM_TAIL_DRAIN: Duration = Duration::from_millis(100);
+
+/// Datos de una reproducción incremental ya terminada.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlaybackStats {
+    /// Instante en que se entregó al dispositivo la primera muestra; `None` si no
+    /// llegó ningún audio.
+    pub first_audio_at: Option<Instant>,
+    /// Veces que la cola se vació con la entrega en curso y hubo que pausar.
+    pub stalls: u32,
+}
+
+/// Remuestreador lineal por fragmentos. Conserva entre llamadas la posición de
+/// salida y las muestras de entrada que aún hacen falta, de modo que el resultado
+/// de pasar el audio en trozos de cualquier tamaño es el mismo que el de
+/// [`resample_linear`] sobre el audio completo.
+struct StreamResampler {
+    /// Muestras de entrada por muestra de salida.
+    ratio: f64,
+    /// Entrada aún no descartada; su primer elemento es la muestra global `base`.
+    pending: Vec<f32>,
+    base: u64,
+    /// Total de muestras de entrada recibidas.
+    total: u64,
+    /// Índice de la siguiente muestra de salida.
+    next_out: u64,
+    identity: bool,
+}
+
+impl StreamResampler {
+    fn new(from_rate: u32, to_rate: u32) -> Self {
+        Self {
+            ratio: from_rate as f64 / to_rate as f64,
+            pending: Vec::new(),
+            base: 0,
+            total: 0,
+            next_out: 0,
+            identity: from_rate == to_rate,
+        }
+    }
+
+    /// Interpola la muestra de salida `index`, acotando la vecina derecha a la última
+    /// muestra recibida (solo lo que hace falta al cerrar la entrega).
+    fn interpolate(&self, index: u64) -> f32 {
+        let src = index as f64 * self.ratio;
+        let floor = src.floor() as u64;
+        let ceil = (floor + 1).min(self.total - 1);
+        let frac = (src - floor as f64) as f32;
+        let at = |i: u64| self.pending[(i - self.base) as usize];
+        at(floor) * (1.0 - frac) + at(ceil) * frac
+    }
+
+    /// Descarta la entrada que ninguna salida futura volverá a leer.
+    fn discard_consumed(&mut self) {
+        let keep_from = ((self.next_out as f64 * self.ratio).floor() as u64).min(self.total);
+        let drop = (keep_from - self.base) as usize;
+        self.pending.drain(..drop);
+        self.base = keep_from;
+    }
+
+    /// Añade un fragmento y devuelve las muestras de salida que ya se pueden calcular,
+    /// es decir, las que tienen disponible su muestra vecina derecha.
+    fn push(&mut self, input: &[f32]) -> Vec<f32> {
+        if self.identity {
+            return input.to_vec();
+        }
+        self.pending.extend_from_slice(input);
+        self.total += input.len() as u64;
+        let mut out = Vec::new();
+        loop {
+            let floor = (self.next_out as f64 * self.ratio).floor() as u64;
+            if floor + 1 >= self.total {
+                break;
+            }
+            out.push(self.interpolate(self.next_out));
+            self.next_out += 1;
+        }
+        self.discard_consumed();
+        out
+    }
+
+    /// Cierra la entrega y devuelve las muestras de salida que quedaban, con la
+    /// misma longitud total que daría [`resample_linear`].
+    fn finish(&mut self) -> Vec<f32> {
+        if self.identity || self.total == 0 {
+            return Vec::new();
+        }
+        let target_len = (self.total as f64 / self.ratio) as u64;
+        let mut out = Vec::new();
+        while self.next_out < target_len {
+            out.push(self.interpolate(self.next_out));
+            self.next_out += 1;
+        }
+        out
+    }
+}
+
+/// Fase de la cola de reproducción.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueuePhase {
+    /// Acumulando audio hasta alcanzar el colchón.
+    Buffering,
+    /// Entregando muestras al dispositivo.
+    Playing,
+    /// La entrega terminó y la cola se vació.
+    Done,
+}
+
+/// Cola de reproducción incremental, sin dependencia del dispositivo. Guarda audio
+/// mono ya a la tasa del dispositivo y decide cuándo empezar a sonar, cuándo
+/// pausar por falta de audio y cuándo terminó.
+struct PlaybackQueue {
+    samples: std::collections::VecDeque<f32>,
+    /// Muestras mono en cola con las que empieza a sonar.
+    prebuffer: usize,
+    phase: QueuePhase,
+    /// La entrega terminó: no llegará más audio.
+    delivery_finished: bool,
+    stalls: u32,
+    first_audio_at: Option<Instant>,
+}
+
+impl PlaybackQueue {
+    fn new(prebuffer: usize) -> Self {
+        Self {
+            samples: std::collections::VecDeque::new(),
+            prebuffer,
+            phase: QueuePhase::Buffering,
+            delivery_finished: false,
+            stalls: 0,
+            first_audio_at: None,
+        }
+    }
+
+    fn push(&mut self, samples: &[f32]) {
+        self.samples.extend(samples.iter().copied());
+    }
+
+    /// Marca que no llegará más audio.
+    fn finish_delivery(&mut self) {
+        self.delivery_finished = true;
+    }
+
+    /// Descarta lo pendiente y da la reproducción por terminada.
+    fn clear(&mut self) {
+        self.samples.clear();
+        self.delivery_finished = true;
+        self.phase = QueuePhase::Done;
+    }
+
+    fn started(&self) -> bool {
+        self.first_audio_at.is_some()
+    }
+
+    fn is_done(&self) -> bool {
+        self.phase == QueuePhase::Done
+    }
+
+    fn stats(&self) -> PlaybackStats {
+        PlaybackStats {
+            first_audio_at: self.first_audio_at,
+            stalls: self.stalls,
+        }
+    }
+
+    /// Siguiente muestra mono para el dispositivo, o `None` si toca silencio. Aquí
+    /// están las transiciones: empieza al alcanzar el colchón (o al terminar la
+    /// entrega con algo en cola); si la cola se vacía con la entrega en curso cuenta un
+    /// corte y vuelve a esperar el colchón; si se vacía tras terminar, acaba sin
+    /// contar corte.
+    fn next_sample(&mut self) -> Option<f32> {
+        if self.phase == QueuePhase::Buffering {
+            let ready = self.samples.len() >= self.prebuffer
+                || (self.delivery_finished && !self.samples.is_empty());
+            if ready {
+                self.phase = QueuePhase::Playing;
+            } else if self.delivery_finished {
+                self.phase = QueuePhase::Done;
+            }
+        }
+        if self.phase != QueuePhase::Playing {
+            return None;
+        }
+        match self.samples.pop_front() {
+            Some(sample) => {
+                if self.first_audio_at.is_none() {
+                    self.first_audio_at = Some(Instant::now());
+                }
+                Some(sample)
+            }
+            None if self.delivery_finished => {
+                self.phase = QueuePhase::Done;
+                None
+            }
+            None => {
+                self.stalls += 1;
+                self.phase = QueuePhase::Buffering;
+                None
+            }
+        }
+    }
+
+    /// Rellena un búfer entrelazado del dispositivo: duplica el audio mono en todos
+    /// los canales y, donde no hay audio, escribe el silencio de `T` (`EQUILIBRIUM`,
+    /// que no es 0 en los formatos sin signo).
+    fn fill<T: SizedSample + FromSample<f32>>(&mut self, data: &mut [T], channels: usize) {
+        for frame in data.chunks_mut(channels.max(1)) {
+            match self.next_sample() {
+                Some(sample) => {
+                    let value = T::from_sample(sample.clamp(-1.0, 1.0));
+                    frame.fill(value);
+                }
+                None => frame.fill(T::EQUILIBRIUM),
+            }
+        }
+    }
+}
+
+/// Construye el flujo de salida del reproductor incremental para el formato de
+/// muestra `T` del dispositivo.
+fn build_stream_playback<T: SizedSample + FromSample<f32> + 'static>(
+    device: &cpal::Device,
+    config: StreamConfig,
+    queue: Arc<Mutex<PlaybackQueue>>,
+    failed: &Arc<AtomicBool>,
+) -> Result<cpal::Stream> {
+    let channels = config.channels as usize;
+    Ok(device.build_output_stream(
+        config,
+        move |data: &mut [T], _| {
+            acquire_lock(&queue, "cola de reproducción").fill(data, channels);
+        },
+        stream_error_callback("Error en stream de audio", failed),
+        None,
+    )?)
+}
+
+/// Reproductor incremental: recibe audio mono PCM de 16 bits por fragmentos con
+/// [`StreamPlayer::push`], lo remuestrea a la tasa del dispositivo y lo reproduce
+/// desde una cola. Empieza a sonar al reunir [`STREAM_PREBUFFER_MS`] de audio; si la
+/// cola se vacía con la entrega en curso, pausa (y cuenta un corte) hasta recuperar
+/// el colchón. Debe usarse desde el hilo que lo creó.
+pub struct StreamPlayer {
+    queue: Arc<Mutex<PlaybackQueue>>,
+    resampler: Mutex<StreamResampler>,
+    failed: Arc<AtomicBool>,
+    stream: cpal::Stream,
+}
+
+impl StreamPlayer {
+    /// Añade un fragmento de audio a la cola. Falla si el flujo de audio murió.
+    pub fn push(&self, pcm: &[i16]) -> Result<()> {
+        ensure_stream_alive(&self.failed, "la reproducción")?;
+        let input: Vec<f32> = pcm.iter().map(|&s| f32::from(s) / 32768.0).collect();
+        let output = acquire_lock(&self.resampler, "remuestreador").push(&input);
+        acquire_lock(&self.queue, "cola de reproducción").push(&output);
+        Ok(())
+    }
+
+    /// Si ya se entregó alguna muestra al dispositivo.
+    pub fn started(&self) -> bool {
+        acquire_lock(&self.queue, "cola de reproducción").started()
+    }
+
+    /// Marca el fin de la entrega, espera a que se reproduzca lo que queda y
+    /// devuelve las estadísticas. Falla si el flujo de audio muere antes.
+    pub fn finish(self) -> Result<PlaybackStats> {
+        let tail = acquire_lock(&self.resampler, "remuestreador").finish();
+        {
+            let mut queue = acquire_lock(&self.queue, "cola de reproducción");
+            queue.push(&tail);
+            queue.finish_delivery();
+        }
+        loop {
+            ensure_stream_alive(&self.failed, "la reproducción")?;
+            if acquire_lock(&self.queue, "cola de reproducción").is_done() {
+                break;
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        std::thread::sleep(STREAM_TAIL_DRAIN);
+        let stats = acquire_lock(&self.queue, "cola de reproducción").stats();
+        Ok(stats)
+    }
+
+    /// Detiene la reproducción de inmediato y descarta lo que había en cola.
+    pub fn abort(self) {
+        acquire_lock(&self.queue, "cola de reproducción").clear();
+        if let Err(err) = self.stream.pause() {
+            eprintln!("Aviso: no se pudo pausar el flujo de audio al abortar: {err}");
+        }
+    }
+}
+
 /// Servicio de Audio sobre CPAL (Playback, Capture, Enumeración). Sin backend de
 /// audio en el sistema se construye igual y cada operación falla con
 /// [`AudioBackendUnavailable`].
@@ -591,6 +894,34 @@ impl AudioService {
         }
 
         Ok(())
+    }
+
+    /// Abre el dispositivo de salida predeterminado con su configuración por defecto y
+    /// arranca un reproductor incremental para audio mono a `source_rate` Hz. El audio
+    /// no suena hasta que [`StreamPlayer::push`] reúne [`STREAM_PREBUFFER_MS`] o la
+    /// entrega termina. Falla con los mismos errores tipados que [`Self::play_wav`].
+    pub fn stream_player(&self, source_rate: u32) -> Result<StreamPlayer> {
+        let device = self.default_output_device()?;
+        let dev_config = device.default_output_config()?;
+        let device_rate = dev_config.sample_rate();
+        let config = StreamConfig {
+            channels: dev_config.channels(),
+            sample_rate: device_rate,
+            buffer_size: cpal::BufferSize::Default,
+        };
+        let prebuffer = (u64::from(device_rate) * STREAM_PREBUFFER_MS / 1000) as usize;
+        let queue = Arc::new(Mutex::new(PlaybackQueue::new(prebuffer)));
+        let failed = Arc::new(AtomicBool::new(false));
+        let stream = with_sample_type!(dev_config.sample_format(), T => {
+            build_stream_playback::<T>(&device, config, queue.clone(), &failed)
+        })?;
+        stream.play()?;
+        Ok(StreamPlayer {
+            queue,
+            resampler: Mutex::new(StreamResampler::new(source_rate, device_rate)),
+            failed,
+            stream,
+        })
     }
 
     /// Capturar audio del micrófono por N segundos remuestreado a 16kHz/mono/int16 (Whisper compatible)
@@ -1001,6 +1332,161 @@ pub fn write_zero_rate_wav(path: &Path) {
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.resize(wav.len() + data_len as usize, 1);
     std::fs::write(path, wav).expect("escribir el WAV de frecuencia nula");
+}
+
+#[cfg(test)]
+mod stream_player_tests {
+    use super::*;
+
+    /// Rampa determinista de `n` muestras, para comparar remuestreos.
+    fn ramp(n: usize) -> Vec<f32> {
+        (0..n)
+            .map(|i| ((i * 37 % 200) as f32 - 100.0) / 100.0)
+            .collect()
+    }
+
+    /// Pasa `input` al remuestreador en trozos de los tamaños dados (cíclicos).
+    fn resample_in_chunks(input: &[f32], from: u32, to: u32, sizes: &[usize]) -> Vec<f32> {
+        let mut resampler = StreamResampler::new(from, to);
+        let mut out = Vec::new();
+        let mut pos = 0;
+        let mut i = 0;
+        while pos < input.len() {
+            let end = (pos + sizes[i % sizes.len()]).min(input.len());
+            out.extend(resampler.push(&input[pos..end]));
+            pos = end;
+            i += 1;
+        }
+        out.extend(resampler.finish());
+        out
+    }
+
+    /// El remuestreador por fragmentos de tamaños dispares da el mismo resultado que
+    /// `resample_linear` sobre el audio completo, al subir y al bajar la tasa.
+    #[test]
+    fn chunked_resampler_matches_resample_linear() {
+        let input = ramp(4_800);
+        for (from, to) in [
+            (24_000, 48_000),
+            (24_000, 44_100),
+            (24_000, 22_050),
+            (24_000, 16_000),
+        ] {
+            let expected = resample_linear(&input, from, to);
+            let got = resample_in_chunks(&input, from, to, &[1, 7, 960, 3, 1_000, 2]);
+            assert!(
+                got.len().abs_diff(expected.len()) <= 1,
+                "{from}->{to}: longitud {} frente a {}",
+                got.len(),
+                expected.len()
+            );
+            for (i, (a, b)) in got.iter().zip(&expected).enumerate() {
+                assert!(
+                    (a - b).abs() < 1e-5,
+                    "{from}->{to}: muestra {i}: {a} frente a {b}"
+                );
+            }
+        }
+    }
+
+    /// Con la misma tasa de origen y destino el remuestreador es la identidad.
+    #[test]
+    fn resampler_with_equal_rates_is_identity() {
+        let input = ramp(1_000);
+        let got = resample_in_chunks(&input, 48_000, 48_000, &[100, 33]);
+        assert_eq!(got, input);
+    }
+
+    /// Cola con colchón de 10 muestras y `n` muestras dadas.
+    fn queue_with(prebuffer: usize, n: usize) -> PlaybackQueue {
+        let mut queue = PlaybackQueue::new(prebuffer);
+        queue.push(&vec![0.5; n]);
+        queue
+    }
+
+    /// Consume `n` muestras de la cola y devuelve cuántas fueron audio.
+    fn drain(queue: &mut PlaybackQueue, n: usize) -> usize {
+        (0..n).filter(|_| queue.next_sample().is_some()).count()
+    }
+
+    /// No suena hasta alcanzar el colchón; al alcanzarlo, empieza.
+    #[test]
+    fn queue_starts_when_prebuffer_is_reached() {
+        let mut queue = queue_with(10, 9);
+        assert_eq!(
+            drain(&mut queue, 5),
+            0,
+            "con menos del colchón hay silencio"
+        );
+        assert!(!queue.started());
+        queue.push(&[0.5]);
+        assert_eq!(drain(&mut queue, 3), 3);
+        assert!(queue.started());
+        assert!(queue.stats().first_audio_at.is_some());
+    }
+
+    /// Si la entrega termina con menos audio que el colchón, suena igualmente.
+    #[test]
+    fn queue_starts_with_less_audio_when_delivery_finished() {
+        let mut queue = queue_with(10, 4);
+        assert_eq!(drain(&mut queue, 2), 0);
+        queue.finish_delivery();
+        assert_eq!(drain(&mut queue, 10), 4);
+        assert_eq!(queue.stats().stalls, 0);
+        assert!(queue.is_done());
+    }
+
+    /// Si la cola se vacía con la entrega en curso, pausa, cuenta un corte y
+    /// reanuda al recuperar el colchón.
+    #[test]
+    fn queue_stalls_and_resumes_after_recovering_the_prebuffer() {
+        let mut queue = queue_with(10, 10);
+        assert_eq!(drain(&mut queue, 10), 10);
+        assert_eq!(drain(&mut queue, 3), 0, "vacía con la entrega en curso");
+        assert_eq!(queue.stats().stalls, 1);
+        queue.push(&[0.5; 5]);
+        assert_eq!(drain(&mut queue, 3), 0, "sigue esperando el colchón");
+        queue.push(&[0.5; 5]);
+        assert_eq!(drain(&mut queue, 10), 10, "reanuda al recuperar el colchón");
+        assert_eq!(drain(&mut queue, 2), 0);
+        assert_eq!(queue.stats().stalls, 2);
+    }
+
+    /// Vaciar la cola después de terminar la entrega no es un corte.
+    #[test]
+    fn queue_emptied_after_finish_is_not_a_stall() {
+        let mut queue = queue_with(10, 10);
+        queue.finish_delivery();
+        assert_eq!(drain(&mut queue, 20), 10);
+        assert_eq!(queue.stats().stalls, 0);
+        assert!(queue.is_done());
+    }
+
+    /// El audio mono se duplica a todos los canales y el silencio es el
+    /// `EQUILIBRIUM` del formato, que en los sin signo no es 0.
+    #[test]
+    fn queue_fill_duplicates_channels_and_uses_format_silence() {
+        let mut queue = queue_with(2, 2);
+        let mut data = [0f32; 8];
+        queue.fill(&mut data, 2);
+        assert_eq!(data, [0.5, 0.5, 0.5, 0.5, 0.0, 0.0, 0.0, 0.0]);
+
+        let mut queue = PlaybackQueue::new(100);
+        let mut data = [0u16; 4];
+        queue.fill(&mut data, 2);
+        assert_eq!(data, [<u16 as Sample>::EQUILIBRIUM; 4]);
+        assert_ne!(data[0], 0);
+    }
+
+    /// Abortar descarta lo pendiente y deja la cola terminada.
+    #[test]
+    fn queue_clear_discards_pending_audio() {
+        let mut queue = queue_with(2, 50);
+        assert!(queue.next_sample().is_some());
+        queue.clear();
+        assert!(queue.next_sample().is_none());
+        assert!(queue.is_done());
+    }
 }
 
 #[cfg(test)]
