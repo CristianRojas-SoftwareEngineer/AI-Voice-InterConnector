@@ -296,7 +296,16 @@ Las cifras de calidad y velocidad corresponden al modelo 0.6B; solo AVX2 se midi
 
 **Cambios del motor ligados a la entrega.** El prefill es siempre completo: la reutilización del prefill entre peticiones recalculaba el resto del prompt con los pesos q4_0, daba audios distintos según la petición anterior y retrasaba el primer audio (1,27–1,37 s frente a 0,98–1,03 s). Una respuesta por partes sin su fragmento final es un fallo, y las peticiones inválidas reciben un error 400.
 
-**Medición final de punta a punta** (`speech say`, frase larga): pendiente de la medición de la entrega.
+**Medición final de punta a punta** (`speech say --json`, frase larga de 450 caracteres, 26 s de audio, equipo enchufado, 5 ejecuciones por celda; «hilo de carga» es un proceso que lee sin parar 512 MB de RAM):
+
+| Ruta | Nivel | `first_audio_ms` (mediana / máximo) | `stalls` | Duración del comando (mediana) |
+|---|---|---|---|---|
+| Daemon | Sin carga | 1248 / 1359 ms | 0 en las 5 | 27,0 s |
+| Daemon | Un hilo de carga | 1478 / 1548 ms | 0 en las 5 | 27,3 s |
+| Directa | Sin carga | 2871 / 3531 ms | 0 en las 5 | 33,7 s |
+| Directa | Un hilo de carga | 3641 / 3671 ms | 0 en las 5 | 34,5 s |
+
+Por el daemon la voz empieza en torno a 1,2–1,5 s, frente a los 18 s de la entrega completa, y no se corta en ninguna de las 20 ejecuciones. Por la ruta directa el primer sonido llega en torno a 3 s porque cada comando arranca su propio motor (≈ 1,6 s). No se midió con el equipo a batería.
 
 ---
 
