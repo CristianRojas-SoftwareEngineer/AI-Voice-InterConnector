@@ -316,7 +316,7 @@ let mut args = vec![
 if precision == TtsPrecision::Mixed {
     args.push(String::from("--quant-mixed"));
 }
-args.extend([String::from("--stream"), String::from("--watch-stdin")]);
+args.push(String::from("--watch-stdin"));
 ```
 
 - **Perfil predeterminado:** `TtsPrecision::Mixed` (activo cuando `AVI_TTS_PRECISION` está ausente o vale exactamente `"mixed"`).

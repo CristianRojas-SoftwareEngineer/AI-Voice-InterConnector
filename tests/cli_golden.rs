@@ -8734,12 +8734,11 @@ fn test_voice_list_no_panic_on_sigpipe_closed_stdout_before_spawn() {
 }
 
 // ─── JSON veraz y temporales ───────────────────────────────────────────────────
-// Fijan cinco comportamientos: el `status` del simulacro de `self uninstall` y
+// Fijan cuatro comportamientos: el `status` del simulacro de `self uninstall` y
 // de `cleanup` (`planned`, con el recibo de `removed` y sin `dry_run`); el
 // veredicto de `daemon stop` sin daemon (`not_running` con `was_running`); el
-// borrado del WAV temporal de `dub` y de `say`, también cuando la reproducción
-// falla; el canal del fallo de parseo con `--json` (envelope `usage_error` por
-// stdout y stderr mudo); y la retirada de `audio_path`.
+// canal del fallo de parseo con `--json` (envelope `usage_error` por stdout y
+// stderr mudo); y la retirada de `audio_path` de `say` y `dub`.
 //
 // `was_running` es el nombre del campo que ya emitía el motor, y
 // `daemon_fully_stopped` el del predicado de apagado completo: el vocabulario

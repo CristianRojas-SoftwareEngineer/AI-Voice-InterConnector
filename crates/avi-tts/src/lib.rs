@@ -1763,9 +1763,9 @@ pub mod resident {
         ))
     }
 
-    /// Simulador HTTP mínimo para tests: responde `200 OK` a `/v1/health` y
-    /// captura el body de un único `POST /v1/tts`. Siempre sano: nunca cuelga,
-    /// nunca muere ni daemoniza de verdad, por lo que no reproduce la
+    /// Simulador HTTP mínimo para tests: responde `200 OK` sin cuerpo a toda
+    /// petición, que basta para la sonda `GET /v1/health`. Siempre sano: nunca
+    /// cuelga, nunca muere ni daemoniza de verdad, por lo que no reproduce la
     /// terminación real de un árbol de procesos; nunca reproduce `panic!` con
     /// lock retenido ni aborto externo (solo el harness lo cubre) ni crash con
     /// puerto ocupado (solo `run_supervised` lo cubre); no corre bajo la imagen
@@ -1774,79 +1774,30 @@ pub mod resident {
     /// por `resident_pid` muerto— solo la comprueba la
     /// serie pesada de extremo a extremo.
     #[cfg(test)]
-    pub(crate) fn simulate_server(
-        body: std::sync::Arc<Mutex<String>>,
-    ) -> (u16, thread::JoinHandle<()>) {
+    pub(crate) fn simulate_server() -> (u16, thread::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("debe bindear un puerto libre");
         let port = listener.local_addr().expect("puerto local").port();
         let handle = thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
-                let mut buf = Vec::new();
+                // La sonda solo envía cabeceras: se leen hasta su final para que cerrar
+                // el socket no deje bytes sin leer, lo que el sistema convertiría en un
+                // reinicio de la conexión.
+                let mut request = Vec::new();
                 let mut tmp = [0u8; 8192];
-                let content_length;
-                loop {
+                while !request.windows(4).any(|w| w == b"\r\n\r\n") {
                     match stream.read(&mut tmp) {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            buf.extend_from_slice(&tmp[..n]);
-                            let text = String::from_utf8_lossy(&buf);
-                            if let Some(end) = text.find("\r\n\r\n") {
-                                let headers = text[..end].to_string();
-                                content_length = headers
-                                    .lines()
-                                    .find_map(|l| {
-                                        l.to_lowercase()
-                                            .strip_prefix("content-length:")
-                                            .and_then(|v| v.trim().parse().ok())
-                                    })
-                                    .unwrap_or(0);
-                                let header_len = end + 4;
-                                while buf.len() < header_len + content_length {
-                                    match stream.read(&mut tmp) {
-                                        Ok(0) => break,
-                                        Ok(n) => buf.extend_from_slice(&tmp[..n]),
-                                        Err(_) => break,
-                                    }
-                                }
-                                if buf.len() >= header_len + content_length {
-                                    *body.lock().unwrap() = String::from_utf8_lossy(
-                                        &buf[header_len..header_len + content_length],
-                                    )
-                                    .to_string();
-                                }
-                                break;
-                            }
-                        }
-                        Err(_) => break,
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => request.extend_from_slice(&tmp[..n]),
                     }
                 }
                 let _ = stream.write_all(
-                    b"HTTP/1.1 200 OK\r\nContent-Type: audio/wav\r\nContent-Length: 46\r\n\r\n",
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                 );
-                let _ = stream.write_all(&min_wav());
                 let _ = stream.flush();
             }
         });
         (port, handle)
-    }
-
-    /// WAV mínimo válido (24 kHz, 1 muestra silenciosa) para respuestas simuladas.
-    #[cfg(test)]
-    pub(crate) fn min_wav() -> Vec<u8> {
-        let spec = hound::WavSpec {
-            channels: 1,
-            sample_rate: 24_000,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut cursor = std::io::Cursor::new(Vec::new());
-        {
-            let mut writer = hound::WavWriter::new(&mut cursor, spec).unwrap();
-            writer.write_sample(0i16).unwrap();
-            writer.finalize().unwrap();
-        }
-        cursor.into_inner()
     }
 }
 
@@ -2052,7 +2003,7 @@ mod tests {
             30,
             &engine.registration(),
         );
-        let (port, server) = resident::simulate_server(Arc::new(Mutex::new(String::new())));
+        let (port, server) = resident::simulate_server();
         let healthy = resident::Qwen3TtsResident::spawn_with_child(
             sleeping_process(),
             port,
@@ -2104,10 +2055,8 @@ mod tests {
             Qwen3TtsEngine::new(Some(first_registry.clone())).expect("primer motor de prueba");
         let second =
             Qwen3TtsEngine::new(Some(second_registry.clone())).expect("segundo motor de prueba");
-        let (first_port, first_server) =
-            resident::simulate_server(Arc::new(Mutex::new(String::new())));
-        let (second_port, second_server) =
-            resident::simulate_server(Arc::new(Mutex::new(String::new())));
+        let (first_port, first_server) = resident::simulate_server();
+        let (second_port, second_server) = resident::simulate_server();
         assert_ne!(first_port, second_port);
 
         let first_resident = resident::Qwen3TtsResident::spawn_with_child(
@@ -3134,7 +3083,7 @@ fn main() {
     /// el `Drop` del gestor termina al hijo.
     #[test]
     fn resident_healthcheck_ok_and_drop_kills_child() {
-        let (port, handle) = resident::simulate_server(Arc::new(Mutex::new(String::new())));
+        let (port, handle) = resident::simulate_server();
         let child = sleeping_process();
         let pid = child.id();
         let live = Mutex::new(None);

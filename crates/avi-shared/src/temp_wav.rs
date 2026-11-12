@@ -4,7 +4,7 @@
 // Copyright (c) 2026 Cristián Rojas Arredondo.
 // SPDX-License-Identifier: MPL-2.0
 
-//! Guardián del WAV temporal de `say`/`dub` y de los handlers del daemon.
+//! Guardián del WAV temporal de la CLI (`speech synthesize` y la captura del micrófono de `voice clone`).
 //!
 //! Quien crea el fichero lo borra al salir de ámbito, también en salidas de
 //! error: el `Drop` ignora solo que el fichero ya no exista y avisa por stderr
@@ -23,7 +23,7 @@ pub struct TempWav {
 
 impl TempWav {
     /// Reserva un WAV temporal dentro de `dir` con el prefijo de producto dado
-    /// (p. ej. `"avi_say_"`) y un sufijo aleatorio.
+    /// (p. ej. `"avi_tts_"`) y un sufijo aleatorio.
     pub fn new(dir: &Path, prefix: &str) -> std::io::Result<Self> {
         let (_file, path) = tempfile::Builder::new()
             .prefix(prefix)

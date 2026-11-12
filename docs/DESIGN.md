@@ -177,7 +177,7 @@ El `--json` global emite JSONL, una línea por evento, y conserva progreso y res
    sha256), o None si es un preset
                      │
                      ▼
-3. Qwen3TtsEngine::synthesize_with_options(texto, VoiceProfile { name, reference }, GenerationOptions con idioma) → resolve_voice_engine
+3. Qwen3TtsEngine::synthesize_streaming(texto, VoiceProfile { name, reference }, GenerationOptions con idioma, cancelación, destino de los fragmentos) → resolve_voice_engine
    - default → Cloned(VoiceReference) (reference.qvoice embebido en el binario)
    - ryan/vivian → Preset (voces puras del motor, sin qvoice)
    - clonada → Cloned(VoiceReference) con reference.qvoice
@@ -286,7 +286,7 @@ La compilación, los requisitos de desarrollo y el pipeline están en [BUILD.md]
 Para añadir un nuevo motor TTS:
 
 1. Crear nuevo crate en `crates/` o módulo en `crates/avi-tts`
-2. Mantener la interfaz `TtsEngine` y el dispatch en `src/main.rs`
+2. Ofrecer la misma interfaz de entrega en streaming que `Qwen3TtsEngine` (`synthesize_streaming` y `synthesize_to_wav`) y adaptar el dispatch en `src/main.rs`
 3. Recompilar con `cargo build --release --features full` y validar con `cargo test --all`
 
 ## Referencias
