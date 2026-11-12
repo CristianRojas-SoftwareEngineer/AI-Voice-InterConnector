@@ -627,12 +627,17 @@ static void handle_tts_stream(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     ctx->stream_chunk_frames = chunk_frames;
     qwen_tts_set_audio_callback(ctx, stream_http_callback, &state);
 
+    /* La desconexión del cliente se comprueba en cada fotograma, igual que en la entrega
+     * completa: así la generación se cancela sin esperar a que falle un envío. */
+    qwen_tts_set_abort_callback(ctx, client_disconnected, &fd);
+
     /* Send chunked response header */
     send_chunked_header(fd);
 
     /* Per-sentence dynamic emotion: inline markup streams span-by-span — each sentence is
      * synthesized with its own emotion and flushed as it completes (low time-to-first-audio),
      * so a single request can switch mood paragraph by paragraph. Plain text streams as one take. */
+    int gen_rc = -1;
     if (qwen_compose_has_markup(text)) {
         char *language = json_extract_string(body, "language");
         qwen_cspan_t *spans = NULL; int nspans = 0;
@@ -640,26 +645,37 @@ static void handle_tts_stream(qwen_tts_ctx_t *ctx, int fd, const char *body) {
             fprintf(stderr, "[HTTP] inline markup -> per-sentence compose stream (%d spans)\n", nspans);
             ctx->stream = 0;        /* each span is a full internal decode; we emit its buffer per span */
             ctx->audio_cb = NULL;
-            qwen_compose_render_stream(ctx, spans, nspans, language, 0.12f,
-                                       compose_stream_emit, &state, 1);
+            gen_rc = qwen_compose_render_stream(ctx, spans, nspans, language, 0.12f,
+                                                compose_stream_emit, &state, 1);
         }
         qwen_compose_free_spans(spans, nspans);
         free(language);
         free(text);
     } else {
-    float *audio = NULL;
-    int n_samples = 0;
-    qwen_tts_generate(ctx, text, &audio, &n_samples);
-    free(audio);
-    free(text);
+        float *audio = NULL;
+        int n_samples = 0;
+        gen_rc = qwen_tts_generate(ctx, text, &audio, &n_samples);
+        free(audio);
+        free(text);
     }
 
-    /* Terminate chunked encoding */
-    send_chunked_end(fd);
-
     /* Clean up streaming state */
+    qwen_tts_set_abort_callback(ctx, NULL, NULL);
     ctx->stream = 0;
     ctx->audio_cb = NULL;
+
+    /* El fragmento final de tamaño cero es la señal de entrega correcta. Si la generación falló
+     * o el cliente se fue, la respuesta se deja sin cerrar para que el cliente la reconozca como
+     * entrega truncada y no la confunda con un audio corto. */
+    if (gen_rc != 0 || state.total_samples <= 0) {
+        if (client_disconnected(&fd))
+            fprintf(stderr, "[HTTP] TTS stream cancelado: el cliente se desconectó tras %.1f s\n",
+                    (server_time_ms() - t0) / 1000.0);
+        else
+            fprintf(stderr, "[HTTP] TTS stream: la generación falló; la respuesta queda sin cierre\n");
+        return;
+    }
+    send_chunked_end(fd);
 
     double elapsed = server_time_ms() - t0;
     float audio_secs = (float)state.total_samples / QWEN_TTS_SAMPLE_RATE;
