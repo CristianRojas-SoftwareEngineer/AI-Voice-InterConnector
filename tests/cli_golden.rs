@@ -1942,6 +1942,31 @@ impl FakeDaemon {
     /// `delay` antes de responder: simula una inferencia lenta tras una
     /// conexión inmediata.
     fn start_with_delay(status: u16, body: Value, delay: Duration) -> Self {
+        Self::start_rendered(status, move || body.to_string(), delay)
+    }
+
+    /// Como [`FakeDaemon::start`], pero la ruta de trabajo responde un flujo
+    /// NDJSON: un evento por línea, en el orden dado.
+    fn start_events(events: Vec<Value>) -> Self {
+        Self::start_rendered(
+            200,
+            move || {
+                events
+                    .iter()
+                    .map(|event| format!("{event}\n"))
+                    .collect::<String>()
+            },
+            Duration::ZERO,
+        )
+    }
+
+    /// Base de los constructores: `render` produce el cuerpo de la respuesta de
+    /// toda ruta distinta de `/health`.
+    fn start_rendered(
+        status: u16,
+        render: impl Fn() -> String + Send + 'static,
+        delay: Duration,
+    ) -> Self {
         use std::io::Read;
         use std::sync::atomic::Ordering;
         use std::sync::{Arc, Mutex};
@@ -1996,13 +2021,13 @@ impl FakeDaemon {
                             "warm": "warm",
                             "engine": "rust_native",
                             "schema_version": avi_core::json_emitter::DAEMON_SCHEMA_VERSION,
-                        }),
+                        })
+                        .to_string(),
                     )
                 } else {
                     std::thread::sleep(delay);
-                    (status, body.clone())
+                    (status, render())
                 };
-                let payload = payload.to_string();
                 let response = format!(
                     "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
                     payload.len()
@@ -9054,24 +9079,19 @@ fn parse_error_with_json_emits_usage_error_envelope() {
     }
 }
 
-/// Silencio de 1 s en base64 para alimentar al daemon falso: es un WAV válido,
-/// así que la reproducción lo acepta donde haya dispositivo.
-///
-/// `path` debe vivir dentro del sandbox de la prueba: el WAV se arma en el
-/// temporal de la máquina si se le pasa una ruta de `std::env::temp_dir()`, y ese
-/// residuo quedaría fuera del alcance del `TempDir` que borra el sandbox.
-fn silent_wav_b64(path: &std::path::Path) -> String {
-    write_silent_wav(path, 1);
-    let bytes = std::fs::read(path).expect("leer el WAV de silencio");
-    base64::engine::general_purpose::STANDARD.encode(&bytes)
+/// Evento `audio` del daemon falso con `seconds` s de silencio (PCM de 16 bits,
+/// 24 kHz, mono, en base64).
+fn silent_audio_event(seconds: usize) -> Value {
+    let pcm = vec![0u8; seconds * 24_000 * 2];
+    serde_json::json!({
+        "event": "audio",
+        "pcm_b64": base64::engine::general_purpose::STANDARD.encode(pcm),
+    })
 }
 
-/// `audio_b64` con bytes que no son un WAV: la reproducción los rechaza al
-/// abrirlos y falla con `playback_failed`. El fallo ocurre en la apertura, antes
-/// de mirar el dispositivo de salida, así que se produce igual en una máquina
-/// con audio y en una sin él: la puerta no depende del host.
-fn unreadable_audio_b64() -> String {
-    base64::engine::general_purpose::STANDARD.encode(b"esto no es un WAV: audio_b64 de mentira")
+/// Evento `audio` con un `pcm_b64` que no es base64: protocolo inválido.
+fn invalid_audio_event() -> Value {
+    serde_json::json!({ "event": "audio", "pcm_b64": "%%%no-es-base64%%%" })
 }
 
 /// Exige un dispositivo de salida para poder afirmar el envelope de éxito.
@@ -9094,42 +9114,28 @@ fn require_output_device() {
     );
 }
 
-/// Rutas con el prefijo dado dentro del temporal del hijo del sandbox.
-fn residue_with_prefix(dir: &std::path::Path, prefix: &str) -> Vec<String> {
-    std::fs::read_dir(dir.join("child-tmp"))
-        .expect("listar el temporal del hijo")
-        .filter_map(|e| e.ok())
-        .map(|e| e.file_name().to_string_lossy().to_string())
-        .filter(|n| n.starts_with(prefix))
-        .collect()
-}
-
-/// `speech dub` por daemon con respuesta válida **sale bien**, no
-/// deja su WAV temporal en ninguna salida y su envelope no lleva `audio_path`.
+/// `speech dub` por daemon con respuesta válida **sale bien**: el audio llega en
+/// eventos `audio`, el envelope informa `first_audio_ms` y `stalls` y no lleva
+/// `audio_path`.
 ///
 /// El nombre afirma «success» y la puerta lo demuestra: el código 0 y el `status`
-/// `dubbed` se exigen **antes** de mirar el residuo. Sin ellos la prueba pasa en
-/// vacío cuando la invocación falla —un envelope de error tampoco lleva
-/// `audio_path`— y cuando el daemon falso deja de responder no se crea ningún
-/// temporal que assertar.
+/// `dubbed` se exigen **antes** de mirar el resto. Sin ellos la prueba pasa en
+/// vacío cuando la invocación falla.
 #[test]
 #[ignore = "requiere un dispositivo de salida de audio"]
-fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
+fn dub_daemon_success_reports_first_audio_and_stalls() {
     require_output_device();
-    let (sandbox, envs) = contract_sandbox("dub-no-residue");
+    let (sandbox, envs) = contract_sandbox("dub-streaming");
     let dir = sandbox.path();
-    let body_wav = dir
-        .join("child-tmp")
-        .join(format!("dub_body_{}.wav", std::process::id()));
-    let wav_b64 = silent_wav_b64(&body_wav);
-    let fake = FakeDaemon::start(
-        200,
+    let fake = FakeDaemon::start_events(vec![
+        serde_json::json!({ "event": "started", "text_length": 4 }),
+        silent_audio_event(1),
+        silent_audio_event(1),
         serde_json::json!({
             "event": "result", "status": "dubbed",
-            "text": "hola", "translated": "hola",
-            "audio_b64": wav_b64, "voice": "default",
+            "text": "hola", "translated": "hola", "voice": "default", "work_ms": 5,
         }),
-    );
+    ]);
     fake.publish_in(&dir.join("data"));
     let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
@@ -9151,8 +9157,8 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
     );
     assert_eq!(
         code, 0,
-        "el dub por daemon debe salir 0: un envelope de error también pasa la aserción de \
-         audio_path y no demostraría que la reproducción ocurrió: {actual}"
+        "el dub por daemon debe salir 0: un envelope de error también pasa las demás \
+         aserciones y no demostraría que la reproducción ocurrió: {actual}"
     );
     assert_eq!(
         actual["status"],
@@ -9162,35 +9168,34 @@ fn dub_daemon_success_leaves_no_residue_and_no_audio_path() {
     // El envelope refleja el evento simulado: transcripción y texto sintetizado.
     assert_eq!(actual["text"], Value::String("hola".to_string()));
     assert_eq!(actual["translated"], Value::String("hola".to_string()));
-    let residue = residue_with_prefix(dir, "avi_dub_");
     assert!(
-        residue.is_empty(),
-        "el temporal del dub debe borrarse en todas las salidas: {residue:?}"
+        actual["first_audio_ms"].is_u64(),
+        "el envelope informa los ms hasta el primer sonido: {actual}"
     );
+    assert_eq!(actual["stalls"], Value::from(0), "sin cortes: {actual}");
     assert!(
         actual.get("audio_path").is_none(),
         "el envelope del dub no debe llevar audio_path: {actual}"
     );
 }
 
-/// El guardián del temporal de `dub` borra su WAV también cuando **la
-/// reproducción falla**.
-///
-/// El fallo se fuerza con un `audio_b64` que no es un WAV, de modo que la puerta
-/// dice algo en cualquier máquina y no solo donde la reproducción falla por falta
-/// de dispositivo.
+/// Un evento `audio` inválido en el stream de `/dub` termina con `daemon_error`
+/// (exit 1): nunca se reproduce una entrega que no se entiende. Abre el
+/// dispositivo de salida antes de pedir la síntesis, por eso necesita salida de audio.
 #[test]
-fn dub_daemon_playback_failure_leaves_no_residue() {
-    let fake = FakeDaemon::start(
-        200,
+#[ignore = "requiere un dispositivo de salida de audio"]
+fn dub_daemon_invalid_audio_event_exits_1_with_daemon_error() {
+    require_output_device();
+    let (sandbox, envs) = contract_sandbox("dub-invalid-audio");
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start_events(vec![
+        serde_json::json!({ "event": "started", "text_length": 4 }),
+        invalid_audio_event(),
         serde_json::json!({
             "event": "result", "status": "dubbed",
-            "text": "hola", "translated": "hola",
-            "audio_b64": unreadable_audio_b64(), "voice": "default",
+            "text": "hola", "translated": "hola", "voice": "default", "work_ms": 5,
         }),
-    );
-    let (sandbox, envs) = contract_sandbox("dub-playback-failed");
-    let dir = sandbox.path();
+    ]);
     fake.publish_in(&dir.join("data"));
     let wav = dir.join("input_1s.wav");
     write_silent_wav(&wav, 1);
@@ -9212,18 +9217,12 @@ fn dub_daemon_playback_failure_leaves_no_residue() {
     );
     assert_eq!(
         code, 1,
-        "si la reproducción falla el dub no puede salir 0 (playback_failed es exit 1): {actual}"
+        "un evento audio inválido no puede salir 0: {actual}"
     );
     assert_eq!(
         actual["reason"],
-        Value::String("playback_failed".to_string()),
-        "el fallo debe nombrarse playback_failed y no io_error o daemon_error: {actual}"
-    );
-    let residue = residue_with_prefix(dir, "avi_dub_");
-    assert!(
-        residue.is_empty(),
-        "el guardián debe borrar el temporal del dub también cuando la reproducción \
-         falla: {residue:?}"
+        Value::String("daemon_error".to_string()),
+        "el fallo debe nombrarse daemon_error: {actual}"
     );
 }
 
@@ -9272,23 +9271,22 @@ fn translate_daemon_waits_for_a_slow_inference() {
     );
 }
 
-/// `speech say` por daemon con respuesta válida **sale bien**, no
-/// deja su WAV temporal en ninguna salida y su envelope no lleva `audio_path`. Vale
-/// lo dicho en el test del dub sobre cada aserción.
+/// `speech say` por daemon con respuesta válida **sale bien**: el audio llega en
+/// eventos `audio`, el envelope informa `first_audio_ms` y `stalls` y no lleva
+/// `audio_path`. Vale lo dicho en el test del dub sobre cada aserción.
 #[test]
 #[ignore = "requiere un dispositivo de salida de audio"]
-fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
+fn say_daemon_success_reports_first_audio_and_stalls() {
     require_output_device();
-    let (sandbox, envs) = contract_sandbox("say-no-residue");
+    let (sandbox, envs) = contract_sandbox("say-streaming");
     let dir = sandbox.path();
-    let body_wav = dir
-        .join("child-tmp")
-        .join(format!("say_body_{}.wav", std::process::id()));
-    let wav_b64 = silent_wav_b64(&body_wav);
-    let fake = FakeDaemon::start(
-        200,
-        serde_json::json!({ "event": "result", "audio_b64": wav_b64, "translated": "Hola" }),
-    );
+    let fake = FakeDaemon::start_events(vec![
+        serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
+        serde_json::json!({ "event": "progress", "stage": "synthesis" }),
+        silent_audio_event(1),
+        silent_audio_event(1),
+        serde_json::json!({ "event": "result", "translated": "Hola", "work_ms": 5 }),
+    ]);
     fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
@@ -9297,19 +9295,19 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
     );
     assert_eq!(
         code, 0,
-        "el say por daemon debe salir 0: un envelope de error también pasa la aserción de \
-         audio_path y no demostraría que la reproducción ocurrió: {actual}"
+        "el say por daemon debe salir 0: un envelope de error también pasa las demás \
+         aserciones y no demostraría que la reproducción ocurrió: {actual}"
     );
     assert_eq!(
         actual["status"],
         Value::String("reproduced".to_string()),
         "el envelope debe afirmar que se reprodujo, no solo que no falló: {actual}"
     );
-    let residue = residue_with_prefix(dir, "avi_say_");
     assert!(
-        residue.is_empty(),
-        "el temporal del say debe borrarse en todas las salidas: {residue:?}"
+        actual["first_audio_ms"].is_u64(),
+        "el envelope informa los ms hasta el primer sonido: {actual}"
     );
+    assert_eq!(actual["stalls"], Value::from(0), "sin cortes: {actual}");
     assert!(
         actual.get("audio_path").is_none(),
         "el envelope del say no debe llevar audio_path: {actual}"
@@ -9322,16 +9320,10 @@ fn say_daemon_success_leaves_no_residue_and_no_audio_path() {
 fn synthesize_daemon_persists_translated_text() {
     let (sandbox, envs) = contract_sandbox("synthesize-translated");
     let dir = sandbox.path();
-    let body_wav = dir
-        .join("child-tmp")
-        .join(format!("synth_body_{}.wav", std::process::id()));
-    let wav_b64 = silent_wav_b64(&body_wav);
-    let fake = FakeDaemon::start(
-        200,
-        serde_json::json!({
-            "event": "result", "audio_b64": wav_b64, "translated": "Hello there"
-        }),
-    );
+    let fake = FakeDaemon::start_events(vec![
+        silent_audio_event(1),
+        serde_json::json!({ "event": "result", "translated": "Hello there" }),
+    ]);
     fake.publish_in(&dir.join("data"));
     let mut envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     envs.push(("AVI_TTS_PRECISION", "invalid"));
@@ -9368,14 +9360,10 @@ fn synthesize_daemon_persists_translated_text() {
 fn synthesize_daemon_result_without_translated_fails() {
     let (sandbox, envs) = contract_sandbox("synthesize-no-translated");
     let dir = sandbox.path();
-    let body_wav = dir
-        .join("child-tmp")
-        .join(format!("synth_body_{}.wav", std::process::id()));
-    let wav_b64 = silent_wav_b64(&body_wav);
-    let fake = FakeDaemon::start(
-        200,
-        serde_json::json!({ "event": "result", "audio_b64": wav_b64 }),
-    );
+    let fake = FakeDaemon::start_events(vec![
+        silent_audio_event(1),
+        serde_json::json!({ "event": "result" }),
+    ]);
     fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
@@ -9397,38 +9385,47 @@ fn synthesize_daemon_result_without_translated_fails() {
     assert_eq!(actual["reason"], "synthesis_failed", "{actual}");
 }
 
-/// El guardián del temporal de `say` borra su WAV también cuando **la
-/// reproducción falla**. Vale lo dicho en el test del dub: el fallo se fuerza con
-/// audio ilegible, no confiando en que la máquina tenga o no dispositivo.
+/// Un evento `audio` inválido en el stream de `/synthesize` termina con
+/// `daemon_error` (exit 1) y no guarda nada. `synthesize` sin `--play` no abre el
+/// dispositivo de salida, así que la puerta dice lo mismo en cualquier máquina.
 #[test]
-fn say_daemon_playback_failure_leaves_no_residue() {
-    let fake = FakeDaemon::start(
-        200,
-        serde_json::json!({
-            "event": "result", "audio_b64": unreadable_audio_b64(), "translated": "Hola"
-        }),
-    );
-    let (sandbox, envs) = contract_sandbox("say-playback-failed");
+fn synthesize_daemon_invalid_audio_event_exits_1_with_daemon_error() {
+    let (sandbox, envs) = contract_sandbox("synthesize-invalid-audio");
     let dir = sandbox.path();
+    let fake = FakeDaemon::start_events(vec![
+        invalid_audio_event(),
+        serde_json::json!({ "event": "result", "translated": "Hola" }),
+    ]);
     fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
-        &["--json", "speech", "say", "--daemon", "--text", "Hola"],
+        &[
+            "--json",
+            "speech",
+            "synthesize",
+            "--daemon",
+            "--text",
+            "Hola",
+            "--voice",
+            "default",
+            "--label",
+            "audio-invalido",
+        ],
         &envs,
     );
     assert_eq!(
         code, 1,
-        "si la reproducción falla el say no puede salir 0 (playback_failed es exit 1): {actual}"
+        "un evento audio inválido no puede salir 0: {actual}"
     );
     assert_eq!(
         actual["reason"],
-        Value::String("playback_failed".to_string()),
-        "el fallo debe nombrarse playback_failed y no io_error o daemon_error: {actual}"
+        Value::String("daemon_error".to_string()),
+        "el fallo debe nombrarse daemon_error: {actual}"
     );
-    let residue = residue_with_prefix(dir, "avi_say_");
+    let (code, list) = run_json_env(&["--json", "speech", "list"], &envs);
+    assert_eq!(code, 0, "{list}");
     assert!(
-        residue.is_empty(),
-        "el guardián debe borrar el temporal del say también cuando la reproducción \
-         falla: {residue:?}"
+        !list.to_string().contains("audio-invalido"),
+        "una entrega inválida no debe guardar la locución: {list}"
     );
 }

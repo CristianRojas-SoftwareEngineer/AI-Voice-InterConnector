@@ -21,7 +21,7 @@ use avi_store as store;
 use avi_store::{Label, ModelStore, SpeechStore, VoiceName, VoiceStore};
 #[cfg(feature = "native-stt")]
 use avi_stt::EngineHolder;
-use avi_tts::{Qwen3TtsEngine, TtsEngine};
+use avi_tts::Qwen3TtsEngine;
 // El motor de traducción real solo entra en scope con `native-translation`.
 #[cfg(feature = "native-translation")]
 use avi_translation as translation;
@@ -99,7 +99,8 @@ static STT_HOLDER: EngineHolder = EngineHolder::new();
 /// Traduce un fallo de la síntesis directa al contrato: la falta del modelo que
 /// exige la voz sale como `model_missing` (exit 4), el vencimiento del
 /// presupuesto como `synthesis_timeout`, una voz sin referencia que no es preset
-/// como `voice_not_found` (exit 3) y cualquier otro como `synthesis_failed`.
+/// como `voice_not_found` (exit 3) y cualquier otro, incluida una entrega cortada
+/// a mitad (`SynthesisTruncated`), como `synthesis_failed`.
 fn synthesis_cli_error(e: anyhow::Error) -> CliError {
     if e.downcast_ref::<avi_tts::ModelMissing>().is_some() {
         return CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string());
@@ -155,13 +156,31 @@ fn resolve_voice_reference(
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
 }
 
-/// Síntesis directa de una voz con su referencia ya resuelta (`None` para un
-/// preset): pide al motor el idioma de destino (token del producto) con la
-/// temperatura opcional ya validada y el seed opcional (`None` usa el de
-/// producción).
+/// Perfil de voz y opciones de generación de una síntesis directa: el idioma de
+/// destino (token del producto), la temperatura opcional ya validada y el seed
+/// opcional (`None` usa el de producción).
+fn tts_request(
+    reference: Option<&avi_store::VoiceReference>,
+    voice: &VoiceName,
+    temperature: Option<f32>,
+    seed: Option<u64>,
+    language: &str,
+) -> (avi_tts::VoiceProfile, avi_tts::GenerationOptions) {
+    let profile = avi_tts::VoiceProfile {
+        name: voice.to_string(),
+        reference: reference.cloned(),
+    };
+    let options = avi_tts::GenerationOptions::with_temperature(temperature, language)
+        .with_seed_override(seed);
+    (profile, options)
+}
+
+/// Síntesis directa sin reproducción: acumula la entrega del motor y escribe el
+/// WAV en `output_path`, con la voz y su referencia ya resueltas (`None` para un
+/// preset).
 // Firma ancha deliberada: cada argumento mapea 1:1 a un dato de la síntesis.
 #[allow(clippy::too_many_arguments)]
-fn synthesize_voice_directly(
+fn synthesize_wav_directly(
     engine: &Qwen3TtsEngine,
     reference: Option<&avi_store::VoiceReference>,
     text: &str,
@@ -169,17 +188,253 @@ fn synthesize_voice_directly(
     temperature: Option<f32>,
     seed: Option<u64>,
     language: &str,
-    output_path: &PathBuf,
-) -> Result<PathBuf, CliError> {
-    let profile = avi_tts::VoiceProfile {
-        name: voice.to_string(),
-        reference: reference.cloned(),
-    };
-    let options = avi_tts::GenerationOptions::with_temperature(temperature, language)
-        .with_seed_override(seed);
+    output_path: &std::path::Path,
+) -> Result<(), CliError> {
+    let (profile, options) = tts_request(reference, voice, temperature, seed, language);
     engine
-        .synthesize_with_options(text, &profile, &options, Some(output_path))
+        .synthesize_to_wav(
+            text,
+            &profile,
+            &options,
+            output_path,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
         .map_err(synthesis_cli_error)
+}
+
+/// Datos de una síntesis directa en streaming: el motor local, la voz con su
+/// referencia ya resuelta (`None` para un preset), el texto y el idioma de destino.
+struct DirectSynthesis<'a> {
+    engine: &'a Qwen3TtsEngine,
+    reference: Option<&'a avi_store::VoiceReference>,
+    text: &'a str,
+    voice: &'a VoiceName,
+    temperature: Option<f32>,
+    seed: Option<u64>,
+    language: &'a str,
+}
+
+/// Lo que queda de una entrega en streaming ya terminada.
+struct DeliveryStats {
+    /// Milisegundos desde el inicio de la fase de síntesis hasta que la primera
+    /// muestra llegó al dispositivo; `None` si no hubo reproducción o no llegó audio.
+    first_audio_ms: Option<u64>,
+    /// Veces que la cola de reproducción se vació con la entrega en curso.
+    stalls: u32,
+    /// Audio acumulado (PCM de 16 bits, 24 kHz, mono); vacío si no se acumuló.
+    pcm: Vec<i16>,
+}
+
+/// Receptor de los fragmentos de audio de una síntesis en streaming. Lo usan igual
+/// la ruta directa, que recibe los fragmentos del motor, y la del daemon, que los
+/// recibe en eventos `audio`.
+trait AudioReceiver {
+    /// Marca el inicio de la fase de síntesis: desde aquí cuenta `first_audio_ms`.
+    fn begin_synthesis(&mut self);
+    /// Entrega un fragmento. Un fallo del dispositivo es `playback_failed`.
+    fn push(&mut self, pcm: &[i16]) -> Result<(), CliError>;
+    /// Si ya se entregó alguna muestra al dispositivo.
+    fn started(&self) -> bool;
+}
+
+/// Reparte los fragmentos de una síntesis entre un reproductor opcional y un
+/// acumulador opcional. Al terminar devuelve `first_audio_ms` y `stalls`.
+struct StreamDelivery {
+    player: Option<audio::StreamPlayer>,
+    accumulated: Option<Vec<i16>>,
+    synthesis_began: std::time::Instant,
+    /// Principio del mensaje de `playback_failed`, antes de la causa.
+    playback_failure: String,
+}
+
+impl AudioReceiver for StreamDelivery {
+    fn begin_synthesis(&mut self) {
+        self.synthesis_began = std::time::Instant::now();
+    }
+
+    fn push(&mut self, pcm: &[i16]) -> Result<(), CliError> {
+        if let Some(player) = &self.player {
+            player
+                .push(pcm)
+                .map_err(|e| playback_error(e, &self.playback_failure))?;
+        }
+        if let Some(accumulated) = &mut self.accumulated {
+            accumulated.extend_from_slice(pcm);
+        }
+        Ok(())
+    }
+
+    fn started(&self) -> bool {
+        self.player.as_ref().is_some_and(|p| p.started())
+    }
+}
+
+impl StreamDelivery {
+    /// Termina la entrega: espera a que suene lo que queda en cola y devuelve los
+    /// datos de la reproducción y el audio acumulado.
+    fn finish(self) -> Result<DeliveryStats, CliError> {
+        let (first_audio_ms, stalls) = match self.player {
+            Some(player) => {
+                let playback = player
+                    .finish()
+                    .map_err(|e| playback_error(e, &self.playback_failure))?;
+                (
+                    playback.first_audio_at.map(|at| {
+                        at.saturating_duration_since(self.synthesis_began)
+                            .as_millis() as u64
+                    }),
+                    playback.stalls,
+                )
+            }
+            None => (None, 0),
+        };
+        Ok(DeliveryStats {
+            first_audio_ms,
+            stalls,
+            pcm: self.accumulated.unwrap_or_default(),
+        })
+    }
+
+    /// Corta la reproducción de inmediato y descarta lo pendiente: la síntesis
+    /// falló a mitad.
+    fn abort(self) {
+        if let Some(player) = self.player {
+            player.abort();
+        }
+    }
+}
+
+/// Receptor para los streams que no deben traer audio (`voice clone`): un evento
+/// `audio` es un protocolo inválido.
+struct RejectAudio;
+
+impl AudioReceiver for RejectAudio {
+    fn begin_synthesis(&mut self) {}
+
+    fn push(&mut self, _pcm: &[i16]) -> Result<(), CliError> {
+        Err(CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            "El daemon envió audio en un stream que no lo admite.",
+        ))
+    }
+
+    fn started(&self) -> bool {
+        false
+    }
+}
+
+/// Error de reproducción: sin backend, sin salida o fallo del flujo de audio.
+/// `failure` es el principio del mensaje del fallo genérico.
+fn playback_error(e: anyhow::Error, failure: &str) -> CliError {
+    audio_error(e, ExitCode::Error, "playback_failed", |e| {
+        format!("{failure}: {e}")
+    })
+}
+
+/// Prepara la entrega de una síntesis en streaming. Con `play` abre el
+/// dispositivo de salida —antes de pedir la síntesis, de modo que sin salida de
+/// audio el comando termina sin sintetizar—; con `accumulate` guarda el audio.
+/// `playback_failure` encabeza el mensaje de `playback_failed`.
+fn open_delivery(
+    play: bool,
+    accumulate: bool,
+    playback_failure: impl Into<String>,
+) -> Result<StreamDelivery, CliError> {
+    let playback_failure = playback_failure.into();
+    let player = if play {
+        Some(
+            audio::AudioService::new()
+                .stream_player(avi_tts::ENGINE_SAMPLE_RATE)
+                .map_err(|e| playback_error(e, &playback_failure))?,
+        )
+    } else {
+        None
+    };
+    Ok(StreamDelivery {
+        player,
+        accumulated: accumulate.then(Vec::new),
+        synthesis_began: std::time::Instant::now(),
+        playback_failure,
+    })
+}
+
+/// Escribe en `path` el audio acumulado de una entrega como WAV de 24 kHz, mono y
+/// 16 bits.
+fn write_take_wav(path: &std::path::Path, pcm: &[i16]) -> Result<(), CliError> {
+    let wav = audio::encode_pcm_mono_wav(pcm, avi_tts::ENGINE_SAMPLE_RATE)
+        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    std::fs::write(path, wav).map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
+}
+
+/// Indicador de progreso compartible con el hilo que lo repinta mientras el hilo
+/// actual entrega el audio: permite cambiar la fase desde el receptor de
+/// fragmentos sin quitarle el indicador al repintado.
+struct SharedProgress<'a>(std::sync::Mutex<&'a mut PhaseProgress>);
+
+impl SharedProgress<'_> {
+    fn phase(&self, label: &'static str, msg: &str) {
+        match self.0.lock() {
+            Ok(mut progress) => progress.phase(label, msg),
+            Err(poisoned) => poisoned.into_inner().phase(label, msg),
+        }
+    }
+}
+
+impl ProgressTicker for SharedProgress<'_> {
+    fn repaint(&self) {
+        match self.0.lock() {
+            Ok(progress) => progress.tick(),
+            Err(poisoned) => poisoned.into_inner().tick(),
+        }
+    }
+}
+
+/// Síntesis directa en streaming: el motor local entrega el audio fragmento a
+/// fragmento a `delivery`, que lo reproduce, lo acumula o ambas cosas. La fase
+/// visible pasa a `playing_text` en cuanto suena la primera muestra. Si la
+/// síntesis falla a mitad, se corta la reproducción y el error es el de la
+/// síntesis; un fallo del dispositivo cancela la síntesis y es `playback_failed`.
+fn synthesize_streaming_directly(
+    request: &DirectSynthesis<'_>,
+    progress: &mut PhaseProgress,
+    playing_text: &str,
+    mut delivery: StreamDelivery,
+) -> Result<DeliveryStats, CliError> {
+    let (profile, options) = tts_request(
+        request.reference,
+        request.voice,
+        request.temperature,
+        request.seed,
+        request.language,
+    );
+    let shared = SharedProgress(std::sync::Mutex::new(progress));
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let mut playback_failure: Option<CliError> = None;
+    let mut announced_playing = false;
+    delivery.begin_synthesis();
+    let result = run_blocking_with_progress(&shared, || {
+        request
+            .engine
+            .synthesize_streaming(request.text, &profile, &options, &cancel, &mut |pcm| {
+                if let Err(e) = delivery.push(pcm) {
+                    playback_failure = Some(e);
+                    return Err(anyhow::anyhow!("falló la reproducción del audio"));
+                }
+                if !announced_playing && delivery.started() {
+                    announced_playing = true;
+                    shared.phase("playing", playing_text);
+                }
+                Ok(())
+            })
+    });
+    match result {
+        Ok(()) => delivery.finish(),
+        Err(e) => {
+            delivery.abort();
+            Err(playback_failure.unwrap_or_else(|| synthesis_cli_error(e)))
+        }
+    }
 }
 
 /// Valida el override de temperatura (`0 < t <= 2.0`); exit 2 si no calza.
@@ -2257,13 +2512,15 @@ trait PlayResynthesizer {
     ) -> impl std::future::Future<Output = Result<(), CliError>>;
 }
 
-/// Re-síntesis directa: vuelve a sintetizar con el motor local sobre el mismo
-/// temporal y se encarga de su propio progreso.
+/// Re-síntesis directa: vuelve a sintetizar con el motor local, reproduciendo la
+/// toma nueva mientras se sintetiza, y la deja en el mismo temporal. Se encarga
+/// de su propio progreso.
 struct LocalResynthesizer<'a> {
     engine: &'a Qwen3TtsEngine,
     reference: Option<&'a avi_store::VoiceReference>,
     final_text: &'a str,
     voice: &'a VoiceName,
+    label: &'a Label,
     temperature: Option<f32>,
     target_language: &'a str,
     tmp_wav: &'a PathBuf,
@@ -2275,32 +2532,41 @@ impl PlayResynthesizer for LocalResynthesizer<'_> {
         self.progress
             .phase("synthesizing", RETAKE_PHASES.synthesizing);
         self.progress.tick();
-        let result = run_blocking_with_progress(&*self.progress, || {
-            synthesize_voice_directly(
-                self.engine,
-                self.reference,
-                self.final_text,
-                self.voice,
-                self.temperature,
-                Some(seed),
-                self.target_language,
-                self.tmp_wav,
+        let result = open_delivery(
+            true,
+            true,
+            format!("Fallo al reproducir la locución '{}'", self.label),
+        )
+        .and_then(|delivery| {
+            synthesize_streaming_directly(
+                &DirectSynthesis {
+                    engine: self.engine,
+                    reference: self.reference,
+                    text: self.final_text,
+                    voice: self.voice,
+                    temperature: self.temperature,
+                    seed: Some(seed),
+                    language: self.target_language,
+                },
+                &mut *self.progress,
+                RETAKE_PHASES.playing,
+                delivery,
             )
         });
         // La línea de progreso se cede antes de que escriba el menú, también si
         // la síntesis falla.
         self.progress.close_line();
-        result?;
-        Ok(())
+        write_take_wav(self.tmp_wav, &result?.pcm)
     }
 }
 
-/// Re-síntesis por daemon: vuelve a despachar la síntesis por la misma vía y
-/// deja el WAV nuevo en el mismo temporal.
+/// Re-síntesis por daemon: vuelve a despachar la síntesis por la misma vía,
+/// reproduce la toma nueva mientras llega y la deja en el mismo temporal.
 struct DaemonResynthesizer<'a> {
     client: &'a reqwest::Client,
     text: &'a str,
     voice: &'a str,
+    label: &'a Label,
     source_language: &'a str,
     target_language: &'a str,
     temperature: Option<f32>,
@@ -2311,24 +2577,32 @@ struct DaemonResynthesizer<'a> {
 impl PlayResynthesizer for DaemonResynthesizer<'_> {
     async fn resynthesize(&mut self, seed: u64) -> Result<(), CliError> {
         // La fase «Sintetizando…» la pinta el consumo del stream del daemon.
-        let result = daemon_synthesize_wav(
-            self.progress,
-            &RETAKE_PHASES,
-            self.client,
-            self.text,
-            self.voice,
-            self.source_language,
-            self.target_language,
-            self.temperature,
-            Some(seed),
-        )
-        .await;
+        let result = match open_delivery(
+            true,
+            true,
+            format!("Fallo al reproducir la locución '{}'", self.label),
+        ) {
+            Ok(delivery) => {
+                daemon_synthesize_streaming(
+                    self.progress,
+                    &RETAKE_PHASES,
+                    self.client,
+                    self.text,
+                    self.voice,
+                    self.source_language,
+                    self.target_language,
+                    self.temperature,
+                    Some(seed),
+                    delivery,
+                )
+                .await
+            }
+            Err(e) => Err(e),
+        };
         // La línea de progreso se cede antes de que escriba el menú, también si
         // la síntesis falla.
         self.progress.close_line();
-        let synthesis = result?;
-        std::fs::write(self.tmp_wav, &synthesis.wav)
-            .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))
+        write_take_wav(self.tmp_wav, &result?.stats.pcm)
     }
 }
 
@@ -2386,15 +2660,16 @@ fn menu_playback(label: &Label) -> impl FnMut(&std::path::Path) -> Result<(), Cl
     }
 }
 
-/// Menú interactivo `--play`: reproduce la toma y ofrece 4 opciones a stderr —
+/// Menú interactivo `--play`: sobre la toma que ya sonó mientras se sintetizaba,
+/// ofrece 4 opciones a stderr —
 /// 1) reproducir otra vez (sin re-síntesis), 2) aceptar y guardar con
 ///    `persist_locution`, que recomprueba la identidad de la voz y la colisión
 ///    de label al guardar, 3) rechazar y regenerar
 ///    (una síntesis nueva), 4) rechazar y descartar. EOF o error de lectura de
 ///    stdin también descartan; una opción inválida avisa y repite el menú.
 ///
-/// La opción 1 se resuelve dentro del menú porque no necesita volver a
-/// sintetizar; la 3 se devuelve al llamador como `Resynthesize`, que re-sintetiza
+/// La opción 1 reproduce la toma completa ya guardada y se resuelve dentro del
+/// menú porque no necesita volver a sintetizar; la 3 se devuelve al llamador como `Resynthesize`, que re-sintetiza
 /// y reentra al menú. El menú y los prompts van a stderr, nunca a stdout. No
 /// introduce exit codes nuevos.
 // Firma ancha deliberada: cada argumento mapea 1:1 a un dato del menú.
@@ -2411,9 +2686,6 @@ fn synthesize_play_loop(
     reader: &mut dyn FnMut(&mut String) -> std::io::Result<usize>,
     playback: &mut dyn FnMut(&std::path::Path) -> Result<(), CliError>,
 ) -> Result<PlayDecision, CliError> {
-    // Reproducir al entrar al menú.
-    playback(wav)?;
-
     loop {
         eprintln!("¿Qué quieres hacer con esta toma?");
         eprintln!("  1) Reproducir otra vez");
@@ -2895,18 +3167,43 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // La identidad de la voz se resuelve antes de sintetizar: la
                 // locución solo se guarda si la voz la conserva al guardarla.
                 let reference = resolve_voice_reference(&voice_store, &voice)?;
-                run_blocking_with_progress(&progress, || {
-                    synthesize_voice_directly(
-                        &engine,
-                        reference.as_ref(),
-                        &final_text,
-                        &voice,
-                        temperature,
-                        None,
-                        &target_language,
-                        &tmp_wav,
-                    )
-                })?;
+                if play {
+                    // La toma suena mientras se sintetiza y se acumula en el
+                    // temporal para el menú y el guardado.
+                    let delivery = open_delivery(
+                        true,
+                        true,
+                        format!("Fallo al reproducir la locución '{}'", label),
+                    )?;
+                    let take = synthesize_streaming_directly(
+                        &DirectSynthesis {
+                            engine: &engine,
+                            reference: reference.as_ref(),
+                            text: &final_text,
+                            voice: &voice,
+                            temperature,
+                            seed: None,
+                            language: &target_language,
+                        },
+                        &mut progress,
+                        SYNTHESIZE_PHASES.playing,
+                        delivery,
+                    )?;
+                    write_take_wav(&tmp_wav, &take.pcm)?;
+                } else {
+                    run_blocking_with_progress(&progress, || {
+                        synthesize_wav_directly(
+                            &engine,
+                            reference.as_ref(),
+                            &final_text,
+                            &voice,
+                            temperature,
+                            None,
+                            &target_language,
+                            &tmp_wav,
+                        )
+                    })?;
+                }
 
                 let saved = if play {
                     // Bucle interactivo, reemplaza la reproducción y el guardado
@@ -2921,6 +3218,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         reference: reference.as_ref(),
                         final_text: &final_text,
                         voice: &voice,
+                        label: &label,
                         temperature,
                         target_language: &target_language,
                         tmp_wav: &tmp_wav,
@@ -2978,7 +3276,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // Patrón de bloque externo: el trabajo que puede fallar vive en un
             // bloque y el cierre del indicador —que consume el indicador— se
             // hace fuera, sobre el resultado ya obtenido.
-            let result = async {
+            let result: Result<DeliveryStats, CliError> = async {
                 progress.phase("validating", "Validando texto y voz…");
                 let (voice, (), ()) = prepare_synthesis(
                     || {
@@ -2994,7 +3292,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 // Dispatch 3 modos (Say es delegable al daemon).
                 let client = daemon_client();
                 if route_to_daemon(routing.mode()).await? {
-                    say_via_daemon(
+                    return say_via_daemon(
                         &mut progress,
                         &client,
                         &text,
@@ -3003,15 +3301,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         &target_language,
                         temperature,
                     )
-                    .await?;
-                    return Ok(());
+                    .await;
                 }
 
                 require_model_provisioned()?;
                 let voice_store = open_voice_store()?;
-                // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
-                let tmp_wav = avi_process::scratch::temp_wav("avi_say_")
-                    .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
                 progress.close_line();
                 let engine_result = direct_tts_engine();
                 progress.repaint();
@@ -3026,35 +3320,33 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 progress.phase("synthesizing", SAY_PHASES.synthesizing);
                 progress.tick();
                 let reference = resolve_voice_reference(&voice_store, &voice)?;
-                run_blocking_with_progress(&progress, || {
-                    synthesize_voice_directly(
-                        &engine,
-                        reference.as_ref(),
-                        &final_text,
-                        &voice,
+                // El dispositivo se abre antes de pedir la síntesis: sin salida de
+                // audio el comando termina sin sintetizar.
+                let delivery = open_delivery(true, false, "Fallo al reproducir la locución")?;
+                synthesize_streaming_directly(
+                    &DirectSynthesis {
+                        engine: &engine,
+                        reference: reference.as_ref(),
+                        text: &final_text,
+                        voice: &voice,
                         temperature,
-                        None,
-                        &target_language,
-                        tmp_wav.path(),
-                    )
-                })?;
-                progress.phase("playing", SAY_PHASES.playing);
-                audio::AudioService::new()
-                    .play_wav(tmp_wav.path())
-                    .map_err(|e| {
-                        audio_error(e, ExitCode::Error, "playback_failed", |e| {
-                            format!("Fallo al reproducir la locución: {}", e)
-                        })
-                    })?;
-                Ok(())
+                        seed: None,
+                        language: &target_language,
+                    },
+                    &mut progress,
+                    SAY_PHASES.playing,
+                    delivery,
+                )
             }
             .await;
             let elapsed = progress.close();
-            result?;
+            let stats = result?;
             if json_mode {
                 emit_raw_json(json!({
                     "status": "reproduced",
                     "voice": voice,
+                    "first_audio_ms": stats.first_audio_ms,
+                    "stalls": stats.stalls,
                 }));
             } else {
                 println!(
@@ -3309,11 +3601,6 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     // El texto traducido puede exceder el tope aunque el transcrito no.
                     avi_core::validate_synthesis_text(&final_text)?;
                     let voice_store = open_voice_store()?;
-                    // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
-                    let tmp_wav = avi_process::scratch::temp_wav("avi_dub_")
-                        .map_err(|e| {
-                            CliError::new(ExitCode::Error, "io_error", format!("{e:#}"))
-                        })?;
                     progress.close_line();
                     let engine_result = direct_tts_engine();
                     progress.repaint();
@@ -3321,29 +3608,27 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     progress.phase("synthesizing", DUB_PHASES.synthesizing);
                     progress.tick();
                     let reference = resolve_voice_reference(&voice_store, &voice)?;
-                    run_blocking_with_progress(&progress, || {
-                        synthesize_voice_directly(
-                            &engine,
-                            reference.as_ref(),
-                            &final_text,
-                            &voice,
+                    // El dispositivo se abre antes de pedir la síntesis.
+                    let delivery = open_delivery(true, false, "Fallo al reproducir el doblaje")?;
+                    let stats = synthesize_streaming_directly(
+                        &DirectSynthesis {
+                            engine: &engine,
+                            reference: reference.as_ref(),
+                            text: &final_text,
+                            voice: &voice,
                             temperature,
-                            None,
-                            &target_language,
-                            tmp_wav.path(),
-                        )
-                    })?;
-                    progress.phase("playing", DUB_PHASES.playing);
-                    audio::AudioService::new()
-                        .play_wav(tmp_wav.path())
-                        .map_err(|e| {
-                            audio_error(e, ExitCode::Error, "playback_failed", |e| {
-                                format!("Fallo al reproducir el doblaje: {}", e)
-                            })
-                        })?;
+                            seed: None,
+                            language: &target_language,
+                        },
+                        &mut progress,
+                        DUB_PHASES.playing,
+                        delivery,
+                    )?;
                     Ok(DubOutcome {
                         transcript: transcribed,
                         translated: final_text,
+                        first_audio_ms: stats.first_audio_ms,
+                        stalls: stats.stalls,
                     })
                 }
                 .await;
@@ -5404,19 +5689,20 @@ async fn translate_via_daemon(
     ))
 }
 
-/// Resultado de una síntesis por daemon: el WAV del motor (24 kHz s16le mono) y
-/// el texto realmente sintetizado (ya traducido si los idiomas difieren).
+/// Resultado de una síntesis por daemon: el texto realmente sintetizado (ya
+/// traducido si los idiomas difieren) y los datos de la entrega del audio.
 struct DaemonSynthesis {
-    wav: Vec<u8>,
     translated: String,
+    stats: DeliveryStats,
 }
 
-/// POST /synthesize al daemon, consume el stream NDJSON y decodifica `audio_b64`
-/// y `translated` del evento `result`. El seed opcional fija la toma; sin él el
-/// daemon usa el de producción.
+/// POST /synthesize al daemon y consumo de su stream NDJSON: cada evento `audio`
+/// va a `delivery` según llega, y el evento `result` aporta `translated`. El seed
+/// opcional fija la toma; sin él el daemon usa el de producción. Si el stream falla
+/// después de empezar a sonar, se corta la reproducción y se propaga el error.
 // Cada argumento mapea 1:1 a un campo de la petición y el indicador es del llamador.
 #[allow(clippy::too_many_arguments)]
-async fn daemon_synthesize_wav(
+async fn daemon_synthesize_streaming(
     progress: &mut PhaseProgress,
     texts: &PhaseTexts,
     client: &reqwest::Client,
@@ -5426,6 +5712,7 @@ async fn daemon_synthesize_wav(
     target_language: &str,
     temperature: Option<f32>,
     seed: Option<u64>,
+    mut delivery: StreamDelivery,
 ) -> Result<DaemonSynthesis, CliError> {
     let mut payload = serde_json::json!({ "text": text, "voice": voice, "source_language": source_language, "target_language": target_language });
     if let Some(t) = temperature {
@@ -5436,48 +5723,50 @@ async fn daemon_synthesize_wav(
     }
     // El POST apunta a la dirección descubierta.
     let client_addr = lifecycle::daemon_stop::resolve_client_addr(&effective_data_dir()?);
-    let resp = client
-        .post(format!("http://{}/synthesize", client_addr))
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|e| {
-            CliError::new(
-                ExitCode::DaemonUnreachable,
-                "daemon_unreachable",
-                format!("Daemon inalcanzable en {}: {}", client_addr, e),
-            )
-        })?;
-    if !resp.status().is_success() {
-        return Err(daemon_error_from_response(resp).await);
-    }
-    let val = consume_ndjson_stream(resp, StreamResult::Synthesize, texts, progress).await?;
-    let b64 = val["audio_b64"].as_str().ok_or_else(|| {
-        CliError::new(
-            ExitCode::Error,
-            "synthesis_failed",
-            "El daemon devolvió result sin audio_b64.",
+    let streamed = async {
+        let resp = client
+            .post(format!("http://{}/synthesize", client_addr))
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| {
+                CliError::new(
+                    ExitCode::DaemonUnreachable,
+                    "daemon_unreachable",
+                    format!("Daemon inalcanzable en {}: {}", client_addr, e),
+                )
+            })?;
+        if !resp.status().is_success() {
+            return Err(daemon_error_from_response(resp).await);
+        }
+        consume_ndjson_stream(
+            resp,
+            StreamResult::Synthesize,
+            texts,
+            progress,
+            &mut delivery,
         )
-    })?;
-    let translated = val["translated"].as_str().ok_or_else(|| {
-        CliError::new(
+        .await
+    }
+    .await;
+    let val = match streamed {
+        Ok(val) => val,
+        Err(e) => {
+            delivery.abort();
+            return Err(e);
+        }
+    };
+    let Some(translated) = val["translated"].as_str().map(str::to_string) else {
+        delivery.abort();
+        return Err(CliError::new(
             ExitCode::Error,
             "synthesis_failed",
             "El daemon devolvió result sin translated.",
-        )
-    })?;
-    let wav = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "synthesis_failed",
-                format!("audio_b64 del daemon no decodable: {}", e),
-            )
-        })?;
+        ));
+    };
     Ok(DaemonSynthesis {
-        wav,
-        translated: translated.to_string(),
+        translated,
+        stats: delivery.finish()?,
     })
 }
 
@@ -5603,9 +5892,12 @@ const TRANSLATE_PHASES: PhaseTexts = PhaseTexts {
     ..SYNTHESIZE_PHASES
 };
 
-/// Consume un stream NDJSON del daemon (`started` → latidos → `result`/`error`)
-/// con timeout de inactividad + failsafe total. Retorna el evento final
-/// `result`; el evento `error` se mapea a `CliError` con la tabla única.
+/// Consume un stream NDJSON del daemon (`started` → latidos → eventos `audio` →
+/// `result`/`error`) con timeout de inactividad + failsafe total. Cada evento
+/// `audio` (PCM de 16 bits, 24 kHz, mono, en base64) va a `audio` según llega, y la
+/// fase visible pasa a la de reproducción en cuanto suena la primera muestra.
+/// Retorna el evento final `result`; el evento `error` se mapea a `CliError` con la
+/// tabla única.
 /// Sin `result` (stream truncado, NDJSON inválido, inactividad o failsafe) el
 /// fallo es ruidoso: nunca se reemite un éxito parcial.
 async fn consume_ndjson_stream(
@@ -5613,8 +5905,11 @@ async fn consume_ndjson_stream(
     expected: StreamResult,
     texts: &PhaseTexts,
     progress: &mut PhaseProgress,
+    audio: &mut dyn AudioReceiver,
 ) -> Result<Value, CliError> {
     let deadline = tokio::time::Instant::now() + STREAM_TOTAL_DEADLINE;
+    let mut synthesis_began = false;
+    let mut playing = false;
     let stage = expected.stage();
     let mut rest = String::new();
     // Los diagnósticos nombran la dirección descubierta.
@@ -5691,15 +5986,58 @@ async fn consume_ndjson_stream(
                 )
             })?;
             if let Some((label, msg)) = stream_event_phase(&ev, texts) {
-                progress.phase(label, msg);
+                if label == "synthesizing" && !synthesis_began {
+                    synthesis_began = true;
+                    audio.begin_synthesis();
+                }
+                // Una vez que suena, los latidos de la síntesis no devuelven la fase
+                // anterior.
+                if !(playing && label == "synthesizing") {
+                    progress.phase(label, msg);
+                }
             }
             match ev.get("event").and_then(|v| v.as_str()) {
+                Some("audio") => {
+                    audio.push(&decode_audio_event(&ev)?)?;
+                    if !playing && audio.started() {
+                        playing = true;
+                        progress.phase("playing", texts.playing);
+                    }
+                }
                 Some("result") => return Ok(ev),
                 Some("error") => return Err(stream_error_event(&ev)),
                 _ => {}
             }
         }
     }
+}
+
+/// Decodifica el PCM de un evento `audio` del daemon. Un evento sin `pcm_b64`, con
+/// base64 inválido o con un número impar de bytes es un protocolo inválido.
+fn decode_audio_event(ev: &Value) -> Result<Vec<i16>, CliError> {
+    let invalid = |detail: String| {
+        CliError::new(
+            ExitCode::Error,
+            "daemon_error",
+            format!("Evento audio inválido del daemon: {detail}"),
+        )
+    };
+    let b64 = ev["pcm_b64"]
+        .as_str()
+        .ok_or_else(|| invalid("falta pcm_b64".to_string()))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .map_err(|e| invalid(format!("pcm_b64 no decodable: {e}")))?;
+    if bytes.len() % 2 != 0 {
+        return Err(invalid(format!(
+            "pcm_b64 con {} bytes, no es PCM de 16 bits",
+            bytes.len()
+        )));
+    }
+    Ok(bytes
+        .chunks_exact(2)
+        .map(|b| i16::from_le_bytes([b[0], b[1]]))
+        .collect())
 }
 
 /// Traduce una respuesta no 2xx del daemon a `CliError`: el `reason` sale del cuerpo
@@ -5844,7 +6182,13 @@ async fn synthesize_via_daemon(
     let speech_store = open_speech_store()?;
     let voice_store = open_voice_store()?;
     let reference = resolve_voice_reference(&voice_store, voice)?;
-    let first_take = daemon_synthesize_wav(
+    // La toma suena mientras llega solo con --play; siempre se acumula para guardarla.
+    let delivery = open_delivery(
+        play,
+        true,
+        format!("Fallo al reproducir la locución '{}'", label),
+    )?;
+    let first_take = daemon_synthesize_streaming(
         progress,
         &SYNTHESIZE_PHASES,
         client,
@@ -5854,6 +6198,7 @@ async fn synthesize_via_daemon(
         target_language,
         temperature,
         None,
+        delivery,
     )
     .await?;
     // Texto realmente sintetizado: el que ven el menú y el sidecar (paridad
@@ -5863,8 +6208,7 @@ async fn synthesize_via_daemon(
     let tmp_guard = avi_process::scratch::temp_wav("avi_tts_")
         .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
     let tmp = tmp_guard.path().clone();
-    std::fs::write(&tmp, &first_take.wav)
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
+    write_take_wav(&tmp, &first_take.stats.pcm)?;
 
     let saved = if play {
         // Bucle interactivo en el cliente; el bucle vive en el llamador y la
@@ -5876,6 +6220,7 @@ async fn synthesize_via_daemon(
             client,
             text,
             voice: voice.as_str(),
+            label,
             source_language,
             target_language,
             temperature,
@@ -5916,7 +6261,8 @@ async fn synthesize_via_daemon(
     Ok(saved)
 }
 
-/// `say` vía daemon: reproduce el WAV decodificado y expone una copia efímera.
+/// `say` vía daemon: reproduce el audio según llega en los eventos `audio` y
+/// devuelve los datos de la entrega.
 // Cada argumento representa un dato de la orden y el indicador pertenece al llamador.
 #[allow(clippy::too_many_arguments)]
 async fn say_via_daemon(
@@ -5927,8 +6273,10 @@ async fn say_via_daemon(
     source_language: &str,
     target_language: &str,
     temperature: Option<f32>,
-) -> Result<(), CliError> {
-    let wav = daemon_synthesize_wav(
+) -> Result<DeliveryStats, CliError> {
+    // El dispositivo se abre antes de pedir la síntesis.
+    let delivery = open_delivery(true, false, "Fallo al reproducir la locución")?;
+    Ok(daemon_synthesize_streaming(
         progress,
         &SAY_PHASES,
         client,
@@ -5938,23 +6286,10 @@ async fn say_via_daemon(
         target_language,
         temperature,
         None,
+        delivery,
     )
     .await?
-    .wav;
-    // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
-    let tmp = avi_process::scratch::temp_wav("avi_say_")
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
-    std::fs::write(tmp.path(), &wav)
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-    progress.phase("playing", SAY_PHASES.playing);
-    audio::AudioService::new()
-        .play_wav(tmp.path())
-        .map_err(|e| {
-            audio_error(e, ExitCode::Error, "playback_failed", |e| {
-                format!("Fallo al reproducir la locución: {}", e)
-            })
-        })?;
-    Ok(())
+    .stats)
 }
 
 /// Confirmación destructiva de sobrescribir la voz `name`, que tiene las
@@ -6049,8 +6384,14 @@ async fn clone_via_daemon(
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
-    let val: Value =
-        consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, progress).await?;
+    let val: Value = consume_ndjson_stream(
+        resp,
+        StreamResult::Clone,
+        &CLONE_PHASES,
+        progress,
+        &mut RejectAudio,
+    )
+    .await?;
     let cloned_name = val["name"].as_str().ok_or_else(|| {
         CliError::new(
             ExitCode::Error,
@@ -6103,6 +6444,10 @@ struct DubOutcome {
     /// Texto que se sintetiza: la traducción, o la propia transcripción cuando
     /// el idioma de origen y el de destino coinciden.
     translated: String,
+    /// Milisegundos hasta la primera muestra entregada al dispositivo.
+    first_audio_ms: Option<u64>,
+    /// Veces que la cola de reproducción se vació con la entrega en curso.
+    stalls: u32,
 }
 
 /// Envelope `--json` de `speech dub`: `text` es la transcripción y `translated`
@@ -6112,6 +6457,8 @@ fn dub_envelope(outcome: &DubOutcome) -> Value {
         "status": "dubbed",
         "text": outcome.transcript,
         "translated": outcome.translated,
+        "first_audio_ms": outcome.first_audio_ms,
+        "stalls": outcome.stalls,
     })
 }
 
@@ -6135,9 +6482,10 @@ fn emit_dub(json_mode: bool, outcome: &DubOutcome, elapsed: std::time::Duration)
     }
 }
 
-/// Lee `text` y `translated` del evento `result` del daemon. Un campo ausente o
-/// que no es texto es un error del daemon: no hay valor por defecto.
-fn dub_outcome_from_result(val: &Value) -> Result<DubOutcome, CliError> {
+/// Lee `text` y `translated` del evento `result` del daemon y les añade los datos de
+/// la entrega. Un campo ausente o que no es texto es un error del daemon: no hay
+/// valor por defecto.
+fn dub_outcome_from_result(val: &Value, stats: &DeliveryStats) -> Result<DubOutcome, CliError> {
     let field = |name: &str| {
         val[name].as_str().map(str::to_string).ok_or_else(|| {
             CliError::new(
@@ -6150,6 +6498,8 @@ fn dub_outcome_from_result(val: &Value) -> Result<DubOutcome, CliError> {
     Ok(DubOutcome {
         transcript: field("text")?,
         translated: field("translated")?,
+        first_audio_ms: stats.first_audio_ms,
+        stalls: stats.stalls,
     })
 }
 
@@ -6192,6 +6542,8 @@ async fn dub_via_daemon(
         "El audio del doblaje",
     )
     .await?;
+    // El dispositivo se abre antes de pedir la síntesis.
+    let mut delivery = open_delivery(true, false, "Fallo al reproducir el doblaje")?;
     progress.phase("started", DUB_PHASES.started);
     let bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
     let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
@@ -6238,42 +6590,27 @@ async fn dub_via_daemon(
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
-    // El evento final del stream trae la forma contractual
-    // {status:"dubbed", text, translated, audio_b64, voice}, donde `text` es la
-    // transcripción y `translated` el texto que se sintetiza; los eventos `error`
-    // del stream se traducen con la misma tabla única.
-    let val: Value = consume_ndjson_stream(resp, StreamResult::Dub, &DUB_PHASES, progress).await?;
-    let audio_b64_resp = val["audio_b64"].as_str().ok_or_else(|| {
-        CliError::new(
-            ExitCode::Error,
-            "daemon_error",
-            "El daemon no devolvió audio_b64.",
-        )
-    })?;
-    let wav_bytes = base64::engine::general_purpose::STANDARD
-        .decode(audio_b64_resp)
-        .map_err(|e| {
-            CliError::new(
-                ExitCode::Error,
-                "daemon_error",
-                format!("audio_b64 del daemon no decodable: {}", e),
-            )
-        })?;
-    let outcome = dub_outcome_from_result(&val)?;
-    // Guardián del temporal: lo borra al salir de ámbito, también si falla la reproducción.
-    let tmp_wav = avi_process::scratch::temp_wav("avi_dub_")
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", format!("{e:#}")))?;
-    std::fs::write(tmp_wav.path(), &wav_bytes)
-        .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
-    progress.phase("playing", DUB_PHASES.playing);
-    audio::AudioService::new()
-        .play_wav(tmp_wav.path())
-        .map_err(|e| {
-            audio_error(e, ExitCode::Error, "playback_failed", |e| {
-                format!("Fallo al reproducir el doblaje: {}", e)
-            })
-        })?;
-    Ok(outcome)
+    // Los eventos `audio` llevan el audio doblado; el evento final trae la forma
+    // contractual {status:"dubbed", text, translated, voice}, donde `text` es la
+    // transcripción y `translated` el texto que se sintetiza. Los eventos `error`
+    // del stream se traducen con la misma tabla única; si llegan con la voz ya
+    // sonando, se corta la reproducción.
+    let val: Value = match consume_ndjson_stream(
+        resp,
+        StreamResult::Dub,
+        &DUB_PHASES,
+        progress,
+        &mut delivery,
+    )
+    .await
+    {
+        Ok(val) => val,
+        Err(e) => {
+            delivery.abort();
+            return Err(e);
+        }
+    };
+    dub_outcome_from_result(&val, &delivery.finish()?)
 }
 
 #[cfg(test)]
@@ -6289,10 +6626,18 @@ mod tests {
         let outcome = DubOutcome {
             transcript: "hola mundo".to_string(),
             translated: "hello world".to_string(),
+            first_audio_ms: Some(1234),
+            stalls: 0,
         };
         assert_eq!(
             dub_envelope(&outcome),
-            json!({ "status": "dubbed", "text": "hola mundo", "translated": "hello world" })
+            json!({
+                "status": "dubbed",
+                "text": "hola mundo",
+                "translated": "hello world",
+                "first_audio_ms": 1234,
+                "stalls": 0,
+            })
         );
     }
 
@@ -6301,6 +6646,8 @@ mod tests {
         let outcome = DubOutcome {
             transcript: "hola mundo".to_string(),
             translated: "hello world".to_string(),
+            first_audio_ms: Some(900),
+            stalls: 0,
         };
         assert_eq!(
             dub_text_lines(&outcome, std::time::Duration::from_secs(9)),
@@ -6313,6 +6660,8 @@ mod tests {
         let outcome = DubOutcome {
             transcript: "hola".to_string(),
             translated: "hola".to_string(),
+            first_audio_ms: None,
+            stalls: 0,
         };
         assert_eq!(
             dub_text_lines(&outcome, std::time::Duration::from_secs(2)),
@@ -6324,9 +6673,16 @@ mod tests {
     fn dub_outcome_from_result_reads_text_and_translated() {
         let event =
             json!({ "event": "result", "status": "dubbed", "text": "hola", "translated": "hello" });
-        let outcome = dub_outcome_from_result(&event).expect("evento completo");
+        let stats = DeliveryStats {
+            first_audio_ms: Some(950),
+            stalls: 2,
+            pcm: Vec::new(),
+        };
+        let outcome = dub_outcome_from_result(&event, &stats).expect("evento completo");
         assert_eq!(outcome.transcript, "hola");
         assert_eq!(outcome.translated, "hello");
+        assert_eq!(outcome.first_audio_ms, Some(950));
+        assert_eq!(outcome.stalls, 2);
     }
 
     #[test]
@@ -6336,7 +6692,13 @@ mod tests {
             json!({ "status": "dubbed", "translated": "hello" }),
             json!({ "status": "dubbed", "text": 1, "translated": "hello" }),
         ] {
-            let err = dub_outcome_from_result(&event).expect_err("campo ausente o inválido");
+            let stats = DeliveryStats {
+                first_audio_ms: None,
+                stalls: 0,
+                pcm: Vec::new(),
+            };
+            let err =
+                dub_outcome_from_result(&event, &stats).expect_err("campo ausente o inválido");
             assert_eq!(err.reason, "daemon_error", "{event}");
         }
     }
@@ -6997,58 +7359,197 @@ mod tests {
             .await
             .expect("el doble debe responder");
         let mut progress = PhaseProgress::new();
-        let val = consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, &mut progress)
-            .await
-            .expect("la secuencia de éxito entrega el final");
+        let val = consume_ndjson_stream(
+            resp,
+            StreamResult::Clone,
+            &CLONE_PHASES,
+            &mut progress,
+            &mut RejectAudio,
+        )
+        .await
+        .expect("la secuencia de éxito entrega el final");
         assert_eq!(val["event"], "result");
         assert_eq!(val["name"], "v");
         assert_eq!(val["precomputed"], true);
     }
 
-    /// La síntesis lee los eventos mientras la respuesta sigue abierta; el WAV
-    /// solo se entrega cuando llega el evento final.
-    #[tokio::test]
-    async fn consume_ndjson_stream_synthesis_returns_audio_after_intermediate_events() {
-        let addr = serve_programmed_sequence(
-            vec![
-                r#"{"event":"started","voice":"v"}"#.to_string(),
-                r#"{"event":"heartbeat","stage":"warming"}"#.to_string(),
-                r#"{"event":"heartbeat","stage":"warming"}"#.to_string(),
-                r#"{"event":"progress","stage":"synthesis"}"#.to_string(),
-                r#"{"event":"heartbeat","stage":"synthesis"}"#.to_string(),
-                r#"{"event":"result","audio_b64":"UklGRg=="}"#.to_string(),
-            ],
-            None,
-        )
-        .await;
-        let client = daemon_client();
-        let resp = client
+    /// Receptor de pruebas: guarda los fragmentos y dice que ya suena tras el primero.
+    #[derive(Default)]
+    struct CollectingAudio {
+        chunks: Vec<Vec<i16>>,
+        synthesis_began: bool,
+    }
+
+    impl AudioReceiver for CollectingAudio {
+        fn begin_synthesis(&mut self) {
+            self.synthesis_began = true;
+        }
+
+        fn push(&mut self, pcm: &[i16]) -> Result<(), CliError> {
+            self.chunks.push(pcm.to_vec());
+            Ok(())
+        }
+
+        fn started(&self) -> bool {
+            !self.chunks.is_empty()
+        }
+    }
+
+    /// Línea NDJSON de un evento `audio` con estas muestras.
+    fn audio_event(samples: &[i16]) -> String {
+        let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        json!({
+            "event": "audio",
+            "pcm_b64": base64::engine::general_purpose::STANDARD.encode(bytes),
+        })
+        .to_string()
+    }
+
+    /// Consume la secuencia programada de `/synthesize` con un receptor dado.
+    async fn consume_synthesis(
+        lines: Vec<String>,
+        audio: &mut dyn AudioReceiver,
+    ) -> Result<Value, CliError> {
+        let addr = serve_programmed_sequence(lines, None).await;
+        let resp = daemon_client()
             .post(format!("http://{addr}/synthesize"))
             .send()
             .await
             .expect("el doble debe responder");
         let mut progress = PhaseProgress::new();
-        let mut stream = Box::pin(consume_ndjson_stream(
+        let result = consume_ndjson_stream(
             resp,
             StreamResult::Synthesize,
             &SYNTHESIZE_PHASES,
             &mut progress,
-        ));
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(320), &mut stream)
-                .await
-                .is_err(),
-            "el resultado debe seguir pendiente tras los eventos intermedios"
-        );
-        let val = stream.await.expect("el stream termina con audio_b64");
-        assert_eq!(val["audio_b64"], "UklGRg==");
-        assert_eq!(
-            base64::engine::general_purpose::STANDARD
-                .decode(val["audio_b64"].as_str().unwrap())
-                .unwrap(),
-            b"RIFF"
-        );
+            audio,
+        )
+        .await;
         let _elapsed = progress.close();
+        result
+    }
+
+    /// Los eventos `audio` llegan al receptor en orden mientras la respuesta sigue
+    /// abierta, y el resultado final ya no lleva el audio.
+    #[tokio::test]
+    async fn consume_ndjson_stream_synthesis_delivers_audio_events_in_order() {
+        let mut audio = CollectingAudio::default();
+        let val = consume_synthesis(
+            vec![
+                r#"{"event":"started","voice":"v"}"#.to_string(),
+                r#"{"event":"heartbeat","stage":"warming"}"#.to_string(),
+                r#"{"event":"progress","stage":"synthesis"}"#.to_string(),
+                audio_event(&[1, 2, 3]),
+                r#"{"event":"heartbeat","stage":"synthesis"}"#.to_string(),
+                audio_event(&[-4, 5]),
+                r#"{"event":"result","translated":"hola","work_ms":10}"#.to_string(),
+            ],
+            &mut audio,
+        )
+        .await
+        .expect("la secuencia termina con result");
+        assert_eq!(val["translated"], "hola");
+        assert!(val.get("audio_b64").is_none());
+        assert_eq!(audio.chunks, vec![vec![1, 2, 3], vec![-4, 5]]);
+        assert!(
+            audio.synthesis_began,
+            "la fase de síntesis se anuncia al receptor"
+        );
+    }
+
+    /// Un `error` tras eventos `audio` ya entregados es un error ruidoso con su
+    /// `reason`: nunca se da por buena una entrega parcial.
+    #[tokio::test]
+    async fn consume_ndjson_stream_error_after_audio_events_is_reported() {
+        let mut audio = CollectingAudio::default();
+        let err = consume_synthesis(
+            vec![
+                r#"{"event":"started","voice":"v"}"#.to_string(),
+                audio_event(&[1, 2]),
+                r#"{"event":"error","reason":"synthesis_failed","message":"se cortó"}"#.to_string(),
+            ],
+            &mut audio,
+        )
+        .await
+        .expect_err("el error del stream se propaga");
+        assert_eq!(err.reason, "synthesis_failed");
+        assert_eq!(
+            audio.chunks,
+            vec![vec![1, 2]],
+            "lo recibido antes ya se entregó"
+        );
+    }
+
+    /// Un `pcm_b64` que no es base64, un evento sin `pcm_b64` o un PCM de longitud
+    /// impar son un protocolo inválido del daemon.
+    #[tokio::test]
+    async fn consume_ndjson_stream_rejects_invalid_audio_events() {
+        for event in [
+            r#"{"event":"audio","pcm_b64":"%%%no-base64%%%"}"#,
+            r#"{"event":"audio"}"#,
+            r#"{"event":"audio","pcm_b64":"AAAA"}"#,
+        ] {
+            let mut audio = CollectingAudio::default();
+            let err = consume_synthesis(
+                vec![
+                    r#"{"event":"started","voice":"v"}"#.to_string(),
+                    event.to_string(),
+                    r#"{"event":"result","translated":"hola"}"#.to_string(),
+                ],
+                &mut audio,
+            )
+            .await
+            .expect_err("el evento audio inválido es un error");
+            assert_eq!(err.reason, "daemon_error", "{event}");
+            assert!(audio.chunks.is_empty(), "{event}");
+        }
+    }
+
+    /// Un stream que no debe traer audio (clonado) rechaza el evento `audio`.
+    #[tokio::test]
+    async fn consume_ndjson_stream_without_audio_receiver_rejects_audio_events() {
+        let addr = serve_programmed_sequence(
+            vec![
+                r#"{"event":"started","name":"v"}"#.to_string(),
+                audio_event(&[1, 2]),
+                r#"{"event":"result","name":"v"}"#.to_string(),
+            ],
+            None,
+        )
+        .await;
+        let resp = daemon_client()
+            .post(format!("http://{addr}/voices/clone"))
+            .send()
+            .await
+            .expect("el doble debe responder");
+        let mut progress = PhaseProgress::new();
+        let err = consume_ndjson_stream(
+            resp,
+            StreamResult::Clone,
+            &CLONE_PHASES,
+            &mut progress,
+            &mut RejectAudio,
+        )
+        .await
+        .expect_err("el clonado no admite audio");
+        assert_eq!(err.reason, "daemon_error");
+        let _elapsed = progress.close();
+    }
+
+    /// Sin reproductor, la entrega acumula los fragmentos y no informa de
+    /// reproducción: ni primer sonido ni cortes.
+    #[test]
+    fn stream_delivery_without_player_accumulates_the_audio() {
+        let mut delivery =
+            open_delivery(false, true, "Fallo al reproducir").expect("sin reproductor");
+        delivery.begin_synthesis();
+        assert!(!delivery.started());
+        delivery.push(&[1, 2]).expect("acumular");
+        delivery.push(&[3]).expect("acumular");
+        let stats = delivery.finish().expect("terminar");
+        assert_eq!(stats.pcm, vec![1, 2, 3]);
+        assert_eq!(stats.first_audio_ms, None);
+        assert_eq!(stats.stalls, 0);
     }
 
     /// La traducción pura fija la etiqueta canónica y el texto de la tabla del
@@ -7225,9 +7726,15 @@ mod tests {
             .expect("el doble debe responder");
         let start = std::time::Instant::now();
         let mut progress = PhaseProgress::new();
-        let e = consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, &mut progress)
-            .await
-            .expect_err("el evento de fallo debe fallar");
+        let e = consume_ndjson_stream(
+            resp,
+            StreamResult::Clone,
+            &CLONE_PHASES,
+            &mut progress,
+            &mut RejectAudio,
+        )
+        .await
+        .expect_err("el evento de fallo debe fallar");
         assert_eq!(e.code, ExitCode::StateConflict);
         assert_eq!(e.reason, "voice_exists");
         assert!(
@@ -7250,9 +7757,15 @@ mod tests {
             .expect("el doble debe responder cabeceras");
         let start = std::time::Instant::now();
         let mut progress = PhaseProgress::new();
-        let e = consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, &mut progress)
-            .await
-            .expect_err("el atasco debe fallar");
+        let e = consume_ndjson_stream(
+            resp,
+            StreamResult::Clone,
+            &CLONE_PHASES,
+            &mut progress,
+            &mut RejectAudio,
+        )
+        .await
+        .expect_err("el atasco debe fallar");
         assert_eq!(e.code, ExitCode::DaemonUnreachable);
         assert_eq!(e.reason, "daemon_unreachable");
         let elapsed = start.elapsed();
@@ -7282,9 +7795,15 @@ mod tests {
             .await
             .expect("el doble debe responder");
         let mut progress = PhaseProgress::new();
-        let e = consume_ndjson_stream(resp, StreamResult::Clone, &CLONE_PHASES, &mut progress)
-            .await
-            .expect_err("el truncado debe fallar");
+        let e = consume_ndjson_stream(
+            resp,
+            StreamResult::Clone,
+            &CLONE_PHASES,
+            &mut progress,
+            &mut RejectAudio,
+        )
+        .await
+        .expect_err("el truncado debe fallar");
         assert_eq!(e.code, ExitCode::Error);
         assert_eq!(e.reason, "daemon_error");
     }
@@ -7375,8 +7894,8 @@ mod tests {
         )
         .expect("el menú no debe fallar");
 
-        // Reproducción inicial + la de la opción 1.
-        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // Solo la de la opción 1: la toma inicial ya sonó mientras se sintetizaba.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
         match decision {
             PlayDecision::Saved(avi_store::Persisted::Saved(saved)) => {
                 // La ruta guardada es la del almacén, no la del temporal.
@@ -7425,7 +7944,8 @@ mod tests {
         .expect("el menú no debe fallar");
 
         assert_eq!(decision, PlayDecision::Discarded);
-        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // El menú no reproduce al entrar: la toma ya sonó mientras se sintetizaba.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(
             store
                 .find(
@@ -7462,8 +7982,9 @@ mod tests {
         .expect("el menú no debe fallar");
 
         assert_eq!(decision, PlayDecision::Resynthesize);
-        // El menú solo reproduce al entrar: la re-síntesis es del llamador.
-        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // El menú no reproduce nada al entrar: la re-síntesis, con su propia
+        // reproducción en streaming, es del llamador.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert!(
             store
                 .find(
@@ -7536,8 +8057,8 @@ mod tests {
         .expect("el menú no debe fallar");
 
         assert!(matches!(decision, PlayDecision::Saved(_)));
-        // Solo una reproducción: la opción inválida no reproduce.
-        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Ninguna reproducción: la opción inválida no reproduce.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     /// La colisión de etiqueta se recomprueba al guardar (opción 2) y falla con
@@ -7765,8 +8286,8 @@ mod tests {
         .expect("el bucle no debe fallar");
 
         assert_eq!(resyntheses.load(std::sync::atomic::Ordering::SeqCst), 1);
-        // Reproducción inicial + la de la vuelta tras re-sintetizar.
-        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // El menú no reproduce nada: cada toma ya sonó mientras se sintetizaba.
+        assert_eq!(plays.load(std::sync::atomic::Ordering::SeqCst), 0);
         let SynthesizeOutcome::Saved(saved) = outcome else {
             panic!("la locución debe quedar guardada: {outcome:?}");
         };
