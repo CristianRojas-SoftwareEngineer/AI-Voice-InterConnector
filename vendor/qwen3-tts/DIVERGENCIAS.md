@@ -56,8 +56,8 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 
 ### Cancelación de la generación al desconectarse el cliente
 
-- **Archivos**: `qwen_tts.h`, `qwen_tts.c`, `qwen_tts_server.c`.
-- **Qué cambia**: `qwen_tts_set_abort_callback` registra un callback que `qwen_tts_generate` consulta al inicio de cada fotograma; si devuelve distinto de cero, el decodificador descarta lo pendiente y la generación devuelve `-1` sin audio. `handle_tts` lo registra con `client_disconnected`, que detecta el cierre del socket del cliente sin bloquear (`select` con timeout cero y `recv` con `MSG_PEEK`), y registra `[HTTP] TTS cancelado…` en vez de responder un error. El streaming también se cancela: `stream_http_callback` devuelve `-1` cuando un `write` falla.
+- **Archivos**: `qwen_tts.h`, `qwen_tts.c`, `qwen_tts_server.c` (`handle_tts` y `handle_tts_stream`).
+- **Qué cambia**: `qwen_tts_set_abort_callback` registra un callback que `qwen_tts_generate` consulta al inicio de cada fotograma; si devuelve distinto de cero, el decodificador descarta lo pendiente y la generación devuelve `-1` sin audio. `handle_tts` y `handle_tts_stream` lo registran con `client_disconnected`, que detecta el cierre del socket del cliente sin bloquear (`select` con timeout cero y `recv` con `MSG_PEEK`), y registran `[HTTP] TTS cancelado…` o `[HTTP] TTS stream cancelado…` en vez de responder un error. El streaming también se cancela cuando `stream_http_callback` devuelve `-1` porque un `write` falla.
 - **Por qué**: el servidor atiende una conexión a la vez, ni siquiera `/v1/health` mientras genera. Sin esto, un trabajo abandonado por el cliente (plazo vencido, Ctrl+C o desconexión) lo bloquea hasta terminar.
 - **Requisito del cliente**: no cerrar la mitad de escritura del socket tras enviar la petición; el motor lo interpretaría como un abandono y cancelaría la generación.
 - **Si se pierde**: cada vencimiento deja el residente ocupado y el lanzador lo reemplaza en frío antes de la siguiente síntesis.
@@ -244,6 +244,34 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Qué cambia**: un valor no vacío de `QWEN_CP_PREC` distinto de `bf16`, `int8`, `int4` y `mixed`, o de `QWEN_TALKER_PREC` distinto de `bf16`, `int8` e `int4`, detiene la carga con un error. Si `--expr` o una voz `.qvoice` con WDELTA sobrescribe pesos con pesos q4_0 activos en el Talker o en el Code Predictor, la carga falla con un error que pide bf16 o `--int8`; tras una sobrescritura se rehacen solo las copias int8 que ya existían. Un fallo al aplicar el `.expr` de `--emotion` termina el motor con error, igual que `--expr` con un modelo distinto del 1.7B, que antes se ignoraba con un aviso.
 - **Por qué**: el original dejaba en bf16 cualquier valor desconocido y no recuantizaba los pesos q4_0 tras una sobrescritura, de modo que una errata o una voz con WDELTA sintetizaban con una configuración distinta de la pedida sin avisar.
 - **Si se pierde**: una errata en la precisión o una sobrescritura con pesos q4_0 vuelve a cambiar en silencio la velocidad, la numérica o la voz.
+
+### Prefill siempre completo
+
+- **Archivos**: `qwen_tts.c` (`qwen_tts_generate`, `qwen_tts_unload`, `qwen_tts_clone_for_worker`, funciones de lotes), `qwen_tts.h`, `qwen_tts_compose.c`.
+- **Qué cambia**: desaparece la reutilización del prefill entre peticiones (`prev_input_embeds`, `prev_prefill_len` y el recálculo token a token del sufijo). Cada petición hace el prefill completo por lotes con BLAS sobre los pesos BF16 mapeados, con `kv_len = 0`.
+- **Por qué**: la reutilización recalculaba el resto del prompt con los pesos q4_0, una aritmética distinta, así que el mismo texto con la misma semilla daba audios distintos según la petición anterior; y esa ruta, la habitual en la aplicación, retrasaba el primer audio unos 0,3 s (1,27–1,37 s frente a 0,98–1,03 s).
+- **Si se pierde**: el audio vuelve a depender de la petición anterior y el primer audio llega más tarde.
+
+### Validación única de peticiones del servidor y de la CLI
+
+- **Archivos**: `qwen_tts_server.c` (`validate_tts_fields`, `parse_tts_request`, `parse_batch_req`, `handle_tts`, `handle_tts_stream`, `reader_main`), `main.c`.
+- **Qué cambia**: una sola función valida las peticiones del modo normal y del modo por lotes y responde `400` con la causa: `text` ausente, vacío, solo espacios o de más de 8192 bytes; `language` o `speaker` desconocidos; `temperature`, `top_k`, `top_p` o `rep_penalty` fuera de rango; y `rate` distinto de 1 en `/v1/tts/stream`. Ya no se recortan valores ni se ignoran identificadores negativos. La CLI termina con error ante `-s` o `-l` desconocidos y ante `--rate` distinto de 1 con `--stream`.
+- **Por qué**: el servidor sintetizaba con una configuración distinta de la pedida (un idioma `Klingon` generó 4,5 s de audio) y el modo por lotes repetía los fallos en un segundo analizador.
+- **Si se pierde**: las degradaciones silenciosas vuelven y los dos analizadores pueden divergir.
+
+### Señal de fallo de la entrega por partes
+
+- **Archivos**: `qwen_tts_server.c` (`handle_tts_stream`).
+- **Qué cambia**: se recoge el resultado de la generación y el fragmento final de tamaño cero se envía solo si terminó bien y hubo muestras; si no, la respuesta queda sin cierre. La desconexión del cliente se comprueba en cada fotograma, como en la entrega completa.
+- **Por qué**: antes se cerraba siempre como correcta, y el cliente no podía distinguir un fallo de un audio corto.
+- **Si se pierde**: una generación fallida a mitad se presenta como una entrega completa.
+
+### Objetivo `test-serve-stream`
+
+- **Archivos**: `Makefile`.
+- **Qué cambia**: el objetivo arranca el servidor y comprueba la entrega por partes, que el mismo audio sale por `/v1/tts` y `/v1/tts/stream`, la reproducibilidad, las validaciones 400 y la cancelación; forma parte de `test-serve-all`.
+- **Por qué**: ninguna prueba automática cubría la entrega por partes ni las validaciones.
+- **Si se pierde**: una regresión en esos comportamientos pasa inadvertida.
 
 ### Sin rutas de compatibilidad con cuantizadores y formatos antiguos
 

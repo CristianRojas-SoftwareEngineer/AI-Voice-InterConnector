@@ -328,13 +328,11 @@ one falsely said "int4 is loaded but never used"; DEBUNKED, `talker.c:397-450` d
 
 **CORRECTNESS (fix first — testable on M1 now):**
 - [x] **Server cross-request reproducibility — FIXED 2026-06-03 (commit cbfa979).** Root cause was NOT
-  "kv_len not reset" but: on a FULL prefix match (`delta_start==prefill_len`, identical consecutive
-  request) the prefill block at `qwen_tts.c:1108` was skipped entirely, leaving `ctx->dec_x` (read to
-  seed the first generated frame) STALE from the previous request's last token step. Fix: on full
-  match force `delta_start=0` (full fresh prefill = bit-identical to cold). Partial matches (real
-  server case: shared prefix, different text) untouched → delta-prefill optimization preserved.
-  Verified: 3 identical reqs now bit-identical AND == CLI (327ec448); `test-serve-bench` PASSES (was
-  FAIL); test-small 5/5. Remaining server hardening (below) still open.
+  "kv_len not reset" but: the prefill se reutilizaba parcialmente entre peticiones y, con una
+  coincidencia total, se omitía y dejaba `ctx->dec_x` obsoleto. Resolución definitiva: cada petición
+  hace el prefill completo desde la posición 0 (sin reutilizar nada de la anterior), de modo que el
+  resultado depende solo de la petición. `test-serve-bench` y `test-serve-stream` lo comprueban.
+  Remaining server hardening (below) still open.
 - [x] **Server thread-safety — single-threaded by design; mutex added as foundation (2026-06-04,
   commit a3819a2).** The server is genuinely single-threaded: one `while(server_running)` loop,
   `accept()` → `handle_*()` inline → close, NO `pthread_create`/fork. Requests are serialized; a 2nd
@@ -363,7 +361,7 @@ one falsely said "int4 is loaded but never used"; DEBUNKED, `talker.c:397-450` d
   acceptor thread + bounded connection queue (256) + N worker threads; worker 0 reuses the base
   ctx, the rest are **`qwen_tts_clone_for_worker()`** clones that SHARE the read-only weights +
   loaded voice + RoPE (weight memory paid once) but own FRESH per-request mutable buffers (KV
-  caches, dec_*/cp_dec_*/pref_*, emb LRU cache, delta-prefill cache). Freed with
+  caches, dec_*/cp_dec_*/pref_*, emb LRU cache). Freed with
   `qwen_tts_free_clone` (never `qwen_tts_unload` — that would free the shared weights).
   THREE shared-mutable hazards found + fixed: (1) the synthesis ctx → per-worker clones;
   (2) the kernel thread pool has a single global job slot → added `qwen_parallel_is_reentrant()`
@@ -483,7 +481,7 @@ PASSED. Closed the worst gaps:
 ## OPEN FUTURE TASKS (compact — nothing dropped)
 
 - [x] **Server warm-request reproducibility bug — FIXED 2026-06-03 (commit cbfa979).** See 21.6 for
-  the verified root cause (stale `ctx->dec_x` on full prefix match) + fix (full match → `delta_start=0`).
+  the verified root cause (stale `ctx->dec_x` on full prefix match); la resolución vigente es el prefill completo en cada petición.
   `test-serve-bench` now PASSES. (The md5-bit-identical assertion turned out fine once the bug was
   fixed — it was the bug, not the test, that was wrong.)
 - **CP sliding window attention** (old 18.3): config has `sliding_window=72`; verify CP attention
@@ -519,7 +517,7 @@ ARM/x86), CodeQL, clang-tidy, ASan/UBSan, release artifacts on tag.
 BLAS (Accelerate/OpenBLAS), NEON SIMD kernels (rms_norm, attention, RoPE, bf16↔f32, add/mul/scale),
 cache-line-aligned buffers (+24%), LRU text-embedding cache, **decoder thread overlap** (pipeline
 parallelism), multi-row bf16 matvec (2-row fused), unified QKV dispatch, fused gate+up, top-k
-quickselect (4× sampling), batch vvexpf SwiGLU, delta prefill / KV reuse (server, ~50% prefill),
+quickselect (4× sampling), batch vvexpf SwiGLU,
 persistent prefill buffers, BF16 KV cache, **fused residual+RMSNorm** (−21% short), software
 prefetch (~1-2%). INT8 + streaming TTFA: see 21.0.
 
@@ -582,8 +580,8 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 > - **`--compose` + INLINE `[tag]` MARKUP** (ElevenLabs/Bark style, English tags, auto-detected in `--text`): per-span
 >   emotion switch, `[pause:400ms]`, paralinguistic fillers. `parse_markup`→`render_spans`.
 > - **🐛 CROSS-SPAN LEAK FIXED (user-caught by ear):** compose's repeated `generate` calls reused the prev span's KV
->   via delta-prefill → a `[sad]` rendered differently in a mix vs alone. Fix `ctx->prev_prefill_len=0` per span →
->   each span bit-identical to standalone (corr 1.0). LESSON: delta-prefill is a SERVER opt, wrong for compose.
+>   → a `[sad]` rendered differently in a mix vs alone. Resolución vigente: cada tramo (y cada petición) hace el
+>   prefill completo, así que cada tramo sale idéntico al independiente (corr 1.0).
 > - **PARALINGUISTIC LIBRARY** (ear-validated macros, no-steer soft prosody): `[sigh]`=Hah…, `[hmm]`=Hmmm…, `[mmm]`=嗯,
 >   `[mah]`,`[uhm]`,`[hmpf]`,`[ahh]`/`[relief]`=Haaa…,`[phew]`=Uao…,`[laugh]`=Eheh…(IT),`[haha]`(EN),`[heh]`,
 >   `[ouch]`(EN)/`[ahi]`(IT).
@@ -819,7 +817,7 @@ greedy warmup, partial-layer replacement) all WORSE — 30s ref is the sweet spo
 >   utilization on ragged EOS). Most complex feature of the batching arc → dedicated branch, validate on x86.
 > - **TODO (later, this branch) — `--batch` × `.qvoice` + EMOTION mixing (user's "2 tests in 1", 2026-06-08).** Verify
 >   batched long-form works with a loaded `.qvoice` (e.g. Silvio): the voice is a KV/WDELTA prefix — does each chunk's
->   cold-prefill (prev_prefill_len=0) correctly RE-APPLY the voice prefix in the batched orchestrator every time (no voice
+>   full prefill correctly RE-APPLY the voice prefix in the batched orchestrator every time (no voice
 >   drift across chunks)? Check fidelity (ear + mel-corr vs sequential `.qvoice`) + RTF, bf16/int8. **AND** test combining
 >   `--batch` with `--emotion`/`--roughness` (the expressivity steering) — does the control-vector/steer apply per chunk
 >   in the batched path, and can we mix emotions cleanly across a long text? (the batched step reuses the same Talker/CP;

@@ -385,6 +385,10 @@ curl -s http://localhost:8080/v1/audio/speech \
   -d '{"input":"Hello world","voice":"ryan"}' -o output.wav
 ```
 
+`/v1/tts/stream` returns raw PCM (s16le, 24 kHz, mono; headers `X-Sample-Rate`, `X-Sample-Format`, `X-Channels`) with chunked transfer encoding. The first chunk holds 2 frames (160 ms of audio); the following ones hold `chunk_frames` frames from the request (default 10). The final zero-length chunk marks a successful delivery: **a response that ends without it is a failure** (generation error or cancellation), not a short audio. `rate` is not supported on this endpoint.
+
+Invalid requests get a `400` with the cause in the `error` field, in normal and batch mode alike: blank or whitespace-only `text`, unknown `language` or `speaker`, `temperature` outside [0, 2], `top_k` outside [0, vocab size], `top_p` outside [0, 1], `rep_penalty` outside [0.5, 2], and `rate` other than 1 on `/v1/tts/stream`. Each request runs the full prefill, so the same request always yields the same audio.
+
 > The server listens only on `127.0.0.1` by default and has no authentication. Exposing it to the network requires an explicit `--host 0.0.0.0`.
 
 ### Streaming

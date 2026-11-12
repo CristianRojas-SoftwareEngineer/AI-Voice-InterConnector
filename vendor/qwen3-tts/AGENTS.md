@@ -148,11 +148,19 @@ Play output (macOS):
 afplay output.wav
 ```
 
-## Streaming Output (Future)
+## Streaming Output
 
-Streaming mode will generate audio chunks progressively, writing WAV data
-as frames are decoded. The causal ConvNet decoder enables this without
-lookahead. Not implemented in phase 1.
+Streaming genera el audio por fragmentos y lo entrega según se decodifica; el decodificador
+convolucional causal lo permite sin mirar hacia delante.
+
+- CLI: `--stream` escribe un WAV progresivamente y `--stdout` emite PCM s16le de 24 kHz mono por la
+  salida estándar. `--rate` distinto de 1 no se puede combinar con `--stream` (error).
+- Servidor: `POST /v1/tts/stream` responde PCM s16le, 24 kHz, mono, con transferencia por partes
+  (cabeceras `X-Sample-Rate`, `X-Sample-Format`, `X-Channels`). El primer fragmento es de 2
+  fotogramas y los siguientes de `chunk_frames` (10 por defecto). El fragmento final de tamaño
+  cero marca la entrega correcta: una respuesta que se corta sin él es un fallo.
+- Prueba: `make test-serve-stream` (entrega por partes, validaciones 400, reproducibilidad y
+  cancelación).
 
 ## Kernel/Optimization Rules
 
