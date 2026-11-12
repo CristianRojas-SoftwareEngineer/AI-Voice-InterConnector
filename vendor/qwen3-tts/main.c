@@ -1183,8 +1183,15 @@ int main(int argc, char **argv) {
             case 'd': model_dir = optarg; break;
             case 't': text = optarg; break;
             case 'o': output = optarg; break;
-            case 's': speaker_id = qwen_tts_speaker_id(optarg); speaker_name = optarg; break;
-            case 'l': language = optarg; break;
+            case 's':
+                speaker_id = qwen_tts_speaker_id(optarg);
+                if (speaker_id < 0) { fprintf(stderr, "error: voz desconocida: %s\n", optarg); return 1; }
+                speaker_name = optarg;
+                break;
+            case 'l':
+                if (qwen_tts_language_id(optarg) < 0) { fprintf(stderr, "error: idioma desconocido: %s\n", optarg); return 1; }
+                language = optarg;
+                break;
             case 'T': temperature = (float)atof(optarg); temp_set = 1; break;
             case 'k': top_k = atoi(optarg); break;
             case 'p': top_p = (float)atof(optarg); break;
@@ -2910,8 +2917,13 @@ int main(int argc, char **argv) {
     stream_state.volume = audio_volume;   /* --volume applies per chunk while streaming */
     ctx->stream = do_stream;
     ctx->stream_chunk_frames = stream_chunk;
-    if (do_stream && audio_rate != 1.0f && !silent)
-        fprintf(stderr, "Warning: --rate has no effect in --stream mode (time-stretch needs the full buffer)\n");
+    /* El cambio de velocidad necesita el búfer completo, así que no se puede aplicar mientras se
+     * emite por partes: se rechaza en lugar de ignorarlo. */
+    if (do_stream && audio_rate != 1.0f) {
+        fprintf(stderr, "error: --rate no se puede aplicar con --stream\n");
+        qwen_tts_unload(ctx);
+        return 1;
+    }
 
     if (do_stream) {
         if (do_stdout) {

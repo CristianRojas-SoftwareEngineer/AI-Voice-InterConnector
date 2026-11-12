@@ -51,10 +51,6 @@ static pthread_mutex_t g_synth_lock = PTHREAD_MUTEX_INITIALIZER;
  * single worker (or inline mode) there is no concurrency, so it also stays 0. */
 static int g_serialize_synth = 0;
 
-static inline float clampf(float v, float lo, float hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
 /* ── Simple JSON helpers ─────────────────────────────────────────────── */
 
 /* Extract a string value for a key from JSON. Returns malloc'd string or NULL. */
@@ -340,41 +336,95 @@ static void reset_request_state(qwen_tts_ctx_t *ctx) {
     ctx->seed = (uint32_t)(tv.tv_sec ^ tv.tv_usec);
 }
 
-/* Apply TTS params from JSON body to context. Returns text (malloc'd) or NULL on error.
+/* Validación ÚNICA de una petición de síntesis, compartida por el analizador normal
+ * (parse_tts_request) y el de lotes (parse_batch_req). Devuelve 0 si es válida o -1 con la
+ * causa en err. Reglas: texto presente, no vacío, no solo espacios y de a lo sumo MAX_TTS_TEXT
+ * bytes; idioma y speaker conocidos si se indican; temperature en [0, 2], top_k en
+ * [0, codec_vocab_size], top_p en [0, 1] y rep_penalty en [0.5, 2] si se indican. Nada se
+ * recorta ni se sustituye por un valor por defecto: una petición inválida se rechaza. */
+static int validate_tts_fields(const qwen_tts_ctx_t *ctx, const char *body,
+                               char *err, size_t err_len) {
+    char *text = json_extract_string(body, "text");
+    if (!text) text = json_extract_string(body, "input");
+    if (!text || text[0] == '\0') {
+        free(text);
+        snprintf(err, err_len, "missing or empty 'text'");
+        return -1;
+    }
+    int only_ws = 1;
+    for (const char *p = text; *p; p++) {
+        if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') { only_ws = 0; break; }
+    }
+    size_t tlen = strlen(text);
+    free(text);
+    if (only_ws) { snprintf(err, err_len, "'text' contains only whitespace"); return -1; }
+    if (tlen > MAX_TTS_TEXT) { snprintf(err, err_len, "'text' exceeds %d bytes", MAX_TTS_TEXT); return -1; }
+
+    char *language = json_extract_string(body, "language");
+    if (language) {
+        int bad = qwen_tts_language_id(language) < 0;
+        if (bad) snprintf(err, err_len, "unknown language '%.64s'", language);
+        free(language);
+        if (bad) return -1;
+    }
+    char *speaker = json_extract_string(body, "speaker");
+    if (!speaker) speaker = json_extract_string(body, "voice");
+    if (speaker) {
+        int bad = qwen_tts_speaker_id(speaker) < 0;
+        if (bad) snprintf(err, err_len, "unknown speaker '%.64s'", speaker);
+        free(speaker);
+        if (bad) return -1;
+    }
+
+    if (strstr(body, "\"temperature\"")) {
+        double v = json_extract_number(body, "temperature", 0.5);
+        if (!(v >= 0.0 && v <= 2.0)) { snprintf(err, err_len, "'temperature' out of range [0, 2]"); return -1; }
+    }
+    if (strstr(body, "\"top_k\"")) {
+        double v = json_extract_number(body, "top_k", 50);
+        if (!(v >= 0.0 && v <= (double)ctx->config.codec_vocab_size)) {
+            snprintf(err, err_len, "'top_k' out of range [0, %d]", ctx->config.codec_vocab_size);
+            return -1;
+        }
+    }
+    if (strstr(body, "\"top_p\"")) {
+        double v = json_extract_number(body, "top_p", 1.0);
+        if (!(v >= 0.0 && v <= 1.0)) { snprintf(err, err_len, "'top_p' out of range [0, 1]"); return -1; }
+    }
+    if (strstr(body, "\"rep_penalty\"")) {
+        double v = json_extract_number(body, "rep_penalty", 1.05);
+        if (!(v >= 0.5 && v <= 2.0)) { snprintf(err, err_len, "'rep_penalty' out of range [0.5, 2]"); return -1; }
+    }
+    return 0;
+}
+
+/* Apply TTS params from JSON body to context. Returns text (malloc'd) or NULL on error
+ * (la causa queda en err; ver validate_tts_fields).
  * out_volume/out_rate receive the effective DSP gain/tempo (from --emotion recipe or
  * explicit "volume"/"rate"), to be applied to the rendered audio by the caller. */
 static char *parse_tts_request(qwen_tts_ctx_t *ctx, const char *body,
-                               float *out_volume, float *out_rate) {
+                               float *out_volume, float *out_rate,
+                               char *err, size_t err_len) {
     /* Start from clean defaults — prevents state leaking between requests */
     reset_request_state(ctx);
+
+    if (validate_tts_fields(ctx, body, err, err_len) != 0) return NULL;
 
     char *text = json_extract_string(body, "text");
     if (!text) {
         /* Try OpenAI-compatible "input" field */
         text = json_extract_string(body, "input");
     }
-    if (!text || text[0] == '\0') {
-        free(text);
-        return NULL;
-    }
-    if (strlen(text) > MAX_TTS_TEXT) {   /* reject oversized input (DoS / OOM guard) */
-        free(text);
-        return NULL;
-    }
 
     char *speaker = json_extract_string(body, "speaker");
     if (!speaker) speaker = json_extract_string(body, "voice");
     if (speaker) {
-        int sid = qwen_tts_speaker_id(speaker);
-        if (sid >= 0) ctx->speaker_id = sid;
+        ctx->speaker_id = qwen_tts_speaker_id(speaker);
         free(speaker);
     }
 
     char *language = json_extract_string(body, "language");  /* kept for the emotion resolver below */
-    if (language) {
-        int lid = qwen_tts_language_id(language);
-        if (lid >= 0) ctx->language_id = lid;
-    }
+    if (language) ctx->language_id = qwen_tts_language_id(language);
 
     /* Instruct (1.7B only) */
     free(ctx->instruct);
@@ -387,18 +437,13 @@ static char *parse_tts_request(qwen_tts_ctx_t *ctx, const char *body,
         free(vd);
     }
 
-    /* Sampling params (override defaults only if provided), clamped to sane ranges so
-     * a bad client value can't crash sampling or produce garbage (e.g. negative top_k,
-     * top_p outside [0,1], runaway temperature). */
-    /* Cap temperature at 2.0: above that (with top_p=1/top_k=0) sampling is so flat the
-     * model may never emit EOS and runs to max_frames — a degenerate near-runaway. 2.0 is
-     * already far past the 0.5 default. */
-    ctx->temperature = clampf((float)json_extract_number(body, "temperature", ctx->temperature), 0.0f, 2.0f);
+    /* Parámetros de muestreo: solo se sustituyen los indicados; los rangos ya los validó
+     * validate_tts_fields (temperature se limita a 2.0 porque por encima el muestreo es tan
+     * plano que el modelo puede no emitir nunca EOS y llegar a max_frames). */
+    ctx->temperature = (float)json_extract_number(body, "temperature", ctx->temperature);
     ctx->top_k       = (int)json_extract_number(body, "top_k", ctx->top_k);
-    if (ctx->top_k < 0) ctx->top_k = 0;
-    if (ctx->top_k > ctx->config.codec_vocab_size) ctx->top_k = ctx->config.codec_vocab_size;
-    ctx->top_p       = clampf((float)json_extract_number(body, "top_p", ctx->top_p), 0.0f, 1.0f);
-    ctx->rep_penalty = clampf((float)json_extract_number(body, "rep_penalty", ctx->rep_penalty), 0.5f, 2.0f);
+    ctx->top_p       = (float)json_extract_number(body, "top_p", ctx->top_p);
+    ctx->rep_penalty = (float)json_extract_number(body, "rep_penalty", ctx->rep_penalty);
 
     /* Seed (optional: 0 or negative = keep time-based from reset) */
     int seed = (int)json_extract_number(body, "seed", -1);
@@ -458,9 +503,10 @@ static double server_time_ms(void) {
 
 static void handle_tts(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     float volume = 1.0f, rate = 1.0f;
-    char *text = parse_tts_request(ctx, body, &volume, &rate);
+    char err[160];
+    char *text = parse_tts_request(ctx, body, &volume, &rate, err, sizeof err);
     if (!text) {
-        send_error(fd, 400, "missing, empty, or oversized 'text' (max 8192 chars)");
+        send_error(fd, 400, err);
         return;
     }
     if (ctx->voice_design && ctx->config.hidden_size < 2048) {
@@ -543,10 +589,17 @@ static void handle_tts(qwen_tts_ctx_t *ctx, int fd, const char *body) {
 
 static void handle_tts_stream(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     float volume = 1.0f, rate = 1.0f;
-    char *text = parse_tts_request(ctx, body, &volume, &rate);
-    (void)rate;  /* pitch-preserving tempo isn't applied on the streaming path (needs full buffer) */
+    char err[160];
+    char *text = parse_tts_request(ctx, body, &volume, &rate, err, sizeof err);
     if (!text) {
-        send_error(fd, 400, "missing, empty, or oversized 'text' (max 8192 chars)");
+        send_error(fd, 400, err);
+        return;
+    }
+    /* El cambio de velocidad con conservación de tono necesita el búfer completo, así que la
+     * entrega por partes no puede aplicarlo: se rechaza antes de enviar la cabecera. */
+    if (rate != 1.0f) {
+        send_error(fd, 400, "'rate' is not supported on /v1/tts/stream");
+        free(text);
         return;
     }
     if (ctx->voice_design && ctx->config.hidden_size < 2048) {
@@ -904,14 +957,15 @@ static void job_free(batch_job_t *j) {
  * scheduler owns ctx; readers must be read-only on it). Resolves speaker/language
  * names + defaults using ctx config only. *needs_single set when the batch engine
  * can't serve it (instruct or voice_design → must run single-stream). Returns
- * malloc'd text or NULL on bad/oversized input. */
+ * malloc'd text o NULL si la petición es inválida (causa en err). */
 static char *parse_batch_req(qwen_tts_ctx_t *ctx, int def_speaker_id, int def_language_id,
                              const char *body,
-                             qwen_batch_req_t *req, int *needs_single) {
+                             qwen_batch_req_t *req, int *needs_single,
+                             char *err, size_t err_len) {
     *needs_single = 0;
+    if (validate_tts_fields(ctx, body, err, err_len) != 0) return NULL;
     char *text = json_extract_string(body, "text");
     if (!text) text = json_extract_string(body, "input");
-    if (!text || text[0] == '\0' || strlen(text) > MAX_TTS_TEXT) { free(text); return NULL; }
 
     /* valores por defecto (reflejan reset_request_state). Se usa la instantánea tomada al
      * arrancar el servidor, NO ctx->speaker_id/language_id en vivo, que el planificador muta en cada admisión. */
@@ -924,16 +978,14 @@ static char *parse_batch_req(qwen_tts_ctx_t *ctx, int def_speaker_id, int def_la
 
     char *speaker = json_extract_string(body, "speaker");
     if (!speaker) speaker = json_extract_string(body, "voice");
-    if (speaker) { int sid = qwen_tts_speaker_id(speaker); if (sid >= 0) req->speaker_id = sid; free(speaker); }
+    if (speaker) { req->speaker_id = qwen_tts_speaker_id(speaker); free(speaker); }
     char *language = json_extract_string(body, "language");
-    if (language) { int lid = qwen_tts_language_id(language); if (lid >= 0) req->language_id = lid; free(language); }
+    if (language) { req->language_id = qwen_tts_language_id(language); free(language); }
 
-    req->temperature = clampf((float)json_extract_number(body, "temperature", req->temperature), 0.0f, 2.0f);
+    req->temperature = (float)json_extract_number(body, "temperature", req->temperature);
     req->top_k = (int)json_extract_number(body, "top_k", req->top_k);
-    if (req->top_k < 0) req->top_k = 0;
-    if (req->top_k > ctx->config.codec_vocab_size) req->top_k = ctx->config.codec_vocab_size;
-    req->top_p = clampf((float)json_extract_number(body, "top_p", req->top_p), 0.0f, 1.0f);
-    req->rep_penalty = clampf((float)json_extract_number(body, "rep_penalty", req->rep_penalty), 0.5f, 2.0f);
+    req->top_p = (float)json_extract_number(body, "top_p", req->top_p);
+    req->rep_penalty = (float)json_extract_number(body, "rep_penalty", req->rep_penalty);
     int seed = (int)json_extract_number(body, "seed", -1);
     if (seed >= 0) req->seed = (uint32_t)seed;
 
@@ -996,8 +1048,14 @@ static void *reader_main(void *arg) {
             batch_job_t *j = (batch_job_t *)calloc(1, sizeof(batch_job_t));
             j->fd = fd;
             int needs_single = 0;
-            char *text = parse_batch_req(ra->ctx, ra->def_speaker_id, ra->def_language_id, body, &j->req, &needs_single);
-            if (!text) { send_error(fd, 400, "missing, empty, or oversized 'text' (max 8192 chars)"); close(fd); free(j); free(buf); continue; }
+            char err[160];
+            char *text = parse_batch_req(ra->ctx, ra->def_speaker_id, ra->def_language_id, body, &j->req, &needs_single, err, sizeof err);
+            if (!text) { send_error(fd, 400, err); close(fd); free(j); free(buf); continue; }
+            /* Misma restricción que handle_tts_stream: la entrega por partes no admite 'rate'. */
+            if (is_stream && strstr(body, "\"rate\"") && json_extract_number(body, "rate", 1.0) != 1.0) {
+                send_error(fd, 400, "'rate' is not supported on /v1/tts/stream");
+                free(text); close(fd); free(j); free(buf); continue;
+            }
             if (needs_single) {
                 /* instruct / voice_design can't batch → dedicated worker (clone ctx) */
                 j->kind = JOB_SINGLE; j->is_stream = is_stream;
