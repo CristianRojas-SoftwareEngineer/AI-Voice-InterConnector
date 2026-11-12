@@ -57,9 +57,14 @@ pub fn wav_bytes_duration_secs(bytes: &[u8]) -> Option<f64> {
 
 /// Codifica muestras PCM mono int16 en un WAV de 16 kHz.
 pub fn encode_pcm_16k_mono_wav(pcm: &[i16]) -> Result<Vec<u8>, hound::Error> {
+    encode_pcm_mono_wav(pcm, 16_000)
+}
+
+/// Codifica muestras PCM mono int16 en un WAV de la frecuencia indicada.
+pub fn encode_pcm_mono_wav(pcm: &[i16], sample_rate: u32) -> Result<Vec<u8>, hound::Error> {
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: 16_000,
+        sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
@@ -1067,15 +1072,25 @@ mod tests {
     #[test]
     fn pcm_wav_round_trip_preserves_format_and_samples() {
         let samples = [0, 1234, -2345, i16::MAX, i16::MIN];
-        let bytes = crate::encode_pcm_16k_mono_wav(&samples).expect("codificar WAV");
-        let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).expect("leer WAV");
-        let spec = reader.spec();
-        assert_eq!(spec.sample_rate, 16_000);
-        assert_eq!(spec.channels, 1);
-        assert_eq!(spec.bits_per_sample, 16);
-        assert_eq!(spec.sample_format, hound::SampleFormat::Int);
-        let decoded: Vec<i16> = reader.samples::<i16>().map(Result::unwrap).collect();
-        assert_eq!(decoded, samples);
+        for (sample_rate, bytes) in [
+            (
+                16_000,
+                crate::encode_pcm_16k_mono_wav(&samples).expect("codificar WAV a 16 kHz"),
+            ),
+            (
+                24_000,
+                crate::encode_pcm_mono_wav(&samples, 24_000).expect("codificar WAV a 24 kHz"),
+            ),
+        ] {
+            let mut reader = hound::WavReader::new(std::io::Cursor::new(bytes)).expect("leer WAV");
+            let spec = reader.spec();
+            assert_eq!(spec.sample_rate, sample_rate);
+            assert_eq!(spec.channels, 1);
+            assert_eq!(spec.bits_per_sample, 16);
+            assert_eq!(spec.sample_format, hound::SampleFormat::Int);
+            let decoded: Vec<i16> = reader.samples::<i16>().map(Result::unwrap).collect();
+            assert_eq!(decoded, samples);
+        }
     }
 
     /// Reserva un `.wav` temporal con dueño: el fichero se borra al soltar la

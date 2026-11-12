@@ -82,6 +82,15 @@ fn lock_live(
 }
 
 /// Seed de la config de producción: el de la primera toma de cada síntesis.
+/// Frecuencia de muestreo del audio que entrega el motor (PCM mono de 16 bits).
+pub const ENGINE_SAMPLE_RATE: u32 = 24_000;
+
+/// Fotogramas por fragmento que se piden al motor en la entrega en streaming. Un
+/// fotograma son 80 ms de audio. Con 4 el hueco entre el primer fragmento (2 fotogramas)
+/// y el siguiente queda en ~0,12 s, frente a ~0,58 s con 10, a cambio de un 4 % más de
+/// factor de tiempo real (0,70 → 0,72 sin carga).
+const STREAM_CHUNK_FRAMES: u32 = 4;
+
 pub const PRODUCTION_SEED: u64 = 4;
 
 /// Mayor seed que acepta el motor: lo lee como `int` de 32 bits con signo y
@@ -166,53 +175,12 @@ impl GenerationOptions {
     }
 }
 
-/// Opciones de prosodia (ganancia y tempo), serializables al body HTTP.
-/// `EmotionOptions` es no-op en el modelo 0.6B: se serializa si se usa, sin
-/// prometer control emocional: es una restricción conocida del modelo.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ProsodyOptions {
-    pub volume: Option<f32>,
-    pub rate: Option<f32>,
-}
-
-/// Opciones de emoción (no-op en 0.6B; solo se transporta el campo `emotion`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EmotionOptions {
-    pub emotion: Option<String>,
-}
-
 /// Perfil de voz: su nombre y, si es clonada, su referencia con la identidad de
 /// su contenido, resuelta por el almacén de voces.
 #[derive(Debug, Clone)]
 pub struct VoiceProfile {
     pub name: String,
     pub reference: Option<avi_store::VoiceReference>,
-}
-
-/// Trait público del motor de síntesis TTS
-pub trait TtsEngine: Send + Sync {
-    /// Síntesis interrumpible: activar `cancel` cierra la conexión con el motor,
-    /// que aborta la generación en curso y queda libre para la siguiente
-    /// petición; la llamada devuelve entonces `SynthesisCancelled`.
-    fn synthesize_cancellable(
-        &self,
-        text: &str,
-        profile: &VoiceProfile,
-        options: &GenerationOptions,
-        output_path: Option<&PathBuf>,
-        cancel: &AtomicBool,
-    ) -> Result<PathBuf>;
-
-    /// Síntesis sin cancelación externa (solo la acota su presupuesto).
-    fn synthesize_with_options(
-        &self,
-        text: &str,
-        profile: &VoiceProfile,
-        options: &GenerationOptions,
-        output_path: Option<&PathBuf>,
-    ) -> Result<PathBuf> {
-        self.synthesize_cancellable(text, profile, options, output_path, &AtomicBool::new(false))
-    }
 }
 
 /// Voz resuelta hacia la semántica del motor: preset del servidor (modelo
@@ -732,8 +700,14 @@ impl Qwen3TtsEngine {
         })
     }
 
-    /// Síntesis vía servidor residente: arranca (o reutiliza) el residente de
-    /// la voz solicitada y hace `POST /v1/tts`.
+    /// Entrega en streaming: arranca (o reutiliza) el residente de la voz del
+    /// perfil, hace `POST /v1/tts/stream` y llama a `sink` con cada fragmento de
+    /// audio (PCM mono de 16 bits a [`ENGINE_SAMPLE_RATE`]) según llega.
+    ///
+    /// La voz clonada llega con su referencia ya resuelta por el almacén; sin
+    /// ella solo `ryan` y `vivian` son presets, y cualquier otra voz es
+    /// `VoiceNotFound`. El texto viaja por el body HTTP JSON, ruta segura para
+    /// UTF-8 acentuado (a diferencia del argv de un subproceso en Windows).
     ///
     /// Antes de reutilizar un residente se verifica su salud real
     /// (`health_check`, `try_wait` + `GET /v1/health`): un residente colgado
@@ -745,25 +719,28 @@ impl Qwen3TtsEngine {
     ///
     /// El `guard` cubre solo la decisión reutilizar/arrancar, la salud
     /// observada, el eventual rearranque y la lectura del puerto (`u16`
-    /// copiable); se suelta antes del `POST /v1/tts`, que corre sin lock. La
+    /// copiable); se suelta antes del `POST`, que corre sin lock. La
     /// serialización del uso del residente la da la capa superior
     /// (`synthesis_lock` en el daemon, secuencialidad en el CLI directo), así
     /// que la siguiente petición reclama el residente de inmediato en vez de
-    /// esperar tras un hilo huérfano reteniendo el lock. El plazo total del
-    /// POST es el presupuesto proporcional a la longitud del texto
+    /// esperar tras un hilo huérfano reteniendo el lock. El plazo total de la
+    /// entrega es el presupuesto proporcional a la longitud del texto
     /// (`avi_core::synthesis_budget`); si vence, el error envuelve
-    /// `SynthesisTimeout`. Al vencer o al activarse `cancel` (que produce
-    /// `SynthesisCancelled`) se cierra la conexión y el motor aborta la
-    /// generación, así que el residente sigue caliente y el `health_check` de
-    /// la siguiente petición lo reutiliza.
-    fn synthesize_via_resident(
+    /// `SynthesisTimeout`. Al vencer, al activarse `cancel` (que produce
+    /// `SynthesisCancelled`) o al fallar `sink` se cierra la conexión y el motor
+    /// aborta la generación, así que el residente sigue caliente y el
+    /// `health_check` de la siguiente petición lo reutiliza. Si el motor corta la
+    /// entrega antes de terminar, el error envuelve `SynthesisTruncated`.
+    pub fn synthesize_streaming(
         &self,
         text: &str,
-        voice: &VoiceEngine,
+        profile: &VoiceProfile,
         options: &GenerationOptions,
-        out_path: &Path,
         cancel: &AtomicBool,
+        sink: &mut dyn FnMut(&[i16]) -> Result<()>,
     ) -> Result<()> {
+        let voice = resolve_voice_engine(&profile.name, profile.reference.as_ref())?;
+        let voice = &voice;
         let model_dir = select_model_dir(
             voice,
             self.model_dir.as_deref(),
@@ -816,65 +793,47 @@ impl Qwen3TtsEngine {
             return Err(anyhow::Error::new(SynthesisCancelled));
         }
         let budget = avi_core::synthesis_budget(text.chars().count());
-        let body = build_tts_body(text, voice, options, None, None)?.to_string();
-        // Petición de trabajo: debe poder entrar en una cola que se vacía.
-        let (status, bytes) = http_exchange(
-            &format!("{}/v1/tts", url),
-            "POST",
-            Some(&body),
+        let body = build_tts_body(text, voice, options)?.to_string();
+        http_stream_exchange(
+            &format!("{}/v1/tts/stream", url),
+            &body,
             budget,
-            Some(cancel),
-            Connection::Work,
-        )?;
-        if (200..300).contains(&status) {
-            std::fs::write(out_path, bytes)?;
-            Ok(())
-        } else {
-            Err(anyhow!(
-                "El residente Qwen3-TTS devolvió código de error: {}",
-                status
-            ))
-        }
+            cancel,
+            sink,
+        )
     }
-}
 
-impl TtsEngine for Qwen3TtsEngine {
-    fn synthesize_cancellable(
+    /// Igual que [`Self::synthesize_streaming`], pero acumula los fragmentos y
+    /// escribe el audio completo en `output_path` como WAV de 24 kHz, mono y 16
+    /// bits. Si la entrega falla no se escribe nada.
+    pub fn synthesize_to_wav(
         &self,
         text: &str,
         profile: &VoiceProfile,
         options: &GenerationOptions,
-        output_path: Option<&PathBuf>,
+        output_path: &Path,
         cancel: &AtomicBool,
-    ) -> Result<PathBuf> {
-        let path = output_path
-            .cloned()
-            .unwrap_or_else(|| PathBuf::from("output.wav"));
-
-        // La voz clonada llega con su referencia ya resuelta por el almacén; sin
-        // ella solo `ryan` y `vivian` son presets, y cualquier otra voz es
-        // `VoiceNotFound`.
-        let voice = resolve_voice_engine(&profile.name, profile.reference.as_ref())?;
-
-        // Servidor residente gestionado por el host, con healthcheck y POST
-        // acotados (este último por el presupuesto de síntesis del texto). El
-        // texto viaja por body HTTP JSON, ruta segura para UTF-8 acentuado (a
-        // diferencia del argv de un subprocess en Windows).
-        self.synthesize_via_resident(text, &voice, options, &path, cancel)?;
-        Ok(path)
+    ) -> Result<()> {
+        let mut pcm: Vec<i16> = Vec::new();
+        self.synthesize_streaming(text, profile, options, cancel, &mut |chunk| {
+            pcm.extend_from_slice(chunk);
+            Ok(())
+        })?;
+        let wav = avi_audio::encode_pcm_mono_wav(&pcm, ENGINE_SAMPLE_RATE)?;
+        std::fs::write(output_path, wav)?;
+        Ok(())
     }
 }
 
-/// Construye el body HTTP de `POST /v1/tts`: sin `format` (el
-/// servidor lo ignora) y claves solo-si-`Some`. `language` lleva siempre el
+/// Construye el body HTTP de `POST /v1/tts/stream`: claves solo-si-`Some`, más
+/// `chunk_frames` con el tamaño de fragmento de la entrega en streaming.
+/// `language` lleva siempre el
 /// nombre del idioma que entiende el motor, tanto con preset como con voz
 /// clonada; `speaker` solo se emite con preset. Un idioma desconocido es error.
 pub(crate) fn build_tts_body(
     text: &str,
     voice: &VoiceEngine,
     options: &GenerationOptions,
-    prosody: Option<&ProsodyOptions>,
-    emotion: Option<&EmotionOptions>,
 ) -> Result<serde_json::Value> {
     let language = engine_language_name(&options.language)?;
     let mut obj = serde_json::Map::new();
@@ -908,19 +867,10 @@ pub(crate) fn build_tts_body(
     if let Some(seed) = options.seed {
         obj.insert("seed".to_string(), serde_json::Value::from(seed));
     }
-    if let Some(p) = prosody {
-        if let Some(v) = p.volume {
-            obj.insert("volume".to_string(), serde_json::Value::from(v));
-        }
-        if let Some(r) = p.rate {
-            obj.insert("rate".to_string(), serde_json::Value::from(r));
-        }
-    }
-    if let Some(e) = emotion {
-        if let Some(em) = &e.emotion {
-            obj.insert("emotion".to_string(), serde_json::Value::String(em.clone()));
-        }
-    }
+    obj.insert(
+        "chunk_frames".to_string(),
+        serde_json::Value::from(STREAM_CHUNK_FRAMES),
+    );
     Ok(serde_json::Value::Object(obj))
 }
 
@@ -958,51 +908,47 @@ impl std::fmt::Display for SynthesisCancelled {
 
 impl std::error::Error for SynthesisCancelled {}
 
+/// El motor cerró la conexión antes de enviar el fragmento final de la entrega en
+/// streaming: la generación falló o se cortó, y el audio recibido está incompleto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SynthesisTruncated;
+
+impl std::fmt::Display for SynthesisTruncated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "La entrega del motor se cortó antes de terminar; el audio quedó incompleto."
+        )
+    }
+}
+
+impl std::error::Error for SynthesisTruncated {}
+
 /// Intervalo máximo entre dos consultas de la bandera de cancelación y del
 /// plazo mientras se espera la respuesta: acota a ~100 ms la latencia con la
 /// que una cancelación cierra la conexión.
 const CANCEL_POLL: Duration = Duration::from_millis(100);
 
-/// Cliente HTTP/1.1 mínimo sobre `TcpStream` (sin runtime async): suficiente
-/// para `/v1/health` y `/v1/tts` del motor. Evita `reqwest::blocking`, que
-/// paniquea al dropearse dentro del runtime tokio de la CLI ("Cannot drop a
-/// runtime in a context where blocking is not allowed").
-///
-/// Envía `Connection: close` y lee la respuesta hasta EOF; devuelve
-/// (código de estado, bytes del body). `timeout` es el plazo total del
-/// intercambio (conexión, envío y lectura): al vencer devuelve
-/// `SynthesisTimeout`, aunque el servidor siga enviando bytes a goteo. Si
-/// `cancel` se activa, devuelve `SynthesisCancelled`. En ambos casos el
-/// socket se cierra al soltarse, y ese cierre es la señal con la que el motor
-/// aborta la generación. Por eso nunca se cierra la mitad de escritura tras
-/// enviar la petición: el motor lo interpretaría como un abandono.
-///
-/// `connection` declara el uso: una sonda (`Connection::Probe`) se rechaza al
-/// instante si nadie escucha; una petición de trabajo (`Connection::Work`)
-/// conserva los reintentos de conexión del sistema.
-fn http_exchange(
+/// Conexión al motor para una petición HTTP/1.1 con `Connection: close`: resuelve la URL,
+/// conecta y envía la petición dentro del plazo. Devuelve el socket listo para leer la
+/// respuesta. `timeout` es el plazo total del intercambio; al vencer devuelve
+/// `SynthesisTimeout`. El socket nunca cierra su mitad de escritura tras enviar la
+/// petición: el motor lo interpretaría como un abandono y cancelaría la generación.
+fn open_request(
     url: &str,
     method: &str,
     body: Option<&str>,
     timeout: Duration,
-    cancel: Option<&AtomicBool>,
+    deadline: Instant,
     connection: Connection,
-) -> Result<(u16, Vec<u8>)> {
-    let deadline = Instant::now() + timeout;
+) -> Result<std::net::TcpStream> {
     let timed_out = || anyhow::Error::new(SynthesisTimeout { budget: timeout });
-    let remaining = || deadline.saturating_duration_since(Instant::now());
     let (host, port, path) = parse_http_url(url)?;
     let addr = std::net::ToSocketAddrs::to_socket_addrs(&(host.as_str(), port))?
         .next()
         .ok_or_else(|| anyhow!("No se pudo resolver {}:{}", host, port))?;
     let mut stream = avi_process::loopback::connect_timeout(&addr, timeout, connection)?;
-    let is_timeout = |e: &std::io::Error| {
-        matches!(
-            e.kind(),
-            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
-        )
-    };
-    let left = remaining();
+    let left = deadline.saturating_duration_since(Instant::now());
     if left.is_zero() {
         return Err(timed_out());
     }
@@ -1028,15 +974,34 @@ fn http_exchange(
             anyhow::Error::new(e)
         }
     })?;
+    Ok(stream)
+}
+
+/// Un error de lectura o escritura por plazo de socket vencido, no un fallo real.
+fn is_timeout(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+    )
+}
+
+/// Sonda `GET` sobre `TcpStream` (sin runtime async) para `/v1/health` del motor.
+/// Evita `reqwest::blocking`, que paniquea al dropearse dentro del runtime tokio de la
+/// CLI ("Cannot drop a runtime in a context where blocking is not allowed").
+///
+/// Envía `Connection: close`, lee la respuesta hasta EOF y devuelve el código de
+/// estado. `timeout` es el plazo total del intercambio; al vencer devuelve
+/// `SynthesisTimeout`. Una sonda (`Connection::Probe`) se rechaza al instante si nadie
+/// escucha.
+fn http_exchange(url: &str, timeout: Duration) -> Result<u16> {
+    let deadline = Instant::now() + timeout;
+    let mut stream = open_request(url, "GET", None, timeout, deadline, Connection::Probe)?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];
     loop {
-        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
-            return Err(anyhow::Error::new(SynthesisCancelled));
-        }
-        let left = remaining();
+        let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return Err(timed_out());
+            return Err(anyhow::Error::new(SynthesisTimeout { budget: timeout }));
         }
         stream.set_read_timeout(Some(left.min(CANCEL_POLL)))?;
         match stream.read(&mut chunk) {
@@ -1046,20 +1011,186 @@ fn http_exchange(
             Err(e) => return Err(anyhow::Error::new(e)),
         }
     }
-    let text = String::from_utf8_lossy(&buf);
-    let header_end = text.find("\r\n\r\n").ok_or_else(|| {
+    parse_status(&buf).map(|(status, _)| status)
+}
+
+/// Estado HTTP y posición donde empieza el cuerpo. Falla si la respuesta aún no trae el
+/// final de las cabeceras.
+fn parse_status(buf: &[u8]) -> Result<(u16, usize)> {
+    let header_end = find_subsequence(buf, b"\r\n\r\n").ok_or_else(|| {
         anyhow!(
             "Respuesta HTTP sin final de headers: {:?}",
-            &text[..text.len().min(80)]
+            String::from_utf8_lossy(&buf[..buf.len().min(80)])
         )
     })?;
-    let status_line = text[..header_end].lines().next().unwrap_or("");
-    let status: u16 = status_line
+    let head = String::from_utf8_lossy(&buf[..header_end]);
+    let status: u16 = head
+        .lines()
+        .next()
+        .unwrap_or("")
         .split_whitespace()
         .nth(1)
         .and_then(|c| c.parse().ok())
         .unwrap_or(0);
-    Ok((status, buf[header_end + 4..].to_vec()))
+    Ok((status, header_end + 4))
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Un trozo de una respuesta con transferencia por partes.
+#[derive(Debug, PartialEq, Eq)]
+enum ChunkItem {
+    /// Cuerpo de un fragmento completo.
+    Data(Vec<u8>),
+    /// Fragmento final de tamaño cero: la entrega terminó.
+    End,
+}
+
+/// Extrae del inicio de `buf` el siguiente fragmento completo de una respuesta con
+/// transferencia por partes. `Ok(None)` significa que aún faltan bytes; los bytes
+/// consumidos se retiran de `buf`.
+fn take_chunk(buf: &mut Vec<u8>) -> Result<Option<ChunkItem>> {
+    let Some(line_end) = find_subsequence(buf, b"\r\n") else {
+        return Ok(None);
+    };
+    let size_text = String::from_utf8_lossy(&buf[..line_end]).into_owned();
+    let size_text = size_text.split(';').next().unwrap_or("").trim();
+    let size = usize::from_str_radix(size_text, 16).map_err(|_| {
+        anyhow!(
+            "Tamaño de fragmento inválido en la respuesta: {:?}",
+            size_text
+        )
+    })?;
+    if size == 0 {
+        buf.clear();
+        return Ok(Some(ChunkItem::End));
+    }
+    let data_start = line_end + 2;
+    let data_end = data_start + size;
+    // El fragmento termina con CRLF: se espera completo para no confundir un corte
+    // con una entrega correcta.
+    if buf.len() < data_end + 2 {
+        return Ok(None);
+    }
+    if &buf[data_end..data_end + 2] != b"\r\n" {
+        return Err(anyhow!(
+            "Fragmento sin CRLF final en la respuesta del motor"
+        ));
+    }
+    let data = buf[data_start..data_end].to_vec();
+    buf.drain(..data_end + 2);
+    Ok(Some(ChunkItem::Data(data)))
+}
+
+/// Mensaje del campo `error` del cuerpo JSON de un rechazo del motor; si el cuerpo no
+/// es ese JSON, el texto tal cual.
+fn engine_error_message(body: &[u8]) -> String {
+    let text = String::from_utf8_lossy(body);
+    serde_json::from_str::<serde_json::Value>(&text)
+        .ok()
+        .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+        .unwrap_or_else(|| text.trim().to_string())
+}
+
+/// Cliente de la entrega en streaming: `POST` a `/v1/tts/stream`, decodifica la
+/// transferencia por partes y llama a `sink` con cada fragmento (PCM de 16 bits,
+/// little-endian) según llega. Termina bien solo al recibir el fragmento final de
+/// tamaño cero.
+///
+/// `timeout` es el plazo total de la entrega, aunque el motor siga enviando bytes a
+/// goteo: al vencer devuelve `SynthesisTimeout`. Si `cancel` se activa devuelve
+/// `SynthesisCancelled`, y si `sink` falla propaga su error; en los tres casos el
+/// socket se cierra al soltarse, y ese cierre es la señal con la que el motor aborta
+/// la generación. Un estado distinto de 200 da un error con el campo `error` del
+/// cuerpo; un cierre de la conexión sin el fragmento final da `SynthesisTruncated`; un
+/// fragmento con un número impar de bytes es un error.
+fn http_stream_exchange(
+    url: &str,
+    body: &str,
+    timeout: Duration,
+    cancel: &AtomicBool,
+    sink: &mut dyn FnMut(&[i16]) -> Result<()>,
+) -> Result<()> {
+    let deadline = Instant::now() + timeout;
+    // Petición de trabajo: debe poder entrar en una cola que se vacía.
+    let mut stream = open_request(url, "POST", Some(body), timeout, deadline, Connection::Work)?;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut status: Option<u16> = None;
+    let mut chunk = [0u8; 16 * 1024];
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(anyhow::Error::new(SynthesisCancelled));
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(anyhow::Error::new(SynthesisTimeout { budget: timeout }));
+        }
+        stream.set_read_timeout(Some(left.min(CANCEL_POLL)))?;
+        let eof = match stream.read(&mut chunk) {
+            Ok(0) => true,
+            Ok(n) => {
+                buf.extend_from_slice(&chunk[..n]);
+                false
+            }
+            Err(e) if is_timeout(&e) || e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(anyhow::Error::new(e)),
+        };
+        if status.is_none() {
+            if let Some(end) = find_subsequence(&buf, b"\r\n\r\n") {
+                let (code, body_start) = parse_status(&buf)?;
+                let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                if code == 200 && !head.contains("transfer-encoding: chunked") {
+                    return Err(anyhow!(
+                        "El residente Qwen3-TTS respondió sin transferencia por partes"
+                    ));
+                }
+                buf.drain(..body_start);
+                status = Some(code);
+            } else if eof {
+                return Err(anyhow!(
+                    "Respuesta HTTP sin final de headers: {:?}",
+                    String::from_utf8_lossy(&buf[..buf.len().min(80)])
+                ));
+            }
+        }
+        match status {
+            Some(200) => {
+                while let Some(item) = take_chunk(&mut buf)? {
+                    match item {
+                        ChunkItem::End => return Ok(()),
+                        ChunkItem::Data(bytes) => {
+                            if bytes.len() % 2 != 0 {
+                                return Err(anyhow!(
+                                    "Fragmento de audio con un número impar de bytes ({})",
+                                    bytes.len()
+                                ));
+                            }
+                            let samples: Vec<i16> = bytes
+                                .chunks_exact(2)
+                                .map(|b| i16::from_le_bytes([b[0], b[1]]))
+                                .collect();
+                            sink(&samples)?;
+                        }
+                    }
+                }
+                if eof {
+                    return Err(anyhow::Error::new(SynthesisTruncated));
+                }
+            }
+            // Rechazo del motor: el cuerpo (JSON con el campo `error`) llega entero
+            // antes de que el servidor cierre la conexión.
+            Some(code) if eof => {
+                return Err(anyhow!(
+                    "El residente Qwen3-TTS devolvió código de error {}: {}",
+                    code,
+                    engine_error_message(&buf)
+                ));
+            }
+            Some(_) | None => {}
+        }
+    }
 }
 
 /// Descompone `http://host:puerto/ruta` en sus tres partes.
@@ -1246,7 +1377,7 @@ pub fn clone_voice(
 }
 
 /// Servidor residente del motor Qwen3-TTS: spawn perezoso con
-/// `--serve <puerto> --host 127.0.0.1 -j 4 [--quant-mixed] --stream --watch-stdin [--load-voice <qvoice> --graft]`,
+/// `--serve <puerto> --host 127.0.0.1 -j 4 [--quant-mixed] --watch-stdin [--load-voice <qvoice> --graft]`,
 /// healthcheck `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 /// El residente guarda abierto el extremo de escritura de la tubería de entrada
 /// del motor; si el daemon muere de forma abrupta, la tubería se cierra y el
@@ -1315,7 +1446,7 @@ pub mod resident {
 
     /// Construye el argv de arranque del residente, sin I/O real:
     /// programa más argumentos `-d <model_dir> --serve <port> --host 127.0.0.1
-    /// -j 4 [--quant-mixed] --stream --watch-stdin [--load-voice <qvoice> --graft]`. El llamador
+    /// -j 4 [--quant-mixed] --watch-stdin [--load-voice <qvoice> --graft]`. El llamador
     /// pasa en `model_dir` el modelo Base si hay `load_voice` y CustomVoice si no.
     /// `--graft` clona por el camino solo x-vector (el motor ignora la
     /// transcripción y los códigos de referencia del `.qvoice`) y no aplica
@@ -1342,7 +1473,7 @@ pub mod resident {
         if precision == TtsPrecision::Mixed {
             args.push(String::from("--quant-mixed"));
         }
-        args.extend([String::from("--stream"), String::from("--watch-stdin")]);
+        args.push(String::from("--watch-stdin"));
         if let Some(lv) = load_voice {
             args.push(String::from("--load-voice"));
             args.push(lv.to_string_lossy().into_owned());
@@ -1608,16 +1739,9 @@ pub mod resident {
             }
             // Como sonda, un motor que aún no escucha se rechaza al instante y el
             // presupuesto `retries × interval_ms` es el real también en Windows.
-            let ok = http_exchange(
-                &url,
-                "GET",
-                None,
-                Duration::from_millis(interval_ms),
-                None,
-                Connection::Probe,
-            )
-            .map(|(status, _)| (200..300).contains(&status))
-            .unwrap_or(false);
+            let ok = http_exchange(&url, Duration::from_millis(interval_ms))
+                .map(|status| (200..300).contains(&status))
+                .unwrap_or(false);
             if ok {
                 return Ok(());
             }
@@ -2068,7 +2192,7 @@ mod tests {
     fn build_tts_body_carries_overridden_seed() {
         let voice = VoiceEngine::Preset("ryan".to_string());
         let opts = GenerationOptions::production("es").with_seed_override(Some(777));
-        let body = build_tts_body("Hola", &voice, &opts, None, None).expect("idioma válido");
+        let body = build_tts_body("Hola", &voice, &opts).expect("idioma válido");
         assert_eq!(body.get("seed").and_then(|v| v.as_u64()), Some(777));
     }
 
@@ -2141,9 +2265,9 @@ mod tests {
     fn build_tts_body_rejects_unknown_language() {
         let opts = GenerationOptions::new("fr");
         let preset = VoiceEngine::Preset("ryan".to_string());
-        assert!(build_tts_body("Hola", &preset, &opts, None, None).is_err());
+        assert!(build_tts_body("Hola", &preset, &opts).is_err());
         let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
-        assert!(build_tts_body("Hola", &cloned, &opts, None, None).is_err());
+        assert!(build_tts_body("Hola", &cloned, &opts).is_err());
     }
 
     /// Argv exacto de arranque del residente (preset y voz clonada con
@@ -2151,7 +2275,7 @@ mod tests {
     /// cuantiza el code predictor y la misma petición deja de ser determinista
     /// y sale truncada.
     #[test]
-    fn build_resident_command_has_threads_and_stream_without_int4() {
+    fn build_resident_command_has_threads_without_int4_or_stream() {
         let (program, args) = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
             Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
@@ -2172,7 +2296,6 @@ mod tests {
                 "-j",
                 "4",
                 "--quant-mixed",
-                "--stream",
                 "--watch-stdin",
             ]
         );
@@ -2197,7 +2320,6 @@ mod tests {
                 "-j",
                 "4",
                 "--quant-mixed",
-                "--stream",
                 "--watch-stdin",
                 "--load-voice",
                 "voice.qvoice",
@@ -2373,11 +2495,12 @@ mod tests {
             reference: Some(test_reference(qvoice.to_str().unwrap(), "huella")),
         };
         let err = engine
-            .synthesize_with_options(
+            .synthesize_to_wav(
                 "Hola",
                 &profile,
                 &GenerationOptions::new("es"),
-                Some(&dir.path().join("salida.wav")),
+                &dir.path().join("salida.wav"),
+                &AtomicBool::new(false),
             )
             .unwrap_err();
         assert!(
@@ -2838,11 +2961,11 @@ fn main() {
     /// `language` en nombre del motor.
     /// Afirma los defaults del `struct`/motor sin cambios, no los valores de
     /// producción de `GenerationOptions::production(..)` (config validada por oído) — el body HTTP
-    /// no transporta `-j`/`--stream` (son flags de arranque de proceso).
+    /// no transporta `-j` (es un flag de arranque de proceso).
     #[test]
     fn build_tts_body_defaults_and_cloned_voice() {
         let voice = VoiceEngine::Preset("ryan".to_string());
-        let body = build_tts_body("Hola", &voice, &GenerationOptions::new("es"), None, None)
+        let body = build_tts_body("Hola", &voice, &GenerationOptions::new("es"))
             .expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
         assert_eq!(obj.get("text").and_then(|v| v.as_str()), Some("Hola"));
@@ -2863,7 +2986,7 @@ fn main() {
         assert!(!obj.contains_key("emotion"));
 
         let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
-        let body = build_tts_body("Hola", &cloned, &GenerationOptions::new("en"), None, None)
+        let body = build_tts_body("Hola", &cloned, &GenerationOptions::new("en"))
             .expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
         assert!(!obj.contains_key("speaker"), "voz clonada omite speaker");
@@ -2871,32 +2994,23 @@ fn main() {
             obj.get("language").and_then(|v| v.as_str()),
             Some("English")
         );
-        let body = build_tts_body("Hola", &voice, &GenerationOptions::new("en"), None, None)
+        let body = build_tts_body("Hola", &voice, &GenerationOptions::new("en"))
             .expect("el idioma es válido");
         assert_eq!(
             body.get("language").and_then(|v| v.as_str()),
             Some("English")
         );
 
-        let prosody = ProsodyOptions {
-            volume: Some(1.1),
-            rate: Some(0.9),
-        };
-        let emotion = EmotionOptions {
-            emotion: Some("joy".to_string()),
-        };
-        let body = build_tts_body(
-            "Hola",
-            &voice,
-            &GenerationOptions::new("es"),
-            Some(&prosody),
-            Some(&emotion),
-        )
-        .expect("el idioma es válido");
-        let obj = body.as_object().expect("body debe ser objeto");
-        assert!((obj.get("volume").and_then(|v| v.as_f64()).unwrap() - 1.1).abs() < 1e-6);
-        assert!((obj.get("rate").and_then(|v| v.as_f64()).unwrap() - 0.9).abs() < 1e-6);
-        assert_eq!(obj.get("emotion").and_then(|v| v.as_str()), Some("joy"));
+        assert_eq!(
+            obj_chunk_frames(&body),
+            Some(u64::from(STREAM_CHUNK_FRAMES)),
+            "el body pide fragmentos de STREAM_CHUNK_FRAMES fotogramas"
+        );
+    }
+
+    /// `chunk_frames` del body de la petición, si está.
+    fn obj_chunk_frames(body: &serde_json::Value) -> Option<u64> {
+        body.get("chunk_frames").and_then(|v| v.as_u64())
     }
 
     /// Referencia de prueba con la ruta y la huella dadas, sin tocar disco.
@@ -2962,11 +3076,12 @@ fn main() {
             reference: None,
         };
         let err = engine
-            .synthesize_with_options(
+            .synthesize_to_wav(
                 "Hola",
                 &profile,
                 &GenerationOptions::new("es"),
-                Some(&dir.path().join("salida.wav")),
+                &dir.path().join("salida.wav"),
+                &AtomicBool::new(false),
             )
             .unwrap_err();
         let not_found = err
@@ -3190,44 +3305,241 @@ fn main() {
         );
     }
 
-    /// Un servidor que acepta la conexión pero nunca responde agota el
-    /// presupuesto inyectado y produce `SynthesisTimeout` con ese presupuesto.
-    /// `simulate_server` responde siempre, así que aquí se usa un listener mudo.
-    #[test]
-    fn http_exchange_silent_server_yields_synthesis_timeout() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("puerto libre");
-        let port = listener.local_addr().unwrap().port();
-        let handle = thread::spawn(move || {
-            let (_stream, _) = listener.accept().expect("conexión del cliente");
-            thread::sleep(Duration::from_millis(1500));
-        });
-        let budget = Duration::from_millis(200);
-        let err = http_exchange(
-            &format!("http://127.0.0.1:{}/v1/tts", port),
-            "POST",
-            Some("{}"),
-            budget,
-            Some(&AtomicBool::new(false)),
-            Connection::Work,
-        )
-        .expect_err("un servidor mudo debe agotar el presupuesto");
-        let timeout = err
-            .downcast_ref::<SynthesisTimeout>()
-            .expect("el error debe envolver SynthesisTimeout");
-        assert_eq!(timeout.budget, budget);
-        handle.join().unwrap();
+    /// Cabecera de una entrega por partes correcta.
+    const STREAM_HEAD: &[u8] =
+        b"HTTP/1.1 200 OK\r\nContent-Type: audio/pcm\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n";
+
+    /// Fragmento HTTP con las muestras dadas en PCM little-endian.
+    fn http_chunk(samples: &[i16]) -> Vec<u8> {
+        let payload: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+        let mut out = format!("{:x}\r\n", payload.len()).into_bytes();
+        out.extend_from_slice(&payload);
+        out.extend_from_slice(b"\r\n");
+        out
     }
 
-    /// Un servidor que envía un byte cada 50 ms nunca deja vencer una lectura
-    /// individual; el plazo total igualmente corta el intercambio.
-    #[test]
-    fn http_exchange_trickling_server_hits_total_deadline() {
+    /// Lee la petición completa (cabeceras y cuerpo) que envía el cliente.
+    fn read_request(stream: &mut std::net::TcpStream) {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut buf = Vec::new();
+        let mut tmp = [0u8; 1024];
+        loop {
+            let n = stream.read(&mut tmp).expect("leer la petición");
+            assert!(n > 0, "el cliente cerró antes de enviar la petición");
+            buf.extend_from_slice(&tmp[..n]);
+            if let Some(end) = find_subsequence(&buf, b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                let length: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:")?.trim().parse().ok())
+                    .unwrap_or(0);
+                if buf.len() >= end + 4 + length {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Espera el cierre del cliente; `true` si la conexión terminó con EOF.
+    fn wait_for_client_close(stream: &mut std::net::TcpStream) -> bool {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut tmp = [0u8; 1024];
+        loop {
+            match stream.read(&mut tmp) {
+                Ok(0) => return true,
+                Ok(_) => continue,
+                Err(_) => return false,
+            }
+        }
+    }
+
+    /// Motor falso de una sola conexión: lee la petición y ejecuta `respond`.
+    /// Devuelve la URL de `/v1/tts/stream` y el hilo, cuyo resultado es el de `respond`.
+    fn fake_engine<T, F>(respond: F) -> (String, thread::JoinHandle<T>)
+    where
+        T: Send + 'static,
+        F: FnOnce(std::net::TcpStream) -> T + Send + 'static,
+    {
         let listener = TcpListener::bind("127.0.0.1:0").expect("puerto libre");
         let port = listener.local_addr().unwrap().port();
         let handle = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("conexión del cliente");
+            read_request(&mut stream);
+            respond(stream)
+        });
+        (format!("http://127.0.0.1:{port}/v1/tts/stream"), handle)
+    }
+
+    /// Una entrega correcta en varios fragmentos llega al `sink` en orden y completa.
+    #[test]
+    fn stream_exchange_delivers_chunks_in_order() {
+        let (url, server) = fake_engine(|mut stream| {
+            stream.write_all(STREAM_HEAD).unwrap();
+            stream.write_all(&http_chunk(&[1, 2, 3])).unwrap();
+            stream.write_all(&http_chunk(&[-4, 5])).unwrap();
+            stream
+                .write_all(&http_chunk(&[i16::MAX, i16::MIN]))
+                .unwrap();
+            stream.write_all(b"0\r\n\r\n").unwrap();
+        });
+        let mut calls: Vec<Vec<i16>> = Vec::new();
+        http_stream_exchange(
+            &url,
+            "{}",
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+            &mut |c| {
+                calls.push(c.to_vec());
+                Ok(())
+            },
+        )
+        .expect("entrega correcta");
+        assert_eq!(
+            calls,
+            vec![vec![1, 2, 3], vec![-4, 5], vec![i16::MAX, i16::MIN]]
+        );
+        server.join().unwrap();
+    }
+
+    /// Un fragmento partido entre lecturas (también a mitad de una muestra y de la
+    /// línea de tamaño) se reensambla sin perder ni duplicar muestras.
+    #[test]
+    fn stream_exchange_reassembles_chunks_split_across_reads() {
+        let (url, server) = fake_engine(|mut stream| {
+            let mut all = STREAM_HEAD.to_vec();
+            all.extend(http_chunk(&[10, 20, 30, 40]));
+            all.extend(http_chunk(&[50]));
+            all.extend_from_slice(b"0\r\n\r\n");
+            // Trozos de 3 bytes: parten cabeceras, líneas de tamaño y muestras.
+            for piece in all.chunks(3) {
+                stream.write_all(piece).unwrap();
+                stream.flush().unwrap();
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+        let mut got: Vec<i16> = Vec::new();
+        http_stream_exchange(
+            &url,
+            "{}",
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+            &mut |c| {
+                got.extend_from_slice(c);
+                Ok(())
+            },
+        )
+        .expect("entrega correcta");
+        assert_eq!(got, vec![10, 20, 30, 40, 50]);
+        server.join().unwrap();
+    }
+
+    /// Cerrar la conexión sin el fragmento final es `SynthesisTruncated`, y lo
+    /// recibido antes ya se entregó.
+    #[test]
+    fn stream_exchange_without_final_chunk_is_truncated() {
+        let (url, server) = fake_engine(|mut stream| {
+            stream.write_all(STREAM_HEAD).unwrap();
+            stream.write_all(&http_chunk(&[7, 8])).unwrap();
+        });
+        let mut got: Vec<i16> = Vec::new();
+        let err = http_stream_exchange(
+            &url,
+            "{}",
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+            &mut |c| {
+                got.extend_from_slice(c);
+                Ok(())
+            },
+        )
+        .expect_err("una entrega cortada no es correcta");
+        assert!(
+            err.downcast_ref::<SynthesisTruncated>().is_some(),
+            "el error debe envolver SynthesisTruncated: {err}"
+        );
+        assert_eq!(got, vec![7, 8]);
+        server.join().unwrap();
+    }
+
+    /// Un rechazo del motor incluye su código y el campo `error` del cuerpo.
+    #[test]
+    fn stream_exchange_rejection_carries_the_engine_message() {
+        let (url, server) = fake_engine(|mut stream| {
+            let body = br#"{"error":"unknown language 'Klingon'"}"#;
+            let head = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.write_all(body).unwrap();
+        });
+        let err = http_stream_exchange(
+            &url,
+            "{}",
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+            &mut |_| panic!("un rechazo no entrega audio"),
+        )
+        .expect_err("el estado 400 es un error");
+        let message = err.to_string();
+        assert!(message.contains("400"), "falta el código: {message}");
+        assert!(
+            message.contains("unknown language 'Klingon'"),
+            "falta el mensaje del motor: {message}"
+        );
+        server.join().unwrap();
+    }
+
+    /// Un fragmento con un número impar de bytes no es PCM de 16 bits: error.
+    #[test]
+    fn stream_exchange_rejects_a_chunk_with_odd_byte_count() {
+        let (url, server) = fake_engine(|mut stream| {
+            stream.write_all(STREAM_HEAD).unwrap();
+            stream.write_all(b"3\r\nabc\r\n0\r\n\r\n").unwrap();
+        });
+        let err = http_stream_exchange(
+            &url,
+            "{}",
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+            &mut |_| Ok(()),
+        )
+        .expect_err("un fragmento impar es un error");
+        assert!(
+            err.to_string().contains("impar"),
+            "mensaje inesperado: {err}"
+        );
+        server.join().unwrap();
+    }
+
+    /// Un servidor que acepta la conexión pero nunca responde agota el
+    /// presupuesto inyectado y produce `SynthesisTimeout` con ese presupuesto.
+    #[test]
+    fn stream_exchange_silent_server_yields_synthesis_timeout() {
+        let (url, server) = fake_engine(|_stream| thread::sleep(Duration::from_millis(1500)));
+        let budget = Duration::from_millis(200);
+        let err =
+            http_stream_exchange(&url, "{}", budget, &AtomicBool::new(false), &mut |_| Ok(()))
+                .expect_err("un servidor mudo debe agotar el presupuesto");
+        let timeout = err
+            .downcast_ref::<SynthesisTimeout>()
+            .expect("el error debe envolver SynthesisTimeout");
+        assert_eq!(timeout.budget, budget);
+        server.join().unwrap();
+    }
+
+    /// Un servidor que sigue entregando fragmentos sin terminar nunca deja vencer una
+    /// lectura individual; el plazo total igualmente corta la entrega a mitad.
+    #[test]
+    fn stream_exchange_deadline_cuts_a_delivery_in_progress() {
+        let (url, server) = fake_engine(|mut stream| {
+            stream.write_all(STREAM_HEAD).unwrap();
             for _ in 0..40 {
-                if stream.write_all(b"x").is_err() {
+                if stream.write_all(&http_chunk(&[1, 2])).is_err() {
                     break;
                 }
                 thread::sleep(Duration::from_millis(50));
@@ -3235,54 +3547,36 @@ fn main() {
         });
         let budget = Duration::from_millis(300);
         let started = Instant::now();
-        let err = http_exchange(
-            &format!("http://127.0.0.1:{}/v1/tts", port),
-            "POST",
-            Some("{}"),
-            budget,
-            None,
-            Connection::Work,
-        )
-        .expect_err("el goteo no debe extender el plazo total");
+        let mut delivered = 0usize;
+        let err = http_stream_exchange(&url, "{}", budget, &AtomicBool::new(false), &mut |c| {
+            delivered += c.len();
+            Ok(())
+        })
+        .expect_err("el plazo total debe cortar la entrega");
         let elapsed = started.elapsed();
         assert!(
             err.downcast_ref::<SynthesisTimeout>().is_some(),
-            "el error debe envolver SynthesisTimeout: {}",
-            err
+            "el error debe envolver SynthesisTimeout: {err}"
         );
+        assert!(delivered > 0, "antes del corte ya había llegado audio");
         assert!(
             elapsed < budget + Duration::from_secs(1),
-            "el plazo total debe cortar el goteo: {:?}",
-            elapsed
+            "el plazo total debe cortar la entrega: {elapsed:?}"
         );
-        handle.join().unwrap();
+        server.join().unwrap();
     }
 
-    /// Activar la bandera de cancelación cierra la conexión en pocos periodos
-    /// de sondeo y el servidor observa EOF: es la señal con la que el motor
-    /// aborta la generación. El tiempo se mide desde la activación, no desde
-    /// el inicio del intercambio, para no contar la espera del hilo que la
-    /// activa ni la planificación de hilos de una máquina cargada. El tope,
-    /// diez periodos de sondeo, sigue muy por debajo de los 10 s de plazo del
-    /// intercambio, así que solo se cumple si el corte lo causó la bandera.
+    /// Activar la bandera de cancelación a mitad de la entrega cierra la conexión en
+    /// pocos periodos de sondeo y el servidor observa EOF: es la señal con la que el
+    /// motor aborta la generación. El tiempo se mide desde la activación, no desde el
+    /// inicio del intercambio, para no contar la espera del hilo que la activa; el
+    /// tope, diez periodos de sondeo, sigue muy por debajo de los 10 s de plazo.
     #[test]
-    fn http_exchange_cancel_flag_closes_connection() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("puerto libre");
-        let port = listener.local_addr().unwrap().port();
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("conexión del cliente");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            // Consume la petición completa y espera el cierre del cliente.
-            let mut buf = [0u8; 1024];
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) => return 0,
-                    Ok(_) => continue,
-                    Err(_) => return usize::MAX,
-                }
-            }
+    fn stream_exchange_cancel_flag_closes_connection_mid_delivery() {
+        let (url, server) = fake_engine(|mut stream| {
+            stream.write_all(STREAM_HEAD).unwrap();
+            stream.write_all(&http_chunk(&[1, 2, 3])).unwrap();
+            wait_for_client_close(&mut stream)
         });
         let cancel = Arc::new(AtomicBool::new(false));
         let setter = {
@@ -3294,29 +3588,50 @@ fn main() {
                 activated
             })
         };
-        let err = http_exchange(
-            &format!("http://127.0.0.1:{}/v1/tts", port),
-            "POST",
-            Some("{}"),
-            Duration::from_secs(10),
-            Some(&cancel),
-            Connection::Work,
-        )
-        .expect_err("la bandera debe cancelar el intercambio");
+        let err =
+            http_stream_exchange(
+                &url,
+                "{}",
+                Duration::from_secs(10),
+                &cancel,
+                &mut |_| Ok(()),
+            )
+            .expect_err("la bandera debe cancelar la entrega");
         let ended = Instant::now();
         assert!(
             err.downcast_ref::<SynthesisCancelled>().is_some(),
-            "el error debe envolver SynthesisCancelled: {}",
-            err
+            "el error debe envolver SynthesisCancelled: {err}"
         );
-        let activated = setter.join().unwrap();
-        let elapsed = ended.duration_since(activated);
+        let elapsed = ended.duration_since(setter.join().unwrap());
         assert!(
             elapsed < CANCEL_POLL * 10,
-            "la cancelación debe cerrar pronto tras activar la bandera: {:?}",
-            elapsed
+            "la cancelación debe cerrar pronto tras activar la bandera: {elapsed:?}"
         );
-        assert_eq!(handle.join().unwrap(), 0, "el servidor debe leer EOF");
+        assert!(server.join().unwrap(), "el servidor debe leer EOF");
+    }
+
+    /// Un error del `sink` se propaga tal cual y cierra la conexión, lo que cancela la
+    /// generación en el motor.
+    #[test]
+    fn stream_exchange_sink_error_closes_connection_and_propagates() {
+        let (url, server) = fake_engine(|mut stream| {
+            stream.write_all(STREAM_HEAD).unwrap();
+            stream.write_all(&http_chunk(&[1, 2, 3])).unwrap();
+            wait_for_client_close(&mut stream)
+        });
+        let err = http_stream_exchange(
+            &url,
+            "{}",
+            Duration::from_secs(10),
+            &AtomicBool::new(false),
+            &mut |_| Err(anyhow!("el dispositivo de audio murió")),
+        )
+        .expect_err("el error del sink debe propagarse");
+        assert!(
+            err.to_string().contains("el dispositivo de audio murió"),
+            "mensaje inesperado: {err}"
+        );
+        assert!(server.join().unwrap(), "el servidor debe leer EOF");
     }
 
     /// Ruta de log de prueba bajo el directorio temporal: ninguna prueba toca los
