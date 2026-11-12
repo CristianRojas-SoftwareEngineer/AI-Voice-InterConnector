@@ -220,6 +220,7 @@ help:
 	@echo "  make test-large-quant - Run all 1.7B quantization tests (INT8 + INT4)"
 	@echo "  make test-emotion-ft - Emotion fine-tune (.expr graft) smoke: CSP Italian on 1.7B (preset+clone, seed 42)"
 	@echo "  make test-clone      - Voice clone e2e (generate ref → clone → stream)"
+	@echo "  make test-serve-stream - Servidor: entrega por partes, validaciones 400, reproducibilidad y cancelación"
 	@echo "  make demo-clone      - Voice clone demo (requires REF=<reference.wav>)"
 	@echo "  make test-regression - Cross-model regression checks"
 	@echo "  make test-all        - Run everything (0.6B + 1.7B + regression)"
@@ -865,9 +866,58 @@ test-serve-parallel: $(TARGET)
 	 echo "PASS: 2 parallel requests served"
 	@echo ""
 
+# ── Prueba de la entrega por partes (/v1/tts/stream) ──
+# Arranca el servidor y comprueba, en este orden: (1) la entrega por partes termina bien y deja
+# un PCM no vacío de tamaño par; (2) el mismo audio por /v1/tts y por /v1/tts/stream tiene la
+# misma longitud; (3) la misma petición da el mismo audio aunque otra distinta la preceda;
+# (4) las peticiones inválidas reciben 400 y 'rate' solo se admite fuera de la entrega por partes;
+# (5) cortar la conexión libera el motor. Falla con "FAIL: <caso>" en el primero que no se cumpla.
+
+test-serve-stream: $(TARGET)
+	@echo "=== Server streaming test ==="
+	@mkdir -p $(TEST_DIR)
+	@./$(TARGET) -d $(MODEL_SMALL) --serve 8094 >/dev/null 2>&1 & SERVER_PID=$$!; \
+	 trap 'kill $$SERVER_PID 2>/dev/null' EXIT; \
+	 fail() { echo "FAIL: $$1"; exit 1; }; \
+	 U=http://localhost:8094; H='Content-Type: application/json'; \
+	 A='{"text":"Hello, this is a streaming test.","speaker":"ryan","language":"English","seed":42}'; \
+	 B='{"text":"A different sentence that comes in between.","speaker":"ryan","language":"English","seed":42}'; \
+	 UP=0; for i in $$(seq 1 60); do \
+	   if curl -s $$U/v1/health | grep -q '"ok"'; then UP=1; break; fi; sleep 0.5; \
+	 done; \
+	 [ "$$UP" = 1 ] || fail "server did not start"; \
+	 echo "  1. streaming delivery"; \
+	 curl -sN -X POST $$U/v1/tts/stream -H "$$H" -d "$$A" -o $(TEST_DIR)/stream_a.pcm || fail "streaming delivery"; \
+	 PCM=$$(stat -c%s $(TEST_DIR)/stream_a.pcm); \
+	 [ "$$PCM" -gt 0 ] && [ $$((PCM % 2)) -eq 0 ] || fail "streaming PCM size ($$PCM)"; \
+	 echo "  2. same audio"; \
+	 curl -s -X POST $$U/v1/tts -H "$$H" -d "$$A" -o $(TEST_DIR)/stream_a1.wav; \
+	 WAV=$$(stat -c%s $(TEST_DIR)/stream_a1.wav); \
+	 [ $$((WAV - 44)) -eq "$$PCM" ] || fail "same audio length (wav $$WAV, pcm $$PCM)"; \
+	 echo "  3. reproducibility"; \
+	 curl -s -X POST $$U/v1/tts -H "$$H" -d "$$B" -o $(TEST_DIR)/stream_b.wav; \
+	 curl -s -X POST $$U/v1/tts -H "$$H" -d "$$A" -o $(TEST_DIR)/stream_a2.wav; \
+	 cmp -s $(TEST_DIR)/stream_a1.wav $(TEST_DIR)/stream_a2.wav || fail "reproducibility"; \
+	 echo "  4. validations"; \
+	 code() { curl -s -o /dev/null -w '%{http_code}' -X POST $$U$$1 -H "$$H" -d "$$2"; }; \
+	 [ "$$(code /v1/tts '{"text":"   \n\t "}')" = 400 ] || fail "whitespace-only text"; \
+	 [ "$$(code /v1/tts '{"text":"Hi.","language":"Klingon"}')" = 400 ] || fail "unknown language"; \
+	 [ "$$(code /v1/tts '{"text":"Hi.","speaker":"nadie"}')" = 400 ] || fail "unknown speaker"; \
+	 [ "$$(code /v1/tts '{"text":"Hi.","temperature":5}')" = 400 ] || fail "temperature out of range"; \
+	 [ "$$(code /v1/tts/stream '{"text":"Hi.","speaker":"ryan","rate":1.2}')" = 400 ] || fail "rate on streaming"; \
+	 [ "$$(code /v1/tts '{"text":"Hi.","speaker":"ryan","rate":1.2}')" = 200 ] || fail "rate on /v1/tts"; \
+	 echo "  5. cancellation"; \
+	 LONG=$$(printf 'Esta es una frase larga para probar la cancelacion de la entrega. %.0s' 1 2 3 4 5 6 7 8); \
+	 curl -sN --max-time 1 -X POST $$U/v1/tts/stream -H "$$H" \
+	   -d "{\"text\":\"$$LONG\",\"speaker\":\"ryan\",\"language\":\"Spanish\"}" -o /dev/null; \
+	 curl -s --max-time 5 $$U/v1/health | grep -q '"ok"' || fail "health after cancel"; \
+	 [ "$$(code /v1/tts '{"text":"Hi.","speaker":"ryan"}')" = 200 ] || fail "synthesis after cancel"; \
+	 echo "PASS: streaming server (5 checks)"
+	@echo ""
+
 # ── Combined server tests ──
 
-test-serve-all: test-serve test-serve-bench test-serve-openai test-serve-parallel
+test-serve-all: test-serve test-serve-bench test-serve-openai test-serve-parallel test-serve-stream
 	@echo "=== All server tests passed ==="
 
 # ── RTF Benchmarks ──
@@ -1001,7 +1051,7 @@ demo-clone: $(TARGET)
 	@echo "  Italian:    afplay $(TEST_DIR)/clone_output_it.wav"
 
 .PHONY: all help blas clean debug info serve cp-microbench test-batch test-errors test-emotion test-emotion-ft test-compose test-caps test-selftest test-modes test-qvoice e2e \
-        test-serve test-serve-bench test-serve-openai test-serve-parallel test-serve-all \
+        test-serve test-serve-bench test-serve-openai test-serve-parallel test-serve-stream test-serve-all \
         test-clone test-voice-design \
         demo-clone \
         test-small test-small-en test-small-it test-small-vivian test-small-stream test-small-stdout \

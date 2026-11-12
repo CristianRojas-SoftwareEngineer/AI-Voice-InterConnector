@@ -353,6 +353,8 @@ static int validate_tts_fields(const qwen_tts_ctx_t *ctx, const char *body,
     }
     int only_ws = 1;
     for (const char *p = text; *p; p++) {
+        /* El cuerpo llega sin desescapar: \n, \t y \r escritos como secuencia también son espacio. */
+        if (*p == '\\' && (p[1] == 'n' || p[1] == 't' || p[1] == 'r')) { p++; continue; }
         if (*p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') { only_ws = 0; break; }
     }
     size_t tlen = strlen(text);
