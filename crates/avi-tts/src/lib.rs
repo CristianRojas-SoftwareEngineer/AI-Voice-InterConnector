@@ -85,11 +85,15 @@ fn lock_live(
 /// Frecuencia de muestreo del audio que entrega el motor (PCM mono de 16 bits).
 pub const ENGINE_SAMPLE_RATE: u32 = 24_000;
 
-/// Fotogramas por fragmento que se piden al motor en la entrega en streaming. Un
-/// fotograma son 80 ms de audio. Con 4 el hueco entre el primer fragmento (2 fotogramas)
-/// y el siguiente queda en ~0,12 s, frente a ~0,58 s con 10, a cambio de un 4 % más de
-/// factor de tiempo real (0,70 → 0,72 sin carga).
-const STREAM_CHUNK_FRAMES: u32 = 4;
+/// Tamaño máximo, en fotogramas, de los fragmentos que se piden al motor en la entrega en
+/// streaming. Un fotograma son 80 ms de audio. El motor empieza con un fragmento de 2
+/// fotogramas, sigue con fragmentos de 4 y los hace crecer según un calendario fijo, que
+/// depende solo del número de fragmento, hasta este máximo. Así el hueco tras el primer
+/// fragmento se mantiene pequeño y el decodificador de voz trabaja menos con los
+/// fragmentos grandes: con la frase larga y un hilo de carga de memoria, el factor de
+/// tiempo real mediano por el daemon baja de 0,94 con fragmentos fijos de 4 a 0,86, y el
+/// audio no llega más tarde que con el tamaño fijo de 4.
+const STREAM_CHUNK_FRAMES: u32 = 10;
 
 pub const PRODUCTION_SEED: u64 = 4;
 

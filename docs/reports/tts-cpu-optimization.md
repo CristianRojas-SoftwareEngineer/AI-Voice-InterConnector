@@ -307,6 +307,37 @@ Las cifras de calidad y velocidad corresponden al modelo 0.6B; solo AVX2 se midi
 
 Por el daemon la voz empieza en torno a 1,2–1,5 s, frente a los 18 s de la entrega completa, y no se corta en ninguna de las 20 ejecuciones. Por la ruta directa el primer sonido llega en torno a 3 s porque cada comando arranca su propio motor (≈ 1,6 s). No se midió con el equipo a batería.
 
+### 4.8. El decodificador de voz como cuello de botella en la entrega en streaming
+
+**Análisis.** En la frase larga (450 caracteres, 25,5 s de audio, semilla 4) el prefill tarda 0,77 s (4 %), el Talker 6,7 s (34 %), el Code Predictor 11,8 s (60 %) y el drenaje del decodificador tras la generación 0,2 s; el total es de 19,6 s (RTF 0,77) sin carga y de 24,2 s (RTF 0,95) con un hilo de carga. El hilo del decodificador trabaja en paralelo con la generación y suma 18,6 s (95 % del total): cada fragmento de 4 fotogramas tarda 216–246 ms y la generación entrega 4 fotogramas cada 220–245 ms, así que va justo al ritmo de la generación. Un prototipo que aceleraba el Talker 1,9 s por frase no bajó el total, porque el ahorro se fue al drenaje. Con fragmentos mayores el decodificador hace menos trabajo (16,9–18,7 s con 4 fotogramas, 14,4–15,5 s con 10), pero entregarlos desde el principio retrasa el audio más que el colchón de 300 ms del reproductor (hasta 0,78 s con 10 fotogramas).
+
+**Cambios del motor.** La atención del Talker en el paso de un fotograma recorría las cabezas en serie mientras tres de los cuatro hilos del pool esperaban; ahora las cabezas se reparten entre los hilos del motor con `qwen_parallel` (GCD en macOS, pool de pthreads en Windows y Linux), con el mismo audio byte a byte. El Talker baja de 16,8 a 13,6 ms por fotograma sin carga y de 20,9 a 16,2 con un hilo de carga (medianas por la CLI). El log del residente añade, tras cada síntesis correcta, una línea `[HTTP] Desglose` con el tiempo de cada etapa, los fotogramas, los fragmentos y la cola máxima del decodificador, para diagnosticar el rendimiento de cualquier instalación leyendo su log.
+
+**Calendario de fragmentos crecientes: adoptado con 8 fragmentos por escalón.** Se probó un calendario fijo que depende solo del número de fragmento (primer fragmento de 2 fotogramas; después 4 fotogramas durante N fragmentos, 6 durante otros N, 8 durante otros N y 10 en adelante) con N = 3, 5 y 8, frente al motor anterior con fragmentos de 4. Un barrido con un residente por variante, la frase larga rotando entre ellos, 2 rondas sin carga y 5 con un hilo de carga, se repitió una vez:
+
+| Barrido | Variante | RTF mediano sin carga | RTF mediano con carga | Retraso máximo de llegada (ms) |
+|---|---|---|---|---|
+| 1 | anterior, 4 fotogramas | 0,781 | 0,941 | 272 |
+| 1 | N = 3 | 0,679 | 0,847 | 223 |
+| 1 | N = 5 | 0,679 | 0,839 | 337 |
+| 1 | N = 8 | 0,692 | 0,841 | 252 |
+| 2 | anterior, 4 fotogramas | 0,794 | 0,974 | 441 |
+| 2 | N = 3 | 0,681 | 0,869 | 337 |
+| 2 | N = 5 | 0,689 | 0,856 | 373 |
+| 2 | N = 8 | 0,692 | 0,868 | 201 |
+
+El umbral absoluto de 250 ms de retraso máximo de llegada no sirvió de criterio: el motor anterior, con fragmentos fijos de 4, lo supera (272 y 441 ms, en una sola petición con carga de cada barrido) y aun así el reproductor real no se corta, porque no empieza a sonar con el primer audio sino al reunir 300 ms en cola, de modo que esa medida es conservadora. Se usó como referencia la producción actual: una variante cumple si, en cada barrido, su retraso máximo no supera el del motor anterior en ese mismo barrido. Cumplen N = 3 (223 y 337 ms) y N = 8 (252 y 201 ms); N = 5 no (337 > 272 en el primer barrido). N = 3 y N = 8 quedan a menos de un 1 % en RTF con carga (0,847 / 0,869 frente a 0,841 / 0,868), así que gana el mayor, que además tiene el menor retraso máximo en el peor barrido. El primer audio no depende de N, porque el primer fragmento y los siguientes hasta el fragmento N son los mismos en las tres variantes; sus diferencias entre variantes son ruido de la medición y no se usó para elegir, sino que se verifica en la medición final contra el motor anterior. El audio por streaming con fragmentos de 10 de la larga tiene las mismas muestras que con fragmentos de 4 y un SNR de 98,9 dB frente a él. La mejora de RTF de las variantes (hasta 0,09–0,12 con carga) incluye la de la atención en paralelo, que las variantes llevaban y el motor anterior no.
+
+**Medición final antes y después** (frase «Buenos días…» de 16,7 s por la CLI del motor, frase larga de 25,5 s por el residente y por el daemon; 5 síntesis por versión y nivel por la CLI y el residente, 12 por el daemon; mediana del RTF; «con carga» es un proceso que lee sin parar 512 MB de RAM):
+
+| Ruta | Sin carga (antes → después) | Con un hilo de carga (antes → después) |
+|---|---|---|
+| CLI del motor | 0,710 → 0,700 (−1,4 %) | 0,920 → 0,880 (−4,3 %) |
+| Residente directo | 0,772 → 0,691 (−10,5 %) | 0,934 → 0,872 (−6,6 %) |
+| Daemon | 0,757 → 0,689 (−9,0 %) | 0,937 → 0,855 (−8,7 %) |
+
+Con `chunk_frames` 4 el audio del motor nuevo es idéntico byte a byte al del motor anterior. Por el reproductor real, `speech say` por el daemon tiene `stalls` = 0 en las 40 ejecuciones medidas (10 por versión y nivel) y un `first_audio_ms` mediano de 1218 → 1188 ms sin carga y de 1578 → 1558 ms con carga. El Talker baja de 17,4 a 13,5 ms por fotograma sin carga y de 21,3 a 17,0 con carga; el drenaje del decodificador tras la generación queda en unos 0,4 s por el residente. Una medición intermedia, con solo la atención en paralelo y sin el calendario, dio por el residente y el daemon un RTF prácticamente igual al anterior (daemon 0,773 → 0,758 sin carga y 0,944 → 0,938 con carga): con fragmentos de 4 el decodificador seguía marcando el ritmo, y es el calendario el que reparte esa ganancia.
+
 ---
 
 ## 5. Arquitectura de integración en el producto

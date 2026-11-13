@@ -186,7 +186,7 @@ El `--json` global emite JSONL, una línea por evento, y conserva progreso y res
                      │
                      ▼
 4. Residente HTTP en loopback (puerto efímero anotado en `daemon.pid`), único camino de síntesis:
-   `POST /v1/tts/stream` con fragmentos de 4 fotogramas (entrega en streaming)
+   `POST /v1/tts/stream` con fragmentos de hasta 10 fotogramas, que el motor hace crecer desde 2 y 4 fotogramas según un calendario fijo (entrega en streaming)
                      │
                      ▼
 5. Fragmentos PCM → StreamPlayer (cpal), que suena con 300 ms de colchón, y/o
