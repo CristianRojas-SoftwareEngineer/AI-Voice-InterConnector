@@ -373,10 +373,10 @@ typedef struct {
                                 * are still all-zero, prepending them is identical
                                 * to the causal zero-pad conv1d already does, so we
                                 * skip that work (it cost ~8% TTFA on N1). */
-    int    cs_tile;            /* 1 mientras el decodificador corre en paralelo con una
-                                * generación en marcha: solo entonces las unidades
+    int    cs_tile;            /* 1 en toda la petición cuando el hilo del decodificador
+                                * corre en paralelo con la generación: las unidades
                                 * residuales finales se procesan por tramos (ver
-                                * cs_res_tiled). 0 por defecto y al drenar. */
+                                * cs_res_tiled). 0 por defecto (ruta por lotes). */
 
     /* Tracking */
     int frames_decoded;    /* total codec frames processed */

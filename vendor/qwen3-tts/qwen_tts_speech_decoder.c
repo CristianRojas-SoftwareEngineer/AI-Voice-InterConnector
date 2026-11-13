@@ -1407,11 +1407,13 @@ static int cs_ensure_alloc(qwen_sd_stream_state_t *st) {
  * últimas etapas, con la señal más larga, concentran el tráfico.
  * Aun calculando solo las columnas válidas (ver cs_conv1d), cada tramo copia su
  * entrada, su cola y su salida, y relee las columnas de cola, así que los tramos
- * añaden trabajo al decodificador y solo compensan mientras otra generación
- * compite por la memoria: se usan únicamente con st->cs_tile activo, que el hilo del
- * decodificador fija mientras la generación sigue en marcha. Al drenar los
- * fotogramas finales, en la decodificación sin paralelismo y en la ruta por
- * lotes, el bloque residual se calcula entero.
+ * añaden trabajo al decodificador y solo compensan cuando otra generación compite
+ * por la memoria: se usan únicamente con st->cs_tile activo, que el hilo del
+ * decodificador fija para toda la petición, porque casi toda su decodificación
+ * corre junto a la generación. No se desactivan al drenar los fotogramas finales:
+ * el resultado difiere en sus últimos bits con y sin tramos, y desactivarlos en
+ * ese momento haría depender el audio de qué fragmentos caen tras el final de la
+ * generación. En la ruta por lotes el bloque residual se calcula entero.
  * Las colas con estado de cada convolución dilatada (cs_res_tail) encadenan los
  * tramos igual que encadenan los fragmentos del flujo: la cola avanza tramo a
  * tramo, y solo el primer tramo del primer fragmento arranca sin contexto.

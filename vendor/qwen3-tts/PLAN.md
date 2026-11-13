@@ -468,10 +468,14 @@ PASSED. Closed the worst gaps:
   -O0 vs -O3 outputs and called the difference "drift"; (2) **my own runaway busy-loops + leftover
   processes** saturating the 4-core box during other measurements. Lesson (again): verify the binary
   + a quiet machine before trusting an A/B; `make debug` then `make blas` needs a `make clean` between
-  (timestamp trap). The QWEN_NO_OVERLAP knob (added during the hunt) is harmless + kept as a
-  decode-overlap diagnostic. **NOTE for product:** at DEFAULT (multi-thread, temp>0) output is
-  legitimately "similar not identical" (FP reduction-order across threads + sampling) — that's why the
-  golden test uses mel-corr, and that benign variation is expected, not a bug.
+  (timestamp trap).
+- [x] **Multi-thread output with a fixed seed is now reproducible.** With several threads the same
+  request gave different audio, which was attributed to FP reduction order. That was wrong: the
+  decoder thread's result depended on its timing against generation (how many frames it took per
+  chunk, whether it used tiles, and BLAS threads changed at drain). The decoder now takes at most the
+  chunk size, tiles the whole request and keeps one BLAS thread count until it ends, so the same
+  request gives the same audio byte for byte, on both routes. The `QWEN_NO_OVERLAP` diagnostic was
+  removed. Cross-ISA comparisons still use mel-corr: there the FP order does differ legitimately.
 - ~~`-j1 --temperature 0` intermittently non-deterministic / likely UB~~ — **WRONG, fully retracted**
   (see the RESOLVED entry above). It was binary-mixing (ASan-O0 vs -O3) + my runaway processes, not an
   engine bug. Kept here only as a record of the false trail so it isn't re-opened.

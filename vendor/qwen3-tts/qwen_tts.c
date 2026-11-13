@@ -481,8 +481,16 @@ static void *decoder_thread_fn(void *arg) {
 
     /* ctx->sd_stream is initialized by main thread before launching us.
      * We are the sole user of sd_stream during generation — main thread
-     * only touches Talker/CP state, never speech decoder state. */
-    int drain_wide = 0;  /* 1 cuando el drenaje ya recuperó todos los hilos de BLAS */
+     * only touches Talker/CP state, never speech decoder state.
+     *
+     * El audio depende solo de la petición, no de la temporización entre este hilo y
+     * la generación: cada fragmento decodificado cambia el resultado en sus últimos
+     * bits según cómo se reparten los fotogramas, si se procesa por tramos y con
+     * cuántos hilos calcula BLAS. Por eso las tres cosas se fijan sin mirar cuánto se
+     * adelantó la generación: los fragmentos tienen siempre `target` fotogramas (salvo
+     * el último), los tramos se usan en toda la petición y BLAS conserva el número de
+     * hilos que le asignó la generación hasta que este hilo termina. */
+    ctx->sd_stream.cs_tile = 1;
 
     for (;;) {
         int avail, is_done;
@@ -498,6 +506,9 @@ static void *decoder_thread_fn(void *arg) {
             pthread_cond_wait(&dt->cond, &dt->mutex);
         avail = dt->write_pos - dt->read_pos;
         is_done = dt->done;
+        /* Si la generación se adelantó, lo que sobra de `target` queda para el
+         * siguiente fragmento: tomarlo todo haría depender el reparto del ritmo. */
+        if (avail > target) avail = target;
         pthread_mutex_unlock(&dt->mutex);
 
         if (avail <= 0 && is_done) break;
@@ -515,18 +526,6 @@ static void *decoder_thread_fn(void *arg) {
 
         if (dt->cb_aborted) { dt->read_pos += avail; continue; }
 
-        /* Al drenar, el decodificador usa lo que libera la generación. Los tramos solo
-         * compensan mientras la generación sigue en marcha y compite por la memoria,
-         * así que al drenar (o sin paralelismo, cuando este bucle corre tras terminar
-         * la generación) se decodifica sin tramos. Y la generación cedió a BLAS un
-         * hilo menos que -j para dejar un núcleo a su pool; terminada, el decodificador
-         * es el único usuario de BLAS y recupera todos los hilos. Lo hace este mismo
-         * hilo, entre dos llamadas propias, para no cambiarlos con una en curso. */
-        ctx->sd_stream.cs_tile = !is_done;
-        if (is_done && !drain_wide) {
-            qwen_blas_set_threads(qwen_get_threads());
-            drain_wide = 1;
-        }
         if (qwen_speech_decoder_decode_streaming(ctx, chunk_codes, avail,
                                                    &chunk_audio, &chunk_samples) == 0) {
             if (chunk_samples > 0 && chunk_audio) {
@@ -1511,12 +1510,6 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
      * In normal mode, it accumulates audio to a buffer. */
     decoder_thread_t dt_state;
     pthread_t dt_thread;
-    /* DIAGNOSTIC: QWEN_NO_OVERLAP=1 runs the speech decoder SYNCHRONOUSLY (no overlap
-     * pthread) — used to test whether the decoder thread is the source of the intermittent
-     * -j1 temp0 non-determinism. With it set, the thread is never spawned; frames buffer
-     * into dt->codes during generation and are drained by a single synchronous
-     * decoder_thread_fn() call at the end (done=1 → it processes all and returns). */
-    int dt_no_overlap = (getenv("QWEN_NO_OVERLAP") != NULL);
     qwen_sd_stream_init(&ctx->sd_stream);
     dt_init(&dt_state, ctx, max_frames);
     if (ctx->stream && ctx->audio_cb) {
@@ -1533,26 +1526,26 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
         if (e) trim_frames = atoi(e);
         if (trim_frames > 0) dt_state.trim_head_left = trim_frames * 1920;
     }
-    if (!dt_no_overlap) {
-        pthread_create(&dt_thread, NULL, decoder_thread_fn, &dt_state);
-        /* From here the decoder thread is the BLAS user, and it runs alongside
-         * our matvec pool. Prefill (above) had BLAS to itself and kept all -j
-         * threads; hand one back now. Measured on 4-core Neoverse-N1 (0.6B
-         * --int4 -j4): BLAS at 3 gives RTF 1.47 stream / 1.51 file against 1.54
-         * / 1.59 at 4, with TTFA untouched because prefill still ran wide.
-         * Dropping to 1 is a disaster (RTF 2.14): the decoder becomes the
-         * bottleneck. A strict `ours + BLAS == cores` split is wrong -- mild
-         * oversubscription wins, because our pool has serial stretches in which
-         * the cores must be free to go to the decoder. */
-        int nt = qwen_get_threads();
-        /* El óptimo de OPENBLAS por modo en N1 difiere (archivo=2, stream=3 con 4 vCPU):
-         * QWEN_BLAS_GEN_THREADS reemplaza el valor por defecto de la fase de generación
-         * para que la máquina pueda barrerlo sin recompilar. No hace nada en Accelerate. */
-        int gen_blas = nt > 1 ? nt - 1 : 1;
-        { const char *e = getenv("QWEN_BLAS_GEN_THREADS");
-          if (e && atoi(e) > 0) gen_blas = atoi(e); }
-        qwen_blas_set_threads(gen_blas);
-    }
+    /* El decodificador es el usuario de BLAS desde aquí hasta que termina, y corre junto
+     * al pool de matvec de la generación. El prefill (arriba) tuvo BLAS para sí con
+     * todos los hilos de -j; ahora se devuelve uno. Medido en Neoverse-N1 de 4 núcleos
+     * (0.6B --int4 -j4): BLAS con 3 da RTF 1.47 en streaming / 1.51 en archivo frente a
+     * 1.54 / 1.59 con 4, sin tocar el TTFA porque el prefill sigue usando todos. Con 1 el
+     * decodificador se vuelve el cuello de botella (RTF 2.14). Un reparto estricto
+     * `nuestros + BLAS == núcleos` es peor: algo de sobresuscripción gana, porque el pool
+     * tiene tramos en serie en los que los núcleos deben quedar libres para el
+     * decodificador. El número se fija antes de lanzar el hilo y no cambia hasta que
+     * termina: el resultado de BLAS depende del número de hilos, y cambiarlo a mitad
+     * haría depender el audio de qué fragmento cae después del cambio. */
+    int nt = qwen_get_threads();
+    /* El óptimo de OPENBLAS por modo en N1 difiere (archivo=2, stream=3 con 4 vCPU):
+     * QWEN_BLAS_GEN_THREADS reemplaza el valor por defecto de la fase de generación
+     * para que la máquina pueda barrerlo sin recompilar. No hace nada en Accelerate. */
+    int gen_blas = nt > 1 ? nt - 1 : 1;
+    { const char *e = getenv("QWEN_BLAS_GEN_THREADS");
+      if (e && atoi(e) > 0) gen_blas = atoi(e); }
+    qwen_blas_set_threads(gen_blas);
+    pthread_create(&dt_thread, NULL, decoder_thread_fn, &dt_state);
 
     for (int frame = 0; frame < max_frames; frame++) {
         /* Cancelación pedida por el llamante: el decodificador descarta lo pendiente
@@ -1564,7 +1557,7 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
             if (tf_codes) { free(tf_codes); ctx->tf_ref_codes = NULL; }
             if (code0_fp) fclose(code0_fp);
             dt_finish(&dt_state);
-            if (dt_no_overlap) decoder_thread_fn(&dt_state); else pthread_join(dt_thread, NULL);
+            pthread_join(dt_thread, NULL);
             qwen_blas_set_threads(qwen_get_threads());
             qwen_sd_stream_free(&ctx->sd_stream); dt_free(&dt_state);
             return -1;
@@ -1730,7 +1723,7 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
              * leaves a live thread reading freed stack memory (UAF) and leaks dt_state buffers.
              * Mirror the normal-exit cleanup (cf. the codec_frames==0 path below). */
             dt_finish(&dt_state);
-            if (dt_no_overlap) decoder_thread_fn(&dt_state); else pthread_join(dt_thread, NULL);
+            pthread_join(dt_thread, NULL);
             qwen_blas_set_threads(qwen_get_threads());   /* decoder gone: BLAS may spread again */
             qwen_sd_stream_free(&ctx->sd_stream); dt_free(&dt_state);
             return -1;
@@ -1764,7 +1757,7 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
     /* Speech decoder */
     if (ctx->codec_frames == 0) {
         dt_finish(&dt_state);
-        if (dt_no_overlap) decoder_thread_fn(&dt_state); else pthread_join(dt_thread, NULL);
+        pthread_join(dt_thread, NULL);
         qwen_blas_set_threads(qwen_get_threads());
         qwen_sd_stream_free(&ctx->sd_stream); dt_free(&dt_state);
         *out_samples = NULL; *out_n_samples = 0;
@@ -1776,7 +1769,7 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
     double t_dec_start = time_ms();
 
     dt_finish(&dt_state);
-    if (dt_no_overlap) decoder_thread_fn(&dt_state); else pthread_join(dt_thread, NULL);
+    pthread_join(dt_thread, NULL);
     qwen_blas_set_threads(qwen_get_threads());
     qwen_sd_stream_free(&ctx->sd_stream);
 
