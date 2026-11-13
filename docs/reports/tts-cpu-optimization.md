@@ -247,7 +247,7 @@ Las frases con errores de transcripción son las mismas en todas las condiciones
 - **FFN del Code Predictor en Q4_0** (`QWEN_CP_PREC=mixed`, fijado por `--quant-mixed`): atención y cabezas de salida en INT8, `gate_up` y `down` en Q4_0. El Code Predictor cuantizado pasa de ~47 MB a ~26 MB.
 - **PREFILL2 con cualquier Code Predictor cuantizado**, eligiendo el kernel matmat por matriz.
 - **Anticipación de lecturas en los kernels INT8** de AVX2 y SDOT, 5120 bytes por delante en las dos filas que se procesan a la vez, sin cambio numérico.
-- **Decodificador por tramos de 256 KB** en las unidades residuales de `up2` y `up3`, solo mientras la generación sigue en marcha. Al drenar los fotogramas finales se decodifica sin tramos y con todos los hilos de BLAS, y cada convolución con contexto calcula solo sus columnas nuevas; sin esas dos medidas, los tramos alargaban el drenaje final de ~200 a ~350 ms por frase.
+- **Decodificador por tramos de 256 KB** en las unidades residuales de `up2` y `up3`, en toda la petición, y cada convolución con contexto calcula solo sus columnas nuevas. Los tramos se mantienen al drenar los fotogramas finales y BLAS conserva el mismo número de hilos hasta el final: cambiar cualquiera de los dos al terminar la generación haría depender el audio de la temporización entre hilos.
 
 **Procedimiento de validación.**
 - **Velocidad:** pares alternados en orden ABBA frente al motor anterior, con el texto largo y el perfil de producción, sin carga y con 1 y 2 hilos que leen 512 MB de RAM de forma continua (carga de memoria sintética); 5 pares por nivel, y en el daemon tres frases en 3 rondas alternadas. Las mediciones se hicieron con el equipo enchufado y sin aplicaciones de red de fondo, que ralentizaban por igual a ambos motores.

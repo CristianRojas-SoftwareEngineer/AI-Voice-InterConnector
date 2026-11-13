@@ -314,6 +314,17 @@ fn vendor_binary() -> PathBuf {
     })
 }
 
+/// Candado de las pruebas que usan el motor real. Todas comparten un único
+/// residente (`clone_state`), que se relanza al cambiar de voz y atiende una
+/// síntesis cada vez: ejecutadas en paralelo, una prueba corta la entrega de
+/// otra o altera su audio. El candado las serializa; la prueba lo conserva
+/// hasta que termina.
+static ENGINE_EXCLUSIVE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn engine_exclusive() -> tokio::sync::MutexGuard<'static, ()> {
+    ENGINE_EXCLUSIVE.lock().await
+}
+
 /// Exige el binario del motor, salvo que `QWEN3_TTS_BIN` ya apunte a otro. Lo
 /// construye `cargo xtask build-engine`.
 fn require_clone_binary() {
@@ -790,6 +801,7 @@ fn minimal_wav() -> Vec<u8> {
 #[ignore = "requiere el modelo Base de clonado y el binario del motor"]
 async fn voices_clone_daemon_precomputed_true() {
     require_base_model();
+    let _engine = engine_exclusive().await;
     require_clone_binary();
     let wav = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../avi-stt/tests/assets/parakeet_sample_16k.wav");
@@ -1404,6 +1416,7 @@ async fn voices_clone_non_boolean_force_returns_usage_error() {
 #[ignore = "requiere Parakeet, DPDFNet y el binario del motor Qwen3-TTS"]
 async fn dub_control_and_denoise_deliver_audio_events() {
     let _registry = lock_registry().await;
+    let _engine = engine_exclusive().await;
     require_clone_binary();
     let state = resource_state();
     let input =
@@ -1504,6 +1517,7 @@ fn delivered_pcm(events: &[Value]) -> Vec<u8> {
 #[tokio::test]
 #[ignore = "requiere el binario del motor y el modelo CustomVoice"]
 async fn synthesize_preset_delivers_audio_events() {
+    let _engine = engine_exclusive().await;
     require_clone_binary();
     require_custom_voice_model();
     let (status, bytes) = send_to(
@@ -1527,12 +1541,8 @@ async fn synthesize_preset_delivers_audio_events() {
     assert!(result.get("t3_time").is_none());
     assert!(result.get("s3gen_time").is_none());
 
-    // El seed enviado gobierna la toma: mismo seed, mismo audio; otro seed, otro audio.
-    // Un único residente para las tres tomas, calentado con una petición previa. El
-    // motor con varios hilos (`-j 4`) puede producir, de forma intermitente, un audio
-    // distinto para la misma petición (variación ajena al seed y anterior a la entrega
-    // en streaming), así que la igualdad de las tomas con el mismo seed no está
-    // garantizada al 100 %.
+    // El seed enviado gobierna la toma: mismo seed, mismo audio, byte a byte, aunque
+    // entre las dos tomas iguales se intercale otra; otro seed, otro audio.
     let seed_state = clone_state();
     let with_seed = |seed: u64| {
         let state = seed_state.clone();
@@ -1553,10 +1563,9 @@ async fn synthesize_preset_delivers_audio_events() {
             delivered_pcm(&ndjson_events(&bytes))
         }
     };
-    let _warmup = with_seed(10).await;
     let a = with_seed(11).await;
-    let b = with_seed(11).await;
     let c = with_seed(12).await;
+    let b = with_seed(11).await;
     assert_eq!(a, b, "el mismo seed debe dar el mismo audio");
     assert_ne!(a, c, "otro seed debe dar otro audio");
 }
@@ -1569,6 +1578,7 @@ async fn synthesize_preset_delivers_audio_events() {
 #[tokio::test]
 #[ignore = "requiere el binario del motor, todos los modelos provisionados y CT2"]
 async fn synthesize_announces_translation_and_matches_the_direct_route() {
+    let _engine = engine_exclusive().await;
     require_clone_binary();
     require_custom_voice_model();
     prepare_shared_env();
@@ -1628,6 +1638,7 @@ async fn synthesize_announces_translation_and_matches_the_direct_route() {
 #[tokio::test]
 #[ignore = "requiere el binario del motor y el modelo CustomVoice"]
 async fn synthesize_preset_in_each_language_delivers_audio() {
+    let _engine = engine_exclusive().await;
     require_clone_binary();
     require_custom_voice_model();
     for (token, text) in [
@@ -1699,6 +1710,7 @@ async fn disconnect_cancels_synthesis(state: Arc<DaemonState>, response: axum::r
 #[tokio::test]
 #[ignore = "requiere el binario del motor y el modelo CustomVoice"]
 async fn synthesize_disconnect_cancels_the_engine_work() {
+    let _engine = engine_exclusive().await;
     require_clone_binary();
     require_custom_voice_model();
     let state = clone_state();
@@ -1723,6 +1735,7 @@ async fn synthesize_disconnect_cancels_the_engine_work() {
 #[ignore = "requiere Parakeet, el binario del motor y el modelo CustomVoice"]
 async fn dub_disconnect_cancels_the_engine_work() {
     let state = resource_state();
+    let _engine = engine_exclusive().await;
     require_clone_binary();
     require_custom_voice_model();
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
