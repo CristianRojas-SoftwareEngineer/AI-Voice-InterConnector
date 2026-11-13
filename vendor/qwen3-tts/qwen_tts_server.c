@@ -303,6 +303,10 @@ static void handle_speakers(int fd) {
     send_json(fd, 200, json);
 }
 
+/* Tamaño de fragmento del decodificador cuando la petición no lo fija: el máximo por
+ * defecto de /v1/tts/stream y el tamaño constante de /v1/tts. */
+#define DEFAULT_CHUNK_FRAMES 10
+
 /* Reset per-request context to clean defaults (prevents state leaking between requests) */
 static void reset_request_state(qwen_tts_ctx_t *ctx) {
     /* Reset speaker and language.
@@ -319,6 +323,11 @@ static void reset_request_state(qwen_tts_ctx_t *ctx) {
     ctx->top_k = 50;
     ctx->top_p = 1.0f;
     ctx->rep_penalty = 1.05f;
+
+    /* El tamaño de fragmento de una petición en streaming no debe pasar a la siguiente:
+     * el decodificador da resultados distintos en sus últimos bits según el tamaño, así
+     * que /v1/tts devolvía un audio distinto según el `chunk_frames` de la petición anterior. */
+    ctx->stream_chunk_frames = DEFAULT_CHUNK_FRAMES;
 
     /* Reset transient flags */
     ctx->voice_design = 0;
@@ -503,6 +512,16 @@ static double server_time_ms(void) {
     return tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
 }
 
+/* Imprime el desglose por etapas de la petición recién servida (lo acumuló
+ * qwen_tts_generate en ctx->timing). Sin fotogramas no hay nada que desglosar. */
+static void log_timing_breakdown(const qwen_tts_timing_t *t) {
+    if (t->frames <= 0) return;
+    fprintf(stderr, "[HTTP] Desglose: prefill %.0f ms, Talker %.0f ms (%.1f ms/f), CP %.0f ms (%.1f ms/f), "
+            "decodificador %.0f ms, drenaje %.0f ms, %d fotogramas en %d fragmentos, cola máxima %d fotogramas\n",
+            t->prefill_ms, t->talker_ms, t->talker_ms / t->frames, t->cp_ms, t->cp_ms / t->frames,
+            t->decoder_ms, t->drain_ms, t->frames, t->chunks, t->max_backlog_frames);
+}
+
 static void handle_tts(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     float volume = 1.0f, rate = 1.0f;
     char err[160];
@@ -532,6 +551,7 @@ static void handle_tts(qwen_tts_ctx_t *ctx, int fd, const char *body) {
      * fotograma: el servidor atiende una conexión a la vez y no debe quedarse
      * ocupado con un trabajo que nadie espera. */
     qwen_tts_set_abort_callback(ctx, client_disconnected, &fd);
+    memset(&ctx->timing, 0, sizeof ctx->timing);
 
     /* Per-sentence dynamic emotion: if the text carries inline markup ([joy]…[sad]…, [pause],
      * fillers), synthesize span-by-span with each span's own emotion and concatenate — same
@@ -587,6 +607,7 @@ static void handle_tts(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     float audio_secs = (float)n_samples / QWEN_TTS_SAMPLE_RATE;
     fprintf(stderr, "[HTTP] Sent %d bytes WAV (%.2fs audio) in %.1fs (RTF %.2f)\n",
             wav_size, audio_secs, elapsed / 1000.0, (elapsed / 1000.0) / audio_secs);
+    log_timing_breakdown(&ctx->timing);
 }
 
 static void handle_tts_stream(qwen_tts_ctx_t *ctx, int fd, const char *body) {
@@ -617,13 +638,13 @@ static void handle_tts_stream(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     /* Set up streaming (emotion steering is already set on ctx; volume applied per chunk) */
     stream_http_state_t state = { .fd = fd, .total_samples = 0, .volume = volume };
     ctx->stream = 1;
-    /* Per-request chunk size (idea from PR #17). The default stays 10 frames
-     * (0.8s): with the exact stateful conv decoder a chunk boundary no longer
-     * costs a context re-decode, so a bigger chunk buys throughput only by
-     * amortizing BLAS/dispatch — while coarsening mid-stream latency. Clients
-     * that want throughput over smoothness can raise it. TTFA is set by the
-     * 2-frame first chunk either way. */
-    int chunk_frames = (int)json_extract_number(body, "chunk_frames", 10);
+    /* Tamaño MÁXIMO de fragmento por petición (idea de PR #17); por defecto 10
+     * fotogramas (0,8 s). El primer fragmento tiene 2 fotogramas y los siguientes
+     * crecen según el calendario fijo del decodificador (4, 6, 8…) hasta este máximo:
+     * un fragmento mayor ahorra trabajo al decodificador (amortiza BLAS y el envío)
+     * a costa de entregar el audio a trompicones más gruesos. El primer audio lo fija
+     * el primer fragmento de 2 fotogramas. */
+    int chunk_frames = (int)json_extract_number(body, "chunk_frames", DEFAULT_CHUNK_FRAMES);
     if (chunk_frames < 2)   chunk_frames = 2;
     if (chunk_frames > 250) chunk_frames = 250;
     ctx->stream_chunk_frames = chunk_frames;
@@ -632,6 +653,7 @@ static void handle_tts_stream(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     /* La desconexión del cliente se comprueba en cada fotograma, igual que en la entrega
      * completa: así la generación se cancela sin esperar a que falle un envío. */
     qwen_tts_set_abort_callback(ctx, client_disconnected, &fd);
+    memset(&ctx->timing, 0, sizeof ctx->timing);
 
     /* Send chunked response header */
     send_chunked_header(fd);
@@ -683,6 +705,7 @@ static void handle_tts_stream(qwen_tts_ctx_t *ctx, int fd, const char *body) {
     float audio_secs = (float)state.total_samples / QWEN_TTS_SAMPLE_RATE;
     fprintf(stderr, "[HTTP] Streamed %d samples (%.2fs audio) in %.1fs (RTF %.2f)\n",
             state.total_samples, audio_secs, elapsed / 1000.0, (elapsed / 1000.0) / audio_secs);
+    log_timing_breakdown(&ctx->timing);
 }
 
 /* ── Per-connection handling ─────────────────────────────────────────────

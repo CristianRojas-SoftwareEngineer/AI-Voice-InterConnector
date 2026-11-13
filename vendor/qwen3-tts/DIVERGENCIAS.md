@@ -255,7 +255,7 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 ### Decodificación independiente de la temporización
 
 - **Archivos**: `qwen_tts.c` (`decoder_thread_fn`, `qwen_tts_generate`), `qwen_tts_speech_decoder.c` (comentario de `cs_res_tiled`), `qwen_tts.h` (`cs_tile`).
-- **Qué cambia**: el hilo del decodificador toma como mucho el tamaño de fragmento vigente (2 fotogramas el primero en streaming, después `chunk_frames`) aunque la generación se haya adelantado; usa tramos en toda la petición; y BLAS conserva hasta el final el número de hilos que se le asignó al lanzar el hilo (uno menos que `-j`), sin recuperar todos al drenar. Desaparece la variable de diagnóstico `QWEN_NO_OVERLAP`, que decodificaba sin el hilo, al final de la generación.
+- **Qué cambia**: el hilo del decodificador toma como mucho el tamaño de fragmento vigente (2 fotogramas el primero en streaming, después el que fija el calendario de fragmentos crecientes, hasta `chunk_frames`) aunque la generación se haya adelantado; usa tramos en toda la petición; y BLAS conserva hasta el final el número de hilos que se le asignó al lanzar el hilo (uno menos que `-j`), sin recuperar todos al drenar. Desaparece la variable de diagnóstico `QWEN_NO_OVERLAP`, que decodificaba sin el hilo, al final de la generación.
 - **Por qué**: el decodificador por fragmentos da resultados que difieren en sus últimos bits según cómo se reparten los fotogramas, si usa tramos y con cuántos hilos calcula BLAS, y las tres cosas dependían de cuánto se había adelantado la generación. La misma petición daba así audios distintos con la voz clonada por la ruta del producto (6 tomas con 6 audios distintos, con semilla fija y una petición distinta intercalada); con el cambio, las 6 tomas son idénticas, también con un hilo de carga de memoria, y el RTF no empeora (0,77–0,84 frente a 0,83–0,85 sin carga; 1,00–1,01 frente a 1,01–1,21 con carga). La variable solo servía para investigar esa irreproducibilidad.
 - **Si se pierde**: la misma petición vuelve a dar audios distintos según la temporización entre la generación y el decodificador.
 
@@ -279,6 +279,34 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Qué cambia**: el objetivo arranca el servidor y comprueba la entrega por partes, que el mismo audio sale por `/v1/tts` y `/v1/tts/stream`, la reproducibilidad por las dos rutas (en tres rondas por `/v1/tts/stream`), las validaciones 400 y la cancelación; forma parte de `test-serve-all`.
 - **Por qué**: ninguna prueba automática cubría la entrega por partes ni las validaciones.
 - **Si se pierde**: una regresión en esos comportamientos pasa inadvertida.
+
+### Desglose por etapas en el log del servidor
+
+- **Archivos**: `qwen_tts.h` (`qwen_tts_timing_t` y el campo `timing` de `qwen_tts_ctx_t`), `qwen_tts.c` (`decoder_thread_t`, `decoder_thread_fn`, `qwen_tts_generate`), `qwen_tts_server.c` (`handle_tts`, `handle_tts_stream`, `log_timing_breakdown`).
+- **Qué cambia**: `qwen_tts_generate` acumula en `ctx->timing` el prefill, el Talker, el Code Predictor, el trabajo del hilo del decodificador, el drenaje tras la generación, los fotogramas, los fragmentos y el máximo de fotogramas pendientes que el decodificador encontró al empezar un fragmento. El servidor pone el campo a cero antes de generar y, tras una síntesis correcta, imprime una línea `[HTTP] Desglose: …` justo después de `[HTTP] Sent …` o `[HTTP] Streamed …`, que no cambian. Sin efecto en el audio.
+- **Por qué**: el log solo traía el RTF de cada petición, y saber dónde se iba el tiempo exigía compilar copias instrumentadas del motor. Con el desglose, el rendimiento de cualquier instalación se diagnostica leyendo su log.
+- **Si se pierde**: vuelve a hacer falta instrumentar el motor para ver qué etapa limita el rendimiento.
+
+### Atención del Talker repartida por cabezas
+
+- **Archivos**: `qwen_tts_kernels.c` (`attention_bf16kv_heads`, `qwen_causal_attention_bf16kv`, `qwen_causal_attention_bf16kv_heads_parallel`), `qwen_tts_kernels.h`, `qwen_tts_talker.c` (paso de decodificación, `qwen_talker_step`).
+- **Qué cambia**: el cuerpo de `qwen_causal_attention_bf16kv` pasa a una función estática que recibe el rango de cabezas. Una versión nueva, `qwen_causal_attention_bf16kv_heads_parallel`, reparte las cabezas en tramos contiguos entre los hilos del motor con `qwen_parallel` cuando `seq_q` es 1, `seq_k` es al menos 48 y hay más de un hilo; en otro caso llama a la versión en serie. Solo el paso de un fotograma del Talker usa la versión paralela; el Code Predictor y las rutas por lotes siguen con la serie.
+- **Por qué**: en el paso de un fotograma, la atención recorría las cabezas en serie mientras los otros hilos del pool esperaban, y su coste crece con la longitud de la frase (de 4,6 a 15 ms por fotograma a lo largo de una frase de 26 s). Cada cabeza hace las mismas operaciones en el mismo orden, así que el audio es idéntico bit a bit. Es igual en los tres sistemas porque `qwen_parallel` es GCD en macOS y el pool de pthreads en Windows y Linux, y la llamada se hace solo desde el hilo de la generación, nunca anidada ni desde el hilo del decodificador.
+- **Si se pierde**: el Talker vuelve a gastar tres de cada cuatro hilos en espera durante la atención y el paso de un fotograma tarda más en frases largas.
+
+### Calendario fijo de fragmentos crecientes en streaming
+
+- **Archivos**: `qwen_tts.c` (`decoder_thread_fn`, `decoder_thread_t`, constantes `STREAM_RAMP_*`), `qwen_tts_server.c` (comentario de `chunk_frames` en `handle_tts_stream`), `main.c` (ayuda de `--stream-chunk`).
+- **Qué cambia**: en streaming, tras el primer fragmento de 2 fotogramas, el tamaño de cada fragmento es `min(chunk_frames, 4 + 2 × (k / 8))`, con `k` el número de fragmentos ya decodificados fuera del primero (4 fotogramas durante 8 fragmentos, 6 durante 8, 8 durante 8 y 10 en adelante con `chunk_frames` 10). `chunk_frames` pasa a ser el tamaño máximo. Con `chunk_frames` menor o igual que 4 los tamaños son los mismos que antes. Fuera del streaming el tamaño sigue siendo constante. El tamaño depende solo del número de fragmento, no del ritmo de la generación.
+- **Por qué**: el decodificador de voz iba justo al ritmo de la generación (95 % del tiempo total) y hace menos trabajo con fragmentos grandes, pero entregarlos desde el principio retrasa el audio más que el colchón del reproductor. Con el calendario, el RTF mediano de la frase larga con un hilo de carga baja de 0,94–0,97 a 0,84–0,87 (incluye la atención en paralelo) sin que el retraso máximo de llegada supere el del tamaño fijo de 4. El valor 8 sale de una selección entre 3, 5 y 8.
+- **Si se pierde**: el decodificador vuelve a limitar el ritmo con fragmentos de 4 fotogramas y el RTF con carga sube.
+
+### El tamaño de fragmento no pasa de una petición a la siguiente
+
+- **Archivos**: `qwen_tts_server.c` (`reset_request_state`, `DEFAULT_CHUNK_FRAMES`, `handle_tts_stream`).
+- **Qué cambia**: `reset_request_state` devuelve `stream_chunk_frames` a 10 en cada petición, así que `/v1/tts` decodifica siempre con fragmentos de 10 fotogramas, y `/v1/tts/stream` toma el mismo 10 como máximo por defecto.
+- **Por qué**: `/v1/tts/stream` fijaba el tamaño de fragmento en el contexto y nadie lo reiniciaba, de modo que `/v1/tts` decodificaba con el `chunk_frames` de la petición en streaming anterior. Como el decodificador da resultados distintos en sus últimos bits según el tamaño, la misma petición a `/v1/tts` devolvía audios distintos según lo que se hubiera pedido antes.
+- **Si se pierde**: `/v1/tts` vuelve a depender de la petición anterior y deja de ser reproducible.
 
 ### Sin rutas de compatibilidad con cuantizadores y formatos antiguos
 

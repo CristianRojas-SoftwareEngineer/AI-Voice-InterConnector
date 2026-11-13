@@ -575,9 +575,9 @@ int qwen_talker_step(qwen_tts_ctx_t *ctx, float *embed, float *hidden_out) {
         float scale = 1.0f / sqrtf((float)c->head_dim);
         uint16_t *layer_k = ctx->kv_cache_k + (int64_t)layer * ctx->kv_max * kv_dim;
         uint16_t *layer_v = ctx->kv_cache_v + (int64_t)layer * ctx->kv_max * kv_dim;
-        qwen_causal_attention_bf16kv(ctx->dec_attn_out, ctx->dec_q, layer_k, layer_v,
-                                     1, pos + 1, c->num_heads, c->num_kv_heads,
-                                     c->head_dim, scale, pos);
+        qwen_causal_attention_bf16kv_heads_parallel(ctx->dec_attn_out, ctx->dec_q, layer_k, layer_v,
+                                                    1, pos + 1, c->num_heads, c->num_kv_heads,
+                                                    c->head_dim, scale, pos);
 
         /* 7. Output projection */
         if (l->wo_q4)

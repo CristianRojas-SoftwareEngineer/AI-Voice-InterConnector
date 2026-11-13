@@ -437,6 +437,22 @@ typedef int (*qwen_tts_audio_cb)(const float *samples, int n_samples, void *user
  * trabajo pendiente y devuelve -1 sin producir audio. */
 typedef int (*qwen_tts_abort_cb)(void *userdata);
 
+/* Desglose por etapas de la generación. qwen_tts_generate ACUMULA en él (suma los
+ * tiempos, los fotogramas y los fragmentos; el máximo en max_backlog_frames) en cada
+ * llamada, aunque ctx->silent esté activo; quien quiera las cifras de una sola
+ * petición lo pone a cero antes de generar. */
+typedef struct {
+    double prefill_ms;          /* prefill del Talker */
+    double talker_ms;           /* pasos del Talker, sumados sobre todos los fotogramas */
+    double cp_ms;               /* pasos del Code Predictor, sumados sobre todos los fotogramas */
+    double decoder_ms;          /* tiempo de trabajo del hilo del decodificador de voz */
+    double drain_ms;            /* espera al decodificador tras terminar la generación */
+    int    frames;              /* fotogramas generados (80 ms de audio cada uno) */
+    int    chunks;              /* fragmentos decodificados */
+    int    max_backlog_frames;  /* máximo de fotogramas pendientes que el decodificador encontró
+                                 * al empezar un fragmento, antes de limitarlos a su tamaño */
+} qwen_tts_timing_t;
+
 /* ========================================================================
  * Main Context Structure
  * ======================================================================== */
@@ -518,6 +534,9 @@ typedef struct qwen_tts_ctx {
     void *audio_cb_userdata;
     qwen_tts_abort_cb abort_cb;  /* Cancelación por fotograma (NULL = sin cancelación) */
     void *abort_cb_userdata;
+
+    /* Desglose por etapas, acumulado por qwen_tts_generate */
+    qwen_tts_timing_t timing;
 
     /* Random seed */
     uint32_t seed;

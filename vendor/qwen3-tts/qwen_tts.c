@@ -371,6 +371,26 @@ static void embed_one_text_token(qwen_tts_ctx_t *ctx, int tid, float *out) {
 
 #define DT_CHUNK_FRAMES 10  /* decode every N frames (match streaming chunk) */
 
+/* Calendario de fragmentos en streaming. Tras el primer fragmento de 2 fotogramas,
+ * los fragmentos empiezan en STREAM_RAMP_START_FRAMES fotogramas y suben
+ * STREAM_RAMP_STEP_FRAMES cada STREAM_RAMP_HOLD_CHUNKS fragmentos, sin pasar de
+ * `chunk_frames`. Con `chunk_frames` 10 da fragmentos de 2, 4 (x8), 6 (x8), 8 (x8) y 10
+ * en adelante; con `chunk_frames` <= 4 da los mismos tamaños que el tamaño fijo.
+ *
+ * Con 8 fragmentos por escalón, el audio de la frase larga (25,5 s) nunca llega más
+ * tarde respecto a su instante de reproducción que con el tamaño fijo de 4, y el RTF
+ * con un hilo de carga de memoria baja de 0,94 a 0,86 (incluida la atención en paralelo).
+ *
+ * Empieza pequeño porque al principio de la frase el colchón de audio del reproductor
+ * está casi vacío y un fragmento grande llegaría tarde; como el motor va más rápido que
+ * el tiempo real, el audio de sobra se acumula y los fragmentos mayores, que cuestan
+ * menos trabajo al decodificador, ya no llegan tarde. El tamaño depende solo del número
+ * de fragmento y nunca del ritmo de la generación ni del hardware, para que el audio
+ * dependa solo de la petición. */
+#define STREAM_RAMP_START_FRAMES 4
+#define STREAM_RAMP_STEP_FRAMES  2
+#define STREAM_RAMP_HOLD_CHUNKS  8
+
 typedef struct {
     /* Shared state (protected by mutex) */
     pthread_mutex_t mutex;
@@ -397,6 +417,9 @@ typedef struct {
     double decode_ms;       /* total decode time */
     double first_chunk_ms;  /* abs timestamp (gettimeofday ms) of first emitted chunk; 0 = none yet */
     int    chunk_frames;    /* frames to wait for per chunk (from ctx->stream_chunk_frames) */
+    int    chunks;          /* fragmentos decodificados (solo los escribe el hilo del decodificador) */
+    int    ramp_chunks;     /* fragmentos decodificados con el calendario creciente (fuera del primero) */
+    int    max_backlog;     /* máximo de fotogramas pendientes al empezar un fragmento, antes de limitarlos */
     int    trim_head_left;  /* ICL onset fix: samples still to drop from the head of output */
 } decoder_thread_t;
 
@@ -411,6 +434,9 @@ static void dt_init(decoder_thread_t *dt, qwen_tts_ctx_t *ctx, int max_frames) {
     dt->ctx = ctx;
     dt->decode_ms = 0;
     dt->first_chunk_ms = 0;
+    dt->chunks = 0;
+    dt->ramp_chunks = 0;
+    dt->max_backlog = 0;
     /* Frames per decode chunk: wire --stream-chunk (ctx->stream_chunk_frames),
      * fall back to the historical default if unset. Smaller = lower TTFA. */
     dt->chunk_frames = (ctx->stream_chunk_frames > 0) ? ctx->stream_chunk_frames : DT_CHUNK_FRAMES;
@@ -487,25 +513,36 @@ static void *decoder_thread_fn(void *arg) {
      * la generación: cada fragmento decodificado cambia el resultado en sus últimos
      * bits según cómo se reparten los fotogramas, si se procesa por tramos y con
      * cuántos hilos calcula BLAS. Por eso las tres cosas se fijan sin mirar cuánto se
-     * adelantó la generación: los fragmentos tienen siempre `target` fotogramas (salvo
-     * el último), los tramos se usan en toda la petición y BLAS conserva el número de
-     * hilos que le asignó la generación hasta que este hilo termina. */
+     * adelantó la generación: los fragmentos tienen siempre los fotogramas que fija el
+     * calendario para su número de fragmento (salvo el último), los tramos se usan en
+     * toda la petición y BLAS conserva el número de hilos que le asignó la generación
+     * hasta que este hilo termina. */
     ctx->sd_stream.cs_tile = 1;
 
     for (;;) {
         int avail, is_done;
         pthread_mutex_lock(&dt->mutex);
-        /* Fragmentación escalonada: en modo streaming se emite un PRIMER
-         * fragmento pequeño para reducir el TTFA y después se vuelve al tamaño
-         * completo para mantener el rendimiento. El fragmento pequeño ocurre
-         * una sola vez, así que el RTF global no se ve afectado. */
+        /* Fragmentación escalonada: en modo streaming el PRIMER fragmento es
+         * pequeño (2 fotogramas) para reducir el TTFA, y después el tamaño crece
+         * según el calendario STREAM_RAMP_* hasta `chunk_frames`. Fuera del
+         * streaming el tamaño es `chunk_frames` constante. */
         int target = dt->chunk_frames;
-        if (dt->first_chunk_ms == 0 && dt->ctx->stream && target > 2)
-            target = 2;
+        int ramped = 0;
+        if (dt->ctx->stream) {
+            if (dt->first_chunk_ms == 0 && target > 2) {
+                target = 2;
+            } else {
+                int ramp = STREAM_RAMP_START_FRAMES
+                         + STREAM_RAMP_STEP_FRAMES * (dt->ramp_chunks / STREAM_RAMP_HOLD_CHUNKS);
+                if (ramp < target) target = ramp;
+                ramped = 1;
+            }
+        }
         while (dt->write_pos - dt->read_pos < target && !dt->done)
             pthread_cond_wait(&dt->cond, &dt->mutex);
         avail = dt->write_pos - dt->read_pos;
         is_done = dt->done;
+        if (avail > dt->max_backlog) dt->max_backlog = avail;
         /* Si la generación se adelantó, lo que sobra de `target` queda para el
          * siguiente fragmento: tomarlo todo haría depender el reparto del ritmo. */
         if (avail > target) avail = target;
@@ -525,6 +562,8 @@ static void *decoder_thread_fn(void *arg) {
         t0 = tv.tv_sec * 1000.0 + tv.tv_usec / 1000.0;
 
         if (dt->cb_aborted) { dt->read_pos += avail; continue; }
+        dt->chunks++;
+        if (ramped) dt->ramp_chunks++;
 
         if (qwen_speech_decoder_decode_streaming(ctx, chunk_codes, avail,
                                                    &chunk_audio, &chunk_samples) == 0) {
@@ -1775,6 +1814,16 @@ int qwen_tts_generate(qwen_tts_ctx_t *ctx, const char *text, float **out_samples
 
     double dt_decode_ms = dt_state.decode_ms;
     double dt_drain_ms = time_ms() - t_dec_start;
+    /* Desglose acumulado para quien lo consulte (el servidor lo imprime por petición). */
+    ctx->timing.prefill_ms += prefill_ms;
+    ctx->timing.talker_ms += t_talker_step_total;
+    ctx->timing.cp_ms += t_cp_total;
+    ctx->timing.decoder_ms += dt_decode_ms;
+    ctx->timing.drain_ms += dt_drain_ms;
+    ctx->timing.frames += ctx->codec_frames;
+    ctx->timing.chunks += dt_state.chunks;
+    if (dt_state.max_backlog > ctx->timing.max_backlog_frames)
+        ctx->timing.max_backlog_frames = dt_state.max_backlog;
     /* TTFA = time from generation start to first emitted audio chunk. */
     double ttfa_ms = (dt_state.first_chunk_ms > 0) ? dt_state.first_chunk_ms - t_start : -1;
 

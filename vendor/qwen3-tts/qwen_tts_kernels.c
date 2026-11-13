@@ -3347,17 +3347,20 @@ void qwen_causal_attention_windowed(float *out, const float *Q, const float *K, 
     }
 }
 
-/* Causal GQA attention with bf16 KV cache.
+/* Causal GQA attention with bf16 KV cache, restringida al rango de cabezas
+ * [h_begin, h_end). Es el cuerpo común de la versión en serie y de la paralela:
+ * cada cabeza solo lee Q, K y V y solo escribe su propio trozo de `out`.
  * K_bf16/V_bf16 are stored as uint16_t (bf16), converted to f32 inline. */
-void qwen_causal_attention_bf16kv(float *out, const float *Q,
-                                  const uint16_t *K_bf16, const uint16_t *V_bf16,
-                                  int seq_q, int seq_k, int n_heads, int n_kv_heads,
-                                  int head_dim, float scale, int q_offset) {
+static void attention_bf16kv_heads(float *out, const float *Q,
+                                   const uint16_t *K_bf16, const uint16_t *V_bf16,
+                                   int seq_q, int seq_k, int n_heads, int n_kv_heads,
+                                   int head_dim, float scale, int q_offset,
+                                   int h_begin, int h_end) {
     int heads_per_kv = n_heads / n_kv_heads;
     int q_hidden = n_heads * head_dim;
     int kv_hidden = n_kv_heads * head_dim;
 
-    for (int h = 0; h < n_heads; h++) {
+    for (int h = h_begin; h < h_end; h++) {
         int kv_h = h / heads_per_kv;
 
         for (int i = 0; i < seq_q; i++) {
@@ -3491,6 +3494,57 @@ void qwen_causal_attention_bf16kv(float *out, const float *Q,
             }
         }
     }
+}
+
+/* Causal GQA attention with bf16 KV cache (versión en serie: todas las cabezas en el hilo que llama). */
+void qwen_causal_attention_bf16kv(float *out, const float *Q,
+                                  const uint16_t *K_bf16, const uint16_t *V_bf16,
+                                  int seq_q, int seq_k, int n_heads, int n_kv_heads,
+                                  int head_dim, float scale, int q_offset) {
+    attention_bf16kv_heads(out, Q, K_bf16, V_bf16, seq_q, seq_k, n_heads, n_kv_heads,
+                           head_dim, scale, q_offset, 0, n_heads);
+}
+
+/* Por debajo de este número de posiciones de la caché, repartir las cabezas entre
+ * hilos cuesta más (despertar el pool y esperar a que termine) que calcularlas. */
+#define ATTN_PARALLEL_MIN_SEQ_K 48
+
+typedef struct {
+    float *out; const float *Q; const uint16_t *K, *V;
+    int seq_q, seq_k, n_heads, n_kv_heads, head_dim;
+    float scale; int q_offset;
+} attn_heads_job_t;
+
+/* Tarea del pool: la tarea `tid` de `nt` calcula un tramo contiguo de cabezas. */
+static void attn_heads_task(size_t tid, size_t nt, void *p) {
+    const attn_heads_job_t *j = (const attn_heads_job_t *)p;
+    int h0 = (int)((size_t)j->n_heads * tid / nt);
+    int h1 = (int)((size_t)j->n_heads * (tid + 1) / nt);
+    attention_bf16kv_heads(j->out, j->Q, j->K, j->V, j->seq_q, j->seq_k, j->n_heads,
+                           j->n_kv_heads, j->head_dim, j->scale, j->q_offset, h0, h1);
+}
+
+/* Misma atención que qwen_causal_attention_bf16kv, con las cabezas repartidas entre
+ * los hilos del motor cuando se calcula un solo fotograma (seq_q == 1) sobre una
+ * caché larga. El resultado es idéntico bit a bit: cada cabeza ejecuta las mismas
+ * operaciones en el mismo orden y escribe solo su trozo de `out`; solo cambia qué
+ * hilo la calcula. Funciona igual en los tres sistemas porque qwen_parallel es GCD
+ * en macOS y el pool de pthreads en Windows y Linux. Debe llamarse solo desde el
+ * hilo de la generación y nunca desde dentro de una tarea de qwen_parallel: el pool
+ * de pthreads no admite llamadas anidadas ni desde un segundo hilo. */
+void qwen_causal_attention_bf16kv_heads_parallel(float *out, const float *Q,
+                                                 const uint16_t *K_bf16, const uint16_t *V_bf16,
+                                                 int seq_q, int seq_k, int n_heads, int n_kv_heads,
+                                                 int head_dim, float scale, int q_offset) {
+    int nt = g_n_threads;
+    if (seq_q != 1 || seq_k < ATTN_PARALLEL_MIN_SEQ_K || nt <= 1) {
+        qwen_causal_attention_bf16kv(out, Q, K_bf16, V_bf16, seq_q, seq_k, n_heads, n_kv_heads,
+                                     head_dim, scale, q_offset);
+        return;
+    }
+    attn_heads_job_t j = { out, Q, K_bf16, V_bf16, seq_q, seq_k, n_heads, n_kv_heads,
+                           head_dim, scale, q_offset };
+    qwen_parallel((size_t)nt, attn_heads_task, &j);
 }
 
 /* ========================================================================

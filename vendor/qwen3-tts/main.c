@@ -1289,7 +1289,7 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "                             e.g. \"Speak in an angry tone\"\n");
                 fprintf(stderr, "  --stream                   Stream audio (decode during generation)\n");
                 fprintf(stderr, "  --stdout                   Output raw s16le PCM to stdout (implies --stream)\n");
-                fprintf(stderr, "  --stream-chunk <n>         Frames per stream chunk (default: 10)\n");
+                fprintf(stderr, "  --stream-chunk <n>         Max frames per stream chunk (default: 10); chunks grow from 2 up to it\n");
                 fprintf(stderr, "  --serve <port>             Start HTTP server on port\n");
                 fprintf(stderr, "  --workers <n>              Concurrent synthesis workers (server; default 1)\n");
                 fprintf(stderr, "  --batch-size <n>           Request-batching: step up to n concurrent users together (server; n>=2)\n");

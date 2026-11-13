@@ -277,6 +277,14 @@ void qwen_causal_attention_bf16kv(float *out, const float *Q,
                                   int seq_q, int seq_k, int n_heads, int n_kv_heads,
                                   int head_dim, float scale, int q_offset);
 
+/* Igual que qwen_causal_attention_bf16kv, con las cabezas repartidas entre los hilos
+ * del motor cuando seq_q == 1 y seq_k >= 48; resultado idéntico bit a bit. Solo desde
+ * el hilo de la generación, nunca dentro de una tarea de qwen_parallel. */
+void qwen_causal_attention_bf16kv_heads_parallel(float *out, const float *Q,
+                                                 const uint16_t *K_bf16, const uint16_t *V_bf16,
+                                                 int seq_q, int seq_k, int n_heads, int n_kv_heads,
+                                                 int head_dim, float scale, int q_offset);
+
 /* ========================================================================
  * RoPE - INTERLEAVED STYLE
  * ======================================================================== */

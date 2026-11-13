@@ -157,7 +157,8 @@ convolucional causal lo permite sin mirar hacia delante.
   salida estándar. `--rate` distinto de 1 no se puede combinar con `--stream` (error).
 - Servidor: `POST /v1/tts/stream` responde PCM s16le, 24 kHz, mono, con transferencia por partes
   (cabeceras `X-Sample-Rate`, `X-Sample-Format`, `X-Channels`). El primer fragmento es de 2
-  fotogramas y los siguientes de `chunk_frames` (10 por defecto). El fragmento final de tamaño
+  fotogramas y los siguientes crecen según un calendario fijo (4, 6, 8…) hasta `chunk_frames`
+  (10 por defecto, el tamaño máximo). El fragmento final de tamaño
   cero marca la entrega correcta: una respuesta que se corta sin él es un fallo.
 - Prueba: `make test-serve-stream` (entrega por partes, validaciones 400, reproducibilidad y
   cancelación).

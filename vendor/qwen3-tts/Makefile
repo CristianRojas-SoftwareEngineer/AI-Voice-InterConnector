@@ -870,8 +870,9 @@ test-serve-parallel: $(TARGET)
 # Arranca el servidor y comprueba, en este orden: (1) la entrega por partes termina bien y deja
 # un PCM no vacío de tamaño par; (2) el mismo audio por /v1/tts y por /v1/tts/stream tiene la
 # misma longitud; (3) la misma petición da el mismo audio aunque otra distinta la preceda, por
-# /v1/tts y, en tres rondas, por /v1/tts/stream (el reparto de los fotogramas del decodificador
-# no debe depender de la temporización);
+# /v1/tts (también tras una petición en streaming con otro `chunk_frames`, que no debe pasar a
+# la siguiente) y, en tres rondas, por /v1/tts/stream (el reparto de los fotogramas del
+# decodificador no debe depender de la temporización);
 # (4) las peticiones inválidas reciben 400 y 'rate' solo se admite fuera de la entrega por partes;
 # (5) cortar la conexión libera el motor. Falla con "FAIL: <caso>" en el primero que no se cumpla.
 
@@ -900,6 +901,10 @@ test-serve-stream: $(TARGET)
 	 curl -s -X POST $$U/v1/tts -H "$$H" -d "$$B" -o $(TEST_DIR)/stream_b.wav; \
 	 curl -s -X POST $$U/v1/tts -H "$$H" -d "$$A" -o $(TEST_DIR)/stream_a2.wav; \
 	 cmp -s $(TEST_DIR)/stream_a1.wav $(TEST_DIR)/stream_a2.wav || fail "reproducibility"; \
+	 B4=$$(echo "$$B" | sed 's/}$$/,"chunk_frames":4}/'); \
+	 curl -sN -X POST $$U/v1/tts/stream -H "$$H" -d "$$B4" -o /dev/null; \
+	 curl -s -X POST $$U/v1/tts -H "$$H" -d "$$A" -o $(TEST_DIR)/stream_a3.wav; \
+	 cmp -s $(TEST_DIR)/stream_a1.wav $(TEST_DIR)/stream_a3.wav || fail "reproducibility after chunk_frames 4"; \
 	 for i in 1 2 3; do \
 	   curl -sN -X POST $$U/v1/tts/stream -H "$$H" -d "$$B" -o /dev/null; \
 	   curl -sN -X POST $$U/v1/tts/stream -H "$$H" -d "$$A" -o $(TEST_DIR)/stream_a$$i.pcm; \
