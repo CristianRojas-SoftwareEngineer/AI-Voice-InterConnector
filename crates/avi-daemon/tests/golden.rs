@@ -182,14 +182,22 @@ fn clone_state() -> Arc<DaemonState> {
                 SpeechStore::at(tmp.join("speech")),
             )
             .expect("estado del daemon con almacenes temporales");
-            let binary = std::env::var_os("QWEN3_TTS_BIN")
-                .map(PathBuf::from)
-                .unwrap_or_else(vendor_binary);
-            std::env::set_var("QWEN3_TTS_BIN", &binary);
-            state.tts_engine.binary_path = Some(binary);
+            state.tts_engine.binary_path = Some(engine_binary());
             Arc::new(state)
         })
         .clone()
+}
+
+/// Binario del motor de las pruebas con el motor real: `QWEN3_TTS_BIN` si está
+/// definida o, si no, el de `vendor/qwen3-tts`, porque el cwd del crate no ve el
+/// vendor del workspace. Fija también la variable, que es donde el clonado y el
+/// arranque del residente buscan el binario.
+fn engine_binary() -> PathBuf {
+    let binary = std::env::var_os("QWEN3_TTS_BIN")
+        .map(PathBuf::from)
+        .unwrap_or_else(vendor_binary);
+    std::env::set_var("QWEN3_TTS_BIN", &binary);
+    binary
 }
 
 /// Carga una fixture dorada desde `tests/golden/` en la raíz del workspace.
@@ -275,18 +283,21 @@ fn require_parakeet() {
 }
 
 /// La puerta del recurso precede a la construcción que carga los motores; un
-/// estado de contrato nunca se emplea para la inferencia STT.
+/// estado de contrato nunca se emplea para la inferencia STT. El motor TTS usa el
+/// mismo binario que `clone_state`: sin fijarlo, su resolución depende de que otra
+/// prueba del proceso haya definido antes `QWEN3_TTS_BIN`, y una prueba ejecutada
+/// sola o en otro orden recibe `model_missing`.
 #[cfg(feature = "native-stt")]
 fn resource_state() -> Arc<DaemonState> {
     require_parakeet();
     prepare_shared_env();
-    Arc::new(
-        DaemonState::with_stores(
-            VoiceStore::at(process_root().join("resource/voices")),
-            SpeechStore::at(process_root().join("resource/speech")),
-        )
-        .expect("requiere modelos provisionados para cargar los motores del daemon"),
+    let mut state = DaemonState::with_stores(
+        VoiceStore::at(process_root().join("resource/voices")),
+        SpeechStore::at(process_root().join("resource/speech")),
     )
+    .expect("requiere modelos provisionados para cargar los motores del daemon");
+    state.tts_engine.binary_path = Some(engine_binary());
+    Arc::new(state)
 }
 
 /// Exige `model.safetensors` del snapshot del modelo Base de clonado: lo
