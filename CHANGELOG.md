@@ -139,6 +139,8 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
+Una locución larga tardaba 18 s en empezar a sonar porque la aplicación esperaba a que el motor terminara toda la síntesis, y el residente del motor retenía unos 3,35 GiB de memoria privada, que en un equipo de 8 GiB acabarían en el archivo de paginación y romperían esa promesa. La versión hace que `speech say`, `speech dub` y `speech synthesize --play` reproduzcan el audio mientras se sintetiza (la voz empieza en torno a 1,2 s por el daemon) y recorta el residente a ~1,43 GiB con el mismo audio byte a byte y un ~6 % más de velocidad, además de limpiar los avisos del motor en Linux.
+
 ### Añadido
 
 - **Entrega en streaming:** `speech say`, `speech dub` y `speech synthesize --play` (también cada toma nueva del menú) reproducen el audio mientras se sintetiza, por la ruta directa y por el daemon, en lugar de esperar a que termine toda la síntesis: con una frase larga de 450 caracteres (26 s de audio) la voz pasa de empezar a los 18 s a empezar en torno a 1,2 s por el daemon (mediana de 1148 ms sin carga y de 1398 ms con un hilo de carga de memoria, sin cortes en las 10 ejecuciones medidas) y en torno a 3 s por la ruta directa, que además arranca su propio motor. Toda síntesis usa `POST /v1/tts/stream` del motor con fragmentos de hasta 10 fotogramas que el motor hace crecer desde 2 y 4 fotogramas según un calendario fijo, y el reproductor incremental espera 300 ms de audio en cola antes de sonar y, si la cola se vacía con la entrega en curso, pausa y reanuda. Si la síntesis falla o vence su plazo con la voz ya sonando, se corta la reproducción y el comando termina con `synthesis_failed` o `synthesis_timeout`.
