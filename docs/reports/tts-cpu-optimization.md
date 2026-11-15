@@ -20,6 +20,10 @@
    - [4.4. Optimización del decodificador acústico y afinidad](#44-optimización-del-decodificador-acústico-y-afinidad)
    - [4.5. Producto escalar entero en los kernels cuantizados](#45-producto-escalar-entero-en-los-kernels-cuantizados)
    - [4.6. Optimizaciones de ancho de banda de memoria](#46-optimizaciones-de-ancho-de-banda-de-memoria)
+   - [4.7. Entrega en streaming](#47-entrega-en-streaming)
+   - [4.8. El decodificador de voz como cuello de botella en la entrega en streaming](#48-el-decodificador-de-voz-como-cuello-de-botella-en-la-entrega-en-streaming)
+   - [4.9. Memoria privada del residente](#49-memoria-privada-del-residente)
+   - [4.10. Conversión de los pesos del prefill](#410-conversión-de-los-pesos-del-prefill)
 5. [Arquitectura de integración en el producto](#5-arquitectura-de-integración-en-el-producto)
    - [5.1. Perfil predeterminado y reversibilidad (`AVI_TTS_PRECISION`)](#51-perfil-predeterminado-y-reversibilidad-avi_tts_precision)
    - [5.2. Aislamiento del entorno del residente](#52-aislamiento-del-entorno-del-residente)
@@ -88,6 +92,9 @@ Durante la campaña se evaluaron de forma aislada múltiples factores sobre el m
 | **Afinidad de un hilo lógico por núcleo físico (Windows)** | **ADOPTADA** | Elimina el estado lento intermitente en que dos hilos pesados comparten núcleo SMT; aplicada desde el motor, la reciben CLI y daemon. |
 | **Convolución transpuesta con pesos reordenados en caché** | **DESCARTADO** | ~750 ms por frase frente a ~1.620 ms del original, pero más lenta que el GEMM único (~590 ms) y con ~107 MB de RAM adicional. |
 | **Hilos dedicados a la activación Snake** | **DESCARTADO** | Sin ganancia con 4 hilos (RTF 1,06/1,06/1,04 frente a 1,04/1,06/1,04 sin ellos) y resultado mixto con 6. |
+| **Conversión paralela de los pesos del prefill** | **ADOPTADA** | Reparte entre los hilos del motor la conversión bf16 a f32 de cada capa; audio idéntico bit a bit y primer audio −9,8 % (texto corto, sin carga) y −7,6 % (con carga). Resultados en la sección 4.10. |
+| **Prefill con los pesos y kernels de la generación** | **DESCARTADA** | Sube el tono de la voz `ryan` en 4,7 semitonos, el WER sube 1,8 y 2,7 pp y el prefill del texto largo empeora un 41 %. |
+| **Conversión del prefill por franjas en caché** | **DESCARTADA** | Cambia el audio, porque OpenBLAS reparte distinto al partir la multiplicación, y el prefill del texto largo empeora un 6,6 %. |
 
 ### 2.1. Reparto del tiempo del Code Predictor y techo de ancho de banda
 
@@ -377,6 +384,27 @@ Juntos: de 3.349 a 1.428 MiB privados (−57 %) y −550 MiB de working set. El 
 | `OMP_NUM_THREADS=4` frente a sin variable, con carga de memoria (5 pares alternados) | md5 idéntico; mediana del total −6,2 % y −7,0 % (primera y segunda petición) |
 | `speech say` por el daemon, frase larga, sin carga | `first_audio_ms` mediano 1148 ms, RTF del motor 0,63–0,66, `stalls` 0 en las 5 |
 | `speech say` por el daemon, frase larga, con carga | RTF del motor 0,82–0,84, `stalls` 0 en las 5 |
+
+### 4.10. Conversión de los pesos del prefill
+
+**Problema.** Cada petición empieza con el prefill del Talker, que multiplica con `sgemm` de BLAS sobre los pesos de las 28 capas convertidos de bf16 a f32. Esa conversión se hacía en serie, en el hilo principal, mientras los demás hilos del motor esperaban. Es un coste fijo por petición: en un experimento previo (Ryzen 7 5825U, perfil `mixed`, voz clonada, `-j 4`) costaba unos 155 ms sin carga y 250–265 ms con un hilo copiando memoria, el 42 % del prefill en un texto corto y el 22 % en uno largo.
+
+**Solución.** Se reparte la conversión de cada capa entre los hilos del pool del motor con una sola llamada a `qwen_parallel`: cada hilo convierte una rebanada contigua de cada matriz y, en gate/up, un rango de filas. Con 4 hilos la conversión baja a unos 130 ms; no baja más porque está limitada por el ancho de banda de memoria. No se toca BLAS ni el número de hilos.
+
+**Exactitud.** La conversión es una copia de bits elemento a elemento, así que el reparto no cambia ningún valor. El PCM es idéntico bit a bit entre el motor anterior y el nuevo en los 18 casos medidos: perfiles `mixed`, `int8` y `bf16`, voz clonada y preset `ryan`, textos de unos 20, 60 y 108 tokens, semilla 4.
+
+**Medición** (residentes de ambos motores vivos a la vez, perfil `mixed`, voz clonada, semilla 4, 5 bloques ABBA por nivel y texto, 10 muestras por lado, medianas):
+
+| Texto y nivel | Prefill (ms) | Primer audio (ms) | RTF |
+|---|---|---|---|
+| Corto, sin carga | 372 → 334 (−10,2 %) | 601 → 542 (−9,8 %) | 0,907 → 0,902 (−0,5 %) |
+| Largo, sin carga | 684 → 670 (−2,2 %) | 894 → 886 (−0,9 %) | 0,654 → 0,656 (+0,3 %) |
+| Corto, con carga de memoria | 524 → 451 (−13,8 %) | 831 → 769 (−7,6 %) | 1,234 → 1,215 (−1,6 %) |
+| Largo, con carga de memoria | 974 → 888 (−8,8 %) | 1285 → 1190 (−7,4 %) | 1,064 → 1,050 (−1,3 %) |
+
+El RTF no empeora más de un 0,3 % en ningún caso. La ganancia es modesta y se nota sobre todo en textos cortos y con la memoria cargada, que es donde la conversión pesa más.
+
+**Alternativas descartadas.** Usar en el prefill los pesos cuantizados y los kernels de la generación sube el tono de `ryan` hasta 4,7 semitonos, sube el WER 1,8 y 2,7 pp y empeora el prefill del texto largo un 41 %. Convertir por franjas en caché cambia el audio, porque OpenBLAS reparte distinto al partir la multiplicación, y empeora el prefill del texto largo un 6,6 %.
 
 ---
 

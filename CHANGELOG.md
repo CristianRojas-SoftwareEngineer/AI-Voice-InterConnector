@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.45.1 — 2026-11-15](#0451--2026-11-15)
 - [0.45.0 — 2026-11-15](#0450--2026-11-15)
 - [0.44.0 — 2026-11-04](#0440--2026-11-04)
@@ -137,6 +138,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La voz empieza a sonar algo antes en cada locución, sobre todo en las frases cortas: el motor preparaba en serie los pesos del modelo antes de empezar a hablar y ahora reparte ese trabajo entre sus hilos. El audio que se genera no cambia.
+
+### Cambiado
+
+- **Prefill del Talker:** la conversión de los pesos de bf16 a f32 que se hace en cada petición se reparte entre los hilos del motor en lugar de hacerse en serie. El audio es idéntico bit a bit en los perfiles `mixed`, `int8` y `bf16`, con la voz clonada y con `ryan`. Con el perfil `mixed` y la voz clonada, el prefill de una frase corta baja de 372 a 334 ms sin carga (−10,2 %) y de 524 a 451 ms con la memoria cargada (−13,8 %), y el primer audio baja un 9,8 % y un 7,6 %; el RTF no empeora en ningún caso.
 
 ## [0.45.1] — 2026-11-15
 
