@@ -557,7 +557,8 @@ pub struct Qwen3TtsEngine {
 const HEALTH_OBS_RETRIES: usize = 1;
 const HEALTH_OBS_INTERVAL_MS: u64 = 2000;
 
-/// Plazo con el que `shutdown` espera la muerte del residente tras matarlo.
+/// Plazo con el que `shutdown` y el `Drop` del residente esperan su muerte
+/// tras matarlo.
 const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 
 /// Plazo con el que `clone_voice` espera al subproceso de clonado: la carga
@@ -1669,16 +1670,22 @@ pub mod resident {
     impl Drop for Qwen3TtsResident {
         fn drop(&mut self) {
             if let Some(mut child) = self.child.take() {
-                // Cierre por árbol con recolección: el `shutdown()` previo ya mató el
-                // árbol preciso por PID; aquí la espera es acotada y en mejor
-                // esfuerzo (nunca `INFINITE`): si el hijo no muere en el plazo,
-                // `wait_timeout` lo mata y lo recolecta. Insuficiente ante caída
-                // a medio `spawn` (sin `Child` que recolectar): por eso
-                // `run_supervised` reclama además el árbol propio previo con
-                // deadline y verificación antes del siguiente `bind`.
+                // El residente se suelta vivo al cambiar de voz y al terminar la CLI
+                // directa. Mientras el gestor existe retiene la tubería de entrada
+                // del motor, así que este no puede terminar solo y esperarlo sería
+                // inútil: se mata y se recolecta con espera acotada y en mejor
+                // esfuerzo (nunca `INFINITE`). Insuficiente ante caída a medio
+                // `spawn` (sin `Child` que recolectar): por eso `run_supervised`
+                // reclama además el árbol propio previo con deadline y
+                // verificación antes del siguiente `bind`.
                 #[expect(
                     clippy::let_underscore_must_use,
-                    reason = "en `drop` no hay a quién devolver el error; la espera acotada mata y recolecta"
+                    reason = "el hijo puede estar ya muerto (p. ej. tras `shutdown`); la espera siguiente recolecta en ambos casos"
+                )]
+                let _ = child.kill();
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "en `drop` no hay a quién devolver el error; la espera acotada recolecta"
                 )]
                 let _ = child.wait_timeout(super::SHUTDOWN_WAIT);
             }
@@ -3111,7 +3118,8 @@ fn main() {
     }
 
     /// El healthcheck responde cuando el listener simula `/v1/health`, y
-    /// el `Drop` del gestor termina al hijo.
+    /// el `Drop` del gestor termina al hijo de inmediato, sin esperar a que
+    /// muera solo.
     #[test]
     fn resident_healthcheck_ok_and_drop_kills_child() {
         let (port, handle) = resident::simulate_server();
@@ -3127,9 +3135,15 @@ fn main() {
             &bare(&live),
         )
         .expect("el healthcheck debe pasar contra el listener simulado");
+        let started = Instant::now();
         drop(resident);
+        let elapsed = started.elapsed();
         // El servidor simulado no termina nunca: se desacopla el hilo.
         drop(handle);
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "el Drop del gestor no debe esperar a que el hijo muera solo: tardó {elapsed:?}"
+        );
         thread::sleep(Duration::from_millis(800));
         assert!(
             !process_alive(pid),
