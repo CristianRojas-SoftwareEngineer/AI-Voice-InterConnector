@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.45.0 — 2026-11-15](#0450--2026-11-15)
 - [0.44.0 — 2026-11-04](#0440--2026-11-04)
 - [0.43.0 — 2026-11-04](#0430--2026-11-04)
 - [0.42.0 — 2026-11-02](#0420--2026-11-02)
@@ -137,7 +137,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.45.0] — 2026-11-15
 
 Una locución larga tardaba 18 s en empezar a sonar porque la aplicación esperaba a que el motor terminara toda la síntesis, y el residente del motor retenía unos 3,35 GiB de memoria privada, que en un equipo de 8 GiB acabarían en el archivo de paginación y romperían esa promesa. La versión hace que `speech say`, `speech dub` y `speech synthesize --play` reproduzcan el audio mientras se sintetiza (la voz empieza en torno a 1,2 s por el daemon) y recorta el residente a ~1,43 GiB con el mismo audio byte a byte y un ~6 % más de velocidad, además de limpiar los avisos del motor en Linux.
 
@@ -4053,3 +4053,4 @@ estado con el que nace el producto.
 [0.42.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.41.4...v0.42.0
 [0.43.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.42.0...v0.43.0
 [0.44.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.43.0...v0.44.0
+[0.45.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.44.0...v0.45.0
