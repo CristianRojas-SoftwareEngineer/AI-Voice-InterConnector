@@ -2315,6 +2315,60 @@ void qwen_quantize_bf16_to_q4_0(const uint16_t *src_bf16, int rows, int cols,
     }
 }
 
+/* ========================================================================
+ * Proyección gate_up intercalada (fila 2r = gate r, fila 2r+1 = up r)
+ *
+ * Las cuatro funciones parten de `gate` y `up` (rows × cols, bf16) y producen la
+ * matriz intercalada sin pasar por una copia fusionada en bf16. Los cuantizadores y la
+ * conversión trabajan fila a fila, así que cuantizar cada fila de `gate` y de `up` en su
+ * posición intercalada da los mismos bytes que cuantizar la copia fusionada completa.
+ * ======================================================================== */
+
+void qwen_interleave_gate_up_bf16(uint16_t *dst, const uint16_t *gate,
+                                  const uint16_t *up, int rows, int cols) {
+    size_t row_bytes = (size_t)cols * sizeof(uint16_t);
+    for (int r = 0; r < rows; r++) {
+        memcpy(dst + (size_t)(2 * r) * cols, gate + (size_t)r * cols, row_bytes);
+        memcpy(dst + (size_t)(2 * r + 1) * cols, up + (size_t)r * cols, row_bytes);
+    }
+}
+
+void qwen_quantize_gate_up_int8(const uint16_t *gate, const uint16_t *up,
+                                int rows, int cols, int8_t *dst_int8, float *dst_scale) {
+    for (int r = 0; r < rows; r++) {
+        qwen_quantize_bf16_to_int8(gate + (size_t)r * cols, 1, cols,
+                                   dst_int8 + (size_t)(2 * r) * cols, dst_scale + 2 * r);
+        qwen_quantize_bf16_to_int8(up + (size_t)r * cols, 1, cols,
+                                   dst_int8 + (size_t)(2 * r + 1) * cols, dst_scale + 2 * r + 1);
+    }
+}
+
+void qwen_quantize_gate_up_q4_0(const uint16_t *gate, const uint16_t *up,
+                                int rows, int cols, q4_0_block_t *dst) {
+    size_t blocks_per_row = (size_t)cols / Q4_0_BLOCK_SIZE;
+    for (int r = 0; r < rows; r++) {
+        qwen_quantize_bf16_to_q4_0(gate + (size_t)r * cols, 1, cols,
+                                   dst + (size_t)(2 * r) * blocks_per_row);
+        qwen_quantize_bf16_to_q4_0(up + (size_t)r * cols, 1, cols,
+                                   dst + (size_t)(2 * r + 1) * blocks_per_row);
+    }
+}
+
+void qwen_gate_up_to_f32(float *dst, const uint16_t *gate, const uint16_t *up,
+                         int rows, int cols) {
+    for (int r = 0; r < rows; r++) {
+        float *g = dst + (size_t)(2 * r) * cols;
+        float *u = dst + (size_t)(2 * r + 1) * cols;
+        const uint16_t *sg = gate + (size_t)r * cols;
+        const uint16_t *su = up + (size_t)r * cols;
+        for (int k = 0; k < cols; k++) {
+            uint32_t bg = (uint32_t)sg[k] << 16, bu = (uint32_t)su[k] << 16;
+            memcpy(&g[k], &bg, sizeof(float));
+            memcpy(&u[k], &bu, sizeof(float));
+        }
+    }
+}
+
 #if defined(__ARM_FEATURE_DOTPROD)
 /* Matvec q4_0 con SDOT. La activación compartida x se cuantiza a int8 una sola vez
  * (escala sx por vector, a cargo del llamador); por bloque se desempaquetan los 32

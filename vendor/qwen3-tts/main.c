@@ -96,16 +96,19 @@ static int print_qvoice_info(const char *path) {
     if (version >= 3) {
         char meta_magic[4];
         if (fread(meta_magic, 1, 4, f) == 4 && memcmp(meta_magic, "META", 4) == 0) {
+            uint32_t lang_id, enc_dim_meta;
+            if (fread(&lang_id, sizeof(uint32_t), 1, f) != 1 ||
+                fread(meta_lang_name, 1, 16, f) != 16 ||
+                fread(&meta_model_size, sizeof(uint32_t), 1, f) != 1 ||
+                fread(&enc_dim_meta, sizeof(uint32_t), 1, f) != 1 ||
+                fread(&meta_ref_dur, sizeof(float), 1, f) != 1 ||
+                fread(meta_voice_name, 1, 64, f) != 64) {
+                fprintf(stderr, "error: la voz .qvoice de %s está truncada\n", path);
+                fclose(f);
+                return -1;
+            }
             has_meta = 1;
-            uint32_t lang_id;
-            fread(&lang_id, sizeof(uint32_t), 1, f);
-            fread(meta_lang_name, 1, 16, f);
             meta_lang_name[15] = '\0';
-            fread(&meta_model_size, sizeof(uint32_t), 1, f);
-            uint32_t enc_dim_meta;
-            fread(&enc_dim_meta, sizeof(uint32_t), 1, f);
-            fread(&meta_ref_dur, sizeof(float), 1, f);
-            fread(meta_voice_name, 1, 64, f);
             meta_voice_name[63] = '\0';
         }
     }
@@ -268,7 +271,10 @@ static void write_tensor_impl(FILE *vf, FILE *cv_sf, const char *cv_hdr_json, si
             /* Read CV tensor */
             uint8_t *cv_buf = (uint8_t *)malloc(raw);
             fseek(cv_sf, cv_data_off + cvs, SEEK_SET);
-            fread(cv_buf, 1, raw, cv_sf);
+            if (!cv_buf || fread(cv_buf, 1, raw, cv_sf) != raw) {
+                fprintf(stderr, "error: no se pudo leer el tensor %s del safetensors de CustomVoice\n", tname);
+                exit(1);
+            }
             /* Compute int16 delta (lossless — no clamping) */
             size_t n16 = raw / 2;
             int16_t *delta = (int16_t *)malloc(n16 * sizeof(int16_t));
@@ -688,7 +694,8 @@ static int run_compose(qwen_tts_ctx_t *ctx, const char *spec, const char *langua
  * antes a partir de los pesos anteriores. Solo las copias int8 se rehacen después de
  * la sobrescritura; con copias q4_0 activas la sobrescritura no llegaría a los pesos
  * que se usan, así que se rechaza. Devuelve 1 si alguna capa del Talker o del Code
- * Predictor tiene pesos q4_0. */
+ * Predictor tiene pesos q4_0. La copia fusionada bf16 de gate+up solo existe en bf16
+ * y se reconstruye solo si existe; la recuantización int8 lee gate_bf16 y up_bf16. */
 static int weights_have_q4(const qwen_tts_ctx_t *ctx) {
     for (int i = 0; i < ctx->config.num_layers; i++)
         if (ctx->layers[i].wq_q4 || ctx->layers[i].gate_up_fused_q4) return 1;
@@ -700,7 +707,8 @@ static int weights_have_q4(const qwen_tts_ctx_t *ctx) {
 /* Rehace desde los pesos bf16 sobrescritos las copias int8 que ya existían: las del
  * Talker si sus capas están en int8 y las del Code Predictor si las suyas lo están.
  * No crea copias nuevas, para que la precisión de cada parte no cambie (por ejemplo,
- * con QWEN_TALKER_PREC o QWEN_CP_PREC distintos de --int8). */
+ * con QWEN_TALKER_PREC o QWEN_CP_PREC distintos de --int8). gate_up se rehace desde
+ * gate_bf16 y up_bf16 ya sobrescritos. */
 static void requantize_int8_after_override(qwen_tts_ctx_t *ctx, const char *source, int silent) {
     extern void qwen_talker_quantize_int8(qwen_tts_ctx_t *ctx);
     extern void qwen_cp_quantize_int8(qwen_tts_ctx_t *ctx);
@@ -909,13 +917,8 @@ static int apply_expr_file(qwen_tts_ctx_t *ctx, const char *path, float expr_wei
     int h = ctx->config.hidden_size;
     for (int li = 0; li < nl; li++) {
         qwen_talker_layer_t *l = &ctx->layers[li];
-        if (l->gate_bf16 && l->up_bf16 && l->gate_up_fused_bf16) {
-            size_t row_bytes = (size_t)h * sizeof(uint16_t);
-            for (int r = 0; r < inter; r++) {
-                memcpy(l->gate_up_fused_bf16 + (size_t)(2*r)*h,   l->gate_bf16 + (size_t)r*h, row_bytes);
-                memcpy(l->gate_up_fused_bf16 + (size_t)(2*r+1)*h, l->up_bf16   + (size_t)r*h, row_bytes);
-            }
-        }
+        if (l->gate_bf16 && l->up_bf16 && l->gate_up_fused_bf16)
+            qwen_interleave_gate_up_bf16(l->gate_up_fused_bf16, l->gate_bf16, l->up_bf16, inter, h);
     }
 
     /* Las copias cuantizadas se construyeron con los pesos anteriores al delta: con
@@ -1859,17 +1862,19 @@ int main(int argc, char **argv) {
                     char meta_magic[4];
                     if (fread(meta_magic, 1, 4, vf) == 4 && memcmp(meta_magic, "META", 4) == 0) {
                         has_meta = 1;
-                        fread(&meta_lang_id, sizeof(uint32_t), 1, vf);
-                        fread(meta_lang_name, 1, 16, vf);
+                        uint32_t meta_enc_dim, meta_flags;
+                        if (fread(&meta_lang_id, sizeof(uint32_t), 1, vf) != 1 ||
+                            fread(meta_lang_name, 1, 16, vf) != 16 ||
+                            fread(&meta_model_size, sizeof(uint32_t), 1, vf) != 1 ||
+                            fread(&meta_enc_dim, sizeof(uint32_t), 1, vf) != 1 ||
+                            fread(&meta_ref_dur, sizeof(float), 1, vf) != 1 ||
+                            fread(meta_voice_name, 1, 64, vf) != 64 ||
+                            fread(&meta_flags, sizeof(uint32_t), 1, vf) != 1) {
+                            fprintf(stderr, "error: la voz .qvoice de %s está truncada\n", load_voice);
+                            fclose(vf); qwen_tts_unload(ctx); return 1;
+                        }
                         meta_lang_name[15] = '\0';
-                        fread(&meta_model_size, sizeof(uint32_t), 1, vf);
-                        uint32_t meta_enc_dim;
-                        fread(&meta_enc_dim, sizeof(uint32_t), 1, vf);
-                        fread(&meta_ref_dur, sizeof(float), 1, vf);
-                        fread(meta_voice_name, 1, 64, vf);
                         meta_voice_name[63] = '\0';
-                        uint32_t meta_flags;
-                        fread(&meta_flags, sizeof(uint32_t), 1, vf);
                         /* Auto-set language from metadata if not specified on CLI */
                         if (!language && meta_lang_id > 0) {
                             ctx->language_id = (int)meta_lang_id;
@@ -1897,9 +1902,12 @@ int main(int argc, char **argv) {
                             (int)tpad_hidden == ctx->config.hidden_size &&
                             ctx->cached_tts_pad_embed) {
                             int h = ctx->config.hidden_size;
-                            fread(ctx->cached_tts_pad_embed, sizeof(float), h, vf);
-                            fread(ctx->cached_tts_bos_embed, sizeof(float), h, vf);
-                            fread(ctx->cached_tts_eos_embed, sizeof(float), h, vf);
+                            if (fread(ctx->cached_tts_pad_embed, sizeof(float), h, vf) != (size_t)h ||
+                                fread(ctx->cached_tts_bos_embed, sizeof(float), h, vf) != (size_t)h ||
+                                fread(ctx->cached_tts_eos_embed, sizeof(float), h, vf) != (size_t)h) {
+                                fprintf(stderr, "error: la voz .qvoice de %s está truncada\n", load_voice);
+                                fclose(vf); qwen_tts_unload(ctx); return 1;
+                            }
                             has_tpad = 1;
                             if (!silent)
                                 fprintf(stderr, "  Loaded source tts_pad/bos/eos embeddings\n");
@@ -1934,11 +1942,15 @@ int main(int argc, char **argv) {
                             float *fc2_b = (float *)malloc((size_t)h * sizeof(float));
                             uint16_t *ce = (uint16_t *)malloc((size_t)cv * h * sizeof(uint16_t));
                             if (fc1 && fc1_b && fc2 && fc2_b && ce) {
-                                fread(fc1, sizeof(uint16_t), (size_t)th * th, vf);
-                                fread(fc1_b, sizeof(float), th, vf);
-                                fread(fc2, sizeof(uint16_t), (size_t)h * th, vf);
-                                fread(fc2_b, sizeof(float), h, vf);
-                                fread(ce, sizeof(uint16_t), (size_t)cv * h, vf);
+                                if (fread(fc1, sizeof(uint16_t), (size_t)th * th, vf) != (size_t)th * th ||
+                                    fread(fc1_b, sizeof(float), th, vf) != (size_t)th ||
+                                    fread(fc2, sizeof(uint16_t), (size_t)h * th, vf) != (size_t)h * th ||
+                                    fread(fc2_b, sizeof(float), h, vf) != (size_t)h ||
+                                    fread(ce, sizeof(uint16_t), (size_t)cv * h, vf) != (size_t)cv * h) {
+                                    fprintf(stderr, "error: la voz .qvoice de %s está truncada\n", load_voice);
+                                    free(fc1); free(fc1_b); free(fc2); free(fc2_b); free(ce);
+                                    fclose(vf); qwen_tts_unload(ctx); return 1;
+                                }
                                 /* Override model weights */
                                 ctx->text_proj_fc1_bf16 = fc1;
                                 ctx->text_proj_fc1_bias = fc1_b;
@@ -2067,7 +2079,10 @@ int main(int argc, char **argv) {
                             }
                         }
                         uint32_t n_tensors;
-                        fread(&n_tensors, sizeof(uint32_t), 1, vf);
+                        if (fread(&n_tensors, sizeof(uint32_t), 1, vf) != 1) {
+                            fprintf(stderr, "error: la voz .qvoice de %s está truncada\n", load_voice);
+                            fclose(vf); qwen_tts_unload(ctx); return 1;
+                        }
                         int loaded = 0;
                         int zlib_warned = 0;
                         int64_t wfull_bytes = 0;
@@ -2080,9 +2095,12 @@ int main(int argc, char **argv) {
                             if (fread(&name_len, sizeof(uint16_t), 1, vf) != 1) break;
                             char tname[256] = {0};
                             if (name_len >= 256) break;
-                            fread(tname, 1, name_len, vf);
                             uint32_t data_bytes;
-                            fread(&data_bytes, sizeof(uint32_t), 1, vf);
+                            if (fread(tname, 1, name_len, vf) != name_len ||
+                                fread(&data_bytes, sizeof(uint32_t), 1, vf) != 1) {
+                                fprintf(stderr, "error: la voz .qvoice de %s está truncada\n", load_voice);
+                                fclose(vf); qwen_tts_unload(ctx); return 1;
+                            }
 
                             /* Match tensor name to ctx field and replace */
                             void **target_ptr = NULL;
@@ -2199,8 +2217,11 @@ int main(int argc, char **argv) {
                             /* Read dtype flag and compressed size */
                             uint8_t dtype_flag = 0;
                             uint32_t compressed_size = data_bytes;
-                            fread(&dtype_flag, 1, 1, vf);
-                            fread(&compressed_size, sizeof(uint32_t), 1, vf);
+                            if (fread(&dtype_flag, 1, 1, vf) != 1 ||
+                                fread(&compressed_size, sizeof(uint32_t), 1, vf) != 1) {
+                                fprintf(stderr, "error: la voz .qvoice de %s está truncada\n", load_voice);
+                                fclose(vf); qwen_tts_unload(ctx); return 1;
+                            }
 
                             if (target_ptr) {
                                 if (dtype_flag == 4) {
@@ -2277,15 +2298,9 @@ int main(int argc, char **argv) {
                         /* Rebuild gate_up_fused for all talker layers */
                         for (int li = 0; li < nl; li++) {
                             qwen_talker_layer_t *l = &ctx->layers[li];
-                            if (l->gate_bf16 && l->up_bf16 && l->gate_up_fused_bf16) {
-                                size_t row_bytes = (size_t)h * sizeof(uint16_t);
-                                for (int r = 0; r < inter; r++) {
-                                    memcpy(l->gate_up_fused_bf16 + (size_t)(2*r)*h,
-                                           l->gate_bf16 + (size_t)r*h, row_bytes);
-                                    memcpy(l->gate_up_fused_bf16 + (size_t)(2*r+1)*h,
-                                           l->up_bf16 + (size_t)r*h, row_bytes);
-                                }
-                            }
+                            if (l->gate_bf16 && l->up_bf16 && l->gate_up_fused_bf16)
+                                qwen_interleave_gate_up_bf16(l->gate_up_fused_bf16, l->gate_bf16,
+                                                             l->up_bf16, inter, h);
                         }
                         /* Rebuild gate_up_fused for all CP layers */
                         {
@@ -2293,15 +2308,9 @@ int main(int argc, char **argv) {
                             int cp_inter2 = ctx->config.cp_intermediate_size;
                             for (int li = 0; li < ctx->config.cp_num_layers; li++) {
                                 qwen_cp_layer_t *cl = &ctx->cp_layers[li];
-                                if (cl->gate_bf16 && cl->up_bf16 && cl->gate_up_fused_bf16) {
-                                    size_t row_bytes = (size_t)cp_h2 * sizeof(uint16_t);
-                                    for (int r = 0; r < cp_inter2; r++) {
-                                        memcpy(cl->gate_up_fused_bf16 + (size_t)(2*r)*cp_h2,
-                                               cl->gate_bf16 + (size_t)r*cp_h2, row_bytes);
-                                        memcpy(cl->gate_up_fused_bf16 + (size_t)(2*r+1)*cp_h2,
-                                               cl->up_bf16 + (size_t)r*cp_h2, row_bytes);
-                                    }
-                                }
+                                if (cl->gate_bf16 && cl->up_bf16 && cl->gate_up_fused_bf16)
+                                    qwen_interleave_gate_up_bf16(cl->gate_up_fused_bf16, cl->gate_bf16,
+                                                                 cl->up_bf16, cp_inter2, cp_h2);
                             }
                         }
 
@@ -2534,9 +2543,15 @@ int main(int argc, char **argv) {
                             cv_sf = fopen(cv_sf_path, "rb");
                             if (cv_sf) {
                                 uint64_t cv_hs;
-                                fread(&cv_hs, 8, 1, cv_sf);
+                                if (fread(&cv_hs, 8, 1, cv_sf) != 1) {
+                                    fprintf(stderr, "error: cabecera truncada en %s\n", cv_sf_path);
+                                    return 1;
+                                }
                                 cv_hdr_json = (char *)malloc(cv_hs + 1);
-                                fread(cv_hdr_json, 1, cv_hs, cv_sf);
+                                if (!cv_hdr_json || fread(cv_hdr_json, 1, cv_hs, cv_sf) != cv_hs) {
+                                    fprintf(stderr, "error: cabecera truncada en %s\n", cv_sf_path);
+                                    return 1;
+                                }
                                 cv_hdr_json[cv_hs] = '\0';
                                 cv_data_off = 8 + cv_hs;
                                 use_wdelta = 1;

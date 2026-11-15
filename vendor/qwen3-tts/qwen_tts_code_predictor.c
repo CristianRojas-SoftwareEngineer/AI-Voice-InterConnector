@@ -257,7 +257,13 @@ void qwen_cp_quantize_int8(qwen_tts_ctx_t *ctx) {
         cp_qz(&l->wk_int8, &l->wk_scale, l->wk_bf16, cp_kv_dim, cp_h);
         cp_qz(&l->wv_int8, &l->wv_scale, l->wv_bf16, cp_kv_dim, cp_h);
         cp_qz(&l->wo_int8, &l->wo_scale, l->wo_bf16, cp_h, cp_q_dim);
-        cp_qz(&l->gate_up_fused_int8, &l->gate_up_fused_scale, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
+        if (!l->gate_up_fused_int8)
+            l->gate_up_fused_int8 = (int8_t *)aligned_malloc((size_t)2 * cp_inter * cp_h);
+        if (!l->gate_up_fused_scale)
+            l->gate_up_fused_scale = (float *)aligned_malloc((size_t)2 * cp_inter * sizeof(float));
+        if (l->gate_up_fused_int8 && l->gate_up_fused_scale)
+            qwen_quantize_gate_up_int8(l->gate_bf16, l->up_bf16, cp_inter, cp_h,
+                                       l->gate_up_fused_int8, l->gate_up_fused_scale);
         cp_qz(&l->down_int8, &l->down_scale, l->down_bf16, cp_h, cp_inter);
     }
     for (int g = 0; g < 15; g++)
@@ -271,6 +277,15 @@ static void cp_qz_q4(q4_0_block_t **dst, const uint16_t *src, int rows, int cols
     int bpr = cols / Q4_0_BLOCK_SIZE;
     if (!*dst) *dst = (q4_0_block_t *)aligned_malloc((size_t)rows * bpr * sizeof(q4_0_block_t));
     if (*dst) qwen_quantize_bf16_to_q4_0(src, rows, cols, *dst);
+}
+
+/* Reserva el búfer q4_0 de gate+up intercalado si falta y lo (re)cuantiza desde
+ * gate_bf16 y up_bf16 (sin copia fusionada bf16). */
+static void cp_qz_gate_up_q4(q4_0_block_t **dst, const uint16_t *gate, const uint16_t *up,
+                             int rows, int cols) {
+    int bpr = cols / Q4_0_BLOCK_SIZE;
+    if (!*dst) *dst = (q4_0_block_t *)aligned_malloc((size_t)2 * rows * bpr * sizeof(q4_0_block_t));
+    if (*dst) qwen_quantize_gate_up_q4_0(gate, up, rows, cols, *dst);
 }
 
 /* Reserva el búfer Q2_0 si falta y lo (re)cuantiza desde el puntero bf16 actual;
@@ -312,7 +327,7 @@ void qwen_cp_quantize_q4(qwen_tts_ctx_t *ctx) {
         cp_qz_q4(&l->wk_q4, l->wk_bf16, cp_kv_dim, cp_h);
         cp_qz_q4(&l->wv_q4, l->wv_bf16, cp_kv_dim, cp_h);
         cp_qz_q4(&l->wo_q4, l->wo_bf16, cp_h, cp_q_dim);
-        cp_qz_q4(&l->gate_up_fused_q4, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
+        cp_qz_gate_up_q4(&l->gate_up_fused_q4, l->gate_bf16, l->up_bf16, cp_inter, cp_h);
         cp_qz_q4(&l->down_q4, l->down_bf16, cp_h, cp_inter);
     }
     for (int g = 0; g < 15; g++)
@@ -325,7 +340,8 @@ void qwen_cp_quantize_q4(qwen_tts_ctx_t *ctx) {
  * y las FFN (gate_up_fused y down) en q4_0. Las FFN son la mayor parte de los bytes
  * que el CP lee 15 veces por fotograma y toleran q4_0 sin pérdida de calidad
  * medible, mientras que la atención y las cabezas quedan en int8. Las FFN se
- * cuantizan directamente a q4_0, sin copias int8. */
+ * cuantizan directamente a q4_0, sin copias int8; gate_up se cuantiza desde
+ * gate_bf16 y up_bf16 porque en este perfil no existe la copia fusionada bf16. */
 void qwen_cp_quantize_mixed(qwen_tts_ctx_t *ctx) {
     qwen_tts_config_t *c = &ctx->config;
     int cp_h = c->cp_hidden_size;
@@ -338,7 +354,7 @@ void qwen_cp_quantize_mixed(qwen_tts_ctx_t *ctx) {
         cp_qz(&l->wk_int8, &l->wk_scale, l->wk_bf16, cp_kv_dim, cp_h);
         cp_qz(&l->wv_int8, &l->wv_scale, l->wv_bf16, cp_kv_dim, cp_h);
         cp_qz(&l->wo_int8, &l->wo_scale, l->wo_bf16, cp_h, cp_q_dim);
-        cp_qz_q4(&l->gate_up_fused_q4, l->gate_up_fused_bf16, 2 * cp_inter, cp_h);
+        cp_qz_gate_up_q4(&l->gate_up_fused_q4, l->gate_bf16, l->up_bf16, cp_inter, cp_h);
         cp_qz_q4(&l->down_q4, l->down_bf16, cp_h, cp_inter);
     }
     for (int g = 0; g < 15; g++)
@@ -409,6 +425,35 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
     /* Final norm */
     ctx->cp_norm = get_f32(ctx->safetensors, "talker.code_predictor.model.norm.weight");
 
+    /* La precisión del CP sigue normalmente a --int8/--int4, que TAMBIÉN cuantizan el Talker.
+     * El CP tiene hidden=1024 en ambos modelos y es el cuello de botella por fotograma
+     * (~90 % matvec), así que cuantizarlo acelera tanto el 0.6B como el 1.7B.
+     * QWEN_CP_PREC={bf16|int8|int4|mixed} DESACOPLA la precisión del CP de la del Talker para que
+     * una medición mantenga fijo el Talker (y con él code0) y varíe SOLO el CP; si no,
+     * code0 deriva entre ejecuciones y la coincidencia por codebook se contamina con la
+     * cuantización del Talker. Sin la variable, el comportamiento de --int8/--int4 no cambia.
+     * El valor mixed (el que fija --quant-mixed) cuantiza la atención y las cabezas en int8
+     * y las FFN en q4_0 (ver qwen_cp_quantize_mixed). Los valores válidos son bf16, int8,
+     * int4 y mixed; cualquier otro valor no vacío detiene la carga con un error, para no
+     * sintetizar con una precisión distinta de la pedida. Se decide antes de cargar las
+     * capas porque de ella depende si se crea la copia fusionada bf16 de gate+up. */
+    int cp_do_int8 = ctx->use_int8;
+    int cp_do_int4 = ctx->use_int4;
+    int cp_do_mixed = 0;
+    const char *cp_prec = getenv("QWEN_CP_PREC");
+    if (cp_prec && *cp_prec) {
+        if (strcmp(cp_prec, "bf16") && strcmp(cp_prec, "int8") && strcmp(cp_prec, "int4") &&
+            strcmp(cp_prec, "mixed")) {
+            fprintf(stderr, "error: QWEN_CP_PREC=%s no es válido; use bf16, int8, int4 o mixed\n", cp_prec);
+            return -1;
+        }
+        cp_do_int8 = !strcmp(cp_prec, "int8");
+        cp_do_int4 = !strcmp(cp_prec, "int4");
+        cp_do_mixed = !strcmp(cp_prec, "mixed");
+        if (!ctx->silent)
+            fprintf(stderr, "  [QWEN_CP_PREC=%s] CP precision decoupled from Talker\n", cp_prec);
+    }
+
     /* Per-layer weights */
     for (int i = 0; i < c->cp_num_layers; i++) {
         qwen_cp_layer_t *l = &ctx->cp_layers[i];
@@ -434,16 +479,13 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
         CP_LOAD_BF16(up_bf16, "talker.code_predictor.model.layers.%d.mlp.up_proj.weight", i);
         CP_LOAD_BF16(down_bf16, "talker.code_predictor.model.layers.%d.mlp.down_proj.weight", i);
 
-        /* Fuse gate+up: interleave rows [gate_row0, up_row0, gate_row1, ...] */
-        {
-            size_t row_bytes = (size_t)cp_h * sizeof(uint16_t);
-            l->gate_up_fused_bf16 = (uint16_t *)aligned_malloc(2 * (size_t)c->cp_intermediate_size * row_bytes);
-            for (int r = 0; r < c->cp_intermediate_size; r++) {
-                memcpy(l->gate_up_fused_bf16 + (size_t)(2 * r) * cp_h,
-                       l->gate_bf16 + (size_t)r * cp_h, row_bytes);
-                memcpy(l->gate_up_fused_bf16 + (size_t)(2 * r + 1) * cp_h,
-                       l->up_bf16 + (size_t)r * cp_h, row_bytes);
-            }
+        /* Copia fusionada gate+up (filas intercaladas): solo la usa la ruta bf16. Con
+         * cualquier precisión cuantizada se cuantiza directamente desde gate_bf16 y up_bf16. */
+        if (!cp_do_int8 && !cp_do_int4 && !cp_do_mixed) {
+            l->gate_up_fused_bf16 = (uint16_t *)aligned_malloc(
+                2 * (size_t)c->cp_intermediate_size * cp_h * sizeof(uint16_t));
+            qwen_interleave_gate_up_bf16(l->gate_up_fused_bf16, l->gate_bf16, l->up_bf16,
+                                         c->cp_intermediate_size, cp_h);
         }
 
         #undef CP_LOAD_BF16
@@ -521,34 +563,6 @@ int qwen_cp_load(qwen_tts_ctx_t *ctx) {
         }
     }
     ctx->cp_rope_cache_len = cp_kv_max;
-
-    /* La precisión del CP sigue normalmente a --int8/--int4, que TAMBIÉN cuantizan el Talker.
-     * El CP tiene hidden=1024 en ambos modelos y es el cuello de botella por fotograma
-     * (~90 % matvec), así que cuantizarlo acelera tanto el 0.6B como el 1.7B.
-     * QWEN_CP_PREC={bf16|int8|int4|mixed} DESACOPLA la precisión del CP de la del Talker para que
-     * una medición mantenga fijo el Talker (y con él code0) y varíe SOLO el CP; si no,
-     * code0 deriva entre ejecuciones y la coincidencia por codebook se contamina con la
-     * cuantización del Talker. Sin la variable, el comportamiento de --int8/--int4 no cambia.
-     * El valor mixed (el que fija --quant-mixed) cuantiza la atención y las cabezas en int8
-     * y las FFN en q4_0 (ver qwen_cp_quantize_mixed). Los valores válidos son bf16, int8,
-     * int4 y mixed; cualquier otro valor no vacío detiene la carga con un error, para no
-     * sintetizar con una precisión distinta de la pedida. */
-    int cp_do_int8 = ctx->use_int8;
-    int cp_do_int4 = ctx->use_int4;
-    int cp_do_mixed = 0;
-    const char *cp_prec = getenv("QWEN_CP_PREC");
-    if (cp_prec && *cp_prec) {
-        if (strcmp(cp_prec, "bf16") && strcmp(cp_prec, "int8") && strcmp(cp_prec, "int4") &&
-            strcmp(cp_prec, "mixed")) {
-            fprintf(stderr, "error: QWEN_CP_PREC=%s no es válido; use bf16, int8, int4 o mixed\n", cp_prec);
-            return -1;
-        }
-        cp_do_int8 = !strcmp(cp_prec, "int8");
-        cp_do_int4 = !strcmp(cp_prec, "int4");
-        cp_do_mixed = !strcmp(cp_prec, "mixed");
-        if (!ctx->silent)
-            fprintf(stderr, "  [QWEN_CP_PREC=%s] CP precision decoupled from Talker\n", cp_prec);
-    }
 
     if (cp_do_mixed) {
         if (!ctx->silent)

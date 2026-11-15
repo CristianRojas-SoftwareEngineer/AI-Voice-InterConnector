@@ -770,7 +770,8 @@ void qwen_tts_unload(qwen_tts_ctx_t *ctx) {
      * base, así que solo la base llega aquí con la lista poblada. */
     for (int i = 0; i < ctx->n_owned_overrides; i++) free(ctx->owned_overrides[i]);
     free(ctx->owned_overrides);
-    /* Free malloc'd fused weights (gate_up are the only malloc'd weight copies) */
+    /* Libera las copias fusionadas bf16 de gate+up; solo existen en bf16, y en el resto de
+     * perfiles el puntero es NULL (free(NULL) es válido). */
     for (int i = 0; i < ctx->config.num_layers; i++) free(ctx->layers[i].gate_up_fused_bf16);
     for (int i = 0; i < ctx->config.cp_num_layers; i++) free(ctx->cp_layers[i].gate_up_fused_bf16);
     for (int i = 0; i < ctx->config.cp_num_layers; i++) free(ctx->cp_layers[i].down_q2_rough);
@@ -851,7 +852,7 @@ qwen_tts_ctx_t *qwen_tts_clone_for_worker(const qwen_tts_ctx_t *base) {
                       ? c->intermediate_size : c->cp_intermediate_size;
 
     /* Talker KV cache + decode buffers (see qwen_talker_load) */
-    int talker_kv_max = 2048;
+    int talker_kv_max = QWEN_KV_INITIAL_POSITIONS;
     int64_t kv_size = (int64_t)c->num_layers * talker_kv_max * kv_dim;
     w->kv_cache_k = (uint16_t *)aligned_calloc(kv_size, sizeof(uint16_t));
     w->kv_cache_v = (uint16_t *)aligned_calloc(kv_size, sizeof(uint16_t));
@@ -1899,7 +1900,8 @@ int qwen_tts_generate_batch(qwen_tts_ctx_t *ctx, char **chunks, int nc,
         if (out_n + _c > out_cap) { out_cap = (out_n + _c) * 2 + 4096;         \
             float *_t = (float *)realloc(out, out_cap * sizeof(float));        \
             if (!_t) { free(out); return -1; } out = _t; }                     \
-        if (src) memcpy(out + out_n, (src), _c * sizeof(float));               \
+        const float *_s = (src);   /* variable: un NULL literal no llega a memcpy */ \
+        if (_s) memcpy(out + out_n, _s, _c * sizeof(float));                   \
         else memset(out + out_n, 0, _c * sizeof(float));                       \
         out_n += _c;                                                           \
     } while (0)

@@ -132,6 +132,20 @@ static int read_request(int fd, char *buf, int buf_size) {
     return total;
 }
 
+/* Escribe todo el búfer en el socket, reintentando las escrituras parciales. Devuelve 0
+ * si se escribió entero y -1 si el cliente cerró la conexión o hubo un error: quien llama
+ * decide si ese fallo importa (una respuesta sin cliente no tiene a quién avisar). */
+static int send_all(int fd, const void *buf, size_t len) {
+    const char *p = (const char *)buf;
+    while (len > 0) {
+        ssize_t n = write(fd, p, len);
+        if (n <= 0) return -1;
+        p += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
 /* Send HTTP response with headers + body */
 static void send_response(int fd, int status, const char *content_type,
                           const void *body, int body_len) {
@@ -149,8 +163,8 @@ static void send_response(int fd, int status, const char *content_type,
         "Connection: close\r\n"
         "\r\n",
         status, status_text, content_type, body_len);
-    write(fd, header, hlen);
-    if (body && body_len > 0) write(fd, body, body_len);
+    if (send_all(fd, header, (size_t)hlen) == 0 && body && body_len > 0)
+        send_all(fd, body, (size_t)body_len);
 }
 
 static void send_json(int fd, int status, const char *json) {
@@ -182,7 +196,7 @@ static void send_chunked_header(int fd) {
         "Access-Control-Allow-Origin: *\r\n"
         "Connection: close\r\n"
         "\r\n";
-    write(fd, header, strlen(header));
+    send_all(fd, header, strlen(header));
 }
 
 static int stream_http_callback(const float *samples, int n_samples, void *userdata) {
@@ -233,7 +247,7 @@ static int client_disconnected(void *ud) {
 }
 
 static void send_chunked_end(int fd) {
-    write(fd, "0\r\n\r\n", 5);
+    send_all(fd, "0\r\n\r\n", 5);
 }
 
 /* Adapter: feed a composer span's PCM through the HTTP chunk encoder (applies per-chunk gain). */
@@ -747,7 +761,7 @@ static void handle_connection(qwen_tts_ctx_t *ctx, int client_fd,
             "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
             "Access-Control-Allow-Headers: Content-Type\r\n"
             "Connection: close\r\n\r\n";
-        write(client_fd, cors, strlen(cors));
+        send_all(client_fd, cors, strlen(cors));
     }
     else if (strcmp(path, "/v1/health") == 0 && strcmp(method, "GET") == 0) {
         handle_health(client_fd);
@@ -1077,7 +1091,7 @@ static void *reader_main(void *arg) {
             const char *cors = "HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\n"
                 "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\n"
                 "Connection: close\r\n\r\n";
-            write(fd, cors, strlen(cors)); close(fd);
+            send_all(fd, cors, strlen(cors)); close(fd);
         } else if (strcmp(path, "/v1/health") == 0 && strcmp(method, "GET") == 0) {
             handle_health(fd); close(fd);
         } else if (strcmp(path, "/v1/speakers") == 0 && strcmp(method, "GET") == 0) {
@@ -1147,7 +1161,8 @@ static void send_pcm_chunk(int fd, const float *samples, int n) {
     }
     int data_len = n * 2;
     char ch[32]; int chlen = snprintf(ch, sizeof(ch), "%x\r\n", data_len);
-    write(fd, ch, chlen); write(fd, pcm, data_len); write(fd, "\r\n", 2);
+    if (send_all(fd, ch, (size_t)chlen) == 0 && send_all(fd, pcm, (size_t)data_len) == 0)
+        send_all(fd, "\r\n", 2);
     free(pcm);
 }
 

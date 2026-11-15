@@ -378,7 +378,8 @@ int qwen_compose_render_buffer(qwen_tts_ctx_t *ctx, qwen_cspan_t *spans, int nsp
             if (!_t) { free(out); return -1; }                            \
             out = _t;                                                      \
         }                                                                  \
-        if (src) memcpy(out + out_len, (src), _c * sizeof(float));         \
+        const float *_s = (src);   /* variable: un NULL literal no llega a memcpy */ \
+        if (_s) memcpy(out + out_len, _s, _c * sizeof(float));             \
         else memset(out + out_len, 0, _c * sizeof(float));                 \
         out_len += _c;                                                     \
     } while (0)

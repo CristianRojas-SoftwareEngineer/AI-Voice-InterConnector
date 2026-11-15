@@ -584,6 +584,7 @@ typedef struct qwen_tts_ctx {
     uint16_t *kv_cache_v;
     int kv_max;
     int kv_len;
+#define QWEN_KV_INITIAL_POSITIONS 1024   /* posiciones iniciales de la caché KV; kv_cache_grow la duplica cuando hace falta */
 
     /* --batch orchestration: prefill_only=1 makes qwen_tts_generate stop right after
      * prefill (KV populated, dec_x = last position), so the batched orchestrator can

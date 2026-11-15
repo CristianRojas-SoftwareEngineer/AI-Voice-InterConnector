@@ -113,19 +113,16 @@ int qwen_read_wav(const char *path, float **out_samples, int *out_n_samples, int
         if (fread(&chunk_size, 4, 1, f) != 1) break;
 
         if (memcmp(chunk_id, "fmt ", 4) == 0) {
-            fread(&audio_format, 2, 1, f);
-            int16_t ch;
-            fread(&ch, 2, 1, f);
+            int16_t ch, block_align, bps;
+            uint32_t sr, byte_rate;
+            if (fread(&audio_format, 2, 1, f) != 1 || fread(&ch, 2, 1, f) != 1 ||
+                fread(&sr, 4, 1, f) != 1 || fread(&byte_rate, 4, 1, f) != 1 ||
+                fread(&block_align, 2, 1, f) != 1 || fread(&bps, 2, 1, f) != 1) {
+                fprintf(stderr, "Error: chunk fmt truncado en %s\n", path);
+                fclose(f); return -1;
+            }
             num_channels = ch;
-            uint32_t sr;
-            fread(&sr, 4, 1, f);
             sample_rate = (int)sr;
-            uint32_t byte_rate;
-            fread(&byte_rate, 4, 1, f);
-            int16_t block_align;
-            fread(&block_align, 2, 1, f);
-            int16_t bps;
-            fread(&bps, 2, 1, f);
             bits_per_sample = bps;
             /* Skip extra fmt bytes */
             if (chunk_size > 16) {

@@ -221,6 +221,18 @@ typedef struct {
 void qwen_quantize_bf16_to_q4_0(const uint16_t *src_bf16, int rows, int cols,
                                  q4_0_block_t *dst);
 
+/* Proyección gate_up intercalada: la fila 2r es la fila r de `gate` y la 2r+1 la fila r de
+ * `up` (rows filas de `cols` bf16 cada una). Las tres últimas funciones dan los mismos
+ * bytes que cuantizar (o convertir) la copia intercalada completa, sin crearla. */
+void qwen_interleave_gate_up_bf16(uint16_t *dst, const uint16_t *gate,
+                                  const uint16_t *up, int rows, int cols);
+void qwen_quantize_gate_up_int8(const uint16_t *gate, const uint16_t *up,
+                                int rows, int cols, int8_t *dst_int8, float *dst_scale);
+void qwen_quantize_gate_up_q4_0(const uint16_t *gate, const uint16_t *up,
+                                int rows, int cols, q4_0_block_t *dst);
+void qwen_gate_up_to_f32(float *dst, const uint16_t *gate, const uint16_t *up,
+                         int rows, int cols);
+
 /* Matvec Q4_0: y[rows] = dequant(W_q4[rows, cols/32 blocks]) @ x[cols]. La
  * activación x se cuantiza a int8 y cada bloque se multiplica con producto escalar
  * entero (nibbles × activación), se escala con la escala fp16 del bloque y se

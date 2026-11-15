@@ -559,6 +559,11 @@ int qwen_speech_encoder_encode(qwen_tts_ctx_t *ctx, const float *audio, int n_sa
     /* === Stage 3: Downsample conv (stride=2, k=4, no bias) === */
     {
         int out_len = enc_conv1d_out_len(cur_len, 4, 2);
+        if (out_len <= 0) {
+            fprintf(stderr, "ERROR: el audio de referencia es demasiado corto para el codificador\n");
+            free(signal);
+            return -1;
+        }
         float *out = (float *)calloc((int64_t)cur_ch * out_len, sizeof(float));
         enc_causal_conv1d(out, signal, enc->downsample_weight, NULL,
                           cur_ch, cur_ch, cur_len, 4, 2, 1);
