@@ -394,6 +394,22 @@ Describe "bootstrap de Windows" {
         Assert-NoStagingLeft $script:TestDir
     }
 
+    It "con powershell.exe y un modulo Archive de otro runtime delante en PSModulePath extrae el zip sin usar Expand-Archive" {
+        if ($null -eq (Get-Command powershell.exe -ErrorAction SilentlyContinue)) {
+            Set-ItResult -Skipped -Because "powershell.exe no disponible"
+            return
+        }
+        $envBase = Get-TestEnvBase $script:TestDir
+        $decoy = New-DecoyArchiveModulePath (Join-Path $script:TestDir "decoy-modules")
+        $result = Invoke-ChildBootstrap -Bootstrap $script:InstallPs1 `
+            -Arguments @("-Version", "9.9.9", "-NoSetup", "-NoModifyPath", "-Yes") -ExtraEnv $envBase `
+            -Engine (Get-Command powershell.exe).Source -ChildEnv @{ PSModulePath = $decoy }
+
+        $result.ExitCode | Should -Be 0
+        ($result.Stdout + $result.Stderr) | Should -Not -Match "ExtractToDirectory"
+        Assert-NoStagingLeft $script:TestDir
+    }
+
     It "con powershell.exe, un PSModulePath heredado de PowerShell 7 y la reparacion rota falla explicando la causa antes de descargar" {
         if ($null -eq (Get-Command powershell.exe -ErrorAction SilentlyContinue) -or $null -eq (Get-Command pwsh -ErrorAction SilentlyContinue)) {
             Set-ItResult -Skipped -Because "powershell.exe o pwsh no disponible"

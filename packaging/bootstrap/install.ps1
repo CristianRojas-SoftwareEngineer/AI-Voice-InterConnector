@@ -63,27 +63,40 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
 
     function Initialize-BootstrapModules {
         # Un PSModulePath heredado de PowerShell 7 hace que Windows PowerShell 5.1
-        # cargue sus modulos .NET Core, incompatibles, y los cmdlets estandar
-        # desaparecen. Si falta alguno se importa el modulo del propio motor por
-        # ruta absoluta bajo $PSHOME (sin tocar PSModulePath ni usar directorios
+        # cargue sus modulos .NET Core, incompatibles: los cmdlets estandar
+        # desaparecen o, peor, se resuelven a una version de otro runtime. Por eso
+        # se exige que cada cmdlet salga de un modulo del propio motor ($PSHOME),
+        # no solo que exista. Si no, se importa el modulo del motor por ruta
+        # absoluta bajo $PSHOME (sin tocar PSModulePath ni usar directorios
         # escribibles por el usuario). Se evita Join-Path: es un cmdlet del
-        # modulo que podria faltar.
+        # modulo que podria faltar. La extraccion del zip no pasa por aqui: usa
+        # la API de .NET con una firma comun a ambos runtimes.
         $required = [ordered]@{
             "Microsoft.PowerShell.Utility"  = @("Get-FileHash", "New-Object")
             "Microsoft.PowerShell.Security" = @("Get-Acl", "Set-Acl")
-            "Microsoft.PowerShell.Archive"  = @("Expand-Archive")
             "Microsoft.PowerShell.Management" = @("Test-Path", "New-Item", "Join-Path", "Split-Path", "Remove-Item", "Get-Content")
+        }
+        # Los modulos nucleo informan como base el propio $PSHOME y el resto
+        # $PSHOME\Modules\<modulo>: se acepta la igualdad o estar debajo.
+        $ownRoot = $PSHOME.TrimEnd([IO.Path]::DirectorySeparatorChar)
+        $isOwn = {
+            param($Name)
+            $command = Get-Command $Name -ErrorAction SilentlyContinue
+            if ($null -eq $command) { return $false }
+            if ($null -eq $command.Module) { return $true }
+            $base = $command.Module.ModuleBase
+            return ($base -eq $ownRoot -or $base.StartsWith($ownRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase))
         }
         $missing = @()
         foreach ($module in $required.Keys) {
-            $absent = @($required[$module] | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+            $absent = @($required[$module] | Where-Object { -not (& $isOwn $_) })
             if ($absent.Count -eq 0) { continue }
             try {
-                Import-Module ([IO.Path]::Combine($PSHOME, "Modules", $module)) -ErrorAction Stop
+                Import-Module ([IO.Path]::Combine($PSHOME, "Modules", $module)) -Force -ErrorAction Stop
             } catch {
                 Write-Verbose "no se pudo importar ${module}: $_"
             }
-            $missing += @($absent | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) })
+            $missing += @($absent | Where-Object { -not (& $isOwn $_) })
         }
         if ($missing.Count -gt 0) {
             throw "ERROR [unsupported_platform]: faltan cmdlets est${a}ndar de PowerShell: $($missing -join ', '). Suele deberse a que esta consola hered${o} el entorno de m${o}dulos de PowerShell 7. Abre Windows PowerShell sin heredar ese entorno y vuelve a ejecutar el instalador."
@@ -259,7 +272,13 @@ $env:AVI_NO_SETUP = "1"; irm <url> | iex
             Write-BootstrapLog "$megabytes MB en $seconds s; checksum verificado."
             Write-BootstrapLog ""
 
-            Expand-Archive -Path $archivePath -DestinationPath $staging -Force
+            # API de .NET con la firma de dos argumentos, comun a .NET Framework
+            # (Windows PowerShell 5.1) y a .NET (PowerShell 7+): Expand-Archive
+            # depende del modulo que resuelva PSModulePath y puede ser el de otro
+            # runtime. $staging es un directorio propio y vacio: no hay nada que
+            # sobrescribir.
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $staging)
             $exe = Join-Path $staging "$App.exe"
             if (-not (Test-Path $exe)) { throw "ERROR [bundle_invalid]: el archivo no contiene el ejecutable esperado: $App.exe." }
             $incompatible = "ERROR [binary_incompatible]: el binario descargado ($target) no arranca en este sistema. Alternativa: compila desde la fuente siguiendo docs/BUILD.md. La instalaci${o}n existente no se ha modificado."

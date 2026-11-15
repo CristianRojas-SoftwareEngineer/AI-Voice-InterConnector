@@ -47,6 +47,27 @@ function Get-ContaminatedModulePath {
     return (@($pwshModules) + @($current -split ";" | Where-Object { $_ -ne "" -and $_ -ne $pwshModules })) -join ";"
 }
 
+# PSModulePath con un Microsoft.PowerShell.Archive senuelo delante. Imita al de
+# PowerShell 7, que extrae con la sobrecarga de tres argumentos de
+# ZipFile.ExtractToDirectory, inexistente en .NET Framework: bajo Windows
+# PowerShell 5.1 cualquier Expand-Archive que resuelva a el falla. La prueba no
+# depende asi de la version de `pwsh` instalada, cuyo modulo real cambia entre
+# versiones menores. Devuelve el PSModulePath; el modulo se crea en $Root.
+function New-DecoyArchiveModulePath {
+    param([string]$Root)
+    $moduleDir = Join-Path $Root "Microsoft.PowerShell.Archive"
+    New-Item -ItemType Directory -Force -Path $moduleDir | Out-Null
+    $body = @'
+function Expand-Archive {
+    param([string]$Path, [string]$DestinationPath, [switch]$Force)
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($Path, $DestinationPath, $true)
+}
+'@
+    Set-Content -Path (Join-Path $moduleDir "Microsoft.PowerShell.Archive.psm1") -Value $body
+    $current = [Environment]::GetEnvironmentVariable("PSModulePath")
+    return (@($Root) + @($current -split ";" | Where-Object { $_ -ne "" -and $_ -ne $Root })) -join ";"
+}
+
 # Aplica las variables del hashtable (valor $null = ausente) guardando las previas.
 function Enter-HarnessEnv {
     param([hashtable]$Vars)

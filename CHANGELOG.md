@@ -137,6 +137,14 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
+## [No publicado]
+
+El instalador de Windows fallaba bajo Windows PowerShell 5.1 en equipos con PowerShell 7 instalado: dejaba la instalación sin hacer con `No se encuentra ninguna sobrecarga para "ExtractToDirectory" y el número de argumentos "3"`. El instalador deja de depender del módulo que resuelva `PSModulePath` para extraer el paquete, de modo que funciona igual en Windows PowerShell 5.1 y en PowerShell 7+.
+
+### Corregido
+
+- **`install.ps1` bajo Windows PowerShell 5.1 con PowerShell 7 instalado:** extrae el zip con `ZipFile.ExtractToDirectory` de dos argumentos, común a .NET Framework y a .NET, en lugar de `Expand-Archive`, que con un `PSModulePath` heredado de PowerShell 7 se resolvía al módulo de .NET Core y fallaba. La reparación de módulos estándar ya no se basa en que el cmdlet exista, sino en que provenga de los módulos del propio motor (`$PSHOME`). Nueva prueba de la suite del bootstrap con un módulo `Microsoft.PowerShell.Archive` señuelo delante en `PSModulePath`, independiente de la versión de `pwsh` instalada.
+
 ## [0.45.0] — 2026-11-15
 
 Una locución larga tardaba 18 s en empezar a sonar porque la aplicación esperaba a que el motor terminara toda la síntesis, y el residente del motor retenía unos 3,35 GiB de memoria privada, que en un equipo de 8 GiB acabarían en el archivo de paginación y romperían esa promesa. La versión hace que `speech say`, `speech dub` y `speech synthesize --play` reproduzcan el audio mientras se sintetiza (la voz empieza en torno a 1,2 s por el daemon) y recorta el residente a ~1,43 GiB con el mismo audio byte a byte y un ~6 % más de velocidad, además de limpiar los avisos del motor en Linux.
