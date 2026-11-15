@@ -141,11 +141,15 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-La voz empieza a sonar algo antes en cada locución, sobre todo en las frases cortas: el motor preparaba en serie los pesos del modelo antes de empezar a hablar y ahora reparte ese trabajo entre sus hilos. El audio que se genera no cambia.
+La voz empieza a sonar algo antes en cada locución, sobre todo en las frases cortas: el motor preparaba en serie los pesos del modelo antes de empezar a hablar y ahora reparte ese trabajo entre sus hilos. El audio que se genera no cambia. Además, la síntesis directa y el cambio de voz del daemon dejan de esperar unos 5 s al cerrar el motor anterior.
 
 ### Cambiado
 
 - **Prefill del Talker:** la conversión de los pesos de bf16 a f32 que se hace en cada petición se reparte entre los hilos del motor en lugar de hacerse en serie. El audio es idéntico bit a bit en los perfiles `mixed`, `int8` y `bf16`, con la voz clonada y con `ryan`. Con el perfil `mixed` y la voz clonada, el prefill de una frase corta baja de 372 a 334 ms sin carga (−10,2 %) y de 524 a 451 ms con la memoria cargada (−13,8 %), y el primer audio baja un 9,8 % y un 7,6 %; el RTF no empeora en ningún caso.
+
+### Corregido
+
+- **Cierre del motor residente:** al soltar un motor vivo (al cambiar de voz en el daemon y al terminar la síntesis directa con `--no-daemon`), la aplicación esperaba hasta 5 s a que terminara solo, algo que no podía ocurrir mientras ella retenía su tubería de entrada, y lo mataba al vencer el plazo. Ahora lo mata y lo recolecta en el acto. La síntesis directa de una frase corta baja de 8841 a 3833 ms (mediana, −5,0 s) y una petición del daemon que cambia de voz baja de 9336 a 4433 ms (mediana, −4,9 s); las peticiones sin cambio de voz no varían. El audio no cambia: el bloque de datos del WAV tiene el mismo md5.
 
 ## [0.45.1] — 2026-11-15
 
