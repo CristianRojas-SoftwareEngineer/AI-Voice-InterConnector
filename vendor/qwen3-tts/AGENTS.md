@@ -78,7 +78,7 @@ Architecture/background references:
 - Code Predictor runs 15 sequential passes per audio frame.
 - Speech decoder is a causal ConvNet with 480x upsampling.
 - Large weights are bf16 mmapped and consumed via bf16 kernels.
-- `gate_up_fused_bf16` (gate and up rows interleaved) exists only when the component runs in bf16; quantization and the Talker prefill read `gate_bf16`/`up_bf16` directly. The prefill has a single path (BLAS sgemm).
+- `gate_up_fused_bf16` (gate and up rows interleaved) exists only when the component runs in bf16; quantization and the Talker prefill read `gate_bf16`/`up_bf16` directly. The prefill has a single path (BLAS sgemm), and the per-layer bf16-to-f32 weight conversion it needs is split across the engine's pool threads (`qwen_parallel`).
 - The Talker KV cache starts at `QWEN_KV_INITIAL_POSITIONS` (1024) positions and doubles on demand.
 - Output audio is 24 kHz, generated from 16-codebook discrete tokens at 12.5 Hz.
 

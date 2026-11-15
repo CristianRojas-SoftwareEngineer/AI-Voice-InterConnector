@@ -336,6 +336,13 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Por qué**: era un interruptor de entorno heredado de una máquina M1, apagado por defecto y sin uso, que seleccionaba una ruta de cálculo (algo que el motor no permite) y obligaba a mantener la copia fusionada bf16.
 - **Si se pierde**: reaparece una ruta muerta que exige la copia fusionada en todos los perfiles.
 
+### Conversión de los pesos del prefill repartida entre los hilos
+
+- **Archivos**: `qwen_tts_talker.c` (`prefill_convert_job_t`, `convert_slice_bf16_to_f32`, `prefill_convert_task`, `qwen_talker_prefill`).
+- **Qué cambia**: para cada una de las 28 capas, la conversión bf16 a f32 de `wq`, `wk`, `wv`, `wo`, `gate`/`up` y `down` se reparte entre los hilos del pool con una sola llamada a `qwen_parallel`: cada hilo convierte una rebanada contigua de cada matriz (gate y up, un rango de filas) y escribe un rango disjunto de los búferes `pref_*_f32`. La conversión en serie desaparece. El `sgemm` no cambia ni se toca el número de hilos de BLAS.
+- **Por qué**: la conversión en serie costaba unos 155 ms fijos por petición (250–265 ms con otro proceso saturando la memoria), el 42 % del prefill de un texto corto, mientras el resto de los hilos esperaba. Convertir es una copia de bits elemento a elemento, así que repartirla no cambia ningún valor: el PCM es idéntico bit a bit en los perfiles `mixed`, `int8` y `bf16`, con la voz clonada y con `ryan`, en textos corto, medio y largo (18 casos). Medido con el residente en `mixed`, voz clonada y `-j 4`, la mediana del prefill del texto corto baja un 10,2 % sin carga y un 13,8 % con carga de memoria (372 a 334 ms y 524 a 451 ms), el primer audio un 9,8 % y un 7,6 %, y el RTF no empeora en ningún caso. En el texto largo la ganancia del prefill es del 2,2 % sin carga y del 8,8 % con carga. La ganancia es pequeña porque la conversión está limitada por el ancho de banda de memoria.
+- **Si se pierde**: el prefill vuelve a convertir en serie unos 155 ms por petición y el primer audio sube un 7–10 % en textos cortos.
+
 ### Uso directo con OpenBLAS de OpenMP
 
 - **Archivos**: ninguno (requisito de uso); `qwen_tts_kernels.c` (`qwen_blas_set_threads`).

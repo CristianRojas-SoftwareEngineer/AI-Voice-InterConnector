@@ -11,6 +11,7 @@
 #include "qwen_tts_kernels.h"
 #include "ingot/safetensors.h"
 #include "qwen_tts_batch.h"
+#include "qwen_tts_thread.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -663,6 +664,42 @@ int qwen_talker_step(qwen_tts_ctx_t *ctx, float *embed, float *hidden_out) {
  * Prefill (multi-token)
  * ======================================================================== */
 
+/* Trabajo de conversión bf16 a f32 de los pesos de una capa del Talker: búferes f32 de
+ * destino, capa de origen, tamaños en elementos de cada matriz y dimensiones de gate/up. */
+typedef struct {
+    float *wq, *wk, *wv, *wo, *gate_up, *down;
+    const qwen_talker_layer_t *layer;
+    int64_t nq, nk, nv, no, nd;
+    int inter, h;
+} prefill_convert_job_t;
+
+/* Convierte la rebanada [tid*n/nt, (tid+1)*n/nt) de una matriz bf16 a f32. */
+static void convert_slice_bf16_to_f32(float *dst, const uint16_t *src, int64_t n,
+                                      size_t tid, size_t nt) {
+    int64_t a = (int64_t)((tid * (size_t)n) / nt);
+    int64_t b = (int64_t)(((tid + 1) * (size_t)n) / nt);
+    bf16_to_f32_matrix(dst + a, src + a, b - a);
+}
+
+/* Tarea del pool: convierte a f32 los pesos de una capa repartiendo cada matriz entre los
+ * hilos; gate y up se reparten por filas de inter. Cada hilo escribe un rango disjunto de
+ * los búferes de destino, y el resultado es idéntico al de la conversión en serie porque
+ * la conversión es una copia de bits elemento a elemento. Se llama desde el hilo principal
+ * antes de que exista el hilo del decodificador: el pool no es reentrante. */
+static void prefill_convert_task(size_t tid, size_t nt, void *arg) {
+    prefill_convert_job_t *j = (prefill_convert_job_t *)arg;
+    const qwen_talker_layer_t *l = j->layer;
+    convert_slice_bf16_to_f32(j->wq, l->wq_bf16, j->nq, tid, nt);
+    convert_slice_bf16_to_f32(j->wk, l->wk_bf16, j->nk, tid, nt);
+    convert_slice_bf16_to_f32(j->wv, l->wv_bf16, j->nv, tid, nt);
+    convert_slice_bf16_to_f32(j->wo, l->wo_bf16, j->no, tid, nt);
+    convert_slice_bf16_to_f32(j->down, l->down_bf16, j->nd, tid, nt);
+    int r0 = (int)((tid * (size_t)j->inter) / nt);
+    int r1 = (int)(((tid + 1) * (size_t)j->inter) / nt);
+    qwen_gate_up_to_f32(j->gate_up + (size_t)2 * r0 * j->h, l->gate_bf16 + (size_t)r0 * j->h,
+                        l->up_bf16 + (size_t)r0 * j->h, r1 - r0, j->h);
+}
+
 int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
     qwen_tts_config_t *c = &ctx->config;
     int h = c->hidden_size;
@@ -672,7 +709,7 @@ int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
     float eps = c->rms_norm_eps;
 
     /* Las proyecciones del prefill van siempre por el sgemm de BLAS sobre los pesos
-     * convertidos a f32. */
+     * convertidos a f32; esa conversión se reparte entre los hilos del motor. */
     if (!ctx->silent) fprintf(stderr, "  Prefill:%d tokens, hidden=%d\n", seq_len, h);
 
     if (kv_cache_grow(ctx, seq_len) != 0) return -1;
@@ -735,14 +772,16 @@ int qwen_talker_prefill(qwen_tts_ctx_t *ctx, float *input_embeds, int seq_len) {
     for (int layer = 0; layer < c->num_layers; layer++) {
         qwen_talker_layer_t *l = &ctx->layers[layer];
 
-        /* Convierte a f32 los pesos bf16 de esta capa; gate y up se intercalan en el mismo
-         * búfer directamente desde gate_bf16 y up_bf16 (no depende de la copia fusionada). */
-        bf16_to_f32_matrix(wq_f32, l->wq_bf16, (int64_t)q_dim * h);
-        bf16_to_f32_matrix(wk_f32, l->wk_bf16, (int64_t)kv_dim * h);
-        bf16_to_f32_matrix(wv_f32, l->wv_bf16, (int64_t)kv_dim * h);
-        bf16_to_f32_matrix(wo_f32, l->wo_bf16, (int64_t)h * q_dim);
-        qwen_gate_up_to_f32(gate_up_f32, l->gate_bf16, l->up_bf16, inter, h);
-        bf16_to_f32_matrix(down_f32, l->down_bf16, (int64_t)h * inter);
+        /* Convierte a f32 los pesos bf16 de esta capa repartiendo el trabajo entre los hilos
+         * del motor; qwen_parallel no vuelve hasta que todos terminan, antes de cualquier
+         * sgemm. Gate y up se intercalan en el mismo búfer directamente desde gate_bf16 y
+         * up_bf16 (no depende de la copia fusionada). */
+        prefill_convert_job_t job = {
+            wq_f32, wk_f32, wv_f32, wo_f32, gate_up_f32, down_f32, l,
+            (int64_t)q_dim * h, (int64_t)kv_dim * h, (int64_t)kv_dim * h,
+            (int64_t)h * q_dim, (int64_t)h * inter, inter, h
+        };
+        qwen_parallel((size_t)qwen_get_threads(), prefill_convert_task, &job);
 
         /* 1. Input RMSNorm for all positions */
         qwen_rms_norm(pref_x_norm, residual, l->input_norm, seq_len, h, eps);
