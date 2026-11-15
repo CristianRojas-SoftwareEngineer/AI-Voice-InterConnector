@@ -220,7 +220,7 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 ### Perfil `mixed` del Code Predictor
 
 - **Archivos**: `qwen_tts_code_predictor.c` (`qwen_cp_quantize_mixed`, `qwen_cp_load`, `cp_prec_label`), `main.c` (`--quant-mixed`), `Makefile` (`test-modes`).
-- **Qué cambia**: `QWEN_CP_PREC=mixed` cuantiza la atención (`wq`, `wk`, `wv`, `wo`) y las 15 cabezas de salida en int8 y las FFN (`gate_up_fused` y `down`) directamente en q4_0, sin copias int8. `--quant-mixed` es Talker q4_0 más este Code Predictor (antes, Code Predictor entero en int8), y la línea de carga lo identifica con `[INT8+Q4_0-FFN]`. `test-modes` comprueba 5 combinaciones, la última `--quant-mixed --stream` con su etiqueta.
+- **Qué cambia**: `QWEN_CP_PREC=mixed` cuantiza la atención (`wq`, `wk`, `wv`, `wo`) y las 15 cabezas de salida en int8 y las FFN (`gate_up` desde `gate_bf16` y `up_bf16`, y `down`) directamente en q4_0, sin copias int8. `--quant-mixed` es Talker q4_0 más este Code Predictor (antes, Code Predictor entero en int8), y la línea de carga lo identifica con `[INT8+Q4_0-FFN]`. `test-modes` comprueba 5 combinaciones, la última `--quant-mixed --stream` con su etiqueta.
 - **Por qué**: las FFN son la mayor parte de los bytes que el Code Predictor lee 15 veces por fotograma y toleran q4_0. Con el modelo 0.6B la calidad no cambió de forma medible (WER 3,85 % frente a 4,14 %, similitud WavLM media 0,976, sin finales perdidos, entonación y duración dentro de la variación entre semillas) ni audible, y la memoria del Code Predictor cuantizado baja de ~47 MB a ~26 MB. Con PREFILL2, el RTF baja un 8-10 %.
 - **Si se pierde**: `--quant-mixed` vuelve a leer las FFN del Code Predictor en int8, con más tráfico de memoria por fotograma.
 
@@ -314,3 +314,31 @@ Este directorio es un snapshot del motor Qwen3-TTS, sin submódulo ni historial 
 - **Qué cambia**: el cuantizador q4_0 por mínimos cuadrados ponderados es el único, sin la variable `QWEN_Q4_NAIVE` que restauraba el redondeo por máximo absoluto. La sección WDELTA de una `.qvoice` exige el campo de tamaño del modelo (1024 o 2048) y, si falta o no es válido, la carga falla con un error en lugar de reinterpretarlo como el formato anterior sin ese campo. Desaparecen los alias `test-en` y `test-it-ryan` del `Makefile`.
 - **Por qué**: el motor no tiene usuarios externos ni voces creadas con el formato anterior, y esas rutas solo servían para reproducir comportamientos ya sustituidos; la variable además contradecía la regla de que ningún interruptor de entorno selecciona la numérica cuantizada.
 - **Si se pierde**: vuelve a existir una segunda numérica q4_0 sin pruebas y una voz WDELTA corrupta podría cargarse leyendo como número de tensores lo que es otro campo.
+
+### Copia fusionada de `gate_up` solo en bf16
+
+- **Archivos**: `qwen_tts_kernels.c` y `qwen_tts_kernels.h` (`qwen_interleave_gate_up_bf16`, `qwen_quantize_gate_up_int8`, `qwen_quantize_gate_up_q4_0`, `qwen_gate_up_to_f32`), `qwen_tts_talker.c` (`qwen_talker_load`, `qwen_talker_quantize_int8`, `qwen_talker_prefill`), `qwen_tts_code_predictor.c` (`qwen_cp_load` y los cuantizadores), `main.c` (reconstrucción tras una sobrescritura de pesos).
+- **Qué cambia**: el Talker y el Code Predictor deciden su precisión antes de cargar las capas y crean `gate_up_fused_bf16` (las filas de `gate` y `up` intercaladas: la 2r es `gate` y la 2r+1 es `up`) solo cuando el componente funciona en bf16. Con int8 o q4_0, las copias cuantizadas se crean directamente desde `gate_bf16` y `up_bf16` (el `mmap`), fila a fila y en posición intercalada, con los cuantizadores por fila de siempre; el prefill convierte a f32 desde las mismas matrices. Una sola función de intercalado sustituye los cinco bucles copiados.
+- **Por qué**: con q4_0 o int8 la copia solo servía de fuente para cuantizar y para convertir a f32 en cada petición: 336 MiB en el Talker y 58 MiB en el Code Predictor de memoria privada. Los cuantizadores y la conversión trabajan fila a fila, así que los bytes resultantes son idénticos y el audio no cambia.
+- **Si se pierde**: el residente vuelve a retener unos 394 MiB que el perfil de producción no usa.
+
+### Caché KV inicial de 1024 posiciones
+
+- **Archivos**: `qwen_tts.h` (`QWEN_KV_INITIAL_POSITIONS`), `qwen_tts_talker.c` (`qwen_talker_load`), `qwen_tts.c` (clon de worker).
+- **Qué cambia**: la caché KV del Talker nace con 1024 posiciones en lugar de 2048, con una constante única para la carga y el clon de worker; `kv_cache_grow` la duplica cuando hace falta.
+- **Por qué**: 2048 posiciones reservaban 224 MiB para frases que casi nunca las necesitan; con 1024 se ahorran 111 MiB y las frases largas crecen por duplicación sin cambiar el resultado.
+- **Si se pierde**: se reservan 111 MiB más en cada instancia del motor.
+
+### Prefill del Talker de una sola ruta
+
+- **Archivos**: `qwen_tts_talker.c` (`qwen_talker_prefill`).
+- **Qué cambia**: se retira la ruta opcional de prefill por `matmat` y la variable de entorno que la activaba: las proyecciones del prefill van siempre por el `sgemm` de BLAS sobre los pesos convertidos a f32.
+- **Por qué**: era un interruptor de entorno heredado de una máquina M1, apagado por defecto y sin uso, que seleccionaba una ruta de cálculo (algo que el motor no permite) y obligaba a mantener la copia fusionada bf16.
+- **Si se pierde**: reaparece una ruta muerta que exige la copia fusionada en todos los perfiles.
+
+### Uso directo con OpenBLAS de OpenMP
+
+- **Archivos**: ninguno (requisito de uso); `qwen_tts_kernels.c` (`qwen_blas_set_threads`).
+- **Qué cambia**: cuando el motor se enlaza con un OpenBLAS compilado con OpenMP (el de MSYS2 en Windows), `OMP_NUM_THREADS` debe valer lo mismo que `-j`. Nunca se debe fijar `OPENBLAS_NUM_THREADS`: con esa variable `qwen_blas_set_threads` deja de ajustar los hilos de BLAS por fase y el audio cambia.
+- **Por qué**: sin la variable, OpenBLAS crea un hilo de OpenMP por hilo lógico y compromete unos 128 MiB por hilo (2 GiB con 16 hilos) sin usarlos, y esos hilos compiten con el pool del motor: con `OMP_NUM_THREADS=4` el residente baja 1.410 MiB y sintetiza un 6 % más rápido (el decodificador pasa de 24,5 a 20,6 s en la frase larga), con el mismo audio. En Linux con OpenBLAS de pthreads la variable no cambia el audio ni la memoria física.
+- **Si se pierde**: el motor lanzado a mano en Windows reserva 2 GiB de más y va más lento; la aplicación ya fija la variable en todos sus lanzamientos.

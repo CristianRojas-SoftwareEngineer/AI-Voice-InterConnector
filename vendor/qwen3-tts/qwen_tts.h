@@ -142,7 +142,7 @@ typedef struct {
     uint16_t *up_bf16;           /* [inter, hidden] */
     uint16_t *down_bf16;         /* [hidden, inter] */
 
-    /* Fused gate+up for optimization */
+    /* gate+up intercalados: solo existe (si no, es NULL) cuando la capa va en bf16 */
     uint16_t *gate_up_fused_bf16; /* [2*inter, hidden] */
 
     /* INT8 quantized weights (optional, allocated if --int8 flag is set) */
@@ -192,7 +192,7 @@ typedef struct {
     uint16_t *up_bf16;
     uint16_t *down_bf16;
 
-    /* Fused gate+up for optimization */
+    /* gate+up intercalados: solo existe (si no, es NULL) cuando la capa va en bf16 */
     uint16_t *gate_up_fused_bf16; /* [2*inter, hidden] */
 
     /* INT8 quantized weights (optional, allocated if --int8 flag is set) */

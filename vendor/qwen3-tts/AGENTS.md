@@ -78,6 +78,8 @@ Architecture/background references:
 - Code Predictor runs 15 sequential passes per audio frame.
 - Speech decoder is a causal ConvNet with 480x upsampling.
 - Large weights are bf16 mmapped and consumed via bf16 kernels.
+- `gate_up_fused_bf16` (gate and up rows interleaved) exists only when the component runs in bf16; quantization and the Talker prefill read `gate_bf16`/`up_bf16` directly. The prefill has a single path (BLAS sgemm).
+- The Talker KV cache starts at `QWEN_KV_INITIAL_POSITIONS` (1024) positions and doubles on demand.
 - Output audio is 24 kHz, generated from 16-codebook discrete tokens at 12.5 Hz.
 
 ## Important Defaults
@@ -138,6 +140,9 @@ Build:
 make blas
 ```
 
+When running the engine directly against an OpenBLAS built with OpenMP (MSYS2 on Windows), set
+`OMP_NUM_THREADS` to the same value as `-j`; never set `OPENBLAS_NUM_THREADS` (it changes the audio).
+
 Smoke run:
 ```bash
 ./qwen_tts -d qwen3-tts-0.6b --text "Hello, how are you?" -o output.wav
@@ -171,6 +176,7 @@ convolucional causal lo permite sin mirar hacia delante.
   max|x|/127, round-half-even, saturate to [-128,127]) and multiplied with an integer dot product per ISA
   (AVX2 `maddubs`, VNNI `dpbusd`, ARM SDOT/i8mm, int32-accumulating scalar loop). There are no float
   fallbacks and no environment switches to select a quantized path; a batched `matmat` must equal B × `matvec`.
+- No environment switch may select a compute path (the Talker prefill has no optional `matmat` route).
 - Keep generic/NEON/AVX variants functionally equivalent.
 - If you optimize one path, verify no regression on others.
 - Favor meaningful speedups; avoid complexity for tiny wins.

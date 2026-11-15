@@ -300,12 +300,12 @@ Las cifras de calidad y velocidad corresponden al modelo 0.6B; solo AVX2 se midi
 
 | Ruta | Nivel | `first_audio_ms` (mediana / máximo) | `stalls` | Duración del comando (mediana) |
 |---|---|---|---|---|
-| Daemon | Sin carga | 1248 / 1359 ms | 0 en las 5 | 27,0 s |
-| Daemon | Un hilo de carga | 1478 / 1548 ms | 0 en las 5 | 27,3 s |
+| Daemon (motor con 1,4 GiB, ver 4.9) | Sin carga | 1148 / 1279 ms | 0 en las 5 | 26,9 s |
+| Daemon (motor con 1,4 GiB, ver 4.9) | Un hilo de carga | 1398 / 1408 ms | 0 en las 5 | 27,2 s |
 | Directa | Sin carga | 2871 / 3531 ms | 0 en las 5 | 33,7 s |
 | Directa | Un hilo de carga | 3641 / 3671 ms | 0 en las 5 | 34,5 s |
 
-Por el daemon la voz empieza en torno a 1,2–1,5 s, frente a los 18 s de la entrega completa, y no se corta en ninguna de las 20 ejecuciones. Por la ruta directa el primer sonido llega en torno a 3 s porque cada comando arranca su propio motor (≈ 1,6 s). No se midió con el equipo a batería.
+Por el daemon la voz empieza en torno a 1,1–1,4 s, frente a los 18 s de la entrega completa, y no se corta en ninguna de las 10 ejecuciones medidas. Las filas de la ruta directa son de una medición anterior, con el motor previo al recorte de memoria, y no se repitieron. Por la ruta directa el primer sonido llega en torno a 3 s porque cada comando arranca su propio motor (≈ 1,6 s). No se midió con el equipo a batería.
 
 ### 4.8. El decodificador de voz como cuello de botella en la entrega en streaming
 
@@ -338,6 +338,46 @@ El umbral absoluto de 250 ms de retraso máximo de llegada no sirvió de criteri
 
 Con `chunk_frames` 4 el audio del motor nuevo es idéntico byte a byte al del motor anterior. Por el reproductor real, `speech say` por el daemon tiene `stalls` = 0 en las 40 ejecuciones medidas (10 por versión y nivel) y un `first_audio_ms` mediano de 1218 → 1188 ms sin carga y de 1578 → 1558 ms con carga. El Talker baja de 17,4 a 13,5 ms por fotograma sin carga y de 21,3 a 17,0 con carga; el drenaje del decodificador tras la generación queda en unos 0,4 s por el residente. Una medición intermedia, con solo la atención en paralelo y sin el calendario, dio por el residente y el daemon un RTF prácticamente igual al anterior (daemon 0,773 → 0,758 sin carga y 0,944 → 0,938 con carga): con fragmentos de 4 el decodificador seguía marcando el ritmo, y es el calendario el que reparte esa ganancia.
 
+### 4.9. Memoria privada del residente
+
+**Problema.** El residente retenía ~3,35 GiB de memoria privada mientras vivía el daemon. En un equipo de 8 GiB con otras aplicaciones, Windows mandaría esa memoria al archivo de paginación y la locución siguiente tardaría mucho más que el segundo que promete el streaming.
+
+**Inventario** (Ryzen 7 5825U, 16 hilos lógicos, 32 GiB; residente de producción con la frase larga):
+
+| Fase | Memoria privada (MiB) | Partidas |
+|---|---|---|
+| Antes de `main` | 2.053 | OpenBLAS con OpenMP compromete ~128 MiB por hilo de OpenMP (16 hilos) sin tocarlos; con `OMP_NUM_THREADS=4` son 514 |
+| Carga del Talker | +803 | copias q4_0 236,5; copia bf16 fusionada de `gate_up` 335,7; caché KV de 2048 posiciones 224,0 |
+| Carga del Code Predictor | +147 | atención int8, FFN q4_0 y cabezas ~85; copia bf16 fusionada 60 |
+| Decodificador | +145 | pesos reordenados 111, codebooks |
+| Resto | +42 +18 +95 +42 | codificador de hablante, voz `--graft`, búferes del prefill, espacio de trabajo |
+| **Total tras la primera petición** | **3.352** | |
+
+Los pesos bf16 del modelo (1,83 GB) y los f32 del decodificador (0,68 GB) se leen por `mmap` de solo lectura y no son memoria privada: convertir el decodificador a bf16 no ahorra memoria privada.
+
+**Recortes** (todos con el mismo audio, md5 idéntico):
+
+| Recorte | Efecto en memoria privada |
+|---|---|
+| La copia fusionada de `gate_up` del Talker solo existe en bf16 | −336 MiB |
+| La del Code Predictor, igual | −58 MiB |
+| Caché KV inicial de 1024 posiciones (crece por duplicación) | −111 MiB |
+| `OMP_NUM_THREADS` igual a `-j` (4) | −1.410 MiB |
+
+Juntos: de 3.349 a 1.428 MiB privados (−57 %) y −550 MiB de working set. El prefill del Talker pierde su ruta opcional por `matmat` y convierte `gate` y `up` a f32 directamente.
+
+**Tiempo.** Con la combinación frente al control (5 pares alternados sin carga), el primer audio baja un 6,1 % y el total un 5,9 %; toda la mejora viene de `OMP_NUM_THREADS`: los hilos de OpenMP de OpenBLAS competían con el pool del motor (el decodificador pasa de 24,5 a 20,6 s y el Code Predictor de 36,9 a 34,2 ms por fotograma). En Linux (OpenBLAS de pthreads) la variable no cambia ni el audio ni la memoria física; `OPENBLAS_NUM_THREADS`, en cambio, cambia el audio, porque el motor deja de ajustar los hilos de BLAS por fase, y por eso nunca se fija.
+
+**Medición final con el motor y la aplicación nuevos.**
+
+| Criterio | Resultado |
+|---|---|
+| Audio frente a la línea base (CLI en los tres perfiles y servidor; larga, corta y un texto doble que obliga a crecer la caché KV) | md5 idénticos |
+| Memoria privada tras la frase larga | 1.431 MiB (working set 2.352 MiB) |
+| `OMP_NUM_THREADS=4` frente a sin variable, con carga de memoria (5 pares alternados) | md5 idéntico; mediana del total −6,2 % y −7,0 % (primera y segunda petición) |
+| `speech say` por el daemon, frase larga, sin carga | `first_audio_ms` mediano 1148 ms, RTF del motor 0,63–0,66, `stalls` 0 en las 5 |
+| `speech say` por el daemon, frase larga, con carga | RTF del motor 0,82–0,84, `stalls` 0 en las 5 |
+
 ---
 
 ## 5. Arquitectura de integración en el producto
@@ -367,7 +407,8 @@ args.push(String::from("--watch-stdin"));
 Para proteger la inferencia de variables de entorno heredadas que pudieran corromper la precisión, el lanzador `spawn_with_allowlist_env` inyecta de forma atómica:
 - **Para `mixed`:** `QWEN_TALKER_PREC=int4` y `QWEN_CP_PREC=mixed`.
 - **Para `bf16`:** `QWEN_TALKER_PREC=bf16` y `QWEN_CP_PREC=bf16`.
-- El motor rechaza con un error cualquier otro valor de esas variables.
+- **En ambos perfiles:** `OMP_NUM_THREADS=4`, el mismo valor que `-j` (ver 4.9).
+- El motor rechaza con un error cualquier otro valor de las variables de precisión.
 - El proceso padre y las rutas de clonado (`voice clone`) mantienen su entorno limpio e intacto.
 
 ---
