@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.45.1 — 2026-11-15](#0451--2026-11-15)
 - [0.45.0 — 2026-11-15](#0450--2026-11-15)
 - [0.44.0 — 2026-11-04](#0440--2026-11-04)
 - [0.43.0 — 2026-11-04](#0430--2026-11-04)
@@ -138,7 +138,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.45.1] — 2026-11-15
 
 El instalador de Windows fallaba bajo Windows PowerShell 5.1 en equipos con PowerShell 7 instalado: dejaba la instalación sin hacer con `No se encuentra ninguna sobrecarga para "ExtractToDirectory" y el número de argumentos "3"`. El instalador deja de depender del módulo que resuelva `PSModulePath` para extraer el paquete, de modo que funciona igual en Windows PowerShell 5.1 y en PowerShell 7+.
 
@@ -4063,3 +4063,4 @@ estado con el que nace el producto.
 [0.43.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.42.0...v0.43.0
 [0.44.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.43.0...v0.44.0
 [0.45.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.44.0...v0.45.0
+[0.45.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.45.0...v0.45.1
