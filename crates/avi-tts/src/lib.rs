@@ -95,6 +95,14 @@ pub const ENGINE_SAMPLE_RATE: u32 = 24_000;
 /// audio no llega más tarde que con el tamaño fijo de 4.
 const STREAM_CHUNK_FRAMES: u32 = 10;
 
+/// Hilos del motor: el `-j` del residente y del clonado, y el valor de
+/// `OMP_NUM_THREADS` en su entorno. Deben coincidir: si OpenBLAS está compilado con
+/// OpenMP y la variable no existe, crea un hilo por cada hilo lógico del procesador
+/// (reserva unos 128 MiB por hilo sin usarlos y compite con el pool del motor).
+/// Nunca se fija `OPENBLAS_NUM_THREADS`: con esa variable el motor deja de ajustar los
+/// hilos de BLAS por fase y el audio cambia.
+const ENGINE_THREADS: u32 = 4;
+
 pub const PRODUCTION_SEED: u64 = 4;
 
 /// Mayor seed que acepta el motor: lo lee como `int` de 32 bits con signo y
@@ -1246,16 +1254,20 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
 
 /// Lanza el motor hijo con `TMP`, `TEMP` y `TMPDIR` apuntando al scratch del
 /// proceso padre: así los temporales del motor mueren con el scratch y no
-/// quedan en el temporal del sistema.
+/// quedan en el temporal del sistema. Fija además `OMP_NUM_THREADS` con
+/// `ENGINE_THREADS` en todas las plataformas (donde OpenBLAS no usa OpenMP la
+/// variable no tiene efecto).
 fn spawn_engine(
     request: avi_process::RestrictedSpawnRequest,
     precision: Option<TtsPrecision>,
 ) -> Result<avi_process::RestrictedChild> {
     let scratch = avi_process::scratch::dir()?;
+    let threads = ENGINE_THREADS.to_string();
     let mut env: Vec<(&str, &std::ffi::OsStr)> = vec![
         ("TMP", scratch.as_os_str()),
         ("TEMP", scratch.as_os_str()),
         ("TMPDIR", scratch.as_os_str()),
+        ("OMP_NUM_THREADS", std::ffi::OsStr::new(&threads)),
     ];
     if let Some(precision) = precision {
         let (talker, cp) = match precision {
@@ -1274,7 +1286,8 @@ fn spawn_engine(
 /// `-d <model_dir> --ref-audio <ref> --xvector-only --save-voice <out>
 /// --voice-name <name> --watch-stdin`. `--xvector-only` guarda solo la huella
 /// de timbre (x-vector): sin transcripción ni códigos ICL. No lleva idioma: la
-/// huella sale del audio y cada petición de síntesis fija el suyo.
+/// huella sale del audio y cada petición de síntesis fija el suyo. Fija `-j` con
+/// `ENGINE_THREADS`, el mismo número de hilos que el residente.
 fn build_clone_command(
     bin: &Path,
     model_dir: &Path,
@@ -1292,6 +1305,8 @@ fn build_clone_command(
         out_qvoice.to_string_lossy().into_owned(),
         String::from("--voice-name"),
         name.to_string(),
+        String::from("-j"),
+        ENGINE_THREADS.to_string(),
         String::from("--watch-stdin"),
     ];
     (bin.to_path_buf(), args)
@@ -1472,7 +1487,7 @@ pub mod resident {
             String::from("--host"),
             crate::RESIDENT_HOST.to_string(),
             String::from("-j"),
-            String::from("4"),
+            crate::ENGINE_THREADS.to_string(),
         ];
         if precision == TtsPrecision::Mixed {
             args.push(String::from("--quant-mixed"));
@@ -2206,6 +2221,8 @@ mod tests {
                 "out.qvoice",
                 "--voice-name",
                 "ana",
+                "-j",
+                "4",
                 "--watch-stdin",
             ]
         );
@@ -2517,7 +2534,8 @@ mod tests {
             .arg("--host")
             .arg("127.0.0.1")
             .arg("-j")
-            .arg("4");
+            .arg(ENGINE_THREADS.to_string())
+            .env("OMP_NUM_THREADS", ENGINE_THREADS.to_string());
         if watch_stdin {
             cmd.arg("--watch-stdin");
         }
@@ -2631,7 +2649,7 @@ const HOLD: bool = __HOLD__;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::fs::write(format!("{DIR}/args.txt"), args.join(" ")).unwrap();
-    let keys = ["TMP", "TEMP", "TMPDIR", "QWEN_TALKER_PREC", "QWEN_CP_PREC"];
+    let keys = ["TMP", "TEMP", "TMPDIR", "QWEN_TALKER_PREC", "QWEN_CP_PREC", "OMP_NUM_THREADS"];
     let values: Vec<_> = keys.iter().map(|key| format!("{key}={}", std::env::var(key).unwrap_or_default())).collect();
     std::fs::write(format!("{DIR}/env.txt"), values.join("\n")).unwrap();
     let (tx, rx) = mpsc::channel();
@@ -2735,6 +2753,7 @@ fn main() {
                 "--nocapture",
             ]);
             command.env(MARKER, "1");
+            command.env("OMP_NUM_THREADS", "conflict");
             for key in keys {
                 command.env(key, "conflict");
             }
@@ -2784,6 +2803,10 @@ fn main() {
             for key in ["TMP", "TEMP", "TMPDIR"] {
                 assert_eq!(env[key], scratch.to_str().unwrap());
             }
+            // Los hilos de OpenMP los fija la aplicación aunque el padre tenga otro valor,
+            // y el entorno del padre no cambia.
+            assert_eq!(env["OMP_NUM_THREADS"], ENGINE_THREADS.to_string());
+            assert_eq!(std::env::var("OMP_NUM_THREADS").unwrap(), "conflict");
             let expected = match precision {
                 Some(TtsPrecision::Mixed) => ["int4", "mixed"],
                 Some(TtsPrecision::Bf16) => ["bf16", "bf16"],
@@ -2811,6 +2834,7 @@ fn main() {
             command.env(MARKER, dir.path());
             command.env("AVI_DATA_DIR", dir.path());
             command.env("QWEN3_TTS_BIN", bin);
+            command.env("OMP_NUM_THREADS", "conflict");
             for key in keys {
                 command.env(key, "conflict");
             }
@@ -2847,8 +2871,11 @@ fn main() {
         for key in ["TMP", "TEMP", "TMPDIR"] {
             assert_eq!(env[key], scratch.to_str().unwrap());
         }
+        assert_eq!(env["OMP_NUM_THREADS"], ENGINE_THREADS.to_string());
+        assert_eq!(std::env::var("OMP_NUM_THREADS").unwrap(), "conflict");
         let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
         assert!(args.contains("--xvector-only"));
+        assert!(args.contains("-j 4"));
         assert!(!args.contains("--quant-mixed"));
     }
 
