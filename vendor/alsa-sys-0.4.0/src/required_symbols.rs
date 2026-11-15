@@ -28,6 +28,7 @@ pub(crate) const REQUIRED_SYMBOLS: &[&core::ffi::CStr] = &[
     c"snd_pcm_get_params",
     c"snd_pcm_hw_params",
     c"snd_pcm_hw_params_any",
+    c"snd_pcm_hw_params_can_pause",
     c"snd_pcm_hw_params_can_resume",
     c"snd_pcm_hw_params_copy",
     c"snd_pcm_hw_params_current",

@@ -2080,8 +2080,12 @@ impl Drop for FakeDaemon {
 }
 
 /// Ejecuta `speech dub` por la vía daemon contra un servidor falso que responde
-/// 404 con `body` a `/dub`, y devuelve (código, JSON, rutas recibidas).
+/// 404 con `body` a `/dub`, y devuelve (código, JSON, rutas recibidas). El comando abre
+/// el dispositivo de salida antes de pedir la síntesis, así que sin salida de audio
+/// termina con `audio_backend_unavailable` antes de llegar al daemon: las pruebas que
+/// la usan son de recurso.
 fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<String>) {
+    require_output_device();
     let fake = FakeDaemon::start(404, body);
     let (sandbox, envs) = contract_sandbox(tag);
     let dir = sandbox.path();
@@ -2110,6 +2114,7 @@ fn dub_against_fake_daemon_404(tag: &str, body: Value) -> (i32, Value, Vec<Strin
 /// Un 404 de `/dub` con `reason` `voice_not_found` sale con exit 3 y no degrada
 /// a una composición que transcriba por separado.
 #[test]
+#[ignore = "requiere un dispositivo de salida de audio"]
 fn dub_daemon_404_voice_not_found_exits_3_without_transcribe() {
     let (code, actual, paths) = dub_against_fake_daemon_404(
         "dub_404_voice",
@@ -2126,6 +2131,7 @@ fn dub_daemon_404_voice_not_found_exits_3_without_transcribe() {
 /// Un 404 de `/dub` con `reason` `model_missing` sale con exit 4 y no degrada
 /// a una composición que transcriba por separado.
 #[test]
+#[ignore = "requiere un dispositivo de salida de audio"]
 fn dub_daemon_404_model_missing_exits_4_without_transcribe() {
     let (code, actual, paths) = dub_against_fake_daemon_404(
         "dub_404_model",
@@ -2143,6 +2149,7 @@ fn dub_daemon_404_model_missing_exits_4_without_transcribe() {
 /// marcha es de otro binario, o su build no incluye la función): sale con exit 1,
 /// un mensaje que nombra ambas causas y ninguna petición a `/transcribe`.
 #[test]
+#[ignore = "requiere un dispositivo de salida de audio"]
 fn dub_daemon_bare_404_exits_1_with_restart_hint_without_transcribe() {
     let (code, actual, paths) = dub_against_fake_daemon_404("dub_404_bare", serde_json::json!({}));
     assert_eq!(
