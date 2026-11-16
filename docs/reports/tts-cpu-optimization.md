@@ -70,6 +70,24 @@ Después, cuatro optimizaciones de ancho de banda de memoria (FFN del Code Predi
 
 Por último, leer una fila por iteración en las matrices de 2048 columnas o más del producto matriz-vector entero de AVX2 baja el RTF de los textos largos un 3,7 % sin carga y un 6,1 % con carga de memoria, con el mismo audio bit a bit (detalle en la [sección 4.11](#411-lectura-de-filas-largas)).
 
+### Estado actual medido
+
+Medición única del motor con todas las optimizaciones integradas, en las dos rutas que usa la aplicación, sin y con carga de memoria.
+
+- **Equipo y perfil:** Ryzen 7 5825U, Windows 11, `mixed -j 4`, temperatura 0,35 y semilla de producción, con el motor que incluye la lectura de filas largas de la [sección 4.11](#411-lectura-de-filas-largas).
+- **RTF:** tiempo de pared del proceso `speech synthesize` dividido por la duración del WAV resultante (muestras / 24000). En la CLI directa incluye arrancar el motor y cargar el modelo; en el daemon caliente, no.
+- **Carga L1:** un hilo que copia en bucle 256 MB, en marcha durante toda la serie. L0 es el equipo limpio y sin esa carga.
+- **Alcance:** 3 voces (voz clonada, `ryan`, `vivian`) × español e inglés, con un texto largo (unos 400 caracteres) y uno corto, y 5 síntesis por celda. Cada cifra es la mediana de las 30 síntesis de su ruta, carga y longitud.
+
+| Ruta | Carga | RTF texto largo | RTF texto corto |
+|---|---|---|---|
+| CLI directa | L0 (sin carga) | **0,72** | 1,41 |
+| CLI directa | L1 (un hilo de carga) | **1,06** | 1,92 |
+| Daemon caliente | L0 (sin carga) | **0,65** | 0,81 |
+| Daemon caliente | L1 (un hilo de carga) | **1,00** | 1,17 |
+
+Estas cifras sustituyen a las de estado final de las secciones anteriores, que se conservan como medición de cada optimización.
+
 ---
 
 ## 2. Diagnóstico experimental y descarte de alternativas
@@ -478,18 +496,12 @@ Para proteger la inferencia de variables de entorno heredadas que pudieran corro
 
 ## 6. Límites de la optimización y margen restante
 
-La adopción de `--quant-mixed` dio una ganancia de ~25–36 % de velocidad en CPU sin degradación acústica, con un RTF de producción de ~1,38×. Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restaron otro 11–25 % y el producto escalar entero de la [sección 4.5](#45-producto-escalar-entero-en-los-kernels-cuantizados) otro 18–20 %, y las optimizaciones de ancho de banda de la [sección 4.6](#46-optimizaciones-de-ancho-de-banda-de-memoria) otro 16–25 %, sin reentrenar el modelo. La lectura de filas largas de la [sección 4.11](#411-lectura-de-filas-largas) añade un 3,7 % sin carga y un 6,1 % con carga de memoria en los textos largos; la tabla siguiente no la incluye, porque se midió con otra carga de memoria:
-
-| Condición | RTF final (`mixed -j 4`) |
-|---|---|
-| Equipo libre | **0,66** |
-| 1 hilo de carga de memoria | **0,84** |
-| 2 hilos saturando el ancho de banda de memoria | 1,10 |
+La adopción de `--quant-mixed` dio una ganancia de ~25–36 % de velocidad en CPU sin degradación acústica, con un RTF de producción de ~1,38×. Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restaron otro 11–25 % y el producto escalar entero de la [sección 4.5](#45-producto-escalar-entero-en-los-kernels-cuantizados) otro 18–20 %, y las optimizaciones de ancho de banda de la [sección 4.6](#46-optimizaciones-de-ancho-de-banda-de-memoria) otro 16–25 %, sin reentrenar el modelo. La lectura de filas largas de la [sección 4.11](#411-lectura-de-filas-largas) añade un 3,7 % sin carga y un 6,1 % con carga de memoria en los textos largos. El RTF actual, con todas ellas integradas, es el de la tabla y el protocolo de [«Estado actual medido»](#estado-actual-medido) en la sección 1.
 
 ### Reparto del tiempo por fotograma
-El pipeline genera audio a 12,5 Hz (80 ms por fotograma). En cada fotograma el Talker genera 1 código acústico (`code0`) y el Code Predictor (CP) de 5 capas genera secuencialmente los 15 códigos residuales (`code1` a `code15`), con **16 × 5 = 80 evaluaciones de capa por fotograma**. Con el motor final, en el texto largo y el equipo libre, el Talker tarda 15,0 ms y el CP 33,0 ms por fotograma: el CP sigue siendo la parte dominante (~69 % de ambos), y dentro de él las multiplicaciones de pesos siguen siendo la mayor parte del tiempo.
+El pipeline genera audio a 12,5 Hz (80 ms por fotograma). En cada fotograma el Talker genera 1 código acústico (`code0`) y el Code Predictor (CP) de 5 capas genera secuencialmente los 15 códigos residuales (`code1` a `code15`), con **16 × 5 = 80 evaluaciones de capa por fotograma**. Con el motor actual, en la voz clonada, el texto largo, el daemon y el equipo libre, el Talker tarda 13,4 ms y el CP 33,9 ms por fotograma: el CP sigue siendo la parte dominante (~72 % de ambos), y dentro de él las multiplicaciones de pesos siguen siendo la mayor parte del tiempo.
 
 ### Conclusión y margen restante
-- **El RTF < 1 se logra sin reentrenar** sin carga (0,66) y con un hilo de carga de memoria (0,84). La destilación del Code Predictor de 5 a 3 capas deja de ser condición necesaria para ese objetivo.
-- **Con el ancho de banda de memoria saturado el RTF sigue por encima de 1 (1,10).** Aquí el CP queda limitado por memoria (55,7 ms por fotograma frente a 33,0 sin carga). Las FFN ya están en Q4_0; cuantizar a INT4 todo el Code Predictor provoca salidas no deterministas y truncamientos, y truncar codebooks degrada la inteligibilidad (sección 2).
-- **La destilación del CP de 5 a 3 capas queda como margen adicional** (`.work/plans/plan-002-cp-3layers-distillation.md`): al leer menos pesos por fotograma reduce justamente el tráfico de memoria que limita el caso saturado, y da más holgura bajo carga de CPU.
+- **El RTF < 1 se logra sin reentrenar en los textos largos y sin carga**, tanto en el daemon (0,65) como en la CLI directa (0,72). Los textos cortos quedan por encima de 1 en la CLI directa (1,41), porque el arranque del motor y la carga del modelo pesan más que la síntesis, y por debajo en el daemon (0,81). La destilación del Code Predictor de 5 a 3 capas deja de ser condición necesaria para ese objetivo.
+- **Con un hilo de carga de memoria el RTF de los textos largos sube a 1,00 en el daemon y a 1,06 en la CLI directa**, es decir, queda en el límite o por encima de 1. Aquí el CP queda limitado por memoria (51,3 ms por fotograma en el daemon con carga frente a 33,9 sin carga). Las FFN ya están en Q4_0; cuantizar a INT4 todo el Code Predictor provoca salidas no deterministas y truncamientos, y truncar codebooks degrada la inteligibilidad (sección 2).
+- **La destilación del CP de 5 a 3 capas queda como margen adicional** (`.work/plans/plan-002-cp-3layers-distillation.md`): al leer menos pesos por fotograma reduce justamente el tráfico de memoria que limita el caso con carga de memoria, y da más holgura bajo carga de CPU.

@@ -27,8 +27,8 @@ CPU-only inference (BLAS is required, plus architecture-specific SIMD paths). Th
 ## Current Status
 
 - **All components verified correct** (Talker, Code Predictor, Speech Decoder — bit-identical to Python)
-- **Performance**: RTF ~1.3–1.7 on Apple M1 8-core, 16 GB RAM (4 threads)
-- **Dev hardware**: Apple M1 8-core, 16 GB RAM — all benchmarks reference this machine
+- **Performance**: mediana del RTF del texto largo en el Ryzen 7 5825U, con `-j 4` y perfil `mixed`: 0,65 en el daemon y 0,72 en la CLI directa sin carga; 1,00 y 1,06 con un hilo que copia 256 MB en bucle. Detalle y protocolo en `docs/reports/tts-cpu-optimization.md` del repositorio.
+- **Dev hardware**: Ryzen 7 5825U (AVX2, sin AVX-512), Windows 11. Las mediciones de `DIVERGENCIAS.md` y del informe de optimización del repositorio se refieren a este equipo; las del `README.md` son del motor original en otro hardware
 
 ## Active Branches
 
@@ -184,18 +184,17 @@ convolucional causal lo permite sin mirar hacia delante.
 
 ## Cross-Hardware Performance Workflow (perf / SIMD / batching epics)
 
-Dev box is **Apple M1** (the user's only fast-iteration device). M1 covers NEON + dotprod/SDOT
-but **not** bf16/i8mm (M2+), SVE (server ARM), or AVX-512/VNNI/BF16/AMX (x86). So for any
-performance/new-SIMD epic, the loop is:
+El equipo de desarrollo es un **Ryzen 7 5825U** (Windows 11): cubre AVX2, pero **no** AVX-512/VNNI/BF16/AMX
+(x86) ni NEON/SDOT, bf16/i8mm o SVE (ARM). Para cualquier épica de rendimiento o de SIMD nuevo, el ciclo es:
 
-1. **Develop on M1** here (fast iteration). Newer-ISA kernels are `#ifdef`-guarded so M1 keeps
-   compiling the scalar/NEON fallback.
-2. **Keep it compile-clean for other ISAs without leaving M1:** `make check-isa` forces the
-   `-march` for the guarded BFMMLA/SMMLA/SME (ARM) and VNNI/BF16/AMX (x86) paths so syntax errors
-   surface NOW, not on the rented box.
-3. **Validate on real hardware** (we cannot fully test these on M1): rent/borrow the target, run
-   the one-command harness, read the numbers, **fix, loop**. This is expected — perf/SIMD epics
-   are *not* done until measured on real silicon.
+1. **Desarrollar en el Ryzen** (iteración rápida). Los kernels de otras ISA van protegidos con `#ifdef`,
+   así que el equipo sigue compilando su ruta AVX2.
+2. **Mantener compilables las demás ISA sin salir del equipo:** `make check-isa` fuerza el
+   `-march` de las rutas protegidas BFMMLA/SMMLA/SME (ARM) y VNNI/BF16/AMX (x86), para que los errores
+   de sintaxis salgan ahora y no en el equipo alquilado.
+3. **Validar en hardware real** (estas rutas no se pueden probar del todo en el Ryzen): alquilar o pedir prestado el equipo, ejecutar
+   el arnés de un solo comando, leer las cifras, **corregir y repetir**. Es lo esperado: una épica de
+   rendimiento o de SIMD no está terminada hasta medirla en silicio real.
 
 **The testing/benchmark make targets** (document any new one here):
 - `make matmat-bench` — batched matmat twins (`qwen_matmat_{bf16,int8,q4_0}`) vs B×matvec, per
