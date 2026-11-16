@@ -24,6 +24,7 @@
    - [4.8. El decodificador de voz como cuello de botella en la entrega en streaming](#48-el-decodificador-de-voz-como-cuello-de-botella-en-la-entrega-en-streaming)
    - [4.9. Memoria privada del residente](#49-memoria-privada-del-residente)
    - [4.10. Conversión de los pesos del prefill](#410-conversión-de-los-pesos-del-prefill)
+   - [4.11. Lectura de filas largas](#411-lectura-de-filas-largas)
 5. [Arquitectura de integración en el producto](#5-arquitectura-de-integración-en-el-producto)
    - [5.1. Perfil predeterminado y reversibilidad (`AVI_TTS_PRECISION`)](#51-perfil-predeterminado-y-reversibilidad-avi_tts_precision)
    - [5.2. Aislamiento del entorno del residente](#52-aislamiento-del-entorno-del-residente)
@@ -65,7 +66,9 @@ Sobre ese perfil se aplicaron después cuatro optimizaciones del motor que no ca
 
 Después, todas las multiplicaciones de pesos cuantizados del motor (int8 del Code Predictor y q4_0 del Talker) pasaron a usar producto escalar entero en todas las arquitecturas. Medido de forma alternada contra el motor anterior en el mismo equipo (Ryzen 7 5825U, `-j 4`, voz clonada, texto largo en español), el RTF mediano baja de 0,93 a **0,76** con el equipo libre y de 1,10 a **0,88** con cuatro procesos ocupando la CPU, sin reentrenar el modelo y con la misma calidad medida (WER 3,55 % en ambos, similitud de voz media de 0,978). Con dos hilos saturando el ancho de banda de memoria el RTF baja de 1,70 a 1,47 y sigue por encima de 1, porque el Code Predictor queda limitado por memoria (detalle en la [sección 4.5](#45-producto-escalar-entero-en-los-kernels-cuantizados)).
 
-Por último, cuatro optimizaciones de ancho de banda de memoria (FFN del Code Predictor en Q4_0, PREFILL2 con cualquier Code Predictor cuantizado, anticipación de lecturas en los kernels INT8 y decodificador por tramos) bajan el RTF mediano, medido por pares alternados contra el motor anterior, de 0,79 a **0,66** sin carga, de 1,06 a **0,84** con un hilo de carga de memoria y de 1,45 a **1,10** con dos, sin pérdida de calidad medida ni audible (detalle en la [sección 4.6](#46-optimizaciones-de-ancho-de-banda-de-memoria)).
+Después, cuatro optimizaciones de ancho de banda de memoria (FFN del Code Predictor en Q4_0, PREFILL2 con cualquier Code Predictor cuantizado, anticipación de lecturas en los kernels INT8 y decodificador por tramos) bajan el RTF mediano, medido por pares alternados contra el motor anterior, de 0,79 a **0,66** sin carga, de 1,06 a **0,84** con un hilo de carga de memoria y de 1,45 a **1,10** con dos, sin pérdida de calidad medida ni audible (detalle en la [sección 4.6](#46-optimizaciones-de-ancho-de-banda-de-memoria)).
+
+Por último, leer una fila por iteración en las matrices de 2048 columnas o más del producto matriz-vector entero de AVX2 baja el RTF de los textos largos un 3,7 % sin carga y un 6,1 % con carga de memoria, con el mismo audio bit a bit (detalle en la [sección 4.11](#411-lectura-de-filas-largas)).
 
 ---
 
@@ -406,6 +409,38 @@ El RTF no empeora más de un 0,3 % en ningún caso. La ganancia es modesta y se 
 
 **Alternativas descartadas.** Usar en el prefill los pesos cuantizados y los kernels de la generación sube el tono de `ryan` hasta 4,7 semitonos, sube el WER 1,8 y 2,7 pp y empeora el prefill del texto largo un 41 %. Convertir por franjas en caché cambia el audio, porque OpenBLAS reparte distinto al partir la multiplicación, y empeora el prefill del texto largo un 6,6 %.
 
+### 4.11. Lectura de filas largas
+
+**Problema.** El producto matriz-vector entero de AVX2 procesaba dos filas por iteración. En las filas de 2048 columnas o más (`down` 1024×3072 y `wo` 1024×2048 en q4_0, en el Talker y en el Code Predictor, y `wo` 1024×2048 del Code Predictor en int8) eso mantiene dos flujos de lectura simultáneos por hilo, y dos flujos rinden menos que uno: el ancho de banda de memoria queda sin aprovechar.
+
+**Solución.** En AVX2, `qwen_matvec_int8` y `qwen_matvec_q4_0` leen una fila por iteración cuando la fila tiene al menos 2048 columnas, con una sola regla para los dos formatos. El núcleo de una fila sirve además como fila sobrante del núcleo de dos filas, así que no queda código duplicado. El matmat y el QKV fusionado siguen con dos filas (en el matmat la baldosa de 8 filas se queda en caché para las columnas del lote, y el QKV solo tiene filas cortas). VNNI, SDOT y la ruta escalar no cambian.
+
+**Exactitud.** Cada fila usa la misma función de bloque en el mismo orden (q4_0) o la misma acumulación entera (int8), así que el resultado es idéntico bit a bit. Los md5 de los 12 casos (3 voces × es/en, textos corto y largo) coinciden con los del motor anterior; la autocomprobación de cada llamada real del motor no dio diferencias; y la autoprueba del motor incluye filas largas en paralelo (1024×2048) y en serie (255×3072) con error 0 entre el matmat y B matvec.
+
+**Medición** (Ryzen 7 5825U, perfil `mixed`, `-j 4`, voz clonada, semilla 4, medianas de rondas alternadas contra el motor anterior):
+
+| Medida | Sin carga | Con carga de memoria |
+|---|---|---|
+| `FFN down` del CP (ms por fotograma) | 7,154 → 5,632 | 11,731 → 8,052 |
+| RTF, voz clonada, texto largo (6 pares) | 0,660 → 0,635 (−3,7 %, 6/6) | 1,064 → 0,998 (−6,1 %, 6/6) |
+| RTF, `ryan`, texto largo (4 pares) | | 1,027 → 0,980 (−4,5 %, 4/4) |
+| RTF, texto corto | sin cambio (+0,35 %) | |
+
+En int8, `O proj` del CP baja un 4,2 % y un 15,4 % (sin y con carga, 3/3 rondas en cada condición); de extremo a extremo ese aporte queda por debajo de la resolución de 6 pares. El primer audio de los textos largos varió entre +1,5 % y +6,8 %.
+
+Confirmación con el motor del repositorio (microbanco del CP, 3 rondas alternadas, mismo comando, medianas):
+
+| Operación (ms por fotograma) | Sin carga | Con carga de memoria |
+|---|---|---|
+| `FFN down` | 8,643 → 6,500 (−24,8 %, 3/3) | 11,885 → 8,206 (−31,0 %, 3/3) |
+| `O proj` | 4,841 → 4,763 (−1,6 %, 2/3) | 7,775 → 6,716 (−13,6 %, 3/3) |
+
+Sin carga, `O proj` es la operación con la ganancia más pequeña (≈4 %) y queda al nivel del ruido entre rondas: en una de las tres no bajó, y una repetición posterior de tres rondas con el mismo motor sí bajó en las tres (−3,7 %).
+
+**Alternativas descartadas.** El intercalado de filas por pares: su ganancia máxima calculada (1,06 ms por fotograma sin carga y 1,20 con carga) no superaba el ruido con carga y exigía reordenar los pesos para todos sus consumidores. La atención del CP en bloques de 5 o 6 bits: era más lenta que int8 (−1,49 y −4,0 ms por fotograma sin carga), porque `wo` 1024×2048 empaquetado va un 52–87 % más lento.
+
+**Lo no medido.** Las rutas VNNI, SDOT y escalar, y otros procesadores.
+
 ---
 
 ## 5. Arquitectura de integración en el producto
@@ -443,7 +478,7 @@ Para proteger la inferencia de variables de entorno heredadas que pudieran corro
 
 ## 6. Límites de la optimización y margen restante
 
-La adopción de `--quant-mixed` dio una ganancia de ~25–36 % de velocidad en CPU sin degradación acústica, con un RTF de producción de ~1,38×. Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restaron otro 11–25 % y el producto escalar entero de la [sección 4.5](#45-producto-escalar-entero-en-los-kernels-cuantizados) otro 18–20 %, y las optimizaciones de ancho de banda de la [sección 4.6](#46-optimizaciones-de-ancho-de-banda-de-memoria) otro 16–25 %, sin reentrenar el modelo:
+La adopción de `--quant-mixed` dio una ganancia de ~25–36 % de velocidad en CPU sin degradación acústica, con un RTF de producción de ~1,38×. Las optimizaciones del decodificador y la afinidad de la [sección 4.4](#44-optimización-del-decodificador-acústico-y-afinidad) restaron otro 11–25 % y el producto escalar entero de la [sección 4.5](#45-producto-escalar-entero-en-los-kernels-cuantizados) otro 18–20 %, y las optimizaciones de ancho de banda de la [sección 4.6](#46-optimizaciones-de-ancho-de-banda-de-memoria) otro 16–25 %, sin reentrenar el modelo. La lectura de filas largas de la [sección 4.11](#411-lectura-de-filas-largas) añade un 3,7 % sin carga y un 6,1 % con carga de memoria en los textos largos; la tabla siguiente no la incluye, porque se midió con otra carga de memoria:
 
 | Condición | RTF final (`mixed -j 4`) |
 |---|---|

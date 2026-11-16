@@ -141,9 +141,11 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-La voz empieza a sonar algo antes en cada locución, sobre todo en las frases cortas: el motor preparaba en serie los pesos del modelo antes de empezar a hablar y ahora reparte ese trabajo entre sus hilos. El audio que se genera no cambia. Además, la síntesis directa y el cambio de voz del daemon dejan de esperar unos 5 s al cerrar el motor anterior.
+La voz empieza a sonar algo antes en cada locución, sobre todo en las frases cortas: el motor preparaba en serie los pesos del modelo antes de empezar a hablar y ahora reparte ese trabajo entre sus hilos. El audio que se genera no cambia. Además, la síntesis directa y el cambio de voz del daemon dejan de esperar unos 5 s al cerrar el motor anterior. Las locuciones largas se sintetizan algo más rápido, sobre todo con otras aplicaciones usando la memoria, con el mismo audio.
 
 ### Cambiado
+
+- **Lectura de filas largas en el motor:** el motor TTS lee una fila por iteración en las matrices de 2048 columnas o más (int8 y q4_0) del producto matriz-vector en AVX2, en lugar de dos, porque dos flujos de lectura simultáneos por hilo rinden menos que uno en filas largas. El audio es idéntico bit a bit y la autoprueba del motor incluye ahora filas largas. Con la voz clonada y un texto largo en un Ryzen 7 5825U, el RTF mediano baja de 0,660 a 0,635 sin carga (−3,7 %, 6 de 6 pares) y de 1,064 a 0,998 con carga de memoria (−6,1 %, 6 de 6); con `ryan` y carga baja de 1,027 a 0,980 (−4,5 %, 4 de 4). El texto corto no cambia.
 
 - **Prefill del Talker:** la conversión de los pesos de bf16 a f32 que se hace en cada petición se reparte entre los hilos del motor en lugar de hacerse en serie. El audio es idéntico bit a bit en los perfiles `mixed`, `int8` y `bf16`, con la voz clonada y con `ryan`. Con el perfil `mixed` y la voz clonada, el prefill de una frase corta baja de 372 a 334 ms sin carga (−10,2 %) y de 524 a 451 ms con la memoria cargada (−13,8 %), y el primer audio baja un 9,8 % y un 7,6 %; el RTF no empeora en ningún caso.
 
