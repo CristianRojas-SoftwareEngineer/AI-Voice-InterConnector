@@ -79,12 +79,22 @@ Medición única del motor con todas las optimizaciones integradas, en las dos r
 - **Carga L1:** un hilo que copia en bucle 256 MB, en marcha durante toda la serie. L0 es el equipo limpio y sin esa carga.
 - **Alcance:** 3 voces (voz clonada, `ryan`, `vivian`) × español e inglés, con un texto largo (unos 400 caracteres) y uno corto, y 5 síntesis por celda. Cada cifra es la mediana de las 30 síntesis de su ruta, carga y longitud.
 
-| Ruta | Carga | RTF texto largo | RTF texto corto |
-|---|---|---|---|
-| CLI directa | L0 (sin carga) | **0,72** | 1,41 |
-| CLI directa | L1 (un hilo de carga) | **1,06** | 1,92 |
-| Daemon caliente | L0 (sin carga) | **0,65** | 0,81 |
-| Daemon caliente | L1 (un hilo de carga) | **1,00** | 1,17 |
+| Ruta | Carga | Texto | RTF | ¿Tiempo real? |
+|---|---|---|---|---|
+| Daemon caliente | Sin carga | Largo | **0,65** | Sí |
+| Daemon caliente | Sin carga | Corto | **0,81** | Sí |
+| CLI directa | Sin carga | Largo | **0,72** | Sí |
+| Daemon caliente | Con carga | Largo | **1,00** | En el límite |
+| Daemon caliente | Con carga | Corto | 1,17 | No |
+| CLI directa | Sin carga | Corto | 1,41 | No, por el arranque del motor |
+| CLI directa | Con carga | Largo | 1,06 | No |
+| CLI directa | Con carga | Corto | 1,92 | No |
+
+- **Sin carga se cumple el tiempo real**, salvo en la CLI directa con frases cortas. Ahí lo impide el coste fijo de arrancar el motor y cargar el modelo (unos 2–3 s por síntesis: 19,8 s frente a 17,1 s en el texto largo y 4,4 s frente a 2,5 s en el corto, medianas de la CLI directa y del daemon), no la síntesis.
+- **Las frases cortas tienen peor RTF por naturaleza:** con unos 3 s de audio, el coste fijo de cada petición (prefill y primer fragmento) pesa mucho más que en una frase larga.
+- **Con carga de memoria no se cumple:** el Code Predictor, que lee sus pesos 15 veces por fotograma, pasa de 33,9 a 51,3 ms por fotograma en el daemon. El Talker y el CP suman unos 74 ms, frente a los 80 ms que dura cada fotograma de audio.
+
+**Por qué estas cifras difieren de las anteriores.** Las mediciones de estado final previas usaban una carga más suave (un hilo que solo lee 512 MB, frente a uno que copia 256 MB, es decir, que lee y escribe), medían casi siempre frases largas y no incluían el arranque del motor de la CLI directa. No hay regresión: con la misma carga y el mismo caso (voz clonada, texto largo, residente), el motor anterior daba 0,660 sin carga y 1,064 con carga, y el actual da 0,635 y 0,998.
 
 Estas cifras sustituyen a las de estado final de las secciones anteriores, que se conservan como medición de cada optimización.
 
