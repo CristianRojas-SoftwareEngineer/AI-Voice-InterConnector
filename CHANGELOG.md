@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.45.2 — 2026-11-16](#0452--2026-11-16)
 - [0.45.1 — 2026-11-15](#0451--2026-11-15)
 - [0.45.0 — 2026-11-15](#0450--2026-11-15)
 - [0.44.0 — 2026-11-04](#0440--2026-11-04)
@@ -139,7 +139,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.45.2] — 2026-11-16
 
 La voz empieza a sonar algo antes en cada locución, sobre todo en las frases cortas: el motor preparaba en serie los pesos del modelo antes de empezar a hablar y ahora reparte ese trabajo entre sus hilos. El audio que se genera no cambia. Además, la síntesis directa y el cambio de voz del daemon dejan de esperar unos 5 s al cerrar el motor anterior. Las locuciones largas se sintetizan algo más rápido, sobre todo con otras aplicaciones usando la memoria, con el mismo audio.
 
@@ -4079,3 +4079,4 @@ estado con el que nace el producto.
 [0.44.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.43.0...v0.44.0
 [0.45.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.44.0...v0.45.0
 [0.45.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.45.0...v0.45.1
+[0.45.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.45.1...v0.45.2
