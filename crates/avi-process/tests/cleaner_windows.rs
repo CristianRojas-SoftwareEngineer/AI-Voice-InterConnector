@@ -118,7 +118,14 @@ fn removal_failure_leaves_only_removal_failed_log() {
     let _scheduling = avi_process::schedule_removal(&target, &token).expect("programar el borrado");
 
     let log = root.path().join("victim.removal-failed.log");
-    assert!(wait_until(|| log.exists()), "debe escribirse el registro");
+    // `Set-Content` crea el registro antes de escribirlo y lo mantiene abierto
+    // mientras escribe: existir no basta, hay que poder leer su contenido.
+    assert!(
+        wait_until(
+            || std::fs::read_to_string(&log).is_ok_and(|text| text.contains("no se pudo retirar"))
+        ),
+        "debe escribirse el registro"
+    );
     assert!(target.exists(), "el destino bloqueado sigue en disco");
     assert_eq!(
         entries(root.path()),
@@ -127,9 +134,6 @@ fn removal_failure_leaves_only_removal_failed_log() {
             "victim.removal-failed.log".to_string()
         ]
     );
-    assert!(std::fs::read_to_string(&log)
-        .unwrap()
-        .contains("no se pudo retirar"));
 }
 
 /// Un PID reutilizado por otro proceso (mismo PID, otro inicio) cuenta como
