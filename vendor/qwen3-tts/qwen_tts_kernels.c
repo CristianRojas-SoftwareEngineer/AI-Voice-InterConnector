@@ -126,7 +126,8 @@ void qwen_caps_report(void *out) {
     fprintf(f, "  arch:             (other)\n");
 #endif
     /* Ruta caliente: matvecs bf16/int8/q4 y atención (~90 % de la decodificación).
-     * NEON y AVX2 son kernels de 2 filas con varios acumuladores y prefetch. */
+     * NEON y AVX2 son kernels de 2 filas con varios acumuladores y prefetch; el
+     * matvec entero de AVX2 lee una sola fila por iteración en las filas largas. */
 #ifdef __ARM_NEON
     fprintf(f, "  matvec + attn:    NEON (2-row fused)\n");
 #elif defined(__AVX512F__)
@@ -1947,7 +1948,7 @@ int qwen_quant_shape_check(const char *name, int cols) {
     return 0;
 }
 
-/* Distancia, en bytes, a la que los kernels int8 de dos filas anticipan la
+/* Distancia, en bytes, a la que los kernels int8 anticipan la
  * lectura de cada fila de pesos. Con la memoria compartida con otros procesos,
  * pedir los pesos justo al usarlos deja al núcleo esperando a la RAM; pedirlos
  * 5120 bytes por delante cubre esa latencia sin expulsar de la caché los datos
@@ -1956,6 +1957,13 @@ int qwen_quant_shape_check(const char *name, int cols) {
  * del final de la matriz no produce fallos: prefetch es una pista que la CPU
  * descarta si la dirección no es válida, tanto en x86 como en ARM. */
 #define QWEN_INT8_PF_DIST 5120
+
+/* Columnas a partir de las cuales el matvec entero AVX2 (int8 y q4_0) lee una fila
+ * por iteración en lugar de dos: en filas largas un único flujo de lectura por hilo
+ * rinde más que dos simultáneos. La salida es idéntica bit a bit, porque cada fila
+ * usa la misma acumulación. Solo afecta al matvec; el matmat y el QKV fusionado
+ * siguen con el núcleo de dos filas. */
+enum { QWEN_LONG_ROW_COLS = 2048 };
 
 #if defined(__ARM_FEATURE_DOTPROD)
 /* Producto escalar entero con SDOT: y[o] = scale[o] * sx * Σ_k W[o][k]·qx[k].
@@ -2071,13 +2079,40 @@ static inline int int8_hsum_epi32(__m256i v) {
     return _mm_cvtsi128_si32(s);
 }
 
-/* Producto escalar entero en AVX2: y[o] = scale[o]*sx * Σ_k W[o][k]·qx[k].
- * _mm256_maddubs_epi16 multiplica u8 por s8, así que se usa |w| (sign(w,w)) como
- * operando sin signo y se traslada el signo de w a la activación (sign(a,w)); el
- * producto |w|·(a·sgn(w)) es exactamente w·a. Cada par adyacente suma como mucho
- * 128·127·2 = 32512 y no satura int16; _mm256_madd_epi16 con unos lo ensancha a
- * int32. Dos filas a la vez para amortizar la carga de la activación; la cola de
- * columnas (no múltiplo de 32) se acumula en escalar. El bucle de dos filas
+/* Producto escalar entero en AVX2, una fila por iteración: y[o] = scale[o]*sx *
+ * Σ_k W[o][k]·qx[k]. _mm256_maddubs_epi16 multiplica u8 por s8, así que se usa |w|
+ * (sign(w,w)) como operando sin signo y se traslada el signo de w a la activación
+ * (sign(a,w)); el producto |w|·(a·sgn(w)) es exactamente w·a. Cada par adyacente
+ * suma como mucho 128·127·2 = 32512 y no satura int16; _mm256_madd_epi16 con unos
+ * lo ensancha a int32. La cola de columnas (no múltiplo de 32) se acumula en
+ * escalar. Anticipa la lectura de la fila QWEN_INT8_PF_DIST bytes por delante.
+ * Es el núcleo del matvec de las filas largas (QWEN_LONG_ROW_COLS) y de la fila
+ * sobrante de int8_matvec_avx2; da el mismo resultado bit a bit que el de dos filas. */
+static void int8_matvec_avx2_1row(float *y, const int8_t *qx, float sx,
+                                  const int8_t *W, const float *scale,
+                                  int in_dim, int out_dim) {
+    qwen_ftz_on();  /* se ejecuta en cada worker del pool */
+    const __m256i ones = _mm256_set1_epi16(1);
+    for (int o = 0; o < out_dim; o++) {
+        const int8_t *w0 = W + (size_t)o * in_dim;
+        __m256i acc0 = _mm256_setzero_si256();
+        int k = 0;
+        for (; k + 32 <= in_dim; k += 32) {
+            __builtin_prefetch(w0 + k + QWEN_INT8_PF_DIST, 0, 3);
+            __m256i a  = _mm256_loadu_si256((const __m256i *)(qx + k));
+            __m256i v0 = _mm256_loadu_si256((const __m256i *)(w0 + k));
+            __m256i p0 = _mm256_maddubs_epi16(_mm256_sign_epi8(v0, v0), _mm256_sign_epi8(a, v0));
+            acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(p0, ones));
+        }
+        int32_t s0 = int8_hsum_epi32(acc0);
+        for (; k < in_dim; k++) s0 += (int32_t)w0[k] * qx[k];
+        y[o] = (float)s0 * scale[o] * sx;
+    }
+}
+
+/* Variante de dos filas a la vez de int8_matvec_avx2_1row, para amortizar la carga
+ * de la activación; la fila sobrante usa el núcleo de una fila. Es la que usan el
+ * matmat, el QKV fusionado y el matvec de las filas cortas. El bucle de dos filas
  * anticipa la lectura de ambas filas QWEN_INT8_PF_DIST bytes por delante. */
 static void int8_matvec_avx2(float *y, const int8_t *qx, float sx,
                              const int8_t *W, const float *scale,
@@ -2106,20 +2141,9 @@ static void int8_matvec_avx2(float *y, const int8_t *qx, float sx,
         y[o]     = (float)s0 * scale[o]     * sx;
         y[o + 1] = (float)s1 * scale[o + 1] * sx;
     }
-    if (o < out_dim) {
-        const int8_t *w0 = W + (size_t)o * in_dim;
-        __m256i acc0 = _mm256_setzero_si256();
-        int k = 0;
-        for (; k + 32 <= in_dim; k += 32) {
-            __m256i a  = _mm256_loadu_si256((const __m256i *)(qx + k));
-            __m256i v0 = _mm256_loadu_si256((const __m256i *)(w0 + k));
-            __m256i p0 = _mm256_maddubs_epi16(_mm256_sign_epi8(v0, v0), _mm256_sign_epi8(a, v0));
-            acc0 = _mm256_add_epi32(acc0, _mm256_madd_epi16(p0, ones));
-        }
-        int32_t s0 = int8_hsum_epi32(acc0);
-        for (; k < in_dim; k++) s0 += (int32_t)w0[k] * qx[k];
-        y[o] = (float)s0 * scale[o] * sx;
-    }
+    if (o < out_dim)
+        int8_matvec_avx2_1row(y + o, qx, sx, W + (size_t)o * in_dim, scale + o,
+                              in_dim, out_dim - o);
 }
 #else
 /* Producto escalar entero portable: acumula w·qx en int32 y aplica las escalas al final. */
@@ -2136,6 +2160,22 @@ static void int8_matvec_scalar_int(float *y, const int8_t *qx, float sx,
 }
 #endif /* __AVX2__ */
 
+/* Filas del matvec int8 entero: en AVX2, una fila por iteración a partir de
+ * QWEN_LONG_ROW_COLS columnas y dos filas en otro caso. Lo usan la tarea paralela y
+ * la rama serie; el matmat y el QKV fusionado llaman directamente a int8_matvec_avx2. */
+static inline void int8_mv_rows(float *y, const int8_t *qx, float sx,
+                                const int8_t *W, const float *scale,
+                                int in_dim, int out_dim) {
+#if defined(__AVX2__)
+    if (in_dim >= QWEN_LONG_ROW_COLS)
+        int8_matvec_avx2_1row(y, qx, sx, W, scale, in_dim, out_dim);
+    else
+        int8_matvec_avx2(y, qx, sx, W, scale, in_dim, out_dim);
+#else
+    int8_matvec_scalar_int(y, qx, sx, W, scale, in_dim, out_dim);
+#endif
+}
+
 typedef struct {
     float *y; const int8_t *qx; float sx; const int8_t *W; const float *scale; int rows, cols;
 } int8_int_ctx;
@@ -2143,13 +2183,8 @@ static void int8_int_task(size_t tid, size_t nt, void *vc) {
     int8_int_ctx *c = (int8_int_ctx *)vc;
     int r0 = (int)(tid * (size_t)c->rows / nt);
     int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
-#if defined(__AVX2__)
-    int8_matvec_avx2(c->y + r0, c->qx, c->sx, c->W + (size_t)r0 * c->cols,
-                     c->scale + r0, c->cols, r1 - r0);
-#else
-    int8_matvec_scalar_int(c->y + r0, c->qx, c->sx, c->W + (size_t)r0 * c->cols,
-                           c->scale + r0, c->cols, r1 - r0);
-#endif
+    int8_mv_rows(c->y + r0, c->qx, c->sx, c->W + (size_t)r0 * c->cols,
+                 c->scale + r0, c->cols, r1 - r0);
 }
 #endif /* !__AVX512VNNI__ && !__ARM_FEATURE_DOTPROD */
 
@@ -2195,11 +2230,7 @@ void qwen_matvec_int8(float *y, const int8_t *W, const float *scale,
         qwen_parallel((size_t)nt, int8_int_task, &c);
         return;
     }
-#if defined(__AVX2__)
-    int8_matvec_avx2(y, qx_buf, sx, W, scale, cols, rows);
-#else
-    int8_matvec_scalar_int(y, qx_buf, sx, W, scale, cols, rows);
-#endif
+    int8_mv_rows(y, qx_buf, sx, W, scale, cols, rows);
 #endif
 }
 
@@ -2606,9 +2637,10 @@ static void q4_0_vnni_task(size_t tid, size_t nt, void *vc) {
  * del bloque (precalculado una vez por activación) a cada una de las 8 lanas, lo
  * que descuenta exactamente 8·Σqa del total. Las lanas se convierten a float, se
  * escalan con la escala fp16 del bloque y se acumulan con FMA; la reducción
- * horizontal se hace una sola vez por fila. Ambos núcleos (dos filas y una fila)
- * usan esta misma función, así que cada fila da el mismo resultado bit a bit sea
- * cual sea el núcleo que la procese. */
+ * horizontal se hace una sola vez por fila. Los núcleos de dos filas
+ * (q4_0_matvec_avx2) y de una fila (q4_0_avx2_rows1) usan esta misma función, así
+ * que cada fila da el mismo resultado bit a bit sea cual sea el núcleo que la
+ * procese. */
 static inline __m256 q4_0_avx2_block(__m256 acc, const q4_0_block_t *blk, __m256i a, int sumq) {
     const __m128i lomask = _mm_set1_epi8(0x0F);
     __m128i raw = _mm_loadu_si128((const __m128i *)blk->qs);
@@ -2620,19 +2652,54 @@ static inline __m256 q4_0_avx2_block(__m256 acc, const q4_0_block_t *blk, __m256
     return _mm256_fmadd_ps(_mm256_cvtepi32_ps(p), _mm256_set1_ps(qwen_f16_to_f32(blk->scale_f16)), acc);
 }
 
-/* Producto escalar entero q4_0 en AVX2: y[o] = sx · Σ_bloques escala_b · (Σ w·qa).
- * Dos filas a la vez para reutilizar la carga de la activación; la fila sobrante
- * usa la misma función de bloque. */
-static void q4_0_matvec_avx2(float *y, const int8_t *qx, float sx,
-                             const q4_0_block_t *W, int cols, int out_dim) {
-    qwen_ftz_on();  /* se ejecuta en cada worker del pool */
-    int nb = cols / Q4_0_BLOCK_SIZE;
+/* Suma de la activación cuantizada por bloque (Σqa de cada bloque de 32), que
+ * q4_0_avx2_block resta para pasar de nibbles sin signo a pesos con signo. */
+static inline void q4_0_avx2_sumq(const int8_t *qx, int nb, int *sumq) {
     const __m256i ones8 = _mm256_set1_epi8(1), ones16 = _mm256_set1_epi16(1);
-    int sumq[QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
     for (int b = 0; b < nb; b++) {
         __m256i a = _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE));
         sumq[b] = int8_hsum_epi32(_mm256_madd_epi16(_mm256_maddubs_epi16(ones8, a), ones16));
     }
+}
+
+/* Núcleo de una fila por iteración sobre filas ya preparadas (con sumq calculado):
+ * un solo flujo de lectura, con anticipación ~1 KB por delante (16 bloques). Es el
+ * núcleo del matvec de las filas largas (QWEN_LONG_ROW_COLS) y de la fila sobrante
+ * de q4_0_matvec_avx2. Prefetch más allá del final es inocuo. */
+static void q4_0_avx2_rows1(float *y, const int8_t *qx, float sx,
+                            const q4_0_block_t *W, int nb, const int *sumq, int out_dim) {
+    for (int o = 0; o < out_dim; o++) {
+        const q4_0_block_t *r0 = W + (size_t)o * nb;
+        __m256 s0 = _mm256_setzero_ps();
+        for (int b = 0; b < nb; b++) {
+            __m256i a = _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE));
+            _mm_prefetch((const char *)&r0[b + 16], _MM_HINT_T0);
+            s0 = q4_0_avx2_block(s0, &r0[b], a, sumq[b]);
+        }
+        y[o] = qwen_hsum256_ps(s0) * sx;
+    }
+}
+
+/* Matvec q4_0 de una fila por iteración: cada fila da el mismo resultado bit a bit
+ * que con q4_0_matvec_avx2, porque usa la misma función de bloque en el mismo orden. */
+static void q4_0_matvec_avx2_1row(float *y, const int8_t *qx, float sx,
+                                  const q4_0_block_t *W, int cols, int out_dim) {
+    qwen_ftz_on();  /* se ejecuta en cada worker del pool */
+    int nb = cols / Q4_0_BLOCK_SIZE;
+    int sumq[QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
+    q4_0_avx2_sumq(qx, nb, sumq);
+    q4_0_avx2_rows1(y, qx, sx, W, nb, sumq, out_dim);
+}
+
+/* Producto escalar entero q4_0 en AVX2: y[o] = sx · Σ_bloques escala_b · (Σ w·qa).
+ * Dos filas a la vez para reutilizar la carga de la activación; la fila sobrante
+ * usa el núcleo de una fila (q4_0_avx2_rows1). */
+static void q4_0_matvec_avx2(float *y, const int8_t *qx, float sx,
+                             const q4_0_block_t *W, int cols, int out_dim) {
+    qwen_ftz_on();  /* se ejecuta en cada worker del pool */
+    int nb = cols / Q4_0_BLOCK_SIZE;
+    int sumq[QWEN_QACT_MAX / Q4_0_BLOCK_SIZE];
+    q4_0_avx2_sumq(qx, nb, sumq);
     int o = 0;
     for (; o + 1 < out_dim; o += 2) {
         const q4_0_block_t *r0 = W + (size_t)o * nb, *r1 = r0 + nb;
@@ -2652,15 +2719,8 @@ static void q4_0_matvec_avx2(float *y, const int8_t *qx, float sx,
         y[o]     = qwen_hsum256_ps(s0) * sx;
         y[o + 1] = qwen_hsum256_ps(s1) * sx;
     }
-    if (o < out_dim) {
-        const q4_0_block_t *r0 = W + (size_t)o * nb;
-        __m256 s0 = _mm256_setzero_ps();
-        for (int b = 0; b < nb; b++) {
-            __m256i a = _mm256_loadu_si256((const __m256i *)(qx + (size_t)b * Q4_0_BLOCK_SIZE));
-            s0 = q4_0_avx2_block(s0, &r0[b], a, sumq[b]);
-        }
-        y[o] = qwen_hsum256_ps(s0) * sx;
-    }
+    if (o < out_dim)
+        q4_0_avx2_rows1(y + o, qx, sx, W + (size_t)o * nb, nb, sumq, out_dim - o);
 }
 #else
 /* Producto escalar entero q4_0 portable: por bloque acumula (nibble − 8)·qa en
@@ -2687,6 +2747,7 @@ static void q4_0_matvec_scalar_int(float *y, const int8_t *qx, float sx,
 }
 #endif /* __AVX2__ */
 
+/* Filas q4_0 con el núcleo de dos filas en AVX2: lo usan el matmat y el QKV fusionado. */
 static inline void q4_0_int_rows(float *y, const int8_t *qx, float sx,
                                  const q4_0_block_t *W, int cols, int rows) {
 #if defined(__AVX2__)
@@ -2696,13 +2757,27 @@ static inline void q4_0_int_rows(float *y, const int8_t *qx, float sx,
 #endif
 }
 
+/* Filas del matvec q4_0 entero: en AVX2, una fila por iteración a partir de
+ * QWEN_LONG_ROW_COLS columnas y q4_0_int_rows en otro caso. Lo usan la tarea paralela
+ * y la rama serie; el matmat y el QKV fusionado llaman directamente a q4_0_int_rows. */
+static inline void q4_0_mv_rows(float *y, const int8_t *qx, float sx,
+                                const q4_0_block_t *W, int cols, int rows) {
+#if defined(__AVX2__)
+    if (cols >= QWEN_LONG_ROW_COLS) {
+        q4_0_matvec_avx2_1row(y, qx, sx, W, cols, rows);
+        return;
+    }
+#endif
+    q4_0_int_rows(y, qx, sx, W, cols, rows);
+}
+
 typedef struct { float *y; const int8_t *qx; float sx; const q4_0_block_t *W; int rows, cols; } q4_0_int_ctx;
 static void q4_0_int_task(size_t tid, size_t nt, void *vc) {
     q4_0_int_ctx *c = (q4_0_int_ctx *)vc;
     int r0 = (int)(tid * (size_t)c->rows / nt);
     int r1 = (int)((tid + 1) * (size_t)c->rows / nt);
-    q4_0_int_rows(c->y + r0, c->qx, c->sx,
-                  c->W + (size_t)r0 * (c->cols / Q4_0_BLOCK_SIZE), c->cols, r1 - r0);
+    q4_0_mv_rows(c->y + r0, c->qx, c->sx,
+                 c->W + (size_t)r0 * (c->cols / Q4_0_BLOCK_SIZE), c->cols, r1 - r0);
 }
 #endif /* !__AVX512VNNI__ && !__ARM_FEATURE_DOTPROD */
 
@@ -2733,7 +2808,7 @@ void qwen_matvec_q4_0(float *y, const q4_0_block_t *W, const float *x,
         qwen_parallel((size_t)nt, q4_0_int_task, &c);
         return;
     }
-    q4_0_int_rows(y, qx_buf, sx, W, cols, rows);
+    q4_0_mv_rows(y, qx_buf, sx, W, cols, rows);
 #endif
 }
 
@@ -4532,8 +4607,13 @@ int qwen_kernel_selftest(void *out) {
     #define NEXT_F (( (rng = rng * 6364136223846793005ull + 1442695040888963407ull) >> 40) \
                     / (float)(1u << 24) * 2.0f - 1.0f)   /* uniform in [-1,1) */
 
-    /* Two CP-shaped matrices: gate_up [3072×1024] and a rows-not-multiple case. */
-    const int cases[][2] = { {3072, 1024}, {2048, 1024}, {257, 320} };
+    /* Casos {filas, columnas}: {3072,1024} y {2048,1024} tienen la forma de las
+     * matrices del CP; {257,320} tiene un número de filas impar y pocas columnas;
+     * {1024,2048} son filas largas con reparto entre hilos (forma
+     * de wo) y {255,3072} filas largas en la rama serie y con número de filas impar
+     * (forma de down). Las filas largas ejercitan el núcleo de una fila, que debe
+     * dar error 0 frente al matmat de dos filas. */
+    const int cases[][2] = { {3072, 1024}, {2048, 1024}, {257, 320}, {1024, 2048}, {255, 3072} };
     const int ncases = (int)(sizeof(cases) / sizeof(cases[0]));
     int failures = 0;
 
@@ -4793,7 +4873,8 @@ int qwen_kernel_selftest(void *out) {
                             rows, cols, ok ? "PASS (exacto)" : "FAIL");
                     if (!ok) failures++;
                     /* La fila 0 sola (núcleo de una fila) debe coincidir bit a bit con la
-                     * misma fila procesada dentro del matvec completo (núcleo de dos filas). */
+                     * misma fila procesada dentro del matvec completo (núcleo de dos filas, o de una
+                     * fila en las filas largas). */
                     float y0;
                     qwen_matvec_q4_0(&y0, wq, x, 1, cols);
                     qwen_matvec_q4_0(yc, wq, x, rows, cols);

@@ -179,7 +179,8 @@ convolucional causal lo permite sin mirar hacia delante.
 - No environment switch may select a compute path (the Talker prefill has no optional `matmat` route).
 - Keep generic/NEON/AVX variants functionally equivalent.
 - If you optimize one path, verify no regression on others.
-- Favor meaningful speedups; avoid complexity for tiny wins.
+- Toda mejora de velocidad consistente se adopta aunque sea pequeña, siempre que conserve la numérica exacta y no abra un segundo camino para la misma operación.
+- Filas largas del matvec entero AVX2: a partir de `QWEN_LONG_ROW_COLS` (2048) columnas, `qwen_matvec_int8` y `qwen_matvec_q4_0` leen una fila por iteración (un solo flujo de lectura por hilo). Solo cambia el matvec; el matmat y el QKV fusionado siguen con el núcleo de dos filas. La igualdad bit a bit entre ambos núcleos la cubre `--self-test` (matmat frente a B matvec con error 0, con formas de filas largas).
 
 ## Cross-Hardware Performance Workflow (perf / SIMD / batching epics)
 
