@@ -40,7 +40,6 @@ const fn permanent(label: &'static str, active: &'static str, done: &'static str
 
 pub const VALIDATING: Stage = transient("validating", "Validando…");
 pub const STARTED: Stage = transient("started", "Enviando al daemon…");
-pub const QUEUED: Stage = transient("queued", "Esperando turno para sintetizar…");
 pub const DENOISE_QUEUE: Stage =
     transient("denoise_queue", "Esperando turno para limpiar el ruido…");
 pub const SAVING: Stage = transient("saving", "Guardando…");
@@ -53,6 +52,12 @@ pub const TRANSLATING: Stage = permanent("translating", "Traduciendo…", "Tradu
 /// El llamador cambia el texto terminado con `done_as("Primer audio")` si
 /// después se reproduce.
 pub const SYNTHESIZING: Stage = permanent("synthesizing", "Sintetizando…", "Voz sintetizada");
+/// Textos activos de `SYNTHESIZING` mientras la síntesis espera: no son etapas
+/// propias, así que la espera comparte el reloj de la síntesis y nunca deja una
+/// línea terminada.
+pub const SYNTHESIS_QUEUED_TEXT: &str = "Esperando turno para sintetizar…";
+pub const SYNTHESIS_WARMING_TEXT: &str = "Calentando el motor…";
+pub const SYNTHESIS_LOADING_VOICE_TEXT: &str = "Cargando la voz…";
 pub const PLAYING: Stage = permanent("playing", "Reproduciendo…", "Reproducido");
 pub const CLONING: Stage = permanent(
     "cloning",
@@ -60,7 +65,6 @@ pub const CLONING: Stage = permanent(
     "Voz clonada",
 );
 pub const WARMING: Stage = permanent("warming", "Calentando el motor…", "Motor calentado");
-pub const WARMUP: Stage = permanent("warmup", "Precargando la voz…", "Voz precargada");
 pub const REMOVING: Stage = permanent("removing", "Borrando…", "Borrado");
 /// Transitoria: el llamador la hace permanente con `done_as("Daemon detenido")`
 /// solo si se detuvo un daemon.
@@ -102,7 +106,6 @@ mod tests {
         let all = [
             VALIDATING,
             STARTED,
-            QUEUED,
             DENOISE_QUEUE,
             SAVING,
             CHECKING,
@@ -115,7 +118,6 @@ mod tests {
             PLAYING,
             CLONING,
             WARMING,
-            WARMUP,
             REMOVING,
             STOPPING,
             STARTING,
@@ -137,6 +139,13 @@ mod tests {
                 stage.active.contains("daemon") || stage.done.is_some_and(|d| d.contains("daemon"));
             let allowed = matches!(stage.label, "started" | "stopping" | "starting");
             assert!(!mentions || allowed, "{} nombra al daemon", stage.label);
+        }
+        for text in [
+            SYNTHESIS_QUEUED_TEXT,
+            SYNTHESIS_WARMING_TEXT,
+            SYNTHESIS_LOADING_VOICE_TEXT,
+        ] {
+            assert!(!text.contains("daemon"), "{text} nombra al daemon");
         }
     }
 

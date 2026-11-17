@@ -124,6 +124,19 @@ pub struct GenerationOptions {
     pub seed: Option<u64>,
 }
 
+/// Paso de la síntesis que el motor avisa a quien lo llama.
+///
+/// - `LoadingVoice`: el motor está arrancando un residente (primer uso, cambio
+///   de voz o rearranque de un residente degradado); la síntesis aún no empezó
+///   y tarda varios segundos.
+/// - `Synthesizing`: el residente recién arrancado está sano y el motor
+///   empieza a sintetizar. Solo se avisa después de un `LoadingVoice`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SynthesisStep {
+    LoadingVoice,
+    Synthesizing,
+}
+
 /// Traduce un token de idioma del producto al nombre completo que acepta el
 /// motor Qwen3-TTS. Cualquier otro token es un error: nunca se cae a un idioma
 /// por defecto.
@@ -745,6 +758,12 @@ impl Qwen3TtsEngine {
     /// aborta la generación, así que el residente sigue caliente y el
     /// `health_check` de la siguiente petición lo reutiliza. Si el motor corta la
     /// entrega antes de terminar, el error envuelve `SynthesisTruncated`.
+    ///
+    /// `on_step` avisa cuándo el motor arranca un residente:
+    /// `SynthesisStep::LoadingVoice` justo antes de cada arranque (primer uso,
+    /// cambio de voz o rearranque por degradación) y
+    /// `SynthesisStep::Synthesizing` cuando ese residente ya está sano, antes de
+    /// pedir el audio. Con un residente reutilizado no avisa nada.
     pub fn synthesize_streaming(
         &self,
         text: &str,
@@ -752,6 +771,7 @@ impl Qwen3TtsEngine {
         options: &GenerationOptions,
         cancel: &AtomicBool,
         sink: &mut dyn FnMut(&[i16]) -> Result<()>,
+        on_step: &mut dyn FnMut(SynthesisStep),
     ) -> Result<()> {
         let voice = resolve_voice_engine(&profile.name, profile.reference.as_ref())?;
         let voice = &voice;
@@ -760,6 +780,7 @@ impl Qwen3TtsEngine {
             self.model_dir.as_deref(),
             self.base_model_dir.as_deref(),
         )?;
+        let mut loaded_voice = false;
         let url = {
             // Un hilo que murió con el mutex del residente tomado lo deja
             // poisoned; un `unwrap()` convertiría eso en un pánico que tumba
@@ -776,6 +797,8 @@ impl Qwen3TtsEngine {
                 // El residente anterior se termina antes de lanzar el nuevo: el
                 // registro solo anota uno y ninguno puede vivir sin anotar.
                 *guard = None;
+                loaded_voice = true;
+                on_step(SynthesisStep::LoadingVoice);
                 *guard = Some(self.start_resident(model_dir, voice)?);
             } else if let Err(health_error) = guard
                 .as_mut()
@@ -794,6 +817,8 @@ impl Qwen3TtsEngine {
                     .pid();
                 resident::kill_tree_resident_by_pid(pid);
                 *guard = None;
+                loaded_voice = true;
+                on_step(SynthesisStep::LoadingVoice);
                 *guard = Some(self.start_resident(model_dir, voice)?);
             }
             let state = guard
@@ -801,6 +826,9 @@ impl Qwen3TtsEngine {
                 .expect("residente arrancado o reutilizado sano");
             format!("http://{}:{}", RESIDENT_HOST, state.resident.port)
         };
+        if loaded_voice {
+            on_step(SynthesisStep::Synthesizing);
+        }
         // Una cancelación durante el arranque o la salud observada no debe
         // encargar al motor un trabajo que nadie espera.
         if cancel.load(Ordering::SeqCst) {
@@ -819,7 +847,8 @@ impl Qwen3TtsEngine {
 
     /// Igual que [`Self::synthesize_streaming`], pero acumula los fragmentos y
     /// escribe el audio completo en `output_path` como WAV de 24 kHz, mono y 16
-    /// bits. Si la entrega falla no se escribe nada.
+    /// bits. Si la entrega falla no se escribe nada. `on_step` avisa el
+    /// arranque de un residente igual que en [`Self::synthesize_streaming`].
     pub fn synthesize_to_wav(
         &self,
         text: &str,
@@ -827,12 +856,20 @@ impl Qwen3TtsEngine {
         options: &GenerationOptions,
         output_path: &Path,
         cancel: &AtomicBool,
+        on_step: &mut dyn FnMut(SynthesisStep),
     ) -> Result<()> {
         let mut pcm: Vec<i16> = Vec::new();
-        self.synthesize_streaming(text, profile, options, cancel, &mut |chunk| {
-            pcm.extend_from_slice(chunk);
-            Ok(())
-        })?;
+        self.synthesize_streaming(
+            text,
+            profile,
+            options,
+            cancel,
+            &mut |chunk| {
+                pcm.extend_from_slice(chunk);
+                Ok(())
+            },
+            on_step,
+        )?;
         let wav = avi_audio::encode_pcm_mono_wav(&pcm, ENGINE_SAMPLE_RATE)?;
         std::fs::write(output_path, wav)?;
         Ok(())
@@ -2479,6 +2516,7 @@ mod tests {
                 &GenerationOptions::new("es"),
                 &dir.path().join("salida.wav"),
                 &AtomicBool::new(false),
+                &mut |_| {},
             )
             .unwrap_err();
         assert!(
@@ -2512,9 +2550,11 @@ mod tests {
     /// Lanza el motor real en modo `--serve` sobre un puerto efímero de
     /// loopback, con stdout y stderr descartados. Exige el binario y los pesos:
     /// si faltan, falla de forma explícita.
-    fn spawn_real_engine(watch_stdin: bool, stdin: Stdio) -> EngineGuard {
-        // El directorio de trabajo de `cargo test` es el del crate, así que la
-        // ruta relativa `vendor/…` se ancla a la raíz del repositorio.
+    /// Binario real del motor para las pruebas con recursos: `QWEN3_TTS_BIN` si
+    /// está definida o, si no, el de `vendor/qwen3-tts`. El directorio de trabajo
+    /// de `cargo test` es el del crate, así que la ruta relativa `vendor/…` se
+    /// ancla a la raíz del repositorio. Si falta, falla de forma explícita.
+    fn real_engine_binary() -> PathBuf {
         let vendored = Path::new(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
             "../../vendor/qwen3-tts/qwen_tts.exe"
         } else {
@@ -2528,6 +2568,11 @@ mod tests {
              constrúyelo con `cargo xtask build-engine`",
             );
         assert!(bin.is_file(), "falta {}", bin.display());
+        bin
+    }
+
+    fn spawn_real_engine(watch_stdin: bool, stdin: Stdio) -> EngineGuard {
+        let bin = real_engine_binary();
         let model_dir = resolve_model_dir(Some(&bin))
             .expect("no se pudo resolver el directorio de pesos qwen3-tts-0.6b")
             .expect(
@@ -2609,6 +2654,47 @@ mod tests {
             exited,
             "al cerrar la tubería el motor debe terminar en menos de 10 s"
         );
+    }
+
+    /// Un motor nuevo avisa el arranque del residente en la primera síntesis
+    /// (`LoadingVoice` y después `Synthesizing`) y no avisa nada en la segunda,
+    /// que reutiliza el residente sano con la misma voz.
+    #[test]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    fn synthesis_reports_resident_start_only_when_it_starts() {
+        // El residente localiza el binario por `QWEN3_TTS_BIN`; el candado evita
+        // que otra prueba de resolución lo cambie mientras tanto.
+        let _guard = RESOLUTION_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::env::set_var("QWEN3_TTS_BIN", real_engine_binary());
+        let engine = Qwen3TtsEngine::new(None).expect("motor de prueba");
+        let profile = VoiceProfile {
+            name: "ryan".to_string(),
+            reference: None,
+        };
+        let options = GenerationOptions::new("es");
+        let cancel = AtomicBool::new(false);
+        let synthesize_recording_steps = || {
+            let mut steps = Vec::new();
+            engine
+                .synthesize_streaming(
+                    "Hola.",
+                    &profile,
+                    &options,
+                    &cancel,
+                    &mut |_| Ok(()),
+                    &mut |step| steps.push(step),
+                )
+                .expect("la síntesis debe completarse");
+            steps
+        };
+        assert_eq!(
+            synthesize_recording_steps(),
+            vec![SynthesisStep::LoadingVoice, SynthesisStep::Synthesizing]
+        );
+        assert_eq!(synthesize_recording_steps(), Vec::<SynthesisStep>::new());
+        engine.close();
     }
 
     /// Limpieza del motor doble: mata su árbol por PID y borra su directorio
@@ -3070,6 +3156,7 @@ fn main() {
                 &GenerationOptions::new("es"),
                 &dir.path().join("salida.wav"),
                 &AtomicBool::new(false),
+                &mut |_| {},
             )
             .unwrap_err();
         let not_found = err

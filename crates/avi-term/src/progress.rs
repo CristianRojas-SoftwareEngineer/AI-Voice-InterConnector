@@ -78,6 +78,9 @@ pub struct PhaseProgress {
     tty: bool,
     enabled: bool,
     machine: bool,
+    /// Modo de etapa única: cerrar una etapa permanente no escribe su línea
+    /// terminada.
+    single_stage: bool,
     color: bool,
     repaint_every: Duration,
     beat_every: Duration,
@@ -98,6 +101,7 @@ impl PhaseProgress {
             tty: std::io::stderr().is_terminal(),
             enabled: !progress_silenced(),
             machine: line::machine_mode(),
+            single_stage: false,
             color: color_enabled(Stream::Stderr),
             repaint_every: MIN_REPAINT,
             beat_every: BEAT_INTERVAL,
@@ -124,6 +128,18 @@ impl PhaseProgress {
         progress.color = false;
         progress.repaint_every = Duration::ZERO;
         progress
+    }
+
+    /// Activa el modo de etapa única, para un comando cuya única etapa de
+    /// trabajo repetiría lo que dice el cierre: al cerrarse, una etapa
+    /// permanente no escribe su línea `✓`, pero sí registra su duración, que el
+    /// cierre del comando recupera con [`PhaseProgress::finished_duration`].
+    /// Sin terminal se conservan el anuncio `… <texto>` y los latidos. En modo
+    /// máquina no tiene efecto: no hay cierre, así que la línea `✓` de la etapa
+    /// es la única que da su duración y se escribe como siempre.
+    pub fn single_stage(mut self) -> Self {
+        self.single_stage = true;
+        self
     }
 
     /// Texto que el indicador ha escrito hasta ahora por stderr.
@@ -186,8 +202,8 @@ impl PhaseProgress {
             .is_none_or(|last| last.elapsed() >= self.repaint_every)
     }
 
-    /// Cierra la etapa en curso: una permanente deja su línea terminada, una
-    /// transitoria se borra.
+    /// Cierra la etapa en curso: una permanente deja su línea terminada (salvo
+    /// en modo de etapa única), una transitoria se borra.
     fn close_current(&self, inner: &mut Inner) {
         let Some(current) = inner.current.take() else {
             return;
@@ -201,6 +217,9 @@ impl PhaseProgress {
         }
         if self.tty {
             self.clear_line();
+        }
+        if self.single_stage && !self.machine {
+            return;
         }
         if let Some(done) = &current.done {
             let line = finished_line(self.color, done, elapsed, current.note.as_deref());
@@ -696,6 +715,57 @@ mod tests {
         let _ = progress.close();
         let after = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
         assert_eq!(after, out, "cerrar después no repite la línea terminada");
+    }
+
+    /// En modo de etapa única, cerrar una etapa permanente (con `close` o con
+    /// `end_stage`) no escribe su línea `✓`, con o sin terminal; sin terminal
+    /// queda el anuncio `… <texto>`, y la duración sigue disponible.
+    #[test]
+    fn single_stage_closes_a_permanent_stage_without_its_line() {
+        for tty in [false, true] {
+            for use_end_stage in [false, true] {
+                let progress = PhaseProgress::for_test(None, tty).single_stage();
+                progress.phase(&stage::TRANSLATING);
+                if use_end_stage {
+                    progress.end_stage();
+                }
+                let captured = std::sync::Arc::clone(&progress.captured);
+                if use_end_stage {
+                    assert!(progress.finished_duration("Traducido").is_some());
+                }
+                let _ = progress.close();
+                let out = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                assert!(
+                    !out.contains('✓'),
+                    "tty={tty} end_stage={use_end_stage}: {out}"
+                );
+                if !tty {
+                    assert_eq!(out, "… Traduciendo…\n", "{out}");
+                }
+            }
+        }
+    }
+
+    /// La duración de la etapa cerrada en modo de etapa única queda registrada
+    /// para el cierre del comando.
+    #[test]
+    fn single_stage_keeps_the_duration_of_the_closed_stage() {
+        let progress = PhaseProgress::for_test(None, false).single_stage();
+        progress.phase(&stage::TRANSLATING);
+        progress.phase(&stage::SAVING);
+        assert!(progress.finished_duration("Traducido").is_some());
+    }
+
+    /// En modo máquina el modo de etapa única no actúa: la línea `✓` se
+    /// escribe como siempre.
+    #[test]
+    fn single_stage_has_no_effect_in_machine_mode() {
+        let mut progress = PhaseProgress::for_test(None, false).single_stage();
+        progress.machine = true;
+        progress.phase(&stage::TRANSLATING);
+        progress.end_stage();
+        let out = progress.captured();
+        assert!(out.contains("✓ Traducido"), "{out}");
     }
 
     /// `done_as` convierte una transitoria en permanente y cambia el texto

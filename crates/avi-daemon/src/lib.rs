@@ -330,7 +330,10 @@ fn audio_event_line(pcm: &[i16]) -> String {
 /// y envía cada fragmento al cliente como un evento `audio`. Devuelve los ms de
 /// trabajo puro, tomados dentro del trabajo (ya con el lock), que excluyen la
 /// espera en cola. Si el cliente se fue, el envío falla y con él la entrega, lo que
-/// cierra la conexión con el motor y cancela la generación.
+/// cierra la conexión con el motor y cancela la generación. Cuando el motor
+/// avisa que arranca o termina de arrancar un residente, solo lo anota en
+/// `signal` y despierta a la fase de síntesis, que es quien escribe los
+/// eventos: este hilo nunca emite `progress` ni latidos.
 fn synthesize_to_events(
     state: &DaemonState,
     tx: &tokio::sync::mpsc::Sender<String>,
@@ -338,14 +341,26 @@ fn synthesize_to_events(
     profile: &VoiceProfile,
     options: &GenerationOptions,
     cancel: &std::sync::atomic::AtomicBool,
+    signal: &StepSignal,
 ) -> anyhow::Result<std::time::Duration> {
     let work_t0 = std::time::Instant::now();
-    state
-        .tts_engine
-        .synthesize_streaming(text, profile, options, cancel, &mut |pcm| {
+    state.tts_engine.synthesize_streaming(
+        text,
+        profile,
+        options,
+        cancel,
+        &mut |pcm| {
             tx.blocking_send(audio_event_line(pcm))
                 .map_err(|_| anyhow::anyhow!("El cliente se desconectó; se cancela la síntesis."))
-        })?;
+        },
+        &mut |step| {
+            signal.loading_voice.store(
+                step == avi_tts::SynthesisStep::LoadingVoice,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            signal.changed.notify_one();
+        },
+    )?;
     Ok(work_t0.elapsed())
 }
 
@@ -405,15 +420,48 @@ impl Drop for CancelOnDrop {
     }
 }
 
+/// Aviso del hilo del trabajo a la fase de síntesis sobre el paso del motor.
+/// `loading_voice` es verdadero mientras el motor arranca un residente y
+/// `changed` despierta a la fase cuando cambia. Solo la fase escribe los
+/// `progress` y los latidos, así que ningún latido viejo llega tras un cambio.
+struct StepSignal {
+    loading_voice: std::sync::atomic::AtomicBool,
+    changed: tokio::sync::Notify,
+}
+
+impl StepSignal {
+    fn new() -> Self {
+        Self {
+            loading_voice: std::sync::atomic::AtomicBool::new(false),
+            changed: tokio::sync::Notify::new(),
+        }
+    }
+
+    /// Etapa vigente del trabajo: `loading_voice` o `synthesis`.
+    fn stage(&self) -> &'static str {
+        if self.loading_voice.load(std::sync::atomic::Ordering::SeqCst) {
+            "loading_voice"
+        } else {
+            "synthesis"
+        }
+    }
+}
+
 /// Fase de síntesis compartida por `/synthesize` y `/dub`.
 ///
-/// 1. Espera `synthesis_lock` emitiendo latidos: `stage: "warming"` si el
-///    daemon está calentando el motor, `queued` si otra síntesis retiene el lock.
-/// 2. Ejecuta `job` en `spawn_blocking` con latidos `synthesis`, acotado a
-///    `budget` más `SYNTHESIS_DEADLINE_MARGIN`. `job` recibe una bandera de
+/// 1. Al entrar emite de inmediato un `progress` con la etapa real:
+///    `synthesis` si consigue `synthesis_lock` al instante; si no, `warming`
+///    (el daemon está calentando el motor) o `queued` (otra síntesis retiene el
+///    lock), espera el lock con latidos de esa etapa y emite
+///    `progress{synthesis}` al obtenerlo.
+/// 2. Ejecuta `job` en `spawn_blocking` con latidos de la etapa vigente,
+///    acotado a `budget` más `SYNTHESIS_DEADLINE_MARGIN`. Si el motor arranca un
+///    residente, emite `progress{loading_voice}` y los latidos pasan a esa
+///    etapa; al estar sano, `progress{synthesis}`. `job` recibe una bandera de
 ///    cancelación que se activa al vencer ese deadline, al desconectarse el
-///    cliente o al descartarse la fase; el motor aborta entonces la
-///    generación y queda caliente para la siguiente petición.
+///    cliente o al descartarse la fase, y el `StepSignal` con el que avisa el
+///    paso del motor; el motor aborta entonces la generación y queda caliente
+///    para la siguiente petición.
 /// 3. Si vence el deadline o `job` devuelve un error que envuelve
 ///    `SynthesisTimeout`, emite `{event:"error", reason:"synthesis_timeout"}`.
 ///    Una síntesis correcta marca el motor como `warm`.
@@ -430,7 +478,9 @@ async fn run_synthesis_phase<T>(
     tx: &tokio::sync::mpsc::Sender<String>,
     state: &DaemonState,
     budget: std::time::Duration,
-    job: impl FnOnce(Arc<std::sync::atomic::AtomicBool>) -> anyhow::Result<T> + Send + 'static,
+    job: impl FnOnce(Arc<std::sync::atomic::AtomicBool>, Arc<StepSignal>) -> anyhow::Result<T>
+        + Send
+        + 'static,
 ) -> Option<anyhow::Result<T>>
 where
     T: Send + 'static,
@@ -454,28 +504,49 @@ async fn run_synthesis_phase_with<T>(
     budget: std::time::Duration,
     heartbeat: std::time::Duration,
     margin: std::time::Duration,
-    job: impl FnOnce(Arc<std::sync::atomic::AtomicBool>) -> anyhow::Result<T> + Send + 'static,
+    job: impl FnOnce(Arc<std::sync::atomic::AtomicBool>, Arc<StepSignal>) -> anyhow::Result<T>
+        + Send
+        + 'static,
 ) -> Option<anyhow::Result<T>>
 where
     T: Send + 'static,
 {
-    // Espera del lock con latidos; el estado de warmup decide la etapa.
-    let _lock = {
-        let lock = state.synthesis_lock.lock();
-        tokio::pin!(lock);
-        loop {
-            tokio::select! {
-                guard = &mut lock => break guard,
-                _ = tokio::time::sleep(heartbeat) => {
-                    let stage = if state.warm_snapshot().0 == "warming" {
-                        "warming"
-                    } else {
-                        "queued"
-                    };
-                    emit_ndjson(tx, json!({ "event": "heartbeat", "stage": stage })).await;
+    // Etapa de la espera del lock: el estado de warmup decide cuál es.
+    let waiting_stage = || {
+        if state.warm_snapshot().0 == "warming" {
+            "warming"
+        } else {
+            "queued"
+        }
+    };
+    // Con el lock libre la fase empieza ya; si no, anuncia la espera real y
+    // la acompaña con latidos hasta obtenerlo.
+    let _lock = match state.synthesis_lock.try_lock() {
+        Ok(guard) => {
+            emit_ndjson(tx, json!({ "event": "progress", "stage": "synthesis" })).await;
+            guard
+        }
+        Err(_) => {
+            emit_ndjson(tx, json!({ "event": "progress", "stage": waiting_stage() })).await;
+            let guard = {
+                let lock = state.synthesis_lock.lock();
+                tokio::pin!(lock);
+                loop {
+                    tokio::select! {
+                        guard = &mut lock => break guard,
+                        _ = tokio::time::sleep(heartbeat) => {
+                            emit_ndjson(
+                                tx,
+                                json!({ "event": "heartbeat", "stage": waiting_stage() }),
+                            )
+                            .await;
+                        }
+                        _ = tx.closed() => return None,
+                    }
                 }
-                _ = tx.closed() => return None,
-            }
+            };
+            emit_ndjson(tx, json!({ "event": "progress", "stage": "synthesis" })).await;
+            guard
         }
     };
 
@@ -487,13 +558,18 @@ where
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let _cancel_on_drop = CancelOnDrop(cancel.clone());
     let job_cancel = cancel.clone();
-    let mut handle = tokio::task::spawn_blocking(move || job(job_cancel));
+    let signal = Arc::new(StepSignal::new());
+    let job_signal = signal.clone();
+    let mut handle = tokio::task::spawn_blocking(move || job(job_cancel, job_signal));
     let deadline = tokio::time::sleep(budget + margin);
     tokio::pin!(deadline);
     let outcome = loop {
         tokio::select! {
             _ = tokio::time::sleep(heartbeat) => {
-                emit_ndjson(tx, json!({ "event": "heartbeat", "stage": "synthesis" })).await;
+                emit_ndjson(tx, json!({ "event": "heartbeat", "stage": signal.stage() })).await;
+            }
+            _ = signal.changed.notified() => {
+                emit_ndjson(tx, json!({ "event": "progress", "stage": signal.stage() })).await;
             }
             _ = tx.closed() => return None,
             res = &mut handle => break Some(res),
@@ -601,14 +677,17 @@ async fn health_handler(State(state): State<SharedState>) -> Json<Value> {
 ///
 /// Contrato NDJSON vigente, sin texto humano en los eventos de avance:
 /// `started` (con `voice` y `text_length`) → `heartbeat`{`stage`: `translate`}
-/// durante la traducción (solo si hay par distinto) → `progress`{`stage`:
-/// `synthesis`} → `audio`{`pcm_b64`}… (un evento por fragmento, intercalados con
-/// `heartbeat`) → `result`{`translated`,`work_ms`} OR `error`{`reason`,`message`}.
-/// El audio es PCM de 16 bits, little-endian, 24 kHz, mono, en base64, y se
-/// concatena en orden; el `result` ya no lo lleva. El motor no reporta progreso
-/// interno, por lo que se emite un único marcador `progress` de fase tras traducir
-/// y antes de sintetizar. Un fallo a mitad de entrega emite `error` tras los
-/// eventos `audio` ya enviados.
+/// durante la traducción (solo si hay par distinto) → `progress`{`stage`}
+/// inmediato al entrar en la fase de síntesis (`synthesis` con el lock libre;
+/// `queued` o `warming` si hay que esperarlo, con latidos de esa etapa y un
+/// `progress`{`synthesis`} al obtenerlo) → `progress`{`loading_voice`} si el
+/// motor arranca un residente, y `progress`{`synthesis`} cuando está sano →
+/// `audio`{`pcm_b64`}… (un evento por fragmento, intercalados con `heartbeat`
+/// de la etapa vigente) → `result`{`translated`,`work_ms`} OR
+/// `error`{`reason`,`message`}. El audio es PCM de 16 bits, little-endian,
+/// 24 kHz, mono, en base64, y se concatena en orden; el `result` ya no lo lleva.
+/// Un fallo a mitad de entrega emite `error` tras los eventos `audio` ya
+/// enviados.
 async fn synthesize_handler(
     State(state): State<SharedState>,
     Json(payload): Json<Value>,
@@ -777,9 +856,6 @@ async fn synthesize_handler(
             }
         };
 
-        // Marcador genérico de fase (el motor no reporta progreso interno).
-        emit_ndjson(&tx, json!({ "event": "progress", "stage": "synthesis" })).await;
-
         // Perfil de voz: referencia con su identidad si la voz está clonada; el
         // motor resuelve el preset vía `resolve_voice_engine` a partir del nombre.
         let reference = match state.voice_store.resolve(&voice_owned) {
@@ -816,7 +892,7 @@ async fn synthesize_handler(
         let budget = avi_core::synthesis_budget(text_final.chars().count());
         let state_synth = state.clone();
         let tx_synth = tx.clone();
-        let job = move |cancel: Arc<std::sync::atomic::AtomicBool>| {
+        let job = move |cancel: Arc<std::sync::atomic::AtomicBool>, signal: Arc<StepSignal>| {
             synthesize_to_events(
                 &state_synth,
                 &tx_synth,
@@ -824,6 +900,7 @@ async fn synthesize_handler(
                 &profile,
                 &options,
                 &cancel,
+                &signal,
             )
         };
         let Some(synth_res) = run_synthesis_phase(&tx, &state, budget, job).await else {
@@ -1699,8 +1776,9 @@ async fn voices_clone_handler(
         };
         // Warm-on-clone (A): precalienta la voz recién clonada en segundo plano
         // para eliminar el cold-start del residente en la primera síntesis del
-        // flujo clonar→sintetizar. Se conserva en `spawn_blocking` y se anuncia
-        // por evento (por eso `precomputed: true` = precarga iniciada).
+        // flujo clonar→sintetizar. Se conserva en `spawn_blocking`;
+        // `precomputed: true` significa «precarga iniciada». No se anuncia como
+        // etapa porque sigue en marcha cuando se emite el `result`.
         let warm_state = state.clone();
         let warm_name = name.clone();
         tokio::task::spawn_blocking(move || {
@@ -1710,7 +1788,6 @@ async fn voices_clone_handler(
             )]
             let _ = warm_voice_engine(&warm_state, &warm_name);
         });
-        emit_ndjson(&tx, json!({ "event": "progress", "stage": "warmup" })).await;
         emit_ndjson(
             &tx,
             json!({
@@ -1799,9 +1876,11 @@ fn dub_fields(payload: &Value) -> Result<(VoiceName, String, String, Option<f32>
 /// baratas (audio, par/CT2, modelo, voz y rama sin `native-stt`, en JSON plano
 /// con los códigos de siempre), latidos `heartbeat` durante cada fase pesada y
 /// evento final `result` con la forma contractual actual (`status: "dubbed"`).
-/// La fase de síntesis la gobierna `run_synthesis_phase`: latidos en cola,
-/// presupuesto proporcional al texto y cancelación del trabajo en el motor al
-/// vencer o al desconectarse el cliente.
+/// La fase de síntesis la gobierna `run_synthesis_phase`: un `progress`
+/// inmediato con la etapa real (`synthesis`, `queued` o `warming`),
+/// `progress{loading_voice}` si arranca un residente, latidos con la etapa
+/// vigente, presupuesto proporcional al texto y cancelación del trabajo en el
+/// motor al vencer o al desconectarse el cliente.
 async fn dub_handler(
     #[cfg(feature = "native-stt")] State(state): State<SharedState>,
     Json(payload): Json<Value>,
@@ -2183,10 +2262,13 @@ async fn dub_handler(
                 .await;
                 return;
             }
-            // Síntesis: la fase espera `synthesis_lock` con latidos (`warming` o
-            // `queued`), acota el trabajo al presupuesto del texto, lo cancela
-            // en el motor ante desconexión del cliente o vencimiento y, al
-            // vencer, emite `synthesis_timeout` (nunca cierre silencioso).
+            // Síntesis: la fase anuncia de inmediato su etapa real con un
+            // `progress` (`synthesis` si el lock está libre; `warming` o `queued`
+            // si hay que esperarlo, con latidos, y `synthesis` al obtenerlo),
+            // emite `loading_voice` si el motor arranca un residente, acota el
+            // trabajo al presupuesto del texto, lo cancela en el motor ante
+            // desconexión del cliente o vencimiento y, al vencer, emite
+            // `synthesis_timeout` (nunca cierre silencioso).
             let reference = match state.voice_store.resolve(&voice) {
                 Ok(reference) => reference,
                 Err(e) => {
@@ -2211,7 +2293,7 @@ async fn dub_handler(
             let synth_state = state.clone();
             let synth_tx = tx.clone();
             let synth_options = GenerationOptions::with_temperature(temperature, &target_iso);
-            let job = move |cancel: Arc<std::sync::atomic::AtomicBool>| {
+            let job = move |cancel: Arc<std::sync::atomic::AtomicBool>, signal: Arc<StepSignal>| {
                 synthesize_to_events(
                     &synth_state,
                     &synth_tx,
@@ -2219,6 +2301,7 @@ async fn dub_handler(
                     &profile,
                     &synth_options,
                     &cancel,
+                    &signal,
                 )
             };
             let Some(synth_res) = run_synthesis_phase(&tx, &state, budget, job).await else {
@@ -2403,6 +2486,7 @@ pub fn warm_voice_engine(state: &DaemonState, voice: &VoiceName) -> anyhow::Resu
             &GenerationOptions::production("es"),
             &std::sync::atomic::AtomicBool::new(false),
             &mut |_| Ok(()),
+            &mut |_| {},
         )
         .map_err(|e| anyhow::anyhow!("Warmup TTS falló: {}", e));
     eprintln!(
@@ -3375,7 +3459,7 @@ mod tests {
                 std::time::Duration::from_secs(5),
                 TEST_HEARTBEAT,
                 std::time::Duration::from_secs(1),
-                |_cancel| Ok(7u32),
+                |_cancel, _signal| Ok(7u32),
             )
             .await
         });
@@ -3408,7 +3492,7 @@ mod tests {
                 std::time::Duration::from_secs(5),
                 TEST_HEARTBEAT,
                 std::time::Duration::from_secs(1),
-                |_cancel| Ok(1u32),
+                |_cancel, _signal| Ok(1u32),
             )
             .await
         });
@@ -3443,7 +3527,7 @@ mod tests {
                 std::time::Duration::from_secs(5),
                 TEST_HEARTBEAT,
                 std::time::Duration::from_secs(1),
-                move |_cancel| {
+                move |_cancel, _signal| {
                     // Bloquea el hilo del trabajo hasta que la prueba lo libera.
                     hold.recv().map_err(|_| {
                         anyhow::anyhow!("la prueba soltó el trabajo antes de tiempo")
@@ -3462,6 +3546,181 @@ mod tests {
         assert_eq!(res.expect("el trabajo termina bien"), "listo");
         events.extend(drain_events(&mut rx));
         assert!(heartbeats_with_stage(&events, "synthesis") >= 3);
+    }
+
+    /// Espera a que el canal entregue un `progress` de la etapa `stage`, con
+    /// `deadline` como límite duro, y devuelve todos los eventos leídos hasta
+    /// él, incluido ese.
+    async fn wait_for_progress(
+        rx: &mut tokio::sync::mpsc::Receiver<String>,
+        stage: &str,
+        deadline: std::time::Duration,
+    ) -> Vec<Value> {
+        let limit = std::time::Instant::now() + deadline;
+        let mut events = Vec::new();
+        loop {
+            let remaining = limit.saturating_duration_since(std::time::Instant::now());
+            let line = tokio::time::timeout(remaining, rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("no llegó `progress` de la etapa `{stage}`"))
+                .expect("la fase sigue viva: su emisor no debe cerrarse antes");
+            let event: Value = serde_json::from_str(&line).expect("cada evento es JSON");
+            let found = event["event"] == "progress" && event["stage"] == stage;
+            events.push(event);
+            if found {
+                return events;
+            }
+        }
+    }
+
+    /// Etapas de los eventos `progress`, en orden.
+    fn progress_stages(events: &[Value]) -> Vec<String> {
+        events
+            .iter()
+            .filter(|e| e["event"] == "progress")
+            .map(|e| e["stage"].as_str().expect("stage es texto").to_string())
+            .collect()
+    }
+
+    /// Con el lock libre, el primer evento de la fase es `progress{synthesis}`.
+    #[tokio::test]
+    async fn synthesis_phase_announces_synthesis_immediately_when_lock_is_free() {
+        let (state, _dir) = test_state();
+        state.set_warm();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
+        let res = run_synthesis_phase_with(
+            &tx,
+            &state,
+            std::time::Duration::from_secs(5),
+            TEST_HEARTBEAT,
+            std::time::Duration::from_secs(1),
+            |_cancel, _signal| Ok(()),
+        )
+        .await;
+        assert!(res.expect("hay resultado").is_ok());
+        let events = drain_events(&mut rx);
+        assert_eq!(events[0]["event"], "progress");
+        assert_eq!(events[0]["stage"], "synthesis");
+        assert_eq!(progress_stages(&events), ["synthesis"]);
+    }
+
+    /// Con el lock tomado, el primer evento llega antes de cualquier latido y es
+    /// `progress{queued}`; al soltarlo llega `progress{synthesis}`. Sin
+    /// `set_warm()`, el primer evento es `progress{warming}`.
+    #[tokio::test]
+    async fn synthesis_phase_announces_the_wait_before_any_heartbeat() {
+        for (warm, expected_wait) in [(true, "queued"), (false, "warming")] {
+            let (state, _dir) = test_state();
+            let state = Arc::new(state);
+            if warm {
+                state.set_warm();
+            }
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
+            let guard = state.synthesis_lock.lock().await;
+            let phase_state = state.clone();
+            let phase = tokio::spawn(async move {
+                run_synthesis_phase_with(
+                    &tx,
+                    &phase_state,
+                    std::time::Duration::from_secs(5),
+                    TEST_HEARTBEAT,
+                    std::time::Duration::from_secs(1),
+                    |_cancel, _signal| Ok(()),
+                )
+                .await
+            });
+            let first: Value = serde_json::from_str(
+                &tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                    .await
+                    .expect("llega un primer evento")
+                    .expect("la fase sigue viva"),
+            )
+            .expect("evento JSON");
+            assert_eq!(first["event"], "progress", "{first}");
+            assert_eq!(first["stage"], expected_wait, "{first}");
+            let mut events = vec![first];
+            events.extend(
+                wait_for_heartbeats(&mut rx, expected_wait, 1, std::time::Duration::from_secs(5))
+                    .await,
+            );
+            drop(guard);
+            assert!(phase.await.expect("join").is_some());
+            events.extend(drain_events(&mut rx));
+            assert_eq!(progress_stages(&events), [expected_wait, "synthesis"]);
+        }
+    }
+
+    /// Si el trabajo avisa que carga la voz, la fase emite
+    /// `progress{loading_voice}`, los latidos siguientes son `loading_voice`
+    /// hasta que el trabajo avisa el fin, y entonces llega `progress{synthesis}`.
+    #[tokio::test]
+    async fn synthesis_phase_reports_loading_voice_and_returns_to_synthesis() {
+        let (state, _dir) = test_state();
+        let state = Arc::new(state);
+        state.set_warm();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(64);
+        let (release_load, hold_load) = std::sync::mpsc::channel::<()>();
+        let (release_end, hold_end) = std::sync::mpsc::channel::<()>();
+        let phase_state = state.clone();
+        let phase = tokio::spawn(async move {
+            run_synthesis_phase_with(
+                &tx,
+                &phase_state,
+                std::time::Duration::from_secs(5),
+                TEST_HEARTBEAT,
+                std::time::Duration::from_secs(1),
+                move |_cancel, signal| {
+                    signal
+                        .loading_voice
+                        .store(true, std::sync::atomic::Ordering::SeqCst);
+                    signal.changed.notify_one();
+                    hold_load.recv().map_err(|_| {
+                        anyhow::anyhow!("la prueba soltó el trabajo antes de tiempo")
+                    })?;
+                    signal
+                        .loading_voice
+                        .store(false, std::sync::atomic::Ordering::SeqCst);
+                    signal.changed.notify_one();
+                    hold_end.recv().map_err(|_| {
+                        anyhow::anyhow!("la prueba soltó el trabajo antes de tiempo")
+                    })?;
+                    Ok(())
+                },
+            )
+            .await
+        });
+        let mut events = wait_for_heartbeats(
+            &mut rx,
+            "loading_voice",
+            2,
+            std::time::Duration::from_secs(5),
+        )
+        .await;
+        release_load.send(()).expect("el trabajo sigue esperando");
+        events.extend(
+            wait_for_progress(&mut rx, "synthesis", std::time::Duration::from_secs(5)).await,
+        );
+        release_end.send(()).expect("el trabajo sigue esperando");
+        assert!(phase.await.expect("join").is_some());
+        events.extend(drain_events(&mut rx));
+        assert_eq!(
+            progress_stages(&events),
+            ["synthesis", "loading_voice", "synthesis"]
+        );
+        // Entre `progress{loading_voice}` y el `progress{synthesis}` final solo
+        // hay latidos `loading_voice`; ninguno `synthesis` llega tarde.
+        let loading = events
+            .iter()
+            .position(|e| e["event"] == "progress" && e["stage"] == "loading_voice")
+            .expect("hay progress loading_voice");
+        let back = events
+            .iter()
+            .rposition(|e| e["event"] == "progress" && e["stage"] == "synthesis")
+            .expect("hay progress synthesis final");
+        assert!(loading < back);
+        assert!(events[loading + 1..back]
+            .iter()
+            .all(|e| e["event"] == "heartbeat" && e["stage"] == "loading_voice"));
     }
 
     /// Espera en el hilo del trabajo hasta ver la bandera de cancelación (con un
@@ -3509,7 +3768,7 @@ mod tests {
             std::time::Duration::from_millis(50),
             TEST_HEARTBEAT,
             std::time::Duration::from_millis(50),
-            move |cancel| {
+            move |cancel, _signal| {
                 wait_for_cancel(&cancel, &job_seen);
                 Ok(())
             },
@@ -3535,7 +3794,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             TEST_HEARTBEAT,
             std::time::Duration::from_secs(1),
-            move |cancel| {
+            move |cancel, _signal| {
                 *job_cancel_seen.lock().unwrap() = Some(cancel);
                 Err::<(), _>(anyhow::Error::new(avi_tts::SynthesisTimeout {
                     budget: std::time::Duration::from_secs(5),
@@ -3569,7 +3828,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             TEST_HEARTBEAT,
             std::time::Duration::from_secs(1),
-            |_cancel| Ok(()),
+            |_cancel, _signal| Ok(()),
         )
         .await;
         assert!(res.expect("hay resultado").is_ok());
@@ -3596,7 +3855,7 @@ mod tests {
             std::time::Duration::from_secs(5),
             TEST_HEARTBEAT,
             std::time::Duration::from_secs(1),
-            |_cancel| -> anyhow::Result<()> { panic!("no debe arrancar el trabajo") },
+            |_cancel, _signal| -> anyhow::Result<()> { panic!("no debe arrancar el trabajo") },
         )
         .await;
         assert!(res.is_none());
@@ -3617,7 +3876,7 @@ mod tests {
             std::time::Duration::from_secs(30),
             TEST_HEARTBEAT,
             std::time::Duration::from_secs(1),
-            move |cancel| {
+            move |cancel, _signal| {
                 wait_for_cancel(&cancel, &job_seen);
                 Ok(())
             },

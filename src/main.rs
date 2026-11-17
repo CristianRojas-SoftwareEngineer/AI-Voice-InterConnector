@@ -59,7 +59,8 @@ fn resolve_daemon_addr() -> SocketAddr {
 /// dispone de otro plazo de la misma duración que este.
 /// Vencer la publicación con el hijo vivo es un diagnóstico
 /// (`daemon_unreachable`), no un flake a reintentar; vencer la espera del
-/// calentamiento solo deja un aviso, porque el daemon ya sirve.
+/// calentamiento no es un error, porque el daemon ya sirve: el cierre del
+/// comando dice que el motor sigue calentándose.
 const DAEMON_READY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 /// Presupuesto de la confirmación por `/health` una vez publicada la dirección,
 /// independiente de lo que la publicación haya consumido de
@@ -177,9 +178,13 @@ fn tts_request(
 /// Síntesis directa sin reproducción: acumula la entrega del motor y escribe el
 /// WAV en `output_path`, con la voz y su referencia ya resueltas (`None` para un
 /// preset).
+///
+/// El texto activo de la etapa `SYNTHESIZING` ya abierta pasa a «Cargando la
+/// voz…» mientras el motor arranca su residente, y vuelve a «Sintetizando…».
 // Firma ancha deliberada: cada argumento mapea 1:1 a un dato de la síntesis.
 #[allow(clippy::too_many_arguments)]
 fn synthesize_wav_directly(
+    progress: &PhaseProgress,
     engine: &Qwen3TtsEngine,
     reference: Option<&avi_store::VoiceReference>,
     text: &str,
@@ -197,8 +202,19 @@ fn synthesize_wav_directly(
             &options,
             output_path,
             &std::sync::atomic::AtomicBool::new(false),
+            &mut |step| show_synthesis_step(progress, step),
         )
         .map_err(synthesis_cli_error)
+}
+
+/// Refleja en el texto activo de la etapa `SYNTHESIZING` el paso que avisa el
+/// motor local: cargar la voz o sintetizar. Es la misma etapa y el mismo reloj.
+fn show_synthesis_step(progress: &PhaseProgress, step: avi_tts::SynthesisStep) {
+    let active = match step {
+        avi_tts::SynthesisStep::LoadingVoice => stage::SYNTHESIS_LOADING_VOICE_TEXT,
+        avi_tts::SynthesisStep::Synthesizing => stage::SYNTHESIZING.active,
+    };
+    progress.phase_with(&stage::SYNTHESIZING, active);
 }
 
 /// Datos de una síntesis directa en streaming: el motor local, la voz con su
@@ -215,8 +231,10 @@ struct DirectSynthesis<'a> {
 
 /// Lo que queda de una entrega en streaming ya terminada.
 struct DeliveryStats {
-    /// Milisegundos desde el inicio de la fase de síntesis hasta que la primera
-    /// muestra llegó al dispositivo; `None` si no hubo reproducción o no llegó audio.
+    /// Milisegundos desde que se abre la etapa de síntesis, incluidas la espera de
+    /// turno, el calentamiento del motor y la carga de la voz, hasta que la
+    /// primera muestra llegó al dispositivo; `None` si no hubo reproducción o no
+    /// llegó audio.
     first_audio_ms: Option<u64>,
     /// Veces que la cola de reproducción se vació con la entrega en curso.
     stalls: u32,
@@ -228,7 +246,9 @@ struct DeliveryStats {
 /// la ruta directa, que recibe los fragmentos del motor, y la del daemon, que los
 /// recibe en eventos `audio`.
 trait AudioReceiver {
-    /// Marca el inicio de la fase de síntesis: desde aquí cuenta `first_audio_ms`.
+    /// Marca el inicio de la fase de síntesis: desde aquí cuenta `first_audio_ms`,
+    /// incluidas la espera de turno, el calentamiento del motor y la carga de la
+    /// voz, hasta la primera muestra que suena.
     fn begin_synthesis(&mut self);
     /// Entrega un fragmento. Un fallo del dispositivo es `playback_failed`.
     fn push(&mut self, pcm: &[i16]) -> Result<(), CliError>;
@@ -241,6 +261,7 @@ trait AudioReceiver {
 struct StreamDelivery {
     player: Option<audio::StreamPlayer>,
     accumulated: Option<Vec<i16>>,
+    /// Instante en que se abrió la etapa de síntesis: origen de `first_audio_ms`.
     synthesis_began: std::time::Instant,
     /// Principio del mensaje de `playback_failed`, antes de la causa.
     playback_failure: String,
@@ -269,6 +290,13 @@ impl AudioReceiver for StreamDelivery {
 }
 
 impl StreamDelivery {
+    /// Fija el origen de `first_audio_ms` en el instante en que el llamador abrió
+    /// la etapa de síntesis, antes de resolver la voz y de abrir el dispositivo.
+    fn began_at(mut self, synthesis_began: std::time::Instant) -> Self {
+        self.synthesis_began = synthesis_began;
+        self
+    }
+
     /// Termina la entrega: espera a que suene lo que queda en cola, repintando
     /// el indicador mientras suena, y devuelve los datos de la reproducción y el
     /// audio acumulado.
@@ -372,6 +400,10 @@ fn write_take_wav(path: &std::path::Path, pcm: &[i16]) -> Result<(), CliError> {
 /// visible pasa a `Reproduciendo…` en cuanto suena la primera muestra. Si la
 /// síntesis falla a mitad, se corta la reproducción y el error es el de la
 /// síntesis; un fallo del dispositivo cancela la síntesis y es `playback_failed`.
+///
+/// La etapa `SYNTHESIZING` ya está abierta: mientras el motor arranca su
+/// residente su texto activo es «Cargando la voz…». El reloj de `first_audio_ms`
+/// es el de `delivery`, que el llamador fijó al abrir esa etapa.
 fn synthesize_streaming_directly(
     request: &DirectSynthesis<'_>,
     progress: &PhaseProgress,
@@ -387,11 +419,13 @@ fn synthesize_streaming_directly(
     let cancel = std::sync::atomic::AtomicBool::new(false);
     let mut playback_failure: Option<CliError> = None;
     let mut announced_playing = false;
-    delivery.begin_synthesis();
     let result = progress.while_running(|| {
-        request
-            .engine
-            .synthesize_streaming(request.text, &profile, &options, &cancel, &mut |pcm| {
+        request.engine.synthesize_streaming(
+            request.text,
+            &profile,
+            &options,
+            &cancel,
+            &mut |pcm| {
                 if let Err(e) = delivery.push(pcm) {
                     playback_failure = Some(e);
                     return Err(anyhow::anyhow!("falló la reproducción del audio"));
@@ -403,7 +437,9 @@ fn synthesize_streaming_directly(
                     progress.phase(&stage::PLAYING);
                 }
                 Ok(())
-            })
+            },
+            &mut |step| show_synthesis_step(progress, step),
+        )
     });
     match result {
         Ok(()) => delivery.finish(progress),
@@ -1722,13 +1758,17 @@ async fn handle_translate(
     }
     // Despacho 3 modos vía daemon_client + route_to_daemon
     let client = daemon_client();
-    if route_to_daemon(daemon_mode).await? {
-        avi_term::line::context(&format!(
-            "Traducción {} · {}",
-            languages_label(source, target),
-            route_label(true)
-        ));
-        let progress = PhaseProgress::new();
+    let use_daemon = route_to_daemon(daemon_mode).await?;
+    // La cabecera va tras validar la invocación y antes del primer acceso a
+    // recursos (modelo, daemon): un error de recurso sale con ella.
+    avi_term::line::context(&format!(
+        "Traducción {} · {}",
+        languages_label(source, target),
+        route_label(use_daemon)
+    ));
+    if use_daemon {
+        // Única etapa del comando: no deja su línea y queda solo el cierre.
+        let progress = PhaseProgress::new().single_stage();
         progress.phase(&stage::TRANSLATING);
         let result = translate_via_daemon(&client, text, source, target, &progress).await;
         if let Ok((translated, _, _)) = &result {
@@ -1761,12 +1801,8 @@ async fn handle_translate(
     }
     #[cfg(feature = "native-translation")]
     {
-        avi_term::line::context(&format!(
-            "Traducción {} · {}",
-            languages_label(source, target),
-            route_label(false)
-        ));
-        let progress = PhaseProgress::new();
+        // Única etapa del comando: no deja su línea y queda solo el cierre.
+        let progress = PhaseProgress::new().single_stage();
         progress.phase(&stage::TRANSLATING);
         progress.tick();
         // Patrón de bloque externo: el trabajo que puede fallar vive en un
@@ -1886,7 +1922,14 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             // El indicador nace antes de las validaciones, y el patrón de
             // bloque externo garantiza que se cierra en cualquier camino de
             // salida: éxito, error o cancelación.
-            let progress = PhaseProgress::new();
+            // Con archivo y sin limpieza de ruido la clonación es la única etapa
+            // de trabajo: no deja su línea y queda solo el cierre. Con micrófono
+            // o con limpieza hay más de una etapa y cada una queda fija.
+            let progress = if mic || denoise {
+                PhaseProgress::new()
+            } else {
+                PhaseProgress::new().single_stage()
+            };
             // Patrón de bloque externo: el trabajo que puede fallar vive en un
             // bloque async y el cierre del indicador —que consume el indicador—
             // se hace fuera, sobre el resultado ya obtenido. Así ningún `?`
@@ -1899,7 +1942,20 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 // se limita tras la captura antes de codificarlo.
                 if !mic {
                     if let Some(reference) = speech_reference.as_deref() {
-                        ensure_clone_reference_within_limit(std::path::Path::new(reference))?;
+                        let reference = std::path::Path::new(reference);
+                        ensure_clone_reference_within_limit(reference)?;
+                        // La existencia del archivo es parte de la invocación,
+                        // en las dos rutas: se comprueba antes que el almacén.
+                        if !reference.is_file() {
+                            return Err(CliError::new(
+                                ExitCode::NotFound,
+                                "audio_not_found",
+                                format!(
+                                    "El audio de referencia '{}' no existe.",
+                                    reference.display()
+                                ),
+                            ));
+                        }
                     }
                 }
                 if mic {
@@ -1945,12 +2001,6 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 } else {
                     None
                 };
-                avi_term::line::context(&format!(
-                    "Clonación de la voz {} · {} · {}",
-                    name,
-                    audio_source_label(speech_reference.as_deref(), mic_max),
-                    route_label(use_daemon)
-                ));
                 // El cliente y el daemon comparten el directorio de datos, así
                 // que una voz existente se rechaza antes de abrir el micrófono
                 // o leer la referencia, en las dos rutas; el daemon conserva su
@@ -1966,6 +2016,14 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                         format!("La voz '{}' ya existe.", name),
                     ));
                 }
+                // La cabecera va tras validar la invocación y el almacén, y
+                // antes de la confirmación y de cualquier recurso.
+                avi_term::line::context(&format!(
+                    "Clonación de la voz {} · {} · {}",
+                    name,
+                    audio_source_label(speech_reference.as_deref(), mic_max),
+                    route_label(use_daemon)
+                ));
                 // Sobrescribir la voz se lleva también sus locuciones, grabadas
                 // con el contenido anterior: si las hay, se pide la confirmación
                 // destructiva antes de capturar o clonar, en las dos rutas.
@@ -2055,16 +2113,6 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 }
                 let _mic_scratch = mic_scratch;
                 let speech_path = speech_path.expect("ruta local");
-                if !mic && !speech_path.is_file() {
-                    return Err(CliError::new(
-                        ExitCode::NotFound,
-                        "audio_not_found",
-                        format!(
-                            "El audio de referencia '{}' no existe.",
-                            speech_path.display()
-                        ),
-                    ));
-                }
                 // Limpieza de ruido de referencia (opt-in) antes del clonado
                 // directo. Resuelve el modelo y verifica integridad antes de
                 // convertir a 48 kHz; un modelo ausente falla con `model_missing`.
@@ -2074,6 +2122,9 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 // del bloque, la ruta queda apuntando a un archivo borrado.
                 #[cfg(feature = "native-denoise")]
                 let (_denoise_scratch, speech_path) = if denoise {
+                    // La limpieza es trabajo de varios segundos: tiene su etapa
+                    // visible, que cierra la etapa siguiente.
+                    progress.phase(&stage::DENOISING);
                     let work_dir =
                         avi_process::scratch::tempdir("avi_clone_denoise_").map_err(|e| {
                             CliError::new(ExitCode::Error, "io_error", format!("{e:#}"))
@@ -2289,7 +2340,8 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 // es del motor de confirmación y saldría dos veces.
                 return Ok(());
             }
-            let progress = PhaseProgress::new();
+            // Única etapa del comando: no deja su línea y queda solo el cierre.
+            let progress = PhaseProgress::new().single_stage();
             let result = 'work: {
                 progress.phase(&stage::REMOVING);
                 break 'work avi_store::remove_voice(&voice_store, &speech_store, &name)
@@ -2930,6 +2982,7 @@ struct LocalResynthesizer<'a> {
 impl PlayResynthesizer for LocalResynthesizer<'_> {
     async fn resynthesize(&mut self, seed: u64) -> Result<(), CliError> {
         self.progress.phase(&stage::SYNTHESIZING);
+        let synthesis_began = std::time::Instant::now();
         self.progress.tick();
         let result = open_delivery(
             true,
@@ -2940,6 +2993,7 @@ impl PlayResynthesizer for LocalResynthesizer<'_> {
             ),
         )
         .and_then(|delivery| {
+            let delivery = delivery.began_at(synthesis_began);
             synthesize_streaming_directly(
                 &DirectSynthesis {
                     engine: self.engine,
@@ -3378,8 +3432,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 audio_source_label(audio.as_deref(), mic_max),
                 route_label(use_daemon)
             );
+            // La cabecera va tras validar la invocación y antes del primer
+            // acceso a recursos (modelo, micrófono, daemon): un error de
+            // recurso sale con ella y uno de invocación, sin ella.
+            avi_term::line::context(&context);
             if use_daemon {
-                avi_term::line::context(&context);
                 let progress = PhaseProgress::new();
                 let result = transcribe_via_daemon(
                     &client,
@@ -3403,11 +3460,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     "Falta el modelo de transcripción.",
                 ));
             }
-            avi_term::line::context(&context);
 
             // Compilado sin soporte STT (feature off): rama de error explícita.
-            // La validación de argumentos y la ausencia de modelo (exit 4) son puras
-            // y ya se ejecutaron arriba; aquí solo se corta la ejecución del motor.
+            // La validación de argumentos y la ausencia de modelo (exit 4) ya se
+            // comprobaron arriba; aquí solo se corta la ejecución del motor.
             #[cfg(not(feature = "native-stt"))]
             {
                 Err(CliError::new(
@@ -3504,7 +3560,18 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             // El indicador nace antes de las validaciones, y el patrón de
             // bloque externo garantiza que se cierra en cualquier camino: los
             // `?` de las validaciones no pueden dejar la fase abierta.
-            let progress = PhaseProgress::new();
+            //
+            // Sin `--play` y sin traducción (origen igual al destino) la síntesis
+            // es la única etapa de trabajo: no deja su línea y queda solo el
+            // cierre, que ya da la duración del audio. Se decide con los
+            // argumentos, porque el indicador nace antes de las validaciones.
+            let source_is_target =
+                source_language.as_deref().unwrap_or(&target_language) == target_language;
+            let progress = if play || !source_is_target {
+                PhaseProgress::new()
+            } else {
+                PhaseProgress::new().single_stage()
+            };
             let result = async {
                 progress.phase(&stage::VALIDATING);
                 let (voice, label, existing) = prepare_synthesis(
@@ -3588,6 +3655,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     text.clone()
                 };
                 progress.phase(&stage::SYNTHESIZING);
+                let synthesis_began = std::time::Instant::now();
                 progress.tick();
                 // La identidad de la voz se resuelve antes de sintetizar: la
                 // locución solo se guarda si la voz la conserva al guardarla.
@@ -3599,7 +3667,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         true,
                         true,
                         format!("No se pudo reproducir el audio sintetizado '{}'", label),
-                    )?;
+                    )?
+                    .began_at(synthesis_began);
                     let take = synthesize_streaming_directly(
                         &DirectSynthesis {
                             engine: &engine,
@@ -3617,6 +3686,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 } else {
                     progress.while_running(|| {
                         synthesize_wav_directly(
+                            &progress,
                             &engine,
                             reference.as_ref(),
                             &final_text,
@@ -3756,12 +3826,14 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     text.clone()
                 };
                 progress.phase(&stage::SYNTHESIZING);
+                let synthesis_began = std::time::Instant::now();
                 progress.tick();
                 let reference = resolve_voice_reference(&voice_store, &voice)?;
                 // El dispositivo se abre antes de pedir la síntesis: sin salida de
                 // audio el comando termina sin sintetizar.
                 let delivery =
-                    open_delivery(true, false, "No se pudo reproducir el audio sintetizado")?;
+                    open_delivery(true, false, "No se pudo reproducir el audio sintetizado")?
+                        .began_at(synthesis_began);
                 synthesize_streaming_directly(
                     &DirectSynthesis {
                         engine: &engine,
@@ -3867,8 +3939,11 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
             };
             {
                 let client = daemon_client();
-                if route_to_daemon(routing.mode()).await? {
-                    avi_term::line::context(&context(true));
+                let use_daemon = route_to_daemon(routing.mode()).await?;
+                // La cabecera va tras validar la invocación y antes del primer
+                // acceso a recursos (modelos, micrófono, daemon).
+                avi_term::line::context(&context(use_daemon));
+                if use_daemon {
                     let progress = PhaseProgress::new();
                     let result = dub_via_daemon(
                         &progress,
@@ -3896,11 +3971,10 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 ));
             }
             require_model_provisioned()?;
-            avi_term::line::context(&context(false));
 
             // Doblaje = transcribe→traduce→sintetiza: sin soporte STT (feature off)
             // el pipeline no puede arrancar; rama de error explícita tras las
-            // validaciones puras (usage, audio existente, modelos ausentes → exit 4).
+            // comprobaciones (usage, audio existente, modelos ausentes → exit 4).
             #[cfg(not(feature = "native-stt"))]
             {
                 Err(CliError::new(
@@ -4028,10 +4102,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     progress.reclaim();
                     let engine = engine_result?;
                     progress.phase(&stage::SYNTHESIZING);
+                    let synthesis_began = std::time::Instant::now();
                     progress.tick();
                     let reference = resolve_voice_reference(&voice_store, &voice)?;
                     // El dispositivo se abre antes de pedir la síntesis.
-                    let delivery = open_delivery(true, false, "Fallo al reproducir el doblaje")?;
+                    let delivery = open_delivery(true, false, "Fallo al reproducir el doblaje")?
+                        .began_at(synthesis_began);
                     let stats = synthesize_streaming_directly(
                         &DirectSynthesis {
                             engine: &engine,
@@ -4070,7 +4146,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                     avi_term::line::context(&format!(
                         "Reproducción del audio sintetizado {label} · voz {voice}"
                     ));
-                    let progress = PhaseProgress::new();
+                    // Única etapa del comando: no deja su línea y queda solo el cierre.
+                    let progress = PhaseProgress::new().single_stage();
                     // Patrón de bloque externo: el cierre del indicador se hace
                     // fuera del trabajo que puede fallar.
                     let result = 'work: {
@@ -4301,12 +4378,7 @@ async fn handle_daemon(
                 lifecycle::daemon_stop::DaemonState::Stopped => {}
             }
             avi_shared::diag_trace::mark("start.observe_done");
-            progress.phase(&stage::STARTING);
-            // Mientras launch_daemon espera el ready del hijo, el usuario ve
-            // la fase de calentamiento (el warmup TTS corre en segundo plano
-            // en el residente y no bloquea este bucle de sondeo).
-            progress.phase(&stage::WARMING);
-            let pid = launch_daemon(
+            let launched = launch_daemon(
                 auto_restart,
                 max_retries,
                 &warm_voice,
@@ -4314,9 +4386,11 @@ async fn handle_daemon(
                 Some(&progress),
             )
             .await;
-            match pid {
-                Ok(pid) => {
-                    progress.finish("Daemon iniciado", &[format!("pid {pid}")]);
+            match launched {
+                Ok((pid, warm)) => {
+                    let (action, extras) =
+                        daemon_launch_closing("Daemon listo", "Daemon en marcha", pid, &warm);
+                    progress.finish(&action, &extras);
                     if json_mode {
                         emit_raw_json(
                             json!({ "status": "started", "daemon": "running", "pid": pid }),
@@ -4444,12 +4518,13 @@ async fn handle_daemon(
             let ready_deadline = std::cmp::min(remaining, DAEMON_READY_DEADLINE);
             // Mismo lanzamiento que `Start`, con sus mismos resultados y
             // códigos de fallo.
-            progress.phase(&stage::STARTING);
-            progress.phase(&stage::WARMING);
-            let pid = launch_daemon(false, 3, "default", ready_deadline, Some(&progress)).await;
-            match pid {
-                Ok(pid) => {
-                    progress.finish("Daemon reiniciado", &[format!("pid {pid}")]);
+            let launched =
+                launch_daemon(false, 3, "default", ready_deadline, Some(&progress)).await;
+            match launched {
+                Ok((pid, warm)) => {
+                    let (action, extras) =
+                        daemon_launch_closing("Daemon reiniciado", "Daemon reiniciado", pid, &warm);
+                    progress.finish(&action, &extras);
                     if json_mode {
                         emit_raw_json(
                             json!({ "status": "restarted", "daemon": "running", "pid": pid }),
@@ -5304,7 +5379,8 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     if repair {
         let lock = lifecycle::lock::acquire_exclusive(&env.roots.program_dir)
             .map_err(|e| lifecycle_error_to_cli(e.into()))?;
-        let progress = PhaseProgress::new();
+        // Única etapa del comando: no deja su línea y queda solo el cierre.
+        let progress = PhaseProgress::new().single_stage();
         // Patrón de bloque externo: el cierre del indicador —que consume el
         // indicador— se hace fuera del trabajo que puede fallar.
         let repair_result = 'work: {
@@ -5611,7 +5687,8 @@ fn ready_file_path() -> Result<PathBuf, CliError> {
 /// Lanza el daemon en segundo plano y espera el resultado de su arranque. Es la
 /// única secuencia de lanzamiento, compartida por `start` y `restart`, y
 /// termina siempre en uno de tres resultados:
-/// - listo: el hijo publicó su dirección real y `/health` responde → su PID;
+/// - listo: el hijo publicó su dirección real y `/health` responde → su PID y el
+///   estado del motor (`EngineWarm`);
 /// - fallo tipado: el hijo publicó un registro de fallo → el código de su causa
 ///   (`startup_error_to_cli`);
 /// - muerte: el hijo terminó sin registro → exit 1 `daemon_error` con su estado
@@ -5629,14 +5706,22 @@ fn ready_file_path() -> Result<PathBuf, CliError> {
 /// deja nada vivo: mata el árbol del hijo si sigue vivo, lo recolecta y borra
 /// `daemon.ready`. No escribe el pidfile: lo escribe el propio daemon antes de
 /// publicar `daemon.ready`.
+///
+/// Abre la etapa de inicio al entrar y la de calentamiento tras el `/health`
+/// correcto, de modo que cada una dura lo que dura su trabajo. Si la espera del
+/// calentamiento vence o falla, descarta esa etapa y devuelve el estado; solo en
+/// modo máquina, donde no hay cierre, lo avisa por stderr.
 async fn launch_daemon(
     auto_restart: bool,
     max_retries: u32,
     warm_voice: &str,
     deadline: std::time::Duration,
     progress: Option<&PhaseProgress>,
-) -> Result<u32, CliError> {
+) -> Result<(u32, EngineWarm), CliError> {
     let start = std::time::Instant::now();
+    if let Some(progress) = progress {
+        progress.phase(&stage::STARTING);
+    }
     avi_shared::diag_trace::mark("launch_daemon.enter");
     // El hijo publica su registro en el fichero ready de la instancia (ruta
     // absoluta bajo el `data_dir` vigente).
@@ -5810,11 +5895,17 @@ async fn launch_daemon(
         )));
     }
     avi_shared::diag_trace::mark("launch_daemon.health_probe_ok");
+    // Recién ahora empieza el calentamiento: el proceso ya publicó y responde.
+    if let Some(progress) = progress {
+        progress.phase(&stage::WARMING);
+    }
     // El arranque no termina hasta que `/health` informa el motor como
     // `warm`, la misma condición con la que `daemon status` dice «motor
     // listo»: que el daemon responda solo significa que sirve.
-    match await_engine_warm(&addr, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL, progress).await {
-        Ok(true) => {}
+    let warm = match await_engine_warm(&addr, DAEMON_READY_DEADLINE, DAEMON_POLL_INTERVAL, progress)
+        .await
+    {
+        Ok(true) => EngineWarm::Ready,
         Ok(false) => {
             // El calentamiento fallido no derriba el daemon (la primera
             // petición paga el arranque en frío), pero la etapa no puede
@@ -5822,25 +5913,73 @@ async fn launch_daemon(
             if let Some(progress) = progress {
                 progress.discard_stage();
             }
-            avi_term::line::warn(
-                "El daemon está en marcha, pero falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`.",
-            );
+            if avi_term::line::machine_mode() {
+                avi_term::line::warn(
+                        "El daemon está en marcha, pero falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`.",
+                    );
+            }
+            EngineWarm::Failed
         }
         Err(_) => {
             // El daemon ya sirve y acota su propio calentamiento, que acaba en
             // `warm` o `warm_failed`; en un equipo lento puede pasar del plazo
             // de esta espera. No se derriba un daemon sano por eso: la etapa
-            // no dice «Motor calentado» y el aviso remite a `daemon status`.
+            // no dice «Motor calentado» y el cierre remite a `daemon status`.
             avi_shared::diag_trace::mark("launch_daemon.warm_deadline_expired");
             if let Some(progress) = progress {
                 progress.discard_stage();
             }
-            avi_term::line::warn(
-                "El daemon está en marcha, pero el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo.",
-            );
+            if avi_term::line::machine_mode() {
+                avi_term::line::warn(
+                        "El daemon está en marcha, pero el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo.",
+                    );
+            }
+            EngineWarm::StillWarming
         }
+    };
+    Ok((pid, warm))
+}
+
+/// Estado del motor cuando el daemon ya sirve.
+enum EngineWarm {
+    /// `/health` informó el motor como `warm`.
+    Ready,
+    /// La espera del calentamiento venció con el motor aún calentándose.
+    StillWarming,
+    /// El calentamiento terminó en `warm_failed`.
+    Failed,
+}
+
+/// Línea de cierre de `daemon start` y `daemon restart`: la acción y los extras
+/// según el estado del motor. Con el motor listo la acción es `action_ready`;
+/// si la espera venció o el calentamiento falló, `action_running` y el propio
+/// cierre lo dice, sin un aviso aparte.
+fn daemon_launch_closing(
+    action_ready: &str,
+    action_running: &str,
+    pid: u32,
+    warm: &EngineWarm,
+) -> (String, Vec<String>) {
+    let pid = format!("pid {pid}");
+    match warm {
+        EngineWarm::Ready => (action_ready.to_string(), vec![pid]),
+        EngineWarm::StillWarming => (
+            action_running.to_string(),
+            vec![
+                pid,
+                "el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo"
+                    .to_string(),
+            ],
+        ),
+        EngineWarm::Failed => (
+            action_running.to_string(),
+            vec![
+                pid,
+                "falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`"
+                    .to_string(),
+            ],
+        ),
     }
-    Ok(pid)
 }
 
 /// Limpieza de un arranque fallido: si el hijo sigue vivo, mata su árbol y lo
@@ -6477,7 +6616,9 @@ async fn consume_ndjson_stream(
                     format!("NDJSON inválido del daemon: {}", e),
                 )
             })?;
-            if let Some(event_stage) = stream_event_phase(&ev) {
+            if let Some((event_stage, active)) = stream_event_phase(&ev) {
+                // El primer evento de la síntesis, sea espera o trabajo, abre el
+                // reloj de «primer audio»: la espera cuenta.
                 if event_stage.label == stage::SYNTHESIZING.label && !synthesis_began {
                     synthesis_began = true;
                     audio.begin_synthesis();
@@ -6485,7 +6626,7 @@ async fn consume_ndjson_stream(
                 // Una vez que suena, los latidos de la síntesis no devuelven la fase
                 // anterior.
                 if !(playing && event_stage.label == stage::SYNTHESIZING.label) {
-                    progress.phase(event_stage);
+                    progress.phase_with(event_stage, active);
                     current_label = event_stage.label;
                 }
             }
@@ -6653,23 +6794,29 @@ fn process_stream_line(line: &str) -> Result<Option<Value>, CliError> {
 /// `progress` y `heartbeat` de una misma etapa comparten etiqueta. Solo se leen
 /// `event` y `stage`; los eventos y las etapas desconocidos no anuncian fase.
 ///
-/// Etapa del daemon → etapa del catálogo: `warming`, `queued`, `warmup` y
-/// `denoise_queue` se conservan; `denoise` → `DENOISING`, `synthesis` →
-/// `SYNTHESIZING`, `clone` → `CLONING`, `transcribe` → `TRANSCRIBING`,
-/// `translate` → `TRANSLATING`; el evento `started` → `STARTED`.
-fn stream_event_phase(ev: &Value) -> Option<&'static Stage> {
+/// Devuelve la etapa del catálogo y su texto activo. Etapa del daemon → etapa:
+/// `queued`, `warming`, `loading_voice` y `synthesis` son la misma etapa
+/// `SYNTHESIZING` con distinto texto activo (esperar turno, calentar el motor,
+/// cargar la voz o sintetizar), de modo que la espera comparte el reloj de la
+/// síntesis; `denoise_queue` se conserva; `denoise` → `DENOISING`, `clone` →
+/// `CLONING`, `transcribe` → `TRANSCRIBING`, `translate` → `TRANSLATING`; el
+/// evento `started` → `STARTED`.
+fn stream_event_phase(ev: &Value) -> Option<(&'static Stage, &'static str)> {
+    let with_active = |stage: &'static Stage| Some((stage, stage.active));
     match ev.get("event").and_then(Value::as_str) {
-        Some("started") => Some(&stage::STARTED),
+        Some("started") => with_active(&stage::STARTED),
         Some("progress" | "heartbeat") => match ev.get("stage").and_then(Value::as_str) {
-            Some("warming") => Some(&stage::WARMING),
-            Some("queued") => Some(&stage::QUEUED),
-            Some("warmup") => Some(&stage::WARMUP),
-            Some("denoise_queue") => Some(&stage::DENOISE_QUEUE),
-            Some("denoise") => Some(&stage::DENOISING),
-            Some("synthesis") => Some(&stage::SYNTHESIZING),
-            Some("clone") => Some(&stage::CLONING),
-            Some("transcribe") => Some(&stage::TRANSCRIBING),
-            Some("translate") => Some(&stage::TRANSLATING),
+            Some("queued") => Some((&stage::SYNTHESIZING, stage::SYNTHESIS_QUEUED_TEXT)),
+            Some("warming") => Some((&stage::SYNTHESIZING, stage::SYNTHESIS_WARMING_TEXT)),
+            Some("loading_voice") => {
+                Some((&stage::SYNTHESIZING, stage::SYNTHESIS_LOADING_VOICE_TEXT))
+            }
+            Some("synthesis") => with_active(&stage::SYNTHESIZING),
+            Some("denoise_queue") => with_active(&stage::DENOISE_QUEUE),
+            Some("denoise") => with_active(&stage::DENOISING),
+            Some("clone") => with_active(&stage::CLONING),
+            Some("transcribe") => with_active(&stage::TRANSCRIBING),
+            Some("translate") => with_active(&stage::TRANSLATING),
             _ => None,
         },
         _ => None,
@@ -7599,6 +7746,48 @@ mod tests {
         assert!(started.elapsed() >= std::time::Duration::from_millis(100));
     }
 
+    /// El cierre del arranque dice en una sola línea cómo quedó el motor: listo,
+    /// aún calentándose o con el calentamiento fallido.
+    #[test]
+    fn daemon_launch_closing_reports_the_engine_state() {
+        let (action, extras) =
+            daemon_launch_closing("Daemon listo", "Daemon en marcha", 42, &EngineWarm::Ready);
+        assert_eq!(action, "Daemon listo");
+        assert_eq!(extras, vec!["pid 42".to_string()]);
+
+        let (action, extras) = daemon_launch_closing(
+            "Daemon listo",
+            "Daemon en marcha",
+            42,
+            &EngineWarm::StillWarming,
+        );
+        assert_eq!(action, "Daemon en marcha");
+        assert_eq!(
+            extras,
+            vec![
+                "pid 42".to_string(),
+                "el motor sigue calentándose; `ai-voice-interconnector daemon status` dirá cuándo está listo"
+                    .to_string(),
+            ]
+        );
+
+        let (action, extras) = daemon_launch_closing(
+            "Daemon reiniciado",
+            "Daemon reiniciado",
+            7,
+            &EngineWarm::Failed,
+        );
+        assert_eq!(action, "Daemon reiniciado");
+        assert_eq!(
+            extras,
+            vec![
+                "pid 7".to_string(),
+                "falló el calentamiento del motor; consulta `ai-voice-interconnector daemon status`"
+                    .to_string(),
+            ]
+        );
+    }
+
     /// Un calentamiento fallido deja de esperar sin darlo por logrado, y uno
     /// que no termina agota el plazo con error.
     #[tokio::test]
@@ -7788,7 +7977,7 @@ mod tests {
         for line in [
             r#"{"event":"started","name":"v"}"#,
             r#"{"event":"heartbeat","stage":"clone"}"#,
-            r#"{"event":"progress","stage":"warmup"}"#,
+            r#"{"event":"progress","stage":"loading_voice"}"#,
             "",
             "   ",
         ] {
@@ -8074,14 +8263,18 @@ mod tests {
     struct CollectingAudio {
         chunks: Vec<Vec<i16>>,
         synthesis_began: bool,
+        /// Orden de las llamadas al receptor: `begin` y `push`.
+        calls: Vec<&'static str>,
     }
 
     impl AudioReceiver for CollectingAudio {
         fn begin_synthesis(&mut self) {
             self.synthesis_began = true;
+            self.calls.push("begin");
         }
 
         fn push(&mut self, pcm: &[i16]) -> Result<(), CliError> {
+            self.calls.push("push");
             self.chunks.push(pcm.to_vec());
             Ok(())
         }
@@ -8144,6 +8337,46 @@ mod tests {
             audio.synthesis_began,
             "la fase de síntesis se anuncia al receptor"
         );
+    }
+
+    /// Una espera de turno es texto vivo de la etapa de síntesis: no cierra
+    /// «Voz sintetizada» como hecha, el reloj de «primer audio» parte de la
+    /// espera y `begin_synthesis` llega antes del primer fragmento.
+    #[tokio::test]
+    async fn consume_ndjson_stream_queued_wait_does_not_finish_synthesis() {
+        let addr = serve_programmed_sequence(
+            vec![
+                r#"{"event":"started","voice":"v"}"#.to_string(),
+                r#"{"event":"progress","stage":"queued"}"#.to_string(),
+                r#"{"event":"heartbeat","stage":"queued"}"#.to_string(),
+                r#"{"event":"progress","stage":"synthesis"}"#.to_string(),
+                audio_event(&[1, 2, 3]),
+                audio_event(&[4]),
+                r#"{"event":"result","translated":"hola","work_ms":10}"#.to_string(),
+            ],
+            None,
+        )
+        .await;
+        let resp = daemon_client()
+            .post(format!("http://{addr}/synthesize"))
+            .send()
+            .await
+            .expect("el doble debe responder");
+        let progress = PhaseProgress::new();
+        let mut audio = CollectingAudio::default();
+        consume_ndjson_stream(resp, StreamResult::Synthesize, &progress, &mut audio)
+            .await
+            .expect("la secuencia termina con result");
+        assert!(
+            progress.finished_duration("Voz sintetizada").is_none(),
+            "la espera no cierra la síntesis como hecha"
+        );
+        assert!(
+            progress.finished_duration("Primer audio").is_some(),
+            "la síntesis se cierra como primer audio"
+        );
+        assert_eq!(audio.calls, vec!["begin", "push", "push"]);
+        let _elapsed = progress.close();
     }
 
     /// Un `error` tras eventos `audio` ya entregados es un error ruidoso con su
@@ -8235,28 +8468,50 @@ mod tests {
         assert_eq!(stats.stalls, 0);
     }
 
-    /// La traducción pura fija la etapa del catálogo de cada etapa del daemon;
-    /// `progress` y `heartbeat` de una misma etapa comparten etiqueta (clave de
-    /// racionado) y texto.
+    /// La traducción pura fija la etapa del catálogo y el texto activo de cada
+    /// etapa del daemon; `progress` y `heartbeat` de una misma etapa comparten
+    /// etiqueta (clave de racionado) y texto. Las esperas de la síntesis son la
+    /// misma etapa `SYNTHESIZING` con otro texto.
     #[test]
     fn stream_event_phase_maps_stages_and_rate_limits_by_stage() {
         let cases = [
-            ("warming", &stage::WARMING),
-            ("queued", &stage::QUEUED),
-            ("warmup", &stage::WARMUP),
-            ("denoise_queue", &stage::DENOISE_QUEUE),
-            ("denoise", &stage::DENOISING),
-            ("synthesis", &stage::SYNTHESIZING),
-            ("clone", &stage::CLONING),
-            ("transcribe", &stage::TRANSCRIBING),
-            ("translate", &stage::TRANSLATING),
+            (
+                "warming",
+                &stage::SYNTHESIZING,
+                stage::SYNTHESIS_WARMING_TEXT,
+            ),
+            ("queued", &stage::SYNTHESIZING, stage::SYNTHESIS_QUEUED_TEXT),
+            (
+                "loading_voice",
+                &stage::SYNTHESIZING,
+                stage::SYNTHESIS_LOADING_VOICE_TEXT,
+            ),
+            (
+                "synthesis",
+                &stage::SYNTHESIZING,
+                stage::SYNTHESIZING.active,
+            ),
+            (
+                "denoise_queue",
+                &stage::DENOISE_QUEUE,
+                stage::DENOISE_QUEUE.active,
+            ),
+            ("denoise", &stage::DENOISING, stage::DENOISING.active),
+            ("clone", &stage::CLONING, stage::CLONING.active),
+            (
+                "transcribe",
+                &stage::TRANSCRIBING,
+                stage::TRANSCRIBING.active,
+            ),
+            ("translate", &stage::TRANSLATING, stage::TRANSLATING.active),
         ];
-        for (daemon_stage, expected) in cases {
+        for (daemon_stage, expected_stage, expected_text) in cases {
+            let expected = Some((expected_stage, expected_text));
             let heartbeat = json!({ "event": "heartbeat", "stage": daemon_stage });
             let progress_event = json!({ "event": "progress", "stage": daemon_stage });
             assert_eq!(
                 stream_event_phase(&heartbeat),
-                Some(expected),
+                expected,
                 "latido de {daemon_stage}"
             );
             assert_eq!(
@@ -8275,7 +8530,10 @@ mod tests {
     #[test]
     fn started_maps_to_the_started_stage_for_every_command() {
         let event = json!({ "event": "started", "operation": "otra cosa" });
-        assert_eq!(stream_event_phase(&event), Some(&stage::STARTED));
+        assert_eq!(
+            stream_event_phase(&event),
+            Some((&stage::STARTED, stage::STARTED.active))
+        );
     }
 
     /// El daemon es un detalle de ruta: ningún texto del catálogo lleva un
@@ -8285,7 +8543,6 @@ mod tests {
         let all = [
             &stage::VALIDATING,
             &stage::STARTED,
-            &stage::QUEUED,
             &stage::DENOISE_QUEUE,
             &stage::SAVING,
             &stage::CHECKING,
@@ -8298,7 +8555,6 @@ mod tests {
             &stage::PLAYING,
             &stage::CLONING,
             &stage::WARMING,
-            &stage::WARMUP,
             &stage::REMOVING,
             &stage::STOPPING,
             &stage::STARTING,
@@ -8326,6 +8582,17 @@ mod tests {
                 "texto sin cierre «…»: {}",
                 stage.active
             );
+        }
+        for text in [
+            stage::SYNTHESIS_QUEUED_TEXT,
+            stage::SYNTHESIS_WARMING_TEXT,
+            stage::SYNTHESIS_LOADING_VOICE_TEXT,
+        ] {
+            assert!(
+                !text.contains("(daemon)"),
+                "texto con sufijo de ruta: {text}"
+            );
+            assert!(text.ends_with('…'), "texto sin cierre «…»: {text}");
         }
     }
 

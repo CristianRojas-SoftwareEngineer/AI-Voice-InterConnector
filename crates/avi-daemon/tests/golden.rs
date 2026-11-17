@@ -976,6 +976,14 @@ async fn voices_clone_daemon_precomputed_true() {
         !seed_state.speech_store.voice_dir(&vn(&name)).exists(),
         "las locuciones del contenido anterior se borran"
     );
+    // La precarga sigue en segundo plano tras el `result`, así que el clonado
+    // no la anuncia como etapa.
+    assert!(
+        !events
+            .iter()
+            .any(|e| e["event"] == "progress" && e["stage"] == "warmup"),
+        "el clonado no emite `progress{{warmup}}`: {events:?}"
+    );
     // Intermedios: solo latidos o progreso (nunca un segundo `started`/`result`).
     if events.len() > 2 {
         for e in &events[1..events.len() - 1] {
@@ -1610,6 +1618,40 @@ async fn synthesize_preset_delivers_audio_events() {
     let events = ndjson_events(&bytes);
     let audio = delivered_pcm(&events);
     assert!(!audio.is_empty(), "el audio no debe estar vacío");
+
+    // El estado es compartido entre pruebas, así que el residente puede venir ya
+    // con `ryan`. Pedir `vivian` justo después obliga a arrancar otro residente:
+    // la fase anuncia `loading_voice` antes del primer `audio` y `synthesis`
+    // cuando el residente está sano.
+    let (status, switch_bytes) = send_to(
+        clone_state(),
+        post_json(
+            "/synthesize",
+            serde_json::json!({
+                "text": "Hola, esto es una prueba.", "voice": "vivian",
+                "source_language": "es", "target_language": "es"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let switch_events = ndjson_events(&switch_bytes);
+    let first_audio = switch_events
+        .iter()
+        .position(|e| e["event"] == "audio")
+        .expect("hay audio");
+    let loading = switch_events
+        .iter()
+        .position(|e| e["event"] == "progress" && e["stage"] == "loading_voice")
+        .expect("se anuncia `loading_voice`");
+    let synthesis_after_loading = switch_events
+        .iter()
+        .rposition(|e| e["event"] == "progress" && e["stage"] == "synthesis")
+        .expect("se anuncia `synthesis`");
+    assert!(
+        loading < synthesis_after_loading && synthesis_after_loading < first_audio,
+        "`loading_voice`, luego `synthesis`, luego el primer audio: {switch_events:?}"
+    );
     // Mismo idioma de origen y destino: `translated` es el texto de la petición.
     let result = events.last().expect("evento final");
     assert_eq!(result["translated"], "Hola, esto es una prueba.");

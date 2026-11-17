@@ -773,8 +773,9 @@ pub async fn run_with_progress(
 
     // La frontera: el indicador nace **después** de la confirmación, porque el
     // prompt no puede quedar pegado a una fase. La cancelación ya salió, así que
-    // desde aquí el barrido siempre ocurre.
-    let indicator = progress.then(avi_term::progress::PhaseProgress::new);
+    // desde aquí el barrido siempre ocurre. Es la única etapa del comando: no
+    // deja su línea y queda solo el cierre.
+    let indicator = progress.then(|| avi_term::progress::PhaseProgress::new().single_stage());
     if let Some(indicator) = indicator.as_ref() {
         indicator.phase(&avi_term::stage::CLEANING);
     }

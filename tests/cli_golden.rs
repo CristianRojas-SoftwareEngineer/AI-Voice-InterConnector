@@ -2516,7 +2516,7 @@ fn no_progress_silences_the_phase_and_keeps_the_closing_line() {
     let (code, _stdout, stderr) = run_capture(&["cleanup", "--all", "--yes"], &envs);
     assert_eq!(code, 0, "cleanup sale 0: {stderr}");
     assert!(
-        !stderr.contains("… ") && !stderr.contains("Datos borrados"),
+        !stderr.contains("… "),
         "con AVI_NO_PROGRESS las etapas no se emiten: {stderr}"
     );
     assert!(
@@ -5276,6 +5276,141 @@ mod tts {
             !fake.requested_paths().iter().any(|p| p == "/voices/clone"),
             "el daemon no debe recibir el clonado: {:?}",
             fake.requested_paths()
+        );
+    }
+
+    /// Un error de almacén de `voice clone` (voz ya existente) sale sin línea de
+    /// contexto: la cabecera se escribe después de las comprobaciones de la
+    /// invocación y del almacén.
+    #[test]
+    fn voice_clone_existing_voice_has_no_context_header() {
+        let (sandbox, envs) = sandbox_unique_state("clone_exists_no_header");
+        let data_dir = sandbox.path().join("data");
+        let store = avi_store::VoiceStore::at(data_dir.join("voices"));
+        store.ensure_initialized().expect("inicializar store");
+        let name = "ya_existe";
+        let reference = sandbox.path().join("reference.qvoice");
+        std::fs::write(&reference, b"voice").expect("crear referencia");
+        avi_store::replace_voice(
+            &store,
+            &avi_store::SpeechStore::at(data_dir.join("speech")),
+            &avi_store::VoiceName::parse(name).unwrap(),
+            &reference,
+        )
+        .expect("guardar voz de prueba");
+        let wav = sandbox.path().join("ref.wav");
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: 16_000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut writer = hound::WavWriter::create(&wav, spec).expect("crear el WAV");
+            for _ in 0..1600 {
+                writer.write_sample(0i16).expect("escribir muestra");
+            }
+            writer.finalize().expect("cerrar el WAV");
+        }
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, _stdout, stderr) = run_text_env(
+            &[
+                "voice",
+                "clone",
+                "--no-daemon",
+                "--name",
+                name,
+                "--speech-reference",
+                wav.to_str().unwrap(),
+            ],
+            &envs,
+        );
+        assert_eq!(code, 6, "{stderr}");
+        assert!(stderr.contains("Error:"), "{stderr}");
+        assert!(
+            !stderr.contains("Clonación de la voz"),
+            "un error de almacén sale sin cabecera: {stderr}"
+        );
+    }
+
+    /// Una referencia de clonado inexistente es un error de invocación: sale
+    /// `audio_not_found` sin cabecera, también con `--force` (sin llegar a la
+    /// pregunta).
+    #[test]
+    fn voice_clone_missing_reference_has_no_context_header() {
+        let (sandbox, envs) = sandbox_unique_state("clone_missing_reference");
+        let missing = sandbox.path().join("no_existe.wav");
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        for extra in [&["--no-daemon"][..], &["--no-daemon", "--force"][..]] {
+            let mut args = vec!["voice", "clone", "--name", "nueva_voz"];
+            args.extend_from_slice(extra);
+            args.extend_from_slice(&["--speech-reference", missing.to_str().unwrap()]);
+            let (code, _stdout, stderr) = run_text_env(&args, &envs);
+            assert_eq!(code, 3, "{extra:?}: {stderr}");
+            assert!(
+                stderr.contains("no existe"),
+                "{extra:?}: audio_not_found: {stderr}"
+            );
+            assert!(
+                !stderr.contains("Clonación de la voz"),
+                "{extra:?}: un error de invocación sale sin cabecera: {stderr}"
+            );
+        }
+    }
+
+    /// Un error de recurso de `speech transcribe` (modelo ausente) sale con la
+    /// línea de contexto delante del error.
+    #[test]
+    fn transcribe_missing_model_error_has_context_header() {
+        let (sandbox, envs) = sandbox_unique_state("transcribe_header");
+        let audio = sandbox.path().join("entrada.wav");
+        std::fs::write(&audio, b"no es un wav").expect("crear el archivo de entrada");
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, _stdout, stderr) = run_text_env(
+            &[
+                "speech",
+                "transcribe",
+                "--no-daemon",
+                "--source-language",
+                "es",
+                "--audio",
+                audio.to_str().unwrap(),
+            ],
+            &envs,
+        );
+        assert_eq!(code, 4, "{stderr}");
+        let header = stderr.find("Transcripción es").expect("cabecera");
+        let error = stderr.find("Error:").expect("error de model_missing");
+        assert!(header < error, "la cabecera va antes del error: {stderr}");
+    }
+
+    /// Una etiqueta ocupada en `speech synthesize` es un error de almacén: sigue
+    /// saliendo sin línea de contexto.
+    #[test]
+    fn synthesize_label_collision_has_no_context_header() {
+        let inst = IsolatedInstance::new("synth_collision_no_header");
+        let a = inst.contract_args();
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        create_utterance(&inst, "default", "ocupada");
+        let (code, _stdout, stderr) = run_text_env(
+            &[
+                "speech",
+                "synthesize",
+                "--no-daemon",
+                "--text",
+                "Hola",
+                "--label",
+                "ocupada",
+            ],
+            &a,
+        );
+        assert_eq!(code, 6, "{stderr}");
+        assert!(stderr.contains("Error:"), "{stderr}");
+        assert!(
+            !stderr.contains("Síntesis"),
+            "un error de almacén sale sin cabecera: {stderr}"
         );
     }
 
@@ -9617,6 +9752,109 @@ fn synthesize_daemon_persists_translated_text() {
     assert!(
         list.to_string().contains("Hello there"),
         "el sidecar debe guardar el texto traducido: {list}"
+    );
+}
+
+/// Con el motor calentándose, `speech synthesize --daemon` muestra la espera como
+/// texto vivo de la síntesis: sin terminal anuncia «… Calentando el motor…», no
+/// escribe «Motor calentado» ni una línea terminada de síntesis. Sin `--play` y sin
+/// traducción la síntesis es la única etapa del comando, así que tampoco deja su
+/// línea «✓ Voz sintetizada» y queda solo el cierre.
+#[test]
+fn synthesize_daemon_warming_wait_is_live_text_of_the_synthesis() {
+    let (sandbox, envs) = contract_sandbox("synthesize-warming-wait");
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start_events(vec![
+        serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
+        serde_json::json!({ "event": "progress", "stage": "warming" }),
+        serde_json::json!({ "event": "heartbeat", "stage": "warming" }),
+        serde_json::json!({ "event": "progress", "stage": "synthesis" }),
+        silent_audio_event(1),
+        serde_json::json!({ "event": "result", "translated": "Hola" }),
+    ]);
+    fake.publish_in(&dir.join("data"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, _stdout, stderr) = run_text_env(
+        &[
+            "speech",
+            "synthesize",
+            "--daemon",
+            "--text",
+            "Hola",
+            "--voice",
+            "default",
+            "--label",
+            "espera-calentando",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        !stderr.contains("Motor calentado"),
+        "la espera no es una etapa terminada: {stderr}"
+    );
+    assert!(
+        stderr.contains("… Calentando el motor…"),
+        "la espera se anuncia como texto de la síntesis: {stderr}"
+    );
+    assert!(
+        !stderr.contains("✓ Voz sintetizada"),
+        "la etapa única no deja su línea terminada: {stderr}"
+    );
+}
+
+/// `translate` por el daemon en texto es de etapa única: deja solo el cierre
+/// «Traducción completada» y no la línea «✓ Traducido» de su etapa.
+#[test]
+fn translate_daemon_single_stage_leaves_only_the_closing_line() {
+    let (sandbox, envs) = contract_sandbox("translate-single-stage");
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start(
+        200,
+        serde_json::json!({
+            "translated": "Hello",
+            "source_language": "es",
+            "target_language": "en",
+        }),
+    );
+    fake.publish_in(&dir.join("data"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, _stdout, stderr) = run_text_env(&["translate", "--daemon", "--text", "Hola"], &envs);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("Traducción completada"),
+        "el cierre da el resultado: {stderr}"
+    );
+    assert!(
+        !stderr.contains("✓ Traducido"),
+        "la etapa única no deja su línea: {stderr}"
+    );
+}
+
+/// Con `--json` la regla de etapa única no actúa: no hay cierre y la línea de
+/// la etapa es la única que da la duración por stderr.
+#[test]
+fn translate_daemon_json_keeps_the_stage_line() {
+    let (sandbox, envs) = contract_sandbox("translate-json-stage");
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start(
+        200,
+        serde_json::json!({
+            "translated": "Hello",
+            "source_language": "es",
+            "target_language": "en",
+        }),
+    );
+    fake.publish_in(&dir.join("data"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, _stdout, stderr) = run_text_env(
+        &["--json", "translate", "--daemon", "--text", "Hola"],
+        &envs,
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stderr.contains("✓ Traducido"),
+        "en modo máquina la línea de la etapa se conserva: {stderr}"
     );
 }
 
