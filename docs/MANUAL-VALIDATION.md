@@ -67,7 +67,7 @@ validación.
 - [4. Dispositivos de audio](#4-dispositivos-de-audio)
 - [5. Síntesis y reproducción](#5-síntesis-y-reproducción)
 - [6. Gestión de voces](#6-gestión-de-voces)
-- [7. Gestión de habla sintética](#7-gestión-de-habla-sintética)
+- [7. Gestión de audios sintetizados](#7-gestión-de-audios-sintetizados)
 - [8. Transcripción y doblaje (no interactivos)](#8-transcripción-y-doblaje-no-interactivos)
 - [9. Rutas interactivas de audio (push-to-talk y `--play`)](#9-rutas-interactivas-de-audio-push-to-talk-y---play)
   - [9.1 Push-to-talk (`speech transcribe --mic` / `speech dub --mic` sin `--duration`)](#91-push-to-talk-speech-transcribe---mic--speech-dub---mic-sin---duration)
@@ -102,8 +102,9 @@ ai-voice-interconnector doctor
 ai-voice-interconnector doctor --json
 ```
 
-**Esperado**: `doctor --json` emite el informe por stdout; sin `--json`, los
-chequeos fallidos y el veredicto van por stderr. Con los modelos provisionados
+**Esperado**: `doctor --json` emite el informe por stdout; sin `--json`, todas las
+comprobaciones van por stdout (`  ✓ <etiqueta>: <detalle>` o `  ✗ <etiqueta>: <detalle> → <indicación>`),
+y el cierre `✓ Diagnóstico sin problemas.` o el `Error: N comprobaciones fallan.` van por stderr. Con los modelos provisionados
 y los demás chequeos correctos, `doctor` termina con **exit 0**. Si faltan
 modelos, termina con **exit 1** y `doctor --json` incluye `models_provisioned`
 en `failed`, con los modelos ausentes en `models.missing`: es el diagnóstico
@@ -145,9 +146,9 @@ ai-voice-interconnector devices
 ai-voice-interconnector devices --json
 ```
 
-**Esperado**: lista de dispositivos de salida a stdout seguida de las líneas
-«Entrada predeterminada» y «Salida predeterminada» con los dispositivos que
-el sistema tiene por defecto (o `ninguna`); en JSON, `devices` más
+**Esperado**: `Salidas de audio:` y la lista de dispositivos de salida a stdout
+(la salida predeterminada lleva ` · predeterminada`), seguida de la línea
+`Entrada predeterminada: <nombre>` (o `ninguna`); en JSON, `devices` más
 `default_input` y `default_output` (`null` si el sistema no tiene ese
 dispositivo); **exit 0**.
 
@@ -155,7 +156,7 @@ dispositivo); **exit 0**.
 
 🧠 🔊
 
-`say` sintetiza y reproduce **sin** persistir. `synthesize` persiste una locución
+`say` sintetiza y reproduce **sin** persistir. `synthesize` persiste un audio sintetizado
 reutilizable: **por defecto** guarda siempre; **con `--play`** la persistencia es
 condicional al bucle interactivo (ver §9).
 
@@ -163,14 +164,14 @@ condicional al bucle interactivo (ver §9).
 # Reproducir con la voz de fábrica 'default' (no persiste)
 ai-voice-interconnector speech say --text "Hola mundo, esto es una prueba de síntesis de voz."
 
-# Sintetizar y guardar como locución reutilizable (sin --play: persiste siempre)
+# Sintetizar y guardar como audio sintetizado reutilizable (sin --play: persiste siempre)
 ai-voice-interconnector speech synthesize --text "Guardando a archivo." --label prueba
 
 # Forzar modo directo (sin daemon)
 ai-voice-interconnector speech say --text "Modo directo." --no-daemon
 ```
 
-**Esperado**: en `say` se oye el audio **empezando antes de que termine la síntesis** (con el daemon, en torno a 1 s; en modo directo, un poco más por el arranque del motor), continuo y sin cortes, y **no** queda locución (no aparece en `speech list`), **exit 0**. En `synthesize` sin `--play` se persiste la locución `prueba` (aparece en `speech list`), **exit 0**. `--no-daemon` produce el mismo resultado por la vía directa.
+**Esperado**: en `say` se oye el audio **empezando antes de que termine la síntesis** (con el daemon, en torno a 1 s; en modo directo, un poco más por el arranque del motor), continuo y sin cortes, y **no** queda audio sintetizado (no aparece en `speech list`), **exit 0**; cierra con `✓ Reproducción completada en … · primer audio …`. En `synthesize` sin `--play` se persiste el audio sintetizado `prueba` (aparece en `speech list`), imprime su ruta por stdout y cierra con `✓ Síntesis completada en … · … de audio`, **exit 0**. `--no-daemon` produce el mismo resultado por la vía directa.
 
 ## 6. Gestión de voces
 
@@ -191,10 +192,10 @@ ai-voice-interconnector voice list
 # Sintetizar con la voz registrada
 ai-voice-interconnector speech say --text "Esta es mi voz clonada." --voice mi_voz
 
-# Guardar síntesis con voz registrada como locución reutilizable
+# Guardar síntesis con voz registrada como audio sintetizado reutilizable
 ai-voice-interconnector speech synthesize --text "Guardando con mi voz." --label saludo --voice mi_voz
 
-# Re-clonar la voz con otra referencia: pide confirmación porque tiene locuciones
+# Re-clonar la voz con otra referencia: pide confirmación porque tiene audios sintetizados
 ai-voice-interconnector daemon start
 ai-voice-interconnector speech say --text "Antes de re-clonar." --voice mi_voz --daemon
 ai-voice-interconnector daemon status --json
@@ -202,7 +203,7 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference otra.wav --
 ai-voice-interconnector speech say --text "Después de re-clonar." --voice mi_voz --daemon
 ai-voice-interconnector daemon status --json
 
-# Volver a sintetizar la locución borrada y eliminar la voz de usuario
+# Volver a sintetizar el audio sintetizado borrado y eliminar la voz de usuario
 ai-voice-interconnector speech synthesize --text "Guardando con mi voz." --label saludo --voice mi_voz
 ai-voice-interconnector voice remove --name mi_voz
 
@@ -210,21 +211,21 @@ ai-voice-interconnector voice remove --name mi_voz
 ai-voice-interconnector voice list
 ```
 
-**Esperado**: `clone` registra la voz (aparece en `voice list`), **exit 0**; `say`/`synthesize --voice mi_voz` usan su timbre; `remove` la elimina y deja de aparecer, **exit 0**. Intentar `voice remove` sobre una voz de fábrica (`default`/`ryan`/`vivian`) sale con **exit 2**.
+**Esperado**: `clone` registra la voz (aparece en `voice list`), **exit 0**; `say`/`synthesize --voice mi_voz` usan su timbre; `remove` pregunta siempre (tenga o no audios sintetizados), la elimina y deja de aparecer, **exit 0**. Intentar `voice remove` sobre una voz de fábrica (`default`/`ryan`/`vivian`) sale con **exit 2**.
 
-**Re-clonado.** `voice clone --force` sobre `mi_voz`, que tiene la locución `saludo`, muestra por stderr el plan (la voz y sus locuciones, con rutas y tamaños) y pregunta `[s/N]`; responder `n` sale con **exit 0**, imprime `Cancelado.` y no cambia nada. Al responder `s`, stdout dice `Voz 'mi_voz' clonada; se eliminaron sus 1 locución(es) anteriores: saludo (N s).`, `speech list --voice mi_voz` queda vacío y `--json` lleva `"removed_speech": ["saludo"]`. Sin terminal (por ejemplo, con `< /dev/null`) y sin `--yes` sale con **exit 2** (`confirmation_required`) sin cambiar nada. **El residente recarga la voz:** el `say` posterior suena con el timbre de `otra.wav`, no con el de `habla.wav`, y el `pid` del residente (`resident_pid` en `daemon.pid`) cambia respecto del anterior al re-clonado; dos `say` seguidos con la voz sin cambios conservan el mismo.
+**Re-clonado.** `voice clone --force` sobre `mi_voz`, que tiene el audio sintetizado `saludo`, muestra por stderr el plan (la voz y sus audios sintetizados, con rutas y tamaños) y pregunta `¿Sobrescribir la voz mi_voz y borrar sus 1 audio sintetizado? [s/N]`; responder `n` sale con **exit 0**, imprime `Cancelado; no se ha borrado nada.` y no cambia nada. Al responder `s`, el cierre por stderr dice `✓ Voz mi_voz clonada en N s · se borraron 1 audio sintetizado anterior`, `speech list --voice mi_voz` queda vacío y `--json` lleva `"removed_speech": ["saludo"]`. Sin terminal (por ejemplo, con `< /dev/null`) y sin `--yes` sale con **exit 2** (`confirmation_required`) sin cambiar nada. **El residente recarga la voz:** el `say` posterior suena con el timbre de `otra.wav`, no con el de `habla.wav`, y el `pid` del residente (`resident_pid` en `daemon.pid`) cambia respecto del anterior al re-clonado; dos `say` seguidos con la voz sin cambios conservan el mismo.
 
-**Clonado: progreso y comprobaciones previas.** Repite `voice clone` con `--no-daemon` y con `--daemon` en una terminal real y comprueba en **stderr**: (1) el tiempo de «Clonando voz… (puede tardar varios minutos)» **avanza** también en la ruta directa; (2) ninguna fase muestra «(daemon)»; (3) por el daemon, con `--denoise`, aparece la espera «Esperando turno para limpiar el ruido…» si otra limpieza retiene el turno. Con la voz ya registrada y sin `--force`, `voice clone --mic --name mi_voz` sale con **exit 6** (`voice_exists`) **antes** de abrir el micrófono, en las dos rutas.
+**Clonado: progreso y comprobaciones previas.** Repite `voice clone` con `--no-daemon` y con `--daemon` en una terminal real y comprueba en **stderr**: (1) el tiempo de «Clonando la voz… (puede tardar varios minutos)» **avanza** también en la ruta directa y la línea de clonado no se duplica por el daemon; (2) ninguna etapa muestra «(daemon)» (solo la línea de contexto nombra la ruta); (3) por el daemon, con `--denoise`, aparece la espera «Esperando turno para limpiar el ruido…» si otra limpieza retiene el turno. Con la voz ya registrada y sin `--force`, `voice clone --mic --name mi_voz` sale con **exit 6** (`voice_exists`) **antes** de abrir el micrófono, en las dos rutas.
 
-## 7. Gestión de habla sintética
+## 7. Gestión de audios sintetizados
 
 🧠 · reproducir requiere 🔊
 
-El almacén de locuciones (`speech synthesize` las persiste; estas sub-acciones
-operan sobre ellas sin re-sintetizar).
+El almacén de audios sintetizados (`speech synthesize` los persiste; estas sub-acciones
+operan sobre ellos sin re-sintetizar).
 
 ```bash
-# Listar locuciones guardadas (todas las voces; --voice/-v opcional filtra por voz)
+# Listar audios sintetizados guardados (todas las voces; --voice/-v opcional filtra por voz)
 ai-voice-interconnector speech list
 ai-voice-interconnector speech list --json
 ai-voice-interconnector speech list --voice mi_voz
@@ -234,14 +235,14 @@ ai-voice-interconnector speech list --voice mi_voz --json
 ai-voice-interconnector speech list --voice 'mala voz!' ; echo "exit=$?"
 ai-voice-interconnector speech list --voice voz_que_no_existe ; echo "exit=$?"
 
-# Reproducir una locución guardada sin re-sintetizar
+# Reproducir un audio sintetizado guardado sin re-sintetizar
 ai-voice-interconnector speech play --label prueba
 
-# Eliminar una locución guardada
+# Eliminar un audio sintetizado guardado (pregunta antes de borrar; --yes omite la pregunta)
 ai-voice-interconnector speech remove --label prueba
 ```
 
-**Esperado**: `list` muestra las locuciones persistidas, **exit 0**; `play` reproduce sin re-sintetizar, **exit 0**; `remove` la borra (deja de aparecer en `list`), **exit 0**. `play`/`remove` con una etiqueta inexistente salen con **exit 3**.
+**Esperado**: `list` muestra por stdout `Audios sintetizados guardados:` y los audios persistidos (o `No hay audios sintetizados guardados.`), **exit 0**; `play` reproduce sin re-sintetizar, avanza el contador de `Reproduciendo…` hasta el final y cierra con `✓ Reproducción completada en …`, **exit 0**; `remove` pregunta `¿Borrar este audio sintetizado? [s/N]` (responder `n` imprime `Cancelado; no se ha borrado nada.` y sale con **exit 0**), y al responder `s` lo borra (deja de aparecer en `list`) con `✓ Audio sintetizado prueba de la voz default borrado.`, **exit 0**. Sin terminal y sin `--yes`, `remove` sale con **exit 2** (`confirmation_required`) y una línea `Solución:` con la orden y `--yes`. `play`/`remove` con una etiqueta inexistente salen con **exit 3**.
 
 ## 8. Transcripción y doblaje (no interactivos)
 
@@ -264,9 +265,9 @@ ai-voice-interconnector speech transcribe --audio clip.wav --source-language es 
 ai-voice-interconnector speech dub --audio clip_en.wav --source-language en --target-language es --voice mi_voz
 ```
 
-**Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`), **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce **mientras sintetiza** (la voz empieza antes de que termine la síntesis y suena continua), **exit 0**. Un `--audio` inexistente sale con **exit 3**, igual que un `--mic` sin entrada predeterminada (`no_input_device`) o un `dub` sin salida predeterminada (`no_output_device`); un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
+**Esperado**: `transcribe` imprime el texto reconocido a **stdout** (o el objeto JSON con `--json`) y cierra con `✓ Transcripción completada en …` por stderr, **exit 0**. `dub` transcribe, traduce si los idiomas difieren, sintetiza con `--voice` y reproduce **mientras sintetiza** (la voz empieza antes de que termine la síntesis y suena continua), **exit 0**; `Transcripción: …` y, si difieren los idiomas, `Traducción: …` salen por stdout **antes** de que empiece a sonar el audio, y el cierre es `✓ Doblaje completado en … · primer audio …`. Un `--audio` inexistente sale con **exit 3**, igual que un `--mic` sin entrada predeterminada (`no_input_device`) o un `dub` sin salida predeterminada (`no_output_device`); un fallo del pipeline de transcripción, **exit 10**; de traducción, **exit 9**.
 
-**Doblaje y traducción: paridad y progreso.** Con `speech dub` en una terminal real, repite con `--no-daemon` y `--daemon`: el tiempo de cada fase (incluida «Limpiando ruido del audio…» con `--denoise`) avanza en la ruta directa, y ninguna fase muestra «(daemon)». Un `dub` con una voz inexistente sale con **exit 3** (`voice_not_found`) antes de leer el audio o abrir el micrófono, en las dos rutas. La paridad del texto traducido se comprueba con una entrada de dos oraciones y dos párrafos: `translate --text "<texto>" --source-language es --target-language en` con `--no-daemon` y con `--daemon` debe dar el **mismo** texto, igual que el sidecar de `speech synthesize --text "<texto>" --label p --source-language es --target-language en` (`speech list --json`) por las dos rutas. `translate --daemon` no tiene un tope total de 1500 ms: usa el mismo criterio que `speech transcribe --daemon`, y sin daemon sale con **exit 5** (`daemon_unreachable`).
+**Doblaje y traducción: paridad y progreso.** Con `speech dub` en una terminal real, repite con `--no-daemon` y `--daemon`: el tiempo de cada etapa (incluida «Limpiando el ruido…» con `--denoise`) avanza en la ruta directa, el contador de «Reproduciendo…» avanza hasta el final del audio, y ninguna etapa muestra «(daemon)» (solo la línea de contexto nombra la ruta). Un `dub` con una voz inexistente sale con **exit 3** (`voice_not_found`) antes de leer el audio o abrir el micrófono, en las dos rutas. La paridad del texto traducido se comprueba con una entrada de dos oraciones y dos párrafos: `translate --text "<texto>" --source-language es --target-language en` con `--no-daemon` y con `--daemon` debe dar el **mismo** texto, igual que el sidecar de `speech synthesize --text "<texto>" --label p --source-language es --target-language en` (`speech list --json`) por las dos rutas. `translate --daemon` no tiene un tope total de 1500 ms: usa el mismo criterio que `speech transcribe --daemon`, y sin daemon sale con **exit 5** (`daemon_unreachable`).
 
 ### Limpieza de ruido (`--denoise`)
 
@@ -297,11 +298,14 @@ ai-voice-interconnector speech denoise clip.wav --output-dir limpio
 ai-voice-interconnector --json speech denoise clip.wav --dry-run
 ```
 
-**Esperado**: escribe la versión limpia en el directorio indicado y sale con
-**exit 0**; `--dry-run` muestra el plan sin escribir. Una entrada inexistente
+**Esperado**: escribe la versión limpia en el directorio indicado, imprime la ruta
+de cada archivo generado por **stdout**, muestra por stderr una etapa por archivo
+con su porcentaje y cierra con `✓ Limpieza de ruido completada en … · N archivos limpios`,
+**exit 0**; `--dry-run` muestra el plan por stdout sin escribir, y
+`Simulación: no se ha modificado nada.` por stderr. Una entrada inexistente
 sale con **exit 3**; una entrada sin audio o un destino ya existente sin
-`--overwrite`, con **exit 2**; modelo ausente, FFmpeg ausente o error de E/S,
-con **exit 1**.
+`--overwrite`, con **exit 2**; modelo ausente, con **exit 4**; FFmpeg ausente o
+error de E/S, con **exit 1**.
 
 ## 9. Rutas interactivas de audio (push-to-talk y `--play`)
 
@@ -324,14 +328,14 @@ rechazar). Redirige stdin para que **no** sea terminal:
 ```bash
 ai-voice-interconnector speech transcribe --mic --source-language es < /dev/null ; echo "exit=$?"
 ```
-**Esperado**: **exit 2** (`usage_error`), aviso en **stderr** pidiendo `--duration N` al no haber terminal. **Sin panic ni backtrace** (regresión histórica ya corregida).
+**Esperado**: **exit 2** (`usage_error`), `Error:` en **stderr** que explica que `--mic` necesita `--duration` sin terminal. **Sin panic ni backtrace** (regresión histórica ya corregida).
 
 **Duración fija sigue intacta** (no interactiva, no push-to-talk):
 
 ```bash
 ai-voice-interconnector speech transcribe --mic --duration 3 --source-language es ; echo "exit=$?"
 ```
-**Esperado**: graba 3 s fijos y transcribe a **stdout**, **exit 0**; sin panic. Durante la grabación la fase «Capturando audio del micrófono…» **permanece** en stderr y su tiempo avanza (no se cede la línea: solo el push-to-talk la cede para sus instrucciones y la recupera al terminar).
+**Esperado**: graba 3 s fijos y transcribe a **stdout**, **exit 0**; sin panic. Durante la grabación, en una terminal real, stderr muestra `● Grabando 0:01 / 0:03` con el medidor de nivel, y el contador avanza; al terminar queda `✓ Audio grabado`. Sin terminal solo aparece una vez `Grabando (máximo 0:03)…`. Si no hablas (silencio), aparece `Aviso: No se detectó voz en la grabación (nivel máximo … dBFS); comprueba que el micrófono no esté silenciado.` y el comando continúa.
 
 **Ruta feliz push-to-talk** — en una terminal interactiva real:
 
@@ -339,8 +343,8 @@ ai-voice-interconnector speech transcribe --mic --duration 3 --source-language e
 ai-voice-interconnector speech transcribe --mic --source-language es
 ```
 **Esperado**:
-1. En **stderr** aparece: `Grabando… pulsa Enter para detener.`
-2. Hablas; la grabación continúa mientras hablas.
+1. En **stderr** aparece, en una sola línea que se repinta: `● Grabando 0:00 / 5:00  <medidor>  Enter para detener`.
+2. Hablas; el contador avanza y el medidor de nivel sube mientras hablas.
 3. Pulsas **Enter** → se detiene y transcribe a **stdout** el texto reconocido, **exit 0**.
 
 **Techo de seguridad** (Enter olvidado) — baja el tope con la variable de entorno y **no** pulses Enter:
@@ -348,7 +352,7 @@ ai-voice-interconnector speech transcribe --mic --source-language es
 ```bash
 AVI_PUSH_TO_TALK_MAX_SECS=5 ai-voice-interconnector speech transcribe --mic --source-language es
 ```
-**Esperado**: a los 5 s la captura se corta sola, en **stderr** aparece `Límite de grabación alcanzado (5 s); deteniendo.`, transcribe lo grabado y sale con **exit 0** (el techo **no** es error).
+**Esperado**: a los 5 s la captura se corta sola, en **stderr** aparece `Aviso: Se alcanzó el límite de grabación (0:05); se detiene.`, transcribe lo grabado y sale con **exit 0** (el techo **no** es error).
 
 **`dub` se comporta igual**: repite las cuatro comprobaciones con `speech dub --mic --source-language … --target-language …`. Las cuatro vías (transcribe/dub × directo/daemon) comparten la misma captura.
 
@@ -362,7 +366,7 @@ ai-voice-interconnector speech synthesize --text "hola" --label p1 --play --json
 # --play sin TTY:
 ai-voice-interconnector speech synthesize --text "hola" --label p1 --play < /dev/null ; echo "exit=$?"
 ```
-**Esperado**: ambos **exit 2** (`usage_error`); el segundo con `--play requiere una terminal interactiva (TTY).`. No sintetiza ni guarda.
+**Esperado**: ambos **exit 2** (`usage_error`); el segundo con un `Error:` que explica que `--play` requiere una terminal interactiva. No sintetiza ni guarda.
 
 **Ruta feliz del bucle** — terminal real:
 
@@ -380,9 +384,9 @@ Opción [1-4]:
 ```
 Prueba cada opción:
 - **`1`** → vuelve a reproducir la **misma** toma (sin re-sintetizar) y reaparece el menú.
-- **`3`** → muestra «Sintetizando otra toma…», **re-sintetiza** una toma nueva que también suena mientras se sintetiza, y reaparece el menú sin que la línea de progreso quede pegada a él. Elige `3` varias veces: **cada toma debe sonar distinta** de las anteriores. Repite todo el procedimiento con `--no-daemon` y con `--daemon` para cubrir la ruta directa y la del daemon: en las dos debe decir «Sintetizando otra toma…», el tiempo de la fase debe avanzar en la ruta directa y ninguna fase debe mostrar «(daemon)». Con `--source-language es --target-language en` aparece además la fase «Traduciendo texto…» también por el daemon.
-- **`2`** → guarda la locución (**exit 0**); verifícalo con `ai-voice-interconnector speech list --json` (debe aparecer `demo_loop`).
-- **`4`** o **Ctrl-D (EOF)** → imprime `Descartado.` y sale **exit 0** **sin** guardar nada.
+- **`3`** → vuelve a mostrar la etapa «Sintetizando…», **re-sintetiza** una toma nueva que también suena mientras se sintetiza, y reaparece el menú sin que la línea de progreso quede pegada a él. Elige `3` varias veces: **cada toma debe sonar distinta** de las anteriores. Repite todo el procedimiento con `--no-daemon` y con `--daemon` para cubrir la ruta directa y la del daemon: en las dos debe mostrarse la misma etapa, el tiempo de la etapa debe avanzar en la ruta directa y ninguna etapa debe mostrar «(daemon)». Con `--source-language es --target-language en` aparece además la etapa «Traduciendo…» también por el daemon.
+- **`2`** → guarda el audio sintetizado (**exit 0**), imprime su ruta por stdout y cierra con `✓ Síntesis completada en …`; verifícalo con `ai-voice-interconnector speech list --json` (debe aparecer `demo_loop`).
+- **`4`** o **Ctrl-D (EOF)** → imprime `✓ Audio descartado; no se ha guardado.` y sale **exit 0** **sin** guardar nada.
 
 **Recomprobación de colisión al guardar** (con una etiqueta que ya exista, sin `--force`):
 
@@ -413,7 +417,7 @@ ai-voice-interconnector self uninstall --dry-run
 ai-voice-interconnector cleanup --all --dry-run
 ```
 
-**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `5,9 GB` y el prompt `¿Continuar? [S/n] ` deja un espacio antes de la respuesta. La provisión abre otro bloque con `Descargando 6 modelo(s):`; cada barra está etiquetada `[i/6] nombre`, muestra el total real del modelo (no el de un archivo pequeño), velocidad, `transcurrido` y `quedan`. Al completarse cada modelo queda una línea permanente `✓ [i/6]` con tamaño, duración y velocidad. Sin TTY no hay barras, pero aparecen las líneas de avance `… nombre  <completado> de <total> (<transcurrido>)` cada 15 s. Cierra con `Modelos descargados: <tamaño> en <duración>.`, deja una línea en blanco y después aparece el resumen final, con `Comando:` terminado en `.exe`, el estado del PATH y los modelos con tamaño y tiempo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones muestran cada ruta una vez, su categoría en español, tamaños con coma y un único `Simulación: no se ha modificado nada.` al final del plan; no modifican el disco.
+**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `5,9 GB` y el prompt `¿Instalar el programa? [S/n] ` deja un espacio antes de la respuesta. La provisión abre su bloque con `Descargando 6 modelos:`; cada barra está etiquetada `[i/6] nombre`, muestra el porcentaje, el total real del modelo (no el de un archivo pequeño), la velocidad y `quedan` con un tiempo estable (nunca un valor absurdo; `quedan —` durante los primeros 2 s de cada modelo), y se repinta de forma continua aunque no lleguen bytes. Al completarse cada modelo queda una línea permanente `✓ [i/6]` con tamaño, duración y velocidad. Sin TTY no hay barras, pero aparecen las líneas de avance `… [i/6] nombre  <completado> de <total> · <duración>` cada 15 s. No existe una línea «Total:» propia de la provisión: el cierre es `✓ ai-voice-interconnector <versión> instalado en <total>`, con los detalles `PATH: …` y `Modelos: …` debajo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones escriben su plan por stdout —cada ruta una vez, con su categoría en español y tamaños con coma— y un único `Simulación: no se ha modificado nada.` por stderr; no abren ninguna etapa de borrado y no modifican el disco.
 
 ## 10. Daemon
 
@@ -548,7 +552,7 @@ ai-voice-interconnector speech play --label etiqueta_que_no_existe ; echo "exit=
 
 El indicador escribe por stderr y es el **único dueño de su línea**: cuando el producto necesita escribir, cede la línea y la vuelve a tomar. Estas comprobaciones exigen una **terminal real** (no vale redirigir stderr a un fichero: sin terminal no hay línea que ceder ni línea que se pegue).
 
-### 12.1 La fase no queda pegada a la línea siguiente
+### 12.1 La etapa no queda pegada a la línea siguiente
 
 Con un comando que capture el micrófono, en una terminal de verdad:
 
@@ -556,21 +560,21 @@ Con un comando que capture el micrófono, en una terminal de verdad:
 ai-voice-interconnector speech transcribe --mic --source-language es
 ```
 
-**Esperado**: el aviso «Grabando… pulsa Enter para detener.» aparece en su
-**propia línea**, y la fase «… Transcribiendo audio…» no queda pegada a
-ninguna otra. Lo mismo con el menú de `speech synthesize --play`: las
-opciones se leen en su propia línea, y la fase no las arrastra.
+**Esperado**: la línea `● Grabando … Enter para detener` se repinta en su
+**propia línea**, y al terminar la etapa queda `✓ Audio grabado` y la etapa
+«… Transcribiendo…» no queda pegada a ninguna otra. Lo mismo con el menú de
+`speech synthesize --play`: las opciones se leen en su propia línea, y la
+etapa no las arrastra.
 
-### 12.2 El mensaje final aparece una sola vez
+### 12.2 El cierre aparece una sola vez
 
 ```bash
 ai-voice-interconnector speech say --text "Prueba." --voice default --no-daemon
 ```
 
-**Esperado**: el resultado «Reproduciendo (N s).» aparece **una vez**, por
-stdout, y **no** hay ninguna línea `[ok]` ni `[error]` por stderr: el
-indicador no dice cómo terminó, lo dice el resultado. El estado se dice una
-sola vez.
+**Esperado**: el cierre `✓ Reproducción completada en … · primer audio …`
+aparece **una vez**, por stderr; stdout queda vacío y **no** hay ninguna línea
+`[ok]` ni `[error]`. El estado se dice una sola vez.
 
 ### 12.3 La cancelación se dice una sola vez
 
@@ -580,18 +584,22 @@ ai-voice-interconnector voice remove --name una_voz_que_exista
 
 y responde `n` a la confirmación.
 
-**Esperado**: «Cancelado.» aparece **una sola vez**, por stderr. No hay un
-segundo «Cancelado.» por stdout.
+**Esperado**: la pregunta `¿Borrar la voz una_voz_que_exista? [s/N]` y, tras
+responder `n`, «Cancelado; no se ha borrado nada.» aparece **una sola vez**, por
+stderr. No hay un segundo «Cancelado» por stdout.
 
-### 12.4 Una fase, una línea en no-TTY
+### 12.4 Una etapa, una línea en no-TTY
 
 ```bash
 ai-voice-interconnector self update 2> salida.txt
 ```
 
-**Esperado**: el fichero `salida.txt` no acumula líneas de la fase repetidas:
-la fase se anuncia una vez y la actividad posterior no abre líneas nuevas.
-Vale cualquier comando con una espera larga, porque el racionado es por fase:
+**Esperado**: el fichero `salida.txt` no acumula líneas de la etapa repetidas:
+una etapa permanente se anuncia una vez (`… <texto>`), emite como mucho un
+latido cada 10 s y deja su línea `✓` al terminar; una transitoria no escribe
+nada, y la actividad posterior no abre líneas nuevas. Sin color. Con
+`AVI_NO_PROGRESS=1` desaparecen las líneas de etapa, pero no el contexto ni el
+cierre. Vale cualquier comando con una espera larga:
 también `translate --daemon` o `speech transcribe --daemon` con la salida
 redirigida.
 
@@ -601,14 +609,15 @@ redirigida.
 ai-voice-interconnector self update
 ```
 
-**Esperado**: durante la descarga, el tiempo de la fase **avanza** —los
-segundos suben en la terminal— y no se queda en `(0 s)`. Es la
+**Esperado**: durante la descarga, el tiempo de la etapa **avanza** —los
+segundos suben en la terminal— y no se queda en `0,0 s`. Es la
 comprobación que distingue una espera viva de una detenida.
 
 **También en las rutas directas**: lo mismo debe verse durante el trabajo
 bloqueante —síntesis, clonado, transcripción, traducción y limpieza de
-ruido con `--no-daemon`— y durante la grabación de `--mic --duration N`,
+ruido con `--no-daemon`— y durante la grabación y la reproducción,
 porque un hilo repinta la línea mientras el trabajo corre. No hay excepción
-de reloj detenido. Si una biblioteca escribe un aviso mientras la fase está
-abierta, el aviso aparece en su propia línea y la fase se vuelve a pintar en
-el siguiente repintado.
+de reloj detenido: ningún tramo de más de 1 s sin bytes nuevos mientras el
+comando trabaja. Si el producto escribe un aviso mientras la etapa está
+abierta, el aviso (`Aviso: …`) aparece en su propia línea y la etapa se vuelve
+a pintar en el siguiente repintado.

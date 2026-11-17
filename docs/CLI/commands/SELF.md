@@ -54,7 +54,7 @@ El orden es el de [`self install`](../../specs/LIFECYCLE.md#83-self-install) y e
 8. **Integración de `PATH`** ([contrato de `self`](../CONTRACT.md#self-install-self-update-y-self-uninstall) e [integración de PATH](../../specs/LIFECYCLE.md#831-integración-de-path)). En Unix el `PATH` se modifica **por defecto** y se anuncia en el resumen; `--no-modify-path` lo desactiva. Un archivo ajeno en la ruta del enlace → `path_conflict` (14), salvo `--force`.
 9. **Escribir el recibo** de forma atómica.
 10. **La misma provisión que `setup`**, salvo `--no-setup`: descarga de la selección (todos los modelos, el Base de clonado incluido) según el estado real del almacén, sin repetir la confirmación y con la [vista de progreso](SETUP.md#modelos-provisionados-model_revisions) en un bloque propio. El bloqueo se retiene hasta aquí y se libera al terminar la provisión.
-11. **Resumen final**, separado del bloque anterior por una línea en blanco: versión, rutas (`Comando:` con la ruta real del ejecutable, `.exe` incluido en Windows), estado del `PATH` y estado de los modelos; el estado de los modelos se describe en español (`no se provisionaron (--no-setup)`, `ya estaban provisionados`, `se descargaron N modelo(s), X,Y GB en <duración>`, `falló la provisión`). Si esta pasada añadió el `PATH`, la línea es `PATH:      se añadió <dir>; las terminales que ya estaban abiertas no lo verán hasta reiniciarse.`
+11. **Cierre**, por stderr: `✓ ai-voice-interconnector <versión> instalado en <total>` (o `reparado en <total>`), y debajo, con texto atenuado, solo dos detalles: `PATH: …` (qué se hizo con el `PATH`) y `Modelos: …` (el estado de los modelos, descrito en español: `no se provisionaron (--no-setup)`, `ya estaban provisionados`, `se descargaron N modelos, X,Y GB en <duración>`, `falló la provisión`). El resumen ya no repite el programa ni el comando, que el plan mostró antes. Si esta pasada añadió el `PATH`, además se avisa con `Aviso:` que las terminales que ya estaban abiertas no lo verán hasta reiniciarse. El plan previo a la confirmación pregunta `¿Instalar el programa?` (o `¿Reparar la instalación?`), y con el `PATH` ya integrado dice `PATH: ya está en el PATH de tu usuario; no se modifica.`
 
 **Lo que el recibo registra es el estado, no el diff de esta pasada.** El recibo dice qué integración de `PATH` está en pie, no qué cambió en esta ejecución: si registrara solo el diff, una segunda instalación desde el mismo bundle escribiría un recibo sin entrada de `PATH` y `self uninstall` no podría revertir la que puso la primera, dejando residuo dentro de una raíz de propiedad exclusiva. El diff vive aparte, en `Outcome::path_rewritten`, y es lo único que decide si el resumen avisa de que las terminales ya abiertas no ven el `PATH` nuevo.
 
@@ -76,7 +76,7 @@ El orden es el de [`self update`](../../specs/LIFECYCLE.md#84-self-update) y est
 8. **Parar el daemon con el binario actual**, que conoce su protocolo y su `daemon.pid`, anotando si estaba en ejecución. Si no se detiene → `daemon_stop_failed` (16) sin tocar nada y con el staging retirado.
 9. **Traspaso**: ejecuta `<staging>/ai-voice-interconnector --json self install --yes`, manteniendo stderr separado y capturando stdout estructurado; propaga las preferencias del recibo (`--no-modify-path` si la instalación no tocaba el `PATH`), `--no-setup` si se pidió y **`--force` cuando el `update` lo recibió**. Valida la causa anidada en el parcial; stdout inválido o sin `models_cause` falla explícitamente.
 10. **Limpiar**: borra siempre el staging. El aparcado `.old-*` que el reemplazo no pudo borrar por tener algo en uso (en Windows, lo retiene el ejecutable del `self update` que lanzó el traspaso) lo retira el propio `self install` **como unidad**: un único borrado diferido de la carpeta entera, que espera a que termine ese proceso, o, si no puede programarse, la recuperación de la siguiente operación. Así no queda ninguna carpeta `.old-*` vacía ni se lanza un limpiador por archivo. En Unix no hay diferido.
-11. **Resultado**: `anterior → nueva`. Sin reinicio automático del daemon: si estaba activo, el resumen indica cómo relanzarlo con el comando habitual.
+11. **Resultado**: `✓ Actualizado de <anterior> a <nueva> en <total>`, por stderr. Sin reinicio automático del daemon: si estaba activo, un aviso indica cómo relanzarlo con el comando habitual.
 
 **Garantías.** Un fallo antes del traspaso deja todo intacto (staging borrado, instalación intacta). Un fallo durante el traspaso revierte la transacción nueva del `self install` invocado. Una interrupción en cualquier punto queda recuperable en la siguiente operación de ciclo de vida.
 
@@ -84,9 +84,9 @@ El orden es el de [`self update`](../../specs/LIFECYCLE.md#84-self-update) y est
 
 ## El progreso por stderr
 
-Los tres comandos de este grupo pintan la fase del trabajo por stderr —`self install` con las fases del motor (`stopping`, `replacing`, `path`, `receipt`), `self update` con una por paso (`checking`, `downloading`, `verifying`, `stopping`, `replacing`) y `self uninstall` con las suyas (`stopping`, `state`, `path`, `program`, `locks`)— y ceden la línea antes de que el producto escriba la confirmación. El **resultado** —el resumen o el envelope `--json`— va por stdout, y lo dice **una sola vez**, con la duración de la operación.
+Los tres comandos de este grupo pintan sus etapas por stderr —`self install` con las del motor (`stopping`, `replacing` o `copying` en una instalación nueva, `path`, `receipt`), `self update` con una por paso y un único reloj (`checking`, `downloading`, `verifying`, `stopping`, `replacing`) y `self uninstall` con las suyas (`stopping`, `state`, `path`, `program`, `locks`)— y ceden la línea antes de que el producto escriba la confirmación. `self update` abre con la línea de contexto `Actualización desde la versión <A>`; `self install` y `self uninstall` no la tienen, porque su plan y su pregunta hacen de contexto. El cierre —`✓ <acción> en <total>`— va por stderr y lo dice **una sola vez** el flujo de la biblioteca (o el handler en `self update`); con `--json` no se escribe y el envelope va por stdout.
 
-`AVI_NO_PROGRESS=1` silencia todo el progreso por stderr, y nada más: el resumen por stdout, el envelope `--json` y los códigos de salida no cambian.
+`AVI_NO_PROGRESS=1` silencia solo las etapas por stderr: el cierre, el envelope `--json` y los códigos de salida no cambian.
 
 ## `setup_failed`: el único desenlace que no es ni éxito ni error
 
@@ -127,9 +127,9 @@ Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el t
 Los pasos de [`self uninstall`](../../specs/LIFECYCLE.md#85-self-uninstall), en orden, sobre la **instalación registrada** y no sobre la posición del ejecutable.
 
 1. **El canal decide si se puede actuar**: `homebrew` → `externally_managed` (12) con el comando de Homebrew en el mensaje. Sin recibo de instalación, el comando no adopta las raíces convencionales aunque contengan datos y devuelve **`not_installed` y salida 0** sin borrarlas.
-2. **Plan**, el mismo en la simulación y en la ejecución (`uninstall::plan_lines`): cada ruta una sola vez, con su categoría en español cuando la tiene (`datos de usuario` para la raíz de datos entera) y su tamaño; las reversiones del `PATH` que el recibo registra, una línea por cada una con lo que se retira (`se revertirá el PATH: …`), que son acciones del plan y no recursos conservados; y la lista de lo que **no** se tocará y por qué.
-3. **`--dry-run`**: imprime el plan, después una sola vez `Simulación: no se ha modificado nada.`, y termina **sin tomar el bloqueo**: tomar el bloqueo crea el archivo, y una simulación que deja un archivo detrás no es una simulación.
-4. **Confirmación destructiva** `Esto eliminará lo indicado. ¿Continuar? [s/N] `. Sin terminal y sin `--yes` → `confirmation_required` (2) y nada borrado. Al terminar, el texto dice `Desinstalación completada (N s).`, con la duración de la operación; el `status` es del envelope `--json`. Sin recibo de instalación, el desenlace es `not_installed` y el texto dice `No había nada que desinstalar.`, sin duración: el comando no adopta ni inspecciona raíces convencionales del perfil.
+2. **Plan**, el mismo en la simulación y en la ejecución (`uninstall::plan_lines`): cada ruta una sola vez, con su categoría en español cuando la tiene (`datos de usuario` para la raíz de datos entera) y su tamaño; las reversiones del `PATH` que el recibo registra, una línea por cada una con lo que se retira (`PATH: se quitará la entrada <ruta> del PATH de tu usuario.`), que son acciones del plan y no recursos conservados; y la lista de lo que **no** se tocará y por qué.
+3. **`--dry-run`**: escribe el plan por stdout, después una sola vez `Simulación: no se ha modificado nada.` por stderr, y termina **sin tomar el bloqueo**: tomar el bloqueo crea el archivo, y una simulación que deja un archivo detrás no es una simulación.
+4. **Confirmación destructiva** `¿Desinstalar el programa y borrar lo indicado? [s/N] ` (con `--keep-data`, `¿Desinstalar el programa y borrar lo indicado, conservando tus datos? [s/N] `). Sin terminal y sin `--yes` → `confirmation_required` (2) y nada borrado. Al terminar, el cierre por stderr dice `✓ Desinstalación completada en <total>`; el `status` es del envelope `--json`. Si quedan restos (`program_dir_kept`), en texto sale el `Error:` con su `Solución:` y en `--json` solo el envelope, con el mismo código. Sin recibo de instalación, el desenlace es `not_installed` y el texto dice `✓ No había nada que desinstalar.`, sin duración: el comando no adopta ni inspecciona raíces convencionales del perfil.
 5. **Parar el daemon**: va **después** de la confirmación, para que un `daemon_stop_failed` no deje nada a medias.
 6. **Borrar el estado.**
 7. **Revertir el `PATH`** exactamente según el recibo: el enlace solo si apunta al directorio de programa, los bloques delimitados de los perfiles, y en Windows la entrada del registro con comparación canónica conservando el tipo del valor y difundiendo `WM_SETTINGCHANGE`. Un resto que no se pueda revertir se informa en `failed`.
@@ -148,7 +148,7 @@ Por eso la composición del plan vive en `uninstall::compose_plan` y tiene dos r
 | Invocación | Destinos del estado |
 |---|---|
 | Sin `--keep-data` | Los del plan de modelos (raíz de modelos según R1–R3) **más la raíz de datos entera** |
-| Con `--keep-data` | El plan de `cleanup --all` **filtrado**: fuera modelos, voces y habla; dentro configuración, logs y estado del daemon |
+| Con `--keep-data` | El plan de `cleanup --all` **filtrado**: fuera modelos, voces y audios sintetizados; dentro configuración, logs y estado del daemon |
 
 Con `--keep-data` el directorio de programa **se borra igual**: la bandera conserva el estado, no el programa.
 
@@ -189,7 +189,7 @@ Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_
 
 `planned` es el recibo de `compose_plan`, el mismo que usa la ejecución real, así que `--dry-run` anuncia exactamente lo que ocurriría. Con `--dry-run` el `status` es `planned`, `removed` copia `planned` y `path_reverted` es el valor previsto; el envelope no lleva clave `dry_run`: `planned` ya dice que nada se modificó.
 
-`preserved` está **siempre presente** como array de objetos `{"path", "reason"}` con lo que la operación conserva a propósito: los recursos compartidos (caché HF ajena, voces/modelos/habla con `--keep-data`) y el directorio de programa cuando la regla de borrado lo impide y ningún destino del plan lo recorre. Sin instalación registrada (`not_installed`) vale `[]`. Es una lista **por operación**, igual que en `cleanup`: lo que `cleanup` preserva `self uninstall` puede borrarlo, y preservar un contenedor no conserva a sus descendientes que el plan sí lista. Con `--keep-data` la lista anuncia lo que cleanup sin `--keep-data` borraría —modelos, voces y habla— para que la decisión de conservar el estado sea visible. En texto, cada entrada se narra junto al plan (`no se tocará <ruta>: <motivo>`).
+`preserved` está **siempre presente** como array de objetos `{"path", "reason"}` con lo que la operación conserva a propósito: los recursos compartidos (caché HF ajena, voces/modelos/audios sintetizados con `--keep-data`) y el directorio de programa cuando la regla de borrado lo impide y ningún destino del plan lo recorre. Sin instalación registrada (`not_installed`) vale `[]`. Es una lista **por operación**, igual que en `cleanup`: lo que `cleanup` preserva `self uninstall` puede borrarlo, y preservar un contenedor no conserva a sus descendientes que el plan sí lista. Con `--keep-data` la lista anuncia lo que cleanup sin `--keep-data` borraría —modelos, voces y audios sintetizados— para que la decisión de conservar el estado sea visible. En texto, cada entrada se narra junto al plan (`no se tocará <ruta>: <motivo>`).
 
 **`path_reverted` previsto y real salen del mismo predicado.** No basta con leer la marca `modify_path` del recibo: puede decir que se integró el `PATH` y que hoy no queda nada que revertir —el enlace se borró a mano, el bloque ya no está en el perfil—. El valor publicado lo decide `path_would_be_reverted`, que además de la marca comprueba la existencia real de cada artefacto (el enlace solo si apunta al directorio de programa, el bloque delimitado del perfil, la entrada de registro en Windows), y lo usan tanto el simulacro como la ejecución. Por eso `--dry-run` no puede afirmar una reversión que la operación real no haría.
 
@@ -226,32 +226,34 @@ Los `reason` del empaquetado salen con el **1** genérico: ningún `reason` nuev
 
 ## Muestras de salida
 
-El **resultado** —el resumen o el envelope `--json`— va por stdout y lo dice una sola vez, con la duración de la operación. El progreso —las fases— va por stderr, con la forma `… <mensaje> (<tiempo>)`.
+Las etapas, la pregunta y el cierre van por stderr. Con `--dry-run`, el plan va por stdout; con `--json`, stdout lleva solo el envelope.
 
 ```text
 # self install
-stdout: ai-voice-interconnector instalado: 0.35.0 (12 s).
-        Programa:  <directorio-de-programa>
-        Comando:   <ruta-del-comando>
-        PATH:      <estado-del-path>
-        Modelos:   <estado-de-los-modelos>
-stderr: … Deteniendo daemon… (0 s)
-        … Reemplazando el programa… (1 s)
-        … Integrando en el PATH… (2 s)
-        … Escribiendo el recibo… (3 s)
+stderr: ✓ Programa copiado  1,2 s
+        ✓ PATH integrado  0,1 s
+        ✓ Recibo escrito  0,0 s
+        ✓ ai-voice-interconnector 0.35.0 instalado en 12,0 s
+          PATH: se añadió <directorio>
+          Modelos: ya estaban provisionados
 
 # self update
-stdout: ai-voice-interconnector actualizado: 0.34.0 → 0.35.0 (12 s).
-stderr: … Buscando actualizaciones… (0 s)
-        … Descargando versión 0.35.0… (1 s)
-        … Verificando la versión descargada… (8 s)
-        … Deteniendo daemon… (9 s)
-        … Reemplazando el programa… (10 s)
+stderr: Actualización desde la versión 0.34.0
+        ✓ Versión 0.35.0 descargada  7,1 s
+        ✓ Descarga verificada  0,2 s
+        ✓ Programa reemplazado  1,5 s
+        ✓ Actualizado de 0.34.0 a 0.35.0 en 12,0 s
+
+# self uninstall --dry-run
+stdout: Se borrarán 4 rutas, 5,9 GB en total:
+          modelos: <ruta> (5,9 GB)
+          programa: <ruta> (…)
+          PATH: se quitará la entrada <ruta> del PATH de tu usuario.
+stderr: Simulación: no se ha modificado nada.
 
 # self uninstall
-stdout: Desinstalación completada (12 s).
-stderr: … Deteniendo daemon… (0 s)
-        … Borrando el estado… (1 s)
+stderr: ✓ Estado borrado  0,4 s
+        ✓ Desinstalación completada en 2,0 s
 ```
 
-Cancelar la confirmación imprime `Cancelado.` **por stderr y una sola vez** y sale con 0. Con `--json`, stdout lleva **solo** el envelope y el resumen en texto no sale.
+Cancelar la confirmación imprime `Cancelado; no se ha borrado nada.` (o `Cancelado.` si no es destructiva) **por stderr y una sola vez** y sale con 0. Con `--json`, stdout lleva **solo** el envelope y no salen ni el cierre ni el resumen en texto.

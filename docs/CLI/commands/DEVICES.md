@@ -135,24 +135,25 @@ independencia del orden.
 Sin `--json` (`src/main.rs`):
 
 ```
-Dispositivos de salida de audio:
-  [0] Altavoces (Realtek Audio) (latencia: 11.6ms)
-  [1] Auriculares (USB) (latencia: 10.2ms)
+Salidas de audio:
+  [0] Altavoces (Realtek Audio) · latencia 11,6 ms · predeterminada
+  [1] Auriculares (USB) · latencia 10,2 ms
 Entrada predeterminada: Micrófono (Realtek Audio)
-Salida predeterminada: Altavoces (Realtek Audio)
 ```
 
-Cada línea de dispositivo sigue el patrón `[id] name (latencia: X.Xms)`, con la
-latencia reconvertida de segundos a milisegundos (`* 1000.0`) solo para esta
-vista. Un nombre o una latencia `null` se muestran como `desconocido`:
+Todo va por stdout. Cada línea de dispositivo sigue el patrón
+`[id] nombre · latencia X,Y ms`, con la latencia reconvertida de segundos a
+milisegundos (`* 1000.0`) solo para esta vista y con coma decimal. La salida
+predeterminada se marca al final de su línea con ` · predeterminada`, así que no
+hay una línea aparte para ella. Un nombre `null` se muestra como `desconocido` y una latencia `null` como
+`latencia desconocida`:
 
 ```
-  [2] desconocido (latencia: desconocido)
+  [2] desconocido · latencia desconocida
 ```
 
-Las dos últimas líneas muestran la entrada y la salida predeterminadas: su
-nombre, `desconocido` si el backend no lo expone o `ninguna` si el sistema no
-tiene ese dispositivo.
+La última línea muestra la entrada predeterminada: su nombre, `desconocido` si el
+backend no lo expone o `ninguna` si el sistema no tiene ese dispositivo.
 
 ---
 
@@ -165,7 +166,7 @@ tiene ese dispositivo.
 
 El error se envuelve en `main` (`src/main.rs`): con `--json` emite
 `{"error": <mensaje>, "reason": <reason>, "schema_version": "6"}` a stdout;
-sin `--json`, `Error: <mensaje>` a stderr. El proceso termina con el código
+sin `--json`, `Error: <mensaje>` y, si el `reason` tiene remedio, `Solución: <orden>` a stderr. El proceso termina con el código
 de la tabla.
 
 `devices` no depende del daemon, no requiere modelos provisionados y no

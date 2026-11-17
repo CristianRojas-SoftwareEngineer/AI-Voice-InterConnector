@@ -54,7 +54,7 @@ Es la fuente de verdad funcional del ciclo de vida: la guía de usuario, el cont
 | **Directorio de programa** | Directorio donde vive el bundle instalado. Propiedad exclusiva de la aplicación; nunca contiene datos del usuario. |
 | **Recibo de instalación** | Archivo JSON dentro del directorio de programa que registra qué se instaló, dónde, por qué canal y qué integración de PATH se aplicó. |
 | **Canal** | Vía por la que se instaló la copia: `script`, `homebrew` o `unmanaged` ([§7.2](#72-canales)). |
-| **Estado de la aplicación** | Todo lo que la aplicación crea en el perfil del usuario fuera del directorio de programa: modelos, voces de usuario, habla sintetizada, configuración, `daemon.pid`, logs y temporales. |
+| **Estado de la aplicación** | Todo lo que la aplicación crea en el perfil del usuario fuera del directorio de programa: modelos, voces de usuario, audios sintetizados, configuración, `daemon.pid`, logs y temporales. |
 | **Staging** | Directorio de trabajo, hermano del directorio de programa y con el token de su propietario en el nombre, donde `self update` descarga, verifica y extrae un bundle y desde el que `self install` reemplaza el programa. |
 | **Aparcar** | Renombrar un archivo instalado a un subdirectorio `.old-<token>-<único>` en lugar de borrarlo, para poder revertir o para sortear un archivo en uso. |
 | **Operación de ciclo de vida** | `self install`, `self update`, `self uninstall`, `cleanup` y las tareas equivalentes de `xtask`. |
@@ -217,7 +217,7 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 | Directorio de programa (bundle + recibo) | Exclusiva | `~/.local/opt/ai-voice-interconnector/` | `~/.local/opt/ai-voice-interconnector/` | `%LOCALAPPDATA%\Programs\ai-voice-interconnector\` |
 | Comando en el PATH | Exclusiva (solo el enlace o la entrada) | Enlace `~/.local/bin/ai-voice-interconnector` | Ídem | Entrada en el valor `Path` de `HKCU\Environment` |
 | Bloque en perfiles de shell | Exclusiva (solo el bloque delimitado) | [§8.3.1](#831-integración-de-path) | Ídem | — |
-| Datos de usuario y estado (voces, habla sintetizada, configuración, `daemon.pid`, logs) | Exclusiva | `$XDG_DATA_HOME/ai-voice-interconnector/` | `~/Library/Application Support/ai-voice-interconnector/` | `%LOCALAPPDATA%\ai-voice-interconnector\data\` |
+| Datos de usuario y estado (voces, audios sintetizados, configuración, `daemon.pid`, logs) | Exclusiva | `$XDG_DATA_HOME/ai-voice-interconnector/` | `~/Library/Application Support/ai-voice-interconnector/` | `%LOCALAPPDATA%\ai-voice-interconnector\data\` |
 | Contenedor de caché (solo alberga `models` y `tmp`) | Exclusiva (contenedor) | `$XDG_CACHE_HOME/ai-voice-interconnector/` | `~/Library/Caches/ai-voice-interconnector/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\` |
 | Modelos (hoja `models` del contenedor de caché; regenerable) | Exclusiva | `$XDG_CACHE_HOME/ai-voice-interconnector/models/` | `~/Library/Caches/ai-voice-interconnector/models/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\models\` |
 | Temporales de ejecución (hoja `tmp` del contenedor de caché): un scratch por proceso, `tmp/<token>/` | Exclusiva por token | `$XDG_CACHE_HOME/ai-voice-interconnector/tmp/<token>/` | `~/Library/Caches/ai-voice-interconnector/tmp/<token>/` | `%LOCALAPPDATA%\ai-voice-interconnector\cache\tmp\<token>\` |
@@ -340,14 +340,14 @@ El recibo `install-receipt.json` vive en el directorio de programa y se escribe 
 
 | Tipo de operación | Con terminal | Sin terminal |
 |---|---|---|
-| No destructiva (`self install`, `self update`, `setup`) | Resumen de cambios y confirmación `¿Continuar? [S/n] `; `--yes` la omite | Procede sin preguntar |
-| Destructiva (`self uninstall`, `cleanup`, `setup --force-update`, degradar de versión, `xtask clean`) | Plan con cada ruta una vez, su categoría en español y su tamaño, y confirmación `Esto eliminará lo indicado. ¿Continuar? [s/N] `; `--yes` la omite | Exige `--yes`; sin él termina con `confirmation_required` y no borra nada |
+| No destructiva (`self install`, `self update`, `setup`) | Resumen de cambios y confirmación con la pregunta concreta (`¿Instalar el programa? [S/n] `, `¿Actualizar a la versión X? [S/n] `, `¿Descargar los modelos? [S/n] `); `--yes` la omite | Procede sin preguntar |
+| Destructiva (`self uninstall`, `cleanup`, `setup --force-update`, degradar de versión, `speech remove`, `voice remove`, `xtask clean`) | Plan con cada ruta una vez, su categoría en español y su tamaño, y confirmación con la pregunta concreta (`¿Borrar lo indicado? [s/N] `, `¿Borrar la voz mi_voz? [s/N] `); `--yes` la omite | Exige `--yes`; sin él termina con `confirmation_required` y no borra nada. La línea `Solución:` muestra la orden real repetida con `--yes` |
 
-Los dos prompts terminan con un espacio, para que la respuesta no quede pegada.
+Los dos prompts terminan con un espacio, para que la respuesta no quede pegada. Cancelar escribe `Cancelado.` (no destructiva) o `Cancelado; no se ha borrado nada.` (destructiva) y sale con 0.
 
-**Simulación.** Toda operación destructiva acepta `--dry-run`: imprime el mismo plan que mostraría la ejecución (rutas, categorías, tamaños, cambios de PATH) y después, una sola vez, `Simulación: no se ha modificado nada.`, sin modificar el disco.
+**Simulación.** Toda operación destructiva acepta `--dry-run`: escribe por stdout el mismo plan que mostraría la ejecución (rutas, categorías, tamaños, cambios de PATH) y después, una sola vez, `Simulación: no se ha modificado nada.` por stderr, sin modificar el disco.
 
-**Salida.** El progreso y los avisos van a stderr en español; el resultado, a stdout. Con `--json`, stdout contiene únicamente el envelope estándar del contrato de la CLI, con `status`, `reason` y los campos de cada operación.
+**Salida.** El contexto, las etapas, el cierre, los avisos y los errores van a stderr en español; los resultados (incluido el plan de una simulación), a stdout. Con `--json`, stdout contiene únicamente el envelope estándar del contrato de la CLI, con `status`, `reason` y los campos de cada operación.
 
 **Resultados.** Los `reason` son contrato de máquina y se mantienen en inglés. Los códigos de salida numéricos se asignan en el contrato de la CLI respetando las familias existentes (0 éxito, 2 error de uso).
 
@@ -467,7 +467,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
      Comando:   ~/.local/bin/ai-voice-interconnector
      PATH:      se añadirá ~/.local/bin en ~/.bashrc y ~/.profile
      Modelos:   se descargarán unos 5,9 GB en ~/.cache/ai-voice-interconnector/models
-   ¿Continuar? [S/n]
+   ¿Instalar el programa? [S/n]
    ```
 
    El prompt termina con un espacio después de `[S/n]`, aunque el bloque de Markdown no lo muestre.
@@ -491,8 +491,8 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
 7. **macOS**: eliminar `com.apple.quarantine` de forma recursiva en todo el directorio de programa, no solo en el ejecutable, porque el motor y la librería de ONNX Runtime también se ejecutan o cargan. Si el archivo se descargó por navegador y se extrajo con el Finder, todos los archivos heredan la cuarentena.
 8. **Integración de PATH** ([§8.3.1](#831-integración-de-path)).
 9. **Escribir el recibo** (de forma atómica).
-10. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y el consejo depende de la causa anidada en `models_cause`: con `network_error` basta reintentar con `setup`; con `model_unavailable` reintentar no lo resuelve y hace falta una versión que vuelva a fijar el modelo. El bloqueo se retiene hasta aquí y se libera al terminar la provisión. La vista abre otro bloque con una línea en blanco, anuncia `Descargando N modelo(s):`, muestra una barra por modelo pendiente con su total real, velocidad y tiempos rotulados (solo con terminal), deja una línea permanente `✓ [i/N]` con tamaño, duración y velocidad al terminar cada modelo, y cierra con `Modelos descargados: <tamaño> en <duración>.`. Las líneas permanentes salen también sin terminal.
-11. **Resumen final**: precedido de una línea en blanco; versión, rutas (`Comando:` incluye `.exe` en Windows), estado del PATH (`se añadió <dir>; las terminales que ya estaban abiertas no lo verán hasta reiniciarse.` cuando esta pasada lo reescribió) y estado de los modelos (`se descargaron N modelo(s), <tamaño> en <duración>` cuando se descargó algo).
+10. **Provisionar como `setup`** en el mismo proceso (misma función de provisión: descarga según el estado real del almacén), salvo `--no-setup` ([§8.7](#87-setup-en-el-ciclo-de-vida)). Si falla → `setup_failed`: el programa queda instalado y el consejo depende de la causa anidada en `models_cause`: con `network_error` basta reintentar con `setup`; con `model_unavailable` reintentar no lo resuelve y hace falta una versión que vuelva a fijar el modelo. El bloqueo se retiene hasta aquí y se libera al terminar la provisión. La vista abre su bloque sin línea en blanco previa, anuncia `Descargando N modelos:`, muestra una barra por modelo pendiente con porcentaje, su total real, velocidad y tiempo restante (solo con terminal), y deja una línea permanente `✓ [i/N]` con tamaño, duración y velocidad al terminar cada modelo. La vista no escribe el total: el cierre del comando lo da. Las líneas permanentes salen también sin terminal.
+11. **Cierre**: por stderr, `✓ ai-voice-interconnector <versión> instalado en <total>` (o `reparado en`), y debajo, atenuados, solo los detalles `PATH: …` (qué se hizo con el PATH; si esta pasada lo reescribió, un `Aviso:` aparte dice que las terminales que ya estaban abiertas no lo verán hasta reiniciarse) y `Modelos: …` (`se descargaron N modelos, <tamaño> en <duración>` cuando se descargó algo).
 
 #### 8.3.1 Integración de PATH
 
@@ -513,7 +513,7 @@ Ejemplos: `curl -fsSL <url> | sh -s -- --no-setup` y `$env:AVI_NO_SETUP = "1"; i
   # <<< ai-voice-interconnector <<<
   ```
 
-- El proceso que ejecutó `curl | sh` no puede cambiar el PATH de su shell padre. El resumen final indica la línea exacta para la sesión actual o pide abrir una terminal nueva.
+- El proceso que ejecutó `curl | sh` no puede cambiar el PATH de su shell padre. El cierre y su aviso indican la línea exacta para la sesión actual o pide abrir una terminal nueva.
 
 **Windows**
 
@@ -789,7 +789,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 | `docs/MANUAL-VALIDATION.md` | Procedimiento operativo de la validación end-to-end manual: la matriz de la CLI que CI no puede ejercitar, con la caché de modelos y la integración de `PATH` vigentes |
 | `docs/RELEASING.md` | El corte de release: bump de las cinco versiones, promoción de `[No publicado]` por `cargo xtask release` y aborted list del gate de publicación |
 | `docs/CLI/commands/DAEMON.md` | Documento del grupo `daemon`: ciclo de vida del servidor nativo que mantiene los modelos residentes en memoria y sus subcomandos |
-| `docs/CLI/commands/SPEECH.md` | Documento de `speech`: síntesis, transcripción y doblaje voz→voz, y el CRUD de las locuciones persistidas |
+| `docs/CLI/commands/SPEECH.md` | Documento de `speech`: síntesis, transcripción y doblaje voz→voz, y el CRUD de los audios sintetizados persistidos |
 | `docs/CLI/commands/VOICE.md` | Documento de `voice`: registro de voces (fábrica y clonadas), con `clone` delegable al daemon y `list`/`remove` siempre locales |
 | `docs/CLI/commands/TRANSLATE.md` | Documento de `translate`: traducción de texto es↔en, delegable al daemon o ejecutada con el motor local |
 | `docs/CLI/commands/DEVICES.md` | Documento de `devices`: enumeración de los dispositivos de salida de audio y de la entrada y la salida predeterminadas, sin subcomandos, sin estado y sin daemon |
@@ -828,7 +828,7 @@ Las interrupciones se simulan con un punto de inyección de fallos que solo exis
 **Desinstalación y limpieza**
 
 17. `self uninstall --yes` elimina el programa, la integración de PATH y el estado, sin residuo dentro de las raíces de propiedad exclusiva. En Windows puede terminar con `removal_scheduled`, y el directorio desaparece cuando el proceso termina. Si el borrado no puede programarse, el comando termina con `program_dir_kept` y nunca con éxito.
-18. `self uninstall --keep-data` conserva modelos, voces y habla sintetizada.
+18. `self uninstall --keep-data` conserva modelos, voces y audios sintetizados.
 19. Sin terminal y sin `--yes`, toda operación destructiva termina con `confirmation_required` y no borra nada.
 20. `--dry-run` en cualquier operación destructiva lista rutas y tamaños sin modificar el disco.
 21. Repetir `self uninstall` en un sistema ya limpio termina con éxito (`not_installed`).

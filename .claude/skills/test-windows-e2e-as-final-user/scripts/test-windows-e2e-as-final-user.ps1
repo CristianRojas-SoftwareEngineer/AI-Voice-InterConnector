@@ -56,7 +56,7 @@ $script:Phases = @(
     [pscustomobject]@{Id='06-daemon';Title='Daemon'}
     [pscustomobject]@{Id='07-voices';Title='Voces'}
     [pscustomobject]@{Id='08-synthesis';Title='Síntesis y WER'}
-    [pscustomobject]@{Id='09-store';Title='Store de locuciones y voces'}
+    [pscustomobject]@{Id='09-store';Title='Store de audios sintetizados y voces'}
     [pscustomobject]@{Id='10-stt';Title='Transcripción'}
     [pscustomobject]@{Id='11-translate';Title='Traducción'}
     [pscustomobject]@{Id='12-dub';Title='Doblaje'}
@@ -984,7 +984,7 @@ function Run-E2E {
         $filtered=Invoke-Cli @('speech','list','--voice','mi_voz') 'speech-list-filter' -Json;Assert-True (@($filtered.Payload.speech|ForEach-Object label) -contains 'e2e_auto_clone') 'Filtro por voz no devuelve su etiqueta de síntesis.'
         if($script:OutputAvailable){$play=Invoke-Cli @('speech','play','--label','e2e_auto_default','--voice','default') 'speech-play' -Json;Assert-True ($play.Payload.status -eq 'played') 'Speech play no reportó played.'}else{Set-SubcaseResult '09-store-play' 'SKIP' -Reason 'devices --json informó default_output nulo; play no se invocó.';Set-Step '09-store-play' 'SKIP' 'No hay salida predeterminada (default_output nulo).'}
         $removeSpeech=Invoke-Cli @('speech','remove','--label','e2e_direct_en','--voice','default') 'speech-remove' -Json
-        Assert-True ($removeSpeech.Payload.status -eq 'removed' -and $removeSpeech.Payload.label -eq 'e2e_direct_en') 'Speech remove no confirmó la locución esperada.'
+        Assert-True ($removeSpeech.Payload.status -eq 'removed' -and $removeSpeech.Payload.label -eq 'e2e_direct_en') 'Speech remove no confirmó el audio sintetizado esperado.'
         $speechAfterRemove=Invoke-Cli @('speech','list') 'speech-list-after-remove' -Json;Assert-True (@($speechAfterRemove.Payload.speech|ForEach-Object label) -notcontains 'e2e_direct_en') 'La etiqueta removida continúa en speech store.'
         $null=Invoke-Cli @('speech','synthesize','--text','Test voice','--voice','mi_voz_denoise','--label','e2e_voice_remove','--no-daemon') 'synth-disposable' -Json
         $removeVoice=Invoke-Cli @('voice','remove','--name','mi_voz_denoise','--yes') 'voice-remove-disposable' -Json

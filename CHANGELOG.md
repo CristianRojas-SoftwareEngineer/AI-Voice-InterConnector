@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.45.2 — 2026-11-16](#0452--2026-11-16)
 - [0.45.1 — 2026-11-15](#0451--2026-11-15)
 - [0.45.0 — 2026-11-15](#0450--2026-11-15)
@@ -138,6 +139,51 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador se congelaba mientras sonaba el audio o se grababa con el micrófono, los errores mezclaban texto de bibliotecas en inglés y casi nunca decían qué hacer, y cada comando presentaba su salida a su manera. Ahora todos los comandos comparten un único núcleo de presentación: abren con una línea de contexto, muestran cada etapa con su duración, cierran con un resumen común y, ante un error, dicen qué pasó y qué hacer con la orden concreta. El usuario sabe en todo momento qué ocurre y qué debe hacer, sin funcionalidades nuevas y sin cambiar las claves ni los códigos de los contratos de máquina.
+
+### Añadido
+
+- **Línea `Solución:` en los errores:** todo error en texto sale como `Error: …` seguido, cuando hay remedio, de `Solución: …` con la orden concreta, a partir de una tabla única por `reason`. El texto técnico de las bibliotecas pasa al campo de detalle, que sale en `--json` tras ` Detalle:` y en las trazas.
+- **Grabación con medidor:** con terminal, la grabación muestra `● Grabando m:ss / m:ss`, un medidor de nivel y `Enter para detener`; avisa al alcanzar el límite y avisa si no se detectó voz (el tramo más fuerte no supera −43 dBFS) sin cortar el comando.
+- **Eventos `transcript` y `translation` en `/dub`:** el daemon envía la transcripción y la traducción en cuanto existen, y `speech dub` las muestra antes de que suene el audio. Son eventos nuevos sin cambio de `DAEMON_SCHEMA_VERSION`.
+- **`speech remove --yes` y su confirmación:** `speech remove` pregunta `[s/N]` con terminal y sale con `confirmation_required` (2) sin terminal y sin `--yes`. `voice remove` pregunta siempre, tenga o no audios sintetizados.
+- **Nuevos `reason`:** `speech_metadata_corrupt` (1), `output_exists` (2) y `empty_transcript` (2, el doblaje no reconoció voz en el audio).
+- **Color y `NO_COLOR`:** verde, rojo, amarillo y atenuado solo en una terminal; `NO_COLOR` lo desactiva.
+
+### Cambiado
+
+- **Etapas, contexto y cierre comunes:** cada etapa permanente deja `✓ <texto>  <duración>`, la etapa en curso se repinta debajo y el comando cierra con `✓ <acción> en <duración>`. `AVI_NO_PROGRESS` silencia solo las etapas.
+- **Duraciones y plurales:** una sola forma (`0,7 s`, `2 min 35 s`, `1 h 02 min`) y plurales concordados, sin `(s)`.
+- **Vocabulario:** «audio sintetizado» sustituye a «locución» y «habla sintética» en todo el texto humano, incluidos los motivos de `preserved[]`.
+- **Flujos:** stdout lleva solo resultados (textos, listas, rutas, planes de `--dry-run`); contexto, etapas, cierres, preguntas, avisos y errores van por stderr.
+- **Formatos nuevos** de `devices`, `speech list`, `voice list`, `daemon status` (`Daemon: en marcha (pid N, puerto P, motor listo).`), `doctor` (etiquetas en español e indicación por comprobación), planes de `cleanup` y `self uninstall`, y cierre de `self install`.
+- **`speech denoise`:** usa los errores y el formato comunes, en español y con decimales con coma; escribe la ruta de cada archivo generado por stdout y conserva sus códigos de salida y su JSONL.
+- **Barras de `setup`:** con porcentaje, repintado continuo y tiempo restante estable; desaparece la línea «Total:».
+- **Dependencias:** se retiran `indicatif` 0.17, `console` 0.15 y `number_prefix`.
+
+### Corregido
+
+- **`self update` sin terminal:** sin `--yes`, la confirmación sale como `confirmation_required` con código 2 en lugar de `lifecycle_failed`.
+- **Contador congelado:** el contador de `Reproduciendo…` y el de la grabación avanzan hasta el final, en local y por el daemon.
+- **Tiempo restante de `setup`:** deja de mostrar valores absurdos.
+
+### Notas de release
+
+Cambios incompatibles del texto humano y de los flujos; las claves, las opciones y las versiones de esquema no cambian.
+
+- Los cierres pasan de stdout a stderr.
+- Los planes de `--dry-run` pasan a stdout.
+- `speech remove` y `voice remove` piden confirmación: los scripts sin terminal necesitan `--yes`.
+- El `error` del JSON termina siempre en punto y puede llevar ` Detalle: …`.
+- Un metadato corrupto ya no es `io_error`, sino `speech_metadata_corrupt`.
+- Un archivo sin audio en la limpieza de ruido es `invalid_audio`, que en el daemon responde 400 en lugar de 500; un modelo ausente en `speech denoise` sale con código 4.
+- `speech denoise` escribe en texto el formato común y la ruta de cada archivo generado por stdout.
+- `speech dub` escribe `Transcripción:` y `Traducción:` en cuanto existen, y ya no imprime una línea final por stdout.
+- `daemon status`, `devices`, `speech list`, `voice list` y `doctor` cambian su texto.
+- Una transcripción vacía en `speech dub` (directo y daemon) pasa de `empty_text` a `empty_transcript`, con el mismo código 2.
 
 ## [0.45.2] — 2026-11-16
 

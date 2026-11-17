@@ -1,6 +1,6 @@
 # `cleanup`
 
-Borrado del estado por categorías, sin tocar el programa. Es la operación que hace posible quedarse con el programa y perder los datos (o al revés): borra modelos, voces, habla sintética, configuración, logs y estado del daemon, y **nunca** el directorio de programa ni su integración de `PATH` — eso es `self uninstall`.
+Borrado del estado por categorías, sin tocar el programa. Es la operación que hace posible quedarse con el programa y perder los datos (o al revés): borra modelos, voces, audios sintetizados, configuración, logs y estado del daemon, y **nunca** el directorio de programa ni su integración de `PATH` — eso es `self uninstall`.
 
 **Implementación:** el motor es el módulo `cleanup` de `avi-lifecycle` (`crates/avi-lifecycle/src/cleanup.rs`), que resuelve la lista de destinos, la confirmación, la parada del daemon y el barrido. En `src/main.rs` solo queda `handle_cleanup`, que convierte tipos y compone el envelope `--json`. `uninstall` **no** es su reverso ni su supera: `self uninstall` reutiliza el mismo planificador para el estado y añade el directorio de programa, y es el único que borra el programa.
 
@@ -45,19 +45,19 @@ Borrado del estado por categorías, sin tocar el programa. Es la operación que 
 
 1. **Gate de categoría**: sin categoría → `usage_error` (2), sin borrar nada.
 2. **Privilegios**: ninguna operación pide elevación. En Unix, si se detecta ejecución vía `sudo` (uid 0 con `SUDO_USER`), se aborta con `sudo_not_supported` (1); root sin `sudo` (contenedores) sí se permite. En Windows, si el proceso está elevado, se avisa por stderr.
-3. **`--dry-run`**: imprime el plan, incluido el barrido que *se haría*, después una sola vez `Simulación: no se ha modificado nada.`, y termina con exit 0 **sin tomar el bloqueo, sin barrer y sin borrar**. El barrido no se ejecuta en la simulación porque lo que no puede coexistir con una simulación es modificar el disco; lo que sí hace es **anunciarlo con la misma decisión** del barrido real, de modo que lo que dice el `--dry-run` es lo que ocurriría.
+3. **`--dry-run`**: escribe el plan por **stdout**, incluido el barrido que *se haría*, después una sola vez `Simulación: no se ha modificado nada.` por stderr, y termina con exit 0 **sin abrir ninguna etapa de borrado, sin tomar el bloqueo, sin barrer y sin borrar**. Si no hay nada que borrar, escribe solo `✓ No había nada que limpiar.`. El barrido no se ejecuta en la simulación porque lo que no puede coexistir con una simulación es modificar el disco; lo que sí hace es **anunciarlo con la misma decisión** del barrido real, de modo que lo que dice el `--dry-run` es lo que ocurriría.
 4. **Bloqueo y recuperación**: bloqueo exclusivo de SO (el mismo, sobre el directorio de programa registrado, que toman `self update` y `self uninstall`; excluye a los comandos de uso, que lo toman compartido) y barrido transversal por identidad exacta: cada residuo (scratch, temporales con token, stagings de instalación, aparcados `.old-<token>-<nanos>` y registros `*.removal-failed.log` cuyo destino ya no existe) lleva el token `<pid>-<inicio>` de su dueño, y se barre si el dueño está muerto (inexistente o con otro inicio, como un PID reutilizado), se conserva sin más si vive y se conserva e informa si no se puede observar. Un registro `*.removal-failed.log` cuyo destino sigue existiendo se informa como borrado diferido sin completar. El barrido va **antes** del plan, para que el plan que el usuario ve sea el que queda después y no una lista que el barrido va a invalidar.
-5. **Plan** y **confirmación destructiva** `[s/N]`. El plan sale de la misma composición que el de la simulación (`cleanup::plan_lines`): `Se borrarán N ruta(s), X,Y GB en total:` y una línea por destino, cada uno una sola vez, con su categoría en español y su tamaño (`  modelos: <ruta> (5,9 GB)`; las categorías son `modelos`, `voces`, `locuciones`, `configuración`, `registros`, `estado del daemon` y `temporales`), seguido de lo que no se tocará.
+5. **Plan** y **confirmación destructiva** `[s/N]`. Si no hay nada que borrar, no se pide confirmación: escribe `✓ No había nada que limpiar.` y termina. El plan sale de la misma composición que el de la simulación (`cleanup::plan_lines`): `Se borrarán N rutas, X,Y GB en total:` (los plurales concuerdan: `1 ruta`, `2 rutas`) y una línea por destino, cada uno una sola vez, con su categoría en español y su tamaño (`  modelos: <ruta> (5,9 GB)`; las categorías son `modelos`, `voces`, `audios sintetizados`, `configuración`, `registros`, `estado del daemon` y `temporales`), seguido de lo que no se tocará. La pregunta es `¿Borrar lo indicado? [s/N]`.
 6. **Parar el daemon** antes de borrar nada que use. Si no se detiene → `daemon_stop_failed` (**16**) y **nada del plan se borra**.
 7. **Borrado** de cada destino del plan, en el orden del plan, y después la **poda de contenedores**: el ejecutor del árbol de propiedad recorre de abajo arriba los contenedores ancestros de lo borrado y aplica `remove_dir` (nunca recursivo) a los que quedaron vacíos. Un contenedor con cualquier entrada ajena se conserva y se informa en `preserved` (una vez), y la poda de esa rama se detiene ahí. Una raíz de modelos compartida (`External`) nunca se poda. Los contenedores podados entran en `planned` y `removed` tras los destinos. `cleanup --all` no borra el contenedor raíz de la aplicación en Windows (`%LOCALAPPDATA%\ai-voice-interconnector`), porque la raíz de datos sigue en pie con los datos de fábrica; el contenedor de caché sí se poda si queda vacío. El directorio de programa solo entra en `preserved` si existe.
 
 **`NotFound` es éxito.** El plan dice lo que tiene que dejar de existir, y si ya no existe el objetivo está cumplido. No es un caso teórico: la parada del daemon borra el pidfile cuando no había daemon vivo, y el pidfile es un destino de `--all`.
 
-**Lo que no se pudo borrar no es un fallo de la operación**: cada destino que falla se avisa por stderr (`no se pudo borrar <ruta>: <motivo>`) y el borrado sigue con el resto del plan, sin tumbar la operación. Ese destino no entra en `removed` pero sí sigue en `planned`, así que con `--json` se detecta comparando las dos listas; el envelope no tiene una clave propia para él.
+**Lo que no se pudo borrar no es un fallo de la operación**: cada destino que falla se avisa por stderr (`Aviso: No se pudo borrar <ruta>: <motivo>.`; es la única ruta que se vuelve a escribir tras el plan) y el borrado sigue con el resto del plan, sin tumbar la operación. Ese destino no entra en `removed` pero sí sigue en `planned`, así que con `--json` se detecta comparando las dos listas; el envelope no tiene una clave propia para él.
 
-**El progreso empieza tras la confirmación.** La fase `cleaning` se pinta cuando la operación empieza de verdad, no antes: la confirmación ocurre dentro del motor y, hasta que el usuario la acepta, no hay nada que progreso. La línea se cede antes de cada aviso de ruta, de modo que ningún aviso queda pegado a la fase. El resultado —«Limpieza completada: N ruta(s), M barrido(s) (N s).»— lo dice el handler, por stdout, y es la única vez que se dice el estado. La duración es la del barrido, la del mismo reloj que mostró la fase.
+**El progreso empieza tras la confirmación.** La fase `cleaning` se pinta cuando la operación empieza de verdad, no antes: la confirmación ocurre dentro del motor y, hasta que el usuario la acepta, no hay nada que progresar. La línea se cede antes de cada aviso de ruta, de modo que ningún aviso queda pegado a la etapa. El cierre —`✓ Limpieza completada en <total> · N rutas borradas`— lo escribe el motor por stderr, y es la única vez que se dice el estado; cuenta los destinos del plan que se borraron, la misma cifra que muestra el plan. La duración es la del borrado, del mismo reloj que mostró la etapa. En `--json` no se escribe el cierre.
 
-**Silenciar el progreso.** `AVI_NO_PROGRESS=1` silencia toda la salida de progreso por stderr —la fase y los avisos de ruta—, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.
+**Silenciar el progreso.** `AVI_NO_PROGRESS=1` silencia solo las etapas por stderr, y nada más: los avisos de ruta, el cierre, el plan, el envelope `--json` y los códigos de salida no cambian.
 
 ---
 
@@ -69,7 +69,7 @@ La tabla vive en las [reglas transversales](../../specs/LIFECYCLE.md#81-reglas-t
 
 | | Con terminal (TTY) | Sin terminal |
 |---|---|---|
-| `cleanup` | Plan con categorías y tamaños, luego `Esto eliminará lo indicado. ¿Continuar? [s/N] ` (con espacio final) | **Exige `--yes`**: sin él termina con `confirmation_required` (2) y **no borra nada** |
+| `cleanup` | Plan con categorías y tamaños, luego `¿Borrar lo indicado? [s/N] ` (con espacio final); si se rechaza, `Cancelado; no se ha borrado nada.` | **Exige `--yes`**: sin él termina con `confirmation_required` (2) y **no borra nada** |
 
 La aceptación es `s`/`si`/`sí`/`y`/`yes`/`dale`/`ok` (sin distinguir mayúsculas). **Cualquier otra respuesta es un no**, incluido el salto de línea, y también en el prompt no destructivo: una errata nunca debe autorizar un borrado. Responder «no» **no es un error**: es `status` `cancelled` con salida 0, porque las reglas transversales no cuentan la cancelación entre los `reason`.
 
@@ -107,13 +107,13 @@ Sobre `schema_version`, ver [las dos versiones de esquema](../CONTRACT.md#las-do
 
 | Necesidad | Comando |
 |---|---|
-| Borrar una locución | `speech remove --label` |
-| Borrar muchas locuciones | `cleanup --synthetic-speech` |
+| Borrar un audio sintetizado | `speech remove --label` |
+| Borrar muchos audios sintetizados | `cleanup --synthetic-speech` |
 | Borrar una voz clonada | `voice remove --name X` |
 | Borrar las voces del usuario | `cleanup --voices` |
 | Liberar el espacio de los modelos y volver a descargarlos con `setup` | `cleanup --model` |
 | Desinstalar el programa y su `PATH` | `self uninstall` |
-| Desinstalar conservando modelos, voces y habla | `self uninstall --keep-data` |
+| Desinstalar conservando modelos, voces y audios sintetizados | `self uninstall --keep-data` |
 
 **`--voices` nunca borra las voces de fábrica** (`default`, `ryan`, `vivian`): van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar. `voice remove` las protege con exit 2 por la misma razón. Y **`self uninstall` sí las borra**, porque al desinstalar desaparece el programa: es la diferencia de alcance entre `cleanup --all` y `self uninstall` sin `--keep-data`, y el motivo está en [`SELF.md`](SELF.md).
 
@@ -131,7 +131,7 @@ Sobre `schema_version`, ver [las dos versiones de esquema](../CONTRACT.md#las-do
 | Otra operación de ciclo de vida tiene el bloqueo | 17 | `lifecycle_locked` |
 | Unix: ejecución lanzada con `sudo` | 1 | `sudo_not_supported` |
 | Cancelación del usuario | 0 | — (`status` `cancelled`, no es un error) |
-| Destino que no se pudo borrar | 0 | — (aviso por stderr; está en `planned` y no en `removed`, no tumba la operación) |
+| Destino que no se pudo borrar | 0 | — (`Aviso:` por stderr; está en `planned` y no en `removed`, no tumba la operación) |
 
 ---
 
@@ -148,18 +148,23 @@ ai-voice-interconnector --json cleanup --model --dry-run
 
 ## Muestras de salida
 
-En la ejecución real, el **resultado** va por stdout y lo dice una sola vez. En `--dry-run`, el plan y el aviso de simulación van por stderr. El progreso —la fase— va por stderr, con la forma `… <mensaje> (<tiempo>)`, y **empieza tras la confirmación**.
+En la ejecución real, el plan y la pregunta van por stderr, la etapa de borrado (`Borrando los datos…`) **empieza tras la confirmación** y el cierre va por stderr. En `--dry-run`, el plan va por **stdout** y el aviso de simulación por stderr; no hay etapa de borrado.
 
 ```text
 # cleanup --voices --yes
-stdout: Limpieza completada: 3 ruta(s), 1 barrido(s) (2 s).
-stderr: … Limpiando datos… (0 s)
-        no se pudo borrar <ruta>: <motivo>
+stderr: Se borrarán 3 rutas, 12,0 KB en total:
+          voces: <ruta> (…)
+        ✓ Datos borrados  0,3 s
+        ✓ Limpieza completada en 0,4 s · 3 rutas borradas
 
 # cleanup --all --dry-run
-stderr: Se borrarán 6 ruta(s), 5,9 GB en total:
-        … (el plan, una línea por destino)
-        no se tocará …/Programs/ai-voice-interconnector: el programa y la integración de PATH son de `self uninstall`
+stdout: Se borrarán 6 rutas, 5,9 GB en total:
+          … (una línea por destino)
+          no se tocará …/Programs/ai-voice-interconnector: el programa y la integración de PATH son de `self uninstall`
+stderr: Simulación: no se ha modificado nada.
+
+# cleanup --model, sin nada que borrar
+stderr: ✓ No había nada que limpiar.
 ```
 
-Cancelar la confirmación imprime `Cancelado.` **por stderr y una sola vez** y sale con 0. Con `--json`, stdout lleva **solo** el envelope —`{"status", "reason", "removed", "planned", "preserved", "unreadable"}`— y el resultado en texto no sale.
+Cancelar la confirmación imprime `Cancelado; no se ha borrado nada.` **por stderr y una sola vez** y sale con 0. Con `--json`, stdout lleva **solo** el envelope —`{"status", "reason", "removed", "planned", "preserved", "unreadable"}`— y no sale el cierre.

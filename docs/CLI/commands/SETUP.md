@@ -26,7 +26,7 @@ No existen `--with-stt` (`parakeet-tdt-v3` se provisiona siempre) ni `--with-voi
 
 1. **Inicializar el registro de voces** (`VoiceStore::ensure_initialized`), que crea el directorio del registro con un directorio por voz de fábrica (`default`, `ryan`, `vivian`) y escribe el `reference.qvoice` embebido solo en `default` si aún no existe; `ryan` y `vivian` quedan sin archivo, porque son presets del motor (ver [el modelo de voces](../../DESIGN.md#modelo-de-voces)).
 2. **Calcular lo pendiente** para el resumen previo: repos sin snapshot. Ese cálculo solo alimenta el resumen y la confirmación; no decide qué se ejecuta. Con `--force-update`, la selección completa es lo que se purga y se vuelve a descargar.
-3. **Una sola confirmación.** Con `--force-update` es destructiva: su resumen incluye «Se purgarán los modelos descargados y se volverán a descargar.» y la línea de tamaño de la selección completa. Sin él es no destructiva: solo muestra el tamaño y se omite si no hay nada que descargar o con `--yes`; sin terminal procede. La confirmación destructiva sin terminal y sin `--yes` es un error, igual que en `cleanup`. Desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (ver [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)). Si el usuario cancela, no se purga ni se descarga nada: en texto solo aparece «Cancelado.» y con `--json` el envelope es `{ "status": "cancelled", "models_provisioned": [] }` con exit 0.
+3. **Una sola confirmación.** Con `--force-update` es destructiva: su resumen incluye «Se purgarán los modelos descargados y se volverán a descargar.» y la línea de tamaño de la selección completa. Sin él es no destructiva: solo muestra el tamaño y se omite si no hay nada que descargar o con `--yes`; sin terminal procede. La confirmación destructiva sin terminal y sin `--yes` es un error, igual que en `cleanup`. Desde `self install` **no vuelve a preguntar**, porque esa operación ya mostró su propio resumen (ver [`setup` en el ciclo de vida](../../specs/LIFECYCLE.md#87-setup-en-el-ciclo-de-vida)). Si el usuario cancela, no se purga ni se descarga nada: en texto solo aparece «Cancelado.» (o «Cancelado; no se ha borrado nada.» con `--force-update`) y con `--json` el envelope es `{ "status": "cancelled", "models_provisioned": [] }` con exit 0.
 4. **Purga** (solo con `--force-update`) de **la misma selección** que se va a provisionar: todos los modelos, el de clonado incluido. La purga **pasa por el plan de borrado de modelos** —las mismas reglas de propiedad, R3 entre ellas— y no por purgas ad hoc.
 5. **Descargar** lo pendiente, repo a repo, en la revisión fijada, con la vista de progreso por stderr (ver abajo), y **podar** después las revisiones propias obsoletas.
 6. **Envelope `--json`** o mensaje humano.
@@ -55,20 +55,26 @@ Todos los modelos se provisionan siempre: no hay selección opcional.
 **Tamaño.** El tamaño de cada descarga es el `approx_bytes` de su `ModelPin` en [`MODEL_REVISIONS`](../../../crates/avi-shared/src/paths.rs). La confirmación previa anuncia la suma de los repos pendientes, en escala decimal y con un decimal separado por coma:
 
 ```
-Se descargarán N modelo(s), unos X,Y GB.
+Se descargarán 6 modelos, unos X,Y GB.
 ```
 
-**Progreso.** Solo si hay algo pendiente, la provisión abre un bloque propio por stderr, precedido de una línea en blanco: un encabezado, una barra por modelo numerada sobre los pendientes —con su tamaño real, velocidad, tiempo transcurrido y restante—, que al terminar se sustituye por una línea permanente, y un cierre con el total. Sin terminal no se dibujan las barras, pero el resto sale igual:
+La pregunta de confirmación es `¿Descargar los modelos?` (o `¿Borrar los modelos descargados y descargarlos de nuevo?` con `--force-update`).
+
+**Progreso.** Solo si hay algo pendiente, la provisión abre un bloque propio por stderr, sin línea en blanco previa: un encabezado y una barra por modelo numerada sobre los pendientes, con el porcentaje, el tamaño real, la velocidad media del modelo y el tiempo restante. La barra se repinta cada 250 ms aunque no lleguen bytes, y el tiempo restante sale de la velocidad media global de la provisión (`quedan —` durante los primeros 2 s de cada modelo). Al terminar cada modelo, la barra se sustituye por una línea permanente. El cierre con el total no lo escribe la provisión sino el comando (`setup` o `self install`). Sin terminal no se dibujan las barras, pero el resto sale igual:
 
 ```
-Descargando 6 modelo(s):
-  ✓ [1/6] qwen3-tts-0.6b  2,5 GB en 44 s (56,7 MB/s)
+Descargando 6 modelos:
+  qwen3-tts-0.6b  ████████░░░░   67 %  1,7 GB / 2,5 GB  56,7 MB/s  quedan 14,0 s
+  ✓ [1/6] qwen3-tts-0.6b  2,5 GB en 44,0 s · 56,7 MB/s
   …
-Modelos descargados: 5,9 GB en 2 min 10 s.
+✓ Setup completado en 2 min 10 s · 6 modelos, 5,9 GB descargados
 ```
+
+Con los modelos ya descargados, `setup` cierra con `✓ Los 6 modelos ya estaban descargados.` y no hay bloque de descarga. Ya no existe una línea «Total:» propia de la provisión.
 
 Sin terminal, cada descarga activa emite una línea visible cada 15 segundos
-con los bytes completados, el total y el tiempo transcurrido; no hay barras ni
+con los bytes completados, el total y el tiempo transcurrido
+(`  … [i/n] <modelo>  <hecho> de <total> · <duración>`); no hay barras ni
 se usa el tamaño de la caché como señal de avance. El watchdog interno de
 `cargo xtask bootstrap` recibe un latido separado cuando se observa avance de
 bytes, como máximo una vez cada cinco segundos por modelo; las muestras repetidas

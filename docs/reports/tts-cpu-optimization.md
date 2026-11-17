@@ -378,7 +378,7 @@ Con `chunk_frames` 4 el audio del motor nuevo es idéntico byte a byte al del mo
 
 ### 4.9. Memoria privada del residente
 
-**Problema.** El residente retenía ~3,35 GiB de memoria privada mientras vivía el daemon. En un equipo de 8 GiB con otras aplicaciones, Windows mandaría esa memoria al archivo de paginación y la locución siguiente tardaría mucho más que el segundo que promete el streaming.
+**Problema.** El residente retenía ~3,35 GiB de memoria privada mientras vivía el daemon. En un equipo de 8 GiB con otras aplicaciones, Windows mandaría esa memoria al archivo de paginación y el audio sintetizado siguiente tardaría mucho más que el segundo que promete el streaming.
 
 **Inventario** (Ryzen 7 5825U, 16 hilos lógicos, 32 GiB; residente de producción con la frase larga):
 

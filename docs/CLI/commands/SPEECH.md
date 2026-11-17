@@ -1,6 +1,6 @@
 # `speech`
 
-Síntesis, transcripción, doblaje voz→voz y limpieza local de archivos de audio y vídeo, más el CRUD de las locuciones persistidas. Es el comando más grande de la CLI: reúne varios subcomandos y los motores de voz (`avi-tts`, `avi-stt`, `avi-translation`, `denoise`); sus subcomandos de síntesis, transcripción y doblaje admiten el
+Síntesis, transcripción, doblaje voz→voz y limpieza local de archivos de audio y vídeo, más el CRUD de los audios sintetizados persistidos. Es el comando más grande de la CLI: reúne varios subcomandos y los motores de voz (`avi-tts`, `avi-stt`, `avi-translation`, `denoise`); sus subcomandos de síntesis, transcripción y doblaje admiten el
 [despacho al daemon](../CONTRACT.md#5-el-despacho-al-daemon).
 
 Implementación: enum `SpeechCommands`, `handle_speech` para las demás acciones y `handle_denoise` desde `main` para el veredicto de archivos. Helpers de despacho al daemon: `route_to_daemon`, `transcribe_via_daemon`,
@@ -66,7 +66,7 @@ archivo, solo PCM `i16` little-endian 16 kHz mono codificado en base64 en
 ai-voice-interconnector speech list [--voice <nombre>]
 ```
 
-Lista las locuciones persistidas en `SpeechStore`
+Lista los audios sintetizados persistidos en `SpeechStore`
 (`crates/avi-store`), local-only (brazo `List` de `SpeechCommands`).
 
 | Flag | Tipo | Default | Descripción |
@@ -78,15 +78,18 @@ validado (`VoiceName::parse`: exit 2 `invalid_voice_name`, también con `.` o `.
 comprueba la existencia de la voz con `VoiceStore::exists` (exit 3 `voice_not_found`)
 antes de leer; sin `--voice` no valida nada y devuelve todo.
 
-Salida humana: una línea por locución con voz, etiqueta, duración y texto; una
-locución sin sidecar de metadatos se muestra como `(sin metadatos)`.
+Salida humana (stdout): la cabecera `Audios sintetizados guardados:` y una
+línea por audio, `  <voz>  <etiqueta>  <duración>  «<texto>»`; un audio sin
+sidecar de metadatos se muestra como `  <voz>  <etiqueta>  (sin metadatos)`.
+Sin ningún audio, una sola línea: `No hay audios sintetizados guardados.`.
 Salida `--json`: `{"speech": [{"label", "voice", "text", "created_at",
 "duration_secs"}, ...]}`; `text`, `created_at` y `duration_secs` son `null`
-cuando la locución no tiene sidecar.
+cuando el audio no tiene sidecar.
 
 El WAV es el registro: `list` enumera los WAV, y el sidecar `.json` aporta los
 metadatos opcionales. Un sidecar ilegible o corrupto hace fallar el comando con
-exit 1 `io_error`; el mensaje nombra el fichero y remite a `speech remove`.
+exit 1 `speech_metadata_corrupt`; el mensaje nombra la etiqueta y la voz, y la
+línea `Solución:` remite a `speech remove`.
 
 ---
 
@@ -120,7 +123,17 @@ Requiere el feature `native-denoise` (incluido en `full`), el modelo DPDFNet pro
 
 El orden de resolución es defaults → preset → flags individuales. `studio` aplica solo a exportación de archivos; no altera audio de entrada de transcripción, doblaje o clonado. Para vídeo, se produce MP4 con el primer stream de vídeo copiado y audio limpio AAC; los formatos de audio siguen la matriz admitida por el pipeline migrado. No se amplía la matriz de contenedores ni códecs.
 
-Con Ctrl+C el proceso termina con el código de interrupción 130; el pipeline elimina temporales y no publica una salida parcial. **Límite verificado:** la señal se atiende al cerrar, no interrumpe el DSP en curso: en las corridas medidas con el paquete instalado el archivo se completó y publicó antes de salir con 130. Los códigos de fallo conservan la paridad con el motor de origen: entrada inválida, destino ya existente o entrada sin audio devuelven 2; modelo DPDFNet ausente, ORT no disponible, FFmpeg ausente o fallido y error de E/S devuelven 1; entrada ausente devuelve 3. La cancelación pedida por la biblioteca devuelve 3. En lotes, los resultados individuales conservan los estados `ok`/`skipped`/`failed`; el código final refleja si el lote completó o tuvo fallos.
+Con Ctrl+C el proceso termina con el código de interrupción 130; el pipeline elimina temporales y no publica una salida parcial. **Límite verificado:** la señal se atiende al cerrar, no interrumpe el DSP en curso: en las corridas medidas con el paquete instalado el archivo se completó y publicó antes de salir con 130. Los códigos de fallo conservan la paridad con el motor de origen: entrada inválida, destino ya existente o entrada sin audio devuelven 2; ORT no disponible, FFmpeg ausente o fallido y error de E/S devuelven 1; el modelo DPDFNet ausente devuelve 4 (`model_missing`); entrada ausente devuelve 3. La cancelación pedida por la biblioteca devuelve 3. En lotes, los resultados individuales conservan los estados `ok`/`skipped`/`failed`; el código final refleja si el lote completó o tuvo fallos.
+
+Cada error se construye como un error común de la CLI, con un único mapeo de error a `reason`: entrada inválida o sin audio es `invalid_audio`, destino ya existente es `output_exists`, el modelo ausente es `model_missing`, el error de E/S es `io_error` y el resto `denoise_failed`. Los errores de validación previos al lote (un bitrate fuera de rango o incompatible con el códec, `--dry-blend`, `--pause-gate-db`, `--target-lufs`, un prefijo o sufijo inválido, entradas que no existen o ffmpeg ausente) salen como un único error `Error:` más `Solución:` en texto, o como un único envelope `{error, reason}` con `--json`, sin registros JSONL; los de uso son `usage_error` (2).
+
+**Salida en texto.**
+
+- stderr abre con el contexto `Limpieza de ruido · N archivos` y muestra una etapa por archivo con su avance: `… [i/n] <nombre>  <porcentaje> %  <etapa del pipeline>  <duración>`. Cada archivo terminado deja `✓ [i/n] <nombre>  <duración> · <tamaño de la salida>`; uno omitido, `– [i/n] <nombre>: ya existe la salida; se omite.`; y uno fallido, `✗ [i/n] <nombre>: <mensaje>`. Sin terminal, cada archivo escribe `… [i/n] <nombre>` una vez y un latido cada 10 s.
+- stdout lleva la ruta completa de cada archivo generado, una por línea.
+- El cierre es `✓ Limpieza de ruido completada en <total> · N archivos limpios`, más `, N omitidos` si los hay. Si algún archivo falló, el comando escribe `Error: No se pudo limpiar N de M archivos.` y sale con el peor código del lote; con `--json` no se escribe un segundo documento.
+- `--dry-run` escribe por stdout `<entrada> → <salida> (<se procesaría | se sobrescribiría | se omitiría | fallaría: ya existe la salida>)` por archivo, y por stderr `Simulación: no se ha modificado nada.`.
+- `--verbose` añade líneas de detalle atenuadas por stderr, y una salida duplicada se avisa con `Aviso:`. Los decimales llevan coma y no queda texto en inglés ni línea `Summary:`.
 
 `--model-dir` y `--ffmpeg-path` no forman parte de esta interfaz y se rechazan como flags desconocidos: provisiona el modelo con `setup` y usa el FFmpeg integrado. El único comando público para limpiar archivos es `speech denoise`.
 
@@ -147,12 +160,15 @@ El parser exige exactamente uno de `--audio` o `--mic` y rechaza
 
 Validaciones puras antes de despachar:
 - `--mic` sin `--duration` **y sin TTY** (`stdin.is_terminal` es `false`,
- p. ej. en un pipe o en CI): exit 2 `usage_error` ("`--mic` requiere
- `--duration` en este host").
+ p. ej. en un pipe o en CI): exit 2 `usage_error` ("`--mic` necesita
+ `--duration` cuando no hay una terminal.").
 - `--mic` sin `--duration` **con TTY**: graba en modo **push-to-talk**
  (`crates/avi-audio`, primitiva de captura hasta Enter): al iniciar la
- grabación emite un aviso mínimo por stderr (nunca espera en silencio) y
- captura hasta que el usuario presiona Enter. Hay un techo de seguridad
+ grabación muestra por stderr `● Grabando m:ss / m:ss`, un medidor de nivel y
+ `Enter para detener` (sin terminal, escribe una sola vez
+ `Grabando (máximo m:ss)…`; nunca espera en silencio) y
+ captura hasta que el usuario presiona Enter. Si el tramo más fuerte de la
+ grabación no supera −43 dBFS, avisa que no se detectó voz y continúa. Hay un techo de seguridad
  configurable con la variable de entorno `AVI_PUSH_TO_TALK_MAX_SECS`
  (el default es el de [`push_to_talk_max_secs`](../../../crates/avi-audio/src/lib.rs) si no está definida): al alcanzarlo, detiene la grabación,
  avisa por stderr y devuelve lo grabado hasta ese punto con exit **0** (no es
@@ -176,7 +192,7 @@ Despacho:
  codifica el PCM a `audio_b64`, hace `POST /transcribe` y emite el mismo
  envelope que la rama local. Un error HTTP del daemon se traduce por su
  `reason` con la tabla única; un 404 sin `reason` ni `error` sale con exit 1
- `daemon_error` y el mensaje de reiniciar el daemon con `ai-voice-interconnector daemon restart`.
+ `daemon_error`, y la línea `Solución:` indica reiniciar el daemon con `ai-voice-interconnector daemon restart`.
 2. Rama directa: verifica que `parakeet-tdt-v3/nemo128.onnx` exista (si no,
  exit 4 `model_missing` antes de instanciar nada); si el binario se compiló
  sin el feature `native-stt`, exit 1 `stt_unsupported`; si el feature está
@@ -205,9 +221,9 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 |---|---|---|---|
 | `--text`, `-t` | string | — | Obligatorio. Texto a sintetizar; no vacío y de hasta 500 caracteres Unicode (si no, exit 2 `empty_text` / `text_too_long`, antes de cualquier despacho) |
 | `--voice`, `-v` | string | `default` | Voz a usar |
-| `--label`, `-l` | string | — | Obligatorio. Etiqueta bajo la que se persiste la locución (se normaliza a minúsculas) |
-| `--force`, `-f` | flag | `false` | Sobrescribe una locución existente con la misma etiqueta |
-| `--skip-existing` | flag | `false` | Conserva la locución existente con la misma etiqueta sin sintetizar: sale con exit 0 y `status` `skipped`. Incompatible con `--force` y con `--play` (exit 2 `usage_error`) |
+| `--label`, `-l` | string | — | Obligatorio. Etiqueta bajo la que se persiste el audio sintetizado (se normaliza a minúsculas) |
+| `--force`, `-f` | flag | `false` | Sobrescribe un audio sintetizado existente con la misma etiqueta |
+| `--skip-existing` | flag | `false` | Conserva el audio sintetizado existente con la misma etiqueta sin sintetizar: sale con exit 0 y `status` `skipped`. Incompatible con `--force` y con `--play` (exit 2 `usage_error`) |
 | `--play` | flag | `false` | Reproduce la toma y abre el menú interactivo; solo persiste al aceptar |
 | `--source-language` | `es`\|`en` | = `target-language` | Idioma del texto de entrada |
 | `--target-language` | `es`\|`en` | `es` | Idioma/modelo de síntesis; si difiere del origen, el texto se traduce antes de sintetizar |
@@ -222,7 +238,7 @@ esperaba respuesta — si colisiona en ese instante, también exit 6. Rechazar y
 descartar (opción 4) o Ctrl-D terminan con exit 0 sin persistir nada; solo
 aceptar (opción 2) persiste la toma que sonó. La primera toma usa el seed de
 producción; cada regeneración (opción 3) usa un seed nuevo, distinto de los
-anteriores, y muestra «Sintetizando otra toma…» (en las dos rutas) sin dejar la línea de progreso
+anteriores, y vuelve a mostrar la etapa de síntesis (en las dos rutas) sin dejar la línea de progreso
 pegada al menú. `--play` es incompatible con
 `--json` (exit 2 si se combinan) y exige terminal interactiva en la entrada
 estándar (exit 2 sin TTY, antes de sintetizar).
@@ -232,8 +248,8 @@ estándar (exit 2 sin TTY, antes de sintetizar).
 `Overwrite` y `--skip-existing` es `Skip`. La decisión mira solo el WAV, que es el
 registro: con la ficha `.json` corrupta y sin `--force` sale `label_exists`, no un
 `io_error`. Con `--skip-existing` y la etiqueta ocupada, el comando termina con
-exit 0 y `status` `skipped` sin sintetizar ni tocar la locución, e imprime
-«Ya existe: \<ruta\> (omitido).»; como la colisión se decide antes que los
+exit 0 y `status` `skipped` sin sintetizar ni tocar el audio sintetizado: imprime
+su ruta por stdout y cierra con `✓ Ya existía; se conserva sin sintetizar de nuevo.`; como la colisión se decide antes que los
 recursos, responde así aunque el modelo falte o el daemon esté caído.
 
 **Orden de validación.** `synthesize`, `say` y `dub` comparten la preparación
@@ -259,9 +275,13 @@ Flujo local:
  `--play`, acumula el audio, escribe el WAV temporal y persiste; con `--play`, la
  toma suena mientras se sintetiza, se acumula en el WAV temporal y entra al bucle
  de 4 opciones, que persiste solo al aceptar y no repite la reproducción al
- entrar. La CLI imprime la ruta calculada del WAV persistido.
+ entrar. La CLI imprime por stdout la ruta calculada del WAV persistido y cierra
+por stderr con `✓ Síntesis completada en <total> · <duración> de audio`; con
+`--play`, la opción de descartar cierra con `✓ Audio descartado; no se ha guardado.`.
+Antes de la primera etapa escribe el contexto `Síntesis <idiomas> · voz <voz> ·
+etiqueta <etiqueta> · local|daemon`.
 
-**Persistencia.** Toda locución se guarda con `avi_store::persist_locution`
+**Persistencia.** Todo audio sintetizado se guarda con `avi_store::persist_locution`
 (`crates/avi-store/src/lib.rs`), la única forma de escribir en `SpeechStore`, en
 las dos rutas, con y sin `--play`. La CLI resuelve la identidad de la voz
 (`VoiceStore::resolve`: la ruta del `reference.qvoice` y su huella sha256; un
@@ -295,7 +315,7 @@ rama local — el mismo contrato de salida y de persistencia. Cuando los idiomas
 
 ```json
 { "status": "success", "audio_path": "<ruta del WAV persistido>", "voice": "<voz>" }
-{ "status": "skipped", "audio_path": "<ruta de la locución existente>", "voice": "<voz>" }
+{ "status": "skipped", "audio_path": "<ruta del audio sintetizado existente>", "voice": "<voz>" }
 { "status": "discarded", "voice": "<voz>" }
 ```
 
@@ -352,8 +372,9 @@ entregada al dispositivo (por la ruta directa incluye el arranque del motor), y
 curso.
 
 **No hay `audio_path`.** El audio no pasa por ningún archivo: suena según llega.
-El texto humano dice «Reproduciendo (N s).» —con la duración de la operación— y
-sin ruta. Quien
+El texto humano cierra con `✓ Reproducción completada en <total> · primer audio <t>`
+por stderr, tras la línea de contexto `Lectura en voz alta <idiomas> · voz <voz> · local|daemon`,
+y sin ruta; stdout queda vacío. Quien
 quiera el fichero en disco usa `speech synthesize`, que sí lo persiste y sí
 devuelve su `audio_path`.
 `say` es humo de punta a punta, sin puerta de calidad sobre lo que sonó; la
@@ -390,8 +411,8 @@ El parser exige exactamente uno de `--audio` o `--mic` y rechaza
 Validaciones puras (en este orden):
 1. `validate_temperature`.
 2. `--mic` sin `--duration` sin TTY: exit 2 `usage_error`. **Con TTY, mismo
- push-to-talk que en `transcribe`**: aviso mínimo por stderr al iniciar,
- captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (exit 0
+ push-to-talk que en `transcribe`**: contador `● Grabando m:ss / m:ss` y
+ medidor de nivel por stderr, captura hasta Enter o hasta el techo `AVI_PUSH_TO_TALK_MAX_SECS` (exit 0
  al vencer). No hay panic por `duration` ausente en este caso.
 3. Si `--audio` apunta a un archivo inexistente: exit 3 `audio_not_found`.
 4. Duración del audio: el audio de entrada dura como máximo `MAX_DUB_AUDIO_SECS`
@@ -417,15 +438,15 @@ consumiendo el stream NDJSON con un timeout de inactividad entre latidos
 Todo error de la ruta (404 incluido) se traduce por su `reason` con la tabla
 única, sin degradar a otra vía: 404 `voice_not_found` sale con exit 3 y 404
 `model_missing` con exit 4. Un 404 sin `reason` ni `error` sale con exit 1
-`daemon_error` y el mensaje «El daemon no expone esta ruta (HTTP 404):
-reinícialo con el binario actual ejecutando `ai-voice-interconnector daemon restart`, o usa un
-build que incluya la función.»
+`daemon_error` y el mensaje «El daemon no expone esta ruta (HTTP 404): es
+anterior a este programa o no incluye la función.», con la línea `Solución:` de
+reiniciar el daemon con `ai-voice-interconnector daemon restart`.
 
 Rama directa (requiere feature `native-stt`; sin
 ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
 4) y el modelo de síntesis provisionado (`require_model_provisioned`) →
 captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
-vacío, exit 2 `empty_text` → si `source != target`, exige el modelo de
+vacío, exit 2 `empty_transcript` → si `source != target`, exige el modelo de
 traducción provisionado (exit 4 `model_missing` si no); sin el feature
 `native-translation`, exit 1 `translation_unsupported` →
 `Qwen3TtsEngine::synthesize_streaming` →
@@ -438,18 +459,20 @@ Handler `dub_handler`. Acepta
 (todos obligatorios salvo `temperature`, todos `es`/`en` en idiomas).
 Tras validar barato en JSON
 plano (audio, formatos, modelos e idiomas), abre una respuesta streaming NDJSON
-(`application/x-ndjson`) emitiendo `{"event":"started", "voice":"..."}`, sin `operation` ni `message`: el cliente es el dueño de los textos y anuncia «Doblando audio…» por su cuenta.
+(`application/x-ndjson`) emitiendo `{"event":"started", "voice":"..."}`, sin `operation` ni `message`: el cliente es el dueño de los textos y muestra su propia etapa.
 
 Pipeline interno con latidos (`with_heartbeats`, periodo `STREAM_HEARTBEAT` entre `heartbeat`; ante desconexión,
 `AbortHandle` descarta el resultado de la transcripción y la traducción, que terminan en segundo
 plano; la cancelación del trabajo en el motor solo aplica a la síntesis).
 La limpieza de ruido de `--denoise` la hace el cliente antes de despachar y
 se muestra como la fase `denoising`, igual que en la ruta directa:
-1. Transcribe en `spawn_blocking` con el motor STT residente del estado de inferencia (fase `"transcribe"`).
-2. Si `source != target`, traduce en `spawn_blocking` con el motor CT2 residente del par; nunca carga modelos bajo demanda (latidos `"translate"`, con la misma segmentación de oraciones y párrafos, por lotes, que la ruta directa).
+1. Transcribe en `spawn_blocking` con el motor STT residente del estado de inferencia (fase `"transcribe"`) y, al terminar, emite `{"event":"transcript","text":"<transcripción>"}`.
+2. Si `source != target`, traduce en `spawn_blocking` con el motor CT2 residente del par; nunca carga modelos bajo demanda (latidos `"translate"`, con la misma segmentación de oraciones y párrafos, por lotes, que la ruta directa) y, al terminar, emite `{"event":"translation","text":"<texto traducido>"}`.
 3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` sobre `spawn_blocking` (fase `"synthesis"`). Mientras espera el lock emite latidos `warming` (el daemon aún calienta el motor) o `queued` (otra síntesis retiene el lock). El plazo es el presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) del texto traducido, más un margen interno; si vence, emite evento `error` con `synthesis_timeout` y cancela el trabajo en el motor TTS residente, que queda caliente para la siguiente petición. Si el cliente se desconecta durante la síntesis, el trabajo se cancela igual.
 
 Antes del stream, un audio que supera `MAX_DUB_AUDIO_SECS` se rechaza con HTTP 400 `audio_too_long`; un texto traducido que supera `MAX_TEXT_LENGTH` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) emite un evento `error` `text_too_long`.
+
+Los eventos `transcript` y `translation` llevan exactamente las claves `event`, `text` y `schema_version`; `text` es contenido del usuario, no texto de interfaz. Salen antes del primer `audio`, de modo que el cliente muestra `Transcripción: …` y `Traducción: …` antes de que suene el doblaje. Son eventos nuevos sin cambio de versión del esquema del daemon; un cliente que no los conozca los ignora.
 
 Durante la síntesis emite un evento `audio` por cada fragmento del motor, intercalado con los latidos:
 
@@ -465,7 +488,7 @@ Al finalizar, emite el evento `result`, que ya no lleva el audio:
 
 Un fallo a mitad de la entrega emite `error` (`synthesis_failed` o `synthesis_timeout`) después de los eventos `audio` ya enviados.
 
-En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo>", "message": "..."}` con el mapeo contractual correspondiente (`usage_error`/`invalid_audio`/`audio_too_long`/`empty_text`/`text_too_long` → exit 2, `model_missing` → exit 4, `voice_not_found` → exit 3, `transcription_failed` → exit 10, `translation_failed` → exit 9, `synthesis_failed`/`synthesis_timeout`/`stt_unsupported`/`translation_unsupported` → exit 1).
+En caso de error en cualquier etapa, emite `{"event":"error", "reason": "<motivo>", "message": "..."}` con el mapeo contractual correspondiente (`usage_error`/`invalid_audio`/`audio_too_long`/`empty_text`/`empty_transcript`/`text_too_long` → exit 2, `model_missing` → exit 4, `voice_not_found` → exit 3, `transcription_failed` → exit 10, `translation_failed` → exit 9, `synthesis_failed`/`synthesis_timeout`/`stt_unsupported`/`translation_unsupported` → exit 1).
 
 ### Contrato `--json` (CLI)
 
@@ -482,10 +505,12 @@ significado que en `say`. En la vía daemon, si al evento `result` le falta `tex
 `translated`, la CLI sale con exit 1 `daemon_error`, sin valores por defecto; un evento
 `audio` inválido sale igual con `daemon_error`.
 
-En modo texto (sin `--json`), `dub` imprime siempre tres líneas por stdout, en
-este orden: `Transcripción: <texto>`, `Traducción: <texto>` y
-`Doblaje reproducido (N s).`. Con origen igual a destino, las dos primeras
-llevan el mismo texto.
+En modo texto (sin `--json`), `dub` escribe por stdout `Transcripción: <texto>`
+en cuanto termina de transcribir y, solo si los idiomas difieren,
+`Traducción: <texto>` en cuanto termina de traducir; ambas salen antes de que
+suene el audio. Por stderr abre con el contexto `Doblaje <idiomas> · voz <voz> ·
+<fuente> · local|daemon` y cierra con
+`✓ Doblaje completado en <total> · primer audio <t>`.
 
 **No hay `audio_path`, por la misma razón que en `say`.** El audio doblado no
 pasa por ningún archivo, ni en el daemon ni en la CLI: suena según llega. Quien
@@ -501,13 +526,15 @@ humo sin puerta de calidad sobre lo que sonó.
 ai-voice-interconnector speech play --label <etiqueta> [--voice <nombre>]
 ```
 
-Local-only. Busca la locución en `SpeechStore` por
+Local-only. Busca el audio sintetizado en `SpeechStore` por
 `(voice, label)` y reproduce el WAV persistido. Valida los nombres al construir
 `VoiceName` y `Label` (exit 2 `invalid_voice_name` para la voz e
 `invalid_identifier` para la etiqueta, también con `.` o `..`) y la existencia de la voz con
 `VoiceStore::exists` (exit 3 `voice_not_found`) antes de buscar la etiqueta; con
 la voz válida, una etiqueta inexistente es exit 3 `speech_not_found`. La existencia la decide el WAV; un sidecar corrupto sale con
-exit 1 `io_error` (el mensaje nombra el fichero y remite a `speech remove`).
+exit 1 `speech_metadata_corrupt` (el mensaje nombra la etiqueta y la voz, y la línea `Solución:` remite a `speech remove`).
+
+Por stderr abre con el contexto `Reproducción del audio sintetizado <etiqueta> · voz <voz>`, avanza el contador de la etapa `Reproduciendo…` hasta el final y cierra con `✓ Reproducción completada en <total>`; stdout queda vacío.
 
 ### Contrato `--json`
 
@@ -520,22 +547,33 @@ exit 1 `io_error` (el mensaje nombra el fichero y remite a `speech remove`).
 ## `speech remove`
 
 ```
-ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>]
+ai-voice-interconnector speech remove --label <etiqueta> [--voice <nombre>] [--yes]
 ```
 
-Local-only. Elimina el WAV y el sidecar de la locución de `SpeechStore` sin
-interpretar el sidecar (también elimina una locución con sidecar corrupto). Valida
+Local-only. Elimina el WAV y el sidecar del audio sintetizado de `SpeechStore` sin
+interpretar el sidecar (también elimina un audio con sidecar corrupto). Valida
 los nombres (exit 2 `invalid_voice_name` para la voz e `invalid_identifier` para la
 etiqueta, también con `.` o `..`, sin tocar ningún archivo) y la existencia de la voz (exit 3
 `voice_not_found`) antes de buscar la etiqueta; con la voz válida, si no existe
-ninguno de los dos ficheros, exit 3 `speech_not_found`. Las locuciones de una voz
-se borran con la propia voz (`voice remove`), así que toda locución guardada
+ninguno de los dos ficheros, exit 3 `speech_not_found`. Los audios sintetizados de una voz
+se borran con la propia voz (`voice remove`), así que todo audio guardado
 pertenece a una voz existente.
+
+**Confirmación.** Borrar es destructivo: con terminal muestra por stderr
+`Se borrará el audio sintetizado <etiqueta> de la voz <voz>:` con la ruta del WAV
+y pregunta `¿Borrar este audio sintetizado? [s/N]`. `--yes`/`-y` omite la pregunta.
+Sin terminal y sin `--yes` sale con exit 2 `confirmation_required`, y la línea
+`Solución:` muestra la orden repetida con `--yes`. Si el usuario responde que no,
+escribe `Cancelado; no se ha borrado nada.`, sale con exit 0 y, con `--json`,
+emite `{ "status": "cancelled", "label", "voice" }`. Si el audio no existe, la
+pregunta no se hace y el comando sale con `speech_not_found`. Al borrar, cierra con
+`✓ Audio sintetizado <etiqueta> de la voz <voz> borrado.` por stderr.
 
 ### Contrato `--json`
 
 ```json
 { "status": "removed", "label": "<etiqueta>", "voice": "<voz>" }
+{ "status": "cancelled", "label": "<etiqueta>", "voice": "<voz>" }
 ```
 
 ---
@@ -557,20 +595,28 @@ rechaza un `source_language`/`target_language` distinto de `es` y `en` con `usag
 
 ## El progreso por stderr
 
-Los subcomandos de este grupo pintan la fase del trabajo por stderr, con la forma `… <mensaje> (<tiempo>)`, y ceden la línea antes de que el producto escriba las instrucciones del push-to-talk (`--mic` sin `--duration`) o el menú de `--play`; con `--mic --duration N` la fase «Capturando audio del micrófono…» permanece y su tiempo avanza durante la grabación. Los textos son idénticos en la ruta directa y en la del daemon y ninguna fase lleva un sufijo de ruta; en TTY el tiempo avanza también durante el trabajo bloqueante de la ruta directa (síntesis, transcripción, traducción, limpieza de ruido), porque un hilo repinta la línea mientras el trabajo corre. Los avisos de las bibliotecas pasan por un canal de consola que borra la línea de fase abierta antes de escribir; el indicador la repinta en su siguiente repintado.
+Cada subcomando de este grupo abre con una línea de contexto por stderr (`Doblaje es → en · voz default · archivo a.wav · daemon`) y pinta sus etapas por stderr. Una etapa permanente deja, al terminar, `✓ <texto>  <duración>`; la etapa en curso se repinta debajo como `… <texto> <duración>`, también durante el trabajo bloqueante de la ruta directa, la grabación y la reproducción. Los textos de las etapas son idénticos en la ruta directa y en la del daemon, y ninguna lleva un sufijo de ruta. Los avisos pasan por un canal de consola que borra la línea de etapa abierta antes de escribir (`Aviso: …`); el indicador la repinta en su siguiente repintado.
 
-Los textos por subcomando, además de «Leyendo archivo de audio…», «Capturando audio del micrófono…», «Limpiando ruido del audio…», «Transcribiendo audio…» y «Traduciendo texto…» (comunes a las rutas que los usan):
+Las etapas de los subcomandos de voz son estas; las marcadas como transitorias se borran al terminar y no dejan línea:
 
-| Subcomando | Arranque | Fases propias |
+| Etapa | Texto activo | Texto terminado |
 |---|---|---|
-| `synthesize` | «Iniciando síntesis…» | «Sintetizando voz…», «Guardando locución…», «Reproduciendo…» (con `--play`, desde que suena la primera muestra); en la regeneración, «Preparando otra toma…» y «Sintetizando otra toma…» |
-| `say` | «Iniciando síntesis…» | «Sintetizando voz…» hasta el primer sonido, «Reproduciendo…» desde ahí |
-| `dub` | «Doblando audio…» | «Traduciendo texto transcrito…», «Sintetizando voz doblada…» hasta el primer sonido, «Reproduciendo doblaje…» desde ahí |
-| `transcribe` | «Iniciando transcripción…» | — |
+| validación | `Validando…` | transitoria |
+| envío al daemon | `Enviando al daemon…` | transitoria |
+| espera de turno | `Esperando turno para sintetizar…` (o `…para limpiar el ruido…`) | transitoria |
+| lectura del archivo | `Leyendo el audio…` | `Audio leído` |
+| captura | `Grabando…` | `Audio grabado` |
+| limpieza de ruido | `Limpiando el ruido…` | `Ruido limpiado` |
+| transcripción | `Transcribiendo…` | `Transcrito` |
+| traducción | `Traduciendo…` | `Traducido` |
+| síntesis | `Sintetizando…` | `Primer audio` si después se reproduce; si no, `Voz sintetizada` |
+| guardado | `Guardando…` | transitoria |
+| reproducción | `Reproduciendo…` | `Reproducido` |
+| clonado | `Clonando la voz… (puede tardar varios minutos)` | `Voz clonada` |
 
-Del daemon llegan además las esperas «Calentando motor de síntesis…», «En cola de síntesis…» y «Esperando turno para limpiar el ruido…». El **resultado** —el texto o el envelope `--json`— va por stdout, y lo dice **una sola vez**, con la duración de la operación.
+Del daemon llegan además las esperas de calentamiento del motor (`Calentando el motor…`) y de turno de síntesis. El **resultado** —el texto, la ruta o el envelope `--json`— va por stdout en cuanto existe, y el cierre (`✓ <acción> en <duración total>`) va por stderr, una sola vez.
 
-`AVI_NO_PROGRESS=1` silencia todo el progreso por stderr —la fase y la actividad—, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.
+`AVI_NO_PROGRESS=1` silencia solo las etapas por stderr —línea activa, líneas terminadas y latidos—, y nada más: el contexto, los resultados por stdout, el cierre, el envelope `--json` y los códigos de salida no cambian. `NO_COLOR` desactiva el color; la salida redirigida nunca lleva color.
 
 ---
 
@@ -579,7 +625,8 @@ Del daemon llegan además las esperas «Calentando motor de síntesis…», «En
 | Reason | Exit | Origen |
 |---|---|---|
 | `usage_error` | 2 | `AVI_TTS_PRECISION` inválida al crear el motor directo; `--skip-existing` con `--force` o con `--play`, falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
-| `empty_text` | 2 | Texto a sintetizar o transcripción resultante vacíos |
+| `empty_text` | 2 | Texto a sintetizar vacío |
+| `empty_transcript` | 2 | El doblaje (`dub`, directo y daemon) no reconoció voz: la transcripción resultante está vacía |
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera `MAX_TEXT_LENGTH` caracteres Unicode ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `audio_too_long` | 2 | El audio de `dub` supera `MAX_DUB_AUDIO_SECS`, o `--duration` lo supera; el de `transcribe` supera `MAX_TRANSCRIBE_AUDIO_SECS`, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` lo superan ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
@@ -595,7 +642,10 @@ Del daemon llegan además las esperas «Calentando motor de síntesis…», «En
 | `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`); una voz clonada exige además `qwen3-tts-0.6b-base` |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` ni `--skip-existing` sobre una etiqueta ya usada |
-| `voice_changed` | 6 | `synthesize`: la voz se re-clonó o se eliminó mientras se sintetizaba; la locución no se guarda |
+| `voice_changed` | 6 | `synthesize`: la voz se re-clonó o se eliminó mientras se sintetizaba; el audio sintetizado no se guarda |
+| `speech_metadata_corrupt` | 1 | `list`/`play`: el sidecar de metadatos de un audio sintetizado es ilegible; `remove` lo borra sin leerlo |
+| `confirmation_required` | 2 | `remove` sin terminal y sin `--yes` |
+| `output_exists` | 2 | `denoise`: la salida ya existe y no se pidió `--overwrite` ni `--skip-existing` (el daemon lo responde con HTTP 400) |
 | `lifecycle_locked` | 17 | Todos los subcomandos: hay una operación de ciclo de vida en curso (`self install`, `self update`, `self uninstall`, `cleanup`, `doctor --repair`) y el comando no llega a ejecutarse |
 | `stt_unsupported` | 1 | Binario compilado sin el feature `native-stt` (transcribe/dub) |
 | `translation_unsupported` | 1 | Binario compilado sin el feature `native-translation`, con par no-passthrough |
@@ -631,39 +681,45 @@ ai-voice-interconnector --json speech list --voice mi_voz
 
 ## Muestras de salida
 
-El **resultado** va por stdout y lo dice una sola vez, con la duración de la operación. El progreso —la fase y la actividad— va por stderr, con la forma `… <mensaje> (<tiempo>)`.
+Los **resultados** van por stdout, en cuanto existen. La línea de contexto, las etapas y el cierre van por stderr.
 
 ```text
 # speech synthesize (ruta local)
-stdout: Síntesis completada: <ruta del WAV persistido> (3 s).
-stderr: … Validando texto y voz… (0 s)
-        … Sintetizando voz… (1 s)
-        … Guardando locución… (3 s)
+stdout: <ruta del WAV persistido>
+stderr: Síntesis es · voz default · etiqueta saludo · local
+        ✓ Voz sintetizada  1,9 s
+        ✓ Síntesis completada en 2,1 s · 3,4 s de audio
 
 # speech say
-stdout: Reproduciendo (4 s).
-stderr: … Validando texto y voz… (0 s)
-        … Sintetizando voz… (3 s)
-        … Reproduciendo… (4 s)
+stderr: Lectura en voz alta es · voz default · local
+        ✓ Primer audio  1,2 s
+        ✓ Reproducido  3,0 s
+        ✓ Reproducción completada en 4,3 s · primer audio 1,2 s
 
 # speech transcribe
 stdout: <el texto transcrito>
-stderr: … Leyendo archivo de audio… (0 s)
-        … Transcribiendo audio… (1 s)
+stderr: Transcripción es · archivo entrada.wav · local
+        ✓ Audio leído  0,1 s
+        ✓ Transcrito  1,4 s
+        ✓ Transcripción completada en 1,6 s
 
 # speech dub
 stdout: Transcripción: <el texto transcrito>
         Traducción: <el texto traducido>
-        Doblaje reproducido (9 s).
-stderr: … Leyendo archivo de audio… (0 s)
-        … Transcribiendo audio… (2 s)
-        … Traduciendo texto transcrito… (5 s)
-        … Sintetizando voz doblada… (6 s)
-        … Reproduciendo doblaje… (9 s)
+stderr: Doblaje en → es · voz default · archivo entrevista.wav · daemon
+        ✓ Audio leído  0,1 s
+        ✓ Transcrito  2,0 s
+        ✓ Traducido  0,6 s
+        ✓ Primer audio  1,1 s
+        ✓ Reproducido  4,2 s
+        ✓ Doblaje completado en 8,2 s · primer audio 1,1 s
 
 # speech play
-stdout: Reproduciendo locución 'saludo' de la voz 'default' (2 s).
-stderr: … Reproduciendo locución… (0 s)
+stderr: Reproducción del audio sintetizado saludo · voz default
+        ✓ Reproducido  2,0 s
+        ✓ Reproducción completada en 2,0 s
 ```
 
-Con `--json`, stdout lleva **solo** el envelope —`{"status": "success"|"skipped", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`, `{"status": "dubbed", "text", "translated"}`— y el resultado en texto no sale. El progreso por stderr es el mismo.
+Con terminal, la etapa en curso aparece debajo de las ya terminadas como `… Reproduciendo… 1,3 s` y se repinta; sin terminal escribe `… <texto>` una vez, un latido cada 10 s y la línea `✓` al terminar.
+
+Con `--json`, stdout lleva **solo** el envelope —`{"status": "success"|"skipped", "audio_path", "voice"}`, `{"status": "reproduced", "voice"}`, `{"text", "source_language"}`, `{"status": "dubbed", "text", "translated"}`— y no salen ni el contexto, ni los resultados de texto, ni el cierre. Las etapas por stderr son las mismas.

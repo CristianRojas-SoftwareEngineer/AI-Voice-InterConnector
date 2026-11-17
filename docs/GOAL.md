@@ -132,8 +132,8 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 
 # 6. Síntesis a través del daemon (añade -v mi_voz para usar la voz clonada)
 ./ai-voice-interconnector speech say --text "Hola mundo" [-v mi_voz]                    # Reproducir
-./ai-voice-interconnector speech synthesize --text "Hola mundo" [-v mi_voz] --label LOCUCION  # Sintetiza y guarda la locución en el almacén
-./ai-voice-interconnector speech synthesize --text "Hola mundo" --label LOCUCION --play  # Sintetiza y reproduce; solo guarda al elegir 2 (4 descarta)
+./ai-voice-interconnector speech synthesize --text "Hola mundo" [-v mi_voz] --label ETIQUETA  # Sintetiza y guarda el audio sintetizado en el almacén
+./ai-voice-interconnector speech synthesize --text "Hola mundo" --label ETIQUETA --play  # Sintetiza y reproduce; solo guarda al elegir 2 (4 descarta)
 
 # 6b. Síntesis cross-lingual opcional: el usuario escribe en su idioma y obtiene
 # audio en el idioma destino con su propia voz clonada, en un solo comando
@@ -149,12 +149,12 @@ Los comandos están ordenados en secuencia de dependencia: cada paso solo requie
 # 6e. Doblaje voz→voz: transcribe, traduce si difiere, sintetiza y reproduce
 ./ai-voice-interconnector speech dub --audio condicion.wav --source-language es --target-language es -v mi_voz
 
-# 7. Locuciones guardadas: listar, reproducir y eliminar
+# 7. Audios sintetizados guardados: listar, reproducir y eliminar
 ./ai-voice-interconnector speech list [--voice mi_voz]   # Filtrable por voz
-./ai-voice-interconnector speech play --label LOCUCION [-v mi_voz]
-./ai-voice-interconnector speech remove --label LOCUCION [-v mi_voz]
+./ai-voice-interconnector speech play --label ETIQUETA [-v mi_voz]
+./ai-voice-interconnector speech remove --label ETIQUETA [-v mi_voz]   # Pide confirmación; --yes la omite
 
-# 8. Eliminar voz clonada (limpieza; se lleva sus locuciones guardadas)
+# 8. Eliminar voz clonada (limpieza; pide confirmación y se lleva sus audios sintetizados guardados)
 ./ai-voice-interconnector voice remove --name mi_voz
 
 # 9. Limpiar el estado provisionado, por categoría o completo

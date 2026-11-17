@@ -38,12 +38,12 @@ Sin `--daemon`/`--no-daemon` el modo es `Auto` (`DaemonMode::Auto`,
 daemon; si no, se ejecuta local. Sin daemon, el rechazo de la conexión es
 inmediato en todas las plataformas y la ejecución local no espera.
 
-**La fase `translating` se repinta mientras espera.** El endpoint `/translate`
-devuelve JSON plano y no emite eventos, así que sin repintado la fase
-quedaría sin avance visible mientras el motor traduce. Con `AVI_NO_PROGRESS=1` el
-progreso por stderr se silencia entero —la fase incluida—, y nada más: el
-texto traducido por stdout, el envelope `--json` y los códigos de salida no
-cambian. El indicador se repinta con su
+**La etapa `translating` se repinta mientras espera.** El endpoint `/translate`
+devuelve JSON plano y no emite eventos, así que sin repintado la etapa
+quedaría sin avance visible mientras el motor traduce. Con `AVI_NO_PROGRESS=1` las
+etapas por stderr se silencian —la etapa incluida—, y nada más: la línea de
+contexto, el texto traducido por stdout, el cierre, el envelope `--json` y los
+códigos de salida no cambian. El indicador se repinta con su
 propio reloj durante la espera, de modo que el tiempo visible avanza. El
 plazo de la petición no cambia: lo que cambia es lo que se ve
 mientras espera.
@@ -207,16 +207,18 @@ ai-voice-interconnector --json translate --daemon --text "Buenos días" --source
 
 ## Muestras de salida
 
-El **resultado** —el texto traducido o el envelope `--json`— va por stdout y lo dice una sola vez, con la duración de la operación. El progreso —la fase— va por stderr, con la forma `… <mensaje> (<tiempo>)`, y se repinta mientras la espera.
+El **resultado** —el texto traducido, sin etiqueta, o el envelope `--json`— va por stdout. La línea de contexto, la etapa y el cierre van por stderr.
 
 ```text
 # translate
 stdout: <el texto traducido>
-stderr: … Traduciendo texto… (0 s)
+stderr: Traducción es → en · daemon
+        ✓ Traducido  0,4 s
+        ✓ Traducción completada en 0,5 s
 
 # translate --json
 stdout: {"translated": "…", "source_language": "es", "target_language": "en"}
-stderr: … Traduciendo texto… (0 s)
+stderr: ✓ Traducido  0,4 s
 ```
 
-La fase se repinta con su propio reloj durante la espera del daemon, de modo que el tiempo visible avanza en vez de quedarse en `(0 s)`; lo mismo ocurre en la ruta directa, donde un hilo repinta la línea mientras el motor traduce. Con `AVI_NO_PROGRESS=1` el progreso por stderr se silencia entero, y nada más: el resultado por stdout, el envelope `--json` y los códigos de salida no cambian.
+La etapa se repinta con su propio reloj durante la espera del daemon, de modo que el tiempo visible avanza en vez de quedarse en `0,0 s`; lo mismo ocurre en la ruta directa, donde un hilo repinta la línea mientras el motor traduce. Con `--json` no salen ni el contexto ni el cierre. Con `AVI_NO_PROGRESS=1` las etapas por stderr se silencian, y nada más: el resultado por stdout, el cierre, el envelope `--json` y los códigos de salida no cambian.

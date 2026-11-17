@@ -264,7 +264,7 @@ cargo build --release --features full
 ```
 
 En Windows, el producto y `cargo xtask` fijan la consola a UTF-8 al arrancar
-(helper compartido `avi_shared::force_utf8_console`), así que los mensajes
+(helper compartido `avi_term::line::init_console`, que además activa las secuencias de color de la consola), así que los mensajes
 con tildes se ven bien aunque la PowerShell use otra página de códigos.
 
 ### ONNX Runtime vía `load-dynamic` (sin build en compilación)
