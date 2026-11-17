@@ -250,32 +250,29 @@ async fn install_sets_bundled_ffmpeg_executable() {
 
 /// Quita del final de una línea la duración que el resumen añade.
 ///
-/// El resumen de una instalación termina con el tiempo que tardó, entre
-/// paréntesis, y con el punto que cierra la frase: «ai-voice-interconnector
-/// instalado: 0.34.0 (1 s).» Ese tiempo es el reloj de una ejecución, no el
-/// estado que deja, y dos ejecuciones del mismo estado no tardan lo mismo. La
-/// línea sin ese paréntesis es la que afirma el estado.
+/// El resumen de una instalación termina con el tiempo que tardó, tras « en »:
+/// «ai-voice-interconnector 0.34.0 instalado en 1,0 s». Ese tiempo es el reloj de
+/// una ejecución, no el estado que deja, y dos ejecuciones del mismo estado no
+/// tardan lo mismo. La línea sin esa cola es la que afirma el estado.
 ///
-/// El helper va anclado al formato de la duración, no a «cualquier paréntesis
-/// final»: una línea del resumen que acabara en `)` por otro motivo no debe
+/// El helper va anclado al formato de la duración, no a «cualquier texto tras
+/// ` en `»: una línea del resumen que contuviera ` en ` por otro motivo no debe
 /// mutilarse en silencio.
 fn without_trailing_duration(line: &str) -> String {
     let trimmed = line.trim_end();
-    // `format_duration` escribe «7 s», «1 min 59 s» o «1 h 02 min».
-    // La duración va entre paréntesis y el punto cierra la frase.
-    let body = trimmed.strip_suffix('.').unwrap_or(trimmed);
-    let Some(pos) = body.rfind(" (") else {
+    // La duración se escribe «7,0 s», «1 min 59 s» o «1 h 02 min».
+    let Some(pos) = trimmed.rfind(" en ") else {
         return line.to_string();
     };
-    let duration = &body[pos + 2..body.len() - 1];
+    let duration = &trimmed[pos + 4..];
     let looks_like_duration = duration.ends_with(" s")
         || duration.ends_with(" min")
         || duration.ends_with(" h")
         || duration
             .split_once(" min ")
             .is_some_and(|(_, rest)| rest.ends_with(" s"));
-    if body.ends_with(')') && looks_like_duration {
-        body[..pos].to_string()
+    if looks_like_duration {
+        trimmed[..pos].to_string()
     } else {
         line.to_string()
     }
@@ -480,7 +477,7 @@ async fn bundle_without_required_files_is_rejected() {
         "`BundleInvalid = 15` de la tabla única"
     );
     assert!(
-        failure.message.contains("faltan") && failure.message.contains("archivo(s)"),
+        failure.message.contains("faltan") && failure.message.contains("archivos obligatorios"),
         "el mensaje nombra los ausentes: {failure}"
     );
     assert_eq!(
@@ -564,17 +561,7 @@ async fn integrated_install_announces_no_path_change() {
     let second = install::install(&env, &options, &Inert, &crate::install_env::RemovesNow)
         .await
         .expect("la segunda instalación se completa");
-    let expected = if cfg!(windows) {
-        format!(
-            "  PATH:      {} ya está en el PATH del usuario; no se modifica",
-            sandbox.bin_dir.display()
-        )
-    } else {
-        format!(
-            "  PATH:      {} ya está en el PATH; no se modifica",
-            sandbox.bin_dir.display()
-        )
-    };
+    let expected = "  PATH:      ya está en el PATH de tu usuario; no se modifica.".to_string();
     assert!(
         second.summary_before.contains(&expected),
         "{:?}",

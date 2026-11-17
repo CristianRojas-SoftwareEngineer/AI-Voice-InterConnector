@@ -3,6 +3,10 @@
 use crate::errors::E;
 use crate::ffmpeg_io::{resolve_audio_bitrate, verify_ffmpeg};
 use crate::preset::{AudioBitrate, EgressParams, Preset, DEFAULT_PARAMS};
+use avi_core::exit_codes::{CliError, ExitCode};
+use avi_term::progress::PhaseProgress;
+use avi_term::style::{paint, Stream, Tone, ACTIVE, FAIL};
+use avi_term::{fmt, line, stage};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::io::Write;
@@ -142,6 +146,25 @@ pub struct JsonSummaryLine {
     pub summary: BatchSummary,
 }
 
+/// Resultado de ejecutar la CLI de archivos.
+#[derive(Debug)]
+pub enum BatchOutcome {
+    /// El lote terminó sin fallos, o se mostró la versión.
+    Done,
+    /// La cancelación cooperativa detuvo el lote.
+    Cancelled,
+    /// El lote terminó con fallos. `code` es el peor código de salida del
+    /// lote y `error` el error que lo resume, con el `reason` del primer
+    /// fallo de ese código. Las líneas por archivo y el resumen ya se
+    /// escribieron: el llamador solo escribe el error en texto.
+    Failed { code: i32, error: CliError },
+}
+
+/// Error de validación de argumentos: `usage_error` con código 2.
+fn usage_error(message: impl Into<String>) -> CliError {
+    CliError::new(ExitCode::InvalidInput, "usage_error", message)
+}
+
 /// Normaliza una ruta lexicalmente contra `cwd` sin tocar disco ni resolver symlinks.
 pub fn normalize_lexical(path: &Path, cwd: &Path) -> PathBuf {
     let abs_path = if path.is_absolute() {
@@ -226,14 +249,14 @@ pub fn validate_affix(name: &str, affix_type: &str) -> Result<(), E> {
     }
     if name == "." || name == ".." {
         return Err(E::EInvalidInput(format!(
-            "El {} no puede ser '.' ni '..'",
+            "El {} no puede ser «.» ni «..».",
             affix_type
         )));
     }
     for c in name.chars() {
         if !c.is_ascii_alphanumeric() && c != '.' && c != '_' && c != '-' {
             return Err(E::EInvalidInput(format!(
-                "El {} '{}' contiene caracteres no permitidos. Solo se permiten [A-Za-z0-9._-]",
+                "El {} «{}» contiene caracteres no permitidos; solo se admiten letras, números, «.», «_» y «-».",
                 affix_type, name
             )));
         }
@@ -282,10 +305,10 @@ pub fn expand_inputs(
         } else if norm_input.is_file() {
             if !is_supported_input(&norm_input) {
                 return Err(E::EInvalidInput(format!(
-                    "Extensión no soportada para '{}'. Video: {:?}; audio: {:?}",
+                    "El formato de {} no es compatible; se admiten video ({}) y audio ({}).",
                     input.display(),
-                    VIDEO_EXTENSIONS,
-                    AUDIO_EXTENSIONS
+                    VIDEO_EXTENSIONS.join(", "),
+                    AUDIO_EXTENSIONS.join(", ")
                 )));
             }
             let key = dedup_key(&norm_input);
@@ -294,7 +317,7 @@ pub fn expand_inputs(
             }
         } else {
             return Err(E::EInvalidInput(format!(
-                "La ruta de entrada '{}' no existe",
+                "La ruta de entrada {} no existe.",
                 input.display()
             )));
         }
@@ -302,7 +325,8 @@ pub fn expand_inputs(
 
     if collected.is_empty() {
         return Err(E::EInvalidInput(
-            "Lote vacío sin archivos de medios soportados".to_string(),
+            "Las rutas indicadas no contienen archivos de audio ni de video compatibles."
+                .to_string(),
         ));
     }
 
@@ -330,10 +354,10 @@ fn collect_dir_entries(
             if let Some(out_d) = norm_out_dir {
                 if path == out_d {
                     if verbose {
-                        eprintln!(
-                            "[verbose] Excluyendo output-dir anidado: {}",
+                        line::detail(&format!(
+                            "Se excluye el directorio de salida anidado: {}",
                             path.display()
-                        );
+                        ));
                     }
                     continue;
                 }
@@ -351,11 +375,11 @@ fn collect_dir_entries(
                     .to_lowercase();
                 if stem.ends_with(suffix_filter) {
                     if verbose {
-                        eprintln!(
-                            "[verbose] Excluyendo archivo ya procesado (*{}): {}",
+                        line::detail(&format!(
+                            "Se excluye el archivo ya procesado (*{}): {}",
                             suffix_filter,
                             path.display()
-                        );
+                        ));
                     }
                     continue;
                 }
@@ -379,7 +403,9 @@ pub fn resolve_outputs(
     verbose: bool,
 ) -> Result<Vec<ResolvedItem>, E> {
     if expanded.is_empty() {
-        return Err(E::EInvalidInput("Lote vacío".to_string()));
+        return Err(E::EInvalidInput(
+            "No hay archivos que procesar.".to_string(),
+        ));
     }
 
     let pfx = prefix.unwrap_or("");
@@ -392,7 +418,7 @@ pub fn resolve_outputs(
     if let Some(name) = output_name {
         if expanded.len() > 1 {
             return Err(E::EInvalidInput(
-                "--output-name solo se permite cuando el lote expandido tiene exactamente 1 archivo de medio"
+                "--output-name solo se permite cuando el lote expandido tiene exactamente 1 archivo."
                     .to_string(),
             ));
         }
@@ -418,7 +444,7 @@ pub fn resolve_outputs(
         // si --output-name resuelve a la propia entrada sin prefix/suffix -> E_INVALID_INPUT exit 2 siempre
         if normalize_lexical(&out_path, cwd) == normalize_lexical(input, cwd) {
             return Err(E::EInvalidInput(
-                "--output-name resuelve al mismo archivo de entrada".to_string(),
+                "--output-name resuelve al mismo archivo de entrada.".to_string(),
             ));
         }
 
@@ -432,7 +458,7 @@ pub fn resolve_outputs(
     // Si ambos prefijo y sufijo son vacíos y la salida es in-place -> E_INVALID_INPUT
     if pfx.is_empty() && sfx.is_empty() && output_dir.is_none() {
         return Err(E::EInvalidInput(
-            "Prefijo y sufijo no pueden estar vacíos simultáneamente si la salida es in-place"
+            "Prefijo y sufijo no pueden estar vacíos simultáneamente si la salida es en la misma carpeta."
                 .to_string(),
         ));
     }
@@ -458,10 +484,10 @@ pub fn resolve_outputs(
                         base_out.join(rel)
                     } else {
                         if verbose {
-                            eprintln!(
-                                "[verbose] Entrada fuera de cwd, usando nombre plano: {}",
+                            line::detail(&format!(
+                                "Entrada fuera del directorio actual; se usa un nombre plano: {}",
                                 input.display()
-                            );
+                            ));
                         }
                         base_out
                     }
@@ -487,11 +513,14 @@ pub fn resolve_outputs(
                     candidate_out = alt_path;
                     key = alt_key;
                     is_adjusted = true;
-                    eprintln!(
-                        "[aviso] Salida duplicada intra-lote para '{}', renombrada a '{}'",
-                        input.display(),
-                        candidate_out.display()
-                    );
+                    // Con salida de máquina stderr queda vacío.
+                    if !line::machine_mode() {
+                        line::warn(format!(
+                            "La salida de {} coincide con otra del lote y se renombra a {}",
+                            input.display(),
+                            candidate_out.display()
+                        ));
+                    }
                     break;
                 }
                 counter += 1;
@@ -521,23 +550,25 @@ pub fn run_dry_run(
 
     for item in items {
         let exists = item.output.exists();
-        let (status, reason) = if exists {
+        // El mensaje de máquina (JSONL) y el texto para personas de cada caso.
+        let (status, reason, human) = if exists {
             if overwrite {
                 summary.ok += 1;
-                (ItemStatus::DryRun, "would overwrite".to_string())
+                (ItemStatus::DryRun, "would overwrite", "se sobrescribiría")
             } else if skip_existing {
                 summary.skipped += 1;
-                (ItemStatus::DryRun, "would skip".to_string())
+                (ItemStatus::DryRun, "would skip", "se omitiría")
             } else {
                 summary.failed += 1;
                 (
                     ItemStatus::DryRun,
-                    "would fail: E_OUTPUT_EXISTS".to_string(),
+                    "would fail: E_OUTPUT_EXISTS",
+                    "fallaría: ya existe la salida",
                 )
             }
         } else {
             summary.ok += 1;
-            (ItemStatus::DryRun, "would process".to_string())
+            (ItemStatus::DryRun, "would process", "se procesaría")
         };
 
         if json_mode {
@@ -545,17 +576,17 @@ pub fn run_dry_run(
                 input: item.input.display().to_string(),
                 output: item.output.display().to_string(),
                 status,
-                message: reason,
+                message: reason.to_string(),
                 pct: 0,
             };
             println!("{}", serde_json::to_string(&line).unwrap());
             let _ = std::io::stdout().flush();
         } else {
-            eprintln!(
-                "{} -> {} ({})",
+            println!(
+                "{} → {} ({})",
                 item.input.display(),
                 item.output.display(),
-                reason
+                human
             );
         }
     }
@@ -565,10 +596,7 @@ pub fn run_dry_run(
         println!("{}", serde_json::to_string(&sum_line).unwrap());
         let _ = std::io::stdout().flush();
     } else {
-        eprintln!(
-            "Summary (dry-run): ok={} failed={} skipped={}",
-            summary.ok, summary.failed, summary.skipped
-        );
+        eprintln!("Simulación: no se ha modificado nada.");
     }
 
     Ok(())
@@ -581,19 +609,22 @@ pub fn print_version(ffmpeg_version: Option<&str>) {
     println!("denoise {} + modelo DPDFNet + {}", pkg_ver, ff_str);
 }
 
-/// Ejecuta la CLI de archivos y devuelve el código de salida. El llamador
-/// decide cómo resolver ffmpeg; el subcomando de AVI solo usa el ejecutable
-/// integrado. `studio_default` activa la receta `studio` cuando no se pasa
-/// `--preset` (contrato del subcomando AVI); `cancel_flag` conecta la
-/// cancelación con el handler del llamador, que la CLI raíz ya instaló y la
-/// biblioteca no debe duplicar.
+/// Ejecuta la CLI de archivos. El llamador decide cómo resolver ffmpeg; el
+/// subcomando de AVI solo usa el ejecutable integrado. `studio_default` activa
+/// la receta `studio` cuando no se pasa `--preset` (contrato del subcomando
+/// AVI); `cancel_flag` conecta la cancelación con el handler del llamador, que
+/// la CLI raíz ya instaló y la biblioteca no debe duplicar.
+///
+/// Un `Err` es un error de validación previo al lote: no se escribió ninguna
+/// línea y el llamador lo presenta. Los fallos dentro del lote salen como
+/// [`BatchOutcome::Failed`], porque el lote ya escribió sus líneas.
 pub fn execute<F>(
     cli: Cli,
     json_mode: bool,
     studio_default: bool,
     resolve_ffmpeg: F,
     cancel_flag: Option<Arc<AtomicBool>>,
-) -> i32
+) -> Result<BatchOutcome, CliError>
 where
     F: Fn() -> Result<PathBuf, E>,
 {
@@ -603,7 +634,7 @@ where
             .ok()
             .and_then(|bin| verify_ffmpeg(&bin).ok());
         print_version(ff_ver.as_deref());
-        return 0;
+        return Ok(BatchOutcome::Done);
     }
 
     // Resolver parámetros de empaquetado/post-procesamiento con precedencia:
@@ -613,66 +644,63 @@ where
     // Validar bitrate explícito estructuralmente (64-320)
     if let AudioBitrate::Explicit(bitrate) = egress.audio_bitrate {
         if !(64..=320).contains(&bitrate) {
-            let err = E::EInvalidInput(format!(
-                "El bitrate de audio {bitrate} kbps está fuera del rango permitido (64-320)"
-            ));
-            eprintln!("Error: {}", err);
-            return err.exit_code();
+            return Err(usage_error(format!(
+                "El bitrate de audio ({bitrate} kbps) está fuera del rango permitido, de 64 a 320 kbps."
+            )));
         }
     }
 
     // Validar dry-blend (0.0 a 1.0)
     if !(0.0..=1.0).contains(&egress.dry_blend) {
-        let err = E::EInvalidInput(format!(
-            "El valor de dry-blend {} está fuera del rango permitido (0.0 - 1.0)",
+        return Err(usage_error(format!(
+            "El valor de --dry-blend ({}) está fuera del rango permitido, de 0 a 1.",
             egress.dry_blend
-        ));
-        eprintln!("Error: {}", err);
-        return err.exit_code();
+        )));
     }
 
     // Validar pause-gate-db (-40.0 a 0.0)
     if !(-40.0..=0.0).contains(&egress.pause_gate_db) {
-        let err = E::EInvalidInput(format!(
-            "El valor de pause-gate-db {} dB está fuera del rango permitido (-40 a 0)",
+        return Err(usage_error(format!(
+            "El valor de --pause-gate-db ({} dB) está fuera del rango permitido, de -40 a 0 dB.",
             egress.pause_gate_db
-        ));
-        eprintln!("Error: {}", err);
-        return err.exit_code();
+        )));
     }
 
     // Validar target-lufs (-36.0 a -12.0) si está presente.
     if let Some(lufs) = egress.target_lufs {
         if !(-36.0..=-12.0).contains(&lufs) {
-            let err = E::EInvalidInput(format!(
-                "El valor de target-lufs {:.1} LUFS está fuera del rango permitido (-36 a -12)",
-                lufs
-            ));
-            eprintln!("Error: {}", err);
-            return err.exit_code();
+            return Err(usage_error(format!(
+                "El valor de --target-lufs ({lufs:.1} LUFS) está fuera del rango permitido, de -36 a -12 LUFS."
+            )));
+        }
+    }
+
+    // Un prefijo o sufijo inválido es un error de uso, no de audio.
+    for (value, kind) in [
+        (cli.prefix.as_deref(), "prefijo"),
+        (cli.suffix.as_deref(), "sufijo"),
+    ] {
+        if let Some(value) = value {
+            validate_affix(value, kind).map_err(|e| usage_error(e.to_string()))?;
         }
     }
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
     // Expansión
-    let expanded = match expand_inputs(
+    let expanded = expand_inputs(
         &cli.input,
         cli.recursive,
         cli.output_dir.as_deref(),
         cli.suffix.as_deref().unwrap_or("_denoised"),
         cli.verbose,
         &cwd,
-    ) {
-        Ok(exp) => exp,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            return e.exit_code();
-        }
-    };
+    )
+    .map_err(|e| e.to_cli_error())?;
 
-    // Resolución de nombres
-    let resolved = match resolve_outputs(
+    // Resolución de nombres: sus errores son combinaciones de opciones que no
+    // se pueden cumplir, es decir, errores de uso.
+    let resolved = resolve_outputs(
         &expanded,
         cli.output_name.as_deref(),
         cli.output_dir.as_deref(),
@@ -681,13 +709,8 @@ where
         cli.recursive,
         &cwd,
         cli.verbose,
-    ) {
-        Ok(res) => res,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            return e.exit_code();
-        }
-    };
+    )
+    .map_err(|e| usage_error(e.to_string()))?;
 
     // El bitrate se valida contra el códec de cada salida antes del dry-run y
     // de ejecutar ffmpeg; un override incompatible no se ajusta en silencio.
@@ -697,36 +720,20 @@ where
             .extension()
             .map(|f| f.to_string_lossy().to_ascii_lowercase())
             .unwrap_or_default();
-        if let Err(e) = resolve_audio_bitrate(&ext, egress.audio_bitrate) {
-            eprintln!("Error: {}", e);
-            return e.exit_code();
-        }
+        resolve_audio_bitrate(&ext, egress.audio_bitrate)
+            .map_err(|e| usage_error(e.to_string()))?;
     }
 
     // Dry run
     if cli.dry_run {
-        return match run_dry_run(&resolved, cli.overwrite, cli.skip_existing, json_mode) {
-            Ok(()) => 0,
-            Err(e) => {
-                eprintln!("Error: {}", e);
-                e.exit_code()
-            }
-        };
+        run_dry_run(&resolved, cli.overwrite, cli.skip_existing, json_mode)
+            .map_err(|e| e.to_cli_error())?;
+        return Ok(BatchOutcome::Done);
     }
 
     // Localizar y verificar ffmpeg
-    let ffmpeg_bin = match resolve_ffmpeg() {
-        Ok(bin) => bin,
-        Err(e) => {
-            eprintln!("Error: {}", e);
-            return e.exit_code();
-        }
-    };
-
-    if let Err(e) = verify_ffmpeg(&ffmpeg_bin) {
-        eprintln!("Error: {}", e);
-        return e.exit_code();
-    }
+    let ffmpeg_bin = resolve_ffmpeg().map_err(|e| e.to_cli_error())?;
+    verify_ffmpeg(&ffmpeg_bin).map_err(|e| e.to_cli_error())?;
 
     let models_provider = crate::models::AviModelsProvider;
 
@@ -746,7 +753,7 @@ where
         cancel_flag,
     };
 
-    process_batch(&resolved, &params)
+    Ok(process_batch(&resolved, &params))
 }
 
 /// Resuelve los parámetros con el comportamiento del origen (sin preset =
@@ -829,38 +836,54 @@ pub struct BatchParams<'a> {
     pub cancel_flag: Option<Arc<AtomicBool>>,
 }
 
-/// Procesa un lote de elementos resueltos en orden y devuelve el código de
-/// salida más grave del lote: 1 (fallo de ffmpeg, modelo o E/S) prevalece sobre
-/// 2 (entrada, destino o ausencia de audio), y 3 sobre ambos.
-pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> i32 {
+/// Nombre de un archivo sin su carpeta, para las líneas de texto.
+fn file_label(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Procesa un lote de elementos resueltos en orden. El código de salida más
+/// grave del lote (en `BatchOutcome::Failed`) es 1 (fallo de ffmpeg, modelo o
+/// E/S) sobre 2 (entrada, destino o ausencia de audio); la cancelación (3)
+/// prevalece sobre ambos.
+///
+/// En texto abre un único indicador para todo el lote: una etapa por archivo
+/// que deja `✓ [i/n] nombre  duración · tamaño`, y la ruta de cada archivo
+/// generado sale por stdout. Con `json_mode` solo se escriben las líneas JSONL.
+pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> BatchOutcome {
     let mut summary = BatchSummary::default();
     let mut worst_exit_code = 0;
+    // Primer fallo de cada código: el resumen del lote usa el del peor.
+    let mut first_failure_1: Option<CliError> = None;
+    let mut first_failure_2: Option<CliError> = None;
     let total_items = items.len();
+
+    let progress = (!params.json_mode).then(PhaseProgress::new);
+    if !params.json_mode {
+        line::context(&format!(
+            "Limpieza de ruido · {}",
+            fmt::count(total_items as u64, "archivo", "archivos")
+        ));
+    }
 
     for (idx, item) in items.iter().enumerate() {
         if let Some(flag) = &params.cancel_flag {
             if flag.load(Ordering::SeqCst) {
-                return 3;
+                return BatchOutcome::Cancelled;
             }
         }
 
         let item_idx = idx + 1;
         let in_str = item.input.display().to_string();
         let out_str = item.output.display().to_string();
+        let label = format!("[{}/{}] {}", item_idx, total_items, file_label(&item.input));
 
-        let pb = if !params.json_mode {
-            let pb = indicatif::ProgressBar::new(100);
-            pb.set_style(
-                indicatif::ProgressStyle::default_bar()
-                    .template("[{elapsed_precise}] [{bar:40.cyan/blue}] {pos}% {msg}")
-                    .unwrap_or_else(|_| indicatif::ProgressStyle::default_bar())
-                    .progress_chars("=>-"),
-            );
-            eprintln!("[{}/{}] {} -> {}", item_idx, total_items, in_str, out_str);
-            pb
-        } else {
-            indicatif::ProgressBar::hidden()
-        };
+        // Un archivo que se va a omitir no abre etapa: no hay trabajo que medir.
+        let expects_skip = params.skip_existing && item.output.exists();
+        if let (Some(progress), false) = (&progress, expects_skip) {
+            progress.phase_with(&stage::DENOISING, &label);
+        }
 
         let start_time = std::time::Instant::now();
         let cancel_flag_clone = params.cancel_flag.clone();
@@ -882,58 +905,62 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> i32 {
             cancel_flag: cancel_flag_clone,
         };
 
-        let result = crate::pipeline::clean_file(&pipe_params, |pct, msg| {
-            if params.json_mode {
-                let line = JsonLogLine {
-                    input: in_str.clone(),
-                    output: out_str.clone(),
-                    status: ItemStatus::Ok,
-                    message: msg.to_string(),
-                    pct,
-                };
-                println!("{}", serde_json::to_string(&line).unwrap());
-                let _ = std::io::stdout().flush();
-            } else {
-                pb.set_position(pct as u64);
-                pb.set_message(msg.to_string());
-            }
-        });
+        let run = || {
+            crate::pipeline::clean_file(&pipe_params, |pct, msg| {
+                if params.json_mode {
+                    let line = JsonLogLine {
+                        input: in_str.clone(),
+                        output: out_str.clone(),
+                        status: ItemStatus::Ok,
+                        message: msg.to_string(),
+                        pct,
+                    };
+                    println!("{}", serde_json::to_string(&line).unwrap());
+                    let _ = std::io::stdout().flush();
+                } else if let Some(progress) = &progress {
+                    // `skipped` lo emite el pipeline antes de devolver
+                    // `Skipped`; ese caso no abre etapa y no se pinta.
+                    if !expects_skip {
+                        progress.live(live_line(&label, pct, msg, start_time.elapsed()));
+                    }
+                }
+            })
+        };
+        // El repintado periódico mantiene el tiempo y el latido sin terminal
+        // aunque el pipeline tarde entre dos avisos de avance.
+        let result = match &progress {
+            Some(progress) => progress.while_running(run),
+            None => run(),
+        };
 
-        let elapsed = start_time.elapsed().as_secs_f64();
+        let elapsed = start_time.elapsed();
 
         match result {
             Ok(crate::pipeline::ProcessStatus::Ok) => {
                 summary.ok += 1;
-                pb.finish_and_clear();
-                let size_mb = std::fs::metadata(&item.output)
-                    .map(|m| m.len() as f64 / (1024.0 * 1024.0))
-                    .unwrap_or(0.0);
+                let size_bytes = std::fs::metadata(&item.output)
+                    .map(|m| m.len())
+                    .unwrap_or(0);
 
                 if params.json_mode {
+                    let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
                     let line = JsonLogLine {
                         input: in_str,
                         output: out_str,
                         status: ItemStatus::Ok,
-                        message: format!("{:.2} MB, {:.1}s", size_mb, elapsed),
+                        message: format!("{:.2} MB, {:.1}s", size_mb, elapsed.as_secs_f64()),
                         pct: 100,
                     };
                     println!("{}", serde_json::to_string(&line).unwrap());
                     let _ = std::io::stdout().flush();
-                } else {
-                    eprintln!(
-                        "[{}/{}] done {} -> {} ({:.2} MB, {:.1}s)",
-                        item_idx,
-                        total_items,
-                        item.input.display(),
-                        item.output.display(),
-                        size_mb,
-                        elapsed
-                    );
+                } else if let Some(progress) = &progress {
+                    progress.done_as(&label);
+                    progress.note(&fmt::bytes(size_bytes));
+                    progress.result(None, &out_str);
                 }
             }
             Ok(crate::pipeline::ProcessStatus::Skipped) => {
                 summary.skipped += 1;
-                pb.finish_and_clear();
 
                 if params.json_mode {
                     let line = JsonLogLine {
@@ -945,26 +972,38 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> i32 {
                     };
                     println!("{}", serde_json::to_string(&line).unwrap());
                     let _ = std::io::stdout().flush();
-                } else {
+                } else if let Some(progress) = &progress {
+                    progress.discard_stage();
                     eprintln!(
-                        "[{}/{}] skipped {} -> {}",
-                        item_idx,
-                        total_items,
-                        item.input.display(),
-                        item.output.display()
+                        "{}",
+                        paint(
+                            Stream::Stderr,
+                            Tone::Dim,
+                            &format!("– {label}: ya existe la salida; se omite.")
+                        )
                     );
                 }
             }
             Err(e) => {
                 summary.failed += 1;
-                pb.finish_and_clear();
 
                 let code = e.exit_code();
                 if code == 3 {
-                    return 3;
+                    if let Some(progress) = &progress {
+                        progress.discard_stage();
+                    }
+                    return BatchOutcome::Cancelled;
                 }
                 if code == 1 || (code == 2 && worst_exit_code != 1) {
                     worst_exit_code = code;
+                }
+                let slot = if code == 1 {
+                    &mut first_failure_1
+                } else {
+                    &mut first_failure_2
+                };
+                if slot.is_none() {
+                    *slot = Some(e.to_cli_error());
                 }
 
                 if params.json_mode {
@@ -977,14 +1016,12 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> i32 {
                     };
                     println!("{}", serde_json::to_string(&line).unwrap());
                     let _ = std::io::stdout().flush();
-                } else {
+                } else if let Some(progress) = &progress {
+                    progress.discard_stage();
                     eprintln!(
-                        "[{}/{}] failed {} -> {}: {}",
-                        item_idx,
-                        total_items,
-                        item.input.display(),
-                        item.output.display(),
-                        e
+                        "{} {label}: {}",
+                        paint(Stream::Stderr, Tone::Error, FAIL),
+                        fmt::sentence(&e.to_string())
                     );
                 }
             }
@@ -992,15 +1029,60 @@ pub fn process_batch(items: &[ResolvedItem], params: &BatchParams) -> i32 {
     }
 
     if params.json_mode {
-        let sum_line = JsonSummaryLine { summary };
+        let sum_line = JsonSummaryLine {
+            summary: summary.clone(),
+        };
         println!("{}", serde_json::to_string(&sum_line).unwrap());
         let _ = std::io::stdout().flush();
-    } else {
-        eprintln!(
-            "Summary: ok={} failed={} skipped={}",
-            summary.ok, summary.failed, summary.skipped
-        );
     }
 
-    worst_exit_code
+    if worst_exit_code != 0 {
+        let first = if worst_exit_code == 1 {
+            first_failure_1
+        } else {
+            first_failure_2
+        };
+        let mut error = CliError::new(
+            if worst_exit_code == 1 {
+                ExitCode::Error
+            } else {
+                ExitCode::InvalidInput
+            },
+            first
+                .as_ref()
+                .map_or("denoise_failed", |first| first.reason.as_str())
+                .to_string(),
+            format!(
+                "No se pudo limpiar {} de {}.",
+                summary.failed,
+                fmt::count(total_items as u64, "archivo", "archivos")
+            ),
+        );
+        error.detail = first.and_then(|first| first.detail);
+        return BatchOutcome::Failed {
+            code: worst_exit_code,
+            error,
+        };
+    }
+
+    if let Some(progress) = progress {
+        let mut extra = fmt::count(summary.ok as u64, "archivo limpio", "archivos limpios");
+        if summary.skipped > 0 {
+            extra.push_str(&format!(
+                ", {}",
+                fmt::count(summary.skipped as u64, "omitido", "omitidos")
+            ));
+        }
+        progress.finish("Limpieza de ruido completada", &[extra]);
+    }
+
+    BatchOutcome::Done
+}
+
+/// Línea activa de un archivo: `… [i/n] nombre  42 %  mensaje  duración`.
+fn live_line(label: &str, pct: u32, message: &str, elapsed: std::time::Duration) -> String {
+    format!(
+        "{ACTIVE} {label}  {pct:>3} %  {message}  {}",
+        paint(Stream::Stderr, Tone::Dim, &fmt::duration(elapsed))
+    )
 }

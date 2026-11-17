@@ -371,7 +371,7 @@ impl VoiceStore {
     /// no existen.
     fn ensure_removable(&self, name: &VoiceName) -> Result<(), String> {
         if is_factory_name(name.as_str()) {
-            return Err(format!("La voz '{}' no se puede eliminar.", name));
+            return Err(format!("La voz {name} es de fábrica y no se puede borrar."));
         }
         if !self.voice_dir(name).is_dir() {
             return Err(format!("La voz '{}' no existe.", name));
@@ -554,13 +554,14 @@ pub struct SidecarError {
 
 impl std::fmt::Display for SidecarError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // La causa (texto de la biblioteca de JSON) viaja en `reason`, para el
+        // detalle del error; el mensaje nombra el fichero y dice qué pasó.
         write!(
             f,
-            "Los metadatos '{}' de la locución '{}' de la voz '{}' son ilegibles o están corruptos: {}",
+            "Los metadatos '{}' del audio sintetizado '{}' de la voz '{}' están dañados.",
             self.path.display(),
             self.label,
-            self.voice,
-            self.reason
+            self.voice
         )
     }
 }
@@ -739,7 +740,7 @@ impl SpeechStore {
         let meta = self.metadata_path(voice, label);
         if !wav.is_file() && !meta.is_file() {
             return Err(format!(
-                "La locución '{}' de la voz '{}' no existe.",
+                "El audio sintetizado '{}' de la voz '{}' no existe.",
                 label, voice
             ));
         }
@@ -881,12 +882,12 @@ impl std::fmt::Display for LocutionConflict {
         match self {
             Self::VoiceChanged { voice } => write!(
                 f,
-                "La voz '{}' cambió durante la síntesis; la locución no se guardó.",
+                "La voz '{}' cambió durante la síntesis y el audio sintetizado no se guardó.",
                 voice
             ),
             Self::LabelExists { label, .. } => write!(
                 f,
-                "Ya existe una locución con la etiqueta '{}' (usa --force).",
+                "Ya existe un audio sintetizado con la etiqueta '{}'.",
                 label
             ),
         }
@@ -2603,8 +2604,10 @@ mod tests {
         let entry = speech
             .find(&v("ryan"), &l("greeting"))
             .unwrap()
-            .expect("la locución debe existir");
-        let metadata = entry.metadata.expect("la locución guardada lleva sidecar");
+            .expect("el audio sintetizado debe existir");
+        let metadata = entry
+            .metadata
+            .expect("el audio sintetizado guardado lleva sidecar");
         assert_eq!(metadata.text, "Hola");
         // 1 muestra a 24 kHz → 1/24000 s
         assert!((metadata.duration_secs - 1.0 / 24_000.0).abs() < 1e-9);
@@ -2905,7 +2908,7 @@ mod tests {
         assert!(blocked.is_dir(), "el contenido nuevo no se publicó");
         assert!(
             !speech.voice_dir(&v("voz")).exists(),
-            "las locuciones viejas se borraron"
+            "los audios sintetizados viejos se borraron"
         );
         let leftovers: Vec<_> = std::fs::read_dir(voices.voice_dir(&v("voz")))
             .unwrap()
@@ -2994,7 +2997,7 @@ mod tests {
                 .unwrap()
                 .text,
             "x",
-            "sobrescribir reemplaza la locución"
+            "sobrescribir reemplaza el audio sintetizado"
         );
     }
 

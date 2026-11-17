@@ -324,7 +324,7 @@ fn warn_cwd_vendor_ignored(vendored: &Path) {
     #[cfg(test)]
     CWD_VENDOR_WARNING_COUNT.fetch_add(1, Ordering::Relaxed);
     avi_shared::console::warn(format_args!(
-        "Aviso: se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
+        "se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
         vendored.display(),
         CWD_VENDOR_OPT_IN
     ));
@@ -431,7 +431,7 @@ fn resolve_named_model_dir(
             return Ok(Some(vendored));
         }
         avi_shared::console::warn(format_args!(
-            "Aviso: se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
+            "se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
             vendored.display(),
             CWD_VENDOR_OPT_IN
         ));
@@ -482,10 +482,11 @@ fn select_model_dir<'a>(
 ) -> std::result::Result<&'a Path, ModelMissing> {
     match voice {
         VoiceEngine::Preset(_) => model_dir.ok_or(ModelMissing {
-            message: "El modelo de síntesis Qwen3-TTS no está provisionado.",
+            message: "Falta el modelo de síntesis.",
         }),
         VoiceEngine::Cloned(_) => base_model_dir.ok_or(ModelMissing {
-            message: "El modelo Base de Qwen3-TTS, necesario para sintetizar voces clonadas, no está provisionado. Ejecuta 'setup' primero.",
+            message:
+                "Falta el modelo de clonación de voz, necesario para sintetizar voces clonadas.",
         }),
     }
 }
@@ -646,7 +647,7 @@ impl Qwen3TtsEngine {
             );
             if state == avi_process::registry::Registered::Unknown {
                 avi_shared::console::warn(format_args!(
-                    "Aviso: no se puede observar al residente (pid {pid}); se conserva anotado"
+                    "no se puede observar al residente (pid {pid}); se conserva anotado"
                 ));
                 *lock_live(&self.live) = Some((pid, identity));
                 return;
@@ -655,7 +656,7 @@ impl Qwen3TtsEngine {
                 crate::resident::kill_tree_resident_by_pid(pid);
                 if !self.wait_resident_gone(pid) {
                     avi_shared::console::warn(format_args!(
-                        "Aviso: el residente (pid {pid}) sigue vivo tras el plazo de cierre; se conserva anotado"
+                        "el residente (pid {pid}) sigue vivo tras el plazo de cierre; se conserva anotado"
                     ));
                     *lock_live(&self.live) = Some((pid, identity));
                     return;
@@ -767,7 +768,7 @@ impl Qwen3TtsEngine {
             // reutilizar/arrancar se sigue tomando sobre el guard recuperado.
             let mut guard = self.resident.lock().unwrap_or_else(|poisoned| {
                 avi_shared::console::warn(
-                    "Aviso: mutex del residente poisoned; se sigue sobre el estado recuperado",
+                    "mutex del residente poisoned; se sigue sobre el estado recuperado",
                 );
                 poisoned.into_inner()
             });
@@ -784,7 +785,7 @@ impl Qwen3TtsEngine {
             {
                 // Residente degradado (crash o hang): rearranque determinista.
                 avi_shared::console::warn(format_args!(
-                    "Aviso: el residente de síntesis está degradado ({health_error}); se rearranca"
+                    "el residente de síntesis está degradado ({health_error}); se rearranca"
                 ));
                 let pid = guard
                     .as_ref()
@@ -2451,7 +2452,7 @@ mod tests {
         let preset = VoiceEngine::Preset("ryan".to_string());
         let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
         let err = select_model_dir(&cloned, Some(&custom), None).unwrap_err();
-        assert!(err.to_string().contains("Base"), "mensaje: {err}");
+        assert!(err.to_string().contains("clonación"), "mensaje: {err}");
         assert!(select_model_dir(&preset, None, Some(&base)).is_err());
     }
 

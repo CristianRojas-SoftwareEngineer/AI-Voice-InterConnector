@@ -33,12 +33,12 @@ impl ModelsProvider for AviModelsProvider {
         })?;
         if !store.is_provisioned(DPDFNET_MODEL) {
             return Err(E::EModelMissing(format!(
-                "El modelo {DPDFNET_MODEL} no está provisionado; ejecuta `ai-voice-interconnector setup` y comprueba el resultado con `ai-voice-interconnector doctor`"
+                "El modelo de limpieza de ruido {DPDFNET_MODEL} no está provisionado."
             )));
         }
         store.verify_artifact(DPDFNET_MODEL).map_err(|e| {
             E::EModelMissing(format!(
-                "El modelo {DPDFNET_MODEL} no supera la verificación de integridad: {e}; ejecuta `ai-voice-interconnector setup --force-update` para repararlo"
+                "El modelo de limpieza de ruido {DPDFNET_MODEL} no supera la verificación de integridad: {e}."
             ))
         })?;
         Ok(ModelPaths {
@@ -79,8 +79,7 @@ impl ModelsProvider for FakeProvider {
                 )));
             } else {
                 return Err(E::EModelMissing(
-                    "Modelo no encontrado (simulado); ejecuta `ai-voice-interconnector setup`"
-                        .to_string(),
+                    "Modelo no encontrado (simulado).".to_string(),
                 ));
             }
         }

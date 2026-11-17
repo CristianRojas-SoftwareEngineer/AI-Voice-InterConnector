@@ -44,6 +44,7 @@ dependencies = [
  "avi-shared",
  "avi-store",
  "avi-stt",
+ "avi-term",
  "avi-translation",
  "avi-tts",
  "base64 0.22.1",
@@ -214,6 +215,7 @@ version = "0.1.0"
 dependencies = [
  "alsa-sys",
  "anyhow",
+ "avi-term",
  "cpal",
  "hound",
  "rubato",
@@ -265,9 +267,10 @@ dependencies = [
  "avi-process",
  "avi-shared",
  "avi-store",
+ "avi-term",
  "flate2",
  "hf-hub",
- "indicatif 0.18.6",
+ "indicatif",
  "libc",
  "reqwest 0.12.28",
  "same-file",
@@ -299,12 +302,12 @@ dependencies = [
 name = "avi-shared"
 version = "0.1.0"
 dependencies = [
+ "avi-term",
  "directories",
  "ort",
  "serde",
  "serde_json",
  "tempfile",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -337,6 +340,13 @@ dependencies = [
  "avi-shared",
  "avi-store",
  "ort",
+]
+
+[[package]]
+name = "avi-term"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -722,19 +732,6 @@ dependencies = [
  "ryu",
  "serde",
  "static_assertions",
-]
-
-[[package]]
-name = "console"
-version = "0.15.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "054ccb5b10f9f2cbf51eb355ca1d05c2d279ce1804688d0db74b4733a5aeafd8"
-dependencies = [
- "encode_unicode",
- "libc",
- "once_cell",
- "unicode-width",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1139,11 +1136,12 @@ version = "1.0.0"
 dependencies = [
  "anyhow",
  "avi-audio",
+ "avi-core",
  "avi-shared",
  "avi-store",
+ "avi-term",
  "clap",
  "hound",
- "indicatif 0.17.11",
  "ort",
  "regex",
  "rustfft",
@@ -1958,24 +1956,11 @@ dependencies = [
 
 [[package]]
 name = "indicatif"
-version = "0.17.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "183b3088984b400f4cfac3620d5e076c84da5364016b4f49473de574b2586235"
-dependencies = [
- "console 0.15.11",
- "number_prefix",
- "portable-atomic",
- "unicode-width",
- "web-time",
-]
-
-[[package]]
-name = "indicatif"
 version = "0.18.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9433806cd6b4ec1aba79c021c7e4c58fb4c3b9977c085062e611ac929998fb0c"
 dependencies = [
- "console 0.16.4",
+ "console",
  "portable-atomic",
  "unicode-width",
  "unit-prefix",
@@ -2507,12 +2492,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "number_prefix"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 
 [[package]]
 name = "objc2"
@@ -3969,7 +3948,7 @@ dependencies = [
  "derive_builder",
  "esaxx-rs",
  "getrandom 0.3.4",
- "indicatif 0.18.6",
+ "indicatif",
  "itertools",
  "log",
  "macro_rules_attribute",
@@ -5076,6 +5055,7 @@ dependencies = [
  "avi-process",
  "avi-shared",
  "avi-store",
+ "avi-term",
  "clap",
  "filetime",
  "flate2",

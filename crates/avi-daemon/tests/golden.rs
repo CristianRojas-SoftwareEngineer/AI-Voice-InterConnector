@@ -749,10 +749,27 @@ async fn voices_clone_started_event_names_the_voice_without_human_text() {
 /// Invariante del protocolo: los eventos del stream no llevan texto humano. El
 /// cliente es el dueño de los textos de fase, así que `started` no nombra la
 /// operación y ningún `progress` lleva `message` ni un `percent` inerte; solo
-/// la etapa en `stage`.
+/// la etapa en `stage`. Los eventos `transcript` y `translation` llevan texto
+/// del usuario, no de interfaz: exactamente las claves `event`, `text` y
+/// `schema_version`.
 fn assert_events_carry_no_human_text(events: &[Value]) {
     for e in events {
         match e["event"].as_str() {
+            Some("transcript") | Some("translation") => {
+                let mut keys: Vec<&str> = e
+                    .as_object()
+                    .expect("el evento es un objeto")
+                    .keys()
+                    .map(String::as_str)
+                    .collect();
+                keys.sort_unstable();
+                assert_eq!(
+                    keys,
+                    ["event", "schema_version", "text"],
+                    "forma de `transcript` y `translation`: {e:?}"
+                );
+                assert!(e["text"].is_string(), "`text` es una cadena: {e:?}");
+            }
             Some("started") => {
                 assert!(
                     e.get("operation").is_none(),
@@ -1643,6 +1660,66 @@ async fn synthesize_announces_translation_and_matches_the_direct_route() {
         Value::String(local),
         "el daemon traduce igual que la ruta directa: {result}"
     );
+}
+
+/// `/dub` emite `transcript` justo después de la transcripción y `translation`
+/// justo después de la traducción, los dos antes del primer `audio`: el cliente
+/// los muestra antes de que suene el doblaje. El motor de síntesis apunta a un
+/// binario inexistente, así que el stream termina con error tras los textos y la
+/// prueba no necesita reproducir nada.
+#[cfg(all(feature = "native-stt", feature = "native-translation"))]
+#[tokio::test]
+#[ignore = "requiere Parakeet y los modelos de traducción"]
+async fn dub_emits_transcript_and_translation_in_order() {
+    let mut state = DaemonState::with_stores(
+        VoiceStore::at(process_root().join("dub-texts/voices")),
+        SpeechStore::at(process_root().join("dub-texts/speech")),
+    )
+    .expect("requiere modelos provisionados para cargar los motores del daemon");
+    #[allow(clippy::disallowed_methods)]
+    let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
+    state.tts_engine.binary_path = Some(missing.clone());
+    state.tts_engine.model_dir = Some(missing);
+    prepare_shared_env();
+    let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
+    let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_responses_16k.wav"))
+        .expect("el WAV corpus debe cargarse");
+    let audio: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let (status, bytes) = send_to(
+        Arc::new(state),
+        post_json(
+            "/dub",
+            serde_json::json!({
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio),
+                "source_language": "es",
+                "target_language": "en",
+                "voice": "ryan",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = ndjson_events(&bytes);
+    assert_events_carry_no_human_text(&events);
+    let position = |pred: &dyn Fn(&Value) -> bool| events.iter().position(pred);
+    let transcribe_last = events
+        .iter()
+        .rposition(|e| e["event"] == "progress" && e["stage"] == "transcribe")
+        .expect("la etapa de transcripción se anuncia");
+    let transcript = position(&|e| e["event"] == "transcript").expect("evento transcript");
+    let translate_first = position(&|e| e["event"] == "progress" && e["stage"] == "translate")
+        .expect("la etapa de traducción se anuncia");
+    let translate_last = events
+        .iter()
+        .rposition(|e| e["event"] == "progress" && e["stage"] == "translate")
+        .expect("la etapa de traducción se anuncia");
+    let translation = position(&|e| e["event"] == "translation").expect("evento translation");
+    assert!(transcribe_last < transcript, "{events:?}");
+    assert!(transcript < translate_first, "{events:?}");
+    assert!(translate_last < translation, "{events:?}");
+    if let Some(first_audio) = position(&|e| e["event"] == "audio") {
+        assert!(translation < first_audio, "{events:?}");
+    }
 }
 
 /// El idioma de destino `es` y `en` de un preset producen audio no vacío.

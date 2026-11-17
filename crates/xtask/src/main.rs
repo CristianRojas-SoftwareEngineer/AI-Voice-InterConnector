@@ -514,7 +514,7 @@ enum Commands {
 
 fn main() -> Result<()> {
     // Bootstrap: consola en UTF-8 antes de cualquier salida.
-    avi_shared::force_utf8_console();
+    avi_term::line::init_console();
     let cmd = localize_command(Cli::command());
     let matches = cmd
         .try_get_matches()
@@ -1880,7 +1880,7 @@ mod tests {
         for main in [&xtask_main, &product_main] {
             let text = std::fs::read_to_string(main).unwrap();
             assert!(
-                text.contains("avi_shared::force_utf8_console"),
+                text.contains("avi_term::line::init_console"),
                 "{} debe llamar al helper compartido",
                 main.display()
             );

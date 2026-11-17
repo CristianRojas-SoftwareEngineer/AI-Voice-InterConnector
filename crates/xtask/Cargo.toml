@@ -13,6 +13,8 @@ regex = "1.10"
 serde_json = "1.0"
 # Tipos del bundle y pines desde la fuente única, sin red ni TLS.
 avi-shared = { path = "../avi-shared" }
+# Arranque de consola y formato de tamaños compartidos con el producto.
+avi-term = { path = "../avi-term" }
 # Primitivas de proceso compartidas con el producto, sin red.
 avi-process = { path = "../avi-process" }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }

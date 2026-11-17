@@ -27,10 +27,10 @@
 //! Nunca se toca nada fuera del staging que trajo la operación.
 
 use crate::faults::{self, FaultPoint};
-use crate::progress::PhaseProgress;
 use crate::removal::{retire, PathRemover, Retirement};
 use crate::{setup, LifecycleError};
 use avi_process::{spawn_with_allowlist_env, RestrictedSpawnRequest, Scheduling, StdinSpec};
+use avi_term::progress::PhaseProgress;
 use std::path::{Path, PathBuf};
 
 /// Variable interna con el PID del `self update` que lanza el traspaso.
@@ -112,7 +112,7 @@ pub fn interpret_handover_status(code: Option<i32>) -> anyhow::Result<HandoverOu
         )),
         Some(ROLLED_BACK_CODE) => Err(LifecycleError::rolled_back(format!(
             "el traspaso al binario nuevo falló y restauró la versión anterior \
-             (código {ROLLED_BACK_CODE}): reintenta `self update`"
+             (código {ROLLED_BACK_CODE})"
         ))
         .into()),
         other => Err(anyhow::anyhow!(
@@ -277,7 +277,7 @@ fn inherited_stdio_file(end: StdioEnd) -> anyhow::Result<std::fs::File> {
 /// valida y conserva la misma causa estructurada del proceso hijo.
 pub fn partial_setup_message(cause: &ModelsCause) -> String {
     format!(
-        "la provisión de modelos no se completó durante el traspaso ({}: {}). El programa \
+        "La provisión de modelos no se completó durante el traspaso ({}: {}). El programa \
          queda actualizado y {}",
         cause.reason,
         cause.message,
@@ -296,23 +296,23 @@ pub fn partial_setup_message(cause: &ModelsCause) -> String {
 pub fn cleanup_staging(
     staging: &Path,
     remover: &dyn PathRemover,
-    progress: &mut PhaseProgress,
+    progress: &PhaseProgress,
 ) -> Retirement {
     let retirement = avi_process::current_owner_token()
         .map_or(Retirement::Kept, |own| retire(staging, remover, &own));
     match retirement {
         Retirement::Removed => {}
         Retirement::Scheduled(scheduling) => {
-            progress.close_line();
-            eprintln!("  {}", scheduled_staging_message(staging, scheduling));
+            progress.yield_line();
+            avi_term::line::warn(scheduled_staging_message(staging, scheduling));
         }
         Retirement::Kept => {
-            progress.close_line();
-            eprintln!(
-                "  no se pudo borrar {}: lo recogerá la recuperación de la \
+            progress.yield_line();
+            avi_term::line::warn(format!(
+                "No se pudo borrar {}: lo recogerá la recuperación de la \
                  siguiente operación",
                 staging.display()
-            );
+            ));
         }
     }
     retirement
@@ -323,7 +323,7 @@ pub fn cleanup_staging(
 /// recoge el resto.
 pub fn scheduled_staging_message(staging: &Path, scheduling: Scheduling) -> String {
     let base = format!(
-        "el staging se borrará al terminar este proceso: {}",
+        "La descarga a medio aplicar se borrará al terminar este proceso: {}",
         staging.display()
     );
     match scheduling {
@@ -352,7 +352,7 @@ mod tests {
             message.contains("model_unavailable: modelo: 404"),
             "{message}"
         );
-        assert!(!message.contains("basta reintentar"), "{message}");
+        assert!(!message.contains("puedes reintentarlo"), "{message}");
         assert!(message.contains("reintentar no lo resuelve"), "{message}");
     }
 
@@ -364,7 +364,7 @@ mod tests {
             message: "modelo: sin red".to_string(),
         });
         assert!(
-            message.ends_with("y basta reintentar con setup"),
+            message.ends_with("y puedes reintentarlo con `ai-voice-interconnector setup`"),
             "{message}"
         );
     }
@@ -483,7 +483,7 @@ mod tests {
                     remove_ok: true,
                     schedule: Ok(()),
                 },
-                &mut PhaseProgress::new()
+                &PhaseProgress::new()
             ),
             Retirement::Removed
         );
@@ -494,7 +494,7 @@ mod tests {
                     remove_ok: false,
                     schedule: Ok(()),
                 },
-                &mut PhaseProgress::new()
+                &PhaseProgress::new()
             ),
             Retirement::Scheduled(Scheduling::Detached)
         );
@@ -505,7 +505,7 @@ mod tests {
                     remove_ok: false,
                     schedule: Err(anyhow::anyhow!("x")),
                 },
-                &mut PhaseProgress::new()
+                &PhaseProgress::new()
             ),
             Retirement::Kept
         );
@@ -517,7 +517,8 @@ mod tests {
     fn scheduled_staging_message_depends_on_scheduling() {
         let staging = Path::new("/staging/update-0.24.0");
         let detached = scheduled_staging_message(staging, Scheduling::Detached);
-        assert!(detached.starts_with("el staging se borrará al terminar este proceso: "));
+        assert!(detached
+            .starts_with("La descarga a medio aplicar se borrará al terminar este proceso: "));
         assert!(!detached.contains("recuperación"));
         let attached = scheduled_staging_message(staging, Scheduling::Attached);
         assert!(attached.starts_with(&detached));

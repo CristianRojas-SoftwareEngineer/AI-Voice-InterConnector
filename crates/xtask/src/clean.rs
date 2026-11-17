@@ -379,9 +379,9 @@ impl Size {
     /// Texto legible; una cota inferior se marca como incompleta.
     pub(crate) fn text(self) -> String {
         if self.incomplete {
-            format!("≥ {} (incompleto)", avi_shared::human_bytes(self.bytes))
+            format!("≥ {} (incompleto)", avi_term::fmt::bytes(self.bytes))
         } else {
-            avi_shared::human_bytes(self.bytes)
+            avi_term::fmt::bytes(self.bytes)
         }
     }
 }
@@ -969,7 +969,15 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
         }
     }
     if !failed.is_empty() {
-        eprintln!("No se pudieron borrar {} ruta(s):", failed.len());
+        eprintln!(
+            "{} {}:",
+            if failed.len() == 1 {
+                "No se pudo borrar"
+            } else {
+                "No se pudieron borrar"
+            },
+            avi_term::fmt::count(failed.len() as u64, "ruta", "rutas")
+        );
         for (p, e) in &failed {
             eprintln!("  ✗ {}: {}", p.display(), e);
         }
@@ -989,10 +997,14 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
 /// la próxima limpieza retira el resto.
 fn closing_message(removed: usize, deferred: Option<avi_process::Scheduling>) -> String {
     match deferred {
-        None => format!("Limpieza completada: {removed} ruta(s)."),
+        None => format!(
+            "Limpieza completada: {}.",
+            avi_term::fmt::count(removed as u64, "ruta", "rutas")
+        ),
         Some(scheduling) => {
             let mut msg = format!(
-                "Limpieza programada: {removed} ruta(s) borradas; `target/` se termina de borrar en segundo plano al salir este comando."
+                "Limpieza programada: {}; `target/` se termina de borrar en segundo plano al salir este comando.",
+                avi_term::fmt::count(removed as u64, "ruta borrada", "rutas borradas")
             );
             if scheduling == avi_process::Scheduling::Attached {
                 msg.push_str(" Si se interrumpe cargo antes, la próxima limpieza retira el resto.");
@@ -1008,7 +1020,8 @@ mod tests {
 
     #[test]
     fn closing_message_without_deferred_is_completed() {
-        assert_eq!(closing_message(3, None), "Limpieza completada: 3 ruta(s).");
+        assert_eq!(closing_message(3, None), "Limpieza completada: 3 rutas.");
+        assert_eq!(closing_message(1, None), "Limpieza completada: 1 ruta.");
     }
 
     #[test]
@@ -1016,14 +1029,14 @@ mod tests {
         let msg = closing_message(2, Some(avi_process::Scheduling::Detached));
         assert_eq!(
             msg,
-            "Limpieza programada: 2 ruta(s) borradas; `target/` se termina de borrar en segundo plano al salir este comando."
+            "Limpieza programada: 2 rutas borradas; `target/` se termina de borrar en segundo plano al salir este comando."
         );
     }
 
     #[test]
     fn closing_message_attached_adds_interruption_note() {
         let msg = closing_message(2, Some(avi_process::Scheduling::Attached));
-        assert!(msg.starts_with("Limpieza programada: 2 ruta(s) borradas;"));
+        assert!(msg.starts_with("Limpieza programada: 2 rutas borradas;"));
         assert!(msg.ends_with("Si se interrumpe cargo antes, la próxima limpieza retira el resto."));
     }
 

@@ -55,13 +55,12 @@ impl Kind {
         }
     }
 
-    /// Prefijo de la línea de cierre, distinto porque la consecuencia no es la
-    /// misma: una no destructiva solo dice lo que va a hacer, la destructiva
-    /// recuerda que borra.
-    fn question(self) -> &'static str {
+    /// Línea con la que se cancela, distinta porque la consecuencia no es la
+    /// misma: una destructiva aclara que no se ha borrado nada.
+    fn cancellation(self) -> &'static str {
         match self {
-            Self::NonDestructive => "¿Continuar?",
-            Self::Destructive => "Esto eliminará lo indicado. ¿Continuar?",
+            Self::NonDestructive => "Cancelado.",
+            Self::Destructive => "Cancelado; no se ha borrado nada.",
         }
     }
 
@@ -97,6 +96,9 @@ impl PlanEntry {
 #[derive(Debug)]
 pub struct Confirmation<'a> {
     pub kind: Kind,
+    /// Pregunta concreta de la operación, sin el sufijo `[s/N]` ni `[S/n]`, que
+    /// pone `confirm` según el tipo. Dice qué se va a hacer o a borrar.
+    pub question: &'a str,
     /// Resumen de cambios de la operación no destructiva (versión, programa,
     /// `PATH`, modelos). Se imprime siempre.
     pub summary: &'a [String],
@@ -150,10 +152,9 @@ pub fn confirm<R: BufRead>(
             // Sin terminal, lo no destructivo procede.
             Kind::NonDestructive => Ok(Decision::Proceed),
             // Sin terminal, lo destructivo exige `--yes`.
-            Kind::Destructive => Err(LifecycleError::confirmation_required(format!(
-                "operación destructiva sin terminal y sin `--yes`: {}",
-                crate::APP_NAME
-            ))
+            Kind::Destructive => Err(LifecycleError::confirmation_required(
+                "Esta orden necesita tu confirmación, pero no hay una terminal para preguntarte.",
+            )
             .into()),
         };
     }
@@ -162,7 +163,7 @@ pub fn confirm<R: BufRead>(
     write!(
         out,
         "{} {} ",
-        request.kind.question(),
+        request.question,
         request.kind.prompt_literal()
     )?;
     out.flush()?;
@@ -171,7 +172,7 @@ pub fn confirm<R: BufRead>(
     if affirmative(&line, request.kind) {
         Ok(Decision::Proceed)
     } else {
-        writeln!(out, "Cancelado.")?;
+        writeln!(out, "{}", request.kind.cancellation())?;
         Ok(Decision::Cancelled)
     }
 }
@@ -206,7 +207,7 @@ fn print_plan(request: &Confirmation<'_>, out: &mut dyn Write) -> anyhow::Result
                 out,
                 "  {} ({})",
                 entry.path.display(),
-                crate::human_bytes(size)
+                avi_term::fmt::bytes(size)
             )?,
             None => writeln!(out, "  {}", entry.path.display())?,
         }
@@ -249,6 +250,7 @@ mod tests {
     ) -> Confirmation<'a> {
         Confirmation {
             kind,
+            question: "¿Hacer la prueba?",
             summary,
             entries,
             assume_yes,
@@ -293,8 +295,8 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("[S/n]"), "literal de la celda: {out}");
         assert!(
-            out.ends_with("[S/n] "),
-            "el prompt termina con espacio: {out:?}"
+            out.ends_with("¿Hacer la prueba? [S/n] "),
+            "el prompt lleva la pregunta concreta y termina con espacio: {out:?}"
         );
         assert!(!out.contains("[s/N]"), "no es la celda destructiva: {out}");
 
@@ -311,10 +313,29 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("[s/N]"), "literal de la celda: {out}");
         assert!(
-            out.ends_with("[s/N] Cancelado.\n"),
-            "el prompt termina con espacio: {out:?}"
+            out.ends_with("¿Hacer la prueba? [s/N] Cancelado; no se ha borrado nada.\n"),
+            "el prompt termina con espacio y la cancelación aclara que no se borró: {out:?}"
         );
-        assert!(out.contains("Cancelado."), "cancela sin error: {out}");
+        // La cancelación de una operación no destructiva es la corta.
+        let mut out = Vec::new();
+        let decision = confirm(
+            &request(Kind::NonDestructive, &summary, &[], false, false, true),
+            &mut Cursor::new("n\n"),
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(decision, Decision::Cancelled);
+        assert!(String::from_utf8(out)
+            .unwrap()
+            .ends_with("[S/n] Cancelado.\n"));
+        let mut out = Vec::new();
+        confirm(
+            &request(Kind::Destructive, &summary, &entries, false, false, true),
+            &mut Cursor::new("\n"),
+            &mut out,
+        )
+        .unwrap();
+        let out = String::from_utf8(out).unwrap();
         assert!(
             out.contains(&dest.display().to_string()) && out.contains("9 B)"),
             "la celda destructiva lista rutas con tamaños: {out}"
@@ -413,7 +434,8 @@ mod tests {
         let err = confirm(
             &Confirmation {
                 kind: Kind::Destructive,
-                summary: &["cleanup borrará modelos y habla sintetizada".to_string()],
+                question: "¿Borrar lo indicado?",
+                summary: &["cleanup borrará modelos y audios sintetizados".to_string()],
                 entries: &entries,
                 assume_yes: false,
                 dry_run: false,
@@ -433,6 +455,11 @@ mod tests {
             2,
             "error de uso, no un error genérico"
         );
+        assert_eq!(
+            failure.message,
+            "Esta orden necesita tu confirmación, pero no hay una terminal para preguntarte.",
+            "el mensaje no lleva el nombre de la aplicación: la solución completa la orden"
+        );
         // Que la respuesta fuera `y` no cambia nada: sin terminal no hay a quién
         // preguntarle, y el criterio es exigir `--yes`.
         assert_eq!(snapshot(&dir), before, "no se borra nada sin `--yes`");
@@ -445,6 +472,7 @@ mod tests {
             confirm(
                 &Confirmation {
                     kind: Kind::Destructive,
+                    question: "¿Borrar lo indicado?",
                     summary: &[],
                     entries: &entries,
                     assume_yes: true,
@@ -477,6 +505,7 @@ mod tests {
         let decision = confirm(
             &Confirmation {
                 kind: Kind::Destructive,
+                question: "¿Borrar lo indicado?",
                 summary: &summary,
                 entries: &entries,
                 assume_yes: false,
@@ -516,6 +545,7 @@ mod tests {
                 confirm(
                     &Confirmation {
                         kind: Kind::Destructive,
+                        question: "¿Borrar lo indicado?",
                         summary: &summary,
                         entries: &entries,
                         assume_yes: yes,

@@ -48,9 +48,13 @@ pub(crate) fn run(check: bool, root: Option<&Path>) -> Result<()> {
     verify_reachable_are_declared(&base, &reachable)?;
     verify_used_features_reachable(&base, &reachable)?;
     println!(
-        "cadena de features coherente: {} feature(s) del paquete raíz, {} pareja(s) alcanzable(s)",
-        declared.len(),
-        reachable.len()
+        "cadena de features coherente: {} del paquete raíz, {}",
+        avi_term::fmt::count(declared.len() as u64, "feature", "features"),
+        avi_term::fmt::count(
+            reachable.len() as u64,
+            "pareja alcanzable",
+            "parejas alcanzables"
+        )
     );
     Ok(())
 }
@@ -266,7 +270,10 @@ fn fail(errors: Vec<String>) -> Result<()> {
     for error in &errors {
         println!("ERROR: {error}");
     }
-    bail!("{} divergencia(s) en la cadena de features", errors.len())
+    bail!(
+        "{} en la cadena de features",
+        avi_term::fmt::count(errors.len() as u64, "divergencia", "divergencias")
+    )
 }
 
 #[cfg(test)]

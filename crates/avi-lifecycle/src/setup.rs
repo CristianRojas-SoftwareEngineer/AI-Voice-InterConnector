@@ -276,7 +276,7 @@ pub fn retry_advice(cause_reason: &str) -> &'static str {
             "reintentar no lo resuelve: el modelo fijado ya no está disponible en Hugging \
              Face y hace falta una versión que vuelva a fijarlo"
         }
-        _ => "basta reintentar con setup",
+        _ => "puedes reintentarlo con `ai-voice-interconnector setup`",
     }
 }
 
@@ -376,6 +376,10 @@ pub struct Outcome {
     /// publica como `models_provisioned`, y no distingue los que se descargaron de los
     /// que ya estaban: el contrato solo promete el conjunto disponible.
     pub provisioned: Vec<String>,
+    /// Cuántos de esos repos hubo que descargar en esta pasada.
+    pub downloaded: usize,
+    /// Bytes y duración de lo descargado; `None` si no hubo nada que descargar.
+    pub stats: Option<ProvisionStats>,
     /// El usuario rechazó la confirmación; no se tocó el disco.
     pub cancelled: bool,
 }
@@ -417,7 +421,7 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
     if options.force_update {
         outcome.purge = purge(store);
         for (name, reason) in &outcome.purge.failures {
-            eprintln!("  no se pudo purgar {name}: {reason}");
+            avi_term::line::warn(format!("No se pudo purgar {name}: {reason}"));
         }
     }
 
@@ -430,12 +434,18 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
             }
         })?;
     outcome.provisioned = provisioned.provisioned;
+    outcome.downloaded = provisioned.downloaded.len();
+    outcome.stats = provisioned.stats;
 
     // 5. Poda tras éxito: las revisiones fuera del pin vigente.
     //    Un fallo aquí no invalida lo provisionado: se informa y se sigue.
     outcome.pruned = prune_obsolete()?;
     for (name, reason) in &outcome.pruned.failures {
-        eprintln!("  no se pudo podar {name}: {reason}");
+        // Se nombra el modelo, no la ruta de su revisión.
+        let model = name.split("/snapshots/").next().unwrap_or(name);
+        avi_term::line::warn(format!(
+            "No se pudo podar una revisión antigua de {model}: {reason}"
+        ));
     }
 
     Ok(outcome)
@@ -443,10 +453,15 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
 
 /// Línea de la confirmación: cuántos modelos se descargan y su tamaño estimado.
 fn download_summary(pending: &Pending) -> String {
+    let verb = if pending.models.len() == 1 {
+        "descargará"
+    } else {
+        "descargarán"
+    };
     format!(
-        "Se descargarán {} modelo(s), unos {}.",
-        pending.models.len(),
-        crate::human_bytes(pending.estimated_bytes())
+        "Se {verb} {}, unos {}.",
+        avi_term::fmt::count(pending.models.len() as u64, "modelo", "modelos"),
+        avi_term::fmt::bytes(pending.estimated_bytes())
     )
 }
 
@@ -490,9 +505,15 @@ fn confirm_plan(plan: &Pending, purges: bool, options: &Options) -> anyhow::Resu
     let Some((kind, summary)) = confirmation_summary(plan, purges, options) else {
         return Ok(true);
     };
+    let question = if purges {
+        "¿Borrar los modelos descargados y descargarlos de nuevo?"
+    } else {
+        "¿Descargar los modelos?"
+    };
     let decision = crate::confirm::confirm(
         &crate::confirm::Confirmation {
             kind,
+            question,
             summary: &summary,
             entries: &[],
             assume_yes: options.assume_yes,
@@ -517,8 +538,11 @@ pub(crate) mod tests {
     fn retry_advice_depends_on_the_cause() {
         let rejected = retry_advice("model_unavailable");
         assert!(rejected.contains("reintentar no lo resuelve"), "{rejected}");
-        assert!(!rejected.contains("basta reintentar"), "{rejected}");
-        assert_eq!(retry_advice("network_error"), "basta reintentar con setup");
+        assert!(!rejected.contains("puedes reintentarlo"), "{rejected}");
+        assert_eq!(
+            retry_advice("network_error"),
+            "puedes reintentarlo con `ai-voice-interconnector setup`"
+        );
     }
 
     #[test]
@@ -642,8 +666,12 @@ pub(crate) mod tests {
         assert_eq!(all.estimated_bytes(), 5_865_044_386);
         assert_eq!(
             download_summary(&all),
-            "Se descargarán 6 modelo(s), unos 5,9 GB."
+            "Se descargarán 6 modelos, unos 5,9 GB."
         );
+        let one = Pending {
+            models: vec![CLONING_MODEL.to_string()],
+        };
+        assert!(download_summary(&one).starts_with("Se descargará 1 modelo, "));
     }
 
     /// Con `--force-update` la confirmación es una sola, destructiva, y su

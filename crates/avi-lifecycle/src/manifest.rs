@@ -76,10 +76,16 @@ pub fn validate_bundle(triple: &str, dir: &Path) -> Result<Vec<String>, Lifecycl
     let section = target_section(triple)?;
     let missing = missing_in(&section, dir);
     if !missing.is_empty() {
+        let which = if missing.len() == 1 {
+            "falta 1 archivo obligatorio".to_string()
+        } else {
+            format!("faltan {} obligatorios", {
+                avi_term::fmt::count(missing.len() as u64, "archivo", "archivos")
+            })
+        };
         return Err(LifecycleError::bundle_invalid(format!(
-            "el bundle en {} está incompleto: faltan {} archivo(s) obligatorio(s): {}",
+            "el bundle en {} está incompleto: {which}: {}",
             dir.display(),
-            missing.len(),
             missing.join(", ")
         )));
     }

@@ -6,37 +6,35 @@
 
 //! Vista del progreso de la provisión de modelos, por stderr.
 //!
-//! Dibuja un encabezado con el número de modelos, una barra por modelo
-//! etiquetada `[i/N] nombre` con su tamaño real, velocidad, tiempo transcurrido
-//! y restante, y un cierre con el total. Cada barra se borra al terminar
-//! (`finish_and_clear`) y se sustituye por una línea permanente con el tamaño,
-//! la duración y la velocidad del modelo: así no queda en pantalla una línea
-//! rellenada con espacios ni texto pegado a ella, y lo que se copia de la
-//! terminal es legible. Sin terminal, `indicatif` no dibuja las barras, pero el
-//! encabezado, una línea de avance cada quince segundos por modelo, las líneas
-//! de los modelos terminados y el cierre salen igual: el avance sigue siendo
-//! visible en el log, que es lo que distingue una descarga larga de un flujo
-//! mudo. Cuando `AVI_SETUP_WATCHDOG` está definido, envía además al padre un
+//! Dibuja un encabezado con el número de modelos y una barra por modelo
+//! etiquetada `[i/N] nombre` con su porcentaje, tamaño real, velocidad media y
+//! tiempo restante. La barra se repinta cada 250 ms aunque no lleguen bytes, y
+//! el tiempo restante sale de la velocidad media global de la provisión. Cada
+//! barra se borra al terminar (`finish_and_clear`) y se sustituye por una línea
+//! permanente con el tamaño, la duración y la velocidad del modelo: así no queda
+//! en pantalla una línea rellenada con espacios ni texto pegado a ella, y lo que
+//! se copia de la terminal es legible. El total de la provisión no se escribe
+//! aquí: lo devuelve [`ProvisionView::finish`] y el cierre del comando lo
+//! cuenta. Sin terminal, `indicatif` no dibuja las barras, pero el encabezado,
+//! una línea de avance cada quince segundos por modelo y las líneas de los
+//! modelos terminados salen igual: el avance sigue siendo visible en el log, que
+//! es lo que distingue una descarga larga de un flujo mudo. Cuando `AVI_SETUP_WATCHDOG` está definido, envía además al padre un
 //! latido interno de bytes cada cinco segundos, aunque se haya silenciado el
 //! progreso visible.
 //!
-//! Aloja además `PhaseProgress`, el indicador de fase que la CLI y el propio
-//! motor (install, uninstall) usan en operaciones largas: una sola definición
-//! del mecanismo para todos los consumidores.
+//! El indicador de etapas de la CLI y del motor (install, uninstall) vive en
+//! `avi_term::progress::PhaseProgress`.
 //!
 //! Los textos salen de funciones puras para poder fijarlos en pruebas.
 
-use std::io::{IsTerminal, Write};
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
+use std::io::IsTerminal;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use avi_store::TransferObserver;
+use avi_term::fmt::{bytes as human_bytes, duration as format_duration};
 use indicatif::{ProgressBar, ProgressState, ProgressStyle};
-
-use crate::human_bytes;
 
 /// Lo descargado de un modelo y cuánto tardó.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,10 +58,9 @@ pub struct ProvisionView {
 }
 
 impl ProvisionView {
-    /// Abre el bloque de progreso: una línea en blanco que lo separa del bloque
-    /// anterior y el encabezado con el número de modelos a descargar.
+    /// Abre el bloque de progreso: el encabezado con el número de modelos a
+    /// descargar.
     pub fn start(count: usize) -> Self {
-        eprintln!();
         eprintln!("{}", header_line(count));
         Self {
             count,
@@ -75,18 +72,20 @@ impl ProvisionView {
     /// Barra del modelo `index` (desde 1) de los `count` pendientes.
     pub fn model(&self, index: usize, name: &str) -> ModelBar {
         let label = label(index, self.count, name);
+        let started = Instant::now();
         let bar = ProgressBar::new(0)
-            .with_style(bar_style())
+            .with_style(bar_style(self.started, Arc::clone(&self.bytes), started))
             .with_prefix(label.clone());
+        // Repinta aunque no lleguen bytes, para que el tiempo no se congele.
+        bar.enable_steady_tick(REPAINT_EVERY);
         // Sin terminal, `indicatif` no dibuja la barra: el aviso periódico por
         // bytes es la única señal de que la descarga sigue escribiendo.
-        let beat = (!std::io::stderr().is_terminal()
-            && !silenced_by(std::env::var("AVI_NO_PROGRESS").ok().as_deref()))
-        .then(|| AtomicU64::new(0));
+        let beat = (!std::io::stderr().is_terminal() && !avi_term::progress::progress_silenced())
+            .then(|| AtomicU64::new(0));
         ModelBar {
             bar,
             label,
-            started: Instant::now(),
+            started,
             completed: AtomicU64::new(0),
             provision_bytes: Arc::clone(&self.bytes),
             beat,
@@ -94,14 +93,14 @@ impl ProvisionView {
         }
     }
 
-    /// Cierra el bloque con el total descargado y la duración de la provisión.
+    /// Devuelve el total descargado y la duración de la provisión. No escribe
+    /// nada: el cierre lo escribe el comando que la pidió (`setup` o
+    /// `self install`).
     pub fn finish(self) -> ProvisionStats {
-        let stats = ProvisionStats {
+        ProvisionStats {
             bytes: self.bytes.load(Ordering::Relaxed),
             elapsed: self.started.elapsed(),
-        };
-        eprintln!("{}", total_line(stats.bytes, stats.elapsed));
-        stats
+        }
     }
 }
 
@@ -162,6 +161,7 @@ impl TransferObserver for ModelBar {
 impl ModelBar {
     /// Borra la barra y deja en su lugar la línea permanente del modelo.
     pub fn finish(&self) -> ModelStats {
+        self.bar.disable_steady_tick();
         self.bar.finish_and_clear();
         let stats = ModelStats {
             bytes: self.completed.load(Ordering::Relaxed),
@@ -177,286 +177,63 @@ impl ModelBar {
     }
 }
 
-/// Indicador ligero de progreso por fase para operaciones locales de larga
-/// duración. Todo va a stderr, nunca a stdout. En TTY mantiene una única
-/// línea actualizada con `\r`; en no-TTY anuncia cada fase nueva con una
-/// línea propia, sin `\r` ni secuencias ANSI, y **raciona** la actividad
-/// repetida dentro de la misma fase: no abre una línea nueva. `AVI_NO_PROGRESS=1`
-/// (o cualquier valor no vacío) silencia toda salida de progreso.
+/// Plantilla de la barra activa:
+/// `  [i/N] nombre  ████░░░░░░░░   42 %  1,0 GB/2,5 GB  51,0 MB/s  quedan 30,0 s`.
 ///
-/// El indicador **no imprime estado**: ni un cierre `[ok]` ni `[error]`. El
-/// mensaje final lo emite quien lo usa —el handler de la CLI o el flujo de la
-/// librería—, por stdout, con la duración que devuelve [`PhaseProgress::close`].
-pub struct PhaseProgress {
-    start: Instant,
-    tty: bool,
-    enabled: bool,
-    current: Option<(&'static str, String)>,
-    /// Fase ya anunciada en modo no-TTY. Es el estado del racionado: una fase
-    /// nueva se anuncia siempre, y una repetición de la misma fase no abre
-    /// línea nueva.
-    announced: Option<&'static str>,
-    /// ¿Se abrió ya el bloque (la línea en blanco inicial)? Solo el primer
-    /// `phase` la escribe.
-    block_opened: bool,
-    /// Líneas de fase o actividad pintadas. En modo no-TTY cada una es una
-    /// línea de stderr; el contador permite comprobarlo sin capturar stderr,
-    /// que no es portable en un test unitario. Solo existe en las pruebas:
-    /// en producción no hay nada que contar. Es un `Arc` para que una prueba
-    /// pueda inspectarlo después de que `close` consuma el indicador.
-    #[cfg(test)]
-    renders: Arc<AtomicUsize>,
-    /// Líneas cedidas: veces que `close_line` devolvió la línea al producto.
-    /// En modo no-TTY no hay línea que ceder, así que no cuenta ninguna.
-    #[cfg(test)]
-    closing_lines: Arc<AtomicUsize>,
-    /// Repintados: veces que la fase se volvió a pintar sobre su línea sin que
-    /// la fase cambiara. En no-TTY no abren línea nueva, así que se cuentan
-    /// aparte de las líneas.
-    #[cfg(test)]
-    repaints: Arc<AtomicUsize>,
-}
-
-impl PhaseProgress {
-    /// Crea el indicador: captura el reloj de inicio y decide TTY/silenciado
-    /// una sola vez, para que cada `phase`/`tick` sea barato.
-    pub fn new() -> Self {
-        let disabled = silenced_by(std::env::var("AVI_NO_PROGRESS").ok().as_deref());
-        Self {
-            start: Instant::now(),
-            tty: std::io::stderr().is_terminal(),
-            enabled: !disabled,
-            current: None,
-            announced: None,
-            block_opened: false,
-            #[cfg(test)]
-            renders: Arc::new(AtomicUsize::new(0)),
-            #[cfg(test)]
-            closing_lines: Arc::new(AtomicUsize::new(0)),
-            #[cfg(test)]
-            repaints: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    /// Indicador de pruebas con el valor de `AVI_NO_PROGRESS` y el modo de
-    /// terminal fijados a mano, para no depender del entorno del proceso ni
-    /// de que exista una terminal.
-    #[cfg(test)]
-    fn for_test(no_progress_value: Option<&str>, tty: bool) -> Self {
-        Self {
-            start: Instant::now(),
-            tty,
-            enabled: !silenced_by(no_progress_value),
-            current: None,
-            announced: None,
-            block_opened: false,
-            renders: Arc::new(AtomicUsize::new(0)),
-            closing_lines: Arc::new(AtomicUsize::new(0)),
-            repaints: Arc::new(AtomicUsize::new(0)),
-        }
-    }
-
-    /// Líneas de fase o actividad pintadas hasta ahora. En modo no-TTY, cada
-    /// una es una línea de stderr.
-    #[cfg(test)]
-    pub fn renders(&self) -> usize {
-        self.renders.load(Ordering::Relaxed)
-    }
-
-    /// Líneas cedidas hasta ahora: veces que la línea se devolvió al producto.
-    #[cfg(test)]
-    pub fn closing_lines(&self) -> usize {
-        self.closing_lines.load(Ordering::Relaxed)
-    }
-
-    /// Repintados hasta ahora: veces que la fase se volvió a pintar sobre su
-    /// línea sin que la fase cambiara.
-    ///
-    /// Es distinto de `renders`, que cuenta líneas: en no-TTY la actividad
-    /// repetida dentro de la misma fase no abre línea nueva, así que un
-    /// repintado puede no producir ninguna línea. Por eso tiene su propio
-    /// contador.
-    #[cfg(test)]
-    pub fn repaints(&self) -> usize {
-        self.repaints.load(Ordering::Relaxed)
-    }
-
-    /// Cambia la fase actual.
-    ///
-    /// El primer `phase` de un indicador abre el bloque con una línea en
-    /// blanco, como hace `ProvisionView::start`. En TTY la fase se repinta
-    /// sobre la misma línea; en no-TTY se anuncia con una línea propia, y una
-    /// repetición de la misma fase dentro del bloque no abre línea nueva.
-    /// No-op si el indicador está deshabilitado.
-    pub fn phase(&mut self, label: &'static str, msg: &str) {
-        if !self.enabled {
-            return;
-        }
-        if !self.block_opened {
-            self.block_opened = true;
-            eprintln!();
-        }
-        self.current = Some((label, msg.to_string()));
-        if self.tty {
-            self.paint();
-            return;
-        }
-        // Racionado: solo la fase nueva se anuncia.
-        if self.announced != Some(label) {
-            self.announced = Some(label);
-            self.paint();
-        }
-    }
-
-    /// Actualiza la línea de la fase actual con el tiempo transcurrido
-    /// actualizado. Útil en bucles de espera.
-    ///
-    /// En TTY repinta sobre la misma línea, y si un aviso del canal de consola
-    /// la había cedido, la recupera debajo del aviso. En no-TTY no abre línea
-    /// nueva: la actividad repetida dentro de la misma fase se raciona. El
-    /// repintado se cuenta en cualquier modo, porque es el trabajo que el
-    /// indicador hace aunque en no-TTY no produzca línea.
-    pub fn tick(&self) {
-        if !self.enabled || self.current.is_none() {
-            return;
-        }
-        #[cfg(test)]
-        self.repaints.fetch_add(1, Ordering::Relaxed);
-        if !self.tty {
-            return;
-        }
-        self.paint();
-    }
-
-    /// Cede la línea: la devuelve al producto para que nada quede pegado a
-    /// lo que se escriba después.
-    ///
-    /// En TTY borra la línea de la fase y deja el cursor al principio; en
-    /// no-TTY no hay línea que ceder y no escribe nada. Es idempotente: ceder
-    /// una línea ya cedida, también la que cedió un aviso del canal de
-    /// consola, no hace nada.
-    pub fn close_line(&mut self) {
-        if !self.enabled || !self.tty {
-            return;
-        }
-        if !avi_shared::console::take_phase_line() {
-            return;
-        }
-        #[cfg(test)]
-        self.closing_lines.fetch_add(1, Ordering::Relaxed);
-        #[expect(
-            clippy::let_underscore_must_use,
-            reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
-        )]
-        let _ = std::io::stderr().flush();
-    }
-
-    /// Vuelve a pintar la fase actual sobre la línea, si la había.
-    ///
-    /// Es la operación complementaria de [`PhaseProgress::close_line`]: tras
-    /// ceder la línea, `repaint` la devuelve a la fase vigente. En no-TTY no
-    /// hay línea que repintar y no escribe nada.
-    pub fn repaint(&mut self) {
-        if !self.enabled || !self.tty || self.current.is_none() {
-            return;
-        }
-        self.paint();
-    }
-
-    /// Cierra el indicador y devuelve la duración total.
-    ///
-    /// No imprime mensaje de estado: el estado lo dice quien cierra, con la
-    /// duración que este cierre devuelve. Si la línea estaba abierta, la cede
-    /// antes de terminar, para que nada quede pegado a la salida.
-    pub fn close(mut self) -> Duration {
-        let elapsed = self.start.elapsed();
-        self.close_line();
-        elapsed
-    }
-
-    /// Pinta la fase actual. En TTY la repinta sobre la misma línea y publica
-    /// en el canal de consola que la línea queda abierta, para que un aviso la
-    /// ceda antes de escribir; en no-TTY escribe una línea propia.
-    fn paint(&self) {
-        let Some((_, msg)) = &self.current else {
-            return;
-        };
-        let line = phase_line(msg, self.start.elapsed());
-        #[cfg(test)]
-        self.renders.fetch_add(1, Ordering::Relaxed);
-        if self.tty {
-            eprint!("\r\x1b[2K{line}");
-            avi_shared::console::set_phase_line_open(true);
-            #[expect(
-                clippy::let_underscore_must_use,
-                reason = "si stderr no admite el vaciado, el indicador sigue mostrando la fase"
-            )]
-            let _ = std::io::stderr().flush();
-        } else {
-            eprintln!("{line}");
-        }
-    }
-}
-
-impl Default for PhaseProgress {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// ¿Silencia el indicador el valor de `AVI_NO_PROGRESS`? Cualquier valor no
-/// vacío lo silencia; el vacío y la ausencia lo dejan hablar.
-fn silenced_by(value: Option<&str>) -> bool {
-    value.is_some_and(|v| !v.is_empty())
-}
-
-/// Línea de una fase o de una actividad, sin los controles de línea que la
-/// terminal añade: `… <msg> (<elapsed>)`.
-///
-/// Es una función pura para que el texto exacto sea comprobable en un test
-/// unitario, donde stderr no se puede capturar de forma portable. El
-/// indicador la usa tal cual, de modo que la línea que sale por stderr es
-/// byte a byte la que esta función devuelve.
-pub fn phase_line(msg: &str, elapsed: Duration) -> String {
-    format!("… {msg} ({})", format_duration(elapsed))
-}
-
-/// Plantilla de la barra activa. Los tamaños, la velocidad y los tiempos usan
-/// claves propias para que salgan con `human_bytes` (coma decimal) y con los
-/// rótulos en español, en lugar de los formatos fijos de `indicatif`.
-/// Escribir en el búfer de la plantilla no puede fallar de forma recuperable:
-/// si fallara, la barra saldría sin ese campo, que es todo lo que cabe hacer.
-fn bar_style() -> ProgressStyle {
-    ProgressStyle::with_template(
-        "  {prefix}  {bar:12}  {sizes}  {speed}  transcurrido {elapsed_clock}  quedan {eta_clock}",
-    )
-    .expect("la plantilla de la barra es válida")
-    .progress_chars("█░")
-    .with_key(
-        "sizes",
-        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-            let total = state.len().unwrap_or(0);
-            write!(w, "{}/{}", human_bytes(state.pos()), human_bytes(total)).ok();
-        },
-    )
-    .with_key(
-        "speed",
-        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-            write!(w, "{}/s", human_bytes(state.per_sec() as u64)).ok();
-        },
-    )
-    .with_key(
-        "elapsed_clock",
-        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-            write!(w, "{}", clock(state.elapsed())).ok();
-        },
-    )
-    .with_key(
-        "eta_clock",
-        |state: &ProgressState, w: &mut dyn std::fmt::Write| {
-            write!(w, "{}", clock(state.eta())).ok();
-        },
-    )
+/// Los tamaños, el porcentaje, la velocidad y el tiempo restante usan claves
+/// propias para que salgan con `avi_term::fmt` (coma decimal, duraciones del
+/// producto) y con los rótulos en español, en lugar de los formatos fijos de
+/// `indicatif`. La velocidad es la media del modelo (sus bytes entre su
+/// tiempo); el tiempo restante usa la velocidad media global de la provisión,
+/// que es más estable que la del modelo en curso. Escribir en el búfer de la
+/// plantilla no puede fallar de forma recuperable: si fallara, la barra saldría
+/// sin ese campo, que es todo lo que cabe hacer.
+fn bar_style(
+    provision_started: Instant,
+    provision_bytes: Arc<AtomicU64>,
+    model_started: Instant,
+) -> ProgressStyle {
+    ProgressStyle::with_template("  {prefix}  {bar:12}  {pct}  {sizes}  {speed}  quedan {eta}")
+        .expect("la plantilla de la barra es válida")
+        .progress_chars("█░")
+        .with_key(
+            "pct",
+            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                write!(w, "{:>3} %", (state.fraction() * 100.0).floor() as u64).ok();
+            },
+        )
+        .with_key(
+            "sizes",
+            |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let total = state.len().unwrap_or(0);
+                write!(w, "{}/{}", human_bytes(state.pos()), human_bytes(total)).ok();
+            },
+        )
+        .with_key(
+            "speed",
+            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let speed = bytes_per_second(state.pos(), model_started.elapsed());
+                write!(w, "{}/s", human_bytes(speed)).ok();
+            },
+        )
+        .with_key(
+            "eta",
+            move |state: &ProgressState, w: &mut dyn std::fmt::Write| {
+                let remaining = state.len().unwrap_or(0).saturating_sub(state.pos());
+                let global_bytes = provision_bytes.load(Ordering::Relaxed) + state.pos();
+                write!(
+                    w,
+                    "{}",
+                    eta_text(
+                        remaining,
+                        global_bytes,
+                        provision_started.elapsed(),
+                        model_started.elapsed()
+                    )
+                )
+                .ok();
+            },
+        )
 }
 
 /// Etiqueta de un modelo: `[i/N] nombre`.
@@ -466,19 +243,27 @@ fn label(index: usize, count: usize, name: &str) -> String {
 
 /// Encabezado del bloque de progreso.
 pub fn header_line(count: usize) -> String {
-    format!("Descargando {count} modelo(s):")
+    format!(
+        "Descargando {}:",
+        avi_term::fmt::count(count as u64, "modelo", "modelos")
+    )
 }
 
-/// Línea permanente de un modelo terminado. La velocidad se calcula sobre al
-/// menos un milisegundo, para que una descarga instantánea no divida por cero.
+/// Velocidad media de `bytes` en `elapsed`, en bytes por segundo. Se calcula
+/// sobre al menos un milisegundo, para que una descarga instantánea no divida
+/// por cero.
+fn bytes_per_second(bytes: u64, elapsed: Duration) -> u64 {
+    (bytes as f64 / elapsed.as_secs_f64().max(0.001)) as u64
+}
+
+/// Línea permanente de un modelo terminado:
+/// `  ✓ [i/N] nombre  2,5 GB en 49,0 s · 51,0 MB/s`.
 pub fn model_done_line(label: &str, bytes: u64, elapsed: Duration) -> String {
-    let seconds = elapsed.as_secs_f64().max(0.001);
-    let speed = (bytes as f64 / seconds) as u64;
     format!(
-        "  ✓ {label}  {} en {} ({}/s)",
+        "  ✓ {label}  {} en {} · {}/s",
         human_bytes(bytes),
         format_duration(elapsed),
-        human_bytes(speed)
+        human_bytes(bytes_per_second(bytes, elapsed))
     )
 }
 
@@ -486,57 +271,49 @@ pub fn model_done_line(label: &str, bytes: u64, elapsed: Duration) -> String {
 const NO_TTY_HEARTBEAT: Duration = Duration::from_secs(15);
 /// Cadencia del latido interno para que el padre vigile descargas largas.
 const WATCHDOG_HEARTBEAT: Duration = Duration::from_secs(5);
+/// Cada cuánto se repinta una barra aunque no lleguen bytes.
+const REPAINT_EVERY: Duration = Duration::from_millis(250);
+/// Tiempo que debe llevar un modelo descargando para que se estime lo que
+/// queda: antes la velocidad media aún no es representativa.
+const ETA_WARMUP: Duration = Duration::from_secs(2);
 
 /// Línea periódica de avance de un modelo sin terminal:
-/// `  … [i/N] nombre  1,2 GB de 2,5 GB (0:12)`.
+/// `  … [i/N] nombre  1,2 GB de 2,5 GB · 12,0 s`.
 ///
 /// Función pura, como el resto de las líneas del módulo, para que el texto
 /// exacto sea comprobable sin capturar stderr.
 pub fn transfer_line(label: &str, completed: u64, total: u64, elapsed: Duration) -> String {
-    let elapsed_text = clock(elapsed);
+    let elapsed_text = format_duration(elapsed);
     if total == 0 {
-        return format!("  … {label}  {} ({elapsed_text})", human_bytes(completed));
+        return format!("  … {label}  {} · {elapsed_text}", human_bytes(completed));
     }
     format!(
-        "  … {label}  {} de {} ({elapsed_text})",
+        "  … {label}  {} de {} · {elapsed_text}",
         human_bytes(completed),
         human_bytes(total)
     )
 }
 
-/// Cierre del bloque de progreso.
-pub fn total_line(bytes: u64, elapsed: Duration) -> String {
-    format!(
-        "Modelos descargados: {} en {}.",
-        human_bytes(bytes),
-        format_duration(elapsed)
-    )
-}
-
-/// Duración legible: `7 s`, `1 min 59 s`, `1 h 02 min`.
-pub fn format_duration(elapsed: Duration) -> String {
-    let secs = elapsed.as_secs();
-    if secs < 60 {
-        format!("{secs} s")
-    } else if secs < 3600 {
-        format!("{} min {} s", secs / 60, secs % 60)
-    } else {
-        format!("{} h {:02} min", secs / 3600, (secs % 3600) / 60)
+/// Tiempo restante de un modelo: lo que falta por descargar entre la velocidad
+/// media global de la provisión (bytes descargados en total entre el tiempo
+/// desde que empezó). Da `—` durante los primeros 2 s del modelo y mientras la
+/// velocidad global sea cero, porque entonces no hay estimación fiable.
+pub fn eta_text(
+    remaining_bytes: u64,
+    global_bytes: u64,
+    global_elapsed: Duration,
+    model_elapsed: Duration,
+) -> String {
+    let speed = global_bytes as f64 / global_elapsed.as_secs_f64();
+    if model_elapsed < ETA_WARMUP || !speed.is_finite() || speed <= 0.0 {
+        return "—".to_string();
     }
-}
-
-/// Reloj `m:ss` de la barra activa.
-pub fn clock(elapsed: Duration) -> String {
-    let secs = elapsed.as_secs();
-    format!("{}:{:02}", secs / 60, secs % 60)
+    format_duration(Duration::from_secs_f64(remaining_bytes as f64 / speed))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Serializa las pruebas en TTY: la línea de fase abierta es estado global
-    // del proceso, compartido con el canal de avisos de la consola.
-    use crate::test_support::ENV_LOCK;
 
     #[test]
     fn watchdog_heartbeat_survives_disabled_visible_progress() {
@@ -571,19 +348,6 @@ mod tests {
     }
 
     #[test]
-    fn format_duration_uses_seconds_minutes_and_hours() {
-        assert_eq!(format_duration(Duration::from_secs(7)), "7 s");
-        assert_eq!(format_duration(Duration::from_secs(119)), "1 min 59 s");
-        assert_eq!(format_duration(Duration::from_secs(3720)), "1 h 02 min");
-    }
-
-    #[test]
-    fn clock_pads_the_seconds() {
-        assert_eq!(clock(Duration::from_secs(4)), "0:04");
-        assert_eq!(clock(Duration::from_secs(183)), "3:03");
-    }
-
-    #[test]
     fn transfer_line_shows_progress_and_elapsed() {
         assert_eq!(
             transfer_line(
@@ -592,18 +356,18 @@ mod tests {
                 2_500_000_000,
                 Duration::from_secs(12)
             ),
-            "  … [1/5] qwen3-tts-0.6b  1,2 GB de 2,5 GB (0:12)"
+            "  … [1/5] qwen3-tts-0.6b  1,2 GB de 2,5 GB · 12,0 s"
         );
         assert_eq!(
             transfer_line("[1/1] m", 1024, 0, Duration::from_secs(0)),
-            "  … [1/1] m  1,0 KB (0:00)",
+            "  … [1/1] m  1,0 KB · 0,0 s",
             "un total desconocido no inventa denominador"
         );
     }
 
     #[test]
     fn header_line_counts_the_models() {
-        assert_eq!(header_line(5), "Descargando 5 modelo(s):");
+        assert_eq!(header_line(5), "Descargando 5 modelos:");
     }
 
     #[test]
@@ -614,7 +378,7 @@ mod tests {
                 2_500_000_000,
                 Duration::from_secs(49)
             ),
-            "  ✓ [1/5] qwen3-tts-0.6b  2,5 GB en 49 s (51,0 MB/s)"
+            "  ✓ [1/5] qwen3-tts-0.6b  2,5 GB en 49,0 s · 51,0 MB/s"
         );
     }
 
@@ -622,267 +386,41 @@ mod tests {
     fn model_done_line_survives_a_zero_duration() {
         assert_eq!(
             model_done_line(&label(2, 2, "m"), 1000, Duration::ZERO),
-            "  ✓ [2/2] m  1,0 KB en 0 s (1,0 MB/s)"
+            "  ✓ [2/2] m  1,0 KB en 0,0 s · 1,0 MB/s"
         );
     }
 
+    /// Antes de 2 s de modelo, o con velocidad global cero, no hay estimación.
     #[test]
-    fn total_line_reports_size_and_time() {
+    fn eta_is_unknown_before_two_seconds_and_without_speed() {
+        let ten = Duration::from_secs(10);
         assert_eq!(
-            total_line(5_900_000_000, Duration::from_secs(119)),
-            "Modelos descargados: 5,9 GB en 1 min 59 s."
+            eta_text(1_000_000_000, 100_000_000, ten, Duration::from_millis(1999)),
+            "—"
         );
+        assert_eq!(eta_text(1_000_000_000, 0, ten, Duration::from_secs(5)), "—");
     }
 
-    // ─── Comportamiento del indicador de fase ───────────────────────────────
-    //
-    // Estas pruebas fijan el comportamiento vigente de `PhaseProgress` en modo
-    // no-TTY, que es la forma en que un script lee la salida. La salida por
-    // stderr no es capturable de forma portable en un test unitario, así que se
-    // comprueba por dos vías: el texto exacto con la función pura `phase_line` y
-    // el número de líneas emitidas con el contador que el indicador lleva para
-    // las pruebas.
-
-    /// La línea de una fase es `… <msg> (<elapsed>)`, con el elapsed formateado
-    /// por `format_duration`.
+    /// Con 100 MB en 10 s la velocidad global es 10 MB/s: 1 GB tarda 100 s.
     #[test]
-    fn phase_line_is_the_message_with_its_elapsed() {
+    fn eta_uses_the_global_average_speed() {
         assert_eq!(
-            phase_line("Limpiando datos…", Duration::from_secs(0)),
-            "… Limpiando datos… (0 s)"
-        );
-        assert_eq!(
-            phase_line("Traduciendo texto…", Duration::from_secs(7)),
-            "… Traduciendo texto… (7 s)"
-        );
-        assert_eq!(
-            phase_line("Traduciendo texto…", Duration::from_secs(119)),
-            "… Traduciendo texto… (1 min 59 s)"
-        );
-    }
-
-    /// Una fase nueva en no-TTY emite exactamente una línea.
-    #[test]
-    fn phase_paints_one_line_in_no_tty() {
-        let mut progress = PhaseProgress::for_test(None, false);
-        progress.phase("cleaning", "Limpiando datos…");
-        assert_eq!(progress.renders(), 1, "una fase, una línea");
-        assert_eq!(
-            progress.closing_lines(),
-            0,
-            "una fase no cierra el indicador"
-        );
-    }
-
-    /// La actividad repetida dentro de la misma fase **no** abre línea nueva
-    /// en no-TTY: es el racionado del indicador.
-    #[test]
-    fn phase_then_tick_paints_one_line_in_no_tty() {
-        let mut progress = PhaseProgress::for_test(None, false);
-        progress.phase("cleaning", "Limpiando datos…");
-        progress.tick();
-        assert_eq!(
-            progress.renders(),
-            1,
-            "la actividad repetida no abre una segunda línea en no-TTY"
-        );
-    }
-
-    /// Una fase nueva tras otra sí se anuncia: el racionado es por fase, no un
-    /// tope global de líneas.
-    #[test]
-    fn a_new_phase_is_announced_again_in_no_tty() {
-        let mut progress = PhaseProgress::for_test(None, false);
-        progress.phase("cleaning", "Limpiando datos…");
-        progress.tick();
-        progress.phase("stopping", "Deteniendo daemon…");
-        progress.tick();
-        assert_eq!(
-            progress.renders(),
-            2,
-            "cada fase nueva se anuncia una vez: el racionado es por fase"
-        );
-    }
-
-    /// Una fase con cuarenta actividades dentro **emite exactamente una
-    /// línea**: la actividad repetida no abre línea nueva, y el racionado es
-    /// por fase, no un tope global.
-    #[test]
-    fn one_phase_and_forty_ticks_paint_exactly_one_line_in_no_tty() {
-        let mut progress = PhaseProgress::for_test(None, false);
-        progress.phase("cleaning", "Limpiando datos…");
-        for _ in 0..40 {
-            progress.tick();
-        }
-        assert_eq!(
-            progress.renders(),
-            1,
-            "la actividad repetida dentro de la misma fase no abre línea nueva"
-        );
-    }
-
-    /// `tick()` sin fase previa no pinta nada: no hay línea que repintar.
-    #[test]
-    fn tick_without_phase_paints_nothing() {
-        let progress = PhaseProgress::for_test(None, false);
-        progress.tick();
-        assert_eq!(progress.renders(), 0);
-    }
-
-    /// El repintado se cuenta aunque no abra línea nueva: es el trabajo que
-    /// hace el indicador para que el tiempo visible avance durante una
-    /// espera, y en no-TTY no produce ninguna línea.
-    ///
-    /// Sin fase no hay nada que repintar, así que el contador no se mueve.
-    #[test]
-    fn repaints_are_counted_even_without_a_new_line() {
-        let mut progress = PhaseProgress::for_test(None, false);
-        progress.phase("cleaning", "Limpiando datos…");
-        progress.tick();
-        progress.tick();
-        assert_eq!(
-            progress.repaints(),
-            2,
-            "la actividad repetida repinta aunque no abra línea"
+            eta_text(
+                1_000_000_000,
+                100_000_000,
+                Duration::from_secs(10),
+                Duration::from_secs(2)
+            ),
+            "1 min 40 s"
         );
         assert_eq!(
-            progress.renders(),
-            1,
-            "y la línea sigue siendo una: el racionado no cede"
+            eta_text(
+                0,
+                100_000_000,
+                Duration::from_secs(10),
+                Duration::from_secs(9)
+            ),
+            "0,0 s"
         );
-    }
-
-    /// `close` no imprime mensaje de estado: el indicador no dice cómo terminó
-    /// la operación, solo cuánto duró.
-    #[test]
-    fn close_does_not_paint_a_closing_line() {
-        let mut progress = PhaseProgress::for_test(None, false);
-        progress.phase("cleaning", "Limpiando datos…");
-        let renders = Arc::clone(&progress.renders);
-        let closing_lines = Arc::clone(&progress.closing_lines);
-        let elapsed = progress.close();
-        assert_eq!(
-            renders.load(Ordering::Relaxed),
-            1,
-            "el cierre no es una línea de fase"
-        );
-        assert_eq!(
-            closing_lines.load(Ordering::Relaxed),
-            0,
-            "el cierre no imprime estado: lo dice quien cierra"
-        );
-        assert!(
-            elapsed.as_secs() < 60,
-            "la duración sale del reloj del indicador"
-        );
-    }
-
-    /// `close_line` es idempotente: ceder una línea ya cedida no hace nada.
-    ///
-    /// La idempotencia se mide en TTY, que es la única rama que cede de
-    /// verdad: en no-TTY no hay línea que ceder, así que el contador no se
-    /// movería nunca y la aserción no distinguiría nada.
-    #[test]
-    fn close_line_is_idempotent_and_writes_nothing_in_no_tty() {
-        let mut progress = PhaseProgress::for_test(None, false);
-        progress.phase("cleaning", "Limpiando datos…");
-        progress.close_line();
-        progress.close_line();
-        assert_eq!(
-            progress.closing_lines(),
-            0,
-            "en no-TTY no hay línea que ceder"
-        );
-        assert_eq!(progress.renders(), 1, "ceder la línea no repinta la fase");
-    }
-
-    /// Ceder la línea dos veces cede una sola: la segunda no hace nada.
-    ///
-    /// Es la idempotencia medida, en la rama que cede de verdad.
-    #[test]
-    fn close_line_in_tty_is_idempotent() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut progress = PhaseProgress::for_test(None, true);
-        progress.phase("cleaning", "Limpiando datos…");
-        progress.close_line();
-        progress.close_line();
-        assert_eq!(
-            progress.closing_lines(),
-            1,
-            "ceder la línea ya cedida no la cede otra vez"
-        );
-    }
-
-    /// Tras ceder la línea, `repaint` vuelve a pintar la fase vigente.
-    #[test]
-    fn repaint_after_close_line_paints_the_phase_again() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut progress = PhaseProgress::for_test(None, true);
-        progress.phase("cleaning", "Limpiando datos…");
-        assert_eq!(progress.renders(), 1, "la fase se pinta al abrirla");
-        progress.close_line();
-        assert_eq!(
-            progress.closing_lines(),
-            1,
-            "ceder la línea se cuenta una vez"
-        );
-        progress.repaint();
-        assert_eq!(progress.renders(), 2, "tras ceder la línea, se repinta");
-    }
-
-    /// Un aviso del canal de consola cede la línea abierta del indicador: la
-    /// cesión siguiente del indicador ya no tiene nada que borrar, y el
-    /// repintado vuelve a abrirla debajo del aviso.
-    #[test]
-    fn a_console_warning_takes_the_line_and_repaint_reopens_it() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut progress = PhaseProgress::for_test(None, true);
-        progress.phase("cleaning", "Limpiando datos…");
-        assert!(avi_shared::console::phase_line_open());
-        avi_shared::console::warn("Aviso: prueba de cesión por aviso");
-        assert!(!avi_shared::console::phase_line_open());
-        progress.close_line();
-        assert_eq!(progress.closing_lines(), 0, "la línea ya la cedió el aviso");
-        progress.repaint();
-        assert!(avi_shared::console::phase_line_open());
-        assert_eq!(progress.renders(), 2, "el repintado recupera la línea");
-        progress.close_line();
-    }
-
-    /// `AVI_NO_PROGRESS` con cualquier valor no vacío silencia toda salida:
-    /// ni fases, ni actividad, ni cesión.
-    ///
-    /// La medida es en TTY, la única rama que escribe y que cuenta: en no-TTY
-    /// el indicador nunca pintaría ni cedería, así que allí la aserción no
-    /// distinguiría «silenciado» de «no-TTY».
-    #[test]
-    fn no_progress_silences_everything() {
-        let mut progress = PhaseProgress::for_test(Some("1"), true);
-        let renders = Arc::clone(&progress.renders);
-        let closing_lines = Arc::clone(&progress.closing_lines);
-        progress.phase("cleaning", "Limpiando datos…");
-        progress.tick();
-        progress.close_line();
-        let _ = progress.close();
-        assert_eq!(
-            renders.load(Ordering::Relaxed),
-            0,
-            "el indicador silenciado no pinta"
-        );
-        assert_eq!(
-            closing_lines.load(Ordering::Relaxed),
-            0,
-            "el indicador silenciado no cierra"
-        );
-    }
-
-    /// El valor vacío de `AVI_NO_PROGRESS` no silencia: solo el valor no
-    /// vacío lo hace.
-    #[test]
-    fn empty_no_progress_value_does_not_silence() {
-        assert!(!silenced_by(Some("")));
-        assert!(!silenced_by(None));
-        assert!(silenced_by(Some("0")));
-        assert!(silenced_by(Some("1")));
     }
 }

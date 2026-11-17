@@ -748,7 +748,7 @@ fn uninstall_keep_data_preserves_models_voices_and_speech() {
         !exists(&sandbox.data_dir.join("logs")),
         "pero la configuración y los logs sí caen: son estado de ejecución, no datos"
     );
-    for reason in ["modelos", "voces", "habla"] {
+    for reason in ["modelos", "voces", "audios sintetizados"] {
         assert!(
             outcome.preserved.iter().any(|p| p.reason.contains(reason)),
             "`{reason}` se anuncia como conservado: {:?}",

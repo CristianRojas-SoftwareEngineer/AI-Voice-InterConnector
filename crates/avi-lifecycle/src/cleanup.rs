@@ -70,7 +70,7 @@ impl Category {
         match self {
             Self::Model => "modelos",
             Self::Voices => "voces",
-            Self::SyntheticSpeech => "locuciones",
+            Self::SyntheticSpeech => "audios sintetizados",
             Self::Config => "configuración",
             Self::Logs => "registros",
             Self::DaemonState => "estado del daemon",
@@ -661,11 +661,10 @@ pub struct Outcome {
     pub daemon_was_running: bool,
     /// Destinos del plan que fallaron al borrarse.
     pub failed: Vec<String>,
-    /// Duración del barrido, la del reloj que mostró las fases. La anuncia el
-    /// handler en su mensaje final; en la simulación y en la cancelación es
-    /// cero, porque no hubo barrido que medir.
-    pub elapsed: std::time::Duration,
 }
+
+/// Línea con la que se cierra `cleanup` cuando no hay nada que borrar.
+const NOTHING_TO_CLEAN: &str = "No había nada que limpiar.";
 
 /// Ejecuta `cleanup`.
 ///
@@ -708,26 +707,14 @@ pub async fn run_with_progress(
 
     // Ninguna operación pide elevación.
     let report = crate::privileges::ensure_per_user()?;
-    if let Some(warning) = &report.warning {
-        eprintln!("{warning}");
+    if let Some(warning) = report.warning {
+        avi_term::line::warn(warning);
     }
 
     if options.dry_run {
-        // El simulacro también anuncia la fase: la confirmación no ocurre —el
-        // simulacro no pregunta nada—, así que el indicador puede abrirse sin
-        // que un prompt quede pegado a él.
-        let mut indicator = progress.then(crate::progress::PhaseProgress::new);
-        if let Some(indicator) = indicator.as_mut() {
-            indicator.phase("cleaning", "Limpiando datos…");
-            // La línea se cede antes del plan: el plan se imprime por stderr y
-            // no puede quedar pegado a la fase.
-            indicator.close_line();
-        }
-        let outcome = simulate(roots, options);
-        if let Some(indicator) = indicator {
-            indicator.close();
-        }
-        return Ok(outcome);
+        // La simulación no abre ninguna etapa: no borra nada y no pregunta,
+        // así que solo escribe el plan por stdout.
+        return Ok(simulate(roots, options));
     }
 
     // Recuperación y bloqueo. El barrido transversal va aquí dentro,
@@ -736,6 +723,35 @@ pub async fn run_with_progress(
     let recovery = recovery::recover(roots.recovery_roots())?;
 
     let plan = plan(roots, options);
+
+    // Sin nada que borrar no hay plan que confirmar ni daemon que parar: se
+    // dice en una sola línea y se termina.
+    if plan.is_empty() {
+        drop(lock);
+        if progress {
+            avi_term::line::ok(NOTHING_TO_CLEAN);
+        }
+        return Ok(Outcome {
+            status: "cleanup_complete",
+            swept: recovery
+                .removed()
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            kept: recovery
+                .kept
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            unreadable: recovery
+                .unreadable
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            preserved: plan.preserved,
+            ..Outcome::default()
+        });
+    }
 
     // `cleanup` es destructiva: el plan con categorías y tamaños, el mismo que
     // muestra la simulación, y confirmación `[s/N]`.
@@ -758,41 +774,42 @@ pub async fn run_with_progress(
     // La frontera: el indicador nace **después** de la confirmación, porque el
     // prompt no puede quedar pegado a una fase. La cancelación ya salió, así que
     // desde aquí el barrido siempre ocurre.
-    let mut indicator = progress.then(crate::progress::PhaseProgress::new);
-    if let Some(indicator) = indicator.as_mut() {
-        indicator.phase("cleaning", "Limpiando datos…");
+    let indicator = progress.then(avi_term::progress::PhaseProgress::new);
+    if let Some(indicator) = indicator.as_ref() {
+        indicator.phase(&avi_term::stage::CLEANING);
     }
 
     // Antes de borrar recursos que el daemon usa, se detiene el daemon. Si no
     // se detiene, `daemon_stop_failed` y nada del plan se borra.
     let daemon = daemon_stop::stop(&roots.data_dir, &daemon_stop::default_addr(), control).await;
     if let Err(failure) = daemon_stop::require_stopped(&daemon) {
-        if let Some(indicator) = indicator.as_mut() {
-            indicator.close_line();
+        if let Some(indicator) = indicator.as_ref() {
+            indicator.yield_line();
         }
         return Err(failure.into());
     }
 
-    let report = ownership::execute(&roots.ownership_tree(), &plan.ownership);
+    // El borrado puede tardar: el contador avanza mientras dura.
+    let delete = || ownership::execute(&roots.ownership_tree(), &plan.ownership);
+    let report = match indicator.as_ref() {
+        Some(indicator) => indicator.while_running(delete),
+        None => delete(),
+    };
     let mut removed = Vec::new();
     let mut failed = Vec::new();
+    // Destinos del plan que se borraron: la cifra del cierre, la misma unidad
+    // que cuenta el plan (los contenedores vacíos que se podan no cuentan).
+    let mut deleted_targets: u64 = 0;
     for path in &report.removed {
-        if let Some(target) = plan.targets.iter().find(|t| &t.path == path) {
-            // La línea se cede antes del aviso de ruta: el aviso es del producto
-            // y no puede quedar pegado a la fase.
-            if let Some(indicator) = indicator.as_mut() {
-                indicator.close_line();
-            }
-            eprintln!("  {}: {}", target.category.describe(), path.display());
+        if plan.targets.iter().any(|t| &t.path == path) {
+            deleted_targets += 1;
         }
         removed.push(path.display().to_string());
     }
     removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
+    // El plan ya enumeró las rutas: solo se escribe la que no se pudo borrar.
     for (path, e) in &report.failed {
-        if let Some(indicator) = indicator.as_mut() {
-            indicator.close_line();
-        }
-        eprintln!("  no se pudo borrar {}: {e}", path.display());
+        avi_term::line::warn(format!("No se pudo borrar {}: {e}", path.display()));
         failed.push(path.display().to_string());
     }
 
@@ -805,15 +822,20 @@ pub async fn run_with_progress(
         .iter()
         .map(|p| p.display().to_string())
         .collect();
-    // El cierre no imprime estado: el mensaje final lo compone quien cierra.
-    // La duración que devuelve es la del barrido, y la anuncia el handler.
-    let elapsed = match indicator {
-        Some(indicator) => indicator.close(),
-        None => std::time::Duration::ZERO,
-    };
+    // La línea de cierre lleva la duración del barrido, la del reloj que
+    // mostró las fases.
+    if let Some(indicator) = indicator {
+        indicator.finish(
+            "Limpieza completada",
+            &[avi_term::fmt::count(
+                deleted_targets,
+                "ruta borrada",
+                "rutas borradas",
+            )],
+        );
+    }
     Ok(Outcome {
         status: "cleanup_complete",
-        elapsed,
         removed,
         planned,
         swept: recovery
@@ -848,10 +870,17 @@ pub async fn run_with_progress(
 pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     let plan = plan(roots, options);
     let preview: SweepPreview = recovery::preview(roots.recovery_roots());
-    for line in plan_lines(&plan, Some(&preview)) {
-        eprintln!("{line}");
+    if plan.is_empty() && preview.all().is_empty() && preview.unreadable.is_empty() {
+        avi_term::line::ok(NOTHING_TO_CLEAN);
+    } else if !avi_term::line::machine_mode() {
+        // El plan es el resultado de la simulación y sale por stdout; el aviso
+        // de que no se modificó nada es el cierre y sale por stderr. Con
+        // `--json` los sustituye el envelope.
+        for line in plan_lines(&plan, Some(&preview)) {
+            println!("{line}");
+        }
+        eprintln!("{}", confirm::simulation_notice());
     }
-    eprintln!("{}", confirm::simulation_notice());
     // `removed` son las categorías y `swept` el barrido transversal, **en las dos
     // ramas**: mezclar el barrido dentro de `removed` en la simulación y no en la
     // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
@@ -887,8 +916,6 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
         dry_run: true,
         daemon_was_running: false,
         failed: Vec::new(),
-        // La simulación no barre: no hay duración que anunciar.
-        elapsed: std::time::Duration::ZERO,
     }
 }
 
@@ -901,6 +928,7 @@ fn confirm(plan: &DeletionPlan, options: &Options) -> anyhow::Result<Decision> {
     confirm::confirm(
         &Confirmation {
             kind: Kind::Destructive,
+            question: "¿Borrar lo indicado?",
             summary: &summary,
             entries: &[],
             assume_yes: options.assume_yes,
@@ -919,20 +947,23 @@ fn confirm(plan: &DeletionPlan, options: &Options) -> anyhow::Result<Decision> {
 /// conserva.
 pub(crate) fn plan_lines(plan: &DeletionPlan, preview: Option<&SweepPreview>) -> Vec<String> {
     let mut out = Vec::new();
-    if plan.is_empty() {
-        out.push("No hay nada que limpiar.".to_string());
-    } else {
+    if !plan.is_empty() {
+        let verb = if plan.targets.len() == 1 {
+            "borrará"
+        } else {
+            "borrarán"
+        };
         out.push(format!(
-            "Se borrarán {} ruta(s), {} en total:",
-            plan.targets.len(),
-            crate::human_bytes(plan.total_bytes())
+            "Se {verb} {}, {} en total:",
+            avi_term::fmt::count(plan.targets.len() as u64, "ruta", "rutas"),
+            avi_term::fmt::bytes(plan.total_bytes())
         ));
         for target in &plan.targets {
             out.push(format!(
                 "  {}: {} ({})",
                 target.category.describe(),
                 target.path.display(),
-                crate::human_bytes(target.size)
+                avi_term::fmt::bytes(target.size)
             ));
         }
     }
@@ -999,7 +1030,7 @@ mod plan_lines_tests {
             [
                 "modelos",
                 "voces",
-                "locuciones",
+                "audios sintetizados",
                 "configuración",
                 "registros",
                 "estado del daemon",
@@ -1030,7 +1061,7 @@ mod plan_lines_tests {
             ownership: ownership::Plan::default(),
         };
         let lines = plan_lines(&plan, None);
-        assert_eq!(lines[0], "Se borrarán 8 ruta(s), 12,0 KB en total:");
+        assert_eq!(lines[0], "Se borrarán 8 rutas, 12,0 KB en total:");
         for (i, category) in ALL.iter().enumerate() {
             let path = format!("/raiz/destino-{i}");
             let shown = PathBuf::from(&path).display().to_string();

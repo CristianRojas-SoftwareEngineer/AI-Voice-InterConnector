@@ -119,19 +119,15 @@ fn is_fatal(kind: cpal::ErrorKind) -> bool {
     }
 }
 
-/// Crea el callback de error de un stream: escribe por stderr y marca `failed`
-/// solo si el error es fatal (invalida el stream y termina la operación).
-/// Los errores transitorios (`Xrun`, `RealtimeDenied`, `DeviceChanged`) no se
-/// registran en stderr ni marcan el flag; el stream continúa entregando
-/// muestras.
-fn stream_error_callback(
-    label: &'static str,
-    failed: &Arc<AtomicBool>,
-) -> impl FnMut(cpal::Error) + Send + 'static {
+/// Crea el callback de error de un stream: marca `failed` solo si el error es
+/// fatal (invalida el stream y termina la operación). No escribe nada: el
+/// fallo llega al usuario como error tipado desde [`ensure_stream_alive`].
+/// Los errores transitorios (`Xrun`, `RealtimeDenied`, `DeviceChanged`) no
+/// marcan el flag; el stream continúa entregando muestras.
+fn stream_error_callback(failed: &Arc<AtomicBool>) -> impl FnMut(cpal::Error) + Send + 'static {
     let failed = Arc::clone(failed);
     move |err| {
         if is_fatal(err.kind()) {
-            eprintln!("{label}: {err}");
             failed.store(true, Ordering::SeqCst);
         }
     }
@@ -240,7 +236,7 @@ fn build_playback_stream<T: SizedSample + FromSample<f32> + 'static>(
             let mut idx = acquire_lock(&sample_idx, "índice de reproducción");
             fill_converted(data, &samples, &mut idx);
         },
-        stream_error_callback("Error en stream de audio", failed),
+        stream_error_callback(failed),
         None,
     )?)
 }
@@ -262,7 +258,7 @@ where
             let mut buffer = acquire_lock(&recorded, "buffer de grabación");
             buffer.extend(data.iter().map(|&s| f32::from_sample(s)));
         },
-        stream_error_callback("Error en captura de micrófono", failed),
+        stream_error_callback(failed),
         None,
     )?)
 }
@@ -270,17 +266,98 @@ where
 /// Intervalo con el que las esperas comprueban si el stream falló.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
-/// Espera `duration` comprobando cada [`POLL_INTERVAL`] que el stream siga vivo.
-fn wait_checking_stream(duration: Duration, failed: &AtomicBool, operation: &str) -> Result<()> {
-    let deadline = Instant::now() + duration;
+/// Espera `duration` comprobando cada [`POLL_INTERVAL`] que el stream siga
+/// vivo. En cada vuelta llama a `on_poll` con el tiempo transcurrido.
+fn wait_checking_stream(
+    duration: Duration,
+    failed: &AtomicBool,
+    operation: &str,
+    on_poll: &mut dyn FnMut(Duration),
+) -> Result<()> {
+    let start = Instant::now();
+    let deadline = start + duration;
     loop {
         ensure_stream_alive(failed, operation)?;
+        on_poll(start.elapsed());
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Ok(());
         }
         std::thread::sleep(remaining.min(POLL_INTERVAL));
     }
+}
+
+/// Observador del progreso de una grabación con micrófono. La biblioteca no
+/// escribe en la terminal: quien graba decide cómo mostrar el avance. Los
+/// métodos se llaman desde el hilo que graba, de ahí `Send + Sync`.
+pub trait CaptureObserver: Send + Sync {
+    /// La grabación empezó. `max` es su tope y `until_enter` indica si la
+    /// detiene el usuario con Enter.
+    fn started(&self, max: Duration, until_enter: bool);
+    /// Avance de la grabación: tiempo grabado y nivel, en dBFS, de los últimos
+    /// 100 ms. Se llama en cada vuelta del sondeo de 50 ms.
+    fn progress(&self, elapsed: Duration, level_dbfs: f32);
+    /// La grabación terminó porque venció su tope, no porque la detuviera el
+    /// usuario.
+    fn limit_reached(&self);
+}
+
+/// Suelo, en dBFS, de los niveles que se informan: el silencio digital.
+const LEVEL_FLOOR_DBFS: f32 = -90.0;
+
+/// Ventana, en milisegundos, con la que se mide el nivel.
+const LEVEL_WINDOW_MS: u32 = 100;
+
+/// Nivel, en dBFS, por debajo del cual la ventana más fuerte de una grabación
+/// se considera silencio.
+pub const SILENCE_THRESHOLD_DBFS: f32 = -43.0;
+
+/// Convierte la suma de cuadrados de `count` muestras normalizadas en dBFS, con
+/// el suelo de [`LEVEL_FLOOR_DBFS`].
+fn rms_dbfs(sum_squares: f64, count: usize) -> f32 {
+    if count == 0 {
+        return LEVEL_FLOOR_DBFS;
+    }
+    let rms = (sum_squares / count as f64).sqrt();
+    if rms <= 0.0 {
+        return LEVEL_FLOOR_DBFS;
+    }
+    ((20.0 * rms.log10()) as f32).max(LEVEL_FLOOR_DBFS)
+}
+
+/// Nivel, en dBFS, de los últimos 100 ms del búfer compartido de grabación. El
+/// búfer guarda `f32` entrelazados a la frecuencia y los canales del
+/// dispositivo, así que 100 ms son `sample_rate × channels / 10` muestras.
+fn recent_level_dbfs(recorded: &Mutex<Vec<f32>>, sample_rate: u32, channels: usize) -> f32 {
+    let window = (sample_rate as usize * channels * LEVEL_WINDOW_MS as usize / 1000).max(1);
+    let buffer = acquire_lock(recorded, "buffer de grabación");
+    let tail = &buffer[buffer.len().saturating_sub(window)..];
+    let sum: f64 = tail.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
+    rms_dbfs(sum, tail.len())
+}
+
+/// RMS más alto, en dBFS, entre las ventanas consecutivas de 100 ms de `pcm`
+/// (mono, a `rate` Hz). Si el audio es más corto que una ventana, se mide
+/// entero. Sirve para decidir si una grabación fue silencio comparándola con
+/// [`SILENCE_THRESHOLD_DBFS`]; un audio vacío da el suelo de −90.
+pub fn loudest_window_dbfs(pcm: &[i16], rate: u32) -> f32 {
+    let window = (rate as usize * LEVEL_WINDOW_MS as usize / 1000).max(1);
+    let level = |chunk: &[i16]| {
+        let sum: f64 = chunk
+            .iter()
+            .map(|&s| {
+                let v = f64::from(s) / 32768.0;
+                v * v
+            })
+            .sum();
+        rms_dbfs(sum, chunk.len())
+    };
+    if pcm.len() < window {
+        return level(pcm);
+    }
+    pcm.chunks_exact(window)
+        .map(level)
+        .fold(LEVEL_FLOOR_DBFS, f32::max)
 }
 
 /// Causa por la que terminó la espera de la grabación push-to-talk.
@@ -295,16 +372,19 @@ enum StopReason {
 /// Espera el fin de una grabación push-to-talk: Enter (mensaje `Ok` del canal),
 /// el vencimiento de `max` o un fallo fatal del stream. Es un error que falle la
 /// lectura de stdin, que el hilo lector desaparezca sin avisar o que el stream
-/// quede invalidado.
+/// quede invalidado. En cada vuelta llama a `on_poll` con el tiempo grabado.
 fn wait_for_stop(
     rx: &std::sync::mpsc::Receiver<std::io::Result<()>>,
     max: Duration,
     failed: &AtomicBool,
+    on_poll: &mut dyn FnMut(Duration),
 ) -> Result<StopReason> {
     use std::sync::mpsc::RecvTimeoutError;
-    let deadline = Instant::now() + max;
+    let start = Instant::now();
+    let deadline = start + max;
     loop {
         ensure_stream_alive(failed, "la grabación")?;
+        on_poll(start.elapsed());
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Ok(StopReason::Limit);
@@ -336,7 +416,9 @@ fn wait_for_stop(
 /// pánico del hilo anterior, no el dato que guarda.
 fn acquire_lock<'a, T>(mutex: &'a Mutex<T>, label: &str) -> std::sync::MutexGuard<'a, T> {
     mutex.lock().unwrap_or_else(|poisoned| {
-        eprintln!("Aviso: mutex «{label}» envenenado; se sigue sobre el estado recuperado");
+        avi_term::line::warn(format!(
+            "El mutex «{label}» está envenenado; se sigue sobre el estado recuperado"
+        ));
         poisoned.into_inner()
     })
 }
@@ -358,15 +440,14 @@ impl std::fmt::Display for AudioBackendUnavailable {
         match &self.missing {
             Some(symbol) => write!(
                 f,
-                "No hay audio en este sistema: la librería {} (ALSA) no define {symbol}. \
-                 Actualiza el paquete de runtime de ALSA de tu distribución para reproducir \
-                 o grabar audio",
+                "No hay audio en este sistema: la librería {} (ALSA) no define {symbol}, \
+                 así que no se puede reproducir ni grabar audio.",
                 self.library
             ),
             None => write!(
                 f,
-                "No hay audio en este sistema: falta la librería {} (ALSA). Instala el paquete \
-                 de runtime de ALSA de tu distribución para reproducir o grabar audio",
+                "No hay audio en este sistema: falta la librería {} (ALSA), \
+                 así que no se puede reproducir ni grabar audio.",
                 self.library
             ),
         }
@@ -386,7 +467,7 @@ pub struct NoInputDevice;
 
 impl std::fmt::Display for NoInputDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("No hay dispositivo de entrada predeterminado")
+        f.write_str("No hay un dispositivo de entrada predeterminado.")
     }
 }
 
@@ -398,7 +479,7 @@ pub struct NoOutputDevice;
 
 impl std::fmt::Display for NoOutputDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("No hay dispositivo de salida predeterminado")
+        f.write_str("No hay un dispositivo de salida predeterminado.")
     }
 }
 
@@ -410,7 +491,7 @@ pub struct EmptyAudio;
 
 impl std::fmt::Display for EmptyAudio {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("No se capturaron muestras de audio; el micrófono no entregó datos")
+        f.write_str("No se capturaron muestras de audio: el micrófono no entregó datos.")
     }
 }
 
@@ -692,7 +773,7 @@ fn build_stream_playback<T: SizedSample + FromSample<f32> + 'static>(
         move |data: &mut [T], _| {
             acquire_lock(&queue, "cola de reproducción").fill(data, channels);
         },
-        stream_error_callback("Error en stream de audio", failed),
+        stream_error_callback(failed),
         None,
     )?)
 }
@@ -726,7 +807,9 @@ impl StreamPlayer {
 
     /// Marca el fin de la entrega, espera a que se reproduzca lo que queda y
     /// devuelve las estadísticas. Falla si el flujo de audio muere antes.
-    pub fn finish(self) -> Result<PlaybackStats> {
+    /// Llama a `on_tick` en cada vuelta de la espera, para que quien llama
+    /// pueda repintar su indicador mientras suena el audio.
+    pub fn finish(self, on_tick: &mut dyn FnMut()) -> Result<PlaybackStats> {
         let tail = acquire_lock(&self.resampler, "remuestreador").finish();
         {
             let mut queue = acquire_lock(&self.queue, "cola de reproducción");
@@ -738,6 +821,7 @@ impl StreamPlayer {
             if acquire_lock(&self.queue, "cola de reproducción").is_done() {
                 break;
             }
+            on_tick();
             std::thread::sleep(POLL_INTERVAL);
         }
         std::thread::sleep(STREAM_TAIL_DRAIN);
@@ -749,7 +833,9 @@ impl StreamPlayer {
     pub fn abort(self) {
         acquire_lock(&self.queue, "cola de reproducción").clear();
         if let Err(err) = self.stream.pause() {
-            eprintln!("Aviso: no se pudo pausar el flujo de audio al abortar: {err}");
+            avi_term::line::warn(format!(
+                "No se pudo pausar el flujo de audio al abortar: {err}"
+            ));
         }
     }
 }
@@ -844,8 +930,10 @@ impl AudioService {
             .collect())
     }
 
-    /// Reproducir un archivo WAV sobre el dispositivo por defecto usando CPAL
-    pub fn play_wav<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+    /// Reproducir un archivo WAV sobre el dispositivo por defecto usando CPAL.
+    /// Llama a `on_tick` en cada vuelta de la espera, para que quien llama
+    /// pueda repintar su indicador mientras suena el audio.
+    pub fn play_wav<P: AsRef<Path>>(&self, path: P, on_tick: &mut dyn FnMut()) -> Result<()> {
         let reader = hound::WavReader::open(path)?;
         let spec = reader.spec();
         ensure_nonzero_sample_rate(&spec)?;
@@ -890,6 +978,7 @@ impl AudioService {
         // que invalide el stream la interrumpe con error.
         while *acquire_lock(&sample_idx, "índice de reproducción") < total_samples {
             ensure_stream_alive(&stream_failed, "la reproducción")?;
+            on_tick();
             std::thread::sleep(POLL_INTERVAL);
         }
 
@@ -924,8 +1013,14 @@ impl AudioService {
         })
     }
 
-    /// Capturar audio del micrófono por N segundos remuestreado a 16kHz/mono/int16 (Whisper compatible)
-    pub fn capture_16k_mono_pcm(&self, duration_secs: u64) -> Result<Vec<i16>> {
+    /// Capturar audio del micrófono por N segundos remuestreado a 16kHz/mono/int16 (Whisper compatible).
+    /// Informa su avance al `observer`; que dure `duration_secs` es lo
+    /// esperado, así que nunca llama a `limit_reached`.
+    pub fn capture_16k_mono_pcm(
+        &self,
+        duration_secs: u64,
+        observer: Arc<dyn CaptureObserver>,
+    ) -> Result<Vec<i16>> {
         let device = self.default_input_device()?;
 
         let config = device.default_input_config()?;
@@ -945,10 +1040,17 @@ impl AudioService {
         })?;
 
         stream.play()?;
+        observer.started(Duration::from_secs(duration_secs), false);
         wait_checking_stream(
             Duration::from_secs(duration_secs),
             &stream_failed,
             "la captura",
+            &mut |elapsed| {
+                observer.progress(
+                    elapsed,
+                    recent_level_dbfs(&recorded_samples, sample_rate, channels),
+                );
+            },
         )?;
         drop(stream);
 
@@ -967,10 +1069,15 @@ impl AudioService {
     /// Devuelve error si la variable de entorno es inválida, si falla la
     /// lectura de stdin o si un error fatal invalida el stream de audio; los
     /// errores transitorios no se registran en stderr y la captura continúa.
-    /// Rechaza con error cuando la captura no produjo muestras (usuario pulsa
+    /// Informa su avance al `observer` y le avisa con `limit_reached` si la
+    /// detuvo el tope. Rechaza con error cuando la captura no produjo muestras (usuario pulsa
     /// Enter sin hablar o un Xrun descarta todos los frames), con el error
     /// tipado [`EmptyAudio`]; no retorna `Ok(Vec::new())`.
-    pub fn capture_16k_mono_pcm_until_enter(&self, max_secs: u64) -> Result<Vec<i16>> {
+    pub fn capture_16k_mono_pcm_until_enter(
+        &self,
+        max_secs: u64,
+        observer: Arc<dyn CaptureObserver>,
+    ) -> Result<Vec<i16>> {
         let max_secs = max_secs.min(push_to_talk_max_secs()?);
         let device = self.default_input_device()?;
 
@@ -991,7 +1098,7 @@ impl AudioService {
         })?;
 
         stream.play()?;
-        eprintln!("Grabando… pulsa Enter para detener.");
+        observer.started(Duration::from_secs(max_secs), true);
 
         // Espera de una línea de stdin con límite temporal: se lee en un hilo
         // aparte y se recibe con `recv_timeout` para poder aplicar el deadline
@@ -1008,11 +1115,19 @@ impl AudioService {
             let _ = tx.send(read);
         });
 
-        if wait_for_stop(&rx, Duration::from_secs(max_secs), &stream_failed)? == StopReason::Limit {
-            eprintln!(
-                "Límite de grabación alcanzado ({} s); deteniendo.",
-                max_secs
-            );
+        let stop = wait_for_stop(
+            &rx,
+            Duration::from_secs(max_secs),
+            &stream_failed,
+            &mut |elapsed| {
+                observer.progress(
+                    elapsed,
+                    recent_level_dbfs(&recorded_samples, sample_rate, channels),
+                );
+            },
+        )?;
+        if stop == StopReason::Limit {
+            observer.limit_reached();
         }
 
         drop(stream);
@@ -1061,11 +1176,21 @@ pub enum WavLoadError {
 impl std::fmt::Display for WavLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            WavLoadError::NotFound => write!(f, "El archivo de audio no existe"),
-            WavLoadError::Invalid(detail) => {
-                write!(f, "El archivo de audio no es un WAV válido: {detail}")
-            }
-            WavLoadError::Io(err) => write!(f, "No se pudo leer el archivo de audio: {err}"),
+            WavLoadError::NotFound => write!(f, "El archivo de audio no existe."),
+            WavLoadError::Invalid(_) => write!(f, "El archivo no es un WAV válido."),
+            WavLoadError::Io(_) => write!(f, "No se pudo leer el archivo de audio."),
+        }
+    }
+}
+
+impl WavLoadError {
+    /// Texto técnico de la causa, en el idioma de la biblioteca de origen: no
+    /// forma parte del mensaje y se entrega aparte como detalle del error.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            WavLoadError::NotFound => None,
+            WavLoadError::Invalid(detail) => Some(detail.clone()),
+            WavLoadError::Io(err) => Some(err.to_string()),
         }
     }
 }
@@ -1512,7 +1637,7 @@ mod tests {
     #[test]
     fn test_stream_error_callback_only_marks_fatal_errors() {
         let failed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mut callback = crate::stream_error_callback("prueba", &failed);
+        let mut callback = crate::stream_error_callback(&failed);
 
         callback(cpal::Error::new(cpal::ErrorKind::Xrun));
         assert!(!failed.load(std::sync::atomic::Ordering::SeqCst));
@@ -1871,10 +1996,17 @@ mod tests {
     #[test]
     fn test_play_wav_zero_sample_rate_is_error_not_panic() {
         let path = zero_rate_wav_in_temp("rate0_play");
-        let err = crate::AudioService::new().play_wav(&path).unwrap_err();
+        let err = crate::AudioService::new()
+            .play_wav(&path, &mut || {})
+            .unwrap_err();
+        // El texto de la causa viaja como detalle, no en el mensaje.
+        let detail = err
+            .downcast_ref::<crate::WavLoadError>()
+            .and_then(|e| e.detail())
+            .unwrap_or_default();
         assert!(
-            err.to_string().contains("frecuencia de muestreo"),
-            "obtenido: {err}"
+            detail.contains("frecuencia de muestreo"),
+            "obtenido: {err} / {detail}"
         );
     }
 
@@ -2070,29 +2202,38 @@ mod tests {
 
         let (tx, rx) = channel();
         tx.send(Ok(())).unwrap();
-        let enter = crate::wait_for_stop(&rx, Duration::from_secs(5), &alive).unwrap();
+        let enter = crate::wait_for_stop(&rx, Duration::from_secs(5), &alive, &mut |_| {}).unwrap();
         assert_eq!(enter, crate::StopReason::Enter);
 
+        // El sondeo informa del tiempo grabado en cada vuelta hasta el tope.
         let (_tx, rx) = channel();
-        let limit = crate::wait_for_stop(&rx, Duration::from_millis(60), &alive).unwrap();
+        let mut polls = Vec::new();
+        let limit = crate::wait_for_stop(&rx, Duration::from_millis(120), &alive, &mut |e| {
+            polls.push(e)
+        })
+        .unwrap();
         assert_eq!(limit, crate::StopReason::Limit);
+        assert!(polls.len() >= 2, "obtenido: {polls:?}");
+        assert!(polls.windows(2).all(|w| w[0] <= w[1]));
 
         // Un fallo de lectura de stdin no se confunde con Enter.
         let (tx, rx) = channel();
         tx.send(Err(std::io::Error::other("stdin roto"))).unwrap();
-        let err = crate::wait_for_stop(&rx, Duration::from_secs(5), &alive).unwrap_err();
+        let err =
+            crate::wait_for_stop(&rx, Duration::from_secs(5), &alive, &mut |_| {}).unwrap_err();
         assert!(err.to_string().contains("stdin roto"), "obtenido: {err}");
 
         // El lector que desaparece sin avisar es un fallo.
         let (tx, rx) = channel::<std::io::Result<()>>();
         drop(tx);
-        assert!(crate::wait_for_stop(&rx, Duration::from_secs(5), &alive).is_err());
+        assert!(crate::wait_for_stop(&rx, Duration::from_secs(5), &alive, &mut |_| {}).is_err());
 
         // Un fallo del stream interrumpe la espera.
         let (_tx, rx) = channel();
         let failed = AtomicBool::new(false);
         failed.store(true, Ordering::SeqCst);
-        let err = crate::wait_for_stop(&rx, Duration::from_secs(5), &failed).unwrap_err();
+        let err =
+            crate::wait_for_stop(&rx, Duration::from_secs(5), &failed, &mut |_| {}).unwrap_err();
         assert!(
             err.to_string().contains("stream de audio"),
             "obtenido: {err}"
@@ -2104,10 +2245,74 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         use std::time::Duration;
         let alive = AtomicBool::new(false);
-        crate::wait_checking_stream(Duration::from_millis(60), &alive, "la captura").unwrap();
+        let mut polls = 0usize;
+        crate::wait_checking_stream(
+            Duration::from_millis(120),
+            &alive,
+            "la captura",
+            &mut |_| polls += 1,
+        )
+        .unwrap();
+        assert!(polls >= 2, "vueltas: {polls}");
         let failed = AtomicBool::new(true);
-        assert!(
-            crate::wait_checking_stream(Duration::from_secs(5), &failed, "la captura").is_err()
-        );
+        assert!(crate::wait_checking_stream(
+            Duration::from_secs(5),
+            &failed,
+            "la captura",
+            &mut |_| {}
+        )
+        .is_err());
+    }
+
+    /// Tono senoidal mono de `millis` ms a `rate` Hz y amplitud `amplitude`
+    /// (1,0 = fondo de escala).
+    fn sine_pcm(rate: u32, millis: u32, amplitude: f32) -> Vec<i16> {
+        let n = (rate as usize * millis as usize) / 1000;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                (amplitude * (2.0 * std::f32::consts::PI * 440.0 * t).sin() * 32767.0) as i16
+            })
+            .collect()
+    }
+
+    #[test]
+    fn loudest_window_of_silence_is_below_the_threshold() {
+        let pcm = vec![0i16; 16_000];
+        let level = crate::loudest_window_dbfs(&pcm, 16_000);
+        assert!(level < crate::SILENCE_THRESHOLD_DBFS, "obtenido: {level}");
+        assert_eq!(crate::loudest_window_dbfs(&[], 16_000), -90.0);
+    }
+
+    #[test]
+    fn loudest_window_of_a_tone_is_above_the_threshold() {
+        let pcm = sine_pcm(16_000, 500, 0.1);
+        let level = crate::loudest_window_dbfs(&pcm, 16_000);
+        // Un tono de amplitud 0,1 tiene RMS 0,0707, unos −23 dBFS.
+        assert!(level > crate::SILENCE_THRESHOLD_DBFS, "obtenido: {level}");
+        assert!((level + 23.0).abs() < 1.0, "obtenido: {level}");
+    }
+
+    #[test]
+    fn loudest_window_reports_the_loudest_not_the_average() {
+        // 900 ms de silencio y 100 ms de tono: la media quedaría muy por
+        // debajo de la ventana más fuerte, que es el tono.
+        let mut pcm = vec![0i16; 14_400];
+        pcm.extend(sine_pcm(16_000, 100, 0.5));
+        let level = crate::loudest_window_dbfs(&pcm, 16_000);
+        assert!((level + 9.0).abs() < 1.0, "obtenido: {level}");
+    }
+
+    #[test]
+    fn recent_level_uses_only_the_last_100_ms_of_the_interleaved_buffer() {
+        // 48 kHz estéreo: 100 ms son 9600 muestras. Antes, silencio; al final,
+        // un tramo de amplitud constante 0,1 de exactamente esa longitud.
+        let mut samples = vec![0.0f32; 48_000];
+        samples.extend(std::iter::repeat_n(0.1f32, 9_600));
+        let buffer = std::sync::Mutex::new(samples);
+        let level = crate::recent_level_dbfs(&buffer, 48_000, 2);
+        assert!((level + 20.0).abs() < 0.1, "obtenido: {level}");
+        let empty = std::sync::Mutex::new(Vec::<f32>::new());
+        assert_eq!(crate::recent_level_dbfs(&empty, 48_000, 2), -90.0);
     }
 }

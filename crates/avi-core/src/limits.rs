@@ -52,7 +52,7 @@ pub fn validate_synthesis_text(text: &str) -> Result<(), CliError> {
         return Err(CliError::new(
             ExitCode::InvalidInput,
             "empty_text",
-            "El texto a sintetizar no puede estar vacío",
+            "El texto a sintetizar no puede estar vacío.",
         ));
     }
     let length = text.chars().count();
@@ -60,9 +60,7 @@ pub fn validate_synthesis_text(text: &str) -> Result<(), CliError> {
         return Err(CliError::new(
             ExitCode::InvalidInput,
             "text_too_long",
-            format!(
-                "El texto a sintetizar supera el máximo de {MAX_TEXT_LENGTH} caracteres (recibidos: {length})"
-            ),
+            format!("El texto tiene {length} caracteres y el máximo es {MAX_TEXT_LENGTH}."),
         ));
     }
     Ok(())
@@ -114,8 +112,10 @@ mod tests {
         let err = validate_synthesis_text(&"a".repeat(MAX_TEXT_LENGTH + 1)).unwrap_err();
         assert_eq!(err.code, ExitCode::InvalidInput);
         assert_eq!(err.reason, "text_too_long");
-        assert!(err.message.contains("500"));
-        assert!(err.message.contains("501"));
+        assert_eq!(
+            err.message,
+            "El texto tiene 501 caracteres y el máximo es 500."
+        );
     }
 
     #[test]

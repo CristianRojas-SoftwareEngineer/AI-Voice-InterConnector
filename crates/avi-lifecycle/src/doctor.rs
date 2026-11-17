@@ -372,20 +372,7 @@ fn report_from_state(product_version: &str, roots: &cleanup::Roots, state: Repor
         if pending.is_clean() {
             "sin residuos de operaciones anteriores".to_string()
         } else {
-            format!(
-                "{} aparcado(s), {} staging(s), {} scratch y {} temporal(es) por recoger; \
-                 {} registro(s) de borrado resuelto(s); {} residuo(s) de dueño no \
-                 observable; {} borrado(s) diferido(s) sin completar; {} directorio(s) sin \
-                 poder listar",
-                pending.parked.len(),
-                pending.stagings.len(),
-                pending.scratch.len(),
-                pending.temporaries.len(),
-                pending.failure_logs.len(),
-                pending.unknown_owner.len(),
-                pending.pending_failures.len(),
-                pending.unreadable.len()
-            )
+            pending_detail(&pending)
         },
     );
     // Falla si falta algún repo de la selección, el modelo Base de clonado incluido.
@@ -410,6 +397,56 @@ fn report_from_state(product_version: &str, roots: &cleanup::Roots, state: Repor
         checks,
         failed,
     }
+}
+
+/// Detalle de la comprobación de restos pendientes: lista solo los grupos que
+/// no están vacíos, cada uno con su cantidad concordada.
+fn pending_detail(pending: &Pending) -> String {
+    let groups = [
+        (pending.parked.len(), "aparcado", "aparcados"),
+        (
+            pending.stagings.len(),
+            "descarga a medio aplicar",
+            "descargas a medio aplicar",
+        ),
+        (
+            pending.scratch.len(),
+            "carpeta de trabajo temporal",
+            "carpetas de trabajo temporales",
+        ),
+        (pending.temporaries.len(), "temporal", "temporales"),
+        (
+            pending.failure_logs.len(),
+            "registro de borrado resuelto",
+            "registros de borrado resueltos",
+        ),
+        (
+            pending.unknown_owner.len(),
+            "residuo de dueño no observable",
+            "residuos de dueño no observable",
+        ),
+        (
+            pending.pending_failures.len(),
+            "borrado diferido sin completar",
+            "borrados diferidos sin completar",
+        ),
+        (
+            pending.unreadable.len(),
+            "directorio sin poder listar",
+            "directorios sin poder listar",
+        ),
+    ];
+    let mut parts: Vec<String> = Vec::new();
+    if pending.transaction_journal {
+        parts.push("1 diario de transacción sin cerrar".to_string());
+    }
+    parts.extend(
+        groups
+            .iter()
+            .filter(|(n, _, _)| *n > 0)
+            .map(|(n, singular, plural)| avi_term::fmt::count(*n as u64, singular, plural)),
+    );
+    format!("restos por recoger: {}", parts.join(", "))
 }
 
 /// Fila `pending` del reporte, en modo informe: lo que la recuperación **haría**, sin

@@ -65,11 +65,11 @@ pub const DAEMON_PORT_ENV: &str = "AVI_DAEMON_PORT";
 
 /// Emite el aviso de un pidfile descartado.
 fn warn_discarded(data_dir: &Path, reason: &str) {
-    eprintln!(
-        "Aviso: {} descartado, {}: se trata como ausente.",
+    avi_term::line::warn(format!(
+        "{} descartado, {}: se trata como ausente",
         pid_path(data_dir).display(),
         reason
-    );
+    ));
 }
 
 /// Lee el pidfile completo. `None` si no hay —ausencia normal—, y también si
@@ -395,10 +395,10 @@ pub async fn stop(
         && match remove_pid_file(data_dir) {
             Ok(()) => true,
             Err(error) => {
-                eprintln!(
-                    "Aviso: no se pudo borrar {}: {error}.",
+                avi_term::line::warn(format!(
+                    "No se pudo borrar {}: {error}",
                     pid_path(data_dir).display()
-                );
+                ));
                 false
             }
         };
@@ -413,10 +413,10 @@ pub async fn stop(
         && match remove_ready_file(data_dir) {
             Ok(()) => true,
             Err(error) => {
-                eprintln!(
-                    "Aviso: no se pudo borrar {}: {error}.",
+                avi_term::line::warn(format!(
+                    "No se pudo borrar {}: {error}",
                     data_dir.join(READY_FILE).display()
-                );
+                ));
                 false
             }
         };
@@ -587,7 +587,9 @@ impl Degradation {
     /// Descripción para la salida de texto.
     pub fn describe(self) -> &'static str {
         match self {
-            Degradation::Unresponsive => "el daemon registrado sigue vivo pero no responde",
+            Degradation::Unresponsive => {
+                "el proceso registrado sigue vivo y no atiende las peticiones"
+            }
             Degradation::Unregistered => {
                 "algo responde en la dirección del daemon sin un daemon registrado"
             }

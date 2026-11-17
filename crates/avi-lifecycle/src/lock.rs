@@ -195,10 +195,10 @@ struct HeldLock {
 impl Drop for HeldLock {
     fn drop(&mut self) {
         if let Err(e) = self.file.unlock() {
-            eprintln!(
-                "Aviso: no se pudo soltar el bloqueo de ciclo de vida {}: {e}",
+            avi_term::line::warn(format!(
+                "No se pudo soltar el bloqueo de ciclo de vida {}: {e}",
                 self.path.display()
-            );
+            ));
         }
     }
 }

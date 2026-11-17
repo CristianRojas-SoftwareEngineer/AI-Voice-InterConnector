@@ -238,10 +238,10 @@ pub fn recover_with(
     // Lo que no se pudo listar queda pendiente y a la vista: ni se da por limpio ni se
     // calla.
     for (dir, cause) in &preview.unreadable {
-        eprintln!(
-            "Aviso: no se pudo listar {} para el barrido: {cause}",
+        avi_term::line::warn(format!(
+            "No se pudo listar {} para el barrido: {cause}",
             dir.display()
-        );
+        ));
         if !outcome.kept.contains(dir) {
             outcome.kept.push(dir.clone());
         }

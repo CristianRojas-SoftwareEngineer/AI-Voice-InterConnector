@@ -2157,14 +2157,42 @@ fn dub_daemon_bare_404_exits_1_with_restart_hint_without_transcribe() {
         "un 404 sin reason debe salir con exit 1 ({actual})"
     );
     assert_eq!(actual["reason"], "daemon_error");
-    let message = actual["error"].as_str().unwrap_or("");
-    assert!(
-        message.contains("daemon restart"),
-        "el mensaje debe indicar `daemon restart`: {message}"
-    );
     assert!(
         !paths.iter().any(|p| p == "/transcribe"),
         "no debe haber petición a /transcribe: {paths:?}"
+    );
+
+    // En texto, la indicación de reiniciar el daemon llega por la línea
+    // `Solución:` de `daemon_error`, no dentro del mensaje.
+    let fake = FakeDaemon::start(404, serde_json::json!({}));
+    let (sandbox, envs) = contract_sandbox("dub_404_bare_text");
+    let dir = sandbox.path();
+    fake.publish_in(&dir.join("data"));
+    let wav = dir.join("input_1s.wav");
+    write_silent_wav(&wav, 1);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, _stdout, stderr) = run_text_env(
+        &[
+            "speech",
+            "dub",
+            "--daemon",
+            "--audio",
+            wav.to_str().expect("ruta UTF-8"),
+            "--source-language",
+            "es",
+            "--target-language",
+            "es",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 1, "en texto también sale con exit 1: {stderr}");
+    let solution = stderr
+        .lines()
+        .find(|l| l.starts_with("Solución:"))
+        .unwrap_or_else(|| panic!("falta la línea Solución: {stderr}"));
+    assert!(
+        solution.contains("daemon restart"),
+        "la solución debe indicar `daemon restart`: {solution}"
     );
 }
 
@@ -2327,40 +2355,28 @@ fn cleanup_dry_run_reports_preserved_program() {
 // Estas pruebas fijan el comportamiento ACTUAL de la salida por stderr de un
 // comando con indicador, para que un cambio posterior pueda distinguir «lo
 // que cambió a propósito» de «lo que cambió por descuido». El texto exacto de
-// la línea lo fijan las funciones puras de `avi_lifecycle::progress`
-// (`phase_line`); aquí se fija el reparto entre stdout y
-// stderr, que es la parte que el harness sí puede observar.
+// las líneas lo fijan las pruebas de `avi-term`; aquí se fija el reparto entre
+// stdout y stderr, que es la parte que el harness sí puede observar.
 
-/// `cleanup --all --dry-run` emite la fase por **stderr** y nada por
-/// stdout: `stdout` es el envelope JSON y el progreso nunca lo contamina.
-///
-/// La fase se emite **una** línea: el indicador raciona la actividad repetida
-/// dentro de la misma fase, de modo que la fase y su `tick` no abren dos
-/// líneas en no-TTY.
+/// `cleanup --all --dry-run --json` no abre ninguna etapa y su `stdout` es solo
+/// el envelope JSON: ni el plan ni el progreso lo contaminan.
 #[test]
-fn cleanup_dry_run_emits_the_phase_on_stderr_and_nothing_on_stdout() {
+fn cleanup_dry_run_json_opens_no_phase_and_leaves_stdout_to_the_envelope() {
     let (_sandbox, envs) = contract_sandbox("progress-baseline");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, stdout, stderr) = run_capture(&["--json", "cleanup", "--all", "--dry-run"], &envs);
     assert_eq!(code, 0, "el simulacro de cleanup sale 0");
 
-    // stderr: la fase, con el texto y el elapsed, y solo por stderr.
+    // stderr: la simulación no abre ninguna etapa, porque no borra nada.
     let fases: Vec<&str> = stderr.lines().filter(|l| l.starts_with("… ")).collect();
-    assert_eq!(
-        fases.len(),
-        1,
-        "la actividad repetida dentro de la misma fase no abre línea nueva: {stderr}"
+    assert!(
+        fases.is_empty(),
+        "una simulación no anuncia la etapa de borrado: {stderr}"
     );
-    for fase in &fases {
-        assert!(
-            fase.starts_with("… Limpiando datos… ("),
-            "la fase de cleanup es la que el indicador nombra: {fase}"
-        );
-        assert!(
-            fase.ends_with(")"),
-            "la fase cierra con el tiempo transcurrido: {fase}"
-        );
-    }
+    assert!(
+        !stderr.starts_with('\n'),
+        "el indicador no escribe una línea en blanco inicial: {stderr:?}"
+    );
 
     // stdout: solo el envelope, sin una sola línea de progreso.
     assert!(
@@ -2373,31 +2389,57 @@ fn cleanup_dry_run_emits_the_phase_on_stderr_and_nothing_on_stdout() {
     assert_eq!(envelope["status"], Value::String("planned".to_string()));
 }
 
-/// `AVI_NO_PROGRESS` con valor no vacío silencia la fase: stderr se queda sin
-/// la línea de progreso y stdout conserva el envelope.
+/// `cleanup --all --dry-run` en texto escribe el plan por **stdout**, no abre
+/// ninguna etapa y cierra por stderr con el aviso de que no se modificó nada.
 #[test]
-fn no_progress_silences_the_phase_and_keeps_the_envelope() {
+fn cleanup_dry_run_writes_the_plan_on_stdout_and_opens_no_phase() {
+    let (_sandbox, envs) = contract_sandbox("progress-dry-run-text");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, stdout, stderr) = run_capture(&["cleanup", "--all", "--dry-run"], &envs);
+    assert_eq!(code, 0, "el simulacro de cleanup sale 0: {stderr}");
+    assert!(
+        stdout.contains("Se borrar") && stdout.contains(" en total:"),
+        "el plan sale por stdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains("… ") && !stderr.contains("Borrando los datos"),
+        "la simulación no abre ninguna etapa: {stderr}"
+    );
+    assert!(
+        stderr.contains("Simulación: no se ha modificado nada."),
+        "el cierre de la simulación sale por stderr: {stderr}"
+    );
+    assert!(
+        !stdout.contains("Simulación"),
+        "el cierre no se mezcla con el plan: {stdout}"
+    );
+}
+
+/// `AVI_NO_PROGRESS` con valor no vacío silencia las etapas: stderr se queda sin
+/// las líneas activas ni terminadas, pero conserva la línea de cierre.
+#[test]
+fn no_progress_silences_the_phase_and_keeps_the_closing_line() {
     let (_sandbox, envs) = contract_sandbox("progress-silenced");
     let mut envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     envs.push(("AVI_NO_PROGRESS", "1"));
-    let (code, stdout, stderr) = run_capture(&["--json", "cleanup", "--all", "--dry-run"], &envs);
-    assert_eq!(code, 0, "el simulacro de cleanup sale 0");
+    let (code, _stdout, stderr) = run_capture(&["cleanup", "--all", "--yes"], &envs);
+    assert_eq!(code, 0, "cleanup sale 0: {stderr}");
     assert!(
-        !stderr.contains("… Limpiando datos…"),
-        "con AVI_NO_PROGRESS la fase no se emite: {stderr}"
+        !stderr.contains("… ") && !stderr.contains("Datos borrados"),
+        "con AVI_NO_PROGRESS las etapas no se emiten: {stderr}"
     );
-    let envelope: Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
-    assert_eq!(envelope["status"], Value::String("planned".to_string()));
+    assert!(
+        stderr.contains("✓ Limpieza completada en "),
+        "pero la línea de cierre no se silencia: {stderr}"
+    );
 }
 
-/// El mensaje final de `cleanup` lleva la duración de la operación.
+/// El cierre de `cleanup` sale por stderr y lleva la duración de la operación y
+/// la cifra de rutas borradas; stdout queda vacío.
 ///
 /// El indicador de `cleanup` lo cierra la librería —la confirmación ocurre
-/// dentro del motor, y por eso el indicador nace después de ella—, así que la
-/// duración tiene que volver al handler por el desenlace. Sin eso, el mensaje
-/// final sería el único sin reloj, contra la regla del protocolo: el dueño del
-/// mensaje final le añade la duración de la operación.
+/// dentro del motor, y por eso el indicador nace después de ella—, y el cierre
+/// usa el mismo reloj que mostró las etapas.
 #[test]
 fn the_cleanup_final_message_carries_the_duration_of_the_sweep() {
     let (_sandbox, envs) = contract_sandbox("progress-cleanup-duration");
@@ -2405,12 +2447,16 @@ fn the_cleanup_final_message_carries_the_duration_of_the_sweep() {
     let (code, stdout, stderr) = run_capture(&["cleanup", "--all", "--yes"], &envs);
     assert_eq!(code, 0, "cleanup sale 0: {stderr}");
     assert!(
-        stdout.contains("Limpieza completada:"),
-        "el mensaje final de cleanup lo dice el handler: {stdout}"
+        stderr.contains("✓ Limpieza completada en ") && stderr.contains(" s"),
+        "el cierre de cleanup lleva la duración de la operación: {stderr}"
     );
     assert!(
-        stdout.contains(" s)."),
-        "el mensaje final lleva la duración de la operación: {stdout}"
+        stderr.contains(" · ") && stderr.contains("borrada"),
+        "y la cifra de rutas borradas: {stderr}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "cleanup no escribe resultados por stdout: {stdout}"
     );
 }
 
@@ -2442,23 +2488,17 @@ fn a_path_that_fails_with_question_mark_leaves_no_open_phase() {
     );
     assert_eq!(code, 2, "el texto vacío se rechaza con exit 2: {stderr}");
 
-    // La fase se pintó, y cada línea de stderr es una línea propia: en no-TTY
-    // la fase no comparte línea con nada, así que no puede quedar pegada.
-    let fases: Vec<&str> = stderr.lines().filter(|l| l.starts_with("… ")).collect();
-    assert_eq!(fases.len(), 1, "una fase, una línea: {stderr}");
-    for fase in &fases {
-        assert!(
-            fase.ends_with(")"),
-            "la fase cierra con el tiempo transcurrido: {fase}"
-        );
-    }
-    // La línea de la fase no comparte línea con el mensaje de error: en no-TTY
-    // cada línea es una línea.
+    // La validación es una etapa transitoria: sin terminal no escribe nada, ni
+    // al abrirse ni al cerrarse por el error, y no deja una línea terminada.
     assert!(
-        stderr
-            .lines()
-            .all(|l| !l.starts_with("… ") || l.ends_with(")")),
-        "ninguna línea queda pegada a la fase: {stderr}"
+        !stderr.contains("… ") && !stderr.contains('✓'),
+        "una etapa transitoria que falla no deja líneas: {stderr}"
+    );
+    // Ninguna línea queda pegada a otra: sin terminal no hay retornos de carro
+    // ni secuencias de borrado.
+    assert!(
+        !stderr.contains('\r') && !stderr.contains('\x1b'),
+        "sin terminal no hay controles de línea: {stderr:?}"
     );
 
     // El mensaje de error va **una sola vez**, por stdout, en el envelope.
@@ -2466,7 +2506,7 @@ fn a_path_that_fails_with_question_mark_leaves_no_open_phase() {
         .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
     assert_eq!(
         envelope["error"],
-        Value::String("El texto a sintetizar no puede estar vacío".to_string())
+        Value::String("El texto a sintetizar no puede estar vacío.".to_string())
     );
     assert_eq!(envelope["reason"], Value::String("empty_text".to_string()));
     assert_eq!(
@@ -2481,35 +2521,37 @@ fn a_path_that_fails_with_question_mark_leaves_no_open_phase() {
     );
 }
 
-/// El mensaje final lo dice **una sola vez**, por stdout, y con la duración.
+/// El cierre se dice **una sola vez**, por stderr, tras la línea de contexto.
 ///
 /// Es la propiedad central del protocolo: el indicador no dice cómo terminó,
 /// así que el estado lo dice el dueño —el handler— y lo dice una vez. El
 /// comando es `daemon stop` sin daemon en marcha: es un camino de éxito que
-/// no necesita motor, y su desenlace tiene un mensaje propio («No había
-/// daemon que detener (N s).») en vez de repetir un estado genérico.
+/// no necesita motor, y su desenlace tiene un cierre propio («No había ningún
+/// daemon en marcha.») en vez de repetir un estado genérico. `daemon stop` no
+/// tiene resultado de texto, así que stdout queda vacío.
 #[test]
-fn the_final_message_is_said_once_by_stdout_with_its_duration() {
+fn the_final_message_is_said_once_by_stderr_after_the_context_line() {
     let (_sandbox, envs) = contract_sandbox("progress-final-message");
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, stdout, stderr) = run_capture(&["daemon", "stop"], &envs);
     assert_eq!(code, 0, "daemon stop sin daemon sale 0: {stderr}");
 
-    // El mensaje final aparece **una sola vez**.
+    // El cierre aparece **una sola vez**, tras la línea de contexto.
     assert_eq!(
-        stdout.matches("No había daemon que detener").count(),
+        stderr
+            .matches("✓ No había ningún daemon en marcha.")
+            .count(),
         1,
-        "el estado lo dice su dueño, y lo dice una vez: {stdout}"
+        "el estado lo dice su dueño, y lo dice una vez: {stderr}"
     );
-    // Y con la duración del reloj del indicador, no con otro.
     assert!(
-        stdout.contains("No había daemon que detener (") && stdout.contains(" s)."),
-        "el mensaje final lleva la duración de la operación: {stdout}"
+        stderr.trim_start().starts_with("Daemon · "),
+        "la línea de contexto abre el comando: {stderr}"
     );
-    // El mensaje final no va por stderr: stderr lleva el progreso.
+    // El comando no tiene resultado: nada por stdout.
     assert!(
-        !stderr.contains("No había daemon que detener"),
-        "el resultado no se dice por stderr: {stderr}"
+        stdout.trim().is_empty(),
+        "daemon stop no escribe nada por stdout: {stdout}"
     );
     // Y el indicador no dice el estado por su cuenta.
     assert!(
@@ -2570,19 +2612,19 @@ fn uninstall_without_installation_says_so_instead_of_printing_a_blank_line() {
     let (code, stdout, stderr) = run_capture(&["self", "uninstall", "--yes"], &envs);
     assert_eq!(code, 0, "desinstalar sin instalación es un éxito: {stderr}");
 
-    // stdout no lleva una línea en blanco: el mensaje final dice algo.
+    // El cierre sale por stderr y dice algo; stdout no lleva ni una línea en blanco.
     assert!(
-        !stdout.trim().is_empty(),
-        "el mensaje final no puede ser una línea en blanco: {stdout}"
+        stdout.is_empty(),
+        "self uninstall no escribe resultados por stdout: {stdout:?}"
     );
     assert!(
-        stdout.contains("No había nada que desinstalar"),
-        "el desenlace dice que no había nada que desinstalar: {stdout}"
+        stderr.contains("✓ No había nada que desinstalar."),
+        "el desenlace dice que no había nada que desinstalar: {stderr}"
     );
     // Y no dice que desinstaló algo, que sería mentira.
     assert!(
-        !stdout.contains("Desinstalación completada"),
-        "sin instalación no se desinstaló nada: {stdout}"
+        !stderr.contains("Desinstalación completada"),
+        "sin instalación no se desinstaló nada: {stderr}"
     );
 }
 
@@ -2901,7 +2943,8 @@ fn doctor_repair_collects_leftovers() {
 }
 
 /// `doctor` sin el flag no modifica nada y orienta a `--repair`:
-/// sale 1 con restos, los deja en disco y la pista aparece en stderr.
+/// sale 1 con restos, los deja en disco y la indicación aparece en stdout, en la
+/// línea de la comprobación fallida.
 #[test]
 fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
     let (sandbox, envs) = sandbox_unique_state("doctorhint");
@@ -2920,13 +2963,21 @@ fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
     std::fs::create_dir_all(&staging).expect("crear staging");
     std::fs::write(staging.join("downloaded"), "bundle").expect("rellenar staging");
 
-    let (code, _out, err) = run_text_env(&["doctor"], &envs);
+    let (code, out, err) = run_text_env(&["doctor"], &envs);
     assert_eq!(code, 1, "con restos debe fallar");
     assert!(parked.exists(), "sin --repair no se toca el aparcado");
     assert!(staging.exists(), "sin --repair no se toca el staging");
     assert!(
-        err.contains("doctor --repair"),
-        "la pista debe orientar a --repair: {err:?}"
+        out.contains("✗ Restos pendientes:") && out.contains("doctor --repair"),
+        "la indicación debe orientar a --repair en la línea fallida de stdout: {out:?}"
+    );
+    assert!(
+        !out.contains("pending_artifacts"),
+        "el identificador interno no sale en texto: {out:?}"
+    );
+    assert!(
+        err.contains("Error:") && err.contains("comprobaciones fallan."),
+        "el veredicto sale por stderr como error: {err:?}"
     );
 }
 
@@ -4101,10 +4152,13 @@ mod tts {
                 .expect("ejecutar el binario");
             assert_eq!(output.status.code(), Some(0), "{route}");
             let stdout = String::from_utf8_lossy(&output.stdout);
-            assert_eq!(
-                stdout.trim(),
-                format!("Ya existe: {} (omitido).", wav.display()),
-                "{route}"
+            // El resultado por stdout es la ruta del audio ya existente; el
+            // cierre va por stderr.
+            assert_eq!(stdout.trim(), wav.display().to_string(), "{route}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("✓ Ya existía; se conserva sin sintetizar de nuevo."),
+                "{route}: {stderr}"
             );
         }
         assert_eq!(
@@ -4330,14 +4384,81 @@ mod tts {
         ] {
             let (code, actual) = run_json_env(&args, &a);
             assert_eq!(code, 1, "{actual}");
-            assert_eq!(actual["reason"], "io_error");
+            assert_eq!(actual["reason"], "speech_metadata_corrupt");
             let message = actual["error"].as_str().expect("`error` es texto");
+            assert!(message.contains(&label), "{message}");
+            // El fichero y la causa viajan como detalle; la orden no va en el mensaje.
             assert!(message.contains(&format!("{label}.json")), "{message}");
-            assert!(message.contains("speech remove"), "{message}");
+            assert!(!message.contains("speech remove"), "{message}");
         }
-        let (code, actual) = run_json_env(&["--json", "speech", "remove", "--label", &label], &a);
+        let (code, actual) = run_json_env(
+            &["--json", "speech", "remove", "--label", &label, "--yes"],
+            &a,
+        );
         assert_eq!(code, 0, "{actual}");
         assert!(!sidecar.exists());
+    }
+
+    /// `speech remove` sin terminal y sin `--yes` sale con 2 y
+    /// `confirmation_required`, con la línea `Solución:` que repite la orden con
+    /// `--yes`, y no borra nada.
+    #[test]
+    fn speech_remove_without_yes_requires_confirmation() {
+        let inst = IsolatedInstance::new("speech_remove_noyes");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("noyes");
+        create_utterance(&inst, "default", &label);
+        let wav = inst
+            .dir
+            .join("speech")
+            .join("default")
+            .join(format!("{label}.wav"));
+        let a = inst.contract_args();
+        let (code, actual) = run_json_env(&["--json", "speech", "remove", "--label", &label], &a);
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "confirmation_required");
+        let output = bin_command()
+            .args(["speech", "remove", "--label", label.as_str()])
+            .envs(a.iter().copied())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("ejecutar el binario");
+        assert_eq!(output.status.code(), Some(2));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let solution = stderr
+            .lines()
+            .find(|l| l.starts_with("Solución:"))
+            .unwrap_or_else(|| panic!("falta la línea Solución: {stderr}"));
+        assert!(
+            solution.contains(&format!("speech remove --label {label} --yes")),
+            "{solution}"
+        );
+        assert!(wav.is_file(), "no se borra nada sin confirmar");
+    }
+
+    /// `speech remove --yes` borra sin preguntar y sale con 0.
+    #[test]
+    fn speech_remove_with_yes_removes_the_audio() {
+        let inst = IsolatedInstance::new("speech_remove_yes");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("yes");
+        create_utterance(&inst, "default", &label);
+        let wav = inst
+            .dir
+            .join("speech")
+            .join("default")
+            .join(format!("{label}.wav"));
+        let (code, actual) = run_json_env(
+            &["--json", "speech", "remove", "--label", &label, "--yes"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 0, "{actual}");
+        assert_eq!(actual["status"], "removed");
+        assert!(!wav.exists());
     }
 
     /// `speech list --voice default` filtra por voz existente (exit 0, solo esa voz).
@@ -4607,14 +4728,29 @@ mod tts {
         }
     }
 
-    /// `voice remove` de una voz sin locuciones borra sin preguntar, sin terminal y
-    /// sin `--yes`, y el envelope lleva `removed_speech` vacío.
+    /// `voice remove` pregunta siempre, también una voz sin audios sintetizados:
+    /// sin terminal y sin `--yes` sale con 2 y no borra nada.
     #[test]
-    fn voice_remove_without_speech_removes_without_confirmation() {
-        let inst = IsolatedInstance::new("voice_remove_plain");
+    fn voice_remove_without_speech_and_without_yes_requires_confirmation() {
+        let inst = IsolatedInstance::new("voice_remove_plain_noyes");
         create_user_voice(&inst, "locutor", &[]);
         let (code, actual) = run_json_env(
             &["--json", "voice", "remove", "--name", "locutor"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 2, "{actual}");
+        assert_eq!(actual["reason"], "confirmation_required");
+        assert!(inst.dir.join("voices").join("locutor").is_dir());
+    }
+
+    /// `voice remove --yes` de una voz sin audios sintetizados la borra, y el
+    /// envelope lleva `removed_speech` vacío.
+    #[test]
+    fn voice_remove_without_speech_removes_with_yes() {
+        let inst = IsolatedInstance::new("voice_remove_plain");
+        create_user_voice(&inst, "locutor", &[]);
+        let (code, actual) = run_json_env(
+            &["--json", "voice", "remove", "--name", "locutor", "--yes"],
             &inst.contract_args(),
         );
         assert_eq!(code, 0, "{actual}");
@@ -7786,6 +7922,38 @@ fn speech_denoise_dry_run_emits_jsonl_without_model() {
         lines[1]["summary"].is_object(),
         "la última línea es el resumen: {}",
         lines[1]
+    );
+}
+
+/// Un error de validación previo al lote de `speech denoise` sale con `--json` como un único
+/// envelope `{error, reason}` por stdout y el código 2, sin líneas JSONL ni `Error:` suelto.
+#[cfg(feature = "native-denoise")]
+#[test]
+fn speech_denoise_validation_error_is_a_single_json_envelope() {
+    let (sandbox, envs) = contract_sandbox("speech_denoise_validation");
+    let input = sandbox.path().join("voz.wav");
+    std::fs::write(&input, b"no se llega a leer").expect("crear entrada");
+    let input = input.to_string_lossy().into_owned();
+    let args = [
+        "--json",
+        "speech",
+        "denoise",
+        input.as_str(),
+        "--dry-blend",
+        "5",
+    ];
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, stdout, stderr) = run_capture(&args, &envs);
+    assert_eq!(code, 2, "{stdout}\n{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    // `from_str` rechaza un segundo documento tras el primero.
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único documento JSON");
+    assert_eq!(envelope["reason"], "usage_error", "{envelope}");
+    assert!(
+        envelope["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("--dry-blend")),
+        "{envelope}"
     );
 }
 

@@ -222,10 +222,10 @@ fn run(
     // La transacción ya está confirmada: un diario que no se pueda borrar no la
     // revierte. Se avisa, y la recuperación lo completa como commit.
     if let Err(e) = remove_journal(program_dir) {
-        eprintln!(
-            "Aviso: no se pudo borrar {}: {e}.",
+        avi_term::line::warn(format!(
+            "No se pudo borrar {}: {e}",
             journal_path(program_dir).display()
-        );
+        ));
     }
 
     Ok(ReplaceOutcome {

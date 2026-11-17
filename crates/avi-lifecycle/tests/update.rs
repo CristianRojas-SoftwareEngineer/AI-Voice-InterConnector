@@ -401,11 +401,7 @@ fn daemon_stops_before_replacement() {
     let staging = own_staging(&sandbox);
     support::write(&staging.join("package.bin"), "staging en uso");
     assert_eq!(
-        update::cleanup_staging(
-            &staging,
-            &Busy,
-            &mut avi_lifecycle::progress::PhaseProgress::new()
-        ),
+        update::cleanup_staging(&staging, &Busy, &avi_term::progress::PhaseProgress::new()),
         avi_lifecycle::removal::Retirement::Scheduled(avi_process::Scheduling::Detached),
         "lo que está en uso se programa, no se borra en el acto"
     );
@@ -907,6 +903,7 @@ fn child_destructive_without_terminal() {
     let error = confirm::confirm(
         &confirm::Confirmation {
             kind: confirm::Kind::Destructive,
+            question: "¿Instalar la versión 0.23.1, anterior a la instalada?",
             summary: &summary,
             entries: &[],
             assume_yes: false,

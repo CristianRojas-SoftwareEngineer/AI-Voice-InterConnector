@@ -98,7 +98,7 @@ fn sweep_siblings(
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => avi_shared::console::warn(format_args!(
-                "aviso: no se pudo borrar el scratch huérfano '{}': {e}",
+                "no se pudo borrar el scratch huérfano '{}': {e}",
                 entry.path().display()
             )),
         }
@@ -140,7 +140,7 @@ pub fn release() {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => avi_shared::console::warn(format_args!(
-            "aviso: no se pudo borrar el scratch '{}': {e}",
+            "no se pudo borrar el scratch '{}': {e}",
             path.display()
         )),
     }

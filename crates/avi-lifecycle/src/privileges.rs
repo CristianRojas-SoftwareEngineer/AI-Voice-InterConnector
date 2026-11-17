@@ -96,7 +96,7 @@ fn sudo_message() -> String {
 fn warning_for(report: &Report) -> Option<String> {
     if cfg!(windows) && report.elevated {
         return Some(format!(
-            "AVISO: {} se está ejecutando con privilegios de administrador. La \
+            "{} se está ejecutando con privilegios de administrador. La \
              instalación se hará en el perfil de la cuenta que ejecuta, no en el \
              de todos los usuarios.",
             crate::APP_NAME

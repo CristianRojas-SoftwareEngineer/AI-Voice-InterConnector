@@ -8,13 +8,11 @@
 //!
 //! Micro-crate puro: tipos del manifiesto del bundle con su parseo, directorios
 //! canónicos del producto con sus revisiones de modelos, lectura de
-//! `packaging/pins.json` y el formateador de tamaños. Sin red ni TLS a
-//! propósito, de modo que `xtask` puede depender de él sin arrastrar el árbol
-//! de `hf-hub` que impide usar `avi-store` desde el tooling. Excepciones a esa
-//! pureza, ambas acotadas: el arranque de consola (`console`) usa la API del
-//! sistema solo en Windows, y el módulo opcional `onnx_runtime` carga ONNX
-//! Runtime en ejecución (sin red ni enlace en build-time) solo cuando alguien
-//! activa su feature.
+//! `packaging/pins.json`. Sin red ni TLS a propósito, de modo que `xtask`
+//! puede depender de él sin arrastrar el árbol de `hf-hub` que impide usar
+//! `avi-store` desde el tooling. Excepción a esa pureza, acotada: el módulo
+//! opcional `onnx_runtime` carga ONNX Runtime en ejecución (sin red ni enlace
+//! en build-time) solo cuando alguien activa su feature.
 
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
@@ -30,47 +28,8 @@ pub mod pins;
 pub mod staging_names;
 pub mod temp_wav;
 
-pub use console::force_utf8_console;
 pub use owner::{OwnerState, OwnerToken};
 pub use temp_wav::TempWav;
-
-/// Tamaño legible en escala decimal (B, KB, MB, GB, TB) con un decimal separado
-/// por coma, porque el texto es para personas en español. Es el único formateador de tamaños del workspace, compartido por el producto
-/// y por `xtask`: cada unidad vale 1000 de la anterior y la etiqueta lo dice.
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes as f64;
-    let mut unit = 0;
-    while value >= 1000.0 && unit + 1 < UNITS.len() {
-        value /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 {
-        format!("{bytes} B")
-    } else {
-        format!(
-            "{} {}",
-            format!("{value:.1}").replace('.', ","),
-            UNITS[unit]
-        )
-    }
-}
-
-#[cfg(test)]
-mod human_bytes_tests {
-    use super::human_bytes;
-
-    #[test]
-    fn formats_decimal_units_with_one_decimal() {
-        assert_eq!(human_bytes(0), "0 B");
-        assert_eq!(human_bytes(999), "999 B");
-        assert_eq!(human_bytes(1000), "1,0 KB");
-        assert_eq!(human_bytes(1500), "1,5 KB");
-        assert_eq!(human_bytes(5 * 1000 * 1000), "5,0 MB");
-        assert_eq!(human_bytes(3 * 1000 * 1000 * 1000 / 2), "1,5 GB");
-        assert_eq!(human_bytes(1000u64.pow(4)), "1,0 TB");
-    }
-}
 
 /// Limpieza de disco de mejor esfuerzo: su fallo no cambia el desenlace de la
 /// operación que la pide, pero tampoco se calla. Un `NotFound` es el estado que
@@ -89,9 +48,7 @@ fn best_effort_warning(
     context: impl std::fmt::Display,
 ) -> Option<String> {
     match result {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
-            Some(format!("Aviso: {context}: {e}."))
-        }
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Some(format!("{context}: {e}.")),
         _ => None,
     }
 }
@@ -116,7 +73,7 @@ mod best_effort_tests {
         );
         assert_eq!(
             warning.as_deref(),
-            Some("Aviso: no se pudo borrar a.tmp: denegado.")
+            Some("no se pudo borrar a.tmp: denegado.")
         );
     }
 }

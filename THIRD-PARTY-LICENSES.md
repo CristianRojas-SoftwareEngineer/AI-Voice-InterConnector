@@ -781,8 +781,8 @@ Public License instead of this License.  But first, please read
 ## Inventario de las dependencias distribuidas
 
 <!-- inventario:inicio -->
-Generado desde el grafo de dependencias distribuidas (404 paquetes resueltos, 375 crates únicos): dependencias normales de `ai-voice-interconnector` con `--features full`, para los triples de `packaging/bundle-manifest.json`, sin dependencias de desarrollo ni de compilación.
-Resumen por familia (paquetes resueltos): Apache-2.0 21, BSD 3, CDLA-Permissive-2.0 1, ISC 3, MIT 349, MPL-2.0 3, Unicode-3.0 18, Zlib 6.
+Generado desde el grafo de dependencias distribuidas (401 paquetes resueltos, 374 crates únicos): dependencias normales de `ai-voice-interconnector` con `--features full`, para los triples de `packaging/bundle-manifest.json`, sin dependencias de desarrollo ni de compilación.
+Resumen por familia (paquetes resueltos): Apache-2.0 21, BSD 3, CDLA-Permissive-2.0 1, ISC 3, MIT 346, MPL-2.0 3, Unicode-3.0 18, Zlib 6.
 
 | Paquete | Versión | Licencia (metadato) | Familia |
 |---------|---------|---------------------|--------|
@@ -831,7 +831,6 @@ Resumen por familia (paquetes resueltos): Apache-2.0 21, BSD 3, CDLA-Permissive-
 | `colorchoice` | 1.0.5 | MIT OR Apache-2.0 | MIT |
 | `colored` | 3.1.1 | MPL-2.0 | MPL-2.0 |
 | `compact_str` | 0.9.1 | MIT | MIT |
-| `console` | 0.15.11 | MIT | MIT |
 | `console` | 0.16.4 | MIT | MIT |
 | `const-oid` | 0.10.2 | Apache-2.0 OR MIT | MIT |
 | `const-str` | 1.1.0 | MIT | MIT |
@@ -937,7 +936,6 @@ Resumen por familia (paquetes resueltos): Apache-2.0 21, BSD 3, CDLA-Permissive-
 | `idna` | 1.1.0 | MIT OR Apache-2.0 | MIT |
 | `idna_adapter` | 1.2.2 | Apache-2.0 OR MIT | MIT |
 | `indexmap` | 2.14.0 | Apache-2.0 OR MIT | MIT |
-| `indicatif` | 0.17.11 | MIT | MIT |
 | `indicatif` | 0.18.6 | MIT | MIT |
 | `ipnet` | 2.12.1 | MIT OR Apache-2.0 | MIT |
 | `is_terminal_polyfill` | 1.70.2 | MIT OR Apache-2.0 | MIT |
@@ -984,7 +982,6 @@ Resumen por familia (paquetes resueltos): Apache-2.0 21, BSD 3, CDLA-Permissive-
 | `num-integer` | 0.1.46 | MIT OR Apache-2.0 | MIT |
 | `num-traits` | 0.2.19 | MIT OR Apache-2.0 | MIT |
 | `num_cpus` | 1.17.0 | MIT OR Apache-2.0 | MIT |
-| `number_prefix` | 0.4.0 | MIT | MIT |
 | `objc2` | 0.6.4 | MIT | MIT |
 | `objc2-audio-toolbox` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | MIT |
 | `objc2-core-audio` | 0.3.2 | Zlib OR Apache-2.0 OR MIT | MIT |
@@ -1199,7 +1196,7 @@ Resumen por familia (paquetes resueltos): Apache-2.0 21, BSD 3, CDLA-Permissive-
 ## Avisos de licencia
 
 <!-- avisos:inicio -->
-Generado desde los archivos de licencia de los crates distribuidos y de los componentes de la tabla siguiente: 54 textos distintos para 404 crates y 15 componentes.
+Generado desde los archivos de licencia de los crates distribuidos y de los componentes de la tabla siguiente: 54 textos distintos para 401 crates y 15 componentes.
 
 ### Componentes que no vienen de Cargo
 
@@ -4361,7 +4358,6 @@ Titulares:
 - Copyright (c) 2017 Sam Rijs
 - Copyright (c) 2017 Ted Driggs
 - Copyright (c) 2017-2024 oyvindln
-- Copyright (c) 2018 Benjamin Sago
 - Copyright (c) 2018 Sam Rijs, Alex Crichton and contributors
 - Copyright (c) 2018 diwic
 - Copyright (c) 2018-     SYSTRAN.
@@ -4393,7 +4389,7 @@ Titulares:
 - Copyright 2010-2014 Rich Geldreich and Tenacious Software LLC
 - Copyright 2013-2014 RAD Game Tools and Valve Software
 
-Aplica a: CTranslate2 y oneDNN (fuentes incluidas en crates vendorizados), Código de terceros incluido en CTranslate2, Motor TTS qwen_tts (código propio y vendorizado), ONNX Runtime, `alsa-sys` 0.4.0, `alsa` 0.11.0, `castaway` 0.2.4, `compact_str` 0.9.1, `const-str` 1.1.0, `countio` 0.3.0, `crc32fast` 1.5.1, `darling_core` 0.20.11, `darling_core` 0.24.1, `darling_macro` 0.20.11, `darling_macro` 0.24.1, `darling` 0.20.11, `darling` 0.24.1, `gearhash` 0.1.3, `heapify` 0.2.0, `ident_case` 1.0.1, `macro_rules_attribute-proc_macro` 0.2.3, `macro_rules_attribute` 0.2.3, `matchit` 0.7.3, `miniz_oxide` 0.9.1, `number_prefix` 0.4.0, `ort-sys` 2.0.0-rc.13, `ort` 2.0.0-rc.13, `os_str_bytes` 6.6.1, `realfft` 3.5.0, `reqwest-middleware` 0.5.2, `rustls-platform-verifier` 0.7.0, `simd-adler32` 0.3.10, `static_assertions` 1.1.0, `statrs` 0.18.0, `tinyvec_macros` 0.1.1, `tokio-macros` 2.7.2, `tokio-retry` 0.3.2, `tokio-stream` 0.1.19, `tokio-util` 0.7.19, `tokio` 1.53.1, `unit-prefix` 0.5.2, `whoami` 2.1.3.
+Aplica a: CTranslate2 y oneDNN (fuentes incluidas en crates vendorizados), Código de terceros incluido en CTranslate2, Motor TTS qwen_tts (código propio y vendorizado), ONNX Runtime, `alsa-sys` 0.4.0, `alsa` 0.11.0, `castaway` 0.2.4, `compact_str` 0.9.1, `const-str` 1.1.0, `countio` 0.3.0, `crc32fast` 1.5.1, `darling_core` 0.20.11, `darling_core` 0.24.1, `darling_macro` 0.20.11, `darling_macro` 0.24.1, `darling` 0.20.11, `darling` 0.24.1, `gearhash` 0.1.3, `heapify` 0.2.0, `ident_case` 1.0.1, `macro_rules_attribute-proc_macro` 0.2.3, `macro_rules_attribute` 0.2.3, `matchit` 0.7.3, `miniz_oxide` 0.9.1, `ort-sys` 2.0.0-rc.13, `ort` 2.0.0-rc.13, `os_str_bytes` 6.6.1, `realfft` 3.5.0, `reqwest-middleware` 0.5.2, `rustls-platform-verifier` 0.7.0, `simd-adler32` 0.3.10, `static_assertions` 1.1.0, `statrs` 0.18.0, `tinyvec_macros` 0.1.1, `tokio-macros` 2.7.2, `tokio-retry` 0.3.2, `tokio-stream` 0.1.19, `tokio-util` 0.7.19, `tokio` 1.53.1, `unit-prefix` 0.5.2, `whoami` 2.1.3.
 
 ```text
 MIT License
@@ -4654,7 +4650,7 @@ Titulares:
 - Copyright (c) 2024 Elastio Software Inc
 - Copyright (c) 2025 Junpei Kawamoto
 
-Aplica a: `aho-corasick` 1.1.5, `base64` 0.13.1, `base64` 0.22.1, `bon-macros` 3.10.0, `bon` 3.10.0, `bstr` 1.13.1, `console` 0.15.11, `console` 0.16.4, `crossbeam-channel` 0.5.16, `crossbeam-deque` 0.8.7, `crossbeam-epoch` 0.9.20, `crossbeam-utils` 0.8.22, `ct2rs` 0.10.0, `dasp_sample` 0.11.0, `derive_builder_core` 0.20.2, `derive_builder_macro` 0.20.2, `derive_builder` 0.20.2, `generic-array` 0.14.7, `globset` 0.4.20, `indicatif` 0.17.11, `indicatif` 0.18.6, `memchr` 2.8.3, `mime_guess` 2.0.5, `nix` 0.31.3, `nu-ansi-term` 0.50.3, `onednn-src` 0.1.15, `safe-transmute` 0.11.3, `same-file` 1.0.6, `shellexpand` 3.1.2, `strsim` 0.11.1, `sysinfo` 0.38.4, `twox-hash` 2.1.3, `typenum` 1.20.1, `winapi-util` 0.1.11.
+Aplica a: `aho-corasick` 1.1.5, `base64` 0.13.1, `base64` 0.22.1, `bon-macros` 3.10.0, `bon` 3.10.0, `bstr` 1.13.1, `console` 0.16.4, `crossbeam-channel` 0.5.16, `crossbeam-deque` 0.8.7, `crossbeam-epoch` 0.9.20, `crossbeam-utils` 0.8.22, `ct2rs` 0.10.0, `dasp_sample` 0.11.0, `derive_builder_core` 0.20.2, `derive_builder_macro` 0.20.2, `derive_builder` 0.20.2, `generic-array` 0.14.7, `globset` 0.4.20, `indicatif` 0.18.6, `memchr` 2.8.3, `mime_guess` 2.0.5, `nix` 0.31.3, `nu-ansi-term` 0.50.3, `onednn-src` 0.1.15, `safe-transmute` 0.11.3, `same-file` 1.0.6, `shellexpand` 3.1.2, `strsim` 0.11.1, `sysinfo` 0.38.4, `twox-hash` 2.1.3, `typenum` 1.20.1, `winapi-util` 0.1.11.
 
 ```text
 The MIT License (MIT)

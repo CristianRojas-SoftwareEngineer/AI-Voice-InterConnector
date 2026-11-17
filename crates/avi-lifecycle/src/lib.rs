@@ -206,8 +206,6 @@ impl std::fmt::Display for LifecycleError {
 
 impl std::error::Error for LifecycleError {}
 
-pub(crate) use avi_shared::human_bytes;
-
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::path::Path;

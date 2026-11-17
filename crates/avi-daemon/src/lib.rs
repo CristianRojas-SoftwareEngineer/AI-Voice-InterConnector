@@ -120,11 +120,21 @@ struct MissingModel(&'static str);
 
 impl std::fmt::Display for MissingModel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "El modelo '{}' no está provisionado. Ejecuta 'setup' primero.",
-            self.0
-        )
+        // Se nombra el modelo por su función, sin el identificador interno.
+        let name = self.0;
+        if let Some(pair) = name.strip_prefix("opus-mt-") {
+            write!(
+                f,
+                "Falta el modelo de traducción {}.",
+                pair.replace('-', " → ")
+            )
+        } else if name.starts_with("parakeet") {
+            write!(f, "Falta el modelo de transcripción.")
+        } else if name.starts_with("qwen3-tts") {
+            write!(f, "Falta el modelo de síntesis.")
+        } else {
+            write!(f, "Falta el modelo {name}.")
+        }
     }
 }
 
@@ -1058,12 +1068,13 @@ fn denoise_busy_response() -> Response {
 /// Traduce un error del motor DSP a `reason` y estado HTTP del contrato.
 #[cfg(feature = "native-denoise")]
 fn denoise_failure(e: &denoise::errors::E) -> (&'static str, StatusCode) {
-    match e {
-        denoise::errors::E::EModelMissing(_) => ("model_missing", StatusCode::NOT_FOUND),
-        denoise::errors::E::EInvalidInput(_) => ("invalid_audio", StatusCode::BAD_REQUEST),
-        denoise::errors::E::EIo(_) => ("io_error", StatusCode::INTERNAL_SERVER_ERROR),
-        _ => ("denoise_failed", StatusCode::INTERNAL_SERVER_ERROR),
-    }
+    let reason = e.reason();
+    let status = match reason {
+        "model_missing" => StatusCode::NOT_FOUND,
+        "invalid_audio" | "output_exists" => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    (reason, status)
 }
 
 #[cfg(all(feature = "native-denoise", feature = "native-stt"))]
@@ -1191,7 +1202,8 @@ pub fn validate_transcribe_input(body: &Value) -> Result<Vec<i16>, InputError> {
         return Err(InputError {
             reason: "audio_too_long",
             message: format!(
-                "El audio de la transcripción no puede superar {} segundos.",
+                "El audio de la transcripción dura {} s y el máximo es {} s.",
+                (audio_bytes.len() / 2).div_ceil(16_000),
                 avi_core::MAX_TRANSCRIBE_AUDIO_SECS
             ),
         });
@@ -1233,13 +1245,11 @@ fn translate_resident(state: &DaemonState, pair: &str, text: &str) -> Result<Str
     // El snapshot puede borrarse tras cargar el residente; se informa la
     // pérdida del recurso sin reconstruir el motor bajo demanda.
     if !state.model_store.is_provisioned(&model_name) {
-        let ct2_dir = state.model_store.model_dir(&model_name);
         return Err(InputError {
             reason: "model_missing",
             message: format!(
-                "El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.",
-                model_name,
-                ct2_dir.display()
+                "Falta el modelo de traducción {}.",
+                pair.replace('-', " → ")
             ),
         });
     }
@@ -1265,7 +1275,7 @@ pub fn validate_translate_input(body: &Value) -> Result<TranslateInput, InputErr
     if text.trim().is_empty() {
         return Err(InputError {
             reason: "empty_text",
-            message: "El texto a traducir está vacío".to_string(),
+            message: "El texto a traducir está vacío.".to_string(),
         });
     }
     let source = required_language(body, "source_language")?;
@@ -1435,7 +1445,7 @@ async fn voices_clone_handler(
             Json(with_sv(json!({
                 "error": "voice_exists",
                 "reason": "voice_exists",
-                "message": format!("La voz '{}' ya existe (usa --force para sobrescribirla).", name),
+                "message": format!("La voz '{}' ya existe.", name),
             }))),
         )
             .into_response();
@@ -1476,7 +1486,7 @@ async fn voices_clone_handler(
         None => {
             return input_error_response(
                 "invalid_audio",
-                "El audio de referencia no es un WAV válido o legible".to_string(),
+                "El audio de referencia no es un WAV válido.".to_string(),
             );
         }
     };
@@ -1484,7 +1494,8 @@ async fn voices_clone_handler(
         return input_error_response(
             "audio_too_long",
             format!(
-                "La referencia de clonado no puede superar {} segundos.",
+                "La referencia de clonado dura {} s y el máximo es {} s.",
+                wav_duration.ceil() as u64,
                 avi_core::MAX_CLONE_REFERENCE_SECS
             ),
         );
@@ -1839,7 +1850,8 @@ async fn dub_handler(
                 "status": "error",
                 "reason": "audio_too_long",
                 "message": format!(
-                    "El audio dura más de {} s, el máximo admitido para doblar.",
+                    "El audio del doblaje dura {} s y el máximo es {} s.",
+                    (pcm.len() as u64).div_ceil(16_000),
                     avi_core::MAX_DUB_AUDIO_SECS
                 ),
             }))),
@@ -1856,7 +1868,6 @@ async fn dub_handler(
     #[cfg(feature = "native-stt")]
     if let Some(pair) = translation_pair.as_deref() {
         let model_name = format!("opus-mt-{pair}");
-        let ct2_dir = state.model_store.model_dir(&model_name);
         // El snapshot puede borrarse después del arranque; la comprobación
         // informa `model_missing` sin intentar cargar motores bajo demanda.
         if !state.model_store.is_provisioned(&model_name) {
@@ -1865,7 +1876,7 @@ async fn dub_handler(
                 Json(with_sv(json!({
                     "status": "error",
                     "reason": "model_missing",
-                    "message": format!("El modelo de traducción {} no está provisionado en '{}' — ejecuta setup.", model_name, ct2_dir.display()),
+                    "message": format!("Falta el modelo de traducción {}.", model_name.trim_start_matches("opus-mt-").replace('-', " → ")),
                 }))),
             )
                 .into_response();
@@ -2072,13 +2083,20 @@ async fn dub_handler(
                     &tx,
                     json!({
                         "event": "error",
-                        "reason": "empty_text",
-                        "message": "El texto transcrito está vacío",
+                        "reason": "empty_transcript",
+                        "message": "No se reconoció voz en el audio.",
                     }),
                 )
                 .await;
                 return;
             }
+            // El cliente muestra la transcripción en cuanto existe, antes de
+            // que empiece a sonar el audio. `text` es contenido del usuario.
+            emit_ndjson(
+                &tx,
+                json!({"event": "transcript", "text": transcribed.as_str()}),
+            )
+            .await;
             // Traducción o passthrough (la validación barata ya garantizó par
             // soportado, CT2 provisionado y feature residente cuando toca).
             let final_text = if source_iso == target_iso {
@@ -2139,6 +2157,14 @@ async fn dub_handler(
                     }
                 }
             };
+            // Solo si los idiomas difieren hay una traducción que mostrar.
+            if source_iso != target_iso {
+                emit_ndjson(
+                    &tx,
+                    json!({"event": "translation", "text": final_text.as_str()}),
+                )
+                .await;
+            }
             // Sin entrega a cliente caído: no sintetizar (sin trabajo huérfano).
             if tx.is_closed() {
                 return;

@@ -437,9 +437,12 @@ fn final_summary_reports_the_path_state_once() {
         lines[0]
     );
     assert!(
-        lines[0].contains("las terminales que ya estaban abiertas no lo verán hasta reiniciarse"),
-        "con el aviso a las terminales ya abiertas, que solo aparece si se acaba de escribir: {}",
-        lines[0]
+        first
+            .warnings
+            .iter()
+            .any(|w| w.contains("terminales que ya estaban abiertas no verán el PATH")),
+        "con el aviso a las terminales ya abiertas, que solo aparece si se acaba de escribir: {:?}",
+        first.warnings
     );
 
     // ── Estado 2: la integración está en pie y esta pasada no la tocó ────────────
@@ -454,16 +457,18 @@ fn final_summary_reports_the_path_state_once() {
         .expect("la segunda instalación se completa");
     assert!(!second.path_changed());
     let lines = summary_lines(&second.summary);
-    assert_eq!(
-        lines.len(),
-        1,
-        "tampoco en la repetición, que es donde se vería un segundo duplicado: {:?}",
+    assert!(
+        lines.is_empty(),
+        "en la repetición el cierre no repite lo que el plan ya dijo (que no se modifica): {:?}",
         second.summary
     );
     assert!(
-        lines[0].contains("ya estaba integrado"),
-        "y lo dice como estado, no como plan: {}",
-        lines[0]
+        !second
+            .warnings
+            .iter()
+            .any(|w| w.contains("terminales que ya estaban abiertas")),
+        "y no avisa de terminales abiertas, porque no se escribió nada: {:?}",
+        second.warnings
     );
 
     // ── Estado 3: `--no-modify-path`, donde el plan **es** el estado ──────────────
@@ -548,7 +553,7 @@ fn no_setup_provisions_nothing() {
         outcome
             .summary
             .iter()
-            .any(|l| l == "  Modelos:   no se provisionaron (--no-setup)"),
+            .any(|l| l == "  Modelos: no se provisionaron (--no-setup)"),
         "el resumen describe en español que no se provisionó: {:?}",
         outcome.summary
     );
@@ -697,8 +702,10 @@ fn setup_failure_keeps_install() {
         failure.message
     );
     assert!(
-        failure.message.contains("reintentar con setup"),
-        "y que basta reintentar con `setup`, que es la otra mitad del aviso: {}",
+        failure
+            .message
+            .contains("reintentarlo con `ai-voice-interconnector setup`"),
+        "y que puede reintentarse con `setup`, que es la otra mitad del aviso: {}",
         failure.message
     );
     assert!(
@@ -736,21 +743,14 @@ fn setup_failure_keeps_install() {
         "el literal del contrato no aparece en el texto: {:?}",
         outcome.summary
     );
+    // El aviso de después lleva el consejo de reintentar y nombra la causa con su
+    // `reason` anidado.
     assert!(
-        outcome
-            .summary
-            .iter()
-            .any(|l| l.contains("reintentar con setup")),
-        "y que basta reintentar con `setup`: {:?}",
-        outcome.summary
-    );
-    assert!(
-        outcome
-            .summary
-            .iter()
-            .any(|l| l.contains("Causa:") && l.contains("network_error")),
-        "y nombra la causa, con el `reason` anidado: {:?}",
-        outcome.summary
+        outcome.warnings.iter().any(|l| l
+            .contains("reintentarlo con `ai-voice-interconnector setup`")
+            && l.contains("network_error")),
+        "el aviso dice que puede reintentarse con `setup` y nombra la causa: {:?}",
+        outcome.warnings
     );
 
     // Y es reintentable con `setup`: el modelo sigue sin existir, así que un `setup`
@@ -817,15 +817,17 @@ fn successful_provisioning_has_no_reason() {
         !outcome
             .summary
             .iter()
-            .any(|l| l.contains("Causa:") || l.contains("no se completó")),
-        "y el resumen no dice nada de un fallo que no ha habido: {:?}",
-        outcome.summary
+            .chain(outcome.warnings.iter())
+            .any(|l| l.contains("no se completó")),
+        "y el resumen no dice nada de un fallo que no ha habido: {:?} {:?}",
+        outcome.summary,
+        outcome.warnings
     );
     assert!(
         outcome
             .summary
             .iter()
-            .any(|l| l == "  Modelos:   ya estaban provisionados"),
+            .any(|l| l == "  Modelos: ya estaban provisionados"),
         "y el resumen describe en español que ya estaban provisionados: {:?}",
         outcome.summary
     );
@@ -1060,7 +1062,7 @@ fn keep_data_preserves_state() {
             "la locución de {voice} se queda"
         );
     }
-    for reason in ["modelos", "voces", "habla"] {
+    for reason in ["modelos", "voces", "audios sintetizados"] {
         assert!(
             outcome.preserved.iter().any(|p| p.reason.contains(reason)),
             "`{reason}` se anuncia como conservado, con su motivo: {:?}",
@@ -2114,7 +2116,7 @@ fn uninstall_plan_lists_path_revert_apart_from_preserved() {
     assert!(
         plan.path_revert
             .iter()
-            .all(|r| r.to_string().starts_with("se revertirá el PATH: se retira")),
+            .all(|r| r.to_string().starts_with("PATH: se quitará")),
         "cada línea dice que se retira: {:?}",
         plan.path_revert
     );

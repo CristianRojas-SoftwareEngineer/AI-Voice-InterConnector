@@ -52,7 +52,7 @@ impl Drop for TempWav {
             // `Drop` no puede propagar ni hacer pánico: el fallo queda visible
             // por stderr con la ruta que se queda en disco.
             Err(e) => crate::console::warn(format_args!(
-                "aviso: no se pudo borrar el temporal '{}': {e}",
+                "no se pudo borrar el temporal '{}': {e}",
                 self.path.display()
             )),
         }

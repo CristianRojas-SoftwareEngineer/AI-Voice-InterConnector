@@ -196,7 +196,7 @@ pub fn probe(ffmpeg: &Path, input: &Path) -> Result<ProbeResult, E> {
     // validaciones probe
     if !has_video && !has_audio {
         return Err(E::EInvalidInput(format!(
-            "Archivo inválido o corrupto (sin streams de medios reconocidos): {}",
+            "El archivo {} está dañado o no es un audio ni un video reconocible.",
             input.display()
         )));
     }

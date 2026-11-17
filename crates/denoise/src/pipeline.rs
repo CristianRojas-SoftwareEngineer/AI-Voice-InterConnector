@@ -111,10 +111,7 @@ where
             progress_cb(0, "skipped");
             return Ok(ProcessStatus::Skipped);
         } else if !params.overwrite {
-            return Err(E::EOutputExists(format!(
-                "El archivo de destino ya existe: {}",
-                params.output.display()
-            )));
+            return Err(E::EOutputExists(params.output.display().to_string()));
         }
     }
 

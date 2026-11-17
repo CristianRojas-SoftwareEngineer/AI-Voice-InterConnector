@@ -17,6 +17,9 @@ clap = { version = "4.4", features = ["derive", "env"] }
 serde_json = "1.0"
 tokio = { version = "1.35", features = ["full"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Registro de trazas: el detalle técnico de un error (`CliError::detail`) va a
+# `tracing::debug!` y no a la salida de texto.
+tracing = "0.1"
 ctrlc = "3.4"
 avi-core = { path = "crates/avi-core" }
 avi-audio = { path = "crates/avi-audio" }
@@ -31,8 +34,10 @@ avi-translation = { path = "crates/avi-translation" }
 # que solo se activa en los builds de prueba de más abajo, de modo que el binario
 # distribuido no contiene el punto de inyección de fallo.
 avi-lifecycle = { path = "crates/avi-lifecycle" }
-# Arranque de consola en UTF-8 compartido con `xtask` (`force_utf8_console`).
 avi-shared = { path = "crates/avi-shared" }
+# Núcleo de presentación en terminal: arranque de consola en UTF-8 compartido
+# con `xtask` (`avi_term::line::init_console`), color, formatos y etapas.
+avi-term = { path = "crates/avi-term" }
 # Limpieza de ruido DPDFNet para archivos de audio y vídeo. Opt-in: el
 # subcomando `speech denoise` solo existe con `native-denoise`, que el paquete
 # de producto activa mediante `full`.
@@ -65,8 +70,6 @@ sha2 = "0.11"
 tar = "0.4"
 flate2 = "1.0"
 zip = { version = "2.4", default-features = false, features = ["deflate-flate2", "flate2"] }
-# Solo los tests de la propia crate raíz usan `tracing` (captura de logs).
-tracing = "0.1"
 # Solo para los tests: expone el generador de WAV de frecuencia nula.
 avi-audio = { path = "crates/avi-audio", features = ["test-support"] }
 # Solo para los tests: habilita el feature `faults` del motor, de modo que

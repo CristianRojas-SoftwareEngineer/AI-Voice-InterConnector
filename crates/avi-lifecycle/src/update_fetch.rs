@@ -185,10 +185,10 @@ pub async fn fetch(
     let outcome = fetch_into(client, request, &staging).await;
     if outcome.is_err() {
         if let Err(e) = std::fs::remove_dir_all(&staging) {
-            eprintln!(
-                "Aviso: el staging {} de la descarga fallida quedó sin borrar: {e}",
+            avi_term::line::warn(format!(
+                "La descarga fallida {} quedó sin borrar: {e}",
                 staging.display()
-            );
+            ));
         }
     }
     outcome
@@ -275,10 +275,10 @@ fn validate_pe_image(bytes: &[u8], triple: &str) -> Result<(), String> {
 /// ejerzan con plazos cortos sin esperar el timeout real.
 fn boot_timeout_expired(staging: &Path, triple: &str, timeout: Duration) -> LifecycleError {
     if let Err(e) = std::fs::remove_dir_all(staging) {
-        eprintln!(
-            "Aviso: el staging {} quedó sin retirar tras el timeout de `verify_boot`: {e}",
+        avi_term::line::warn(format!(
+            "La descarga {} quedó sin retirar tras agotarse el tiempo de la verificación: {e}",
             staging.display()
-        );
+        ));
     }
     LifecycleError::binary_incompatible(format!(
         "el binario descargado ({triple}) no terminó `--version` en {} s (timeout): \
@@ -372,10 +372,10 @@ pub async fn verify_boot(
         ))
     });
     if let Err(e) = std::fs::remove_file(&log_path) {
-        eprintln!(
-            "Aviso: el log de `verify_boot` {} quedó sin borrar: {e}",
+        avi_term::line::warn(format!(
+            "El registro de la verificación {} quedó sin borrar: {e}",
             log_path.display()
-        );
+        ));
     }
     if !status.success() {
         return Err(LifecycleError::binary_incompatible(format!(
@@ -633,11 +633,11 @@ fn apply_permissions(triple: &str, staging: &Path) -> Result<(), LifecycleError>
             // verificado, pero un archivo ejecutable sin permiso queda
             // arrancable y la traza es lo único que lo delata.
             if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)) {
-                eprintln!(
-                    "Aviso: no se pudo aplicar el modo {mode:o} a {}: {e}; \
+                avi_term::line::warn(format!(
+                    "No se pudo aplicar el modo {mode:o} a {}: {e}; \
                      puede quedar sin permiso de ejecución",
                     path.display()
-                );
+                ));
             }
         }
         Ok(())
@@ -687,10 +687,10 @@ fn restrict_staging(staging: &Path) {
         // motivo tiene que quedar escrito, porque nadie vuelve a mirar esa
         // ruta.
         if let Err(e) = std::fs::set_permissions(staging, std::fs::Permissions::from_mode(0o700)) {
-            eprintln!(
-                "Aviso: no se pudo dejar el staging {} solo para el usuario: {e}",
+            avi_term::line::warn(format!(
+                "No se pudo dejar la descarga {} accesible solo para tu usuario: {e}",
                 staging.display()
-            );
+            ));
         }
     }
     #[cfg(not(unix))]

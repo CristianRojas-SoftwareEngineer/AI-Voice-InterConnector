@@ -7,6 +7,8 @@ publish = false
 description = "Fuente única pura del bundle, las rutas y los pines (sin red ni TLS)"
 
 [dependencies]
+# Estado de la línea de fase y avisos que `console` reexporta.
+avi-term = { path = "../avi-term" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 directories = "5.0"
@@ -23,8 +25,3 @@ ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dy
 # motor STT y por la sesión DPDFNet del crate `denoise`: quien crea una sesión
 # `ort` activa esta feature para que ambas cargas partan de un solo inicializador.
 native-ort = ["dep:ort"]
-
-[target.'cfg(windows)'.dependencies]
-# Arranque de consola en UTF-8 (`console`): solo Windows, Unix sigue puro.
-# `Win32_Foundation` lo exige el BOOL que devuelven las fijaciones.
-windows-sys = { version = "0.52", features = ["Win32_System_Console", "Win32_Foundation", "Win32_Globalization"] }

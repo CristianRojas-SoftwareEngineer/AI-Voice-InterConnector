@@ -18,6 +18,8 @@ faults = []
 avi-store = { path = "../avi-store" }
 # Tipos del bundle y parseo del manifiesto como fuente única, sin red.
 avi-shared = { path = "../avi-shared" }
+# Núcleo de presentación: formatos, etapas y el indicador de fases.
+avi-term = { path = "../avi-term" }
 # Identidad de proceso (hora de creación e imagen) que el pidfile registra.
 avi-process = { path = "../avi-process" }
 serde = { version = "1.0", features = ["derive"] }
