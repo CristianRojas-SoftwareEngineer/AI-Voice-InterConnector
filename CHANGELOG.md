@@ -150,7 +150,7 @@ La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador 
 - **Grabación con medidor:** con terminal, la grabación muestra `● Grabando m:ss / m:ss`, un medidor de nivel y `Enter para detener`; avisa al alcanzar el límite y avisa si no se detectó voz (el tramo más fuerte no supera −43 dBFS) sin cortar el comando.
 - **Eventos `transcript` y `translation` en `/dub`:** el daemon envía la transcripción y la traducción en cuanto existen, y `speech dub` las muestra antes de que suene el audio. Son eventos nuevos sin cambio de `DAEMON_SCHEMA_VERSION`.
 - **`speech remove --yes` y su confirmación:** `speech remove` pregunta `[s/N]` con terminal y sale con `confirmation_required` (2) sin terminal y sin `--yes`. `voice remove` pregunta siempre, tenga o no audios sintetizados.
-- **Nuevos `reason`:** `speech_metadata_corrupt` (1), `output_exists` (2) y `empty_transcript` (2, el doblaje no reconoció voz en el audio).
+- **Nuevos `reason`:** `speech_metadata_corrupt` (1), `output_exists` (2) y `empty_transcript` (2, la transcripción o el doblaje no reconocieron voz en el audio).
 - **Color y `NO_COLOR`:** verde, rojo, amarillo y atenuado solo en una terminal; `NO_COLOR` lo desactiva.
 
 ### Cambiado
@@ -184,6 +184,9 @@ Cambios incompatibles del texto humano y de los flujos; las claves, las opciones
 - `speech dub` escribe `Transcripción:` y `Traducción:` en cuanto existen, y ya no imprime una línea final por stdout.
 - `daemon status`, `devices`, `speech list`, `voice list` y `doctor` cambian su texto.
 - Una transcripción vacía en `speech dub` (directo y daemon) pasa de `empty_text` a `empty_transcript`, con el mismo código 2.
+- `speech transcribe` y `/transcribe` sobre un audio sin voz pasan de código 0 (HTTP 200) con texto vacío a código 2 (HTTP 400) `empty_transcript`.
+- El mensaje de `transcription_failed` pasa a «No se pudo transcribir el audio.», o a «No se pudo cargar el modelo de transcripción.» si falla la carga; ya no lleva el texto de la biblioteca.
+- La causa técnica de `transcription_failed` va al detalle del JSON o, en el daemon, a su registro.
 
 ## [0.45.2] — 2026-11-16
 

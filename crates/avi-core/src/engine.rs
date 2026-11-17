@@ -4,8 +4,39 @@
 // Copyright (c) 2026 Cristián Rojas Arredondo.
 // SPDX-License-Identifier: MPL-2.0
 
+use crate::exit_codes::{CliError, ExitCode};
+
 pub trait SttEngine: Send + Sync {
     fn transcribe(&self, audio_pcm: &[i16]) -> anyhow::Result<String>;
+}
+
+/// Única fuente de la regla de transcripción para la CLI y el daemon: transcribe
+/// con el motor, trata el texto vacío como un error y da el error en el formato
+/// común. Ningún otro sitio de producción llama a `SttEngine::transcribe`.
+///
+/// Devuelve:
+/// - el texto tal como lo dio el motor, si tiene contenido;
+/// - `empty_transcript` (código 2, sin detalle) si el texto queda vacío tras
+///   `trim`, es decir, el motor no reconoció voz;
+/// - `transcription_failed` (código 10) si el motor falla, con la cadena de
+///   causas de la biblioteca solo en `detail`, nunca en el mensaje.
+pub fn transcribe_speech(engine: &dyn SttEngine, pcm: &[i16]) -> Result<String, CliError> {
+    let text = engine.transcribe(pcm).map_err(|e| {
+        CliError::new(
+            ExitCode::TranscriptionFailed,
+            "transcription_failed",
+            "No se pudo transcribir el audio.",
+        )
+        .with_detail(format!("{e:#}"))
+    })?;
+    if text.trim().is_empty() {
+        return Err(CliError::new(
+            ExitCode::InvalidInput,
+            "empty_transcript",
+            "No se reconoció voz en el audio.",
+        ));
+    }
+    Ok(text)
 }
 
 pub trait TranslationEngine: Send + Sync {
@@ -163,4 +194,49 @@ fn split_tokens(text: &str, max_length: usize) -> Vec<String> {
 /// desarrollo fija.
 pub fn available_threads() -> usize {
     num_cpus::get_physical().max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::exit_codes::ExitCode;
+
+    /// Motor falso que devuelve siempre el resultado configurado.
+    struct FakeStt(Result<&'static str, &'static str>);
+
+    impl SttEngine for FakeStt {
+        fn transcribe(&self, _audio_pcm: &[i16]) -> anyhow::Result<String> {
+            match self.0 {
+                Ok(text) => Ok(text.to_string()),
+                Err(cause) => Err(anyhow::anyhow!(cause).context("fallo de la sesión")),
+            }
+        }
+    }
+
+    #[test]
+    fn empty_or_blank_text_is_empty_transcript_without_detail() {
+        for text in ["", "  \n"] {
+            let err = transcribe_speech(&FakeStt(Ok(text)), &[0; 16]).unwrap_err();
+            assert_eq!(err.code, ExitCode::InvalidInput);
+            assert_eq!(err.reason, "empty_transcript");
+            assert_eq!(err.message, "No se reconoció voz en el audio.");
+            assert!(err.detail.is_none());
+        }
+    }
+
+    #[test]
+    fn engine_failure_is_transcription_failed_with_chained_cause_in_detail() {
+        let err = transcribe_speech(&FakeStt(Err("causa interna")), &[0; 16]).unwrap_err();
+        assert_eq!(err.code, ExitCode::TranscriptionFailed);
+        assert_eq!(err.reason, "transcription_failed");
+        assert_eq!(err.message, "No se pudo transcribir el audio.");
+        let detail = err.detail.expect("el fallo del motor lleva detalle");
+        assert!(detail.contains("causa interna"), "detalle: {detail}");
+    }
+
+    #[test]
+    fn normal_text_passes_through_untouched() {
+        let text = transcribe_speech(&FakeStt(Ok(" hola mundo ")), &[0; 16]).unwrap();
+        assert_eq!(text, " hola mundo ");
+    }
 }

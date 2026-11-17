@@ -28,11 +28,6 @@ pub mod spawn;
 use denoise_adapter::{DenoiseGate, GateBegin, DENOISE_QUEUE_TIMEOUT};
 /// Familia de los logs por arranque del daemon (`daemon_<pid>_<ms>.log`).
 pub const DAEMON_LOG_FAMILY: &str = "daemon";
-pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_death};
-// El trait `SttEngine` (`.transcribe`) solo lo consume la superficie STT,
-// gateada tras `native-stt`.
-#[cfg(feature = "native-stt")]
-use avi_core::engine::SttEngine;
 use avi_core::json_emitter;
 use avi_store::{ModelStore, SpeechStore, VoiceName, VoiceStore};
 #[cfg(feature = "native-stt")]
@@ -40,6 +35,7 @@ use avi_stt::ParakeetEngine;
 #[cfg(feature = "native-translation")]
 use avi_translation::Ct2TranslationEngine;
 use avi_tts::{GenerationOptions, Qwen3TtsEngine, VoiceProfile};
+pub use spawn::{kill_tree_by_pid, pid_alive, spawn_background, wait_for_pid_death};
 // `Engine` trait requerido por el API no-deprecation de base64 0.22
 // (el motor interno del daemon usa el alfabeto STANDARD, idéntico al `encode`/`decode`
 // libres, por compatibilidad con el cliente raíz del CLI).
@@ -989,19 +985,30 @@ async fn transcribe_handler(
         pcm
     };
 
-    let result = engines.stt_engine.transcribe(&pcm);
-    match result {
+    match avi_core::engine::transcribe_speech(&engines.stt_engine, &pcm) {
         Ok(text) => {
             let body = with_sv(json!({ "text": text }));
             Json(body).into_response()
         }
-        Err(e) => {
+        Err(err) => {
+            // El detalle es texto de biblioteca: va al registro del daemon y
+            // nunca a la respuesta.
+            if let Some(detail) = &err.detail {
+                eprintln!("[daemon] {}: {}", err.reason, detail);
+            }
+            // Un audio sin voz es entrada inválida (400); cualquier otro
+            // fallo es del motor (500).
+            let status = if err.code == avi_core::exit_codes::ExitCode::InvalidInput {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
             let body = with_sv(json!({
                 "status": "error",
-                "reason": "transcription_failed",
-                "message": e.to_string(),
+                "reason": err.reason,
+                "message": err.message,
             }));
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(body)).into_response()
+            (status, Json(body)).into_response()
         }
     }
 }
@@ -2044,7 +2051,7 @@ async fn dub_handler(
                 stt_state
                     .inference_engines
                     .as_ref()
-                    .map(|engines| engines.stt_engine.transcribe(&pcm))
+                    .map(|engines| avi_core::engine::transcribe_speech(&engines.stt_engine, &pcm))
             });
             let transcribed = match with_heartbeats(&tx, "transcribe", stt_work).await {
                 None => return,
@@ -2053,13 +2060,18 @@ async fn dub_handler(
                     emit_ndjson(&tx, json!({"event": "error", "reason": "daemon_error", "message": "El estado de contrato no puede transcribir."})).await;
                     return;
                 }
-                Some(Ok(Some(Err(e)))) => {
+                Some(Ok(Some(Err(err)))) => {
+                    // El detalle es texto de biblioteca: va al registro del
+                    // daemon y nunca al evento.
+                    if let Some(detail) = &err.detail {
+                        eprintln!("[daemon] {}: {}", err.reason, detail);
+                    }
                     emit_ndjson(
                         &tx,
                         json!({
                             "event": "error",
-                            "reason": "transcription_failed",
-                            "message": e.to_string(),
+                            "reason": err.reason,
+                            "message": err.message,
                         }),
                     )
                     .await;
@@ -2078,18 +2090,6 @@ async fn dub_handler(
                     return;
                 }
             };
-            if transcribed.trim().is_empty() {
-                emit_ndjson(
-                    &tx,
-                    json!({
-                        "event": "error",
-                        "reason": "empty_transcript",
-                        "message": "No se reconoció voz en el audio.",
-                    }),
-                )
-                .await;
-                return;
-            }
             // El cliente muestra la transcripción en cuanto existe, antes de
             // que empiece a sonar el audio. `text` es contenido del usuario.
             emit_ndjson(

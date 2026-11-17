@@ -7,11 +7,6 @@
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
 use avi_audio as audio;
-// El trait STT y el motor real solo entran en scope con `native-stt` (off por
-// defecto); sin el feature, los subcomandos de transcripción devuelven un error
-// explícito de "compilado sin soporte".
-#[cfg(feature = "native-stt")]
-use avi_core::engine::SttEngine;
 use avi_core::exit_codes::{CliError, ExitCode};
 use avi_core::json_emitter::emit_raw_json;
 use avi_daemon as daemon;
@@ -3447,8 +3442,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                             CliError::new(
                                 ExitCode::TranscriptionFailed,
                                 "transcription_failed",
-                                e.to_string(),
+                                "No se pudo cargar el modelo de transcripción.",
                             )
+                            .with_detail(format!("{e:#}"))
                         })?;
                     // Limpieza de ruido (opt-in) antes de STT: toma de turno,
                     // 48 kHz, inferencia y vuelta a 16 kHz. El modelo se resuelve
@@ -3480,15 +3476,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         let denoised = pcm;
                         denoised
                     };
-                    let text = progress
-                        .while_running(|| engine.transcribe(&pcm_for_stt))
-                        .map_err(|e| {
-                            CliError::new(
-                                ExitCode::TranscriptionFailed,
-                                "transcription_failed",
-                                e.to_string(),
-                            )
-                        })?;
+                    let text = progress.while_running(|| {
+                        avi_core::engine::transcribe_speech(engine, &pcm_for_stt)
+                    })?;
                     Ok(text)
                 }
                 .await;
@@ -3978,25 +3968,13 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                             CliError::new(
                                 ExitCode::TranscriptionFailed,
                                 "transcription_failed",
-                                e.to_string(),
+                                "No se pudo cargar el modelo de transcripción.",
                             )
+                            .with_detail(format!("{e:#}"))
                         })?;
-                    let transcribed = progress
-                        .while_running(|| stt.transcribe(&pcm_for_stt))
-                        .map_err(|e| {
-                        CliError::new(
-                            ExitCode::TranscriptionFailed,
-                            "transcription_failed",
-                            e.to_string(),
-                        )
+                    let transcribed = progress.while_running(|| {
+                        avi_core::engine::transcribe_speech(stt, &pcm_for_stt)
                     })?;
-                    if transcribed.trim().is_empty() {
-                        return Err(CliError::new(
-                            ExitCode::InvalidInput,
-                            "empty_transcript",
-                            "No se reconoció voz en el audio.",
-                        ));
-                    }
                     // La transcripción sale por stdout en cuanto existe, antes de
                     // que suene el audio.
                     progress.result(Some("Transcripción"), &transcribed);

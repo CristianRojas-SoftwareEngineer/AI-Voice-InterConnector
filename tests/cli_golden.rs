@@ -1458,6 +1458,42 @@ fn speech_transcribe_with_audio_matches_contract() {
     assert!(!text.is_empty(), "`text` no debe estar vacío");
 }
 
+/// Un audio sin voz (3 s de silencio) no es un éxito con texto vacío: sale con
+/// exit 2 y `empty_transcript`, en JSON y en texto con la línea `Solución:`.
+#[cfg(feature = "native-stt")]
+#[test]
+#[ignore = "requiere Parakeet"]
+fn speech_transcribe_silence_is_empty_transcript() {
+    require_parakeet();
+    let inst = IsolatedInstance::new("transcribe_silence");
+    std::fs::create_dir_all(&inst.dir).expect("carpeta de datos de la instancia");
+    let wav = inst.dir.join("silence_3s.wav");
+    write_silent_wav(&wav, 3);
+    let wav_arg = wav.to_str().expect("ruta UTF-8");
+    let args = [
+        "speech",
+        "transcribe",
+        "--no-daemon",
+        "--audio",
+        wav_arg,
+        "--source-language",
+        "es",
+    ];
+
+    let mut json_args = vec!["--json"];
+    json_args.extend_from_slice(&args);
+    let (code, actual) = run_json_env(&json_args, &inst.args());
+    assert_eq!(code, 2, "el silencio debe salir con exit 2 ({actual})");
+    assert_eq!(actual["reason"], "empty_transcript");
+
+    let (code, _stdout, stderr) = run_text_env(&args, &inst.args());
+    assert_eq!(code, 2, "en texto también sale con exit 2: {stderr}");
+    assert!(
+        stderr.lines().any(|l| l.starts_with("Solución:")),
+        "falta la línea Solución: {stderr}"
+    );
+}
+
 #[test]
 fn speech_transcribe_without_audio_nor_mic_exits_2() {
     let (code, actual) = run_json(&["--json", "speech", "transcribe", "--source-language", "es"]);
@@ -2193,6 +2229,61 @@ fn dub_daemon_bare_404_exits_1_with_restart_hint_without_transcribe() {
     assert!(
         solution.contains("daemon restart"),
         "la solución debe indicar `daemon restart`: {solution}"
+    );
+}
+
+/// Un 400 `empty_transcript` de `/transcribe` sale con exit 2, en texto con la
+/// línea `Solución:` y con `--json` conservando el `reason`.
+#[test]
+fn transcribe_daemon_empty_transcript_exits_2_with_solution() {
+    let fake = FakeDaemon::start(
+        400,
+        serde_json::json!({
+            "status": "error",
+            "reason": "empty_transcript",
+            "message": "No se reconoció voz en el audio.",
+        }),
+    );
+    let (sandbox, envs) = contract_sandbox("transcribe_daemon_empty");
+    let dir = sandbox.path();
+    fake.publish_in(&dir.join("data"));
+    let wav = dir.join("input_1s.wav");
+    write_silent_wav(&wav, 1);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let wav_arg = wav.to_str().expect("ruta UTF-8");
+
+    let (code, actual) = run_json_env(
+        &[
+            "--json",
+            "speech",
+            "transcribe",
+            "--daemon",
+            "--audio",
+            wav_arg,
+            "--source-language",
+            "es",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 2, "empty_transcript debe salir con exit 2 ({actual})");
+    assert_eq!(actual["reason"], "empty_transcript");
+
+    let (code, _stdout, stderr) = run_text_env(
+        &[
+            "speech",
+            "transcribe",
+            "--daemon",
+            "--audio",
+            wav_arg,
+            "--source-language",
+            "es",
+        ],
+        &envs,
+    );
+    assert_eq!(code, 2, "en texto también sale con exit 2: {stderr}");
+    assert!(
+        stderr.lines().any(|l| l.starts_with("Solución:")),
+        "falta la línea Solución: {stderr}"
     );
 }
 

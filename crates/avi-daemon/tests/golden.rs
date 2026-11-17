@@ -584,15 +584,59 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
     }
 }
 
-/// Audio de ~70 s (PCM 16 kHz mono, ~3 MB de cuerpo en base64): supera el límite
-/// de cuerpo por defecto de 2 MiB pero cabe en el tope de transcripción de 300 s,
-/// así que `/transcribe` debe procesarlo y responder 200.
+/// Audio de ~80 s de voz real (PCM 16 kHz mono, ~3,4 MB de cuerpo en base64):
+/// supera el límite de cuerpo por defecto de 2 MiB pero cabe en el tope de
+/// transcripción de 300 s, así que `/transcribe` debe procesarlo y responder 200
+/// con texto. Se usa voz y no silencio porque un audio sin voz es 400
+/// `empty_transcript`.
 #[cfg(feature = "native-stt")]
 #[tokio::test]
 #[ignore = "requiere Parakeet"]
 async fn transcribe_audio_over_default_body_limit_is_accepted() {
     let state = resource_state();
-    let silence = vec![0u8; 70 * 16_000 * 2];
+    let sample = avi_audio::load_wav_16k_mono_pcm(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../avi-stt/tests/assets/parakeet_sample_16k.wav"),
+    )
+    .expect("el WAV de muestra debe cargarse");
+    let target_samples = 80 * 16_000;
+    let mut pcm: Vec<i16> = Vec::with_capacity(target_samples + sample.len());
+    while pcm.len() < target_samples {
+        pcm.extend_from_slice(&sample);
+    }
+    let audio_bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let (status, bytes) = send_to(
+        state,
+        post_json(
+            "/transcribe",
+            serde_json::json!({
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
+                "source_language": "es",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "cuerpo: {}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert!(
+        !actual["text"].as_str().unwrap_or("").is_empty(),
+        "`text` no debe estar vacío: {actual}"
+    );
+}
+
+/// Un audio sin voz (3 s de ceros) responde 400 `empty_transcript` con el
+/// mensaje común, no un 200 con texto vacío.
+#[cfg(feature = "native-stt")]
+#[tokio::test]
+#[ignore = "requiere Parakeet"]
+async fn transcribe_silence_is_400_empty_transcript() {
+    let state = resource_state();
+    let silence = vec![0u8; 3 * 16_000 * 2];
     let (status, bytes) = send_to(
         state,
         post_json(
@@ -606,10 +650,13 @@ async fn transcribe_audio_over_default_body_limit_is_accepted() {
     .await;
     assert_eq!(
         status,
-        StatusCode::OK,
+        StatusCode::BAD_REQUEST,
         "cuerpo: {}",
         String::from_utf8_lossy(&bytes)
     );
+    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    assert_eq!(actual["reason"], "empty_transcript");
+    assert_eq!(actual["message"], "No se reconoció voz en el audio.");
 }
 
 /// WAV PCM 16-bit mono 16 kHz de silencio con la duración indicada.

@@ -746,6 +746,10 @@ cierre `✓ Transcripción completada en <total>` salen por stderr.
 Con `--json`, emite `{"text", "source_language"}` y nada por stdout salvo ese objeto.
 `source_language` es el valor de `--source-language` (`es` o `en`).
 
+Si el audio no contiene voz reconocible, el comando sale con código 2 y
+`empty_transcript` («No se reconoció voz en el audio.») con su línea
+`Solución:`, en la vía directa y en la del daemon.
+
 **Opciones:**
 - `--audio`: Ruta del archivo WAV a transcribir (mutuamente excluyente con `--mic`; uno de los dos es requerido)
 - `--mic`: Transcribe desde el micrófono en vez de un archivo (mutuamente excluyente con `--audio`; uno de los dos es requerido)

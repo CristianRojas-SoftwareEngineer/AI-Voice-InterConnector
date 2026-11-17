@@ -196,10 +196,20 @@ Despacho:
 2. Rama directa: verifica que `parakeet-tdt-v3/nemo128.onnx` exista (si no,
  exit 4 `model_missing` antes de instanciar nada); si el binario se compiló
  sin el feature `native-stt`, exit 1 `stt_unsupported`; si el feature está
- activo, instancia `ParakeetEngine` (`crates/avi-stt/src/lib.rs`) y llama
- `engine.transcribe(&pcm)`.
+ activo, instancia `ParakeetEngine` (`crates/avi-stt/src/lib.rs`) y transcribe
+ con `avi_core::engine::transcribe_speech`, la misma función que usa el daemon.
 
 `ParakeetEngine` solo transcribe, nunca traduce: el idioma declarado selecciona el modelo y la respuesta, pero la transcripción es directa sin traducción intermedia.
+
+Un audio en el que el motor no reconoce voz no es un éxito con texto vacío: en
+las dos vías (directa y daemon) sale con exit 2 `empty_transcript`, con el
+mensaje «No se reconoció voz en el audio.» y la línea `Solución:`. Con `--mic`,
+una grabación en silencio conserva primero su aviso de captura
+(`No se detectó voz en la grabación`) y después sale con ese mismo error. Si el
+motor falla, sale con exit 10 `transcription_failed` y el mensaje «No se pudo
+transcribir el audio.» (o «No se pudo cargar el modelo de transcripción.» si
+falla la carga del modelo); la causa técnica de la biblioteca va solo en el
+detalle de `--json`.
 
 ### Contrato `--json`
 
@@ -445,8 +455,8 @@ reiniciar el daemon con `ai-voice-interconnector daemon restart`.
 Rama directa (requiere feature `native-stt`; sin
 ella, exit 1 `stt_unsupported`): verifica `parakeet-tdt-v3` provisionado (exit
 4) y el modelo de síntesis provisionado (`require_model_provisioned`) →
-captura/lee PCM → `ParakeetEngine::transcribe` → si el texto transcrito está
-vacío, exit 2 `empty_transcript` → si `source != target`, exige el modelo de
+captura/lee PCM → `transcribe_speech` (exit 2 `empty_transcript` si el texto
+transcrito queda vacío) → si `source != target`, exige el modelo de
 traducción provisionado (exit 4 `model_missing` si no); sin el feature
 `native-translation`, exit 1 `translation_unsupported` →
 `Qwen3TtsEngine::synthesize_streaming` →
@@ -626,7 +636,7 @@ Del daemon llegan además las esperas de calentamiento del motor (`Calentando el
 |---|---|---|
 | `usage_error` | 2 | `AVI_TTS_PRECISION` inválida al crear el motor directo; `--skip-existing` con `--force` o con `--play`, falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
 | `empty_text` | 2 | Texto a sintetizar vacío |
-| `empty_transcript` | 2 | El doblaje (`dub`, directo y daemon) no reconoció voz: la transcripción resultante está vacía |
+| `empty_transcript` | 2 | La transcripción (`transcribe`) o el doblaje (`dub`), directos o por el daemon, no reconocieron voz: la transcripción resultante está vacía |
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera `MAX_TEXT_LENGTH` caracteres Unicode ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `audio_too_long` | 2 | El audio de `dub` supera `MAX_DUB_AUDIO_SECS`, o `--duration` lo supera; el de `transcribe` supera `MAX_TRANSCRIBE_AUDIO_SECS`, o `--duration` o `AVI_PUSH_TO_TALK_MAX_SECS` lo superan ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
 | `invalid_audio` | 2 | El audio no es un WAV decodificable, o está truncado (`--audio` de transcribe y dub, referencia de `voice clone`) |
