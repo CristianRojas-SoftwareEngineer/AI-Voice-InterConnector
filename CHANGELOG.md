@@ -142,7 +142,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador se congelaba mientras sonaba el audio o se grababa con el micrófono, los errores mezclaban texto de bibliotecas en inglés y casi nunca decían qué hacer, y cada comando presentaba su salida a su manera. Ahora todos los comandos comparten un único núcleo de presentación: abren con una línea de contexto, muestran cada etapa con su duración, cierran con un resumen común y, ante un error, dicen qué pasó y qué hacer con la orden concreta. El usuario sabe en todo momento qué ocurre y qué debe hacer, sin funcionalidades nuevas y sin cambiar las claves ni los códigos de los contratos de máquina.
+La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador se congelaba mientras sonaba el audio o se grababa con el micrófono, los errores mezclaban texto de bibliotecas en inglés y casi nunca decían qué hacer, y cada comando presentaba su salida a su manera. Ahora todos los comandos comparten un único núcleo de presentación: abren con una línea de contexto, muestran cada etapa con su duración, cierran con un resumen común y, ante un error, dicen qué pasó y qué hacer con la orden concreta. El usuario sabe en todo momento qué ocurre y qué debe hacer, sin funcionalidades nuevas y sin cambiar las claves ni los códigos de los contratos de máquina. Además, la terminal ya no marca como terminado lo que aún espera: explica las esperas de la síntesis y el cambio de voz mientras ocurren, mide el primer audio desde que el usuario empieza a esperar y no repite líneas en los comandos de una sola etapa.
 
 ### Añadido
 
@@ -155,7 +155,13 @@ La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador 
 
 ### Cambiado
 
-- **Etapas, contexto y cierre comunes:** cada etapa permanente deja `✓ <texto>  <duración>`, la etapa en curso se repinta debajo y el comando cierra con `✓ <acción> en <duración>`. `AVI_NO_PROGRESS` silencia solo las etapas.
+- **Etapas, contexto y cierre comunes:** cada etapa permanente deja `✓ <texto>  <duración>`, salvo que sea la única etapa de trabajo del comando (ver «Etapa única»), la etapa en curso se repinta debajo y el comando cierra con `✓ <acción> en <duración>`. `AVI_NO_PROGRESS` silencia solo las etapas.
+- **Esperas de la síntesis como texto vivo:** `Esperando turno para sintetizar…` (otra síntesis tiene el turno) y `Calentando el motor…` son textos de la propia etapa de síntesis, con un solo reloj, y ya no cierran la síntesis como hecha. Sin terminal se escribe el anuncio inicial de la etapa y sus latidos de 10 s.
+- **`Cargando la voz…`:** al arrancar el motor un residente (primer uso, cambio de voz o residente degradado), por el daemon o en local, la línea viva lo dice y vuelve a `Sintetizando…` cuando el residente está listo. El motor avisa ese paso con un tipo nuevo, `SynthesisStep`.
+- **Etapa única:** `translate`, `speech play`, `voice remove`, `doctor --repair`, `cleanup`, `voice clone` con archivo y sin `--denoise`, y `speech synthesize` sin `--play` y sin traducción solo escriben el cierre, sin la línea `✓` de su etapa, que lo repetiría. Con `--json` no hay cierre y la línea de la etapa se conserva.
+- **`voice clone --denoise` en local:** la limpieza de ruido de la referencia muestra su etapa `Limpiando el ruido…`, igual que por el daemon.
+- **Cabecera de los errores:** la línea de contexto se escribe después de validar la invocación y el almacén y antes de cualquier recurso o trabajo, en todos los comandos. Un error de invocación o de almacén (`label_exists`, `voice_exists`, `audio_not_found` de la referencia de `voice clone`) sale sin cabecera; uno de recursos o de trabajo (`model_missing`, `no_input_device`, daemon inalcanzable) sale con ella.
+- **Cierre de `daemon start` y `daemon restart`:** con el motor listo, `✓ Daemon listo en <total> · pid N`; si la espera del calentamiento vence o falla, `✓ Daemon en marcha en <total> · pid N · …` con la causa en la misma línea, sin aviso aparte (`daemon restart` conserva `Daemon reiniciado` como acción). `--json` no cambia.
 - **Duraciones y plurales:** una sola forma (`0,7 s`, `2 min 35 s`, `1 h 02 min`) y plurales concordados, sin `(s)`.
 - **Vocabulario:** «audio sintetizado» sustituye a «locución» y «habla sintética» en todo el texto humano, incluidos los motivos de `preserved[]`.
 - **Flujos:** stdout lleva solo resultados (textos, listas, rutas, planes de `--dry-run`); contexto, etapas, cierres, preguntas, avisos y errores van por stderr.
@@ -169,11 +175,19 @@ La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador 
 - **`self update` sin terminal:** sin `--yes`, la confirmación sale como `confirmation_required` con código 2 en lugar de `lifecycle_failed`.
 - **Contador congelado:** el contador de `Reproduciendo…` y el de la grabación avanzan hasta el final, en local y por el daemon.
 - **Tiempo restante de `setup`:** deja de mostrar valores absurdos.
+- **`✓ Voz sintetizada` falso:** con otra síntesis en curso o el motor calentándose, `speech say` y `speech synthesize` por el daemon cerraban la síntesis como hecha en 0,5 s antes de sintetizar nada y el cierre decía «primer audio 0,5 s» cuando se había esperado 6,6 s. Ahora la espera es parte de la síntesis y «primer audio» la cuenta.
+- **`✓ Daemon iniciado  0,0 s` falso:** `daemon start` y `daemon restart` abrían «Iniciando» y «Calentando» seguidos antes de arrancar nada. Cada etapa se abre ahora cuando ocurre su trabajo.
+- **`✓ Voz precargada` falso:** `voice clone` por el daemon anunciaba como terminada una precarga que sigue en segundo plano.
+- **Aviso contradictorio del arranque:** con el equipo cargado, «el motor sigue calentándose» iba seguido de un cierre `✓` que lo contradecía; ahora el cierre lo dice en una sola línea.
 
 ### Notas de release
 
-Cambios incompatibles del texto humano y de los flujos; las claves, las opciones y las versiones de esquema no cambian.
+Cambios incompatibles del texto humano y de los flujos; las claves, las opciones y las versiones de esquema no cambian. `DAEMON_SCHEMA_VERSION` tampoco se mueve por los nuevos valores de `stage` del daemon, porque `stage` es un valor y el cliente ignora los que no conoce.
 
+- `first_audio_ms` (y la etapa y el extra «primer audio») incluyen la espera de turno, el calentamiento del motor y la carga de la voz, y no solo la síntesis.
+- El NDJSON del daemon emite un `progress` inmediato al entrar en la fase de síntesis (`queued`, `warming` o `synthesis`), `synthesis` solo con el lock tomado y la etapa nueva `loading_voice` cuando arranca un residente; `/voices/clone` ya no emite `warmup`.
+- El cierre de `daemon start` pasa de `Daemon iniciado` a `Daemon listo` (motor listo) o `Daemon en marcha` (calentamiento sin terminar o fallido).
+- Los comandos de una sola etapa ya no escriben la línea `✓` de su etapa, y los errores de invocación y de almacén ya no llevan línea de contexto.
 - Los cierres pasan de stdout a stderr.
 - Los planes de `--dry-run` pasan a stdout.
 - `speech remove` y `voice remove` piden confirmación: los scripts sin terminal necesitan `--yes`.

@@ -213,7 +213,6 @@ El **resultado** —el texto traducido, sin etiqueta, o el envelope `--json`— 
 # translate
 stdout: <el texto traducido>
 stderr: Traducción es → en · daemon
-        ✓ Traducido  0,4 s
         ✓ Traducción completada en 0,5 s
 
 # translate --json
@@ -221,4 +220,4 @@ stdout: {"translated": "…", "source_language": "es", "target_language": "en"}
 stderr: ✓ Traducido  0,4 s
 ```
 
-La etapa se repinta con su propio reloj durante la espera del daemon, de modo que el tiempo visible avanza en vez de quedarse en `0,0 s`; lo mismo ocurre en la ruta directa, donde un hilo repinta la línea mientras el motor traduce. Con `--json` no salen ni el contexto ni el cierre. Con `AVI_NO_PROGRESS=1` las etapas por stderr se silencian, y nada más: el resultado por stdout, el cierre, el envelope `--json` y los códigos de salida no cambian.
+La etapa se repinta con su propio reloj durante la espera del daemon, de modo que el tiempo visible avanza en vez de quedarse en `0,0 s`; lo mismo ocurre en la ruta directa, donde un hilo repinta la línea mientras el motor traduce. `translating` es la única etapa del comando, así que en texto no deja su línea `✓ Traducido` y queda solo el cierre; con `--json` no hay cierre y la línea de la etapa es la única que da su duración por stderr. Con `--json` no salen ni el contexto ni el cierre. Con `AVI_NO_PROGRESS=1` las etapas por stderr se silencian, y nada más: el resultado por stdout, el cierre, el envelope `--json` y los códigos de salida no cambian.

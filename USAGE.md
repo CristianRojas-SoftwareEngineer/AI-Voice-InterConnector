@@ -163,7 +163,7 @@ según se sintetiza y no pasa por ningún archivo.
 |-------|------|-------------|
 | `status` | string | Siempre `"reproduced"` |
 | `voice` | string | Nombre de la voz efectivamente usada (`"default"` si no se dio `--voice`) |
-| `first_audio_ms` | número | Milisegundos desde el inicio de la fase de síntesis hasta que suena la primera muestra (por la ruta directa incluye el arranque del motor) |
+| `first_audio_ms` | número | Milisegundos desde que se abre la etapa de síntesis hasta que suena la primera muestra; incluye la espera de turno, el calentamiento del motor y la carga de la voz |
 | `stalls` | número | Veces que la cola de reproducción se vació con la entrega en curso y la voz se pausó; `0` si sonó continua |
 
 **`speech play --json`** / **`speech remove --json`** — identifican el audio sintetizado y el resultado.
@@ -444,7 +444,7 @@ Para que el daemon adopte el último cambio a `mixed`, también es necesario rei
 
 En las operaciones pesadas (`synthesize`, `say`, `voice clone` y `dub`), la comunicación con el daemon opera mediante streaming NDJSON con latidos periódicos cada 500 ms y timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`), evitando cuelgues o timeouts prematuros en tareas de larga duración. Los eventos del stream no llevan texto humano (solo `event`, `stage` y datos de la petición): el cliente traduce cada etapa a una etapa de su catálogo, con los mismos textos que en la ruta directa. El stream de `/dub` añade dos eventos con texto del usuario, `transcript` y `translation` (claves `event`, `text` y `schema_version`), que el cliente muestra en cuanto llegan.
 
-**Salida en la terminal.** Todo comando con etapas abre con una línea de contexto por stderr (por ejemplo `Doblaje es → en · voz default · archivo a.wav · daemon`), trabaja por etapas con su duración (`✓ Audio leído  0,1 s`, la etapa en curso se repinta debajo como `… Sintetizando… 1,3 s`) y cierra con `✓ <acción> en <duración total>`, también por stderr. Los resultados (textos, listas, rutas y planes de `--dry-run`) salen por stdout. Los errores salen como `Error: <qué pasó>.` y, cuando hay remedio, `Solución: <qué hacer>.`; el texto técnico de las bibliotecas solo aparece en el `error` de `--json` (tras ` Detalle:`). El color (verde, rojo, amarillo, atenuado) solo se emite en una terminal; `NO_COLOR` lo desactiva y la salida redirigida nunca lo lleva. `AVI_NO_PROGRESS=1` silencia solo las etapas, no el contexto, los resultados ni el cierre. Las duraciones se escriben `0,7 s`, `2 min 35 s` y `1 h 02 min`.
+**Salida en la terminal.** Todo comando con etapas abre con una línea de contexto por stderr (por ejemplo `Doblaje es → en · voz default · archivo a.wav · daemon`), trabaja por etapas con su duración (`✓ Audio leído  0,1 s`, la etapa en curso se repinta debajo como `… Sintetizando… 1,3 s`) y cierra con `✓ <acción> en <duración total>`, también por stderr. Las esperas de la síntesis (turno, calentamiento del motor, carga de la voz) son textos vivos de la etapa de síntesis y nunca la cierran como hecha; cuando un comando solo tiene una etapa de trabajo, esa etapa no deja su línea y queda solo el cierre; y la línea de contexto se escribe después de validar la invocación y antes de tocar recursos, de modo que un error de invocación sale sin ella. Los resultados (textos, listas, rutas y planes de `--dry-run`) salen por stdout. Los errores salen como `Error: <qué pasó>.` y, cuando hay remedio, `Solución: <qué hacer>.`; el texto técnico de las bibliotecas solo aparece en el `error` de `--json` (tras ` Detalle:`). El color (verde, rojo, amarillo, atenuado) solo se emite en una terminal; `NO_COLOR` lo desactiva y la salida redirigida nunca lo lleva. `AVI_NO_PROGRESS=1` silencia solo las etapas, no el contexto, los resultados ni el cierre. Las duraciones se escriben `0,7 s`, `2 min 35 s` y `1 h 02 min`.
 
 `--daemon` y `--no-daemon` son mutuamente excluyentes: combinarlos sale con
 exit **2** antes de cualquier trabajo. `speech play`, `speech list` y `speech
@@ -469,9 +469,11 @@ abajo) y, al terminar:
 ```
 stdout: <ruta del WAV persistido>
 stderr: Síntesis es · voz default · etiqueta saludo · local
-        ✓ Voz sintetizada  1,9 s
         ✓ Síntesis completada en 2,1 s · 3,4 s de audio
 ```
+
+Sin `--play` y sin traducción, la síntesis es la única etapa de trabajo y no deja su
+línea `✓ Voz sintetizada`: queda solo el cierre.
 
 **Opciones:**
 - `--text, -t` (requerido): Texto a sintetizar
@@ -605,7 +607,8 @@ ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 Reproduce un audio sintetizado ya guardado; no toca el modelo ni el daemon.
 Abre con `Reproducción del audio sintetizado <etiqueta> · voz <voz>`, avanza el
 contador de `Reproduciendo…` hasta el final y cierra con
-`✓ Reproducción completada en <total>`, todo por stderr.
+`✓ Reproducción completada en <total>`, todo por stderr. Es su única etapa, así que
+no deja la línea `✓ Reproducido`.
 
 ```bash
 ai-voice-interconnector speech play --label saludo
@@ -867,10 +870,12 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.w
 
 ```
 Clonación de la voz mi_voz · archivo condicion.wav · local
-✓ Audio leído  0,1 s
-✓ Voz clonada  23,4 s
 ✓ Voz mi_voz clonada en 23,7 s
 ```
+
+Con archivo y sin `--denoise`, el clonado es la única etapa de trabajo y no deja su
+línea `✓ Voz clonada`. Con `--denoise` se añade la etapa `Limpiando el ruido…`
+(`✓ Ruido limpiado`) y cada etapa conserva su línea.
 
 La única referencia de habla produce un `reference.qvoice` (bajo
 `data_dir()/voices/mi_voz/`); el WAV de referencia no se persiste.
@@ -991,9 +996,11 @@ ai-voice-interconnector translate --text "Hello there" --source-language en --ta
 ```
 stdout: Good morning.
 stderr: Traducción es → en · local
-        ✓ Traducido  0,4 s
         ✓ Traducción completada en 0,5 s
 ```
+
+La traducción es la única etapa del comando y no deja su línea `✓ Traducido`; con
+`--json` no hay cierre y esa línea sí sale por stderr.
 
 Con `--json`, emite `{"translated", "source_language", "target_language"}` (ver la referencia
 de esquemas) y nada por stdout salvo ese objeto.
@@ -1155,7 +1162,7 @@ ai-voice-interconnector daemon serve --auto-restart --max-retries 3
 
 **Qué esperar:** `daemon start` verifica que los modelos estén provisionados, lanza el servidor en segundo plano
 y espera hasta `10s` el resultado de su arranque: listo (el daemon publica su dirección real, que se confirma por `/health`), un fallo con su causa (puerto ocupado, voz inexistente) o la muerte del proceso. Si arranca, escribe el PID file `data_dir()/daemon.pid` (con `resident_pid` y la dirección real) y confirma con
-`✓ Daemon iniciado en <total> · pid N` por stderr. Si falla, sale con un código que nombra la causa y no deja proceso ni PID file. Luego `daemon status` escribe por stdout una línea como `Daemon: en marcha (pid 1234, puerto 8765, motor listo).`, `Daemon: en marcha, pero no responde: <motivo>.` o `Daemon: detenido.`; en `--json`, estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
+el cierre por stderr cuando el motor está listo: `✓ Daemon listo en <total> · pid N`. «Iniciando el daemon…» dura lo que dura el arranque real y «Calentando el motor…» empieza después, con hasta 10 s de espera. Si ese plazo vence o el calentamiento falla, el daemon sigue en marcha y el propio cierre lo dice en una línea (`✓ Daemon en marcha en <total> · pid N · el motor sigue calentándose; ...` o `... · falló el calentamiento del motor; ...`), sin aviso aparte; `daemon status` dice cuándo está listo. Si falla, sale con un código que nombra la causa y no deja proceso ni PID file. Luego `daemon status` escribe por stdout una línea como `Daemon: en marcha (pid 1234, puerto 8765, motor listo).`, `Daemon: en marcha, pero no responde: <motivo>.` o `Daemon: detenido.`; en `--json`, estado `running`/`stopped` + `warm` (`warming`/`warm`/`warm_failed`).
 
 Supervisor: con `--auto-restart`, el daemon reintenta hasta `max_retries` (default `3`) tras un crash con backoff `500ms*2^(retries-1)` (0,5 s, 1 s, 2 s…) capado a `4s` y protección por watchdog de supervisión contra bucles de reinicio rápidos; un apagado graceful vía `daemon stop` (`POST /shutdown` + `shutdown_notify`) no reintenta. Tampoco se reintentan los fallos previos a que el daemon esté listo (puerto ocupado, voz inexistente): son de configuración y salen al instante con su código. Sin `--auto-restart`, el daemon es `fail-stop`.
 
@@ -1193,7 +1200,7 @@ ai-voice-interconnector speech say --text "Hola" --voice mi_voz --no-daemon
 **Qué esperar** con el daemon activo: `speech say` omite la carga del modelo y
 la síntesis empieza de inmediato. Mientras sintetiza, el daemon mantiene viva la
 conexión con latidos NDJSON (ver [docs/CLI/CONTRACT.md](docs/CLI/CONTRACT.md#transporte-streaming-ndjson-y-presupuesto-de-inactividad));
-el cliente muestra cada etapa con su tiempo (calentando, en cola, traduciendo, sintetizando) y, en cuanto suena la primera muestra, «Reproduciendo…»: el daemon envía el audio en eventos `audio` del mismo flujo, que el cliente reproduce según llegan. Al terminar la reproducción cierra con lo
+el cliente muestra cada etapa con su tiempo (traduciendo, sintetizando) y, mientras la síntesis espera, lo dice en la misma línea viva sin cerrarla como hecha: «Esperando turno para sintetizar…», «Calentando el motor…» o «Cargando la voz…» (cuando el motor arranca la voz, por ejemplo al cambiar de voz); y, en cuanto suena la primera muestra, «Reproduciendo…»: el daemon envía el audio en eventos `audio` del mismo flujo, que el cliente reproduce según llegan. Al terminar la reproducción cierra con lo
 mismo que en modo directo, sin ruta y por stderr:
 
 ```

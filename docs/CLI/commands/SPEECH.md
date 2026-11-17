@@ -275,6 +275,11 @@ rutas, de modo que con dos fallos a la vez gana el del paso anterior:
  exit 0 `skipped`).
 3. Recursos, ya decidida la ruta: el modelo (exit 4) o el daemon (exit 5).
 
+La línea de contexto se escribe entre el paso 2 y el 3: un error de invocación o
+de almacén sale sin ella, y uno de recursos o de trabajo sale con ella. La única
+excepción es la sonda que decide la ruta en modo automático, que va antes porque
+la línea nombra la ruta y nunca falla.
+
 Flujo local:
 1. `source_eff = source_language.unwrap_or(target_language)` — sin
  `--source-language`, origen = destino (passthrough, no se traduce).
@@ -290,6 +295,16 @@ por stderr con `✓ Síntesis completada en <total> · <duración> de audio`; co
 `--play`, la opción de descartar cierra con `✓ Audio descartado; no se ha guardado.`.
 Antes de la primera etapa escribe el contexto `Síntesis <idiomas> · voz <voz> ·
 etiqueta <etiqueta> · local|daemon`.
+
+Sin `--play` y sin traducción (origen y destino coinciden), la síntesis es la única
+etapa de trabajo y no deja su línea `✓ Voz sintetizada`: queda solo el cierre. Con
+`--play` o con traducción las etapas conservan sus líneas. Mientras la síntesis
+espera, su línea viva cambia de texto sin reiniciar el reloj: `Esperando turno para
+sintetizar…` (otra síntesis tiene el turno), `Calentando el motor…` (el daemon aún
+calienta el motor) o `Cargando la voz…` (el motor arranca el residente de la voz,
+por el daemon o en local, y tarda de 2 a 6 s), y vuelve a `Sintetizando…` cuando
+el residente está listo. Nunca cierran la síntesis como hecha. Sin terminal solo se
+escribe el anuncio inicial de la etapa y sus latidos de 10 s.
 
 **Persistencia.** Todo audio sintetizado se guarda con `avi_store::persist_locution`
 (`crates/avi-store/src/lib.rs`), la única forma de escribir en `SpeechStore`, en
@@ -376,9 +391,12 @@ Despacho: `say_via_daemon` si aplica, o rama directa con
 ```
 
 (Mismo envelope en la rama local y vía daemon.) `first_audio_ms` son los
-milisegundos desde el inicio de la fase de síntesis hasta la primera muestra
-entregada al dispositivo (por la ruta directa incluye el arranque del motor), y
-`stalls` el número de veces que la cola de reproducción se vació con la entrega en
+milisegundos desde que se abre la etapa de síntesis hasta la primera muestra
+que suena, e incluyen la espera de turno, el calentamiento del motor y la carga
+de la voz (`Esperando turno para sintetizar…`, `Calentando el motor…` y
+`Cargando la voz…` son textos vivos de esa misma etapa, con un solo reloj). La
+etapa `Primer audio` y el extra `primer audio` del cierre parten de la misma
+referencia y pueden diferir unos milisegundos. `stalls` el número de veces que la cola de reproducción se vació con la entrega en
 curso.
 
 **No hay `audio_path`.** El audio no pasa por ningún archivo: suena según llega.
@@ -441,6 +459,10 @@ Validaciones puras (en este orden):
 6. El texto traducido, que es el que se sintetiza, no supera 500 caracteres
  Unicode: si no, exit 2 `text_too_long`.
 
+La línea de contexto se escribe tras estas validaciones y antes de comprobar los
+modelos, abrir el micrófono o contactar con el daemon: los errores anteriores
+salen sin ella y los de recursos y de trabajo con ella.
+
 Despacho: si aplica, `dub_via_daemon` hace `POST /dub`
 consumiendo el stream NDJSON con un timeout de inactividad entre latidos
 (`STREAM_INACTIVITY_TIMEOUT`) y un deadline total failsafe
@@ -478,7 +500,7 @@ La limpieza de ruido de `--denoise` la hace el cliente antes de despachar y
 se muestra como la fase `denoising`, igual que en la ruta directa:
 1. Transcribe en `spawn_blocking` con el motor STT residente del estado de inferencia (fase `"transcribe"`) y, al terminar, emite `{"event":"transcript","text":"<transcripción>"}`.
 2. Si `source != target`, traduce en `spawn_blocking` con el motor CT2 residente del par; nunca carga modelos bajo demanda (latidos `"translate"`, con la misma segmentación de oraciones y párrafos, por lotes, que la ruta directa) y, al terminar, emite `{"event":"translation","text":"<texto traducido>"}`.
-3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` sobre `spawn_blocking` (fase `"synthesis"`). Mientras espera el lock emite latidos `warming` (el daemon aún calienta el motor) o `queued` (otra síntesis retiene el lock). El plazo es el presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) del texto traducido, más un margen interno; si vence, emite evento `error` con `synthesis_timeout` y cancela el trabajo en el motor TTS residente, que queda caliente para la siguiente petición. Si el cliente se desconecta durante la síntesis, el trabajo se cancela igual.
+3. Sintetiza bajo `state.synthesis_lock` (reloj de trabajo propio arrancado tras adquirir el lock) con `GenerationOptions::with_temperature` sobre `spawn_blocking`. Al entrar en la fase emite de inmediato un `progress` con la etapa real: `synthesis` si consigue el lock al instante; si no, `warming` (el daemon aún calienta el motor) o `queued` (otra síntesis retiene el lock) con latidos de esa etapa, y `progress{synthesis}` al obtenerlo. Si el motor debe arrancar un residente (primer uso, cambio de voz o residente degradado), emite `progress{loading_voice}` y los latidos pasan a esa etapa hasta que el residente está sano, momento en que vuelve `progress{synthesis}`; los latidos usan siempre la etapa vigente. El plazo es el presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) del texto traducido, más un margen interno; si vence, emite evento `error` con `synthesis_timeout` y cancela el trabajo en el motor TTS residente, que queda caliente para la siguiente petición. Si el cliente se desconecta durante la síntesis, el trabajo se cancela igual.
 
 Antes del stream, un audio que supera `MAX_DUB_AUDIO_SECS` se rechaza con HTTP 400 `audio_too_long`; un texto traducido que supera `MAX_TEXT_LENGTH` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) emite un evento `error` `text_too_long`.
 
@@ -544,7 +566,7 @@ Local-only. Busca el audio sintetizado en `SpeechStore` por
 la voz válida, una etiqueta inexistente es exit 3 `speech_not_found`. La existencia la decide el WAV; un sidecar corrupto sale con
 exit 1 `speech_metadata_corrupt` (el mensaje nombra la etiqueta y la voz, y la línea `Solución:` remite a `speech remove`).
 
-Por stderr abre con el contexto `Reproducción del audio sintetizado <etiqueta> · voz <voz>`, avanza el contador de la etapa `Reproduciendo…` hasta el final y cierra con `✓ Reproducción completada en <total>`; stdout queda vacío.
+Por stderr abre con el contexto `Reproducción del audio sintetizado <etiqueta> · voz <voz>`, avanza el contador de la etapa `Reproduciendo…` hasta el final y cierra con `✓ Reproducción completada en <total>`; stdout queda vacío. Es su única etapa, así que no deja la línea `✓ Reproducido`.
 
 ### Contrato `--json`
 
@@ -613,7 +635,7 @@ Las etapas de los subcomandos de voz son estas; las marcadas como transitorias s
 |---|---|---|
 | validación | `Validando…` | transitoria |
 | envío al daemon | `Enviando al daemon…` | transitoria |
-| espera de turno | `Esperando turno para sintetizar…` (o `…para limpiar el ruido…`) | transitoria |
+| espera de turno de la limpieza de ruido | `Esperando turno para limpiar el ruido…` | transitoria |
 | lectura del archivo | `Leyendo el audio…` | `Audio leído` |
 | captura | `Grabando…` | `Audio grabado` |
 | limpieza de ruido | `Limpiando el ruido…` | `Ruido limpiado` |
@@ -624,7 +646,7 @@ Las etapas de los subcomandos de voz son estas; las marcadas como transitorias s
 | reproducción | `Reproduciendo…` | `Reproducido` |
 | clonado | `Clonando la voz… (puede tardar varios minutos)` | `Voz clonada` |
 
-Del daemon llegan además las esperas de calentamiento del motor (`Calentando el motor…`) y de turno de síntesis. El **resultado** —el texto, la ruta o el envelope `--json`— va por stdout en cuanto existe, y el cierre (`✓ <acción> en <duración total>`) va por stderr, una sola vez.
+Las esperas de la síntesis no son etapas propias, sino textos vivos de la etapa de síntesis, con su mismo reloj, que nunca la cierran como hecha: `Esperando turno para sintetizar…` (otra síntesis tiene el turno), `Calentando el motor…` (el daemon aún calienta el motor) y `Cargando la voz…` (el motor arranca el residente de la voz pedida). Cuando un comando solo tiene una etapa de trabajo (`speech play` y `speech synthesize` sin `--play` y sin traducción), esa etapa no deja su línea y queda solo el cierre; con `--json` la regla no actúa. El **resultado** —el texto, la ruta o el envelope `--json`— va por stdout en cuanto existe, y el cierre (`✓ <acción> en <duración total>`) va por stderr, una sola vez.
 
 `AVI_NO_PROGRESS=1` silencia solo las etapas por stderr —línea activa, líneas terminadas y latidos—, y nada más: el contexto, los resultados por stdout, el cierre, el envelope `--json` y los códigos de salida no cambian. `NO_COLOR` desactiva el color; la salida redirigida nunca lleva color.
 
@@ -697,7 +719,6 @@ Los **resultados** van por stdout, en cuanto existen. La línea de contexto, las
 # speech synthesize (ruta local)
 stdout: <ruta del WAV persistido>
 stderr: Síntesis es · voz default · etiqueta saludo · local
-        ✓ Voz sintetizada  1,9 s
         ✓ Síntesis completada en 2,1 s · 3,4 s de audio
 
 # speech say
@@ -726,7 +747,6 @@ stderr: Doblaje en → es · voz default · archivo entrevista.wav · daemon
 
 # speech play
 stderr: Reproducción del audio sintetizado saludo · voz default
-        ✓ Reproducido  2,0 s
         ✓ Reproducción completada en 2,0 s
 ```
 

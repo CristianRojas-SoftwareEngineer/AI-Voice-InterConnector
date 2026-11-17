@@ -148,13 +148,12 @@ ai-voice-interconnector --json cleanup --model --dry-run
 
 ## Muestras de salida
 
-En la ejecución real, el plan y la pregunta van por stderr, la etapa de borrado (`Borrando los datos…`) **empieza tras la confirmación** y el cierre va por stderr. En `--dry-run`, el plan va por **stdout** y el aviso de simulación por stderr; no hay etapa de borrado.
+En la ejecución real, el plan y la pregunta van por stderr, la etapa de borrado (`Borrando los datos…`) **empieza tras la confirmación**, es la única etapa del comando y no deja su línea `✓ Datos borrados` (queda solo el cierre), y el cierre va por stderr. En `--dry-run`, el plan va por **stdout** y el aviso de simulación por stderr; no hay etapa de borrado.
 
 ```text
 # cleanup --voices --yes
 stderr: Se borrarán 3 rutas, 12,0 KB en total:
           voces: <ruta> (…)
-        ✓ Datos borrados  0,3 s
         ✓ Limpieza completada en 0,4 s · 3 rutas borradas
 
 # cleanup --all --dry-run
