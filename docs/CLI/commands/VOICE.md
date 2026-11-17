@@ -343,7 +343,9 @@ stderr: Clonación de la voz mi_voz · archivo ref.wav · local
         ✓ Voz mi_voz clonada en 27,0 s
 
 # voice clone --force --yes sobre una voz con audios sintetizados
-stderr: ✓ Voz mi_voz clonada en 24,1 s · se borraron 2 audios sintetizados anteriores
+stderr: Clonación de la voz mi_voz · archivo ref.wav · local
+        <el plan de borrado: la voz y sus audios sintetizados, con rutas y tamaños; --yes omite solo la pregunta>
+        ✓ Voz mi_voz clonada en 24,1 s · se borraron 2 audios sintetizados anteriores
 
 # voice remove
 stderr: Se borrará la voz mi_voz y sus 2 audios sintetizados:

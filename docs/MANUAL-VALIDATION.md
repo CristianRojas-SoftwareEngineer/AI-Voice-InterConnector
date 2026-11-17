@@ -443,7 +443,9 @@ ai-voice-interconnector daemon stop
 ai-voice-interconnector daemon status
 ```
 
-**Esperado**: `start` deja el daemon corriendo (`status` lo confirma), **exit 0**; `say --daemon` sintetiza con el modelo ya en memoria (más rápido que la vía directa), **exit 0**; `restart`/`stop` gestionan el ciclo de vida, **exit 0**. Un `--daemon` explícito contra un daemon inalcanzable sale con **exit 5**.
+**Esperado**: `start` deja el daemon corriendo (`status` lo confirma), **exit 0**, con las etapas `✓ Daemon iniciado`, `✓ Motor calentado` y el cierre `✓ Daemon listo en … · pid N` (si el calentamiento no termina en su plazo, el cierre es `✓ Daemon en marcha en … · pid N · …` con la causa en la misma línea); `say --daemon` sintetiza con el modelo ya en memoria (más rápido que la vía directa), **exit 0**; `restart`/`stop` gestionan el ciclo de vida, **exit 0**. Un `--daemon` explícito contra un daemon inalcanzable sale con **exit 5**.
+
+**Esperas de la síntesis.** En una terminal real, con el daemon en marcha: (1) lanza un `say --daemon` con un texto largo y, mientras suena, otro `say --daemon` en una segunda terminal: el segundo muestra `Esperando turno para sintetizar…` y después `Sintetizando…` en la misma línea viva, **sin** ninguna línea `✓ Voz sintetizada`, y su `primer audio` incluye la espera; (2) un `say --daemon -v ryan` tras haber usado `default` muestra `Cargando la voz…` mientras el motor arranca con la otra voz.
 
 **Cero huérfanos tras `stop`** (comprobación a nivel de SO): sin procesos
 `ai-voice-interconnector` ni `qwen_tts` residuales, puerto `8765` y puerto del residente (el `resident_port` que anotaba `daemon.pid`) cerrados y
@@ -596,7 +598,8 @@ ai-voice-interconnector self update 2> salida.txt
 
 **Esperado**: el fichero `salida.txt` no acumula líneas de la etapa repetidas:
 una etapa permanente se anuncia una vez (`… <texto>`), emite como mucho un
-latido cada 10 s y deja su línea `✓` al terminar; una transitoria no escribe
+latido cada 10 s y deja su línea `✓` al terminar (salvo que sea la única
+etapa de trabajo del comando, que deja solo el cierre); una transitoria no escribe
 nada, y la actividad posterior no abre líneas nuevas. Sin color. Con
 `AVI_NO_PROGRESS=1` desaparecen las líneas de etapa, pero no el contexto ni el
 cierre. Vale cualquier comando con una espera larga:
