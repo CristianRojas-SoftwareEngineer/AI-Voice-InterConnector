@@ -169,6 +169,7 @@ La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador 
 - **`speech denoise`:** usa los errores y el formato comunes, en español y con decimales con coma; escribe la ruta de cada archivo generado por stdout y conserva sus códigos de salida y su JSONL.
 - **Barras de `setup`:** con porcentaje, repintado continuo y tiempo restante estable; desaparece la línea «Total:».
 - **Dependencias:** se retiran `indicatif` 0.17, `console` 0.15 y `number_prefix`.
+- **Resolución del motor y de los modelos:** el binario se busca en `QWEN3_TTS_BIN`, en la raíz del bundle y, en desarrollo, en `engine-bundle/`, donde lo deja `cargo xtask bootstrap`; desaparecen la búsqueda en el `PATH` y la variable `AVI_ALLOW_CWD_VENDOR`. Los modelos se resuelven solo por su variable (`QWEN3_TTS_MODEL_DIR` o `QWEN3_TTS_BASE_MODEL_DIR`) y por el snapshot de la raíz de modelos de AVI: dejan de buscarse junto al binario y en `vendor/qwen3-tts/`.
 
 ### Corregido
 

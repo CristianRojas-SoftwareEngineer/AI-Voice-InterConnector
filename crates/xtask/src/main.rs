@@ -1813,19 +1813,20 @@ fn check_code_quality_gate() -> Result<()> {
 /// las pruebas marcadas como `#[ignore]` (modelos, daemon, instalación real),
 /// con el entorno y la salida heredados. No tiene modo de omisión.
 ///
-/// La gate asegura los recursos fijados (ONNX Runtime en `ort-bundle/` y FFmpeg
-/// en `ffmpeg-bundle/`) con `ensure_pinned_bundles`, la misma función que usa
+/// La gate asegura los recursos fijados (ONNX Runtime en `ort-bundle/`, FFmpeg
+/// en `ffmpeg-bundle/` y el motor TTS en `engine-bundle/`) con
+/// `ensure_pinned_bundles`, la misma función que usa
 /// `bootstrap`; por eso, tras un `bootstrap`, ese aseguramiento no descarga
 /// nada. Las pruebas cargan ONNX Runtime desde `ORT_DYLIB_PATH`: la gate
 /// exporta la ruta del fichero de la librería, que prevalece sobre el valor por
 /// defecto de la configuración de cargo, de modo que valida el mismo runtime
 /// que se distribuye.
 ///
-/// Además habilita la capa `<cwd>/vendor` (`AVI_ALLOW_CWD_VENDOR=1`): las
-/// pruebas se ejecutan desde la raíz del repo y los hijos CLI que lanzan
-/// resuelven el motor recién compilado en `vendor/qwen3-tts/`, sin exigir un
-/// programa instalado. Sin este opt-in, un entorno limpio falla las 21 pruebas
-/// del motor aunque todo esté provisionado.
+/// Además apunta `QWEN3_TTS_BIN` al motor fijado en `engine-bundle/`, para que
+/// las pruebas y los hijos CLI que lanzan lo resuelvan sin exigir un programa
+/// instalado. Sin esa variable, un entorno limpio falla las pruebas del motor
+/// aunque el bundle esté aprovisionado, porque el cwd de cada crate no es la
+/// raíz del repositorio.
 ///
 /// La CLI solo busca FFmpeg junto a su propio ejecutable, así que la gate lo copia a la
 /// carpeta de binarios de prueba (`<target_directory>/debug`); y como las
@@ -1839,10 +1840,11 @@ fn check_resource_tests_gate() -> Result<()> {
     let triple = package::host_triple()?;
     let bundles = package::ensure_pinned_bundles(&root, triple, &pins)?;
     let ort_dylib = package::ort_dylib_path(&bundles.ort, triple)?;
+    let engine_bin = bundles.engine.join(package::engine_binary_name(triple)?);
     package::stage_ffmpeg_beside(&bundles.ffmpeg, &cargo_target_dir()?.join("debug"), triple)?;
     let status = std::process::Command::new("cargo")
         .env("ORT_DYLIB_PATH", &ort_dylib)
-        .env("AVI_ALLOW_CWD_VENDOR", "1")
+        .env("QWEN3_TTS_BIN", &engine_bin)
         .env(
             "PATH",
             package::path_with_prepended(&bundles.ffmpeg, std::env::var_os("PATH").as_deref())?,

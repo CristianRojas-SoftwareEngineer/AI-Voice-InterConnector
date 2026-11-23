@@ -157,7 +157,7 @@ function Initialize-Run {
 
     $script:Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..\..')).Path
     if($env:AVI_NO_SETUP){throw 'BLOCKED: AVI_NO_SETUP ya está definido externamente; no se continúa con entorno de bootstrap ambiguo.'}
-    foreach($variable in @('AVI_INSTALL_DIR','AVI_BIN_DIR','AVI_DATA_DIR','AVI_CACHE_DIR','HF_HUB_CACHE','HF_HOME','AVI_DAEMON_PORT','AVI_DOWNLOAD_BASE_URL','AVI_VERSION','AVI_YES','AVI_NO_MODIFY_PATH','QWEN3_TTS_BIN','QWEN3_TTS_MODEL_DIR','QWEN3_TTS_BASE_MODEL_DIR','AVI_ALLOW_CWD_VENDOR')){if([Environment]::GetEnvironmentVariable($variable)){throw "BLOCKED: $variable altera versión, rutas, motor, confirmación automática o transporte de esta corrida."}}
+    foreach($variable in @('AVI_INSTALL_DIR','AVI_BIN_DIR','AVI_DATA_DIR','AVI_CACHE_DIR','HF_HUB_CACHE','HF_HOME','AVI_DAEMON_PORT','AVI_DOWNLOAD_BASE_URL','AVI_VERSION','AVI_YES','AVI_NO_MODIFY_PATH','QWEN3_TTS_BIN','QWEN3_TTS_MODEL_DIR','QWEN3_TTS_BASE_MODEL_DIR')){if([Environment]::GetEnvironmentVariable($variable)){throw "BLOCKED: $variable altera versión, rutas, motor, confirmación automática o transporte de esta corrida."}}
     foreach ($relative in @('SKILL.md', 'src\main.rs', 'Cargo.toml', 'tests\golden\cli_version.json', 'assets\audios\Speech Sampler.wav', 'crates\avi-stt\tests\assets\parakeet_sample_16k.wav', 'packaging\bootstrap\install.ps1')) {
         $path = if ($relative -eq 'SKILL.md') { Join-Path $PSScriptRoot "..\$relative" } else { Join-Path $script:Root $relative }
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Falta la entrada requerida: $path" }

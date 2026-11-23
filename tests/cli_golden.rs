@@ -26,7 +26,7 @@
 //!   `cargo test --workspace --features full -- --include-ignored` con ONNX
 //!   Runtime y FFmpeg fijados (FFmpeg copiado junto al binario de prueba). Si
 //!   falta un recurso fallan con un mensaje que nombra el comando que lo
-//!   aprovisiona: `ai-voice-interconnector setup`, `cargo xtask build-engine`
+//!   aprovisiona: `ai-voice-interconnector setup`, `cargo xtask bootstrap`
 //!   o `cargo xtask resource-gate`. Usan la raíz de modelos real en solo lectura
 //!   y estado y puerto propios (`IsolatedInstance`); el residente reserva su
 //!   propio puerto efímero y lo anota en el `daemon.pid` de la instancia.
@@ -3279,7 +3279,8 @@ mod tts {
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    /// Ruta del binario del motor Qwen3-TTS (override o vendored).
+    /// Ruta del binario del motor Qwen3-TTS (override o el de `engine-bundle/`,
+    /// donde lo deja `cargo xtask bootstrap`).
     fn tts_binary() -> Option<PathBuf> {
         if let Ok(b) = std::env::var("QWEN3_TTS_BIN") {
             let p = PathBuf::from(b);
@@ -3288,8 +3289,7 @@ mod tts {
             }
         }
         [
-            PathBuf::from("vendor/qwen3-tts/qwen_tts.exe"),
-            PathBuf::from("target/release/vendor/qwen3-tts/qwen_tts.exe"),
+            PathBuf::from("engine-bundle/qwen_tts.exe"),
             PathBuf::from("target/release/qwen_tts.exe"),
         ]
         .into_iter()
@@ -3312,53 +3312,42 @@ mod tts {
     }
 
     /// Exige el modelo Base `qwen3-tts-0.6b-base` que necesita el clonado: su
-    /// snapshot (`config.json`) o, si no, el directorio vendored con
-    /// `"tts_model_type": "base"`.
+    /// snapshot (`config.json`) en la raíz de modelos de AVI.
     fn require_tts_base_model() {
         let snapshot = avi_store::ModelStore::new()
             .expect("la raíz de modelos debe resolverse")
             .model_snapshot_path("qwen3-tts-0.6b-base")
             .expect("el pin de qwen3-tts-0.6b-base debe existir en MODEL_REVISIONS")
             .join("config.json");
-        let vendored = Path::new("vendor/qwen3-tts/qwen3-tts-0.6b-base/config.json");
-        let vendored_is_base = std::fs::read_to_string(vendored)
-            .map(|c| c.contains("\"tts_model_type\": \"base\""))
-            .unwrap_or(false);
         assert!(
-            snapshot.is_file() || vendored_is_base,
-            "falta {} (ni {} con tts_model_type base): aprovisiona el modelo Base con \
-             `ai-voice-interconnector setup`",
-            snapshot.display(),
-            vendored.display()
+            snapshot.is_file(),
+            "falta {}: aprovisiona el modelo Base con `ai-voice-interconnector setup`",
+            snapshot.display()
         );
     }
 
-    /// Exige el binario del motor (`QWEN3_TTS_BIN` o
-    /// `vendor/qwen3-tts/qwen_tts.exe`). Los pesos no se exigen aparte: el motor
-    /// usa el snapshot de la raíz de modelos que exige `require_tts_model()`.
+    /// Exige el binario del motor (`QWEN3_TTS_BIN` o el de
+    /// `engine-bundle/`). Los pesos no se exigen aparte: el motor usa el
+    /// snapshot de la raíz de modelos que exige `require_tts_model()`.
     fn require_tts_binary() {
         let binary = std::env::var_os("QWEN3_TTS_BIN")
             .map(PathBuf::from)
             .filter(|path| !path.as_os_str().is_empty())
             .or_else(|| {
-                let vendored = PathBuf::from("vendor/qwen3-tts/qwen_tts.exe");
-                vendored.is_file().then_some(vendored)
-            })
-            .or_else(|| {
-                let packaged = PathBuf::from("target/release/vendor/qwen3-tts/qwen_tts.exe");
-                packaged.is_file().then_some(packaged)
+                let bundled = PathBuf::from("engine-bundle/qwen_tts.exe");
+                bundled.is_file().then_some(bundled)
             })
             .or_else(|| {
                 let packaged = PathBuf::from("target/release/qwen_tts.exe");
                 packaged.is_file().then_some(packaged)
             })
             .expect(
-                "falta el binario del motor (QWEN3_TTS_BIN o bundle full): \
-                 constrúyelo con `cargo xtask build-engine`",
+                "falta el binario del motor (QWEN3_TTS_BIN o engine-bundle/qwen_tts.exe): \
+                 aprovisiónalo con `cargo xtask bootstrap`",
             );
         assert!(
             binary.is_file(),
-            "falta {}: constrúyelo con `cargo xtask build-engine`",
+            "falta {}: aprovisiónalo con `cargo xtask bootstrap`",
             binary.display()
         );
     }

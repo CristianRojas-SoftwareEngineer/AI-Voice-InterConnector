@@ -300,89 +300,27 @@ fn validated_env_path(
     }
 }
 
-/// Opt-in que habilita la capa `<cwd>/vendor/...` en la resolución del motor
-/// y sus modelos. Sin `AVI_ALLOW_CWD_VENDOR=1`, el directorio de trabajo no
-/// aporta binario ni modelos: un `vendor/` ajeno en el CWD no puede suplantar
-/// al motor en silencio. Cualquier otro valor (incluido vacío o ausente)
-/// mantiene la denegación por defecto.
-const CWD_VENDOR_OPT_IN: &str = "AVI_ALLOW_CWD_VENDOR";
-
-/// `true` solo con `AVI_ALLOW_CWD_VENDOR=1`.
-fn cwd_vendor_allowed() -> bool {
-    std::env::var(CWD_VENDOR_OPT_IN).as_deref() == Ok("1")
-}
-
-/// Avisa una sola vez por proceso que se ignoró el binario del directorio de
-/// trabajo.
-///
-/// La resolución se recalcula en cada llamada —el entorno puede cambiar—,
-/// pero el aviso no se repite: se emite el primero y los siguientes callan.
-/// Sin esta marca, un comando que resuelve el binario dos veces —al crear el
-/// motor y al arrancar el residente— avisa dos veces de lo mismo.
-static CWD_VENDOR_WARNING_EMITTED: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Número de avisos emitidos, para que una prueba pueda contarlos sin
-/// capturar stderr.
-#[cfg(test)]
-static CWD_VENDOR_WARNING_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// Avisa, una sola vez por proceso, que se ignoró el binario del directorio de
-/// trabajo.
-fn warn_cwd_vendor_ignored(vendored: &Path) {
-    if CWD_VENDOR_WARNING_EMITTED.swap(true, Ordering::Relaxed) {
-        return;
-    }
-    #[cfg(test)]
-    CWD_VENDOR_WARNING_COUNT.fetch_add(1, Ordering::Relaxed);
-    avi_shared::console::warn(format_args!(
-        "se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
-        vendored.display(),
-        CWD_VENDOR_OPT_IN
-    ));
-}
-
 /// Resolución del binario del motor por capas:
 /// 1. `QWEN3_TTS_BIN` (si está definida debe ser un archivo existente);
-///    2. `<directorio real del programa>/vendor/qwen3-tts/qwen_tts(.exe)`; 3. `<cwd>/vendor/qwen3-tts/qwen_tts(.exe)`
-///    (solo con `AVI_ALLOW_CWD_VENDOR=1`; si habría resuelto, avisa qué se
-///    ignoró y cómo habilitarlo, una sola vez por proceso);
-///    4. búsqueda en `PATH`. `Ok(None)` indica que ninguna capa lo halló.
+/// 2. `<directorio real del programa>/qwen_tts(.exe)`, la raíz del bundle;
+/// 3. `engine-bundle/qwen_tts(.exe)` bajo el directorio de trabajo, donde lo
+///    deja `cargo xtask bootstrap` en desarrollo. `Ok(None)` indica que
+///    ninguna capa lo halló.
 fn resolve_binary() -> Result<Option<PathBuf>> {
     if let Some(bin) = validated_env_path("QWEN3_TTS_BIN", std::env::var_os("QWEN3_TTS_BIN"), true)?
     {
         return Ok(Some(bin));
     }
+    let name = RESIDENT_IMAGE_NAME;
     if let Ok(dir) = avi_shared::paths::program_dir() {
-        let cand = dir.join(if cfg!(windows) {
-            "vendor/qwen3-tts/qwen_tts.exe"
-        } else {
-            "vendor/qwen3-tts/qwen_tts"
-        });
+        let cand = dir.join(name);
         if cand.is_file() {
             return Ok(Some(cand));
         }
     }
-    let vendored = PathBuf::from(if cfg!(windows) {
-        "vendor/qwen3-tts/qwen_tts.exe"
-    } else {
-        "vendor/qwen3-tts/qwen_tts"
-    });
-    if vendored.is_file() {
-        if cwd_vendor_allowed() {
-            return Ok(Some(vendored));
-        }
-        warn_cwd_vendor_ignored(&vendored);
-    }
-    let name = RESIDENT_IMAGE_NAME;
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            let cand = dir.join(name);
-            if cand.is_file() {
-                return Ok(Some(cand));
-            }
-        }
+    let development = PathBuf::from("engine-bundle").join(name);
+    if development.is_file() {
+        return Ok(Some(development));
     }
     Ok(None)
 }
@@ -390,35 +328,13 @@ fn resolve_binary() -> Result<Option<PathBuf>> {
 /// Resolución por capas del directorio de un modelo del motor llamado
 /// `dir_name`:
 /// 1. la variable `env_var` (si está definida debe ser un directorio existente);
-/// 2. directorio hermano del binario (`<dir del bin>/<dir_name>`);
-/// 3. `<exe_dir>/vendor/qwen3-tts/<dir_name>`;
-/// 4. snapshot no vacío en la raíz de modelos (`ModelStore::model_snapshot_path`);
-/// 5. `<cwd>/vendor/qwen3-tts/<dir_name>` (solo con `AVI_ALLOW_CWD_VENDOR=1`;
-///    si habría resuelto, avisa qué se ignoró y cómo habilitarlo).
+/// 2. snapshot no vacío en la raíz de modelos (`ModelStore::model_snapshot_path`).
 ///
 /// `Ok(None)` indica que ninguna capa lo halló; un error de E/S al inspeccionar
 /// el snapshot se propaga.
-fn resolve_named_model_dir(
-    env_var: &str,
-    dir_name: &str,
-    bin: Option<&Path>,
-) -> Result<Option<PathBuf>> {
+fn resolve_named_model_dir(env_var: &str, dir_name: &str) -> Result<Option<PathBuf>> {
     if let Some(dir) = validated_env_path(env_var, std::env::var_os(env_var), false)? {
         return Ok(Some(dir));
-    }
-    if let Some(b) = bin {
-        if let Some(parent) = b.parent() {
-            let sibling = parent.join(dir_name);
-            if sibling.is_dir() {
-                return Ok(Some(sibling));
-            }
-        }
-    }
-    if let Ok(dir) = avi_shared::paths::program_dir() {
-        let cand = dir.join("vendor/qwen3-tts").join(dir_name);
-        if cand.is_dir() {
-            return Ok(Some(cand));
-        }
     }
     if let Some(p) = avi_store::ModelStore::new()?.model_snapshot_path(dir_name) {
         if p.is_dir() {
@@ -438,24 +354,13 @@ fn resolve_named_model_dir(
             }
         }
     }
-    let vendored = PathBuf::from("vendor/qwen3-tts").join(dir_name);
-    if vendored.is_dir() {
-        if cwd_vendor_allowed() {
-            return Ok(Some(vendored));
-        }
-        avi_shared::console::warn(format_args!(
-            "se ignoró '{}' del directorio de trabajo: define {}=1 para habilitarlo.",
-            vendored.display(),
-            CWD_VENDOR_OPT_IN
-        ));
-    }
     Ok(None)
 }
 
 /// Directorio de pesos CustomVoice (presets), `qwen3-tts-0.6b`; la variable de
 /// entorno es `QWEN3_TTS_MODEL_DIR`. Capas en [`resolve_named_model_dir`].
-fn resolve_model_dir(bin: Option<&Path>) -> Result<Option<PathBuf>> {
-    resolve_named_model_dir("QWEN3_TTS_MODEL_DIR", "qwen3-tts-0.6b", bin)
+fn resolve_model_dir() -> Result<Option<PathBuf>> {
+    resolve_named_model_dir("QWEN3_TTS_MODEL_DIR", "qwen3-tts-0.6b")
 }
 
 /// Directorio del modelo Base (`qwen3-tts-0.6b-base`), deliberadamente
@@ -463,8 +368,8 @@ fn resolve_model_dir(bin: Option<&Path>) -> Result<Option<PathBuf>> {
 /// síntesis de voces clonadas, que exigen el modelo Base, distinto del
 /// CustomVoice usado por los presets. La variable de entorno es
 /// `QWEN3_TTS_BASE_MODEL_DIR`. Capas en `resolve_named_model_dir`.
-pub fn resolve_base_model_dir(bin: Option<&Path>) -> Result<Option<PathBuf>> {
-    resolve_named_model_dir("QWEN3_TTS_BASE_MODEL_DIR", "qwen3-tts-0.6b-base", bin)
+pub fn resolve_base_model_dir() -> Result<Option<PathBuf>> {
+    resolve_named_model_dir("QWEN3_TTS_BASE_MODEL_DIR", "qwen3-tts-0.6b-base")
 }
 
 /// Falta el modelo de pesos que exige el tipo de voz a sintetizar (CustomVoice
@@ -599,8 +504,8 @@ impl Qwen3TtsEngine {
     /// `AVI_TTS_PRECISION` no es `mixed` ni `bf16`.
     pub fn new(registry: Option<Arc<dyn ResidentRegistry>>) -> Result<Self> {
         let binary_path = resolve_binary()?;
-        let model_dir = resolve_model_dir(binary_path.as_deref())?;
-        let base_model_dir = resolve_base_model_dir(binary_path.as_deref())?;
+        let model_dir = resolve_model_dir()?;
+        let base_model_dir = resolve_base_model_dir()?;
         let precision = TtsPrecision::from_env()?;
         Ok(Self {
             binary_path,
@@ -2293,7 +2198,7 @@ mod tests {
     fn build_resident_command_has_threads_without_int4_or_stream() {
         let (program, args) = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
-            Path::new("vendor/qwen3-tts/qwen3-tts-0.6b"),
+            Path::new("models/qwen3-tts-0.6b"),
             45123,
             None,
             TtsPrecision::Mixed,
@@ -2303,7 +2208,7 @@ mod tests {
             args,
             vec![
                 "-d",
-                "vendor/qwen3-tts/qwen3-tts-0.6b",
+                "models/qwen3-tts-0.6b",
                 "--serve",
                 "45123",
                 "--host",
@@ -2551,21 +2456,21 @@ mod tests {
     /// loopback, con stdout y stderr descartados. Exige el binario y los pesos:
     /// si faltan, falla de forma explícita.
     /// Binario real del motor para las pruebas con recursos: `QWEN3_TTS_BIN` si
-    /// está definida o, si no, el de `vendor/qwen3-tts`. El directorio de trabajo
-    /// de `cargo test` es el del crate, así que la ruta relativa `vendor/…` se
-    /// ancla a la raíz del repositorio. Si falta, falla de forma explícita.
+    /// está definida o, si no, el de `engine-bundle/`. El directorio de trabajo
+    /// de `cargo test` es el del crate, así que la ruta relativa se ancla a la
+    /// raíz del repositorio. Si falta, falla de forma explícita.
     fn real_engine_binary() -> PathBuf {
-        let vendored = Path::new(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
-            "../../vendor/qwen3-tts/qwen_tts.exe"
+        let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
+            "../../engine-bundle/qwen_tts.exe"
         } else {
-            "../../vendor/qwen3-tts/qwen_tts"
+            "../../engine-bundle/qwen_tts"
         });
         let bin = std::env::var_os("QWEN3_TTS_BIN")
             .map(PathBuf::from)
-            .or_else(|| vendored.is_file().then_some(vendored))
+            .or_else(|| bundled.is_file().then_some(bundled))
             .expect(
-                "falta el binario del motor (QWEN3_TTS_BIN o vendor/qwen3-tts/qwen_tts.exe): \
-             constrúyelo con `cargo xtask build-engine`",
+                "falta el binario del motor (QWEN3_TTS_BIN o engine-bundle/qwen_tts[.exe]): \
+             aprovisiónalo con `cargo xtask bootstrap`",
             );
         assert!(bin.is_file(), "falta {}", bin.display());
         bin
@@ -2573,7 +2478,7 @@ mod tests {
 
     fn spawn_real_engine(watch_stdin: bool, stdin: Stdio) -> EngineGuard {
         let bin = real_engine_binary();
-        let model_dir = resolve_model_dir(Some(&bin))
+        let model_dir = resolve_model_dir()
             .expect("no se pudo resolver el directorio de pesos qwen3-tts-0.6b")
             .expect(
                 "faltan los pesos qwen3-tts-0.6b: aprovisiónalos con `ai-voice-interconnector setup`",
@@ -3828,9 +3733,10 @@ fn main() {
         );
     }
 
-    /// `resolve_binary` halla el binario junto al `current_exe` aunque `cwd` no tenga vendor.
+    /// `resolve_binary` halla el binario en la raíz del bundle, junto al
+    /// `current_exe`.
     #[test]
-    fn resolve_binary_finds_exe_dir_vendor() {
+    fn resolve_binary_finds_program_dir() {
         // Guardar env para no contaminar otros tests (serializados por --test-threads=1 en CI)
         let _guard = RESOLUTION_ENV_GUARD
             .lock()
@@ -3842,34 +3748,39 @@ fn main() {
             .parent()
             .expect("parent")
             .to_path_buf();
-        let cand = exe_dir.join(if cfg!(windows) {
-            "vendor/qwen3-tts/qwen_tts.exe"
-        } else {
-            "vendor/qwen3-tts/qwen_tts"
-        });
-        let created_dir = cand.parent().unwrap().to_path_buf();
+        let cand = exe_dir.join(RESIDENT_IMAGE_NAME);
         let existed = cand.is_file();
         if !existed {
-            std::fs::create_dir_all(&created_dir).unwrap();
-            std::fs::write(&cand, b"fake").unwrap();
+            std::fs::write(&cand, b"fake").expect("debe escribir el señuelo");
         }
         let found = resolve_binary().expect("la resolución no debe fallar sin QWEN3_TTS_BIN");
         // Limpiar
         if !existed {
             let _ = std::fs::remove_file(&cand);
-            // No borrar created_dir si quedó con otros ficheros
-            let _ = std::fs::remove_dir(&created_dir);
-            let _ = std::fs::remove_dir(exe_dir.join("vendor/qwen3-tts"));
-            let _ = std::fs::remove_dir(exe_dir.join("vendor"));
         }
         if let Some(o) = orig {
             std::env::set_var("QWEN3_TTS_BIN", o);
         }
         assert!(
             found.is_some(),
-            "resolve_binary debe hallar el binario en <exe_dir>/vendor"
+            "resolve_binary debe hallar el binario en la raíz del bundle"
         );
         assert_eq!(found.unwrap(), cand);
+    }
+
+    /// `QWEN3_TTS_BIN`, si está definida, gana al resto de capas.
+    #[test]
+    fn resolve_binary_prefers_env_var() {
+        let _guard = RESOLUTION_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN"]);
+        let work = tempfile::tempdir().expect("debe crear el directorio de prueba");
+        let bin = work.path().join(RESIDENT_IMAGE_NAME);
+        std::fs::write(&bin, b"falso").expect("debe escribir el señuelo");
+        std::env::set_var("QWEN3_TTS_BIN", &bin);
+        let found = resolve_binary().expect("la resolución no debe fallar");
+        assert_eq!(found, Some(bin), "la variable del binario debe ganar");
     }
 
     /// Candado que serializa las pruebas que tocan el CWD o las variables de
@@ -3909,109 +3820,73 @@ fn main() {
         }
     }
 
-    /// Nombre del binario del motor según la plataforma, como lo espera la
-    /// capa `<cwd>/vendor`.
-    fn cwd_vendor_bin() -> std::path::PathBuf {
-        std::path::PathBuf::from(if cfg!(windows) {
-            "vendor/qwen3-tts/qwen_tts.exe"
-        } else {
-            "vendor/qwen3-tts/qwen_tts"
-        })
-    }
-
-    /// Sin opt-in, la capa `<cwd>/vendor` no aporta el binario aunque exista;
-    /// con `=1`, resuelve como antes. Capas superiores neutralizadas.
+    /// `resolve_binary` halla el binario de desarrollo en `engine-bundle/` bajo
+    /// el directorio de trabajo, donde lo deja `cargo xtask bootstrap`.
     #[test]
-    fn resolve_binary_cwd_needs_opt_in() {
+    fn resolve_binary_finds_development_bundle() {
         let _guard = RESOLUTION_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN", "AVI_ALLOW_CWD_VENDOR"]);
+        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN"]);
         let work = tempfile::tempdir().expect("debe crear el CWD de prueba");
-        let rel = cwd_vendor_bin();
+        let rel = std::path::PathBuf::from("engine-bundle").join(RESIDENT_IMAGE_NAME);
         let abs = work.path().join(&rel);
-        std::fs::create_dir_all(abs.parent().unwrap()).expect("debe crear vendor");
+        std::fs::create_dir_all(abs.parent().unwrap()).expect("debe crear engine-bundle");
         std::fs::write(&abs, b"falso").expect("debe escribir el señuelo");
         std::env::set_current_dir(work.path()).expect("debe cambiar el CWD");
         std::env::remove_var("QWEN3_TTS_BIN");
-        std::env::remove_var("AVI_ALLOW_CWD_VENDOR");
-        let denied = resolve_binary().expect("la resolución no debe fallar");
-        assert_ne!(
-            denied,
-            Some(rel.clone()),
-            "sin opt-in el CWD no debe aportar el binario"
-        );
-        std::env::set_var("AVI_ALLOW_CWD_VENDOR", "1");
-        let allowed = resolve_binary().expect("la resolución no debe fallar");
+        let found = resolve_binary().expect("la resolución no debe fallar");
         assert_eq!(
-            allowed,
+            found,
             Some(rel),
-            "con opt-in el CWD debe resolver como antes"
+            "la capa de desarrollo debe resolver engine-bundle/"
         );
     }
 
-    /// Sin opt-in, la capa `<cwd>/vendor` no aporta el directorio del modelo;
-    /// con `=1`, sí. Fixture con nombre imposible en snapshots reales.
+    /// `resolve_named_model_dir` devuelve el directorio de la variable del
+    /// modelo cuando existe, y `None` cuando ninguna capa lo halla.
     #[test]
-    fn resolve_named_model_dir_cwd_needs_opt_in() {
+    fn resolve_named_model_dir_prefers_env_var() {
+        let _guard = RESOLUTION_ENV_GUARD
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _restore = ResolutionRestore::take(&["AVI_TTS_TEST_SIN_DEFINIR"]);
+        let work = tempfile::tempdir().expect("debe crear el directorio de prueba");
+        std::env::set_var("AVI_TTS_TEST_SIN_DEFINIR", work.path());
+        let found = resolve_named_model_dir("AVI_TTS_TEST_SIN_DEFINIR", "fixture-inexistente-xyz")
+            .expect("la resolución no debe fallar");
+        assert_eq!(found, Some(work.path().to_path_buf()));
+        std::env::remove_var("AVI_TTS_TEST_SIN_DEFINIR");
+        let missing =
+            resolve_named_model_dir("AVI_TTS_TEST_SIN_DEFINIR", "fixture-inexistente-xyz")
+                .expect("la resolución no debe fallar");
+        assert_eq!(missing, None, "sin variable ni snapshot no hay modelo");
+    }
+
+    /// `resolve_named_model_dir` halla el snapshot no vacío de la raíz de
+    /// modelos de AVI cuando la variable del modelo no está definida.
+    #[test]
+    fn resolve_named_model_dir_finds_model_snapshot() {
         let _guard = RESOLUTION_ENV_GUARD
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let _restore =
-            ResolutionRestore::take(&["AVI_ALLOW_CWD_VENDOR", "AVI_TTS_TEST_SIN_DEFINIR"]);
-        let work = tempfile::tempdir().expect("debe crear el CWD de prueba");
-        let rel = std::path::PathBuf::from("vendor/qwen3-tts").join("fixture-inexistente-xyz");
-        std::fs::create_dir_all(work.path().join(&rel)).expect("debe crear el modelo falso");
-        std::env::set_current_dir(work.path()).expect("debe cambiar el CWD");
-        std::env::remove_var("AVI_ALLOW_CWD_VENDOR");
-        let denied =
-            resolve_named_model_dir("AVI_TTS_TEST_SIN_DEFINIR", "fixture-inexistente-xyz", None)
-                .expect("la resolución no debe fallar");
-        assert_eq!(denied, None, "sin opt-in el CWD no debe aportar modelos");
-        std::env::set_var("AVI_ALLOW_CWD_VENDOR", "1");
-        let allowed =
-            resolve_named_model_dir("AVI_TTS_TEST_SIN_DEFINIR", "fixture-inexistente-xyz", None)
-                .expect("la resolución no debe fallar");
-        assert_eq!(
-            allowed,
-            Some(rel),
-            "con opt-in el CWD debe resolver como antes"
-        );
-    }
-
-    /// El aviso del binario del directorio de trabajo sale **una sola vez por
-    /// proceso**, aunque la resolución se repita.
-    ///
-    /// Un comando local resuelve el binario dos veces: al crear el motor y al
-    /// arrancar el residente. La decisión se recalcula cada vez —el entorno
-    /// puede cambiar— y por eso la prueba sigue resolviendo de verdad; lo que
-    /// no se repite es el aviso.
-    ///
-    /// El contador permite comprobarlo sin capturar stderr, que no es portable
-    /// en un test unitario.
-    #[test]
-    fn cwd_vendor_warning_is_emitted_only_once_per_process() {
-        let _guard = RESOLUTION_ENV_GUARD
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let _restore = ResolutionRestore::take(&["QWEN3_TTS_BIN", "AVI_ALLOW_CWD_VENDOR"]);
-        let work = tempfile::tempdir().expect("debe crear el CWD de prueba");
-        let rel = cwd_vendor_bin();
-        let abs = work.path().join(&rel);
-        std::fs::create_dir_all(abs.parent().unwrap()).expect("debe crear vendor");
-        std::fs::write(&abs, b"falso").expect("debe escribir el señuelo");
-        std::env::set_current_dir(work.path()).expect("debe cambiar el CWD");
-        std::env::remove_var("QWEN3_TTS_BIN");
-        std::env::remove_var("AVI_ALLOW_CWD_VENDOR");
-
-        let before = CWD_VENDOR_WARNING_COUNT.load(Ordering::Relaxed);
-        // Dos resoluciones: la segunda es la que hacía duplicar el aviso.
-        let _first = resolve_binary().expect("la resolución no debe fallar");
-        let _second = resolve_binary().expect("la resolución no debe fallar");
-        let emitted = CWD_VENDOR_WARNING_COUNT.load(Ordering::Relaxed) - before;
-        assert!(
-            emitted <= 1,
-            "el aviso sale como mucho una vez por proceso: {emitted}"
-        );
+            ResolutionRestore::take(&["AVI_CACHE_DIR", "HF_XET_CACHE", "AVI_TTS_TEST_SIN_DEFINIR"]);
+        let cache = tempfile::tempdir().expect("debe crear la caché de prueba");
+        std::env::set_var("AVI_CACHE_DIR", cache.path());
+        std::env::remove_var("AVI_TTS_TEST_SIN_DEFINIR");
+        let (repo, rev) = avi_store::ModelStore::revision_of("qwen3-tts-0.6b-base")
+            .expect("el modelo Base debe tener un pin de revisión");
+        let snapshot = cache
+            .path()
+            .join("models")
+            .join(format!("models--{}", repo.replace('/', "--")))
+            .join("snapshots")
+            .join(rev);
+        std::fs::create_dir_all(&snapshot).expect("debe crear el snapshot");
+        std::fs::write(snapshot.join("config.json"), b"{}").expect("debe escribir el snapshot");
+        let found = resolve_named_model_dir("AVI_TTS_TEST_SIN_DEFINIR", "qwen3-tts-0.6b-base")
+            .expect("la resolución no debe fallar");
+        assert_eq!(found, Some(snapshot));
     }
 }

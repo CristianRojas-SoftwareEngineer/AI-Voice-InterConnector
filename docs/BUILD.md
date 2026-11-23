@@ -296,8 +296,8 @@ y una `ORT_DYLIB_PATH` exportada explícitamente lo sustituye. `cargo xtask
 bootstrap` deja además `ffmpeg-bundle/` con el FFmpeg fijado. `cargo xtask
 release` asegura `ort-bundle/` en la versión fijada y exporta la ruta de su
 librería para su gate de pruebas con recursos, junto con
-`AVI_ALLOW_CWD_VENDOR=1` para que los hijos CLI resuelvan el motor recién
-compilado sin exigir un programa instalado.
+`QWEN3_TTS_BIN` apuntando al motor de `engine-bundle/` para que los hijos CLI
+lo resuelvan sin exigir un programa instalado.
 
 Las pruebas que codifican, remuestrean o analizan medios resuelven `ffmpeg` por
 `PATH` (`find_ffmpeg`), así que desde el repositorio hay que tener el binario
@@ -324,17 +324,15 @@ que el producto (10 s para publicar su dirección), y una CPU saturada por más
 binarios de prueba en paralelo o por otra carga puede superarlo y producir
 fallos que no son defectos.
 
-#### Motor TTS desde el repo (opt-in del CWD)
+#### Motor TTS desde el repo
 
 Al ejecutar desde la raíz del repo (`cargo run`, pruebas sin instalar), el
-motor `qwen_tts` y sus modelos viven en `vendor/qwen3-tts/`, que el producto
-resuelve por la capa `<cwd>/vendor`. Esa capa está denegada por defecto: sin
-`AVI_ALLOW_CWD_VENDOR=1`, el directorio de trabajo no aporta binario ni
-modelos y la resolución avisa qué ignoró. El aviso sale **una sola vez por
-proceso**, aunque la resolución se repita: la decisión se recalcula cada vez
-—el entorno puede cambiar— y solo el mensaje deja de repetirse. Para
-desarrollar desde el repo, define `AVI_ALLOW_CWD_VENDOR=1` (solo desarrollo
-local; el producto instalado y CI no la necesitan).
+motor `qwen_tts` vive en `engine-bundle/`, que `cargo xtask bootstrap`
+aprovisiona con el artefacto fijado en `packaging/pins.json`. La resolución lo
+halla por la capa `engine-bundle/` bajo el directorio de trabajo, sin
+`QWEN3_TTS_BIN`. Los pesos no viven junto al motor: los aprovisiona
+`ai-voice-interconnector setup` en la raíz de modelos de AVI, que es la otra
+capa de su resolución.
 
 #### Empaquetado de ONNX Runtime en los artefactos de release
 

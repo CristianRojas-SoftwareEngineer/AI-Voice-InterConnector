@@ -220,8 +220,8 @@ promovido.
    incluido; asegura el FFmpeg fijado en `ffmpeg-bundle/`, lo copia junto al
    binario de prueba (la CLI solo lo busca ahí) y antepone su carpeta al
    `PATH` para las pruebas que lo resuelven así, sin depender del FFmpeg del
-   sistema; y habilita el motor de `vendor/qwen3-tts/` con
-   `AVI_ALLOW_CWD_VENDOR=1`. Solo exige los modelos aprovisionados con
+   sistema; y asegura el motor en `engine-bundle/` y exporta su ruta en
+   `QWEN3_TTS_BIN`. Solo exige los modelos aprovisionados con
    `cargo xtask bootstrap --models --yes`. Las pruebas de recursos de
    `avi-daemon/tests/golden.rs` consultan esa caché heredada en solo lectura;
    el caso HTTP que exige DPDFNet ausente corre en un target de integración con

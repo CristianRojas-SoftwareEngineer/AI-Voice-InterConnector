@@ -166,7 +166,7 @@ fn state_without_base_model() -> Arc<DaemonState> {
 /// Estado de contrato para rutas de clonado: no carga inferencia STT ni CT2.
 /// Usa almacenes en otro directorio temporal propio del proceso y su motor TTS
 /// apunta a `QWEN3_TTS_BIN` si está definida o, si no, al binario de
-/// `vendor/qwen3-tts`, porque el cwd del crate no ve el vendor del workspace.
+/// `engine-bundle/`, porque el cwd del crate no ve el bundle del workspace.
 /// El clonado y el arranque del residente buscan el binario en `QWEN3_TTS_BIN`
 /// y no en el campo, así que se fija también la variable; el estado de contrato
 /// no la ve porque su `binary_path = None` corta `/synthesize` antes del motor.
@@ -189,13 +189,13 @@ fn clone_state() -> Arc<DaemonState> {
 }
 
 /// Binario del motor de las pruebas con el motor real: `QWEN3_TTS_BIN` si está
-/// definida o, si no, el de `vendor/qwen3-tts`, porque el cwd del crate no ve el
-/// vendor del workspace. Fija también la variable, que es donde el clonado y el
+/// definida o, si no, el de `engine-bundle/`, porque el cwd del crate no ve el
+/// bundle del workspace. Fija también la variable, que es donde el clonado y el
 /// arranque del residente buscan el binario.
 fn engine_binary() -> PathBuf {
     let binary = std::env::var_os("QWEN3_TTS_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(vendor_binary);
+        .unwrap_or_else(bundled_binary);
     std::env::set_var("QWEN3_TTS_BIN", &binary);
     binary
 }
@@ -316,12 +316,12 @@ fn require_base_model() {
     });
 }
 
-/// Binario del motor en `vendor/qwen3-tts` del workspace.
-fn vendor_binary() -> PathBuf {
+/// Binario del motor en `engine-bundle/` del workspace.
+fn bundled_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(if cfg!(windows) {
-        "../../vendor/qwen3-tts/qwen_tts.exe"
+        "../../engine-bundle/qwen_tts.exe"
     } else {
-        "../../vendor/qwen3-tts/qwen_tts"
+        "../../engine-bundle/qwen_tts"
     })
 }
 
@@ -337,15 +337,15 @@ async fn engine_exclusive() -> tokio::sync::MutexGuard<'static, ()> {
 }
 
 /// Exige el binario del motor, salvo que `QWEN3_TTS_BIN` ya apunte a otro. Lo
-/// construye `cargo xtask build-engine`.
+/// deja `cargo xtask bootstrap`.
 fn require_clone_binary() {
     if std::env::var_os("QWEN3_TTS_BIN").is_some() {
         return;
     }
-    let binary = vendor_binary();
+    let binary = bundled_binary();
     assert!(
         binary.is_file(),
-        "falta {}: constrúyelo con `cargo xtask build-engine`",
+        "falta {}: aprovisiónalo con `cargo xtask bootstrap`",
         binary.display()
     );
 }
