@@ -277,6 +277,7 @@ Un único binario Rust expone la CLI. La síntesis la hace el motor Qwen3-TTS, q
 - [SOURCE-OFFER.md](SOURCE-OFFER.md) — disponibilidad de la fuente (MPL-2.0 §3.2).
 - [THIRD-PARTY-LICENSES.md](THIRD-PARTY-LICENSES.md) — inventario y avisos de licencias de terceros.
 - [docs/issues/README.md](docs/issues/README.md) — registro de defectos en investigación.
+- [docs/BACKLOG.md](docs/BACKLOG.md) — funcionalidades aplazadas, con lo decidido y lo pendiente para retomarlas.
 
 ## Licencia
 
