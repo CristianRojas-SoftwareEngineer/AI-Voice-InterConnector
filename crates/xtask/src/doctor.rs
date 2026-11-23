@@ -30,6 +30,7 @@ pub(crate) const ROW_IDS: &[&str] = &[
     "engine-toolchain",
     "onnx",
     "ffmpeg",
+    "qwen-tts-engine",
     "sccache",
     "target-hygiene",
 ];
@@ -818,6 +819,45 @@ fn check_ffmpeg(root: &Path, pins: &Pins) -> Row {
     }
 }
 
+/// Sonda del motor TTS: `engine-bundle/` fresco para el SHA-256 fijado del
+/// triple (ejecutable no vacío y marcador coincidente). El motor no declara su
+/// versión por sí mismo, así que la frescura se decide por el binario y el
+/// marcador, nunca ejecutándolo. Solo lectura: descargarlo es tarea de
+/// `bootstrap`.
+fn check_engine_bundle(root: &Path, pins: &Pins) -> Row {
+    let label = "Motor TTS qwen-tts-engine (bundle fijado)";
+    let want = Some(pins.qwen_tts_engine.clone());
+    let bundle = super::package::engine_bundle_dir(root);
+    let row = |status: Status, found: Option<String>| Row {
+        id: "qwen-tts-engine",
+        label,
+        mandatory: true,
+        hint: (status != Status::Ok).then(|| "cargo xtask bootstrap".to_string()),
+        status,
+        found,
+        want: want.clone(),
+    };
+    if !bundle.is_dir() {
+        return row(Status::Missing, None);
+    }
+    let fresh = super::package::host_triple().and_then(|triple| {
+        let sha = super::package::pinned_engine_sha256(pins, triple)?;
+        super::package::engine_bundle_is_fresh(&bundle, triple, sha)
+    });
+    let dir = super::package::ENGINE_BUNDLE_REL;
+    match fresh {
+        Ok(true) => row(Status::Ok, Some(format!("{dir} {}", pins.qwen_tts_engine))),
+        Ok(false) => row(
+            Status::Mismatch,
+            Some(format!(
+                "{dir} incompleto o de otro artefacto (fijado {})",
+                pins.qwen_tts_engine
+            )),
+        ),
+        Err(e) => row(Status::Error, Some(e.to_string())),
+    }
+}
+
 /// Contenido del marcador `.ort-version` de un `ort-bundle/`.
 enum OrtMarker {
     /// El marcador no existe: la versión del bundle es desconocida.
@@ -1142,6 +1182,7 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         check_engine_toolchain(pins),
         check_onnx(root, pins),
         check_ffmpeg(root, pins),
+        check_engine_bundle(root, pins),
         check_sccache(pins),
         check_target_hygiene(root),
     ];
@@ -1199,8 +1240,8 @@ pub fn run(json: bool) -> Result<()> {
 }
 
 /// Verifica que estén completos los recursos fijados que asegura `bootstrap`
-/// (ONNX Runtime y FFmpeg), los modelos, la ausencia de `.incomplete` y la de
-/// residuos, sin las comprobaciones del ciclo de vida.
+/// (ONNX Runtime, FFmpeg y el motor TTS), los modelos, la ausencia de
+/// `.incomplete` y la de residuos, sin las comprobaciones del ciclo de vida.
 pub fn verify_resources(json: bool) -> Result<()> {
     use serde_json::json;
 
@@ -1208,7 +1249,7 @@ pub fn verify_resources(json: bool) -> Result<()> {
     let pins = load_pins(&root)?;
     let triple = super::package::host_triple()?;
     let models = models_drift();
-    let super::package::PinnedBundles { ort, ffmpeg } =
+    let super::package::PinnedBundles { ort, ffmpeg, engine } =
         super::package::pinned_bundles_status(&root, triple, &pins);
     let incomplete = find_incomplete_files(&models_cache_root()?);
     let pending = find_pending_resources(&root);
@@ -1224,6 +1265,13 @@ pub fn verify_resources(json: bool) -> Result<()> {
         Ok(ok) => ok,
         Err(error) => {
             errors.push(format!("FFmpeg: {error}"));
+            false
+        }
+    };
+    let engine_ok = match engine {
+        Ok(ok) => ok,
+        Err(error) => {
+            errors.push(format!("Motor TTS qwen-tts-engine: {error}"));
             false
         }
     };
@@ -1246,6 +1294,7 @@ pub fn verify_resources(json: bool) -> Result<()> {
     let ok = models.is_empty()
         && ort_ok
         && ffmpeg_ok
+        && engine_ok
         && incomplete.is_empty()
         && pending.is_empty()
         && errors.is_empty();
@@ -1258,6 +1307,7 @@ pub fn verify_resources(json: bool) -> Result<()> {
                 "models": { "ok": models.is_empty(), "missing": models },
                 "onnx_runtime": { "ok": ort_ok, "version": pins.ort },
                 "ffmpeg": { "ok": ffmpeg_ok, "version": pins.ffmpeg },
+                "qwen_tts_engine": { "ok": engine_ok, "version": pins.qwen_tts_engine },
                 "incomplete": incomplete,
                 "pending": pending,
                 "errors": errors,
@@ -1279,6 +1329,14 @@ pub fn verify_resources(json: bool) -> Result<()> {
         println!(
             "  FFmpeg: {}",
             if ffmpeg_ok {
+                "correcto"
+            } else {
+                "falta o está incompleto"
+            }
+        );
+        println!(
+            "  Motor TTS qwen-tts-engine: {}",
+            if engine_ok {
                 "correcto"
             } else {
                 "falta o está incompleto"
@@ -1445,6 +1503,9 @@ mod tests {
             ffmpeg: "9.0.2".to_string(),
             ffmpeg_sha256: std::collections::BTreeMap::new(),
             ffmpeg_source_sha256: std::collections::BTreeMap::new(),
+            qwen_tts_engine: "1.0.0".to_string(),
+            qwen_tts_engine_sha256: std::collections::BTreeMap::new(),
+            qwen_tts_engine_source_sha256: "b".repeat(64),
             sccache: "0.8.2".to_string(),
             msys2_base: "2026-06-11".to_string(),
             msys2_gcc: "16.2.0".to_string(),
@@ -1474,6 +1535,7 @@ mod tests {
                 "engine-toolchain",
                 "ffmpeg",
                 "onnx",
+                "qwen-tts-engine",
                 "rust",
                 "sccache",
                 "target-hygiene"
@@ -1803,6 +1865,60 @@ mod tests {
         let row = check_ffmpeg(root.path(), &fixture_pins());
         assert_eq!(row.status, Status::Error);
         assert!(row.found.unwrap().contains("FFmpeg"));
+    }
+
+    /// Pines de fixture con el SHA-256 del motor fijado para el triple del host.
+    fn engine_fixture_pins(sha: &str) -> Pins {
+        let mut pins = fixture_pins();
+        let triple = super::super::package::host_triple().unwrap();
+        pins.qwen_tts_engine_sha256
+            .insert(triple.to_string(), sha.to_string());
+        pins
+    }
+
+    /// Escribe en `engine-bundle/` un ejecutable no vacío y el marcador dado.
+    fn write_engine_bundle(root: &Path, marker: &str) {
+        let bundle = super::super::package::engine_bundle_dir(root);
+        std::fs::create_dir_all(&bundle).unwrap();
+        let triple = super::super::package::host_triple().unwrap();
+        let name = super::super::package::engine_binary_name(triple).unwrap();
+        std::fs::write(bundle.join(name), b"qwen_tts").unwrap();
+        std::fs::write(bundle.join(super::super::package::ENGINE_MARKER), marker).unwrap();
+    }
+
+    /// Sin bundle la fila del motor falta; con marcador de otro artefacto es
+    /// una versión distinta; con ejecutable y marcador del hash fijado es
+    /// correcta. Solo la correcta prescinde de la pista de `bootstrap`.
+    #[test]
+    fn engine_row_reports_missing_mismatch_and_ok() {
+        let sha = "a".repeat(64);
+        let pins = engine_fixture_pins(&sha);
+        let root = tempfile::tempdir().unwrap();
+        let row = check_engine_bundle(root.path(), &pins);
+        assert_eq!(row.id, "qwen-tts-engine");
+        assert!(row.mandatory);
+        assert_eq!(row.status, Status::Missing);
+        assert_eq!(row.want, Some("1.0.0".to_string()));
+        assert!(row.hint.unwrap().contains("cargo xtask bootstrap"));
+        write_engine_bundle(root.path(), &"b".repeat(64));
+        let row = check_engine_bundle(root.path(), &pins);
+        assert_eq!(row.status, Status::Mismatch);
+        assert!(row.hint.is_some());
+        write_engine_bundle(root.path(), &sha);
+        let row = check_engine_bundle(root.path(), &pins);
+        assert_eq!(row.status, Status::Ok);
+        assert!(row.hint.is_none());
+    }
+
+    /// Un bundle presente sin hash del motor fijado para el triple no se puede
+    /// contrastar: la fila es un error, no una ausencia ni una coincidencia.
+    #[test]
+    fn engine_row_without_pin_is_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        write_engine_bundle(root.path(), &"a".repeat(64));
+        let row = check_engine_bundle(root.path(), &fixture_pins());
+        assert_eq!(row.status, Status::Error);
+        assert!(row.found.unwrap().contains("qwen-tts-engine"));
     }
 
     /// Un programa inexistente es «no instalado»; uno que no se puede ejecutar

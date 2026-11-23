@@ -55,6 +55,7 @@ cargo-timings/
 vendor/qwen3-tts/.engine-cachekey
 ort-bundle/
 ffmpeg-bundle/
+engine-bundle/
 # Informe NUnit que Pester escribe en el directorio actual con `-CI`
 testResults.xml
 # Planes, bitácoras y artefactos locales de trabajo; no se versionan.

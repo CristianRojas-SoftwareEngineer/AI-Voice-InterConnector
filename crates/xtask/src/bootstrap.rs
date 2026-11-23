@@ -184,19 +184,20 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
         }
     }
 
-    // Paso 3. Recursos fijados (ONNX Runtime y FFmpeg) con la misma función que
-    // la puerta y `package`; reutiliza los bundles frescos. Un bundle que no
-    // estaba fresco antes de asegurarlo se descargó, y eso cuenta como trabajo.
+    // Paso 3. Recursos fijados (ONNX Runtime, FFmpeg y motor TTS) con la misma
+    // función que la puerta y `package`; reutiliza los bundles frescos. Un
+    // bundle que no estaba fresco antes de asegurarlo se descargó, y eso cuenta
+    // como trabajo.
     let triple = super::package::host_triple()?;
-    let super::package::PinnedBundles { ort, ffmpeg } =
+    let super::package::PinnedBundles { ort, ffmpeg, engine } =
         super::package::pinned_bundles_status(&root, triple, &pins);
-    if !matches!(ort, Ok(true)) || !matches!(ffmpeg, Ok(true)) {
+    if !matches!(ort, Ok(true)) || !matches!(ffmpeg, Ok(true)) || !matches!(engine, Ok(true)) {
         worked = true;
     }
     super::package::ensure_pinned_bundles(&root, triple, &pins)?;
     println!(
-        "Paso 3/6 (recursos fijados): ONNX Runtime {} en ort-bundle/ y FFmpeg {} en ffmpeg-bundle/ asegurados.",
-        pins.ort, pins.ffmpeg
+        "Paso 3/6 (recursos fijados): ONNX Runtime {} en ort-bundle/, FFmpeg {} en ffmpeg-bundle/ y motor qwen-tts-engine {} en engine-bundle/ asegurados.",
+        pins.ort, pins.ffmpeg, pins.qwen_tts_engine
     );
 
     // Paso 4. Motor TTS si falta o está desactualizado.

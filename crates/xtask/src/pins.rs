@@ -49,6 +49,14 @@ const SCHEMA_SMOKE_MARKERS: [&str; 2] = ["$j.schema_version -ne '", "campo 'sche
 /// Inicio del comando que retira temporales antes de guardar la caché de `target/`.
 const CACHE_CLEANUP_MARKER: &str = "          command: >-\n            rm -rf -- ";
 
+/// Targets de AVI a los que se les exige un SHA-256 del paquete del motor.
+const ENGINE_TRIPLES: [&str; 4] = [
+    "x86_64-pc-windows-msvc",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+];
+
 /// Ejecuta el subcomando: `--check` verifica y `--sync` regenera el canal.
 pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
     if !check && !sync {
@@ -224,6 +232,44 @@ fn check_text(pins: &Pins, cfg: &str, toolchain: &str) -> Vec<String> {
     ));
     errors.extend(cache_cleanup_errors(cfg));
     errors.extend(windows_executor_errors(cfg));
+    errors.extend(engine_pin_errors(pins));
+    errors
+}
+
+/// Errores del pin del motor TTS: una versión vacía, un target de AVI sin
+/// hash, un hash que no son 64 dígitos hexadecimales en minúsculas, o una
+/// tabla con un target que AVI no usa. El aprovisionamiento verifica el hash
+/// del paquete, así que aquí se comprueba que la tabla esté completa y bien
+/// formada antes de intentar ninguna descarga.
+fn engine_pin_errors(pins: &Pins) -> Vec<String> {
+    let mut errors = Vec::new();
+    if pins.qwen_tts_engine.trim().is_empty() {
+        errors.push("qwen_tts_engine no fija ninguna versión".to_string());
+    }
+    for triple in ENGINE_TRIPLES {
+        match pins.qwen_tts_engine_sha256.get(triple) {
+            Some(hash) if super::package::is_sha256(hash) => {}
+            Some(hash) => errors.push(format!(
+                "qwen_tts_engine_sha256[{triple}] no son 64 dígitos hexadecimales en minúsculas: {hash:?}"
+            )),
+            None => errors.push(format!(
+                "qwen_tts_engine_sha256 no fija el SHA-256 del motor para {triple}"
+            )),
+        }
+    }
+    for triple in pins.qwen_tts_engine_sha256.keys() {
+        if !ENGINE_TRIPLES.contains(&triple.as_str()) {
+            errors.push(format!(
+                "qwen_tts_engine_sha256 fija un target que AVI no soporta: {triple}"
+            ));
+        }
+    }
+    let source = &pins.qwen_tts_engine_source_sha256;
+    if !super::package::is_sha256(source) {
+        errors.push(format!(
+            "qwen_tts_engine_source_sha256 no son 64 dígitos hexadecimales en minúsculas: {source:?}"
+        ));
+    }
     errors
 }
 
@@ -341,6 +387,12 @@ mod tests {
             ffmpeg: "9.0.2".to_string(),
             ffmpeg_sha256: std::collections::BTreeMap::new(),
             ffmpeg_source_sha256: std::collections::BTreeMap::new(),
+            qwen_tts_engine: "1.0.0".to_string(),
+            qwen_tts_engine_sha256: ENGINE_TRIPLES
+                .iter()
+                .map(|triple| (triple.to_string(), "a".repeat(64)))
+                .collect(),
+            qwen_tts_engine_source_sha256: "b".repeat(64),
             sccache: "0.8.2".to_string(),
             msys2_base: "2026-06-11".to_string(),
             msys2_gcc: "16.2.0".to_string(),
@@ -398,6 +450,23 @@ mod tests {
         render_toolchain(&fixture_pins())
     }
 
+    /// Tabla de hashes del motor de fixture: los cuatro targets de AVI, cada
+    /// uno con un hash bien formado.
+    fn engine_fixture_hashes() -> serde_json::Value {
+        let hash = "a".repeat(64);
+        serde_json::json!({
+            "x86_64-pc-windows-msvc": hash,
+            "x86_64-unknown-linux-gnu": hash,
+            "aarch64-unknown-linux-gnu": hash,
+            "aarch64-apple-darwin": hash,
+        })
+    }
+
+    /// Hash de fixture del archivo de fuentes del motor.
+    fn engine_fixture_source_hash() -> String {
+        "b".repeat(64)
+    }
+
     /// Directorio temporal propio de cada prueba, con dueño: se borra al soltarse,
     /// también si la prueba falla.
     fn own_dir(name: &str) -> tempfile::TempDir {
@@ -410,6 +479,83 @@ mod tests {
     #[test]
     fn clean_tree_passes() {
         assert!(check_text(&fixture_pins(), &fixture_config(), &fixture_toolchain()).is_empty());
+    }
+
+    /// Un target de AVI sin hash del motor se rechaza: el aprovisionamiento no
+    /// puede verificar una descarga que no tiene hash fijado.
+    #[test]
+    fn engine_pin_without_a_target_hash_is_rejected() {
+        let mut pins = fixture_pins();
+        pins.qwen_tts_engine_sha256.remove("aarch64-apple-darwin");
+        let errors = check_text(&pins, &fixture_config(), &fixture_toolchain());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("aarch64-apple-darwin") && e.contains("no fija")),
+            "{errors:?}"
+        );
+    }
+
+    /// Un hash del motor que no son 64 dígitos hexadecimales en minúsculas se
+    /// rechaza en cualquier target.
+    #[test]
+    fn engine_pin_with_malformed_hash_is_rejected() {
+        let mut pins = fixture_pins();
+        pins.qwen_tts_engine_sha256
+            .insert("x86_64-unknown-linux-gnu".to_string(), "ABC".to_string());
+        let errors = check_text(&pins, &fixture_config(), &fixture_toolchain());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("x86_64-unknown-linux-gnu") && e.contains("64 dígitos")),
+            "{errors:?}"
+        );
+    }
+
+    /// La tabla solo admite los cuatro targets de AVI: una entrada de otro
+    /// target no se verifica en ninguna descarga y se rechaza.
+    #[test]
+    fn engine_pin_with_unsupported_target_is_rejected() {
+        let mut pins = fixture_pins();
+        pins.qwen_tts_engine_sha256
+            .insert("riscv64gc-unknown-linux-gnu".to_string(), "a".repeat(64));
+        let errors = check_text(&pins, &fixture_config(), &fixture_toolchain());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("riscv64gc-unknown-linux-gnu") && e.contains("no soporta")),
+            "{errors:?}"
+        );
+    }
+
+    /// El hash de las fuentes mal formado se rechaza: es el que comprueba la
+    /// oferta de código fuente.
+    #[test]
+    fn engine_source_pin_with_malformed_hash_is_rejected() {
+        let mut pins = fixture_pins();
+        pins.qwen_tts_engine_source_sha256 = "xyz".to_string();
+        let errors = check_text(&pins, &fixture_config(), &fixture_toolchain());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("qwen_tts_engine_source_sha256") && e.contains("64 dígitos")),
+            "{errors:?}"
+        );
+    }
+
+    /// Una versión del motor vacía se rechaza: no puede formar ni la URL ni el
+    /// nombre del paquete.
+    #[test]
+    fn engine_pin_without_version_is_rejected() {
+        let mut pins = fixture_pins();
+        pins.qwen_tts_engine = " ".to_string();
+        let errors = check_text(&pins, &fixture_config(), &fixture_toolchain());
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.contains("qwen_tts_engine no fija ninguna versión")),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -585,6 +731,7 @@ mod tests {
             dir.join("packaging/pins.json"),
             serde_json::to_string_pretty(&serde_json::json!({
                 "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "ffmpeg_source_sha256": {}, "sccache": "0.8.2",
+                "qwen_tts_engine": "1.0.0", "qwen_tts_engine_sha256": engine_fixture_hashes(), "qwen_tts_engine_source_sha256": engine_fixture_source_hash(),
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
@@ -608,6 +755,7 @@ mod tests {
             dir.join("packaging/pins.json"),
             serde_json::to_string_pretty(&serde_json::json!({
                 "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "ffmpeg_source_sha256": {}, "sccache": "0.8.2",
+                "qwen_tts_engine": "1.0.0", "qwen_tts_engine_sha256": engine_fixture_hashes(), "qwen_tts_engine_source_sha256": engine_fixture_source_hash(),
                 "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
                 "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",

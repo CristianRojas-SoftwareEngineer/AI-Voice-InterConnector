@@ -9,7 +9,10 @@
 //! La CI y Rust leen este archivo tal cual; nadie replica sus valores en el
 //! código. `ort` es la versión de ONNX Runtime que empaqueta `xtask package` y
 //! que el motor espera, y `ort_sha256` el SHA-256 de su asset oficial por
-//! target; `rust` fija la toolchain (`rust-toolchain.toml`).
+//! target; `rust` fija la toolchain (`rust-toolchain.toml`). `qwen_tts_engine`
+//! fija la release del motor TTS que se distribuye y `qwen_tts_engine_sha256`
+//! el SHA-256 de su paquete por target; `qwen_tts_engine_source_sha256` es el
+//! hash del archivo de fuentes de esa release.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -40,6 +43,16 @@ pub struct Pins {
     /// repositorio los publica), indexado por nombre de asset. Una descarga cuyo
     /// hash no coincide, o un asset sin entrada, es un error.
     pub ffmpeg_source_sha256: BTreeMap<String, String>,
+    /// Versión de la release del motor TTS `qwen-tts-engine` que se descarga y
+    /// se distribuye junto al ejecutable.
+    pub qwen_tts_engine: String,
+    /// SHA-256 (hexadecimal en minúsculas) del paquete publicado del motor de la
+    /// versión `qwen_tts_engine`, indexado por triple de Rust de AVI. Una
+    /// descarga cuyo hash no coincide, o un triple sin entrada, es un error.
+    pub qwen_tts_engine_sha256: BTreeMap<String, String>,
+    /// SHA-256 (hexadecimal en minúsculas) del archivo de fuentes que la
+    /// release del motor publica para esa versión.
+    pub qwen_tts_engine_source_sha256: String,
     pub sccache: String,
     pub msys2_base: String,
     pub msys2_gcc: String,

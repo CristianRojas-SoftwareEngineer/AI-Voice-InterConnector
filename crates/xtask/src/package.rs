@@ -62,6 +62,21 @@ const FFMPEG_BTBN_COMMIT: &str = "937868360a21d711ec94a33f5591d345ad9b7754";
 /// `xtask`.
 pub(crate) const ORT_MARKER: &str = ".ort-version";
 
+/// Caché local del paquete del motor TTS, relativa a la raíz. Es la única
+/// fuente de esta ruta en `xtask`: ningún otro módulo la escribe a mano.
+pub(crate) const ENGINE_BUNDLE_REL: &str = "engine-bundle";
+
+/// Marcador del SHA-256 del paquete del motor dentro de `engine-bundle/`: un
+/// cambio de pin invalida el bundle aunque la versión nominal no cambie.
+pub(crate) const ENGINE_MARKER: &str = ".qwen-tts-engine-sha256";
+
+/// Repositorio del motor TTS del que se descarga el paquete fijado.
+const ENGINE_REPO: &str = "CristianRojas-SoftwareEngineer/qwen-tts-engine";
+
+/// Avisos que el paquete del motor distribuye y que quedan en la raíz de
+/// `engine-bundle/` junto al ejecutable.
+const ENGINE_NOTICES: [&str; 3] = ["LICENSE", "NOTICE", "THIRD-PARTY-LICENSES.md"];
+
 /// Marca temporal fija de los archivos comprimidos (2020-01-01 UTC): con
 /// entradas ordenadas y metadatos fijos, el mismo árbol produce el mismo
 /// archivo y el `SHA256SUMS.txt` del release es reproducible.
@@ -185,6 +200,19 @@ pub(crate) fn pinned_ffmpeg_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&
     pinned_sha256(&pins.ffmpeg_sha256, "FFmpeg", triple)
 }
 
+/// SHA-256 fijado en `pins.json` para el paquete del motor TTS del triple.
+pub(crate) fn pinned_engine_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&'a str> {
+    pinned_sha256(&pins.qwen_tts_engine_sha256, "qwen-tts-engine", triple)
+}
+
+/// `true` si `hash` son 64 dígitos hexadecimales en minúsculas.
+pub(crate) fn is_sha256(hash: &str) -> bool {
+    hash.len() == 64
+        && hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Valida que `pins.json` fije un SHA-256 bien formado para el target: 64
 /// dígitos hexadecimales en minúsculas. Un triple sin entrada o un valor mal
 /// formado es un error, nunca una descarga sin verificar.
@@ -196,11 +224,7 @@ fn pinned_sha256<'a>(
     let Some(hash) = hashes.get(triple) else {
         bail!("packaging/pins.json no fija el SHA-256 de {artifact} para {triple}");
     };
-    if hash.len() != 64
-        || !hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
+    if !is_sha256(hash) {
         bail!("el SHA-256 de {artifact} para {triple} en packaging/pins.json no son 64 dígitos hexadecimales en minúsculas: {hash:?}");
     }
     Ok(hash)
@@ -328,6 +352,34 @@ fn ffmpeg_buildconf(binary: &Path) -> Result<String> {
     Ok(text)
 }
 
+/// Triple con el que el motor publica su paquete para el target de AVI: el
+/// motor solo compila el binario de Windows con host GNU, así que el target
+/// MSVC de AVI consume el artefacto `x86_64-pc-windows-gnu`; el resto coincide.
+fn engine_triple(triple: &str) -> Result<&'static str> {
+    match triple {
+        "x86_64-pc-windows-msvc" => Ok("x86_64-pc-windows-gnu"),
+        "x86_64-unknown-linux-gnu" => Ok("x86_64-unknown-linux-gnu"),
+        "aarch64-unknown-linux-gnu" => Ok("aarch64-unknown-linux-gnu"),
+        "aarch64-apple-darwin" => Ok("aarch64-apple-darwin"),
+        other => bail!("triple no soportado: {other}"),
+    }
+}
+
+/// Archivo y URL de descarga del motor TTS para el target de AVI. El release
+/// publica un `.zip` por target de Windows y un `.tar.gz` por los de Linux y
+/// macOS, con la versión y el triple del motor en el nombre.
+pub(crate) fn engine_download(triple: &str, version: &str) -> Result<(String, String)> {
+    let engine = engine_triple(triple)?;
+    let extension = if engine.contains("-windows-") {
+        "zip"
+    } else {
+        "tar.gz"
+    };
+    let file = format!("qwen-tts-engine-v{version}-{engine}.{extension}");
+    let url = format!("https://github.com/{ENGINE_REPO}/releases/download/v{version}/{file}");
+    Ok((file, url))
+}
+
 /// Nombre del archivo con la configuración de build de FFmpeg del triple.
 pub(crate) fn ffmpeg_buildconf_name(version: &str, triple: &str) -> String {
     format!("ffmpeg-{version}-buildconf-{triple}.txt")
@@ -339,6 +391,17 @@ pub(crate) fn ffmpeg_binary_name(triple: &str) -> Result<&'static str> {
         Ok("ffmpeg.exe")
     } else if triple.contains("-linux-") || triple.contains("-apple-") {
         Ok("ffmpeg")
+    } else {
+        bail!("triple no soportado: {triple}")
+    }
+}
+
+/// Nombre del ejecutable del motor TTS dentro del bundle para el triple.
+pub(crate) fn engine_binary_name(triple: &str) -> Result<&'static str> {
+    if triple.contains("-windows-") {
+        Ok("qwen_tts.exe")
+    } else if triple.contains("-linux-") || triple.contains("-apple-") {
+        Ok("qwen_tts")
     } else {
         bail!("triple no soportado: {triple}")
     }
@@ -852,6 +915,25 @@ pub(crate) fn ffmpeg_bundle_is_fresh(
     Ok(std::fs::read_to_string(marker)?.trim() == expected_sha256)
 }
 
+/// `true` si `engine-bundle/` ya sirve para el triple: el ejecutable presente
+/// con tamaño mayor que cero y el marcador con el SHA-256 del paquete fijado.
+pub(crate) fn engine_bundle_is_fresh(
+    bundle: &Path,
+    triple: &str,
+    expected_sha256: &str,
+) -> Result<bool> {
+    let binary = bundle.join(engine_binary_name(triple)?);
+    let marker = bundle.join(ENGINE_MARKER);
+    if !binary.is_file() || !marker.is_file() {
+        return Ok(false);
+    }
+    let size = std::fs::metadata(&binary)?.len();
+    if size == 0 {
+        return Ok(false);
+    }
+    Ok(std::fs::read_to_string(marker)?.trim() == expected_sha256)
+}
+
 /// Extrae el ejecutable de FFmpeg del archivo descargado. En zip se busca por
 /// nombre; en `.tar.xz` se descomprime a un temporal y se recorre el tar. Falla
 /// si no aparece el ejecutable esperado.
@@ -904,6 +986,80 @@ fn extract_ffmpeg_binary(archive: &Path, triple: &str) -> Result<Vec<u8>> {
     )
 }
 
+/// Extrae del paquete del motor el ejecutable y los tres avisos, que quedan en
+/// la raíz del bundle. El paquete los trae dentro de una carpeta con la versión
+/// y el triple; solo se acepta el nombre de archivo, así que una ruta anidada o
+/// absoluta no puede escribir fuera de `bundle`. Falla si falta alguno de los
+/// cuatro o si alguno está vacío.
+fn extract_engine_bundle(archive: &Path, bundle: &Path, triple: &str) -> Result<()> {
+    let mut wanted = vec![engine_binary_name(triple)?];
+    wanted.extend(ENGINE_NOTICES);
+    let mut written: Vec<String> = Vec::new();
+    let name = archive.to_string_lossy();
+    if name.ends_with(".zip") {
+        let file = std::fs::File::open(archive)?;
+        let mut zip = zip::ZipArchive::new(file)?;
+        for i in 0..zip.len() {
+            let mut entry = zip.by_index(i)?;
+            if entry.is_dir() {
+                continue;
+            }
+            let entry_name = entry.name().rsplit('/').next().unwrap_or("").to_string();
+            if wanted.contains(&entry_name.as_str()) {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+                write_engine_member(bundle, &entry_name, &bytes, archive)?;
+                written.push(entry_name);
+            }
+        }
+    } else if name.ends_with(".tar.gz") {
+        let file = std::fs::File::open(archive)?;
+        let decoder = flate2::read::GzDecoder::new(std::io::BufReader::new(file));
+        let mut tar = tar::Archive::new(decoder);
+        for entry in tar.entries()? {
+            let mut entry = entry?;
+            if !entry.header().entry_type().is_file() {
+                continue;
+            }
+            let path = entry.path()?.to_string_lossy().to_string();
+            let entry_name = path.rsplit('/').next().unwrap_or("").to_string();
+            if wanted.contains(&entry_name.as_str()) {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+                write_engine_member(bundle, &entry_name, &bytes, archive)?;
+                written.push(entry_name);
+            }
+        }
+    } else {
+        bail!(
+            "formato de paquete del motor no soportado: {}",
+            archive.display()
+        );
+    }
+    for member in wanted {
+        if !written.iter().any(|w| w == member) {
+            bail!(
+                "el paquete del motor no trae {member}: {}",
+                archive.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Escribe un miembro del paquete del motor en la raíz del bundle. Un miembro
+/// vacío es un paquete truncado y detiene el aprovisionamiento.
+fn write_engine_member(bundle: &Path, name: &str, bytes: &[u8], archive: &Path) -> Result<()> {
+    if bytes.is_empty() {
+        bail!(
+            "el miembro {name} del paquete del motor está vacío: {}",
+            archive.display()
+        );
+    }
+    std::fs::write(bundle.join(name), bytes)?;
+    Ok(())
+}
+
 /// Directorio canónico del bundle de FFmpeg dentro del repositorio.
 pub(crate) fn ffmpeg_bundle_dir(root: &Path) -> PathBuf {
     root.join(FFMPEG_BUNDLE_REL)
@@ -912,6 +1068,11 @@ pub(crate) fn ffmpeg_bundle_dir(root: &Path) -> PathBuf {
 /// Directorio canónico del bundle de ONNX Runtime dentro del repositorio.
 pub(crate) fn ort_bundle_dir(root: &Path) -> PathBuf {
     root.join(ORT_BUNDLE_REL)
+}
+
+/// Directorio canónico del bundle del motor TTS dentro del repositorio.
+pub(crate) fn engine_bundle_dir(root: &Path) -> PathBuf {
+    root.join(ENGINE_BUNDLE_REL)
 }
 
 /// Punto de entrada de `xtask ffmpeg`: aprovisiona en `dest` el FFmpeg fijado
@@ -990,6 +1151,47 @@ pub(crate) fn ensure_ffmpeg_bundle(bundle: &Path, triple: &str, pins: &Pins) -> 
     Ok(bundle.to_path_buf())
 }
 
+/// Asegura `engine-bundle/` para el triple: reutiliza el bundle si está fresco
+/// o lo reconstruye descargando el paquete de la release del motor. La descarga
+/// va por HTTPS y su SHA-256 debe coincidir con el fijado en `pins.json`; el
+/// paquete deja en la raíz del bundle el ejecutable y los tres avisos, y el
+/// marcador solo se escribe tras esas comprobaciones, así que un bundle fresco
+/// procede de una descarga verificada.
+pub(crate) fn ensure_engine_bundle(root: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
+    let version = pins.qwen_tts_engine.as_str();
+    let expected_sha256 = pinned_engine_sha256(pins, triple)?;
+    let bundle = engine_bundle_dir(root);
+    if bundle.is_dir() && engine_bundle_is_fresh(&bundle, triple, expected_sha256)? {
+        eprintln!("Bundle del motor TTS reutilizado de {ENGINE_BUNDLE_REL}");
+        return Ok(bundle);
+    }
+    if bundle.is_dir() {
+        std::fs::remove_dir_all(&bundle)?;
+    }
+    std::fs::create_dir_all(&bundle)?;
+    let (file, url) = engine_download(triple, version)?;
+    let dest = tempfile::Builder::new()
+        .prefix(&format!("xtask-qwen-tts-engine-{version}-"))
+        .suffix(&format!("-{file}"))
+        .tempfile()?
+        .into_temp_path();
+    eprintln!("Descargando el motor qwen-tts-engine {version}: {url}");
+    download_https(&url, &dest)?;
+    verify_sha256(&dest, expected_sha256)?;
+    extract_engine_bundle(&dest, &bundle, triple)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let binary = bundle.join(engine_binary_name(triple)?);
+        std::fs::set_permissions(binary, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::write(bundle.join(ENGINE_MARKER), expected_sha256)?;
+    if !engine_bundle_is_fresh(&bundle, triple, expected_sha256)? {
+        bail!("el bundle del motor TTS quedó incompleto tras la descarga");
+    }
+    Ok(bundle)
+}
+
 /// Conjunto completo de recursos fijados del repositorio, uno por campo. Quien
 /// asegura (`ensure_pinned_bundles`) y quien comprueba (`pinned_bundles_status`)
 /// construyen este mismo literal, así que añadir un campo obliga a cubrirlo en
@@ -997,6 +1199,7 @@ pub(crate) fn ensure_ffmpeg_bundle(bundle: &Path, triple: &str, pins: &Pins) -> 
 pub(crate) struct PinnedBundles<T> {
     pub ort: T,
     pub ffmpeg: T,
+    pub engine: T,
 }
 
 /// Asegura todos los recursos fijados en sus directorios canónicos y devuelve
@@ -1011,6 +1214,7 @@ pub(crate) fn ensure_pinned_bundles(
     Ok(PinnedBundles {
         ort: ensure_ort_bundle(root, triple, pins)?,
         ffmpeg: ensure_ffmpeg_bundle(&ffmpeg_bundle_dir(root), triple, pins)?,
+        engine: ensure_engine_bundle(root, triple, pins)?,
     })
 }
 
@@ -1026,6 +1230,8 @@ pub(crate) fn pinned_bundles_status(
         ort: ort_bundle_is_fresh(&ort_bundle_dir(root), triple, &pins.ort),
         ffmpeg: pinned_ffmpeg_sha256(pins, triple)
             .and_then(|sha| ffmpeg_bundle_is_fresh(&ffmpeg_bundle_dir(root), triple, sha)),
+        engine: pinned_engine_sha256(pins, triple)
+            .and_then(|sha| engine_bundle_is_fresh(&engine_bundle_dir(root), triple, sha)),
     }
 }
 
@@ -1390,6 +1596,7 @@ pub fn run(
     let PinnedBundles {
         ort: bundle,
         ffmpeg: ffmpeg_bundle,
+        engine: _,
     } = ensure_pinned_bundles(&root, triple, &pins)?;
     for lib in ort_expected_libs(triple)? {
         if !bundle.join(lib).is_file() {
@@ -2271,11 +2478,14 @@ mod tests {
         let pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
             .expect("pins.json válido");
         let triple = host_triple().unwrap();
-        let PinnedBundles { ort, ffmpeg } = pinned_bundles_status(root.path(), triple, &pins);
+        let PinnedBundles { ort, ffmpeg, engine } =
+            pinned_bundles_status(root.path(), triple, &pins);
         assert!(!ort.unwrap());
         assert!(!ffmpeg.unwrap());
+        assert!(!engine.unwrap());
         assert!(!ort_bundle_dir(root.path()).exists());
         assert!(!ffmpeg_bundle_dir(root.path()).exists());
+        assert!(!engine_bundle_dir(root.path()).exists());
     }
 
     /// Un triple sin hash de FFmpeg fijado es un error solo de FFmpeg: el estado
@@ -2287,8 +2497,165 @@ mod tests {
             .expect("pins.json válido");
         let triple = host_triple().unwrap();
         pins.ffmpeg_sha256.remove(triple);
-        let PinnedBundles { ort, ffmpeg } = pinned_bundles_status(root.path(), triple, &pins);
+        let PinnedBundles { ort, ffmpeg, engine } =
+            pinned_bundles_status(root.path(), triple, &pins);
         assert!(!ort.unwrap());
         assert!(ffmpeg.is_err());
+        assert!(!engine.unwrap());
+    }
+
+    /// Nombre y URL del paquete del motor para cada target de AVI: el de
+    /// Windows es el artefacto GNU (es el único que el motor publica), el
+    /// resto conserva su triple, y solo Windows usa `.zip`.
+    #[test]
+    fn engine_download_per_target() {
+        for (triple, extension) in [
+            ("x86_64-pc-windows-msvc", "zip"),
+            ("x86_64-unknown-linux-gnu", "tar.gz"),
+            ("aarch64-unknown-linux-gnu", "tar.gz"),
+            ("aarch64-apple-darwin", "tar.gz"),
+        ] {
+            let (file, url) = engine_download(triple, "1.0.0").unwrap();
+            let engine = engine_triple(triple).unwrap();
+            assert_eq!(file, format!("qwen-tts-engine-v1.0.0-{engine}.{extension}"));
+            assert_eq!(
+                url,
+                format!(
+                    "https://github.com/{ENGINE_REPO}/releases/download/v1.0.0/{file}"
+                )
+            );
+        }
+        assert_eq!(
+            engine_triple("x86_64-pc-windows-msvc").unwrap(),
+            "x86_64-pc-windows-gnu"
+        );
+        assert!(engine_download("riscv64gc-unknown-linux-gnu", "1.0.0").is_err());
+    }
+
+    /// El bundle del motor está fresco solo con el ejecutable no vacío y el
+    /// marcador del hash fijado; cambiar el pin o vaciar el binario lo
+    /// invalida.
+    #[test]
+    fn engine_bundle_freshness_requires_binary_and_matching_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let bundle = engine_bundle_dir(root.path());
+        std::fs::create_dir_all(&bundle).unwrap();
+        let triple = host_triple().unwrap();
+        let binary = bundle.join(engine_binary_name(triple).unwrap());
+        let pinned = "a".repeat(64);
+        assert!(!engine_bundle_is_fresh(&bundle, triple, &pinned).unwrap());
+        std::fs::write(&binary, b"motor").unwrap();
+        std::fs::write(bundle.join(ENGINE_MARKER), &pinned).unwrap();
+        assert!(engine_bundle_is_fresh(&bundle, triple, &pinned).unwrap());
+        std::fs::write(bundle.join(ENGINE_MARKER), "b".repeat(64)).unwrap();
+        assert!(!engine_bundle_is_fresh(&bundle, triple, &pinned).unwrap());
+        std::fs::write(&binary, b"").unwrap();
+        std::fs::write(bundle.join(ENGINE_MARKER), &pinned).unwrap();
+        assert!(!engine_bundle_is_fresh(&bundle, triple, &pinned).unwrap());
+    }
+
+    /// Un target sin hash del motor fijado es un error nombrado, no una
+    /// descarga sin verificar.
+    #[test]
+    fn pinned_engine_sha256_rejects_missing_and_malformed_hashes() {
+        let mut pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
+            .expect("pins.json válido");
+        let triple = host_triple().unwrap();
+        pinned_engine_sha256(&pins, triple).unwrap();
+        pins.qwen_tts_engine_sha256.remove(triple);
+        let err = pinned_engine_sha256(&pins, triple).unwrap_err().to_string();
+        assert!(err.contains(triple) && err.contains("qwen-tts-engine"), "{err}");
+        pins.qwen_tts_engine_sha256.insert(triple.to_string(), "ABC".to_string());
+        assert!(pinned_engine_sha256(&pins, triple).is_err());
+    }
+
+    /// Paquete sintético del motor: la carpeta con la versión y el triple trae
+    /// el ejecutable y los tres avisos, y la extracción deja los cuatro en la
+    /// raíz del bundle.
+    #[test]
+    fn extract_engine_bundle_flattens_the_package_folder() {
+        let root = tempfile::tempdir().unwrap();
+        let version = "1.0.0";
+        let engine = "x86_64-unknown-linux-gnu";
+        let folder = format!("qwen-tts-engine-v{version}-{engine}");
+        let archive = root.path().join(format!("{folder}.tar.gz"));
+        {
+            let file = std::fs::File::create(&archive).unwrap();
+            let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+            let mut tar = tar::Builder::new(gz);
+            for (name, data) in [
+                ("qwen_tts", "MOTOR"),
+                ("LICENSE", "MPL"),
+                ("NOTICE", "aviso"),
+                ("THIRD-PARTY-LICENSES.md", "terceros"),
+            ] {
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_cksum();
+                tar.append_data(&mut header, format!("{folder}/{name}"), data.as_bytes())
+                    .unwrap();
+            }
+            let gz = tar.into_inner().unwrap();
+            gz.finish().unwrap();
+        }
+        let bundle = engine_bundle_dir(root.path());
+        std::fs::create_dir_all(&bundle).unwrap();
+        extract_engine_bundle(&archive, &bundle, "x86_64-unknown-linux-gnu").unwrap();
+        for (name, data) in [
+            ("qwen_tts", "MOTOR"),
+            ("LICENSE", "MPL"),
+            ("NOTICE", "aviso"),
+            ("THIRD-PARTY-LICENSES.md", "terceros"),
+        ] {
+            assert_eq!(
+                std::fs::read_to_string(bundle.join(name)).unwrap(),
+                data,
+                "{name}"
+            );
+        }
+    }
+
+    /// El paquete de Windows es un zip y la extracción también deja los cuatro
+    /// archivos en la raíz; un paquete al que le falta un aviso se rechaza.
+    #[test]
+    fn extract_engine_bundle_reads_zip_and_rejects_incomplete_packages() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let version = "1.0.0";
+        let folder = format!("qwen-tts-engine-v{version}-x86_64-pc-windows-gnu");
+        let archive = root.path().join(format!("{folder}.zip"));
+        let write_zip = |members: &[(&str, &str)]| {
+            let file = std::fs::File::create(&archive).unwrap();
+            let mut zip = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            for (name, data) in members {
+                zip.start_file(format!("{folder}/{name}"), options).unwrap();
+                zip.write_all(data.as_bytes()).unwrap();
+            }
+            zip.finish().unwrap();
+        };
+        write_zip(&[
+            ("qwen_tts.exe", "MOTOR"),
+            ("LICENSE", "MPL"),
+            ("NOTICE", "aviso"),
+            ("THIRD-PARTY-LICENSES.md", "terceros"),
+        ]);
+        let bundle = engine_bundle_dir(root.path());
+        std::fs::create_dir_all(&bundle).unwrap();
+        extract_engine_bundle(&archive, &bundle, "x86_64-pc-windows-msvc").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(bundle.join("qwen_tts.exe")).unwrap(),
+            "MOTOR"
+        );
+        assert!(bundle.join("NOTICE").is_file());
+
+        let incomplete = engine_bundle_dir(&root.path().join("otro"));
+        std::fs::create_dir_all(&incomplete).unwrap();
+        write_zip(&[("qwen_tts.exe", "MOTOR"), ("LICENSE", "MPL")]);
+        let err = extract_engine_bundle(&archive, &incomplete, "x86_64-pc-windows-msvc")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("NOTICE"), "{err}");
     }
 }
