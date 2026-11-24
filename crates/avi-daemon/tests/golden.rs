@@ -1706,7 +1706,7 @@ async fn synthesize_announces_translation_and_matches_the_direct_route() {
     .expect("requiere modelos provisionados para cargar los motores del daemon");
     let binary = std::env::var_os("QWEN3_TTS_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(vendor_binary);
+        .unwrap_or_else(bundled_binary);
     std::env::set_var("QWEN3_TTS_BIN", &binary);
     state.tts_engine.binary_path = Some(binary);
     let text = "Hola, esto es una prueba. ¿Cómo estás hoy?";
