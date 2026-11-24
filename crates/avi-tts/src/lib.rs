@@ -3083,15 +3083,14 @@ fn main() {
         server.join().unwrap();
     }
 
-    /// Un rechazo del motor incluye su código y el campo `error` del cuerpo.
-    #[test]
-    fn stream_exchange_rejection_carries_the_engine_message() {
-        let (url, server) = fake_engine(|mut stream| {
-            let body = br#"{"error":"unknown language 'Klingon'"}"#;
-            let head = format!(
-                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
+    /// Motor falso que rechaza la petición con `status_line`, `content_type` y
+    /// `body`, y cierra; devuelve el texto del error de AVI.
+    fn rejection_message(status_line: &str, content_type: &str, body: &'static [u8]) -> String {
+        let head = format!(
+            "HTTP/1.1 {status_line}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let (url, server) = fake_engine(move |mut stream| {
             stream.write_all(head.as_bytes()).unwrap();
             stream.write_all(body).unwrap();
         });
@@ -3102,14 +3101,61 @@ fn main() {
             &AtomicBool::new(false),
             &mut |_| panic!("un rechazo no entrega audio"),
         )
-        .expect_err("el estado 400 es un error");
-        let message = err.to_string();
+        .expect_err("un estado distinto de 200 es un error");
+        server.join().unwrap();
+        err.to_string()
+    }
+
+    /// Un rechazo del motor incluye su código y el campo `error` del cuerpo. El
+    /// texto es propio de la prueba: el contrato del motor promete el código de
+    /// estado y la clave `error`, no la redacción del mensaje.
+    #[test]
+    fn stream_exchange_rejection_carries_the_engine_message() {
+        let message = rejection_message(
+            "400 Bad Request",
+            "application/json",
+            br#"{"error":"texto de rechazo de la prueba"}"#,
+        );
         assert!(message.contains("400"), "falta el código: {message}");
         assert!(
-            message.contains("unknown language 'Klingon'"),
-            "falta el mensaje del motor: {message}"
+            message.contains("texto de rechazo de la prueba"),
+            "falta el campo error del cuerpo: {message}"
         );
-        server.join().unwrap();
+        assert!(
+            !message.contains(r#"{"error""#),
+            "el mensaje debe llevar el campo error, no el JSON: {message}"
+        );
+    }
+
+    /// Un rechazo cuyo cuerpo no es JSON lleva el código y el cuerpo tal cual.
+    #[test]
+    fn stream_exchange_rejection_without_json_carries_the_body() {
+        let message = rejection_message(
+            "500 Internal Server Error",
+            "text/plain",
+            b"cuerpo de rechazo sin JSON\n",
+        );
+        assert!(message.contains("500"), "falta el código: {message}");
+        assert!(
+            message.contains("cuerpo de rechazo sin JSON"),
+            "falta el cuerpo recibido: {message}"
+        );
+    }
+
+    /// Un rechazo con un cuerpo JSON sin la clave `error` lleva el código y el
+    /// cuerpo tal cual.
+    #[test]
+    fn stream_exchange_rejection_json_without_error_key_carries_the_body() {
+        let message = rejection_message(
+            "400 Bad Request",
+            "application/json",
+            br#"{"detalle":"sin clave error"}"#,
+        );
+        assert!(message.contains("400"), "falta el código: {message}");
+        assert!(
+            message.contains(r#"{"detalle":"sin clave error"}"#),
+            "falta el cuerpo recibido: {message}"
+        );
     }
 
     /// Un fragmento con un número impar de bytes no es PCM de 16 bits: error.
