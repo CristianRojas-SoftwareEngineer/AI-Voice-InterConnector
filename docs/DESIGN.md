@@ -102,8 +102,7 @@ AI-Voice-InterConnector/
 │   ├── cmake-0.1.58/                   # Soporte CMake para builds nativos
 │   ├── ct2rs-0.10.0/                   # CTranslate2 con runtime C++/OpenMP enlazado
 │   ├── hf-hub-1.0.0/                   # Descarga HF con hardlinks en Windows
-│   ├── onednn-src-0.1.15/              # oneDNN estático
-│   └── qwen3-tts/                      # Motor nativo Qwen3-TTS
+│   └── onednn-src-0.1.15/              # oneDNN estático
 ├── tests/
 │   ├── cli_golden.rs                   # Harness dorado del CLI
 │   ├── contract_conformance.rs         # Conformidad del contrato que se lee de docs, fixtures y código
@@ -130,13 +129,13 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | Aspecto | Detalle |
 |---------|---------|
 | **Modelo** | `qwen3-tts-0.6b-base` (síntesis y clonado) |
-| **Licencia** | MIT / Apache-2.0 |
+| **Licencia** | MPL-2.0 (binario de `qwen-tts-engine`) / Apache-2.0 (pesos del modelo) |
 | **Parámetros** | 0.6B |
 | **Clonación de voz** | referencia de voz vía archivo (`--speech-reference`) o micrófono (`--mic`; ~10 s recomendados, máximo 30 s); se guarda solo la huella de timbre (sin transcripción) |
 | **Inferencia** | CPU con BLAS (binario de `qwen-tts-engine` fijado en `packaging/pins.json` y aprovisionado en `engine-bundle/`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 (`PRODUCTION_SEED`, primera toma; las regeneraciones de `--play` lo sustituyen con `with_seed_override`) |
 
-Ver `crates/avi-tts/src/lib.rs` para el contrato de invocación: el residente se lanza como `-d <modelo Base> --serve <puerto> --host 127.0.0.1 -j 4 --watch-stdin --load-voice <qvoice>` (siempre con la voz, `default` incluida), y el clonado por proceso local como `-d <modelo Base> --ref-audio <wav> --save-voice <out> -j 4 --watch-stdin`. El idioma del producto (`es`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error.
+Ver `crates/avi-tts/src/lib.rs` para el contrato de invocación: el residente se lanza como `-d <modelo Base> --serve <puerto> --host 127.0.0.1 -j 4 --watch-stdin --load-voice <qvoice>` (siempre con la voz, `default` incluida), y el clonado por proceso local como `-d <modelo Base> --ref-audio <wav> --save-voice <out> -j 4 --watch-stdin`. El idioma del producto (`es`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error. El residente sirve una sola voz y atiende una petición a la vez —AVI las serializa—, y el idioma viaja en todas las peticiones, así que la síntesis no depende del idioma de la voz. El texto de un error del motor es informativo —el campo `error` llega al usuario en español— y no es contrato: el contrato de AVI es el `reason` de su salida `--json`.
 
 **Entrega en streaming.** Toda síntesis usa `POST /v1/tts/stream` del residente, que entrega PCM s16le de 24 kHz mono por partes: el primer fragmento es de 2 fotogramas (160 ms de audio; un fotograma son 80 ms) y los siguientes de 4. `avi-tts` los entrega a quien llama (`synthesize_streaming`) o los acumula en un WAV (`synthesize_to_wav`); una respuesta que se corta sin su fragmento final de tamaño cero es `SynthesisTruncated`, nunca un audio corto válido. Cuatro fotogramas por fragmento dejan un hueco de ~0,12 s tras el primer fragmento, frente a ~0,58 s con 10, a cambio de un 4 % de factor de tiempo real. El reproductor incremental (`StreamPlayer`, en `avi-audio`) remuestrea cada fragmento a la tasa del dispositivo y espera 300 ms de audio en cola antes de sonar, lo que cubre el hueco entre el primer y el segundo fragmento (medido en 0,12–0,19 s); si la cola se vacía con la entrega en curso, pausa y reanuda al recuperar el colchón, y cuenta un corte (`stalls`). `first_audio_ms` son los milisegundos desde que se abre la etapa de síntesis hasta la primera muestra entregada al dispositivo, e incluyen la espera de turno, el calentamiento del motor y la carga de la voz. Por el daemon, el audio viaja en eventos `audio` del flujo NDJSON. La CLI abre el dispositivo de salida antes de pedir la síntesis y, si esta falla con la voz ya sonando, corta la reproducción y termina con error.
 

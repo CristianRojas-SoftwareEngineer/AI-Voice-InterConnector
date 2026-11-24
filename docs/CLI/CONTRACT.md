@@ -313,7 +313,7 @@ Sin `--play`, `synthesize` sintetiza, guarda y termina. Con `--play`, la toma su
 
 **`--skip-existing` hace idempotente la pre-síntesis.** Repetir la misma orden sobre una etiqueta ya guardada es un éxito explícito, y no una negativa que el consumidor tenga que reinterpretar: el código de salida basta para saber si el audio sintetizado está en el almacén.
 
-**El audio sintetizado corresponde siempre al contenido actual de su voz.** La CLI resuelve la identidad de la voz (`VoiceStore::resolve`: la ruta del `reference.qvoice` y su huella sha256; un preset no tiene) antes de sintetizar, en las dos rutas, y la escritura vuelve a comprobarla. Si la voz se re-clonó o se eliminó mientras se sintetizaba, no se escribe nada y la salida es **6** con `voice_changed`. Las dos comprobaciones de escritura viven en un único punto, `avi_store::persist_locution`, que es la única forma de escribir un audio sintetizado y que comprueba la voz antes que la etiqueta; entre la comprobación y la escritura queda una ventana de milisegundos que se acepta.
+**El audio sintetizado corresponde siempre al contenido actual de su voz.** La CLI resuelve la identidad de la voz (`VoiceStore::resolve`: la ruta del `reference.qvoice` y su huella sha256) antes de sintetizar, en las dos rutas, y la escritura vuelve a comprobarla. Si la voz se re-clonó o se eliminó mientras se sintetizaba, no se escribe nada y la salida es **6** con `voice_changed`. Las dos comprobaciones de escritura viven en un único punto, `avi_store::persist_locution`, que es la única forma de escribir un audio sintetizado y que comprueba la voz antes que la etiqueta; entre la comprobación y la escritura queda una ventana de milisegundos que se acepta.
 
 ## 5. El despacho al daemon
 

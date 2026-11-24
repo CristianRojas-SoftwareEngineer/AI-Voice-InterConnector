@@ -119,11 +119,9 @@ de [`packaging/bundle-manifest.json`](../packaging/bundle-manifest.json).
   anterior, así que el mínimo lo fija el criterio de soporte y no la técnica.
 
 El job `build-darwin-arm64` fija `MACOSX_DEPLOYMENT_TARGET` al `min_os` del
-manifiesto (ver `.circleci/config.yml`), variable que leen rustc, el crate `cc`,
-CMake y el clang del Makefile del motor, y comprueba con `cargo xtask package`
-que ningún binario del bundle, incluida la librería de ONNX Runtime, declare un
-`minos` mayor. El motor se compila con `-mcpu=apple-m1`: M1 es el chip más
-antiguo que soporta el mínimo, y su código corre en todos los posteriores. El
+manifiesto (ver `.circleci/config.yml`), variable que leen rustc, el crate `cc` y
+CMake, y comprueba con `cargo xtask package` que ningún binario del bundle,
+incluidos la librería de ONNX Runtime y el motor TTS, declare un `minos` mayor. El
 Cask de Homebrew y el diagnóstico `binary_incompatible` de `install.sh` nombran
 esta versión mínima.
 
@@ -201,13 +199,13 @@ no declara más librerías que las del sistema base:
   antemano que `gcc -print-file-name` las encuentra. Solo `libonnxruntime.so`, la librería
   oficial de Microsoft, usa la `libstdc++.so.6` del sistema, dentro del techo
   `GLIBCXX` del manifiesto.
-- El motor TTS (`qwen_tts`) enlaza OpenBLAS y el runtime Fortran que usa su
-  LAPACK (`libgfortran` y, en x86_64, `libquadmath`) de forma estática. El
-  OpenBLAS de MSYS2 usa OpenMP: al ejecutar el motor a mano hay que fijar
-  `-j`; el motor ajusta él mismo los hilos de OpenBLAS. Las variables de hilos
-  de OpenBLAS (`OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` y `OMP_NUM_THREADS`)
-  no se deben definir: la aplicación las retira del entorno del motor en todos
-  sus lanzamientos.
+- El motor TTS (`qwen_tts`) es un binario ya compilado de su propio release:
+  enlaza de forma estática su OpenBLAS (BSD-3-Clause, sin OpenMP ni Fortran) y
+  los objetos de arranque de GCC y de glibc, así que no importa ninguna
+  librería que el sistema base no traiga. Las variables de hilos de OpenBLAS
+  (`OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` y `OMP_NUM_THREADS`)
+  no se deben definir: el contrato del motor lo exige al cliente y la aplicación
+  las retira del entorno del motor en todos sus lanzamientos.
 
 En **macOS** el motor usa el framework Accelerate y el audio CoreAudio, que
 forman parte del sistema.

@@ -277,4 +277,4 @@ Especificaciones **no comprometidas** para el goal inmediato. No se trabajan aho
 - El canal ofrece descarga de modelos con progreso visible y estado reanudable: hoy el indicador se silencia con `AVI_NO_PROGRESS=1` y la descarga no es reanudable.
 - Existe feedback de usuarios reales de esos canales que justifique el trabajo: el tap de Homebrew no tiene todavía ninguna instalación registrada.
 
-**Criterio de cierre**: tras instalar por cualquiera de los canales, `doctor --json` informa los seis modelos provisionados sin un paso manual adicional.
+**Criterio de cierre**: tras instalar por cualquiera de los canales, `doctor --json` informa los cinco modelos provisionados sin un paso manual adicional.

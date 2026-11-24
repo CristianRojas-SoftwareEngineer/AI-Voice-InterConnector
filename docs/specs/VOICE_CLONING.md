@@ -401,7 +401,7 @@ async fn clone_via_daemon(
 | Captura vacía (0 muestras) | `avi-audio` | `2` | `empty_audio` | «No se capturaron muestras de audio; el micrófono no entregó datos» |
 | Modelo Base no provisionado | `avi-tts` | `4` | `model_missing` | «El modelo Base de clonado TTS no está provisionado. Ejecuta 'setup'.» |
 | Daemon inalcanzable (vía daemon) | IPC client | `5` | `daemon_unreachable` | «El daemon no responde.» |
-| Error interno de clonado | `qwen3-tts` | `1` | `voice_clone_failed` | «Fallo al clonar la voz: ...» |
+| Error interno de clonado | `qwen-tts-engine` | `1` | `voice_clone_failed` | «Fallo al clonar la voz: ...» |
 
 ---
 

@@ -1294,7 +1294,6 @@ Estas variables ajustan el comportamiento de la CLI. Todas son opcionales.
 | `AVI_PUSH_TO_TALK_MAX_SECS` | Techo de seguridad de la grabación push-to-talk, en segundos (default 300). Al alcanzarlo, la grabación se detiene y se devuelve lo grabado con exit 0. |
 | `AVI_DAEMON_PORT` | Puerto en el que escucha el daemon. `0` elige un puerto efímero. |
 | `AVI_DATA_DIR` | Directorio de datos de la instancia, para aislar varios equipos en la misma máquina. |
-| `AVI_ALLOW_CWD_VENDOR` | Con `=1`, habilita el binario del motor que está en el directorio de trabajo. Sin ella, el binario se ignora y se avisa **una sola vez por proceso**. |
 | `RUST_LOG` | Filtro de trazas (`info`, `debug`, …). Sin ella, la CLI muestra `warn` y superiores. |
 
 ## Solución de problemas

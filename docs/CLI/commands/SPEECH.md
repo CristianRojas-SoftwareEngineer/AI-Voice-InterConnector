@@ -309,8 +309,8 @@ escribe el anuncio inicial de la etapa y sus latidos de 10 s.
 **Persistencia.** Todo audio sintetizado se guarda con `avi_store::persist_locution`
 (`crates/avi-store/src/lib.rs`), la única forma de escribir en `SpeechStore`, en
 las dos rutas, con y sin `--play`. La CLI resuelve la identidad de la voz
-(`VoiceStore::resolve`: la ruta del `reference.qvoice` y su huella sha256; un
-preset no tiene) antes de sintetizar, y `persist_locution` la comprueba justo
+(`VoiceStore::resolve`: la ruta del `reference.qvoice` y su huella sha256) antes
+de sintetizar, y `persist_locution` la comprueba justo
 antes de escribir, antes que la colisión de etiqueta:
 
 - Si la voz cambió entre la resolución y el guardado (se re-clonó o se eliminó

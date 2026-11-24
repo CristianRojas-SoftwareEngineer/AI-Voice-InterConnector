@@ -144,6 +144,8 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador se congelaba mientras sonaba el audio o se grababa con el micrófono, los errores mezclaban texto de bibliotecas en inglés y casi nunca decían qué hacer, y cada comando presentaba su salida a su manera. Ahora todos los comandos comparten un único núcleo de presentación: abren con una línea de contexto, muestran cada etapa con su duración, cierran con un resumen común y, ante un error, dicen qué pasó y qué hacer con la orden concreta. El usuario sabe en todo momento qué ocurre y qué debe hacer, sin funcionalidades nuevas y sin cambiar las claves ni los códigos de los contratos de máquina. Además, la terminal ya no marca como terminado lo que aún espera: explica las esperas de la síntesis y el cambio de voz mientras ocurren, mide el primer audio desde que el usuario empieza a esperar y no repite líneas en los comandos de una sola etapa.
 
+Por otra parte, la síntesis deja el motor C que AVI vendorizaba y compilaba para consumir el binario publicado de **`qwen-tts-engine` 1.0.0**, un port a Rust del mismo motor: el programa ya no incluye ni compila código del motor, lo descarga verificado por hash y lo distribuye en la raíz de su bundle, así que compilar AVI ya no necesita gcc ni make. Con la misma voz, el audio cambia, y el motor nuevo es más rápido: el primer audio mejora en las ocho celdas medidas y la memoria comprometida del residente baja de 1 503 a 1 346 MB. Las voces `.qvoice` v3 y las locuciones grabadas con el motor C dejan de servir y se borran al actualizar.
+
 ### Añadido
 
 - **Línea `Solución:` en los errores:** todo error en texto sale como `Error: …` seguido, cuando hay remedio, de `Solución: …` con la orden concreta, a partir de una tabla única por `reason`. El texto técnico de las bibliotecas pasa al campo de detalle, que sale en `--json` tras ` Detalle:` y en las trazas.
@@ -169,7 +171,15 @@ La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador 
 - **`speech denoise`:** usa los errores y el formato comunes, en español y con decimales con coma; escribe la ruta de cada archivo generado por stdout y conserva sus códigos de salida y su JSONL.
 - **Barras de `setup`:** con porcentaje, repintado continuo y tiempo restante estable; desaparece la línea «Total:».
 - **Dependencias:** se retiran `indicatif` 0.17, `console` 0.15 y `number_prefix`.
-- **Resolución del motor y de los modelos:** el binario se busca en `QWEN3_TTS_BIN`, en la raíz del bundle y, en desarrollo, en `engine-bundle/`, donde lo deja `cargo xtask bootstrap`; desaparecen la búsqueda en el `PATH` y la variable `AVI_ALLOW_CWD_VENDOR`. Los modelos se resuelven solo por su variable (`QWEN3_TTS_MODEL_DIR` o `QWEN3_TTS_BASE_MODEL_DIR`) y por el snapshot de la raíz de modelos de AVI: dejan de buscarse junto al binario y en `vendor/qwen3-tts/`.
+- **Resolución del motor y de los modelos:** el binario se busca en `QWEN3_TTS_BIN`, en la raíz del bundle y, en desarrollo, en `engine-bundle/`, donde lo deja `cargo xtask bootstrap`; desaparecen la búsqueda en el `PATH` y la variable `AVI_ALLOW_CWD_VENDOR`. Los modelos se resuelven solo por su variable (`QWEN3_TTS_BASE_MODEL_DIR`) y por el snapshot de la raíz de modelos de AVI: dejan de buscarse junto al binario y en `vendor/qwen3-tts/`.
+- **Motor de síntesis:** AVI deja de vendorizar y compilar el motor y consume el binario publicado de `qwen-tts-engine` `1.0.0`, fijado por versión y SHA-256 por target en `packaging/pins.json` y aprovisionado con `cargo xtask bootstrap`; en el bundle va en su raíz, junto al ejecutable (`qwen_tts[.exe]`). No quedan en AVI fuentes del motor, ni `cargo xtask build-engine`, ni su compilación en la CI: **ya no hacen falta gcc ni make** para compilar AVI.
+- **El audio cambia:** con la misma voz, texto y semilla, el audio del motor nuevo es otro y su duración puede variar. En el A/B intercalado por el daemon (mismos parámetros y voz, 5 repeticiones, mediana) el primer audio mejora en las ocho celdas —de 732 a 505 ms la que menos y de 1 344 a 665 la que más— y el RTF en seis de ocho; en las otras dos el motor C sale por delante solo porque deja unos 0,7 s de silencio final que alargan su audio, y en tiempo absoluto el motor nuevo sintetiza más rápido en cinco de ocho. La memoria comprometida del residente baja de 1 503 a 1 346 MB y el arranque del residente sube de 1,47 a 1,59 s porque el motor se autocalienta. La escucha del usuario fue aceptable, con poca diferencia audible entre motores y mejor calidad de clonación percibida en el nuevo.
+- **Solo el modelo Base:** AVI deja de aprovisionar el checkpoint CustomVoice y retira los presets `ryan` y `vivian`; toda voz, la de fábrica incluida, se sintetiza con el modelo Base (`qwen3-tts-0.6b-base`).
+- **Voz `default` en `.qvoice` v6:** el asset de fábrica pasa al formato v6 del motor (4112 bytes, mismo x-vector), el único que el motor nuevo lee y escribe.
+- **Voces `.qvoice` v3 borradas al actualizar (irreversible):** las voces clonadas con el motor C —del usuario y del plugin— se borran al actualizar, con sus locuciones, junto con las carpetas `ryan/` y `vivian/`; hay que volver a clonarlas, y AVI no incluye un conversor. Volver a una versión anterior de AVI no las recupera.
+- **Locuciones de la voz `default` borradas al actualizar:** se grabaron con el motor C; los anuncios del plugin se regeneran con su comando `presynth` (`node dist/narrate-ctl.js presynth --voice default`).
+- **Variables retiradas:** desaparecen `AVI_TTS_PRECISION`, `AVI_ALLOW_CWD_VENDOR` y `QWEN3_TTS_MODEL_DIR`; el motor tiene un único perfil de precisión y un solo modelo.
+- **Errores del motor en español:** el campo `error` que el motor devuelve —informativo, sin garantía de forma ni de idioma— llega al usuario en español; el contrato de AVI sigue siendo el `reason` de la salida `--json`.
 
 ### Corregido
 
@@ -183,7 +193,7 @@ La CLI no mostraba qué etapa estaba trabajando ni cuánto tardaba, el contador 
 
 ### Notas de release
 
-Cambios incompatibles del texto humano y de los flujos; las claves, las opciones y las versiones de esquema no cambian. `DAEMON_SCHEMA_VERSION` tampoco se mueve por los nuevos valores de `stage` del daemon, porque `stage` es un valor y el cliente ignora los que no conoce.
+Cambios incompatibles del texto humano, de los flujos y del motor de síntesis; las claves, las opciones y las versiones de esquema no cambian. `DAEMON_SCHEMA_VERSION` tampoco se mueve por los nuevos valores de `stage` del daemon, porque `stage` es un valor y el cliente ignora los que no conoce.
 
 - `first_audio_ms` (y la etapa y el extra «primer audio») incluyen la espera de turno, el calentamiento del motor y la carga de la voz, y no solo la síntesis.
 - El NDJSON del daemon emite un `progress` inmediato al entrar en la fase de síntesis (`queued`, `warming` o `synthesis`), `synthesis` solo con el lock tomado y la etapa nueva `loading_voice` cuando arranca un residente; `/voices/clone` ya no emite `warmup`.
@@ -202,6 +212,12 @@ Cambios incompatibles del texto humano y de los flujos; las claves, las opciones
 - `speech transcribe` y `/transcribe` sobre un audio sin voz pasan de código 0 (HTTP 200) con texto vacío a código 2 (HTTP 400) `empty_transcript`.
 - El mensaje de `transcription_failed` pasa a «No se pudo transcribir el audio.», o a «No se pudo cargar el modelo de transcripción.» si falla la carga; ya no lleva el texto de la biblioteca.
 - La causa técnica de `transcription_failed` va al detalle del JSON o, en el daemon, a su registro.
+- El motor de síntesis es el binario publicado de `qwen-tts-engine` `1.0.0`, en la raíz del bundle; compilar AVI ya no necesita gcc ni make.
+- El audio cambia con la misma voz, texto y semilla, y su duración puede variar.
+- La voz de fábrica `default` pasa a `.qvoice` v6 y sus locuciones se borran al actualizar; los anuncios del plugin se regeneran con su comando `presynth`.
+- Las voces `.qvoice` v3 clonadas —del usuario y del plugin— y sus locuciones se borran al actualizar y hay que volver a clonarlas; el borrado es irreversible.
+- Desaparecen `AVI_TTS_PRECISION`, `AVI_ALLOW_CWD_VENDOR` y `QWEN3_TTS_MODEL_DIR`, y los presets `ryan` y `vivian`; solo queda el modelo Base.
+- Los errores del motor llegan en español y son informativos: el contrato de AVI es el `reason`.
 
 ## [0.45.2] — 2026-11-16
 

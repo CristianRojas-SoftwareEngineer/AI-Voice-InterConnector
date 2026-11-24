@@ -57,8 +57,8 @@ la integridad se verifica cotejando los checksums SHA-256.
   sube el pin de ONNX Runtime, hay que actualizar también la copia de sus avisos
   en `packaging/notices/onnxruntime-<versión>/`: `cargo xtask package` falla si
   difiere de la del archivo oficial.
-- **Revisiones de los modelos auditadas.** Los seis modelos fijados (Qwen3-TTS,
-  dos pares opus-mt, Parakeet y DPDFNet) se descargan con
+- **Revisiones de los modelos auditadas.** Los cinco modelos fijados (el Base de
+  Qwen3-TTS, dos pares opus-mt, Parakeet y DPDFNet) se descargan con
   `ai-voice-interconnector setup` y no se empaquetan. Para incorporar una
   revisión nueva de alguno:
   1. consultar el `sha` vigente en `https://huggingface.co/api/models/<repo>`;
@@ -68,6 +68,19 @@ la integridad se verifica cotejando los checksums SHA-256.
      `approx_bytes` o lista de ficheros: el E2E de Windows lee los modelos de
      ese fixture y el test `model_pins_match_fixture` falla si difiere de
      `MODEL_REVISIONS` o de `MODEL_FILE_PATTERNS`.
+- **Versión del motor TTS.** El motor es el binario publicado de
+  `qwen-tts-engine`, fijado por versión y SHA-256 en `packaging/pins.json`. Para
+  subirlo:
+  1. editar `qwen_tts_engine` con la versión nueva, sin la `v` del tag, y
+     `qwen_tts_engine_sha256` con el hash de cada archivo del `SHA256SUMS` de la
+     release, por triple de AVI: el artefacto público de Windows es el de
+     `x86_64-pc-windows-gnu`, que corresponde a la clave `x86_64-pc-windows-msvc`
+     de AVI;
+  2. actualizar `qwen_tts_engine_source_sha256` con el hash del
+     `qwen-tts-engine-<versión>-src.tar.gz` de la release, que es el que
+     `SOURCE-OFFER.md` ofrece al receptor;
+  3. `cargo xtask pins --check` y `cargo xtask bootstrap`, que vuelve a
+     aprovisionar `engine-bundle/` con el paquete verificado.
 - **La publicación es irreversible.** El Release se publica directamente sobre
   el tag. La versión y el CHANGELOG deben estar correctos **antes** de crear el
   tag, porque corregirlos después exige borrar un Release público.
@@ -75,8 +88,8 @@ la integridad se verifica cotejando los checksums SHA-256.
 ### Aprovisionamiento de los recursos antes de cortar
 
 La puerta de pruebas con recursos asegura por sí misma FFmpeg y ONNX Runtime
-de los pines; exige el motor TTS compilado y los seis modelos completos. Los
-cinco modelos obligatorios bloquean el arranque del daemon; `dpdfnet8` es el sexto pin y es
+de los pines; exige el motor TTS en `engine-bundle/` y los cinco modelos completos. Los
+cuatro modelos obligatorios bloquean el arranque del daemon; `dpdfnet8` es el quinto pin y es
 opcional para el arranque, pero requerido por las superficies `--denoise` y
 `speech denoise`.
 
@@ -92,7 +105,7 @@ cargo xtask clean --app --dry-run              # revisar el plan de desinstalaci
 cargo xtask clean --app --yes                  # exigir resultado `uninstalled`, no aceptar `not_installed` como prueba
 cargo xtask clean --repo --dry-run             # retirar también la semilla compilada
 cargo xtask clean --repo --yes                 # deja target/ y bundles fuera para el cold start
-cargo xtask bootstrap --models --yes           # ORT, FFmpeg, motor y seis modelos
+cargo xtask bootstrap --models --yes           # ORT, FFmpeg, motor y cinco modelos
 cargo xtask verify-resources --json            # debe dar exit 0 y `ok: true` sin otro paso
 ```
 
@@ -114,7 +127,8 @@ detente el procedimiento y resuelve la causa. Ninguno de estos comandos toca
 `CARGO_HOME`, rustup, MSYS2 ni `CARGO_HOME/bin`.
 
 **Preparación normal del gate.** `cargo xtask bootstrap --models --yes` deja
-listos ONNX Runtime y FFmpeg en sus versiones fijadas, el motor y los modelos.
+listos ONNX Runtime y FFmpeg en sus versiones fijadas, el motor en
+`engine-bundle/` y los modelos.
 La gate vuelve a asegurar ONNX Runtime y FFmpeg con la misma función que
 `bootstrap`, así que tras él no descarga nada. Si no se ensaya desde cero,
 conserva los recursos ya verificados y ejecuta `bootstrap` solo cuando falte o
@@ -158,8 +172,8 @@ de un bootstrap local. Ejecuta la comprobación específica de recursos:
 cargo xtask verify-resources --json
 ```
 
-Exige exit code 0 y un único objeto JSON con `ok: true`, los seis modelos
-íntegros, bundles FFmpeg/ONNX Runtime verificados y sin artefactos incompletos.
+Exige exit code 0 y un único objeto JSON con `ok: true`, los cinco modelos
+íntegros, bundles FFmpeg/ONNX Runtime y motor verificados y sin artefactos incompletos.
 En Windows, desde Git Bash, comprueba además que no queden cuerpos `.incomplete`:
 
 ```bash

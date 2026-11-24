@@ -248,7 +248,7 @@ Detalle en [USAGE.md](USAGE.md#ciclo-de-vida-de-la-instalación-self).
 
 ## Arquitectura
 
-Un único binario Rust expone la CLI. La síntesis la hace el motor Qwen3-TTS, que corre como proceso residente y se comunica por HTTP en loopback; la transcripción (Parakeet, ONNX Runtime) y la traducción (CTranslate2) corren dentro del proceso. Un daemon opcional mantiene los motores cargados entre invocaciones. Detalle en [docs/DESIGN.md](docs/DESIGN.md#arquitectura).
+Un único binario Rust expone la CLI. La síntesis la hace el motor Qwen3-TTS, un binario propio (`qwen-tts-engine`) que el programa distribuye fijado por versión y hash y resuelve con `QWEN3_TTS_BIN`, la raíz del bundle o `engine-bundle/`; corre como proceso residente y se comunica por HTTP en loopback. La transcripción (Parakeet, ONNX Runtime) y la traducción (CTranslate2) corren dentro del proceso. Un daemon opcional mantiene los motores cargados entre invocaciones. Detalle en [docs/DESIGN.md](docs/DESIGN.md#arquitectura).
 
 ## Documentación
 

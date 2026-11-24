@@ -679,7 +679,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, `ffmpeg-bundle/`, salidas de `package`, binario y cobertura | `xtask` |
 | Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew`), ejecutado con el binario del repositorio |
 | Ambas | `--all` | Aplicación y después repositorio | Ídem |
-| Global | `--global` (nunca incluida en `--all`) | Cachés regenerables de Cargo bajo `CARGO_HOME` (`registry/{cache,src,index}` y `git/{db,checkouts}`) y, en Windows, el contenido del `CacheDir` de pacman declarado en el `pacman.conf` de MSYS2 | `xtask` |
+| Global | `--global` (nunca incluida en `--all`) | Cachés regenerables de Cargo bajo `CARGO_HOME` (`registry/{cache,src,index}` y `git/{db,checkouts}`) y, en un Windows con MSYS2 instalado, el contenido del `CacheDir` de pacman declarado en su `pacman.conf` | `xtask` |
 
 - `--global` es explícita y, sola, no limpia el repositorio. Nunca toca `CARGO_HOME/bin`, rustup, la caché de sccache ni la instalación de MSYS2.
 - La capa repo retira `target.removal-failed.log` (el registro que deja el borrado diferido de `target/` cuando falla) si `target/` ya no existe, y lo informa mientras siga existiendo.
@@ -715,7 +715,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Desinstalar | `ai-voice-interconnector self uninstall` | Ídem | Ídem | Ídem (Cask: `brew uninstall --cask --zap`) |
 | Limpiar estado | `ai-voice-interconnector cleanup …` | Ídem | Ídem | Ídem |
 | Provisión de modelos | `setup` encadenado por `self install` | Ídem | Ídem | `setup` **ofrecido** (Cask): paso explícito, no encadenado |
-| Entorno de desarrollo | `cargo xtask bootstrap` (Build Tools + MSYS2) | `cargo xtask bootstrap` (apt/dnf/pacman/zypper) | Ídem | `cargo xtask bootstrap` (Xcode CLT, Homebrew) |
+| Entorno de desarrollo | `cargo xtask bootstrap` (Build Tools + CMake) | `cargo xtask bootstrap` (apt/dnf/pacman/zypper) | Ídem | `cargo xtask bootstrap` (Xcode CLT, Homebrew) |
 
 Las diferencias entre columnas son mecanismos idiomáticos de cada SO. La experiencia (comandos, confirmaciones, resultados y residuo) es la misma.
 
