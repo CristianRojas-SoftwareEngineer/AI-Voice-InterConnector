@@ -8,7 +8,7 @@
 //!
 //! Convergente: la misma orden prepara el entorno la primera vez y lo pone al
 //! día tras un `git pull`; si nada cambió, no hace trabajo. Los
-//! 6 pasos se ejecutan en orden y cada uno es no-op cuando su estado ya
+//! 5 pasos se ejecutan en orden y cada uno es no-op cuando su estado ya
 //! converge. `--system` es la única vía que ejecuta gestores con `sudo`/UAC,
 //! y solo por petición explícita (flag más confirmación). Las versiones de
 //! ONNX Runtime y FFmpeg salen de los pines y ambos se aseguran con
@@ -106,9 +106,9 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
     let report = super::doctor::check(&root, &pins);
     let plan = plan_system_commands(&report);
     if plan.is_empty() {
-        println!("Paso 1/6 (doctor): requisitos del sistema al día.");
+        println!("Paso 1/5 (doctor): requisitos del sistema al día.");
     } else {
-        println!("Paso 1/6 (doctor): faltan requisitos del sistema:");
+        println!("Paso 1/5 (doctor): faltan requisitos del sistema:");
         for (id, action) in &plan {
             match action {
                 SystemAction::Run { program, args } => {
@@ -159,7 +159,7 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
     // antes de fallar (caso WSL sin rustup).
     match rustup_installed_list()? {
         None => {
-            println!("Paso 2/6 (Rust): sin `rustup` en el PATH.");
+            println!("Paso 2/5 (Rust): sin `rustup` en el PATH.");
             bail!(
                 "instala rustup primero (https://rustup.rs) y repite `cargo xtask bootstrap`: rust-toolchain.toml aplicará la versión {} sola",
                 pins.rust
@@ -168,9 +168,9 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
         Some(installed) => {
             let missing = missing_components(&installed, REQUIRED_COMPONENTS);
             if missing.is_empty() {
-                println!("Paso 2/6 (Rust): componentes al día (clippy, rustfmt).");
+                println!("Paso 2/5 (Rust): componentes al día (clippy, rustfmt).");
             } else {
-                println!("Paso 2/6 (Rust): añadiendo {} …", missing.join(", "));
+                println!("Paso 2/5 (Rust): añadiendo {} …", missing.join(", "));
                 let status = std::process::Command::new("rustup")
                     .arg("component")
                     .arg("add")
@@ -199,41 +199,26 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
     }
     super::package::ensure_pinned_bundles(&root, triple, &pins)?;
     println!(
-        "Paso 3/6 (recursos fijados): ONNX Runtime {} en ort-bundle/, FFmpeg {} en ffmpeg-bundle/ y motor qwen-tts-engine {} en engine-bundle/ asegurados.",
+        "Paso 3/5 (recursos fijados): ONNX Runtime {} en ort-bundle/, FFmpeg {} en ffmpeg-bundle/ y motor qwen-tts-engine {} en engine-bundle/ asegurados.",
         pins.ort, pins.ffmpeg, pins.qwen_tts_engine
     );
 
-    // Paso 4. Motor TTS si falta o está desactualizado.
-    if super::doctor::engine_is_fresh(&root)? {
-        println!("Paso 4/6 (motor TTS): al día, se omite la compilación.");
-    } else {
-        println!("Paso 4/6 (motor TTS): compilando (build-engine --self-test) …");
-        let xtask = std::env::current_exe()?;
-        let status = std::process::Command::new(&xtask)
-            .args(["build-engine", "--self-test"])
-            .status()?;
-        if !status.success() {
-            bail!("la compilación del motor falló (exit {:?})", status.code());
-        }
-        worked = true;
-    }
-
-    // Paso 5. Modelos solo con `--models`, vía `setup` del build local.
+    // Paso 4. Modelos solo con `--models`, vía `setup` del build local.
     if !models {
-        println!("Paso 5/6 (modelos): omitido (pídelo con --models).");
+        println!("Paso 4/5 (modelos): omitido (pídelo con --models).");
     } else if super::doctor::models_are_provisioned() {
-        println!("Paso 5/6 (modelos): ya provisionados, se omite `setup`.");
+        println!("Paso 4/5 (modelos): ya provisionados, se omite `setup`.");
     } else {
-        println!("Paso 5/6 (modelos): ejecutando `setup` del build local …");
+        println!("Paso 4/5 (modelos): ejecutando `setup` del build local …");
         run_setup_with_watchdog(&root)?;
         worked = true;
     }
 
     // Paso 6. Resumen del estado alcanzado.
     if worked {
-        println!("Paso 6/6: entorno puesto al día.");
+        println!("Paso 5/5: entorno puesto al día.");
     } else {
-        println!("Paso 6/6: sin trabajo, el entorno ya estaba convergente.");
+        println!("Paso 5/5: sin trabajo, el entorno ya estaba convergente.");
     }
     Ok(())
 }
@@ -1681,8 +1666,6 @@ mod tests {
                     hint: None,
                 },
             ],
-            engine_drift: None,
-            probe_errors: Vec::new(),
             onnx_drift: None,
             models_drift: Vec::new(),
         }

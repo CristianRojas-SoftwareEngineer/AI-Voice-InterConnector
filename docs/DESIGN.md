@@ -133,7 +133,7 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 | **Licencia** | MIT / Apache-2.0 |
 | **Parámetros** | 0.6B |
 | **Clonación de voz** | referencia de voz vía archivo (`--speech-reference`) o micrófono (`--mic`; ~10 s recomendados, máximo 30 s); se guarda solo la huella de timbre (sin transcripción) |
-| **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
+| **Inferencia** | CPU con BLAS (binario de `qwen-tts-engine` fijado en `packaging/pins.json` y aprovisionado en `engine-bundle/`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 (`PRODUCTION_SEED`, primera toma; las regeneraciones de `--play` lo sustituyen con `with_seed_override`) |
 
 Ver `crates/avi-tts/src/lib.rs` para el contrato de invocación: el residente se lanza como `-d <modelo Base> --serve <puerto> --host 127.0.0.1 -j 4 --watch-stdin --load-voice <qvoice>` (siempre con la voz, `default` incluida), y el clonado por proceso local como `-d <modelo Base> --ref-audio <wav> --save-voice <out> -j 4 --watch-stdin`. El idioma del producto (`es`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error.

@@ -92,15 +92,12 @@ const REPO_ENTRIES: &[&str] = &[
     "target",
     super::package::ORT_BUNDLE_REL,
     super::package::FFMPEG_BUNDLE_REL,
+    super::package::ENGINE_BUNDLE_REL,
     "artifacts",
     ".coverage",
     "coverage.json",
     "coverage.xml",
     "Cargo.lock.cachekey",
-    "vendor/qwen3-tts/qwen_tts",
-    "vendor/qwen3-tts/qwen_tts.exe",
-    "vendor/qwen3-tts/output.wav",
-    "vendor/qwen3-tts/.engine-cachekey",
 ];
 
 /// Antigüedad a partir de la cual un `.pdb` de `deps/` cuenta como obsoleto
@@ -325,34 +322,11 @@ pub(crate) fn prune_targets(root: &Path) -> Vec<PathBuf> {
 
 /// Rutas de la capa proyecto que existen bajo `root`.
 pub(crate) fn repo_targets(root: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = REPO_ENTRIES
+    REPO_ENTRIES
         .iter()
         .map(|e| e.split('/').fold(root.to_path_buf(), |acc, c| acc.join(c)))
         .filter(|p| p.symlink_metadata().is_ok())
-        .collect();
-    // Objetos, dependencias y libs estáticas del motor (sin versionar).
-    collect_c_artifacts(&root.join("vendor").join("qwen3-tts"), &mut out);
-    out
-}
-
-fn collect_c_artifacts(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(ft) = entry.file_type() else { continue };
-        if ft.is_dir() {
-            if !out.contains(&path) {
-                collect_c_artifacts(&path, out);
-            }
-        } else if matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("o" | "d" | "a")
-        ) {
-            out.push(path);
-        }
-    }
+        .collect()
 }
 
 /// Tamaño de una ruta. Si alguna parte no se pudo leer, `bytes` es solo una
@@ -1219,40 +1193,6 @@ mod tests {
         assert!(!path_has_caskroom(Path::new(
             r"C:\Users\ana\.local\bin\ai-voice-interconnector.exe"
         )));
-    }
-
-    #[test]
-    fn repo_targets_curated_and_keep_sources() {
-        let root_guard = tempfile::Builder::new()
-            .prefix("xtask_clean_repo_")
-            .tempdir()
-            .unwrap();
-        let root = root_guard.path().to_path_buf();
-        let engine = root.join("vendor/qwen3-tts");
-        let ingot = engine.join("third_party/ingot/src");
-        std::fs::create_dir_all(&ingot).unwrap();
-        std::fs::create_dir_all(root.join("target/debug")).unwrap();
-        std::fs::create_dir_all(engine.join("presets")).unwrap();
-        for f in ["main.c", "main.o", "main.d", "Makefile"] {
-            std::fs::write(engine.join(f), b"x").unwrap();
-        }
-        std::fs::write(ingot.join("q.o"), b"x").unwrap();
-        std::fs::write(engine.join("third_party/ingot/libingot.a"), b"x").unwrap();
-
-        let got = repo_targets(&root);
-
-        for keep in ["main.c", "Makefile", "presets"] {
-            assert!(!got.contains(&engine.join(keep)), "no debe borrar {}", keep);
-        }
-        for gone in [
-            root.join("target"),
-            engine.join("main.o"),
-            engine.join("main.d"),
-            ingot.join("q.o"),
-            engine.join("third_party/ingot/libingot.a"),
-        ] {
-            assert!(got.contains(&gone), "falta {}", gone.display());
-        }
     }
 
     /// La poda fina retira cachés, cruces ajenos y PDBs viejos, y conserva

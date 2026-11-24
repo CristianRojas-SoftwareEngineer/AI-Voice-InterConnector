@@ -418,18 +418,6 @@ enum Commands {
         #[arg(long, value_name = "DIR")]
         root: Option<PathBuf>,
     },
-    /// Compila el motor TTS nativo (qwen_tts) desde vendor/qwen3-tts
-    BuildEngine {
-        /// Ejecuta `<bin> --self-test` tras compilar (oráculo de kernels)
-        #[arg(long)]
-        self_test: bool,
-        /// Política SIMD pass-through al Makefile (default "auto")
-        #[arg(long)]
-        simd: Option<String>,
-        /// Paralelismo del build (-jN); default = paralelismo del host
-        #[arg(long)]
-        jobs: Option<usize>,
-    },
     /// Limpia el entorno de desarrollo por capas (--repo por defecto)
     Clean {
         /// Solo la capa del repositorio: target/, ort-bundle/, motor y cobertura
@@ -668,13 +656,6 @@ fn main() -> Result<()> {
         Commands::Pins { check, sync, root } => pins::run(check, sync, root.as_deref())?,
         Commands::Features { check, root } => features::run(check, root.as_deref())?,
         Commands::Deps { check, dir } => deps::run(check, &dir)?,
-        Commands::BuildEngine {
-            self_test,
-            simd,
-            jobs,
-        } => {
-            build_engine(self_test, simd, jobs)?;
-        }
         Commands::Clean {
             repo,
             app,
@@ -706,154 +687,6 @@ fn main() -> Result<()> {
         }
         Commands::ResourceGate => check_resource_tests_gate()?,
     }
-    Ok(())
-}
-
-/// Directorio del motor TTS vendorizado.
-fn engine_dir() -> PathBuf {
-    Path::new("vendor").join("qwen3-tts")
-}
-
-/// Nombre del binario del motor según plataforma (.exe en Windows).
-fn engine_bin_name() -> &'static str {
-    if cfg!(windows) {
-        "qwen_tts.exe"
-    } else {
-        "qwen_tts"
-    }
-}
-
-/// Programa `make` según plataforma: mingw32-make (Windows/MinGW) o make (Unix).
-fn make_program() -> &'static str {
-    if cfg!(windows) {
-        "mingw32-make"
-    } else {
-        "make"
-    }
-}
-
-/// Augmenta el entorno de un `Command` con el toolchain MSYS2 UCRT64 (Windows):
-/// PATH con `<MSYS2>\ucrt64\bin` + `<MSYS2>\usr\bin` (cygpath) y MSYSTEM=UCRT64.
-/// La raíz se lee de `MSYS2_ROOT` (default `C:\msys64`). No lanza un login-shell:
-/// invoca mingw32-make directo con el env corregido (robusto y testeable).
-#[cfg(windows)]
-fn augment_windows_env(cmd: &mut std::process::Command) -> Result<()> {
-    let root = std::env::var("MSYS2_ROOT").unwrap_or_else(|_| r"C:\msys64".to_string());
-    let root = Path::new(&root);
-    let ucrt_bin = root.join("ucrt64").join("bin");
-    let usr_bin = root.join("usr").join("bin");
-    if !ucrt_bin.is_dir() {
-        anyhow::bail!(
-            "no se encontró el toolchain MSYS2 UCRT64 en {}: instala MSYS2 con el grupo \
-             mingw-w64-ucrt-x86_64-toolchain (o define MSYS2_ROOT apuntando a tu raíz de MSYS2)",
-            ucrt_bin.display()
-        );
-    }
-    // Prepone ucrt64/bin (gcc/mingw32-make) y usr/bin (cygpath) al PATH heredado.
-    let current = std::env::var_os("PATH").unwrap_or_default();
-    let mut paths = vec![ucrt_bin, usr_bin];
-    paths.extend(std::env::split_paths(&current));
-    let new_path = std::env::join_paths(paths)
-        .map_err(|e| anyhow!("no se pudo construir el PATH de MSYS2: {}", e))?;
-    cmd.env("PATH", new_path);
-    cmd.env("MSYSTEM", "UCRT64");
-    Ok(())
-}
-
-/// Compila el motor TTS (`make blas`) desde vendor/qwen3-tts, ocultando el
-/// mecanismo por plataforma: Unix invoca `make` con el entorno heredado; Windows
-/// invoca `mingw32-make` con el entorno MSYS2 UCRT64 augmentado. Verifica que el
-/// binario se generó y, con --self-test, ejecuta el oráculo de kernels.
-fn build_engine(self_test: bool, simd: Option<String>, jobs: Option<usize>) -> Result<()> {
-    // En Windows el motor solo se compila con los paquetes MSYS2 fijados: la misma regla
-    // que `doctor`, aplicada aquí para que local y CI no puedan enlazar otra OpenBLAS.
-    #[cfg(windows)]
-    {
-        let pins = doctor::load_pins(Path::new("."))?;
-        let row = doctor::check_engine_toolchain(&pins);
-        if row.status != doctor::Status::Ok {
-            anyhow::bail!(
-                "la toolchain del motor TTS no coincide con packaging/pins.json: {} (esperado: {}){}",
-                row.found.as_deref().unwrap_or("no encontrada"),
-                row.want.as_deref().unwrap_or("los pines"),
-                row.hint
-                    .as_deref()
-                    .map(|hint| format!(". {hint}"))
-                    .unwrap_or_default()
-            );
-        }
-    }
-    let dir = engine_dir();
-    let simd = simd.unwrap_or_else(|| "auto".to_string());
-    let jobs = jobs.unwrap_or_else(|| match std::thread::available_parallelism() {
-        Ok(n) => n.get(),
-        Err(e) => {
-            eprintln!(
-                "aviso: no se pudo determinar el paralelismo disponible ({e}); se compila con -j1"
-            );
-            1
-        }
-    });
-
-    let mut cmd = std::process::Command::new(make_program());
-    cmd.arg("-C")
-        .arg(&dir)
-        .arg("blas")
-        .arg(format!("SIMD={}", simd))
-        .arg(format!("-j{}", jobs));
-    #[cfg(windows)]
-    augment_windows_env(&mut cmd)?;
-
-    eprintln!(
-        "Compilando motor TTS: {} -C {} blas SIMD={} -j{}",
-        make_program(),
-        dir.display(),
-        simd,
-        jobs
-    );
-    let status = cmd.status().map_err(|e| {
-        anyhow!(
-            "no se pudo invocar {}: {} (¿toolchain de compilación instalado?)",
-            make_program(),
-            e
-        )
-    })?;
-    if !status.success() {
-        anyhow::bail!(
-            "la compilación del motor TTS falló (exit {:?})",
-            status.code()
-        );
-    }
-
-    let bin = dir.join(engine_bin_name());
-    if !bin.is_file() {
-        anyhow::bail!("el binario del motor no se generó: {}", bin.display());
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&bin)?.permissions().mode();
-        if mode & 0o111 == 0 {
-            anyhow::bail!("el binario del motor no es ejecutable: {}", bin.display());
-        }
-    }
-
-    if self_test {
-        let mut test_cmd = std::process::Command::new(&bin);
-        test_cmd.arg("--self-test");
-        // El .exe es -static, pero augmentar el PATH es barato y evita sorpresas
-        // si alguna DLL del sistema MSYS2 fuese necesaria.
-        #[cfg(windows)]
-        augment_windows_env(&mut test_cmd)?;
-        let st = test_cmd
-            .status()
-            .map_err(|e| anyhow!("no se pudo ejecutar {} --self-test: {}", bin.display(), e))?;
-        if !st.success() {
-            anyhow::bail!("el --self-test del motor falló (exit {:?})", st.code());
-        }
-    }
-
-    println!("Motor TTS compilado: {}", bin.display());
     Ok(())
 }
 
@@ -2256,14 +2089,15 @@ mod tests {
         assert!(commands.contains("- ffmpeg-bundle\n") && commands.contains("when: on_success"));
     }
 
-    /// El paso de MSYS2 no compara versiones por su cuenta: la regla estricta vive en
-    /// `build-engine`.
+    /// El job de Windows ya no aprovisiona el toolchain C del motor: ni caché de
+    /// MSYS2 ni paquetes gcc/OpenBLAS/make.
     #[test]
-    fn test_windows_msys2_step_has_no_drift_logic() {
+    fn test_windows_job_has_no_msys2_toolchain() {
         let windows = ci_job_block(&read_ci_config(), "build-windows-x64");
-        assert!(!windows.contains("$GccPin"));
-        assert!(!windows.contains("[WARN] gcc instalado"));
-        assert!(windows.contains("pacman -Q mingw-w64-ucrt-x86_64-gcc"));
+        assert!(!windows.contains("msys2_restore_cache"));
+        assert!(!windows.contains("msys2_save_cache"));
+        assert!(!windows.contains("MSYS2"));
+        assert!(!windows.contains("pacman"));
     }
 
     /// Directorios `vendor/<dir>` con `Cargo.toml`, ordenados: la regla del CI
@@ -2984,41 +2818,40 @@ mod tests {
         );
     }
 
-    /// Las cachés de `target/` y de MSYS2 usan clave inmutable (el primer
-    /// `save_cache` gana): guardar tras un fallo persistiría para siempre un
-    /// directorio incompleto (ya ocurrió con linux-x64 en v0.20.9). Por eso sus
-    /// commands fijan `when: on_success` en cada paso y no lo exponen como
-    /// parámetro que un job pueda cambiar.
+    /// La caché de `target/` usa clave inmutable (el primer `save_cache` gana):
+    /// guardar tras un fallo persistiría para siempre un directorio incompleto
+    /// (ya ocurrió con linux-x64 en v0.20.9). Por eso su command fija
+    /// `when: on_success` en cada paso y no lo expone como parámetro que un job
+    /// pueda cambiar.
     #[test]
     fn test_immutable_cache_saves_only_on_success() {
         let cfg = read_ci_config();
-        for command in ["cargo_save_target", "msys2_save_cache"] {
-            // El command termina en la primera línea en blanco.
-            let block = cfg
-                .split(&format!("\n  {command}:\n"))
-                .nth(1)
-                .unwrap_or("")
-                .split("\n\n")
-                .next()
-                .unwrap_or("");
-            let whens: Vec<&str> = block
-                .lines()
-                .map(str::trim)
-                .filter(|line| line.starts_with("when:"))
-                .collect();
-            assert!(
-                !whens.is_empty(),
-                "{command} debe declarar `when` en sus pasos"
-            );
-            assert!(
-                whens.iter().all(|when| *when == "when: on_success"),
-                "{command} debe guardar solo con `when: on_success` (clave inmutable); encontrado: {whens:?}"
-            );
-            assert!(
-                !block.contains("parameters.when"),
-                "{command} no debe exponer `when` como parámetro"
-            );
-        }
+        let command = "cargo_save_target";
+        // El command termina en la primera línea en blanco.
+        let block = cfg
+            .split(&format!("\n  {command}:\n"))
+            .nth(1)
+            .unwrap_or("")
+            .split("\n\n")
+            .next()
+            .unwrap_or("");
+        let whens: Vec<&str> = block
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("when:"))
+            .collect();
+        assert!(
+            !whens.is_empty(),
+            "{command} debe declarar `when` en sus pasos"
+        );
+        assert!(
+            whens.iter().all(|when| *when == "when: on_success"),
+            "{command} debe guardar solo con `when: on_success` (clave inmutable); encontrado: {whens:?}"
+        );
+        assert!(
+            !block.contains("parameters.when"),
+            "{command} no debe exponer `when` como parámetro"
+        );
     }
 
     /// Claves de caché del config: cada `key:` de `save_cache` y cada elemento de
@@ -3402,31 +3235,6 @@ mod tests {
         assert!(parse_iso_date("").is_err());
         assert!(parse_iso_date("0000-00-0").is_err());
         assert!(parse_iso_date("09/10/2026").is_err());
-    }
-
-    #[test]
-    fn test_engine_bin_name_by_platform() {
-        if cfg!(windows) {
-            assert_eq!(engine_bin_name(), "qwen_tts.exe");
-        } else {
-            assert_eq!(engine_bin_name(), "qwen_tts");
-        }
-    }
-
-    #[test]
-    fn test_make_program_by_platform() {
-        if cfg!(windows) {
-            assert_eq!(make_program(), "mingw32-make");
-        } else {
-            assert_eq!(make_program(), "make");
-        }
-    }
-
-    #[test]
-    fn test_engine_dir() {
-        let dir = engine_dir();
-        assert!(dir.ends_with("qwen3-tts"));
-        assert!(dir.starts_with("vendor"));
     }
 
     /// CHANGELOG mínimo con ToC, sección curada `## [No publicado]`, una sección
@@ -3994,7 +3802,6 @@ mod tests {
             vec!["xtask", "changelog"],
             vec!["xtask", "language"],
             vec!["xtask", "comments"],
-            vec!["xtask", "build-engine"],
             vec!["xtask", "package"],
             vec!["xtask", "clean"],
             vec!["xtask", "doctor"],

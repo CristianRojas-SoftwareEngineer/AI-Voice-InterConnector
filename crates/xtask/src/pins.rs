@@ -99,16 +99,12 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-/// Las trece claves con su valor, en el orden del manifiesto.
-fn all_pins(pins: &Pins) -> [(&'static str, &String); 13] {
+/// Las nueve claves con su valor, en el orden del manifiesto.
+fn all_pins(pins: &Pins) -> [(&'static str, &String); 9] {
     [
         ("rust", &pins.rust),
         ("ort", &pins.ort),
         ("sccache", &pins.sccache),
-        ("msys2_base", &pins.msys2_base),
-        ("msys2_gcc", &pins.msys2_gcc),
-        ("msys2_openblas", &pins.msys2_openblas),
-        ("msys2_make", &pins.msys2_make),
         ("ninja", &pins.ninja),
         ("bats", &pins.bats),
         ("pwsh", &pins.pwsh),
@@ -394,10 +390,6 @@ mod tests {
                 .collect(),
             qwen_tts_engine_source_sha256: "b".repeat(64),
             sccache: "0.8.2".to_string(),
-            msys2_base: "2026-06-11".to_string(),
-            msys2_gcc: "16.2.0".to_string(),
-            msys2_openblas: "0.3.34-1".to_string(),
-            msys2_make: "4.4.1-5".to_string(),
             ninja: "1.13.2".to_string(),
             bats: "1.14.0".to_string(),
             pwsh: "7.6.6".to_string(),
@@ -407,7 +399,7 @@ mod tests {
         }
     }
 
-    /// CI de fixture con los doce parámetros esperados, el humo de
+    /// CI de fixture con los ocho parámetros esperados, el humo de
     /// `schema_version`, la limpieza de caché y un executor de Windows vigentes.
     fn fixture_config() -> String {
         let pins = fixture_pins();
@@ -732,8 +724,6 @@ mod tests {
             serde_json::to_string_pretty(&serde_json::json!({
                 "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "ffmpeg_source_sha256": {}, "sccache": "0.8.2",
                 "qwen_tts_engine": "1.0.0", "qwen_tts_engine_sha256": engine_fixture_hashes(), "qwen_tts_engine_source_sha256": engine_fixture_source_hash(),
-                "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
-                "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
                 "nextest": "0.9.148", "windows_image": "2026.10.1",
             }))
@@ -756,8 +746,6 @@ mod tests {
             serde_json::to_string_pretty(&serde_json::json!({
                 "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "ffmpeg_source_sha256": {}, "sccache": "0.8.2",
                 "qwen_tts_engine": "1.0.0", "qwen_tts_engine_sha256": engine_fixture_hashes(), "qwen_tts_engine_source_sha256": engine_fixture_source_hash(),
-                "msys2_base": "2026-06-11", "msys2_gcc": "16.2.0",
-                "msys2_openblas": "0.3.34-1", "msys2_make": "4.4.1-5",
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
                 "nextest": "0.9.148", "windows_image": "2026.10.1",
             }))

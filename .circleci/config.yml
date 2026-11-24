@@ -34,30 +34,6 @@ parameters:
     description: >
       Versión exacta de Rust (toolchain) usada en todos los jobs Rust
       (cargo test/build). Espejo entre plataformas (Linux/Windows/macOS).
-  # Pines del toolchain C del motor TTS en Windows (MSYS2 UCRT64). Espejan a
-  # `packaging/pins.json`, que es la fuente única. El release base fija un
-  # snapshot reproducible; la caché de C:\msys64 (msys2_*_cache) es el
-  # mecanismo de determinismo, y `cargo xtask build-engine` falla si gcc,
-  # OpenBLAS o make difieren de estos pines. Bump = editar el JSON (invalida la
-  # caché por clave).
-  msys2_base_pin:
-    type: string
-    default: "2026-06-11"
-    description: >
-      Release del instalador base de MSYS2 (github.com/msys2/msys2-installer) del
-      que se extrae C:\msys64. Debe ser posterior a la publicación de gcc del pin.
-  msys2_gcc_pin:
-    type: string
-    default: "16.2.0"
-    description: Versión de gcc UCRT64 (ancla de la GCC Runtime Library Exception).
-  msys2_openblas_pin:
-    type: string
-    default: "0.3.34-1"
-    description: Versión de mingw-w64-ucrt-x86_64-openblas.
-  msys2_make_pin:
-    type: string
-    default: "4.4.1-5"
-    description: Versión de make/mingw32-make (mingw-w64-ucrt-x86_64-make).
   ort_pin:
     type: string
     default: "1.28.0"
@@ -133,7 +109,6 @@ parameters:
 #     fallback: un acierto garantiza que lo compilado corresponde a los parches
 #     actuales, así que su mtime se fija tras restaurar y cargo no los marca Dirty.
 #   - toolchain (v1): cambia con rust_pin.
-#   - msys2 (v1): cambia con los pines de versión MSYS2 (solo build-windows-x64).
 #   - sccache (v1): cubo semanal por variant (semana ISO en la clave de
 #     guardado, restauración por prefijo): una subida por variante y semana.
 #   - ort-bundle (v4): cambia con ort_pin (los 4 builds, clave por plataforma
@@ -349,25 +324,6 @@ commands:
           paths:
             - ~/.rustup
             - ~/.cargo/bin
-
-  # Caché del toolchain C del motor TTS en Windows (MSYS2 UCRT64 en C:\msys64).
-  # Espejo de toolchain_*_cache pero solo-Windows: clave inmutable por arch + los
-  # pines de versión (release base + gcc/openblas/make), así un bump de pin
-  # invalida la caché y reconstruye. Es el mecanismo de determinismo del release.
-  msys2_restore_cache:
-    description: Restaura C:\msys64 por arch + pines de versión MSYS2
-    steps:
-      - restore_cache:
-          keys:
-            - msys2-v1-{{ checksum ".cache-root" }}-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
-  msys2_save_cache:
-    description: Guarda C:\msys64 (clave inmutable por arch + pines de versión MSYS2)
-    steps:
-      - save_cache:
-          key: msys2-v1-{{ checksum ".cache-root" }}-{{ arch }}-<< pipeline.parameters.msys2_base_pin >>-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-make<< pipeline.parameters.msys2_make_pin >>
-          paths:
-            - C:\msys64
-          when: on_success
 
   # sccache: envuelve `rustc` (RUSTC_WRAPPER) y cachea objetos Rust por
   # hash de contenido en ~/.cache/sccache. Cada variante (test/full/cov) guarda
@@ -1589,49 +1545,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "rust_pin parámetro: << pipeline.parameters.rust_pin >>"
             Write-Host "[STEP] Verificar toolchain Rust - FIN"
-      - msys2_restore_cache
-      - run:
-          # Bootstrap del toolchain C del motor TTS (MSYS2 UCRT64). Idempotente: si
-          # la caché trajo C:\msys64 con gcc, se omite la instalación. En caché fría
-          # instala el base de MSYS2 vía Chocolatey (ya presente en el executor)
-          # pineado a la misma versión del release base, y sincroniza gcc (RLE:
-          # libgfortran/libgcc/libquadmath estáticos), openblas y make (mingw32-make).
-          # El pin de choco + la caché fijan el resultado; si upstream cambió algún
-          # paquete, `cargo xtask build-engine` falla al compilar el motor.
-          # pacman -Q + gcc --version quedan al log como evidencia auditable (RLE).
-          # Marcadores por subpaso para localizar cuelgues.
-          name: Bootstrap MSYS2 UCRT64 (toolchain motor TTS)
-          command: |
-            Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - INICIO"
-            $ErrorActionPreference = "Stop"
-            $Root = "C:\msys64"
-            if (Test-Path "$Root\ucrt64\bin\gcc.exe") {
-              Write-Host "MSYS2 restaurado de caché; se omite instalación"
-            } else {
-              $Release = "<< pipeline.parameters.msys2_base_pin >>"
-              # Versión de choco = release base compactado + sufijo .0.0
-              # (2026-06-11 -> 20260611.0.0): mismo pin que el release upstream.
-              $ChocoVer = ($Release -replace '-', '') + ".0.0"
-              Write-Host "[STEP] Instalar base MSYS2 via Chocolatey ($ChocoVer) - INICIO"
-              choco install msys2 --version=$ChocoVer -y --no-progress --params "/NoUpdate /InstallDir:C:\msys64"
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-              # choco gestiona base + keyring: no corremos `pacman-key --init`
-              # (el hang por entropía que agotaba el no_output_timeout).
-              if (-not (Test-Path "$Root\usr\bin\bash.exe")) { throw "MSYS2 no quedó en $Root tras choco (revisar /InstallDir; ¿anidó C:\msys64\msys64?)" }
-              Write-Host "[STEP] Instalar base MSYS2 via Chocolatey - FIN"
-              $Bash = "$Root\usr\bin\bash.exe"
-              Write-Host "[STEP] Sincronizar toolchain (pacman -S gcc/openblas/make) - INICIO"
-              & $Bash -lc "pacman -Sy --needed --noconfirm --disable-download-timeout mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-              Write-Host "[STEP] Sincronizar toolchain - FIN"
-            }
-            # Evidencia auditable de la build: versiones instaladas de gcc, OpenBLAS y make.
-            # La comparación con los pines no se hace aquí: `cargo xtask build-engine` la
-            # aplica antes de compilar y falla si algún paquete difiere.
-            & "$Root\usr\bin\bash.exe" -lc "pacman -Q mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make"
-            & "$Root\ucrt64\bin\gcc.exe" --version
-            Write-Host "[STEP] Bootstrap MSYS2 UCRT64 - FIN"
-      - msys2_save_cache
       - cargo_restore_caches:
           os: windows
           variant: full

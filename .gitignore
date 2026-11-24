@@ -16,35 +16,6 @@ target/
 coverage.json
 coverage.xml
 
-# --- Runtime nativo Rust/CT2 y motor Qwen (desbloqueo de Fase 0) ---
-# Motor Qwen3-TTS vendorizado: se versionan SOLO fuentes C/H/CU, shims,
-# Makefile, scripts y docs; se excluyen pesos, presets y media binaria.
-vendor/qwen3-tts/qwen3-tts-0.6b/
-vendor/qwen3-tts/presets/
-vendor/**/*.safetensors
-vendor/**/*.gguf
-vendor/**/*.qvoice
-vendor/**/*.bin
-vendor/**/*.wav
-vendor/**/*.mp3
-# El .gitignore vendorizado de qwen3-tts re-incluye `!tests/golden/*.wav`; excluir
-# el directorio padre invalida esa negación (git no re-incluye bajo un dir excluido).
-vendor/qwen3-tts/tests/golden/
-# Artefactos de compilación C del motor (objetos, libs estáticas, deps,
-# ejecutables). Se acotan a su directorio: en el resto de `vendor/` hay copias
-# de crates que se compilan enteras desde sus fuentes y no deben perder ficheros.
-vendor/qwen3-tts/**/*.o
-vendor/qwen3-tts/**/*.a
-vendor/qwen3-tts/**/*.d
-vendor/qwen3-tts/**/*.exe
-# Binarios del motor TTS: se compilan desde fuente en CI/dev vía
-# `cargo xtask build-engine` (no se versionan). `qwen_tts.exe` ya lo cubre la
-# regla de `*.exe`; `qwen_tts` (Unix) necesita regla propia (sin extensión).
-vendor/qwen3-tts/qwen_tts
-# compile_commands.json (soporte editor/clangd): generado localmente con
-# `compiledb` a partir del Makefile real; contiene rutas absolutas del
-# entorno MSYS2/UCRT64 de cada máquina, no se versiona ni se usa en CI.
-vendor/qwen3-tts/compile_commands.json
 # Cachés efímeras de CI (no versionar)
 Cargo.lock.cachekey
 .cache-root
@@ -52,7 +23,6 @@ Cargo.lock.cachekey
 .vendor-patches.list
 .vendor-patches.tree
 cargo-timings/
-vendor/qwen3-tts/.engine-cachekey
 ort-bundle/
 ffmpeg-bundle/
 engine-bundle/

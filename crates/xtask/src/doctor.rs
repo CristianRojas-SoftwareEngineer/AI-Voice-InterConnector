@@ -7,13 +7,12 @@
 //! `xtask doctor`: diagnóstico solo-lectura del entorno de desarrollo.
 //!
 //! La tabla de requisitos se declara una sola vez aquí: los pines (Rust, ONNX
-//! Runtime, FFmpeg, MSYS2…) se leen de `packaging/pins.json` vía `avi-shared`, y de
+//! Runtime, FFmpeg, el motor TTS…) se leen de `packaging/pins.json` vía `avi-shared`, y de
 //! ahí los consumen `doctor`, `bootstrap` y la CI. Por cada requisito informa
 //! si está correcto, falta o tiene una versión distinta de la fijada; cuando
 //! algo falta, da el comando exacto de instalación para el gestor detectado
-//! (apt, dnf, pacman o zypper; `xcode-select` o brew; winget o el `pacman` de
-//! MSYS2). Informa además de la deriva del entorno: motor TTS desactualizado
-//! respecto de sus fuentes, ONNX Runtime distinto del fijado y modelos sin
+//! (apt, dnf, pacman o zypper; `xcode-select` o brew; winget). Informa además
+//! de la deriva del entorno: ONNX Runtime distinto del fijado y modelos sin
 //! provisionar. Termina con éxito solo si están todos los obligatorios.
 //! Admite `--json`. No modifica nada.
 
@@ -27,7 +26,6 @@ pub(crate) const ROW_IDS: &[&str] = &[
     "rust",
     "c-compiler",
     "cmake",
-    "engine-toolchain",
     "onnx",
     "ffmpeg",
     "qwen-tts-engine",
@@ -60,23 +58,17 @@ pub(crate) struct Row {
 /// Informe completo: filas de la tabla más deriva del entorno.
 pub(crate) struct Report {
     pub rows: Vec<Row>,
-    pub engine_drift: Option<String>,
-    /// Chequeos de deriva que no se pudieron ejecutar; hacen fallar el informe.
-    pub probe_errors: Vec<String>,
     pub onnx_drift: Option<String>,
     pub models_drift: Vec<String>,
 }
 
 impl Report {
-    /// `true` si todos los requisitos obligatorios están correctos y ningún
-    /// chequeo de deriva falló al ejecutarse.
+    /// `true` si todos los requisitos obligatorios están correctos.
     pub(crate) fn ok(&self) -> bool {
-        self.probe_errors.is_empty()
-            && self
-                .rows
-                .iter()
-                .filter(|r| r.mandatory)
-                .all(|r| r.status == Status::Ok)
+        self.rows
+            .iter()
+            .filter(|r| r.mandatory)
+            .all(|r| r.status == Status::Ok)
     }
 }
 
@@ -242,33 +234,6 @@ pub(crate) fn msys2_root() -> PathBuf {
     std::env::var("MSYS2_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|_| Path::new(r"C:\msys64").to_path_buf())
-}
-
-/// Versión instalada de un paquete MSYS2 (`pacman -Q nombre` → `nombre
-/// versión`). `Ok(None)` si el paquete no está instalado (`pacman` sale con
-/// error); `Err(motivo)` si `pacman` no se pudo ejecutar o su salida no tiene
-/// la forma `nombre versión`.
-fn msys2_package_version(pacman: &Path, package: &str) -> Result<Option<String>, String> {
-    let out = probe_command(pacman)
-        .args(["-Q", package])
-        .output()
-        .map_err(|e| format!("no se pudo ejecutar `{}`: {e}", pacman.display()))?;
-    if !out.status.success() {
-        return Ok(None);
-    }
-    let text = String::from_utf8(out.stdout)
-        .map_err(|_| format!("la salida de `pacman -Q {package}` no es UTF-8 válido"))?;
-    let version = text
-        .strip_prefix(package)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "salida inesperada de `pacman -Q {package}`: {}",
-                text.trim()
-            )
-        })?;
-    Ok(Some(version.to_string()))
 }
 
 /// `true` si la versión instalada cubre el pin: igualdad tras recortar el
@@ -498,185 +463,6 @@ fn check_cmake() -> Row {
     }
 }
 
-/// Paquetes de MSYS2 UCRT64 que compilan el motor, con su versión fijada, en el orden
-/// gcc, OpenBLAS y make.
-fn msys2_packages(pins: &Pins) -> [(&'static str, &str); 3] {
-    [
-        ("mingw-w64-ucrt-x86_64-gcc", pins.msys2_gcc.as_str()),
-        (
-            "mingw-w64-ucrt-x86_64-openblas",
-            pins.msys2_openblas.as_str(),
-        ),
-        ("mingw-w64-ucrt-x86_64-make", pins.msys2_make.as_str()),
-    ]
-}
-
-/// Compara las versiones instaladas de los paquetes de [`msys2_packages`] (mismo orden)
-/// con los pines: `Ok` si todas coinciden, `Mismatch` nombrando cada diferencia y
-/// `Error` si alguna sonda no pudo ejecutarse.
-fn evaluate_msys2_versions(pins: &Pins, installed: &[Result<Option<String>, String>; 3]) -> Row {
-    let label = "Toolchain del motor TTS";
-    let mut stale = Vec::new();
-    let mut details = Vec::new();
-    let mut failures = Vec::new();
-    for ((package, pinned), version) in msys2_packages(pins).into_iter().zip(installed) {
-        match version {
-            Ok(Some(v)) if pin_covers(v, pinned) => details.push(format!("{package} {v}")),
-            Ok(Some(v)) => stale.push(format!("{package}: instalado {v}, fijado {pinned}")),
-            Ok(None) => stale.push(format!("{package}: no instalado (fijado {pinned})")),
-            Err(reason) => failures.push(reason.clone()),
-        }
-    }
-    if !failures.is_empty() {
-        return probe_error_row(
-            "engine-toolchain",
-            label,
-            true,
-            Some("MSYS2 UCRT64 con los pines de pins.json".to_string()),
-            failures.join("; "),
-        );
-    }
-    if stale.is_empty() {
-        return Row {
-            id: "engine-toolchain",
-            label,
-            mandatory: true,
-            status: Status::Ok,
-            found: Some(details.join(", ")),
-            want: Some("MSYS2 UCRT64 con los pines de pins.json".to_string()),
-            hint: None,
-        };
-    }
-    Row {
-        id: "engine-toolchain",
-        label,
-        mandatory: true,
-        status: Status::Mismatch,
-        found: Some(stale.join("; ")),
-        want: Some(format!(
-            "gcc {}, OpenBLAS {}, make {}",
-            pins.msys2_gcc, pins.msys2_openblas, pins.msys2_make
-        )),
-        hint: Some(
-            "en la shell de MSYS2 UCRT64: pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make".to_string(),
-        ),
-    }
-}
-
-/// Sonda de la toolchain del motor TTS según el SO, con los pines de MSYS2
-/// en Windows. `build-engine` aplica esta misma regla antes de compilar.
-pub(crate) fn check_engine_toolchain(pins: &Pins) -> Row {
-    let label = "Toolchain del motor TTS";
-    if cfg!(windows) {
-        let pacman = msys2_root().join("usr").join("bin").join("pacman.exe");
-        if !pacman.is_file() {
-            return Row {
-                id: "engine-toolchain",
-                label,
-                mandatory: true,
-                status: Status::Missing,
-                found: None,
-                want: Some(format!(
-                    "MSYS2 UCRT64 (gcc {}, OpenBLAS {}, make {})",
-                    pins.msys2_gcc, pins.msys2_openblas, pins.msys2_make
-                )),
-                hint: Some(format!(
-                    "instala MSYS2 (base {}) y ejecuta en su shell: pacman -S mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-openblas mingw-w64-ucrt-x86_64-make",
-                    pins.msys2_base
-                )),
-            };
-        }
-        let installed =
-            msys2_packages(pins).map(|(package, _)| msys2_package_version(&pacman, package));
-        return evaluate_msys2_versions(pins, &installed);
-    }
-    if cfg!(target_os = "macos") {
-        let want = "make, clang y Accelerate (Xcode CLT)";
-        let (make, clang) = match (
-            probe_version_token("make", &["--version"]),
-            probe_version_token("clang", &["--version"]),
-        ) {
-            (Ok(make), Ok(clang)) => (make, clang),
-            (Err(reason), _) | (_, Err(reason)) => {
-                return probe_error_row(
-                    "engine-toolchain",
-                    label,
-                    true,
-                    Some(want.to_string()),
-                    reason,
-                )
-            }
-        };
-        if let (Some(make), Some(clang)) = (make, clang) {
-            return Row {
-                id: "engine-toolchain",
-                label,
-                mandatory: true,
-                status: Status::Ok,
-                found: Some(format!("make {make}, clang {clang} + Accelerate")),
-                want: Some("make, clang y Accelerate (Xcode CLT)".to_string()),
-                hint: None,
-            };
-        }
-        return Row {
-            id: "engine-toolchain",
-            label,
-            mandatory: true,
-            status: Status::Missing,
-            found: None,
-            want: Some("make, clang y Accelerate (Xcode CLT)".to_string()),
-            hint: Some("xcode-select --install".to_string()),
-        };
-    }
-    // Linux: make, gcc y las variantes estáticas de OpenBLAS y de libgfortran.
-    // El Makefile del motor enlaza `libopenblas.a` y el runtime Fortran que usa
-    // su LAPACK para que el motor distribuido solo dependa de glibc, así que una
-    // OpenBLAS solo dinámica no basta para compilarlo.
-    let want = Some("make, gcc y OpenBLAS y libgfortran estáticas".to_string());
-    let (make, gcc) = match (
-        probe_version_token("make", &["--version"]),
-        probe_version_token("gcc", &["--version"]),
-    ) {
-        (Ok(make), Ok(gcc)) => (make, gcc),
-        (Err(reason), _) | (_, Err(reason)) => {
-            return probe_error_row("engine-toolchain", label, true, want, reason)
-        }
-    };
-    let multiarch = probe_output("gcc", &["-print-multiarch"]).unwrap_or_default();
-    let openblas = static_openblas_candidates(&multiarch)
-        .iter()
-        .any(|p| Path::new(p).is_file());
-    if make.is_some() && gcc.is_some() && openblas && gcc_static_library("libgfortran.a") {
-        return Row {
-            id: "engine-toolchain",
-            label,
-            mandatory: true,
-            status: Status::Ok,
-            found: Some("make + gcc + libopenblas.a + libgfortran.a".to_string()),
-            want,
-            hint: None,
-        };
-    }
-    let gcc_major = gcc_major_version();
-    let hint = detect_linux_manager()
-        .map(|m| linux_install_command(m, &engine_toolchain_packages(m, &gcc_major)))
-        .or_else(|| {
-            Some(
-                "instala make, gcc y las librerías estáticas de OpenBLAS y libgfortran con tu gestor"
-                    .to_string(),
-            )
-        });
-    Row {
-        id: "engine-toolchain",
-        label,
-        mandatory: true,
-        status: Status::Missing,
-        found: None,
-        want,
-        hint,
-    }
-}
-
 /// Si `gcc` encuentra la librería estática `name` en su directorio.
 fn gcc_static_library(name: &str) -> bool {
     gcc_static_library_found(probe_output("gcc", &[&format!("-print-file-name={name}")]))
@@ -709,32 +495,6 @@ fn c_compiler_packages(manager: &str, gcc_major: &str) -> String {
         "pacman" => "gcc".to_string(),
         _ => "gcc g++ libstdc++-static o equivalentes".to_string(),
     }
-}
-
-/// Paquetes del toolchain del motor TTS en Linux, con las variantes estáticas
-/// de OpenBLAS y `libgfortran`.
-fn engine_toolchain_packages(manager: &str, gcc_major: &str) -> String {
-    match manager {
-        "apt" if !gcc_major.is_empty() => {
-            format!("make gcc libopenblas-dev libgfortran-{gcc_major}-dev")
-        }
-        "apt" => "make gcc libopenblas-dev gfortran".to_string(),
-        "dnf" => "make gcc openblas-static libgfortran-static".to_string(),
-        "pacman" => "make gcc openblas gcc-fortran".to_string(),
-        _ => "make gcc openblas-static libgfortran-static o equivalentes".to_string(),
-    }
-}
-
-/// Rutas donde el Makefile del motor busca `libopenblas.a` en Linux, en su
-/// mismo orden: Debian y Ubuntu la instalan en `openblas-pthread/`, fuera de la
-/// ruta del enlazador, y otras distribuciones en el directorio de librerías.
-fn static_openblas_candidates(multiarch: &str) -> Vec<String> {
-    vec![
-        format!("/usr/lib/{multiarch}/openblas-pthread/libopenblas.a"),
-        format!("/usr/lib/{multiarch}/libopenblas.a"),
-        "/usr/lib64/libopenblas.a".to_string(),
-        "/usr/lib/libopenblas.a".to_string(),
-    ]
 }
 
 /// Sonda ONNX Runtime: `ort-bundle/` fresco para el pin (marcador más
@@ -1019,108 +779,6 @@ fn check_target_hygiene(root: &Path) -> Row {
     }
 }
 
-/// Nombre del binario del motor según la plataforma.
-fn engine_bin_name() -> &'static str {
-    if cfg!(windows) {
-        "qwen_tts.exe"
-    } else {
-        "qwen_tts"
-    }
-}
-
-/// ¿Está el motor desactualizado? `None` = al día; `Some(motivo)` = deriva.
-/// Pura sobre mtimes ya leídas, así se testea sin disco.
-pub(crate) fn engine_drift_status(
-    bin_mtime: Option<std::time::SystemTime>,
-    newest_source_mtime: Option<std::time::SystemTime>,
-) -> Option<String> {
-    let Some(bin) = bin_mtime else {
-        return Some("motor sin compilar (recompila con build-engine)".to_string());
-    };
-    match newest_source_mtime {
-        Some(newest) if newest > bin => Some(
-            "motor desactualizado respecto de sus fuentes (recompila con build-engine)".to_string(),
-        ),
-        _ => None,
-    }
-}
-
-/// Error de lectura con la ruta que lo causó.
-fn read_error(path: &Path, e: std::io::Error) -> anyhow::Error {
-    anyhow::anyhow!("no se pudo leer {}: {e}", path.display())
-}
-
-/// mtime más reciente entre las fuentes del motor (`.c`, `.h`, `Makefile`);
-/// `None` si no hay fuentes. Un directorio inexistente no aporta fuentes; el
-/// resto de errores de lectura se propagan.
-fn newest_engine_source(root: &Path) -> Result<Option<std::time::SystemTime>> {
-    let dir = root.join("vendor").join("qwen3-tts");
-    let mut newest: Option<std::time::SystemTime> = None;
-    let mut stack = vec![dir];
-    while let Some(dir) = stack.pop() {
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(read_error(&dir, e)),
-        };
-        for entry in entries {
-            let entry = entry.map_err(|e| read_error(&dir, e))?;
-            let path = entry.path();
-            if entry
-                .file_type()
-                .map_err(|e| read_error(&path, e))?
-                .is_dir()
-            {
-                stack.push(path);
-                continue;
-            }
-            let interesting = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| matches!(e, "c" | "h" | "cpp" | "hpp" | "rc" | "manifest"))
-                || entry.file_name().to_string_lossy() == "Makefile";
-            if !interesting {
-                continue;
-            }
-            let mtime = path
-                .metadata()
-                .and_then(|m| m.modified())
-                .map_err(|e| read_error(&path, e))?;
-            newest = Some(newest.map_or(mtime, |n: std::time::SystemTime| n.max(mtime)));
-        }
-    }
-    Ok(newest)
-}
-
-/// `true` si el motor está compilado y al día (convergencia de `bootstrap`).
-/// Un error al comprobarlo se propaga: no se decide «fresco» a ciegas.
-pub(crate) fn engine_is_fresh(root: &Path) -> Result<bool> {
-    Ok(probe_engine_drift(root)?.is_none())
-}
-
-/// Deriva del motor: binario ausente o más viejo que sus fuentes. Un error de
-/// lectura se propaga.
-fn probe_engine_drift(root: &Path) -> Result<Option<String>> {
-    let bin = root
-        .join("vendor")
-        .join("qwen3-tts")
-        .join(engine_bin_name());
-    let bin_mtime = match bin.metadata() {
-        Ok(meta) if meta.is_file() => Some(meta.modified().map_err(|e| read_error(&bin, e))?),
-        Ok(_) => None,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(read_error(&bin, e)),
-    };
-    if bin_mtime.is_none() {
-        return Ok(Some(
-            "motor sin compilar (ejecuta `cargo xtask bootstrap` o `build-engine`)".to_string(),
-        ));
-    }
-    Ok(engine_drift_status(bin_mtime, newest_engine_source(root)?).map(|_| {
-        "motor desactualizado respecto de sus fuentes (ejecuta `cargo xtask bootstrap` o `build-engine`)".to_string()
-    }))
-}
-
 /// Deriva de ONNX: `ort-bundle/` ausente o con marcador ausente, ilegible o
 /// distinto del pin.
 fn probe_onnx_drift(root: &Path, pins: &Pins) -> Option<String> {
@@ -1179,7 +837,6 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         check_rust(pins),
         check_c_compiler(),
         check_cmake(),
-        check_engine_toolchain(pins),
         check_onnx(root, pins),
         check_ffmpeg(root, pins),
         check_engine_bundle(root, pins),
@@ -1191,18 +848,8 @@ pub(crate) fn check(root: &Path, pins: &Pins) -> Report {
         ROW_IDS,
         "la tabla cubre cada fila de requisitos en orden"
     );
-    let mut probe_errors = Vec::new();
-    let engine_drift = match probe_engine_drift(root) {
-        Ok(drift) => drift,
-        Err(e) => {
-            probe_errors.push(format!("no se pudo comprobar el motor TTS: {e}"));
-            None
-        }
-    };
     Report {
         rows,
-        engine_drift,
-        probe_errors,
         onnx_drift: probe_onnx_drift(root, pins),
         models_drift: models_drift(),
     }
@@ -1431,9 +1078,8 @@ fn print_human(report: &Report) {
         }
     }
     let drifts: Vec<&str> = report
-        .engine_drift
+        .onnx_drift
         .iter()
-        .chain(report.onnx_drift.iter())
         .map(|s| s.as_str())
         .chain(report.models_drift.iter().map(|s| s.as_str()))
         .collect();
@@ -1444,9 +1090,6 @@ fn print_human(report: &Report) {
         for drift in drifts {
             println!("  - {drift}");
         }
-    }
-    for error in &report.probe_errors {
-        println!("  [no se pudo comprobar] {error}");
     }
     if report.ok() {
         println!("Entorno listo.");
@@ -1475,16 +1118,10 @@ fn print_json(report: &Report, pins: &Pins) -> Result<()> {
             "rust": pins.rust,
             "ort": pins.ort,
             "sccache": pins.sccache,
-            "msys2_base": pins.msys2_base,
-            "msys2_gcc": pins.msys2_gcc,
-            "msys2_openblas": pins.msys2_openblas,
-            "msys2_make": pins.msys2_make,
             "ninja": pins.ninja,
         },
         "requirements": rows,
-        "probe_errors": report.probe_errors,
         "drift": {
-            "engine": report.engine_drift,
             "onnx": report.onnx_drift,
             "models": report.models_drift,
         },
@@ -1510,10 +1147,6 @@ mod tests {
             qwen_tts_engine_sha256: std::collections::BTreeMap::new(),
             qwen_tts_engine_source_sha256: "b".repeat(64),
             sccache: "0.8.2".to_string(),
-            msys2_base: "2026-06-11".to_string(),
-            msys2_gcc: "16.2.0".to_string(),
-            msys2_openblas: "0.3.34-1".to_string(),
-            msys2_make: "4.4.1-5".to_string(),
             ninja: "1.13.2".to_string(),
             bats: "1.14.0".to_string(),
             pwsh: "7.6.6".to_string(),
@@ -1535,7 +1168,6 @@ mod tests {
             [
                 "c-compiler",
                 "cmake",
-                "engine-toolchain",
                 "ffmpeg",
                 "onnx",
                 "qwen-tts-engine",
@@ -1556,10 +1188,6 @@ mod tests {
             &pins.rust,
             &pins.ort,
             &pins.sccache,
-            &pins.msys2_base,
-            &pins.msys2_gcc,
-            &pins.msys2_openblas,
-            &pins.msys2_make,
             &pins.ninja,
             &pins.pester,
         ] {
@@ -1567,7 +1195,7 @@ mod tests {
         }
     }
 
-    /// `check` sobre fixtures produce las 8 filas en orden y `ok()` solo
+    /// `check` sobre fixtures produce las filas declaradas en orden y `ok()` solo
     /// exige las obligatorias (`sccache` y `target-hygiene` no bloquean).
     #[test]
     fn check_yields_all_rows_in_order() {
@@ -1636,43 +1264,6 @@ mod tests {
         assert!(pin_covers("16.2.0-1", "16.2.0"));
         assert!(pin_covers("0.3.34-1", "0.3.34-1"));
         assert!(!pin_covers("15.1.0-1", "16.2.0"));
-    }
-
-    #[test]
-    fn msys2_versions_equal_to_the_pins_are_accepted() {
-        let installed = [
-            Ok(Some("16.2.0-6".to_string())),
-            Ok(Some("0.3.34-1".to_string())),
-            Ok(Some("4.4.1-5".to_string())),
-        ];
-        let row = evaluate_msys2_versions(&fixture_pins(), &installed);
-        assert_eq!(row.status, Status::Ok);
-    }
-
-    #[test]
-    fn msys2_versions_that_differ_are_rejected_naming_each_difference() {
-        let installed = [
-            Ok(Some("15.1.0-1".to_string())),
-            Ok(Some("0.3.34-1".to_string())),
-            Ok(None),
-        ];
-        let row = evaluate_msys2_versions(&fixture_pins(), &installed);
-        assert_eq!(row.status, Status::Mismatch);
-        let found = row.found.unwrap();
-        assert!(found.contains("gcc: instalado 15.1.0-1, fijado 16.2.0"));
-        assert!(found.contains("make: no instalado (fijado 4.4.1-5)"));
-        assert!(!found.contains("openblas"));
-    }
-
-    #[test]
-    fn a_failed_msys2_probe_is_an_error_and_not_a_pass() {
-        let installed = [
-            Ok(Some("16.2.0-6".to_string())),
-            Err("pacman no respondió".to_string()),
-            Ok(Some("4.4.1-5".to_string())),
-        ];
-        let row = evaluate_msys2_versions(&fixture_pins(), &installed);
-        assert_eq!(row.status, Status::Error);
     }
 
     #[test]
@@ -1772,35 +1363,16 @@ mod tests {
     }
 
     /// El compilador del workspace propone los paquetes de `libgomp.a` y
-    /// `libstdc++.a`; el del motor, los de OpenBLAS y `libgfortran.a`. Con la
-    /// versión de gcc, apt pide los paquetes de desarrollo de esa versión.
+    /// `libstdc++.a`. Con la versión de gcc, apt pide los paquetes de
+    /// desarrollo de esa versión.
     #[test]
-    fn linux_packages_follow_each_row_static_libraries() {
+    fn linux_packages_follow_compiler_static_libraries() {
         let apt = c_compiler_packages("apt", "14");
         for package in ["g++", "libgcc-14-dev", "libstdc++-14-dev"] {
             assert!(apt.contains(package), "{apt}");
         }
         assert!(c_compiler_packages("dnf", "").contains("libstdc++-static"));
         assert!(!c_compiler_packages("apt", "14").contains("gfortran"));
-        let engine = engine_toolchain_packages("apt", "14");
-        assert!(engine.contains("libgfortran-14-dev"), "{engine}");
-        assert!(!engine.contains("libstdc++"), "{engine}");
-        assert!(engine_toolchain_packages("dnf", "").contains("libgfortran-static"));
-    }
-
-    #[test]
-    fn engine_drift_predicate() {
-        use std::time::{Duration, SystemTime};
-        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
-        let older = base - Duration::from_secs(60);
-        // Sin binario: deriva (falta compilar).
-        assert!(engine_drift_status(None, None).is_some());
-        assert!(engine_drift_status(None, Some(base)).is_some());
-        // Binario más viejo que las fuentes: deriva.
-        assert!(engine_drift_status(Some(older), Some(base)).is_some());
-        // Al día: sin deriva.
-        assert!(engine_drift_status(Some(base), Some(older)).is_none());
-        assert!(engine_drift_status(Some(base), None).is_none());
     }
 
     #[test]
@@ -1936,18 +1508,6 @@ mod tests {
         assert!(probe_version(&exe.to_string_lossy(), &["--list"])
             .unwrap()
             .is_some());
-    }
-
-    /// Un fallo de lectura en las fuentes del motor se propaga y no se decide
-    /// «al día»: aquí `vendor/qwen3-tts` es un fichero y no un directorio.
-    #[test]
-    fn engine_source_read_error_is_propagated() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join("vendor")).unwrap();
-        std::fs::write(root.path().join("vendor").join("qwen3-tts"), b"x").unwrap();
-        assert!(newest_engine_source(root.path()).is_err());
-        let empty = tempfile::tempdir().unwrap();
-        assert_eq!(newest_engine_source(empty.path()).unwrap(), None);
     }
 
     #[test]

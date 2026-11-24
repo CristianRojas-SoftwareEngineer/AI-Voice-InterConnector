@@ -40,7 +40,7 @@ Cada uno de los 4 targets se publica como un archivo comprimido con el layout
 de `packaging/bundle-manifest.json`: en la raíz, el binario, los 5 documentos de
 la raíz del repositorio y la librería de ONNX Runtime (más las cinco DLL del
 runtime de VC++ en Windows: `vcruntime140.dll`, `vcruntime140_1.dll`,
-`msvcp140.dll`, `msvcp140_1.dll` y `vcomp140.dll`); el motor, en `vendor/qwen3-tts/qwen_tts[.exe]`:
+`msvcp140.dll`, `msvcp140_1.dll` y `vcomp140.dll`); el motor, en la raíz del bundle como `qwen_tts[.exe]`:
 
 | Target | Asset del release | Binario interno |
 |---|---|---|

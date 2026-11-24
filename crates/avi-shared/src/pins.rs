@@ -54,10 +54,6 @@ pub struct Pins {
     /// release del motor publica para esa versión.
     pub qwen_tts_engine_source_sha256: String,
     pub sccache: String,
-    pub msys2_base: String,
-    pub msys2_gcc: String,
-    pub msys2_openblas: String,
-    pub msys2_make: String,
     pub ninja: String,
     pub bats: String,
     pub pwsh: String,
