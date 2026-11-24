@@ -183,6 +183,17 @@ fn clone_state() -> Arc<DaemonState> {
             )
             .expect("estado del daemon con almacenes temporales");
             state.tts_engine.binary_path = Some(engine_binary());
+            // Segunda voz clonada, copia de la de fábrica: cambiar de voz entre
+            // las dos obliga a reemplazar el residente.
+            let voices = &state.voice_store;
+            voices
+                .ensure_initialized()
+                .expect("materializar la voz de fábrica");
+            let reference = voices.voice_dir(&vn("default")).join("reference.qvoice");
+            let mirror = voices.voice_dir(&vn("espejo"));
+            std::fs::create_dir_all(&mirror).expect("crear la segunda voz");
+            std::fs::copy(&reference, mirror.join("reference.qvoice"))
+                .expect("copiar la referencia de la segunda voz");
             Arc::new(state)
         })
         .clone()
@@ -1095,10 +1106,14 @@ async fn warm_voice_rejected_before_bind_and_acceptance() {
         store.exists(&vn(&name)).expect("resolver la voz de prueba"),
         "la voz registrada debe pasar la validación de --warm-voice"
     );
-    // Un preset del motor no tiene referencia `.qvoice`, pero existe igual.
+    // Una voz registrada sin `reference.qvoice` existe igual.
+    std::fs::create_dir_all(store.root().join("sin_ref"))
+        .expect("registrar una voz sin referencia");
     assert!(
-        store.exists(&vn("ryan")).expect("resolver el preset"),
-        "un preset debe pasar la validación de --warm-voice"
+        store
+            .exists(&vn("sin_ref"))
+            .expect("resolver la voz sin referencia"),
+        "una voz sin referencia debe pasar la validación de --warm-voice"
     );
 }
 
@@ -1410,7 +1425,7 @@ async fn dub_emits_contract_ndjson_stream_without_human_text() {
     let mut state = contract_state(tmp.path());
     let missing_engine = tmp.path().join("motor-inexistente");
     state.tts_engine.binary_path = Some(missing_engine.clone());
-    state.tts_engine.model_dir = Some(missing_engine);
+    state.tts_engine.base_model_dir = Some(missing_engine);
     let voice = "default";
     assert!(
         state
@@ -1548,22 +1563,6 @@ async fn dub_control_and_denoise_deliver_audio_events() {
 
 // ─── síntesis con el motor real ─────────────────────────────────────────
 
-/// Exige `model.safetensors` del snapshot del modelo CustomVoice de los
-/// presets: lo provisiona `ai-voice-interconnector setup`.
-fn require_custom_voice_model() {
-    let model_dir = avi_store::ModelStore::new()
-        .expect("la raíz de modelos debe resolverse")
-        .model_snapshot_path("qwen3-tts-0.6b")
-        .expect("el modelo qwen3-tts-0.6b debe tener un pin de revisión");
-    let weights = model_dir.join("model.safetensors");
-    std::fs::metadata(&weights).unwrap_or_else(|e| {
-        panic!(
-            "falta {} ({e}): provisiona el modelo CustomVoice con `ai-voice-interconnector setup`",
-            weights.display()
-        )
-    });
-}
-
 /// Eventos NDJSON de un cuerpo de respuesta.
 fn ndjson_events(bytes: &[u8]) -> Vec<Value> {
     String::from_utf8(bytes.to_vec())
@@ -1595,20 +1594,20 @@ fn delivered_pcm(events: &[Value]) -> Vec<u8> {
     pcm
 }
 
-/// Camino feliz de `/synthesize` con el motor real: un preset se sintetiza en el
-/// residente y el handler entrega el audio por eventos `audio`.
+/// Camino feliz de `/synthesize` con el motor real: una voz clonada se
+/// sintetiza en el residente y el handler entrega el audio por eventos `audio`.
 #[tokio::test]
-#[ignore = "requiere el binario del motor y el modelo CustomVoice"]
-async fn synthesize_preset_delivers_audio_events() {
+#[ignore = "requiere el binario del motor y el modelo Base"]
+async fn synthesize_delivers_audio_events() {
     let _engine = engine_exclusive().await;
     require_clone_binary();
-    require_custom_voice_model();
+    require_base_model();
     let (status, bytes) = send_to(
         clone_state(),
         post_json(
             "/synthesize",
             serde_json::json!({
-                "text": "Hola, esto es una prueba.", "voice": "ryan",
+                "text": "Hola, esto es una prueba.", "voice": "default",
                 "source_language": "es", "target_language": "es"
             }),
         ),
@@ -1620,15 +1619,15 @@ async fn synthesize_preset_delivers_audio_events() {
     assert!(!audio.is_empty(), "el audio no debe estar vacío");
 
     // El estado es compartido entre pruebas, así que el residente puede venir ya
-    // con `ryan`. Pedir `vivian` justo después obliga a arrancar otro residente:
-    // la fase anuncia `loading_voice` antes del primer `audio` y `synthesis`
-    // cuando el residente está sano.
+    // con `default`. Pedir `espejo` justo después obliga a arrancar otro
+    // residente: la fase anuncia `loading_voice` antes del primer `audio` y
+    // `synthesis` cuando el residente está sano.
     let (status, switch_bytes) = send_to(
         clone_state(),
         post_json(
             "/synthesize",
             serde_json::json!({
-                "text": "Hola, esto es una prueba.", "voice": "vivian",
+                "text": "Hola, esto es una prueba.", "voice": "espejo",
                 "source_language": "es", "target_language": "es"
             }),
         ),
@@ -1669,7 +1668,7 @@ async fn synthesize_preset_delivers_audio_events() {
                 post_json(
                     "/synthesize",
                     serde_json::json!({
-                        "text": "Hola, esto es una prueba.", "voice": "ryan",
+                        "text": "Hola, esto es una prueba.", "voice": "default",
                         "source_language": "es", "target_language": "es",
                         "seed": seed
                     }),
@@ -1697,7 +1696,7 @@ async fn synthesize_preset_delivers_audio_events() {
 async fn synthesize_announces_translation_and_matches_the_direct_route() {
     let _engine = engine_exclusive().await;
     require_clone_binary();
-    require_custom_voice_model();
+    require_base_model();
     prepare_shared_env();
     let root = process_root().join("translated-synthesis");
     let mut state = DaemonState::with_stores(
@@ -1716,7 +1715,7 @@ async fn synthesize_announces_translation_and_matches_the_direct_route() {
         post_json(
             "/synthesize",
             serde_json::json!({
-                "text": text, "voice": "ryan",
+                "text": text, "voice": "default",
                 "source_language": "es", "target_language": "en"
             }),
         ),
@@ -1768,7 +1767,7 @@ async fn dub_emits_transcript_and_translation_in_order() {
     #[allow(clippy::disallowed_methods)]
     let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
     state.tts_engine.binary_path = Some(missing.clone());
-    state.tts_engine.model_dir = Some(missing);
+    state.tts_engine.base_model_dir = Some(missing);
     prepare_shared_env();
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
     let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_responses_16k.wav"))
@@ -1782,7 +1781,7 @@ async fn dub_emits_transcript_and_translation_in_order() {
                 "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio),
                 "source_language": "es",
                 "target_language": "en",
-                "voice": "ryan",
+                "voice": "default",
             }),
         ),
     )
@@ -1811,13 +1810,13 @@ async fn dub_emits_transcript_and_translation_in_order() {
     }
 }
 
-/// El idioma de destino `es` y `en` de un preset producen audio no vacío.
+/// El idioma de destino `es` y `en` de una voz clonada producen audio no vacío.
 #[tokio::test]
-#[ignore = "requiere el binario del motor y el modelo CustomVoice"]
-async fn synthesize_preset_in_each_language_delivers_audio() {
+#[ignore = "requiere el binario del motor y el modelo Base"]
+async fn synthesize_in_each_language_delivers_audio() {
     let _engine = engine_exclusive().await;
     require_clone_binary();
-    require_custom_voice_model();
+    require_base_model();
     for (token, text) in [
         ("es", "Hola, esto es una prueba."),
         ("en", "Hello, this is a test."),
@@ -1827,7 +1826,7 @@ async fn synthesize_preset_in_each_language_delivers_audio() {
             post_json(
                 "/synthesize",
                 serde_json::json!({
-                    "text": text, "voice": "ryan",
+                    "text": text, "voice": "default",
                     "source_language": token, "target_language": token
                 }),
             ),
@@ -1869,7 +1868,7 @@ async fn disconnect_cancels_synthesis(state: Arc<DaemonState>, response: axum::r
             post_json(
                 "/synthesize",
                 serde_json::json!({
-                    "text": "Hola.", "voice": "ryan",
+                    "text": "Hola.", "voice": "default",
                     "source_language": "es", "target_language": "es"
                 }),
             ),
@@ -1885,18 +1884,18 @@ async fn disconnect_cancels_synthesis(state: Arc<DaemonState>, response: axum::r
 /// Al cortar el cliente el stream de `/synthesize`, la síntesis se cancela y el
 /// motor queda libre para la siguiente.
 #[tokio::test]
-#[ignore = "requiere el binario del motor y el modelo CustomVoice"]
+#[ignore = "requiere el binario del motor y el modelo Base"]
 async fn synthesize_disconnect_cancels_the_engine_work() {
     let _engine = engine_exclusive().await;
     require_clone_binary();
-    require_custom_voice_model();
+    require_base_model();
     let state = clone_state();
     let response = build_router_with_state(state.clone())
         .oneshot(post_json(
             "/synthesize",
             serde_json::json!({
                 "text": "Esta es una frase algo más larga para que la síntesis tarde un poco y el cliente pueda cortar a mitad del trabajo.",
-                "voice": "ryan",
+                "voice": "default",
                 "source_language": "es", "target_language": "es"
             }),
         ))
@@ -1909,12 +1908,12 @@ async fn synthesize_disconnect_cancels_the_engine_work() {
 /// antes de sintetizar.
 #[cfg(feature = "native-stt")]
 #[tokio::test]
-#[ignore = "requiere Parakeet, el binario del motor y el modelo CustomVoice"]
+#[ignore = "requiere Parakeet, el binario del motor y el modelo Base"]
 async fn dub_disconnect_cancels_the_engine_work() {
     let state = resource_state();
     let _engine = engine_exclusive().await;
     require_clone_binary();
-    require_custom_voice_model();
+    require_base_model();
     let assets = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../avi-stt/tests/assets");
     let pcm = avi_audio::load_wav_16k_mono_pcm(assets.join("corpus_responses_16k.wav"))
         .expect("el WAV corpus debe cargarse");
@@ -1926,7 +1925,7 @@ async fn dub_disconnect_cancels_the_engine_work() {
                 "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio),
                 "source_language": "es",
                 "target_language": "es",
-                "voice": "ryan",
+                "voice": "default",
             }),
         ))
         .await
@@ -1935,17 +1934,23 @@ async fn dub_disconnect_cancels_the_engine_work() {
 }
 
 /// Eventos NDJSON de la respuesta de `/synthesize` para `voice`, con un estado
-/// cuyo motor tiene binario y modelo CustomVoice inexistentes y sin modelo Base:
-/// ninguna síntesis puede llegar a lanzar un motor real.
-async fn synthesize_events_without_engine(dir_prefix: &str, voice: &str) -> Vec<Value> {
+/// cuyo motor tiene un binario inexistente y, si `with_base_model`, también un
+/// modelo Base inexistente; sin él, el modelo Base no está resuelto. Ninguna
+/// síntesis puede llegar a lanzar un motor real: sin modelo Base el daemon
+/// responde antes de mirar la voz, y con él la voz se comprueba antes de
+/// lanzar el motor.
+async fn synthesize_events_without_engine(
+    dir_prefix: &str,
+    voice: &str,
+    with_base_model: bool,
+) -> Vec<Value> {
     prepare_shared_env();
     let mut state = contract_state(&process_root().join(dir_prefix));
     // Prueba: ruta inexistente bajo el temporal del sistema, sin crear nada.
     #[allow(clippy::disallowed_methods)]
     let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
     state.tts_engine.binary_path = Some(missing.clone());
-    state.tts_engine.model_dir = Some(missing);
-    state.tts_engine.base_model_dir = None;
+    state.tts_engine.base_model_dir = with_base_model.then_some(missing);
     std::fs::create_dir_all(state.voice_store.root().join("sin_referencia"))
         .expect("registrar una voz sin referencia");
     let (status, bytes) = send_to(
@@ -1967,42 +1972,42 @@ async fn synthesize_events_without_engine(dir_prefix: &str, voice: &str) -> Vec<
         .collect()
 }
 
-/// Una voz clonada sin el modelo Base provisionado responde `model_missing`:
-/// el motor falla antes de lanzar nada porque la selección del modelo por tipo
-/// de voz exige el Base.
+/// Una voz sin el modelo Base provisionado responde `model_missing`: el motor
+/// falla antes de lanzar nada porque toda síntesis exige el Base.
 #[tokio::test]
 async fn synthesize_cloned_voice_without_base_model_is_model_missing() {
-    let events = synthesize_events_without_engine("avi_golden_no_base", "default").await;
+    let events = synthesize_events_without_engine("avi_golden_no_base", "default", false).await;
     let last = events.last().expect("debe haber un evento final");
     assert_eq!(last["event"], "error", "evento final: {last:?}");
     assert_eq!(last["reason"], "model_missing", "evento final: {last:?}");
 }
 
-/// Una voz registrada que no tiene `reference.qvoice` ni es un preset del motor
-/// responde `voice_not_found`: la síntesis no la degrada a un speaker inexistente.
+/// Una voz registrada que no tiene `reference.qvoice` responde
+/// `voice_not_found` con el motor provisionado: la falta de voz se distingue
+/// de la falta de motor y se detecta antes de lanzarlo.
 #[tokio::test]
-async fn synthesize_voice_without_reference_nor_preset_is_voice_not_found() {
+async fn synthesize_voice_without_reference_is_voice_not_found() {
     let events =
-        synthesize_events_without_engine("avi_golden_no_reference", "sin_referencia").await;
+        synthesize_events_without_engine("avi_golden_no_reference", "sin_referencia", true).await;
     let last = events.last().expect("debe haber un evento final");
     assert_eq!(last["event"], "error", "evento final: {last:?}");
     assert_eq!(last["reason"], "voice_not_found", "evento final: {last:?}");
 }
 
-/// Sin binario ni modelo CustomVoice resueltos, `/synthesize` responde
-/// `model_missing`: la falta de motor y la de voz se distinguen.
+/// Sin binario ni modelo Base resueltos, `/synthesize` responde `model_missing`:
+/// la falta de motor y la de voz se distinguen.
 #[tokio::test]
 async fn synthesize_without_engine_is_model_missing() {
     prepare_shared_env();
     let mut state = contract_state(&process_root().join("avi_golden_no_engine"));
     state.tts_engine.binary_path = None;
-    state.tts_engine.model_dir = None;
+    state.tts_engine.base_model_dir = None;
     let (status, bytes) = send_to(
         Arc::new(state),
         post_json(
             "/synthesize",
             serde_json::json!({
-                "text": "hola", "voice": "ryan",
+                "text": "hola", "voice": "default",
                 "source_language": "es", "target_language": "es"
             }),
         ),

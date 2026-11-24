@@ -1609,7 +1609,7 @@ mod tests {
         );
         assert!(
             summary.contains(&format!(
-                "  Modelos:   se descargarán unos 5,9 GB en {}",
+                "  Modelos:   se descargarán unos 3,4 GB en {}",
                 env.models_dir.display()
             )),
             "{summary:?}"

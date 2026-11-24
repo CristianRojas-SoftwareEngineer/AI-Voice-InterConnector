@@ -50,7 +50,7 @@ alguno, el parser lo rechaza como argumento desconocido (exit 2
 | `ForceDirect` (`--no-daemon`) | Nunca sondea el daemon; ejecuta el motor local |
 | `Auto` (sin flags) | Sondea `GET /health` (`daemon_active`) con deadline corto; si responde, delega; si no, cae a directo |
 
-En `synthesize`, `say` y `dub`, el motor directo selecciona precisión al crearse mediante `AVI_TTS_PRECISION`: ausente o `mixed` usa el Talker en INT4 y el Code Predictor con la atención en INT8 y las FFN en Q4_0; `bf16` usa BF16. Otro valor produce `usage_error` (2) si se alcanza la construcción del motor, sin alterar la precedencia de validaciones previas. En la ruta daemon se usa el perfil del servidor ya iniciado, no el entorno del cliente.
+En `synthesize`, `say` y `dub`, el motor tiene un único perfil de precisión, siempre activo: no hay variable ni opción para elegirlo.
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
 lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
@@ -284,7 +284,7 @@ Flujo local:
 1. `source_eff = source_language.unwrap_or(target_language)` — sin
  `--source-language`, origen = destino (passthrough, no se traduce).
 2. Despacho: si aplica, vía daemon; si no, rama directa:
- `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b`) → `translate_if_different`
+ `require_model_provisioned` (exit 4 si falta `qwen3-tts-0.6b-base`) → `translate_if_different`
  (passthrough si `source == target`; si no, exige el modelo de traducción
  provisionado, exit 4 si falta) → entrega en streaming con `Qwen3TtsEngine`: sin
  `--play`, acumula el audio, escribe el WAV temporal y persiste; con `--play`, la
@@ -656,7 +656,7 @@ Las esperas de la síntesis no son etapas propias, sino textos vivos de la etapa
 
 | Reason | Exit | Origen |
 |---|---|---|
-| `usage_error` | 2 | `AVI_TTS_PRECISION` inválida al crear el motor directo; `--skip-existing` con `--force` o con `--play`, falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
+| `usage_error` | 2 | `--skip-existing` con `--force` o con `--play`, falta `--audio`/`--mic`, `--audio` y `--mic` a la vez, `--duration` sin `--mic`, `--mic` sin `--duration` y sin TTY, `--temperature` fuera de rango, `--daemon` junto a `--no-daemon`, `--daemon`/`--no-daemon` en un subcomando que no los declara (`list`/`play`/`remove`) |
 | `empty_text` | 2 | Texto a sintetizar vacío |
 | `empty_transcript` | 2 | La transcripción (`transcribe`) o el doblaje (`dub`), directos o por el daemon, no reconocieron voz: la transcripción resultante está vacía |
 | `text_too_long` | 2 | El texto a sintetizar (o el traducido en `dub`) supera `MAX_TEXT_LENGTH` caracteres Unicode ([`limits.rs`](../../../crates/avi-core/src/limits.rs)) |
@@ -671,7 +671,7 @@ Las esperas de la síntesis no son etapas propias, sino textos vivos de la etapa
 | `no_input_device` | 3 | `--mic` de transcribe y dub sin dispositivo de entrada predeterminado en el sistema |
 | `no_output_device` | 3 | La reproducción (`say`, `play`, `dub` y `synthesize --play`) sin dispositivo de salida predeterminado en el sistema |
 | `audio_backend_unavailable` | 3 | Captura o reproducción en un sistema sin backend de audio (en Linux, falta ALSA, `libasound.so.2`, o no define alguna función que se usa) |
-| `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b` o el modelo de traducción del par (`opus-mt-<par>`); una voz clonada exige además `qwen3-tts-0.6b-base` |
+| `model_missing` | 4 | Falta `parakeet-tdt-v3`, `qwen3-tts-0.6b-base` o el modelo de traducción del par (`opus-mt-<par>`) |
 | `daemon_unreachable` | 5 | `--daemon` forzado sin daemon activo |
 | `label_exists` | 6 | `synthesize` sin `--force` ni `--skip-existing` sobre una etiqueta ya usada |
 | `voice_changed` | 6 | `synthesize`: la voz se re-clonó o se eliminó mientras se sintetizaba; el audio sintetizado no se guarda |

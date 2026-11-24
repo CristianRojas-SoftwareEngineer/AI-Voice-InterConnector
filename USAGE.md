@@ -60,25 +60,24 @@ Para instalar, ver [Instalación en el README](README.md#instalación). Si traba
 
 ## Modelos (`setup`)
 
-`setup` descarga **los 6 modelos** desde HuggingFace Hub de forma nativa
+`setup` descarga **los 5 modelos** desde HuggingFace Hub de forma nativa
 (crate `hf-hub`, TLS rustls) a la **caché exclusiva de la aplicación**
 (rutas por SO y efecto de `HF_HUB_CACHE`/`HF_HOME` en
 [Ubicaciones en disco por SO](docs/BUILD.md#ubicaciones-en-disco-por-so)):
 
 | Modelo | Repo HF | Uso |
 |---|---|---|
-| `qwen3-tts-0.6b` | `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | Síntesis TTS |
 | `opus-mt-es-en` | `CristianRojaas/opus-mt-es-en-ct2-int8` | Traducción español → inglés (derivado int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertido a CTranslate2) |
 | `opus-mt-en-es` | `CristianRojaas/opus-mt-en-es-ct2-int8` | Traducción inglés → español (derivado int8 de Helsinki-NLP/opus-mt, CC-BY-4.0, ya convertido a CTranslate2) |
 | `parakeet-tdt-v3` | `istupakov/parakeet-tdt-0.6b-v3-onnx` | STT (ONNX int8) |
 | `dpdfnet8` | `Ceva-IP/DPDFNet` | Limpieza de ruido (`--denoise` y `speech denoise`); no bloquea el arranque del daemon |
-| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Clonado de voz y síntesis de las voces clonadas (Base) |
+| `qwen3-tts-0.6b-base` | `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | Clonado de voz y síntesis de todas las voces (Base) |
 
 Las revisiones están pineadas por commit hash en `MODEL_REVISIONS`
 (`crates/avi-shared/src/paths.rs`): mismo binario → mismos pesos. Tamaño de la descarga y detalle de cada modelo en [`setup`](docs/CLI/commands/SETUP.md); el espacio en disco, en [Requisitos del README](README.md#requisitos). Una descarga interrumpida no se reanuda: `setup` repite el archivo completo.
 
 ```bash
-ai-voice-interconnector setup                        # descarga los 6 modelos (idempotente)
+ai-voice-interconnector setup                        # descarga los 5 modelos (idempotente)
 ai-voice-interconnector setup --force-update         # purga los snapshots pinneados + xet y re-descarga
 ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación interactiva
 ```
@@ -86,7 +85,7 @@ ai-voice-interconnector setup --force-update --yes   # ídem, sin confirmación 
 **Qué esperar:** el encabezado `Descargando N modelos:`, una barra por modelo con su
 porcentaje, tamaño real, velocidad y tiempo restante (repintada de forma continua, sin
 valores absurdos: `quedan —` durante los primeros 2 s), y una línea por modelo terminado
-(`  ✓ [1/6] qwen3-tts-0.6b  2,5 GB en 44,0 s · 56,7 MB/s`). Al terminar cierra por stderr con
+(`  ✓ [1/5] qwen3-tts-0.6b-base  2,5 GB en 44,0 s · 56,7 MB/s`). Al terminar cierra por stderr con
 `✓ Setup completado en <total> · N modelos, X descargados`, o con `✓ Los N modelos ya estaban
 descargados.` si no había nada que descargar; ya no hay una línea «Total:» aparte. Una descarga
 interrumpida se repite entera. La provisión se decide solo por presencia del snapshot HF (no hay
@@ -248,7 +247,7 @@ una respuesta válida y sale como payload, no como texto.
 | Clave | Tipo | Significado |
 |-------|------|-------------|
 | `status` | string | `"completed"`, o `"cancelled"` si cancelas la confirmación (exit 0, `models_provisioned` vacío, nada purgado ni descargado) |
-| `models_provisioned` | array de strings | Los 6 modelos (`qwen3-tts-0.6b`, `opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`, `dpdfnet8`) |
+| `models_provisioned` | array de strings | Los 5 modelos (`opus-mt-*`, `parakeet-tdt-v3`, `qwen3-tts-0.6b-base`, `dpdfnet8`) |
 
 **`cleanup --json` / `self uninstall --json`**
 
@@ -422,25 +421,7 @@ necesitan un modelo cargado):** tres modos, iguales a los de `voice clone`:
   degradar.
 - `--no-daemon`: fuerza el modo directo, sin sondear.
 
-**Precisión de síntesis:** `AVI_TTS_PRECISION` sin definir o con el valor exacto `mixed` selecciona el Talker en INT4 y el Code Predictor con la atención en INT8 y las FFN en Q4_0; `bf16` selecciona BF16 para ambos. Otros valores son inválidos. La CLI directa lee la variable al crear el motor; un daemon mantiene el perfil con el que arrancó, aunque cambie el entorno del cliente. Para cambiarlo, detén e inicia el daemon con la nueva variable:
-
-```powershell
-$env:AVI_TTS_PRECISION = 'bf16'
-ai-voice-interconnector daemon stop
-ai-voice-interconnector daemon start
-# Para volver a la cuantización mixta:
-$env:AVI_TTS_PRECISION = 'mixed'
-```
-
-```sh
-export AVI_TTS_PRECISION=bf16
-ai-voice-interconnector daemon stop
-ai-voice-interconnector daemon start
-# Para volver a la cuantización mixta:
-export AVI_TTS_PRECISION=mixed
-```
-
-Para que el daemon adopte el último cambio a `mixed`, también es necesario reiniciarlo. El perfil afecta a los pesos de síntesis, no a la extracción de la huella al clonar.
+**Precisión de síntesis:** el motor tiene un único perfil de precisión, siempre activo; no hay variable ni opción para elegirlo.
 
 En las operaciones pesadas (`synthesize`, `say`, `voice clone` y `dub`), la comunicación con el daemon opera mediante streaming NDJSON con latidos periódicos cada 500 ms y timeout de inactividad de 1500 ms (`STREAM_INACTIVITY_TIMEOUT`), evitando cuelgues o timeouts prematuros en tareas de larga duración. Los eventos del stream no llevan texto humano (solo `event`, `stage` y datos de la petición): el cliente traduce cada etapa a una etapa de su catálogo, con los mismos textos que en la ruta directa. El stream de `/dub` añade dos eventos con texto del usuario, `transcript` y `translation` (claves `event`, `text` y `schema_version`), que el cliente muestra en cuanto llegan.
 
@@ -575,8 +556,8 @@ puerta de calidad sobre lo que sonó.
 **Orígenes de voz:** todas las voces viven en `data_dir()/voices/<nombre>/`, en
 un único nivel.
 - **Fábrica**: `default`, clonada, cuyo `reference.qvoice` va embebido en el
-  binario (`crates/avi-store/assets/default/`) y se materializa en el primer uso,
-  y los presets `ryan` y `vivian`, sin referencia. No se pueden eliminar.
+  binario (`crates/avi-store/assets/default/`) y se materializa en el primer uso.
+  No se puede eliminar.
 - **Usuario**: voces registradas con `voice clone` (`reference.qvoice`).
   `voice clone --force` con el nombre de una voz existente, de fábrica incluida,
   sustituye su referencia en el mismo directorio.
@@ -853,8 +834,8 @@ cargado) y **10** (fallo de transcripción con el modelo cargado).
 
 Tres sub-acciones sobre el registro de voces: `clone` registra una voz a partir
 de audio de referencia (requiere el modelo Base), `list` muestra las voces de
-fábrica y de usuario, y `remove` elimina una voz de usuario. Las voces de fábrica
-(`default`, `ryan`, `vivian`) no se pueden eliminar.
+fábrica y de usuario, y `remove` elimina una voz de usuario. La voz de fábrica
+(`default`) no se puede eliminar.
 
 #### `voice clone`
 
@@ -938,8 +919,6 @@ ai-voice-interconnector voice list --json
 ```
 Voces:
   default (de fábrica)
-  ryan (de fábrica)
-  vivian (de fábrica)
   mi_voz
 ```
 
@@ -1170,7 +1149,7 @@ Puerto ocupado: si otro proceso usa o reserva el puerto del daemon, `daemon star
 
 Trazas y logs: `RUST_LOG` (sintaxis de `tracing`) fija el nivel de traza de la CLI y de `daemon serve` y manda sobre los valores por defecto; sin ella, la CLI muestra `warn` y superiores (trazas `info`, como la descarga de `setup`, se piden con `RUST_LOG=info`) y el daemon registra `info` de los crates propios. Cada `daemon start`/`restart` escribe `data/logs/daemon_<pid>_<ms>.log` (con el PID del daemon hijo) y, si el arranque falla, el error termina con `Log del daemon: <ruta>`. El motor de síntesis escribe en `data/logs/qwen3-tts_<pid>_<ms>.log`, y la salida de `voice clone` no se vuelca en la terminal. Se conservan los 10 logs más recientes de cada familia, y un log cuyo PID corresponde a un proceso vivo se conserva siempre.
 
-Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz y se reutiliza solo con el mismo preset o con una voz clonada del mismo contenido: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior, y re-clonar una voz con el mismo nombre la recarga.
+Warmup: tras enlazar la dirección resuelta (default `127.0.0.1:8765`), el daemon precalienta la voz elegida por `--warm-voice` (default `default`) vía `spawn_blocking(warm_voice_engine)` — best-effort, no aborta el arranque si falla (degrada a `warm_failed` pero sigue sirviendo; la primera petición paga el cold-start). Una `--warm-voice` inexistente sí aborta el arranque con exit 3 (`voice_not_found`), antes de enlazar el puerto y de cargar los modelos. El residente TTS es de una sola voz y se reutiliza solo con una voz del mismo contenido: clonar por daemon recalienta la voz nueva (warm-on-clone), evicciónando la anterior, y re-clonar una voz con el mismo nombre la recarga.
 
 `daemon stop` cierra con `✓ Daemon detenido en <total>` —o `✓ No había ningún daemon en marcha.` si no había ninguno, porque decir que se detuvo algo que no corría sería mentir— (parada unificada de daemon y residente con verificación y borrado de `daemon.pid` y `daemon.ready`; si el residente registrado sigue vivo, la parada no se da por completa y sale por veredicto con `still_running` y exit 5, sin borrar la pista) y `daemon restart` hace la misma parada unificada seguida del mismo lanzamiento que `daemon start`, con los mismos códigos de fallo.
 
@@ -1230,7 +1209,7 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference habla.wav -
 
 # 3. Verifica que aparece
 ai-voice-interconnector voice list
-# → Voces: default (de fábrica), ryan (de fábrica), vivian (de fábrica), mi_voz
+# → Voces: default (de fábrica), mi_voz
 
 # 4. Escúchala
 ai-voice-interconnector speech say --text "Hola, esto es una prueba" --voice mi_voz
@@ -1400,7 +1379,7 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.w
 
 ### "La voz 'x' no se puede eliminar." (exit 2)
 
-Las voces de fábrica (`default`, `ryan`, `vivian`) no pueden eliminarse con
+La voz de fábrica (`default`) no puede eliminarse con
 `voice remove`: el comando sale con exit 2 y el código `cannot_remove_default`.
 Si quieres reemplazar su sonido, vuelve a clonarla con el mismo nombre usando
 `voice clone --force`: su referencia se sustituye en el mismo directorio.

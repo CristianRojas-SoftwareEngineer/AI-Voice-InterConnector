@@ -1,25 +1,6 @@
 {
   "models": [
     {
-      "name": "qwen3-tts-0.6b",
-      "repo": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-      "revision": "85e237c12c027371202489a0ec509ded67b5e4b5",
-      "approx_bytes": 2498388392,
-      "files": [
-        "config.json",
-        "generation_config.json",
-        "merges.txt",
-        "model.safetensors",
-        "preprocessor_config.json",
-        "speech_tokenizer/config.json",
-        "speech_tokenizer/configuration.json",
-        "speech_tokenizer/model.safetensors",
-        "speech_tokenizer/preprocessor_config.json",
-        "tokenizer_config.json",
-        "vocab.json"
-      ]
-    },
-    {
       "name": "opus-mt-es-en",
       "repo": "CristianRojaas/opus-mt-es-en-ct2-int8",
       "revision": "6eabf2f7d9f92dd52e38fe95c9da29f219613c19",

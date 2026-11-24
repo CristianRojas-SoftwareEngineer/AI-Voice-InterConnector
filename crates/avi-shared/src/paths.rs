@@ -238,15 +238,6 @@ pub struct ModelPin {
 /// `MODEL_FILE_PATTERNS`, para el E2E de Windows; el test
 /// `model_pins_match_fixture` falla si la copia difiere de estas constantes.
 pub const MODEL_REVISIONS: &[ModelPin] = &[
-    // Motor TTS Qwen3-TTS 0.6B CustomVoice (pesos safetensors BF16)
-    ModelPin {
-        name: "qwen3-tts-0.6b",
-        repo: "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
-        revision: "85e237c12c027371202489a0ec509ded67b5e4b5",
-        approx_bytes: 2_498_388_392,
-        artifact_sha256: None,
-        startup_optional: false,
-    },
     // Traducción es→en / en→es: Helsinki-NLP/opus-mt (CC-BY 4.0) convertido una
     // sola vez a CTranslate2 int8 y publicado en repos propios; el motor lo lee
     // directamente del snapshot, sin conversión local.
@@ -435,12 +426,11 @@ pub const MODEL_FILE_PATTERNS: &[(&str, &[&str])] = &[
             "target.spm",
         ],
     ),
-    // Los dos pines Qwen3-TTS comparten contrato de ficheros. Sin esta entrada,
+    // El pin Qwen3-TTS declara sus ficheros. Sin esta entrada,
     // `is_provisioned` aceptaba «algún fichero con tamaño > 0», y como los
     // configs y el tokenizer se escriben al principio de la descarga, un
     // snapshot interrumpido —configs presentes, `model.safetensors` ausente—
     // contaba como provisionado: ni `setup` lo reparaba ni `doctor` lo veía.
-    ("qwen3-tts-0.6b", QWEN3_TTS_SNAPSHOT_FILES),
     ("qwen3-tts-0.6b-base", QWEN3_TTS_SNAPSHOT_FILES),
 ];
 

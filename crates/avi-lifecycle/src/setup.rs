@@ -656,17 +656,17 @@ pub(crate) mod tests {
     }
 
     /// La confirmación anuncia la suma de los tamaños fijados en la tabla de
-    /// pines, en escala decimal: 5 865 044 386 bytes los 6 modelos de la
+    /// pines, en escala decimal: 3 366 655 994 bytes los 5 modelos de la
     /// selección, el Base de clonado y DPDFNet incluidos.
     #[test]
     fn confirmation_announces_the_pinned_sizes() {
         let all = Pending {
             models: selection().into_iter().map(String::from).collect(),
         };
-        assert_eq!(all.estimated_bytes(), 5_865_044_386);
+        assert_eq!(all.estimated_bytes(), 3_366_655_994);
         assert_eq!(
             download_summary(&all),
-            "Se descargarán 6 modelos, unos 5,9 GB."
+            "Se descargarán 5 modelos, unos 3,4 GB."
         );
         let one = Pending {
             models: vec![CLONING_MODEL.to_string()],
@@ -854,8 +854,8 @@ pub(crate) mod tests {
     #[test]
     fn prune_removes_only_obsolete_revisions() {
         let root = scratch("setup-prune");
-        let (repo, revision) =
-            avi_store::ModelStore::revision_of("qwen3-tts-0.6b").expect("el modelo base tiene pin");
+        let (repo, revision) = avi_store::ModelStore::revision_of("qwen3-tts-0.6b-base")
+            .expect("el modelo base tiene pin");
         let snapshots = root
             .join(format!("models--{}", repo.replace('/', "--")))
             .join("snapshots");
@@ -891,7 +891,7 @@ pub(crate) mod tests {
             outcome.removed,
             vec![
                 format!("opus-mt-es-en/snapshots/{stale_hash}"),
-                format!("qwen3-tts-0.6b/snapshots/{old}"),
+                format!("qwen3-tts-0.6b-base/snapshots/{old}"),
             ],
             "poda exacta: solo lo obsoleto, en orden"
         );

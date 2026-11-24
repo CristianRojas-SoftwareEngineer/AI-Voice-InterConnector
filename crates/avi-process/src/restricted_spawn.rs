@@ -300,30 +300,33 @@ fn exit_status_from_raw(code: u32) -> std::process::ExitStatus {
 /// padre no llega al hijo. Sin repliegue: si la lista no se puede aplicar, el
 /// lanzamiento falla con error.
 pub fn spawn_with_allowlist(request: RestrictedSpawnRequest) -> io::Result<RestrictedChild> {
-    spawn_with_allowlist_env(request, &[])
+    spawn_with_allowlist_env(request, &[], &[])
 }
 
 /// Igual que [`spawn_with_allowlist`], pero el hijo recibe además las variables
 /// de entorno de `env`, que sustituyen a las homónimas del padre (en Windows la
-/// comparación del nombre ignora mayúsculas). El resto del entorno se hereda.
+/// comparación del nombre ignora mayúsculas), y pierde las variables nombradas
+/// en `env_remove`, que ganan sobre `env`. El resto del entorno se hereda.
 pub fn spawn_with_allowlist_env(
     request: RestrictedSpawnRequest,
     env: &[(&str, &std::ffi::OsStr)],
+    env_remove: &[&str],
 ) -> io::Result<RestrictedChild> {
     #[cfg(windows)]
     {
-        spawn_with_allowlist_windows(request, env)
+        spawn_with_allowlist_windows(request, env, env_remove)
     }
     #[cfg(not(windows))]
     {
-        spawn_with_allowlist_unix(request, env)
+        spawn_with_allowlist_unix(request, env, env_remove)
     }
 }
 
 /// Bloque de entorno UTF-16 de Windows: el entorno del padre con `overrides`
-/// aplicados, ordenado sin distinguir mayúsculas y terminado en doble nulo.
+/// aplicados y `removed` suprimidas, ordenado sin distinguir mayúsculas y
+/// terminado en doble nulo.
 #[cfg(windows)]
-fn environment_block(overrides: &[(&str, &std::ffi::OsStr)]) -> Vec<u16> {
+fn environment_block(overrides: &[(&str, &std::ffi::OsStr)], removed: &[&str]) -> Vec<u16> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStrExt;
 
@@ -332,6 +335,10 @@ fn environment_block(overrides: &[(&str, &std::ffi::OsStr)]) -> Vec<u16> {
         let upper = key.to_uppercase();
         vars.retain(|(k, _)| k.to_string_lossy().to_uppercase() != upper);
         vars.push((OsString::from(key), value.to_os_string()));
+    }
+    for key in removed {
+        let upper = key.to_uppercase();
+        vars.retain(|(k, _)| k.to_string_lossy().to_uppercase() != upper);
     }
     vars.sort_by_key(|(k, _)| k.to_string_lossy().to_uppercase());
     let mut block: Vec<u16> = Vec::new();
@@ -356,6 +363,7 @@ fn environment_block(overrides: &[(&str, &std::ffi::OsStr)]) -> Vec<u16> {
 fn spawn_with_allowlist_unix(
     request: RestrictedSpawnRequest,
     env: &[(&str, &std::ffi::OsStr)],
+    env_remove: &[&str],
 ) -> io::Result<RestrictedChild> {
     use std::os::unix::process::CommandExt;
     use std::process::Stdio;
@@ -368,6 +376,9 @@ fn spawn_with_allowlist_unix(
     let mut cmd = std::process::Command::new(&request.program);
     cmd.args(&request.args);
     cmd.envs(env.iter().copied());
+    for key in env_remove {
+        cmd.env_remove(key);
+    }
     match request.stdin {
         StdinSpec::Null => {
             cmd.stdin(Stdio::null());
@@ -401,6 +412,7 @@ fn spawn_with_allowlist_unix(
 fn spawn_with_allowlist_windows(
     request: RestrictedSpawnRequest,
     env: &[(&str, &std::ffi::OsStr)],
+    env_remove: &[&str],
 ) -> io::Result<RestrictedChild> {
     // Prepara el stdio del hijo y la allowlist. Los guards de restauración
     // se declaran DESPUÉS que los de cierre para que, al soltarse en orden
@@ -443,7 +455,8 @@ fn spawn_with_allowlist_windows(
     }
 
     let allowed = allowed_handle_list(&marked);
-    let env_block = (!env.is_empty()).then(|| environment_block(env));
+    let env_block =
+        (!env.is_empty() || !env_remove.is_empty()).then(|| environment_block(env, env_remove));
     let result = launch_process_with_list(
         &request.program,
         &request.args,

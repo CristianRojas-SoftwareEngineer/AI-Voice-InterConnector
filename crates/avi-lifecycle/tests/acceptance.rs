@@ -1050,7 +1050,7 @@ fn keep_data_preserves_state() {
         "los modelos se quedan: {:?}",
         outcome.preserved
     );
-    for voice in ["default", "ryan", "mine"] {
+    for voice in ["default", "otra", "mine"] {
         assert!(
             inspect::exists(&sandbox.data_dir.join("voices").join(voice)),
             "la voz {voice} se queda"

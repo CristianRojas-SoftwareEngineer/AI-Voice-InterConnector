@@ -86,7 +86,7 @@ el código fuente correspondiente a esta versión exacta está disponible en:
 Las atribuciones de las dependencias redistribuidas están en
 `THIRD-PARTY-LICENSES.md`, junto a este archivo. Los pesos de los modelos no se
 empaquetan en el binario: se descargan con `setup` y conservan sus licencias:
-Qwen3-TTS (CustomVoice y Base) y DPDFNet, Apache-2.0; Parakeet TDT 0.6B v3
+Qwen3-TTS (Base) y DPDFNet, Apache-2.0; Parakeet TDT 0.6B v3
 (ONNX) y los derivados int8 de opus-mt, CC-BY-4.0.
 {mpl_crates}
 ## FFmpeg {ffmpeg_version}

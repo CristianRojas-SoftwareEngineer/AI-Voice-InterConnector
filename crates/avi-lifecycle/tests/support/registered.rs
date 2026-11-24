@@ -115,7 +115,7 @@ impl Sandbox {
         );
         // Estado de usuario: voces de fábrica y de usuario, habla, configuración, logs
         // y pidfile.
-        for voice in ["default", "ryan", "mine"] {
+        for voice in ["default", "otra", "mine"] {
             write(
                 &self
                     .data_dir

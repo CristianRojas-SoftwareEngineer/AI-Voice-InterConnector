@@ -17,18 +17,16 @@ use avi_shared::paths::{
     MODEL_FILE_PATTERNS, MODEL_REVISIONS,
 };
 
-/// Voces de fábrica: `ryan`/`vivian` son presets del motor (modelo CustomVoice)
-/// sin audio; `default` es voz clonada de fábrica (`.qvoice` con solo la huella
-/// de timbre, x-vector, que se sintetiza con el modelo Base y `--graft`) para
-/// garantizar una tasa de error de palabras ≤ 0.25 en texto corto. La distinción
-/// preset/clonada vive en `avi-tts::resolve_voice_engine` (presencia de
-/// `reference.qvoice`).
-pub const FACTORY_VOICES: &[&str] = &["default", "ryan", "vivian"];
+/// Voces de fábrica: `default` es una voz clonada de fábrica (`.qvoice` con
+/// solo la huella de timbre, x-vector, que se sintetiza con el modelo Base)
+/// para garantizar una tasa de error de palabras ≤ 0.25 en texto corto. Toda
+/// voz de AVI, también esta, se identifica por su `reference.qvoice`.
+pub const FACTORY_VOICES: &[&str] = &["default"];
 
 /// Asset embebido: `.qvoice` de fábrica para `default`, una voz clonada con solo
-/// la huella de timbre (x-vector) que se sintetiza con el modelo Base y
-/// `--graft`. Se materializa en `ensure_initialized` si falta. Se regenera
-/// copiando aquí el `reference.qvoice` que deja en el almacén de voces la orden
+/// la huella de timbre (x-vector) que se sintetiza con el modelo Base. Se
+/// materializa en `ensure_initialized` si falta. Se regenera copiando aquí el
+/// `reference.qvoice` que deja en el almacén de voces la orden
 /// `ai-voice-interconnector voice clone --no-daemon --name default --force --yes
 /// --speech-reference "assets/audios/Speech Sampler.wav"`.
 const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
@@ -310,9 +308,9 @@ impl VoiceStore {
         &self.base_dir
     }
 
-    /// Asegura que el directorio base y las voces de fábrica existan
-    /// (`default` clonada de fábrica con `.qvoice`, `ryan`/`vivian` presets).
-    /// Idempotente; materializa `default/reference.qvoice` desde el asset embebido.
+    /// Asegura que el directorio base y las voces de fábrica existan (`default`,
+    /// la única, con su `.qvoice`). Idempotente; materializa
+    /// `default/reference.qvoice` desde el asset embebido.
     pub fn ensure_initialized(&self) -> Result<()> {
         std::fs::create_dir_all(&self.base_dir)?;
         for name in FACTORY_VOICES {
@@ -344,7 +342,7 @@ impl VoiceStore {
                 voices.push(VoiceEntry { name, is_factory });
             }
         }
-        // Fábrica primero (default, ryan, vivian), luego clonadas alfabéticamente
+        // Fábrica primero (`default`), luego clonadas alfabéticamente
         voices.sort_by(|a, b| b.is_factory.cmp(&a.is_factory).then(a.name.cmp(&b.name)));
         Ok(voices)
     }
@@ -359,7 +357,7 @@ impl VoiceStore {
     }
 
     /// Eliminar solo el registro de una voz (no permite eliminar voces de fábrica:
-    /// default, ryan, vivian). No toca sus locuciones, así que no es pública: fuera
+    /// `default`). No toca sus locuciones, así que no es pública: fuera
     /// del crate una voz solo se borra con [`remove_voice`], que se las lleva con ella.
     fn remove(&self, name: &VoiceName) -> Result<(), String> {
         self.ensure_removable(name)?;
@@ -380,8 +378,8 @@ impl VoiceStore {
     }
 
     /// Buscar el archivo de referencia de una voz: `reference.qvoice`.
-    /// Solo `reference.qvoice` determina la rama clonada; los presets no
-    /// tienen referencia y resuelven como `Preset` en `resolve_voice_engine`.
+    /// `reference.qvoice` es lo único que el motor carga de una voz, así que una
+    /// voz sin él no se puede sintetizar.
     /// Inicializa antes el almacén para que `default` exista en una raíz nueva;
     /// si la inicialización falla, devuelve el error. Fuera del crate la
     /// referencia se obtiene con su identidad mediante [`VoiceStore::resolve`].
@@ -396,7 +394,7 @@ impl VoiceStore {
 
     /// Referencia clonada de una voz con la identidad de su contenido: la huella
     /// es el sha256 del `reference.qvoice` completo. `None` si la voz no tiene
-    /// referencia (preset o voz inexistente); un fallo de E/S es un error.
+    /// referencia o no existe; un fallo de E/S es un error.
     pub fn resolve(&self, name: &VoiceName) -> Result<Option<VoiceReference>> {
         let Some(path) = self.find_reference(name)? else {
             return Ok(None);
@@ -2456,31 +2454,31 @@ mod tests {
         std::fs::write(&wav_src, min_wav()).unwrap();
 
         let saved = speech
-            .save(&v("VIVIAN"), &l("TestGreeting"), "Hola", &wav_src)
+            .save(&v("BEA"), &l("TestGreeting"), "Hola", &wav_src)
             .unwrap();
         let rel = saved
             .strip_prefix(dir.join("speech"))
             .unwrap()
             .to_string_lossy()
             .to_string();
-        assert_eq!(rel.replace('\\', "/"), "vivian/testgreeting.wav");
+        assert_eq!(rel.replace('\\', "/"), "bea/testgreeting.wav");
 
         assert!(speech
-            .find(&v("vivian"), &l("testgreeting"))
+            .find(&v("bea"), &l("testgreeting"))
             .unwrap()
             .is_some());
         assert!(speech
-            .find(&v("VIVIAN"), &l("TESTGREETING"))
+            .find(&v("BEA"), &l("TESTGREETING"))
             .unwrap()
             .is_some());
         let entries = speech.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].voice.as_str(), "vivian");
+        assert_eq!(entries[0].voice.as_str(), "bea");
         assert_eq!(entries[0].label.as_str(), "testgreeting");
 
-        speech.remove(&v("VIVIAN"), &l("TESTGREETING")).unwrap();
+        speech.remove(&v("BEA"), &l("TESTGREETING")).unwrap();
         assert!(speech
-            .find(&v("vivian"), &l("testgreeting"))
+            .find(&v("bea"), &l("testgreeting"))
             .unwrap()
             .is_none());
 
@@ -2515,20 +2513,20 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
         speech
-            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .save(&v("ana"), &l("greeting"), "Hola", &wav_src)
             .unwrap();
         speech
-            .save(&v("vivian"), &l("farewell"), "Adiós", &wav_src)
+            .save(&v("bea"), &l("farewell"), "Adiós", &wav_src)
             .unwrap();
 
-        let ryan = speech.list_by_voice(&v("RYAN")).unwrap();
-        assert_eq!(ryan.len(), 1);
-        assert_eq!(ryan[0].voice.as_str(), "ryan");
-        assert_eq!(ryan[0].label.as_str(), "greeting");
+        let ana = speech.list_by_voice(&v("ANA")).unwrap();
+        assert_eq!(ana.len(), 1);
+        assert_eq!(ana[0].voice.as_str(), "ana");
+        assert_eq!(ana[0].label.as_str(), "greeting");
 
-        let vivian = speech.list_by_voice(&v("vivian")).unwrap();
-        assert_eq!(vivian.len(), 1);
-        assert_eq!(vivian[0].label.as_str(), "farewell");
+        let bea = speech.list_by_voice(&v("bea")).unwrap();
+        assert_eq!(bea.len(), 1);
+        assert_eq!(bea[0].label.as_str(), "farewell");
 
         assert!(speech.list_by_voice(&v("nonexistent")).unwrap().is_empty());
         assert_eq!(speech.list().unwrap().len(), 2);
@@ -2542,12 +2540,12 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
-        speech.save(&v("ryan"), &l("zeta"), "Z", &wav_src).unwrap();
-        speech.save(&v("ryan"), &l("Alfa"), "A", &wav_src).unwrap();
-        std::fs::write(speech.voice_dir(&v("ryan")).join("zeta.json"), b"{roto").unwrap();
+        speech.save(&v("ana"), &l("zeta"), "Z", &wav_src).unwrap();
+        speech.save(&v("ana"), &l("Alfa"), "A", &wav_src).unwrap();
+        std::fs::write(speech.voice_dir(&v("ana")).join("zeta.json"), b"{roto").unwrap();
 
-        assert_eq!(speech.labels_of(&v("RYAN")).unwrap(), vec!["alfa", "zeta"]);
-        assert!(speech.labels_of(&v("vivian")).unwrap().is_empty());
+        assert_eq!(speech.labels_of(&v("ANA")).unwrap(), vec!["alfa", "zeta"]);
+        assert!(speech.labels_of(&v("bea")).unwrap().is_empty());
     }
 
     /// `remove_voice` borra el registro de la voz y su namespace de locuciones y
@@ -2598,11 +2596,11 @@ mod tests {
         std::fs::write(&wav_src, min_wav()).unwrap();
 
         let path = speech
-            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .save(&v("ana"), &l("greeting"), "Hola", &wav_src)
             .unwrap();
         assert!(path.is_file());
         let entry = speech
-            .find(&v("ryan"), &l("greeting"))
+            .find(&v("ana"), &l("greeting"))
             .unwrap()
             .expect("el audio sintetizado debe existir");
         let metadata = entry
@@ -2622,17 +2620,17 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
         speech
-            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .save(&v("ana"), &l("greeting"), "Hola", &wav_src)
             .unwrap();
-        std::fs::remove_file(speech.voice_dir(&v("ryan")).join("greeting.json")).unwrap();
+        std::fs::remove_file(speech.voice_dir(&v("ana")).join("greeting.json")).unwrap();
 
         let entries = speech.list().unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].voice.as_str(), "ryan");
+        assert_eq!(entries[0].voice.as_str(), "ana");
         assert_eq!(entries[0].label.as_str(), "greeting");
         assert!(entries[0].metadata.is_none());
 
-        let found = speech.find(&v("ryan"), &l("greeting")).unwrap().unwrap();
+        let found = speech.find(&v("ana"), &l("greeting")).unwrap().unwrap();
         assert!(found.metadata.is_none());
     }
 
@@ -2644,12 +2642,12 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
         speech
-            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .save(&v("ana"), &l("greeting"), "Hola", &wav_src)
             .unwrap();
-        std::fs::remove_file(speech.audio_path(&v("ryan"), &l("greeting"))).unwrap();
+        std::fs::remove_file(speech.audio_path(&v("ana"), &l("greeting"))).unwrap();
 
         assert!(speech.list().unwrap().is_empty());
-        assert!(speech.find(&v("ryan"), &l("greeting")).unwrap().is_none());
+        assert!(speech.find(&v("ana"), &l("greeting")).unwrap().is_none());
     }
 
     /// Un sidecar corrupto hace fallar `list` y `find` con un `SidecarError` que
@@ -2661,28 +2659,28 @@ mod tests {
         let wav_src = dir.join("src.wav");
         std::fs::write(&wav_src, min_wav()).unwrap();
         speech
-            .save(&v("ryan"), &l("greeting"), "Hola", &wav_src)
+            .save(&v("ana"), &l("greeting"), "Hola", &wav_src)
             .unwrap();
-        let sidecar = speech.voice_dir(&v("ryan")).join("greeting.json");
+        let sidecar = speech.voice_dir(&v("ana")).join("greeting.json");
         std::fs::write(&sidecar, b"{roto").unwrap();
 
         for err in [
             speech.list().unwrap_err(),
-            speech.list_by_voice(&v("ryan")).unwrap_err(),
-            speech.find(&v("ryan"), &l("greeting")).unwrap_err(),
+            speech.list_by_voice(&v("ana")).unwrap_err(),
+            speech.find(&v("ana"), &l("greeting")).unwrap_err(),
         ] {
             let sidecar_err = err
                 .downcast_ref::<SidecarError>()
                 .expect("el error debe ser un SidecarError");
             assert_eq!(sidecar_err.path, sidecar);
             assert_eq!(sidecar_err.label, "greeting");
-            assert_eq!(sidecar_err.voice, "ryan");
+            assert_eq!(sidecar_err.voice, "ana");
             assert!(err.to_string().contains("greeting.json"), "{err}");
         }
 
-        speech.remove(&v("ryan"), &l("greeting")).unwrap();
+        speech.remove(&v("ana"), &l("greeting")).unwrap();
         assert!(!sidecar.exists());
-        assert!(!speech.audio_path(&v("ryan"), &l("greeting")).exists());
+        assert!(!speech.audio_path(&v("ana"), &l("greeting")).exists());
     }
 
     /// El validador único acepta la forma del contrato normalizada a minúsculas y
@@ -2696,7 +2694,7 @@ mod tests {
             ("a..b", "a..b"),
             (".oculta", ".oculta"),
             ("...", "..."),
-            ("VIVIAN", "vivian"),
+            ("BEA", "bea"),
         ] {
             assert_eq!(VoiceName::parse(raw).unwrap().as_str(), normalized);
             assert_eq!(Label::parse(raw).unwrap().as_str(), normalized);
@@ -2742,7 +2740,7 @@ mod tests {
             .into_iter()
             .map(|e| e.name.to_string())
             .collect();
-        assert_eq!(names, vec!["default", "ryan", "vivian"]);
+        assert_eq!(names, vec!["default"]);
     }
 
     /// Prepara y publica `src` como referencia de la voz `name`.
@@ -2850,8 +2848,8 @@ mod tests {
         assert_ne!(recloned, first, "re-clonar cambia la identidad");
 
         assert!(
-            voices.resolve(&v("ryan")).unwrap().is_none(),
-            "preset sin referencia"
+            voices.resolve(&v("ana")).unwrap().is_none(),
+            "voz sin referencia"
         );
         assert!(voices.resolve(&v("nadie")).unwrap().is_none());
     }
@@ -2930,7 +2928,7 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav = dir.join("src.wav");
         std::fs::write(&wav, min_wav()).unwrap();
-        let (voice, label) = (v("ryan"), l("hola"));
+        let (voice, label) = (v("ana"), l("hola"));
         let path = speech.audio_path(&voice, &label);
         let conflict = |e: anyhow::Error| e.downcast::<LocutionConflict>().unwrap();
         let exists = LocutionConflict::LabelExists {
@@ -3084,13 +3082,13 @@ mod tests {
         );
         assert!(!speech.audio_path(&v("voz"), &l("otra")).exists());
 
-        // Un preset se guarda sin referencia; esperar una referencia que no tiene
-        // es un cambio de voz.
+        // Una voz sin referencia se guarda sin ella; esperar una referencia que no
+        // tiene es un cambio de voz.
         persist_locution(
             &voices,
             &speech,
             None,
-            &v("ryan"),
+            &v("ana"),
             &l("saludo"),
             "Hola",
             &wav,
@@ -3101,7 +3099,7 @@ mod tests {
             &voices,
             &speech,
             resolved.as_ref(),
-            &v("ryan"),
+            &v("ana"),
             &l("x"),
             "x",
             &wav,
@@ -3119,54 +3117,49 @@ mod tests {
         let speech = SpeechStore::with_base_dir(dir.join("speech"));
         let wav = dir.join("src.wav");
         std::fs::write(&wav, min_wav()).unwrap();
-        speech.save(&v("ryan"), &l("saludo"), "Hola", &wav).unwrap();
-        let mut names: Vec<_> = std::fs::read_dir(speech.voice_dir(&v("ryan")))
+        speech.save(&v("ana"), &l("saludo"), "Hola", &wav).unwrap();
+        let mut names: Vec<_> = std::fs::read_dir(speech.voice_dir(&v("ana")))
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
             .collect();
         names.sort();
         assert_eq!(names, vec!["saludo.json", "saludo.wav"]);
-        let entry = speech.find(&v("ryan"), &l("saludo")).unwrap().unwrap();
+        let entry = speech.find(&v("ana"), &l("saludo")).unwrap().unwrap();
         assert_eq!(entry.metadata.unwrap().text, "Hola");
     }
 
-    /// La consulta de existencia garantiza las voces de fábrica en una raíz
+    /// La consulta de existencia garantiza la voz de fábrica en una raíz
     /// recién creada, sin necesidad de listar antes; una voz ajena no existe.
     #[test]
     fn exists_guarantees_factory_voices_on_fresh_root() {
         let dir = temp_dir("exists-fresh");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
-        for name in ["default", "ryan", "vivian"] {
-            assert!(voices.exists(&v(name)).unwrap(), "'{}' debe existir", name);
-        }
+        assert!(
+            voices.exists(&v("default")).unwrap(),
+            "'default' debe existir"
+        );
         assert!(!voices.exists(&v("nadie")).unwrap());
     }
 
-    /// `ensure_initialized` registra voces de fábrica (`default` clonada
-    /// de fábrica con `.qvoice`, `ryan`/`vivian` presets) y `list`/`remove`/
-    /// `find_reference` reflejan el registro unificado (--voice ryan alcanzable).
+    /// `ensure_initialized` registra la voz de fábrica `default` (clonada, con
+    /// `.qvoice`) y `list`/`remove`/`find_reference` reflejan el registro.
     #[test]
     fn ensure_initialized_registers_voices_factory() {
         let dir = temp_dir("factory");
         let voices = VoiceStore::with_base_dir(dir.join("voices"));
         voices.ensure_initialized().unwrap();
-        // Las tres fábricas deben existir; `default` es clonada con qvoice, `ryan`/`vivian` presets puros
-        for name in ["default", "ryan", "vivian"] {
-            let d = voices.voice_dir(&v(name));
-            assert!(d.is_dir(), "directorio de fábrica '{}' debe existir", name);
-            assert!(
-                voices.exists(&v(name)).unwrap(),
-                "exists('{}') debe ser true",
-                name
-            );
-            // No debe haber WAV de referencia materializado
-            assert!(
-                !d.join("speech-reference.wav").is_file(),
-                "no debe materializar speech-reference.wav para '{}'",
-                name
-            );
-        }
-        // `default` clonada de fábrica debe tener `reference.qvoice` materializado
+        // La voz de fábrica debe existir y llevar su `reference.qvoice`.
+        let d = voices.voice_dir(&v("default"));
+        assert!(d.is_dir(), "directorio de fábrica 'default' debe existir");
+        assert!(
+            voices.exists(&v("default")).unwrap(),
+            "exists('default') debe ser true"
+        );
+        // No debe haber WAV de referencia materializado
+        assert!(
+            !d.join("speech-reference.wav").is_file(),
+            "no debe materializar speech-reference.wav para 'default'"
+        );
         assert!(
             voices.find_reference(&v("default")).unwrap().is_some(),
             "fábrica 'default' debe tener reference.qvoice"
@@ -3181,14 +3174,6 @@ mod tests {
                 .to_string_lossy(),
             "reference.qvoice"
         );
-        // `ryan`/`vivian` siguen presets puros sin referencia
-        for name in ["ryan", "vivian"] {
-            assert!(
-                voices.find_reference(&v(name)).unwrap().is_none(),
-                "fábrica '{}' sin qvoice no debe tener referencia (preset puro)",
-                name
-            );
-        }
         // Idempotencia: segunda inicialización no borra directorios ni datos de usuario
         let custom_dir = voices.voice_dir(&v("myvoice"));
         std::fs::create_dir_all(&custom_dir).unwrap();
@@ -3198,26 +3183,20 @@ mod tests {
             custom_dir.join("reference.qvoice").is_file(),
             "voz clonada preservada"
         );
-        for name in ["default", "ryan", "vivian"] {
-            assert!(
-                voices.voice_dir(&v(name)).is_dir(),
-                "fábrica '{}' preservada tras 2º init",
-                name
-            );
-        }
-        // `list` debe ver las tres fábricas marcadas is_factory + la clonada
+        assert!(
+            voices.voice_dir(&v("default")).is_dir(),
+            "fábrica 'default' preservada tras 2º init"
+        );
+        // `list` debe ver la fábrica marcada is_factory + la clonada
         let list = voices.list().unwrap();
         let factory_names: Vec<String> = list
             .iter()
             .filter(|e| e.is_factory)
             .map(|e| e.name.to_string())
             .collect();
-        assert_eq!(factory_names.len(), 3, "tres voces de fábrica");
-        assert!(factory_names.contains(&"default".to_string()));
-        assert!(factory_names.contains(&"ryan".to_string()));
-        assert!(factory_names.contains(&"vivian".to_string()));
-        // Todas las fábricas protegidas contra borrado
-        for name in ["default", "ryan", "vivian", "DEFAULT", "RYAN"] {
+        assert_eq!(factory_names, vec!["default".to_string()]);
+        // La fábrica está protegida contra borrado
+        for name in ["default", "DEFAULT"] {
             assert!(
                 voices.remove(&v(name)).is_err(),
                 "remove('{}') debe fallar (fábrica protegida)",

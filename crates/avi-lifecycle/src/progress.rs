@@ -374,11 +374,11 @@ mod tests {
     fn model_done_line_reports_size_time_and_speed() {
         assert_eq!(
             model_done_line(
-                &label(1, 5, "qwen3-tts-0.6b"),
+                &label(1, 5, "modelo-tts"),
                 2_500_000_000,
                 Duration::from_secs(49)
             ),
-            "  ✓ [1/5] qwen3-tts-0.6b  2,5 GB en 49,0 s · 51,0 MB/s"
+            "  ✓ [1/5] modelo-tts  2,5 GB en 49,0 s · 51,0 MB/s"
         );
     }
 

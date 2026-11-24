@@ -531,7 +531,7 @@ pub async fn run(
 /// paralelo: dos implementaciones de un mismo alcance divergirían en cuanto una cambiara.
 /// Hay **una** diferencia deliberada, y es la protección de las voces de fábrica:
 ///
-/// `cleanup --all` no borra `voices/default` ni `voices/ryan` porque van embebidas en
+/// `cleanup --all` no borra `voices/default` porque va embebida en
 /// el binario y el programa sigue instalado: si se borran, `setup` las vuelve a
 /// materializar. En una desinstalación el programa **desaparece**, así que dejarlas
 /// sería residuo dentro de una raíz de propiedad exclusiva, y la desinstalación no deja

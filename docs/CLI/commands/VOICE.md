@@ -27,8 +27,6 @@ ai-voice-interconnector voice remove --name NAME [--yes]
 (`src/main.rs`), no propio de `voice`. `--daemon`/`--no-daemon` son propios de
 `voice clone` (mutuamente excluyentes) y se escriben tras el subcomando.
 
-Al clonar por la ruta directa se crea también el motor TTS: un `AVI_TTS_PRECISION` inválido produce `usage_error` (2) si se alcanza esa creación. Los valores admitidos son `mixed` y `bf16`; ausente equivale a `mixed`. El perfil no cambia los argumentos ni el entorno del proceso de extracción x-vector. La ruta daemon usa la configuración del servidor ya iniciado.
-
 **`voice clone`** (`src/main.rs`):
 
 | Flag | Tipo | Requerido | Descripción |
@@ -167,8 +165,8 @@ El cliente (`clone_via_daemon`) consume el stream mediante `consume_ndjson_strea
 
 Siempre local: no declara `--daemon` ni `--no-daemon`. Delega en `VoiceStore::list()` (`crates/avi-store/src/lib.rs`):
 escanea `<data_dir>/voices/`, marca `is_factory` con `is_factory_name` y
-ordena fábrica primero (`default`, `ryan`, `vivian`), luego clonadas
-alfabéticamente. `ensure_initialized()` materializa las voces de fábrica (y el
+ordena fábrica primero (`default`), luego clonadas
+alfabéticamente. `ensure_initialized()` materializa la voz de fábrica (y el
 `reference.qvoice` embebido de `default`) antes de listar, por lo que
 `default` siempre aparece.
 
@@ -185,8 +183,7 @@ Siempre local: no declara `--daemon` ni `--no-daemon`. Flujo
 
 1. `VoiceName::parse(name)` → exit 2 `invalid_voice_name`, sin tocar ningún archivo. El validador rechaza `.` y `..`, que unidos al almacén lo nombrarían entero: `voice remove --name .` no puede borrar `voices/` ni `speech/`.
 2. `is_factory_name(name)` → exit 2 `cannot_remove_default` (nota: pese al
-   nombre de la razón, protege las tres voces de fábrica —`default`, `ryan`,
-   `vivian`—, no solo `default`).
+   nombre de la razón, protege toda voz de fábrica; hoy solo `default`).
 3. La voz no existe en el registro → exit 3 `voice_not_found`, antes de
    preguntar nada.
 4. **Los audios sintetizados se van con su voz, y borrar siempre pregunta.** Se leen las etiquetas del namespace de
@@ -216,7 +213,7 @@ Siempre local: no declara `--daemon` ni `--no-daemon`. Flujo
 
 | Subcomando | Payload (más `schema_version`) |
 |---|---|
-| `voice list` | `{ "voices": ["default", "ryan", "vivian", ...] }` |
+| `voice list` | `{ "voices": ["default", ...] }` |
 | `voice clone` | `{ "name": "...", "speech": "<ruta a reference.qvoice>", "precomputed": <bool>, "removed_speech": ["<etiqueta>", ...] }`; `removed_speech` lista los audios sintetizados borrados al sobrescribir la voz y es `[]` si no había. Cancelada la confirmación: `{ "status": "cancelled", "name": "<nombre>", "removed_speech": [] }` |
 | `voice remove` | `{ "status": "removed", "voice": "<nombre>", "removed_speech": ["<etiqueta>", ...] }`; `removed_speech` es `[]` si la voz no tenía audios sintetizados. Cancelada la confirmación: `{ "status": "cancelled", "voice": "<nombre>", "removed_speech": [] }` |
 
@@ -232,10 +229,10 @@ del daemon.
 ## Almacenamiento
 
 `VoiceStore` (`crates/avi-store/src/lib.rs`) usa un único nivel físico en
-`<data_dir>/voices/<nombre>/`, sin separación fábrica/usuario en disco: las
-tres voces de fábrica (`FACTORY_VOICES = ["default", "ryan", "vivian"]`,
-`crates/avi-store/src/lib.rs`) se materializan como directorios normales en
-`ensure_initialized()`, y `is_factory_name` es lo único que las distingue de
+`<data_dir>/voices/<nombre>/`, sin separación fábrica/usuario en disco: la
+voz de fábrica (`FACTORY_VOICES = ["default"]`,
+`crates/avi-store/src/lib.rs`) se materializa como directorio normal en
+`ensure_initialized()`, y `is_factory_name` es lo único que la distingue de
 una voz clonada al listar o al intentar eliminarlas.
 
 **Estructura de una voz clonada:**
@@ -249,14 +246,12 @@ El WAV de entrada (`--speech-reference`) se consume
 para producir el perfil y no se copia al almacén: `reference.qvoice` es lo
 único que el motor de síntesis consulta
 (`VoiceStore::resolve`, `crates/avi-store/src/lib.rs`, que lo devuelve como
-`VoiceReference` con su huella sha256): su presencia
-determina la rama «clonada» en `avi_tts::resolve_voice_engine`; sin él, la voz
-resuelve como preset del motor. Toda voz clonada se sintetiza con el modelo
-Base (`qwen3-tts-0.6b-base`) y `--graft`, que aplica solo la huella de timbre y
-deja la prosodia al modelo; los presets se sintetizan con el modelo CustomVoice
-(`qwen3-tts-0.6b`). Sin el modelo Base provisionado, sintetizar con una voz
-clonada (`default` incluida) sale con `model_missing` (exit 4; en el daemon, como evento `error` del stream de
-`/synthesize` y `/dub`), sin caer a CustomVoice. `default` es una voz de fábrica *clonada*
+`VoiceReference` con su huella sha256): sin él, `avi_tts::resolve_voice_engine`
+no encuentra la voz (`voice_not_found`). Toda voz se sintetiza con el modelo
+Base (`qwen3-tts-0.6b-base`), que aplica solo la huella de timbre y deja la
+prosodia al modelo. Sin el modelo Base provisionado, sintetizar con cualquier
+voz (`default` incluida) sale con `model_missing` (exit 4; en el daemon, como evento `error` del stream de
+`/synthesize` y `/dub`). `default` es una voz de fábrica *clonada*
 (trae su propio `reference.qvoice` embebido en el binario,
 `FACTORY_DEFAULT_QVOICE`, también con solo la huella de timbre). Se generó con la
 ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav`
@@ -264,10 +259,7 @@ ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav`
 `ai-voice-interconnector voice clone --no-daemon --name default --force --yes --speech-reference "assets/audios/Speech Sampler.wav"`
 (`--force` porque `default` ya existe como voz de fábrica; `--yes` porque también
 borra sus audios sintetizados guardados, si los hay).
-`ryan`/`vivian` son presets puros del motor Qwen3-TTS, sin
-`reference.qvoice`. Las tres hablan `es` y `en`: el idioma nativo de un
-preset (`ryan`: inglés; `vivian`: chino) es informativo, porque los nueve
-locutores del motor son multilingües.
+Toda voz habla `es` y `en`: el idioma viaja siempre en la petición.
 
 `avi_store::replace_voice` (`crates/avi-store/src/lib.rs`) prepara la referencia
 en un temporal y la publica con `rename` (sin dejar un `.qvoice` parcial ante
@@ -287,7 +279,6 @@ fallo a mitad de copia).
 |---|---|---|---|
 | Nombre inválido (regex/longitud/`..`/separadores) | clone, remove | 2 | `invalid_voice_name` |
 | Audio de referencia inexistente | clone | 3 | `audio_not_found` |
-| Modelo de síntesis (`qwen3-tts-0.6b`) no provisionado | clone (ruta local) | 4 | `model_missing` |
 | Voz ya existe sin `--force` | clone | 6 | `voice_exists` |
 | `--force` sobre una voz con audios sintetizados, sin terminal y sin `--yes` (no se cambia nada) | clone | 2 | `confirmation_required` |
 | Modelo Base de clonado no provisionado | clone (ruta local) | 4 | `model_missing` |
@@ -300,7 +291,7 @@ fallo a mitad de copia).
 | Falla el motor de `avi_tts::clone_voice` o `replace_voice` (el mensaje termina con `Log del motor: <ruta>` a `data/logs/qwen3-tts_*.log`) | clone | 1 | `voice_clone_failed` |
 | Daemon inalcanzable (inactividad / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
-| Voz de fábrica (`default`/`ryan`/`vivian`) | remove | 2 | `cannot_remove_default` |
+| Voz de fábrica (`default`) | remove | 2 | `cannot_remove_default` |
 | Voz no encontrada | remove | 3 | `voice_not_found` |
 | No hay terminal y falta `--yes` (no se borra nada; se pregunta siempre, tenga la voz audios sintetizados o no) | remove | 2 | `confirmation_required` |
 | Fallo de E/S al borrar la voz o sus audios sintetizados | remove | 1 | `io_error` |
@@ -356,8 +347,6 @@ stderr: Se borrará la voz mi_voz y sus 2 audios sintetizados:
 # voice list
 stdout: Voces:
           default (de fábrica)
-          ryan (de fábrica)
-          vivian (de fábrica)
           mi_voz
 ```
 

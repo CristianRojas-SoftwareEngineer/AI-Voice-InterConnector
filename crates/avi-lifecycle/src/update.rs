@@ -152,6 +152,7 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
                 extra_allowed: Vec::new(),
             },
             &[(HANDOVER_PARENT_PID_ENV, parent_pid.as_os_str())],
+            &[],
         )
         .map_err(|e| {
             anyhow::anyhow!(

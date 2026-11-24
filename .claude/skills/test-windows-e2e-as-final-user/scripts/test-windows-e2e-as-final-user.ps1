@@ -157,7 +157,7 @@ function Initialize-Run {
 
     $script:Root = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..\..\..')).Path
     if($env:AVI_NO_SETUP){throw 'BLOCKED: AVI_NO_SETUP ya está definido externamente; no se continúa con entorno de bootstrap ambiguo.'}
-    foreach($variable in @('AVI_INSTALL_DIR','AVI_BIN_DIR','AVI_DATA_DIR','AVI_CACHE_DIR','HF_HUB_CACHE','HF_HOME','AVI_DAEMON_PORT','AVI_DOWNLOAD_BASE_URL','AVI_VERSION','AVI_YES','AVI_NO_MODIFY_PATH','QWEN3_TTS_BIN','QWEN3_TTS_MODEL_DIR','QWEN3_TTS_BASE_MODEL_DIR')){if([Environment]::GetEnvironmentVariable($variable)){throw "BLOCKED: $variable altera versión, rutas, motor, confirmación automática o transporte de esta corrida."}}
+    foreach($variable in @('AVI_INSTALL_DIR','AVI_BIN_DIR','AVI_DATA_DIR','AVI_CACHE_DIR','HF_HUB_CACHE','HF_HOME','AVI_DAEMON_PORT','AVI_DOWNLOAD_BASE_URL','AVI_VERSION','AVI_YES','AVI_NO_MODIFY_PATH','QWEN3_TTS_BIN','QWEN3_TTS_BASE_MODEL_DIR')){if([Environment]::GetEnvironmentVariable($variable)){throw "BLOCKED: $variable altera versión, rutas, motor, confirmación automática o transporte de esta corrida."}}
     foreach ($relative in @('SKILL.md', 'src\main.rs', 'Cargo.toml', 'tests\golden\cli_version.json', 'assets\audios\Speech Sampler.wav', 'crates\avi-stt\tests\assets\parakeet_sample_16k.wav', 'packaging\bootstrap\install.ps1')) {
         $path = if ($relative -eq 'SKILL.md') { Join-Path $PSScriptRoot "..\$relative" } else { Join-Path $script:Root $relative }
         if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Falta la entrada requerida: $path" }
@@ -938,7 +938,7 @@ function Run-E2E {
 
     Invoke-Step '07-voices' {
         $voices=Invoke-Cli @('voice','list') 'voice-list' -Json
-        foreach($name in @('default','ryan','vivian')){if(@($voices.Payload.voices) -notcontains $name){throw ('Voz factory ausente: {0}' -f $name)}}
+        foreach($name in @('default')){if(@($voices.Payload.voices) -notcontains $name){throw ('Voz factory ausente: {0}' -f $name)}}
         $clone=Invoke-VoiceClone 'mi_voz';Assert-PayloadSchema $clone.Payload;Assert-True ($clone.Payload.precomputed -eq $false) 'Clone directo debía ser precomputed false.'
         $qvoice=$clone.QvoicePath;Assert-True (Test-Path -LiteralPath $qvoice -PathType Leaf) 'La ruta speech del clone no existe.';Assert-True ((Get-Item -LiteralPath $qvoice).Length -gt 1MB) 'qvoice debe superar 1 MB.';Assert-True (!(Test-Path -LiteralPath (Join-Path (Split-Path -Parent $qvoice) 'speech-reference.wav'))) 'El WAV fuente fue copiado.'
         $cloneDaemon=Invoke-VoiceClone 'mi_voz_daemon' -Daemon;Assert-PayloadSchema $cloneDaemon.Payload;Assert-True ((Get-Item -LiteralPath $cloneDaemon.QvoicePath).Length -gt 0) 'qvoice daemon vacío.'

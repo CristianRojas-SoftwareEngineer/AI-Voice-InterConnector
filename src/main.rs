@@ -96,11 +96,11 @@ static DENOISE_CANCEL: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::Ato
 #[cfg(feature = "native-stt")]
 static STT_HOLDER: EngineHolder = EngineHolder::new();
 
-/// Traduce un fallo de la síntesis directa al contrato: la falta del modelo que
-/// exige la voz sale como `model_missing` (exit 4), el vencimiento del
-/// presupuesto como `synthesis_timeout`, una voz sin referencia que no es preset
-/// como `voice_not_found` (exit 3) y cualquier otro, incluida una entrega cortada
-/// a mitad (`SynthesisTruncated`), como `synthesis_failed`.
+/// Traduce un fallo de la síntesis directa al contrato: la falta del modelo Base
+/// sale como `model_missing` (exit 4), el vencimiento del presupuesto como
+/// `synthesis_timeout`, una voz sin `reference.qvoice` como `voice_not_found`
+/// (exit 3) y cualquier otro, incluida una entrega cortada a mitad
+/// (`SynthesisTruncated`), como `synthesis_failed`.
 fn synthesis_cli_error(e: anyhow::Error) -> CliError {
     if e.downcast_ref::<avi_tts::ModelMissing>().is_some() {
         return CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string());
@@ -117,16 +117,11 @@ fn synthesis_cli_error(e: anyhow::Error) -> CliError {
 }
 
 /// Motor TTS de la vía directa. Una variable de entorno del motor
-/// (`QWEN3_TTS_BIN`, `QWEN3_TTS_MODEL_DIR`, `QWEN3_TTS_BASE_MODEL_DIR`) que no
-/// apunta a una ruta existente, o un modelo ilegible, es `model_missing`.
+/// (`QWEN3_TTS_BIN` o `QWEN3_TTS_BASE_MODEL_DIR`) que no apunta a una ruta
+/// existente, o un modelo ilegible, es `model_missing`.
 fn direct_tts_engine() -> Result<Qwen3TtsEngine, CliError> {
-    Qwen3TtsEngine::new(None).map_err(|e| {
-        if e.downcast_ref::<avi_tts::InvalidTtsPrecision>().is_some() {
-            CliError::new(ExitCode::InvalidInput, "usage_error", e.to_string())
-        } else {
-            CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string())
-        }
-    })
+    Qwen3TtsEngine::new(None)
+        .map_err(|e| CliError::new(ExitCode::ModelMissing, "model_missing", e.to_string()))
 }
 
 /// Almacén de voces del usuario. Una raíz de datos que no se puede resolver
@@ -146,7 +141,7 @@ fn open_model_store() -> Result<ModelStore, CliError> {
 }
 
 /// Referencia de una voz del almacén con la identidad de su contenido (`None`
-/// para un preset); un fallo de E/S es `io_error`.
+/// si la voz no tiene `reference.qvoice`); un fallo de E/S es `io_error`.
 fn resolve_voice_reference(
     voice_store: &VoiceStore,
     voice: &VoiceName,
@@ -176,8 +171,7 @@ fn tts_request(
 }
 
 /// Síntesis directa sin reproducción: acumula la entrega del motor y escribe el
-/// WAV en `output_path`, con la voz y su referencia ya resueltas (`None` para un
-/// preset).
+/// WAV en `output_path`, con la voz y su referencia ya resueltas.
 ///
 /// El texto activo de la etapa `SYNTHESIZING` ya abierta pasa a «Cargando la
 /// voz…» mientras el motor arranca su residente, y vuelve a «Sintetizando…».
@@ -218,7 +212,8 @@ fn show_synthesis_step(progress: &PhaseProgress, step: avi_tts::SynthesisStep) {
 }
 
 /// Datos de una síntesis directa en streaming: el motor local, la voz con su
-/// referencia ya resuelta (`None` para un preset), el texto y el idioma de destino.
+/// referencia ya resuelta (`None` si no tiene `reference.qvoice`), el texto y el
+/// idioma de destino.
 struct DirectSynthesis<'a> {
     engine: &'a Qwen3TtsEngine,
     reference: Option<&'a avi_store::VoiceReference>,
@@ -2167,12 +2162,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 progress.tick();
                 let cloned = progress
                     .while_running(|| {
-                        avi_tts::clone_voice(
-                            model_dir,
-                            speech_path.as_path(),
-                            &tmp_qvoice,
-                            name.as_str(),
-                        )
+                        avi_tts::clone_voice(model_dir, speech_path.as_path(), &tmp_qvoice)
                     })
                     .and_then(|()| {
                         progress.phase(&stage::SAVING);
@@ -5628,7 +5618,7 @@ impl lifecycle::uninstall::ProgramDirRemover for PlatformRemoval {
 
 fn require_model_provisioned() -> Result<(), CliError> {
     let model_store = open_model_store()?;
-    if !model_store.is_provisioned("qwen3-tts-0.6b") {
+    if !model_store.is_provisioned(avi_shared::paths::CLONING_MODEL) {
         return Err(CliError::new(
             ExitCode::ModelMissing,
             "model_missing",
@@ -7813,8 +7803,8 @@ mod tests {
         assert!(res.is_err(), "{res:?}");
     }
 
-    /// La falta del modelo que exige la voz sale como `model_missing` (exit 4),
-    /// igual que la ausencia de CustomVoice, y no como `synthesis_failed`.
+    /// La falta del modelo Base sale como `model_missing` (exit 4), igual que un
+    /// motor sin provisionar, y no como `synthesis_failed`.
     #[test]
     fn synthesis_cli_error_maps_missing_model_to_model_missing() {
         let any: anyhow::Error = avi_tts::ModelMissing {
@@ -7828,8 +7818,8 @@ mod tests {
         assert_eq!(other.reason, "synthesis_failed");
     }
 
-    /// Una voz sin referencia que no es preset sale como `voice_not_found`
-    /// (exit 3), sin necesitar el motor real.
+    /// Una voz sin `reference.qvoice` sale como `voice_not_found` (exit 3), sin
+    /// necesitar el motor real.
     #[test]
     fn synthesis_cli_error_maps_voice_not_found() {
         let any: anyhow::Error = avi_tts::VoiceNotFound {

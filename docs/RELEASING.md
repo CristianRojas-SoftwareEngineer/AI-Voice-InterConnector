@@ -138,7 +138,7 @@ error lo indica. Un fallo al mostrar un diagnóstico no detiene la lectura de lo
 latidos.
 
 **Nunca esperes a un `setup` que «parece lento».** La selección completa son
-5,9 GB y a 30-60 MB/s se completa en minutos. Si el progreso queda mudo durante
+3,4 GB y a 30-60 MB/s se completa en minutos. Si el progreso queda mudo durante
 el límite, el proceso falla explícitamente en vez de seguir esperando.
 
 **Cómo se mide el avance, si hay que mirarlo.** El tamaño del directorio de la

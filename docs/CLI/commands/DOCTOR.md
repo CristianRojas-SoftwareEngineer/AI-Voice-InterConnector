@@ -105,7 +105,7 @@ Al final, sin fallos escribe `✓ Diagnóstico sin problemas.` por stderr; con f
   "models": {
     "root": "<raíz-de-modelos>",
     "shared_root": false,
-    "provisioned": ["qwen3-tts-0.6b", "opus-mt-es-en", "opus-mt-en-es", "parakeet-tdt-v3", "dpdfnet8", "qwen3-tts-0.6b-base"],
+    "provisioned": ["opus-mt-es-en", "opus-mt-en-es", "parakeet-tdt-v3", "dpdfnet8", "qwen3-tts-0.6b-base"],
     "missing": [],
     "size_bytes": 0
   },

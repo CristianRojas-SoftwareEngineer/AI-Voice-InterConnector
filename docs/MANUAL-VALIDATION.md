@@ -119,7 +119,7 @@ atribuirlo a la falta de modelos.
 comprobar la idempotencia.
 
 ```bash
-# Descarga los 6 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
+# Descarga los 5 modelos pinneados a la caché exclusiva de la aplicación (idempotente)
 ai-voice-interconnector setup
 
 # Confirmar que el entorno quedó sano antes de continuar
@@ -211,7 +211,7 @@ ai-voice-interconnector voice remove --name mi_voz
 ai-voice-interconnector voice list
 ```
 
-**Esperado**: `clone` registra la voz (aparece en `voice list`), **exit 0**; `say`/`synthesize --voice mi_voz` usan su timbre; `remove` pregunta siempre (tenga o no audios sintetizados), la elimina y deja de aparecer, **exit 0**. Intentar `voice remove` sobre una voz de fábrica (`default`/`ryan`/`vivian`) sale con **exit 2**.
+**Esperado**: `clone` registra la voz (aparece en `voice list`), **exit 0**; `say`/`synthesize --voice mi_voz` usan su timbre; `remove` pregunta siempre (tenga o no audios sintetizados), la elimina y deja de aparecer, **exit 0**. Intentar `voice remove` sobre la voz de fábrica (`default`) sale con **exit 2**.
 
 **Re-clonado.** `voice clone --force` sobre `mi_voz`, que tiene el audio sintetizado `saludo`, muestra por stderr el plan (la voz y sus audios sintetizados, con rutas y tamaños) y pregunta `¿Sobrescribir la voz mi_voz y borrar sus 1 audio sintetizado? [s/N]`; responder `n` sale con **exit 0**, imprime `Cancelado; no se ha borrado nada.` y no cambia nada. Al responder `s`, el cierre por stderr dice `✓ Voz mi_voz clonada en N s · se borraron 1 audio sintetizado anterior`, `speech list --voice mi_voz` queda vacío y `--json` lleva `"removed_speech": ["saludo"]`. Sin terminal (por ejemplo, con `< /dev/null`) y sin `--yes` sale con **exit 2** (`confirmation_required`) sin cambiar nada. **El residente recarga la voz:** el `say` posterior suena con el timbre de `otra.wav`, no con el de `habla.wav`, y el `pid` del residente (`resident_pid` en `daemon.pid`) cambia respecto del anterior al re-clonado; dos `say` seguidos con la voz sin cambios conservan el mismo.
 
@@ -417,7 +417,7 @@ ai-voice-interconnector self uninstall --dry-run
 ai-voice-interconnector cleanup --all --dry-run
 ```
 
-**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `5,9 GB` y el prompt `¿Instalar el programa? [S/n] ` deja un espacio antes de la respuesta. La provisión abre su bloque con `Descargando 6 modelos:`; cada barra está etiquetada `[i/6] nombre`, muestra el porcentaje, el total real del modelo (no el de un archivo pequeño), la velocidad y `quedan` con un tiempo estable (nunca un valor absurdo; `quedan —` durante los primeros 2 s de cada modelo), y se repinta de forma continua aunque no lleguen bytes. Al completarse cada modelo queda una línea permanente `✓ [i/6]` con tamaño, duración y velocidad. Sin TTY no hay barras, pero aparecen las líneas de avance `… [i/6] nombre  <completado> de <total> · <duración>` cada 15 s. No existe una línea «Total:» propia de la provisión: el cierre es `✓ ai-voice-interconnector <versión> instalado en <total>`, con los detalles `PATH: …` y `Modelos: …` debajo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones escriben su plan por stdout —cada ruta una vez, con su categoría en español y tamaños con coma— y un único `Simulación: no se ha modificado nada.` por stderr; no abren ninguna etapa de borrado y no modifican el disco.
+**Criterio de aceptación:** el bootstrap muestra `Descargando <archivo>...`, tamaño y segundos con `checksum verificado.`, y separa su bloque con una línea en blanco. El plan muestra `3,4 GB` y el prompt `¿Instalar el programa? [S/n] ` deja un espacio antes de la respuesta. La provisión abre su bloque con `Descargando 5 modelos:`; cada barra está etiquetada `[i/5] nombre`, muestra el porcentaje, el total real del modelo (no el de un archivo pequeño), la velocidad y `quedan` con un tiempo estable (nunca un valor absurdo; `quedan —` durante los primeros 2 s de cada modelo), y se repinta de forma continua aunque no lleguen bytes. Al completarse cada modelo queda una línea permanente `✓ [i/5]` con tamaño, duración y velocidad. Sin TTY no hay barras, pero aparecen las líneas de avance `… [i/5] nombre  <completado> de <total> · <duración>` cada 15 s. No existe una línea «Total:» propia de la provisión: el cierre es `✓ ai-voice-interconnector <versión> instalado en <total>`, con los detalles `PATH: …` y `Modelos: …` debajo. No debe haber líneas pegadas ni rellenadas con espacios al copiar la salida. `El comando ya está disponible en esta ventana.` aparece después del éxito. La instalación termina con **exit 0**. Las dos simulaciones escriben su plan por stdout —cada ruta una vez, con su categoría en español y tamaños con coma— y un único `Simulación: no se ha modificado nada.` por stderr; no abren ninguna etapa de borrado y no modifican el disco.
 
 ## 10. Daemon
 
@@ -445,7 +445,7 @@ ai-voice-interconnector daemon status
 
 **Esperado**: `start` deja el daemon corriendo (`status` lo confirma), **exit 0**, con las etapas `✓ Daemon iniciado`, `✓ Motor calentado` y el cierre `✓ Daemon listo en … · pid N` (si el calentamiento no termina en su plazo, el cierre es `✓ Daemon en marcha en … · pid N · …` con la causa en la misma línea); `say --daemon` sintetiza con el modelo ya en memoria (más rápido que la vía directa), **exit 0**; `restart`/`stop` gestionan el ciclo de vida, **exit 0**. Un `--daemon` explícito contra un daemon inalcanzable sale con **exit 5**.
 
-**Esperas de la síntesis.** En una terminal real, con el daemon en marcha: (1) lanza un `say --daemon` con un texto largo y, mientras suena, otro `say --daemon` en una segunda terminal: el segundo muestra `Esperando turno para sintetizar…` y después `Sintetizando…` en la misma línea viva, **sin** ninguna línea `✓ Voz sintetizada`, y su `primer audio` incluye la espera; (2) un `say --daemon -v ryan` tras haber usado `default` muestra `Cargando la voz…` mientras el motor arranca con la otra voz.
+**Esperas de la síntesis.** En una terminal real, con el daemon en marcha: (1) lanza un `say --daemon` con un texto largo y, mientras suena, otro `say --daemon` en una segunda terminal: el segundo muestra `Esperando turno para sintetizar…` y después `Sintetizando…` en la misma línea viva, **sin** ninguna línea `✓ Voz sintetizada`, y su `primer audio` incluye la espera; (2) un `say --daemon -v <otra_voz_clonada>` tras haber usado `default` muestra `Cargando la voz…` mientras el motor arranca con la otra voz.
 
 **Cero huérfanos tras `stop`** (comprobación a nivel de SO): sin procesos
 `ai-voice-interconnector` ni `qwen_tts` residuales, puerto `8765` y puerto del residente (el `resident_port` que anotaba `daemon.pid`) cerrados y

@@ -3296,23 +3296,8 @@ mod tts {
         .find(|path| path.is_file())
     }
 
-    /// Exige el snapshot del modelo CustomVoice `qwen3-tts-0.6b` (su
-    /// `config.json`) en la raíz de modelos vigente.
-    fn require_tts_model() {
-        let file = avi_store::ModelStore::new()
-            .expect("la raíz de modelos debe resolverse")
-            .model_snapshot_path("qwen3-tts-0.6b")
-            .expect("el pin de qwen3-tts-0.6b debe existir en MODEL_REVISIONS")
-            .join("config.json");
-        assert!(
-            file.is_file(),
-            "falta {}: aprovisiona el modelo con `ai-voice-interconnector setup`",
-            file.display()
-        );
-    }
-
-    /// Exige el modelo Base `qwen3-tts-0.6b-base` que necesita el clonado: su
-    /// snapshot (`config.json`) en la raíz de modelos de AVI.
+    /// Exige el modelo Base `qwen3-tts-0.6b-base` que necesita la síntesis y el
+    /// clonado: su snapshot (`config.json`) en la raíz de modelos de AVI.
     fn require_tts_base_model() {
         let snapshot = avi_store::ModelStore::new()
             .expect("la raíz de modelos debe resolverse")
@@ -3328,7 +3313,7 @@ mod tts {
 
     /// Exige el binario del motor (`QWEN3_TTS_BIN` o el de
     /// `engine-bundle/`). Los pesos no se exigen aparte: el motor usa el
-    /// snapshot de la raíz de modelos que exige `require_tts_model()`.
+    /// snapshot de la raíz de modelos que exige `require_tts_base_model()`.
     fn require_tts_binary() {
         let binary = std::env::var_os("QWEN3_TTS_BIN")
             .map(PathBuf::from)
@@ -3606,7 +3591,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y el modelo Parakeet"]
     fn synthesize_ok_with_label() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         require_parakeet();
         // Serie + ciclo: excluye cleanup (STATE) y paradas del ciclo durante la
@@ -3684,7 +3669,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y el modelo Parakeet"]
     fn synthesize_short_text_word_error_rate_gate() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         require_parakeet();
         // Instancia aislada sin daemon (este test es ruta directa): el
@@ -3822,7 +3807,6 @@ mod tts {
     /// bajaba a ~0.6 s) y 12 s (una salida desbocada la excede).
     #[cfg(feature = "native-stt")]
     fn assert_matrix_cell(voice: &str, language: &str) {
-        require_tts_model();
         require_tts_base_model();
         require_tts_binary();
         require_parakeet();
@@ -3854,44 +3838,16 @@ mod tts {
 
     #[cfg(feature = "native-stt")]
     #[test]
-    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    #[ignore = "requiere el modelo Base, el binario del motor y el modelo Parakeet"]
     fn voice_matrix_default_es_latam() {
         assert_matrix_cell("default", "es");
     }
 
     #[cfg(feature = "native-stt")]
     #[test]
-    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
+    #[ignore = "requiere el modelo Base, el binario del motor y el modelo Parakeet"]
     fn voice_matrix_default_en() {
         assert_matrix_cell("default", "en");
-    }
-
-    #[cfg(feature = "native-stt")]
-    #[test]
-    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
-    fn voice_matrix_ryan_es_latam() {
-        assert_matrix_cell("ryan", "es");
-    }
-
-    #[cfg(feature = "native-stt")]
-    #[test]
-    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
-    fn voice_matrix_ryan_en() {
-        assert_matrix_cell("ryan", "en");
-    }
-
-    #[cfg(feature = "native-stt")]
-    #[test]
-    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
-    fn voice_matrix_vivian_es_latam() {
-        assert_matrix_cell("vivian", "es");
-    }
-
-    #[cfg(feature = "native-stt")]
-    #[test]
-    #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
-    fn voice_matrix_vivian_en() {
-        assert_matrix_cell("vivian", "en");
     }
 
     #[test]
@@ -3959,10 +3915,10 @@ mod tts {
 
     #[test]
     fn synthesize_missing_voice_exits_3() {
-        // Sandbox propio con el modelo CustomVoice sembrado: la ruta llega a la
+        // Sandbox propio con el modelo Base sembrado: la ruta llega a la
         // búsqueda de la voz sin cargar el motor ni tocar la instalación real.
         let inst = IsolatedInstance::new("synth_missing_voice");
-        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let a = inst.contract_args();
         // Ruta directa fijada (colateral del régimen con fixture): la
         // existencia de la voz solo se verifica en la rama local; la vía daemon la
@@ -3994,18 +3950,17 @@ mod tts {
     }
 
     #[test]
-    fn invalid_tts_precision_is_a_usage_error_in_direct_routes() {
-        let inst = IsolatedInstance::new("invalid_tts_precision");
-        seed_pinned_models(
-            &inst.cache_dir(),
-            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
-        );
+    fn invalid_base_model_env_is_model_missing_in_direct_routes() {
+        let inst = IsolatedInstance::new("invalid_base_model_env");
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let engine = write_fake_engine(&inst.dir);
         let engine_path = engine.to_string_lossy().to_string();
         let mut envs = inst.contract_args();
         envs.push(("QWEN3_TTS_BIN", engine_path.as_str()));
-        envs.push(("AVI_TTS_PRECISION", "invalid"));
-        let cases: &[&[&str]] = &[
+        let missing_model = inst.dir.join("modelo-inexistente");
+        let missing_model = missing_model.to_string_lossy().to_string();
+        envs.push(("QWEN3_TTS_BASE_MODEL_DIR", missing_model.as_str()));
+        let (code, actual) = run_json_env(
             &[
                 "--json",
                 "speech",
@@ -4014,90 +3969,21 @@ mod tts {
                 "--text",
                 "Hola",
                 "--voice",
-                "ryan",
+                "default",
                 "--label",
                 "precision",
             ],
-            &[
-                "--json",
-                "speech",
-                "say",
-                "--no-daemon",
-                "--text",
-                "Hola",
-                "--voice",
-                "ryan",
-            ],
-            &[
-                "--json",
-                "voice",
-                "clone",
-                "--no-daemon",
-                "--name",
-                "precision",
-                "--speech-reference",
-                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-            ],
-        ];
-        for args in cases {
-            let (code, actual) = run_json_env(args, &envs);
-            assert_eq!(code, 2, "{args:?}: {actual}");
-            assert_eq!(actual["reason"], "usage_error", "{args:?}: {actual}");
-            let message = actual.to_string();
-            assert!(
-                message.contains("AVI_TTS_PRECISION")
-                    && message.contains("mixed")
-                    && message.contains("bf16"),
-                "{message}"
-            );
-        }
-
-        let missing_model = inst.dir.join("modelo-inexistente");
-        let missing_model = missing_model.to_string_lossy().to_string();
-        envs.push(("QWEN3_TTS_MODEL_DIR", missing_model.as_str()));
-        let (code, actual) = run_json_env(cases[0], &envs);
+            &envs,
+        );
         assert_eq!(code, 4, "{actual}");
         assert_eq!(actual["reason"], "model_missing", "{actual}");
     }
 
-    /// El doblaje llega al motor TTS después de transcribir el audio real.
-    #[cfg(feature = "native-stt")]
-    #[test]
-    #[ignore = "requiere Parakeet y ONNX Runtime"]
-    fn dub_invalid_tts_precision_is_a_usage_error() {
-        require_parakeet();
-        let inst = IsolatedInstance::new("dub_invalid_tts_precision");
-        let mut envs = inst.args();
-        envs.push(("AVI_TTS_PRECISION", "invalid"));
-        let (code, actual) = run_json_env(
-            &[
-                "--json",
-                "speech",
-                "dub",
-                "--no-daemon",
-                "--audio",
-                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
-                "--source-language",
-                "en",
-                "--target-language",
-                "en",
-                "--voice",
-                "ryan",
-            ],
-            &envs,
-        );
-        assert_eq!(code, 2, "{actual}");
-        assert_eq!(actual["reason"], "usage_error", "{actual}");
-        assert!(actual.to_string().contains("AVI_TTS_PRECISION"), "{actual}");
-    }
-
     /// Una voz clonada (`default` lleva `reference.qvoice` de fábrica) sin el
-    /// modelo Base provisionado sale con 4 y `model_missing`, igual que la falta
-    /// de CustomVoice, aunque este sí esté sembrado.
+    /// modelo Base provisionado sale con 4 y `model_missing`.
     #[test]
     fn synthesize_cloned_voice_without_base_model_exits_4() {
         let inst = IsolatedInstance::new("synth_no_base");
-        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
         let a = inst.contract_args();
         let (code, actual) = run_json_env(
             &[
@@ -4304,10 +4190,10 @@ mod tts {
     /// sidecar + WAV mínimo (sin síntesis real).
     #[test]
     fn synthesize_label_collision_exits_6() {
-        // Sandbox propio con el modelo CustomVoice sembrado; el almacén de
+        // Sandbox propio con el modelo Base sembrado; el almacén de
         // locuciones fabricado vive en el directorio de datos del sandbox.
         let inst = IsolatedInstance::new("synth_collision");
-        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let a = inst.contract_args();
         let label = unique_label("collision");
         let wav_min = {
@@ -4549,9 +4435,11 @@ mod tts {
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
         let label_def = unique_label("listdef");
-        let label_ryan = unique_label("listryan");
+        let label_other = unique_label("listotra");
+        std::fs::create_dir_all(inst.dir.join("voices").join("otra"))
+            .expect("crear la segunda voz");
         create_utterance(&inst, "default", &label_def);
-        create_utterance(&inst, "ryan", &label_ryan);
+        create_utterance(&inst, "otra", &label_other);
         let (code, actual) = run_json_env(
             &["--json", "speech", "list", "--voice", "default"],
             &inst.contract_args(),
@@ -4620,9 +4508,11 @@ mod tts {
             .ensure_initialized()
             .expect("voces de fábrica inicializadas");
         let label_def = unique_label("listalldef");
-        let label_ryan = unique_label("listallryan");
+        let label_other = unique_label("listallotra");
+        std::fs::create_dir_all(inst.dir.join("voices").join("otra"))
+            .expect("crear la segunda voz");
         create_utterance(&inst, "default", &label_def);
-        create_utterance(&inst, "ryan", &label_ryan);
+        create_utterance(&inst, "otra", &label_other);
         let (code, actual) = run_json_env(&["--json", "speech", "list"], &inst.contract_args());
         assert_eq!(code, 0);
         assert_eq!(actual["schema_version"], Value::String("6".to_string()));
@@ -4638,8 +4528,8 @@ mod tts {
         assert!(
             entries
                 .iter()
-                .any(|e| e["label"] == Value::String(label_ryan.clone())),
-            "sin filtro debe aparecer la locución de ryan"
+                .any(|e| e["label"] == Value::String(label_other.clone())),
+            "sin filtro debe aparecer la locución de otra"
         );
     }
 
@@ -4923,7 +4813,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn say_success_plays() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         require_audio_device();
         require_parakeet();
@@ -4985,7 +4875,7 @@ mod tts {
             store.is_provisioned(avi_shared::paths::DPDFNET_MODEL),
             "falta DPDFNet: aprovisiona con setup"
         );
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         require_audio_device();
         let _guard = lock_tts();
@@ -5036,7 +4926,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn dub_audio_passthrough_es_es() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         require_parakeet();
         require_audio_device();
@@ -5639,7 +5529,6 @@ mod tts {
     #[test]
     #[ignore = "requiere los modelos Qwen3-TTS y Base, el binario del motor y el modelo Parakeet"]
     fn voice_clone_stores_only_timbre_fingerprint() {
-        require_tts_model();
         require_tts_base_model();
         require_tts_binary();
         require_parakeet();
@@ -5682,13 +5571,10 @@ mod tts {
     /// Clonado repetido → 6. La voz existente se fabrica con un `.qvoice` mínimo.
     #[test]
     fn voice_clone_duplicate_exits_6() {
-        // Sandbox propio con los modelos CustomVoice y Base sembrados; la voz
+        // Sandbox propio con el modelo Base sembrado; la voz
         // existente se fabrica en el almacén de voces del sandbox.
         let inst = IsolatedInstance::new("clone_duplicate");
-        seed_pinned_models(
-            &inst.cache_dir(),
-            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
-        );
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let a = inst.contract_args();
         let name = unique_label("clone");
         let voices = avi_store::VoiceStore::at(inst.dir.join("voices"));
@@ -5889,10 +5775,7 @@ mod tts {
     #[test]
     fn voice_clone_engine_output_goes_to_engine_log() {
         let inst = IsolatedInstance::new("clone_engine_log");
-        seed_pinned_models(
-            &inst.cache_dir(),
-            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
-        );
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let engine = write_fake_engine(&inst.dir);
         let engine_path = engine.to_string_lossy().to_string();
         let mut envs = inst.contract_args();
@@ -6013,10 +5896,7 @@ mod tts {
     #[test]
     fn voice_clone_passes_watch_stdin_and_keeps_open_pipe() {
         let inst = IsolatedInstance::new("clone_watch_stdin");
-        seed_pinned_models(
-            &inst.cache_dir(),
-            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
-        );
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let engine = write_stdin_probe_engine(&inst.dir);
         let engine_path = engine.to_string_lossy().to_string();
         let report = inst.dir.join("engine_report.txt");
@@ -6061,13 +5941,10 @@ mod tts {
 
     #[test]
     fn voice_clone_invalid_name_exits_2() {
-        // Sandbox propio con los modelos CustomVoice y Base sembrados; el nombre
+        // Sandbox propio con el modelo Base sembrado; el nombre
         // se rechaza antes de cargar el motor.
         let inst = IsolatedInstance::new("clone_invalid_name");
-        seed_pinned_models(
-            &inst.cache_dir(),
-            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
-        );
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let a = inst.contract_args();
         let (code, actual) = run_json_env(
             &[
@@ -6091,13 +5968,10 @@ mod tts {
 
     #[test]
     fn voice_clone_missing_audio_exits_3() {
-        // Sandbox propio con los modelos CustomVoice y Base sembrados; la ruta
+        // Sandbox propio con el modelo Base sembrado; la ruta
         // directa falla por el audio inexistente antes de cargar el motor.
         let inst = IsolatedInstance::new("clone_missing_audio");
-        seed_pinned_models(
-            &inst.cache_dir(),
-            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
-        );
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let a = inst.contract_args();
         let (code, actual) = run_json_env(
             &[
@@ -6122,13 +5996,10 @@ mod tts {
     /// Referencia truncada en la ruta local → 2 con `invalid_audio`.
     #[test]
     fn voice_clone_truncated_audio_exits_2() {
-        // Sandbox propio con los modelos CustomVoice y Base sembrados; el WAV
+        // Sandbox propio con el modelo Base sembrado; el WAV
         // truncado se escribe en el temporal del sandbox.
         let inst = IsolatedInstance::new("clone_truncated");
-        seed_pinned_models(
-            &inst.cache_dir(),
-            &["qwen3-tts-0.6b", "qwen3-tts-0.6b-base"],
-        );
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let a = inst.contract_args();
         let wav = write_truncated_wav(&inst.dir, "clone_truncated");
         let name = unique_label("clone");
@@ -6166,7 +6037,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn resident_listens_only_on_loopback() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::resident_listens_only_on_loopback");
@@ -6217,7 +6088,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_start_ok() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_start_ok");
@@ -6258,7 +6129,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_writes_its_own_pidfile_before_ready() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_writes_its_own_pidfile_before_ready");
@@ -6297,7 +6168,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_stop_finds_live_daemon_after_pidfile_is_deleted() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_stop_finds_live_daemon_after_pidfile_is_deleted");
@@ -6328,7 +6199,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn cleanup_all_stops_registered_live_daemon() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::cleanup_all_stops_registered_live_daemon");
@@ -6352,7 +6223,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_restart_rewarms() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_restart_rewarms");
@@ -6396,7 +6267,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_status_running() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_status_running");
@@ -6435,7 +6306,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_status_with_isolated_daemon_reports_running() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_status_with_isolated_daemon_reports_running");
@@ -6580,7 +6451,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn daemon_start_with_auto_restart() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::daemon_start_with_auto_restart");
@@ -6752,7 +6623,7 @@ mod tts {
         inst.enable_diag_trace("start_port_in_use");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
-        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
@@ -6775,7 +6646,7 @@ mod tts {
         // Traza de diagnóstico del arranque (mismo motivo que en el caso
         // contiguo: el arranque tardó más de lo previsto en el ejecutor de CI).
         inst.enable_diag_trace("start_failure_log");
-        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let holder = occupy_instance_port(&mut inst);
         let port = holder.local_addr().unwrap().port();
@@ -6806,30 +6677,6 @@ mod tts {
             "el mensaje debe citar la ruta del log: {actual}"
         );
         drop(holder);
-    }
-
-    #[cfg(not(any(feature = "native-stt", feature = "native-translation")))]
-    #[test]
-    fn daemon_start_rejects_invalid_tts_precision() {
-        let inst = IsolatedInstance::new("daemon_invalid_tts_precision");
-        let names: Vec<_> = avi_shared::paths::MODEL_REVISIONS
-            .iter()
-            .filter(|pin| !pin.startup_optional)
-            .map(|pin| pin.name)
-            .collect();
-        seed_pinned_models(&inst.cache_dir(), &names);
-        let mut envs = inst.contract_args();
-        envs.push(("AVI_TTS_PRECISION", "invalid"));
-        let (code, actual) = run_json_env(&["--json", "daemon", "start"], &envs);
-        assert_eq!(code, 1, "{actual}");
-        assert_eq!(actual["reason"], "daemon_error", "{actual}");
-        let message = actual.to_string();
-        assert!(
-            message.contains("AVI_TTS_PRECISION")
-                && message.contains("mixed")
-                && message.contains("bf16"),
-            "{message}"
-        );
     }
 
     /// `daemon serve` con el puerto ocupado sale con `port_in_use` (exit 6) y
@@ -6871,7 +6718,7 @@ mod tts {
         let trace = inst.enable_diag_trace("start_missing_warm_voice");
         // Sin el modelo `start` saldría antes por `model_missing`; el pidfile
         // señuelo evita que `start` consulte 127.0.0.1:8765 o barra `qwen_tts`.
-        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let _decoy = seed_decoy_daemon_pidfile(&inst.dir);
         let pidfile_before = std::fs::read(inst.dir.join("daemon.pid")).ok();
         let voice = format!("warm_nonexistent_{}", std::process::id());
@@ -7197,7 +7044,7 @@ mod tts {
         // en el ejecutor de CI, y el reclamo del residual es una fase del
         // arranque que hay que cronometrar.
         inst.enable_diag_trace("start_reclaims_unresponsive");
-        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let mut daemon = ForeignProcess::spawn();
         let closed = DecoyPort::reserve();
         seed_pidfile_as_ours(&inst.dir, &daemon, &format!("127.0.0.1:{}", closed.port));
@@ -7236,7 +7083,7 @@ mod tts {
     #[test]
     fn daemon_start_spares_foreign_process_on_reused_pid() {
         let mut inst = IsolatedInstance::new("start_foreign_pid");
-        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b"]);
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
         let mut foreign = ForeignProcess::spawn();
         seed_pidfile_with_fake_identities(&inst.dir, foreign.pid(), u32::MAX - 1);
         let _holder = occupy_instance_port(&mut inst);
@@ -7259,7 +7106,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn simulated_abort_reclaims_and_leaves_no_orphans() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::simulated_abort_reclaims_and_leaves_no_orphans");
@@ -7440,7 +7287,7 @@ mod tts {
     /// `daemon.pid`: la prueba falla por la aserción, pero no deja el motor
     /// vivo ni necesita un guardián propio.
     fn assert_hard_kill_stops_resident(tag: &'static str, extra: &[&str]) {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy(&format!("tts::{tag}"));
@@ -7497,9 +7344,9 @@ mod tts {
     /// cargando el modelo (sin haber pasado su salud): al volver, el residente
     /// que el pidfile nombraba está muerto.
     #[test]
-    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b-base"]
     fn stop_during_warmup_leaves_no_resident() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::stop_during_warmup_leaves_no_resident");
@@ -7528,9 +7375,9 @@ mod tts {
     /// raíz de datos. Se usa `contract_args` para que el modelo real, que la
     /// instancia hereda, no sea nunca el destino del borrado.
     #[test]
-    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b-base"]
     fn self_uninstall_with_hot_resident_leaves_nothing_behind() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::self_uninstall_with_hot_resident_leaves_nothing_behind");
@@ -7586,7 +7433,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor y los modelos CT2"]
     fn translate_delegates_to_daemon() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         require_ct2();
         let _tts = lock_tts();
@@ -7674,7 +7521,6 @@ mod tts {
     #[test]
     #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario del motor"]
     fn clone_delegates_to_daemon() {
-        require_tts_model();
         require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
@@ -7734,7 +7580,6 @@ mod tts {
     #[test]
     #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario del motor"]
     fn resident_reloads_recloned_voice() {
-        require_tts_model();
         require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
@@ -7830,7 +7675,6 @@ mod tts {
     #[test]
     #[ignore = "requiere los modelos Qwen3-TTS y Base, y el binario del motor"]
     fn clone_daemon_truncated_audio_exits_2() {
-        require_tts_model();
         require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
@@ -7868,7 +7712,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet y un dispositivo de audio"]
     fn dub_daemon_passthrough() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         require_parakeet();
         require_audio_device();
@@ -7924,7 +7768,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS, el binario del motor, el modelo Parakeet, los modelos CT2 y un dispositivo de audio"]
     fn dub_daemon_with_translation() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         require_parakeet();
         require_ct2();
@@ -7979,7 +7823,7 @@ mod tts {
     #[test]
     #[ignore = "requiere el modelo Qwen3-TTS y el binario del motor"]
     fn perf_daemon_status_while_running() {
-        require_tts_model();
+        require_tts_base_model();
         require_tts_binary();
         let _tts = lock_tts();
         hit_start_heavy("tts::perf_daemon_status_while_running");
@@ -9714,8 +9558,7 @@ fn synthesize_daemon_persists_translated_text() {
         serde_json::json!({ "event": "result", "translated": "Hello there" }),
     ]);
     fake.publish_in(&dir.join("data"));
-    let mut envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    envs.push(("AVI_TTS_PRECISION", "invalid"));
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(
         &[
             "--json",

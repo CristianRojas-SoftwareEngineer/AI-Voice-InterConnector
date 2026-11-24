@@ -140,7 +140,7 @@ Los pasos de [`self uninstall`](../../specs/LIFECYCLE.md#85-self-uninstall), en 
 
 **Sin `--keep-data`, el destino del estado es la raíz de datos completa.** No es el plan de `cleanup --all`, y la diferencia es deliberada:
 
-- `cleanup --all` **protege las voces de fábrica** (`default`, `ryan`, `vivian`) porque van embebidas en el binario y el programa sigue instalado: borrarlas sería tirar un trabajo que `setup` vuelve a materializar.
+- `cleanup --all` **protege la voz de fábrica** (`default`) porque va embebida en el binario y el programa sigue instalado: borrarla sería tirar un trabajo que `setup` vuelve a materializar.
 - Al desinstalar **el programa desaparece**, y con él las voces de fábrica. Dejarlas sería **residuo dentro de una raíz de propiedad exclusiva**.
 
 Por eso la composición del plan vive en `uninstall::compose_plan` y tiene dos ramas, no dos implementaciones del mismo alcance:
@@ -245,8 +245,8 @@ stderr: Actualización desde la versión 0.34.0
         ✓ Actualizado de 0.34.0 a 0.35.0 en 12,0 s
 
 # self uninstall --dry-run
-stdout: Se borrarán 4 rutas, 5,9 GB en total:
-          modelos: <ruta> (5,9 GB)
+stdout: Se borrarán 4 rutas, 3,4 GB en total:
+          modelos: <ruta> (3,4 GB)
           programa: <ruta> (…)
           PATH: se quitará la entrada <ruta> del PATH de tu usuario.
 stderr: Simulación: no se ha modificado nada.

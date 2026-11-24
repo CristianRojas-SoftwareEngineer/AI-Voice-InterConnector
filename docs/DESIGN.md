@@ -53,8 +53,8 @@ AI Voice-InterConnector es un sistema de voz con IA **100% local** en español e
 │  ┌────────────────────────────────────────────────────────┐  │
 │  │ TTS: Qwen3-TTS residente (subproceso nativo qwen_tts,  │  │
 │  │ HTTP en loopback, puerto efímero)                      │  │
-│  │  · voz preset  → qwen3-tts-0.6b (CustomVoice)          │  │
-│  │  · voz clonada → qwen3-tts-0.6b-base (Base, --graft)   │  │
+│  │  · toda voz    → qwen3-tts-0.6b-base (Base)            │  │
+│  │    (--load-voice <qvoice>)                             │  │
 │  └────────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────┐  ┌──────────────────────────┐  │
 │  │ STT: Parakeet TDT v3     │  │ Traducción: opus-mt es↔en│  │
@@ -129,24 +129,24 @@ En desarrollo se invoca como `cargo run -- <args>` o `./target/release/ai-voice-
 
 | Aspecto | Detalle |
 |---------|---------|
-| **Modelos** | `qwen3-tts-0.6b` (síntesis) y `qwen3-tts-0.6b-base` (clonado) |
+| **Modelo** | `qwen3-tts-0.6b-base` (síntesis y clonado) |
 | **Licencia** | MIT / Apache-2.0 |
 | **Parámetros** | 0.6B |
 | **Clonación de voz** | referencia de voz vía archivo (`--speech-reference`) o micrófono (`--mic`; ~10 s recomendados, máximo 30 s); se guarda solo la huella de timbre (sin transcripción) |
 | **Inferencia** | CPU con BLAS (motor nativo `qwen_tts` compilado con `xtask build-engine`) |
 | **Opciones de generación** | `GenerationOptions::production()` temp 0.35 seed 4 (`PRODUCTION_SEED`, primera toma; las regeneraciones de `--play` lo sustituyen con `with_seed_override`) |
 
-Ver `crates/avi-tts/src/lib.rs` y `vendor/qwen3-tts/README.md` para el contrato de invocación: el residente se lanza como `--serve <puerto> --host 127.0.0.1 -j 4 [--quant-mixed] --watch-stdin` (más `--load-voice <qvoice> --graft` para una voz clonada), y el clonado por proceso local como `-d <modelo> --ref-audio <wav> --xvector-only --save-voice <out> --voice-name <nombre> --watch-stdin`. El idioma del producto (`es`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error.
+Ver `crates/avi-tts/src/lib.rs` para el contrato de invocación: el residente se lanza como `-d <modelo Base> --serve <puerto> --host 127.0.0.1 -j 4 --watch-stdin --load-voice <qvoice>` (siempre con la voz, `default` incluida), y el clonado por proceso local como `-d <modelo Base> --ref-audio <wav> --save-voice <out> -j 4 --watch-stdin`. El idioma del producto (`es`, `en`) viaja como token y `avi-tts` lo traduce al nombre que entiende el motor (`Spanish`, `English`); un token desconocido es error.
 
 **Entrega en streaming.** Toda síntesis usa `POST /v1/tts/stream` del residente, que entrega PCM s16le de 24 kHz mono por partes: el primer fragmento es de 2 fotogramas (160 ms de audio; un fotograma son 80 ms) y los siguientes de 4. `avi-tts` los entrega a quien llama (`synthesize_streaming`) o los acumula en un WAV (`synthesize_to_wav`); una respuesta que se corta sin su fragmento final de tamaño cero es `SynthesisTruncated`, nunca un audio corto válido. Cuatro fotogramas por fragmento dejan un hueco de ~0,12 s tras el primer fragmento, frente a ~0,58 s con 10, a cambio de un 4 % de factor de tiempo real. El reproductor incremental (`StreamPlayer`, en `avi-audio`) remuestrea cada fragmento a la tasa del dispositivo y espera 300 ms de audio en cola antes de sonar, lo que cubre el hueco entre el primer y el segundo fragmento (medido en 0,12–0,19 s); si la cola se vacía con la entrega en curso, pausa y reanuda al recuperar el colchón, y cuenta un corte (`stalls`). `first_audio_ms` son los milisegundos desde que se abre la etapa de síntesis hasta la primera muestra entregada al dispositivo, e incluyen la espera de turno, el calentamiento del motor y la carga de la voz. Por el daemon, el audio viaja en eventos `audio` del flujo NDJSON. La CLI abre el dispositivo de salida antes de pedir la síntesis y, si esta falla con la voz ya sonando, corta la reproducción y termina con error.
 
-**Precisión del residente.** `AVI_TTS_PRECISION` ausente o exactamente `mixed` selecciona con `--quant-mixed` el Talker en INT4 (Q4_0) y el Code Predictor con la atención y las cabezas de salida en INT8 y las FFN en Q4_0; `bf16` selecciona ambos en BF16 sin opciones de cuantización. Cualquier otro valor, incluso vacío o no Unicode, es un error. La lectura ocurre al crear el motor: la CLI directa lo crea por operación y el daemon fija su perfil al arrancar, por lo que cambiarlo exige reiniciar el daemon. La configuración del cliente de un daemon activo no lo modifica. La resolución de rutas de modelos anterior a la creación del perfil conserva su precedencia de error.
+**Precisión del residente.** El motor tiene un único perfil de precisión, siempre activo; AVI no lo elige.
 
-El hijo residente recibe, además de `TMP`, `TEMP` y `TMPDIR`, las variables `QWEN_TALKER_PREC` y `QWEN_CP_PREC` según el perfil (`int4` y `mixed` en `mixed`; `bf16` y `bf16` en `bf16`) y `OMP_NUM_THREADS` con el mismo valor que su `-j` (4, la constante `ENGINE_THREADS`, que también fija el `-j` del clonado). Esa variable es necesaria porque el OpenBLAS del motor en Windows usa OpenMP: sin ella crea un hilo por hilo lógico del procesador, compromete unos 128 MiB por hilo (2 GiB con 16 hilos) y compite con el pool del motor; con ella el residente de producción ocupa ~1,4 GiB de memoria privada en lugar de ~3,35 y sintetiza un 6 % más rápido con el mismo audio. Nunca se fija `OPENBLAS_NUM_THREADS`, porque cambia el audio. No se altera el entorno del padre, el proceso de extracción de voces ni `QWEN_SD_INT8`, que controla el decoder por separado. El perfil mixto no garantiza determinismo ni equivalencia de calidad.
+El hijo residente y el de clonado reciben `TMP`, `TEMP` y `TMPDIR` apuntando al scratch de AVI, y el número de hilos va solo en `-j` (4, la constante `ENGINE_THREADS`). El contrato del motor exige al cliente no definir las variables de hilos de OpenBLAS (`OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` y `OMP_NUM_THREADS`), así que AVI las retira del entorno heredado del hijo en todas las plataformas (`spawn_with_allowlist_env` con `env_remove`); el entorno del padre no cambia.
 
-**Clonación solo con la huella de timbre.** `clone_voice` lanza el motor con `--xvector-only`, de modo que toda voz clonada (la de fábrica y las del usuario) guarda en su `reference.qvoice` únicamente el x-vector de la referencia, sin transcripción, códigos ni idioma: la clonación no depende del STT y es igual con o sin `native-stt`. La síntesis de una voz clonada arranca el residente sobre el modelo Base con `--graft` (aplica solo la huella de timbre y deja la prosodia al modelo), mientras que los presets usan CustomVoice; la única regla de elección es `select_model_dir`, y la falta del modelo que exige la voz es `model_missing` (exit 4), sin caer al otro modelo. El idioma lo fija cada petición de síntesis. La voz de fábrica `default` se generó con la ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav` (~10 s). El `--watch-stdin` es una divergencia propia del motor respecto al upstream y es lo que ata su vida a la de quien lo lanzó: el lanzador mantiene abierta la tubería de su entrada estándar y el motor termina solo al cerrarse.
+**Clonación solo con la huella de timbre.** El motor solo guarda el x-vector de la referencia, de modo que toda voz clonada (la de fábrica y las del usuario) guarda en su `reference.qvoice` únicamente esa huella, sin transcripción, códigos ni idioma: la clonación no depende del STT y es igual con o sin `native-stt`. La síntesis arranca el residente sobre el modelo Base con `--load-voice`, único modelo del motor; la falta del modelo Base es `model_missing` (exit 4). El idioma lo fija cada petición de síntesis. La voz de fábrica `default` se generó con la ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav` (~10 s). El `--watch-stdin` es una divergencia propia del motor respecto al upstream y es lo que ata su vida a la de quien lo lanzó: el lanzador mantiene abierta la tubería de su entrada estándar y el motor termina solo al cerrarse.
 
-**Resolución del binario y de los modelos.** `avi-tts` busca el binario del motor por capas y se queda con la primera que lo halla: la variable `QWEN3_TTS_BIN` (si está definida debe apuntar a un archivo existente), la raíz del bundle junto al ejecutable instalado (`qwen_tts[.exe]`) y, en desarrollo, `engine-bundle/` bajo el directorio de trabajo. Cada directorio de pesos sigue un orden análogo: la variable del modelo (`QWEN3_TTS_MODEL_DIR` para `qwen3-tts-0.6b` y `QWEN3_TTS_BASE_MODEL_DIR` para `qwen3-tts-0.6b-base`) y el snapshot no vacío de la raíz de modelos de AVI. Ningún modelo vive junto al binario, ni en el bundle ni en `engine-bundle/`. Así `daemon start` calienta desde cualquier directorio de trabajo, sin `QWEN3_TTS_BIN`, cuando se usa el binario instalado. El orden vive en `resolve_binary` y `resolve_named_model_dir` (`crates/avi-tts/src/lib.rs`).
+**Resolución del binario y de los modelos.** `avi-tts` busca el binario del motor por capas y se queda con la primera que lo halla: la variable `QWEN3_TTS_BIN` (si está definida debe apuntar a un archivo existente), la raíz del bundle junto al ejecutable instalado (`qwen_tts[.exe]`) y, en desarrollo, `engine-bundle/` bajo el directorio de trabajo. El directorio de pesos sigue un orden análogo: la variable `QWEN3_TTS_BASE_MODEL_DIR` (modelo `qwen3-tts-0.6b-base`) y el snapshot no vacío de la raíz de modelos de AVI. Ningún modelo vive junto al binario, ni en el bundle ni en `engine-bundle/`. Así `daemon start` calienta desde cualquier directorio de trabajo, sin `QWEN3_TTS_BIN`, cuando se usa el binario instalado. El orden vive en `resolve_binary` y `resolve_named_model_dir` (`crates/avi-tts/src/lib.rs`).
 
 ## Traducción cross-lingual (opus-mt / CTranslate2)
 
@@ -175,15 +175,15 @@ El `--json` global emite JSONL, una línea por evento, y conserva progreso y res
    synthesize), comprueba que la voz exista y aplica la CollisionPolicy; solo
    después comprueba el modelo o el daemon. Resuelve la voz con
    VoiceStore::resolve → VoiceReference (ruta de reference.qvoice + huella
-   sha256), o None si es un preset
+   sha256), o None si la voz no tiene reference.qvoice
                      │
                      ▼
 3. Qwen3TtsEngine::synthesize_streaming(texto, VoiceProfile { name, reference }, GenerationOptions con idioma, cancelación, destino de los fragmentos) → resolve_voice_engine
-   - default → Cloned(VoiceReference) (reference.qvoice embebido en el binario)
-   - ryan/vivian → Preset (voces puras del motor, sin qvoice)
-   - clonada → Cloned(VoiceReference) con reference.qvoice
+   - default → VoiceReference (reference.qvoice embebido en el binario)
+   - clonada → VoiceReference con reference.qvoice
+   - sin reference.qvoice → VoiceNotFound
    El residente se reutiliza solo si la voz resuelta es igual a la que tiene
-   cargada: el mismo preset o la misma identidad de contenido. Si no, o si
+   cargada: la misma identidad de contenido. Si no, o si
    no hay residente o está degradado, el motor arranca uno (2 a 6 s) y lo
    avisa a quien llama con `SynthesisStep::LoadingVoice` justo antes y con
    `SynthesisStep::Synthesizing` cuando el residente está sano; el daemon lo
@@ -259,8 +259,8 @@ Convenciones del texto para personas. No alcanzan al envelope `--json`, que es c
 - **Prompt.** Termina con un espacio, para que la respuesta no quede pegada, y nombra lo que se borra o hace: `¿Borrar lo indicado? [s/N] ` (destructivas) y `¿Instalar el programa? [S/n] ` (no destructivas). Lo escribe solo `confirm::confirm`.
 - **Cancelación.** `Cancelado; no se ha borrado nada.` (destructivas) o `Cancelado.` (las demás) lo escribe **solo** `confirm::confirm`, por stderr. Los handlers no lo repiten: el estado se dice una vez.
 - **Simulación.** Toda simulación (`--dry-run`) escribe el plan por stdout y después, una sola vez, `Simulación: no se ha modificado nada.` por stderr (`confirm::simulation_notice`).
-- **Planes.** El plan de `cleanup` y el de `self uninstall` salen de una única función de composición por operación (`plan_lines`), la misma para la simulación y para la confirmación. Cada ruta aparece una vez, con su categoría en español y su tamaño: `  modelos: C:\…\cache\models (5,9 GB)`.
-- **Progreso de la provisión.** `avi-store` calcula los bytes completados y el total de cada modelo a partir de los eventos de `hf-hub` y los entrega a un observador, sin dibujar. La vista (`avi-lifecycle/src/progress.rs`) abre el bloque con `Descargando N modelos:`, dibuja una barra por modelo con porcentaje (`  [3/6] opus-mt-en-es  ████████░░░░   58 %  48,0 MB / 82,5 MB  12,1 MB/s  quedan 3,0 s`), repintada cada 250 ms, la borra al terminar y deja una línea permanente (`  ✓ [1/6] qwen3-tts-0.6b  2,5 GB en 49,0 s · 51,0 MB/s`). El cierre con el total lo escribe el comando que provisiona. Sin terminal no hay barras, pero el encabezado y las líneas por modelo salen igual; cada descarga activa emite una línea visible cada 15 s. `avi-store` distingue el avance por archivo y por grupo xet y filtra las muestras sin bytes nuevos; la vista transmite ese avance al watchdog de `bootstrap` como máximo una vez cada 5 s por modelo. El watchdog no usa el tamaño de los blobs, porque pueden estar preextendidos.
+- **Planes.** El plan de `cleanup` y el de `self uninstall` salen de una única función de composición por operación (`plan_lines`), la misma para la simulación y para la confirmación. Cada ruta aparece una vez, con su categoría en español y su tamaño: `  modelos: C:\…\cache\models (3,4 GB)`.
+- **Progreso de la provisión.** `avi-store` calcula los bytes completados y el total de cada modelo a partir de los eventos de `hf-hub` y los entrega a un observador, sin dibujar. La vista (`avi-lifecycle/src/progress.rs`) abre el bloque con `Descargando N modelos:`, dibuja una barra por modelo con porcentaje (`  [3/5] opus-mt-en-es  ████████░░░░   58 %  48,0 MB / 82,5 MB  12,1 MB/s  quedan 3,0 s`), repintada cada 250 ms, la borra al terminar y deja una línea permanente (`  ✓ [1/5] qwen3-tts-0.6b-base  2,5 GB en 49,0 s · 51,0 MB/s`). El cierre con el total lo escribe el comando que provisiona. Sin terminal no hay barras, pero el encabezado y las líneas por modelo salen igual; cada descarga activa emite una línea visible cada 15 s. `avi-store` distingue el avance por archivo y por grupo xet y filtra las muestras sin bytes nuevos; la vista transmite ese avance al watchdog de `bootstrap` como máximo una vez cada 5 s por modelo. El watchdog no usa el tamaño de los blobs, porque pueden estar preextendidos.
 - **Sin literales de contrato.** El texto nunca imprime un literal del contrato `--json` (`status`, `reason`, categorías): cada estado y cada categoría tiene su descripción en español (`describe`).
 
 ## Modelo de voces
@@ -273,7 +273,7 @@ Todas las voces viven en un único nivel, `data_dir()/voices/<nombre>/`, y se re
 
 Las voces son de dos clases:
 
-- **Fábrica**: `default`, clonada, cuyo `reference.qvoice` va embebido en el binario (`include_bytes!`) y se materializa en `VoiceStore::ensure_initialized()`, y los presets `ryan` y `vivian`, sin referencia. `is_factory_name` las protege de `voice remove`.
+- **Fábrica**: `default`, clonada, cuyo `reference.qvoice` va embebido en el binario (`include_bytes!`) y se materializa en `VoiceStore::ensure_initialized()`. `is_factory_name` la protege de `voice remove`.
 - **Usuario**: registradas con `voice clone`. `voice clone --force` sobre un nombre existente, de fábrica incluido, sustituye su referencia en el mismo directorio.
 
 **Identidad de contenido.** `VoiceStore::resolve` devuelve la referencia de una voz clonada como `VoiceReference { path, fingerprint }`, con la huella sha256 del `reference.qvoice` completo. Todo lo derivado de una voz corresponde a su contenido actual: el residente TTS se reutiliza solo con la misma identidad; `avi_store::replace_voice` es la única forma de cambiar el contenido de una voz y borra sus audios sintetizados antes de publicar la referencia nueva; y `avi_store::persist_locution` es la única forma de escribir un audio sintetizado y comprueba que la voz conserve la identidad con la que se sintetizó.

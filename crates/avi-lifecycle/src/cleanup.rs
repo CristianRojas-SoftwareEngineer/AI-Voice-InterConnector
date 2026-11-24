@@ -514,7 +514,7 @@ fn collect_model(roots: &Roots, collected: &mut Vec<Target>, preserved: &mut Vec
 /// Alcance de `--voices`: las voces que el usuario puede borrar, más el arrastre de
 /// su_namespace de habla.
 ///
-/// Las voces de fábrica (`default`, `ryan`, `vivian`) van embebidas en el binario y
+/// Las voces de fábrica (`default`) van embebidas en el binario y
 /// el contrato de `cleanup` las protege: `--voices` no las borra ni sus locuciones,
 /// y caen solo con `--synthetic-speech` o `--all`. El arrastre de `speech/<voz>` se
 /// omite cuando el habla entera ya está en el alcance, para no listar dos veces lo

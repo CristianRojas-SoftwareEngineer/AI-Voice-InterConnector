@@ -609,10 +609,10 @@ where
     Some(result)
 }
 
-/// `reason` de un fallo de la fase de síntesis: la falta del modelo que exige la
-/// voz (Base para una clonada, CustomVoice para un preset) es `model_missing`,
-/// igual que cuando el motor no está provisionado; una voz sin referencia que no
-/// es preset es `voice_not_found`; cualquier otro fallo es `synthesis_failed`.
+/// `reason` de un fallo de la fase de síntesis: la falta del modelo Base es
+/// `model_missing`, igual que cuando el motor no está provisionado; una voz sin
+/// `reference.qvoice` es `voice_not_found`; cualquier otro fallo es
+/// `synthesis_failed`.
 fn synthesis_failure_reason(e: &anyhow::Error) -> &'static str {
     if e.downcast_ref::<avi_tts::ModelMissing>().is_some() {
         "model_missing"
@@ -782,7 +782,7 @@ async fn synthesize_handler(
         // Provisionamiento del motor: si binario/modelo no se resolvieron, la rama
         // `model_missing` es el contrato aceptado en entornos sin motor
         // (en el daemon real corre desde la raíz del repo, donde sí resuelve).
-        if state.tts_engine.binary_path.is_none() || state.tts_engine.model_dir.is_none() {
+        if state.tts_engine.binary_path.is_none() || state.tts_engine.base_model_dir.is_none() {
             emit_ndjson(
                 &tx,
                 json!({
@@ -856,8 +856,8 @@ async fn synthesize_handler(
             }
         };
 
-        // Perfil de voz: referencia con su identidad si la voz está clonada; el
-        // motor resuelve el preset vía `resolve_voice_engine` a partir del nombre.
+        // Perfil de voz: referencia con su identidad si la voz la tiene; sin ella,
+        // el motor falla como `voice_not_found`.
         let reference = match state.voice_store.resolve(&voice_owned) {
             Ok(reference) => reference,
             Err(e) => {
@@ -1704,8 +1704,7 @@ async fn voices_clone_handler(
             };
             #[cfg(not(feature = "native-denoise"))]
             let source = tmp_wav.clone();
-            avi_tts::clone_voice(&base_model_dir, &source, &clone_qvoice, name.as_str())
-                .map(|()| (work_dir, name))
+            avi_tts::clone_voice(&base_model_dir, &source, &clone_qvoice).map(|()| (work_dir, name))
         });
         // `_work_dir` mantiene vivo el directorio hasta el final de la tarea.
         let (_work_dir, name) = match with_heartbeats(&tx, "clone", clone_work).await {
@@ -1981,7 +1980,7 @@ async fn dub_handler(
             .into_response();
     }
     #[cfg(feature = "native-stt")]
-    if state.tts_engine.binary_path.is_none() || state.tts_engine.model_dir.is_none() {
+    if state.tts_engine.binary_path.is_none() || state.tts_engine.base_model_dir.is_none() {
         return (
             StatusCode::NOT_FOUND,
             Json(with_sv(json!({
@@ -2716,8 +2715,7 @@ async fn prepare_server(
 
     // Guarda de arranque: una `--warm-voice` inexistente aborta el arranque antes de
     // enlazar y de cargar modelos, sin degradar en silencio ni caer a `default`.
-    // Existe tanto una voz clonada como un preset del motor (`ryan`, `vivian`),
-    // que no tiene referencia `.qvoice`.
+    // La voz existe si su directorio está en el registro de voces.
     let warm_exists = voices
         .exists(warm_voice)
         .map_err(|e| StartupError::Failed {

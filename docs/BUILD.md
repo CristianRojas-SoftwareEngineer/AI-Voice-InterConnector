@@ -208,9 +208,10 @@ no declara más librerías que las del sistema base:
 - El motor TTS (`qwen_tts`) enlaza OpenBLAS y el runtime Fortran que usa su
   LAPACK (`libgfortran` y, en x86_64, `libquadmath`) de forma estática. El
   OpenBLAS de MSYS2 usa OpenMP: al ejecutar el motor a mano hay que fijar
-  `OMP_NUM_THREADS` con el mismo valor que `-j` (la aplicación lo hace en todos
-  sus lanzamientos); sin ella reserva unos 128 MiB por hilo lógico y frena al
-  motor. `OPENBLAS_NUM_THREADS` no se debe fijar: cambia el audio.
+  `-j`; el motor ajusta él mismo los hilos de OpenBLAS. Las variables de hilos
+  de OpenBLAS (`OPENBLAS_NUM_THREADS`, `GOTO_NUM_THREADS` y `OMP_NUM_THREADS`)
+  no se deben definir: la aplicación las retira del entorno del motor en todos
+  sus lanzamientos.
 
 En **macOS** el motor usa el framework Accelerate y el audio CoreAudio, que
 forman parte del sistema.

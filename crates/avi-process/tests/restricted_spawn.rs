@@ -68,7 +68,7 @@ fn child_receives_scratch_environment() {
         ("TEMP", scratch.path().as_os_str()),
         ("TMPDIR", scratch.path().as_os_str()),
     ];
-    let mut child = avi_process::spawn_with_allowlist_env(request, &env)
+    let mut child = avi_process::spawn_with_allowlist_env(request, &env, &[])
         .expect("debe lanzar al hijo con el scratch");
     assert!(child.wait().expect("debe esperar al hijo").success());
     reader.seek(SeekFrom::Start(0)).expect("debe rebobinar");
@@ -78,6 +78,65 @@ fn child_receives_scratch_environment() {
         .expect("debe leer el registro");
     let expected = scratch.path().display().to_string();
     assert_eq!(text.trim(), format!("{expected}|{expected}|{expected}"));
+}
+
+/// Una variable nombrada en `env_remove` no llega al hijo: la retirada quita
+/// lo que el padre tenía heredado y gana sobre la sustitución de `env`.
+#[test]
+fn child_does_not_receive_removed_environment() {
+    // Nombre propio de la prueba: ninguna otra la define y su borrado no
+    // afecta a otros procesos de prueba.
+    let key = "AVI_SPAWN_TEST_REMOVED";
+    std::env::set_var(key, "del-padre");
+    let mut reader = tempfile::tempfile().expect("debe crear el registro anónimo");
+    let log_file = reader.try_clone().expect("debe clonar el registro");
+    let (program, args) = if cfg!(windows) {
+        (
+            powershell(),
+            vec![
+                String::from("-NoProfile"),
+                String::from("-Command"),
+                String::from(
+                    "if ($env:AVI_SPAWN_TEST_REMOVED) { Write-Output 'presente' } else { Write-Output 'ausente' }",
+                ),
+            ],
+        )
+    } else {
+        (
+            PathBuf::from("sh"),
+            vec![
+                String::from("-c"),
+                String::from(
+                    "if [ -n \"$AVI_SPAWN_TEST_REMOVED\" ]; then printf 'presente'; else printf 'ausente'; fi",
+                ),
+            ],
+        )
+    };
+    let request = avi_process::RestrictedSpawnRequest {
+        program,
+        args,
+        stdin: avi_process::StdinSpec::Null,
+        stderr_file: log_file.try_clone().expect("debe clonar el registro"),
+        stdout_file: log_file,
+        creation_flags: 0,
+        extra_allowed: Vec::new(),
+    };
+    // Se sustituye y se retira a la vez: la retirada debe ganar.
+    let env = [(key, std::ffi::OsStr::new("sustituida"))];
+    let mut child = avi_process::spawn_with_allowlist_env(request, &env, &[key])
+        .expect("debe lanzar al hijo con la variable retirada");
+    assert!(child.wait().expect("debe esperar al hijo").success());
+    std::env::remove_var(key);
+    reader.seek(SeekFrom::Start(0)).expect("debe rebobinar");
+    let mut text = String::new();
+    reader
+        .read_to_string(&mut text)
+        .expect("debe leer el registro");
+    assert_eq!(
+        text.trim(),
+        "ausente",
+        "la variable retirada no debe llegar al hijo: {text:?}"
+    );
 }
 
 /// El fichero de registro declarado recibe la salida del hijo: lo declarado

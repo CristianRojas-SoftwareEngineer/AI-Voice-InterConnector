@@ -95,12 +95,7 @@ pub const ENGINE_SAMPLE_RATE: u32 = 24_000;
 /// audio no llega más tarde que con el tamaño fijo de 4.
 const STREAM_CHUNK_FRAMES: u32 = 10;
 
-/// Hilos del motor: el `-j` del residente y del clonado, y el valor de
-/// `OMP_NUM_THREADS` en su entorno. Deben coincidir: si OpenBLAS está compilado con
-/// OpenMP y la variable no existe, crea un hilo por cada hilo lógico del procesador
-/// (reserva unos 128 MiB por hilo sin usarlos y compite con el pool del motor).
-/// Nunca se fija `OPENBLAS_NUM_THREADS`: con esa variable el motor deja de ajustar los
-/// hilos de BLAS por fase y el audio cambia.
+/// Hilos del motor: el `-j` del residente y del clonado. Deben coincidir.
 const ENGINE_THREADS: u32 = 4;
 
 pub const PRODUCTION_SEED: u64 = 4;
@@ -200,32 +195,16 @@ impl GenerationOptions {
     }
 }
 
-/// Perfil de voz: su nombre y, si es clonada, su referencia con la identidad de
-/// su contenido, resuelta por el almacén de voces.
+/// Perfil de voz: su nombre y su referencia con la identidad de su contenido,
+/// resuelta por el almacén de voces.
 #[derive(Debug, Clone)]
 pub struct VoiceProfile {
     pub name: String,
     pub reference: Option<avi_store::VoiceReference>,
 }
 
-/// Voz resuelta hacia la semántica del motor: preset del servidor (modelo
-/// CustomVoice) o voz clonada cargada al arranque con
-/// `--load-voice <qvoice> --graft` sobre el modelo Base. La clonada lleva la
-/// identidad de su contenido, así que dos voces son iguales solo si también lo
-/// es el contenido de su `reference.qvoice`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VoiceEngine {
-    Preset(String),
-    Cloned(avi_store::VoiceReference),
-}
-
-/// Voces de fábrica que son presets del motor (modelo CustomVoice): solo
-/// estas se sintetizan sin `reference.qvoice`.
-const PRESET_VOICES: &[&str] = &["ryan", "vivian"];
-
-/// La voz no es clonada (no tiene `reference.qvoice`) ni es uno de los presets
-/// del motor. Los llamadores lo distinguen de otros fallos de síntesis para
-/// reportarlo como `voice_not_found`.
+/// La voz no tiene `reference.qvoice`. Los llamadores lo distinguen de otros
+/// fallos de síntesis para reportarlo como `voice_not_found`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceNotFound {
     /// Nombre de la voz solicitada.
@@ -234,34 +213,19 @@ pub struct VoiceNotFound {
 
 impl std::fmt::Display for VoiceNotFound {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "La voz '{}' no tiene referencia .qvoice y no es un preset del motor ({}).",
-            self.voice,
-            PRESET_VOICES.join(", ")
-        )
+        write!(f, "La voz '{}' no tiene referencia .qvoice.", self.voice)
     }
 }
 
 impl std::error::Error for VoiceNotFound {}
 
-/// Resolución voz → motor: una voz con `reference.qvoice` es clonada; sin
-/// referencia solo `ryan` y `vivian` (sin distinguir mayúsculas) resuelven como
-/// preset. Cualquier otra voz es `VoiceNotFound`.
+/// Resolución voz → motor: lo único que el motor carga de una voz es su
+/// `reference.qvoice`; una voz sin referencia es `VoiceNotFound`.
 pub fn resolve_voice_engine(
     voice: &str,
     reference: Option<&avi_store::VoiceReference>,
-) -> std::result::Result<VoiceEngine, VoiceNotFound> {
-    if let Some(reference) = reference {
-        return Ok(VoiceEngine::Cloned(reference.clone()));
-    }
-    // El almacén de voces normaliza los nombres a minúsculas; el preset se
-    // identifica igual para que `Ryan` y `ryan` sean la misma voz.
-    let normalized = voice.to_lowercase();
-    if PRESET_VOICES.contains(&normalized.as_str()) {
-        return Ok(VoiceEngine::Preset(normalized));
-    }
-    Err(VoiceNotFound {
+) -> std::result::Result<avi_store::VoiceReference, VoiceNotFound> {
+    reference.cloned().ok_or_else(|| VoiceNotFound {
         voice: voice.to_string(),
     })
 }
@@ -357,24 +321,16 @@ fn resolve_named_model_dir(env_var: &str, dir_name: &str) -> Result<Option<PathB
     Ok(None)
 }
 
-/// Directorio de pesos CustomVoice (presets), `qwen3-tts-0.6b`; la variable de
-/// entorno es `QWEN3_TTS_MODEL_DIR`. Capas en [`resolve_named_model_dir`].
-fn resolve_model_dir() -> Result<Option<PathBuf>> {
-    resolve_named_model_dir("QWEN3_TTS_MODEL_DIR", "qwen3-tts-0.6b")
-}
-
-/// Directorio del modelo Base (`qwen3-tts-0.6b-base`), deliberadamente
-/// separado de `resolve_model_dir`: lo usan el clonado (`--ref-audio`) y la
-/// síntesis de voces clonadas, que exigen el modelo Base, distinto del
-/// CustomVoice usado por los presets. La variable de entorno es
-/// `QWEN3_TTS_BASE_MODEL_DIR`. Capas en `resolve_named_model_dir`.
+/// Directorio del modelo Base (`qwen3-tts-0.6b-base`), el único modelo de
+/// síntesis: lo usan el clonado (`--ref-audio`) y la síntesis de todas las
+/// voces. La variable de entorno es `QWEN3_TTS_BASE_MODEL_DIR`. Capas en
+/// [`resolve_named_model_dir`].
 pub fn resolve_base_model_dir() -> Result<Option<PathBuf>> {
     resolve_named_model_dir("QWEN3_TTS_BASE_MODEL_DIR", "qwen3-tts-0.6b-base")
 }
 
-/// Falta el modelo de pesos que exige el tipo de voz a sintetizar (CustomVoice
-/// para un preset, Base para una voz clonada). Los llamadores lo distinguen de
-/// otros fallos de síntesis para reportarlo como `model_missing`.
+/// Falta el modelo de pesos que exige la síntesis (el Base). Los llamadores lo
+/// distinguen de otros fallos de síntesis para reportarlo como `model_missing`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelMissing {
     /// Mensaje en español que indica qué modelo falta.
@@ -389,67 +345,12 @@ impl std::fmt::Display for ModelMissing {
 
 impl std::error::Error for ModelMissing {}
 
-/// Directorio de pesos con el que se arranca el residente de `voice`: el
-/// modelo Base para una voz clonada y CustomVoice para un preset. Si falta el
-/// modelo que exige el tipo de voz es un error explícito, sin caer al otro.
-/// Es la única fuente de la regla «clonada exige Base, preset exige CustomVoice».
-fn select_model_dir<'a>(
-    voice: &VoiceEngine,
-    model_dir: Option<&'a Path>,
-    base_model_dir: Option<&'a Path>,
-) -> std::result::Result<&'a Path, ModelMissing> {
-    match voice {
-        VoiceEngine::Preset(_) => model_dir.ok_or(ModelMissing {
-            message: "Falta el modelo de síntesis.",
-        }),
-        VoiceEngine::Cloned(_) => base_model_dir.ok_or(ModelMissing {
-            message:
-                "Falta el modelo de clonación de voz, necesario para sintetizar voces clonadas.",
-        }),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum TtsPrecision {
-    Mixed,
-    Bf16,
-}
-
-/// La configuración de precisión no corresponde a ninguno de los perfiles admitidos.
-#[derive(Debug)]
-pub struct InvalidTtsPrecision;
-
-impl std::fmt::Display for InvalidTtsPrecision {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "AVI_TTS_PRECISION debe ser mixed o bf16")
-    }
-}
-
-impl std::error::Error for InvalidTtsPrecision {}
-
-impl TtsPrecision {
-    fn from_env() -> std::result::Result<Self, InvalidTtsPrecision> {
-        Self::parse(std::env::var_os("AVI_TTS_PRECISION").as_deref())
-    }
-
-    fn parse(value: Option<&std::ffi::OsStr>) -> std::result::Result<Self, InvalidTtsPrecision> {
-        match value {
-            None => Ok(Self::Mixed),
-            Some(value) if value == "mixed" => Ok(Self::Mixed),
-            Some(value) if value == "bf16" => Ok(Self::Bf16),
-            _ => Err(InvalidTtsPrecision),
-        }
-    }
-}
-
 /// Motor Qwen3-TTS con servidor HTTP residente gestionado por el host como
 /// único camino de síntesis (el healthcheck está acotado; el POST de síntesis
 /// se acota con el presupuesto proporcional al texto).
 pub struct Qwen3TtsEngine {
     pub binary_path: Option<PathBuf>,
-    pub model_dir: Option<PathBuf>,
     pub base_model_dir: Option<PathBuf>,
-    precision: TtsPrecision,
     resident: Mutex<Option<ResidentState>>,
     /// PID e identidad del proceso `qwen_tts` arrancado (`None` si no hay),
     /// observados al nacer. `shutdown` los usa para matar solo al proceso que
@@ -487,31 +388,26 @@ const SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 const CLONE_WAIT: Duration = Duration::from_secs(600);
 
 /// Estado del servidor residente y la voz que tiene cargada. Se reutiliza solo
-/// para el mismo preset o para una voz clonada con la misma identidad de
-/// contenido; con cualquier otra voz, incluida la misma voz re-clonada, se
-/// termina el residente anterior y se arranca otro con `--load-voice`.
+/// para una voz con la misma identidad de contenido; con cualquier otra voz,
+/// incluida la misma voz re-clonada, se termina el residente anterior y se
+/// arranca otro con `--load-voice`.
 struct ResidentState {
     resident: resident::Qwen3TtsResident,
-    voice: VoiceEngine,
+    voice: avi_store::VoiceReference,
 }
 
 impl Qwen3TtsEngine {
     /// Motor con `registry` opcional: el daemon pasa el suyo para que el
     /// residente quede registrado desde que nace; la ruta directa pasa `None` y
-    /// nunca toca el registro. Falla si `QWEN3_TTS_BIN`, `QWEN3_TTS_MODEL_DIR`
-    /// o `QWEN3_TTS_BASE_MODEL_DIR` están definidas y no apuntan a una ruta
-    /// existente, si no se puede inspeccionar un directorio de modelo o si
-    /// `AVI_TTS_PRECISION` no es `mixed` ni `bf16`.
+    /// nunca toca el registro. Falla si `QWEN3_TTS_BIN` o
+    /// `QWEN3_TTS_BASE_MODEL_DIR` están definidas y no apuntan a una ruta
+    /// existente, o si no se puede inspeccionar un directorio de modelo.
     pub fn new(registry: Option<Arc<dyn ResidentRegistry>>) -> Result<Self> {
         let binary_path = resolve_binary()?;
-        let model_dir = resolve_model_dir()?;
         let base_model_dir = resolve_base_model_dir()?;
-        let precision = TtsPrecision::from_env()?;
         Ok(Self {
             binary_path,
-            model_dir,
             base_model_dir,
-            precision,
             resident: Mutex::new(None),
             live: Mutex::new(None),
             registry,
@@ -613,17 +509,16 @@ impl Qwen3TtsEngine {
     /// con diagnóstico, sin dejar el hijo vivo ni el registro anotado). Ensambla
     /// el `ResidentState`. Compartido por el camino de cambio de voz y por el
     /// rearranque ante degradación del residente.
-    fn start_resident(&self, model_dir: &Path, voice: &VoiceEngine) -> Result<ResidentState> {
-        let load_voice = match voice {
-            VoiceEngine::Cloned(reference) => Some(reference.path.as_path()),
-            VoiceEngine::Preset(_) => None,
-        };
+    fn start_resident(
+        &self,
+        model_dir: &Path,
+        voice: &avi_store::VoiceReference,
+    ) -> Result<ResidentState> {
         let port = reserve_loopback_port()?;
         let spawned = resident::Qwen3TtsResident::spawn(
             model_dir,
             port,
-            load_voice,
-            self.precision,
+            voice.path.as_path(),
             &self.registration(),
         )?;
         Ok(ResidentState {
@@ -636,10 +531,10 @@ impl Qwen3TtsEngine {
     /// perfil, hace `POST /v1/tts/stream` y llama a `sink` con cada fragmento de
     /// audio (PCM mono de 16 bits a [`ENGINE_SAMPLE_RATE`]) según llega.
     ///
-    /// La voz clonada llega con su referencia ya resuelta por el almacén; sin
-    /// ella solo `ryan` y `vivian` son presets, y cualquier otra voz es
-    /// `VoiceNotFound`. El texto viaja por el body HTTP JSON, ruta segura para
-    /// UTF-8 acentuado (a diferencia del argv de un subproceso en Windows).
+    /// La voz llega con su referencia ya resuelta por el almacén; sin
+    /// `reference.qvoice` es `VoiceNotFound`. El texto viaja por el body HTTP
+    /// JSON, ruta segura para UTF-8 acentuado (a diferencia del argv de un
+    /// subproceso en Windows).
     ///
     /// Antes de reutilizar un residente se verifica su salud real
     /// (`health_check`, `try_wait` + `GET /v1/health`): un residente colgado
@@ -680,11 +575,9 @@ impl Qwen3TtsEngine {
     ) -> Result<()> {
         let voice = resolve_voice_engine(&profile.name, profile.reference.as_ref())?;
         let voice = &voice;
-        let model_dir = select_model_dir(
-            voice,
-            self.model_dir.as_deref(),
-            self.base_model_dir.as_deref(),
-        )?;
+        let model_dir = self.base_model_dir.as_deref().ok_or(ModelMissing {
+            message: "Falta el modelo de clonación de voz, necesario para sintetizar las voces.",
+        })?;
         let mut loaded_voice = false;
         let url = {
             // Un hilo que murió con el mutex del residente tomado lo deja
@@ -740,7 +633,7 @@ impl Qwen3TtsEngine {
             return Err(anyhow::Error::new(SynthesisCancelled));
         }
         let budget = avi_core::synthesis_budget(text.chars().count());
-        let body = build_tts_body(text, voice, options)?.to_string();
+        let body = build_tts_body(text, options)?.to_string();
         http_stream_exchange(
             &format!("{}/v1/tts/stream", url),
             &body,
@@ -783,29 +676,15 @@ impl Qwen3TtsEngine {
 
 /// Construye el body HTTP de `POST /v1/tts/stream`: claves solo-si-`Some`, más
 /// `chunk_frames` con el tamaño de fragmento de la entrega en streaming.
-/// `language` lleva siempre el
-/// nombre del idioma que entiende el motor, tanto con preset como con voz
-/// clonada; `speaker` solo se emite con preset. Un idioma desconocido es error.
-pub(crate) fn build_tts_body(
-    text: &str,
-    voice: &VoiceEngine,
-    options: &GenerationOptions,
-) -> Result<serde_json::Value> {
+/// `language` lleva siempre el nombre del idioma que entiende el motor. Un
+/// idioma desconocido es error.
+pub(crate) fn build_tts_body(text: &str, options: &GenerationOptions) -> Result<serde_json::Value> {
     let language = engine_language_name(&options.language)?;
     let mut obj = serde_json::Map::new();
     obj.insert(
         "text".to_string(),
         serde_json::Value::String(text.to_string()),
     );
-    match voice {
-        VoiceEngine::Preset(speaker) => {
-            obj.insert(
-                "speaker".to_string(),
-                serde_json::Value::String(speaker.clone()),
-            );
-        }
-        VoiceEngine::Cloned(_) => {}
-    }
     obj.insert(
         "language".to_string(),
         serde_json::Value::String(language.to_string()),
@@ -1196,59 +1075,55 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
     Ok(out_path)
 }
 
+/// Variables de hilos de OpenBLAS que el motor hijo no debe heredar. El
+/// contrato del motor exige al cliente no definirlas en Linux y macOS, porque
+/// OpenBLAS las lee antes de `main` y limitaría sus hilos por debajo del `-j`
+/// que fija el motor. En Windows no tienen efecto, pero se retiran igual.
+const OPENBLAS_THREAD_VARS: &[&str] = &[
+    "OPENBLAS_NUM_THREADS",
+    "GOTO_NUM_THREADS",
+    "OMP_NUM_THREADS",
+];
+
 /// Lanza el motor hijo con `TMP`, `TEMP` y `TMPDIR` apuntando al scratch del
 /// proceso padre: así los temporales del motor mueren con el scratch y no
-/// quedan en el temporal del sistema. Fija además `OMP_NUM_THREADS` con
-/// `ENGINE_THREADS` en todas las plataformas (donde OpenBLAS no usa OpenMP la
-/// variable no tiene efecto).
+/// quedan en el temporal del sistema. Las variables de hilos de OpenBLAS se
+/// retiran del entorno heredado en las dos plataformas.
 fn spawn_engine(
     request: avi_process::RestrictedSpawnRequest,
-    precision: Option<TtsPrecision>,
 ) -> Result<avi_process::RestrictedChild> {
     let scratch = avi_process::scratch::dir()?;
-    let threads = ENGINE_THREADS.to_string();
-    let mut env: Vec<(&str, &std::ffi::OsStr)> = vec![
+    let env: [(&str, &std::ffi::OsStr); 3] = [
         ("TMP", scratch.as_os_str()),
         ("TEMP", scratch.as_os_str()),
         ("TMPDIR", scratch.as_os_str()),
-        ("OMP_NUM_THREADS", std::ffi::OsStr::new(&threads)),
     ];
-    if let Some(precision) = precision {
-        let (talker, cp) = match precision {
-            TtsPrecision::Mixed => ("int4", "mixed"),
-            TtsPrecision::Bf16 => ("bf16", "bf16"),
-        };
-        env.extend([
-            ("QWEN_TALKER_PREC", std::ffi::OsStr::new(talker)),
-            ("QWEN_CP_PREC", std::ffi::OsStr::new(cp)),
-        ]);
-    }
-    Ok(avi_process::spawn_with_allowlist_env(request, &env)?)
+    Ok(avi_process::spawn_with_allowlist_env(
+        request,
+        &env,
+        OPENBLAS_THREAD_VARS,
+    )?)
 }
 
 /// Construye el argv del clonado, sin I/O real: programa más argumentos
-/// `-d <model_dir> --ref-audio <ref> --xvector-only --save-voice <out>
-/// --voice-name <name> --watch-stdin`. `--xvector-only` guarda solo la huella
-/// de timbre (x-vector): sin transcripción ni códigos ICL. No lleva idioma: la
-/// huella sale del audio y cada petición de síntesis fija el suyo. Fija `-j` con
-/// `ENGINE_THREADS`, el mismo número de hilos que el residente.
+/// `-d <model_dir> --ref-audio <ref> --save-voice <out> --watch-stdin`. El
+/// motor guarda solo la huella de timbre (x-vector): sin transcripción ni
+/// códigos ICL. No lleva idioma: la huella sale del audio y cada petición de
+/// síntesis fija el suyo. Fija `-j` con `ENGINE_THREADS`, el mismo número de
+/// hilos que el residente.
 fn build_clone_command(
     bin: &Path,
     model_dir: &Path,
     ref_wav: &Path,
     out_qvoice: &Path,
-    name: &str,
 ) -> (PathBuf, Vec<String>) {
     let args = vec![
         String::from("-d"),
         model_dir.to_string_lossy().into_owned(),
         String::from("--ref-audio"),
         ref_wav.to_string_lossy().into_owned(),
-        String::from("--xvector-only"),
         String::from("--save-voice"),
         out_qvoice.to_string_lossy().into_owned(),
-        String::from("--voice-name"),
-        name.to_string(),
         String::from("-j"),
         ENGINE_THREADS.to_string(),
         String::from("--watch-stdin"),
@@ -1258,8 +1133,8 @@ fn build_clone_command(
 
 /// Clona una voz desde `ref_audio` (WAV de cualquier tasa/canales) a `out_qvoice`
 /// (`.qvoice` con solo la huella de timbre, x-vector, que se sintetiza con el
-/// modelo Base y `--graft`) vía subprocess: `<bin> -d <model_dir> --ref-audio
-/// <ref> --xvector-only --save-voice <out> --voice-name <name> --watch-stdin`.
+/// modelo Base) vía subprocess: `<bin> -d <model_dir> --ref-audio <ref>
+/// --save-voice <out> --watch-stdin`.
 /// La referencia se normaliza antes a 24 kHz mono (requisito del motor). Propaga
 /// el error con el exit code del proceso. Si la referencia no se puede cargar
 /// (WAV inválido, truncado o fallo de lectura), el error conserva el
@@ -1272,12 +1147,7 @@ fn build_clone_command(
 /// La entrada estándar del motor es una tubería que este proceso mantiene
 /// abierta hasta que el motor termina; con `--watch-stdin` el motor se detiene
 /// si esa tubería se cierra, es decir, si este proceso muere.
-pub fn clone_voice(
-    model_dir: impl AsRef<Path>,
-    ref_audio: &Path,
-    out_qvoice: &Path,
-    name: &str,
-) -> Result<()> {
+pub fn clone_voice(model_dir: impl AsRef<Path>, ref_audio: &Path, out_qvoice: &Path) -> Result<()> {
     // La referencia se carga antes de buscar el binario: un audio inválido se
     // rechaza sin depender de que el motor esté provisionado.
     let ref_wav = reference_24k_mono(ref_audio)?;
@@ -1301,8 +1171,7 @@ pub fn clone_voice(
     // fichero al instante. La herencia queda restringida a la lista explícita
     // (tubería de entrada y fichero de registro).
     let status = (|| -> Result<std::process::ExitStatus> {
-        let (program, args) =
-            build_clone_command(&bin, model_dir.as_ref(), &ref_wav, out_qvoice, name);
+        let (program, args) = build_clone_command(&bin, model_dir.as_ref(), &ref_wav, out_qvoice);
         #[cfg(windows)]
         let creation_flags = avi_process::DETACHED_PROCESS;
         #[cfg(not(windows))]
@@ -1316,7 +1185,7 @@ pub fn clone_voice(
             creation_flags,
             extra_allowed: Vec::new(),
         };
-        let mut child = spawn_engine(request, None)?;
+        let mut child = spawn_engine(request)?;
         match child.wait_timeout(CLONE_WAIT)? {
             Some(status) => Ok(status),
             None => Err(anyhow!(
@@ -1340,7 +1209,7 @@ pub fn clone_voice(
 }
 
 /// Servidor residente del motor Qwen3-TTS: spawn perezoso con
-/// `--serve <puerto> --host 127.0.0.1 -j 4 [--quant-mixed] --watch-stdin [--load-voice <qvoice> --graft]`,
+/// `--serve <puerto> --host 127.0.0.1 -j 4 --watch-stdin --load-voice <qvoice>`,
 /// healthcheck `GET /v1/health` con reintentos y terminación del hijo en `Drop`.
 /// El residente guarda abierto el extremo de escritura de la tubería de entrada
 /// del motor; si el daemon muere de forma abrupta, la tubería se cierra y el
@@ -1407,23 +1276,19 @@ pub mod resident {
         pub(crate) log_path: PathBuf,
     }
 
-    /// Construye el argv de arranque del residente, sin I/O real:
-    /// programa más argumentos `-d <model_dir> --serve <port> --host 127.0.0.1
-    /// -j 4 [--quant-mixed] --watch-stdin [--load-voice <qvoice> --graft]`. El llamador
-    /// pasa en `model_dir` el modelo Base si hay `load_voice` y CustomVoice si no.
-    /// `--graft` clona por el camino solo x-vector (el motor ignora la
-    /// transcripción y los códigos de referencia del `.qvoice`) y no aplica
-    /// los pesos diferenciales de la voz.
-    /// `--watch-stdin` hace que el motor termine al cerrarse su entrada estándar.
-    /// El perfil mixed añade `--quant-mixed`; bf16 no añade opciones de cuantización.
+    /// Construye el argv de arranque del residente, sin I/O real: programa más
+    /// argumentos `-d <model_dir> --serve <port> --host 127.0.0.1 -j 4
+    /// --watch-stdin --load-voice <qvoice>`. Toda voz de AVI, `default` incluida,
+    /// es un archivo `.qvoice`, así que `--load-voice` va siempre y `model_dir`
+    /// es el modelo Base. `--watch-stdin` hace que el motor termine al cerrarse
+    /// su entrada estándar.
     pub(crate) fn build_resident_command(
         bin: &Path,
         model_dir: &Path,
         port: u16,
-        load_voice: Option<&Path>,
-        precision: TtsPrecision,
+        load_voice: &Path,
     ) -> (PathBuf, Vec<String>) {
-        let mut args = vec![
+        let args = vec![
             String::from("-d"),
             model_dir.to_string_lossy().into_owned(),
             String::from("--serve"),
@@ -1432,30 +1297,22 @@ pub mod resident {
             crate::RESIDENT_HOST.to_string(),
             String::from("-j"),
             crate::ENGINE_THREADS.to_string(),
+            String::from("--watch-stdin"),
+            String::from("--load-voice"),
+            load_voice.to_string_lossy().into_owned(),
         ];
-        if precision == TtsPrecision::Mixed {
-            args.push(String::from("--quant-mixed"));
-        }
-        args.push(String::from("--watch-stdin"));
-        if let Some(lv) = load_voice {
-            args.push(String::from("--load-voice"));
-            args.push(lv.to_string_lossy().into_owned());
-            args.push(String::from("--graft"));
-        }
         (bin.to_path_buf(), args)
     }
 
     impl Qwen3TtsResident {
         /// Arranca el motor con `--serve` en `port`, lo registra desde que nace y
-        /// espera a que `/v1/health` responda (hasta 60 × 500 ms). Con
-        /// `load_voice` (voz clonada) añade `--load-voice <qvoice> --graft` (el
-        /// clonado solo aplica al arranque); `model_dir` debe ser entonces el
-        /// modelo Base.
+        /// espera a que `/v1/health` responda (hasta 60 × 500 ms). `load_voice`
+        /// es la voz `.qvoice` que se carga al arranque y `model_dir` el modelo
+        /// Base.
         pub(crate) fn spawn(
             model_dir: impl AsRef<Path>,
             port: u16,
-            load_voice: Option<&Path>,
-            precision: TtsPrecision,
+            load_voice: &Path,
             registration: &Registration<'_>,
         ) -> Result<Self> {
             let bin = resolve_binary()?
@@ -1473,14 +1330,8 @@ pub mod resident {
                 &avi_process::classify_owner,
             )
             .map_err(|e| anyhow!("No se pudo crear el log del motor: {}", e))?;
-            let child = launch_resident_process(
-                &bin,
-                model_dir.as_ref(),
-                port,
-                load_voice,
-                precision,
-                log_file,
-            )?;
+            let child =
+                launch_resident_process(&bin, model_dir.as_ref(), port, load_voice, log_file)?;
             Self::spawn_with_child(child, port, log_path, 60, 500, registration)
         }
     }
@@ -1493,11 +1344,10 @@ pub mod resident {
         bin: &Path,
         model_dir: &Path,
         port: u16,
-        load_voice: Option<&Path>,
-        precision: TtsPrecision,
+        load_voice: &Path,
         log_file: std::fs::File,
     ) -> Result<avi_process::RestrictedChild> {
-        let (program, args) = build_resident_command(bin, model_dir, port, load_voice, precision);
+        let (program, args) = build_resident_command(bin, model_dir, port, load_voice);
         {
             // La entrada estándar es una tubería cuyo extremo de escritura queda
             // retenido dentro del hijo devuelto: mientras el residente viva,
@@ -1534,7 +1384,7 @@ pub mod resident {
                 creation_flags,
                 extra_allowed: Vec::new(),
             };
-            spawn_engine(request, Some(precision)).map_err(|e| {
+            spawn_engine(request).map_err(|e| {
                 anyhow!(
                     "No se pudo arrancar el servidor Qwen3-TTS ({}): {}",
                     bin.display(),
@@ -2108,9 +1958,8 @@ mod tests {
     /// El seed sobrescrito viaja en el cuerpo HTTP de la petición.
     #[test]
     fn build_tts_body_carries_overridden_seed() {
-        let voice = VoiceEngine::Preset("ryan".to_string());
         let opts = GenerationOptions::production("es").with_seed_override(Some(777));
-        let body = build_tts_body("Hola", &voice, &opts).expect("idioma válido");
+        let body = build_tts_body("Hola", &opts).expect("idioma válido");
         assert_eq!(body.get("seed").and_then(|v| v.as_u64()), Some(777));
     }
 
@@ -2147,16 +1996,15 @@ mod tests {
         }
     }
 
-    /// El argv de clonado pide solo la huella de timbre (`--xvector-only`) y no
-    /// lleva `--ref-text`: el motor no genera códigos ICL ni guarda transcripción.
+    /// El argv de clonado guarda solo la huella de timbre y no lleva transcripción
+    /// ni idioma; tampoco las opciones del motor C que se retiraron.
     #[test]
-    fn build_clone_command_requests_xvector_only() {
+    fn build_clone_command_omits_transcription_and_language() {
         let (program, args) = build_clone_command(
             Path::new("qwen_tts.exe"),
             Path::new("base"),
             Path::new("ref24k.wav"),
             Path::new("out.qvoice"),
-            "ana",
         );
         assert_eq!(program, PathBuf::from("qwen_tts.exe"));
         assert_eq!(
@@ -2166,17 +2014,19 @@ mod tests {
                 "base",
                 "--ref-audio",
                 "ref24k.wav",
-                "--xvector-only",
                 "--save-voice",
                 "out.qvoice",
-                "--voice-name",
-                "ana",
                 "-j",
                 "4",
                 "--watch-stdin",
             ]
         );
-        assert!(!args.iter().any(|a| a == "--ref-text" || a == "-l"));
+        for flag in ["--ref-text", "-l", "--xvector-only", "--voice-name"] {
+            assert!(
+                !args.iter().any(|a| a == flag),
+                "el clonado no debe pasar {flag}: {args:?}"
+            );
+        }
     }
 
     /// Un idioma desconocido hace fallar la construcción del body: nunca se
@@ -2184,231 +2034,56 @@ mod tests {
     #[test]
     fn build_tts_body_rejects_unknown_language() {
         let opts = GenerationOptions::new("fr");
-        let preset = VoiceEngine::Preset("ryan".to_string());
-        assert!(build_tts_body("Hola", &preset, &opts).is_err());
-        let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
-        assert!(build_tts_body("Hola", &cloned, &opts).is_err());
+        assert!(build_tts_body("Hola", &opts).is_err());
     }
 
-    /// Argv exacto de arranque del residente (preset y voz clonada con
-    /// `--graft`), sin I/O real de proceso. Sin `--int4`: en el modelo 0.6B
-    /// cuantiza el code predictor y la misma petición deja de ser determinista
-    /// y sale truncada.
+    /// Argv exacto de arranque del residente, sin I/O real de proceso: fija los
+    /// hilos con `-j`, espera a la entrada estándar y carga siempre la voz con
+    /// `--load-voice`. No pasa ninguna de las opciones del motor C, que el motor
+    /// Rust no acepta.
     #[test]
-    fn build_resident_command_has_threads_without_int4_or_stream() {
+    fn build_resident_command_has_threads_and_loads_the_voice() {
         let (program, args) = resident::build_resident_command(
             Path::new("qwen_tts.exe"),
-            Path::new("models/qwen3-tts-0.6b"),
+            Path::new("models/qwen3-tts-0.6b-base"),
             45123,
-            None,
-            TtsPrecision::Mixed,
+            Path::new("voice.qvoice"),
         );
         assert_eq!(program, PathBuf::from("qwen_tts.exe"));
         assert_eq!(
             args,
             vec![
                 "-d",
-                "models/qwen3-tts-0.6b",
+                "models/qwen3-tts-0.6b-base",
                 "--serve",
                 "45123",
                 "--host",
                 "127.0.0.1",
                 "-j",
                 "4",
-                "--quant-mixed",
-                "--watch-stdin",
-            ]
-        );
-
-        let (program, args) = resident::build_resident_command(
-            Path::new("qwen_tts.exe"),
-            Path::new("md"),
-            45123,
-            Some(Path::new("voice.qvoice")),
-            TtsPrecision::Mixed,
-        );
-        assert_eq!(program, PathBuf::from("qwen_tts.exe"));
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "md",
-                "--serve",
-                "45123",
-                "--host",
-                "127.0.0.1",
-                "-j",
-                "4",
-                "--quant-mixed",
                 "--watch-stdin",
                 "--load-voice",
                 "voice.qvoice",
-                "--graft",
             ]
         );
-    }
-
-    #[test]
-    fn precision_accepts_only_exact_supported_values() {
-        use std::ffi::OsStr;
-        assert_eq!(TtsPrecision::parse(None).unwrap(), TtsPrecision::Mixed);
-        assert_eq!(
-            TtsPrecision::parse(Some(OsStr::new("mixed"))).unwrap(),
-            TtsPrecision::Mixed
-        );
-        assert_eq!(
-            TtsPrecision::parse(Some(OsStr::new("bf16"))).unwrap(),
-            TtsPrecision::Bf16
-        );
-        for value in ["", " ", " mixed", "MIXED", "other"] {
-            assert!(TtsPrecision::parse(Some(OsStr::new(value))).is_err());
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStrExt;
-            assert!(TtsPrecision::parse(Some(OsStr::from_bytes(b"\xff"))).is_err());
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStringExt;
-            let value = std::ffi::OsString::from_wide(&[0xd800]);
-            assert!(TtsPrecision::parse(Some(&value)).is_err());
-        }
-    }
-
-    #[test]
-    fn engine_reads_precision_once_from_child_environment() {
-        const MARKER: &str = "AVI_TEST_ENGINE_PRECISION";
-        if let Some(expected) = std::env::var_os(MARKER) {
-            let engine = Qwen3TtsEngine::new(None);
-            match expected.to_str().unwrap() {
-                "mixed" | "bf16" => {
-                    let engine = engine.unwrap();
-                    let precision = if expected == "mixed" {
-                        TtsPrecision::Mixed
-                    } else {
-                        TtsPrecision::Bf16
-                    };
-                    std::env::set_var("AVI_TTS_PRECISION", "invalid");
-                    assert_eq!(engine.precision, precision);
-                }
-                "invalid" => assert!(engine
-                    .err()
-                    .unwrap()
-                    .downcast_ref::<InvalidTtsPrecision>()
-                    .is_some()),
-                _ => panic!("caso de precisión desconocido"),
-            }
-            return;
-        }
-        let mut cases: Vec<(Option<std::ffi::OsString>, &str)> = vec![
-            (None, "mixed"),
-            (Some("mixed".into()), "mixed"),
-            (Some("bf16".into()), "bf16"),
-            (Some("".into()), "invalid"),
-            (Some(" ".into()), "invalid"),
-            (Some(" mixed".into()), "invalid"),
-            (Some("MIXED".into()), "invalid"),
-            (Some("other".into()), "invalid"),
-        ];
-        #[cfg(unix)]
-        {
-            use std::os::unix::ffi::OsStringExt;
-            cases.push((Some(std::ffi::OsString::from_vec(vec![0xff])), "invalid"));
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStringExt;
-            cases.push((Some(std::ffi::OsString::from_wide(&[0xd800])), "invalid"));
-        }
-        for (value, expected) in cases {
-            let mut command = Command::new(std::env::current_exe().unwrap());
-            command.args([
-                "--exact",
-                "tests::engine_reads_precision_once_from_child_environment",
-            ]);
-            command.env(MARKER, expected);
-            for key in [
-                "QWEN3_TTS_BIN",
-                "QWEN3_TTS_MODEL_DIR",
-                "QWEN3_TTS_BASE_MODEL_DIR",
-            ] {
-                command.env_remove(key);
-            }
-            match value {
-                Some(value) => {
-                    command.env("AVI_TTS_PRECISION", value);
-                }
-                None => {
-                    command.env_remove("AVI_TTS_PRECISION");
-                }
-            }
+        for flag in ["--quant-mixed", "--int4", "--int8", "--graft"] {
             assert!(
-                command.status().unwrap().success(),
-                "falló el caso {expected}"
+                !args.iter().any(|arg| arg == flag),
+                "el residente no debe pasar {flag}: {args:?}"
             );
         }
     }
 
+    /// La síntesis sin modelo Base falla con el error tipado `ModelMissing`
+    /// antes de lanzar ningún motor, aunque el binario esté provisionado; así
+    /// las capas superiores lo reportan como `model_missing` y no como un fallo
+    /// genérico de síntesis.
     #[test]
-    fn bf16_resident_never_uses_quantization_flags() {
-        for voice in [None, Some(Path::new("voice.qvoice"))] {
-            let (_, args) = resident::build_resident_command(
-                Path::new("qwen_tts"),
-                Path::new("model"),
-                45123,
-                voice,
-                TtsPrecision::Bf16,
-            );
-            for flag in ["--quant-mixed", "--int4", "--int8"] {
-                assert!(!args.iter().any(|arg| arg == flag));
-            }
-            assert_eq!(args.iter().any(|arg| arg == "--graft"), voice.is_some());
-        }
-    }
-
-    /// La voz clonada se sintetiza con el modelo Base y el preset con
-    /// CustomVoice: cada tipo de voz elige su directorio de pesos.
-    #[test]
-    fn select_model_dir_picks_base_for_cloned_and_custom_voice_for_preset() {
-        let custom = PathBuf::from("modelos/qwen3-tts-0.6b");
-        let base = PathBuf::from("modelos/qwen3-tts-0.6b-base");
-        let preset = VoiceEngine::Preset("ryan".to_string());
-        let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
-        assert_eq!(
-            select_model_dir(&preset, Some(&custom), Some(&base)).unwrap(),
-            custom.as_path()
-        );
-        assert_eq!(
-            select_model_dir(&cloned, Some(&custom), Some(&base)).unwrap(),
-            base.as_path()
-        );
-    }
-
-    /// Una voz clonada sin el modelo Base provisionado es un error explícito,
-    /// aunque CustomVoice exista; un preset sin CustomVoice también falla.
-    #[test]
-    fn select_model_dir_fails_when_the_required_model_is_missing() {
-        let custom = PathBuf::from("modelos/qwen3-tts-0.6b");
-        let base = PathBuf::from("modelos/qwen3-tts-0.6b-base");
-        let preset = VoiceEngine::Preset("ryan".to_string());
-        let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
-        let err = select_model_dir(&cloned, Some(&custom), None).unwrap_err();
-        assert!(err.to_string().contains("clonación"), "mensaje: {err}");
-        assert!(select_model_dir(&preset, None, Some(&base)).is_err());
-    }
-
-    /// La síntesis de una voz clonada sin modelo Base falla con el error
-    /// tipado `ModelMissing` antes de lanzar ningún motor, aunque CustomVoice
-    /// esté provisionado; así las capas superiores lo reportan como
-    /// `model_missing` y no como un fallo genérico de síntesis.
-    #[test]
-    fn synthesize_cloned_voice_without_base_model_fails_with_model_missing() {
+    fn synthesize_without_base_model_fails_with_model_missing() {
         let dir = tempfile::tempdir().unwrap();
         let qvoice = dir.path().join("reference.qvoice");
         std::fs::write(&qvoice, b"qvoice").unwrap();
         let mut engine = Qwen3TtsEngine::new(None).expect("motor de prueba");
-        engine.model_dir = Some(dir.path().to_path_buf());
         engine.base_model_dir = None;
         let profile = VoiceProfile {
             name: "clonada".to_string(),
@@ -2478,10 +2153,10 @@ mod tests {
 
     fn spawn_real_engine(watch_stdin: bool, stdin: Stdio) -> EngineGuard {
         let bin = real_engine_binary();
-        let model_dir = resolve_model_dir()
-            .expect("no se pudo resolver el directorio de pesos qwen3-tts-0.6b")
+        let model_dir = resolve_base_model_dir()
+            .expect("no se pudo resolver el directorio de pesos qwen3-tts-0.6b-base")
             .expect(
-                "faltan los pesos qwen3-tts-0.6b: aprovisiónalos con `ai-voice-interconnector setup`",
+                "faltan los pesos qwen3-tts-0.6b-base: aprovisiónalos con `ai-voice-interconnector setup`",
             );
         let port = reserve_loopback_port().expect("debe poder reservar un puerto efímero");
         let mut cmd = Command::new(&bin);
@@ -2492,8 +2167,7 @@ mod tests {
             .arg("--host")
             .arg("127.0.0.1")
             .arg("-j")
-            .arg(ENGINE_THREADS.to_string())
-            .env("OMP_NUM_THREADS", ENGINE_THREADS.to_string());
+            .arg(ENGINE_THREADS.to_string());
         if watch_stdin {
             cmd.arg("--watch-stdin");
         }
@@ -2516,7 +2190,7 @@ mod tests {
     /// fin de fichero desde el primer byte) no termina al arrancar: el
     /// comportamiento sin el flag se conserva.
     #[test]
-    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b-base"]
     fn engine_without_watch_stdin_survives_null_stdin() {
         let mut engine = spawn_real_engine(false, Stdio::null());
         thread::sleep(Duration::from_secs(3));
@@ -2530,7 +2204,7 @@ mod tests {
     /// Con `--watch-stdin` y la entrada en tubería, el motor sigue vivo mientras
     /// la tubería está abierta y termina en menos de 10 s al cerrarla.
     #[test]
-    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b-base"]
     fn engine_with_watch_stdin_exits_when_pipe_closes() {
         let mut engine = spawn_real_engine(true, Stdio::piped());
         let stdin = engine.0.stdin.take().expect("la entrada debe ser tubería");
@@ -2565,7 +2239,7 @@ mod tests {
     /// (`LoadingVoice` y después `Synthesizing`) y no avisa nada en la segunda,
     /// que reutiliza el residente sano con la misma voz.
     #[test]
-    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b"]
+    #[ignore = "requiere el binario del motor y los pesos qwen3-tts-0.6b-base"]
     fn synthesis_reports_resident_start_only_when_it_starts() {
         // El residente localiza el binario por `QWEN3_TTS_BIN`; el candado evita
         // que otra prueba de resolución lo cambie mientras tanto.
@@ -2574,9 +2248,16 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::env::set_var("QWEN3_TTS_BIN", real_engine_binary());
         let engine = Qwen3TtsEngine::new(None).expect("motor de prueba");
+        // `default` es la voz de fábrica, un `.qvoice` real: es la única forma
+        // de tener una voz que el motor cargue.
+        let qvoice = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../avi-store/assets/default/reference.qvoice");
         let profile = VoiceProfile {
-            name: "ryan".to_string(),
-            reference: None,
+            name: "default".to_string(),
+            reference: Some(test_reference(
+                qvoice.to_str().expect("ruta UTF-8"),
+                "asset",
+            )),
         };
         let options = GenerationOptions::new("es");
         let cancel = AtomicBool::new(false);
@@ -2648,7 +2329,7 @@ const HOLD: bool = __HOLD__;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::fs::write(format!("{DIR}/args.txt"), args.join(" ")).unwrap();
-    let keys = ["TMP", "TEMP", "TMPDIR", "QWEN_TALKER_PREC", "QWEN_CP_PREC", "OMP_NUM_THREADS"];
+    let keys = ["TMP", "TEMP", "TMPDIR", "OPENBLAS_NUM_THREADS", "GOTO_NUM_THREADS", "OMP_NUM_THREADS"];
     let values: Vec<_> = keys.iter().map(|key| format!("{key}={}", std::env::var(key).unwrap_or_default())).collect();
     std::fs::write(format!("{DIR}/env.txt"), values.join("\n")).unwrap();
     let (tx, rx) = mpsc::channel();
@@ -2728,8 +2409,7 @@ fn main() {
             bin,
             Path::new("modelos"),
             45123,
-            None,
-            TtsPrecision::Mixed,
+            Path::new("voice.qvoice"),
             log_file,
         )
         .expect("debe poder lanzar el motor doble");
@@ -2740,100 +2420,76 @@ fn main() {
         (child, cleanup)
     }
 
+    /// El residente no hereda del padre las variables de hilos de OpenBLAS: se
+    /// retiran del entorno del hijo y el del padre no cambia.
     #[test]
-    fn resident_precision_overrides_are_child_only() {
-        const MARKER: &str = "AVI_TEST_PRECISION_CHILD";
-        let keys = ["QWEN_TALKER_PREC", "QWEN_CP_PREC"];
+    fn resident_removes_openblas_thread_variables_from_the_child() {
+        const MARKER: &str = "AVI_TEST_THREAD_ENV_CHILD";
+        let keys = OPENBLAS_THREAD_VARS;
         if std::env::var_os(MARKER).is_none() {
             let mut command = Command::new(std::env::current_exe().unwrap());
             command.args([
                 "--exact",
-                "tests::resident_precision_overrides_are_child_only",
+                "tests::resident_removes_openblas_thread_variables_from_the_child",
                 "--nocapture",
             ]);
             command.env(MARKER, "1");
-            command.env("OMP_NUM_THREADS", "conflict");
             for key in keys {
                 command.env(key, "conflict");
             }
             assert!(command.status().unwrap().success());
             return;
         }
-        for precision in [Some(TtsPrecision::Mixed), Some(TtsPrecision::Bf16), None] {
-            let (bin, dir) = write_engine_double("precision-env", false);
-            let log = std::fs::File::create(dir.path().join("engine.log")).unwrap();
-            let child = if let Some(profile) = precision {
-                resident::launch_resident_process(
-                    &bin,
-                    Path::new("model"),
-                    45123,
-                    None,
-                    profile,
-                    log,
-                )
-                .unwrap()
-            } else {
-                spawn_engine(
-                    avi_process::RestrictedSpawnRequest {
-                        program: bin,
-                        args: vec![],
-                        stdin: avi_process::StdinSpec::Piped,
-                        stderr_file: log.try_clone().unwrap(),
-                        stdout_file: log,
-                        creation_flags: 0,
-                        extra_allowed: Vec::new(),
-                    },
-                    None,
-                )
-                .unwrap()
-            };
-            let cleanup = DoubleCleanup {
-                pid: child.id(),
-                dir,
-            };
-            // El marcador de entrada se escribe después de completar el entorno.
-            let _ = wait_for_marker(&cleanup.dir.path().join("stdin.txt"));
-            let output = wait_for_marker(&cleanup.dir.path().join("env.txt"));
-            let env: std::collections::HashMap<_, _> = output
-                .lines()
-                .map(|line| line.split_once('=').unwrap())
-                .collect();
-            let scratch = avi_process::scratch::dir().unwrap();
-            for key in ["TMP", "TEMP", "TMPDIR"] {
-                assert_eq!(env[key], scratch.to_str().unwrap());
-            }
-            // Los hilos de OpenMP los fija la aplicación aunque el padre tenga otro valor,
-            // y el entorno del padre no cambia.
-            assert_eq!(env["OMP_NUM_THREADS"], ENGINE_THREADS.to_string());
-            assert_eq!(std::env::var("OMP_NUM_THREADS").unwrap(), "conflict");
-            let expected = match precision {
-                Some(TtsPrecision::Mixed) => ["int4", "mixed"],
-                Some(TtsPrecision::Bf16) => ["bf16", "bf16"],
-                None => ["conflict"; 2],
-            };
-            for (key, expected) in keys.iter().zip(expected) {
-                assert_eq!(env[*key], expected);
-                assert_eq!(std::env::var(key).unwrap(), "conflict");
-            }
+        let (bin, dir) = write_engine_double("thread-env", false);
+        let log = std::fs::File::create(dir.path().join("engine.log")).unwrap();
+        let child = resident::launch_resident_process(
+            &bin,
+            Path::new("model"),
+            45123,
+            Path::new("voice.qvoice"),
+            log,
+        )
+        .unwrap();
+        let cleanup = DoubleCleanup {
+            pid: child.id(),
+            dir,
+        };
+        // El marcador de entrada se escribe después de completar el entorno.
+        let _ = wait_for_marker(&cleanup.dir.path().join("stdin.txt"));
+        let output = wait_for_marker(&cleanup.dir.path().join("env.txt"));
+        let env: std::collections::HashMap<_, _> = output
+            .lines()
+            .map(|line| line.split_once('=').unwrap())
+            .collect();
+        let scratch = avi_process::scratch::dir().unwrap();
+        for key in ["TMP", "TEMP", "TMPDIR"] {
+            assert_eq!(env[key], scratch.to_str().unwrap());
+        }
+        for key in keys {
+            assert_eq!(
+                env[*key], "",
+                "el residente no debe heredar {key}: {output:?}"
+            );
+            assert_eq!(std::env::var(key).unwrap(), "conflict");
         }
     }
 
+    /// El clonado tampoco hereda las variables de hilos de OpenBLAS del padre.
     #[test]
-    fn clone_voice_inherits_precision_environment_without_resident_overrides() {
+    fn clone_voice_removes_openblas_thread_variables_from_the_child() {
         const MARKER: &str = "AVI_TEST_CLONE_ENV_CHILD";
-        let keys = ["QWEN_TALKER_PREC", "QWEN_CP_PREC"];
+        let keys = OPENBLAS_THREAD_VARS;
         if std::env::var_os(MARKER).is_none() {
             let (bin, dir) = write_engine_double("clone-env", false);
             let mut command = Command::new(std::env::current_exe().unwrap());
             command.args([
                 "--exact",
-                "tests::clone_voice_inherits_precision_environment_without_resident_overrides",
+                "tests::clone_voice_removes_openblas_thread_variables_from_the_child",
                 "--nocapture",
             ]);
             command.env(MARKER, dir.path());
             command.env("AVI_DATA_DIR", dir.path());
             command.env("QWEN3_TTS_BIN", bin);
-            command.env("OMP_NUM_THREADS", "conflict");
             for key in keys {
                 command.env(key, "conflict");
             }
@@ -2856,26 +2512,28 @@ fn main() {
             wav.write_sample(0i16).unwrap();
         }
         wav.finalize().unwrap();
-        clone_voice(&dir, &input, &dir.join("voice.qvoice"), "voice").unwrap();
+        clone_voice(&dir, &input, &dir.join("voice.qvoice")).unwrap();
         let output = std::fs::read_to_string(dir.join("env.txt")).unwrap();
         let env: std::collections::HashMap<_, _> = output
             .lines()
             .map(|line| line.split_once('=').unwrap())
             .collect();
         for key in keys {
-            assert_eq!(env[key], "conflict");
+            assert_eq!(env[key], "", "el clonado no debe heredar {key}");
             assert_eq!(std::env::var(key).unwrap(), "conflict");
         }
         let scratch = avi_process::scratch::dir().unwrap();
         for key in ["TMP", "TEMP", "TMPDIR"] {
             assert_eq!(env[key], scratch.to_str().unwrap());
         }
-        assert_eq!(env["OMP_NUM_THREADS"], ENGINE_THREADS.to_string());
-        assert_eq!(std::env::var("OMP_NUM_THREADS").unwrap(), "conflict");
         let args = std::fs::read_to_string(dir.join("args.txt")).unwrap();
-        assert!(args.contains("--xvector-only"));
         assert!(args.contains("-j 4"));
-        assert!(!args.contains("--quant-mixed"));
+        for flag in ["--xvector-only", "--voice-name", "--quant-mixed"] {
+            assert!(
+                !args.contains(flag),
+                "el clonado no debe pasar {flag}: {args}"
+            );
+        }
     }
 
     /// El arranque del residente pasa `--watch-stdin` al motor, para que
@@ -2936,19 +2594,18 @@ fn main() {
         );
     }
 
-    /// Body HTTP con defaults → claves exactas; voz clonada → sin speaker pero con
-    /// `language` en nombre del motor.
+    /// Body HTTP con defaults → claves exactas y `language` con el nombre del
+    /// motor, sin `speaker`.
     /// Afirma los defaults del `struct`/motor sin cambios, no los valores de
     /// producción de `GenerationOptions::production(..)` (config validada por oído) — el body HTTP
     /// no transporta `-j` (es un flag de arranque de proceso).
     #[test]
-    fn build_tts_body_defaults_and_cloned_voice() {
-        let voice = VoiceEngine::Preset("ryan".to_string());
-        let body = build_tts_body("Hola", &voice, &GenerationOptions::new("es"))
-            .expect("el idioma es válido");
+    fn build_tts_body_defaults_and_language() {
+        let body =
+            build_tts_body("Hola", &GenerationOptions::new("es")).expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
         assert_eq!(obj.get("text").and_then(|v| v.as_str()), Some("Hola"));
-        assert_eq!(obj.get("speaker").and_then(|v| v.as_str()), Some("ryan"));
+        assert!(!obj.contains_key("speaker"), "el body no lleva speaker");
         assert_eq!(
             obj.get("language").and_then(|v| v.as_str()),
             Some("Spanish")
@@ -2964,19 +2621,11 @@ fn main() {
         assert!(!obj.contains_key("rate"));
         assert!(!obj.contains_key("emotion"));
 
-        let cloned = VoiceEngine::Cloned(test_reference("voice.qvoice", "huella"));
-        let body = build_tts_body("Hola", &cloned, &GenerationOptions::new("en"))
-            .expect("el idioma es válido");
+        let body =
+            build_tts_body("Hola", &GenerationOptions::new("en")).expect("el idioma es válido");
         let obj = body.as_object().expect("body debe ser objeto");
-        assert!(!obj.contains_key("speaker"), "voz clonada omite speaker");
         assert_eq!(
             obj.get("language").and_then(|v| v.as_str()),
-            Some("English")
-        );
-        let body = build_tts_body("Hola", &voice, &GenerationOptions::new("en"))
-            .expect("el idioma es válido");
-        assert_eq!(
-            body.get("language").and_then(|v| v.as_str()),
             Some("English")
         );
 
@@ -3000,32 +2649,14 @@ fn main() {
         }
     }
 
-    /// Tabla de resolución voz → motor: con referencia la voz es clonada
-    /// (también `default`); sin ella solo `ryan` y `vivian` son presets y
-    /// cualquier otra voz es `VoiceNotFound`.
+    /// Tabla de resolución voz → motor: con referencia la voz resuelve a su
+    /// `reference.qvoice` (también `default`); sin ella es `VoiceNotFound`.
     #[test]
     fn resolve_voice_engine_table() {
         let q = test_reference("reference.qvoice", "huella");
-        assert_eq!(
-            resolve_voice_engine("my_voice", Some(&q)),
-            Ok(VoiceEngine::Cloned(q.clone()))
-        );
-        assert_eq!(
-            resolve_voice_engine("default", Some(&q)),
-            Ok(VoiceEngine::Cloned(q.clone()))
-        );
-        for preset in ["ryan", "vivian"] {
-            assert_eq!(
-                resolve_voice_engine(preset, None),
-                Ok(VoiceEngine::Preset(preset.to_string()))
-            );
-        }
-        // El nombre del preset no distingue mayúsculas, como el almacén.
-        assert_eq!(
-            resolve_voice_engine("Ryan", None),
-            Ok(VoiceEngine::Preset("ryan".to_string()))
-        );
-        // Sin referencia y sin ser preset (incluida `default`): voz no hallada.
+        assert_eq!(resolve_voice_engine("my_voice", Some(&q)), Ok(q.clone()));
+        assert_eq!(resolve_voice_engine("default", Some(&q)), Ok(q.clone()));
+        // Sin referencia: voz no hallada, `default` incluida.
         for name in ["default", "my_voice"] {
             let err = resolve_voice_engine(name, None).unwrap_err();
             assert_eq!(err.voice, name);
@@ -3036,16 +2667,16 @@ fn main() {
     /// contenido: la misma ruta con otra huella (una voz re-clonada) es otra voz.
     #[test]
     fn cloned_voices_differ_by_fingerprint_with_same_path() {
-        let before = VoiceEngine::Cloned(test_reference("voces/x/reference.qvoice", "aaa"));
-        let same = VoiceEngine::Cloned(test_reference("voces/x/reference.qvoice", "aaa"));
-        let recloned = VoiceEngine::Cloned(test_reference("voces/x/reference.qvoice", "bbb"));
+        let before = test_reference("voces/x/reference.qvoice", "aaa");
+        let same = test_reference("voces/x/reference.qvoice", "aaa");
+        let recloned = test_reference("voces/x/reference.qvoice", "bbb");
         assert_eq!(before, same);
         assert_ne!(before, recloned);
     }
 
-    /// La síntesis de una voz que no es preset ni tiene referencia falla con el
-    /// error tipado `VoiceNotFound`, sin lanzar ningún motor, para que las
-    /// capas superiores lo reporten como `voice_not_found`.
+    /// La síntesis de una voz sin referencia falla con el error tipado
+    /// `VoiceNotFound`, sin lanzar ningún motor, para que las capas superiores
+    /// lo reporten como `voice_not_found`.
     #[test]
     fn synthesize_unknown_voice_fails_with_voice_not_found() {
         let dir = tempfile::tempdir().unwrap();
