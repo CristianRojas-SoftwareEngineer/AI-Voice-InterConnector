@@ -940,7 +940,7 @@ function Run-E2E {
         $voices=Invoke-Cli @('voice','list') 'voice-list' -Json
         foreach($name in @('default')){if(@($voices.Payload.voices) -notcontains $name){throw ('Voz factory ausente: {0}' -f $name)}}
         $clone=Invoke-VoiceClone 'mi_voz';Assert-PayloadSchema $clone.Payload;Assert-True ($clone.Payload.precomputed -eq $false) 'Clone directo debía ser precomputed false.'
-        $qvoice=$clone.QvoicePath;Assert-True (Test-Path -LiteralPath $qvoice -PathType Leaf) 'La ruta speech del clone no existe.';Assert-True ((Get-Item -LiteralPath $qvoice).Length -gt 1MB) 'qvoice debe superar 1 MB.';Assert-True (!(Test-Path -LiteralPath (Join-Path (Split-Path -Parent $qvoice) 'speech-reference.wav'))) 'El WAV fuente fue copiado.'
+        $qvoice=$clone.QvoicePath;Assert-True (Test-Path -LiteralPath $qvoice -PathType Leaf) 'La ruta speech del clone no existe.';Assert-True ((Get-Item -LiteralPath $qvoice).Length -eq 4112) 'qvoice v6 debe medir 4112 B (solo huella de timbre).';Assert-True (!(Test-Path -LiteralPath (Join-Path (Split-Path -Parent $qvoice) 'speech-reference.wav'))) 'El WAV fuente fue copiado.'
         $cloneDaemon=Invoke-VoiceClone 'mi_voz_daemon' -Daemon;Assert-PayloadSchema $cloneDaemon.Payload;Assert-True ((Get-Item -LiteralPath $cloneDaemon.QvoicePath).Length -gt 0) 'qvoice daemon vacío.'
         $conflict=Invoke-VoiceClone 'mi_voz' -ExpectedExit @(6);Assert-True ($conflict.Payload.reason -in @('voice_exists','state_conflict')) 'Conflicto de voz no emitió reason esperado.'
         $forced=Invoke-VoiceClone 'mi_voz' -Force;Assert-True ($forced.ExitCode -eq 0 -and $forced.Payload.name -eq 'mi_voz' -and $forced.Payload.precomputed -eq $false) 'Clone --force no devolvió el resultado esperado.'

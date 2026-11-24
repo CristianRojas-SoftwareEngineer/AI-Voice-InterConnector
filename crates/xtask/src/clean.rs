@@ -647,8 +647,10 @@ fn pacman_cache_dirs(conf: &str, msys2_root: &Path) -> Vec<PathBuf> {
 }
 
 /// Rutas de la capa global: los directorios regenerables de `cargo_home` que
-/// existen y, si se da `msys2_root`, el contenido (no el directorio) de cada
-/// `CacheDir` de pacman. Falla si `msys2_root` no tiene `etc/pacman.conf`.
+/// existen y, si hay MSYS2 en `msys2_root`, el contenido (no el directorio) de
+/// cada `CacheDir` de pacman. Sin `etc/pacman.conf` no hay caché de pacman que
+/// limpiar —MSYS2 no es una dependencia del proyecto— y solo se limpia Cargo; un
+/// `pacman.conf` presente pero ilegible es un error.
 fn global_targets(cargo_home: &Path, msys2_root: Option<&Path>) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for parts in CARGO_HOME_REGENERABLE {
@@ -659,12 +661,11 @@ fn global_targets(cargo_home: &Path, msys2_root: Option<&Path>) -> Result<Vec<Pa
     }
     if let Some(root) = msys2_root {
         let conf_path = root.join("etc").join("pacman.conf");
-        let conf = std::fs::read_to_string(&conf_path).map_err(|e| {
-            anyhow::anyhow!(
-                "no se pudo leer {} (¿MSYS2 instalado?): {e}",
-                conf_path.display()
-            )
-        })?;
+        if !conf_path.exists() {
+            return Ok(out);
+        }
+        let conf = std::fs::read_to_string(&conf_path)
+            .map_err(|e| anyhow::anyhow!("no se pudo leer {}: {e}", conf_path.display()))?;
         for dir in pacman_cache_dirs(&conf, root) {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
@@ -1120,20 +1121,21 @@ mod tests {
         assert_eq!(global_targets(&cargo, None).unwrap(), want[..5]);
     }
 
-    /// En Windows, un MSYS2 sin `pacman.conf` es un error explícito, y sin
-    /// línea `CacheDir` vale el defecto documentado de pacman.
+    /// Sin MSYS2 instalado (`pacman.conf` ausente) no hay caché de pacman que
+    /// limpiar y no es un error; con `pacman.conf` y sin línea `CacheDir` vale
+    /// el defecto documentado de pacman.
     #[test]
     fn global_targets_pacman_conf_rules() {
         let guard = tempfile::Builder::new()
             .prefix("xtask_clean_pacman_")
             .tempdir()
             .unwrap();
-        let err = global_targets(
-            &guard.path().join("cargo"),
-            Some(&guard.path().join("msys64")),
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("pacman.conf"));
+        let cargo = guard.path().join("cargo");
+        std::fs::create_dir_all(cargo.join("registry/cache")).unwrap();
+        assert_eq!(
+            global_targets(&cargo, Some(&guard.path().join("msys64"))).unwrap(),
+            [cargo.join("registry/cache")]
+        );
         assert_eq!(
             pacman_cache_dirs("[options]\n#CacheDir = /x/\n", Path::new("/m")),
             [Path::new("/m").join("var/cache/pacman/pkg")]
