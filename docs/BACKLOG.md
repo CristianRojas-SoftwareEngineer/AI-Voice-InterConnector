@@ -19,7 +19,7 @@ Hoy cada voz exige un residente propio: `start_resident` (`crates/avi-tts/src/li
 ### Por qué no se hace ahora
 
 - **No es un caso de uso recurrente.** La narración del plugin EvolutiveX-Agents usa una sola voz activa, que el usuario elige en `/config` (`evolutivex-agents.voice`) y cambia de forma ocasional, y `SessionStart` arranca el daemon con esa voz ya cargada. La pre-síntesis de anuncios (`presynth --voice <voz>`) se hace una vez por voz, en lote.
-- **El beneficio es pequeño.** Un cambio de voz cuesta lo que tarda el residente en estar listo: con el motor Rust, la carga del modelo (624 ms en el equipo de referencia, Ryzen 7 5825U) y su calentamiento (~1 s), unos 1,5 s según esa suma; el motor C tardaba 1,54 s.
+- **El beneficio es pequeño.** Un cambio de voz cuesta lo que tarda el residente en estar listo: medido como el arranque del residente hasta que `/v1/health` responde (mediana de 6 lanzamientos con la voz `default` en el equipo de referencia, Ryzen 7 5825U, 8 núcleos y 16 hilos), 1,47 s con el motor C y 1,59 s con el motor Rust.
 - **El coste es alto:** necesita una funcionalidad nueva del motor y, en AVI, cambiar el formato del almacén de voces en el disco del usuario y el ciclo de vida del residente.
 
 ### Cuándo retomarla
