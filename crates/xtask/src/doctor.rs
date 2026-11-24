@@ -1249,8 +1249,11 @@ pub fn verify_resources(json: bool) -> Result<()> {
     let pins = load_pins(&root)?;
     let triple = super::package::host_triple()?;
     let models = models_drift();
-    let super::package::PinnedBundles { ort, ffmpeg, engine } =
-        super::package::pinned_bundles_status(&root, triple, &pins);
+    let super::package::PinnedBundles {
+        ort,
+        ffmpeg,
+        engine,
+    } = super::package::pinned_bundles_status(&root, triple, &pins);
     let incomplete = find_incomplete_files(&models_cache_root()?);
     let pending = find_pending_resources(&root);
     let mut errors = Vec::new();

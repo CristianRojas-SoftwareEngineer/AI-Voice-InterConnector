@@ -2478,8 +2478,11 @@ mod tests {
         let pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
             .expect("pins.json válido");
         let triple = host_triple().unwrap();
-        let PinnedBundles { ort, ffmpeg, engine } =
-            pinned_bundles_status(root.path(), triple, &pins);
+        let PinnedBundles {
+            ort,
+            ffmpeg,
+            engine,
+        } = pinned_bundles_status(root.path(), triple, &pins);
         assert!(!ort.unwrap());
         assert!(!ffmpeg.unwrap());
         assert!(!engine.unwrap());
@@ -2497,8 +2500,11 @@ mod tests {
             .expect("pins.json válido");
         let triple = host_triple().unwrap();
         pins.ffmpeg_sha256.remove(triple);
-        let PinnedBundles { ort, ffmpeg, engine } =
-            pinned_bundles_status(root.path(), triple, &pins);
+        let PinnedBundles {
+            ort,
+            ffmpeg,
+            engine,
+        } = pinned_bundles_status(root.path(), triple, &pins);
         assert!(!ort.unwrap());
         assert!(ffmpeg.is_err());
         assert!(!engine.unwrap());
@@ -2520,9 +2526,7 @@ mod tests {
             assert_eq!(file, format!("qwen-tts-engine-v1.0.0-{engine}.{extension}"));
             assert_eq!(
                 url,
-                format!(
-                    "https://github.com/{ENGINE_REPO}/releases/download/v1.0.0/{file}"
-                )
+                format!("https://github.com/{ENGINE_REPO}/releases/download/v1.0.0/{file}")
             );
         }
         assert_eq!(
@@ -2564,8 +2568,12 @@ mod tests {
         pinned_engine_sha256(&pins, triple).unwrap();
         pins.qwen_tts_engine_sha256.remove(triple);
         let err = pinned_engine_sha256(&pins, triple).unwrap_err().to_string();
-        assert!(err.contains(triple) && err.contains("qwen-tts-engine"), "{err}");
-        pins.qwen_tts_engine_sha256.insert(triple.to_string(), "ABC".to_string());
+        assert!(
+            err.contains(triple) && err.contains("qwen-tts-engine"),
+            "{err}"
+        );
+        pins.qwen_tts_engine_sha256
+            .insert(triple.to_string(), "ABC".to_string());
         assert!(pinned_engine_sha256(&pins, triple).is_err());
     }
 

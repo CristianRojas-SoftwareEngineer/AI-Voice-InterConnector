@@ -189,8 +189,11 @@ pub fn run(system: bool, models: bool, yes: bool) -> Result<()> {
     // bundle que no estaba fresco antes de asegurarlo se descargó, y eso cuenta
     // como trabajo.
     let triple = super::package::host_triple()?;
-    let super::package::PinnedBundles { ort, ffmpeg, engine } =
-        super::package::pinned_bundles_status(&root, triple, &pins);
+    let super::package::PinnedBundles {
+        ort,
+        ffmpeg,
+        engine,
+    } = super::package::pinned_bundles_status(&root, triple, &pins);
     if !matches!(ort, Ok(true)) || !matches!(ffmpeg, Ok(true)) || !matches!(engine, Ok(true)) {
         worked = true;
     }
