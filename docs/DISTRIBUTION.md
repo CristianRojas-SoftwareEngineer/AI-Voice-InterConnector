@@ -139,7 +139,7 @@ binario en el prefix (`/opt/homebrew/bin`, ya en el PATH) sin `sudo` y elimina e
 atributo de cuarentena, con lo que mitiga Gatekeeper. Toda la integración de `PATH`,
 la desinstalación (`brew uninstall --cask --zap`) y la limpieza de cuarentena las
 resuelve Homebrew; solo el modelo queda pendiente, porque el Cask no encadena la
-provisión —un hook de post-instalación congelaría `brew install` durante los 5,85 GB
+provisión —un hook de post-instalación congelaría `brew install` durante los 3,37 GB
 de la descarga, sin barra de progreso propia, sin timeout y sin estado reanudable—:
 sus `caveats` remiten a `setup` y a la licencia MPL-2.0.
 

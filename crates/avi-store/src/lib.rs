@@ -23,10 +23,14 @@ use avi_shared::paths::{
 /// voz de AVI, también esta, se identifica por su `reference.qvoice`.
 pub const FACTORY_VOICES: &[&str] = &["default"];
 
-/// Asset embebido: `.qvoice` de fábrica para `default`, una voz clonada con solo
-/// la huella de timbre (x-vector) que se sintetiza con el modelo Base. Se
-/// materializa en `ensure_initialized` si falta. Se regenera copiando aquí el
-/// `reference.qvoice` que deja en el almacén de voces la orden
+/// Asset embebido: `.qvoice` v6 de fábrica para `default` (4112 bytes: `QVCE`,
+/// versión, `enc_dim` 1024, el x-vector de 1024 `f32` e idioma `0`, sin idioma),
+/// una voz clonada con solo la huella de timbre que se sintetiza con el modelo
+/// Base. Su x-vector es el mismo que el de la voz `default` integrada en el
+/// motor. Se materializa en `ensure_initialized` si falta y
+/// [`migrate_engine_voices`] lo reinstala sobre una `default` que no es v6. Se
+/// regenera copiando aquí el `reference.qvoice` que deja en el almacén de voces
+/// la orden
 /// `ai-voice-interconnector voice clone --no-daemon --name default --force --yes
 /// --speech-reference "assets/audios/Speech Sampler.wav"`.
 const FACTORY_DEFAULT_QVOICE: &[u8] = include_bytes!("../assets/default/reference.qvoice");
@@ -863,6 +867,137 @@ pub fn replace_voice(
         reference,
         removed_speech,
     })
+}
+
+/// Voces que versiones anteriores creaban vacías como voces de fábrica en cada
+/// inicialización. Ya no son voces de AVI: [`migrate_engine_voices`] las borra.
+const RETIRED_FACTORY_VOICES: &[&str] = &["ryan", "vivian"];
+
+/// Versión del `.qvoice` que lee el motor: no carga ninguna otra.
+const ENGINE_QVOICE_VERSION: u32 = 6;
+
+/// Versión del `.qvoice` de las voces clonadas por versiones anteriores de AVI.
+const LEGACY_QVOICE_VERSION: u32 = 3;
+
+/// Versión de un `.qvoice` según su cabecera: `QVCE` seguido de la versión en un
+/// `u32` little-endian (bytes 4 a 8). `None` si el archivo es más corto o no
+/// empieza por `QVCE`.
+fn qvoice_version(path: &Path) -> Result<Option<u32>> {
+    use std::io::Read;
+    let mut header = [0u8; 8];
+    match std::fs::File::open(path)?.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(e) => return Err(e.into()),
+    }
+    if &header[..4] != b"QVCE" {
+        return Ok(None);
+    }
+    Ok(Some(u32::from_le_bytes([
+        header[4], header[5], header[6], header[7],
+    ])))
+}
+
+/// Una voz borrada por [`migrate_engine_voices`] y las etiquetas de las
+/// locuciones que se llevó.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovedVoice {
+    pub name: VoiceName,
+    pub removed_speech: Vec<String>,
+}
+
+/// Resultado de [`migrate_engine_voices`]: vacío si el almacén ya estaba en el
+/// formato del motor.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VoiceMigration {
+    /// Etiquetas de las locuciones de `default` borradas al reinstalarla en v6;
+    /// `None` si ya era v6.
+    pub default_speech: Option<Vec<String>>,
+    /// Voces del usuario en `.qvoice` v3, borradas: hay que volver a clonarlas.
+    pub legacy_voices: Vec<RemovedVoice>,
+    /// Voces de fábrica retiradas (`ryan`, `vivian`), borradas.
+    pub retired_voices: Vec<RemovedVoice>,
+}
+
+impl VoiceMigration {
+    /// `true` si la migración no cambió nada.
+    pub fn is_empty(&self) -> bool {
+        self.default_speech.is_none()
+            && self.legacy_voices.is_empty()
+            && self.retired_voices.is_empty()
+    }
+}
+
+/// Deja el almacén en el formato de voz del motor, el `.qvoice` v6, que es el
+/// único que carga:
+///
+/// - si el `reference.qvoice` de `default` no es v6, la reinstala desde el asset
+///   embebido con [`replace_voice`], que borra sus locuciones porque su
+///   contenido cambia;
+/// - borra con [`remove_voice`], con sus locuciones, las voces cuyo
+///   `reference.qvoice` es v3: AVI no las convierte, se vuelven a clonar;
+/// - borra con [`remove_voice`], con sus locuciones, `ryan` y `vivian`.
+///
+/// Idempotente: sobre un almacén ya migrado no toca nada. Sin directorio de
+/// voces no hay nada que migrar.
+pub fn migrate_engine_voices(voices: &VoiceStore, speech: &SpeechStore) -> Result<VoiceMigration> {
+    let mut migration = VoiceMigration::default();
+    if !voices.root().is_dir() {
+        return Ok(migration);
+    }
+
+    let default = VoiceName::parse("default")?;
+    let default_qvoice = voices.voice_dir(&default).join("reference.qvoice");
+    if default_qvoice.is_file() && qvoice_version(&default_qvoice)? != Some(ENGINE_QVOICE_VERSION) {
+        // El asset se escribe en un temporal con token junto al almacén, fuera de
+        // `voices/`, para que `replace_voice` lo publique como cualquier clonado.
+        let parent = voices
+            .root()
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("el directorio de voces no tiene directorio padre"))?;
+        let src = owned_temp_path(&parent.join("reference.qvoice"))?;
+        std::fs::write(&src, FACTORY_DEFAULT_QVOICE)?;
+        let replaced = replace_voice(voices, speech, &default, &src);
+        avi_shared::best_effort(
+            std::fs::remove_file(&src),
+            format_args!("no se pudo borrar el temporal {}", src.display()),
+        );
+        migration.default_speech = Some(replaced?.removed_speech);
+    }
+
+    let mut candidates = Vec::new();
+    for entry in std::fs::read_dir(voices.root())? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        if let Ok(name) = VoiceName::parse(&entry.file_name().to_string_lossy()) {
+            if !is_factory_name(name.as_str()) {
+                candidates.push(name);
+            }
+        }
+    }
+    candidates.sort();
+    for name in candidates {
+        let retired = RETIRED_FACTORY_VOICES.contains(&name.as_str());
+        let reference = voices.voice_dir(&name).join("reference.qvoice");
+        let legacy =
+            reference.is_file() && qvoice_version(&reference)? == Some(LEGACY_QVOICE_VERSION);
+        if !retired && !legacy {
+            continue;
+        }
+        let removed_speech = remove_voice(voices, speech, &name).map_err(anyhow::Error::msg)?;
+        let removed = RemovedVoice {
+            name,
+            removed_speech,
+        };
+        if retired {
+            migration.retired_voices.push(removed);
+        } else {
+            migration.legacy_voices.push(removed);
+        }
+    }
+    Ok(migration)
 }
 
 /// Conflicto que impide guardar una locución.
@@ -2585,6 +2720,115 @@ mod tests {
         assert!(remove_voice(&voices, &speech, &v("sola"))
             .unwrap()
             .is_empty());
+    }
+
+    /// Cabecera `.qvoice` de prueba con la versión indicada, seguida de relleno.
+    fn qvoice_of_version(version: u32) -> Vec<u8> {
+        let mut bytes = b"QVCE".to_vec();
+        bytes.extend_from_slice(&version.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 32]);
+        bytes
+    }
+
+    /// La migración al formato del motor deja `default` en v6 y sin locuciones,
+    /// borra las voces v3 del usuario, `ryan` y `vivian` con sus locuciones,
+    /// conserva las voces v6 con las suyas y es idempotente.
+    #[test]
+    fn migrate_engine_voices_leaves_only_v6_voices() {
+        let dir = temp_dir("migrate_engine_voices");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        let wav_src = dir.join("src.wav");
+        std::fs::write(&wav_src, min_wav()).unwrap();
+        for name in ["default", "ana", "luis"] {
+            std::fs::create_dir_all(voices.voice_dir(&v(name))).unwrap();
+        }
+        let version_of = |name: &str| if name == "luis" { 6 } else { 3 };
+        for name in ["default", "ana", "luis"] {
+            std::fs::write(
+                voices.voice_dir(&v(name)).join("reference.qvoice"),
+                qvoice_of_version(version_of(name)),
+            )
+            .unwrap();
+        }
+        for name in ["ryan", "vivian"] {
+            std::fs::create_dir_all(voices.voice_dir(&v(name))).unwrap();
+        }
+        for name in ["default", "ana", "luis", "ryan", "vivian"] {
+            speech.save(&v(name), &l("hola"), "Hola", &wav_src).unwrap();
+        }
+
+        let migration = migrate_engine_voices(&voices, &speech).unwrap();
+
+        assert_eq!(migration.default_speech, Some(vec!["hola".to_string()]));
+        let names = |removed: &[RemovedVoice]| {
+            removed
+                .iter()
+                .map(|r| (r.name.to_string(), r.removed_speech.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&migration.legacy_voices),
+            vec![("ana".to_string(), vec!["hola".to_string()])]
+        );
+        assert_eq!(
+            names(&migration.retired_voices),
+            vec![
+                ("ryan".to_string(), vec!["hola".to_string()]),
+                ("vivian".to_string(), vec!["hola".to_string()]),
+            ]
+        );
+        let default_qvoice = voices.voice_dir(&v("default")).join("reference.qvoice");
+        assert_eq!(
+            std::fs::read(&default_qvoice).unwrap(),
+            FACTORY_DEFAULT_QVOICE
+        );
+        assert_eq!(qvoice_version(&default_qvoice).unwrap(), Some(6));
+        assert!(!speech.voice_dir(&v("default")).exists());
+        for name in ["ana", "ryan", "vivian"] {
+            assert!(
+                !voices.voice_dir(&v(name)).exists(),
+                "{name} sigue en voices/"
+            );
+            assert!(
+                !speech.voice_dir(&v(name)).exists(),
+                "{name} sigue en speech/"
+            );
+        }
+        assert!(voices
+            .voice_dir(&v("luis"))
+            .join("reference.qvoice")
+            .is_file());
+        assert!(speech.find(&v("luis"), &l("hola")).unwrap().is_some());
+        // El temporal del asset no queda junto al almacén.
+        let leftovers: Vec<_> = std::fs::read_dir(&*dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temporales sobrantes: {leftovers:?}");
+
+        // Sobre un almacén ya migrado no cambia nada.
+        assert!(migrate_engine_voices(&voices, &speech).unwrap().is_empty());
+        assert!(speech.find(&v("luis"), &l("hola")).unwrap().is_some());
+    }
+
+    /// El asset embebido de `default` es un `.qvoice` v6 de 4112 bytes.
+    #[test]
+    fn factory_default_asset_is_v6() {
+        assert_eq!(FACTORY_DEFAULT_QVOICE.len(), 4112);
+        assert_eq!(&FACTORY_DEFAULT_QVOICE[..4], b"QVCE");
+        assert_eq!(FACTORY_DEFAULT_QVOICE[4..8], 6u32.to_le_bytes());
+    }
+
+    /// Sin directorio de voces la migración no crea nada.
+    #[test]
+    fn migrate_engine_voices_without_store_is_a_no_op() {
+        let dir = temp_dir("migrate_engine_voices_empty");
+        let voices = VoiceStore::with_base_dir(dir.join("voices"));
+        let speech = SpeechStore::with_base_dir(dir.join("speech"));
+        assert!(migrate_engine_voices(&voices, &speech).unwrap().is_empty());
+        assert!(!dir.join("voices").exists());
     }
 
     /// round-trip `save` → `find` con `duration_secs` calculada del WAV.

@@ -761,6 +761,29 @@ pub async fn install(
             },
         );
         receipt::write_to(&receipt, &env.program_dir)?;
+
+        // Las voces pasan al formato que carga el motor de esta versión. Con el
+        // daemon parado y el bloqueo tomado nadie usa el almacén; la migración es
+        // idempotente, así que una reparación la completa si esta falla.
+        let migration = avi_store::migrate_engine_voices(
+            &avi_store::VoiceStore::at(env.data_dir.join("voices")),
+            &avi_store::SpeechStore::at(env.data_dir.join("speech")),
+        )
+        .map_err(|e| {
+            LifecycleError::new(
+                "self_install_failed",
+                format!("no se pudieron migrar las voces al formato del motor: {e:#}"),
+            )
+        })?;
+        // Por stderr y en el momento: en el traspaso de `self update` el hijo
+        // corre con `--json` y su resumen no llega al usuario, su stderr sí.
+        let messages = voice_migration_messages(&migration);
+        if !messages.is_empty() {
+            progress.yield_line();
+        }
+        for message in messages {
+            avi_term::line::warn(message);
+        }
         Ok((
             daemon,
             parked,
@@ -830,6 +853,43 @@ pub async fn install(
         recovery_kept: recovery.kept,
         parked,
     })
+}
+
+/// Avisos de la migración de voces: qué voces y cuántos audios sintetizados se
+/// borraron, y que las voces clonadas hay que volver a clonarlas. Vacío si no
+/// cambió nada.
+fn voice_migration_messages(migration: &avi_store::VoiceMigration) -> Vec<String> {
+    // « (audios sintetizados borrados: N)», o nada si no había ninguno.
+    let speech_note = |n: usize| match n {
+        0 => String::new(),
+        n => format!(" (audios sintetizados borrados: {n})"),
+    };
+    let names_and_speech = |removed: &[avi_store::RemovedVoice]| {
+        let names: Vec<&str> = removed.iter().map(|r| r.name.as_str()).collect();
+        let speech: usize = removed.iter().map(|r| r.removed_speech.len()).sum();
+        (names.join(", "), speech_note(speech))
+    };
+    let mut messages = Vec::new();
+    if let Some(speech) = &migration.default_speech {
+        messages.push(format!(
+            "La voz default pasó al formato de voz del motor nuevo{}.",
+            speech_note(speech.len())
+        ));
+    }
+    if !migration.legacy_voices.is_empty() {
+        let (names, speech) = names_and_speech(&migration.legacy_voices);
+        messages.push(format!(
+            "Voces clonadas borradas por tener el formato anterior, que el motor nuevo no \
+             carga: {names}{speech}. Vuelve a clonarlas con `voice clone`."
+        ));
+    }
+    if !migration.retired_voices.is_empty() {
+        let (names, speech) = names_and_speech(&migration.retired_voices);
+        messages.push(format!(
+            "Voces de fábrica retiradas, borradas: {names}{speech}."
+        ));
+    }
+    messages
 }
 
 /// Aviso de la retirada del aparcado, o `None` si se borró ya. Si el limpiador
@@ -1251,6 +1311,36 @@ fn final_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Los avisos de la migración de voces nombran las voces borradas, cuentan sus
+    /// audios sintetizados y piden volver a clonar las del formato anterior; sin
+    /// cambios no hay aviso.
+    #[test]
+    fn voice_migration_messages_name_voices_and_speech() {
+        let removed = |name: &str, speech: &[&str]| avi_store::RemovedVoice {
+            name: avi_store::VoiceName::parse(name).unwrap(),
+            removed_speech: speech.iter().map(|s| s.to_string()).collect(),
+        };
+        assert!(voice_migration_messages(&avi_store::VoiceMigration::default()).is_empty());
+        let migration = avi_store::VoiceMigration {
+            default_speech: Some(vec!["hola".to_string(), "adios".to_string()]),
+            legacy_voices: vec![removed("ana", &["a"]), removed("luis", &[])],
+            retired_voices: vec![removed("ryan", &[]), removed("vivian", &[])],
+        };
+        assert_eq!(
+            voice_migration_messages(&migration),
+            vec![
+                "La voz default pasó al formato de voz del motor nuevo (audios sintetizados \
+                 borrados: 2)."
+                    .to_string(),
+                "Voces clonadas borradas por tener el formato anterior, que el motor nuevo no \
+                 carga: ana, luis (audios sintetizados borrados: 1). Vuelve a clonarlas con \
+                 `voice clone`."
+                    .to_string(),
+                "Voces de fábrica retiradas, borradas: ryan, vivian.".to_string(),
+            ]
+        );
+    }
 
     /// Un bundle fuera de un staging propio se copia a un staging hermano del programa
     /// con el token de este proceso, el original queda intacto y la copia se borra al
