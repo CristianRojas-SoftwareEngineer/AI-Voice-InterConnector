@@ -109,6 +109,21 @@ mismo release:
 
 {ffmpeg_buildconfs}
 
+## qwen-tts-engine {engine_version}
+
+El paquete incluye el motor de síntesis de voz **qwen-tts-engine
+{engine_version}** (`qwen_tts`) como ejecutable independiente bajo **MPL-2.0**:
+la aplicación lo invoca como proceso. Su código fuente correspondiente está
+disponible en:
+
+- **Tag del repositorio:** <https://github.com/{engine_repo}/tree/v{engine_version}>
+- **Archivo de fuentes de la release:**
+  <https://github.com/{engine_repo}/releases/download/v{engine_version}/qwen-tts-engine-v{engine_version}-src.tar.gz>,
+  con SHA-256 `{engine_source_sha256}` (fijado en `packaging/pins.json`)
+
+Su `LICENSE`, su `NOTICE` y su `THIRD-PARTY-LICENSES.md` se reproducen en
+`THIRD-PARTY-LICENSES.md`.
+
 ## Solicitud del código fuente
 
 Si necesitas el árbol de fuentes exacto de un build, incluidas las bibliotecas
@@ -910,7 +925,8 @@ fn mpl_third_party_crates(packages: &[DistPackage]) -> Result<Vec<(String, Strin
 }
 
 /// Oferta de código fuente de `version`. Todo lo variable sale de su fuente única: la
-/// versión y los hashes de FFmpeg de `pins.json`, el build y las URLs de `package.rs` y
+/// versión y los hashes de FFmpeg y del motor TTS de `pins.json`, el build y las URLs de
+/// `package.rs` y
 /// los crates MPL-2.0 de terceros del grafo distribuido.
 fn render_source_offer(
     version: &str,
@@ -949,6 +965,12 @@ fn render_source_offer(
         .replace("{ffmpeg_version}", &pins.ffmpeg)
         .replace("{ffmpeg_btbn_build}", package::FFMPEG_BTBN_BUILD)
         .replace("{ffmpeg_btbn_tag}", package::FFMPEG_BTBN_TAG)
+        .replace("{engine_version}", &pins.qwen_tts_engine)
+        .replace("{engine_repo}", package::ENGINE_REPO)
+        .replace(
+            "{engine_source_sha256}",
+            &pins.qwen_tts_engine_source_sha256,
+        )
         .replace("{version}", version)
         .replace("{repo}", GITHUB_REPO))
 }
@@ -3627,7 +3649,8 @@ mod tests {
     }
 
     /// La oferta cita la versión y el build de FFmpeg fijados, los assets de fuentes y de
-    /// configuración, los crates MPL-2.0 de terceros y solo Issues como canal.
+    /// configuración, los crates MPL-2.0 de terceros, el archivo de fuentes del motor TTS
+    /// con su hash fijado y solo Issues como canal.
     #[test]
     fn test_source_offer_is_derived_from_the_pins() {
         let pins = repo_pins();
@@ -3643,6 +3666,12 @@ mod tests {
             );
         }
         assert!(offer.contains("https://crates.io/crates/ejemplo-mpl/1.2.0"));
+        assert!(offer.contains(&format!(
+            "https://github.com/{}/releases/download/v{v}/qwen-tts-engine-v{v}-src.tar.gz",
+            package::ENGINE_REPO,
+            v = pins.qwen_tts_engine
+        )));
+        assert!(offer.contains(&pins.qwen_tts_engine_source_sha256));
         assert!(offer.contains(&format!("https://github.com/{GITHUB_REPO}/issues")));
         assert!(!offer.contains("contactando al mantenedor"));
         assert!(!offer.contains('{'), "marcador sin resolver en la oferta");

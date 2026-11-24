@@ -10,7 +10,9 @@
 //! Cargo distribuidos (leídos de sus archivos `LICENSE*`, `COPYING*` y `NOTICE*` o de
 //! `packaging/notices/crates/`) y los componentes que no vienen de Cargo (tabla
 //! [`COMPONENTS`]). Los textos idénticos se agrupan por cuerpo, sin las líneas de
-//! copyright, y cada grupo lista sus titulares y quién lo usa.
+//! copyright, y cada grupo lista sus titulares y quién lo usa. Los documentos que un
+//! componente distribuye para incorporarlos tal cual, como los del motor TTS, se
+//! reproducen literales y enteros.
 //!
 //! La expresión SPDX de cada crate decide qué textos hacen falta: `AND` los exige todos,
 //! `OR` elige una alternativa por el orden MIT, Apache-2.0 y el resto, y `WITH` pide la
@@ -366,6 +368,10 @@ const ALL_TARGETS: &[&str] = &[WINDOWS, LINUX_X64, LINUX_ARM64, MACOS_ARM64];
 enum TextSource {
     /// Un archivo del repositorio; `{ort}` se sustituye por la versión fijada de ONNX Runtime.
     File(&'static str),
+    /// Un archivo del repositorio que se reproduce literal y entero, sin separar sus líneas
+    /// de copyright: un documento que un componente distribuye y que se incorpora tal cual,
+    /// con cada titular junto al texto que atribuye.
+    Document(&'static str),
     /// El comentario de licencia que empieza en `begin` dentro de un archivo fuente.
     CommentBlock {
         file: &'static str,
@@ -470,73 +476,25 @@ const COMPONENTS: &[Component] = &[
         note: "Ejecutable independiente que la aplicación invoca como proceso; sus fuentes se ofrecen en SOURCE-OFFER.md.",
     },
     Component {
-        name: "Motor TTS qwen_tts (código propio y vendorizado)",
+        name: "qwen-tts-engine",
         platforms: ALL_TARGETS,
-        spdx: "MIT AND BSD-2-Clause",
+        spdx: "MPL-2.0",
         texts: &[
             ComponentText {
-                license: "MIT",
-                source: TextSource::File("vendor/qwen3-tts/LICENSE"),
+                license: "MPL-2.0",
+                source: TextSource::Document("engine-bundle/LICENSE"),
             },
             ComponentText {
-                license: "MIT",
-                source: TextSource::File("vendor/qwen3-tts/third_party/ingot/LICENSE"),
+                license: "NOTICE de qwen-tts-engine",
+                source: TextSource::Document("engine-bundle/NOTICE"),
             },
             ComponentText {
-                license: "MIT",
-                source: TextSource::File("packaging/notices/llama.cpp/LICENSE"),
-            },
-            ComponentText {
-                license: "BSD-2-Clause",
-                source: TextSource::CommentBlock {
-                    file: "vendor/qwen3-tts/vendor/lz4.c",
-                    begin: "LZ4 - Fast LZ compression algorithm",
-                },
+                license: "THIRD-PARTY-LICENSES.md de qwen-tts-engine",
+                source: TextSource::Document("engine-bundle/THIRD-PARTY-LICENSES.md"),
             },
         ],
         covers: QWEN_BINARIES,
-        note: "Motor del proyecto qwen3-tts; las tablas de cuantización de ingot proceden de llama.cpp y LZ4 va en `vendor/lz4.c`.",
-    },
-    Component {
-        name: "OpenBLAS enlazada en qwen_tts",
-        platforms: &[WINDOWS, LINUX_X64, LINUX_ARM64],
-        spdx: "BSD-3-Clause",
-        texts: &[ComponentText {
-            license: "BSD-3-Clause",
-            source: TextSource::File("packaging/notices/openblas/LICENSE"),
-        }],
-        covers: QWEN_BINARIES,
-        note: "Enlazada estáticamente; en macOS el motor usa Accelerate.",
-    },
-    Component {
-        name: "Runtime de GCC enlazado en qwen_tts",
-        platforms: &[WINDOWS, LINUX_X64, LINUX_ARM64],
-        spdx: "GPL-3.0-or-later WITH GCC-exception-3.1",
-        texts: &[GCC_EXCEPTION],
-        covers: QWEN_BINARIES,
-        note: "`libgcc` en todas; en Windows, `libgomp` (OpenMP de OpenBLAS); en Linux, `libgfortran` (LAPACK de OpenBLAS).",
-    },
-    Component {
-        name: "libquadmath enlazada en qwen_tts",
-        platforms: &[LINUX_X64],
-        spdx: "LGPL-2.1-or-later",
-        texts: &[ComponentText {
-            license: "LGPL-2.1",
-            source: TextSource::File("packaging/notices/lgpl-2.1.txt"),
-        }],
-        covers: &["qwen_tts"],
-        note: "Para reenlazar el motor con otra versión de libquadmath, reconstruye el motor con `cargo xtask build-engine` a partir de `vendor/qwen3-tts/`, cuyas fuentes ofrece SOURCE-OFFER.md.",
-    },
-    Component {
-        name: "winpthreads enlazada en qwen_tts.exe",
-        platforms: &[WINDOWS],
-        spdx: "MIT AND BSD-3-Clause",
-        texts: &[ComponentText {
-            license: "MIT y BSD-3-Clause",
-            source: TextSource::File("packaging/notices/winpthreads/COPYING"),
-        }],
-        covers: &["qwen_tts.exe"],
-        note: "Runtime de hilos POSIX de MinGW-w64.",
+        note: "Motor TTS, ejecutable independiente que la aplicación invoca como proceso. Se reproducen literales los tres documentos del paquete de la release fijada en `packaging/pins.json`: su `LICENSE`, su `NOTICE`, con el aviso MIT del motor C del que se portó, y su `THIRD-PARTY-LICENSES.md`, con las licencias de todo lo que el binario de cada target enlaza. Sus fuentes se ofrecen en SOURCE-OFFER.md.",
     },
     Component {
         name: "CTranslate2 y oneDNN (fuentes incluidas en crates vendorizados)",
@@ -671,7 +629,7 @@ fn read_component_text(
             std::fs::read_to_string(&path)
                 .map_err(|e| anyhow!("no se pudo leer {}: {}", path.display(), e))
         }
-        TextSource::File(path) => {
+        TextSource::File(path) | TextSource::Document(path) => {
             let path = root.join(path.replace("{ort}", ort));
             std::fs::read_to_string(&path)
                 .map_err(|e| anyhow!("no se pudo leer {}: {}", path.display(), e))
@@ -804,6 +762,21 @@ impl Groups {
         group.holders.extend(holders);
         group.users.insert(user.to_string());
     }
+
+    /// Como [`Groups::add`], pero el cuerpo es el texto entero, con sus líneas de copyright
+    /// en su sitio y sin titulares aparte.
+    fn add_verbatim(&mut self, text: &str, licenses: &BTreeSet<String>, user: &str) {
+        let body = text.replace("\r\n", "\n").trim_end().to_string();
+        let key = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let group = self.by_body.entry(key).or_insert_with(|| Group {
+            body,
+            licenses: BTreeSet::new(),
+            holders: BTreeSet::new(),
+            users: BTreeSet::new(),
+        });
+        group.licenses.extend(licenses.iter().cloned());
+        group.users.insert(user.to_string());
+    }
 }
 
 pub(crate) fn platform_name(triple: &str) -> &str {
@@ -874,11 +847,12 @@ pub(crate) fn render_notices(root: &Path, packages: &[DistPackage], ort: &str) -
     for component in COMPONENTS {
         for text in component.texts {
             let content = read_component_text(root, packages, text, ort)?;
-            groups.add(
-                &content,
-                &BTreeSet::from([text.license.to_string()]),
-                component.name,
-            );
+            let licenses = BTreeSet::from([text.license.to_string()]);
+            if matches!(text.source, TextSource::Document(_)) {
+                groups.add_verbatim(&content, &licenses, component.name);
+            } else {
+                groups.add(&content, &licenses, component.name);
+            }
         }
     }
 
@@ -1106,6 +1080,16 @@ mod tests {
             .expect("un grupo compartido");
         assert_eq!(shared.holders.len(), 2);
         assert!(!shared.body.contains("Copyright"));
+    }
+
+    #[test]
+    fn a_document_keeps_its_copyright_lines_in_place() {
+        let mut groups = Groups::default();
+        let label = BTreeSet::from(["NOTICE".to_string()]);
+        groups.add_verbatim(&MIT_TEXT.replace('\n', "\r\n"), &label, "motor");
+        let group = groups.by_body.values().next().expect("un grupo");
+        assert!(group.holders.is_empty());
+        assert_eq!(group.body, MIT_TEXT.trim_end());
     }
 
     #[test]

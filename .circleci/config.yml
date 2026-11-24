@@ -1390,6 +1390,14 @@ jobs:
       - validate_pins
       - validate_features
       - run:
+          # Los avisos reproducen los documentos del paquete del motor fijado, que
+          # `bootstrap` descarga y verifica en engine-bundle/.
+          name: Aprovisionar los recursos fijados (cargo xtask bootstrap)
+          command: |
+            echo "[STEP] Aprovisionar los recursos fijados - INICIO"
+            cargo --quiet xtask bootstrap
+            echo "[STEP] Aprovisionar los recursos fijados - FIN"
+      - run:
           name: Verificar SOURCE-OFFER.md
           command: |
             echo "[STEP] Verificar SOURCE-OFFER.md - INICIO"

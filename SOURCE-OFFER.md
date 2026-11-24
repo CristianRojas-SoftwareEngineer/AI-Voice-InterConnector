@@ -13,7 +13,7 @@ el código fuente correspondiente a esta versión exacta está disponible en:
 Las atribuciones de las dependencias redistribuidas están en
 `THIRD-PARTY-LICENSES.md`, junto a este archivo. Los pesos de los modelos no se
 empaquetan en el binario: se descargan con `setup` y conservan sus licencias:
-Qwen3-TTS (CustomVoice y Base) y DPDFNet, Apache-2.0; Parakeet TDT 0.6B v3
+Qwen3-TTS (Base) y DPDFNet, Apache-2.0; Parakeet TDT 0.6B v3
 (ONNX) y los derivados int8 de opus-mt, CC-BY-4.0.
 
 ## Crates de terceros bajo MPL-2.0
@@ -50,6 +50,21 @@ mismo release:
 - `ffmpeg-9.0.2-buildconf-aarch64-unknown-linux-gnu.txt`: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.45.2/ffmpeg-9.0.2-buildconf-aarch64-unknown-linux-gnu.txt>
 - `ffmpeg-9.0.2-buildconf-x86_64-pc-windows-msvc.txt`: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.45.2/ffmpeg-9.0.2-buildconf-x86_64-pc-windows-msvc.txt>
 - `ffmpeg-9.0.2-buildconf-x86_64-unknown-linux-gnu.txt`: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.45.2/ffmpeg-9.0.2-buildconf-x86_64-unknown-linux-gnu.txt>
+
+## qwen-tts-engine 1.0.0
+
+El paquete incluye el motor de síntesis de voz **qwen-tts-engine
+1.0.0** (`qwen_tts`) como ejecutable independiente bajo **MPL-2.0**:
+la aplicación lo invoca como proceso. Su código fuente correspondiente está
+disponible en:
+
+- **Tag del repositorio:** <https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/tree/v1.0.0>
+- **Archivo de fuentes de la release:**
+  <https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/releases/download/v1.0.0/qwen-tts-engine-v1.0.0-src.tar.gz>,
+  con SHA-256 `bc7f8f0f543b2bde0582161c296744b24f887d3ec79b1843af026e40700661b3` (fijado en `packaging/pins.json`)
+
+Su `LICENSE`, su `NOTICE` y su `THIRD-PARTY-LICENSES.md` se reproducen en
+`THIRD-PARTY-LICENSES.md`.
 
 ## Solicitud del código fuente
 

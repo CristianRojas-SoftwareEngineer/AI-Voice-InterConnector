@@ -72,7 +72,7 @@ pub(crate) const ENGINE_BUNDLE_REL: &str = "engine-bundle";
 pub(crate) const ENGINE_MARKER: &str = ".qwen-tts-engine-sha256";
 
 /// Repositorio del motor TTS del que se descarga el paquete fijado.
-const ENGINE_REPO: &str = "CristianRojas-SoftwareEngineer/qwen-tts-engine";
+pub(crate) const ENGINE_REPO: &str = "CristianRojas-SoftwareEngineer/qwen-tts-engine";
 
 /// Avisos que el paquete del motor distribuye y que quedan en la raíz de
 /// `engine-bundle/` junto al ejecutable.
