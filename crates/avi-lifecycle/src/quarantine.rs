@@ -8,7 +8,7 @@
 //!
 //! Un bundle descargado con el navegador y extraído con el Finder llega a
 //! `com.apple.quarantine` puesto en **todos** sus archivos. Quitarlo solo del
-//! ejecutable no basta: el motor (`vendor/qwen3-tts/qwen_tts`)
+//! ejecutable no basta: el motor (`qwen_tts`)
 //! se **ejecuta** y la librería de ONNX Runtime se **carga**, así que ambos siguen
 //! heredando la cuarentena y macOS los bloquea igual. Por eso hay que quitarlo de
 //! forma recursiva en todo el directorio de programa, no solo del ejecutable.
@@ -90,8 +90,8 @@ pub trait Quarantine {
 ///
 /// El límite de profundidad es una defensa: un directorio de programa con un lazo de
 /// directorios —un enlace simbólico a un ancestro, por ejemplo— no puede dejar la
-/// limpieza colgando. La profundidad real de un bundle es de tres niveles
-/// (`vendor/qwen3-tts/qwen_tts`), así que el margen es amplio.
+/// limpieza colgando. El bundle es plano, todo en la raíz del directorio de
+/// programa, así que el margen es amplio.
 pub fn strip(dir: &Path) -> Outcome {
     strip_bounded(dir, MAX_DEPTH, platform())
 }

@@ -404,7 +404,7 @@ const GCC_EXCEPTION: ComponentText = ComponentText {
     source: TextSource::File("packaging/notices/gcc-exception-3.1.txt"),
 };
 
-const QWEN_BINARIES: &[&str] = &["vendor/qwen3-tts/qwen_tts.exe", "vendor/qwen3-tts/qwen_tts"];
+const QWEN_BINARIES: &[&str] = &["qwen_tts.exe", "qwen_tts"];
 const MAIN_BINARIES: &[&str] = &["ai-voice-interconnector.exe", "ai-voice-interconnector"];
 
 /// Atribución de cada archivo no documental del paquete. Una prueba exige que toda entrada
@@ -524,7 +524,7 @@ const COMPONENTS: &[Component] = &[
             license: "LGPL-2.1",
             source: TextSource::File("packaging/notices/lgpl-2.1.txt"),
         }],
-        covers: &["vendor/qwen3-tts/qwen_tts"],
+        covers: &["qwen_tts"],
         note: "Para reenlazar el motor con otra versión de libquadmath, reconstruye el motor con `cargo xtask build-engine` a partir de `vendor/qwen3-tts/`, cuyas fuentes ofrece SOURCE-OFFER.md.",
     },
     Component {
@@ -535,7 +535,7 @@ const COMPONENTS: &[Component] = &[
             license: "MIT y BSD-3-Clause",
             source: TextSource::File("packaging/notices/winpthreads/COPYING"),
         }],
-        covers: &["vendor/qwen3-tts/qwen_tts.exe"],
+        covers: &["qwen_tts.exe"],
         note: "Runtime de hilos POSIX de MinGW-w64.",
     },
     Component {

@@ -16,8 +16,8 @@
 //! registra a qué se le pregunta:
 //!
 //! - el recorrido visita **todos** los archivos del directorio de programa, incluidos
-//!   los del derivado del motor tres niveles más abajo —que es el motivo de que el
-//!   limpieza deba cubrir todo el directorio y no solo el ejecutable—;
+//!   el motor —que es el motivo de que la limpieza deba cubrir todo el directorio y no
+//!   solo el ejecutable— y los de cualquier subdirectorio;
 //! - **no pregunta por nada fuera** del directorio que se le pasó;
 //! - un fallo en un archivo **no corta** el recorrido;
 //! - el límite de profundidad **se respeta**, que es lo que evita que un directorio con
@@ -175,8 +175,8 @@ impl Quarantine for Fake {
     }
 }
 
-/// Árbol con la forma de un bundle sobre un [`Sandbox`]: ejecutable y documentos en la
-/// raíz, librería de runtime junto a ellos y el derivado del motor tres niveles más abajo.
+/// Árbol con la forma de un bundle sobre un [`Sandbox`]: ejecutable, documentos, motor y
+/// librería de runtime en la raíz, más un archivo anidado ajeno al manifiesto.
 ///
 /// El bundle se escribe primero en el **staging** —que es donde lo deja el bootstrap— y
 /// [`Tree::materialize`] lo traslada al directorio de programa, que es donde la
@@ -201,11 +201,15 @@ impl Tree {
         sandbox.write_bundle(&staging);
         let section = avi_lifecycle::manifest::target_section(avi_lifecycle::target::host_triple())
             .expect("el target del host tiene sección en el manifiesto");
-        let files = section
+        let mut files: Vec<PathBuf> = section
             .required
             .iter()
             .map(|relative| place(&staging, relative))
             .collect();
+        // El bundle es plano, pero la limpieza recorre cualquier subdirectorio que
+        // aparezca en el directorio de programa: un archivo anidado mantiene a prueba
+        // ese recorrido y el límite de profundidad.
+        files.push(place(&staging, "anidado/archivo"));
         Self {
             root: sandbox.root.clone(),
             program: sandbox.program_dir.clone(),
@@ -244,14 +248,12 @@ impl Tree {
     }
 }
 
-/// `true` si entre lo preguntado está el derivado del motor (`vendor/…`), que es el caso
-/// que motiva que la limpieza sea sobre todo el directorio y no solo el ejecutable.
-fn asks_about_derived(asked: &BTreeSet<PathBuf>) -> bool {
-    let separator = if cfg!(windows) { '\\' } else { '/' };
-    let marker = format!("{separator}vendor{separator}");
-    asked
-        .iter()
-        .any(|path| path.to_string_lossy().contains(&marker))
+/// `true` si entre lo preguntado está el motor (`qwen_tts`) del directorio de programa,
+/// que es el caso que motiva que la limpieza sea sobre todo el directorio y no solo el
+/// ejecutable.
+fn asks_about_engine(asked: &BTreeSet<PathBuf>, program: &Path) -> bool {
+    let engine = program.join(format!("qwen_tts{}", std::env::consts::EXE_SUFFIX));
+    asked.contains(&engine)
 }
 
 // ─── Instalar no deja nada en cuarentena ───────────────────────────────────────────
@@ -387,15 +389,11 @@ async fn install_strips_quarantine_from_whole_program_dir() {
     .await
     .expect("la instalación se completa");
 
-    // El derivado del motor y la librería de ONNX Runtime están entre lo colocado, y son
-    // los dos que la operación nombra como los que se ejecutan o se cargan.
+    // El motor y la librería de ONNX Runtime están entre lo colocado, y son los dos que
+    // la operación nombra como los que se ejecutan o se cargan.
     assert!(
-        outcome
-            .receipt
-            .files
-            .iter()
-            .any(|f| f.starts_with("vendor/")),
-        "el derivado del motor está entre los archivos colocados"
+        outcome.receipt.files.iter().any(|f| f == "qwen_tts"),
+        "el motor está entre los archivos colocados"
     );
     assert!(
         outcome.receipt.files.iter().any(|f| f.ends_with(".dylib")),
@@ -603,7 +601,7 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
 
     let outcome = quarantine::strip_bounded(&program, MAX_DEPTH, &fake);
 
-    // 1. Se limpió todo el bundle, incluido el derivado del motor tres niveles abajo.
+    // 1. Se limpió todo el bundle, incluido el archivo anidado.
     assert_eq!(
         outcome.cleared.len(),
         placed.len(),
@@ -639,7 +637,7 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
     // Se preguntó también por los **directorios** intermedios, y eso es lo correcto y no
     // un descuido: un directorio puede llevar él mismo el atributo, y macOS lo
     // heredan los archivos que se creen dentro. Limpiar solo los archivos dejaría que el
-    // siguiente archivo escrito en `vendor/` volviera a heredarlo.
+    // siguiente archivo escrito en ese directorio volviera a heredarlo.
     let directories: Vec<&PathBuf> = asked
         .iter()
         .filter(|r| r.is_dir())
@@ -648,8 +646,8 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
         .collect();
     assert_eq!(
         directories.len(),
-        2,
-        "los dos directorios intermedios del bundle se preguntan también: {directories:?}"
+        1,
+        "el directorio intermedio del árbol se pregunta también: {directories:?}"
     );
     for path in &directories {
         assert!(
@@ -659,10 +657,10 @@ fn quarantine_strip_walks_the_whole_program_dir_and_nothing_outside() {
         );
     }
 
-    // 3. Y se preguntó por el derivado del motor, que es el caso que motiva el paso 7.
+    // 3. Y se preguntó por el motor, que es el caso que motiva el paso 7.
     assert!(
-        asks_about_derived(&asked),
-        "el motor derivado se limpia también, no solo el ejecutable: {asked:?}"
+        asks_about_engine(&asked, &program),
+        "el motor se limpia también, no solo el ejecutable: {asked:?}"
     );
 }
 
@@ -915,11 +913,11 @@ fn quarantine_strip_survives_a_real_directory_loop() {
     let sandbox = Sandbox::new("loop");
     let root = sandbox.root.clone();
     let program = sandbox.program_dir.clone();
-    let dir = program.join("vendor/qwen3-tts");
+    let dir = program.join("anidado");
     std::fs::create_dir_all(&dir).expect("se crea el árbol");
-    let engine = dir.join("qwen_tts");
-    std::fs::write(&engine, "motor").expect("se escribe el derivado");
-    quarantine::put(&engine).expect("se pone la cuarentena");
+    let file = dir.join("archivo");
+    std::fs::write(&file, "contenido").expect("se escribe el archivo anidado");
+    quarantine::put(&file).expect("se pone la cuarentena");
     std::os::unix::fs::symlink(&root, dir.join("back")).expect("se crea el lazo");
 
     let outcome = quarantine::strip(&program);
@@ -929,8 +927,8 @@ fn quarantine_strip_survives_a_real_directory_loop() {
         outcome.failed
     );
     assert!(
-        !quarantine::has(&engine).expect("se consulta el derivado"),
-        "y la limpieza alcanzó al derivado antes de encontrarse con el lazo"
+        !quarantine::has(&file).expect("se consulta el archivo anidado"),
+        "y la limpieza alcanzó al archivo anidado antes de encontrarse con el lazo"
     );
 }
 

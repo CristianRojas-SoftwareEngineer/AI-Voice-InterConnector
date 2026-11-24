@@ -335,7 +335,7 @@ fn fix_permissions(program_dir: &Path, placed: &[String]) -> anyhow::Result<()> 
         let path = program_dir.join(to_platform_path(relative));
         let permissions = if *relative == section.executable
             || (relative == "ffmpeg" && section.required.contains(relative))
-            || relative.starts_with("vendor/")
+            || (relative == "qwen_tts" && section.required.contains(relative))
         {
             0o755
         } else {
@@ -407,10 +407,10 @@ fn remove_journal(program_dir: &Path) -> std::io::Result<()> {
 
 /// Devuelve una entrada aparcada a su sitio, fusionando si el destino ya existe.
 ///
-/// En Windows `fs::rename` no puede reemplazar un directorio por otro, y el caso
-/// de `vendor/` se da en cada reversión: el motor de la versión nueva ya está
-/// colocado cuando se restaura el de la anterior. Fusionar hoja a hoja es lo que
-/// deja el directorio de programa con exactamente la versión anterior.
+/// En Windows `fs::rename` no puede reemplazar un directorio por otro: si la
+/// versión anterior tenía un directorio que la nueva también colocó, fusionar
+/// hoja a hoja es lo que deja el directorio de programa con exactamente la
+/// versión anterior.
 fn restore_entry(source: &Path, dest: &Path) -> anyhow::Result<()> {
     if !dest.exists() {
         return Ok(std::fs::rename(source, dest)?);
@@ -514,17 +514,9 @@ mod tests {
     }
 
     /// Nombres de primer nivel que debe tener un directorio de programa con el
-    /// bundle del target instalado: las entradas planas del manifiesto más el
-    /// directorio `vendor` del motor.
+    /// bundle del target instalado: las entradas del manifiesto, que es plano.
     fn expected_content(triple: &str) -> Vec<String> {
-        let mut out: Vec<String> = manifest::target_section(triple)
-            .unwrap()
-            .required
-            .iter()
-            .filter(|r| !r.contains('/'))
-            .cloned()
-            .collect();
-        out.push("vendor".to_string());
+        let mut out: Vec<String> = manifest::target_section(triple).unwrap().required;
         out.sort();
         out
     }
@@ -599,17 +591,31 @@ mod tests {
 
     /// Un reemplazo confirmado deja el bundle nuevo completo, sin aparcado y sin
     /// diario, y el origen se queda vacío porque la colocación es un renombrado.
+    /// Lo que la versión anterior tenía y la nueva no trae, como el motor que
+    /// antes vivía en un subdirectorio `vendor`, no sobrevive al reemplazo.
     #[test]
     fn committed_replacement_leaves_no_residue() {
         let dir = scratch("txn-ok");
         let triple = target::host_triple();
         let executable = manifest::target_section(triple).unwrap().executable;
+        let engine = format!(
+            "qwen_tts{}",
+            if executable.ends_with(".exe") {
+                ".exe"
+            } else {
+                ""
+            }
+        );
         let program = dir.join("program");
         let source = dir.join("staging");
         std::fs::create_dir_all(&program).unwrap();
         bundle(&source, "v2");
         write_file(&program.join(&executable), "v1");
         write_file(&program.join("LICENSE"), "licencia vieja");
+        write_file(
+            &program.join("vendor").join("qwen3-tts").join(&engine),
+            "motor anterior",
+        );
 
         let outcome = replace(&program, &source).unwrap();
         assert_eq!(outcome.pending_parked, None, "el SO no tiene nada en uso");
@@ -625,18 +631,16 @@ mod tests {
             "v2",
             "también los documentos, no solo el ejecutable"
         );
-        assert!(program
-            .join("vendor/qwen3-tts")
-            .join(format!(
-                "qwen_tts{}",
-                if executable.ends_with(".exe") {
-                    ".exe"
-                } else {
-                    ""
-                }
-            ))
-            .is_file());
-        assert_eq!(content(&program), expected_content(triple));
+        assert_eq!(
+            std::fs::read_to_string(program.join(&engine)).unwrap(),
+            "v2",
+            "el motor nuevo está en la raíz del directorio de programa"
+        );
+        assert_eq!(
+            content(&program),
+            expected_content(triple),
+            "solo queda el bundle nuevo: el directorio `vendor` anterior se retiró"
+        );
         assert!(read_journal(&program).unwrap().is_none(), "sin diario");
         assert!(
             files_in_source(&source).is_empty(),
@@ -704,7 +708,6 @@ mod tests {
             );
             assert!(
                 program
-                    .join("vendor/qwen3-tts")
                     .join(format!(
                         "qwen_tts{}",
                         if executable.ends_with(".exe") {

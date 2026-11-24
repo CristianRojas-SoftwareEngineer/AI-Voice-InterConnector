@@ -146,12 +146,10 @@ mod tests {
                     !relative.split('/').any(|part| part == ".." || part == "."),
                     "{triple}: {relative} no puede escapar de la raíz del bundle"
                 );
-                if relative.contains('/') {
-                    assert!(
-                        relative.starts_with("vendor/"),
-                        "{triple}: lo único anidado es el motor ({relative})"
-                    );
-                }
+                assert!(
+                    !relative.contains('/'),
+                    "{triple}: el bundle es plano, sin nada anidado ({relative})"
+                );
             }
             // Los cinco documentos, el motor y la librería de ONNX Runtime con
             // el nombre que el crate `ort` busca en `load-dynamic`.
@@ -170,7 +168,7 @@ mod tests {
             }
             // El motor lleva la extensión del target: `qwen_tts.exe` en Windows.
             let engine = format!(
-                "vendor/qwen3-tts/qwen_tts{}",
+                "qwen_tts{}",
                 if section.executable.ends_with(".exe") {
                     ".exe"
                 } else {
@@ -239,10 +237,10 @@ mod tests {
         );
         assert!(missing_files(triple, &dir).unwrap().is_empty());
 
-        // Cada entrada obligatoria es imprescindible: se quita una de cada
-        // forma —plana y anidada— y la validación falla nombrándola.
+        // Cada entrada obligatoria es imprescindible: se quitan el ejecutable
+        // y el motor, y la validación falla nombrándolos.
         let engine = format!(
-            "vendor/qwen3-tts/qwen_tts{}",
+            "qwen_tts{}",
             if section.executable.ends_with(".exe") {
                 ".exe"
             } else {

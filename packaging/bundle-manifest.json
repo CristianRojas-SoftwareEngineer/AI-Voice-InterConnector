@@ -1,5 +1,5 @@
 {
-  "note": "Lista canonica de archivos que el bundle de release debe contener, por target. La valida `self install` contra el directorio de programa en ejecucion y la montara `cargo xtask package`; al ser la unica fuente, empaquetado e instalacion no pueden divergir. Replica el staging de los cuatro jobs de build de .circleci/config.yml: ejecutable, los cinco documentos de la raiz, el derivado del motor en vendor/qwen3-tts/, el ejecutable de FFmpeg integrado y la libreria de ONNX Runtime con el nombre exacto que el crate `ort` busca en load-dynamic, mas las DLL del runtime de VC++ de Windows: las cuatro que esa libreria necesita y vcomp140.dll, el runtime OpenMP que importa el ejecutable. Rutas relativas a la raiz del bundle, separador `/` en todos los targets. Cada target declara ademas su contrato de dependencias: system_libs (librerias del sistema base que un binario del bundle puede importar; una entrada que termina en / o en * admite todo lo que empieza por ese prefijo), symbol_ceilings (version maxima de cada familia de simbolos versionados de ELF) y min_os (version minima de macOS que deben declarar los binarios); cargo xtask package los audita antes de comprimir.",
+  "note": "Lista canonica de archivos que el bundle de release debe contener, por target. La valida `self install` contra el directorio de programa en ejecucion y la montara `cargo xtask package`; al ser la unica fuente, empaquetado e instalacion no pueden divergir. Replica el staging de los cuatro jobs de build de .circleci/config.yml: ejecutable, los cinco documentos de la raiz, el ejecutable del motor qwen-tts-engine fijado en pins.json, el ejecutable de FFmpeg integrado y la libreria de ONNX Runtime con el nombre exacto que el crate `ort` busca en load-dynamic, mas las DLL del runtime de VC++ de Windows: las cuatro que esa libreria necesita y vcomp140.dll, el runtime OpenMP que importa el ejecutable. Rutas relativas a la raiz del bundle, separador `/` en todos los targets. Cada target declara ademas su contrato de dependencias: system_libs (librerias del sistema base que un binario del bundle puede importar; una entrada que termina en / o en * admite todo lo que empieza por ese prefijo), symbol_ceilings (version maxima de cada familia de simbolos versionados de ELF) y min_os (version minima de macOS que deben declarar los binarios); cargo xtask package los audita antes de comprimir.",
   "targets": {
     "x86_64-pc-windows-msvc": {
       "executable": "ai-voice-interconnector.exe",
@@ -16,7 +16,7 @@
         "msvcp140_1.dll",
         "vcomp140.dll",
         "ffmpeg.exe",
-        "vendor/qwen3-tts/qwen_tts.exe"
+        "qwen_tts.exe"
       ],
       "system_libs": [
         "kernel32.dll", "ntdll.dll", "advapi32.dll", "user32.dll", "ws2_32.dll",
@@ -38,7 +38,7 @@
         "README.md",
         "libonnxruntime.so",
         "ffmpeg",
-        "vendor/qwen3-tts/qwen_tts"
+        "qwen_tts"
       ],
       "system_libs": [
         "libc.so.6", "libm.so.6", "libmvec.so.1", "libdl.so.2", "librt.so.1",
@@ -58,7 +58,7 @@
         "README.md",
         "libonnxruntime.so",
         "ffmpeg",
-        "vendor/qwen3-tts/qwen_tts"
+        "qwen_tts"
       ],
       "system_libs": [
         "libc.so.6", "libm.so.6", "libmvec.so.1", "libdl.so.2", "librt.so.1",
@@ -78,7 +78,7 @@
         "README.md",
         "libonnxruntime.dylib",
         "ffmpeg",
-        "vendor/qwen3-tts/qwen_tts"
+        "qwen_tts"
       ],
       "system_libs": ["/usr/lib/", "/System/Library/Frameworks/"],
       "min_os": "26.0"

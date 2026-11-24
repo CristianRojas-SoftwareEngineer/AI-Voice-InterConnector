@@ -614,7 +614,7 @@ fn is_parent(component: std::path::Component<'_>) -> bool {
     matches!(component, std::path::Component::ParentDir)
 }
 
-/// Permisos 0755/0644 como `install`: ejecutable y `vendor/` ejecutables, el
+/// Permisos 0755/0644 como `install`: ejecutable y motor ejecutables, el
 /// resto lectura. En Windows no hay modo Unix y se omite.
 fn apply_permissions(triple: &str, staging: &Path) -> Result<(), LifecycleError> {
     #[cfg(unix)]
@@ -623,7 +623,7 @@ fn apply_permissions(triple: &str, staging: &Path) -> Result<(), LifecycleError>
         let section = manifest::target_section(triple)?;
         let entries = walk(staging);
         for relative in entries {
-            let mode = if relative == section.executable || relative.starts_with("vendor/") {
+            let mode = if relative == section.executable || relative == "qwen_tts" {
                 0o755
             } else {
                 0o644

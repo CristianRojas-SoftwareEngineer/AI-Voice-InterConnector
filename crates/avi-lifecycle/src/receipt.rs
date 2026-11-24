@@ -263,7 +263,7 @@ mod tests {
             Path::new("/home/ana/.local/opt/ai-voice-interconnector"),
             vec![
                 "ai-voice-interconnector".to_string(),
-                "vendor/qwen3-tts/qwen_tts".to_string(),
+                "qwen_tts".to_string(),
             ],
             PathIntegration::unix(
                 PathBuf::from("/home/ana/.local/bin/ai-voice-interconnector"),

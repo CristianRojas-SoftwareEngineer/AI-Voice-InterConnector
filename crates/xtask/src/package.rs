@@ -14,7 +14,8 @@
 //! que fija `pins.json` para el target y traer la librería esperada. Resuelve
 //! FFmpeg del mismo modo con `ffmpeg-bundle/`, verifica su SHA-256, exige los
 //! códecs de la matriz de egressión y ejecuta `-version` antes de montarlo.
-//! Valida `--expect-version` (la puerta tag-versión vive aquí, ningún paso YAML
+//! Toma el motor TTS de `engine-bundle/`, también verificado por SHA-256, y
+//! lo monta en la raíz del bundle. Valida `--expect-version` (la puerta tag-versión vive aquí, ningún paso YAML
 //! la duplica), pasa el humo (`version` y `voice list`) y comprime de forma
 //! determinista con el nombre de `release_asset_name`.
 //!
@@ -1322,10 +1323,9 @@ fn smoke_ffmpeg(binary: &Path) -> Result<()> {
 /// Orígenes en disco de cada entrada del manifiesto.
 struct Sources {
     binary: PathBuf,
-    engine: PathBuf,
 }
 
-/// Localiza el binario ya compilado, el motor vendido y los cinco documentos.
+/// Localiza el binario ya compilado y los cinco documentos.
 /// Va antes de la descarga de ONNX Runtime para fallar rápido sin red si falta
 /// lo que el propio repo debe aportar.
 fn locate_sources(root: &Path) -> Result<Sources> {
@@ -1340,14 +1340,6 @@ fn locate_sources(root: &Path) -> Result<Sources> {
             binary.display()
         );
     }
-    let engine_name = format!("qwen_tts{exe_suffix}");
-    let engine = root.join("vendor").join("qwen3-tts").join(&engine_name);
-    if !engine.is_file() {
-        bail!(
-            "motor TTS no encontrado: {} (compila antes con `cargo xtask build-engine`)",
-            engine.display()
-        );
-    }
     for doc in [
         "LICENSE",
         "NOTICE",
@@ -1359,7 +1351,7 @@ fn locate_sources(root: &Path) -> Result<Sources> {
             bail!("documento no encontrado: {}", root.join(doc).display());
         }
     }
-    Ok(Sources { binary, engine })
+    Ok(Sources { binary })
 }
 
 /// Humo del binario ya compilado: versión, voces y contrato de `speech denoise`.
@@ -1404,9 +1396,10 @@ fn stage_bundle(
     root: &Path,
     bundle: &Path,
     ffmpeg: &Path,
+    engine: &Path,
     stage: &Path,
 ) -> Result<()> {
-    let engine_rel = format!("vendor/qwen3-tts/qwen_tts{}", std::env::consts::EXE_SUFFIX);
+    let engine_rel = format!("qwen_tts{}", std::env::consts::EXE_SUFFIX);
     let ffmpeg_rel = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     for relative in &section.required {
         let dest = relative_path(stage, relative);
@@ -1416,7 +1409,7 @@ fn stage_bundle(
         let src = if *relative == section.executable {
             sources.binary.clone()
         } else if *relative == engine_rel {
-            sources.engine.clone()
+            engine.to_path_buf()
         } else if *relative == ffmpeg_rel {
             ffmpeg.to_path_buf()
         } else if root.join(relative).is_file() {
@@ -1486,7 +1479,7 @@ fn sorted_entries(stage: &Path) -> Result<Vec<String>> {
 /// Comprime el árbol a `.zip` (Windows) con entradas ordenadas, modos Unix
 /// fijos (0755 ejecutables, 0644 resto) y marca temporal fija.
 fn compress_zip(stage: &Path, dest: &Path, section: &BundleTarget) -> Result<()> {
-    let engine_rel = format!("vendor/qwen3-tts/qwen_tts{}", std::env::consts::EXE_SUFFIX);
+    let engine_rel = format!("qwen_tts{}", std::env::consts::EXE_SUFFIX);
     let ffmpeg_rel = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     let file = std::fs::File::create(dest)?;
     let mut zip = zip::ZipWriter::new(file);
@@ -1527,7 +1520,7 @@ fn compress_zip(stage: &Path, dest: &Path, section: &BundleTarget) -> Result<()>
 /// Comprime el árbol a `.tar.gz` (Unix) con entradas ordenadas y cabeceras
 /// fijas (uid/gid 0, mtime fija, modos 0755/0644).
 fn compress_tar_gz(stage: &Path, dest: &Path, section: Option<&BundleTarget>) -> Result<()> {
-    let engine_rel = format!("vendor/qwen3-tts/qwen_tts{}", std::env::consts::EXE_SUFFIX);
+    let engine_rel = format!("qwen_tts{}", std::env::consts::EXE_SUFFIX);
     let ffmpeg_rel = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
     let file = std::fs::File::create(dest)?;
     let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
@@ -1596,7 +1589,7 @@ pub fn run(
     let PinnedBundles {
         ort: bundle,
         ffmpeg: ffmpeg_bundle,
-        engine: _,
+        engine: engine_bundle,
     } = ensure_pinned_bundles(&root, triple, &pins)?;
     for lib in ort_expected_libs(triple)? {
         if !bundle.join(lib).is_file() {
@@ -1610,12 +1603,21 @@ pub fn run(
             ffmpeg_binary.display()
         );
     }
+    let engine_binary = engine_bundle.join(engine_binary_name(triple)?);
     // Directorio de montaje con dueño: se borra al salir por cualquier camino.
     let stage_guard = tempfile::Builder::new()
         .prefix(&format!("xtask-package-{triple}-"))
         .tempdir()?;
     let stage = stage_guard.path().to_path_buf();
-    stage_bundle(section, &sources, &root, &bundle, &ffmpeg_binary, &stage)?;
+    stage_bundle(
+        section,
+        &sources,
+        &root,
+        &bundle,
+        &ffmpeg_binary,
+        &engine_binary,
+        &stage,
+    )?;
     // Ningún binario del bundle puede depender de algo que el sistema del
     // usuario no trae: se audita antes de publicar nada.
     super::deps::check_tree(&stage, section)?;
@@ -1680,11 +1682,11 @@ mod tests {
         "targets": {
             "x86_64-pc-windows-msvc": {
                 "executable": "ai-voice-interconnector.exe",
-                "required": ["ai-voice-interconnector.exe", "LICENSE", "onnxruntime.dll", "ffmpeg.exe"]
+                "required": ["ai-voice-interconnector.exe", "LICENSE", "onnxruntime.dll", "ffmpeg.exe", "qwen_tts.exe"]
             },
             "x86_64-unknown-linux-gnu": {
                 "executable": "ai-voice-interconnector",
-                "required": ["ai-voice-interconnector", "LICENSE", "libonnxruntime.so", "ffmpeg"]
+                "required": ["ai-voice-interconnector", "LICENSE", "libonnxruntime.so", "ffmpeg", "qwen_tts"]
             }
         }
     }"#;
@@ -1748,19 +1750,37 @@ mod tests {
         std::fs::write(src.join(lib), b"ort").unwrap();
         let ffmpeg = format!("ffmpeg{}", std::env::consts::EXE_SUFFIX);
         std::fs::write(src.join(&ffmpeg), b"ffmpeg").unwrap();
+        // El motor llega de su propio bundle, fuera de la raíz del repositorio.
+        let engine_bundle = base.join("engine-bundle");
+        std::fs::create_dir_all(&engine_bundle).unwrap();
+        let engine = format!("qwen_tts{}", std::env::consts::EXE_SUFFIX);
+        std::fs::write(engine_bundle.join(&engine), b"motor").unwrap();
         let sources = Sources {
             binary: src.join(&section.executable),
-            engine: src.join(&section.executable),
         };
         // Orígenes de fixture en `src/`, documentos simulados en la raíz.
         let root = src.clone();
-        stage_bundle(section, &sources, &root, &src, &src.join(&ffmpeg), &stage).unwrap();
+        stage_bundle(
+            section,
+            &sources,
+            &root,
+            &src,
+            &src.join(&ffmpeg),
+            &engine_bundle.join(&engine),
+            &stage,
+        )
+        .unwrap();
         let mut staged = Vec::new();
         collect_relative(&stage, &stage, &mut staged).unwrap();
         staged.sort();
         let mut required = section.required.clone();
         required.sort();
         assert_eq!(staged, required);
+        assert_eq!(
+            std::fs::read(stage.join(&engine)).unwrap(),
+            b"motor",
+            "el motor del bundle sale de engine-bundle/"
+        );
     }
 
     /// `--expect-version` divergente falla y el coincidente pasa (con y sin `v`).
@@ -2334,10 +2354,10 @@ mod tests {
             .unwrap();
         let base = base_guard.path().to_path_buf();
         let stage = base.join("stage");
-        std::fs::create_dir_all(stage.join("vendor/qwen3-tts")).unwrap();
+        std::fs::create_dir_all(&stage).unwrap();
         std::fs::write(stage.join("ai-voice-interconnector"), b"bin").unwrap();
         std::fs::write(stage.join("LICENSE"), b"lic").unwrap();
-        std::fs::write(stage.join("vendor/qwen3-tts/qwen_tts"), b"motor").unwrap();
+        std::fs::write(stage.join("qwen_tts"), b"motor").unwrap();
         let first = base.join("first.tar.gz");
         let second = base.join("second.tar.gz");
         compress_tar_gz(&stage, &first, None).unwrap();
@@ -2361,14 +2381,7 @@ mod tests {
             })
             .collect();
         names.sort();
-        assert_eq!(
-            names,
-            [
-                "LICENSE",
-                "ai-voice-interconnector",
-                "vendor/qwen3-tts/qwen_tts"
-            ]
-        );
+        assert_eq!(names, ["LICENSE", "ai-voice-interconnector", "qwen_tts"]);
     }
 
     /// El destino del árbol sin comprimir: con `--flat` cuelga de la raíz de

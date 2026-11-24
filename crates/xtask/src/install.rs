@@ -48,8 +48,8 @@ pub(crate) fn find_staged_binary(dir: &Path) -> Result<Option<PathBuf>> {
     if candidate.is_file() {
         return Ok(Some(candidate));
     }
-    // Búsqueda acotada a un nivel (el árbol del bundle es plano con
-    // `vendor/` como único subdirectorio con binarios ajenos al producto).
+    // Búsqueda acotada a un nivel (el árbol del bundle es plano, sin
+    // subdirectorios).
     for entry in std::fs::read_dir(dir)
         .map_err(|e| anyhow::anyhow!("no se pudo leer {}: {e}", dir.display()))?
     {

@@ -13,7 +13,7 @@
 //! `HOME` y la clave de registro son todos del test.
 //!
 //! El bundle que se instala es **sintético y completo**: los cinco documentos, la
-//! librería de runtime y el derivado del motor, con los nombres exactos que
+//! librería de runtime y el motor, con los nombres exactos que
 //! `packaging/bundle-manifest.json` exige para el target del host. El ejecutable es
 //! un fichero de texto: esta prueba afirma el flujo de la instalación, no que el binario
 //! arranque, que es lo que hace el bootstrap en su último paso.
