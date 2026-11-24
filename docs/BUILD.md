@@ -371,19 +371,20 @@ antes de publicar el artefacto, ejecuta en este orden:
    `schema_version` igual a `CLI_SCHEMA_VERSION` (`cargo xtask pins --check`
    falla si el literal del humo y la constante divergen). `voice list` hace
    fallar el job si falta la voz `default`.
-2. `cargo xtask build-engine --self-test`: compila el motor TTS y ejecuta su
+2. `cargo xtask package --expect-version`, que repite `version` y `voice list`
+   sobre el binario, verifica el SHA-256 de ONNX Runtime y del motor TTS si los
+   descarga, monta el bundle y audita sus dependencias contra el contrato del
+   target (ver [Auditoría de dependencias](#auditoría-de-dependencias)).
+3. `qwen_tts --self-test` sobre el motor descargado en `engine-bundle/`: su
    oráculo de kernels, sin pesos del modelo.
-3. `cargo xtask package --expect-version`, que repite `version` y `voice list`
-   sobre el binario, verifica el SHA-256 de ONNX Runtime si lo descarga, monta
-   el bundle y audita sus dependencias contra el contrato del target (ver
-   [Auditoría de dependencias](#auditoría-de-dependencias)).
 4. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
    archivo empaquetado en un sandbox con las cuatro raíces reubicadas, y
    `--version` del binario instalado. Los cuatro builds comprueban además
    `speech denoise --help`, el rechazo del alias raíz `denoise` y que el FFmpeg
    instalado arranque (`-version` en Unix y Windows).
-5. En Linux, la verificación de portabilidad del artefacto en salas limpias, de
-   la que depende la publicación; ver [RELEASING.md](RELEASING.md#2-automático-lo-que-hace-el-ci).
+5. En Linux, la verificación de portabilidad del artefacto en salas limpias,
+   que ejecuta también `qwen_tts --self-test` del motor instalado y de la que
+   depende la publicación; ver [RELEASING.md](RELEASING.md#2-automático-lo-que-hace-el-ci).
 
 Los cuatro jobs de prueba aprovisionan ese mismo FFmpeg antes de su suite, con
 `cargo xtask ffmpeg`: el pipeline no declara versión, URL ni hash, así que no
@@ -517,12 +518,11 @@ versión instalada difiere de su pin.
 
 ### Caché del motor en CI
 
-En CI el binario del motor (`vendor/qwen3-tts/qwen_tts[.exe]`) se cachea con una
-clave derivada de `vendor/qwen3-tts/.engine-cachekey`, el agregado determinista
-de `Makefile` + `*.c/*.h` (incluye `vendor/lz4.*`) + `third_party/ingot/**/*.{c,h}`
-que genera el command `tts_engine_cachekey` (sin `-r` en `xargs` porque el de
-macOS no admite ese flag). Si la clave exacta (sin fallback) existe tras
-`restore_cache`, solo se verifica con `--self-test`; si no, se compila. El
+En CI el motor no se compila: `engine-bundle/` se cachea por triple con una
+clave que depende de `packaging/pins.json`, como `ffmpeg-bundle/`, y lo
+aprovisiona `cargo xtask package`, que solo lo reutiliza si su marcador
+`.qwen-tts-engine-sha256` coincide con el SHA-256 fijado y si no lo vuelve a
+descargar. El
 bundle de ONNX Runtime (`ort-bundle/`) tiene su propia caché y se guarda tras
 `cargo xtask package`, que es quien lo descarga y verifica. Su marcador
 `ort-bundle/.ort-version` es lo que permite saber la versión: sin él es

@@ -146,8 +146,9 @@ parameters:
 #     pasa el humo.
 #   - pwsh (v1): cambia con pwsh_pin (solo test-bootstrap-windows). Guarda
 #     C:\pwsh; la versión se comprueba contra el pin tras restaurar.
-#   - tts (v1): cambia con checksum de vendor/qwen3-tts/.engine-cachekey (+ msys2
-#     gcc/openblas en Windows; os+arch en Unix). Clave exacta sin fallback.
+#   - engine (v1): cambia con packaging/pins.json (los 4 builds, clave por
+#     triple). Guarda `engine-bundle/`, que `xtask` reutiliza solo si su
+#     marcador `.qwen-tts-engine-sha256` coincide con el pin.
 commands:
   cargo_lock_cachekey:
     description: Genera Cargo.lock.cachekey, el Cargo.lock con la versión del propio crate en 0.0.0
@@ -594,23 +595,19 @@ commands:
           command: dnf install -y -q openssh-clients
   # La imagen trae gcc-toolset-14 (con libgomp.a y libstdc++.a, que los parches
   # vendorizados de ct2rs y onednn-src y `CXXSTDLIB_*` de .cargo/config.toml
-  # piden estáticas,
-  # y libgfortran.a, que el motor enlaza estática), cmake, perl y git. Se añaden
-  # openblas-static (libopenblasp.a, la OpenBLAS con
-  # hilos que el Makefile del motor enlaza estática), y Rust con rustup en la
+  # piden estáticas), cmake, perl y git. Se añade Rust con rustup en la
   # versión de `rust_pin`.
   install_manylinux_build_deps:
-    description: Instala openblas-static y Rust en la imagen manylinux
+    description: Instala Rust en la imagen manylinux
     steps:
       - run:
-          name: Instalar dependencias de sistema y Rust (openblas-static, rustup)
+          name: Instalar Rust (rustup)
           command: |
-            echo "[STEP] Instalar dependencias de sistema y Rust - INICIO"
+            echo "[STEP] Instalar Rust - INICIO"
             set -euo pipefail
-            dnf install -y -q openblas-static
             curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain << pipeline.parameters.rust_pin >>
             echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> "$BASH_ENV"
-            echo "[STEP] Instalar dependencias de sistema y Rust - FIN"
+            echo "[STEP] Instalar Rust - FIN"
 
   # Instalación de Rust vía rustup en Windows, idempotente por caché de
   # toolchain. Extraído de test-windows y build-windows-x64 (bloques idénticos).
@@ -769,6 +766,50 @@ commands:
             export PATH="$HOME/.cargo/bin:$PATH"
             cargo fetch --locked
             echo "[STEP] Precargar dependencias (cargo fetch) - FIN"
+  # Caché de `engine-bundle/` (el motor TTS de la release fijada) por triple, con
+  # la misma clave que la de FFmpeg: raíz del job y checksum de
+  # packaging/pins.json, donde viven la versión y el SHA-256 de cada paquete del
+  # motor. La aprovisiona `xtask package`, que solo reutiliza un bundle cuyo
+  # marcador `.qwen-tts-engine-sha256` coincide con el SHA-256 fijado; si no, lo
+  # descarga y verifica de nuevo.
+  engine_restore_cache:
+    description: Restaura engine-bundle/ por raíz del job, triple y packaging/pins.json
+    parameters:
+      triple:
+        type: string
+    steps:
+      - restore_cache:
+          keys:
+            - engine-v1-{{ checksum ".cache-root" }}-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
+  engine_save_cache:
+    description: Guarda engine-bundle/ (clave inmutable por raíz del job, triple y packaging/pins.json)
+    parameters:
+      triple:
+        type: string
+    steps:
+      - save_cache:
+          key: engine-v1-{{ checksum ".cache-root" }}-<< parameters.triple >>-{{ checksum "packaging/pins.json" }}
+          paths:
+            - engine-bundle
+          when: on_success
+  # Autoprueba del motor descargado en `engine-bundle/`: el oráculo numérico de
+  # los kernels, sin pesos del modelo; el paso falla si su código de salida no es
+  # 0. `shell: bash` existe en los tres executors; en Windows el ejecutable lleva
+  # `.exe`.
+  engine_self_test:
+    description: Ejecuta qwen_tts --self-test sobre el motor de engine-bundle/
+    steps:
+      - run:
+          name: Autoprueba del motor TTS (qwen_tts --self-test)
+          shell: bash
+          command: |
+            echo "[STEP] Autoprueba del motor TTS - INICIO"
+            set -euo pipefail
+            engine_bin="engine-bundle/qwen_tts"
+            if [ -f "$engine_bin.exe" ]; then engine_bin="$engine_bin.exe"; fi
+            echo "SHA-256 fijado y verificado: $(cat engine-bundle/.qwen-tts-engine-sha256)"
+            "./$engine_bin" --self-test
+            echo "[STEP] Autoprueba del motor TTS - FIN"
   # Instalación de gh CLI desde el repo apt oficial firmado. `extra_packages`
   # cubre la divergencia de publish-metadata (git + ruby para el push al tap).
   install_gh_cli:
@@ -808,26 +849,6 @@ commands:
             . "$BASH_ENV"
             test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
             echo "[STEP] Instalar bats-core - FIN"
-  # Agregado determinista de las fuentes del motor TTS (Makefile + C/H +
-  # ingot) para la clave de su caché. Un solo command para los 4 builds:
-  # `shell: bash` existe en los tres executors.
-  tts_engine_cachekey:
-    description: Genera vendor/qwen3-tts/.engine-cachekey (clave de la caché del motor)
-    steps:
-      - run:
-          name: Generar .engine-cachekey (clave TTS)
-          shell: bash
-          command: |
-            echo "[STEP] Generar .engine-cachekey - INICIO"
-            # Agregado determinista: Makefile + fuentes C/H (incluye vendor/lz4) + ingot.
-            # `/usr/bin/*` evita el find/sort de Windows (System32); sin `-r` en
-            # xargs porque el de macOS (BSD) no admite ese flag — con entrada vacía
-            # `cat` hereda la tubería cerrada y no emite nada, así que es seguro.
-            cat vendor/qwen3-tts/Makefile > vendor/qwen3-tts/.engine-cachekey
-            /usr/bin/find vendor/qwen3-tts -maxdepth 1 -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
-            /usr/bin/find vendor/qwen3-tts/vendor -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
-            /usr/bin/find vendor/qwen3-tts/third_party/ingot -type f \( -name '*.c' -o -name '*.h' \) -print | /usr/bin/sort | /usr/bin/xargs cat >> vendor/qwen3-tts/.engine-cachekey 2>/dev/null || true
-            echo "[STEP] Generar .engine-cachekey - FIN"
   # Smoke test del binario en runners Unix: version textual, igualdad con el tag
   # y voz de fábrica `default` (no carga el modelo). Extraído de los 3 builds
   # Unix (bloques idénticos salvo el eco final, parametrizado como `label`).
@@ -1713,37 +1734,6 @@ jobs:
       - cargo_save_target:
           os: windows
           variant: full
-      - tts_engine_cachekey
-      - restore_cache:
-          keys:
-            - tts-v1-{{ checksum ".cache-root" }}-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
-      - run:
-          # Interfaz uniforme (los 4 SO): `xtask build-engine` compila el motor con
-          # mingw32-make bajo el entorno MSYS2 UCRT64 (PATH ucrt64/bin + usr/bin,
-          # MSYSTEM=UCRT64, leído de MSYS2_ROOT default C:\msys64) y verifica con
-          # --self-test. Produce vendor\qwen3-tts\qwen_tts.exe fresco desde fuente.
-          # El empaquetado de abajo lo consume.
-          # Cacheado: si qwen_tts.exe existe tras restore (clave exacta sin fallback),
-          # es fresco y solo se verifica; si no, build completo.
-          name: Compilar motor TTS (make blas + --self-test)
-          command: |
-            Write-Host "[STEP] Compilar y verificar motor TTS - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            $TtsExe = "vendor\qwen3-tts\qwen_tts.exe"
-            if (Test-Path $TtsExe) {
-              Write-Host "Motor TTS restaurado de caché; se ejecuta --self-test directo"
-              & $TtsExe --self-test
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            } else {
-              cargo xtask build-engine --self-test
-              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            }
-            Write-Host "[STEP] Compilar y verificar motor TTS - FIN"
-      - save_cache:
-          key: tts-v1-{{ checksum ".cache-root" }}-{{ arch }}-gcc<< pipeline.parameters.msys2_gcc_pin >>-ob<< pipeline.parameters.msys2_openblas_pin >>-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
-          paths:
-            - vendor/qwen3-tts/qwen_tts.exe
-          when: on_success
       # `ort-bundle/` (ONNX Runtime oficial más las cinco DLL app-local de
       # VC++: vcruntime140, vcruntime140_1, msvcp140, msvcp140_1 y vcomp140) lo arma y lo
       # verifica `xtask package`, el único descargador: comprueba el SHA-256
@@ -1757,6 +1747,8 @@ jobs:
           keys:
             - ort-v4-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
+          triple: x86_64-pc-windows-msvc
+      - engine_restore_cache:
           triple: x86_64-pc-windows-msvc
       - run:
           # Empaquetado canónico: `xtask package` monta el bundle desde
@@ -1774,12 +1766,15 @@ jobs:
             cargo xtask package --expect-version "$TagVersion"
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
+      - engine_self_test
       - save_cache:
           key: ort-v4-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
       - ffmpeg_save_cache:
+          triple: x86_64-pc-windows-msvc
+      - engine_save_cache:
           triple: x86_64-pc-windows-msvc
       - run:
           # Humo de instalación: instala el artefacto empaquetado en un
@@ -1878,33 +1873,6 @@ jobs:
           command: sccache --show-stats
       - smoke_test_unix:
           label: "Linux x64"
-      - tts_engine_cachekey
-      - restore_cache:
-          keys:
-            - tts-v1-{{ checksum ".cache-root" }}-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
-      - run:
-          # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
-          # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
-          # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
-          # oráculo de kernels sin pesos) en un solo paso.
-          # Cacheado como en Windows: si el binario existe tras el restore
-          # (clave exacta sin fallback), es fresco y solo se verifica.
-          name: Compilar motor TTS (make blas + --self-test)
-          command: |
-            echo "[STEP] Compilar y verificar motor TTS - INICIO"
-            set -euo pipefail
-            if [ -x vendor/qwen3-tts/qwen_tts ]; then
-              echo "Motor TTS restaurado de caché; se ejecuta --self-test directo"
-              ./vendor/qwen3-tts/qwen_tts --self-test
-            else
-              cargo xtask build-engine --self-test
-            fi
-            echo "[STEP] Compilar y verificar motor TTS - FIN"
-      - save_cache:
-          key: tts-v1-{{ checksum ".cache-root" }}-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
-          paths:
-            - vendor/qwen3-tts/qwen_tts
-          when: on_success
       - cargo_save_target:
           os: linux-el8
           variant: full
@@ -1919,6 +1887,8 @@ jobs:
             - ort-v4-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: x86_64-unknown-linux-gnu
+      - engine_restore_cache:
+          triple: x86_64-unknown-linux-gnu
       - run:
           # Empaquetado canónico: `xtask package` monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
@@ -1931,12 +1901,15 @@ jobs:
             set -euo pipefail
             cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
+      - engine_self_test
       - save_cache:
           key: ort-v4-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
       - ffmpeg_save_cache:
+          triple: x86_64-unknown-linux-gnu
+      - engine_save_cache:
           triple: x86_64-unknown-linux-gnu
       - sandbox_install_unix:
           artifact_glob: "ai-voice-interconnector-*-x86_64-linux.tar.gz"
@@ -2006,33 +1979,6 @@ jobs:
       # las dos verify-portability-arm64, la única validación del stack aarch64.
       - smoke_test_unix:
           label: "Linux ARM64"
-      - tts_engine_cachekey
-      - restore_cache:
-          keys:
-            - tts-v1-{{ checksum ".cache-root" }}-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
-      - run:
-          # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
-          # por plataforma (make/mingw32-make, entorno MSYS2 en Windows), centraliza
-          # la política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
-          # oráculo de kernels sin pesos) en un solo paso.
-          # Cacheado como en Windows: si el binario existe tras el restore
-          # (clave exacta sin fallback), es fresco y solo se verifica.
-          name: Compilar motor TTS (make blas + --self-test)
-          command: |
-            echo "[STEP] Compilar y verificar motor TTS - INICIO"
-            set -euo pipefail
-            if [ -x vendor/qwen3-tts/qwen_tts ]; then
-              echo "Motor TTS restaurado de caché; se ejecuta --self-test directo"
-              ./vendor/qwen3-tts/qwen_tts --self-test
-            else
-              cargo xtask build-engine --self-test
-            fi
-            echo "[STEP] Compilar y verificar motor TTS - FIN"
-      - save_cache:
-          key: tts-v1-{{ checksum ".cache-root" }}-linux-el8-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
-          paths:
-            - vendor/qwen3-tts/qwen_tts
-          when: on_success
       - cargo_save_target:
           os: linux-el8
           variant: full
@@ -2047,6 +1993,8 @@ jobs:
             - ort-v4-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: aarch64-unknown-linux-gnu
+      - engine_restore_cache:
+          triple: aarch64-unknown-linux-gnu
       - run:
           # Empaquetado canónico: `xtask package` monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
@@ -2059,12 +2007,15 @@ jobs:
             set -euo pipefail
             cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
+      - engine_self_test
       - save_cache:
           key: ort-v4-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
       - ffmpeg_save_cache:
+          triple: aarch64-unknown-linux-gnu
+      - engine_save_cache:
           triple: aarch64-unknown-linux-gnu
       - sandbox_install_unix:
           artifact_glob: "ai-voice-interconnector-*-arm64-linux.tar.gz"
@@ -2092,7 +2043,7 @@ jobs:
       # Versión mínima de macOS del artefacto: macOS 26 (Tahoe), la más antigua
       # con actualizaciones de seguridad que no es la siguiente en perderlas, y
       # que corre en todos los Mac con Apple Silicon (M1 en adelante). La leen
-      # rustc, el crate `cc`, CMake y el clang del Makefile del motor, así que
+      # rustc, el crate `cc` y CMake, así que
       # todo lo que se compila aquí declara ese mínimo; sin ella cada pieza
       # tomaría su propio valor por defecto (el del SDK o el de rustc).
       MACOSX_DEPLOYMENT_TARGET: "26.0"
@@ -2105,17 +2056,11 @@ jobs:
       - toolchain_save_cache:
           os: macos
       - run:
-          name: Instalar dependencias de sistema (cmake, make)
+          name: Instalar dependencias de sistema (cmake)
           command: |
             echo "[STEP] Instalar dependencias de sistema - INICIO"
             if ! command -v cmake >/dev/null 2>&1; then brew install cmake; fi
             cmake --version
-            # make y gcc/clang (el Makefile de qwen_tts invoca `gcc`, que en macOS
-            # resuelve al shim de Apple clang) vienen con el toolchain de Xcode;
-            # se verifica su presencia antes de `make blas` (BLAS = Accelerate,
-            # sin dependencia por brew).
-            make --version
-            gcc --version
             echo "[STEP] Instalar dependencias de sistema - FIN"
       # NOTA: sin libomp — con --features full este build sí compila ct2rs, que
       # usa OPENMP_RUNTIME=NONE en macOS (features por target en
@@ -2157,34 +2102,6 @@ jobs:
             sccache --show-stats
       - smoke_test_unix:
           label: "macOS ARM64"
-      - tts_engine_cachekey
-      - restore_cache:
-          keys:
-            - tts-v1-{{ checksum ".cache-root" }}-macos-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
-      - run:
-          # Interfaz uniforme (los 4 SO): `xtask build-engine` oculta el mecanismo
-          # por plataforma (make + framework Accelerate en macOS), centraliza la
-          # política SIMD (SIMD=auto -> Makefile) y compila + verifica (--self-test,
-          # oráculo de kernels sin pesos) en un solo paso.
-          # Cacheado como en Windows: si el binario existe tras el restore
-          # (clave exacta sin fallback), es fresco y solo se verifica.
-          name: Compilar motor TTS (make blas + --self-test)
-          command: |
-            export PATH="$HOME/.cargo/bin:$PATH"
-            echo "[STEP] Compilar y verificar motor TTS - INICIO"
-            set -euo pipefail
-            if [ -x vendor/qwen3-tts/qwen_tts ]; then
-              echo "Motor TTS restaurado de caché; se ejecuta --self-test directo"
-              ./vendor/qwen3-tts/qwen_tts --self-test
-            else
-              cargo xtask build-engine --self-test
-            fi
-            echo "[STEP] Compilar y verificar motor TTS - FIN"
-      - save_cache:
-          key: tts-v1-{{ checksum ".cache-root" }}-macos-{{ arch }}-{{ checksum "vendor/qwen3-tts/.engine-cachekey" }}
-          paths:
-            - vendor/qwen3-tts/qwen_tts
-          when: on_success
       - cargo_save_target:
           os: macos
           variant: full
@@ -2199,6 +2116,8 @@ jobs:
             - ort-v4-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: aarch64-apple-darwin
+      - engine_restore_cache:
+          triple: aarch64-apple-darwin
       - run:
           # Empaquetado canónico: `xtask package` monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
@@ -2212,12 +2131,15 @@ jobs:
             set -euo pipefail
             cargo xtask package --expect-version "${CIRCLE_TAG#v}"
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
+      - engine_self_test
       - save_cache:
           key: ort-v4-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
       - ffmpeg_save_cache:
+          triple: aarch64-apple-darwin
+      - engine_save_cache:
           triple: aarch64-apple-darwin
       - sandbox_install_unix:
           artifact_glob: "ai-voice-interconnector-*-arm64-macos.tar.gz"
@@ -2283,6 +2205,10 @@ jobs:
             "$STAGE/ai-voice-interconnector" self install --no-setup --yes
             # Por el symlink instalado: el programa debe resolver su directorio real.
             "$AVI_BIN_DIR/ai-voice-interconnector" --version
+            # El motor TTS instalado desde el artefacto arranca en la imagen mínima
+            # y pasa su autoprueba de kernels, que no necesita modelos: con
+            # `set -e`, un código de salida distinto de 0 hace fallar el paso.
+            "$AVI_INSTALL_DIR/qwen_tts" --self-test
             # `doctor` falla sin modelos provisionados; lo que se exige aquí es su
             # comprobación `onnx_runtime`, que carga la librería empaquetada. El
             # JSON sale con sangría y las claves de cada comprobación ordenadas

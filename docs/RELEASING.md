@@ -264,9 +264,10 @@ en `.circleci/config.yml`. Con el tag publicado, ejecuta sin intervención:
 2. **Builds.** `build-windows-x64`, `build-linux-x64`, `build-linux-arm64` y
    `build-darwin-arm64`:
    - verifican versión del binario contra el tag y `voice list` con `default`;
-   - compilan el motor TTS y ejecutan `--self-test`;
    - empaquetan con `cargo xtask package --expect-version ...`, descargan ORT
-     validando SHA-256 y auditan dependencias/ABI del target;
+     y el motor TTS fijado validando su SHA-256 y auditan dependencias/ABI del
+     target;
+   - ejecutan `qwen_tts --self-test` sobre el motor descargado en `engine-bundle/`;
    - ejecutan el smoke de instalación `self install --no-setup --no-modify-path`
      en sandbox y persisten el artefacto en el workspace.
 
