@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.46.0 — 2026-11-24](#0460--2026-11-24)
 - [0.45.2 — 2026-11-16](#0452--2026-11-16)
 - [0.45.1 — 2026-11-15](#0451--2026-11-15)
@@ -139,6 +140,24 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Los mecanismos oficiales de limpieza no dejaban residuos en una instalación sin recibo (descarga manual, binario de desarrollo o Cask de Homebrew), conservaban el modelo que la 0.46.0 dejó de fijar y las pruebas de AVI dejaban claves en el registro de Windows. Esta versión deja el estado en cero en esos casos y explica qué datos guarda el sistema operativo por su cuenta y cómo borrarlos.
+
+### Añadido
+
+- **Aviso de los datos del sistema operativo en `self uninstall`:** el plan avisa de lo que el sistema operativo guarda por su cuenta al usar AVI (permiso de micrófono, reglas del firewall y preferencias de audio por aplicación) y enlaza la documentación de cómo borrarlo en Windows, macOS y Linux (`docs/CLI/commands/SELF.md`, sección «Datos del sistema operativo»). AVI no los borra.
+
+### Cambiado
+
+- **`cleanup --all` sin recibo de instalación:** deja el estado en cero (raíz de datos entera, modelos, temporales y ficheros de bloqueo), como `self uninstall`, y `cargo xtask clean --app` lo encadena cuando `self uninstall` responde `not_installed`. Con recibo no cambia.
+- **Poda de modelos retirados:** `setup` retira de la carpeta de modelos exclusiva los modelos que la versión ya no fija (por ejemplo, el CustomVoice que dejaron las instalaciones anteriores a la 0.46.0). En una caché compartida no cambia.
+- **Evidencia de la skill E2E:** pasa de `%TEMP%` a `target/e2e-evidence`, que retira `cargo xtask clean`.
+
+### Corregido
+
+- **Claves de registro de las pruebas:** las pruebas de ciclo de vida ya no dejan la clave `HKCU\Software\AI-Voice-InterConnector`, y `cargo xtask clean` borra las claves de prueba huérfanas.
 
 ## [0.46.0] — 2026-11-24
 
