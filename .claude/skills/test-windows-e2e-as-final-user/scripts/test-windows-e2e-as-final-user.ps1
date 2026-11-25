@@ -193,7 +193,7 @@ function Initialize-Run {
     $script:ProgramDir = Join-Path $env:LOCALAPPDATA 'Programs\ai-voice-interconnector'
     $script:Bin = Join-Path $script:ProgramDir 'ai-voice-interconnector.exe'
 
-    $base = Join-Path ([IO.Path]::GetTempPath()) 'ai-voice-interconnector-e2e-evidence'
+    $base = Join-Path $script:Root 'target\e2e-evidence'
     [void](New-Item -ItemType Directory -Path $base -Force)
     $runPath = Join-Path $base ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') + '-' + [guid]::NewGuid().ToString('N'))
     [void](New-Item -ItemType Directory -Path $runPath)
