@@ -127,7 +127,7 @@ Cuando `setup` se invoca **directamente** (no desde `self install` ni desde el t
 Los pasos de [`self uninstall`](../../specs/LIFECYCLE.md#85-self-uninstall), en orden, sobre la **instalación registrada** y no sobre la posición del ejecutable.
 
 1. **El canal decide si se puede actuar**: `homebrew` → `externally_managed` (12) con el comando de Homebrew en el mensaje. Sin recibo de instalación, el comando no adopta las raíces convencionales aunque contengan datos y devuelve **`not_installed` y salida 0** sin borrarlas.
-2. **Plan**, el mismo en la simulación y en la ejecución (`uninstall::plan_lines`): cada ruta una sola vez, con su categoría en español cuando la tiene (`datos de usuario` para la raíz de datos entera) y su tamaño; las reversiones del `PATH` que el recibo registra, una línea por cada una con lo que se retira (`PATH: se quitará la entrada <ruta> del PATH de tu usuario.`), que son acciones del plan y no recursos conservados; y la lista de lo que **no** se tocará y por qué.
+2. **Plan**, el mismo en la simulación y en la ejecución (`uninstall::plan_lines`): cada ruta una sola vez, con su categoría en español cuando la tiene (`datos de usuario` para la raíz de datos entera) y su tamaño; las reversiones del `PATH` que el recibo registra, una línea por cada una con lo que se retira (`PATH: se quitará la entrada <ruta> del PATH de tu usuario.`), que son acciones del plan y no recursos conservados; y la lista de lo que **no** se tocará y por qué. Con recibo, la última línea del plan avisa de los datos que el sistema operativo guarda por su cuenta y enlaza [`Datos del sistema operativo`](#datos-del-sistema-operativo) en la versión instalada (`no se tocará: los datos que el sistema operativo guarda por su cuenta (permisos, reglas del firewall, preferencias de audio); cómo borrarlos: https://github.com/<repositorio>/blob/v<versión>/docs/CLI/commands/SELF.md#datos-del-sistema-operativo`); no es una ruta, así que no cuenta en la cabecera `N rutas a tocar y M rutas conservadas` ni aparece en el JSON.
 3. **`--dry-run`**: escribe el plan por stdout, después una sola vez `Simulación: no se ha modificado nada.` por stderr, y termina **sin tomar el bloqueo**: tomar el bloqueo crea el archivo, y una simulación que deja un archivo detrás no es una simulación.
 4. **Confirmación destructiva** `¿Desinstalar el programa y borrar lo indicado? [s/N] ` (con `--keep-data`, `¿Desinstalar el programa y borrar lo indicado, conservando tus datos? [s/N] `). Sin terminal y sin `--yes` → `confirmation_required` (2) y nada borrado. Al terminar, el cierre por stderr dice `✓ Desinstalación completada en <total>`; el `status` es del envelope `--json`. Si quedan restos (`program_dir_kept`), en texto sale el `Error:` con su `Solución:` y en `--json` solo el envelope, con el mismo código. Sin recibo de instalación, el desenlace es `not_installed` y el texto dice `✓ No había nada que desinstalar.`, sin duración: el comando no adopta ni inspecciona raíces convencionales del perfil.
 5. **Parar el daemon**: va **después** de la confirmación, para que un `daemon_stop_failed` no deje nada a medias.
@@ -140,7 +140,7 @@ Los pasos de [`self uninstall`](../../specs/LIFECYCLE.md#85-self-uninstall), en 
 
 **Sin `--keep-data`, el destino del estado es la raíz de datos completa.** No es el plan de `cleanup --all`, y la diferencia es deliberada:
 
-- `cleanup --all` **protege la voz de fábrica** (`default`) porque va embebida en el binario y el programa sigue instalado: borrarla sería tirar un trabajo que `setup` vuelve a materializar.
+- `cleanup --all` con recibo de instalación **protege la voz de fábrica** (`default`) porque va embebida en el binario y el programa sigue instalado: borrarla sería tirar un trabajo que `setup` vuelve a materializar. Sin recibo (descarga manual, binario de `target/` o Cask de Homebrew), `cleanup --all` deja el estado en cero como `self uninstall`, porque ningún `self uninstall` lo retirará.
 - Al desinstalar **el programa desaparece**, y con él las voces de fábrica. Dejarlas sería **residuo dentro de una raíz de propiedad exclusiva**.
 
 Por eso la composición del plan vive en `uninstall::compose_plan` y tiene dos ramas, no dos implementaciones del mismo alcance:
@@ -166,6 +166,35 @@ En Windows, si el ejecutable en uso está dentro del directorio de programa, el 
 ### Idempotencia y residuo
 
 Sin instalación ni estado, `self uninstall` termina con éxito y `status` `not_installed`. Con operación completa, **cero residuo dentro de las raíces de propiedad exclusiva**, y lo compartido que no se borra se informa explícitamente con su motivo: es la lista `preserved`, que forma parte del plan y se imprime una sola vez con él. `preserved` solo lista rutas que existen: un directorio de programa inexistente no se anuncia como conservado. Como parte del residuo cero, el ejecutor del árbol de propiedad borra las hojas del estado y poda de abajo arriba los contenedores que quedan vacíos (el contenedor de caché y, en Windows, el contenedor raíz de la aplicación), con `remove_dir` no recursivo; un contenedor con entradas ajenas se conserva y se informa, y la raíz HF compartida (`External`) nunca se poda. Los contenedores que solo retenían el programa y sus archivos de bloqueo se podan después de retirarlos (en el borrado diferido, el destino programado ya es el contenedor más externo).
+
+### Datos del sistema operativo
+
+Son los datos que el sistema operativo guarda por su cuenta cuando se usa AVI: permisos, reglas del firewall y preferencias de audio por aplicación. AVI no los borra en ningún sistema operativo, porque pertenecen al sistema y al usuario, se guardan en formatos internos del sistema y algunos solo se borran con privilegios de administrador, que AVI nunca pide. Si quieres retirarlos tras desinstalar, se hace a mano, según tu sistema.
+
+**Windows**
+
+- **Permiso de micrófono.** AVI aparece en Configuración → Privacidad y seguridad → Micrófono. La clave que lo guarda se borra con este comando, que lleva la ruta del ejecutable con `#` en lugar de `\` (ajusta el usuario y la ruta si instalaste en otra parte):
+
+  ```text
+  reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\microphone\NonPackaged\C:#Users#<usuario>#AppData#Local#Programs#ai-voice-interconnector#ai-voice-interconnector.exe" /f
+  ```
+
+- **Reglas del firewall.** Solo las crearon versiones anteriores a la 0.26.0, cuyo motor escuchaba fuera de `127.0.0.1`; desde entonces el motor residente escucha solo en `127.0.0.1` y no se crean reglas nuevas. En un **Símbolo del sistema** abierto como administrador:
+
+  ```text
+  netsh advfirewall firewall delete rule name=all program="%LOCALAPPDATA%\Programs\ai-voice-interconnector\vendor\qwen3-tts\qwen_tts.exe"
+  ```
+
+- **Volumen y dispositivo por aplicación.** En Windows 11: Configuración → Sistema → Sonido → Mezclador de volumen → Restablecer. En Windows 10: Configuración → Sistema → Sonido → Opciones avanzadas de sonido → Preferencias de volumen y dispositivo de la aplicación → Restablecer. En los dos casos se devuelven **todas** las aplicaciones a los valores recomendados ([Microsoft Q&A](https://learn.microsoft.com/en-us/answers/questions/1337541/ap-volume-and-device-properties)).
+
+**macOS**
+
+- **Firewall de aplicaciones**, si está activado: Ajustes del Sistema → Red → Firewall → Opciones, selecciona la entrada y pulsa Eliminar ([guía de Apple](https://support.apple.com/guide/mac-help/change-firewall-settings-on-mac-mh11783/mac)).
+- **Micrófono.** El permiso lo concede la aplicación desde la que se ejecuta AVI, normalmente la terminal, y se revoca en Ajustes del Sistema → Privacidad y seguridad → Micrófono.
+
+**Linux**
+
+No hay reglas de firewall por aplicación ni registro de permisos de micrófono para aplicaciones sin *sandbox*. Con PipeWire y WirePlumber, los volúmenes recordados por aplicación están en el archivo `stream-props` de `$XDG_STATE_HOME/wireplumber` (normalmente `~/.local/state/wireplumber`): con WirePlumber detenido se borra ese archivo, lo que olvida los volúmenes de **todas** las aplicaciones; `wpctl reset` restablece todo su estado ([documentación de WirePlumber](https://pipewire.pages.freedesktop.org/wireplumber/daemon/locations.html)).
 
 ---
 
@@ -249,6 +278,7 @@ stdout: Se borrarán 4 rutas, 3,4 GB en total:
           modelos: <ruta> (3,4 GB)
           programa: <ruta> (…)
           PATH: se quitará la entrada <ruta> del PATH de tu usuario.
+          no se tocará: los datos que el sistema operativo guarda por su cuenta (permisos, reglas del firewall, preferencias de audio); cómo borrarlos: https://github.com/<repositorio>/blob/v<versión>/docs/CLI/commands/SELF.md#datos-del-sistema-operativo
 stderr: Simulación: no se ha modificado nada.
 
 # self uninstall

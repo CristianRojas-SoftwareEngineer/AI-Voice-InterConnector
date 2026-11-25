@@ -116,6 +116,10 @@ pub struct Plan {
     /// preservación que la operación no cumple. Con `None` y `program_dir` a `None`, la
     /// regla lo preserva de verdad.
     pub program_dir_swallowed_by: Option<PathBuf>,
+    /// Versión del recibo, con la que el plan enlaza la documentación de cómo borrar los
+    /// datos que el sistema operativo guarda por su cuenta. `None` sin recibo: sin versión
+    /// no hay documentación a la que enlazar, y el plan no lleva el aviso.
+    pub docs_version: Option<String>,
 }
 
 impl Plan {
@@ -667,6 +671,7 @@ pub fn compose_plan(
         preserved,
         path_revert,
         program_dir_swallowed_by,
+        docs_version: receipt.map(|r| r.version.clone()),
     }
 }
 
@@ -846,6 +851,14 @@ fn plan_lines(plan: &Plan, options: &Options, preview: Option<&SweepPreview>) ->
             "  no se tocará {}: {}",
             item.path.display(),
             item.reason
+        ));
+    }
+    if let Some(version) = &plan.docs_version {
+        out.push(format!(
+            "  no se tocará: los datos que el sistema operativo guarda por su cuenta (permisos, \
+             reglas del firewall, preferencias de audio); cómo borrarlos: \
+             https://github.com/{}/blob/v{version}/docs/CLI/commands/SELF.md#datos-del-sistema-operativo",
+            crate::update_resolve::GITHUB_REPO
         ));
     }
     out
@@ -1378,6 +1391,45 @@ mod program_dir_rule_tests {
             plan_lines(&plan, &options, Some(&preview)),
             plan_lines(&compose_plan(&r, None, &program, &options), &options, None),
             "la simulación y la ejecución muestran el mismo plan"
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| !l.contains("el sistema operativo guarda")),
+            "sin recibo no hay versión a la que enlazar: {lines:?}"
+        );
+    }
+
+    /// Con recibo, la última línea del plan avisa de lo que el sistema operativo conserva
+    /// y enlaza la documentación de la versión instalada.
+    #[test]
+    fn plan_lines_end_with_the_operating_system_data_notice_when_there_is_a_receipt() {
+        let root = sandbox("plan-lines-os-notice");
+        let home = root.join("home").join("ana");
+        let program = home.join("programs").join("ai-voice-interconnector");
+        with_receipt(&program);
+        let r = roots(&home, &program);
+        let options = Options::default();
+        let receipt = receipt::InstallReceipt::new(
+            "9.9.9",
+            "x86_64-unknown-linux-gnu",
+            crate::channel::Channel::Script,
+            &program,
+            Vec::new(),
+            receipt::PathIntegration::none(),
+            receipt::Roots {
+                data_dir: r.data_dir.clone(),
+                cache_dir: r.cache_container.clone(),
+            },
+        );
+
+        let plan = compose_plan(&r, Some(&receipt), &program, &options);
+        let lines = plan_lines(&plan, &options, None);
+        assert_eq!(
+            lines.last().unwrap(),
+            "  no se tocará: los datos que el sistema operativo guarda por su cuenta (permisos, \
+             reglas del firewall, preferencias de audio); cómo borrarlos: \
+             https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/blob/v9.9.9/docs/CLI/commands/SELF.md#datos-del-sistema-operativo"
         );
     }
 }

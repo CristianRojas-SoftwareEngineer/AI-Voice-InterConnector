@@ -2551,6 +2551,37 @@ fn the_cleanup_final_message_carries_the_duration_of_the_sweep() {
     );
 }
 
+/// Sin recibo de instalación, `cleanup --all --yes` deja el estado en cero tras un comando
+/// de uso: sin raíz de datos (la voz de fábrica incluida) y sin los dos ficheros de
+/// bloqueo, que viven junto al directorio de programa.
+#[test]
+fn cleanup_all_without_receipt_leaves_no_data_root_and_no_lock_files() {
+    let (sandbox, envs) = sandbox_unique_state("cleanup-without-receipt");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let data = sandbox.path().join("data");
+    let lock = sandbox.path().join(avi_lifecycle::LIFECYCLE_LOCK_NAME);
+    let gate = sandbox.path().join(avi_lifecycle::LIFECYCLE_GATE_NAME);
+
+    // Un comando de uso crea la voz de fábrica y los ficheros de bloqueo.
+    let (code, _) = run_json_env(&["--json", "voice", "list"], &envs);
+    assert_eq!(code, 0);
+    assert!(data.join("voices").join("default").exists());
+    assert!(
+        lock.exists() && gate.exists(),
+        "el comando de uso toma el bloqueo"
+    );
+
+    let (code, actual) = run_json_env(&["--json", "cleanup", "--all", "--yes"], &envs);
+    assert_eq!(code, 0, "{actual}");
+    assert_eq!(
+        actual["status"],
+        Value::String("cleanup_complete".to_string())
+    );
+    assert!(!data.exists(), "la raíz de datos entera se va: {actual}");
+    assert!(!lock.exists(), "el fichero de bloqueo se va");
+    assert!(!gate.exists(), "la compuerta se va");
+}
+
 /// El camino que sale por `?` **cierra el indicador**: la fase queda cedida y
 /// no queda pegada a la salida.
 ///

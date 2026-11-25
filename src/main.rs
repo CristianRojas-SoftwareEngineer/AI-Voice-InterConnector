@@ -4659,6 +4659,12 @@ async fn handle_cleanup(
     yes: bool,
 ) -> Result<(), CliError> {
     let roots = lifecycle::cleanup::Roots::resolve().map_err(lifecycle_error_to_cli)?;
+    // Sin recibo (descarga manual, binario de desarrollo o Cask de Homebrew) `--all` deja el
+    // estado en cero, porque ningún `self uninstall` lo retirará.
+    let registered_program_dir =
+        lifecycle::channel::registered_program_dir().map_err(lifecycle_error_to_cli)?;
+    let receipt =
+        lifecycle::receipt::read_from(&registered_program_dir).map_err(lifecycle_error_to_cli)?;
     let options = lifecycle::cleanup::Options {
         model,
         voices,
@@ -4666,6 +4672,7 @@ async fn handle_cleanup(
         all,
         dry_run,
         assume_yes: yes,
+        without_installation: receipt.is_none(),
     };
     // El indicador **no** lo crea la CLI: la confirmación ocurre dentro de
     // `cleanup::run`, y un indicador abierto antes de ella dejaría el prompt

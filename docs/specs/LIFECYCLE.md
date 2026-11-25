@@ -228,6 +228,7 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 | Bloqueo de ciclo de vida | Exclusiva | `~/.local/opt/.ai-voice-interconnector.lock` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.lock` |
 | Compuerta de traspaso (hermana del bloqueo) | Exclusiva | `~/.local/opt/.ai-voice-interconnector.gate` | Ídem | `%LOCALAPPDATA%\Programs\.ai-voice-interconnector.gate` |
 | Caché HF elegida por el usuario (`HF_HUB_CACHE` o `HF_HOME`) | **Compartida** | La indicada | Ídem | Ídem |
+| Datos del sistema operativo (permisos, reglas del firewall, preferencias de audio) | Del sistema y del usuario: AVI no los borra | Sin firewall por aplicación ni permisos de micrófono; WirePlumber recuerda volúmenes por aplicación | Permiso de micrófono de la aplicación desde la que se ejecuta AVI (normalmente la terminal) y firewall de aplicaciones, si está activado | Permiso de micrófono, reglas del firewall de versiones anteriores a la 0.26.0 y preferencias de audio por aplicación |
 
 **Reubicación.** Cada raíz admite una variable de entorno de reubicación. Además de permitir ubicaciones personalizadas, es lo que hace posibles las pruebas aisladas en CI, porque en Windows las Known Folders ignoran `LOCALAPPDATA`. Los valores efectivos se registran en el recibo, así que la actualización y la desinstalación operan sobre las mismas ubicaciones aunque la variable ya no esté definida.
 
@@ -245,6 +246,7 @@ Las rutas se resuelven con las convenciones de cada SO (XDG en Linux, `~/Library
 - **R1.** Las operaciones destructivas solo actúan dentro de raíces de propiedad exclusiva. Una ruta fuera de ellas es un error interno y nunca se borra.
 - **R2.** El directorio de programa solo se borra si contiene el recibo o el ejecutable de la aplicación. Nunca se borra `$HOME`, la raíz de una unidad ni un directorio del sistema, aunque una variable de reubicación o un recibo manipulado apunten allí.
 - **R3.** En una raíz compartida solo se borran entradas atribuibles a la aplicación (los repos fijados, `models--<org>--<nombre>`, y sus bloqueos). Nunca se borran subdirectorios globales de la caché (`xet`, `.locks` completo).
+- **Datos del sistema operativo.** Lo que el SO registra por su cuenta no es una modificación de AVI y queda fuera de P8 y de R1; escuchar solo en `127.0.0.1` evita crear reglas de firewall. Cómo borrar cada uno en cada SO: [`SELF.md`](../CLI/commands/SELF.md#datos-del-sistema-operativo).
 - **R4.** Todo recurso nuevo que la aplicación empiece a crear se añade a esta tabla, al árbol de propiedad y a los planes de limpieza y desinstalación en el mismo cambio. Los temporales de trabajo se crean en el scratch del proceso. Tres familias van junto a su destino porque el renombrado final exige el mismo volumen: los temporales de reemplazo atómico y los enlaces temporales (`<destino>.<token>.tmp`), los stagings de voz (junto al almacén de voces) y los stagings de instalación (junto al directorio de programa). El binario no escribe en el directorio temporal del sistema; solo lo hacen los bootstraps, que se ejecutan antes de que el binario exista.
 
 **Árbol de propiedad.** Las raíces de propiedad exclusiva forman un árbol declarado una sola vez en `avi-shared`, con tres papeles de nodo:
@@ -565,12 +567,12 @@ ai-voice-interconnector self uninstall [--keep-data] [--dry-run] [--yes] [--json
 Actúa sobre la instalación registrada, sea cual sea la copia del binario que lo invoque.
 
 1. **Recuperación y bloqueo.** Si el canal es `homebrew` → `externally_managed` con `brew uninstall --cask --zap ai-voice-interconnector`; para el estado, se sugiere `cleanup --all`.
-2. **Plan**: rutas con tamaños del directorio de programa, la integración de PATH (enlace, bloques de perfil, entrada de registro) y el estado (salvo con `--keep-data`). También se listan, marcados como "no se tocará", los recursos compartidos.
+2. **Plan**: rutas con tamaños del directorio de programa, la integración de PATH (enlace, bloques de perfil, entrada de registro) y el estado (salvo con `--keep-data`). También se listan, marcados como "no se tocará", los recursos compartidos. Con recibo, la última línea avisa de los datos que el SO guarda por su cuenta (permisos, reglas del firewall, preferencias de audio) y enlaza su documentación en la versión instalada, [`SELF.md`](../CLI/commands/SELF.md#datos-del-sistema-operativo); no es una ruta y no cuenta en la cabecera ni en el JSON.
 3. **`--dry-run`**: imprime el plan y termina.
 4. **Confirmación destructiva.**
 5. **Parar el daemon.** Si falla → `daemon_stop_failed`, sin borrar nada.
 6. **Borrar el estado** (salvo con `--keep-data`):
-    - **Sin `--keep-data`: la raíz de datos entera**, y no el plan de `cleanup --all`. El motivo es que al desinstalar **desaparece el programa, y con él las voces de fábrica** (`cleanup --all` las protege porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar). Dejarlas sería residuo dentro de una raíz de propiedad exclusiva, de modo que el destino del estado es la raíz completa —que R1 permite porque es exclusiva— en vez de la lista de categorías. Los modelos siguen el plan de `--model`, con sus reglas de propiedad, y el scratch cae entero. Después, el ejecutor del árbol de propiedad poda los contenedores que quedaron vacíos.
+    - **Sin `--keep-data`: la raíz de datos entera**, y no el plan de `cleanup --all`. El motivo es que al desinstalar **desaparece el programa, y con él las voces de fábrica** (con recibo de instalación, `cleanup --all` las protege porque van embebidas en el binario y el programa sigue instalado, así que `setup` las vuelve a materializar; sin recibo, `cleanup --all` ya no las protege, porque ningún `self uninstall` retirará ese estado). Dejarlas sería residuo dentro de una raíz de propiedad exclusiva, de modo que el destino del estado es la raíz completa —que R1 permite porque es exclusiva— en vez de la lista de categorías. Los modelos siguen el plan de `--model`, con sus reglas de propiedad, y el scratch cae entero. Después, el ejecutor del árbol de propiedad poda los contenedores que quedaron vacíos.
    - **Con `--keep-data`: el plan de `cleanup --all` filtrado** —fuera modelos, voces y habla, dentro configuración, logs y estado del daemon—, que es lo coherente con lo que el usuario ha pedido. El directorio de programa se borra igual en los dos casos: la bandera conserva el estado, no el programa.
 7. **Revertir el PATH** según el recibo:
    - el enlace, solo si apunta al directorio de programa;
@@ -592,12 +594,12 @@ ai-voice-interconnector cleanup (--model | --voices | --synthetic-speech | --all
 | `--model` | Modelos provisionados: todas las revisiones de los repos propios. La hoja exclusiva de la aplicación se borra entera siempre; de la caché compartida vigente, si la hay, solo los repos fijados | Modelos de otras herramientas en una caché compartida, si el usuario eligió `HF_HUB_CACHE` o `HF_HOME` (regla R3) |
 | `--voices` | Voces de usuario (clonadas o importadas) y su registro | Voces de fábrica (van embebidas en el binario) |
 | `--synthetic-speech` | Audio sintetizado guardado | — |
-| `--all` | Todo lo anterior, más configuración, logs, `daemon.pid` y la hoja de temporales (`scratch`) | Programa e integración de PATH (eso es `self uninstall`) |
+| `--all` | Todo lo anterior, más configuración, logs, `daemon.pid` y la hoja de temporales (`scratch`). **Sin recibo de instalación** (descarga manual, binario de `target/` o Cask de Homebrew, que no deja recibo) deja el estado en cero, como `self uninstall`: la raíz de datos entera (la voz de fábrica incluida, que se regenera en el primer uso), los modelos, los temporales, la poda de los contenedores vacíos y los ficheros de bloqueo y compuerta junto al directorio de programa, que son lo último que se borra | Programa e integración de PATH (eso es `self uninstall`) |
 
 - Sin categoría → `usage_error`, sin borrar nada.
 - Antes de borrar recursos que el daemon usa, se detiene el daemon.
 - Cualquier invocación barre además los residuos de dueño `Dead` (scratch, temporales con token, stagings de instalación, aparcados y registros de borrado resueltos) y conserva e informa los de dueño `Unknown`.
-- Tras borrar, el ejecutor del árbol de propiedad poda de abajo arriba los contenedores que quedaron vacíos (por ejemplo, el contenedor de caché tras `--all`). Un contenedor con entradas ajenas se conserva y se informa. `cleanup --all` no retira el contenedor raíz de la aplicación en Windows, porque conserva los datos de fábrica (las voces embebidas); `self uninstall` sí.
+- Tras borrar, el ejecutor del árbol de propiedad poda de abajo arriba los contenedores que quedaron vacíos (por ejemplo, el contenedor de caché tras `--all`). Un contenedor con entradas ajenas se conserva y se informa. Con recibo, `cleanup --all` no retira el contenedor raíz de la aplicación en Windows, porque conserva los datos de fábrica (las voces embebidas); `self uninstall` sí, y también `cleanup --all` sin recibo.
 - Tras `--model`, la aplicación queda reintentable: `setup` descarga de nuevo lo necesario.
 
 ### 8.7 `setup` en el ciclo de vida
@@ -606,7 +608,7 @@ Solo se especifican los aspectos de `setup` que afectan al ciclo de vida:
 
 - Provisiona el conjunto de modelos fijado por la versión (pines), todos sin excepción: no hay modelos opcionales ni selección persistida, así que las actualizaciones provisionan siempre el conjunto completo.
 - Antes de descargar, calcula el tamaño pendiente. Con terminal pide confirmación `[S/n]`; la omite con `--yes` o cuando la invoca `self install`/`self update` después de su propio resumen. Sin terminal, procede.
-- Tras provisionar con éxito, **poda las revisiones obsoletas** de los repos propios, es decir, las que ya no corresponden al pin vigente.
+- Tras provisionar con éxito, **poda las revisiones obsoletas** de los repos propios, es decir, las que ya no corresponden al pin vigente. En la carpeta de modelos **exclusiva** retira además todo repo `models--*` que `MODEL_REVISIONS` ya no fija, con su carpeta de `.locks` (la carpeta es de la aplicación y solo contiene modelos fijados); en una caché compartida no cambia (R3).
 - Es idempotente: si todo está provisionado, no descarga nada.
 - Las **migraciones de estado** entre versiones son responsabilidad del `setup` de la versión nueva, idempotentes y solo hacia delante.
 
@@ -677,14 +679,14 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Capa | Flag | Contenido | Mecanismo |
 |---|---|---|---|
 | Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, `ffmpeg-bundle/`, salidas de `package`, binario y cobertura | `xtask` |
-| Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew`), ejecutado con el binario del repositorio |
+| Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` y, si este responde `not_installed` (o si el canal es `homebrew`), en `cleanup --all --yes`, ejecutado con el binario del repositorio |
 | Ambas | `--all` | Aplicación y después repositorio | Ídem |
 | Global | `--global` (nunca incluida en `--all`) | Cachés regenerables de Cargo bajo `CARGO_HOME` (`registry/{cache,src,index}` y `git/{db,checkouts}`) y, en un Windows con MSYS2 instalado, el contenido del `CacheDir` de pacman declarado en su `pacman.conf` | `xtask` |
 
 - `--global` es explícita y, sola, no limpia el repositorio. Nunca toca `CARGO_HOME/bin`, rustup, la caché de sccache ni la instalación de MSYS2.
 - La capa repo retira `target.removal-failed.log` (el registro que deja el borrado diferido de `target/` cuando falla) si `target/` ya no existe, y lo informa mientras siga existiendo.
 - **Confinamiento de temporales.** `.cargo/config.toml` fija `TMP`, `TEMP` y `TMPDIR` a `target` para todo lo que lanza Cargo (pruebas, `cargo run`, `cargo xtask`), de modo que los restos de una prueba abortada quedan bajo `target/` y los retira esta orden. Los temporales de `xtask` usan los prefijos de sus pruebas. Antes de guardar la caché de `target/`, la CI retira los temporales `.tmp*` de `tempfile`, los directorios de prueba cuyos prefijos reconoce la poda fina y la raíz `golden-avi-daemon`, también si son recientes; `cargo xtask pins --check` verifica que la orden de la CI cubra todos esos nombres.
-- **Sandboxes de prueba huérfanos.** Las pruebas crean su sandbox con `tempfile`, que lo borra al soltarse; si la corrida se interrumpe, el `Drop` no corre y el directorio queda en el temporal. La poda fina los retira del temporal del **sistema** —donde caen las corridas que no pasaron por Cargo— y de `target/`, y solo los que su nombre reconoce como propios del motor. El criterio de borrado depende de la familia: la que lleva el **PID** en el nombre —el sandbox de ciclo de vida— se decide por el proceso, de modo que la carpeta de un PID muerto se borra aunque sea reciente y la de un PID vivo se respeta aunque sea vieja; las demás familias se borran por **antigüedad**, más de un día, porque su nombre no lleva PID y la antigüedad es lo único que distingue el residuo de una corrida viva. La raíz `golden-avi-daemon/<pid>` se barre por PID, por la misma razón que la familia del sandbox de ciclo de vida.
+- **Sandboxes de prueba huérfanos.** Las pruebas crean su sandbox con `tempfile`, que lo borra al soltarse; si la corrida se interrumpe, el `Drop` no corre y el directorio queda en el temporal. La poda fina los retira del temporal del **sistema** —donde caen las corridas que no pasaron por Cargo— y de `target/`, y solo los que su nombre reconoce como propios del motor. El criterio de borrado depende de la familia: la que lleva el **PID** en el nombre —el sandbox de ciclo de vida— se decide por el proceso, de modo que la carpeta de un PID muerto se borra aunque sea reciente y la de un PID vivo se respeta aunque sea vieja; las demás familias se borran por **antigüedad**, más de un día, porque su nombre no lleva PID y la antigüedad es lo único que distingue el residuo de una corrida viva. La raíz `golden-avi-daemon/<pid>` se barre por PID, por la misma razón que la familia del sandbox de ciclo de vida. En Windows, la capa repo borra también, con o sin `--prune`, las claves de registro de prueba de `HKCU\Software` (`AI-Voice-InterConnector-sandbox-<pid>-…` y `AI-Voice-InterConnector-lifecycle-test-<pid>-…`) cuyo PID ya no vive, porque no están bajo `target/`.
 - Detiene primero los daemons lanzados desde `target/`.
 - `--prune` modera la capa repo a la poda fina (cachés, cruces ajenos y PDBs viejos) y conserva la compilación vigente; el defecto sin flag no cambia. Ver [CONTRIBUTING.md](../../CONTRIBUTING.md).
 - Nunca borra código fuente versionado.
@@ -717,7 +719,7 @@ Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-int
 | Provisión de modelos | `setup` encadenado por `self install` | Ídem | Ídem | `setup` **ofrecido** (Cask): paso explícito, no encadenado |
 | Entorno de desarrollo | `cargo xtask bootstrap` (Build Tools + CMake) | `cargo xtask bootstrap` (apt/dnf/pacman/zypper) | Ídem | `cargo xtask bootstrap` (Xcode CLT, Homebrew) |
 
-Las diferencias entre columnas son mecanismos idiomáticos de cada SO. La experiencia (comandos, confirmaciones, resultados y residuo) es la misma.
+Las diferencias entre columnas son mecanismos idiomáticos de cada SO. La experiencia (comandos, confirmaciones, resultados, residuo, aviso del plan de `self uninstall` y frontera de los datos del sistema operativo) es la misma.
 
 El uso de la aplicación (CLI, daemon, voces de fábrica y de usuario, esquemas `--json` y códigos de salida) tampoco varía entre SO; solo cambia el backend de audio, una tecnología equivalente y no una diferencia de experiencia.
 

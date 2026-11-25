@@ -184,22 +184,33 @@ impl PruneOutcome {
 /// Poda tras éxito: elimina las revisiones de los repos
 /// propios que están fuera del pin vigente de `MODEL_REVISIONS`.
 ///
-/// Solo toca directorios de snapshots de repos propios, que son atribuibles a
-/// la aplicación: procede tanto en la raíz exclusiva como en la compartida
-/// y nunca toca `xet` ni `.locks`. Idempotente: una
-/// segunda pasada no encuentra nada que borrar.
+/// Con la carpeta de modelos **exclusiva**, que es de la aplicación y solo contiene
+/// modelos fijados, retira además todo repo `models--*` que `MODEL_REVISIONS` ya no
+/// fija, con su carpeta en `.locks`: un modelo que una versión deja de fijar se retira
+/// en el siguiente `setup` (que también encadenan `self install` y `self update`). En
+/// una caché compartida solo se tocan los snapshots de los repos fijados, que son
+/// atribuibles a la aplicación; nunca `xet`, `.locks` ni repos de otras herramientas.
+/// Idempotente: una segunda pasada no encuentra nada que borrar.
 ///
 /// La confirmación de tamaño y `called_from_lifecycle` siguen vigentes: la
 /// poda no pregunta por su cuenta, corre tras un éxito ya confirmado.
 ///
 /// Falla si la raíz de modelos no se puede resolver.
 pub fn prune_obsolete() -> std::io::Result<PruneOutcome> {
-    Ok(prune_obsolete_at(&crate::models_cache_dir()?))
+    let root = crate::models_cache_dir()?;
+    Ok(prune_obsolete_at(
+        &root,
+        !crate::cleanup::is_shared_models_root(&root),
+    ))
 }
 
-/// Núcleo comprobable de [`prune_obsolete`], con la raíz de modelos como dato.
-pub fn prune_obsolete_at(models_root: &Path) -> PruneOutcome {
+/// Núcleo comprobable de [`prune_obsolete`], con la raíz de modelos y su carácter
+/// exclusivo como datos.
+pub fn prune_obsolete_at(models_root: &Path, exclusive: bool) -> PruneOutcome {
     let mut outcome = PruneOutcome::default();
+    if exclusive {
+        prune_unpinned_repos(models_root, &mut outcome);
+    }
     for pin in avi_shared::paths::MODEL_REVISIONS {
         let snapshots = models_root
             .join(format!("models--{}", pin.repo.replace('/', "--")))
@@ -227,6 +238,40 @@ pub fn prune_obsolete_at(models_root: &Path) -> PruneOutcome {
     }
     outcome.removed.sort();
     outcome
+}
+
+/// Retira de la carpeta exclusiva cada repo `models--*` que `MODEL_REVISIONS` no fija,
+/// con su carpeta de `.locks`. Deja `xet`, el resto de `.locks` y toda entrada que no
+/// empiece por `models--`.
+fn prune_unpinned_repos(models_root: &Path, outcome: &mut PruneOutcome) {
+    let pinned: Vec<String> = avi_shared::paths::MODEL_REVISIONS
+        .iter()
+        .map(|pin| format!("models--{}", pin.repo.replace('/', "--")))
+        .collect();
+    let Ok(entries) = std::fs::read_dir(models_root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("models--") || pinned.contains(&name) || !entry.path().is_dir() {
+            continue;
+        }
+        let locks = models_root.join(".locks").join(&name);
+        let mut deleted = true;
+        for path in [entry.path(), locks] {
+            if !path.exists() {
+                continue;
+            }
+            if let Err(e) = std::fs::remove_dir_all(&path) {
+                outcome.failures.push((name.clone(), e.to_string()));
+                deleted = false;
+                break;
+            }
+        }
+        if deleted {
+            outcome.removed.push(name);
+        }
+    }
 }
 
 /// Nombre del snapshot vivo de un repo: la revisión pinneada si está
@@ -886,7 +931,7 @@ pub(crate) mod tests {
             "{}",
         );
 
-        let outcome = prune_obsolete_at(&root);
+        let outcome = prune_obsolete_at(&root, true);
         assert_eq!(
             outcome.removed,
             vec![
@@ -907,7 +952,7 @@ pub(crate) mod tests {
             "los ficheros sueltos se ignoran"
         );
 
-        let again = prune_obsolete_at(&root);
+        let again = prune_obsolete_at(&root, true);
         assert!(
             again.removed.is_empty() && again.is_clean(),
             "idempotente: la segunda pasada no encuentra nada"
@@ -933,7 +978,7 @@ pub(crate) mod tests {
         write_file(&root.join("xet").join("sentinel"), "caché global");
         write_file(&root.join(".locks").join("sentinel"), "locks globales");
 
-        let outcome = prune_obsolete_at(&root);
+        let outcome = prune_obsolete_at(&root, false);
         assert_eq!(
             outcome.removed,
             vec![format!("parakeet-tdt-v3/snapshots/{old}")],
@@ -948,5 +993,62 @@ pub(crate) mod tests {
             root.join(".locks").join("sentinel").is_file(),
             "ni `.locks`"
         );
+    }
+
+    /// En la carpeta exclusiva la poda retira además el repo que `MODEL_REVISIONS` ya no
+    /// fija, con su carpeta de `.locks`; conserva los repos fijados vivos, `xet` y el resto
+    /// de `.locks`, y una segunda pasada no borra nada. En una raíz no exclusiva el mismo
+    /// repo se conserva.
+    #[test]
+    fn prune_exclusive_root_removes_unpinned_repos() {
+        const RETIRED: &str = "models--Qwen--Qwen3-TTS-12Hz-0.6B-CustomVoice";
+        let root = scratch("setup-prune-unpinned");
+        let (repo, revision) = avi_store::ModelStore::revision_of("qwen3-tts-0.6b-base")
+            .expect("el modelo base tiene pin");
+        let pinned = format!("models--{}", repo.replace('/', "--"));
+        write_file(
+            &root.join(RETIRED).join("snapshots").join("x").join("f"),
+            "viejo",
+        );
+        write_file(&root.join(".locks").join(RETIRED).join("l"), "");
+        write_file(
+            &root
+                .join(&pinned)
+                .join("snapshots")
+                .join(revision)
+                .join("config.json"),
+            "{}",
+        );
+        write_file(&root.join("xet").join("sentinel"), "caché global");
+        write_file(&root.join(".locks").join("sentinel"), "locks globales");
+
+        // Raíz no exclusiva: el repo no fijado se conserva.
+        let shared = prune_obsolete_at(&root, false);
+        assert!(shared.removed.is_empty(), "{:?}", shared.removed);
+        assert!(root.join(RETIRED).is_dir());
+
+        let outcome = prune_obsolete_at(&root, true);
+        assert_eq!(outcome.removed, vec![RETIRED.to_string()]);
+        assert!(outcome.is_clean(), "sin fallos: {:?}", outcome.failures);
+        assert!(!root.join(RETIRED).exists(), "el repo retirado se va");
+        assert!(
+            !root.join(".locks").join(RETIRED).exists(),
+            "y su carpeta de locks"
+        );
+        assert!(
+            root.join(&pinned).join("snapshots").join(revision).is_dir(),
+            "el repo fijado vivo se queda"
+        );
+        assert!(
+            root.join("xet").join("sentinel").is_file(),
+            "`xet` se queda"
+        );
+        assert!(
+            root.join(".locks").join("sentinel").is_file(),
+            "y el resto de `.locks`"
+        );
+
+        let again = prune_obsolete_at(&root, true);
+        assert!(again.removed.is_empty() && again.is_clean(), "idempotente");
     }
 }

@@ -718,7 +718,7 @@ fn pending_pin_detected_and_obsolete_pruned() {
         &snapshots.join("obsolete-0000").join("weights.bin"),
         "revisión vieja",
     );
-    let outcome = setup::prune_obsolete_at(&sandbox.models_dir);
+    let outcome = setup::prune_obsolete_at(&sandbox.models_dir, true);
     assert_eq!(
         outcome.removed,
         vec![format!("{}/snapshots/obsolete-0000", pin.name)],
@@ -762,7 +762,7 @@ fn pending_pin_detected_and_obsolete_pruned() {
             .join("other.safetensors"),
         "ajeno",
     );
-    let outcome = setup::prune_obsolete_at(&shared.models_dir);
+    let outcome = setup::prune_obsolete_at(&shared.models_dir, false);
     assert_eq!(
         outcome.removed,
         vec![format!("{}/snapshots/obsolete-0000", pin.name)],

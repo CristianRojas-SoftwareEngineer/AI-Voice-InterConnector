@@ -174,7 +174,8 @@ impl Sandbox {
             home,
             #[cfg(windows)]
             registry_subkey: format!(
-                r"Software\AI-Voice-InterConnector\sandbox-{}-{tag}",
+                r"Software\{}{}-{tag}",
+                avi_shared::paths::LIFECYCLE_SANDBOX_KEY_PREFIX,
                 std::process::id()
             ),
             root,

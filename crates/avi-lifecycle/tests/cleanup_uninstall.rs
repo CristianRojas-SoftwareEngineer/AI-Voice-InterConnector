@@ -1273,6 +1273,76 @@ fn cleanup_all_removes_the_cache_container() {
         "las voces de fábrica sobreviven a `cleanup`"
     );
     assert!(exists(&sandbox.app_dir), "y con ellas el contenedor raíz");
+    assert!(
+        exists(&avi_lifecycle::lock::lock_path_for(&sandbox.program_dir)),
+        "con recibo, el fichero de bloqueo del programa instalado se conserva"
+    );
+}
+
+/// Sin recibo de instalación, `cleanup --all` deja el estado en cero: la raíz de datos
+/// entera (voz de fábrica incluida), los modelos, los temporales, los contenedores que
+/// quedan vacíos y los ficheros de bloqueo. La simulación anuncia exactamente lo que la
+/// ejecución borra.
+#[test]
+fn cleanup_all_without_receipt_leaves_zero_state() {
+    let sandbox = Sandbox::new("without-receipt");
+    sandbox.seed_state();
+    write(
+        &sandbox.scratch_root.join("4294967000-1").join("clip.wav"),
+        "x",
+    );
+    let lock = avi_lifecycle::lock::lock_path_for(&sandbox.program_dir);
+    let gate = avi_lifecycle::lock::gate_path_for(&sandbox.program_dir);
+    write(&lock, "");
+    write(&gate, "");
+    let roots = sandbox.roots();
+    let options = with_yes(CleanupOptions {
+        all: true,
+        without_installation: true,
+        ..Default::default()
+    });
+
+    let plan = cleanup::plan(&roots, &options);
+    let listed = paths(&plan);
+    for expected in [
+        &sandbox.data_dir,
+        &sandbox.models_dir,
+        &sandbox.scratch_root,
+        &lock,
+        &gate,
+    ] {
+        assert!(
+            listed.contains(&expected.display().to_string()),
+            "falta {} en {listed:?}",
+            expected.display()
+        );
+    }
+    assert!(plan
+        .targets
+        .iter()
+        .any(|t| t.path == sandbox.data_dir && t.category.describe() == "datos de usuario"));
+    assert_eq!(plan.lock_files, vec![lock.clone(), gate.clone()]);
+
+    let simulated = cleanup::simulate(&roots, &options);
+    assert_eq!(simulated.planned, simulated.removed);
+    assert_eq!(simulated.planned, listed);
+
+    let outcome = runtime()
+        .block_on(cleanup::run(&roots, &options, &Inert))
+        .expect("cleanup se ejecuta");
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    for gone in [
+        &sandbox.data_dir,
+        &sandbox.cache_dir,
+        &sandbox.app_dir,
+        &lock,
+        &gate,
+    ] {
+        assert!(!exists(gone), "queda {}", gone.display());
+    }
+    for path in [&lock, &gate] {
+        assert!(outcome.removed.contains(&path.display().to_string()));
+    }
 }
 
 /// Un archivo ajeno dentro de un contenedor lo conserva en pie, se informa una vez y

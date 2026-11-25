@@ -255,6 +255,11 @@ pub struct Options {
     pub all: bool,
     pub dry_run: bool,
     pub assume_yes: bool,
+    /// `true` cuando no hay recibo de instalación (descarga manual, binario de `target/` o
+    /// Cask de Homebrew). Ningún `self uninstall` retirará ese estado, así que `--all` lo
+    /// deja en cero: la voz de fábrica se vuelve a generar en el primer uso y los ficheros
+    /// de bloqueo no pertenecen a ningún programa registrado.
+    pub without_installation: bool,
 }
 
 impl Options {
@@ -312,6 +317,9 @@ pub struct DeletionPlan {
     /// Planificación del ejecutor del árbol de propiedad: los mismos destinos más los
     /// contenedores que quedarán vacíos y se podan.
     pub ownership: ownership::Plan,
+    /// Ficheros de bloqueo (bloqueo y compuerta) que existen y se borran al final, solo con
+    /// `--all` sin recibo de instalación. No cuentan como destinos: no son una ruta de datos.
+    pub lock_files: Vec<PathBuf>,
 }
 
 impl DeletionPlan {
@@ -325,13 +333,14 @@ impl DeletionPlan {
         self.targets.is_empty()
     }
 
-    /// Rutas del plan en el orden en que se borran: los destinos y, después, los
-    /// contenedores que quedan vacíos y se podan.
+    /// Rutas del plan en el orden en que se borran: los destinos, después los
+    /// contenedores que quedan vacíos y se podan y, al final, los ficheros de bloqueo.
     pub fn paths(&self) -> Vec<PathBuf> {
         self.targets
             .iter()
             .map(|t| t.path.clone())
             .chain(self.ownership.prune.iter().cloned())
+            .chain(self.lock_files.iter().cloned())
             .collect()
     }
 }
@@ -352,7 +361,17 @@ pub fn plan(roots: &Roots, options: &Options) -> DeletionPlan {
             reason: "el programa y la integración de PATH son de `self uninstall`",
         });
     }
-    finish(roots, targets, preserved, &[])
+    let mut plan = finish(roots, targets, preserved, &[]);
+    if options.all && options.without_installation {
+        plan.lock_files = [
+            crate::lock::lock_path_for(&roots.program_dir),
+            crate::lock::gate_path_for(&roots.program_dir),
+        ]
+        .into_iter()
+        .filter(|p| p.exists())
+        .collect();
+    }
+    plan
 }
 
 /// Cierra un plan a partir de los destinos ya seleccionados: planifica con el ejecutor
@@ -379,6 +398,7 @@ pub(crate) fn finish(
         targets,
         preserved,
         ownership,
+        lock_files: Vec::new(),
     }
 }
 
@@ -387,21 +407,28 @@ pub(crate) fn finish(
 pub(crate) fn select(roots: &Roots, options: &Options) -> (Vec<Target>, Vec<Preserved>) {
     let mut collected: Vec<Target> = Vec::new();
     let mut preserved: Vec<Preserved> = Vec::new();
+    // Sin recibo, `--all` deja el estado como `self uninstall` sin `--keep-data`: los modelos,
+    // los temporales y la raíz de datos entera, que ya contiene voces, habla y configuración.
+    let whole_state = options.all && options.without_installation;
 
     if options.wants_model() {
         collect_model(roots, &mut collected, &mut preserved);
     }
-    if options.wants_voices() {
+    if whole_state {
+        collected.extend(scratch_target(roots));
+        push(&mut collected, roots.data_dir.clone(), Category::UserData);
+    }
+    if options.wants_voices() && !whole_state {
         collect_voices(roots, options, &mut collected);
     }
-    if options.wants_speech() {
+    if options.wants_speech() && !whole_state {
         push(
             &mut collected,
             roots.data_dir.join("speech"),
             Category::SyntheticSpeech,
         );
     }
-    if options.all {
+    if options.all && !whole_state {
         // `--all` añade configuración, logs y `daemon.pid` al resto. El
         // fichero `daemon.ready` va con él porque es la otra mitad del mismo estado
         // de ejecución y dejarlo sería un residuo que `doctor` seguiría reportando.
@@ -727,7 +754,13 @@ pub async fn run_with_progress(
     // Sin nada que borrar no hay plan que confirmar ni daemon que parar: se
     // dice en una sola línea y se termina.
     if plan.is_empty() {
-        drop(lock);
+        if options.all && options.without_installation {
+            // Los ficheros de bloqueo que este mismo `cleanup` acaba de crear tampoco
+            // quedan: se retiran sin confirmación y sin anunciarlos.
+            let _ = lock.remove_files();
+        } else {
+            drop(lock);
+        }
         if progress {
             avi_term::line::ok(NOTHING_TO_CLEAN);
         }
@@ -814,7 +847,26 @@ pub async fn run_with_progress(
         failed.push(path.display().to_string());
     }
 
-    drop(lock);
+    // Último paso con efectos: los ficheros de bloqueo, con el bloqueo aún tomado.
+    if plan.lock_files.is_empty() {
+        drop(lock);
+    } else {
+        let lock_failures = lock.remove_files();
+        for (path, error) in &lock_failures {
+            avi_term::line::warn(format!("No se pudo borrar {}: {error}", path.display()));
+            failed.push(path.display().to_string());
+        }
+        removed.extend(
+            plan.lock_files
+                .iter()
+                .filter(|p| {
+                    lock_failures
+                        .iter()
+                        .all(|(failed_path, _)| failed_path != *p)
+                })
+                .map(|p| p.display().to_string()),
+        );
+    }
 
     // Recibo del plan: la lista completa que `plan` calculó, aunque algún
     // destino haya fallado y no esté en `removed`.
@@ -976,6 +1028,9 @@ pub(crate) fn plan_lines(plan: &DeletionPlan, preview: Option<&SweepPreview>) ->
             out.push(format!("  no se puede listar {}: {cause}", path.display()));
         }
     }
+    for path in &plan.lock_files {
+        out.push(format!("  bloqueo: {}", path.display()));
+    }
     for item in &plan.preserved {
         out.push(format!(
             "  no se tocará {}: {}",
@@ -1023,6 +1078,28 @@ mod plan_lines_tests {
         Category::UserData,
     ];
 
+    /// Los ficheros de bloqueo salen como líneas `bloqueo:`, después de los destinos, y
+    /// no cuentan en la cabecera de rutas.
+    #[test]
+    fn plan_lines_list_lock_files_after_the_targets() {
+        let plan = DeletionPlan {
+            targets: vec![Target {
+                path: PathBuf::from("/raiz/datos"),
+                category: Category::UserData,
+                size: 10,
+            }],
+            lock_files: vec![PathBuf::from("/raiz/.bloqueo")],
+            ..Default::default()
+        };
+        let lines = plan_lines(&plan, None);
+        assert_eq!(lines[0], "Se borrará 1 ruta, 10 B en total:");
+        assert_eq!(
+            lines.last().unwrap(),
+            &format!("  bloqueo: {}", PathBuf::from("/raiz/.bloqueo").display())
+        );
+        assert_eq!(lines.len(), 3, "{lines:?}");
+    }
+
     #[test]
     fn categories_describe_in_spanish() {
         let described: Vec<&str> = ALL.iter().map(|c| c.describe()).collect();
@@ -1060,6 +1137,7 @@ mod plan_lines_tests {
                 reason: "el programa y la integración de PATH son de `self uninstall`",
             }],
             ownership: ownership::Plan::default(),
+            lock_files: Vec::new(),
         };
         let lines = plan_lines(&plan, None);
         assert_eq!(lines[0], "Se borrarán 8 rutas, 12,0 KB en total:");

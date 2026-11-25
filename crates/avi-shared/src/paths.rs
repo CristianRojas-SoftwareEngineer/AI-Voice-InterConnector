@@ -357,6 +357,14 @@ pub const TEST_SANDBOX_PREFIXES: &[&str] = &[
     "xtask_pins_",
 ];
 
+/// Claves de registro de prueba, directamente bajo `HKCU\Software` y con el PID del proceso
+/// de pruebas detrás del prefijo. Es la única fuente de los nombres: la usan las pruebas que
+/// crean las claves y la poda de `xtask clean` que borra las de PID muerto.
+pub const LIFECYCLE_SANDBOX_KEY_PREFIX: &str = "AI-Voice-InterConnector-sandbox-";
+pub const LIFECYCLE_TEST_KEY_PREFIX: &str = "AI-Voice-InterConnector-lifecycle-test-";
+pub const TEST_REGISTRY_KEY_PREFIXES: &[&str] =
+    &[LIFECYCLE_SANDBOX_KEY_PREFIX, LIFECYCLE_TEST_KEY_PREFIX];
+
 /// Raíz de los sandboxes de prueba del daemon: cada proceso de pruebas tiene
 /// una carpeta llamada con su PID dentro. El propio harness la barre —borra
 /// las de PID muerto y respeta las de PID vivo—, así que la poda fina no la

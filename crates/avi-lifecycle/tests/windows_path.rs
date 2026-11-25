@@ -44,11 +44,13 @@ use std::path::PathBuf;
 use support::Sandbox;
 use windows_sys::Win32::System::Registry::{REG_EXPAND_SZ, REG_SZ};
 
-/// Subclave propia de esta ejecución. El PID y un contador evitan que dos
-/// ejecuciones simultáneas —o dos pruebas del mismo binario— se pisen.
+/// Subclave propia de esta ejecución. El PID y la etiqueta evitan que dos ejecuciones
+/// simultáneas —o dos pruebas del mismo binario— se pisen. Cuelga directamente de `Software`,
+/// sin clave padre común, para que borrarla no deje ningún padre vacío en el registro.
 fn test_key(tag: &str) -> String {
     format!(
-        r"Software\AI-Voice-InterConnector\lifecycle-test-{}-{tag}",
+        r"Software\{}{}-{tag}",
+        avi_shared::paths::LIFECYCLE_TEST_KEY_PREFIX,
         std::process::id()
     )
 }

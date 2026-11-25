@@ -27,6 +27,7 @@ mod language;
 mod notices;
 mod package;
 mod pins;
+mod test_registry;
 
 const GITHUB_REPO: &str = "CristianRojas-SoftwareEngineer/AI-Voice-InterConnector";
 const CASK_NAME: &str = "ai-voice-interconnector";

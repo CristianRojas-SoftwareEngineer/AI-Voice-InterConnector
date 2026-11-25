@@ -10,7 +10,7 @@
 //! | Capa | Flag | Contenido | Mecanismo |
 //! |---|---|---|---|
 //! | Repositorio | `--repo` (por defecto) | `target/`, `ort-bundle/`, `ffmpeg-bundle/`, salidas de `package`, binario y objetos del motor y cobertura | `xtask` |
-//! | Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew`), ejecutado con el binario del repositorio |
+//! | Aplicación | `--app` | Instalación y estado del usuario | Delegado en `self uninstall --yes` (o `cleanup --all --yes` si el canal es `homebrew` o si `self uninstall` responde `not_installed`, porque sin recibo de instalación `cleanup --all` deja el estado en cero), ejecutado con el binario del repositorio |
 //! | Ambas | `--all` | Aplicación y después repositorio | Ídem |
 //!
 //! Con `--prune`, la capa repo se modera: poda solo `incremental/`, cachés
@@ -21,6 +21,9 @@
 //! La poda reconoce por nombre los directorios temporales de las pruebas.
 //! Los que no llevan PID se retiran tras un día; los sandboxes de ciclo de
 //! vida se retiran solo si su PID ya no está vivo.
+//! En Windows, la capa repo (con o sin `--prune`) borra además las claves de registro de prueba
+//! (`HKCU\Software\AI-Voice-InterConnector-sandbox-<pid>-…` y `…-lifecycle-test-<pid>-…`) cuyo
+//! PID ya no vive, porque no están bajo `target/`.
 //!
 //! La capa global (`--global`) es explícita y nunca entra en `--all`: borra
 //! solo lo que Cargo documenta como regenerable bajo `CARGO_HOME`
@@ -556,8 +559,20 @@ fn parse_app_cleanup_result(
     }
 }
 
-/// Delega la limpieza en el binario del producto y conserva el desenlace estructurado.
+/// Delega la limpieza en el binario del producto y conserva el desenlace estructurado. Si
+/// `self uninstall` responde `not_installed` (sin recibo de instalación), delega a continuación
+/// `cleanup --all`, que sin recibo deja el estado en cero.
 fn delegate_app_layer(repo_bin: &Path, homebrew: bool, dry_run: bool) -> Result<()> {
+    let first = run_app_delegation(repo_bin, homebrew, dry_run)?;
+    if first == AppCleanupResult::NotInstalled {
+        println!("Capa app: sin instalación registrada; se limpia el estado con cleanup --all.");
+        run_app_delegation(repo_bin, true, dry_run)?;
+    }
+    Ok(())
+}
+
+/// Ejecuta una delegación, imprime su salida y devuelve su desenlace validado.
+fn run_app_delegation(repo_bin: &Path, homebrew: bool, dry_run: bool) -> Result<AppCleanupResult> {
     let args = delegate_app_args(homebrew, dry_run);
     println!(
         "Capa app: delegando en {} {} …",
@@ -584,7 +599,7 @@ fn delegate_app_layer(repo_bin: &Path, homebrew: bool, dry_run: bool) -> Result<
         AppCleanupResult::CleanupComplete => println!("Capa app: `cleanup_complete`."),
         AppCleanupResult::Planned => println!("Capa app: `planned` (simulación)."),
     }
-    Ok(())
+    Ok(result)
 }
 
 fn delegation_status(success: bool, code: Option<i32>) -> Result<()> {
@@ -757,6 +772,13 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
     // Las dos raíces pueden coincidir —si el temporal del sistema es el del
     // repo—, y una ruta repetida se borraría dos veces.
     sandbox_paths.retain(|p| !repo_paths.contains(p));
+    // Las claves de registro de prueba no viven en `target/`: las retira la capa repo, con y
+    // sin `--prune`.
+    let registry_keys = if layer.wants_repo() {
+        super::test_registry::orphan_test_keys()
+    } else {
+        Vec::new()
+    };
     let homebrew = if layer.wants_app() {
         installed_copy_is_homebrew()
     } else {
@@ -813,13 +835,19 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
         }
         println!("Total sandboxes: {}", total.text());
     }
+    if !registry_keys.is_empty() {
+        println!("Claves de registro de prueba huérfanas (HKCU):");
+        for key in &registry_keys {
+            println!(r"  HKCU\{key}");
+        }
+    }
     if layer.wants_app() {
         println!(
             "  (la capa app la ejecuta el binario del repositorio: {} {})",
             if homebrew {
                 "cleanup --all"
             } else {
-                "self uninstall"
+                "self uninstall y, si no hay instalación registrada, cleanup --all"
             },
             if dry_run { "--dry-run" } else { "--yes" }
         );
@@ -850,6 +878,7 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
         && repo_paths.is_empty()
         && global_paths.is_empty()
         && sandbox_paths.is_empty()
+        && registry_keys.is_empty()
     {
         // Un registro obsoleto se retira aunque no quede nada más que borrar.
         if layer.wants_repo() {
@@ -927,6 +956,13 @@ pub fn run(layer: Layer, global: bool, dry_run: bool, yes: bool, prune: bool) ->
                     failed.push((p.clone(), e.to_string()));
                 }
             }
+        }
+    }
+
+    for key in &registry_keys {
+        match super::test_registry::delete_test_key(key) {
+            Ok(()) => removed += 1,
+            Err(e) => failed.push((PathBuf::from(format!(r"HKCU\{key}")), e.to_string())),
         }
     }
 
