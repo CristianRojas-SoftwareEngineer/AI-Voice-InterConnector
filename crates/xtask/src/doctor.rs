@@ -497,8 +497,9 @@ fn c_compiler_packages(manager: &str, gcc_major: &str) -> String {
     }
 }
 
-/// Sonda ONNX Runtime: `ort-bundle/` fresco para el pin (marcador más
-/// librería del SO). Solo lectura: descargarlo es tarea de `bootstrap`.
+/// Sonda ONNX Runtime: `ort-bundle/` fresco para el SHA-256 fijado del paquete
+/// NuGet (librería del SO no vacía y marcador coincidente). Solo lectura:
+/// descargarlo es tarea de `bootstrap`.
 fn check_onnx(root: &Path, pins: &Pins) -> Row {
     let label = "ONNX Runtime (versión fijada)";
     let want = Some(pins.ort.clone());
@@ -520,8 +521,21 @@ fn check_onnx(root: &Path, pins: &Pins) -> Row {
             hint: Some("cargo xtask bootstrap".to_string()),
         };
     }
-    match read_ort_marker(&bundle) {
-        OrtMarker::Version(version) if version == pins.ort => Row {
+    let fresh = super::package::host_triple().and_then(|triple| {
+        let sha = super::package::pinned_ort_nupkg_sha256(pins)?;
+        super::package::ort_bundle_is_fresh(&bundle, triple, sha)
+    });
+    let row = |status: Status, found: String| Row {
+        id: "onnx",
+        label,
+        mandatory: true,
+        hint: Some("cargo xtask bootstrap".to_string()),
+        status,
+        found: Some(found),
+        want: want.clone(),
+    };
+    match fresh {
+        Ok(true) => Row {
             id: "onnx",
             label,
             mandatory: true,
@@ -530,15 +544,14 @@ fn check_onnx(root: &Path, pins: &Pins) -> Row {
             want,
             hint: None,
         },
-        other => Row {
-            id: "onnx",
-            label,
-            mandatory: true,
-            status: Status::Mismatch,
-            found: Some(other.describe(&pins.ort)),
-            want,
-            hint: Some("cargo xtask bootstrap".to_string()),
-        },
+        Ok(false) => row(
+            Status::Mismatch,
+            format!(
+                "ort-bundle incompleto o de otro paquete (fijado {})",
+                pins.ort
+            ),
+        ),
+        Err(e) => row(Status::Error, e.to_string()),
     }
 }
 
@@ -615,43 +628,6 @@ fn check_engine_bundle(root: &Path, pins: &Pins) -> Row {
             )),
         ),
         Err(e) => row(Status::Error, Some(e.to_string())),
-    }
-}
-
-/// Contenido del marcador `.ort-version` de un `ort-bundle/`.
-enum OrtMarker {
-    /// El marcador no existe: la versión del bundle es desconocida.
-    Absent,
-    /// El marcador existe pero no se pudo leer (motivo del error).
-    Unreadable(String),
-    /// Versión escrita en el marcador, sin espacios sobrantes.
-    Version(String),
-}
-
-impl OrtMarker {
-    /// Texto de lo hallado en el bundle, contrastado con el pin.
-    fn describe(&self, pinned: &str) -> String {
-        match self {
-            Self::Absent => {
-                format!(
-                    "ort-bundle sin marcador .ort-version (versión desconocida; fijado {pinned})"
-                )
-            }
-            Self::Unreadable(reason) => {
-                format!("marcador .ort-version ilegible: {reason} (fijado {pinned})")
-            }
-            Self::Version(version) => format!("ort-bundle {version} (fijado {pinned})"),
-        }
-    }
-}
-
-/// Lee el marcador de versión de `bundle`; un marcador ausente no se confunde
-/// con uno ilegible.
-fn read_ort_marker(bundle: &Path) -> OrtMarker {
-    match std::fs::read_to_string(bundle.join(super::package::ORT_MARKER)) {
-        Ok(text) => OrtMarker::Version(text.trim().to_string()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => OrtMarker::Absent,
-        Err(e) => OrtMarker::Unreadable(e.to_string()),
     }
 }
 
@@ -779,8 +755,8 @@ fn check_target_hygiene(root: &Path) -> Row {
     }
 }
 
-/// Deriva de ONNX: `ort-bundle/` ausente o con marcador ausente, ilegible o
-/// distinto del pin.
+/// Deriva de ONNX: `ort-bundle/` ausente, incompleto, ilegible o de otro
+/// paquete que el fijado.
 fn probe_onnx_drift(root: &Path, pins: &Pins) -> Option<String> {
     let bundle = super::package::ort_bundle_dir(root);
     if !bundle.is_dir() {
@@ -789,11 +765,18 @@ fn probe_onnx_drift(root: &Path, pins: &Pins) -> Option<String> {
             pins.ort
         ));
     }
-    match read_ort_marker(&bundle) {
-        OrtMarker::Version(version) if version == pins.ort => None,
-        other => Some(format!(
-            "ONNX Runtime: {} (ejecuta `cargo xtask bootstrap`)",
-            other.describe(&pins.ort)
+    let fresh = super::package::host_triple().and_then(|triple| {
+        let sha = super::package::pinned_ort_nupkg_sha256(pins)?;
+        super::package::ort_bundle_is_fresh(&bundle, triple, sha)
+    });
+    match fresh {
+        Ok(true) => None,
+        Ok(false) => Some(format!(
+            "ONNX Runtime: ort-bundle incompleto o de otro paquete (fijado {}) (ejecuta `cargo xtask bootstrap`)",
+            pins.ort
+        )),
+        Err(e) => Some(format!(
+            "ONNX Runtime: {e} (ejecuta `cargo xtask bootstrap`)"
         )),
     }
 }
@@ -1139,7 +1122,7 @@ mod tests {
         Pins {
             rust: "1.96.0".to_string(),
             ort: "1.28.0".to_string(),
-            ort_sha256: std::collections::BTreeMap::new(),
+            ort_nupkg_sha256: "a".repeat(64),
             ffmpeg: "9.0.2".to_string(),
             ffmpeg_sha256: std::collections::BTreeMap::new(),
             ffmpeg_source_sha256: std::collections::BTreeMap::new(),
@@ -1276,7 +1259,8 @@ mod tests {
         assert!(!version_at_least("3.x.25", 3, 20));
     }
 
-    /// Crea un `ort-bundle/` con la librería del SO y, si se indica, el marcador.
+    /// Crea un `ort-bundle/` con una librería del SO no vacía y, si se indica,
+    /// el marcador; fresco es el que escribe el hash de `fixture_pins`.
     fn onnx_fixture(marker: Option<&str>) -> tempfile::TempDir {
         let root = tempfile::Builder::new()
             .prefix("xtask_doctor_onnx_")
@@ -1286,14 +1270,14 @@ mod tests {
         std::fs::create_dir(&bundle).unwrap();
         let triple = super::super::package::host_triple().unwrap();
         let lib = super::super::package::ort_dylib_path(&bundle, triple).unwrap();
-        std::fs::write(lib, b"").unwrap();
+        std::fs::write(lib, b"onnx").unwrap();
         if let Some(text) = marker {
             std::fs::write(bundle.join(super::super::package::ORT_MARKER), text).unwrap();
         }
         root
     }
 
-    /// Sin marcador la versión del bundle es desconocida: fila `Mismatch` con la
+    /// Sin marcador el origen del bundle es desconocido: fila `Mismatch` con la
     /// pista de `bootstrap` y deriva informada.
     #[test]
     fn onnx_without_marker_is_a_mismatch() {
@@ -1305,18 +1289,18 @@ mod tests {
     }
 
     #[test]
-    fn onnx_with_matching_marker_is_ok_and_other_version_drifts() {
+    fn onnx_with_matching_marker_is_ok_and_other_package_drifts() {
         let pins = fixture_pins();
-        let good = onnx_fixture(Some("1.28.0\n"));
+        let good = onnx_fixture(Some(&format!("{}\n", "a".repeat(64))));
         assert_eq!(check_onnx(good.path(), &pins).status, Status::Ok);
         assert!(probe_onnx_drift(good.path(), &pins).is_none());
-        let stale = onnx_fixture(Some("1.20.0"));
+        let stale = onnx_fixture(Some(&"b".repeat(64)));
         assert_eq!(check_onnx(stale.path(), &pins).status, Status::Mismatch);
         assert!(probe_onnx_drift(stale.path(), &pins).is_some());
     }
 
     /// Un marcador que existe pero no se puede leer (aquí, un directorio) se
-    /// informa como ilegible y no como versión vacía.
+    /// informa como error y no como bundle de otro paquete.
     #[test]
     fn onnx_unreadable_marker_is_reported() {
         let root = onnx_fixture(None);
@@ -1326,8 +1310,10 @@ mod tests {
         )
         .unwrap();
         let row = check_onnx(root.path(), &fixture_pins());
-        assert_eq!(row.status, Status::Mismatch);
-        assert!(row.found.unwrap().contains("ilegible"));
+        assert_eq!(row.status, Status::Error);
+        assert!(row.found.unwrap().contains("marcador"));
+        assert!(row.hint.unwrap().contains("cargo xtask bootstrap"));
+        assert!(probe_onnx_drift(root.path(), &fixture_pins()).is_some());
     }
 
     #[test]
@@ -1541,7 +1527,10 @@ mod tests {
         std::fs::create_dir_all(&ort).unwrap();
         let ort_lib = super::super::package::ort_dylib_path(&ort, triple).unwrap();
         std::fs::write(ort_lib, b"").unwrap();
-        assert!(!super::super::package::ort_bundle_is_fresh(&ort, triple, &pins.ort).unwrap());
+        assert!(
+            !super::super::package::ort_bundle_is_fresh(&ort, triple, &pins.ort_nupkg_sha256)
+                .unwrap()
+        );
 
         let ffmpeg = root.path().join("ffmpeg");
         std::fs::create_dir_all(&ffmpeg).unwrap();

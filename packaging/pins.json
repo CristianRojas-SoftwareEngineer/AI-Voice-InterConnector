@@ -1,12 +1,7 @@
 {
   "rust": "1.96.0",
   "ort": "1.28.0",
-  "ort_sha256": {
-    "x86_64-pc-windows-msvc": "abef733dacbe2f571547a7150b479b5cb9cc0df22f96c24983a42cadb1b4f8bc",
-    "x86_64-unknown-linux-gnu": "a3e1b79d7bb1bf09696ce675f49e4064e6c81f6202b8225624fff0e93f8d6407",
-    "aarch64-unknown-linux-gnu": "e15ff8b5d85afe6c144d97c6fd432254bf76a219daaf17658087d6ecb3e8f0bb",
-    "aarch64-apple-darwin": "1268b359718099bde2cedb55787f182a130067bc4f31e8c88478c445b850d3d8"
-  },
+  "ort_nupkg_sha256": "769d1d3ea8ab6cd69f737c9dd4d4462aa4ad0ccfa106eaf506efc40d7bead5db",
   "ffmpeg": "9.0.2",
   "ffmpeg_sha256": {
     "x86_64-pc-windows-msvc": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",

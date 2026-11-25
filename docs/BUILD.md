@@ -332,20 +332,21 @@ capa de su resolución.
 #### Empaquetado de ONNX Runtime en los artefactos de release
 
 El archivo de release trae ONNX Runtime: el usuario no lo instala. El bundle
-lleva el asset oficial de Microsoft de su plataforma, en la versión `ort` de
+lleva la biblioteca de su plataforma del paquete NuGet oficial
+`Microsoft.ML.OnnxRuntime`, en la versión `ort` de
 [`packaging/pins.json`](../packaging/pins.json) (pareja del crate `ort`), con la
 librería dinámica junto al binario y con el nombre por defecto que busca `ort`.
 Lo descarga un único descargador de `xtask`, que `cargo xtask package`,
 `cargo xtask bootstrap` y la gate de pruebas con recursos de `cargo xtask
 release` invocan desde la misma función que asegura todos los recursos fijados
-(ONNX Runtime y FFmpeg), en los cuatro jobs. La descarga va por HTTPS (TLS ≥ 1.2) y el archivo
-debe tener el SHA-256 que fija `pins.json` para su target (clave `ort_sha256`) y
-traer la librería esperada con tamaño mayor que cero; si no, el empaquetado
-falla. Los hashes son los `digest` que GitHub publica para cada asset del
-release oficial de Microsoft, que no publica ficheros de checksum propios; al
-subir `ort` hay que actualizarlos en el mismo cambio. `ort-bundle/` se reutiliza
-solo si trae la librería de ONNX Runtime y el marcador `.ort-version` de la
-versión fijada, que solo se escribe tras una descarga verificada. La frescura
+(ONNX Runtime y FFmpeg), en los cuatro jobs. La descarga va por HTTPS (TLS ≥ 1.2) desde
+nuget.org y el paquete debe tener el SHA-256 que fija `pins.json` (clave
+`ort_nupkg_sha256`) y traer la librería esperada con tamaño mayor que cero; si
+no, el empaquetado falla. nuget.org no permite borrar paquetes, así que la
+versión fijada sigue disponible. El hash es el del archivo `.nupkg`, y hay que
+calcularlo al subir `ort`, en el mismo cambio. `ort-bundle/` se reutiliza solo
+si trae la librería de ONNX Runtime y el marcador `.ort-sha256` con el hash del
+paquete fijado, que solo se escribe tras una descarga verificada. La frescura
 solo mira ONNX Runtime: en Windows, las DLL de VC++ se actualizan en cada
 ejecución desde el redist de la toolchain, también al reutilizar el bundle.
 

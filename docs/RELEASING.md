@@ -56,7 +56,7 @@ la integridad se verifica cotejando los checksums SHA-256.
   paquetes, versiones, licencias, familias, totales y textos de licencia. Si
   sube el pin de ONNX Runtime, hay que actualizar también la copia de sus avisos
   en `packaging/notices/onnxruntime-<versión>/`: `cargo xtask package` falla si
-  difiere de la del archivo oficial.
+  difiere de la del paquete NuGet.
 - **Revisiones de los modelos auditadas.** Los cinco modelos fijados (el Base de
   Qwen3-TTS, dos pares opus-mt, Parakeet y DPDFNet) se descargan con
   `ai-voice-interconnector setup` y no se empaquetan. Para incorporar una

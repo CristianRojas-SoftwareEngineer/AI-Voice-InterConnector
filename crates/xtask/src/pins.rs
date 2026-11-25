@@ -16,8 +16,9 @@
 //! La clave `sccache` es la excepción escrita: no tiene parámetro porque ningún
 //! paso lo interpola como tal; los instaladores leen el fichero directamente.
 //! Exigirle parámetro contradiría esa decisión, así que el validador la perdona
-//! aquí y en ningún otro sitio. `ort_sha256` no es una versión sino la tabla de
-//! hashes que verifica `xtask package`, y ningún paso de la CI la interpola.
+//! aquí y en ningún otro sitio. `ort_nupkg_sha256` no es una versión sino el hash
+//! del paquete NuGet que verifica `xtask package`, y ningún paso de la CI lo
+//! interpola.
 //!
 //! La misma puerta compara los literales de la CI que espejan valores del
 //! código: la `schema_version` que el humo de `build-windows-x64` exige a
@@ -379,7 +380,7 @@ mod tests {
         Pins {
             rust: "1.96.0".to_string(),
             ort: "1.28.0".to_string(),
-            ort_sha256: std::collections::BTreeMap::new(),
+            ort_nupkg_sha256: String::new(),
             ffmpeg: "9.0.2".to_string(),
             ffmpeg_sha256: std::collections::BTreeMap::new(),
             ffmpeg_source_sha256: std::collections::BTreeMap::new(),
@@ -722,7 +723,7 @@ mod tests {
         std::fs::write(
             dir.join("packaging/pins.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "ffmpeg_source_sha256": {}, "sccache": "0.8.2",
+                "rust": "1.96.0", "ort": "1.28.0", "ort_nupkg_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "ffmpeg_source_sha256": {}, "sccache": "0.8.2",
                 "qwen_tts_engine": "1.0.0", "qwen_tts_engine_sha256": engine_fixture_hashes(), "qwen_tts_engine_source_sha256": engine_fixture_source_hash(),
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
                 "nextest": "0.9.148", "windows_image": "2026.10.1",
@@ -744,7 +745,7 @@ mod tests {
         std::fs::write(
             dir.join("packaging/pins.json"),
             serde_json::to_string_pretty(&serde_json::json!({
-                "rust": "1.96.0", "ort": "1.28.0", "ort_sha256": {}, "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "ffmpeg_source_sha256": {}, "sccache": "0.8.2",
+                "rust": "1.96.0", "ort": "1.28.0", "ort_nupkg_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ffmpeg": "9.0.2", "ffmpeg_sha256": {}, "ffmpeg_source_sha256": {}, "sccache": "0.8.2",
                 "qwen_tts_engine": "1.0.0", "qwen_tts_engine_sha256": engine_fixture_hashes(), "qwen_tts_engine_source_sha256": engine_fixture_source_hash(),
                 "ninja": "1.13.2", "bats": "1.14.0", "pwsh": "7.6.6", "pester": "5.8.0",
                 "nextest": "0.9.148", "windows_image": "2026.10.1",

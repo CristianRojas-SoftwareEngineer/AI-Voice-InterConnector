@@ -634,7 +634,7 @@ Las versiones fijadas (Rust, ONNX Runtime, FFmpeg y el motor TTS) se declaran **
 | Rust (versión fijada) | rustup | rustup | rustup | `rust-toolchain.toml` (rustup la instala sola) |
 | Compilador C/C++ del workspace (CTranslate2) | Visual Studio Build Tools (C++) | gcc/g++ y `libgomp` y `libstdc++` estáticas | Xcode Command Line Tools | Sistema |
 | CMake ≥ 3.20 | winget | Gestor de la distribución | Homebrew | Sistema |
-| ONNX Runtime (runtime de STT, versión fijada) | Descarga del asset oficial verificada con el SHA-256 fijado | Ídem | Ídem | `cargo xtask bootstrap` |
+| ONNX Runtime (runtime de STT, versión fijada) | Descarga del paquete NuGet oficial verificada con el SHA-256 fijado | Ídem | Ídem | `cargo xtask bootstrap` |
 | FFmpeg (medios, versión fijada) | Descarga del artefacto fijado verificada con el SHA-256 fijado | Ídem | Ídem | `cargo xtask bootstrap` |
 | sccache (opcional) | ✅ | ✅ | ✅ | `cargo install` o gestor |
 
@@ -648,7 +648,7 @@ Es **convergente**: la misma orden prepara el entorno la primera vez y lo pone a
 
 1. Ejecuta `doctor`. Para los requisitos del sistema que falten, imprime los comandos de instalación. Con `--system`, los ejecuta, y es la única operación de toda la especificación que puede pedir `sudo` o UAC, y solo por petición explícita.
 2. Asegura los componentes de Rust necesarios (clippy, rustfmt y, si se usa cobertura, las herramientas LLVM). La versión de Rust ya la aplica `rust-toolchain.toml`.
-3. Asegura los recursos fijados para el target del host, reutilizando los que ya estén completos y descargando los demás por HTTPS (TLS ≥ 1.2): ONNX Runtime en `ort-bundle/`, cuyo archivo debe tener el SHA-256 que fija `packaging/pins.json` (clave `ort_sha256`) y traer la librería esperada con tamaño mayor que cero, con el marcador `.ort-version`; y FFmpeg en `ffmpeg-bundle/`, cuyo artefacto debe tener el SHA-256 fijado (clave `ffmpeg_sha256`) y superar la prueba de humo, con el marcador de ese hash; y el motor TTS en `engine-bundle/`, cuyo paquete debe tener el SHA-256 fijado (clave `qwen_tts_engine_sha256`), con el marcador `.qwen-tts-engine-sha256`. Falla si alguna comprobación no se cumple. La puerta de pruebas con recursos y `package` aseguran los recursos con la misma función, de modo que tras `bootstrap` no vuelven a descargar nada y `cargo xtask verify-resources` los da por completos.
+3. Asegura los recursos fijados para el target del host, reutilizando los que ya estén completos y descargando los demás por HTTPS (TLS ≥ 1.2): ONNX Runtime en `ort-bundle/`, cuyo paquete NuGet debe tener el SHA-256 que fija `packaging/pins.json` (clave `ort_nupkg_sha256`) y traer la librería esperada con tamaño mayor que cero, con el marcador `.ort-sha256` con el hash del paquete; y FFmpeg en `ffmpeg-bundle/`, cuyo artefacto debe tener el SHA-256 fijado (clave `ffmpeg_sha256`) y superar la prueba de humo, con el marcador de ese hash; y el motor TTS en `engine-bundle/`, cuyo paquete debe tener el SHA-256 fijado (clave `qwen_tts_engine_sha256`), con el marcador `.qwen-tts-engine-sha256`. Falla si alguna comprobación no se cumple. La puerta de pruebas con recursos y `package` aseguran los recursos con la misma función, de modo que tras `bootstrap` no vuelven a descargar nada y `cargo xtask verify-resources` los da por completos.
 4. Con `--models`, provisiona los modelos ejecutando `setup` con el build local.
 5. Imprime un resumen del estado alcanzado.
 

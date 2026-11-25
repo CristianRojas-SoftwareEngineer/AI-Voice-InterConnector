@@ -37,7 +37,7 @@ parameters:
   ort_pin:
     type: string
     default: "1.28.0"
-    description: Versión de ONNX Runtime (pareja de ort 2.0.0-rc.13) empaquetada en los 4 builds. Al subirla, `ort_sha256` de packaging/pins.json lleva los SHA-256 de los 4 assets de la versión nueva.
+    description: Versión de ONNX Runtime (pareja de ort 2.0.0-rc.13) empaquetada en los 4 builds. Al subirla, `ort_nupkg_sha256` de packaging/pins.json lleva el SHA-256 del paquete NuGet `Microsoft.ML.OnnxRuntime` de la versión nueva.
   ninja_pin:
     type: string
     default: "1.13.2"
@@ -111,10 +111,11 @@ parameters:
 #   - toolchain (v1): cambia con rust_pin.
 #   - sccache (v1): cubo semanal por variant (semana ISO en la clave de
 #     guardado, restauración por prefijo): una subida por variante y semana.
-#   - ort-bundle (v4): cambia con ort_pin (los 4 builds, clave por plataforma
-#     de target). Guarda el `ort-bundle/` que arma `xtask package` (con su SHA-256
-#     verificado; más las cinco DLL de VC++ en Windows), incluido el marcador
-#     `.ort-version` que exige para reutilizarlo.
+#   - ort-bundle (v5): cambia con ort_pin (los 4 builds, clave por plataforma
+#     de target). Guarda el `ort-bundle/` que arma `xtask package` (con el
+#     SHA-256 del paquete NuGet verificado; más las cinco DLL de VC++ en
+#     Windows), incluido el marcador `.ort-sha256` con el SHA-256 del paquete,
+#     que exige para reutilizarlo.
 #   - ffmpeg (v1): cambia con packaging/pins.json (los 4 jobs de prueba y los 4
 #     builds, clave por triple). Guarda `ffmpeg-bundle/`, que `xtask` reutiliza
 #     solo si su marcador `.ffmpeg-sha256` coincide con el pin y el ejecutable
@@ -1666,7 +1667,7 @@ jobs:
       # marcador de la versión fijada, y si no lo vuelve a descargar.
       - restore_cache:
           keys:
-            - ort-v4-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
+            - ort-v5-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: x86_64-pc-windows-msvc
       - engine_restore_cache:
@@ -1689,7 +1690,7 @@ jobs:
             Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
       - engine_self_test
       - save_cache:
-          key: ort-v4-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
+          key: ort-v5-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
@@ -1801,11 +1802,11 @@ jobs:
           os: linux-el8
           variant: full
       # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
-      # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+      # pins.json + marcador `.ort-sha256`): la caché solo evita repetir la
       # descarga; sin acierto se vuelve a descargar.
       - restore_cache:
           keys:
-            - ort-v4-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
+            - ort-v5-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: x86_64-unknown-linux-gnu
       - engine_restore_cache:
@@ -1824,7 +1825,7 @@ jobs:
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - engine_self_test
       - save_cache:
-          key: ort-v4-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
+          key: ort-v5-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
@@ -1907,11 +1908,11 @@ jobs:
           os: linux-el8
           variant: full
       # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
-      # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+      # pins.json + marcador `.ort-sha256`): la caché solo evita repetir la
       # descarga; sin acierto se vuelve a descargar.
       - restore_cache:
           keys:
-            - ort-v4-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
+            - ort-v5-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: aarch64-unknown-linux-gnu
       - engine_restore_cache:
@@ -1930,7 +1931,7 @@ jobs:
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - engine_self_test
       - save_cache:
-          key: ort-v4-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
+          key: ort-v5-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success
@@ -2030,11 +2031,11 @@ jobs:
           os: macos
           variant: full
       # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
-      # pins.json + marcador `.ort-version`): la caché solo evita repetir la
+      # pins.json + marcador `.ort-sha256`): la caché solo evita repetir la
       # descarga; sin acierto se vuelve a descargar.
       - restore_cache:
           keys:
-            - ort-v4-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>
+            - ort-v5-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>
       - ffmpeg_restore_cache:
           triple: aarch64-apple-darwin
       - engine_restore_cache:
@@ -2054,7 +2055,7 @@ jobs:
             echo "[STEP] Empaquetar bundle con xtask package - FIN"
       - engine_self_test
       - save_cache:
-          key: ort-v4-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>
+          key: ort-v5-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>
           paths:
             - ort-bundle
           when: on_success

@@ -8,10 +8,11 @@
 //!
 //! Lee `packaging/bundle-manifest.json` como lista canónica (la misma que valida
 //! `self install`): empaquetado e instalación no pueden divergir. Resuelve ONNX
-//! Runtime reutilizando `ort-bundle/` si está fresco para la versión fijada
+//! Runtime reutilizando `ort-bundle/` si está fresco para el paquete fijado
 //! en `packaging/pins.json` (fuente única, espejo del parámetro `ort_pin` de
-//! la CI), o descargándolo si no: el archivo descargado debe tener el SHA-256
-//! que fija `pins.json` para el target y traer la librería esperada. Resuelve
+//! la CI), o descargándolo si no: el paquete NuGet descargado debe tener el
+//! SHA-256 del paquete NuGet que fija `pins.json` y traer la librería del
+//! target. Resuelve
 //! FFmpeg del mismo modo con `ffmpeg-bundle/`, verifica su SHA-256, exige los
 //! códecs de la matriz de egressión y ejecuta `-version` antes de montarlo.
 //! Toma el motor TTS de `engine-bundle/`, también verificado por SHA-256, y
@@ -57,11 +58,10 @@ pub(crate) const FFMPEG_BTBN_BUILD: &str = "n9.0.2-35-g9a9b70bb8c";
 /// descarga el archivo del commit y no el del tag, que un autor podría mover.
 const FFMPEG_BTBN_COMMIT: &str = "937868360a21d711ec94a33f5591d345ad9b7754";
 
-/// Marcador de versión dentro de `ort-bundle/`: lo escribe una descarga de este
-/// comando, también en la CI. Un bundle sin marcador tiene una
-/// versión desconocida y no se reutiliza. Es la única fuente de este nombre en
-/// `xtask`.
-pub(crate) const ORT_MARKER: &str = ".ort-version";
+/// Marcador del SHA-256 del paquete NuGet dentro de `ort-bundle/`: un cambio de
+/// pin invalida el bundle aunque la versión nominal no cambie. Un bundle sin
+/// marcador no se reutiliza. Es la única fuente de este nombre en `xtask`.
+pub(crate) const ORT_MARKER: &str = ".ort-sha256";
 
 /// Caché local del paquete del motor TTS, relativa a la raíz. Es la única
 /// fuente de esta ruta en `xtask`: ningún otro módulo la escribe a mano.
@@ -174,26 +174,39 @@ fn check_expect_version(actual: &str, expect: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Archivo y URL de descarga de ONNX Runtime para el triple (nombres oficiales
-/// de los releases de Microsoft, los mismos que usan los cuatro jobs de build).
-fn ort_download(triple: &str, ort_version: &str) -> Result<(String, String)> {
-    let file = match triple {
-        "x86_64-pc-windows-msvc" => format!("onnxruntime-win-x64-{ort_version}.zip"),
-        "x86_64-unknown-linux-gnu" => format!("onnxruntime-linux-x64-{ort_version}.tgz"),
-        "aarch64-unknown-linux-gnu" => format!("onnxruntime-linux-aarch64-{ort_version}.tgz"),
-        "aarch64-apple-darwin" => format!("onnxruntime-osx-arm64-{ort_version}.tgz"),
-        other => bail!("triple no soportado: {other}"),
-    };
+/// Nombre de archivo y URL del paquete NuGet oficial `Microsoft.ML.OnnxRuntime`
+/// de la versión indicada, con el id y la versión en minúsculas como exige el
+/// contenedor plano de nuget.org. nuget.org no permite borrar paquetes, así que
+/// la versión fijada sigue descargable.
+fn ort_nupkg_download(ort_version: &str) -> (String, String) {
+    let version = ort_version.to_ascii_lowercase();
+    let file = format!("microsoft.ml.onnxruntime.{version}.nupkg");
     let url =
-        format!("https://github.com/microsoft/onnxruntime/releases/download/v{ort_version}/{file}");
-    Ok((file, url))
+        format!("https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/{version}/{file}");
+    (file, url)
 }
 
-/// SHA-256 fijado en `pins.json` para el asset de ONNX Runtime del triple: 64
-/// dígitos hexadecimales en minúsculas. Un triple sin entrada o un valor mal
-/// formado es un error, nunca una descarga sin verificar.
-fn pinned_ort_sha256<'a>(pins: &'a Pins, triple: &str) -> Result<&'a str> {
-    pinned_sha256(&pins.ort_sha256, "ONNX Runtime", triple)
+/// Entrada del paquete NuGet que contiene la librería de ONNX Runtime del
+/// triple. Un triple sin entrada es un error.
+fn ort_package_entry(triple: &str) -> Result<&'static str> {
+    Ok(match triple {
+        "x86_64-pc-windows-msvc" => "runtimes/win-x64/native/onnxruntime.dll",
+        "x86_64-unknown-linux-gnu" => "runtimes/linux-x64/native/libonnxruntime.so",
+        "aarch64-unknown-linux-gnu" => "runtimes/linux-arm64/native/libonnxruntime.so",
+        "aarch64-apple-darwin" => "runtimes/osx-arm64/native/libonnxruntime.dylib",
+        other => bail!("triple no soportado: {other}"),
+    })
+}
+
+/// SHA-256 fijado en `pins.json` para el paquete NuGet de ONNX Runtime: 64
+/// dígitos hexadecimales en minúsculas. Un valor mal formado es un error,
+/// nunca una descarga sin verificar.
+pub(crate) fn pinned_ort_nupkg_sha256(pins: &Pins) -> Result<&str> {
+    let hash = pins.ort_nupkg_sha256.as_str();
+    if !is_sha256(hash) {
+        bail!("el SHA-256 de ort_nupkg_sha256 en packaging/pins.json no son 64 dígitos hexadecimales en minúsculas: {hash:?}");
+    }
+    Ok(hash)
 }
 
 /// SHA-256 fijado en `pins.json` para el artefacto de FFmpeg del triple.
@@ -452,10 +465,14 @@ pub(crate) fn ort_dylib_path(bundle: &Path, triple: &str) -> Result<PathBuf> {
 }
 
 /// `true` si `ort-bundle/` ya sirve para este triple: todas las librerías
-/// presentes y marcador existente cuya versión coincide con la de los pines.
-/// Un marcador o una librería ausentes dejan el bundle sin servir; un fichero
-/// que existe pero no se puede leer es un error.
-pub(crate) fn ort_bundle_is_fresh(bundle: &Path, triple: &str, ort_version: &str) -> Result<bool> {
+/// presentes con tamaño mayor que cero y el marcador con el SHA-256 del paquete
+/// fijado. Un marcador o una librería ausentes dejan el bundle sin servir; un
+/// fichero que existe pero no se puede leer es un error.
+pub(crate) fn ort_bundle_is_fresh(
+    bundle: &Path,
+    triple: &str,
+    expected_sha256: &str,
+) -> Result<bool> {
     for lib in ort_expected_libs(triple)? {
         // Existencia y tamaño: un archivo ausente o vacío (descarga truncada)
         // no es fresco y fuerza la reconstrucción; cualquier otro error de
@@ -470,7 +487,7 @@ pub(crate) fn ort_bundle_is_fresh(bundle: &Path, triple: &str, ort_version: &str
     }
     let marker = bundle.join(ORT_MARKER);
     match std::fs::read_to_string(&marker) {
-        Ok(pinned) => Ok(pinned.trim() == ort_version),
+        Ok(pinned) => Ok(pinned.trim() == expected_sha256),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(anyhow::anyhow!(
             "no se pudo leer el marcador {}: {e}",
@@ -549,42 +566,9 @@ fn download_https(url: &str, dest: &Path) -> Result<()> {
     bail!("Invoke-WebRequest falló al descargar {url}: {status}")
 }
 
-/// Prioridad de una entrada del archivo como candidata a librería: el nombre
-/// exacto gana a la versión, y a igualdad la más específica (más larga).
-/// Tamaño cero nunca vale: los assets de Microsoft listan primero los enlaces
-/// simbólicos (`libonnxruntime.so.1 -> .so.1.28.0`) y quedarse con la primera
-/// coincidencia escribe una librería vacía que todo lo demás acepta.
-fn rank_lib_candidate(
-    canonical: &str,
-    pattern: &str,
-    name: &str,
-    size: u64,
-) -> Option<(u8, usize)> {
-    if size == 0 {
-        return None;
-    }
-    if name == canonical {
-        Some((2, name.len()))
-    } else if name.starts_with(pattern) {
-        Some((1, name.len()))
-    } else {
-        None
-    }
-}
-
-/// Archivos de aviso de ONNX Runtime que el archivo oficial trae en su raíz y que el
-/// paquete reproduce desde `packaging/notices/onnxruntime-<versión>/`.
+/// Archivos de aviso de ONNX Runtime que el paquete NuGet trae en su raíz y que el
+/// paquete de AVI reproduce desde `packaging/notices/onnxruntime-<versión>/`.
 const ORT_NOTICE_FILES: [&str; 2] = ["LICENSE", "ThirdPartyNotices.txt"];
-
-/// Nombre del aviso si la ruta dentro del archivo es uno de [`ORT_NOTICE_FILES`] en la raíz
-/// del directorio principal (no los homónimos de subdirectorios).
-fn ort_notice_name(path: &str) -> Option<&'static str> {
-    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    if parts.len() != 2 {
-        return None;
-    }
-    ORT_NOTICE_FILES.into_iter().find(|name| *name == parts[1])
-}
 
 /// Directorio con las copias versionadas de los avisos de la versión fijada de ONNX Runtime.
 fn ort_notices_dir(root: &Path, ort_version: &str) -> PathBuf {
@@ -593,9 +577,10 @@ fn ort_notices_dir(root: &Path, ort_version: &str) -> PathBuf {
         .join(format!("onnxruntime-{ort_version}"))
 }
 
-/// Compara los avisos leídos del archivo oficial con las copias versionadas, ignorando
-/// la diferencia de fin de línea (el zip de Windows los trae con CRLF). Falla nombrando el
-/// archivo si falta en el archivo oficial o difiere de la copia.
+/// Compara los avisos leídos del paquete NuGet con las copias versionadas, ignorando
+/// la diferencia de fin de línea (el paquete NuGet los trae con CRLF y las copias
+/// versionadas están en LF). Falla nombrando el archivo si falta en el paquete o
+/// difiere de la copia.
 fn verify_ort_notices(
     notices_dir: &Path,
     ort_version: &str,
@@ -604,7 +589,7 @@ fn verify_ort_notices(
     for name in ORT_NOTICE_FILES {
         let bytes = archived
             .get(name)
-            .ok_or_else(|| anyhow!("el archivo de ONNX Runtime {ort_version} no trae {name}"))?;
+            .ok_or_else(|| anyhow!("el paquete de ONNX Runtime {ort_version} no trae {name}"))?;
         let copy_path = notices_dir.join(name);
         let copy = std::fs::read(&copy_path).map_err(|e| {
             anyhow!(
@@ -617,7 +602,7 @@ fn verify_ort_notices(
         if normalize(bytes) != normalize(&copy) {
             bail!(
                 "{name} de ONNX Runtime {ort_version} difiere de {}: actualiza la copia versionada \
-                 con el archivo oficial",
+                 con el paquete oficial",
                 copy_path.display()
             );
         }
@@ -625,10 +610,11 @@ fn verify_ort_notices(
     Ok(())
 }
 
-/// Extrae la librería de ONNX Runtime del archivo descargado a `bundle/` con su
-/// nombre canónico (el que el crate `ort` busca en `load-dynamic`) y verifica que
-/// sus avisos coincidan con las copias de `notices_dir`. Falla si el archivo no trae
-/// la librería esperada con tamaño mayor que cero o si algún aviso difiere.
+/// Extrae del paquete NuGet descargado (un zip) la librería de ONNX Runtime del
+/// triple a `bundle/` con su nombre canónico (el que el crate `ort` busca en
+/// `load-dynamic`) y verifica que sus avisos, tomados solo de la raíz del zip,
+/// coincidan con las copias de `notices_dir`. Falla nombrando la entrada si
+/// falta la librería o mide cero bytes, y nombrando el aviso si falta o difiere.
 fn extract_ort_library(
     archive: &Path,
     bundle: &Path,
@@ -636,88 +622,40 @@ fn extract_ort_library(
     ort_version: &str,
     notices_dir: &Path,
 ) -> Result<()> {
+    let entry_name = ort_package_entry(triple)?;
+    let canonical = entry_name.rsplit('/').next().unwrap_or(entry_name);
+    let file = std::fs::File::open(archive)?;
+    let mut zip = zip::ZipArchive::new(file)?;
     let mut notices: BTreeMap<&'static str, Vec<u8>> = BTreeMap::new();
-    let canonical = if triple.contains("-windows-") {
-        "onnxruntime.dll"
-    } else if triple.contains("-apple-") {
-        "libonnxruntime.dylib"
-    } else {
-        "libonnxruntime.so"
-    };
-    let pattern = if triple.contains("-linux-") {
-        "libonnxruntime.so."
-    } else {
-        canonical
-    };
-    let found: Option<Vec<u8>> = if archive.extension().and_then(|e| e.to_str()) == Some("zip") {
-        let file = std::fs::File::open(archive)?;
-        let mut zip = zip::ZipArchive::new(file)?;
-        let mut best: Option<((u8, usize), usize)> = None;
-        for i in 0..zip.len() {
-            let mut entry = zip.by_index(i)?;
-            if entry.is_dir() {
-                continue;
-            }
-            if let Some(notice) = ort_notice_name(entry.name()) {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
-                notices.insert(notice, bytes);
-                continue;
-            }
-            let name = entry.name().rsplit('/').next().unwrap_or("").to_string();
-            if let Some(rank) = rank_lib_candidate(canonical, pattern, &name, entry.size()) {
-                if best.is_none_or(|(r, _)| rank > r) {
-                    best = Some((rank, i));
-                }
-            }
+    for name in ORT_NOTICE_FILES {
+        // Solo la raíz del zip: un homónimo en un subdirectorio no es el aviso.
+        if let Ok(mut entry) = zip.by_name(name) {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+            notices.insert(name, bytes);
         }
-        match best {
-            Some((_, i)) => {
-                let mut entry = zip.by_index(i)?;
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
-                Some(bytes)
-            }
-            None => None,
-        }
-    } else {
-        let file = std::fs::File::open(archive)?;
-        let gz = flate2::read::GzDecoder::new(file);
-        let mut tar = tar::Archive::new(gz);
-        let mut best_rank: Option<(u8, usize)> = None;
-        let mut hit: Option<Vec<u8>> = None;
-        for entry in tar.entries()? {
-            let mut entry = entry?;
-            let path = entry.path()?.to_string_lossy().to_string();
-            if let Some(notice) = ort_notice_name(&path) {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
-                notices.insert(notice, bytes);
-                continue;
-            }
-            let name = path.rsplit('/').next().unwrap_or("").to_string();
-            let rank = rank_lib_candidate(canonical, pattern, &name, entry.size());
-            if rank.is_some_and(|r| best_rank.is_none_or(|b| r > b)) {
-                let mut bytes = Vec::new();
-                std::io::Read::read_to_end(&mut entry, &mut bytes)?;
-                best_rank = rank;
-                hit = Some(bytes);
-            }
-        }
-        hit
-    };
-    match found {
-        Some(bytes) => {
-            verify_ort_notices(notices_dir, ort_version, &notices)?;
-            std::fs::create_dir_all(bundle)?;
-            std::fs::write(bundle.join(canonical), bytes)?;
-            Ok(())
-        }
-        None => bail!(
-            "el archivo {} no trae la librería {canonical} de ONNX Runtime {ort_version}",
-            archive.display()
-        ),
     }
+    let library = {
+        let mut entry = zip.by_name(entry_name).map_err(|_| {
+            anyhow!(
+                "el paquete {} no trae la entrada {entry_name} de ONNX Runtime {ort_version}",
+                archive.display()
+            )
+        })?;
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+        bytes
+    };
+    if library.is_empty() {
+        bail!(
+            "la entrada {entry_name} del paquete {} mide 0 bytes",
+            archive.display()
+        );
+    }
+    verify_ort_notices(notices_dir, ort_version, &notices)?;
+    std::fs::create_dir_all(bundle)?;
+    std::fs::write(bundle.join(canonical), library)?;
+    Ok(())
 }
 
 /// Resuelve las DLL de [`VC_DLLS`] en el redist de la instalación de Visual
@@ -847,10 +785,10 @@ fn copy_vc_runtime(bundle: &Path) -> Result<()> {
 }
 
 /// Asegura `ort-bundle/` para el triple: lo reutiliza si está fresco o lo
-/// reconstruye descargándolo en caso contrario. La descarga va por HTTPS, su
-/// SHA-256 debe coincidir con el fijado en `pins.json` y el archivo debe traer
-/// la librería esperada con tamaño mayor que cero; el marcador de versión solo
-/// se escribe tras esas comprobaciones, así que un bundle fresco procede de
+/// reconstruye descargándolo en caso contrario. La descarga del paquete NuGet va
+/// por HTTPS, su SHA-256 debe coincidir con el fijado en `pins.json` y el
+/// paquete debe traer la librería esperada con tamaño mayor que cero; el
+/// marcador con el hash del paquete solo se escribe tras esas comprobaciones, así que un bundle fresco procede de
 /// una descarga verificada. En Windows, tanto al reutilizar como al descargar,
 /// deja al día las DLL del runtime de VC++ con las del redist de la toolchain
 /// que compila. Lo llama `ensure_pinned_bundles`, la entrada que usan
@@ -858,9 +796,9 @@ fn copy_vc_runtime(bundle: &Path) -> Result<()> {
 /// descargador en el repositorio.
 pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Result<PathBuf> {
     let ort_version = pins.ort.as_str();
-    let expected_sha256 = pinned_ort_sha256(pins, triple)?;
+    let expected_sha256 = pinned_ort_nupkg_sha256(pins)?;
     let bundle = ort_bundle_dir(root);
-    if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple, ort_version)? {
+    if bundle.is_dir() && ort_bundle_is_fresh(&bundle, triple, expected_sha256)? {
         eprintln!("Bundle ONNX Runtime reutilizado de {ORT_BUNDLE_REL}");
         #[cfg(windows)]
         copy_vc_runtime(&bundle)?;
@@ -870,7 +808,7 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Resul
         std::fs::remove_dir_all(&bundle)?;
     }
     std::fs::create_dir_all(&bundle)?;
-    let (file, url) = ort_download(triple, ort_version)?;
+    let (file, url) = ort_nupkg_download(ort_version);
     // Archivo descargado con dueño: se borra al salir, también si falla la
     // descarga o la extracción.
     let dest = tempfile::Builder::new()
@@ -890,8 +828,8 @@ pub(crate) fn ensure_ort_bundle(root: &Path, triple: &str, pins: &Pins) -> Resul
     )?;
     #[cfg(windows)]
     copy_vc_runtime(&bundle)?;
-    std::fs::write(bundle.join(ORT_MARKER), ort_version)?;
-    if !ort_bundle_is_fresh(&bundle, triple, ort_version)? {
+    std::fs::write(bundle.join(ORT_MARKER), expected_sha256)?;
+    if !ort_bundle_is_fresh(&bundle, triple, expected_sha256)? {
         bail!("el bundle de ONNX Runtime quedó incompleto tras la descarga");
     }
     Ok(bundle)
@@ -1228,7 +1166,8 @@ pub(crate) fn pinned_bundles_status(
     pins: &Pins,
 ) -> PinnedBundles<Result<bool>> {
     PinnedBundles {
-        ort: ort_bundle_is_fresh(&ort_bundle_dir(root), triple, &pins.ort),
+        ort: pinned_ort_nupkg_sha256(pins)
+            .and_then(|sha| ort_bundle_is_fresh(&ort_bundle_dir(root), triple, sha)),
         ffmpeg: pinned_ffmpeg_sha256(pins, triple)
             .and_then(|sha| ffmpeg_bundle_is_fresh(&ffmpeg_bundle_dir(root), triple, sha)),
         engine: pinned_engine_sha256(pins, triple)
@@ -1820,14 +1759,6 @@ mod tests {
         assert!(release_asset_name("i686-unknown-linux-gnu", "0.24.0").is_err());
     }
 
-    /// Versión de ONNX fijada en `pins.json`: los tests la leen de la fuente
-    /// única, como el comando, en vez de replicarla.
-    fn test_ort_version() -> String {
-        pins::parse_text(include_str!("../../../packaging/pins.json"))
-            .expect("pins.json válido")
-            .ort
-    }
-
     /// Las comillas simples se duplican para no cerrar el literal de PowerShell.
     #[test]
     fn powershell_literal_escapes_single_quotes() {
@@ -1835,21 +1766,46 @@ mod tests {
         assert_eq!(powershell_single_quoted("sin comillas"), "sin comillas");
     }
 
-    /// La descarga de ONNX Runtime apunta a los archivos oficiales por triple.
+    /// La URL del paquete NuGet usa el id y la versión en minúsculas del
+    /// contenedor plano de nuget.org, y las librerías esperadas del bundle son
+    /// las canónicas de cada plataforma.
     #[test]
-    fn ort_download_per_target() {
-        let ort_version = test_ort_version();
-        let (file, url) = ort_download("x86_64-pc-windows-msvc", &ort_version).unwrap();
-        assert_eq!(file, format!("onnxruntime-win-x64-{ort_version}.zip"));
-        assert!(url.ends_with(&file) && url.contains(&ort_version));
-        let (file, _) = ort_download("aarch64-apple-darwin", &ort_version).unwrap();
-        assert_eq!(file, format!("onnxruntime-osx-arm64-{ort_version}.tgz"));
+    fn ort_nupkg_download_url() {
+        let (file, url) = ort_nupkg_download("1.28.0");
+        assert_eq!(file, "microsoft.ml.onnxruntime.1.28.0.nupkg");
+        assert_eq!(
+            url,
+            "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.28.0/microsoft.ml.onnxruntime.1.28.0.nupkg"
+        );
         assert!(ort_expected_libs("x86_64-pc-windows-msvc")
             .unwrap()
             .contains(&"onnxruntime.dll"));
         assert!(ort_expected_libs("x86_64-unknown-linux-gnu")
             .unwrap()
             .contains(&"libonnxruntime.so"));
+    }
+
+    /// Cada triple soportado tiene su entrada en el paquete NuGet y uno no
+    /// soportado es un error.
+    #[test]
+    fn ort_package_entry_per_target() {
+        assert_eq!(
+            ort_package_entry("x86_64-pc-windows-msvc").unwrap(),
+            "runtimes/win-x64/native/onnxruntime.dll"
+        );
+        assert_eq!(
+            ort_package_entry("x86_64-unknown-linux-gnu").unwrap(),
+            "runtimes/linux-x64/native/libonnxruntime.so"
+        );
+        assert_eq!(
+            ort_package_entry("aarch64-unknown-linux-gnu").unwrap(),
+            "runtimes/linux-arm64/native/libonnxruntime.so"
+        );
+        assert_eq!(
+            ort_package_entry("aarch64-apple-darwin").unwrap(),
+            "runtimes/osx-arm64/native/libonnxruntime.dylib"
+        );
+        assert!(ort_package_entry("riscv64gc-unknown-linux-gnu").is_err());
     }
 
     /// La descarga de FFmpeg apunta a los archivos oficiales por triple.
@@ -1990,8 +1946,9 @@ mod tests {
             .ffmpeg
     }
 
-    /// Cada target del manifiesto canónico tiene su SHA-256 de ONNX Runtime
-    /// fijado y bien formado, y su sección exige en el bundle todas las
+    /// Cada target del manifiesto canónico tiene su entrada en el paquete NuGet
+    /// de ONNX Runtime, el paquete tiene su SHA-256 fijado y bien formado, y la
+    /// sección de cada target exige en el bundle todas las
     /// librerías que aporta `ort-bundle/` (en Windows, también las cinco DLL
     /// de VC++): empaquetado, instalación y pines no pueden divergir.
     #[test]
@@ -2001,7 +1958,7 @@ mod tests {
         let sections =
             parse_manifest_text(include_str!("../../../packaging/bundle-manifest.json")).unwrap();
         for (triple, section) in &sections {
-            pinned_ort_sha256(&pins, triple).unwrap();
+            ort_package_entry(triple).unwrap();
             for lib in ort_expected_libs(triple).unwrap() {
                 assert!(
                     section.required.iter().any(|r| r == lib),
@@ -2009,11 +1966,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(
-            pins.ort_sha256.len(),
-            sections.len(),
-            "un hash por target, sin sobrantes"
-        );
+        pinned_ort_nupkg_sha256(&pins).unwrap();
         let windows = sections
             .get("x86_64-pc-windows-msvc")
             .expect("el manifiesto declara Windows x64");
@@ -2030,18 +1983,19 @@ mod tests {
         assert!(VC_DLLS.contains(&"msvcp140_1.dll"));
     }
 
-    /// Un triple sin hash o con un hash mal formado es un error.
+    /// El hash del paquete NuGet debe existir y ser hexadecimal en minúsculas
+    /// de 64 dígitos: el fijado vale y uno ausente o mal formado es un error.
     #[test]
     fn pinned_hash_must_exist_and_be_lowercase_hex() {
         let mut pins = pins::parse_text(include_str!("../../../packaging/pins.json"))
             .expect("pins.json válido");
-        assert!(pinned_ort_sha256(&pins, "riscv64gc-unknown-linux-gnu").is_err());
-        pins.ort_sha256
-            .insert("x86_64-unknown-linux-gnu".to_string(), "AB".repeat(32));
-        assert!(pinned_ort_sha256(&pins, "x86_64-unknown-linux-gnu").is_err());
-        pins.ort_sha256
-            .insert("x86_64-unknown-linux-gnu".to_string(), "ab".repeat(31));
-        assert!(pinned_ort_sha256(&pins, "x86_64-unknown-linux-gnu").is_err());
+        assert!(pinned_ort_nupkg_sha256(&pins).is_ok());
+        pins.ort_nupkg_sha256 = String::new();
+        assert!(pinned_ort_nupkg_sha256(&pins).is_err());
+        pins.ort_nupkg_sha256 = "AB".repeat(32);
+        assert!(pinned_ort_nupkg_sha256(&pins).is_err());
+        pins.ort_nupkg_sha256 = "ab".repeat(31);
+        assert!(pinned_ort_nupkg_sha256(&pins).is_err());
     }
 
     /// La verificación acepta el SHA-256 exacto del fichero y rechaza otro.
@@ -2058,16 +2012,16 @@ mod tests {
         );
     }
 
-    /// Un `ort-bundle/` con las librerías y marcador coincidente se reutiliza;
-    /// sin marcador, con marcador divergente o con librerías ausentes, no. Las
-    /// DLL de VC++ no cuentan: se actualizan en cada ejecución.
+    /// Un `ort-bundle/` con las librerías y el marcador con el hash del paquete
+    /// se reutiliza; sin marcador, con un hash distinto o con librerías ausentes
+    /// o vacías, no. Las DLL de VC++ no cuentan: se actualizan en cada ejecución.
     #[test]
     fn ort_bundle_freshness() {
         assert!(ort_expected_libs("x86_64-pc-windows-msvc")
             .unwrap()
             .iter()
             .all(|lib| !VC_DLLS.contains(lib)));
-        let ort_version = test_ort_version();
+        let expected = "ab".repeat(32);
         let triple = if cfg!(windows) {
             "x86_64-pc-windows-msvc"
         } else {
@@ -2081,17 +2035,17 @@ mod tests {
         for lib in ort_expected_libs(triple).unwrap() {
             std::fs::write(base.join(lib), b"x").unwrap();
         }
-        // Sin marcador la versión es desconocida: no es fresco.
-        assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
-        std::fs::write(base.join(ORT_MARKER), "0.0.0").unwrap();
-        assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
-        std::fs::write(base.join(ORT_MARKER), &ort_version).unwrap();
-        assert!(ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
+        // Sin marcador el origen es desconocido: no es fresco.
+        assert!(!ort_bundle_is_fresh(&base, triple, &expected).unwrap());
+        std::fs::write(base.join(ORT_MARKER), "cd".repeat(32)).unwrap();
+        assert!(!ort_bundle_is_fresh(&base, triple, &expected).unwrap());
+        std::fs::write(base.join(ORT_MARKER), &expected).unwrap();
+        assert!(ort_bundle_is_fresh(&base, triple, &expected).unwrap());
         std::fs::remove_file(base.join(ort_expected_libs(triple).unwrap()[0])).unwrap();
-        assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
+        assert!(!ort_bundle_is_fresh(&base, triple, &expected).unwrap());
         // Vacía (descarga truncada) tampoco es fresca: fuerza reconstruir.
         std::fs::write(base.join(ort_expected_libs(triple).unwrap()[0]), b"").unwrap();
-        assert!(!ort_bundle_is_fresh(&base, triple, &ort_version).unwrap());
+        assert!(!ort_bundle_is_fresh(&base, triple, &expected).unwrap());
     }
 
     /// Monta en `installation` un redist sintético de la versión `version` con
@@ -2172,119 +2126,93 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"nueva");
     }
 
-    /// El asset de Linux lista `libonnxruntime.so.1` (enlace, 0 bytes) antes
-    /// que la librería real: la extracción debe traer los bytes reales, no
-    /// los del enlace.
-    #[test]
-    fn extract_ignores_symlink_before_real_library() {
-        let base_guard = tempfile::Builder::new()
-            .prefix("xtask_package_symlink_")
-            .tempdir()
-            .unwrap();
-        let base = base_guard.path().to_path_buf();
-        let archive_path = base.join("ort.tgz");
-        {
-            let file = std::fs::File::create(&archive_path).unwrap();
-            let gz = flate2::write::GzEncoder::new(file, flate2::Compression::default());
-            let mut tar = tar::Builder::new(gz);
-            let mut link = tar::Header::new_gnu();
-            link.set_entry_type(tar::EntryType::Symlink);
-            link.set_size(0);
-            link.set_cksum();
-            tar.append_link(
-                &mut link,
-                "lib/libonnxruntime.so.1",
-                "libonnxruntime.so.1.28.0",
-            )
-            .unwrap();
-            let mut header = tar::Header::new_gnu();
-            let data = b"REAL";
-            header.set_size(data.len() as u64);
-            header.set_mode(0o644);
-            header.set_cksum();
-            tar.append_data(&mut header, "lib/libonnxruntime.so.1.28.0", &data[..])
-                .unwrap();
-            for (name, text) in [("LICENSE", "licencia"), ("ThirdPartyNotices.txt", "avisos")] {
-                let mut header = tar::Header::new_gnu();
-                header.set_size(text.len() as u64);
-                header.set_mode(0o644);
-                header.set_cksum();
-                tar.append_data(&mut header, format!("ort/{name}"), text.as_bytes())
-                    .unwrap();
-            }
-            let gz = tar.into_inner().unwrap();
-            gz.finish().unwrap();
-        }
-        let notices = base.join("notices");
-        write_notices(&notices, "licencia", "avisos");
-        let bundle = base.join("bundle");
-        extract_ort_library(
-            &archive_path,
-            &bundle,
-            "x86_64-unknown-linux-gnu",
-            "1.28.0",
-            &notices,
-        )
-        .unwrap();
-        assert_eq!(
-            std::fs::read(bundle.join("libonnxruntime.so")).unwrap(),
-            b"REAL"
-        );
-    }
-
     fn write_notices(dir: &Path, license: &str, third_party: &str) {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join("LICENSE"), license).unwrap();
         std::fs::write(dir.join("ThirdPartyNotices.txt"), third_party).unwrap();
     }
 
-    /// Zip sintético de ONNX Runtime para Windows con avisos de fin de línea CRLF.
-    fn write_ort_zip(path: &Path, license: &str, third_party: &str) {
+    /// Paquete NuGet sintético con la estructura del real: la biblioteca de
+    /// cada plataforma bajo `runtimes/`, los avisos en la raíz y un `LICENSE`
+    /// homónimo en un subdirectorio que no debe tomarse.
+    fn write_ort_nupkg(path: &Path, entries: &[(&str, &str)]) {
         use std::io::Write;
         let file = std::fs::File::create(path).unwrap();
         let mut zip = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default();
-        for (name, data) in [
-            ("ort/lib/onnxruntime.dll", "DLL"),
-            ("ort/LICENSE", license),
-            ("ort/ThirdPartyNotices.txt", third_party),
-            ("ort/docs/LICENSE", "homónimo de un subdirectorio"),
-        ] {
-            zip.start_file(name, options).unwrap();
+        for (name, data) in entries {
+            zip.start_file(*name, options).unwrap();
             zip.write_all(data.as_bytes()).unwrap();
         }
         zip.finish().unwrap();
     }
 
-    /// Los avisos del archivo fijado coinciden con las copias versionadas, también cuando
-    /// el zip de Windows los trae con CRLF.
-    #[test]
-    fn extract_accepts_notices_that_match_the_versioned_copies() {
-        let base_guard = tempfile::tempdir().unwrap();
-        let base = base_guard.path();
-        let archive = base.join("ort.zip");
-        write_ort_zip(&archive, "linea1\r\nlinea2\r\n", "avisos\r\n");
-        let notices = base.join("notices");
-        write_notices(&notices, "linea1\nlinea2\n", "avisos\n");
-        extract_ort_library(
-            &archive,
-            &base.join("bundle"),
-            "x86_64-pc-windows-msvc",
-            "1.28.0",
-            &notices,
-        )
-        .unwrap();
-        assert!(base.join("bundle/onnxruntime.dll").is_file());
+    /// Entradas de un paquete NuGet completo con la biblioteca del triple.
+    fn full_nupkg_entries<'a>(
+        library_entry: &'a str,
+        license: &'a str,
+        third_party: &'a str,
+    ) -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("runtimes/otra/native/onnxruntime.dll", "OTRA"),
+            (library_entry, "REAL"),
+            ("LICENSE", license),
+            ("ThirdPartyNotices.txt", third_party),
+            ("docs/LICENSE", "homónimo de un subdirectorio"),
+        ]
     }
 
-    /// Un aviso distinto en el archivo fijado falla nombrando el archivo, y no deja
-    /// librería extraída.
+    /// La extracción toma la biblioteca exacta del triple, en Windows y en
+    /// Linux, la escribe con su nombre canónico y acepta los avisos con CRLF
+    /// frente a las copias versionadas en LF.
+    #[test]
+    fn extract_takes_the_triple_entry_and_accepts_crlf_notices() {
+        for (triple, entry, canonical) in [
+            (
+                "x86_64-pc-windows-msvc",
+                "runtimes/win-x64/native/onnxruntime.dll",
+                "onnxruntime.dll",
+            ),
+            (
+                "x86_64-unknown-linux-gnu",
+                "runtimes/linux-x64/native/libonnxruntime.so",
+                "libonnxruntime.so",
+            ),
+        ] {
+            let base_guard = tempfile::tempdir().unwrap();
+            let base = base_guard.path();
+            let archive = base.join("ort.nupkg");
+            write_ort_nupkg(
+                &archive,
+                &full_nupkg_entries(entry, "linea1\r\nlinea2\r\n", "avisos\r\n"),
+            );
+            let notices = base.join("notices");
+            write_notices(&notices, "linea1\nlinea2\n", "avisos\n");
+            extract_ort_library(&archive, &base.join("bundle"), triple, "1.28.0", &notices)
+                .unwrap();
+            assert_eq!(
+                std::fs::read(base.join("bundle").join(canonical)).unwrap(),
+                b"REAL",
+                "{triple}"
+            );
+        }
+    }
+
+    /// Un aviso distinto en el paquete falla nombrando el archivo, y no deja
+    /// librería extraída. El `LICENSE` de un subdirectorio no se toma.
     #[test]
     fn extract_rejects_notices_that_differ_from_the_versioned_copies() {
         let base_guard = tempfile::tempdir().unwrap();
         let base = base_guard.path();
-        let archive = base.join("ort.zip");
-        write_ort_zip(&archive, "licencia nueva", "avisos");
+        let archive = base.join("ort.nupkg");
+        write_ort_nupkg(
+            &archive,
+            &full_nupkg_entries(
+                "runtimes/win-x64/native/onnxruntime.dll",
+                "licencia nueva",
+                "avisos",
+            ),
+        );
         let notices = base.join("notices");
         write_notices(&notices, "licencia vieja", "avisos");
         let err = extract_ort_library(
@@ -2299,23 +2227,20 @@ mod tests {
         assert!(!base.join("bundle/onnxruntime.dll").exists());
     }
 
-    /// Un archivo sin los avisos también falla: no se da por bueno lo que no se puede comparar.
+    /// Un paquete sin los avisos en la raíz también falla: no se da por bueno
+    /// lo que no se puede comparar, y un homónimo de subdirectorio no los suple.
     #[test]
-    fn extract_rejects_an_archive_without_notices() {
+    fn extract_rejects_a_package_without_notices() {
         let base_guard = tempfile::tempdir().unwrap();
         let base = base_guard.path();
-        let archive = base.join("ort.zip");
-        {
-            use std::io::Write;
-            let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive).unwrap());
-            zip.start_file(
-                "ort/lib/onnxruntime.dll",
-                zip::write::SimpleFileOptions::default(),
-            )
-            .unwrap();
-            zip.write_all(b"DLL").unwrap();
-            zip.finish().unwrap();
-        }
+        let archive = base.join("ort.nupkg");
+        write_ort_nupkg(
+            &archive,
+            &[
+                ("runtimes/win-x64/native/onnxruntime.dll", "DLL"),
+                ("docs/LICENSE", "homónimo de un subdirectorio"),
+            ],
+        );
         let notices = base.join("notices");
         write_notices(&notices, "a", "b");
         let err = extract_ort_library(
@@ -2327,6 +2252,48 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("no trae LICENSE"), "{err}");
+    }
+
+    /// Falta la biblioteca del triple o mide cero bytes: error que nombra la entrada.
+    #[test]
+    fn extract_rejects_a_missing_or_empty_library() {
+        let base_guard = tempfile::tempdir().unwrap();
+        let base = base_guard.path();
+        let notices = base.join("notices");
+        write_notices(&notices, "a", "b");
+        let entry = "runtimes/win-x64/native/onnxruntime.dll";
+        for (entries, expected) in [
+            (
+                vec![
+                    ("runtimes/linux-x64/native/libonnxruntime.so", "SO"),
+                    ("LICENSE", "a"),
+                    ("ThirdPartyNotices.txt", "b"),
+                ],
+                "no trae la entrada",
+            ),
+            (
+                vec![
+                    (entry, ""),
+                    ("LICENSE", "a"),
+                    ("ThirdPartyNotices.txt", "b"),
+                ],
+                "mide 0 bytes",
+            ),
+        ] {
+            let archive = base.join("ort.nupkg");
+            write_ort_nupkg(&archive, &entries);
+            let err = extract_ort_library(
+                &archive,
+                &base.join("bundle"),
+                "x86_64-pc-windows-msvc",
+                "1.28.0",
+                &notices,
+            )
+            .unwrap_err();
+            let text = err.to_string();
+            assert!(text.contains(entry) && text.contains(expected), "{text}");
+            assert!(!base.join("bundle/onnxruntime.dll").exists());
+        }
     }
 
     /// Las copias versionadas del repositorio existen para la versión fijada.
