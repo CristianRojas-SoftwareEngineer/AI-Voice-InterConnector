@@ -826,17 +826,17 @@ commands:
             # corre en tags `v*`, así que un CIRCLE_TAG ausente es un error.
             : "${CIRCLE_TAG:?el pipeline solo corre en tags v*}"
             test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
-            # Valida la voz de fábrica 'default' (runner limpio: voice list
-            # auto-inicializa el store y no carga el modelo). Prefijo '^  - default'
-            # tolera el sufijo '(fábrica)' del CLI Rust sin aceptar otras voces.
+            # Valida la voz de fábrica 'default' leyendo el JSON de `voice list`,
+            # que es el contrato de máquina (runner limpio: voice list
+            # auto-inicializa el store y no carga el modelo).
             # Captura previa en variable en lugar de tubería directa a `grep -q`:
             # `grep -q` sale en cuanto encuentra la coincidencia y cierra la
             # tubería; si el binario aún tiene líneas por escribir, esa
             # escritura devuelve EPIPE y `println!` hace panic (Rust ignora
             # SIGPIPE por defecto). Con `pipefail` eso tumbaba el paso de forma
             # intermitente (visto en v0.20.9, build-linux-x64).
-            voice_list_out="$(target/release/ai-voice-interconnector voice list)"
-            printf '%s\n' "$voice_list_out" | grep -q '^  - default'
+            voice_list_out="$(target/release/ai-voice-interconnector --json voice list)"
+            printf '%s\n' "$voice_list_out" | grep -qE '^    "default",?$'
             target/release/ai-voice-interconnector speech denoise --help
             if target/release/ai-voice-interconnector denoise --help; then
               echo "el binario release aceptó el comando raíz denoise" >&2
@@ -1638,12 +1638,12 @@ jobs:
             Write-Host "version --json OK: name=$($j.name) version=$($j.version) schema_version=$($j.schema_version)"
             # Valida que la voz de fábrica 'default' quede registrada en un
             # runner limpio (voice list no carga el modelo y auto-inicializa
-            # el store). El CLI imprime '  - default (fábrica)': se compara por
-            # prefijo con -like (nunca -notmatch sobre array: filtra en vez de
-            # dar booleano).
-            $voiceList = & $Exe voice list
+            # el store). Se lee el JSON de `--json voice list`, que es el
+            # contrato de máquina.
+            $voiceRaw = & $Exe --json voice list | Out-String
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            if (-not ($voiceList | Where-Object { $_ -like '  - default*' })) { throw "La voz de fábrica 'default' no está registrada" }
+            try { $voiceList = $voiceRaw | ConvertFrom-Json } catch { throw "voice list --json no es JSON válido: $voiceRaw : $_" }
+            if (-not ($voiceList.voices -contains 'default')) { throw "La voz de fábrica 'default' no está registrada" }
             & $Exe speech denoise --help
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             & $Exe denoise --help
@@ -2117,8 +2117,8 @@ jobs:
             "$STAGE/ai-voice-interconnector" --version
             # Captura previa en variable: `grep -q` cerraría la tubería antes de
             # que el binario termine de escribir.
-            voice_list_out="$("$STAGE/ai-voice-interconnector" voice list)"
-            printf '%s\n' "$voice_list_out" | grep -q '^  - default'
+            voice_list_out="$("$STAGE/ai-voice-interconnector" --json voice list)"
+            printf '%s\n' "$voice_list_out" | grep -qE '^    "default",?$'
             SANDBOX="$(mktemp -d)"
             export AVI_INSTALL_DIR="$SANDBOX/program" AVI_BIN_DIR="$SANDBOX/bin" AVI_DATA_DIR="$SANDBOX/data" AVI_CACHE_DIR="$SANDBOX/cache"
             mkdir -p "$AVI_INSTALL_DIR" "$AVI_BIN_DIR" "$AVI_DATA_DIR" "$AVI_CACHE_DIR"

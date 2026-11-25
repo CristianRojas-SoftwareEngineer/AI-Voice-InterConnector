@@ -2802,8 +2802,8 @@ mod tests {
         // es justo el patrón de reemplazo; se prohíbe solo el productor
         // original: el binario en ejecución piped directo a `grep -q`.
         assert!(
-            !cfg.contains("ai-voice-interconnector voice list | grep -q"),
-            "no debe existir `ai-voice-interconnector voice list | grep -q` directo: capturar la salida en variable antes de filtrar (regresión EPIPE v0.20.9)"
+            !cfg.contains("voice list | grep -q"),
+            "no debe existir `voice list | grep -q` directo: capturar la salida en variable antes de filtrar (regresión EPIPE v0.20.9)"
         );
         // `find ... | head -nN` tiene el mismo riesgo si `find` tiene más de una
         // coincidencia: `head` cierra la tubería tras la primera línea y `find`

@@ -9419,10 +9419,10 @@ mod tests {
     /// Las fuentes de audio de la línea de contexto.
     #[test]
     fn audio_source_label_names_the_file_or_the_microphone() {
-        assert_eq!(
-            audio_source_label(Some("C:\\datos\\voz.wav"), None),
-            "archivo voz.wav"
-        );
+        // La ruta se construye con el separador del sistema: una ruta con
+        // barras invertidas solo se descompone en Windows.
+        let path = std::path::Path::new("datos").join("voz.wav");
+        assert_eq!(audio_source_label(path.to_str(), None), "archivo voz.wav");
         assert_eq!(
             audio_source_label(None, Some(40)),
             "micrófono (máximo 0:40)"
