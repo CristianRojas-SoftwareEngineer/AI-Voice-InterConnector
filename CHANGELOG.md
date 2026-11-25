@@ -181,6 +181,8 @@ Por otra parte, la síntesis deja el motor C que AVI vendorizaba y compilaba par
 - **Locuciones de la voz `default` borradas al actualizar:** se grabaron con el motor C; los anuncios del plugin se regeneran con su comando `presynth` (`node dist/narrate-ctl.js presynth --voice default`).
 - **Variables retiradas:** desaparecen `AVI_TTS_PRECISION`, `AVI_ALLOW_CWD_VENDOR` y `QWEN3_TTS_MODEL_DIR`; el motor tiene un único perfil de precisión y un solo modelo.
 - **Errores del motor en español:** el campo `error` que el motor devuelve —informativo, sin garantía de forma ni de idioma— llega al usuario en español; el contrato de AVI sigue siendo el `reason` de la salida `--json`.
+- **ONNX Runtime desde NuGet:** Microsoft retiró de GitHub el repositorio de ONNX Runtime y sus descargas, y AVI toma la misma versión 1.28.0 del paquete oficial `Microsoft.ML.OnnxRuntime` de nuget.org, fijado por su SHA-256 en `packaging/pins.json`. Las bibliotecas son las que distribuía la 0.45.2: idénticas en Windows y Linux, y en macOS el mismo build con la firma de Microsoft.
+- **FFmpeg de Linux, build de fin de mes:** BtbN borró el build de FFmpeg 9.0.2 que AVI fijaba para Linux, y AVI fija el de fin de octubre (`n9.0.2-39-g7adfbe40dc`). Solo se fijan builds del último día de un mes, que BtbN conserva dos años.
 
 ### Corregido
 
