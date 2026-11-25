@@ -151,6 +151,7 @@ Los mecanismos oficiales de limpieza no dejaban residuos en una instalación sin
 
 ### Cambiado
 
+- **Motor de síntesis `qwen-tts-engine` 1.2.1:** versión de parche sin cambios de comportamiento ni de audio; sus pruebas dejan de dejar temporales fuera de `target/`.
 - **`cleanup --all` sin recibo de instalación:** deja el estado en cero (raíz de datos entera, modelos, temporales y ficheros de bloqueo), como `self uninstall`, y `cargo xtask clean --app` lo encadena cuando `self uninstall` responde `not_installed`. Con recibo no cambia.
 - **Poda de modelos retirados:** `setup` retira de la carpeta de modelos exclusiva los modelos que la versión ya no fija (por ejemplo, el CustomVoice que dejaron las instalaciones anteriores a la 0.46.0). En una caché compartida no cambia.
 - **Evidencia de la skill E2E:** pasa de `%TEMP%` a `target/e2e-evidence`, que retira `cargo xtask clean`.
