@@ -47,16 +47,18 @@ pub(crate) const FFMPEG_BUNDLE_REL: &str = "ffmpeg-bundle";
 /// pin invalida el bundle aunque la versión nominal no cambie.
 pub(crate) const FFMPEG_MARKER: &str = ".ffmpeg-sha256";
 
-/// Release inmutable de BtbN del que salen los binarios Linux: el tag
-/// `latest` se mueve, así que la URL y el hash fijados apuntan aquí.
-pub(crate) const FFMPEG_BTBN_TAG: &str = "autobuild-2026-10-24-13-02";
+/// Release de BtbN del que salen los binarios Linux. Solo se fija el último
+/// build de un mes, porque BtbN conserva el último build de cada mes durante dos
+/// años y de los diarios solo los 14 últimos; el tag `latest` se mueve, así que
+/// se fija uno fechado. Una prueba exige que el día sea el último de su mes.
+pub(crate) const FFMPEG_BTBN_TAG: &str = "autobuild-2026-10-31-12-59";
 
 /// Build concreto de FFmpeg dentro de [`FFMPEG_BTBN_TAG`].
-pub(crate) const FFMPEG_BTBN_BUILD: &str = "n9.0.2-35-g9a9b70bb8c";
+pub(crate) const FFMPEG_BTBN_BUILD: &str = "n9.0.2-39-g7adfbe40dc";
 
 /// Commit al que apunta [`FFMPEG_BTBN_TAG`] en el repositorio de scripts de BtbN. Se
 /// descarga el archivo del commit y no el del tag, que un autor podría mover.
-const FFMPEG_BTBN_COMMIT: &str = "937868360a21d711ec94a33f5591d345ad9b7754";
+const FFMPEG_BTBN_COMMIT: &str = "5031c6f1082414e53688d39e521849905071070d";
 
 /// Marcador del SHA-256 del paquete NuGet dentro de `ort-bundle/`: un cambio de
 /// pin invalida el bundle aunque la versión nominal no cambie. Un bundle sin
@@ -245,8 +247,16 @@ fn pinned_sha256<'a>(
 }
 
 /// Archivo y URL de descarga de FFmpeg para el triple. Linux usa un release
-/// inmutable de los builds GPL de BtbN y macOS el build de Martin Riedl;
-/// Windows, el essentials de Gyan. El pin de versión manda en todos los casos.
+/// de los builds GPL de BtbN y macOS el build de Martin Riedl; Windows, el
+/// essentials de Gyan. El pin de versión manda en todos los casos.
+///
+/// Conservación de cada origen. BtbN conserva dos años el último build de cada
+/// mes, y por eso solo se fija uno de fin de mes (ver [`FFMPEG_BTBN_TAG`]).
+/// GyanD y Martin Riedl no publican política de conservación, pero conservan
+/// todos sus builds de release (GyanD desde la 4.4, de abril de 2021; Martin
+/// Riedl desde la 5.0, de enero de 2022). Si alguno desapareciera, la descarga
+/// de la CI fallaría con un 404 y los paquetes ya instalados no se verían
+/// afectados.
 ///
 /// Windows se descarga del release que el propio autor del build publica en
 /// GitHub, no de su sitio de paquetes: ese sitio degrada las transferencias
@@ -1808,6 +1818,37 @@ mod tests {
         assert!(ort_package_entry("riscv64gc-unknown-linux-gnu").is_err());
     }
 
+    /// El tag de BtbN fijado es del último día de su mes: solo esos builds
+    /// se conservan dos años; los diarios se borran tras 14.
+    #[test]
+    fn btbn_tag_is_the_last_day_of_its_month() {
+        let parts: Vec<&str> = FFMPEG_BTBN_TAG
+            .strip_prefix("autobuild-")
+            .unwrap_or_default()
+            .split('-')
+            .collect();
+        assert!(
+            parts.len() == 5 && parts.iter().all(|p| p.parse::<u32>().is_ok()),
+            "el tag de BtbN debe tener la forma autobuild-AAAA-MM-DD-HH-MM: {FFMPEG_BTBN_TAG}"
+        );
+        let year: u32 = parts[0].parse().unwrap();
+        let month: u32 = parts[1].parse().unwrap();
+        let day: u32 = parts[2].parse().unwrap();
+        let leap =
+            (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400);
+        let last_day = match month {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            2 if leap => 29,
+            2 => 28,
+            _ => panic!("mes fuera de rango en el tag de BtbN: {FFMPEG_BTBN_TAG}"),
+        };
+        assert_eq!(
+            day, last_day,
+            "el tag de BtbN debe ser del último día de su mes ({year}-{month:02}-{last_day:02}); BtbN solo conserva esos builds dos años: {FFMPEG_BTBN_TAG}"
+        );
+    }
+
     /// La descarga de FFmpeg apunta a los archivos oficiales por triple.
     #[test]
     fn ffmpeg_download_per_target() {
@@ -1819,12 +1860,12 @@ mod tests {
         // paquetes del mismo autor, que degrada las transferencias sostenidas.
         assert!(url.starts_with("https://github.com/GyanD/codexffmpeg/releases/download/"));
         let (file, url) = ffmpeg_download("x86_64-unknown-linux-gnu", &version).unwrap();
-        assert_eq!(file, "ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz");
+        assert_eq!(file, "ffmpeg-n9.0.2-39-g7adfbe40dc-linux64-gpl-9.0.tar.xz");
         assert!(url.ends_with(&file) && url.contains(FFMPEG_BTBN_TAG));
         let (file, _) = ffmpeg_download("aarch64-unknown-linux-gnu", &version).unwrap();
         assert_eq!(
             file,
-            "ffmpeg-n9.0.2-35-g9a9b70bb8c-linuxarm64-gpl-9.0.tar.xz"
+            "ffmpeg-n9.0.2-39-g7adfbe40dc-linuxarm64-gpl-9.0.tar.xz"
         );
         let (file, url) = ffmpeg_download("aarch64-apple-darwin", &version).unwrap();
         assert_eq!(file, "ffmpeg.zip");

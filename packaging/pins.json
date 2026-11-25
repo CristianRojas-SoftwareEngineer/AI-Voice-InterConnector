@@ -5,13 +5,13 @@
   "ffmpeg": "9.0.2",
   "ffmpeg_sha256": {
     "x86_64-pc-windows-msvc": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
-    "x86_64-unknown-linux-gnu": "ddffcf6e3d537dd9e0039f0635261be40dd9bfdafb2ea85970173e928e024e50",
-    "aarch64-unknown-linux-gnu": "710ac178fffa266d6b197a9e3cca4d2c62f35bed70d5cf99762d40aa8a5791f9",
+    "x86_64-unknown-linux-gnu": "73e29a56974ae5a651133a04584c7483b21afe941e17dc91d79814a758b608d3",
+    "aarch64-unknown-linux-gnu": "6cad88ae5bcec356cfc5d7979a036cc4007128201928a0cf243df3db483276cc",
     "aarch64-apple-darwin": "c8ed4c4e6978a03c485edbfe4e0a5dc2380f8a30bba5150531b31b094492d924"
   },
   "ffmpeg_source_sha256": {
     "ffmpeg-9.0.2.tar.xz": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
-    "ffmpeg-builds-autobuild-2026-10-24-13-02.tar.gz": "9ee4b55c6bf1ea2f9ee50a63bac8887532117ce9f7e7b0e2842a533b2d5f046a"
+    "ffmpeg-builds-autobuild-2026-10-31-12-59.tar.gz": "3d82bbb1dd436116034bb4d945245e5550dff0d89db0094e9af90382527c2c17"
   },
   "qwen_tts_engine": "1.2.0",
   "qwen_tts_engine_sha256": {

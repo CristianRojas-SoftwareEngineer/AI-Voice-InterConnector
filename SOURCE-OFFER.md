@@ -33,15 +33,15 @@ disponible en estos assets del release v0.46.0, verificados contra los
 hashes fijados en `packaging/pins.json`:
 
 - `ffmpeg-9.0.2.tar.xz`: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.46.0/ffmpeg-9.0.2.tar.xz>
-- `ffmpeg-builds-autobuild-2026-10-24-13-02.tar.gz`: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.46.0/ffmpeg-builds-autobuild-2026-10-24-13-02.tar.gz>
+- `ffmpeg-builds-autobuild-2026-10-31-12-59.tar.gz`: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.46.0/ffmpeg-builds-autobuild-2026-10-31-12-59.tar.gz>
 
-Los binarios proceden de estos builds (Linux: build `n9.0.2-35-g9a9b70bb8c` del
-release `autobuild-2026-10-24-13-02` de BtbN):
+Los binarios proceden de estos builds (Linux: build `n9.0.2-39-g7adfbe40dc` del
+release `autobuild-2026-10-31-12-59` de BtbN):
 
 - macOS ARM64: <https://ffmpeg.martin-riedl.de/download/macos/arm64/1789931890_9.0.2/ffmpeg.zip>
-- Linux ARM64: <https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-24-13-02/ffmpeg-n9.0.2-35-g9a9b70bb8c-linuxarm64-gpl-9.0.tar.xz>
+- Linux ARM64: <https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-linuxarm64-gpl-9.0.tar.xz>
 - Windows x64: <https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip>
-- Linux x64: <https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-24-13-02/ffmpeg-n9.0.2-35-g9a9b70bb8c-linux64-gpl-9.0.tar.xz>
+- Linux x64: <https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-31-12-59/ffmpeg-n9.0.2-39-g7adfbe40dc-linux64-gpl-9.0.tar.xz>
 
 La configuración con la que se compiló cada binario figura en estos assets del
 mismo release:

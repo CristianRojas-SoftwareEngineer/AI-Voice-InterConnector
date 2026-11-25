@@ -73,7 +73,7 @@ const MIN_FFMPEG_MAJOR: u32 = 6;
 /// - **Número de release desnudo**, como `ffmpeg version 9.0.2` (macOS) y
 ///   `ffmpeg version 9.0.2-full_build-www.gyan.dev` (Windows).
 /// - **Prefijo de `git describe`**, como
-///   `ffmpeg version n9.0.2-35-g9a9b70bb8c-20261024` (Linux). El build de BtbN
+///   `ffmpeg version n9.0.2-39-g7adfbe40dc-20261031` (Linux). El build de BtbN
 ///   nombra su versión con la salida de `git describe` sobre el tag de release:
 ///   la `n` precede al número, y el resto cuenta los commits desde ese tag y
 ///   resume el compromiso. El número de release sigue siendo el que abre la
@@ -579,7 +579,7 @@ mod tests {
         // Linux: el build de BtbN publica la salida de `git describe` del tag.
         assert_eq!(
             version_major(
-                "ffmpeg version n9.0.2-35-g9a9b70bb8c-20261024 Copyright (c) 2000-2026 the FFmpeg developers"
+                "ffmpeg version n9.0.2-39-g7adfbe40dc-20261031 Copyright (c) 2000-2026 the FFmpeg developers"
             ),
             Some(9)
         );
