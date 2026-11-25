@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.46.1 — 2026-11-25](#0461--2026-11-25)
 - [0.46.0 — 2026-11-24](#0460--2026-11-24)
 - [0.45.2 — 2026-11-16](#0452--2026-11-16)
 - [0.45.1 — 2026-11-15](#0451--2026-11-15)
@@ -141,7 +141,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.46.1] — 2026-11-25
 
 Los mecanismos oficiales de limpieza no dejaban residuos en una instalación sin recibo (descarga manual, binario de desarrollo o Cask de Homebrew), conservaban el modelo que la 0.46.0 dejó de fijar y las pruebas de AVI dejaban claves en el registro de Windows. Esta versión deja el estado en cero en esos casos y explica qué datos guarda el sistema operativo por su cuenta y cómo borrarlos.
 
@@ -4184,3 +4184,4 @@ estado con el que nace el producto.
 [0.45.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.45.0...v0.45.1
 [0.45.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.45.1...v0.45.2
 [0.46.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.45.2...v0.46.0
+[0.46.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.46.0...v0.46.1
