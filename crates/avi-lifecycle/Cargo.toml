@@ -58,6 +58,9 @@ indicatif = "0.18"
 # única `ExitCode::from_reason` de `avi-core`, en lugar de guardar un entero propio
 # en el error.
 avi-core = { path = "../avi-core" }
+# Expone la guarda que serializa las pruebas que comparten el registro de
+# ejecución.
+avi-term = { path = "../avi-term", features = ["test-support"] }
 # Directorios de trabajo de las pruebas con dueño que los borra al soltarse.
 tempfile = "3"
 # Las pruebas de la traducción de fallos de descarga construyen el `HFError` que

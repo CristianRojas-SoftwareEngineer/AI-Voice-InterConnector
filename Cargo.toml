@@ -72,6 +72,9 @@ flate2 = "1.0"
 zip = { version = "2.4", default-features = false, features = ["deflate-flate2", "flate2"] }
 # Solo para los tests: expone el generador de WAV de frecuencia nula.
 avi-audio = { path = "crates/avi-audio", features = ["test-support"] }
+# Solo para los tests: expone la guarda que serializa las pruebas que comparten
+# el registro de ejecución.
+avi-term = { path = "crates/avi-term", features = ["test-support"] }
 # Solo para los tests: habilita el feature `faults` del motor, de modo que
 # `cargo test --all` disponga del punto de inyección de fallo sin que
 # `cargo build --release` lo lleve.

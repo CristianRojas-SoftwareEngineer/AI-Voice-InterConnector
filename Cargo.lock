@@ -228,6 +228,7 @@ name = "avi-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "avi-term",
  "num_cpus",
  "serde_json",
  "thiserror 1.0.69",

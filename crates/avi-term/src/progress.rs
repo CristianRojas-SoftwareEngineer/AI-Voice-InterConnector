@@ -7,17 +7,20 @@
 //! Indicador de etapas de trabajo, por stderr.
 //!
 //! Cada etapa del catálogo ([`crate::stage`]) tiene su propio reloj. Una etapa
-//! permanente deja al terminar la línea `✓ <texto>  <duración>`; una transitoria
-//! no deja nada. Con terminal, la etapa en curso se repinta en una sola línea
-//! debajo de las terminadas (`… <texto> <duración>`); sin terminal, una etapa
-//! permanente se anuncia una vez, deja un latido cada 10 s y se cierra con su
-//! línea terminada, sin `\r` ni secuencias ANSI. `AVI_NO_PROGRESS` (cualquier
-//! valor no vacío) silencia todo salvo los resultados y la línea de cierre de
-//! [`PhaseProgress::finish`].
+//! permanente deja al terminar la línea `✓ <Nombre>  <duración>`; una
+//! transitoria no deja nada. Con terminal, la etapa en curso se repinta en una
+//! sola línea debajo de las terminadas (`… <texto> <duración>`); sin terminal,
+//! una etapa permanente se anuncia una vez, deja un latido cada 10 s y se
+//! cierra con su línea terminada, sin `\r` ni secuencias ANSI. `AVI_NO_PROGRESS`
+//! (cualquier valor no vacío) silencia todo salvo los resultados y la línea de
+//! cierre de [`PhaseProgress::finish`].
 //!
-//! Todos los métodos toman `&self`: el estado vive tras un `Mutex`, así que el
-//! indicador se comparte por referencia con el hilo que lo repinta y con los
-//! receptores de eventos.
+//! Cada transición se escribe además en el registro de ejecución
+//! ([`crate::report`]), que es la fuente única del JSON y del manejador de
+//! Ctrl+C. Todos los métodos toman `&self`: el estado vive tras un `Mutex`, así
+//! que el indicador se comparte por referencia con el hilo que lo repinta y con
+//! los receptores de eventos. Orden de cerrojos: primero el estado interno del
+//! indicador y después el registro, y nunca al revés.
 
 use std::io::IsTerminal;
 use std::sync::{Mutex, MutexGuard};
@@ -25,8 +28,9 @@ use std::time::{Duration, Instant};
 
 use crate::fmt;
 use crate::line;
+use crate::report::{self, ReportGuard, StageOutcome};
 use crate::stage::Stage;
-use crate::style::{color_enabled, paint_if, Stream, Tone, ACTIVE, OK};
+use crate::style::{color_enabled, paint_if, Stream, Tone, ACTIVE, FAIL, OK};
 
 /// Ancho al que se rellena el texto de una línea terminada, para que las
 /// duraciones queden alineadas.
@@ -42,14 +46,22 @@ const CLEAR_LINE: &str = "\r\x1b[2K";
 /// Sube el cursor una línea.
 const CURSOR_UP: &str = "\x1b[1A";
 
-/// La etapa en curso.
+/// Una etapa viva.
 struct Current {
+    /// Id de su registro en [`report`].
+    id: u64,
     label: &'static str,
     active: String,
-    done: Option<String>,
-    /// `done_as` fijó el texto terminado: un `phase` del mismo `label` no lo
-    /// pisa con el del catálogo.
-    done_overridden: bool,
+    /// Nombre de la etapa en su columna al terminar.
+    name: String,
+    /// Deja su línea terminada al cerrarse: el catálogo la da por permanente o
+    /// `done_as` la hizo permanente.
+    permanent: bool,
+    /// El recorrido declarado del comando la incluye.
+    declared: bool,
+    /// `done_as` fijó el nombre: un `phase` del mismo `label` no lo pisa con el
+    /// del catálogo.
+    name_overridden: bool,
     started: Instant,
     note: Option<String>,
     /// Línea activa completa que sustituye a la estándar.
@@ -60,12 +72,12 @@ struct Current {
 
 /// Estado mutable del indicador.
 struct Inner {
+    /// La etapa principal: la que se pinta en la línea viva.
     current: Option<Current>,
+    /// Segunda etapa viva, abierta con [`PhaseProgress::overlap`] sin cerrar la
+    /// principal.
+    overlapped: Option<Current>,
     last_paint: Option<Instant>,
-    /// Texto terminado y duración de cada etapa permanente cerrada, para que
-    /// el cierre del comando repita exactamente la duración que mostró la
-    /// etapa.
-    finished_stages: Vec<(String, Duration)>,
     /// El indicador ya se cerró con `close`, `finish` o `fail`: su `Drop` no
     /// hace nada.
     closed: bool,
@@ -92,12 +104,15 @@ pub struct PhaseProgress {
 }
 
 impl PhaseProgress {
-    /// Crea el indicador: captura el reloj de inicio y decide terminal,
+    /// Crea el indicador: captura el reloj de inicio (que fija el origen del
+    /// reloj del registro si es el primero del proceso) y decide terminal,
     /// silenciado, modo máquina y color una sola vez, para que cada llamada
     /// sea barata.
     pub fn new() -> Self {
+        let start = Instant::now();
+        report::lock().set_origin_if_none(start);
         Self {
-            start: Instant::now(),
+            start,
             tty: std::io::stderr().is_terminal(),
             enabled: !progress_silenced(),
             machine: line::machine_mode(),
@@ -107,8 +122,8 @@ impl PhaseProgress {
             beat_every: BEAT_INTERVAL,
             inner: Mutex::new(Inner {
                 current: None,
+                overlapped: None,
                 last_paint: None,
-                finished_stages: Vec::new(),
                 closed: false,
             }),
             #[cfg(test)]
@@ -120,7 +135,7 @@ impl PhaseProgress {
     /// terminal fijados a mano, para no depender del entorno del proceso ni de
     /// que exista una terminal. Sin límite de repintado y sin color.
     #[cfg(test)]
-    fn for_test(no_progress_value: Option<&str>, tty: bool) -> Self {
+    pub(crate) fn for_test(no_progress_value: Option<&str>, tty: bool) -> Self {
         let mut progress = Self::new();
         progress.tty = tty;
         progress.enabled = !silenced_by(no_progress_value);
@@ -132,11 +147,11 @@ impl PhaseProgress {
 
     /// Activa el modo de etapa única, para un comando cuya única etapa de
     /// trabajo repetiría lo que dice el cierre: al cerrarse, una etapa
-    /// permanente no escribe su línea `✓`, pero sí registra su duración, que el
-    /// cierre del comando recupera con [`PhaseProgress::finished_duration`].
-    /// Sin terminal se conservan el anuncio `… <texto>` y los latidos. En modo
-    /// máquina no tiene efecto: no hay cierre, así que la línea `✓` de la etapa
-    /// es la única que da su duración y se escribe como siempre.
+    /// permanente no escribe su línea `✓`, pero sí queda en el registro con su
+    /// duración. Sin terminal se conservan el anuncio `… <texto>` y los
+    /// latidos. En modo máquina no tiene efecto: no hay cierre, así que la
+    /// línea `✓` de la etapa es la única que da su duración y se escribe como
+    /// siempre.
     pub fn single_stage(mut self) -> Self {
         self.single_stage = true;
         self
@@ -155,7 +170,15 @@ impl PhaseProgress {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Escribe `text` en stderr y lo vacía. En las pruebas lo acumula.
+    /// Toma el estado del indicador y, después, el registro: el único orden
+    /// permitido.
+    fn lock_both(&self) -> (MutexGuard<'_, Inner>, ReportGuard) {
+        let inner = self.lock();
+        (inner, report::lock())
+    }
+
+    /// Escribe `text` en stderr y lo vacía. En las pruebas lo acumula. Quien
+    /// llama tiene tomada la guarda del registro.
     fn raw(&self, text: &str) {
         #[cfg(test)]
         self.captured
@@ -202,16 +225,11 @@ impl PhaseProgress {
             .is_none_or(|last| last.elapsed() >= self.repaint_every)
     }
 
-    /// Cierra la etapa en curso: una permanente deja su línea terminada (salvo
-    /// en modo de etapa única), una transitoria se borra.
-    fn close_current(&self, inner: &mut Inner) {
-        let Some(current) = inner.current.take() else {
-            return;
-        };
-        let elapsed = current.started.elapsed();
-        if let Some(done) = &current.done {
-            inner.finished_stages.push((done.clone(), elapsed));
-        }
+    /// Cierra una etapa en el instante `at`: una permanente deja su línea
+    /// terminada (salvo en modo de etapa única), una transitoria se borra.
+    fn close_one(&self, current: Current, rep: &mut ReportGuard, at: Instant) {
+        let elapsed = at.saturating_duration_since(current.started);
+        rep.close_stage(current.id, at, None);
         if !self.enabled {
             return;
         }
@@ -221,9 +239,58 @@ impl PhaseProgress {
         if self.single_stage && !self.machine {
             return;
         }
-        if let Some(done) = &current.done {
-            let line = finished_line(self.color, done, elapsed, current.note.as_deref());
+        if current.permanent {
+            let line = finished_line(self.color, &current.name, elapsed, current.note.as_deref());
             self.raw(&format!("{line}\n"));
+        }
+    }
+
+    /// Cierra una etapa como fallida en `at` y pinta `✗ <Nombre> <duración>`.
+    fn fail_one(&self, current: Current, rep: &mut ReportGuard, at: Instant) {
+        let elapsed = at.saturating_duration_since(current.started);
+        rep.close_stage(current.id, at, Some(StageOutcome::Failed));
+        if !self.enabled {
+            return;
+        }
+        if self.tty {
+            self.clear_line();
+        }
+        let line = failed_line(self.color, &current.name, elapsed);
+        self.raw(&format!("{line}\n"));
+    }
+
+    /// Cierra todas las etapas vivas.
+    fn close_all(&self, inner: &mut Inner, rep: &mut ReportGuard) {
+        let at = Instant::now();
+        if let Some(current) = inner.current.take() {
+            self.close_one(current, rep, at);
+        }
+        if let Some(overlapped) = inner.overlapped.take() {
+            self.close_one(overlapped, rep, at);
+        }
+    }
+
+    /// Abre una etapa viva con inicio `started` y la registra.
+    fn open(
+        &self,
+        rep: &mut ReportGuard,
+        stage: &'static Stage,
+        active: &str,
+        started: Instant,
+    ) -> Current {
+        let id = rep.open_stage(stage, started);
+        Current {
+            id,
+            label: stage.label,
+            active: active.to_string(),
+            name: stage.name.to_string(),
+            permanent: !stage.transient,
+            declared: rep.is_declared(stage.label),
+            name_overridden: false,
+            started,
+            note: None,
+            live: None,
+            last_beat: started,
         }
     }
 
@@ -237,12 +304,14 @@ impl PhaseProgress {
     /// Igual que [`PhaseProgress::phase`], con un texto activo dinámico, por
     /// ejemplo `Descargando la versión 0.46.0…`.
     pub fn phase_with(&self, stage: &'static Stage, active: &str) {
-        let mut inner = self.lock();
+        let (mut inner, mut rep) = self.lock_both();
         if let Some(current) = inner.current.as_mut() {
             if current.label == stage.label {
                 current.active = active.to_string();
-                if !current.done_overridden {
-                    current.done = stage.done.map(str::to_string);
+                if !current.name_overridden {
+                    current.name = stage.name.to_string();
+                    current.permanent = !stage.transient;
+                    rep.rename_stage(current.id, stage.name, current.permanent);
                 }
                 if self.enabled && self.tty {
                     self.paint(&mut inner);
@@ -250,59 +319,112 @@ impl PhaseProgress {
                 return;
             }
         }
-        self.close_current(&mut inner);
-        let now = Instant::now();
-        inner.current = Some(Current {
-            label: stage.label,
-            active: active.to_string(),
-            done: stage.done.map(str::to_string),
-            done_overridden: false,
-            started: now,
-            note: None,
-            live: None,
-            last_beat: now,
-        });
+        self.close_all(&mut inner, &mut rep);
+        let current = self.open(&mut rep, stage, active, Instant::now());
+        inner.current = Some(current);
         if !self.enabled {
             return;
         }
         if self.tty {
             self.paint(&mut inner);
-        } else if stage.done.is_some() {
+        } else if !stage.transient {
             self.raw(&format!("{ACTIVE} {active}\n"));
         }
     }
 
-    /// Duración que mostró la última etapa permanente cerrada con el texto
-    /// terminado `text`, o `None` si ninguna se cerró con él. Permite que el
-    /// cierre del comando repita exactamente ese valor.
-    pub fn finished_duration(&self, text: &str) -> Option<Duration> {
-        self.lock()
-            .finished_stages
-            .iter()
-            .rev()
-            .find(|(done, _)| done == text)
-            .map(|(_, elapsed)| *elapsed)
+    /// Abre una segunda etapa viva con inicio explícito `at`, sin cerrar la
+    /// actual: sirve para dos etapas que corren a la vez, como la síntesis y la
+    /// reproducción que empieza con la primera muestra. Si no había ninguna
+    /// etapa en curso, queda como la principal.
+    pub fn overlap(&self, stage: &'static Stage, at: Instant) {
+        let (mut inner, mut rep) = self.lock_both();
+        let already_open = [inner.current.as_ref(), inner.overlapped.as_ref()]
+            .into_iter()
+            .flatten()
+            .any(|current| current.label == stage.label);
+        if already_open {
+            return;
+        }
+        let opened = self.open(&mut rep, stage, stage.active, at);
+        if inner.current.is_none() {
+            inner.current = Some(opened);
+        } else {
+            inner.overlapped = Some(opened);
+        }
+        if self.enabled && !self.tty && !stage.transient {
+            self.raw(&format!("{ACTIVE} {}\n", stage.active));
+        }
     }
 
-    /// Fija el texto terminado de la etapa en curso y la hace permanente.
+    /// Cierra una etapa concreta con un instante explícito, sin tocar la otra
+    /// si hay dos vivas. Si era la principal, la segunda pasa a serlo. Si
+    /// ninguna etapa viva es `stage`, no hace nada.
+    pub fn end_stage_at(&self, stage: &'static Stage, at: Instant) {
+        let (mut inner, mut rep) = self.lock_both();
+        if inner
+            .current
+            .as_ref()
+            .is_some_and(|c| c.label == stage.label)
+        {
+            if let Some(current) = inner.current.take() {
+                self.close_one(current, &mut rep, at);
+            }
+            inner.current = inner.overlapped.take();
+        } else if inner
+            .overlapped
+            .as_ref()
+            .is_some_and(|c| c.label == stage.label)
+        {
+            if let Some(overlapped) = inner.overlapped.take() {
+                self.close_one(overlapped, &mut rep, at);
+            }
+        }
+    }
+
+    /// Registra una etapa omitida durante la ejecución, con `start == end` en
+    /// el instante en que se marca, y su motivo. No abre ni cierra ninguna
+    /// etapa viva.
+    pub fn skip(&self, stage: &'static Stage, reason: &str) {
+        let (_inner, mut rep) = self.lock_both();
+        rep.skip_stage(stage, reason, Instant::now());
+    }
+
+    /// Marca la etapa en curso como fallida y pinta `✗ <Nombre> <duración>`.
+    /// Si había una segunda etapa viva, esta pasa a ser la principal. Sin
+    /// etapa en curso no hace nada.
+    pub fn fail_current(&self) {
+        let (mut inner, mut rep) = self.lock_both();
+        if let Some(current) = inner.current.take() {
+            self.fail_one(current, &mut rep, Instant::now());
+            inner.current = inner.overlapped.take();
+        }
+    }
+
+    /// Fija el nombre de la etapa en curso en su columna y la hace permanente:
+    /// sustituye al del catálogo, incluso en una transitoria.
     pub fn done_as(&self, text: &str) {
-        if let Some(current) = self.lock().current.as_mut() {
-            current.done = Some(text.to_string());
-            current.done_overridden = true;
+        let (mut inner, mut rep) = self.lock_both();
+        if let Some(current) = inner.current.as_mut() {
+            current.name = text.to_string();
+            current.name_overridden = true;
+            current.permanent = true;
+            rep.rename_stage(current.id, text, true);
         }
     }
 
     /// Añade ` · <texto>` a la línea terminada de la etapa en curso.
     pub fn note(&self, text: &str) {
-        if let Some(current) = self.lock().current.as_mut() {
+        let (mut inner, mut rep) = self.lock_both();
+        if let Some(current) = inner.current.as_mut() {
             current.note = Some(text.to_string());
+            rep.set_note(current.id, text);
         }
     }
 
     /// Sustituye la línea activa completa de la etapa en curso. Sin terminal
     /// no escribe nada.
     pub fn live(&self, line: String) {
-        let mut inner = self.lock();
+        let (mut inner, _rep) = self.lock_both();
         let Some(current) = inner.current.as_mut() else {
             return;
         };
@@ -318,7 +440,7 @@ impl PhaseProgress {
         if !self.enabled {
             return;
         }
-        let mut inner = self.lock();
+        let (mut inner, _rep) = self.lock_both();
         if inner.current.is_none() {
             return;
         }
@@ -332,7 +454,7 @@ impl PhaseProgress {
         let Some(current) = inner.current.as_mut() else {
             return;
         };
-        if current.done.is_some() && current.last_beat.elapsed() >= beat_every {
+        if current.permanent && current.last_beat.elapsed() >= beat_every {
             current.last_beat = Instant::now();
             let text = format!(
                 "  {ACTIVE} {} {}\n",
@@ -350,7 +472,7 @@ impl PhaseProgress {
         if !self.enabled || !self.tty {
             return;
         }
-        let _guard = self.lock();
+        let (_inner, _rep) = self.lock_both();
         self.clear_line();
     }
 
@@ -364,7 +486,7 @@ impl PhaseProgress {
         if !self.enabled || !self.tty || self.machine || !line::phase_line_open() {
             return;
         }
-        let _guard = self.lock();
+        let (_inner, _rep) = self.lock_both();
         self.raw(CURSOR_UP);
     }
 
@@ -373,7 +495,7 @@ impl PhaseProgress {
         if !self.enabled || !self.tty {
             return;
         }
-        let mut inner = self.lock();
+        let (mut inner, _rep) = self.lock_both();
         if inner.current.is_some() {
             self.paint(&mut inner);
         }
@@ -383,18 +505,22 @@ impl PhaseProgress {
     /// terminada, una transitoria se borra. Sirve para fijar la duración de una
     /// etapa antes de una pausa que no es trabajo, como una pregunta al usuario.
     pub fn end_stage(&self) {
-        let mut inner = self.lock();
-        self.close_current(&mut inner);
+        let (mut inner, mut rep) = self.lock_both();
+        self.close_all(&mut inner, &mut rep);
     }
 
     /// Abandona la etapa en curso sin dejar línea terminada, sea permanente o
-    /// transitoria: borra su línea activa. Sirve cuando el trabajo de la etapa
-    /// no se completó (se omitió o falló) y el llamador escribe su propia
-    /// línea en su lugar.
+    /// transitoria: borra su línea activa y la quita del registro. Sirve cuando
+    /// el trabajo de la etapa no se completó (se omitió o falló) y el llamador
+    /// escribe su propia línea en su lugar.
     pub fn discard_stage(&self) {
-        let mut inner = self.lock();
-        if inner.current.take().is_some() && self.enabled && self.tty {
-            self.clear_line();
+        let (mut inner, mut rep) = self.lock_both();
+        if let Some(current) = inner.current.take() {
+            rep.remove_stage(current.id);
+            inner.current = inner.overlapped.take();
+            if self.enabled && self.tty {
+                self.clear_line();
+            }
         }
     }
 
@@ -402,11 +528,13 @@ impl PhaseProgress {
     /// escribe el resultado por stdout. Con terminal en stdout:
     /// `  <etiqueta>: <texto en negrita>`, o `  <texto>` sin etiqueta; sin
     /// terminal: `<etiqueta>: <texto>`, o `<texto>`. En modo máquina no
-    /// escribe nada.
+    /// escribe nada. El resultado queda ligado en el registro a la etapa
+    /// que acaba de cerrarse.
     pub fn result(&self, label: Option<&str>, text: &str) {
         {
-            let mut inner = self.lock();
-            self.close_current(&mut inner);
+            let (mut inner, mut rep) = self.lock_both();
+            self.close_all(&mut inner, &mut rep);
+            rep.add_result(label, text);
         }
         if self.machine {
             return;
@@ -451,8 +579,8 @@ impl PhaseProgress {
     /// cierre.
     pub fn close(self) -> Duration {
         {
-            let mut inner = self.lock();
-            self.close_current(&mut inner);
+            let (mut inner, mut rep) = self.lock_both();
+            self.close_all(&mut inner, &mut rep);
             inner.closed = true;
         }
         self.start.elapsed()
@@ -466,12 +594,15 @@ impl PhaseProgress {
         let color = self.color;
         let elapsed = self.close();
         if !machine {
+            let _rep = report::lock();
             eprintln!("{}", closing_line(color, action, elapsed, extras));
         }
         elapsed
     }
 
-    /// Termina sin cierre: borra la línea activa sin escribir la terminada.
+    /// Termina sin cierre: si queda una etapa abierta, permanente o declarada,
+    /// la registra como fallida y pinta `✗ <Nombre> <duración>`; si no, solo
+    /// borra la línea activa.
     pub fn fail(self) {
         // El `Drop` hace el trabajo: un indicador soltado sin `close`,
         // `finish` ni `fail` equivale a `fail`.
@@ -486,13 +617,19 @@ impl Default for PhaseProgress {
 
 impl Drop for PhaseProgress {
     fn drop(&mut self) {
-        let closed = self
-            .inner
-            .get_mut()
-            .unwrap_or_else(|e| e.into_inner())
-            .closed;
-        if closed {
+        let inner = self.inner.get_mut().unwrap_or_else(|e| e.into_inner());
+        if inner.closed {
             return;
+        }
+        let open = [inner.current.take(), inner.overlapped.take()];
+        let mut rep = report::lock();
+        let at = Instant::now();
+        for current in open.into_iter().flatten() {
+            if current.permanent || current.declared {
+                self.fail_one(current, &mut rep, at);
+            } else {
+                rep.close_stage(current.id, at, None);
+            }
         }
         if self.enabled && self.tty {
             self.clear_line();
@@ -513,7 +650,7 @@ pub fn progress_silenced() -> bool {
     silenced_by(std::env::var("AVI_NO_PROGRESS").ok().as_deref())
 }
 
-/// Línea terminada de una etapa permanente: `✓ ` + el texto relleno a 16
+/// Línea terminada de una etapa permanente: `✓ ` + el nombre relleno a 16
 /// caracteres + la duración atenuada + ` · <nota>` si la hay.
 pub fn finished_line(color: bool, text: &str, elapsed: Duration, note: Option<&str>) -> String {
     let mut line = format!(
@@ -526,6 +663,17 @@ pub fn finished_line(color: bool, text: &str, elapsed: Duration, note: Option<&s
         line.push_str(&format!(" · {note}"));
     }
     line
+}
+
+/// Línea de una etapa fallida: `✗ ` + el nombre relleno a 16 caracteres + la
+/// duración atenuada.
+fn failed_line(color: bool, text: &str, elapsed: Duration) -> String {
+    format!(
+        "{} {text:<width$}  {}",
+        paint_if(color, Tone::Error, FAIL),
+        paint_if(color, Tone::Dim, &fmt::duration(elapsed)),
+        width = DONE_TEXT_WIDTH
+    )
 }
 
 /// Línea de cierre de un comando: `✓ <acción> en <duración>` seguida de
@@ -583,12 +731,10 @@ mod tests {
     use crate::stage;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// Serializa las pruebas en terminal: la línea de fase abierta es estado
-    /// global del proceso, compartido con los avisos de `line`.
+    /// Serializa las pruebas que crean un indicador: la línea de fase abierta
+    /// y el registro de ejecución son estado global del proceso.
     fn tty_lock() -> MutexGuard<'static, ()> {
-        crate::line::test_lock::PHASE_LINE_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
+        report::test_guard()
     }
 
     fn lines(text: &str) -> Vec<&str> {
@@ -598,8 +744,8 @@ mod tests {
     #[test]
     fn finished_line_pads_the_text_and_appends_duration_and_note() {
         assert_eq!(
-            finished_line(false, "Audio leído", Duration::from_millis(700), None),
-            "✓ Audio leído       0,7 s"
+            finished_line(false, "Lectura", Duration::from_millis(700), None),
+            "✓ Lectura           0,7 s"
         );
         assert_eq!(
             finished_line(
@@ -655,6 +801,7 @@ mod tests {
     /// terminada al cerrarse y no escribe línea en blanco inicial.
     #[test]
     fn permanent_stage_without_tty_announces_once_and_leaves_a_done_line() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false);
         progress.phase(&stage::READING);
         progress.tick();
@@ -665,7 +812,7 @@ mod tests {
         let out = progress.captured();
         let all = lines(&out);
         assert_eq!(all.len(), 3, "{all:?}");
-        assert!(all[1].starts_with("✓ Audio leído"), "{all:?}");
+        assert!(all[1].starts_with("✓ Lectura"), "{all:?}");
         assert_eq!(all[2], "… Transcribiendo…");
         assert!(!out.contains('\r'), "sin terminal no hay retornos de carro");
         assert!(!out.contains('\x1b'), "sin terminal no hay secuencias ANSI");
@@ -675,6 +822,7 @@ mod tests {
     /// cerrarse.
     #[test]
     fn transient_stage_without_tty_writes_nothing() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false);
         progress.phase(&stage::VALIDATING);
         progress.tick();
@@ -686,6 +834,7 @@ mod tests {
     /// terminada y deja el indicador listo para abrir otra con reloj propio.
     #[test]
     fn discard_stage_leaves_no_done_line() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false);
         progress.phase(&stage::DENOISING);
         progress.discard_stage();
@@ -696,13 +845,19 @@ mod tests {
         assert_eq!(all.len(), 3, "{all:?}");
         assert_eq!(all[0], "… Limpiando el ruido…");
         assert_eq!(all[1], "… Limpiando el ruido…");
-        assert!(all[2].starts_with("✓ Ruido limpiado"), "{all:?}");
+        assert!(all[2].starts_with("✓ Limpieza"), "{all:?}");
+        assert_eq!(
+            report::snapshot().stages.len(),
+            1,
+            "la etapa descartada no queda en el registro"
+        );
     }
 
     /// `end_stage` deja la línea terminada de la etapa permanente sin abrir
     /// otra, así que el cierre posterior no vuelve a escribirla.
     #[test]
     fn end_stage_closes_the_current_stage_once() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false);
         progress.phase(&stage::PLAYING);
         progress.end_stage();
@@ -710,7 +865,7 @@ mod tests {
         let out = progress.captured();
         let all = lines(&out);
         assert_eq!(all.len(), 2, "{all:?}");
-        assert!(all[1].starts_with("✓ Reproducido"), "{all:?}");
+        assert!(all[1].starts_with("✓ Reproducción"), "{all:?}");
         let captured = std::sync::Arc::clone(&progress.captured);
         let _ = progress.close();
         let after = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
@@ -719,9 +874,10 @@ mod tests {
 
     /// En modo de etapa única, cerrar una etapa permanente (con `close` o con
     /// `end_stage`) no escribe su línea `✓`, con o sin terminal; sin terminal
-    /// queda el anuncio `… <texto>`, y la duración sigue disponible.
+    /// queda el anuncio `… <texto>`, y la etapa queda en el registro.
     #[test]
     fn single_stage_closes_a_permanent_stage_without_its_line() {
+        let _guard = tty_lock();
         for tty in [false, true] {
             for use_end_stage in [false, true] {
                 let progress = PhaseProgress::for_test(None, tty).single_stage();
@@ -730,9 +886,6 @@ mod tests {
                     progress.end_stage();
                 }
                 let captured = std::sync::Arc::clone(&progress.captured);
-                if use_end_stage {
-                    assert!(progress.finished_duration("Traducido").is_some());
-                }
                 let _ = progress.close();
                 let out = captured.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 assert!(
@@ -746,32 +899,37 @@ mod tests {
         }
     }
 
-    /// La duración de la etapa cerrada en modo de etapa única queda registrada
-    /// para el cierre del comando.
+    /// La etapa cerrada en modo de etapa única queda en el registro con su
+    /// instante de cierre.
     #[test]
-    fn single_stage_keeps_the_duration_of_the_closed_stage() {
+    fn single_stage_keeps_the_closed_stage_in_the_report() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false).single_stage();
         progress.phase(&stage::TRANSLATING);
         progress.phase(&stage::SAVING);
-        assert!(progress.finished_duration("Traducido").is_some());
+        let snap = report::snapshot();
+        assert_eq!(snap.stages[0].label, "translating");
+        assert!(snap.stages[0].end.is_some());
     }
 
     /// En modo máquina el modo de etapa única no actúa: la línea `✓` se
     /// escribe como siempre.
     #[test]
     fn single_stage_has_no_effect_in_machine_mode() {
+        let _guard = tty_lock();
         let mut progress = PhaseProgress::for_test(None, false).single_stage();
         progress.machine = true;
         progress.phase(&stage::TRANSLATING);
         progress.end_stage();
         let out = progress.captured();
-        assert!(out.contains("✓ Traducido"), "{out}");
+        assert!(out.contains("✓ Traducción"), "{out}");
     }
 
-    /// `done_as` convierte una transitoria en permanente y cambia el texto
-    /// terminado de una permanente.
+    /// `done_as` convierte una transitoria en permanente y cambia el nombre
+    /// de una permanente.
     #[test]
     fn done_as_makes_a_transient_stage_permanent_and_renames_a_permanent_one() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false);
         progress.phase(&stage::STOPPING);
         progress.done_as("Daemon detenido");
@@ -783,13 +941,19 @@ mod tests {
         assert!(out.contains("✓ Daemon detenido"), "{out}");
         assert!(out.contains("✓ Primer audio"), "{out}");
         assert!(out.contains(" · 1 s"), "{out}");
-        assert!(!out.contains("Voz sintetizada"), "{out}");
+        assert!(!out.contains("✓ Síntesis"), "{out}");
+        let snap = report::snapshot();
+        assert_eq!(snap.stages[0].name, "Daemon detenido");
+        assert_eq!(snap.stages[0].outcome, StageOutcome::Ok);
+        assert_eq!(snap.stages[1].name, "Primer audio");
+        assert_eq!(snap.stages[1].note.as_deref(), Some("1 s"));
     }
 
     /// El mismo `label` solo actualiza los textos y conserva el reloj y el
-    /// texto terminado fijado con `done_as`.
+    /// nombre fijado con `done_as`.
     #[test]
     fn same_label_keeps_the_clock_and_the_done_override() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false);
         progress.phase(&stage::SYNTHESIZING);
         progress.done_as("Primer audio");
@@ -800,12 +964,13 @@ mod tests {
         let current = inner.current.as_ref().unwrap();
         assert_eq!(current.started, started, "el reloj no se reinicia");
         assert_eq!(current.active, "Sintetizando otra toma…");
-        assert_eq!(current.done.as_deref(), Some("Primer audio"));
+        assert_eq!(current.name, "Primer audio");
     }
 
     /// Sin terminal, una etapa permanente deja un latido cada intervalo.
     #[test]
     fn permanent_stage_without_tty_beats_when_due() {
+        let _guard = tty_lock();
         let mut progress = PhaseProgress::for_test(None, false);
         progress.beat_every = Duration::ZERO;
         progress.phase(&stage::DOWNLOADING);
@@ -846,7 +1011,7 @@ mod tests {
         progress.phase(&stage::READING);
         progress.phase(&stage::TRANSCRIBING);
         let out = progress.captured();
-        assert!(out.contains("\r\x1b[2K✓ Audio leído"), "{out:?}");
+        assert!(out.contains("\r\x1b[2K✓ Lectura"), "{out:?}");
         let _ = progress.close();
     }
 
@@ -908,34 +1073,6 @@ mod tests {
         assert!(!plain.captured().contains("Grabando 0:05"));
     }
 
-    /// La duración de una etapa cerrada se puede leer y es la que mostró su
-    /// línea terminada, también con el indicador silenciado.
-    #[test]
-    fn finished_duration_matches_the_stage_line() {
-        let _guard = tty_lock();
-        for silenced in [None, Some("1")] {
-            let progress = PhaseProgress::for_test(silenced, false);
-            progress.phase(&stage::SYNTHESIZING);
-            progress.done_as("Primer audio");
-            std::thread::sleep(Duration::from_millis(30));
-            progress.phase(&stage::PLAYING);
-            let elapsed = progress
-                .finished_duration("Primer audio")
-                .expect("la etapa cerrada deja su duración");
-            assert!(elapsed >= Duration::from_millis(30));
-            if silenced.is_none() {
-                let shown = format!("{}\n", finished_line(false, "Primer audio", elapsed, None));
-                assert!(
-                    progress.captured().contains(&shown),
-                    "{:?}",
-                    progress.captured()
-                );
-            }
-            assert_eq!(progress.finished_duration("Otra"), None);
-            let _ = progress.close();
-        }
-    }
-
     /// Tras el eco de un Enter, el indicador sube una línea antes de borrar:
     /// la línea viva desaparece y solo queda la terminada. Sin terminal no
     /// escribe nada.
@@ -948,7 +1085,7 @@ mod tests {
         progress.climb_echoed_enter();
         progress.phase(&stage::VALIDATING);
         let out = progress.captured();
-        assert!(out.contains("\x1b[1A\r\x1b[2K✓ Audio grabado"), "{out:?}");
+        assert!(out.contains("\x1b[1A\r\x1b[2K✓ Grabación"), "{out:?}");
         let _ = progress.close();
 
         let plain = PhaseProgress::for_test(None, false);
@@ -961,6 +1098,7 @@ mod tests {
     /// terminal.
     #[test]
     fn no_progress_silences_everything() {
+        let _guard = tty_lock();
         for tty in [true, false] {
             let progress = PhaseProgress::for_test(Some("1"), tty);
             progress.phase(&stage::READING);
@@ -985,7 +1123,7 @@ mod tests {
     }
 
     /// `close` no escribe línea de cierre y suelta la línea abierta; el
-    /// `Drop` de un indicador sin cerrar la borra sin dejar la terminada.
+    /// `Drop` de un indicador sin cerrar la borra.
     #[test]
     fn close_and_drop_leave_no_open_line() {
         let _guard = tty_lock();
@@ -1002,9 +1140,10 @@ mod tests {
         assert!(!line::phase_line_open());
     }
 
-    /// `fail` no escribe la línea terminada de la etapa en curso.
+    /// `fail` no escribe la línea terminada de la etapa en curso: pinta `✗`
+    /// con su nombre y la registra como fallida.
     #[test]
-    fn fail_does_not_write_the_done_line() {
+    fn fail_paints_the_failure_line_instead_of_the_done_line() {
         let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, true);
         progress.phase(&stage::READING);
@@ -1013,28 +1152,29 @@ mod tests {
         let out = captured.lock().unwrap().clone();
         assert!(out.contains("Leyendo"), "{out:?}");
         assert!(!out.contains('✓'), "{out:?}");
+        assert!(out.contains("✗ Lectura"), "{out:?}");
         assert!(!line::phase_line_open());
+        assert_eq!(report::snapshot().stages[0].outcome, StageOutcome::Failed);
     }
 
     /// En modo máquina `result` no escribe y las etapas siguen en stderr.
     #[test]
     fn machine_mode_keeps_the_stages_and_drops_the_result() {
+        let _guard = tty_lock();
         let mut progress = PhaseProgress::for_test(None, false);
         progress.machine = true;
         progress.phase(&stage::READING);
         progress.result(Some("Texto"), "no debe salir");
         let out = progress.captured();
         assert!(out.contains("… Leyendo el audio…"), "{out}");
-        assert!(
-            out.contains("✓ Audio leído"),
-            "`result` cierra la etapa: {out}"
-        );
+        assert!(out.contains("✓ Lectura"), "`result` cierra la etapa: {out}");
     }
 
     /// `while_running` repinta desde un hilo auxiliar mientras dura el trabajo
     /// y devuelve el valor, sin exigir `Send` al trabajo.
     #[test]
     fn while_running_ticks_during_the_work_and_returns_its_value() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false);
         let not_send = std::rc::Rc::new(7u32);
         let value = progress.while_running(|| *not_send + 1);
@@ -1045,6 +1185,7 @@ mod tests {
     /// se detiene en cuanto termina: no hay repintados posteriores al retorno.
     #[test]
     fn while_running_ticks_during_long_work_and_stops_after() {
+        let _guard = tty_lock();
         let mut progress = PhaseProgress::for_test(None, false);
         progress.beat_every = Duration::ZERO;
         progress.phase(&stage::DOWNLOADING);
@@ -1067,6 +1208,7 @@ mod tests {
     /// se propaga.
     #[test]
     fn while_running_stops_the_helper_when_the_work_panics() {
+        let _guard = tty_lock();
         let progress = PhaseProgress::for_test(None, false);
         let ticks = AtomicUsize::new(0);
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

@@ -6,6 +6,11 @@ license = "MPL-2.0"
 publish = false
 description = "Núcleo de presentación en terminal: paleta, formatos, línea de fase y etapas"
 
+[features]
+# Expone `report::test_guard()`: el cerrojo que serializa las pruebas que
+# comparten el registro de ejecución y reinicia su estado global.
+test-support = []
+
 [target.'cfg(windows)'.dependencies]
 # Arranque de consola en UTF-8 y activación de las secuencias ANSI (`line`,
 # `style`): solo Windows, Unix sigue puro. `Win32_Foundation` lo exige el BOOL

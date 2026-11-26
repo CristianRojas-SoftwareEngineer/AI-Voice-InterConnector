@@ -22,6 +22,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::fmt::sentence;
+use crate::report::{self, ContextValue};
 use crate::style::{paint, Stream, Tone, OK};
 
 /// Hay una línea de fase pintada sin salto final en stderr. Solo el indicador
@@ -76,17 +77,24 @@ pub fn machine_mode() -> bool {
 /// pintar debajo del aviso. La línea solo se abre en una terminal, así que sin
 /// terminal el aviso se escribe tal cual.
 pub fn warn(msg: impl std::fmt::Display) {
+    let text = sentence(&msg.to_string());
+    let mut report = report::lock();
+    report.add_warning(&text);
     take_phase_line();
-    eprintln!(
-        "{} {}",
-        paint(Stream::Stderr, Tone::Warning, "Aviso:"),
-        sentence(&msg.to_string())
-    );
+    eprintln!("{} {text}", paint(Stream::Stderr, Tone::Warning, "Aviso:"));
 }
 
-/// Escribe la línea de contexto de un comando por stderr. En modo máquina no
-/// escribe nada.
+/// Escribe la línea de contexto de un comando por stderr y la guarda en el
+/// registro de ejecución. En modo máquina no la escribe, pero sí la guarda.
 pub fn context(text: &str) {
+    context_with(text, &[]);
+}
+
+/// Como [`context`], con pares clave/valor tipados para el `context` del
+/// JSON.
+pub fn context_with(text: &str, pairs: &[(&str, ContextValue)]) {
+    let mut report = report::lock();
+    report.set_context(text, pairs);
     if machine_mode() {
         return;
     }
@@ -143,13 +151,12 @@ pub fn init_console() {
     crate::style::vt_enabled(Stream::Stderr);
 }
 
-/// Cerrojo de las pruebas del crate que tocan el estado global de la línea de
-/// fase, compartido entre este módulo y el indicador.
-#[cfg(test)]
-pub(crate) mod test_lock {
-    use std::sync::Mutex;
-
-    pub(crate) static PHASE_LINE_LOCK: Mutex<()> = Mutex::new(());
+/// Reinicia el estado global de este módulo. Solo lo llama
+/// [`report::test_guard`], que además serializa las pruebas.
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn reset_for_tests() {
+    PHASE_LINE_OPEN.store(false, Ordering::Relaxed);
+    MACHINE_MODE.store(false, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -157,12 +164,10 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    use super::test_lock::PHASE_LINE_LOCK;
-
     /// Un aviso cede la línea abierta y la deja cerrada.
     #[test]
     fn warn_takes_an_open_phase_line() {
-        let _guard = PHASE_LINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = report::test_guard();
         set_phase_line_open(true);
         warn("prueba del canal de consola");
         assert!(!phase_line_open());
@@ -171,7 +176,7 @@ mod tests {
     /// Ceder la línea es idempotente: solo la primera vez había algo que ceder.
     #[test]
     fn taking_the_phase_line_is_idempotent() {
-        let _guard = PHASE_LINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = report::test_guard();
         set_phase_line_open(true);
         assert!(phase_line_open());
         assert!(take_phase_line());
@@ -182,7 +187,7 @@ mod tests {
     /// Un aviso con la línea cerrada la deja cerrada.
     #[test]
     fn warn_with_a_closed_line_keeps_it_closed() {
-        let _guard = PHASE_LINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = report::test_guard();
         set_phase_line_open(false);
         warn("prueba sin línea abierta");
         assert!(!phase_line_open());
@@ -192,7 +197,7 @@ mod tests {
     /// el cierre respetan el modo máquina.
     #[test]
     fn context_ok_and_error_take_the_line_and_obey_machine_mode() {
-        let _guard = PHASE_LINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = report::test_guard();
         set_phase_line_open(true);
         error("falló algo", Some("repítelo"));
         assert!(!phase_line_open());

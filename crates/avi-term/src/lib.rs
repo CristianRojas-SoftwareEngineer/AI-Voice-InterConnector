@@ -16,11 +16,14 @@
 //! - [`line`]: estado global de la salida y líneas de contexto, aviso y error.
 //! - [`stage`]: catálogo único de etapas.
 //! - [`progress`]: el indicador de fases [`progress::PhaseProgress`].
+//! - [`report`]: registro de ejecución del proceso, fuente única del texto, del
+//!   JSON y del manejador de Ctrl+C.
 
 #![cfg_attr(not(test), deny(clippy::let_underscore_must_use))]
 
 pub mod fmt;
 pub mod line;
 pub mod progress;
+pub mod report;
 pub mod stage;
 pub mod style;

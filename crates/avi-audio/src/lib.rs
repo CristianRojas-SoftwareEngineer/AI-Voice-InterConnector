@@ -800,6 +800,13 @@ impl StreamPlayer {
         acquire_lock(&self.queue, "cola de reproducción").started()
     }
 
+    /// Estadísticas de la reproducción en vivo: el instante de la primera
+    /// muestra entregada al dispositivo (`None` si aún no llegó ninguna) y los
+    /// cortes hasta ahora. Se leen bajo el mismo cerrojo que [`Self::started`].
+    pub fn live_stats(&self) -> PlaybackStats {
+        acquire_lock(&self.queue, "cola de reproducción").stats()
+    }
+
     /// Marca el fin de la entrega, espera a que se reproduzca lo que queda y
     /// devuelve las estadísticas. Falla si el flujo de audio muere antes.
     /// Llama a `on_tick` en cada vuelta de la espera, para que quien llama

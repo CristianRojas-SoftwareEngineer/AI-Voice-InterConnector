@@ -1511,17 +1511,6 @@ fn finish_progress<T, E>(
     }
 }
 
-/// Extra de la línea de cierre con el tiempo hasta el primer audio, si lo hubo:
-/// `primer audio 1,2 s`. Es la duración que mostró la etapa `Primer audio`, no
-/// una medida aparte, para que cierre y etapa digan lo mismo.
-fn first_audio_extra(progress: &PhaseProgress) -> Vec<String> {
-    progress
-        .finished_duration("Primer audio")
-        .map(|elapsed| format!("primer audio {}", avi_term::fmt::duration(elapsed)))
-        .into_iter()
-        .collect()
-}
-
 /// Ruta efectiva de un comando para su línea de contexto.
 fn route_label(use_daemon: bool) -> &'static str {
     if use_daemon {
@@ -3865,9 +3854,8 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 )
             }
             .await;
-            let first_audio = first_audio_extra(&progress);
             finish_progress(progress, &result, "Reproducción completada", |_| {
-                first_audio
+                Vec::new()
             });
             let stats = result?;
             if json_mode {
@@ -7157,8 +7145,7 @@ fn finish_dub(
     progress: PhaseProgress,
     result: Result<DubOutcome, CliError>,
 ) -> Result<(), CliError> {
-    let first_audio = first_audio_extra(&progress);
-    finish_progress(progress, &result, "Doblaje completado", |_| first_audio);
+    finish_progress(progress, &result, "Doblaje completado", |_| Vec::new());
     let outcome = result?;
     if json_mode {
         emit_raw_json(dub_envelope(&outcome));
@@ -7322,38 +7309,6 @@ mod tests {
                 "stalls": 0,
             })
         );
-    }
-
-    /// El cierre del doblaje lleva el tiempo hasta el primer audio, si lo hubo.
-    #[test]
-    fn dub_closing_line_carries_the_first_audio_time() {
-        let closing = |stage_closed: bool| {
-            let progress = PhaseProgress::new();
-            if stage_closed {
-                progress.phase(&stage::SYNTHESIZING);
-                progress.done_as("Primer audio");
-                progress.phase(&stage::PLAYING);
-            }
-            let extras = first_audio_extra(&progress);
-            let shown = progress.finished_duration("Primer audio");
-            progress.fail();
-            (
-                avi_term::progress::closing_line(
-                    false,
-                    "Doblaje completado",
-                    std::time::Duration::from_secs(9),
-                    &extras,
-                ),
-                shown,
-            )
-        };
-        let (line, shown) = closing(true);
-        let shown = avi_term::fmt::duration(shown.expect("la etapa cerrada deja su duración"));
-        assert_eq!(
-            line,
-            format!("✓ Doblaje completado en 9,0 s · primer audio {shown}")
-        );
-        assert_eq!(closing(false).0, "✓ Doblaje completado en 9,0 s");
     }
 
     /// Los textos del doblaje salen por stdout con su etiqueta cuando no hay
@@ -8387,14 +8342,6 @@ mod tests {
         consume_ndjson_stream(resp, StreamResult::Synthesize, &progress, &mut audio)
             .await
             .expect("la secuencia termina con result");
-        assert!(
-            progress.finished_duration("Voz sintetizada").is_none(),
-            "la espera no cierra la síntesis como hecha"
-        );
-        assert!(
-            progress.finished_duration("Primer audio").is_some(),
-            "la síntesis se cierra como primer audio"
-        );
         assert_eq!(audio.calls, vec!["begin", "push", "push"]);
         let _elapsed = progress.close();
     }

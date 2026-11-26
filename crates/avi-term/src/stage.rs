@@ -5,7 +5,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 //! Catálogo único de etapas de trabajo: el texto con el que una etapa se anima
-//! mientras corre y el texto con el que queda fija al terminar.
+//! mientras corre, su nombre de columna al terminar y si es transitoria.
 
 /// Una etapa de trabajo.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,95 +15,86 @@ pub struct Stage {
     pub label: &'static str,
     /// Texto mientras la etapa corre.
     pub active: &'static str,
-    /// Texto de la línea terminada. `None` significa etapa transitoria: no deja
-    /// línea al terminar.
-    pub done: Option<&'static str>,
+    /// Nombre de la etapa en su columna al terminar (`Grabación`, `Síntesis`…).
+    pub name: &'static str,
+    /// Etapa transitoria: no deja línea al terminar ni se numera, salvo que el
+    /// recorrido declarado del comando la incluya.
+    pub transient: bool,
 }
 
 /// Etapa transitoria.
-const fn transient(label: &'static str, active: &'static str) -> Stage {
+const fn transient(label: &'static str, active: &'static str, name: &'static str) -> Stage {
     Stage {
         label,
         active,
-        done: None,
+        name,
+        transient: true,
     }
 }
 
 /// Etapa permanente.
-const fn permanent(label: &'static str, active: &'static str, done: &'static str) -> Stage {
+const fn permanent(label: &'static str, active: &'static str, name: &'static str) -> Stage {
     Stage {
         label,
         active,
-        done: Some(done),
+        name,
+        transient: false,
     }
 }
 
-pub const VALIDATING: Stage = transient("validating", "Validando…");
-pub const STARTED: Stage = transient("started", "Enviando al daemon…");
-pub const DENOISE_QUEUE: Stage =
-    transient("denoise_queue", "Esperando turno para limpiar el ruido…");
-pub const SAVING: Stage = transient("saving", "Guardando…");
-pub const CHECKING: Stage = transient("checking", "Buscando actualizaciones…");
-pub const READING: Stage = permanent("reading", "Leyendo el audio…", "Audio leído");
-pub const CAPTURING: Stage = permanent("capturing", "Grabando…", "Audio grabado");
-pub const DENOISING: Stage = permanent("denoising", "Limpiando el ruido…", "Ruido limpiado");
-pub const TRANSCRIBING: Stage = permanent("transcribing", "Transcribiendo…", "Transcrito");
-pub const TRANSLATING: Stage = permanent("translating", "Traduciendo…", "Traducido");
-/// El llamador cambia el texto terminado con `done_as("Primer audio")` si
-/// después se reproduce.
-pub const SYNTHESIZING: Stage = permanent("synthesizing", "Sintetizando…", "Voz sintetizada");
+pub const VALIDATING: Stage = transient("validating", "Validando…", "Validación");
+pub const STARTED: Stage = transient("started", "Enviando al daemon…", "Envío");
+pub const DENOISE_QUEUE: Stage = transient(
+    "denoise_queue",
+    "Esperando turno para limpiar el ruido…",
+    "Espera de limpieza",
+);
+pub const SAVING: Stage = transient("saving", "Guardando…", "Guardado");
+pub const CHECKING: Stage = transient("checking", "Buscando actualizaciones…", "Comprobación");
+pub const READING: Stage = permanent("reading", "Leyendo el audio…", "Lectura");
+pub const CAPTURING: Stage = permanent("capturing", "Grabando…", "Grabación");
+pub const DENOISING: Stage = permanent("denoising", "Limpiando el ruido…", "Limpieza");
+pub const TRANSCRIBING: Stage = permanent("transcribing", "Transcribiendo…", "Transcripción");
+pub const TRANSLATING: Stage = permanent("translating", "Traduciendo…", "Traducción");
+pub const SYNTHESIZING: Stage = permanent("synthesizing", "Sintetizando…", "Síntesis");
 /// Textos activos de `SYNTHESIZING` mientras la síntesis espera: no son etapas
 /// propias, así que la espera comparte el reloj de la síntesis y nunca deja una
 /// línea terminada.
 pub const SYNTHESIS_QUEUED_TEXT: &str = "Esperando turno para sintetizar…";
 pub const SYNTHESIS_WARMING_TEXT: &str = "Calentando el motor…";
 pub const SYNTHESIS_LOADING_VOICE_TEXT: &str = "Cargando la voz…";
-pub const PLAYING: Stage = permanent("playing", "Reproduciendo…", "Reproducido");
+pub const PLAYING: Stage = permanent("playing", "Reproduciendo…", "Reproducción");
 pub const CLONING: Stage = permanent(
     "cloning",
     "Clonando la voz… (puede tardar varios minutos)",
-    "Voz clonada",
+    "Clonación",
 );
-pub const WARMING: Stage = permanent("warming", "Calentando el motor…", "Motor calentado");
+pub const WARMING: Stage = permanent("warming", "Calentando el motor…", "Calentamiento");
 pub const REMOVING: Stage = permanent("removing", "Borrando…", "Borrado");
 /// Transitoria: el llamador la hace permanente con `done_as("Daemon detenido")`
 /// solo si se detuvo un daemon.
-pub const STOPPING: Stage = transient("stopping", "Deteniendo el daemon…");
-pub const STARTING: Stage = permanent("starting", "Iniciando el daemon…", "Daemon iniciado");
-pub const DOWNLOADING: Stage = permanent("downloading", "Descargando…", "Descargado");
-pub const VERIFYING: Stage = permanent(
-    "verifying",
-    "Verificando la descarga…",
-    "Descarga verificada",
-);
-pub const REPLACING: Stage = permanent(
-    "replacing",
-    "Reemplazando el programa…",
-    "Programa reemplazado",
-);
-pub const COPYING: Stage = permanent("copying", "Copiando el programa…", "Programa copiado");
-pub const PATH_ADD: Stage = permanent("path", "Integrando en el PATH…", "PATH integrado");
-pub const PATH_REVERT: Stage = permanent("path", "Revirtiendo el PATH…", "PATH revertido");
-pub const RECEIPT: Stage = permanent("receipt", "Escribiendo el recibo…", "Recibo escrito");
-pub const STATE: Stage = permanent("state", "Borrando el estado…", "Estado borrado");
-pub const PROGRAM: Stage = permanent("program", "Borrando el programa…", "Programa borrado");
-pub const LOCKS: Stage = permanent(
-    "locks",
-    "Borrando los archivos de bloqueo…",
-    "Bloqueos borrados",
-);
-pub const CLEANING: Stage = permanent("cleaning", "Borrando los datos…", "Datos borrados");
-pub const REPAIRING: Stage = permanent("repairing", "Reparando los restos…", "Restos reparados");
+pub const STOPPING: Stage = transient("stopping", "Deteniendo el daemon…", "Parada del daemon");
+pub const STARTING: Stage = permanent("starting", "Iniciando el daemon…", "Arranque");
+pub const DOWNLOADING: Stage = permanent("downloading", "Descargando…", "Descarga");
+pub const VERIFYING: Stage = permanent("verifying", "Verificando la descarga…", "Verificación");
+pub const REPLACING: Stage = permanent("replacing", "Reemplazando el programa…", "Reemplazo");
+pub const COPYING: Stage = permanent("copying", "Copiando el programa…", "Copia");
+pub const PATH_ADD: Stage = permanent("path", "Integrando en el PATH…", "Integración en el PATH");
+pub const PATH_REVERT: Stage = permanent("path", "Revirtiendo el PATH…", "Reversión del PATH");
+pub const RECEIPT: Stage = permanent("receipt", "Escribiendo el recibo…", "Recibo");
+pub const STATE: Stage = permanent("state", "Borrando el estado…", "Estado");
+pub const PROGRAM: Stage = permanent("program", "Borrando el programa…", "Programa");
+pub const LOCKS: Stage = permanent("locks", "Borrando los archivos de bloqueo…", "Bloqueos");
+pub const CLEANING: Stage = permanent("cleaning", "Borrando los datos…", "Limpieza de datos");
+pub const REPAIRING: Stage = permanent("repairing", "Reparando los restos…", "Reparación");
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Ningún texto de etapa nombra al daemon salvo las etapas que hablan de
-    /// él por definición: el catálogo describe la operación, no la ruta.
-    #[test]
-    fn only_daemon_stages_mention_the_daemon() {
-        let all = [
+    /// Todas las etapas del catálogo.
+    fn all() -> [Stage; 29] {
+        [
             VALIDATING,
             STARTED,
             DENOISE_QUEUE,
@@ -133,10 +124,15 @@ mod tests {
             LOCKS,
             CLEANING,
             REPAIRING,
-        ];
-        for stage in all {
-            let mentions =
-                stage.active.contains("daemon") || stage.done.is_some_and(|d| d.contains("daemon"));
+        ]
+    }
+
+    /// Ningún texto de etapa nombra al daemon salvo las etapas que hablan de
+    /// él por definición: el catálogo describe la operación, no la ruta.
+    #[test]
+    fn only_daemon_stages_mention_the_daemon() {
+        for stage in all() {
+            let mentions = stage.active.contains("daemon") || stage.name.contains("daemon");
             let allowed = matches!(stage.label, "started" | "stopping" | "starting");
             assert!(!mentions || allowed, "{} nombra al daemon", stage.label);
         }
@@ -153,5 +149,28 @@ mod tests {
     #[test]
     fn path_stages_share_a_label() {
         assert_eq!(PATH_ADD.label, PATH_REVERT.label);
+    }
+
+    /// Solo las seis etapas transitorias del catálogo lo son, y todas tienen
+    /// un nombre de columna.
+    #[test]
+    fn catalog_transient_flags_and_names() {
+        let transients: Vec<&str> = all()
+            .iter()
+            .filter(|stage| stage.transient)
+            .map(|stage| stage.label)
+            .collect();
+        assert_eq!(
+            transients,
+            [
+                "validating",
+                "started",
+                "denoise_queue",
+                "saving",
+                "checking",
+                "stopping"
+            ]
+        );
+        assert!(all().iter().all(|stage| !stage.name.is_empty()));
     }
 }

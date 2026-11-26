@@ -49,5 +49,8 @@ serde_json = "1"
 regex = "1"
 
 [dev-dependencies]
+# Expone la guarda que serializa las pruebas que comparten el registro de
+# ejecución.
+avi-term = { path = "../avi-term", features = ["test-support"] }
 anyhow = "1"
 sha2 = "0.10"
