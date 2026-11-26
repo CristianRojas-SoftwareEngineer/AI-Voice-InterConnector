@@ -2697,7 +2697,12 @@ const CAPTURE_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_
 /// Valida el PCM adquirido: un PCM vacío se rechaza con exit 2
 /// (`empty_audio`) y uno que supera `max_secs` segundos con exit 2
 /// (`audio_too_long`); `subject` es el sujeto de la frase del límite.
-fn validate_acquired_pcm(pcm: &[i16], sample_rate: u32, max_secs: u64, subject: &str) -> Result<(), CliError> {
+fn validate_acquired_pcm(
+    pcm: &[i16],
+    sample_rate: u32,
+    max_secs: u64,
+    subject: &str,
+) -> Result<(), CliError> {
     if pcm.is_empty() {
         return Err(CliError::new(
             ExitCode::InvalidInput,
@@ -9457,8 +9462,8 @@ mod tests {
     /// Un PCM vacío se rechaza como `empty_audio`.
     #[test]
     fn empty_pcm_is_rejected_as_empty_audio() {
-        let error =
-            validate_acquired_pcm(&[], 16_000, 10, "El audio").expect_err("un PCM vacío debe rechazarse");
+        let error = validate_acquired_pcm(&[], 16_000, 10, "El audio")
+            .expect_err("un PCM vacío debe rechazarse");
         assert_eq!(error.reason, "empty_audio");
     }
 
