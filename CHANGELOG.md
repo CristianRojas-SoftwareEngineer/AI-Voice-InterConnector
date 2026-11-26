@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.46.1 — 2026-11-25](#0461--2026-11-25)
 - [0.46.0 — 2026-11-24](#0460--2026-11-24)
 - [0.45.2 — 2026-11-16](#0452--2026-11-16)
@@ -140,6 +141,19 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+La clonación desde el micrófono grababa a 16 kHz para un codificador que trabaja a 24 kHz, así que perdía la banda de 8 a 12 kHz, y la limpieza de la referencia atenuaba las pausas antes de que el motor las compactara. Ahora la captura conserva esa banda, la limpieza solo quita el ruido ambiental y la voz de fábrica se regenera con esa ruta.
+
+### Cambiado
+
+- **Captura de la referencia de `voice clone` desde el micrófono:** graba a 48 kHz con `--denoise` (la tasa de DPDFNet) y a 24 kHz sin él, en lugar de a 16 kHz. La transcripción sigue grabando a 16 kHz.
+- **Voz de fábrica `default`:** el asset `crates/avi-store/assets/default/reference.qvoice` se regenera desde `Speech Sampler.wav` con `voice clone --denoise`. La voz suena distinta a la de la 0.46.1.
+
+### Corregido
+
+- **Limpieza de la referencia de clonación:** `--denoise` aplicaba una compuerta de pausas de -25 dB que atenuaba la referencia antes de que el motor compactara los silencios. Ahora solo quita el ruido ambiental, igual que en la transcripción.
 
 ## [0.46.1] — 2026-11-25
 
