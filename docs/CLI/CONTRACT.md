@@ -566,7 +566,7 @@ La tabla se deriva del eje de dos preguntas. La segunda es la que reparte los en
 | Código | `reason` |
 |---|---|
 | `1` | `io_error`, `model_unavailable`, `release_unavailable`, `voice_clone_failed`, `synthesis_failed`, `synthesis_timeout`, `stt_unsupported`, `translation_unsupported`, `denoise_unsupported`, `denoise_failed`, `playback_failed`, `audio_enumeration_failed`, `speech_list_failed`, `voice_list_failed`, `voice_store_init_failed`, `daemon_error`, `startup_failed`, `sudo_not_supported`, `lifecycle_failed`, `doctor_failed`, `self_install_failed`, `self_uninstall_failed`, `self_update_failed`, `speech_metadata_corrupt` |
-| `2` | `confirmation_required`, `usage_error`, `empty_text`, `text_too_long`, `invalid_voice_name`, `invalid_identifier`, `cannot_remove_default`, `invalid_audio`, `empty_audio`, `empty_transcript`, `audio_too_long`, `output_exists` |
+| `2` | `confirmation_required`, `usage_error`, `empty_text`, `text_too_long`, `invalid_voice_name`, `invalid_identifier`, `cannot_remove_default`, `cannot_clone_default`, `invalid_audio`, `empty_audio`, `empty_transcript`, `audio_too_long`, `output_exists` |
 | `3` | `voice_not_found`, `warm_voice_missing`, `audio_not_found`, `speech_not_found`, `not_installed`, `no_input_device`, `no_output_device`, `audio_backend_unavailable` |
 | `4` | `model_missing` |
 | `5` | `daemon_unreachable` |

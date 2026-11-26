@@ -5943,6 +5943,42 @@ mod tts {
         );
     }
 
+    /// Clonar sobre la voz de fábrica `default` sale con exit 2 y
+    /// `cannot_clone_default` con archivo o micrófono, también con `--force`,
+    /// antes de abrir el dispositivo o leer la referencia.
+    #[test]
+    fn voice_clone_factory_voice_exits_2() {
+        let inst = IsolatedInstance::new("clone_factory_voice");
+        seed_pinned_models(&inst.cache_dir(), &["qwen3-tts-0.6b-base"]);
+        let a = inst.contract_args();
+        let sources: [&[&str]; 2] = [
+            &[
+                "--speech-reference",
+                "crates/avi-stt/tests/assets/parakeet_sample_16k.wav",
+            ],
+            &["--mic", "--duration", "1"],
+        ];
+        for source in sources {
+            for force in [false, true] {
+                let mut args = vec![
+                    "--json",
+                    "voice",
+                    "clone",
+                    "--no-daemon",
+                    "--name",
+                    "default",
+                ];
+                args.extend_from_slice(source);
+                if force {
+                    args.extend_from_slice(&["--force", "--yes"]);
+                }
+                let (code, actual) = run_json_env(&args, &a);
+                assert_eq!(code, 2, "{args:?}: {actual}");
+                assert_eq!(actual["reason"], "cannot_clone_default", "{args:?}");
+            }
+        }
+    }
+
     #[test]
     fn voice_clone_missing_audio_exits_3() {
         // Sandbox propio con el modelo Base sembrado; la ruta

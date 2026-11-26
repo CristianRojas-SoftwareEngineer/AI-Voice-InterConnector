@@ -1933,6 +1933,15 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 progress.phase(&stage::VALIDATING);
                 // Orden de validaciones del contrato: el nombre se valida antes que el modelo.
                 let name = VoiceName::parse(&name).map_err(invalid_name_cli_error)?;
+                // Una voz de fábrica es el asset embebido, que la inicialización del
+                // almacén restituye: no se clona encima.
+                if avi_store::is_factory_name(name.as_str()) {
+                    return Err(CliError::new(
+                        ExitCode::InvalidInput,
+                        "cannot_clone_default",
+                        format!("La voz {name} es de fábrica y no se puede clonar."),
+                    ));
+                }
                 // El archivo conserva el orden de validación vigente; el PCM de micrófono
                 // se limita tras la captura antes de codificarlo.
                 if !mic {

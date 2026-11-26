@@ -1467,6 +1467,18 @@ async fn voices_clone_handler(
                 .into_response();
         }
     };
+    // Una voz de fábrica es el asset embebido: no se clona encima.
+    if avi_store::is_factory_name(name.as_str()) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(with_sv(json!({
+                "error": "cannot_clone_default",
+                "reason": "cannot_clone_default",
+                "message": format!("La voz {name} es de fábrica y no se puede clonar."),
+            }))),
+        )
+            .into_response();
+    }
     // `force` es opcional (ausente = no sobrescribir); si viene, debe ser booleano.
     let force = match payload.get("force") {
         None => false,

@@ -713,6 +713,27 @@ async fn voices_clone_oversized_body_reports_invalid_name_not_413() {
     assert_eq!(actual["reason"], "invalid_voice_name");
 }
 
+/// Clonar sobre la voz de fábrica `default`, con o sin `force`, responde 400
+/// `cannot_clone_default`: su contenido es el asset embebido.
+#[tokio::test]
+async fn voices_clone_factory_voice_is_rejected() {
+    for force in [false, true] {
+        let (status, bytes) = send(post_json(
+            "/voices/clone",
+            serde_json::json!({ "name": "default", "audio_b64": "", "force": force }),
+        ))
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "force={force}, cuerpo: {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+        assert_eq!(actual["reason"], "cannot_clone_default", "force={force}");
+    }
+}
+
 /// Una referencia WAV de 31 s supera el tope de 30 s y se rechaza con 400
 /// `audio_too_long` antes de buscar el modelo Base. El estado se construye sin
 /// modelo Base para que la prueba no pueda lanzar el clonado real aunque el

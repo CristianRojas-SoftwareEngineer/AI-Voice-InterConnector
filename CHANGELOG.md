@@ -144,7 +144,12 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-La clonación desde el micrófono grababa a 16 kHz para un codificador que trabaja a 24 kHz, así que perdía la banda de 8 a 12 kHz, y la limpieza de la referencia atenuaba las pausas antes de que el motor las compactara. Ahora la captura conserva esa banda, la limpieza solo quita el ruido ambiental y la voz de fábrica se regenera con esa ruta.
+La clonación desde el micrófono grababa a 16 kHz para un codificador que trabaja a 24 kHz, así que perdía la banda de 8 a 12 kHz, y la limpieza de la referencia atenuaba las pausas antes de que el motor las compactara. Ahora la captura conserva esa banda, la limpieza solo quita el ruido ambiental y la voz de fábrica se regenera con esa ruta. Además, una voz de fábrica nueva no llegaba a las instalaciones existentes, porque la `default` solo se escribía si faltaba: ahora se reinstala en el primer uso, se actualice por el canal que sea.
+
+### Cambios incompatibles
+
+- **`voice clone --name default` se rechaza**, con o sin `--force`: exit 2 `cannot_clone_default` en la CLI y `400` `cannot_clone_default` en el daemon. El contenido de `default` es el asset embebido, que AVI restituye en cada uso; para usar otra voz se clona con otro nombre.
+- **`self install` deja de migrar voces de versiones anteriores a la 0.46.0:** ya no borra las voces clonadas en `.qvoice` v3 ni las carpetas `ryan/` y `vivian/`, y no imprime avisos de migración. Una instalación que venga de una versión anterior a la 0.46.0 debe borrar esas voces con `voice remove` o `cleanup --voices`.
 
 ### Cambiado
 
@@ -154,6 +159,7 @@ La clonación desde el micrófono grababa a 16 kHz para un codificador que traba
 ### Corregido
 
 - **Limpieza de la referencia de clonación:** `--denoise` aplicaba una compuerta de pausas de -25 dB que atenuaba la referencia antes de que el motor compactara los silencios. Ahora solo quita el ruido ambiental, igual que en la transcripción.
+- **Actualización de la voz de fábrica:** la inicialización del almacén solo escribía `default/reference.qvoice` si faltaba, así que una versión con otra voz de fábrica dejaba la anterior en las instalaciones existentes. Ahora la reinstala si difiere del asset embebido y borra antes sus audios sintetizados, que se hicieron con la voz anterior. Cubre `self install`, `self update`, Homebrew y los binarios sin recibo, porque ocurre en el primer uso de la voz.
 
 ## [0.46.1] — 2026-11-25
 

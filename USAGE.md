@@ -1380,8 +1380,9 @@ ai-voice-interconnector voice clone --name mi_voz --speech-reference condicion.w
 
 La voz de fábrica (`default`) no puede eliminarse con
 `voice remove`: el comando sale con exit 2 y el código `cannot_remove_default`.
-Si quieres reemplazar su sonido, vuelve a clonarla con el mismo nombre usando
-`voice clone --force`: su referencia se sustituye en el mismo directorio.
+Tampoco puede clonarse encima: `voice clone --name default` sale con exit 2 y el
+código `cannot_clone_default`, porque su contenido es el de fábrica y AVI lo
+restituye en cada uso. Para usar otro sonido, clona tu voz con otro nombre.
 
 ### Sin audio de salida
 

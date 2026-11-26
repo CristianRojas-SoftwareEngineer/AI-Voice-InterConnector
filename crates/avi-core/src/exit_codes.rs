@@ -117,6 +117,7 @@ pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("invalid_voice_name", ExitCode::InvalidInput),
     ("invalid_identifier", ExitCode::InvalidInput),
     ("cannot_remove_default", ExitCode::InvalidInput),
+    ("cannot_clone_default", ExitCode::InvalidInput),
     ("invalid_audio", ExitCode::InvalidInput),
     ("empty_audio", ExitCode::InvalidInput),
     ("empty_transcript", ExitCode::InvalidInput),
@@ -197,6 +198,10 @@ pub const REASON_SOLUTIONS: &[(&str, Option<&str>)] = &[
     (
         "cannot_remove_default",
         Some("Solo se pueden borrar las voces clonadas; consúltalas con `ai-voice-interconnector voice list`."),
+    ),
+    (
+        "cannot_clone_default",
+        Some("Clona tu voz con otro nombre, por ejemplo `--name mi_voz`."),
     ),
     ("invalid_audio", Some("Usa un archivo de audio WAV válido.")),
     ("empty_audio", Some("Usa un audio que no esté vacío.")),
@@ -446,6 +451,7 @@ mod tests {
         ("invalid_voice_name", 2),
         ("invalid_identifier", 2),
         ("cannot_remove_default", 2),
+        ("cannot_clone_default", 2),
         ("invalid_audio", 2),
         ("empty_audio", 2),
         ("empty_transcript", 2),

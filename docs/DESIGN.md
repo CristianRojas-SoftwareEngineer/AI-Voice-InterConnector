@@ -116,7 +116,7 @@ AI-Voice-InterConnector/
 └── docs/                               # ver el índice en README.md#documentación
 ```
 
-> Las voces de **fábrica** `default` están embebidas en el binario (`crates/avi-store/assets/default/`) y se materializan en `data_dir()/voices/default/` en `VoiceStore::ensure_initialized()`. Las voces de **usuario** viven en `data_dir()/voices/<nombre>/` (user-data-dir por SO).
+> Las voces de **fábrica** `default` están embebidas en el binario (`crates/avi-store/assets/default/`) y se materializan en `data_dir()/voices/default/` en `VoiceStore::ensure_initialized()`, que también las reinstala, con sus audios sintetizados borrados, cuando el binario trae otra versión. Las voces de **usuario** viven en `data_dir()/voices/<nombre>/` (user-data-dir por SO).
 
 ## Entry point `src/main.rs`
 
@@ -272,7 +272,7 @@ Todas las voces viven en un único nivel, `data_dir()/voices/<nombre>/`, y se re
 
 Las voces son de dos clases:
 
-- **Fábrica**: `default`, clonada, cuyo `reference.qvoice` va embebido en el binario (`include_bytes!`) y se materializa en `VoiceStore::ensure_initialized()`. `is_factory_name` la protege de `voice remove`.
+- **Fábrica**: `default`, clonada, cuyo `reference.qvoice` va embebido en el binario (`include_bytes!`) y se materializa en `VoiceStore::ensure_initialized()`, que la reinstala si el `reference.qvoice` del almacén difiere del embebido: así una versión nueva la trae por cualquier canal de instalación o actualización. `is_factory_name` la protege de `voice remove` y de `voice clone`.
 - **Usuario**: registradas con `voice clone`. `voice clone --force` sobre un nombre existente, de fábrica incluido, sustituye su referencia en el mismo directorio.
 
 **Identidad de contenido.** `VoiceStore::resolve` devuelve la referencia de una voz clonada como `VoiceReference { path, fingerprint }`, con la huella sha256 del `reference.qvoice` completo. Todo lo derivado de una voz corresponde a su contenido actual: el residente TTS se reutiliza solo con la misma identidad; `avi_store::replace_voice` es la única forma de cambiar el contenido de una voz y borra sus audios sintetizados antes de publicar la referencia nueva; y `avi_store::persist_locution` es la única forma de escribir un audio sintetizado y comprueba que la voz conserve la identidad con la que se sintetizó.

@@ -135,7 +135,7 @@ La referencia dura como máximo `MAX_CLONE_REFERENCE_SECS` ([`limits.rs`](../../
 
 `voices_clone_handler` (`crates/avi-daemon/src/lib.rs`):
 
-1. `VoiceName::parse(name)` → `400` `invalid_voice_name` si falla (también con `.` o `..`), antes de tocar ningún almacén.
+1. `VoiceName::parse(name)` → `400` `invalid_voice_name` si falla (también con `.` o `..`), antes de tocar ningún almacén; una voz de fábrica (`is_factory_name`) → `400` `cannot_clone_default`, también con `force`.
 2. `!force && voice_store.exists(name)` → `409` `voice_exists`.
 3. Falta `audio_b64` → `400` `usage_error`; no decodifica base64 → `400` `invalid_audio`; la referencia supera `MAX_CLONE_REFERENCE_SECS` (medida por su cabecera WAV) → `400` `audio_too_long`.
 4. `tts_engine.base_model_dir` ausente (Base de clonado no provisionado) → `404` `model_missing`.
@@ -233,7 +233,11 @@ del daemon.
 voz de fábrica (`FACTORY_VOICES = ["default"]`,
 `crates/avi-store/src/lib.rs`) se materializa como directorio normal en
 `ensure_initialized()`, y `is_factory_name` es lo único que la distingue de
-una voz clonada al listar o al intentar eliminarlas.
+una voz clonada al listar, al intentar eliminarlas o al clonar sobre ellas.
+`ensure_initialized()` corre en cada resolución de voz y deja el
+`reference.qvoice` de `default` igual al embebido: si difiere, el de una
+versión anterior, borra antes `speech/default/` y publica el embebido con
+temporal y renombrado.
 
 **Estructura de una voz clonada:**
 
@@ -256,9 +260,8 @@ voz (`default` incluida) sale con `model_missing` (exit 4; en el daemon, como ev
 `FACTORY_DEFAULT_QVOICE`, también con solo la huella de timbre). Se generó con la
 ruta de clonación del producto a partir de `assets/audios/Speech Sampler.wav`
 (~10 s), copiando al asset el `reference.qvoice` que deja en el almacén
-`ai-voice-interconnector voice clone --no-daemon --name default --force --yes --speech-reference "assets/audios/Speech Sampler.wav"`
-(`--force` porque `default` ya existe como voz de fábrica; `--yes` porque también
-borra sus audios sintetizados guardados, si los hay).
+`ai-voice-interconnector voice clone --no-daemon --name fabrica --denoise --speech-reference "assets/audios/Speech Sampler.wav"`
+(con otro nombre porque `default` no se puede clonar).
 Toda voz habla `es` y `en`: el idioma viaja siempre en la petición.
 
 `avi_store::replace_voice` (`crates/avi-store/src/lib.rs`) prepara la referencia
@@ -291,6 +294,7 @@ fallo a mitad de copia).
 | Falla el motor de `avi_tts::clone_voice` o `replace_voice` (el mensaje termina con `Log del motor: <ruta>` a `data/logs/qwen3-tts_*.log`) | clone | 1 | `voice_clone_failed` |
 | Daemon inalcanzable (inactividad / conexión fallida) en ruta `--daemon`/`Auto`-daemon | clone | 5 | `daemon_unreachable` |
 | Error mapeado desde el body del daemon (ver tabla de la ruta daemon) | clone | 2/4/6/1 | según `reason` recibida |
+| Voz de fábrica (`default`), con o sin `--force`, antes de abrir el micrófono o leer la referencia | clone | 2 | `cannot_clone_default` |
 | Voz de fábrica (`default`) | remove | 2 | `cannot_remove_default` |
 | Voz no encontrada | remove | 3 | `voice_not_found` |
 | No hay terminal y falta `--yes` (no se borra nada; se pregunta siempre, tenga la voz audios sintetizados o no) | remove | 2 | `confirmation_required` |
