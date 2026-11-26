@@ -2686,7 +2686,7 @@ const CAPTURE_REPAINT_INTERVAL: std::time::Duration = std::time::Duration::from_
 /// Valida el PCM adquirido: un PCM vacío se rechaza con exit 2
 /// (`empty_audio`) y uno que supera `max_secs` segundos con exit 2
 /// (`audio_too_long`); `subject` es el sujeto de la frase del límite.
-fn validate_acquired_pcm(pcm: &[i16], max_secs: u64, subject: &str) -> Result<(), CliError> {
+fn validate_acquired_pcm(pcm: &[i16], sample_rate: u32, max_secs: u64, subject: &str) -> Result<(), CliError> {
     if pcm.is_empty() {
         return Err(CliError::new(
             ExitCode::InvalidInput,
@@ -2694,7 +2694,7 @@ fn validate_acquired_pcm(pcm: &[i16], max_secs: u64, subject: &str) -> Result<()
             "No se capturó audio; pulsa Enter después de hablar o verifica el micrófono.",
         ));
     }
-    ensure_pcm_within_limit(pcm, 16_000, subject, max_secs)
+    ensure_pcm_within_limit(pcm, sample_rate, subject, max_secs)
 }
 
 /// Captura PCM del micrófono abriendo la etapa `CAPTURING`. Con terminal, la
@@ -2780,7 +2780,7 @@ async fn acquire_pcm_with_progress(
         progress.phase(&stage::READING);
         read_wav_pcm(audio.expect("validado arriba"))?
     };
-    validate_acquired_pcm(&pcm, max_secs, subject)?;
+    validate_acquired_pcm(&pcm, 16_000, max_secs, subject)?;
     Ok(pcm)
 }
 
@@ -9447,7 +9447,7 @@ mod tests {
     #[test]
     fn empty_pcm_is_rejected_as_empty_audio() {
         let error =
-            validate_acquired_pcm(&[], 10, "El audio").expect_err("un PCM vacío debe rechazarse");
+            validate_acquired_pcm(&[], 16_000, 10, "El audio").expect_err("un PCM vacío debe rechazarse");
         assert_eq!(error.reason, "empty_audio");
     }
 
@@ -9455,10 +9455,10 @@ mod tests {
     #[test]
     fn pcm_over_the_limit_is_rejected_as_audio_too_long() {
         let pcm = vec![1i16; 2 * 16_000 + 1];
-        let error = validate_acquired_pcm(&pcm, 2, "El audio")
+        let error = validate_acquired_pcm(&pcm, 16_000, 2, "El audio")
             .expect_err("un PCM demasiado largo debe rechazarse");
         assert_eq!(error.reason, "audio_too_long");
-        validate_acquired_pcm(&pcm[..2 * 16_000], 2, "El audio")
+        validate_acquired_pcm(&pcm[..2 * 16_000], 16_000, 2, "El audio")
             .expect("el límite exacto es válido");
     }
 
