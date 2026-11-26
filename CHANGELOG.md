@@ -7,7 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
-- [No publicado](#no-publicado)
+- [0.47.0 — 2026-11-26](#0470--2026-11-26)
 - [0.46.1 — 2026-11-25](#0461--2026-11-25)
 - [0.46.0 — 2026-11-24](#0460--2026-11-24)
 - [0.45.2 — 2026-11-16](#0452--2026-11-16)
@@ -142,7 +142,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
 
-## [No publicado]
+## [0.47.0] — 2026-11-26
 
 La clonación desde el micrófono grababa a 16 kHz para un codificador que trabaja a 24 kHz, así que perdía la banda de 8 a 12 kHz, y la limpieza de la referencia atenuaba las pausas antes de que el motor las compactara. Ahora la captura conserva esa banda, la limpieza solo quita el ruido ambiental y la voz de fábrica se regenera con esa ruta. Además, una voz de fábrica nueva no llegaba a las instalaciones existentes, porque la `default` solo se escribía si faltaba: ahora se reinstala en el primer uso, se actualice por el canal que sea. La versión fija el motor `qwen-tts-engine` 1.3.0, que preprocesa la referencia de clonación y comparte con AVI la voz de fábrica nueva.
 
@@ -4215,3 +4215,4 @@ estado con el que nace el producto.
 [0.45.2]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.45.1...v0.45.2
 [0.46.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.45.2...v0.46.0
 [0.46.1]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.46.0...v0.46.1
+[0.47.0]: https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/compare/v0.46.1...v0.47.0
