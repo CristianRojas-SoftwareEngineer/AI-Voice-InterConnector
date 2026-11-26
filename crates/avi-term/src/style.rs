@@ -16,9 +16,20 @@ pub const OK: &str = "✓";
 /// Símbolo de un fallo.
 pub const FAIL: &str = "✗";
 /// Símbolo de una etapa en curso.
-pub const ACTIVE: &str = "…";
+pub const ACTIVE: &str = "●";
 /// Símbolo de una grabación en curso.
 pub const REC: &str = "●";
+/// Símbolo de una etapa omitida durante la ejecución.
+pub const SKIPPED: &str = "○";
+/// Símbolo de un aviso. Nunca va dentro de una columna alineada y no se emite
+/// el selector de variación U+FE0F.
+pub const WARN: &str = "⚠";
+/// Símbolo de una línea de resultado bajo su etapa.
+pub const RESULT: &str = "│";
+/// Separador de un dato complementario.
+pub const DOT: &str = "·";
+/// Carácter del separador entre las etapas y el cierre.
+pub const RULE: &str = "─";
 
 /// Flujo de salida al que va un texto.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

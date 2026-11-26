@@ -176,6 +176,7 @@ pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("self_update_failed", ExitCode::Error),
     ("speech_metadata_corrupt", ExitCode::Error),
     ("output_exists", ExitCode::InvalidInput),
+    ("interrupted", ExitCode::Interrupted),
 ];
 
 /// Solución de cada `reason`, en el mismo orden y con el mismo conjunto que
@@ -396,6 +397,7 @@ pub const REASON_SOLUTIONS: &[(&str, Option<&str>)] = &[
         "output_exists",
         Some("Añade `--overwrite` para reemplazarlo, `--skip-existing` para saltarlo o elige otra carpeta con `--output-dir`."),
     ),
+    ("interrupted", None),
 ];
 
 /// Solución de un `reason`, o `None` si no tiene una orden concreta que
@@ -510,6 +512,7 @@ mod tests {
         ("self_update_failed", 1),
         ("speech_metadata_corrupt", 1),
         ("output_exists", 2),
+        ("interrupted", 130),
     ];
 
     #[test]

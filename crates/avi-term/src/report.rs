@@ -226,6 +226,37 @@ pub struct Report {
     origin: Option<Instant>,
     pauses: Vec<(Instant, Instant)>,
     question_since: Option<Instant>,
+    /// Fases cuyo título ya se pintó.
+    titled_phases: Vec<&'static str>,
+    /// El mapa de fases ya se pintó bajo la cabecera.
+    map_printed: bool,
+}
+
+/// Medidas del recorrido declarado que necesita el render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Layout {
+    /// Total de etapas numeradas declaradas (N).
+    pub total: usize,
+    /// Número de fases declaradas.
+    pub phases: usize,
+    /// Ancho del nombre más largo de las etapas declaradas.
+    pub name_width: usize,
+}
+
+impl Layout {
+    /// Ancho mínimo de la columna de nombres de las etapas sin numerar.
+    pub(crate) const MIN_UNNUMBERED_WIDTH: usize = 12;
+
+    /// ¿Se muestra la numeración `[n/N]`? Solo con al menos 2 etapas numeradas.
+    pub(crate) fn numbered(&self) -> bool {
+        self.total >= 2
+    }
+
+    /// ¿Se muestran los títulos de fase, el mapa y el desglose? Solo con al
+    /// menos 2 fases.
+    pub(crate) fn phased(&self) -> bool {
+        self.phases >= 2
+    }
 }
 
 impl Report {
@@ -240,7 +271,95 @@ impl Report {
             origin: None,
             pauses: Vec::new(),
             question_since: None,
+            titled_phases: Vec::new(),
+            map_printed: false,
         }
+    }
+
+    /// Medidas del recorrido declarado (todo cero si no hay recorrido).
+    pub(crate) fn layout(&self) -> Layout {
+        let Some(pipeline) = &self.pipeline else {
+            return Layout {
+                total: 0,
+                phases: 0,
+                name_width: 0,
+            };
+        };
+        let name_width = pipeline
+            .phases
+            .iter()
+            .flat_map(|phase| phase.stages.iter())
+            .map(|stage| stage.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        Layout {
+            total: pipeline.total(),
+            phases: pipeline.phases.len(),
+            name_width,
+        }
+    }
+
+    /// Ancho de la columna de nombres de las etapas sin numerar: el del más
+    /// largo de las ya mostradas, con un mínimo de 12.
+    pub(crate) fn unnumbered_width(&self) -> usize {
+        let layout = self.layout();
+        self.stages
+            .iter()
+            .filter(|stage| stage.outcome != StageOutcome::Transient)
+            .filter(|stage| !(layout.numbered() && stage.number.is_some()))
+            .map(|stage| stage.name.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(Layout::MIN_UNNUMBERED_WIDTH)
+    }
+
+    /// Registro de la etapa `id`.
+    pub(crate) fn stage(&self, id: u64) -> Option<&StageRecord> {
+        self.stages.iter().find(|stage| stage.id == id)
+    }
+
+    /// Última etapa registrada que no es transitoria, si hay alguna.
+    pub(crate) fn last_shown_stage(&self) -> Option<&StageRecord> {
+        self.stages
+            .iter()
+            .rev()
+            .find(|stage| stage.outcome != StageOutcome::Transient)
+    }
+
+    /// Título de la fase `phase` si todavía no se pintó y el recorrido tiene al
+    /// menos 2 fases; lo marca como pintado.
+    pub(crate) fn take_phase_title(&mut self, phase: &'static str) -> Option<&'static str> {
+        if !self.layout().phased() || self.titled_phases.contains(&phase) {
+            return None;
+        }
+        let title = self
+            .pipeline
+            .as_ref()?
+            .phases
+            .iter()
+            .find(|spec| spec.id == phase)?
+            .title;
+        self.titled_phases.push(phase);
+        Some(title)
+    }
+
+    /// Mapa de fases (`Entrada → Texto → Voz`) seguido de una línea en blanco,
+    /// si hay cabecera, el recorrido tiene al menos 2 fases y todavía no se
+    /// pintó; lo marca como pintado.
+    pub(crate) fn take_phase_map(&mut self) -> Option<String> {
+        if self.map_printed || self.context.is_none() || !self.layout().phased() {
+            return None;
+        }
+        let map = self
+            .pipeline
+            .as_ref()?
+            .phases
+            .iter()
+            .map(|phase| phase.short)
+            .collect::<Vec<_>>()
+            .join(" → ");
+        self.map_printed = true;
+        Some(format!("{map}\n\n"))
     }
 
     /// Fija el origen del reloj si todavía no lo tiene.
@@ -401,7 +520,7 @@ impl Report {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         *self = Self::new();
     }
 }
@@ -451,7 +570,13 @@ pub fn lock() -> ReportGuard {
 /// Declara el recorrido del comando. Las etapas que se abran después y estén en
 /// él quedan con su fase y su número.
 pub fn declare(pipeline: Pipeline) {
-    lock().pipeline = Some(pipeline);
+    let mut report = lock();
+    report.pipeline = Some(pipeline);
+    // Si la cabecera salió antes que el recorrido, el mapa sale ahora.
+    if let Some(map) = report.take_phase_map() {
+        crate::line::take_phase_line();
+        crate::line::write_err(&map);
+    }
 }
 
 /// Copia inmutable del registro.

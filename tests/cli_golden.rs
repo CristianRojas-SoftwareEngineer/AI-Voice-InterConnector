@@ -9601,7 +9601,7 @@ fn synthesize_daemon_persists_translated_text() {
 }
 
 /// Con el motor calentándose, `speech synthesize --daemon` muestra la espera como
-/// texto vivo de la síntesis: sin terminal anuncia «… Calentando el motor…», no
+/// texto vivo de la síntesis: sin terminal anuncia «● Calentando el motor…», no
 /// escribe «Motor calentado» ni una línea terminada de síntesis. Sin `--play` y sin
 /// traducción la síntesis es la única etapa del comando, así que tampoco deja su
 /// línea «✓ Voz sintetizada» y queda solo el cierre.
@@ -9639,7 +9639,7 @@ fn synthesize_daemon_warming_wait_is_live_text_of_the_synthesis() {
         "la espera no es una etapa terminada: {stderr}"
     );
     assert!(
-        stderr.contains("… Calentando el motor…"),
+        stderr.contains("● Calentando el motor…"),
         "la espera se anuncia como texto de la síntesis: {stderr}"
     );
     assert!(
@@ -9648,59 +9648,51 @@ fn synthesize_daemon_warming_wait_is_live_text_of_the_synthesis() {
     );
 }
 
-/// `translate` por el daemon en texto es de etapa única: deja solo el cierre
-/// «Traducción completada» y no la línea «✓ Traducido» de su etapa.
+/// `translate` por el daemon es de etapa única: deja solo el cierre «Traducción
+/// completada» y no la línea «✓ Traducción» de su etapa, y el stderr es el mismo con
+/// y sin `--json` (el modo máquina solo cambia stdout).
 #[test]
 fn translate_daemon_single_stage_leaves_only_the_closing_line() {
-    let (sandbox, envs) = contract_sandbox("translate-single-stage");
-    let dir = sandbox.path();
-    let fake = FakeDaemon::start(
-        200,
-        serde_json::json!({
-            "translated": "Hello",
-            "source_language": "es",
-            "target_language": "en",
-        }),
-    );
-    fake.publish_in(&dir.join("data"));
-    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let (code, _stdout, stderr) = run_text_env(&["translate", "--daemon", "--text", "Hola"], &envs);
-    assert_eq!(code, 0, "{stderr}");
-    assert!(
-        stderr.contains("Traducción completada"),
-        "el cierre da el resultado: {stderr}"
-    );
-    assert!(
-        !stderr.contains("✓ Traducido"),
-        "la etapa única no deja su línea: {stderr}"
-    );
-}
-
-/// Con `--json` la regla de etapa única no actúa: no hay cierre y la línea de
-/// la etapa es la única que da la duración por stderr.
-#[test]
-fn translate_daemon_json_keeps_the_stage_line() {
-    let (sandbox, envs) = contract_sandbox("translate-json-stage");
-    let dir = sandbox.path();
-    let fake = FakeDaemon::start(
-        200,
-        serde_json::json!({
-            "translated": "Hello",
-            "source_language": "es",
-            "target_language": "en",
-        }),
-    );
-    fake.publish_in(&dir.join("data"));
-    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let (code, _stdout, stderr) = run_text_env(
-        &["--json", "translate", "--daemon", "--text", "Hola"],
-        &envs,
-    );
-    assert_eq!(code, 0, "{stderr}");
-    assert!(
-        stderr.contains("✓ Traducido"),
-        "en modo máquina la línea de la etapa se conserva: {stderr}"
-    );
+    let mut normalized = Vec::new();
+    for (name, json) in [
+        ("translate-single-stage", false),
+        ("translate-json-stage", true),
+    ] {
+        let (sandbox, envs) = contract_sandbox(name);
+        let dir = sandbox.path();
+        let fake = FakeDaemon::start(
+            200,
+            serde_json::json!({
+                "translated": "Hello",
+                "source_language": "es",
+                "target_language": "en",
+            }),
+        );
+        fake.publish_in(&dir.join("data"));
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut args = vec!["translate", "--daemon", "--text", "Hola"];
+        if json {
+            args.insert(0, "--json");
+        }
+        let (code, _stdout, stderr) = run_text_env(&args, &envs);
+        assert_eq!(code, 0, "json={json}: {stderr}");
+        assert!(
+            stderr.contains("Traducción completada"),
+            "el cierre da el resultado: {stderr}"
+        );
+        assert!(
+            !stderr.contains("✓ Traducción  "),
+            "la etapa única no deja su línea: {stderr}"
+        );
+        // Se quita la duración del cierre para comparar los dos modos.
+        normalized.push(
+            stderr
+                .lines()
+                .map(|line| line.split(" en ").next().unwrap_or(line).to_string())
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(normalized[0], normalized[1], "--json no cambia stderr");
 }
 
 /// Un `result` de `/synthesize` sin `translated` es un error, sin respaldo.

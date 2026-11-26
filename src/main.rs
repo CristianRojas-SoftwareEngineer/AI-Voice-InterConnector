@@ -1432,6 +1432,10 @@ fn invocation_line() -> String {
 /// real. El detalle técnico, si lo hay, va al registro de trazas. Es el único
 /// camino de escritura de `Error:` de los comandos.
 fn print_error_text(err: &CliError) {
+    // Tras una etapa no transitoria, el texto de error va detrás del separador.
+    if avi_term::report::snapshot().has_permanent_stage() {
+        avi_term::line::separator();
+    }
     let solution = avi_core::exit_codes::solution_for(&err.reason)
         .map(|solution| solution.replace("{cmd}", &invocation_line()));
     avi_term::line::error(&err.message, solution.as_deref());
@@ -7316,11 +7320,11 @@ mod tests {
     #[test]
     fn dub_texts_are_labelled_results_on_stdout() {
         assert_eq!(
-            avi_term::progress::result_line(false, false, Some("Transcripción"), "hola mundo"),
+            avi_term::progress::result_line(false, false, 2, Some("Transcripción"), "hola mundo"),
             "Transcripción: hola mundo"
         );
         assert_eq!(
-            avi_term::progress::result_line(false, false, Some("Traducción"), "hello world"),
+            avi_term::progress::result_line(false, false, 2, Some("Traducción"), "hello world"),
             "Traducción: hello world"
         );
     }
