@@ -144,7 +144,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## [No publicado]
 
-La clonación desde el micrófono grababa a 16 kHz para un codificador que trabaja a 24 kHz, así que perdía la banda de 8 a 12 kHz, y la limpieza de la referencia atenuaba las pausas antes de que el motor las compactara. Ahora la captura conserva esa banda, la limpieza solo quita el ruido ambiental y la voz de fábrica se regenera con esa ruta. Además, una voz de fábrica nueva no llegaba a las instalaciones existentes, porque la `default` solo se escribía si faltaba: ahora se reinstala en el primer uso, se actualice por el canal que sea.
+La clonación desde el micrófono grababa a 16 kHz para un codificador que trabaja a 24 kHz, así que perdía la banda de 8 a 12 kHz, y la limpieza de la referencia atenuaba las pausas antes de que el motor las compactara. Ahora la captura conserva esa banda, la limpieza solo quita el ruido ambiental y la voz de fábrica se regenera con esa ruta. Además, una voz de fábrica nueva no llegaba a las instalaciones existentes, porque la `default` solo se escribía si faltaba: ahora se reinstala en el primer uso, se actualice por el canal que sea. La versión fija el motor `qwen-tts-engine` 1.3.0, que preprocesa la referencia de clonación y comparte con AVI la voz de fábrica nueva.
 
 ### Cambios incompatibles
 
@@ -155,6 +155,7 @@ La clonación desde el micrófono grababa a 16 kHz para un codificador que traba
 
 - **Captura de la referencia de `voice clone` desde el micrófono:** graba a 48 kHz con `--denoise` (la tasa de DPDFNet) y a 24 kHz sin él, en lugar de a 16 kHz. La transcripción sigue grabando a 16 kHz.
 - **Voz de fábrica `default`:** el asset `crates/avi-store/assets/default/reference.qvoice` se regenera desde `Speech Sampler.wav` con `voice clone --denoise`. La voz suena distinta a la de la 0.46.1.
+- **Motor de síntesis `qwen-tts-engine` 1.3.0:** preprocesa la referencia de clonación (pasa-altos de 70 Hz, recorte de los silencios inicial y final, pausas de más de 260 ms compactadas a 100 ms y RMS normalizado a -20 dBFS), así que la misma referencia da otra huella de timbre que con la 1.2.1, y trae la voz `default` nueva, con el mismo x-vector que el asset de AVI. Cambia el audio para la misma petición.
 - **`cargo xtask package` compila el binario que empaqueta:** ejecuta `cargo build --release --package ai-voice-interconnector --features full` desde el árbol actual y reenvía a la compilación lo que va tras `--`. Ya no hace falta compilar antes de `package` ni de `cargo xtask install`. Los cuatro jobs de build de la CI compilan, prueban y empaquetan con un único `cargo xtask package --expect-version X.Y.Z -- --verbose --timings`.
 - **Humo único del binario:** el humo de `xtask package` es el único y sustituye a los de los jobs de build. Exige a `version --json` el nombre, la versión del `Cargo.toml` y la `schema_version` vigente, que toma de `avi-core`, así que `cargo xtask pins --check` deja de vigilar un literal en la CI. Corre con la raíz de datos y el contenedor de caché en un temporal propio.
 - **`cargo xtask install --yes`:** reenvía `--yes` a `self install`, así que el build local se instala sin terminal.

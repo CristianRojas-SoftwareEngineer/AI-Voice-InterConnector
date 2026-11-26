@@ -13,14 +13,14 @@
     "ffmpeg-9.0.2.tar.xz": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e",
     "ffmpeg-builds-autobuild-2026-10-31-12-59.tar.gz": "3d82bbb1dd436116034bb4d945245e5550dff0d89db0094e9af90382527c2c17"
   },
-  "qwen_tts_engine": "1.2.1",
+  "qwen_tts_engine": "1.3.0",
   "qwen_tts_engine_sha256": {
-    "x86_64-pc-windows-msvc": "3094ebec8f60e248098226b7041f6e5eada5414ccf722c29bef6740df07fdb84",
-    "x86_64-unknown-linux-gnu": "c19c282389d6ee5b801ec7f8efd0363c6f3a7881b80152154c545f3aa3dc236f",
-    "aarch64-unknown-linux-gnu": "31d2b32b1446895fc05a90655443231cc7a65b7b98b98739b28bace6734e6c29",
-    "aarch64-apple-darwin": "c9eb94006490e9337a375c77a19a7d6d9a739b08965e3efd7330ada378dbd54f"
+    "x86_64-pc-windows-msvc": "877663ca3bb41f8809db9385d1d2b40238a591eb1d70ce4b893c3873a1016af9",
+    "x86_64-unknown-linux-gnu": "d933c53efe674887474acbe46acb472d2f47e713f8ee0ffa5872770fcd082a89",
+    "aarch64-unknown-linux-gnu": "5a915eac63cce86709d98e9fbf3f12e5c46f79fdab6359591e84b74a02dfb3eb",
+    "aarch64-apple-darwin": "ec4b7fd24ee737cf3816c38d231ac8154db15981e5046735f08118057179da67"
   },
-  "qwen_tts_engine_source_sha256": "d0b96d4d90fdcecb6e602959b06ba9ecd11df10a5684abb9fb8d161399edc376",
+  "qwen_tts_engine_source_sha256": "38bdc6dcdf72e21978364f3b74ab144e9e929a9f98e583e32fbec63a628e06ae",
   "sccache": "0.8.2",
   "ninja": "1.13.2",
   "bats": "1.14.0",
