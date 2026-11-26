@@ -1020,12 +1020,7 @@ async fn transcribe_handler(
             let dir = avi_process::scratch::tempdir("avi_daemon_stt_denoise_")?;
             let models = denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
             let cleaned = models
-                .denoise_pcm16_mono(
-                    &pcm,
-                    16_000,
-                    denoise::service::DenoiseUseCase::Stt,
-                    dir.path(),
-                )
+                .denoise_pcm16_mono(&pcm, 16_000, dir.path())
                 .map_err(anyhow::Error::from)?;
             drop(permit);
             Ok(cleaned)
@@ -1688,12 +1683,7 @@ async fn voices_clone_handler(
                 let clean = work_dir.path().join("reference_clean.wav");
                 let models = denoise::service::ServiceModels::resolve()?;
                 models
-                    .denoise_wav_file(
-                        &tmp_wav,
-                        &clean,
-                        denoise::service::DenoiseUseCase::Clone,
-                        work_dir.path(),
-                    )
+                    .denoise_wav_file(&tmp_wav, &clean, 24_000, work_dir.path())
                     .map_err(anyhow::Error::from)?;
                 // El turno cubre solo la inferencia DSP; el clonado TTS puede
                 // durar minutos y no debe bloquear la limpieza de otras rutas.
@@ -2069,12 +2059,7 @@ async fn dub_handler(
                     let models =
                         denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
                     let cleaned = models
-                        .denoise_pcm16_mono(
-                            &pcm,
-                            16_000,
-                            denoise::service::DenoiseUseCase::Stt,
-                            dir.path(),
-                        )
+                        .denoise_pcm16_mono(&pcm, 16_000, dir.path())
                         .map_err(anyhow::Error::from)?;
                     drop(permit);
                     Ok(cleaned)

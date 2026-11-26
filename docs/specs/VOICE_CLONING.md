@@ -105,9 +105,8 @@ La simetría permite que los consumidores externos y los usuarios finales utilic
 El motor ya cuenta con los componentes necesarios:
 
 1. **`avi-audio` (`AudioService`)**:
-   - `capture_16k_mono_pcm(secs)`: captura una cantidad exacta de segundos a
-     16 kHz mono int16.
-   - `capture_16k_mono_pcm_until_enter(max_secs)`: captura interactiva
+   - `capture_mono_pcm(target_rate, secs, observer)`: captura una cantidad exacta de segundos a `target_rate` Hz (16, 24 o 48 kHz) mono int16.
+   - `capture_mono_pcm_until_enter(target_rate, max_secs, observer)`: captura interactiva
      push-to-talk hasta pulsar Enter, con tope failsafe en segundos. `capture_mic_pcm`
   aplica el mapeo de errores compartido con los demás comandos de captura.
 2. **`capture_mic_pcm()` en `src/main.rs`**:
@@ -148,13 +147,13 @@ El motor ya cuenta con los componentes necesarios:
 | **RF-01** | `voice clone` debe aceptar el grupo mutuamente excluyente y requerido `input`: `--speech-reference <archivo>` (`-s`) o `--mic`. |
 | **RF-02** | Omitir tanto `--speech-reference` como `--mic`, o suministrar ambos simultáneamente, debe fallar con `ExitCode::InvalidInput` (2, `usage_error`). |
 | **RF-03** | El flag `--duration <segs>` debe ser opcional y aceptarse únicamente junto a `--mic` (`conflicts_with = "speech_reference"`). Usarlo con `--speech-reference` debe fallar con exit 2 (`usage_error`). |
-| **RF-04** | `--duration=0` falla con exit 2 (`usage_error`); valores `> 30` fallan con exit 2 (`audio_too_long`). La duración es un objetivo de captura, no una cantidad exacta de muestras. Micrófono >480000 muestras se recorta; una captura más corta no se rellena. |
+| **RF-04** | `--duration=0` falla con exit 2 (`usage_error`); valores `> 30` fallan con exit 2 (`audio_too_long`). La duración es un objetivo de captura, no una cantidad exacta de muestras. Micrófono >30 s a `capture_rate` Hz (48 kHz con `--denoise`, 24 kHz sin él) se recorta; una captura más corta no se rellena. |
 | **RF-05** | En terminal interactiva (TTY), `--mic` sin `--duration` debe iniciar grabación push-to-talk (hasta pulsar Enter o el menor techo entre 30 s y `AVI_PUSH_TO_TALK_MAX_SECS`). El techo de entorno se valida antes de abrir el dispositivo. |
 | **RF-06** | En entorno no interactivo (no-TTY), `--mic` sin `--duration` debe abortar antes de resolver destino o abrir el micrófono con exit 2 (`usage_error`). |
 | **RF-07** | Al iniciar la grabación de micrófono, se debe mostrar por `stderr` la etapa `capturing` (con terminal, `● Grabando m:ss / m:ss` con medidor de nivel; sin ella, `Grabando (máximo m:ss)…`), nunca permanecer en espera silenciosa. Si la grabación no contiene voz (el tramo de 100 ms más fuerte no supera −43 dBFS), se avisa sin interrumpir el comando. |
 | **RF-08** | Si la captura de micrófono entrega cero muestras, debe salir con exit 2 (`empty_audio`); no se detecta ni rechaza silencio. |
 | **RF-09** | Si el sistema no tiene dispositivo de entrada predeterminado, debe salir con exit 3 (`no_input_device`); si no tiene backend de audio, con exit 3 (`audio_backend_unavailable`); si el dispositivo de entrada falla por otra causa (sin permisos, error de backend `cpal` al abrir o durante la captura), con exit 10 (`transcription_failed`). |
-| **RF-10** | En la ruta daemon, archivo envía sus bytes WAV originales y mic envía un WAV 16 kHz/mono/int16 codificado una vez desde PCM; ambos usan `audio_b64` en el `POST /voices/clone` existente. |
+| **RF-10** | En la ruta daemon, archivo envía sus bytes WAV originales y mic envía un WAV mono/int16 (48 kHz con `--denoise`, 24 kHz sin él) codificado una vez desde PCM; ambos usan `audio_b64` en el `POST /voices/clone` existente. |
 | **RF-11** | En la ruta local, mic se escribe una vez a un `avi_process::scratch::temp_wav("avi_clone_mic_")` con guard RAII retenido durante clonado; archivo conserva la ruta original. |
 | **RF-12** | Con `--denoise` y feature `native-denoise`, el destino local limpia una vez en CLI y el daemon limpia una vez en servidor; el cliente envía `denoise: true` y no hay fallback local tras fallo del POST. |
 | **RF-13** | Se valida el nombre antes de capturar. Sin `--force`, `VoiceStore::exists` detecta la colisión antes de capturar o leer la referencia, en las dos rutas, porque la CLI y el daemon comparten el directorio de datos; el daemon conserva su comprobación como defensa. Con `--force`, re-clonar reemplaza la voz y sus audios sintetizados: si la voz tiene audios sintetizados, la CLI pide la confirmación destructiva antes de capturar, en las dos rutas, y sin terminal exige `--yes` (si falta, exit 2 `confirmation_required` sin cambiar nada). El reemplazo lo hace `avi_store::replace_voice`, que borra `speech/<voz>/` antes de publicar la referencia nueva. No se agrega una reserva especial para nombres factory. |
@@ -181,7 +180,7 @@ La captura reside en el proceso CLI (`avi-audio` con `cpal`) para acceder a la T
 
 ### 6.2 Formato de paso al daemon
 
-El CLI codifica el PCM 16 kHz mono capturado a WAV en memoria y lo transmite en base64 (`audio_b64`) al endpoint existente `POST /voices/clone`. Esto preserva intacto el protocolo IPC y el contrato del daemon.
+El CLI codifica el PCM mono capturado (48 kHz con `--denoise`, 24 kHz sin él) a WAV en memoria y lo transmite en base64 (`audio_b64`) al endpoint existente `POST /voices/clone`. Esto preserva intacto el protocolo IPC y el contrato del daemon.
 
 ### 6.3 Interacción push-to-talk y duración
 
@@ -245,7 +244,7 @@ voice clone --name <nombre> [--speech-reference <wav> | --mic [--duration <N>]]
   ├─ 1. Construir el nombre de voz (VoiceName::parse, rechaza también . y ..) ── fallo → exit 2 (invalid_voice_name)
   ├─ 2. Archivo: conservar precedencia de validaciones actual. Mic: validar nombre, duration=0 / >30, techo PTT (>30 → audio_too_long) y no-TTY antes de abrir dispositivo.
   ├─ 3. No-TTY sin duration → usage_error antes del probe. Resolver destino una vez; en las dos rutas, colisión si !force (voice_exists) y, con force y audios sintetizados guardados, confirmación destructiva (confirmation_required sin terminal ni --yes)
-  ├─ 4. Capturar mic, recortar >480000 muestras y codificar una vez; archivo WAV intacto
+  ├─ 4. Capturar mic (48 kHz con --denoise, 24 kHz sin él), recortar >30 s y codificar una vez; archivo WAV intacto
   ├─ 5. Destino daemon: capturar antes de POST; el servidor conserva su comprobación de colisión como defensa y reemplaza con replace_voice; sin fallback a local
   ├─ 6. Clonado local: mic se escribe en avi_process::scratch::temp_wav; archivo usa su ruta original
   ├─ 7. Denoise único: CLI en ruta local; daemon con denoise:true para ejecución del servidor
@@ -274,9 +273,10 @@ if !force {
 }
 
 let (speech_path, daemon_audio, mic_scratch) = if mic {
-    let mut pcm = capture_mic_pcm(duration, avi_core::MAX_CLONE_REFERENCE_SECS).await?;
-    truncate_clone_pcm(&mut pcm); // Máximo 480000 muestras, sin rellenar capturas cortas.
-    let wav = avi_audio::encode_pcm_16k_mono_wav(&pcm)?;
+    let capture_rate: u32 = if denoise { 48_000 } else { 24_000 };
+    let mut pcm = capture_mic_pcm(capture_rate, duration, avi_core::MAX_CLONE_REFERENCE_SECS, observer).await?;
+    truncate_clone_pcm(&mut pcm, capture_rate); // Máximo 30 s, sin rellenar capturas cortas.
+    let wav = avi_audio::encode_pcm_mono_wav(&pcm, capture_rate)?;
     if use_daemon {
         (None, Some(wav), None) // El daemon recibe bytes desde memoria.
     } else {
@@ -292,13 +292,13 @@ let (speech_path, daemon_audio, mic_scratch) = if mic {
 
 ### 7.4 Codificación WAV y despacho al daemon
 
-Para evitar escribir temporales innecesarios en disco cuando se usa la ruta daemon con `--mic`, el PCM capturado se codifica como WAV 16 kHz mono directamente en un buffer de memoria:
+Para evitar escribir temporales innecesarios en disco cuando se usa la ruta daemon con `--mic`, el PCM capturado se codifica como WAV mono directamente en un buffer de memoria:
 
 ```rust
-fn encode_pcm_16k_mono_wav(pcm: &[i16]) -> Result<Vec<u8>, hound::Error> {
+fn encode_pcm_mono_wav(pcm: &[i16], sample_rate: u32) -> Result<Vec<u8>, hound::Error> {
     let spec = hound::WavSpec {
         channels: 1,
-        sample_rate: 16_000,
+        sample_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
@@ -375,7 +375,7 @@ async fn clone_via_daemon(
 ## 8. Invariantes y reglas transversales
 
 1. **Mutua exclusión estricta**: `--speech-reference` y `--mic` nunca pueden coexistir en la misma invocación (garantizado por el grupo `clap::ArgGroup`).
-2. **Límites del micrófono**: `--duration` > 30 falla con exit 2 (`audio_too_long`). Push-to-talk queda limitado por el menor entre 30 s y `AVI_PUSH_TO_TALK_MAX_SECS`; el PCM por encima de 480000 muestras se recorta y las capturas cortas no se rellenan.
+2. **Límites del micrófono**: `--duration` > 30 falla con exit 2 (`audio_too_long`). Push-to-talk queda limitado por el menor entre 30 s y `AVI_PUSH_TO_TALK_MAX_SECS`; el PCM por encima de `30 * capture_rate` muestras (30 s) se recorta y las capturas cortas no se rellenan.
 3. **No-TTY seguro**: Ejecutar `--mic` sin `--duration` en entornos desatendidos (CI, tuberías, cron) falla inmediatamente en fase de validación con exit 2 sin bloquear ni abrir el micrófono.
 4. **Almacenamiento**: El WAV no se almacena en `VoiceStore`; solo persiste `reference.qvoice`. En local, el WAV scratch se elimina mediante RAII en salidas controladas. Una terminación forzosa o fallo del filesystem puede dejar residuos.
 5. **Compatibilidad total del Daemon**: El endpoint `POST /voices/clone` no sufre cambios; sigue validando la duración máxima por cabecera WAV y bytes recibidos.
@@ -409,8 +409,8 @@ async fn clone_via_daemon(
 
 ### 10.1 Pruebas unitarias PCM y WAV
 
-- `crates/avi-audio/src/lib.rs`: round-trip PCM→WAV verifica cabecera 16 kHz/mono/int16 y muestras; la guarda vacía se prueba sin dispositivo.
-- `src/main.rs`: recorte 480001→480000, exacto sin cambio y menor sin padding; round-trip PCM→WAV→base64 y benchmark de 30 s informativo ignorado.
+- `crates/avi-audio/src/lib.rs`: round-trip PCM→WAV verifica cabecera (16 kHz y 24 kHz)/mono/int16 y muestras; la guarda vacía se prueba sin dispositivo.
+- `src/main.rs`: recorte a `30 * sample_rate` muestras (24 kHz y 48 kHz), exacto sin cambio y menor sin padding; round-trip PCM→WAV→base64 a 24 kHz y benchmark de 30 s informativo ignorado.
 
 ### 10.2 Pruebas de parser e integración (`tests/cli_golden.rs`)
 
@@ -444,7 +444,7 @@ La matriz se ejecuta en cada host y plataforma accesibles con micrófono, modelo
 | **AC-04** | Ambas fuentes suministradas | Se ejecuta `voice clone --name v1 -s ref.wav --mic` | Sale con exit `2` (`usage_error`) por exclusión mutua. |
 | **AC-05** | `--duration` con archivo | Se ejecuta `voice clone --name v1 -s ref.wav --duration 10` | Sale con exit `2` (`usage_error`) por incompatibilidad de flags. |
 | **AC-06** | TTY y dispositivos/modelos disponibles | Se ejecuta `voice clone --name v1 --mic` | Anuncia `capturing`, termina con Enter o el menor límite efectivo y completa el clonado. La E2E se ejecuta solo en hosts con dispositivo. |
-| **AC-07** | Una captura fija de 5 s | Se ejecuta `voice clone --name v1 --mic --duration 5` | La duración es objetivo; el PCM resultante se limita a 480000 muestras, no se rellena y alimenta el flujo convergente de clonado. |
+| **AC-07** | Una captura fija de 5 s | Se ejecuta `voice clone --name v1 --mic --duration 5` | La duración es objetivo; el PCM resultante se limita a 30 s (`30 * capture_rate` muestras), no se rellena y alimenta el flujo convergente de clonado. |
 | **AC-08** | Una voz existente en el store | Se clona con `--mic` sin `--force`, por cualquier ruta | Sale con exit `6` (`voice_exists`) antes de grabar. |
 | **AC-09** | Una voz ya existente con audios sintetizados guardados | Se clona con `--mic --force --yes` por daemon | Sobrescribe la voz, borra sus audios sintetizados (`removed_speech` los nombra) e inicia warm-on-clone (exit 0); la siguiente síntesis de la voz recarga el residente. Sin terminal y sin `--yes` sale con exit `2` (`confirmation_required`) sin grabar ni cambiar nada. La ruta local no mantiene un residente que precalentar. |
 | **AC-10** | El flag global `--json` | Se ejecuta `ai-voice-interconnector --json voice clone --name v1 --mic --duration 5` | Stdout contiene únicamente el envelope CLI `{ name, speech, precomputed, removed_speech, schema_version }`; `speech` puede apuntar al filesystem del proceso que clonó. |

@@ -53,7 +53,7 @@ alguno, el parser lo rechaza como argumento desconocido (exit 2
 En `synthesize`, `say` y `dub`, el motor tiene un único perfil de precisión, siempre activo: no hay variable ni opción para elegirlo.
 
 **Invariante de captura de audio:** en `transcribe`/`dub`, la captura o
-lectura del WAV ocurre siempre en el cliente (`AudioService::capture_16k_mono_pcm`
+lectura del WAV ocurre siempre en el cliente (`AudioService::capture_mono_pcm(16_000, ...)`
 o `avi_audio::load_wav_16k_mono_pcm`); el daemon nunca recibe una ruta de
 archivo, solo PCM `i16` little-endian 16 kHz mono codificado en base64 en
 `audio_b64`.

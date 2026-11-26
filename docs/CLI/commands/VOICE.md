@@ -33,7 +33,7 @@ ai-voice-interconnector voice remove --name NAME [--yes]
 |---|---|---|---|
 | `--name, -n` | string | sí | Nombre de la voz; se valida al construir `VoiceName` (no vacío, solo `[A-Za-z0-9._-]`, ni `.` ni `..`: si no, exit 2 `invalid_voice_name`) y se normaliza a minúsculas |
 | `--speech-reference, -s` | string (ruta) | una fuente | WAV de referencia; se conserva intacto y no se reempaqueta en CLI |
-| `--mic` | flag | una fuente | Captura PCM a 16 kHz mono int16 desde el micrófono |
+| `--mic` | flag | una fuente | Captura PCM mono int16 desde el micrófono (48 kHz con `--denoise`, 24 kHz sin él) |
 | `--duration` | segundos | no | Solo con `--mic`; 1–30 segundos. Sin duración requiere TTY y usa push-to-talk con límite de 30 s si `AVI_PUSH_TO_TALK_MAX_SECS` no está definida; un valor explícito inválido produce `usage_error` y mayor de 30 produce `audio_too_long` |
 | `--denoise` | flag | no | Limpia la referencia antes de extraer la huella vocal; requiere `native-denoise` y el modelo DPDFNet provisionado. La opción no garantiza por sí misma preservación de identidad vocal; esa calidad no ha sido evaluada en una prueba humana controlada |
 | `--force, -f` | flag | no | Sobrescribe una voz existente con el mismo nombre y borra sus audios sintetizados guardados, grabados con el contenido anterior |
@@ -80,7 +80,7 @@ Resolver destino una vez
                   antes de capturar (sin terminal y sin --yes → confirmation_required)
     │
     ▼
-Capturar PCM (mic), recortar sobre 480000 muestras y codificar WAV 16 kHz mono int16
+Capturar PCM (mic), recortar a 30 s (48 kHz con --denoise / 24 kHz sin él) y codificar WAV mono int16
     │
     ├─ Daemon ─► bytes WAV en memoria / archivo original → base64 → POST /voices/clone
     │               denoise: true cuando aplica; sin fallback a local
@@ -123,7 +123,7 @@ clonado: el daemon no expone ninguna ruta aparte para precargar voces.
 
 ## Ruta daemon: `POST /voices/clone`
 
-`clone_via_daemon` (`src/main.rs`) codifica a base64 los bytes WAV originales del archivo o los bytes WAV 16 kHz/mono/int16 producidos en memoria desde el PCM capturado, y envía:
+`clone_via_daemon` (`src/main.rs`) codifica a base64 los bytes WAV originales del archivo o los bytes WAV mono int16 (48 kHz con `--denoise`, 24 kHz sin él) producidos en memoria desde el PCM capturado, y envía:
 
 ```json
 { "name": "...", "audio_b64": "...", "force": false }

@@ -2043,14 +2043,16 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     }
                 }
                 let (speech_path, daemon_audio, mic_scratch) = if mic {
+                    let capture_rate: u32 = if denoise { 48_000 } else { 24_000 };
                     let mut pcm = capture_mic_with_progress(
                         &progress,
+                        capture_rate,
                         duration,
                         avi_core::MAX_CLONE_REFERENCE_SECS,
                     )
                     .await?;
-                    truncate_clone_pcm(&mut pcm);
-                    let wav = avi_audio::encode_pcm_16k_mono_wav(&pcm)
+                    truncate_clone_pcm(&mut pcm, capture_rate);
+                    let wav = avi_audio::encode_pcm_mono_wav(&pcm, capture_rate)
                         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
                     if use_daemon {
                         (None, Some(wav), None)
@@ -2132,7 +2134,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                             models.denoise_wav_file(
                                 speech_path.as_path(),
                                 &cleaned_path,
-                                denoise::service::DenoiseUseCase::Clone,
+                                24_000,
                                 work_dir.path(),
                             )
                         })
@@ -2372,11 +2374,13 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
 // ─── Speech ──────────────────────────────────────────────────────────
 
 /// Captura PCM del micrófono en `spawn_blocking`: `duration` fija la
-/// captura por N segundos; `None` (solo alcanzable en TTY, ver guardas de
-/// `--duration`) dispara push-to-talk hasta Enter (`capture_16k_mono_pcm_until_enter`).
-/// `max_secs` es el techo de duración del push-to-talk (se combina con el
-/// techo de entorno).
+/// Captura PCM del micrófono a `target_rate` Hz (16, 24 o 48 kHz) en modo
+/// duración fija o push-to-talk: `Some(secs)` captura por N segundos; `None`
+/// (solo alcanzable en TTY, ver guardas de `--duration`) dispara push-to-talk
+/// hasta Enter (`capture_mono_pcm_until_enter`). `max_secs` es el techo de
+/// duración del push-to-talk (se combina con el techo de entorno).
 async fn capture_mic_pcm(
+    target_rate: u32,
     duration: Option<u64>,
     max_secs: u64,
     observer: Arc<MicObserver>,
@@ -2389,8 +2393,8 @@ async fn capture_mic_pcm(
     tokio::task::spawn_blocking(move || {
         let svc = audio::AudioService::new();
         match duration {
-            Some(secs) => svc.capture_16k_mono_pcm(secs, observer),
-            None => svc.capture_16k_mono_pcm_until_enter(max_secs, observer),
+            Some(secs) => svc.capture_mono_pcm(target_rate, secs, observer),
+            None => svc.capture_mono_pcm_until_enter(target_rate, max_secs, observer),
         }
     })
     .await
@@ -2483,21 +2487,26 @@ fn ensure_wav_within_limit(
     }
 }
 
-/// Rechaza el PCM 16 kHz mono que supera `max_secs` segundos.
-fn ensure_pcm_within_limit(pcm: &[i16], operation: &str, max_secs: u64) -> Result<(), CliError> {
-    if pcm.len() as u64 > max_secs * 16_000 {
+/// Rechaza el PCM mono a `sample_rate` Hz que supera `max_secs` segundos.
+fn ensure_pcm_within_limit(
+    pcm: &[i16],
+    sample_rate: u32,
+    operation: &str,
+    max_secs: u64,
+) -> Result<(), CliError> {
+    if pcm.len() as u64 > max_secs * u64::from(sample_rate) {
         return Err(audio_too_long(
             operation,
-            pcm.len() as f64 / 16_000.0,
+            pcm.len() as f64 / f64::from(sample_rate),
             max_secs,
         ));
     }
     Ok(())
 }
 
-/// Limita el PCM del micrófono a 30 segundos sin rellenar las capturas cortas.
-fn truncate_clone_pcm(pcm: &mut Vec<i16>) {
-    pcm.truncate((avi_core::MAX_CLONE_REFERENCE_SECS * 16_000) as usize);
+/// Limita el PCM del micrófono a 30 segundos a `sample_rate` Hz sin rellenar las capturas cortas.
+fn truncate_clone_pcm(pcm: &mut Vec<i16>, sample_rate: u32) {
+    pcm.truncate((avi_core::MAX_CLONE_REFERENCE_SECS * u64::from(sample_rate)) as usize);
 }
 
 fn validate_clone_push_to_talk_limit(limit: u64) -> Result<(), CliError> {
@@ -2576,7 +2585,7 @@ fn ensure_clone_reference_within_limit(path: &std::path::Path) -> Result<(), Cli
     const OPERATION: &str = "La referencia de clonado";
     ensure_wav_within_limit(path, OPERATION, avi_core::MAX_CLONE_REFERENCE_SECS)?;
     match avi_audio::load_wav_16k_mono_pcm(path) {
-        Ok(pcm) => ensure_pcm_within_limit(&pcm, OPERATION, avi_core::MAX_CLONE_REFERENCE_SECS),
+        Ok(pcm) => ensure_pcm_within_limit(&pcm, 16_000, OPERATION, avi_core::MAX_CLONE_REFERENCE_SECS),
         Err(e @ avi_audio::WavLoadError::Invalid(_)) => {
             Err(
                 CliError::new(ExitCode::InvalidInput, "invalid_audio", e.to_string())
@@ -2685,7 +2694,7 @@ fn validate_acquired_pcm(pcm: &[i16], max_secs: u64, subject: &str) -> Result<()
             "No se capturó audio; pulsa Enter después de hablar o verifica el micrófono.",
         ));
     }
-    ensure_pcm_within_limit(pcm, subject, max_secs)
+    ensure_pcm_within_limit(pcm, 16_000, subject, max_secs)
 }
 
 /// Captura PCM del micrófono abriendo la etapa `CAPTURING`. Con terminal, la
@@ -2695,6 +2704,7 @@ fn validate_acquired_pcm(pcm: &[i16], max_secs: u64, subject: &str) -> Result<()
 /// Los fallos son los de [`capture_mic_pcm`].
 async fn capture_mic_with_progress(
     progress: &PhaseProgress,
+    target_rate: u32,
     duration: Option<u64>,
     max_secs: u64,
 ) -> Result<Vec<i16>, CliError> {
@@ -2707,7 +2717,12 @@ async fn capture_mic_with_progress(
         ),
     );
     let observer = Arc::new(MicObserver::default());
-    let mut capture = Box::pin(capture_mic_pcm(duration, max_secs, observer.clone()));
+    let mut capture = Box::pin(capture_mic_pcm(
+        target_rate,
+        duration,
+        max_secs,
+        observer.clone(),
+    ));
     let captured = loop {
         match tokio::time::timeout(CAPTURE_REPAINT_INTERVAL, &mut capture).await {
             Ok(result) => break result,
@@ -2734,7 +2749,7 @@ async fn capture_mic_with_progress(
             avi_term::fmt::clock(std::time::Duration::from_secs(shown_max))
         ));
     }
-    let level = audio::loudest_window_dbfs(&pcm, 16_000);
+    let level = audio::loudest_window_dbfs(&pcm, target_rate);
     if level < audio::SILENCE_THRESHOLD_DBFS {
         avi_term::line::warn(format!(
             "No se detectó voz en la grabación (nivel máximo {level:.0} dBFS); comprueba que el micrófono no esté silenciado"
@@ -2760,7 +2775,7 @@ async fn acquire_pcm_with_progress(
     subject: &str,
 ) -> Result<Vec<i16>, CliError> {
     let pcm = if mic {
-        capture_mic_with_progress(progress, duration, max_secs).await?
+        capture_mic_with_progress(progress, 16_000, duration, max_secs).await?
     } else {
         progress.phase(&stage::READING);
         read_wav_pcm(audio.expect("validado arriba"))?
@@ -3507,12 +3522,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                                 .map_err(|e| e.to_cli_error())?;
                             progress
                                 .while_running(|| {
-                                    models.denoise_pcm16_mono(
-                                        &pcm,
-                                        16_000,
-                                        denoise::service::DenoiseUseCase::Stt,
-                                        work_dir.path(),
-                                    )
+                                    models.denoise_pcm16_mono(&pcm, 16_000, work_dir.path())
                                 })
                                 .map_err(|e| e.to_cli_error())?
                         } else {
@@ -4002,12 +4012,7 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                             progress.phase(&stage::DENOISING);
                             progress
                                 .while_running(|| {
-                                    models.denoise_pcm16_mono(
-                                        &pcm,
-                                        16_000,
-                                        denoise::service::DenoiseUseCase::Stt,
-                                        work_dir.path(),
-                                    )
+                                    models.denoise_pcm16_mono(&pcm, 16_000, work_dir.path())
                                 })
                                 .map_err(|e| e.to_cli_error())?
                         } else {
@@ -7393,30 +7398,32 @@ mod tests {
 
     #[test]
     fn clone_pcm_truncates_at_thirty_seconds_without_padding() {
-        let limit = (avi_core::MAX_CLONE_REFERENCE_SECS * 16_000) as usize;
-        let mut over = vec![7; limit + 1];
-        super::truncate_clone_pcm(&mut over);
-        assert_eq!(over.len(), limit);
+        for sample_rate in [24_000u32, 48_000] {
+            let limit = (avi_core::MAX_CLONE_REFERENCE_SECS * u64::from(sample_rate)) as usize;
+            let mut over = vec![7; limit + 1];
+            super::truncate_clone_pcm(&mut over, sample_rate);
+            assert_eq!(over.len(), limit, "tasa {sample_rate}");
 
-        let mut exact = vec![7; limit];
-        super::truncate_clone_pcm(&mut exact);
-        assert_eq!(exact.len(), limit);
+            let mut exact = vec![7; limit];
+            super::truncate_clone_pcm(&mut exact, sample_rate);
+            assert_eq!(exact.len(), limit, "tasa {sample_rate}");
 
-        let mut short = vec![7; limit - 1];
-        super::truncate_clone_pcm(&mut short);
-        assert_eq!(short.len(), limit - 1);
+            let mut short = vec![7; limit - 1];
+            super::truncate_clone_pcm(&mut short, sample_rate);
+            assert_eq!(short.len(), limit - 1, "tasa {sample_rate}");
+        }
     }
 
     #[test]
     fn clone_pcm_wav_base64_round_trip_preserves_known_samples() {
         let samples = [0, 1_234, -2_345, i16::MAX, i16::MIN];
-        let wav = avi_audio::encode_pcm_16k_mono_wav(&samples).expect("codificar WAV");
+        let wav = avi_audio::encode_pcm_mono_wav(&samples, 24_000).expect("codificar WAV");
         let encoded = base64::engine::general_purpose::STANDARD.encode(&wav);
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(encoded)
             .expect("decodificar base64");
         let mut reader = hound::WavReader::new(std::io::Cursor::new(decoded)).expect("leer WAV");
-        assert_eq!(reader.spec().sample_rate, 16_000);
+        assert_eq!(reader.spec().sample_rate, 24_000);
         assert_eq!(reader.spec().channels, 1);
         assert_eq!(reader.spec().bits_per_sample, 16);
         assert_eq!(
@@ -7431,9 +7438,9 @@ mod tests {
     #[test]
     #[ignore = "requiere ejecución explícita: benchmark informativo que mide este host"]
     fn benchmark_clone_mic_wav_base64() {
-        let samples = vec![123; 16_000 * 30];
+        let samples = vec![123; 48_000 * 30];
         let started = std::time::Instant::now();
-        let wav = avi_audio::encode_pcm_16k_mono_wav(&samples).expect("codificar WAV");
+        let wav = avi_audio::encode_pcm_mono_wav(&samples, 48_000).expect("codificar WAV");
         let encoded = base64::engine::general_purpose::STANDARD.encode(&wav);
         eprintln!(
             "PCM→WAV→base64 (30 s): {:?}; {} bytes",
@@ -9458,7 +9465,7 @@ mod tests {
     /// Escribe `pcm` en un WAV temporal y devuelve su guarda.
     fn temp_wav_with(pcm: &[i16]) -> avi_shared::temp_wav::TempWav {
         let guard = avi_process::scratch::temp_wav("avi_acquire_test_").expect("WAV temporal");
-        let wav = avi_audio::encode_pcm_16k_mono_wav(pcm).expect("codificar WAV");
+        let wav = avi_audio::encode_pcm_mono_wav(pcm, 16_000).expect("codificar WAV");
         std::fs::write(guard.path(), wav).expect("escribir WAV");
         guard
     }

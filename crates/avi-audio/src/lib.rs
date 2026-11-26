@@ -55,11 +55,6 @@ pub fn wav_bytes_duration_secs(bytes: &[u8]) -> Option<f64> {
     wav_reader_duration_secs(&reader)
 }
 
-/// Codifica muestras PCM mono int16 en un WAV de 16 kHz.
-pub fn encode_pcm_16k_mono_wav(pcm: &[i16]) -> Result<Vec<u8>, hound::Error> {
-    encode_pcm_mono_wav(pcm, 16_000)
-}
-
 /// Codifica muestras PCM mono int16 en un WAV de la frecuencia indicada.
 pub fn encode_pcm_mono_wav(pcm: &[i16], sample_rate: u32) -> Result<Vec<u8>, hound::Error> {
     let spec = hound::WavSpec {
@@ -1013,14 +1008,17 @@ impl AudioService {
         })
     }
 
-    /// Capturar audio del micrófono por N segundos remuestreado a 16kHz/mono/int16 (Whisper compatible).
+    /// Capturar audio del micrófono por N segundos remuestreado a `target_rate` Hz / mono / int16.
+    /// `target_rate` debe ser una de las tasas internas soportadas (16, 24 o 48 kHz).
     /// Informa su avance al `observer`; que dure `duration_secs` es lo
     /// esperado, así que nunca llama a `limit_reached`.
-    pub fn capture_16k_mono_pcm(
+    pub fn capture_mono_pcm(
         &self,
+        target_rate: u32,
         duration_secs: u64,
         observer: Arc<dyn CaptureObserver>,
     ) -> Result<Vec<i16>> {
+        ensure_supported_capture_rate(target_rate)?;
         let device = self.default_input_device()?;
 
         let config = device.default_input_config()?;
@@ -1056,7 +1054,7 @@ impl AudioService {
 
         let raw_samples = acquire_lock(&recorded_samples, "buffer de grabación").clone();
         let raw_samples = ensure_captured_samples_non_empty(raw_samples)?;
-        finish(raw_samples, channels, sample_rate)
+        finish(raw_samples, channels, sample_rate, target_rate)
     }
 
     /// Capturar audio del micrófono en modo push-to-talk: graba hasta que el
@@ -1065,19 +1063,21 @@ impl AudioService {
     /// devuelve lo capturado hasta ese punto (no es un error). `max_secs` es un
     /// techo adicional que fija quien llama; rige el menor entre `max_secs` y el
     /// del entorno (`u64::MAX` deja solo el del entorno). Comparte
-    /// formato de salida (16 kHz, mono, int16) con `capture_16k_mono_pcm`.
-    /// Devuelve error si la variable de entorno es inválida, si falla la
+    /// formato de salida (`target_rate` Hz, mono, int16) con `capture_mono_pcm`.
+    /// Devuelve error si la tasa no es 16/24/48 kHz, si la variable de entorno es inválida, si falla la
     /// lectura de stdin o si un error fatal invalida el stream de audio; los
     /// errores transitorios no se registran en stderr y la captura continúa.
     /// Informa su avance al `observer` y le avisa con `limit_reached` si la
     /// detuvo el tope. Rechaza con error cuando la captura no produjo muestras (usuario pulsa
     /// Enter sin hablar o un Xrun descarta todos los frames), con el error
     /// tipado [`EmptyAudio`]; no retorna `Ok(Vec::new())`.
-    pub fn capture_16k_mono_pcm_until_enter(
+    pub fn capture_mono_pcm_until_enter(
         &self,
+        target_rate: u32,
         max_secs: u64,
         observer: Arc<dyn CaptureObserver>,
     ) -> Result<Vec<i16>> {
+        ensure_supported_capture_rate(target_rate)?;
         let max_secs = max_secs.min(push_to_talk_max_secs()?);
         let device = self.default_input_device()?;
 
@@ -1134,8 +1134,19 @@ impl AudioService {
 
         let raw_samples = acquire_lock(&recorded_samples, "buffer de grabación").clone();
         let raw_samples = ensure_captured_samples_non_empty(raw_samples)?;
-        finish(raw_samples, channels, sample_rate)
+        finish(raw_samples, channels, sample_rate, target_rate)
     }
+}
+
+/// Valida que la frecuencia destino de captura pertenezca a las tasas internas
+/// del flujo (16, 24 o 48 kHz).
+fn ensure_supported_capture_rate(target_rate: u32) -> Result<()> {
+    if !matches!(target_rate, 16_000 | 24_000 | 48_000) {
+        return Err(anyhow!(
+            "Tasa de muestreo de captura no soportada: {target_rate} Hz (se requiere 16, 24 o 48 kHz)"
+        ));
+    }
+    Ok(())
 }
 
 /// Rechaza una captura de micrófono que no produjo muestras: el usuario pulsó
@@ -1151,11 +1162,16 @@ fn ensure_captured_samples_non_empty(raw_samples: Vec<f32>) -> Result<Vec<f32>> 
 }
 
 /// Post-procesado compartido de captura de micrófono: mono → resample antialias
-/// a 16 kHz → int16. Usado por `capture_16k_mono_pcm` y
-/// `capture_16k_mono_pcm_until_enter` para no duplicar el pipeline.
-fn finish(recorded: Vec<f32>, channels: usize, sample_rate: u32) -> Result<Vec<i16>> {
+/// a `target_rate` Hz → int16. Usado por `capture_mono_pcm` y
+/// `capture_mono_pcm_until_enter` para no duplicar el pipeline.
+fn finish(
+    recorded: Vec<f32>,
+    channels: usize,
+    sample_rate: u32,
+    target_rate: u32,
+) -> Result<Vec<i16>> {
     let mono_samples = to_mono(&recorded, channels);
-    let resampled = resample_antialias(&mono_samples, sample_rate, 16_000)
+    let resampled = resample_antialias(&mono_samples, sample_rate, target_rate)
         .map_err(|e| anyhow!(e.to_string()))?;
     Ok(f32_to_i16(&resampled))
 }
@@ -1238,8 +1254,8 @@ fn ensure_nonzero_sample_rate(spec: &hound::WavSpec) -> Result<(), WavLoadError>
 }
 
 /// Cargar un WAV arbitrario (`hound`, cualquier tasa/canales/formato) y normalizarlo
-/// a PCM `i16` mono a 16 kHz, mismo formato que exige Parakeet y que ya produce
-/// `capture_16k_mono_pcm` para el micrófono. Los fallos se devuelven como
+/// a PCM `i16` mono a 16 kHz, mismo formato que exige Parakeet y que produce
+/// `capture_mono_pcm(16_000, ...)` para el micrófono. Los fallos se devuelven como
 /// `WavLoadError`: `NotFound` si el archivo no existe, `Invalid` si no es un WAV
 /// válido o soportado (incluido un WAV truncado, cuyas muestras declaradas no están
 /// en el archivo) e `Io` para el resto de fallos de lectura.
@@ -1686,7 +1702,7 @@ mod tests {
         for (sample_rate, bytes) in [
             (
                 16_000,
-                crate::encode_pcm_16k_mono_wav(&samples).expect("codificar WAV a 16 kHz"),
+                crate::encode_pcm_mono_wav(&samples, 16_000).expect("codificar WAV a 16 kHz"),
             ),
             (
                 24_000,
@@ -2112,11 +2128,13 @@ mod tests {
     }
 
     /// La captura de micrófono usa la misma autoridad y conserva la longitud
-    /// exacta esperada a 16 kHz.
+    /// exacta esperada en la tasa destino.
     #[test]
-    fn test_finish_capture_resamples_to_16k_exactly() {
-        let pcm = crate::finish(vec![0.1; 4800], 1, 48_000).unwrap();
-        assert_eq!(pcm.len(), 1600);
+    fn test_finish_capture_resamples_to_target_rate_exactly() {
+        for (target_rate, expected_len) in [(16_000, 1600), (24_000, 2400), (48_000, 4800)] {
+            let pcm = crate::finish(vec![0.1; 4800], 1, 48_000, target_rate).unwrap();
+            assert_eq!(pcm.len(), expected_len, "tasa {target_rate}");
+        }
     }
 
     #[test]

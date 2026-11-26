@@ -1048,14 +1048,48 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
     Ok((host, port, path.to_string()))
 }
 
+/// Referencia lista en PCM16 mono a 24 kHz: prestada si el WAV de entrada ya
+/// cumple el contrato exacto del motor, o temporal RAII si hubo que convertirlo.
+enum PreparedRef<'a> {
+    Borrowed(&'a Path),
+    Temp(tempfile::TempPath),
+}
+
+impl PreparedRef<'_> {
+    fn as_path(&self) -> &Path {
+        match self {
+            Self::Borrowed(path) => path,
+            Self::Temp(temp) => temp.as_ref(),
+        }
+    }
+}
+
 /// Normaliza `ref_audio` (WAV de cualquier tasa/canales) al formato que exige el
-/// clonado del motor —24 kHz / 16-bit / mono— escribiéndolo en un WAV temporal
-/// único con dueño y devolviendo su ruta: el fichero se borra al soltar el valor
-/// devuelto, por cualquier camino de salida. El motor rechaza referencias que no sean 24 kHz;
-/// el benchmark preprocesaba la referencia de la misma forma. El fallo de carga se
+/// clonado del motor —24 kHz / 16-bit / mono—. Si el archivo ya cumple ese
+/// formato exacto (y contiene muestras legibles), se reutiliza directamente sin
+/// copiar ni remuestrear; en caso contrario se escribe en un WAV temporal único
+/// con dueño que se borra al soltar el valor devuelto. El fallo de carga se
 /// propaga como `avi_audio::WavLoadError` dentro del `anyhow::Error`, de modo que
 /// quien llama lo recupera con `downcast_ref`.
-fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
+fn reference_24k_mono(ref_audio: &Path) -> Result<PreparedRef<'_>> {
+    let reader = hound::WavReader::open(ref_audio).map_err(avi_audio::WavLoadError::from)?;
+    let spec = reader.spec();
+    if spec.channels == 1
+        && spec.sample_rate == 24_000
+        && spec.bits_per_sample == 16
+        && spec.sample_format == hound::SampleFormat::Int
+    {
+        let mut samples = reader.into_samples::<i16>();
+        let mut has_sample = false;
+        for sample in &mut samples {
+            sample.map_err(avi_audio::WavLoadError::from)?;
+            has_sample = true;
+        }
+        if has_sample {
+            return Ok(PreparedRef::Borrowed(ref_audio));
+        }
+    }
+
     let pcm = avi_audio::load_wav_24k_mono_pcm(ref_audio)?;
     // `into_temp_path` cierra el manejador abierto: así el escritor y el motor
     // hijo abren el fichero por ruta sin choque de uso compartido en Windows.
@@ -1072,7 +1106,7 @@ fn reference_24k_mono(ref_audio: &Path) -> Result<tempfile::TempPath> {
         writer.write_sample(*sample)?;
     }
     writer.finalize()?;
-    Ok(out_path)
+    Ok(PreparedRef::Temp(out_path))
 }
 
 /// Variables de hilos de OpenBLAS que el motor hijo no debe heredar. El
@@ -1171,7 +1205,8 @@ pub fn clone_voice(model_dir: impl AsRef<Path>, ref_audio: &Path, out_qvoice: &P
     // fichero al instante. La herencia queda restringida a la lista explícita
     // (tubería de entrada y fichero de registro).
     let status = (|| -> Result<std::process::ExitStatus> {
-        let (program, args) = build_clone_command(&bin, model_dir.as_ref(), &ref_wav, out_qvoice);
+        let (program, args) =
+            build_clone_command(&bin, model_dir.as_ref(), ref_wav.as_path(), out_qvoice);
         #[cfg(windows)]
         let creation_flags = avi_process::DETACHED_PROCESS;
         #[cfg(not(windows))]

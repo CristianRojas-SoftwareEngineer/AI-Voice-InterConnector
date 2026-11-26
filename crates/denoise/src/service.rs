@@ -1,46 +1,23 @@
-//! Adaptador de servicio del DSP: limpieza de audio de entrada para clonado y
-//! STT (transcripción y doblaje).
+//! Adaptador de servicio del DSP: limpieza espectral pura (DPDFNet) para
+//! consumidores internos (STT en transcripción/doblaje y clonación de voz).
 //!
-//! Es la única etapa que ambos consumidores comparten. No usa la CLI de
-//! archivos, no aplica `studio` ni normalización de egresión y no descarga el
+//! Es la única etapa que los consumidores comparten. No usa la CLI de
+//! archivos, no aplica `studio`, *highpass*, *pause gate* ni normalización de
+//! nivel (el acondicionamiento específico de señal queda bajo responsabilidad
+//! de cada consumidor, p. ej. `qwen-tts-engine` en clonación). No descarga el
 //! modelo: `ServiceModels::resolve` exige que `setup` lo haya provisionado y
 //! verifica su integridad antes de tocar el audio.
 //!
 //! Las tasas internas son 16, 24 y 48 kHz. La conversión a/desde 48 kHz usa la
 //! autoridad antialias de `avi-audio`, nunca interpolación lineal: DPDFNet
-//! opera a 48 kHz y el resultado vuelve a la tasa de entrada para que el
-//! consumidor no cambie su contrato (STT sigue recibiendo 16 kHz).
+//! opera a 48 kHz y el resultado se entrega directamente en la tasa solicitada
+//! (`output_rate` / `sample_rate`) para evitar conversiones redundantes.
 
 use crate::df::denoise_wav_with_params;
 use crate::errors::E;
 use crate::models::{AviModelsProvider, ModelPaths, ModelsProvider};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use std::path::Path;
-
-/// Configuración DSP privada por finalidad. Ambas parten del default probado
-/// del origen (`dry_blend=0`, `pause_gate_db=-25`, `highpass=false`) y
-/// evolucionan por separado solo tras medir identidad de clonado o precisión
-/// STT. No se exponen por CLI ni por API.
-///
-/// `Clone` usa `pause_gate_db=-25.0` para preservar timbre; `Stt` usa
-/// `pause_gate_db=0.0` (gate desactivado) para evitar atenuar fonemas de
-/// baja energía en transcripción.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DenoiseUseCase {
-    /// Referencia de clonado: conserva el timbre, sin filtros añadidos.
-    Clone,
-    /// Entrada de STT compartida por `/transcribe` y `/dub`.
-    Stt,
-}
-
-impl DenoiseUseCase {
-    fn params(self) -> (f32, f64, bool) {
-        match self {
-            Self::Clone => (0.0, -25.0, false),
-            Self::Stt => (0.0, 0.0, false),
-        }
-    }
-}
 
 /// Modelo ya resuelto y verificado. Mantenerlo evita repetir el hash del
 /// artefacto entre la resolución y la inferencia del mismo trabajo.
@@ -60,29 +37,37 @@ impl ServiceModels {
     }
 
     /// Limpia un WAV de referencia arbitrario y escribe el resultado como WAV
-    /// PCM16 mono 48 kHz en `output`. `work_dir` debe ser privado de este
-    /// trabajo: el WAV intermedio y el resultado viven ahí hasta que el dueño
-    /// del directorio los borre.
+    /// PCM16 mono a `output_rate` Hz (16, 24 o 48 kHz) en `output`. `work_dir`
+    /// debe ser privado de este trabajo: los temporales viven ahí hasta que el
+    /// dueño del directorio los borre.
     pub fn denoise_wav_file(
         &self,
         input: &Path,
         output: &Path,
-        use_case: DenoiseUseCase,
+        output_rate: u32,
         work_dir: &Path,
     ) -> Result<(), E> {
+        ensure_supported_rate(output_rate)?;
         let pcm48 = avi_audio::load_wav_48k_mono_pcm(input).map_err(map_wav_error)?;
-        self.denoise_pcm48(&pcm48, use_case, output, work_dir)
+        if output_rate == 48_000 {
+            return self.denoise_pcm48(&pcm48, output, work_dir);
+        }
+        let out48_wav = work_dir.join("denoise.out48.wav");
+        self.denoise_pcm48(&pcm48, &out48_wav, work_dir)?;
+        let cleaned48 = read_wav16_mono(&out48_wav)?;
+        let _ = std::fs::remove_file(&out48_wav);
+        let resampled = resample_pcm16(&cleaned48, 48_000, output_rate)?;
+        write_wav16_mono(output, output_rate, &resampled)
     }
 
     /// Limpia PCM16 mono a `sample_rate` y devuelve PCM16 mono en la misma tasa.
-    /// `sample_rate` debe ser una de las tasas internas (16/24/48 kHz): el
+    /// `sample_rate` debe ser una de las tasas internas (16, 24 o 48 kHz): el
     /// contrato de los flujos no admite otras y una tasa desconocida sería un
     /// error de entrada, no una conversión silenciosa.
     pub fn denoise_pcm16_mono(
         &self,
         pcm: &[i16],
         sample_rate: u32,
-        use_case: DenoiseUseCase,
         work_dir: &Path,
     ) -> Result<Vec<i16>, E> {
         if pcm.is_empty() {
@@ -90,11 +75,7 @@ impl ServiceModels {
                 "El audio de entrada está vacío".to_string(),
             ));
         }
-        if !matches!(sample_rate, 16_000 | 24_000 | 48_000) {
-            return Err(E::EInvalidInput(format!(
-                "Tasa de muestreo no soportada: {sample_rate} Hz (se requiere 16, 24 o 48 kHz)"
-            )));
-        }
+        ensure_supported_rate(sample_rate)?;
 
         let pcm48 = if sample_rate == 48_000 {
             pcm.to_vec()
@@ -103,7 +84,7 @@ impl ServiceModels {
         };
 
         let out_wav = work_dir.join("denoise.out.wav");
-        self.denoise_pcm48(&pcm48, use_case, &out_wav, work_dir)?;
+        self.denoise_pcm48(&pcm48, &out_wav, work_dir)?;
         let cleaned = read_wav16_mono(&out_wav)?;
         let _ = std::fs::remove_file(&out_wav);
 
@@ -114,14 +95,8 @@ impl ServiceModels {
         }
     }
 
-    /// Núcleo del servicio: PCM ya en 48 kHz, sin conversiones adicionales.
-    fn denoise_pcm48(
-        &self,
-        pcm48: &[i16],
-        use_case: DenoiseUseCase,
-        output: &Path,
-        work_dir: &Path,
-    ) -> Result<(), E> {
+    /// Núcleo del servicio: PCM ya en 48 kHz, DPDFNet puro sin filtros ni gate.
+    fn denoise_pcm48(&self, pcm48: &[i16], output: &Path, work_dir: &Path) -> Result<(), E> {
         if pcm48.is_empty() {
             return Err(E::EInvalidInput(
                 "El audio de entrada está vacío".to_string(),
@@ -133,20 +108,28 @@ impl ServiceModels {
         let provider = ResolvedProvider {
             paths: self.paths.clone(),
         };
-        let (dry_blend, pause_gate_db, highpass) = use_case.params();
         let result = denoise_wav_with_params(
             &in_wav,
             output,
             &provider,
-            dry_blend,
-            pause_gate_db,
-            highpass,
+            0.0,
+            0.0,
+            false,
             &|_, _| {},
             None,
         );
         let _ = std::fs::remove_file(&in_wav);
         result
     }
+}
+
+fn ensure_supported_rate(sample_rate: u32) -> Result<(), E> {
+    if !matches!(sample_rate, 16_000 | 24_000 | 48_000) {
+        return Err(E::EInvalidInput(format!(
+            "Tasa de muestreo no soportada: {sample_rate} Hz (se requiere 16, 24 o 48 kHz)"
+        )));
+    }
+    Ok(())
 }
 
 /// Proveedor que devuelve el modelo ya resuelto y verificado por

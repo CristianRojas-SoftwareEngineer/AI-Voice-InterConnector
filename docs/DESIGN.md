@@ -219,7 +219,7 @@ Dos capacidades necesitan interacción con la persona en la terminal: la captura
 
 ### Captura push-to-talk (`crates/avi-audio`)
 
-`capture_16k_mono_pcm_until_enter(max_secs)` convive con `capture_16k_mono_pcm(duration_secs)`. Ambas comparten el post-procesado (mono, remuestreo a 16 kHz, i16) en el helper privado `finish(recorded, channels, sample_rate)` y producen el mismo formato; difieren solo en el disparador de fin: dormir la duración fija frente a esperar una línea de stdin. El callback de `cpal` llena el buffer en su hilo de audio mientras otro hilo lee stdin y avisa por un canal; la espera aplica un deadline con `recv_timeout`, de modo que la lectura bloqueante no impide el techo.
+`capture_mono_pcm_until_enter(target_rate, max_secs, observer)` convive con `capture_mono_pcm(target_rate, duration_secs, observer)`. Ambas comparten el post-procesado (mono, remuestreo a `target_rate` Hz: 16, 24 o 48 kHz, i16) en el helper privado `finish(recorded, channels, sample_rate, target_rate)` y producen el mismo formato; difieren solo en el disparador de fin: dormir la duración fija frente a esperar una línea de stdin. El callback de `cpal` llena el buffer en su hilo de audio mientras otro hilo lee stdin y avisa por un canal; la espera aplica un deadline con `recv_timeout`, de modo que la lectura bloqueante no impide el techo.
 
 La grabación con micrófono, de duración fija o con push-to-talk, mantiene viva la etapa de captura: con terminal muestra `● Grabando m:ss / m:ss`, un medidor de nivel y, si se para con Enter, `Enter para detener`; sin terminal escribe una vez `Grabando (máximo m:ss)…`. La biblioteca de audio no escribe en la terminal: informa de su progreso a un observador (`CaptureObserver`) que la CLI traduce a la línea de la etapa.
 
@@ -227,7 +227,7 @@ El techo es el menor entre el que fija quien llama (`max_secs`) y `AVI_PUSH_TO_T
 
 ### Selector de captura (`src/main.rs`)
 
-Las rutas de captura de `transcribe` y `dub`, directas y vía daemon, convergen en `capture_mic_pcm(duration, max_secs)`: `Some(d)` captura de duración fija y `None` push-to-talk (ambas con la etapa de captura viva y su contador avanzando durante la grabación) (solo alcanzable en TTY por las guardas previas, sin `expect` en la rama mic). La captura corre dentro de `tokio::task::spawn_blocking` para no bloquear el reactor durante la espera de Enter. Ctrl-C durante la grabación lo atiende el manejador global de señales del CLI, sin tratamiento específico.
+Las rutas de captura de `transcribe`, `dub` (16 kHz) y `voice clone` (48 kHz con `--denoise`, 24 kHz sin él), directas y vía daemon, convergen en `capture_mic_pcm(target_rate, duration, max_secs, observer)`: `Some(d)` captura de duración fija y `None` push-to-talk (ambas con la etapa de captura viva y su contador avanzando durante la grabación) (solo alcanzable en TTY por las guardas previas, sin `expect` en la rama mic). La captura corre dentro de `tokio::task::spawn_blocking` para no bloquear el reactor durante la espera de Enter. Ctrl-C durante la grabación lo atiende el manejador global de señales del CLI, sin tratamiento específico.
 
 ### Bucle de revisión (`src/main.rs`)
 
