@@ -146,11 +146,6 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 La clonación desde el micrófono grababa a 16 kHz para un codificador que trabaja a 24 kHz, así que perdía la banda de 8 a 12 kHz, y la limpieza de la referencia atenuaba las pausas antes de que el motor las compactara. Ahora la captura conserva esa banda, la limpieza solo quita el ruido ambiental y la voz de fábrica se regenera con esa ruta. Además, una voz de fábrica nueva no llegaba a las instalaciones existentes, porque la `default` solo se escribía si faltaba: ahora se reinstala en el primer uso, se actualice por el canal que sea. La versión fija el motor `qwen-tts-engine` 1.3.0, que preprocesa la referencia de clonación y comparte con AVI la voz de fábrica nueva.
 
-### Cambios incompatibles
-
-- **`voice clone --name default` se rechaza**, con o sin `--force`: exit 2 `cannot_clone_default` en la CLI y `400` `cannot_clone_default` en el daemon. El contenido de `default` es el asset embebido, que AVI restituye en cada uso; para usar otra voz se clona con otro nombre.
-- **`self install` deja de migrar voces de versiones anteriores a la 0.46.0:** ya no borra las voces clonadas en `.qvoice` v3 ni las carpetas `ryan/` y `vivian/`, y no imprime avisos de migración. Una instalación que venga de una versión anterior a la 0.46.0 debe borrar esas voces con `voice remove` o `cleanup --voices`.
-
 ### Cambiado
 
 - **Captura de la referencia de `voice clone` desde el micrófono:** graba a 48 kHz con `--denoise` (la tasa de DPDFNet) y a 24 kHz sin él, en lugar de a 16 kHz. La transcripción sigue grabando a 16 kHz.
@@ -164,6 +159,14 @@ La clonación desde el micrófono grababa a 16 kHz para un codificador que traba
 
 - **Empaquetado de un binario viejo:** `cargo xtask package` tomaba el binario que hubiera en `target/release`, aunque fuera de otra versión o de otra revisión del código, y lo empaquetaba. Ahora lo compila desde el árbol actual y falla si la versión que informa no es la del `Cargo.toml`.
 - **Humo del empaquetado sobre los datos del usuario:** el humo de `xtask package` ejecutaba `voice list` sobre la raíz de datos real, así que empaquetar en local podía reinstalar la voz de fábrica de esa instalación y borrar sus audios sintetizados. Ahora corre en un estado temporal.
+
+### Notas de release
+
+Cambios incompatibles de la voz de fábrica y de la actualización; las claves, las opciones y las versiones de esquema no cambian, y el `reason` nuevo se suma a los existentes.
+
+- **`voice clone --name default` se rechaza**, con o sin `--force`: exit 2 `cannot_clone_default` en la CLI y `400` `cannot_clone_default` en el daemon. El contenido de `default` es el asset embebido, que AVI restituye en cada uso; para usar otra voz se clona con otro nombre.
+- **`self install` deja de migrar voces de versiones anteriores a la 0.46.0:** ya no borra las voces clonadas en `.qvoice` v3 ni las carpetas `ryan/` y `vivian/`, y no imprime avisos de migración. Una instalación que venga de una versión anterior a la 0.46.0 debe borrar esas voces con `voice remove` o `cleanup --voices`.
+- **El motor 1.3.0 cambia el audio para la misma petición**, y una voz clonada de nuevo da otra huella de timbre que con la 1.2.1, por el preprocesamiento de la referencia.
 
 - **Limpieza de la referencia de clonación:** `--denoise` aplicaba una compuerta de pausas de -25 dB que atenuaba la referencia antes de que el motor compactara los silencios. Ahora solo quita el ruido ambiental, igual que en la transcripción.
 - **Actualización de la voz de fábrica:** la inicialización del almacén solo escribía `default/reference.qvoice` si faltaba, así que una versión con otra voz de fábrica dejaba la anterior en las instalaciones existentes. Ahora la reinstala si difiere del asset embebido y borra antes sus audios sintetizados, que se hicieron con la voz anterior. Cubre `self install`, `self update`, Homebrew y los binarios sin recibo, porque ocurre en el primer uso de la voz.
