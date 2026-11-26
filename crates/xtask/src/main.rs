@@ -476,6 +476,9 @@ enum Commands {
         /// No provisionar modelos
         #[arg(long)]
         no_setup: bool,
+        /// Omite la confirmación de `self install`; sin terminal es obligatoria
+        #[arg(long)]
+        yes: bool,
     },
     /// Audita las dependencias de un bundle ya montado o extraído contra el contrato del manifiesto
     Deps {
@@ -502,6 +505,10 @@ enum Commands {
         /// Falla si la versión del CLI no coincide (puerta tag-versión de CI)
         #[arg(long, value_name = "X.Y.Z")]
         expect_version: Option<String>,
+        /// Argumentos que se pasan tal cual a la compilación del binario, tras
+        /// `--` (por ejemplo, `-- --verbose --timings`)
+        #[arg(last = true, value_name = "CARGO_ARGS")]
+        cargo_args: Vec<String>,
     },
     /// Aprovisiona el FFmpeg fijado en packaging/pins.json para el target del host
     Ffmpeg {
@@ -676,13 +683,14 @@ fn main() -> Result<()> {
             models,
             yes,
         } => bootstrap::run(system, models, yes)?,
-        Commands::Install { no_setup } => install::run(no_setup)?,
+        Commands::Install { no_setup, yes } => install::run(no_setup, yes)?,
         Commands::Package {
             out,
             no_compress,
             flat,
             expect_version,
-        } => package::run(out, no_compress, flat, expect_version)?,
+            cargo_args,
+        } => package::run(out, no_compress, flat, expect_version, cargo_args)?,
         Commands::Ffmpeg { dest, sources } => {
             package::run_ffmpeg(dest.as_deref(), sources.as_deref())?
         }
@@ -2035,7 +2043,7 @@ mod tests {
     fn test_ffmpeg_bundle_is_cached_before_first_use() {
         let cfg = read_ci_config();
         let tests = &["- provision_ffmpeg_unix", "- provision_ffmpeg_windows"][..];
-        let builds = &["name: Empaquetar bundle con xtask package"][..];
+        let builds = &["name: Compilar y empaquetar bundle con xtask package"][..];
         let jobs = [
             ("test-linux", tests),
             ("coverage", tests),
@@ -2986,14 +2994,15 @@ mod tests {
     }
 
     /// Los informes de `--timings` salen de `target/` en el mismo paso que los
-    /// genera: vaciados antes del build (la caché de `target/` puede traer los de
-    /// otra corrida) y movidos fuera al terminar. Así la caché no los guarda y la
-    /// limpieza previa al guardado no tiene que borrarlos mientras la subida del
-    /// artefacto aún los mantiene abiertos, que en Windows hace fallar `rm`.
+    /// genera, el de `xtask package` que compila el binario: vaciados antes del
+    /// build (la caché de `target/` puede traer los de otra corrida) y movidos
+    /// fuera al terminar. Así la caché no los guarda y la limpieza previa al
+    /// guardado no tiene que borrarlos mientras la subida del artefacto aún los
+    /// mantiene abiertos, que en Windows hace fallar `rm`.
     #[test]
     fn test_cargo_timings_leave_target_before_upload() {
         let cfg = read_ci_config();
-        let command = "cargo build --release --features full --verbose --timings";
+        let command = "-- --verbose --timings";
         let builds: Vec<&str> = cfg
             .split("- run:")
             .filter(|step| step.contains(command))
@@ -3162,8 +3171,10 @@ mod tests {
                     panic!("{job} debe invocar native_sccache_setup_unix tras sccache_setup_unix")
                 });
             let build = section
-                .find("cargo build --release --features")
-                .unwrap_or_else(|| panic!("{job} debe compilar el binario release"));
+                .find("cargo xtask package --expect-version")
+                .unwrap_or_else(|| {
+                    panic!("{job} debe compilar el binario release con xtask package")
+                });
             assert!(
                 setup < build,
                 "{job}: el launcher debe configurarse antes de compilar"
@@ -3175,7 +3186,7 @@ mod tests {
             "build-windows-x64 debe instalar Ninja (native_sccache_setup_windows) sin condición"
         );
         let compile_step = win
-            .split("name: Compilar binario release (--features full)")
+            .split("name: Compilar y empaquetar bundle con xtask package")
             .nth(1)
             .expect("build-windows-x64 debe tener el paso de compilación")
             .split("\n      - ")
@@ -3205,7 +3216,7 @@ mod tests {
             .unwrap();
         let pos_launcher = compile_step.find("$env:CMAKE_GENERATOR").unwrap();
         let pos_build = compile_step
-            .find("cargo build --release --features")
+            .find("cargo xtask package --expect-version")
             .unwrap();
         assert!(
             pos_vcvars < pos_path,
@@ -3213,7 +3224,7 @@ mod tests {
         );
         assert!(
             pos_launcher < pos_build,
-            "CMAKE_GENERATOR debe fijarse antes de cargo build"
+            "CMAKE_GENERATOR debe fijarse antes de compilar con xtask package"
         );
     }
 

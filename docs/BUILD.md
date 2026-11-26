@@ -258,6 +258,10 @@ cargo build --release --features full
 ./target/release/ai-voice-interconnector doctor
 ```
 
+Para empaquetar o instalar el build local no hace falta compilar antes:
+`cargo xtask package` y `cargo xtask install` compilan el binario completo desde
+el árbol actual, y Cargo no rehace nada si ya estaba al día.
+
 En Windows, el producto y `cargo xtask` fijan la consola a UTF-8 al arrancar
 (helper compartido `avi_term::line::init_console`, que además activa las secuencias de color de la consola), así que los mensajes
 con tildes se ven bien aunque la PowerShell use otra página de códigos.
@@ -360,24 +364,30 @@ cambia sin revalidar el binding `ort` ↔ librería nativa.
 El **smoke test está automatizado en CI**. Cada uno de los 4 jobs de build,
 antes de publicar el artefacto, ejecuta en este orden:
 
-1. Sobre el binario recién compilado, la versión y `voice list`: en Linux y
-   macOS compara `--version` con el tag; en Windows ejecuta `version` y exige a
-   `version --json` los campos `name`, `version` (igual al tag) y
-   `schema_version` igual a `CLI_SCHEMA_VERSION` (`cargo xtask pins --check`
-   falla si el literal del humo y la constante divergen). `voice list` hace
-   fallar el job si falta la voz `default`.
-2. `cargo xtask package --expect-version`, que repite `version` y `voice list`
-   sobre el binario, verifica el SHA-256 de ONNX Runtime y del motor TTS si los
-   descarga, monta el bundle y audita sus dependencias contra el contrato del
-   target (ver [Auditoría de dependencias](#auditoría-de-dependencias)).
-3. `qwen_tts --self-test` sobre el motor descargado en `engine-bundle/`: su
+1. `cargo xtask package --expect-version X.Y.Z -- --verbose --timings`, que
+   compila, prueba y empaqueta en un solo paso:
+   - falla si la versión del `Cargo.toml` no es la del tag;
+   - compila el binario con `cargo build --release --package
+     ai-voice-interconnector --features full` más lo que va tras `--`, desde el
+     árbol del tag, así que el bundle nunca lleva un binario de otra
+     compilación;
+   - pasa el único humo del binario, con la raíz de datos y el contenedor de
+     caché en un temporal propio: `version --json` debe dar `name`, la
+     `version` del `Cargo.toml` y la `schema_version` de `CLI_SCHEMA_VERSION`,
+     que `xtask` toma de `avi-core`; `voice list --json` debe registrar
+     `default`; `speech denoise --help` debe responder y el alias raíz
+     `denoise` debe rechazarse;
+   - verifica el SHA-256 de ONNX Runtime y del motor TTS si los descarga,
+     monta el bundle y audita sus dependencias contra el contrato del target
+     (ver [Auditoría de dependencias](#auditoría-de-dependencias)).
+2. `qwen_tts --self-test` sobre el motor descargado en `engine-bundle/`: su
    oráculo de kernels, sin pesos del modelo.
-4. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
+3. El humo de instalación: `self install --no-setup --no-modify-path --yes` del
    archivo empaquetado en un sandbox con las cuatro raíces reubicadas, y
    `--version` del binario instalado. Los cuatro builds comprueban además
    `speech denoise --help`, el rechazo del alias raíz `denoise` y que el FFmpeg
    instalado arranque (`-version` en Unix y Windows).
-5. En Linux, la verificación de portabilidad del artefacto en salas limpias,
+4. En Linux, la verificación de portabilidad del artefacto en salas limpias,
    que ejecuta también `qwen_tts --self-test` del motor instalado y de la que
    depende la publicación; ver [RELEASING.md](RELEASING.md#2-automático-lo-que-hace-el-ci).
 

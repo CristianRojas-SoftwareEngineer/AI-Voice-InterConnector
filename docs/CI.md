@@ -162,4 +162,4 @@ Restaurar un `target/` de una release anterior nunca produce un binario con la v
 
 - **El crate raíz siempre se recompila.** El checkout deja `src/main.rs` y `Cargo.toml` con un `mtime` posterior al de cualquier artefacto restaurado, y el bump de versión cambia además la `-C metadata` con la que cargo nombra la unidad de compilación.
 - **`sccache` no puede servir un binario viejo.** No cachea crates `--crate-type bin`: el binario final, los build scripts y `xtask` siempre pasan por `rustc`.
-- **El smoke test lo comprueba.** Cada build compara la versión del binario con `CIRCLE_TAG` y falla si no coinciden.
+- **El humo de `xtask package` lo comprueba.** Cada build compila el binario dentro de `xtask package`, que falla si la versión del `Cargo.toml` no es la de `CIRCLE_TAG` o si la que informa el binario no es la del `Cargo.toml`.

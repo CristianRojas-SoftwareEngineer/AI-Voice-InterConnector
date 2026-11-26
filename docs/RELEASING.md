@@ -277,10 +277,15 @@ en `.circleci/config.yml`. Con el tag publicado, ejecuta sin intervención:
 
 2. **Builds.** `build-windows-x64`, `build-linux-x64`, `build-linux-arm64` y
    `build-darwin-arm64`:
-   - verifican versión del binario contra el tag y `voice list` con `default`;
-   - empaquetan con `cargo xtask package --expect-version ...`, descargan ORT
-     y el motor TTS fijado validando su SHA-256 y auditan dependencias/ABI del
-     target;
+   - compilan y empaquetan con
+     `cargo xtask package --expect-version X.Y.Z -- --verbose --timings`, que
+     falla si el `Cargo.toml` no es la versión del tag, compila el binario con
+     `--features full` desde el árbol del tag, le pasa el único humo del
+     binario (versión igual a la del `Cargo.toml`, contrato de
+     `version --json`, `voice list` con `default`, `speech denoise` y el
+     rechazo de `denoise`, en un estado temporal), descarga ORT y el motor TTS
+     fijado validando su SHA-256 y audita dependencias/ABI del target. El
+     informe de tiempos de la compilación se publica como artefacto;
    - ejecutan `qwen_tts --self-test` sobre el motor descargado en `engine-bundle/`;
    - ejecutan el smoke de instalación `self install --no-setup --no-modify-path`
      en sandbox y persisten el artefacto en el workspace.

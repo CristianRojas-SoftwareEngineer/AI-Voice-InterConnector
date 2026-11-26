@@ -21,10 +21,9 @@
 //! interpola.
 //!
 //! La misma puerta compara los literales de la CI que espejan valores del
-//! código: la `schema_version` que el humo de `build-windows-x64` exige a
-//! `version --json` debe ser `CLI_SCHEMA_VERSION`, y la limpieza anterior a
-//! guardar `target/` debe cubrir todos los prefijos de prueba declarados en
-//! `avi-shared`, además de los temporales por defecto y la raíz del daemon.
+//! código: la limpieza anterior a guardar `target/` debe cubrir todos los
+//! prefijos de prueba declarados en `avi-shared`, además de los temporales por
+//! defecto y la raíz del daemon.
 //! Además, cada executor de Windows debe tomar la versión de su imagen del
 //! parámetro `windows_image_pin`.
 //!
@@ -42,10 +41,6 @@ const PIN_SUFFIX: &str = "_pin";
 
 /// Fichero del canal de Rust, relativo a la raíz del repositorio.
 const TOOLCHAIN_REL: &str = "rust-toolchain.toml";
-
-/// Prefijos que preceden, en el humo de la CI, al literal de `schema_version`
-/// que se exige a `version --json`: la comparación y su mensaje de error.
-const SCHEMA_SMOKE_MARKERS: [&str; 2] = ["$j.schema_version -ne '", "campo 'schema_version' != '"];
 
 /// Inicio del comando que retira temporales antes de guardar la caché de `target/`.
 const CACHE_CLEANUP_MARKER: &str = "          command: >-\n            rm -rf -- ";
@@ -85,7 +80,7 @@ pub(crate) fn run(check: bool, sync: bool, root: Option<&Path>) -> Result<()> {
         let errors = check_text(&pins, &cfg, &toolchain);
         if errors.is_empty() {
             println!(
-                "pines en sincronía: parámetros, canal de Rust, instaladores, schema_version del humo, limpieza de la caché e imagen de Windows"
+                "pines en sincronía: parámetros, canal de Rust, instaladores, limpieza de la caché e imagen de Windows"
             );
             return Ok(());
         }
@@ -223,10 +218,6 @@ fn check_text(pins: &Pins, cfg: &str, toolchain: &str) -> Vec<String> {
             "la CI fija sccache en un literal de shell: debe leer packaging/pins.json".to_string(),
         );
     }
-    errors.extend(schema_smoke_errors(
-        cfg,
-        avi_core::json_emitter::CLI_SCHEMA_VERSION,
-    ));
     errors.extend(cache_cleanup_errors(cfg));
     errors.extend(windows_executor_errors(cfg));
     errors.extend(engine_pin_errors(pins));
@@ -332,31 +323,6 @@ fn cache_cleanup_errors(cfg: &str) -> Vec<String> {
     errors
 }
 
-/// Errores del literal de `schema_version` del humo: debe aparecer en cada
-/// prefijo de `SCHEMA_SMOKE_MARKERS` y coincidir siempre con `expected`.
-fn schema_smoke_errors(cfg: &str, expected: &str) -> Vec<String> {
-    let mut errors = Vec::new();
-    for marker in SCHEMA_SMOKE_MARKERS {
-        let literals: Vec<&str> = cfg
-            .match_indices(marker)
-            .filter_map(|(pos, _)| cfg[pos + marker.len()..].split('\'').next())
-            .collect();
-        if literals.is_empty() {
-            errors.push(format!(
-                "el humo de la CI no contiene la comprobación de schema_version (`{marker}`)"
-            ));
-        }
-        for literal in literals {
-            if literal != expected {
-                errors.push(format!(
-                    "el humo de la CI exige schema_version {literal:?} y el envelope de la CLI es {expected:?} (CLI_SCHEMA_VERSION)"
-                ));
-            }
-        }
-    }
-    errors
-}
-
 /// `true` si el texto fija un literal de versión tras el prefijo: el carácter
 /// siguiente es un dígito. Así la lectura viva (`="\$\(...` o `= (Get-...`)
 /// no se confunde con el literal que sustituye.
@@ -400,8 +366,8 @@ mod tests {
         }
     }
 
-    /// CI de fixture con los ocho parámetros esperados, el humo de
-    /// `schema_version`, la limpieza de caché y un executor de Windows vigentes.
+    /// CI de fixture con los ocho parámetros esperados, la limpieza de caché y
+    /// un executor de Windows vigentes.
     fn fixture_config() -> String {
         let pins = fixture_pins();
         let mut cfg = String::from("parameters:\n");
@@ -413,9 +379,6 @@ mod tests {
                 "  {key}_pin:\n    type: string\n    default: \"{value}\"\n"
             ));
         }
-        cfg.push_str(&fixture_schema_smoke(
-            avi_core::json_emitter::CLI_SCHEMA_VERSION,
-        ));
         cfg.push_str("  cargo_save_target:\n    steps:\n      - run:\n");
         cfg.push_str(CACHE_CLEANUP_MARKER);
         cfg.push_str("target/.tmp* ");
@@ -430,13 +393,6 @@ mod tests {
 
     /// Executor de Windows de fixture con la versión del pin.
     const FIXTURE_WINDOWS_EXECUTOR: &str = "  test-windows:\n    executor:\n      name: win/server-2022\n      version: << pipeline.parameters.windows_image_pin >>\n";
-
-    /// Línea del humo de Windows que exige `version` a `version --json`.
-    fn fixture_schema_smoke(version: &str) -> String {
-        format!(
-            "            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '{version}') {{ throw \"version --json: campo 'schema_version' != '{version}': $jsonRaw\" }}\n"
-        )
-    }
 
     /// Canal de fixture que copia el pin de Rust.
     fn fixture_toolchain() -> String {
@@ -609,45 +565,6 @@ mod tests {
         );
         cfg.push_str("            $SccacheVersion = (Get-Content packaging/pins.json -Raw | ConvertFrom-Json).sccache\n");
         assert!(check_text(&fixture_pins(), &cfg, &fixture_toolchain()).is_empty());
-    }
-
-    /// Un humo que exige otra `schema_version` que la del envelope vigente se
-    /// rechaza, también si solo diverge el mensaje de error.
-    #[test]
-    fn stale_schema_smoke_is_rejected() {
-        let current = avi_core::json_emitter::CLI_SCHEMA_VERSION;
-        let cfg =
-            fixture_config().replace(&fixture_schema_smoke(current), &fixture_schema_smoke("0"));
-        let errors = check_text(&fixture_pins(), &cfg, &fixture_toolchain());
-        assert_eq!(errors.len(), 2, "comparación y mensaje: {errors:?}");
-        assert!(errors
-            .iter()
-            .all(|e| e.contains("\"0\"") && e.contains(current)));
-
-        let half = fixture_config().replacen(&format!("-ne '{current}'"), "-ne '0'", 1);
-        let errors = check_text(&fixture_pins(), &half, &fixture_toolchain());
-        assert_eq!(errors.len(), 1, "solo diverge la comparación: {errors:?}");
-    }
-
-    /// Un pipeline sin la comprobación de `schema_version` se rechaza: retirarla
-    /// no puede pasar la puerta en silencio.
-    #[test]
-    fn missing_schema_smoke_is_rejected() {
-        let cfg = fixture_config().replace(
-            &fixture_schema_smoke(avi_core::json_emitter::CLI_SCHEMA_VERSION),
-            "",
-        );
-        let errors = check_text(&fixture_pins(), &cfg, &fixture_toolchain());
-        assert_eq!(errors.len(), 2, "{errors:?}");
-        assert!(errors.iter().all(|e| e.contains("no contiene")));
-    }
-
-    /// El pipeline real exige al humo la `schema_version` vigente.
-    #[test]
-    fn real_pipeline_smoke_matches_cli_schema_version() {
-        let cfg = include_str!("../../../.circleci/config.yml");
-        let errors = schema_smoke_errors(cfg, avi_core::json_emitter::CLI_SCHEMA_VERSION);
-        assert!(errors.is_empty(), "{errors:?}");
     }
 
     /// La cobertura debe fallar si falta un prefijo, el temporal por defecto,

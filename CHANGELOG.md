@@ -155,8 +155,14 @@ La clonación desde el micrófono grababa a 16 kHz para un codificador que traba
 
 - **Captura de la referencia de `voice clone` desde el micrófono:** graba a 48 kHz con `--denoise` (la tasa de DPDFNet) y a 24 kHz sin él, en lugar de a 16 kHz. La transcripción sigue grabando a 16 kHz.
 - **Voz de fábrica `default`:** el asset `crates/avi-store/assets/default/reference.qvoice` se regenera desde `Speech Sampler.wav` con `voice clone --denoise`. La voz suena distinta a la de la 0.46.1.
+- **`cargo xtask package` compila el binario que empaqueta:** ejecuta `cargo build --release --package ai-voice-interconnector --features full` desde el árbol actual y reenvía a la compilación lo que va tras `--`. Ya no hace falta compilar antes de `package` ni de `cargo xtask install`. Los cuatro jobs de build de la CI compilan, prueban y empaquetan con un único `cargo xtask package --expect-version X.Y.Z -- --verbose --timings`.
+- **Humo único del binario:** el humo de `xtask package` es el único y sustituye a los de los jobs de build. Exige a `version --json` el nombre, la versión del `Cargo.toml` y la `schema_version` vigente, que toma de `avi-core`, así que `cargo xtask pins --check` deja de vigilar un literal en la CI. Corre con la raíz de datos y el contenedor de caché en un temporal propio.
+- **`cargo xtask install --yes`:** reenvía `--yes` a `self install`, así que el build local se instala sin terminal.
 
 ### Corregido
+
+- **Empaquetado de un binario viejo:** `cargo xtask package` tomaba el binario que hubiera en `target/release`, aunque fuera de otra versión o de otra revisión del código, y lo empaquetaba. Ahora lo compila desde el árbol actual y falla si la versión que informa no es la del `Cargo.toml`.
+- **Humo del empaquetado sobre los datos del usuario:** el humo de `xtask package` ejecutaba `voice list` sobre la raíz de datos real, así que empaquetar en local podía reinstalar la voz de fábrica de esa instalación y borrar sus audios sintetizados. Ahora corre en un estado temporal.
 
 - **Limpieza de la referencia de clonación:** `--denoise` aplicaba una compuerta de pausas de -25 dB que atenuaba la referencia antes de que el motor compactara los silencios. Ahora solo quita el ruido ambiental, igual que en la transcripción.
 - **Actualización de la voz de fábrica:** la inicialización del almacén solo escribía `default/reference.qvoice` si faltaba, así que una versión con otra voz de fábrica dejaba la anterior en las instalaciones existentes. Ahora la reinstala si difiere del asset embebido y borra antes sus audios sintetizados, que se hicieron con la voz anterior. Cubre `self install`, `self update`, Homebrew y los binarios sin recibo, porque ocurre en el primer uso de la voz.

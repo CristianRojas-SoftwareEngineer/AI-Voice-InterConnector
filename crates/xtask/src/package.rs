@@ -17,8 +17,11 @@
 //! códecs de la matriz de egressión y ejecuta `-version` antes de montarlo.
 //! Toma el motor TTS de `engine-bundle/`, también verificado por SHA-256, y
 //! lo monta en la raíz del bundle. Valida `--expect-version` (la puerta tag-versión vive aquí, ningún paso YAML
-//! la duplica), pasa el humo (`version` y `voice list`) y comprime de forma
-//! determinista con el nombre de `release_asset_name`.
+//! la duplica), compila el binario desde el árbol actual (el bundle nunca lleva
+//! un `target/release` de otra compilación), pasa el humo, que es el único del
+//! binario (contrato de `version --json`, `voice list`, `speech denoise`, en un
+//! estado temporal propio) y comprime de forma determinista con el nombre de
+//! `release_asset_name`.
 //!
 //! Sin red en los tests: las descargas viven en `ensure_ort_bundle` y
 //! `ensure_ffmpeg_bundle`; todo lo demás (manifiesto, nombres, puerta de
@@ -1274,7 +1277,47 @@ struct Sources {
     binary: PathBuf,
 }
 
-/// Localiza el binario ya compilado y los cinco documentos.
+/// Argumentos de la compilación del binario que se empaqueta: el perfil
+/// release con todos los features, acotada al paquete del producto (sin
+/// `--package`, Cargo intentaría reenlazar `xtask.exe` mientras está en uso, y
+/// en Windows eso falla), más los argumentos que el llamador reenvía tras `--`,
+/// como `--timings`. Puros, fijados por test.
+fn build_args(cargo_args: &[String]) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "build",
+        "--release",
+        "--package",
+        "ai-voice-interconnector",
+        "--features",
+        "full",
+    ]
+    .map(String::from)
+    .to_vec();
+    args.extend_from_slice(cargo_args);
+    args
+}
+
+/// Compila el binario que se empaqueta desde el árbol actual. Es la única
+/// fuente del binario del bundle: un `target/release` de otra compilación
+/// nunca llega al bundle, y con el árbol ya compilado Cargo no rehace nada.
+fn build_binary(root: &Path, cargo_args: &[String]) -> Result<()> {
+    let args = build_args(cargo_args);
+    let status = std::process::Command::new("cargo")
+        .args(&args)
+        .current_dir(root)
+        .status()
+        .map_err(|e| anyhow::anyhow!("no se pudo ejecutar cargo: {e}"))?;
+    if !status.success() {
+        bail!(
+            "la compilación del binario falló: cargo {} (exit {:?})",
+            args.join(" "),
+            status.code()
+        );
+    }
+    Ok(())
+}
+
+/// Localiza el binario recién compilado y los cinco documentos.
 /// Va antes de la descarga de ONNX Runtime para fallar rápido sin red si falta
 /// lo que el propio repo debe aportar.
 fn locate_sources(root: &Path) -> Result<Sources> {
@@ -1284,10 +1327,7 @@ fn locate_sources(root: &Path) -> Result<Sources> {
         .join("release")
         .join(format!("ai-voice-interconnector{exe_suffix}"));
     if !binary.is_file() {
-        bail!(
-            "binario no encontrado: {} (compila antes con `cargo build --release --features full`)",
-            binary.display()
-        );
+        bail!("binario no encontrado tras compilar: {}", binary.display());
     }
     for doc in [
         "LICENSE",
@@ -1303,37 +1343,84 @@ fn locate_sources(root: &Path) -> Result<Sources> {
     Ok(Sources { binary })
 }
 
-/// Humo del binario ya compilado: versión, voces y contrato de `speech denoise`.
-fn smoke_binary(binary: &Path) -> Result<()> {
-    for args in [
-        vec!["version"],
-        vec!["voice", "list"],
-        vec!["speech", "denoise", "--help"],
+/// Comprueba la salida de `version --json`: el nombre del producto, la versión
+/// del Cargo.toml y la `schema_version` del envelope vigente de la CLI. Pura,
+/// fijada por test.
+fn check_version_json(raw: &str, version: &str, schema_version: &str) -> Result<()> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| anyhow::anyhow!("`version --json` no es JSON válido ({e}): {raw}"))?;
+    for (field, expected) in [
+        ("name", "ai-voice-interconnector"),
+        ("version", version),
+        ("schema_version", schema_version),
     ] {
-        let status = std::process::Command::new(binary)
-            .args(&args)
-            .status()
-            .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {}: {e}", binary.display()))?;
-        if !status.success() {
-            bail!(
-                "el humo falló: {} {} (exit {:?})",
-                binary.display(),
-                args.join(" "),
-                status.code()
-            );
+        let actual = value.get(field).and_then(|v| v.as_str());
+        if actual != Some(expected) {
+            bail!("`version --json`: `{field}` es {actual:?} y debe ser {expected:?}: {raw}");
         }
     }
-    let status = std::process::Command::new(binary)
-        .arg("denoise")
-        .arg("--help")
-        .status()
-        .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {}: {e}", binary.display()))?;
-    if status.success() {
+    Ok(())
+}
+
+/// Comprueba que la salida de `--json voice list` registre la voz de fábrica
+/// `default`. Pura, fijada por test.
+fn check_voice_list_json(raw: &str) -> Result<()> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| anyhow::anyhow!("`voice list --json` no es JSON válido ({e}): {raw}"))?;
+    let has_default = value
+        .get("voices")
+        .and_then(|v| v.as_array())
+        .is_some_and(|voices| voices.iter().any(|v| v.as_str() == Some("default")));
+    if !has_default {
+        bail!("`voice list --json` no registra la voz de fábrica `default`: {raw}");
+    }
+    Ok(())
+}
+
+/// Humo del binario recién compilado: contrato de `version --json` con la
+/// versión del Cargo.toml, voz de fábrica en `voice list`, `speech denoise` y el
+/// rechazo del comando raíz `denoise`. Corre con la raíz de datos y el
+/// contenedor de caché en un temporal propio, así que empaquetar nunca toca el
+/// estado del usuario.
+fn smoke_binary(binary: &Path, version: &str) -> Result<()> {
+    let state = tempfile::Builder::new()
+        .prefix("xtask-package-smoke-")
+        .tempdir()?;
+    let run = |args: &[&str]| -> Result<std::process::Output> {
+        std::process::Command::new(binary)
+            .args(args)
+            .env("AVI_DATA_DIR", state.path().join("data"))
+            .env("AVI_CACHE_DIR", state.path().join("cache"))
+            .output()
+            .map_err(|e| anyhow::anyhow!("no se pudo ejecutar {}: {e}", binary.display()))
+    };
+    let succeed = |args: &[&str]| -> Result<String> {
+        let out = run(args)?;
+        if !out.status.success() {
+            bail!(
+                "el humo falló: {} {} (exit {:?}): {}",
+                binary.display(),
+                args.join(" "),
+                out.status.code(),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    check_version_json(
+        &succeed(&["version", "--json"])?,
+        version,
+        avi_core::json_emitter::CLI_SCHEMA_VERSION,
+    )?;
+    check_voice_list_json(&succeed(&["--json", "voice", "list"])?)?;
+    succeed(&["speech", "denoise", "--help"])?;
+    if run(&["denoise", "--help"])?.status.success() {
         bail!(
             "el humo falló: {} aceptó el comando raíz `denoise`",
             binary.display()
         );
     }
+    println!("humo del binario {version}: version --json, voice list, speech denoise y rechazo de `denoise`");
     Ok(())
 }
 
@@ -1515,6 +1602,7 @@ pub fn run(
     no_compress: bool,
     flat: bool,
     expect_version: Option<String>,
+    cargo_args: Vec<String>,
 ) -> Result<()> {
     if flat && !no_compress {
         bail!("`--flat` solo tiene sentido con `--no-compress`");
@@ -1533,8 +1621,9 @@ pub fn run(
     let section = sections.get(triple).ok_or_else(|| {
         anyhow::anyhow!("el manifiesto de bundle no tiene sección para el target {triple}")
     })?;
+    build_binary(&root, &cargo_args)?;
     let sources = locate_sources(&root)?;
-    smoke_binary(&sources.binary)?;
+    smoke_binary(&sources.binary, &version)?;
     let PinnedBundles {
         ort: bundle,
         ffmpeg: ffmpeg_bundle,
@@ -1740,6 +1829,48 @@ mod tests {
         check_expect_version("0.24.0", Some("v0.24.0")).unwrap();
         let err = check_expect_version("0.24.0", Some("0.25.0")).unwrap_err();
         assert!(err.to_string().contains("0.25.0"));
+    }
+
+    /// La compilación es release con todos los features, acotada al paquete del
+    /// producto, y reenvía al final los argumentos tras `--`.
+    #[test]
+    fn build_args_target_product_and_forward_extras() {
+        let base = [
+            "build",
+            "--release",
+            "--package",
+            "ai-voice-interconnector",
+            "--features",
+            "full",
+        ];
+        assert_eq!(build_args(&[]), base);
+        let extras = ["--verbose".to_string(), "--timings".to_string()];
+        let mut expected: Vec<&str> = base.to_vec();
+        expected.extend(["--verbose", "--timings"]);
+        assert_eq!(build_args(&extras), expected);
+    }
+
+    /// `version --json` pasa con nombre, versión y `schema_version` esperados, y
+    /// falla si la versión es otra (un binario viejo), si falta un campo o si no
+    /// es JSON.
+    #[test]
+    fn version_json_contract() {
+        let ok = r#"{"name":"ai-voice-interconnector","version":"0.46.1","schema_version":"6"}"#;
+        check_version_json(ok, "0.46.1", "6").unwrap();
+        let stale = check_version_json(&ok.replace("0.46.1", "0.45.2"), "0.46.1", "6");
+        assert!(stale.unwrap_err().to_string().contains("version"));
+        let schema = check_version_json(ok, "0.46.1", "7");
+        assert!(schema.unwrap_err().to_string().contains("schema_version"));
+        assert!(check_version_json(r#"{"version":"0.46.1"}"#, "0.46.1", "6").is_err());
+        assert!(check_version_json("ai-voice-interconnector 0.46.1", "0.46.1", "6").is_err());
+    }
+
+    /// `voice list --json` pasa solo si registra `default`.
+    #[test]
+    fn voice_list_json_requires_default() {
+        check_voice_list_json(r#"{"voices":["default","mia"]}"#).unwrap();
+        assert!(check_voice_list_json(r#"{"voices":["mia"]}"#).is_err());
+        assert!(check_voice_list_json(r#"{"status":"ok"}"#).is_err());
     }
 
     /// El nombre del artefacto sigue `release_asset_name` en los cuatro targets.
@@ -2412,6 +2543,7 @@ mod tests {
             /* no_compress */ false,
             /* flat */ true,
             Some("9.9.9".to_string()),
+            Vec::new(),
         )
         .expect_err("`--flat` sin `--no-compress` debe fallar");
         assert!(

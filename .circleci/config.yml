@@ -806,44 +806,6 @@ commands:
             . "$BASH_ENV"
             test "$(bats --version)" = "Bats ${BATS_VERSION}" || { echo "bats: $(bats --version) != ${BATS_VERSION}" >&2; exit 1; }
             echo "[STEP] Instalar bats-core - FIN"
-  # Smoke test del binario en runners Unix: version textual, igualdad con el tag
-  # y voz de fábrica `default` (no carga el modelo). Extraído de los 3 builds
-  # Unix (bloques idénticos salvo el eco final, parametrizado como `label`).
-  smoke_test_unix:
-    description: Smoke test del binario Unix (version + tag + voz de fábrica)
-    parameters:
-      label:
-        type: string
-    steps:
-      - run:
-          name: Smoke test del binario (version + tag + voz default)
-          command: |
-            echo "[STEP] Smoke test target/release/ai-voice-interconnector - INICIO"
-            export PATH="$HOME/.cargo/bin:$PATH"
-            test -x target/release/ai-voice-interconnector || (echo "Binario no encontrado" && exit 1)
-            target/release/ai-voice-interconnector version
-            # La versión del binario debe coincidir con el tag. El pipeline solo
-            # corre en tags `v*`, así que un CIRCLE_TAG ausente es un error.
-            : "${CIRCLE_TAG:?el pipeline solo corre en tags v*}"
-            test "$(target/release/ai-voice-interconnector --version)" = "ai-voice-interconnector ${CIRCLE_TAG#v}" || { echo "versión del binario distinta del tag ${CIRCLE_TAG}" >&2; exit 1; }
-            # Valida la voz de fábrica 'default' leyendo el JSON de `voice list`,
-            # que es el contrato de máquina (runner limpio: voice list
-            # auto-inicializa el store y no carga el modelo).
-            # Captura previa en variable en lugar de tubería directa a `grep -q`:
-            # `grep -q` sale en cuanto encuentra la coincidencia y cierra la
-            # tubería; si el binario aún tiene líneas por escribir, esa
-            # escritura devuelve EPIPE y `println!` hace panic (Rust ignora
-            # SIGPIPE por defecto). Con `pipefail` eso tumbaba el paso de forma
-            # intermitente (visto en v0.20.9, build-linux-x64).
-            voice_list_out="$(target/release/ai-voice-interconnector --json voice list)"
-            printf '%s\n' "$voice_list_out" | grep -qE '^    "default",?$'
-            target/release/ai-voice-interconnector speech denoise --help
-            if target/release/ai-voice-interconnector denoise --help; then
-              echo "el binario release aceptó el comando raíz denoise" >&2
-              exit 1
-            fi
-            echo "Binario << parameters.label >> OK: version + voice list + speech denoise + rechazo denoise raíz"
-            echo "[STEP] Smoke test target/release/ai-voice-interconnector - FIN"
   # Humo de instalación en sandbox con las cuatro raíces reubicadas. Extraído de
   # los 3 builds Unix (idénticos salvo el tarball, parametrizado como
   # `artifact_glob`).
@@ -1509,14 +1471,14 @@ jobs:
             echo "[STEP] Ejecutar suite del bootstrap POSIX (bats) - FIN"
 
   # ──────────────────────────────────────────────────────────────
-  # Builds nativos Rust — 4 targets de distribución (cargo build --release)
-  # Cada build hace smoke test (version + voice list), empaqueta con
-  # `xtask package` y prueba lo empaquetado con `self install` en un sandbox
+  # Builds nativos Rust — 4 targets de distribución
+  # Cada build compila, pasa el humo del binario y empaqueta con un único
+  # `xtask package`, y prueba lo empaquetado con `self install` en un sandbox
   # antes de persistirlo al workspace para publish-release. Corren en paralelo
   # con los gates, que son requisito de publish-release (ver workflow build-all).
   # ──────────────────────────────────────────────────────────────
   build-windows-x64:
-    # Windows x64: binario + smoke test nativo. No usa Inno Setup aún.
+    # Windows x64: bundle nativo con su humo de instalación. No usa Inno Setup aún.
     executor:
       name: win/server-2022
       version: << pipeline.parameters.windows_image_pin >>
@@ -1558,11 +1520,37 @@ jobs:
       - native_sccache_setup_windows
       - validate_pins
       - validate_features
+      # `ort-bundle/` (ONNX Runtime oficial más las cinco DLL app-local de
+      # VC++: vcruntime140, vcruntime140_1, msvcp140, msvcp140_1 y vcomp140) lo arma y lo
+      # verifica `xtask package`, el único descargador: comprueba el SHA-256
+      # fijado en packaging/pins.json y, en cada ejecución, copia las DLL de
+      # VC++ del redist de la instalación de Visual Studio que compila (la
+      # que devuelve vswhere), escribiendo solo las que difieren. La caché
+      # solo evita repetir la descarga de ONNX Runtime y no fija las DLL;
+      # `xtask package` reutiliza lo restaurado solo si trae la librería y el
+      # marcador de la versión fijada, y si no lo vuelve a descargar.
+      - restore_cache:
+          keys:
+            - ort-v5-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
+      - ffmpeg_restore_cache:
+          triple: x86_64-pc-windows-msvc
+      - engine_restore_cache:
+          triple: x86_64-pc-windows-msvc
       - run:
-          name: Compilar binario release (--features full)
+          # Compilación y empaquetado canónicos en un mismo paso, porque la
+          # compilación necesita el entorno MSVC y sccache que se prepara aquí:
+          # `xtask package` aborta si VERSION != tag, compila el binario release
+          # con `--features full` desde el árbol del tag, le pasa el único humo
+          # del binario (su versión, el contrato de `version --json`, la voz
+          # `default` y `speech denoise`, en un estado temporal), monta el
+          # bundle desde packaging/bundle-manifest.json (la misma lista que
+          # valida `self install`) y audita que ningún binario del bundle
+          # importe nada fuera del sistema base que declara el manifiesto para
+          # el target.
+          name: Compilar y empaquetar bundle con xtask package
           no_output_timeout: 25m
           command: |
-            Write-Host "[STEP] Compilar binario release (cargo build --release) - INICIO"
+            Write-Host "[STEP] Compilar y empaquetar bundle con xtask package - INICIO"
             # Entorno MSVC (vcvars64) importado ANTES de anteponer .cargo\bin y
             # Ninja, para que vcvars no los desplace del PATH. Lo exige Ninja
             # (el generador Visual Studio cargaba INCLUDE/LIB por su cuenta).
@@ -1593,17 +1581,20 @@ jobs:
             cmake --version
             # El crate `ort` usa `load-dynamic`: no enlaza ONNX Runtime en
             # build-time (no hay ORT_LIB_PATH). La librería dinámica se descarga
-            # y empaqueta junto al binario en el step de bundling siguiente.
-            # --timings: desglose por crate en target/cargo-timings. Se vacía
-            # antes (la caché de target/ puede traer informes de otra corrida) y
-            # se mueve fuera de target/ al terminar: así la caché no los guarda y
-            # la limpieza de target/ no compite con la subida del artefacto, que
-            # en Windows aún mantiene abiertos los archivos.
+            # y empaqueta junto al binario en el montaje del bundle.
+            # Lo que va tras `--` llega a `cargo build`. --timings: desglose por
+            # crate en target/cargo-timings. Se vacía antes (la caché de target/
+            # puede traer informes de otra corrida) y se mueve fuera de target/
+            # al terminar: así la caché no los guarda y la limpieza de target/ no
+            # compite con la subida del artefacto, que en Windows aún mantiene
+            # abiertos los archivos.
+            if (-not $env:CIRCLE_TAG) { throw "el pipeline solo corre en tags v*: falta CIRCLE_TAG" }
+            $TagVersion = $env:CIRCLE_TAG -replace '^v',''
             if (Test-Path target\cargo-timings) { Remove-Item -Recurse -Force target\cargo-timings }
-            cargo build --release --features full --verbose --timings
+            cargo xtask package --expect-version "$TagVersion" -- --verbose --timings
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             Move-Item target\cargo-timings cargo-timings
-            Write-Host "[STEP] Compilar binario release (cargo build --release) - FIN"
+            Write-Host "[STEP] Compilar y empaquetar bundle con xtask package - FIN"
       - run:
           name: Estadísticas de sccache (hit-rate)
           command: |
@@ -1612,82 +1603,12 @@ jobs:
       - store_artifacts:
           path: cargo-timings
           destination: cargo-timings
-      - run:
-          name: Smoke test del binario (version + voces de fábrica)
-          command: |
-            Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - INICIO"
-            $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
-            $Exe = "target\release\ai-voice-interconnector.exe"
-            if (-not (Test-Path $Exe)) { throw "Binario no encontrado: $Exe" }
-            & $Exe version
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            # Contrato JSON determinista: `version --json` DEBE exponer name +
-            # version + schema_version. El literal de schema_version es el valor
-            # vigente de CLI_SCHEMA_VERSION y `cargo xtask pins --check` falla si
-            # divergen. Sin este gate un binario cuyo bump de
-            # VERSION no se propagó (p.ej. editado a mano sin recompilar) pasa el
-            # smoke de texto pero viola el contrato JSON y rompe consumidores.
-            $jsonRaw = & $Exe version --json | Out-String
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            try { $j = $jsonRaw | ConvertFrom-Json } catch { throw "version --json no es JSON válido: $jsonRaw : $_" }
-            if (-not $j.PSObject.Properties['version'] -or -not $j.version) { throw "version --json: campo 'version' ausente o vacío: $jsonRaw" }
-            if (-not $j.PSObject.Properties['name'] -or $j.name -ne 'ai-voice-interconnector') { throw "version --json: campo 'name' incorrecto: $jsonRaw" }
-            if (-not $j.PSObject.Properties['schema_version'] -or $j.schema_version -ne '6') { throw "version --json: campo 'schema_version' != '6': $jsonRaw" }
-            if (-not $env:CIRCLE_TAG) { throw "el pipeline solo corre en tags v*: falta CIRCLE_TAG" }
-            $expectedTag = $env:CIRCLE_TAG.TrimStart('v'); if ($j.version -ne $expectedTag) { throw "version --json: version '$($j.version)' != CIRCLE_TAG '$expectedTag' (tag=$env:CIRCLE_TAG)" }
-            Write-Host "version --json OK: name=$($j.name) version=$($j.version) schema_version=$($j.schema_version)"
-            # Valida que la voz de fábrica 'default' quede registrada en un
-            # runner limpio (voice list no carga el modelo y auto-inicializa
-            # el store). Se lee el JSON de `--json voice list`, que es el
-            # contrato de máquina.
-            $voiceRaw = & $Exe --json voice list | Out-String
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            try { $voiceList = $voiceRaw | ConvertFrom-Json } catch { throw "voice list --json no es JSON válido: $voiceRaw : $_" }
-            if (-not ($voiceList.voices -contains 'default')) { throw "La voz de fábrica 'default' no está registrada" }
-            & $Exe speech denoise --help
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            & $Exe denoise --help
-            if ($LASTEXITCODE -eq 0) { throw "El binario release aceptó el comando raíz denoise" }
-            Write-Host "Binario Windows OK: version + voice list + version --json + speech denoise + rechazo denoise raíz"
-            Write-Host "[STEP] Smoke test target/release/ai-voice-interconnector.exe - FIN"
       - sccache_save_cache:
           os: windows
           variant: full
       - cargo_save_target:
           os: windows
           variant: full
-      # `ort-bundle/` (ONNX Runtime oficial más las cinco DLL app-local de
-      # VC++: vcruntime140, vcruntime140_1, msvcp140, msvcp140_1 y vcomp140) lo arma y lo
-      # verifica `xtask package`, el único descargador: comprueba el SHA-256
-      # fijado en packaging/pins.json y, en cada ejecución, copia las DLL de
-      # VC++ del redist de la instalación de Visual Studio que compila (la
-      # que devuelve vswhere), escribiendo solo las que difieren. La caché
-      # solo evita repetir la descarga de ONNX Runtime y no fija las DLL;
-      # `xtask package` reutiliza lo restaurado solo si trae la librería y el
-      # marcador de la versión fijada, y si no lo vuelve a descargar.
-      - restore_cache:
-          keys:
-            - ort-v5-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
-      - ffmpeg_restore_cache:
-          triple: x86_64-pc-windows-msvc
-      - engine_restore_cache:
-          triple: x86_64-pc-windows-msvc
-      - run:
-          # Empaquetado canónico: `xtask package` monta el bundle desde
-          # packaging/bundle-manifest.json (la misma lista que valida
-          # `self install`), aborta si VERSION != tag y audita que ningún
-          # binario del bundle importe nada fuera del sistema base que
-          # declara el manifiesto para el target.
-          name: Empaquetar bundle con xtask package
-          command: |
-            Write-Host "[STEP] Empaquetar bundle con xtask package - INICIO"
-            $ErrorActionPreference = "Stop"
-            $env:PATH = "$env:USERPROFILE\\.cargo\\bin;$env:PATH"
-            if (-not $env:CIRCLE_TAG) { throw "el pipeline solo corre en tags v*: falta CIRCLE_TAG" }
-            $TagVersion = $env:CIRCLE_TAG -replace '^v',''
-            cargo xtask package --expect-version "$TagVersion"
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-            Write-Host "[STEP] Empaquetar bundle con xtask package - FIN"
       - engine_self_test
       - save_cache:
           key: ort-v5-{{ checksum ".cache-root" }}-win-x64-<< pipeline.parameters.ort_pin >>
@@ -1774,33 +1695,6 @@ jobs:
       - native_sccache_setup_unix
       - validate_pins
       - validate_features
-      - run:
-          name: Compilar binario release (--features full)
-          no_output_timeout: 25m
-          command: |
-            echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            # --timings: desglose por crate en target/cargo-timings. Se vacía
-            # antes (la caché de target/ puede traer informes de otra corrida) y
-            # se mueve fuera de target/ al terminar, para que la caché no los
-            # guarde y la limpieza de target/ no compita con su subida.
-            rm -rf -- target/cargo-timings
-            cargo build --release --features full --verbose --timings
-            mv target/cargo-timings cargo-timings
-            echo "[STEP] Compilar binario release (cargo build --release) - FIN"
-      - store_artifacts:
-          path: cargo-timings
-          destination: cargo-timings
-      - run:
-          name: Estadísticas de sccache (hit-rate)
-          command: sccache --show-stats
-      - smoke_test_unix:
-          label: "Linux x64"
-      - cargo_save_target:
-          os: linux-el8
-          variant: full
-      - sccache_save_cache:
-          os: linux-el8
-          variant: full
       # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
       # pins.json + marcador `.ort-sha256`): la caché solo evita repetir la
       # descarga; sin acierto se vuelve a descargar.
@@ -1812,17 +1706,40 @@ jobs:
       - engine_restore_cache:
           triple: x86_64-unknown-linux-gnu
       - run:
-          # Empaquetado canónico: `xtask package` monta el bundle desde
+          # Compilación y empaquetado canónicos: `xtask package` aborta si
+          # VERSION != tag, compila el binario release con `--features full`
+          # desde el árbol del tag, le pasa el único humo del binario (su
+          # versión, el contrato de `version --json`, la voz `default` y
+          # `speech denoise`, en un estado temporal), monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
-          # `self install`), aborta si VERSION != tag y audita que ningún
-          # binario del bundle importe nada fuera del sistema base que
-          # declara el manifiesto para el target.
-          name: Empaquetar bundle con xtask package
+          # `self install`) y audita que ningún binario del bundle importe
+          # nada fuera del sistema base que declara el manifiesto para el
+          # target. Lo que va tras `--` llega a `cargo build`: `--timings`
+          # deja el desglose por crate en target/cargo-timings, que se vacía
+          # antes (la caché de target/ puede traer informes de otra corrida) y
+          # se mueve fuera de target/ al terminar, para que la caché no los
+          # guarde y la limpieza de target/ no compita con su subida.
+          name: Compilar y empaquetar bundle con xtask package
+          no_output_timeout: 25m
           command: |
-            echo "[STEP] Empaquetar bundle con xtask package - INICIO"
+            echo "[STEP] Compilar y empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-            echo "[STEP] Empaquetar bundle con xtask package - FIN"
+            rm -rf -- target/cargo-timings
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}" -- --verbose --timings
+            mv target/cargo-timings cargo-timings
+            echo "[STEP] Compilar y empaquetar bundle con xtask package - FIN"
+      - store_artifacts:
+          path: cargo-timings
+          destination: cargo-timings
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
+      - cargo_save_target:
+          os: linux-el8
+          variant: full
+      - sccache_save_cache:
+          os: linux-el8
+          variant: full
       - engine_self_test
       - save_cache:
           key: ort-v5-{{ checksum ".cache-root" }}-linux-x64-<< pipeline.parameters.ort_pin >>
@@ -1850,9 +1767,10 @@ jobs:
   build-linux-arm64:
     # Linux ARM64 nativo (no cross-compile): Docker arm.medium ejecuta
     # aarch64 real, evitando toolchain de cross-compilación y sysroot.
-    # Sin test-linux-arm64 (suite mockeada arch-independiente), el smoke
-    # test de este build y las dos verify-portability-arm64 son las únicas
-    # validaciones del binario aarch64 nativo.
+    # Sin test-linux-arm64 (suite mockeada arch-independiente), el humo del
+    # binario que corre `xtask package` en este build y las dos
+    # verify-portability-arm64 son las únicas validaciones del binario aarch64
+    # nativo.
     # Misma imagen manylinux_2_28 que build-linux-x64, en su variante aarch64:
     # suelo de glibc 2.28.
     docker:
@@ -1878,35 +1796,6 @@ jobs:
       - native_sccache_setup_unix
       - validate_pins
       - validate_features
-      - run:
-          name: Compilar binario release (--features full)
-          no_output_timeout: 25m
-          command: |
-            echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            # --timings: desglose por crate en target/cargo-timings. Se vacía
-            # antes (la caché de target/ puede traer informes de otra corrida) y
-            # se mueve fuera de target/ al terminar, para que la caché no los
-            # guarde y la limpieza de target/ no compita con su subida.
-            rm -rf -- target/cargo-timings
-            cargo build --release --features full --verbose --timings
-            mv target/cargo-timings cargo-timings
-            echo "[STEP] Compilar binario release (cargo build --release) - FIN"
-      - store_artifacts:
-          path: cargo-timings
-          destination: cargo-timings
-      - run:
-          name: Estadísticas de sccache (hit-rate)
-          command: sccache --show-stats
-      # No hay test-linux-arm64 (suite mockeada): este smoke test es, junto con
-      # las dos verify-portability-arm64, la única validación del stack aarch64.
-      - smoke_test_unix:
-          label: "Linux ARM64"
-      - cargo_save_target:
-          os: linux-el8
-          variant: full
-      - sccache_save_cache:
-          os: linux-el8
-          variant: full
       # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
       # pins.json + marcador `.ort-sha256`): la caché solo evita repetir la
       # descarga; sin acierto se vuelve a descargar.
@@ -1917,18 +1806,44 @@ jobs:
           triple: aarch64-unknown-linux-gnu
       - engine_restore_cache:
           triple: aarch64-unknown-linux-gnu
+      # No hay test-linux-arm64 (suite mockeada): el humo del binario que corre
+      # `xtask package` es, junto con las dos verify-portability-arm64, la única
+      # validación del stack aarch64.
       - run:
-          # Empaquetado canónico: `xtask package` monta el bundle desde
+          # Compilación y empaquetado canónicos: `xtask package` aborta si
+          # VERSION != tag, compila el binario release con `--features full`
+          # desde el árbol del tag, le pasa el único humo del binario (su
+          # versión, el contrato de `version --json`, la voz `default` y
+          # `speech denoise`, en un estado temporal), monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
-          # `self install`), aborta si VERSION != tag y audita que ningún
-          # binario del bundle importe nada fuera del sistema base que
-          # declara el manifiesto para el target.
-          name: Empaquetar bundle con xtask package
+          # `self install`) y audita que ningún binario del bundle importe
+          # nada fuera del sistema base que declara el manifiesto para el
+          # target. Lo que va tras `--` llega a `cargo build`: `--timings`
+          # deja el desglose por crate en target/cargo-timings, que se vacía
+          # antes (la caché de target/ puede traer informes de otra corrida) y
+          # se mueve fuera de target/ al terminar, para que la caché no los
+          # guarde y la limpieza de target/ no compita con su subida.
+          name: Compilar y empaquetar bundle con xtask package
+          no_output_timeout: 25m
           command: |
-            echo "[STEP] Empaquetar bundle con xtask package - INICIO"
+            echo "[STEP] Compilar y empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-            echo "[STEP] Empaquetar bundle con xtask package - FIN"
+            rm -rf -- target/cargo-timings
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}" -- --verbose --timings
+            mv target/cargo-timings cargo-timings
+            echo "[STEP] Compilar y empaquetar bundle con xtask package - FIN"
+      - store_artifacts:
+          path: cargo-timings
+          destination: cargo-timings
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: sccache --show-stats
+      - cargo_save_target:
+          os: linux-el8
+          variant: full
+      - sccache_save_cache:
+          os: linux-el8
+          variant: full
       - engine_self_test
       - save_cache:
           key: ort-v5-{{ checksum ".cache-root" }}-linux-arm64-<< pipeline.parameters.ort_pin >>
@@ -1955,7 +1870,7 @@ jobs:
 
   build-darwin-arm64:
     # macOS ARM64 (Apple Silicon, Xcode 26.4.0): clang nativo, sin cross.
-    # El binario se valida con smoke test version + voice list (no carga modelo).
+    # El binario se valida con el humo de `xtask package` (no carga modelo).
     macos:
       xcode: "26.4.0"
     resource_class: m4pro.medium
@@ -2000,36 +1915,6 @@ jobs:
       - native_sccache_setup_unix
       - validate_pins
       - validate_features
-      - run:
-          name: Compilar binario release (--features full)
-          no_output_timeout: 25m
-          command: |
-            echo "[STEP] Compilar binario release (cargo build --release) - INICIO"
-            export PATH="$HOME/.cargo/bin:$PATH"
-            # --timings: desglose por crate en target/cargo-timings. Se vacía
-            # antes (la caché de target/ puede traer informes de otra corrida) y
-            # se mueve fuera de target/ al terminar, para que la caché no los
-            # guarde y la limpieza de target/ no compita con su subida.
-            rm -rf -- target/cargo-timings
-            cargo build --release --features full --verbose --timings
-            mv target/cargo-timings cargo-timings
-            echo "[STEP] Compilar binario release (cargo build --release) - FIN"
-      - store_artifacts:
-          path: cargo-timings
-          destination: cargo-timings
-      - run:
-          name: Estadísticas de sccache (hit-rate)
-          command: |
-            export PATH="$HOME/.cargo/bin:$PATH"
-            sccache --show-stats
-      - smoke_test_unix:
-          label: "macOS ARM64"
-      - cargo_save_target:
-          os: macos
-          variant: full
-      - sccache_save_cache:
-          os: macos
-          variant: full
       # `ort-bundle/` lo arma y verifica `xtask package` (SHA-256 fijado en
       # pins.json + marcador `.ort-sha256`): la caché solo evita repetir la
       # descarga; sin acierto se vuelve a descargar.
@@ -2041,18 +1926,44 @@ jobs:
       - engine_restore_cache:
           triple: aarch64-apple-darwin
       - run:
-          # Empaquetado canónico: `xtask package` monta el bundle desde
+          # Compilación y empaquetado canónicos: `xtask package` aborta si
+          # VERSION != tag, compila el binario release con `--features full`
+          # desde el árbol del tag, le pasa el único humo del binario (su
+          # versión, el contrato de `version --json`, la voz `default` y
+          # `speech denoise`, en un estado temporal), monta el bundle desde
           # packaging/bundle-manifest.json (la misma lista que valida
-          # `self install`), aborta si VERSION != tag y audita que ningún
-          # binario del bundle declare un `minos` por encima del `min_os`
-          # del manifiesto ni importe nada fuera de libSystem, /usr/lib y
-          # los frameworks de /System.
-          name: Empaquetar bundle con xtask package
+          # `self install`) y audita que ningún binario del bundle declare un
+          # `minos` por encima del `min_os` del manifiesto ni importe nada
+          # fuera de libSystem, /usr/lib y los frameworks de /System. Lo que va
+          # tras `--` llega a `cargo build`: `--timings` deja el desglose por
+          # crate en target/cargo-timings, que se vacía antes (la caché de
+          # target/ puede traer informes de otra corrida) y se mueve fuera de
+          # target/ al terminar, para que la caché no los guarde y la limpieza
+          # de target/ no compita con su subida.
+          name: Compilar y empaquetar bundle con xtask package
+          no_output_timeout: 25m
           command: |
-            echo "[STEP] Empaquetar bundle con xtask package - INICIO"
+            echo "[STEP] Compilar y empaquetar bundle con xtask package - INICIO"
             set -euo pipefail
-            cargo xtask package --expect-version "${CIRCLE_TAG#v}"
-            echo "[STEP] Empaquetar bundle con xtask package - FIN"
+            export PATH="$HOME/.cargo/bin:$PATH"
+            rm -rf -- target/cargo-timings
+            cargo xtask package --expect-version "${CIRCLE_TAG#v}" -- --verbose --timings
+            mv target/cargo-timings cargo-timings
+            echo "[STEP] Compilar y empaquetar bundle con xtask package - FIN"
+      - store_artifacts:
+          path: cargo-timings
+          destination: cargo-timings
+      - run:
+          name: Estadísticas de sccache (hit-rate)
+          command: |
+            export PATH="$HOME/.cargo/bin:$PATH"
+            sccache --show-stats
+      - cargo_save_target:
+          os: macos
+          variant: full
+      - sccache_save_cache:
+          os: macos
+          variant: full
       - engine_self_test
       - save_cache:
           key: ort-v5-{{ checksum ".cache-root" }}-darwin-arm64-<< pipeline.parameters.ort_pin >>

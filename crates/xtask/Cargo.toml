@@ -25,8 +25,8 @@ tempfile = "3"
 # Verificación del SHA-256 fijado del asset de ONNX Runtime (misma versión que
 # ya usa `avi-lifecycle`, sin crates nuevos en el lockfile).
 sha2 = "0.11"
-# Versión vigente del envelope `--json` de la CLI, que `pins --check` compara
-# con la que exige el humo del pipeline.
+# Versión vigente del envelope `--json` de la CLI, que el humo de
+# `xtask package` exige a `version --json` del binario empaquetado.
 avi-core = { path = "../avi-core" }
 avi-store = { path = "../avi-store" }
 # Lectura de ELF, Mach-O y PE para la auditoría de dependencias del bundle

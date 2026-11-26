@@ -659,8 +659,8 @@ Es **convergente**: la misma orden prepara el entorno la primera vez y lo pone a
 Produce el bundle y el archivo de release del target del host. No hay compilación cruzada: cada target se empaqueta en su runner nativo.
 
 1. Valida la versión contra `--expect-version` (en CI, el tag).
-2. Exige lo que el repositorio debe aportar ya compilado: el binario en `target/release/` (`cargo build --release --features full`) y los documentos de licencia. El motor TTS lo aprovisiona en `engine-bundle/` la misma función que `bootstrap`. No compila nada.
-3. Hace una prueba de humo del binario (`version` y `voice list`).
+2. Compila el binario desde el árbol actual con `cargo build --release --package ai-voice-interconnector --features full`, más los argumentos que reciba tras `--` (en CI, `--verbose --timings`), y exige los documentos de licencia. Es la única fuente del binario del bundle: un `target/release/` de otra compilación nunca llega a empaquetarse, y con el árbol al día Cargo no rehace nada. El motor TTS lo aprovisiona en `engine-bundle/` la misma función que `bootstrap`.
+3. Hace la única prueba de humo del binario, con la raíz de datos y el contenedor de caché en un temporal propio para no tocar el estado del usuario: `version --json` con el nombre, la versión del `Cargo.toml` y la `schema_version` vigente; `voice list --json` con `default`; `speech denoise --help` y el rechazo del alias raíz `denoise`.
 4. Asegura `ort-bundle/` y `ffmpeg-bundle/` en sus versiones fijadas con la misma función que `bootstrap` (reutiliza cada uno si está completo y su marcador coincide; si no, lo descarga).
 5. Monta el bundle con la lista canónica de archivos del target (la misma que valida `self install`): ejecutable, motor TTS, ONNX Runtime (más las DLL del runtime de VC++ en Windows), el ejecutable de FFmpeg y documentos de licencia.
 6. Comprime de forma determinista (`.tar.gz` o `.zip`) con el nombre convencional.
@@ -669,7 +669,7 @@ Los cuatro jobs de build de CI invocan este comando en lugar de repetir cada uno
 
 ### 9.5 `cargo xtask install`
 
-Ejecuta `package --no-compress` en un staging y después `<staging>/ai-voice-interconnector self install` (sin canal: deja una instalación `script`). El build local queda instalado **por el mismo camino que un release**, de modo que cada instalación de desarrollo ejercita el instalador real.
+Ejecuta `package --no-compress`, que compila el binario, en un staging y después `<staging>/ai-voice-interconnector self install` (sin canal: deja una instalación `script`). El build local queda instalado **por el mismo camino que un release**, de modo que cada instalación de desarrollo ejercita el instalador real. `--no-setup` y `--yes` se reenvían a `self install`; con `--yes` se instala sin terminal.
 
 - **Volver al release publicado**: `ai-voice-interconnector self update --force`.
 - **Desinstalar**: `ai-voice-interconnector self uninstall`, o `cargo run -- self uninstall` si la copia instalada está rota.

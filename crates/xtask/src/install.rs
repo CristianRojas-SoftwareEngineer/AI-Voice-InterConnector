@@ -6,12 +6,13 @@
 
 //! `xtask install`: instala el build local por el camino del release.
 //!
-//! Ejecuta `package --no-compress` en un staging hermano del directorio de
-//! programa (mismo volumen) y después
-//! `<staging>/ai-voice-interconnector self install`: el build local queda
-//! instalado por el mismo camino que un release, de modo que cada instalación de
-//! desarrollo ejercita el instalador real. Con
-//! `--no-setup` la delegación tampoco provisiona modelos. El staging se borra
+//! Ejecuta `package --no-compress`, que compila el binario desde el árbol
+//! actual, en un staging hermano del directorio de programa (mismo volumen) y
+//! después `<staging>/ai-voice-interconnector self install`: el build local
+//! queda instalado por el mismo camino que un release, de modo que cada
+//! instalación de desarrollo ejercita el instalador real. Con `--no-setup` la
+//! delegación tampoco provisiona modelos, y con `--yes` no pide confirmación,
+//! lo que permite instalar sin terminal. El staging se borra
 //! siempre, con éxito o con error, y el código de salida se propaga.
 //! Sin red ni instalación real en los tests: los argumentos delegados, la
 //! resolución del binario y el borrado del staging son funciones puras sobre
@@ -29,12 +30,15 @@ fn product_bin_name() -> &'static str {
     }
 }
 
-/// Argumentos de la delegación: `self install`, más
-/// `--no-setup` cuando se pide. Puros, fijados por test.
-pub(crate) fn delegate_args(no_setup: bool) -> Vec<String> {
+/// Argumentos de la delegación: `self install`, más `--no-setup` y `--yes`
+/// cuando se piden. Puros, fijados por test.
+pub(crate) fn delegate_args(no_setup: bool, yes: bool) -> Vec<String> {
     let mut args = vec!["self".to_string(), "install".to_string()];
     if no_setup {
         args.push("--no-setup".to_string());
+    }
+    if yes {
+        args.push("--yes".to_string());
     }
     args
 }
@@ -113,7 +117,7 @@ pub(crate) fn staging_dir() -> Result<PathBuf> {
 }
 
 /// Punto de entrada de `xtask install`.
-pub fn run(no_setup: bool) -> Result<()> {
+pub fn run(no_setup: bool, yes: bool) -> Result<()> {
     let root = std::env::current_dir()?;
     if !root.join("Cargo.toml").is_file() || !root.join("crates").join("xtask").is_dir() {
         bail!("ejecuta `cargo xtask install` desde la raíz del repositorio");
@@ -145,7 +149,7 @@ pub fn run(no_setup: bool) -> Result<()> {
         )
     })?;
     println!("Instalando {} …", binary.display());
-    let args = delegate_args(no_setup);
+    let args = delegate_args(no_setup, yes);
     let status = std::process::Command::new(&binary)
         .args(&args)
         .status()
@@ -164,12 +168,20 @@ pub fn run(no_setup: bool) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// La delegación invoca `self install` sin canal y propaga `--no-setup` solo
-    /// cuando se pide.
+    /// La delegación invoca `self install` sin canal y propaga `--no-setup` y
+    /// `--yes` solo cuando se piden.
     #[test]
     fn delegation_args_install_without_channel() {
-        assert_eq!(delegate_args(false), ["self", "install"]);
-        assert_eq!(delegate_args(true), ["self", "install", "--no-setup"]);
+        assert_eq!(delegate_args(false, false), ["self", "install"]);
+        assert_eq!(
+            delegate_args(true, false),
+            ["self", "install", "--no-setup"]
+        );
+        assert_eq!(delegate_args(false, true), ["self", "install", "--yes"]);
+        assert_eq!(
+            delegate_args(true, true),
+            ["self", "install", "--no-setup", "--yes"]
+        );
     }
 
     /// El binario se resuelve en la raíz del árbol y, como repliegue, un
