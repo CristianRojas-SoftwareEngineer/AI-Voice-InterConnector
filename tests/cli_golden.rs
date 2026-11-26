@@ -1978,7 +1978,7 @@ impl FakeDaemon {
     /// `delay` antes de responder: simula una inferencia lenta tras una
     /// conexión inmediata.
     fn start_with_delay(status: u16, body: Value, delay: Duration) -> Self {
-        Self::start_rendered(status, move || body.to_string(), delay)
+        Self::start_rendered(status, move || body.to_string(), delay, None)
     }
 
     /// Como [`FakeDaemon::start`], pero la ruta de trabajo responde un flujo
@@ -1993,15 +1993,26 @@ impl FakeDaemon {
                     .collect::<String>()
             },
             Duration::ZERO,
+            None,
         )
     }
 
+    /// Como [`FakeDaemon::start`], pero la ruta de trabajo abre un flujo NDJSON
+    /// que anuncia `started` y la síntesis y después emite un `heartbeat` cada
+    /// `every` sin terminar nunca con `result`: simula una síntesis larga que
+    /// solo acaba cuando el cliente se desconecta.
+    fn start_heartbeats(every: Duration) -> Self {
+        Self::start_rendered(200, String::new, Duration::ZERO, Some(every))
+    }
+
     /// Base de los constructores: `render` produce el cuerpo de la respuesta de
-    /// toda ruta distinta de `/health`.
+    /// toda ruta distinta de `/health`; con `heartbeat`, esas rutas emiten en su
+    /// lugar un flujo que no termina hasta que el cliente se va.
     fn start_rendered(
         status: u16,
         render: impl Fn() -> String + Send + 'static,
         delay: Duration,
+        heartbeat: Option<Duration>,
     ) -> Self {
         use std::io::Read;
         use std::sync::atomic::Ordering;
@@ -2049,6 +2060,30 @@ impl FakeDaemon {
                     .unwrap_or("")
                     .to_string();
                 paths_t.lock().unwrap().push(path.clone());
+                if let (Some(every), true) = (heartbeat, path != "/health") {
+                    // Respuesta sin longitud, delimitada por el cierre de la
+                    // conexión: termina en cuanto una escritura falla porque el
+                    // cliente se fue.
+                    let head = "HTTP/1.1 200 X\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
+                    let mut line = format!(
+                        "{}\n{}\n",
+                        serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
+                        serde_json::json!({ "event": "progress", "stage": "synthesis" }),
+                    );
+                    let beat = format!(
+                        "{}\n",
+                        serde_json::json!({ "event": "heartbeat", "stage": "synthesis" })
+                    );
+                    if sock.write_all(head.as_bytes()).is_ok() {
+                        while !stop_t.load(Ordering::SeqCst)
+                            && sock.write_all(line.as_bytes()).is_ok()
+                        {
+                            line = beat.clone();
+                            std::thread::sleep(every);
+                        }
+                    }
+                    continue;
+                }
                 let (code, payload) = if path == "/health" {
                     (
                         200,
@@ -7998,7 +8033,8 @@ fn speech_denoise_dry_run_emits_jsonl_without_model() {
 }
 
 /// Un error de validación previo al lote de `speech denoise` sale con `--json` como un único
-/// envelope `{error, reason}` por stdout y el código 2, sin líneas JSONL ni `Error:` suelto.
+/// envelope `{error, reason}` por stdout y el código 2, sin líneas JSONL; el texto de error
+/// sale por stderr igual que sin `--json`.
 #[cfg(feature = "native-denoise")]
 #[test]
 fn speech_denoise_validation_error_is_a_single_json_envelope() {
@@ -8017,7 +8053,8 @@ fn speech_denoise_validation_error_is_a_single_json_envelope() {
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, stdout, stderr) = run_capture(&args, &envs);
     assert_eq!(code, 2, "{stdout}\n{stderr}");
-    assert!(stderr.is_empty(), "{stderr}");
+    // El modo máquina solo cambia stdout: el error también sale por stderr.
+    assert!(stderr.contains("Error:"), "{stderr}");
     // `from_str` rechaza un segundo documento tras el primero.
     let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único documento JSON");
     assert_eq!(envelope["reason"], "usage_error", "{envelope}");
@@ -9689,6 +9726,189 @@ fn translate_daemon_single_stage_leaves_only_the_closing_line() {
             stderr
                 .lines()
                 .map(|line| line.split(" en ").next().unwrap_or(line).to_string())
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert_eq!(normalized[0], normalized[1], "--json no cambia stderr");
+}
+
+/// Envía la interrupción de consola al hijo. En Windows es `CTRL_BREAK_EVENT` al
+/// grupo de procesos del hijo (que debe haberse lanzado con
+/// `CREATE_NEW_PROCESS_GROUP`) y exige que el proceso de pruebas tenga consola;
+/// en Unix es `SIGINT`.
+fn send_interrupt(child: &std::process::Child) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Console::{GenerateConsoleCtrlEvent, CTRL_BREAK_EVENT};
+        // SAFETY: llamada a la API de consola con un identificador de grupo de
+        // procesos; no recibe punteros y su fallo se comprueba abajo.
+        let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+        assert_ne!(
+            sent,
+            0,
+            "GenerateConsoleCtrlEvent falló (¿el proceso de pruebas no tiene consola?): {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    #[cfg(unix)]
+    {
+        let pid = i32::try_from(child.id()).expect("el PID cabe en un pid_t");
+        // SAFETY: `kill` solo recibe dos enteros; su fallo se comprueba abajo.
+        let rc = unsafe { libc::kill(pid, libc::SIGINT) };
+        assert_eq!(
+            rc,
+            0,
+            "kill(SIGINT) falló: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
+/// Ctrl+C durante `speech synthesize --daemon --json`: sale con 130, emite un
+/// único envelope `interrupted` con la etapa de síntesis interrumpida, pinta la
+/// interrupción por stderr y no toca al daemon, que sigue respondiendo.
+#[test]
+fn synthesize_daemon_ctrl_c_emits_interrupted_envelope_and_spares_the_daemon() {
+    let (sandbox, envs) = contract_sandbox("synthesize-ctrl-c");
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start_heartbeats(Duration::from_millis(500));
+    fake.publish_in(&dir.join("data"));
+    let mut out_file = tempfile::tempfile().expect("crear el archivo anónimo de stdout");
+    let mut err_file = tempfile::tempfile().expect("crear el archivo anónimo de stderr");
+    let mut cmd = bin_command();
+    cmd.args([
+        "--json",
+        "speech",
+        "synthesize",
+        "--daemon",
+        "--text",
+        "Hola",
+        "--voice",
+        "default",
+        "--label",
+        "interrumpido",
+    ])
+    .stdin(std::process::Stdio::null())
+    .stdout(out_file.try_clone().expect("duplicar stdout"))
+    .stderr(err_file.try_clone().expect("duplicar stderr"));
+    for (k, v) in &envs {
+        cmd.env(k, v);
+    }
+    // El hijo necesita un grupo de procesos propio y la consola del invocador
+    // para recibir el evento: se sustituye la bandera de `bin_command`
+    // (`CREATE_NO_WINDOW`, que lo dejaría sin consola).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0200);
+    }
+    let mut child = cmd.spawn().expect("el binario debe ejecutarse");
+
+    // Espera a que la síntesis esté en curso: el daemon recibió la petición de
+    // trabajo y después dejó pasar algunos latidos.
+    let started = Instant::now();
+    while !fake.requested_paths().iter().any(|p| p != "/health") {
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "el binario no llegó a pedir la síntesis"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    send_interrupt(&child);
+
+    let waited = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("consultar al hijo") {
+            break status;
+        }
+        if waited.elapsed() > Duration::from_secs(15) {
+            child.kill().expect("matar al hijo propio");
+            panic!("el binario no terminó tras la interrupción");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut stdout = String::new();
+    out_file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| out_file.read_to_string(&mut stdout))
+        .expect("leer el stdout capturado");
+    let mut stderr = String::new();
+    err_file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| err_file.read_to_string(&mut stderr))
+        .expect("leer el stderr capturado");
+
+    assert_eq!(status.code(), Some(130), "{stdout}\n{stderr}");
+    let envelope: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{stdout}"));
+    assert_eq!(envelope["reason"], "interrupted", "{envelope}");
+    let stages = envelope["stages"].as_array().expect("stages es una lista");
+    let synthesis = stages
+        .iter()
+        .find(|stage| stage["stage"] == "synthesizing")
+        .unwrap_or_else(|| panic!("falta la etapa de síntesis: {envelope}"));
+    assert_eq!(synthesis["interrupted"], true, "{envelope}");
+    assert_eq!(synthesis["failed"], true, "{envelope}");
+    assert!(
+        stderr.contains("· interrumpido") && stderr.contains("Interrumpido en"),
+        "stderr pinta la interrupción: {stderr}"
+    );
+
+    // El daemon ajeno sigue vivo y responde.
+    let mut sock = std::net::TcpStream::connect(fake.addr).expect("el daemon sigue escuchando");
+    sock.set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("plazo de lectura");
+    sock.write_all(b"GET /health HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n")
+        .expect("enviar /health");
+    let mut reply = String::new();
+    sock.read_to_string(&mut reply).expect("leer /health");
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+}
+
+/// Con un error tras la cabecera, stderr es el mismo con y sin `--json`: el
+/// modo máquina solo cambia stdout, que lleva el envelope de error.
+#[test]
+fn error_after_header_writes_the_same_stderr_with_and_without_json() {
+    let mut normalized = Vec::new();
+    for (name, json) in [("error-stderr-text", false), ("error-stderr-json", true)] {
+        let (sandbox, envs) = contract_sandbox(name);
+        let dir = sandbox.path();
+        let fake = FakeDaemon::start(500, serde_json::json!({ "reason": "daemon_error" }));
+        fake.publish_in(&dir.join("data"));
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut args = vec![
+            "speech",
+            "synthesize",
+            "--daemon",
+            "--text",
+            "Hola",
+            "--voice",
+            "default",
+            "--label",
+            "mismo-stderr",
+        ];
+        if json {
+            args.insert(0, "--json");
+        }
+        let (code, stdout, stderr) = run_capture(&args, &envs);
+        assert_ne!(code, 0, "json={json}: {stderr}");
+        assert!(stderr.contains("Error:"), "json={json}: {stderr}");
+        if json {
+            let envelope: Value = serde_json::from_str(stdout.trim())
+                .unwrap_or_else(|e| panic!("stdout debe ser el envelope: {e}\n{stdout}"));
+            assert!(envelope["reason"].is_string(), "{envelope}");
+        }
+        // Se normalizan las duraciones para comparar los dos modos.
+        normalized.push(
+            stderr
+                .lines()
+                .map(|line| {
+                    line.split_whitespace()
+                        .filter(|word| !word.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
                 .collect::<Vec<_>>(),
         );
     }

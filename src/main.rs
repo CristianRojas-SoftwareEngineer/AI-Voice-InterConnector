@@ -1112,69 +1112,86 @@ enum DaemonCommands {
 
 // ─── Bootstrap ───────────────────────────────────────────────────────
 
-/// Instalar handler de SIGINT → limpieza acotada + exit 130.
+/// PID del daemon que el manejador de Ctrl+C debe matar: solo el que lanzó
+/// este mismo proceso (`daemon start` y `daemon restart` lo dejan en
+/// `IN_MEMORY_PID`), nunca el que otro proceso registró en el pidfile. Si el
+/// PID es el del propio proceso (`daemon serve` en primer plano), no se mata:
+/// el cierre lo hace la escucha de señales del servidor.
+fn daemon_to_kill_on_interrupt() -> Option<u32> {
+    let pid = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
+    (pid != 0 && pid != std::process::id()).then_some(pid)
+}
+
+/// Pinta la interrupción desde el registro y, con `--json`, emite el envelope
+/// de error `interrupted`. Quien llama tiene tomada la guarda del registro y no
+/// la suelta hasta terminar el proceso, así que aquí no se toma de nuevo.
 ///
-/// Preserva el código 130 en todos los modos; antes de salir mata el árbol
-/// preciso del daemon residual por PID con deadline breve y verificación
-/// (`taskkill /F /T /PID` en Windows, `kill -9` al
-/// grupo en Unix). Vencido el deadline sale igualmente con 130 sin colgarse.
-/// Reclama el PID en memoria cuando aún no hay pidfile (ventana
-/// spawn→write), preservando 130 y el techo de 2 s.
-/// Guarda anti-auto-muerte: si el PID de la pista es el propio proceso
-/// (`daemon serve` en foreground), no se auto-mata; el cierre lo hace la
-/// escucha de señales del servidor por la misma ruta que POST `/shutdown`.
+/// - Con una pregunta en curso o sin ninguna etapa no transitoria: deja
+///   `Interrumpido; no se ha modificado nada.` y, con contexto, `stages: []`.
+/// - Con etapas: marca como interrumpidas las que siguen abiertas, pinta su
+///   `✗ <Nombre> <duración> · interrumpido`, el separador e `Interrumpido en <t>`.
+fn report_interruption(report: &mut avi_term::report::ReportGuard) {
+    use avi_term::line::SpecialClosing;
+
+    avi_term::line::take_phase_line();
+    let before = report.snapshot();
+    let untouched = before.question_active || !before.has_permanent_stage();
+    let closing = if untouched {
+        SpecialClosing::NothingModified
+    } else {
+        SpecialClosing::Interrupted
+    };
+    avi_term::line::special_closing_with(report, closing);
+    if avi_term::line::machine_mode() {
+        let err = CliError::new(
+            ExitCode::Interrupted,
+            "interrupted",
+            "Interrumpido por el usuario.",
+        );
+        let mut envelope = json!({
+            "error": error_envelope_text(&err),
+            "reason": err.reason,
+        });
+        let snapshot = report.snapshot();
+        if untouched && snapshot.context.is_some() {
+            envelope["stages"] = json!([]);
+        }
+        avi_core::json_emitter::emit_raw_json_with(envelope, &snapshot);
+    }
+}
+
+/// Instalar handler de SIGINT → pinta la interrupción + exit 130.
+///
+/// Preserva el código 130 en todos los modos. Pinta la interrupción desde el
+/// registro de ejecución y, con `--json`, emite su envelope de error antes de
+/// cualquier espera. Después mata, si lo hay, solo el árbol del daemon que
+/// lanzó este proceso (`taskkill /F /T /PID` en Windows, `kill -9` al grupo en
+/// Unix) con deadline breve: un comando cliente nunca mata el daemon ajeno.
+/// Vencido el deadline sale igualmente con 130 sin colgarse.
 /// Instalado en `main` antes del despacho: cubre todos los modos.
 fn install_sigint_handler() {
     ctrlc::set_handler(move || {
         // Un lote `denoise` en curso cancela de forma cooperativa: la primera
         // pulsación activa su flag y deja que limpie temporales; la segunda
-        // termina el proceso.
+        // termina el proceso por el camino general.
         #[cfg(feature = "native-denoise")]
         if let Some(flag) = DENOISE_CANCEL.get() {
-            if flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                eprintln!("\nInterrumpido por el usuario.");
-                avi_process::scratch::terminate(ExitCode::Interrupted.code());
+            if !flag.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                // `warn` cede antes la línea de fase abierta, para no pegar el
+                // aviso al indicador.
+                avi_term::line::warn("Cancelación pedida; borrando los temporales…");
+                return;
             }
-            // `warn` cede antes la línea de fase abierta, para no pegar el
-            // aviso al indicador.
-            avi_term::line::warn("Cancelación pedida; borrando los temporales…");
-            return;
         }
-        // pidfile primero; sin pidfile, PID en memoria (ventana spawn→write).
-        // El PID del pidfile solo se mata si su identidad coincide con la
-        // registrada; el PID en memoria es de un hijo recién lanzado por este
-        // proceso y no necesita comprobación.
-        let in_memory_pid = || {
-            let m = IN_MEMORY_PID.load(std::sync::atomic::Ordering::Relaxed);
-            if m != 0 {
-                Some(m)
-            } else {
-                None
-            }
-        };
-        let pid = match registered_daemon() {
-            Ok((Some(pid), avi_process::registry::Registered::Ours)) => Some(pid),
-            Ok((Some(_), _)) => None,
-            Ok((None, _)) => in_memory_pid(),
-            // Sin raíz de datos no hay pidfile que leer: se avisa y solo queda el
-            // PID en memoria.
-            Err(e) => {
-                avi_term::line::warn(format!(
-                    "No se pudo leer el registro del daemon: {}",
-                    e.message
-                ));
-                in_memory_pid()
-            }
-        };
-        if let Some(pid) = pid {
-            let own = std::process::id();
-            if pid != 0 && pid != own {
-                daemon::kill_tree_by_pid(pid);
-                daemon::wait_for_pid_death(pid, CTRL_C_CLEANUP_DEADLINE);
-            }
+        // La guarda se conserva hasta terminar el proceso: el hilo principal no
+        // puede escribir en stderr mientras se pinta la interrupción.
+        let mut report = avi_term::report::lock();
+        report_interruption(&mut report);
+        if let Some(pid) = daemon_to_kill_on_interrupt() {
+            daemon::kill_tree_by_pid(pid);
+            daemon::wait_for_pid_death(pid, CTRL_C_CLEANUP_DEADLINE);
         }
         // Exit code 130 = interrumpido por usuario (Ctrl+C)
-        eprintln!("\nInterrumpido por el usuario.");
         avi_process::scratch::terminate(ExitCode::Interrupted.code());
     })
     .expect("Error al instalar el handler de Ctrl+C");
@@ -1454,15 +1471,16 @@ fn error_envelope_text(err: &CliError) -> String {
     }
 }
 
-/// Emite el error con su `reason` (JSON o texto) y sale con su código.
+/// Escribe el error por stderr (igual con y sin `--json`: el modo máquina solo
+/// cambia stdout) y, con `--json`, emite además su envelope con el `reason`.
+/// Sale con el código del error.
 fn exit_with_error(json_mode: bool, err: CliError) -> ! {
+    print_error_text(&err);
     if json_mode {
         emit_raw_json(json!({
             "error": error_envelope_text(&err),
             "reason": err.reason,
         }));
-    } else {
-        print_error_text(&err);
     }
     avi_process::scratch::terminate(err.code.code());
 }
@@ -2306,7 +2324,9 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             let decision = {
                 let stdin = std::io::stdin();
                 let mut input = stdin.lock();
-                lifecycle::confirm::confirm(
+                // La espera de la respuesta no cuenta como trabajo del comando.
+                avi_term::report::begin_question();
+                let decision = lifecycle::confirm::confirm(
                     &lifecycle::confirm::Confirmation {
                         kind: lifecycle::confirm::Kind::Destructive,
                         question: &question,
@@ -2318,8 +2338,12 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     },
                     &mut input,
                     &mut std::io::stderr(),
-                )
-                .map_err(lifecycle_error_to_cli)?
+                );
+                avi_term::report::end_question(matches!(
+                    decision,
+                    Ok(lifecycle::confirm::Decision::Proceed)
+                ));
+                decision.map_err(lifecycle_error_to_cli)?
             };
             if decision == lifecycle::confirm::Decision::Cancelled {
                 if json_mode {
@@ -4205,7 +4229,9 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                 let decision = {
                     let stdin = std::io::stdin();
                     let mut input = stdin.lock();
-                    lifecycle::confirm::confirm(
+                    // La espera de la respuesta no cuenta como trabajo del comando.
+                    avi_term::report::begin_question();
+                    let decision = lifecycle::confirm::confirm(
                         &lifecycle::confirm::Confirmation {
                             kind: lifecycle::confirm::Kind::Destructive,
                             question: "¿Borrar este audio sintetizado?",
@@ -4217,8 +4243,12 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                         },
                         &mut input,
                         &mut std::io::stderr(),
-                    )
-                    .map_err(lifecycle_error_to_cli)?
+                    );
+                    avi_term::report::end_question(matches!(
+                        decision,
+                        Ok(lifecycle::confirm::Decision::Proceed)
+                    ));
+                    decision.map_err(lifecycle_error_to_cli)?
                 };
                 if decision == lifecycle::confirm::Decision::Cancelled {
                     if json_mode {
@@ -4712,24 +4742,6 @@ async fn handle_cleanup(
     // escribe el plan de la simulación por stdout y el cierre por stderr, y
     // `confirm::confirm` ya escribió «Cancelado.» si el usuario canceló.
     Ok(())
-}
-/// Clasifica el PID del daemon registrado (el del pidfile o, si falta, el que
-/// publica `daemon.ready`): ausente, ajeno (PID reasignado) o nuestro.
-fn registered_daemon() -> Result<(Option<u32>, avi_process::registry::Registered), CliError> {
-    Ok(
-        match lifecycle::daemon_stop::recorded_daemon(&effective_data_dir()?) {
-            Some(recorded) => (
-                Some(recorded.pid),
-                lifecycle::daemon_stop::classify_registered(
-                    &ProductProcesses,
-                    recorded.pid,
-                    daemon::pid_alive(recorded.pid),
-                    recorded.identity.as_ref(),
-                ),
-            ),
-            None => (None, avi_process::registry::Registered::Absent),
-        },
-    )
 }
 
 /// Estado JSON de la parada a partir del veredicto del motor: sin ejecución
@@ -7008,7 +7020,9 @@ fn confirm_voice_replacement(
     );
     let stdin = std::io::stdin();
     let mut input = stdin.lock();
-    lifecycle::confirm::confirm(
+    // La espera de la respuesta no cuenta como trabajo del comando.
+    avi_term::report::begin_question();
+    let decision = lifecycle::confirm::confirm(
         &lifecycle::confirm::Confirmation {
             kind: lifecycle::confirm::Kind::Destructive,
             question: &question,
@@ -7020,8 +7034,12 @@ fn confirm_voice_replacement(
         },
         &mut input,
         &mut std::io::stderr(),
-    )
-    .map_err(lifecycle_error_to_cli)
+    );
+    avi_term::report::end_question(matches!(
+        decision,
+        Ok(lifecycle::confirm::Decision::Proceed)
+    ));
+    decision.map_err(lifecycle_error_to_cli)
 }
 
 async fn clone_via_daemon(
@@ -7290,6 +7308,22 @@ async fn dub_via_daemon(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ctrl+C solo mata el daemon que lanzó este proceso: sin PID en memoria,
+    /// o con el propio, no mata nada.
+    #[test]
+    fn daemon_to_kill_on_interrupt_only_returns_the_spawned_pid() {
+        use std::sync::atomic::Ordering;
+
+        IN_MEMORY_PID.store(0, Ordering::Relaxed);
+        assert_eq!(daemon_to_kill_on_interrupt(), None);
+        IN_MEMORY_PID.store(std::process::id(), Ordering::Relaxed);
+        assert_eq!(daemon_to_kill_on_interrupt(), None);
+        let foreign = std::process::id().wrapping_add(1);
+        IN_MEMORY_PID.store(foreign, Ordering::Relaxed);
+        assert_eq!(daemon_to_kill_on_interrupt(), Some(foreign));
+        IN_MEMORY_PID.store(0, Ordering::Relaxed);
+    }
 
     // Las pruebas de integración de `transcribe` y `dub` exigen modelos y un
     // dispositivo de audio; estas pruebas puras son la fuente determinista del

@@ -1707,6 +1707,118 @@ async fn synthesize_delivers_audio_events() {
     assert_ne!(a, c, "otro seed debe dar otro audio");
 }
 
+/// Un cliente que se va a media síntesis la cancela y libera el lock: la
+/// petición siguiente sintetiza de inmediato (`progress` `synthesis`, sin
+/// `queued` ni `warming` en los primeros 2 s) en vez de esperar a que acabe la
+/// síntesis cortada. Es lo que permite que Ctrl+C en un comando cliente deje el
+/// daemon listo para el siguiente.
+#[tokio::test]
+#[ignore = "requiere el binario del motor y el modelo Base"]
+async fn synthesize_client_disconnect_cancels_and_frees_the_lock() {
+    let _engine = engine_exclusive().await;
+    require_clone_binary();
+    require_base_model();
+    let state = clone_state();
+    let long_text = "Esta es una frase bastante larga que el motor tarda en sintetizar, \
+        porque contiene muchas palabras seguidas y ninguna pausa que permita terminar pronto. \
+        Sigue hablando de cosas cotidianas, de la casa, del trabajo, del viaje de ayer y de \
+        los planes de la semana próxima, hasta completar alrededor de sesenta palabras en total.";
+
+    // Primera petición: se lee el stream hasta el primer `audio` y se suelta.
+    let response = build_router_with_state(state.clone())
+        .oneshot(post_json(
+            "/synthesize",
+            serde_json::json!({
+                "text": long_text, "voice": "default",
+                "source_language": "es", "target_language": "es"
+            }),
+        ))
+        .await
+        .expect("el router debe responder");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let started = std::time::Instant::now();
+    let mut received = Vec::new();
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(120), body.frame())
+            .await
+            .expect("el primer audio debe llegar en 120 s")
+            .expect("el stream no puede terminar antes del primer audio")
+            .expect("el frame debe leerse");
+        if let Some(data) = frame.data_ref() {
+            received.extend_from_slice(data);
+        }
+        if String::from_utf8_lossy(&received).contains("\"event\":\"audio\"") {
+            break;
+        }
+    }
+    let first_audio = started.elapsed();
+    drop(body);
+
+    // La fase abandona el lock en cuanto detecta la desconexión.
+    let dropped = std::time::Instant::now();
+    loop {
+        if state.synthesis_lock.try_lock().is_ok() {
+            break;
+        }
+        assert!(
+            dropped.elapsed() < std::time::Duration::from_secs(5),
+            "el lock de síntesis no se liberó tras la desconexión del cliente"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let released = dropped.elapsed();
+
+    // Segunda petición: sintetiza ya, sin esperar turno.
+    let response = build_router_with_state(state.clone())
+        .oneshot(post_json(
+            "/synthesize",
+            serde_json::json!({
+                "text": "Hola.", "voice": "default",
+                "source_language": "es", "target_language": "es"
+            }),
+        ))
+        .await
+        .expect("el router debe responder");
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let second_started = std::time::Instant::now();
+    let mut second = Vec::new();
+    let mut waited_in_first_2s = false;
+    let mut second_first_audio = None;
+    loop {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(120), body.frame())
+            .await
+            .expect("la segunda síntesis debe avanzar")
+            .map(|frame| frame.expect("el frame debe leerse"));
+        let Some(frame) = frame else { break };
+        if let Some(data) = frame.data_ref() {
+            second.extend_from_slice(data);
+            let text = String::from_utf8_lossy(data);
+            if second_started.elapsed() < std::time::Duration::from_secs(2)
+                && (text.contains("\"stage\":\"queued\"") || text.contains("\"stage\":\"warming\""))
+            {
+                waited_in_first_2s = true;
+            }
+            if second_first_audio.is_none() && text.contains("\"event\":\"audio\"") {
+                second_first_audio = Some(second_started.elapsed());
+            }
+        }
+    }
+    eprintln!(
+        "primer audio de la cortada: {first_audio:?}; lock liberado a los {released:?}; \
+         primer audio de la segunda: {second_first_audio:?}; total de la segunda: {:?}",
+        second_started.elapsed()
+    );
+    assert!(
+        !waited_in_first_2s,
+        "la segunda petición esperó turno: {}",
+        String::from_utf8_lossy(&second)
+    );
+    let events = ndjson_events(&second);
+    assert_eq!(events.last().expect("evento final")["event"], "result");
+}
+
 /// `/synthesize` con idiomas distintos traduce antes de sintetizar: anuncia la
 /// etapa `translate` antes de la etapa `synthesis`, y el texto traducido de
 /// varias oraciones coincide con el de la ruta directa, porque las dos
