@@ -2584,8 +2584,10 @@ mod clone_push_to_talk_tests {
 fn ensure_clone_reference_within_limit(path: &std::path::Path) -> Result<(), CliError> {
     const OPERATION: &str = "La referencia de clonado";
     ensure_wav_within_limit(path, OPERATION, avi_core::MAX_CLONE_REFERENCE_SECS)?;
-    match avi_audio::load_wav_16k_mono_pcm(path) {
-        Ok(pcm) => ensure_pcm_within_limit(&pcm, 16_000, OPERATION, avi_core::MAX_CLONE_REFERENCE_SECS),
+    // La cabecera ya acotó la duración y un WAV que se decodifica entero tiene
+    // las muestras que declara: aquí solo se comprueba que el archivo está íntegro.
+    match avi_audio::validate_wav_samples(path) {
+        Ok(()) => Ok(()),
         Err(e @ avi_audio::WavLoadError::Invalid(_)) => {
             Err(
                 CliError::new(ExitCode::InvalidInput, "invalid_audio", e.to_string())

@@ -1297,6 +1297,17 @@ pub fn load_wav_48k_mono_pcm(path: impl AsRef<Path>) -> Result<Vec<i16>, WavLoad
     load_wav_mono_pcm_at(path, 48_000)
 }
 
+/// Comprueba que el WAV de `path` se puede decodificar entero, sin convertirlo:
+/// no mezcla canales ni remuestrea. La clasificación de errores es la de los
+/// loaders públicos: un WAV truncado, con tasa 0 o no soportado es `Invalid`, un
+/// fichero ausente es `NotFound` y el resto de fallos de lectura son `Io`.
+pub fn validate_wav_samples(path: impl AsRef<Path>) -> Result<(), WavLoadError> {
+    let reader = hound::WavReader::open(path)?;
+    ensure_nonzero_sample_rate(&reader.spec())?;
+    read_normalized_samples(reader)?;
+    Ok(())
+}
+
 /// Carga un WAV arbitrario y lo normaliza a PCM `i16` mono a `to_rate`.
 /// Comparte la clasificación de errores de los loaders públicos: un WAV
 /// truncado o no soportado es `Invalid`, un fichero ausente es `NotFound` y el
@@ -1940,6 +1951,28 @@ mod tests {
             matches!(err, crate::WavLoadError::Invalid(_)),
             "obtenido: {err:?}"
         );
+    }
+
+    #[test]
+    fn test_validate_wav_samples_accepts_any_rate() {
+        let path = temp_wav_path("validate_44k");
+        let wav = crate::encode_pcm_mono_wav(&[1i16; 441], 44_100).expect("codificar WAV");
+        std::fs::write(&path, wav).expect("escribir WAV");
+        crate::validate_wav_samples(&path).expect("un WAV íntegro es válido");
+    }
+
+    #[test]
+    fn test_validate_wav_samples_rejects_truncated_and_zero_rate() {
+        for path in [
+            write_truncated_wav("validate_trunc"),
+            zero_rate_wav_in_temp("validate_rate0"),
+        ] {
+            let err = crate::validate_wav_samples(&path).unwrap_err();
+            assert!(
+                matches!(err, crate::WavLoadError::Invalid(_)),
+                "obtenido: {err:?}"
+            );
+        }
     }
 
     #[test]
