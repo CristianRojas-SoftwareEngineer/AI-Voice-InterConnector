@@ -797,9 +797,9 @@ es requerida**. Con `--mic`, la grabación es **push-to-talk** por defecto
 (termina al presionar Enter); `--duration N` fuerza una grabación de duración
 fija en segundos y solo es válido junto a `--mic`. El push-to-talk se corta en
 el menor de dos techos: `AVI_PUSH_TO_TALK_MAX_SECS` (default 300 s) y el máximo
-de audio de entrada del doblaje, 40 s. Con los valores por defecto el techo es
-40 s: al vencer, detiene la grabación, avisa por stderr y continúa con lo
-grabado (exit **0**). Un `--duration` superior a 40 s sale con **2**
+de audio de entrada del doblaje, 30 s. Con los valores por defecto el techo es
+30 s: al vencer, detiene la grabación, avisa por stderr y continúa con lo
+grabado (exit **0**). Un `--duration` superior a 30 s sale con **2**
 (`audio_too_long`).
 
 ```bash

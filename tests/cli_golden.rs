@@ -1875,8 +1875,8 @@ fn clone_reference_over_limit_is_audio_too_long() {
     }
 }
 
-/// Un audio de doblaje de 41 s supera el tope de 40 s y se rechaza con
-/// `audio_too_long`. La mitad `--no-daemon` prueba el orden: el tope se comprueba
+/// Un audio de doblaje un segundo más largo que `MAX_DUB_AUDIO_SECS` se rechaza
+/// con `audio_too_long`. La mitad `--no-daemon` prueba el orden: el tope se comprueba
 /// antes de `model_missing` y de `stt_unsupported`. La mitad `--daemon` protege
 /// frente a regresiones: la vía daemon da el mismo `audio_too_long` sin enviar el
 /// audio.
@@ -1885,8 +1885,8 @@ fn dub_audio_over_limit_is_audio_too_long() {
     for mode in ["--no-daemon", "--daemon"] {
         let (sandbox, envs) = contract_sandbox("dub_limit");
         let dir = sandbox.path();
-        let wav = dir.join("dubbing_41s.wav");
-        write_silent_wav(&wav, 41);
+        let wav = dir.join("dubbing_over_limit.wav");
+        write_silent_wav(&wav, avi_core::MAX_DUB_AUDIO_SECS as u32 + 1);
         let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let result = run_json_env(
             &[
@@ -4104,7 +4104,7 @@ mod tts {
 
     #[test]
     fn synthesize_text_too_long_exits_2() {
-        let long_text = "a".repeat(501);
+        let long_text = "a".repeat(avi_core::MAX_TEXT_LENGTH + 1);
         let (code, actual) = run_json(&[
             "--json",
             "speech",
@@ -4114,24 +4114,30 @@ mod tts {
             "--label",
             "x",
         ]);
-        assert_eq!(code, 2, "texto de 501 caracteres → ExitCode::InvalidInput");
+        assert_eq!(
+            code, 2,
+            "texto por encima del máximo → ExitCode::InvalidInput"
+        );
         assert_eq!(actual["reason"], Value::String("text_too_long".to_string()));
     }
 
     #[test]
     fn say_text_too_long_exits_2() {
-        let long_text = "a".repeat(501);
+        let long_text = "a".repeat(avi_core::MAX_TEXT_LENGTH + 1);
         let (code, actual) = run_json(&["--json", "speech", "say", "--text", &long_text]);
-        assert_eq!(code, 2, "texto de 501 caracteres → ExitCode::InvalidInput");
+        assert_eq!(
+            code, 2,
+            "texto por encima del máximo → ExitCode::InvalidInput"
+        );
         assert_eq!(actual["reason"], Value::String("text_too_long".to_string()));
     }
 
     #[test]
     fn synthesize_text_at_limit_is_not_rejected_by_validation() {
-        // Con 500 caracteres la validación pasa; el sandbox no tiene modelos, así
-        // que el resultado es otro `reason` (modelo ausente) y no se sintetiza
+        // Con el máximo exacto la validación pasa; el sandbox no tiene modelos,
+        // así que el resultado es otro `reason` (modelo ausente) y no se sintetiza
         // nada, pero nunca `text_too_long`.
-        let limit_text = "a".repeat(500);
+        let limit_text = "a".repeat(avi_core::MAX_TEXT_LENGTH);
         let (_code, actual) = run_json(&[
             "--json",
             "speech",

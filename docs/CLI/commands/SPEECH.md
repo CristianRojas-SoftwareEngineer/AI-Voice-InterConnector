@@ -229,7 +229,7 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 
 | Flag | Tipo | Default | Descripción |
 |---|---|---|---|
-| `--text`, `-t` | string | — | Obligatorio. Texto a sintetizar; no vacío y de hasta 500 caracteres Unicode (si no, exit 2 `empty_text` / `text_too_long`, antes de cualquier despacho) |
+| `--text`, `-t` | string | — | Obligatorio. Texto a sintetizar; no vacío y de hasta 1000 caracteres Unicode (si no, exit 2 `empty_text` / `text_too_long`, antes de cualquier despacho) |
 | `--voice`, `-v` | string | `default` | Voz a usar |
 | `--label`, `-l` | string | — | Obligatorio. Etiqueta bajo la que se persiste el audio sintetizado (se normaliza a minúsculas) |
 | `--force`, `-f` | flag | `false` | Sobrescribe un audio sintetizado existente con la misma etiqueta |
@@ -361,7 +361,7 @@ ai-voice-interconnector speech say --text <texto> [--voice <nombre>] [--source-l
 ```
 
 Sintetiza y reproduce a la vez, en streaming, sin persistir en `SpeechStore` (no tiene `--label`): la voz empieza a sonar en cuanto hay audio suficiente, sin esperar a que termine la síntesis.
-El texto debe ser no vacío y de hasta 500 caracteres Unicode (exit 2
+El texto debe ser no vacío y de hasta 1000 caracteres Unicode (exit 2
 `empty_text` / `text_too_long`, validado antes de cualquier despacho). La
 síntesis directa se acota al presupuesto `synthesis_budget` ([`limits.rs`](../../../crates/avi-core/src/limits.rs)); al vencer, exit 1
 `synthesis_timeout`. Mismas reglas de `--source-language`/`--target-language`/`--temperature` que
@@ -456,7 +456,7 @@ Validaciones puras (en este orden):
  micrófono o leer el audio y antes del modelo o del daemon, en las dos vías:
  una voz inexistente sale con exit 3 `voice_not_found` sin capturar nada (el
  daemon conserva su propia comprobación como defensa).
-6. El texto traducido, que es el que se sintetiza, no supera 500 caracteres
+6. El texto traducido, que es el que se sintetiza, no supera 1000 caracteres
  Unicode: si no, exit 2 `text_too_long`.
 
 La línea de contexto se escribe tras estas validaciones y antes de comprobar los

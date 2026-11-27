@@ -2,5 +2,5 @@
   "schema_version": "8",
   "error": "text_too_long",
   "reason": "text_too_long",
-  "message": "El texto tiene 501 caracteres y el máximo es 500."
+  "message": "El texto tiene 1001 caracteres y el máximo es 1000."
 }

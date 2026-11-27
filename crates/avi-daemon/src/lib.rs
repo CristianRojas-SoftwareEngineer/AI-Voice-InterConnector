@@ -4528,11 +4528,12 @@ mod tests {
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
-    /// D2: dub rechaza cuerpo que supera el límite de 40 s (DefaultBodyLimit del router).
+    /// D2: dub rechaza un cuerpo que supera el límite derivado de su duración
+    /// máxima (DefaultBodyLimit del router).
     #[tokio::test]
     async fn dub_rejects_body_over_limit() {
         use base64::Engine;
-        let pcm = vec![0u8; 100 * 32_000]; // 100 s supera el tope de 40 s con holgura
+        let pcm = vec![0u8; 100 * 32_000]; // 100 s supera el tope de duración con holgura
         let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&pcm);
         let (status, _) = post_json(
             "/dub",
@@ -4542,11 +4543,12 @@ mod tests {
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     }
 
-    /// D2: dub acepta un audio válido de 40 s sin que el body limit lo rechace.
+    /// D2: dub acepta un audio de la duración máxima sin que el body limit lo
+    /// rechace.
     #[tokio::test]
-    async fn dub_accepts_valid_40s() {
+    async fn dub_accepts_audio_at_the_duration_limit() {
         use base64::Engine;
-        let pcm = vec![0u8; 40 * 32_000]; // 40 s, dentro del tope
+        let pcm = vec![0u8; avi_core::MAX_DUB_AUDIO_SECS as usize * 32_000];
         let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&pcm);
         let (status, _) = post_json(
             "/dub",

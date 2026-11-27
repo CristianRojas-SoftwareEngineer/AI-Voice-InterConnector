@@ -428,12 +428,13 @@ async fn synthesize_empty_text_is_contract_error() {
     assert_eq!(actual, fixture("daemon_synthesize_empty.json"));
 }
 
-/// Texto de 501 caracteres: el daemon lo rechaza con 400 y `text_too_long`.
+/// Texto un carácter más largo que el máximo: el daemon lo rechaza con 400 y
+/// `text_too_long`.
 #[tokio::test]
 async fn synthesize_text_too_long_is_contract_error() {
     let (status, bytes) = send(post_json(
         "/synthesize",
-        serde_json::json!({ "text": "a".repeat(501) }),
+        serde_json::json!({ "text": "a".repeat(avi_core::MAX_TEXT_LENGTH + 1) }),
     ))
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

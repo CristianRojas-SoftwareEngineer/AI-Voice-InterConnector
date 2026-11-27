@@ -159,6 +159,8 @@ Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué p
 - **`/transcribe` es un stream NDJSON:** emite eventos de progreso y un evento final con el resultado, en lugar de una única respuesta JSON.
 - **Aviso de referencia corta en `voice clone`:** si la referencia dura menos del mínimo recomendado, el aviso sale bajo `Lectura` (o tras truncar la grabación) y se registra en `warnings` del envelope.
 - **`daemon restart` comprueba el modelo antes de parar:** si falta el modelo de síntesis falla con `model_missing` sin tocar el daemon en marcha ni su pidfile.
+- **Hasta 1000 caracteres por síntesis:** el máximo de texto pasa de 500 a 1000 caracteres. Medido con la voz de fábrica en español y en inglés, el motor actual sintetiza textos de hasta 1000 caracteres completos y sin degradación del habla.
+- **Doblaje de hasta 30 s:** el audio de entrada de `speech dub` pasa de 40 a 30 s, igual que la referencia de `voice clone`. Treinta segundos de habla son unos 500 caracteres, así que el texto traducido queda con margen bajo el máximo de síntesis.
 - **`denoise --json` emite un único envelope** con `status`, `files` y `summary`, en lugar de una línea JSON por archivo y un resumen. Cada archivo es una etapa numerada `[i/N]`.
 - **Ctrl+C:** durante una etapa deja `✗ <Etapa> <duración> · interrumpido`, el separador e `Interrumpido en <t>`; antes de cualquier etapa deja `Interrumpido; no se ha modificado nada.`. Sale con 130 y, con `--json`, emite el envelope de error con `reason` `interrupted`.
 

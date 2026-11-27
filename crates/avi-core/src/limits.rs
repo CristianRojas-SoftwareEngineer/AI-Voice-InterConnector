@@ -9,12 +9,17 @@ use std::time::Duration;
 use crate::exit_codes::{CliError, ExitCode};
 
 /// Longitud máxima, en caracteres Unicode (no bytes), del texto que se sintetiza.
-/// El motor de síntesis en CPU degrada su latencia por encima de este orden de
-/// magnitud, así que se rechaza la entrada antes de despacharla.
-pub const MAX_TEXT_LENGTH: usize = 500;
+/// Es la mayor longitud comprobada: con la voz de fábrica, en español y en
+/// inglés, textos de hasta 1000 caracteres se sintetizan completos y sin
+/// degradación del habla. Por encima no hay medición, así que se rechaza la
+/// entrada antes de despacharla.
+pub const MAX_TEXT_LENGTH: usize = 1000;
 
-/// Duración máxima, en segundos, del audio que acepta `speech dub`.
-pub const MAX_DUB_AUDIO_SECS: u64 = 40;
+/// Duración máxima, en segundos, del audio que acepta `speech dub`. Igual a la de
+/// la referencia de `voice clone`. Treinta segundos de habla son unos 500
+/// caracteres, de modo que el texto traducido queda con margen bajo
+/// `MAX_TEXT_LENGTH` aunque la traducción lo alargue.
+pub const MAX_DUB_AUDIO_SECS: u64 = 30;
 
 /// Duración máxima, en segundos, del audio que acepta `speech transcribe`.
 pub const MAX_TRANSCRIBE_AUDIO_SECS: u64 = 300;
@@ -120,14 +125,14 @@ mod tests {
         assert_eq!(err.reason, "text_too_long");
         assert_eq!(
             err.message,
-            "El texto tiene 501 caracteres y el máximo es 500."
+            "El texto tiene 1001 caracteres y el máximo es 1000."
         );
     }
 
     #[test]
     fn multibyte_text_is_counted_in_chars_not_bytes() {
-        // 500 caracteres que ocupan más de 500 bytes deben aceptarse.
-        let at_limit = "ñ".repeat(250) + &"😀".repeat(250);
+        // El máximo de caracteres, aunque ocupe más bytes que caracteres, se acepta.
+        let at_limit = "ñ".repeat(MAX_TEXT_LENGTH / 2) + &"😀".repeat(MAX_TEXT_LENGTH / 2);
         assert_eq!(at_limit.chars().count(), MAX_TEXT_LENGTH);
         assert!(at_limit.len() > MAX_TEXT_LENGTH);
         assert!(validate_synthesis_text(&at_limit).is_ok());
