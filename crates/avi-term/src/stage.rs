@@ -71,7 +71,7 @@ pub const CLONING: Stage = permanent(
 );
 pub const WARMING: Stage = permanent("warming", "Calentando el motor…", "Calentamiento");
 pub const REMOVING: Stage = permanent("removing", "Borrando…", "Borrado");
-/// Transitoria: los recorridos de `daemon` la declaran; `self update` la renombra con `done_as`.
+/// Transitoria: los recorridos que paran el daemon la declaran, y solo cuando había un daemon activo.
 pub const STOPPING: Stage = transient("stopping", "Deteniendo el daemon…", "Parada del daemon");
 pub const STARTING: Stage = permanent("starting", "Iniciando el daemon…", "Arranque");
 pub const DOWNLOADING: Stage = permanent("downloading", "Descargando…", "Descarga");
@@ -86,13 +86,14 @@ pub const PROGRAM: Stage = permanent("program", "Borrando el programa…", "Prog
 pub const LOCKS: Stage = permanent("locks", "Borrando los archivos de bloqueo…", "Bloqueos");
 pub const CLEANING: Stage = permanent("cleaning", "Borrando los datos…", "Limpieza de datos");
 pub const REPAIRING: Stage = permanent("repairing", "Reparando los restos…", "Reparación");
+pub const PURGING: Stage = permanent("purging", "Purgando los modelos…", "Purga");
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     /// Todas las etapas del catálogo.
-    fn all() -> [Stage; 29] {
+    fn all() -> [Stage; 30] {
         [
             VALIDATING,
             STARTED,
@@ -123,6 +124,7 @@ mod tests {
             LOCKS,
             CLEANING,
             REPAIRING,
+            PURGING,
         ]
     }
 

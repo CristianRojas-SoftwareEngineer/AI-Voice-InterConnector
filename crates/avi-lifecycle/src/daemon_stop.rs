@@ -615,6 +615,20 @@ pub fn observe(data_dir: &Path, control: &dyn ProcessControl, responds: bool) ->
     }
 }
 
+/// ¿Hay un daemon (sano o degradado) que parar? Resuelve la dirección igual que
+/// `stop` y clasifica con `observe`: todo estado distinto de `Stopped` cuenta.
+/// Decide si el recorrido declara la etapa de parada; el aviso de que el daemon
+/// estaba en marcha lo decide después `StopOutcome::was_running`.
+pub async fn is_active(data_dir: &Path, default_addr: &str, control: &dyn ProcessControl) -> bool {
+    let addr = recorded_daemon(data_dir)
+        .and_then(|daemon| daemon.addr)
+        .unwrap_or_else(|| default_addr.to_string());
+    !matches!(
+        observe(data_dir, control, probe(&addr).await),
+        DaemonState::Stopped
+    )
+}
+
 /// ¿Vive el proceso cuyo PID publica el fichero ready (línea `pid=<n>`)? Un
 /// fichero ausente, ilegible, sin esa línea o con el PID del propio proceso no
 /// tiene dueño vivo: es obsoleto. También lo es el que lleva un PID vivo pero sin
@@ -844,6 +858,13 @@ mod tests {
             elapsed < Duration::from_millis(200),
             "la sonda tardó {elapsed:?}"
         );
+    }
+
+    /// Sin pidfile ni nada escuchando en la dirección, no hay daemon que parar.
+    #[tokio::test]
+    async fn is_active_is_false_without_pidfile_or_listener() {
+        let data = scratch("is-active-none");
+        assert!(!is_active(&data, &dead_port(), &Inert::new()).await);
     }
 
     /// Sin pidfile ni daemon, la parada es un no-op verificable: no es un error,

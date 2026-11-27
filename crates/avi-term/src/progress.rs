@@ -211,16 +211,18 @@ impl PhaseProgress {
         let Some(current) = &inner.current else {
             return;
         };
+        let nest = line::nested_prefix();
+        let columns = self.columns().saturating_sub(nest.chars().count());
         let text = match &current.live {
-            Some(live) => clip_plain(&format!("{}{live}", current.prefix), self.columns()),
+            Some(live) => clip_plain(&format!("{}{live}", current.prefix), columns),
             None => fit_live(
                 self.color,
                 &format!("{}{ACTIVE} {}", current.prefix, current.active),
                 &fmt::duration(current.started.elapsed()),
-                self.columns(),
+                columns,
             ),
         };
-        self.raw(&format!("{CLEAR_LINE}{text}"));
+        self.raw(&format!("{CLEAR_LINE}{nest}{text}"));
         line::set_phase_line_open(true);
         inner.last_paint = Some(Instant::now());
     }
@@ -348,8 +350,13 @@ impl PhaseProgress {
         self.close_all(&mut inner, &mut rep);
         let current = self.open(&mut rep, stage, active, Instant::now());
         self.announce_phase_title(&mut rep, &current);
-        let announce = (!self.tty && current.permanent)
-            .then(|| format!("{}{ACTIVE} {active}\n", current.prefix));
+        let announce = (!self.tty && current.permanent).then(|| {
+            format!(
+                "{}{}{ACTIVE} {active}\n",
+                line::nested_prefix(),
+                current.prefix
+            )
+        });
         inner.current = Some(current);
         if !self.enabled {
             return;
@@ -377,7 +384,12 @@ impl PhaseProgress {
         let opened = self.open(&mut rep, stage, stage.active, at);
         self.announce_phase_title(&mut rep, &opened);
         if self.enabled && !self.tty && opened.permanent {
-            self.raw(&format!("{}{ACTIVE} {}\n", opened.prefix, stage.active));
+            self.raw(&format!(
+                "{}{}{ACTIVE} {}\n",
+                line::nested_prefix(),
+                opened.prefix,
+                stage.active
+            ));
         }
         if inner.current.is_none() {
             inner.current = Some(opened);
@@ -578,7 +590,8 @@ impl PhaseProgress {
                 &current.prefix
             };
             let text = format!(
-                "{lead}{ACTIVE} {} {}\n",
+                "{}{lead}{ACTIVE} {} {}\n",
+                line::nested_prefix(),
                 current.active,
                 fmt::duration(current.started.elapsed())
             );
@@ -810,8 +823,7 @@ fn silenced_by(value: Option<&str>) -> bool {
 }
 
 /// ¿Pide el entorno silenciar las etapas (`AVI_NO_PROGRESS` con un valor no
-/// vacío)? Lo usan también las vistas de progreso que no son un
-/// [`PhaseProgress`].
+/// vacío)? Lo consultan quienes escriben por stderr fuera del indicador.
 pub fn progress_silenced() -> bool {
     silenced_by(std::env::var("AVI_NO_PROGRESS").ok().as_deref())
 }
@@ -852,13 +864,14 @@ pub(crate) fn stage_line(
     unnumbered_width: usize,
     record: &StageRecord,
 ) -> Option<String> {
-    let prefix = stage_prefix(layout, record.number);
+    let own_prefix = stage_prefix(layout, record.number);
     let name_chars = record.name.chars().count();
-    let width = if prefix.is_empty() {
+    let width = if own_prefix.is_empty() {
         unnumbered_width.max(name_chars)
     } else {
         layout.name_width.max(name_chars)
     };
+    let prefix = format!("{}{own_prefix}", line::nested_prefix());
     let name = &record.name;
     let elapsed = record
         .end
@@ -1396,6 +1409,58 @@ mod tests {
             StageOutcome::Skipped("ya existía".into())
         );
         assert_eq!(snap.stages[1].outcome, StageOutcome::Failed);
+    }
+
+    /// En modo anidado, las etapas, los avisos y el anuncio sin terminal llevan
+    /// delante 8 espacios, y la línea viva con terminal también.
+    #[test]
+    fn nested_mode_indents_stages_warnings_and_the_live_line() {
+        let _g = report::test_guard();
+        line::set_nested(true);
+        let indent = " ".repeat(8);
+
+        // Sin ninguna etapa mostrada, el aviso sale como `Aviso:` con la sangría.
+        line::warn("antes de las etapas");
+        let progress = PhaseProgress::for_test(None, false);
+        progress.phase(&stage::CAPTURING);
+        progress.end_stage();
+        progress.phase(&stage::TRANSCRIBING);
+        progress.fail_current();
+        line::warn("bajo la etapa");
+        let text = normalize(&err());
+        let lines = lines_of(&text);
+        assert_eq!(lines[0], format!("{indent}Aviso: antes de las etapas."));
+        assert_eq!(lines[1], format!("{indent}● Grabando…"));
+        assert!(
+            lines[2].starts_with(&format!("{indent}✓ Grabación")),
+            "{lines:?}"
+        );
+        assert_eq!(lines[3], format!("{indent}● Transcribiendo…"));
+        assert!(
+            lines[4].starts_with(&format!("{indent}✗ Transcripción")),
+            "{lines:?}"
+        );
+        assert_eq!(lines[5], format!("{indent}  ⚠ bajo la etapa."));
+
+        // Con terminal, la línea viva empieza por la sangría y descuenta su ancho.
+        report::lock().reset();
+        line::reset_for_tests();
+        line::set_nested(true);
+        let mut live = PhaseProgress::for_test(None, true);
+        live.phase(&stage::CAPTURING);
+        live.live("● Grabando 0:05 / 0:40".to_string());
+        let painted = live.captured();
+        assert!(
+            painted.ends_with(&format!("\r\x1b[2K{indent}● Grabando 0:05 / 0:40")),
+            "{painted:?}"
+        );
+        live.width = Some(30);
+        live.live("● una línea viva muy larga que no cabe en el ancho".to_string());
+        let clipped = live.captured();
+        let last = clipped.rsplit("\r\x1b[2K").next().unwrap_or_default();
+        assert!(last.starts_with(&indent), "{last:?}");
+        assert!(last.chars().count() <= 29, "{last:?}");
+        let _ = live.close();
     }
 
     /// El desglose por fase suma exactamente el total y las transitorias

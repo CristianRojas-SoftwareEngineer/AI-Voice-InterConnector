@@ -36,6 +36,13 @@ static PHASE_LINE_OPEN: AtomicBool = AtomicBool::new(false);
 /// ella.
 static MACHINE_MODE: AtomicBool = AtomicBool::new(false);
 
+/// La salida de este proceso va dentro de la etapa de otro proceso.
+static NESTED: AtomicBool = AtomicBool::new(false);
+
+/// Espacios que llevan delante las etapas, avisos y latidos en modo anidado:
+/// la sangría del cuerpo de una etapa numerada.
+const NESTED_INDENT: usize = 8;
+
 /// Longitud del separador entre las etapas y el cierre.
 const RULE_LEN: usize = 50;
 
@@ -47,6 +54,8 @@ const DEFAULT_WIDTH: usize = 80;
 pub enum SpecialClosing {
     /// El usuario contestó que no a una pregunta: `Cancelado; no se ha borrado nada.`
     Cancelled,
+    /// El usuario contestó que no a una operación que no borra nada: `Cancelado.`
+    CancelledNonDestructive,
     /// Ctrl+C con trabajo hecho o en curso: `Interrumpido en <t>`.
     Interrupted,
     /// Ctrl+C antes de cualquier etapa permanente o durante una pregunta:
@@ -171,6 +180,7 @@ pub fn special_closing_with(report: &mut ReportGuard, kind: SpecialClosing) {
     text.push('\n');
     let closing = match kind {
         SpecialClosing::Cancelled => "Cancelado; no se ha borrado nada.".to_string(),
+        SpecialClosing::CancelledNonDestructive => "Cancelado.".to_string(),
         SpecialClosing::Interrupted => {
             let total: Duration = report.snapshot().total();
             format!("Interrumpido en {}", duration(total))
@@ -220,6 +230,27 @@ pub fn machine_mode() -> bool {
     MACHINE_MODE.load(Ordering::Relaxed)
 }
 
+/// Fija el modo anidado: la salida de este proceso va dentro de la etapa de
+/// otro proceso, así que sus etapas, avisos y latidos llevan delante la
+/// sangría del cuerpo de una etapa numerada.
+pub fn set_nested(nested: bool) {
+    NESTED.store(nested, Ordering::Relaxed);
+}
+
+/// Indica si la salida va anidada.
+pub fn nested() -> bool {
+    NESTED.load(Ordering::Relaxed)
+}
+
+/// Sangría que antepone el modo anidado a cada línea: vacía si no está activo.
+pub(crate) fn nested_prefix() -> String {
+    if nested() {
+        " ".repeat(NESTED_INDENT)
+    } else {
+        String::new()
+    }
+}
+
 /// Escribe un aviso en stderr en su propia línea y lo guarda en el registro.
 /// Con una etapa mostrada en el registro (abierta o terminada) sale como
 /// `⚠ <mensaje>.` sangrado bajo ella; sin ninguna, como `Aviso: <mensaje>.`. El
@@ -233,16 +264,17 @@ pub fn warn(msg: impl std::fmt::Display) {
     report.add_warning(&text);
     take_phase_line();
     let shown = report.last_shown_stage().map(|stage| stage.number);
+    let nest = nested_prefix();
     let line = match shown {
         Some(number) => {
             let indent = " ".repeat(body_indent(&report.layout(), number));
             format!(
-                "{indent}{} {text}\n",
+                "{nest}{indent}{} {text}\n",
                 paint(Stream::Stderr, Tone::Warning, WARN)
             )
         }
         None => format!(
-            "{} {text}\n",
+            "{nest}{} {text}\n",
             paint(Stream::Stderr, Tone::Warning, "Aviso:")
         ),
     };
@@ -324,6 +356,7 @@ pub fn init_console() {
 pub(crate) fn reset_for_tests() {
     PHASE_LINE_OPEN.store(false, Ordering::Relaxed);
     MACHINE_MODE.store(false, Ordering::Relaxed);
+    NESTED.store(false, Ordering::Relaxed);
     #[cfg(test)]
     {
         test_capture::ERR
@@ -586,6 +619,16 @@ mod tests {
             )
         );
         drop(progress);
+    }
+
+    /// La cancelación de una operación que no borra nada es `Cancelado.` tras
+    /// el separador.
+    #[test]
+    fn non_destructive_cancellation_says_only_cancelled() {
+        let _guard = report::test_guard();
+        let rule = "─".repeat(50);
+        special_closing(SpecialClosing::CancelledNonDestructive);
+        assert_eq!(err(), format!("{rule}\nCancelado.\n"));
     }
 
     /// El manifiesto declara la dependencia del sistema solo para Windows:

@@ -68,6 +68,15 @@ impl Kind {
     pub fn is_destructive(self) -> bool {
         matches!(self, Self::Destructive)
     }
+
+    /// Cierre que pinta el llamador detrás del separador al cancelar: el mismo
+    /// texto que `cancellation`, como cierre especial del indicador.
+    pub fn cancelled_closing(self) -> avi_term::line::SpecialClosing {
+        match self {
+            Self::NonDestructive => avi_term::line::SpecialClosing::CancelledNonDestructive,
+            Self::Destructive => avi_term::line::SpecialClosing::Cancelled,
+        }
+    }
 }
 
 /// Una ruta del plan con su tamaño, para el listado que hay que hacer en las
@@ -148,6 +157,21 @@ pub fn confirm_without_cancel_notice<R: BufRead>(
     out: &mut dyn Write,
 ) -> anyhow::Result<Decision> {
     confirm_with(request, input, out, false)
+}
+
+/// Pregunta fuera del reloj del comando: abre la pausa del registro, aplica la
+/// tabla de confirmaciones sin escribir el texto de cancelación y cierra la
+/// pausa; si se confirmó, el reloj arranca al responder. Con error, cierra la
+/// pausa sin confirmar y lo propaga.
+pub fn ask<R: BufRead>(
+    request: &Confirmation<'_>,
+    input: &mut R,
+    out: &mut dyn Write,
+) -> anyhow::Result<Decision> {
+    avi_term::report::begin_question();
+    let decision = confirm_without_cancel_notice(request, input, out);
+    avi_term::report::end_question(matches!(decision, Ok(Decision::Proceed)));
+    decision
 }
 
 fn confirm_with<R: BufRead>(
@@ -310,6 +334,44 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.ends_with("¿Hacer la prueba? [s/N] "), "{out:?}");
         assert!(!out.contains("Cancelado"), "{out:?}");
+    }
+
+    /// `ask` cierra la pausa de la pregunta al responder, también al cancelar, y
+    /// no escribe el texto de cancelación.
+    #[test]
+    fn ask_closes_the_question_and_does_not_announce_cancellation() {
+        let _guard = avi_term::report::test_guard();
+        let summary: Vec<String> = Vec::new();
+        for (answer, expected) in [("s\n", Decision::Proceed), ("n\n", Decision::Cancelled)] {
+            let mut out = Vec::new();
+            let decision = ask(
+                &request(Kind::Destructive, &summary, &[], false, false, true),
+                &mut Cursor::new(answer),
+                &mut out,
+            )
+            .unwrap();
+            assert_eq!(decision, expected);
+            assert!(
+                !avi_term::report::snapshot().question_active,
+                "la pausa de la pregunta sigue abierta tras {answer:?}"
+            );
+            let out = String::from_utf8(out).unwrap();
+            assert!(!out.contains("Cancelado"), "{out:?}");
+        }
+    }
+
+    /// El cierre de cancelación depende de si la operación borra algo.
+    #[test]
+    fn cancelled_closing_maps_each_kind() {
+        use avi_term::line::SpecialClosing;
+        assert_eq!(
+            Kind::Destructive.cancelled_closing(),
+            SpecialClosing::Cancelled
+        );
+        assert_eq!(
+            Kind::NonDestructive.cancelled_closing(),
+            SpecialClosing::CancelledNonDestructive
+        );
     }
 
     /// Las cuatro celdas de la tabla de confirmaciones con el predicado de terminal
