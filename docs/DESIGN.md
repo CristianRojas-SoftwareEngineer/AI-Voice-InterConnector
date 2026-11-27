@@ -88,7 +88,7 @@ AI-Voice-InterConnector/
 │   ├── avi-daemon/                     # Servidor HTTP del daemon (axum)
 │   ├── avi-stt/                        # ParakeetEngine (ort, load-dynamic)
 │   ├── avi-translation/                # Ct2TranslationEngine (CTranslate2/ct2rs)
-│   ├── avi-lifecycle/                  # Motor del ciclo de vida: install, uninstall, cleanup, doctor, recibo, bloqueo, PATH; vista de progreso de la provisión (indicatif 0.18)
+│   ├── avi-lifecycle/                  # Motor del ciclo de vida: install, uninstall, cleanup, doctor, recibo, bloqueo, PATH; medición de la transferencia de cada modelo en la provisión
 │   ├── denoise/                        # Limpieza de ruido DPDFNet para archivos de audio y vídeo (native-denoise)
 │   └── xtask/                          # tooling Rust: release, cask, licenses, gates de deriva, bootstrap, package, clean
 ├── packaging/

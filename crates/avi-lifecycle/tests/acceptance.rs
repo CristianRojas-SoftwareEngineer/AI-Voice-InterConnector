@@ -1254,6 +1254,7 @@ fn child_without_terminal() {
 #[test]
 fn dry_run_does_not_touch_disk() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("dry-run");
     sandbox.seed_env();
     sandbox.seed_state();
@@ -1507,6 +1508,7 @@ fn uninstall_is_idempotent() {
 #[test]
 fn cleanup_scope_and_usage_error() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
 
     // ── El gate: sin categoría, `usage_error` y nada borrado ────────────────────
@@ -1672,6 +1674,7 @@ fn cleanup_scope_and_usage_error() {
 #[test]
 fn shared_resources_survive() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
 
     // ── La raíz compartida se reconoce como tal ────────────────────────────────
@@ -2511,6 +2514,7 @@ fn uninstall_plan_does_not_preserve_a_missing_program_dir() {
 #[test]
 fn hf_cache_set_after_install_keeps_exclusive_leaf_removable() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
 
     for uninstalling in [false, true] {

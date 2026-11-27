@@ -670,8 +670,8 @@ pub async fn install(
     }
 
     // El indicador nace tras la confirmación (los pasos 1–4 son rápidos y el
-    // prompt no debe intercalar con una línea de progreso) y termina antes del
-    // paso 10, donde `ProvisionView` toma el relevo.
+    // prompt no debe intercalar con una línea de progreso) y termina tras la
+    // provisión del paso 10, cuyas descargas son etapas suyas.
     //
     // El cierre es **explícito** y vive fuera del bloque de trabajo: `close`
     // consume el indicador, así que cerrarlo dentro de un `map_err` lo
@@ -779,28 +779,24 @@ pub async fn install(
             return Err(e);
         }
     };
-    let elapsed = progress.close();
 
     // ── Paso 10. `setup` en el mismo proceso, salvo `--no-setup` ──────────────
     // El bloqueo exclusivo se retiene hasta aquí: `setup` descarga y purga modelos, y
-    // ningún comando de uso ni otra operación puede cruzarse con esa escritura.
+    // ningún comando de uso ni otra operación puede cruzarse con esa escritura. Las
+    // descargas son etapas del mismo indicador, que se cierra después.
     let models = if options.no_setup {
         ModelsState::Skipped
     } else {
-        provision(&setup::HubProvisioner).await
+        provision(&setup::HubProvisioner, &progress).await
     };
     drop(lock);
+    let elapsed = progress.close();
 
     // ── Paso 11. Resumen final ────────────────────────────────────────────────
     // El mensaje final lo compone el propio flujo de la librería —aquí no hay
     // handler que pueda hacerlo— y lleva la duración que devolvió el cierre
-    // del indicador, que es el mismo reloj que mostró las fases.
-    // El total suma a las etapas la descarga de modelos, que corre con su
-    // propia vista de progreso.
-    let provision_elapsed = match &models {
-        ModelsState::Provisioned { elapsed, .. } => *elapsed,
-        _ => std::time::Duration::ZERO,
-    };
+    // del indicador, que es el mismo reloj que mostró las fases y que ya incluye
+    // la descarga de modelos.
     let (summary, warnings) = final_summary(
         env,
         mode,
@@ -812,7 +808,7 @@ pub async fn install(
         foreign_in_path.as_ref(),
         &recovery.kept,
         !quarantine.failed.is_empty(),
-        elapsed + provision_elapsed,
+        elapsed,
     );
 
     Ok(Outcome {
@@ -1020,7 +1016,7 @@ fn pending_models() -> Result<setup::Pending, LifecycleError> {
 /// propio `reason`, que es lo que la tabla de reasons reserva a cada caso:
 /// `model_unavailable` si el Hub rechaza el modelo fijado y `network_error` si falla el
 /// transporte; reintentar con `setup` solo sirve en el segundo caso.
-async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
+async fn provision(provisioner: &impl setup::Provisioner, progress: &PhaseProgress) -> ModelsState {
     let store = match avi_store::ModelStore::new() {
         Ok(store) => store,
         Err(e) => {
@@ -1031,7 +1027,7 @@ async fn provision(provisioner: &impl setup::Provisioner) -> ModelsState {
             }
         }
     };
-    match setup::provision(&store, provisioner).await {
+    match setup::provision(&store, provisioner, progress).await {
         Ok(done) => match done.stats {
             None => ModelsState::AlreadyProvisioned,
             Some(stats) => ModelsState::Provisioned {
@@ -1361,16 +1357,17 @@ mod tests {
     /// modelos de traducción ya convertidos, sin ejecutar `setup`.
     #[test]
     fn install_provision_downloads_translation_from_empty_store() {
+        let _registry = avi_term::report::test_guard();
         let (_guard, root) = setup::tests::cache_relocated("install-provision-empty");
         std::env::set_var("AVI_DATA_DIR", root.join("data"));
         let plan = setup::pending(&avi_store::ModelStore::new().unwrap());
         for pair in ["opus-mt-es-en", "opus-mt-en-es"] {
             assert!(plan.models.contains(&pair.to_string()));
         }
-        let models = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime de la prueba")
-            .block_on(provision(&setup::tests::FakeProvisioner));
+        let models = setup::tests::test_runtime().block_on(provision(
+            &setup::tests::FakeProvisioner,
+            &PhaseProgress::new(),
+        ));
         assert!(
             matches!(models, ModelsState::Provisioned { .. }),
             "{models:?}"

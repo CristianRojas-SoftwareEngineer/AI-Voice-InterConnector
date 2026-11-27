@@ -688,6 +688,24 @@ pub struct Outcome {
     pub daemon_was_running: bool,
     /// Destinos del plan que fallaron al borrarse.
     pub failed: Vec<String>,
+    /// Plan legible de la simulación, una línea por elemento, para que el binario
+    /// lo escriba por stdout. Vacío fuera de la simulación y cuando no hay nada
+    /// que borrar.
+    pub plan_lines: Vec<String>,
+}
+
+impl Outcome {
+    /// Error de contrato del éxito parcial: `cleanup_incomplete` si alguna ruta del
+    /// plan no se pudo borrar. El `status` sigue siendo `cleanup_complete`: el
+    /// `reason` es lo que indica que la limpieza quedó a medias.
+    pub fn lifecycle_error(&self) -> Option<LifecycleError> {
+        (!self.failed.is_empty()).then(|| {
+            LifecycleError::cleanup_incomplete(format!(
+                "No se pudo borrar {}.",
+                avi_term::fmt::count(self.failed.len() as u64, "ruta", "rutas")
+            ))
+        })
+    }
 }
 
 /// Línea con la que se cierra `cleanup` cuando no hay nada que borrar.
@@ -786,10 +804,35 @@ pub async fn run_with_progress(
         });
     }
 
+    // El recorrido tiene una sola fase: la parada del daemon solo si había uno
+    // activo, y el borrado. Se mira el daemon antes de declarar para que N quede
+    // fijo.
+    let daemon_active =
+        daemon_stop::is_active(&roots.data_dir, &daemon_stop::default_addr(), control).await;
+    let mut stages = Vec::new();
+    if daemon_active {
+        stages.push(&avi_term::stage::STOPPING);
+    }
+    stages.push(&avi_term::stage::CLEANING);
+    let stage_count = stages.len();
+    if progress {
+        avi_term::report::declare(avi_term::report::Pipeline::new(vec![
+            avi_term::report::PhaseSpec {
+                id: "cleanup",
+                title: "Limpieza",
+                short: "Limpieza",
+                stages,
+            },
+        ]));
+    }
+
     // `cleanup` es destructiva: el plan con categorías y tamaños, el mismo que
-    // muestra la simulación, y confirmación `[s/N]`.
+    // muestra la simulación, y confirmación `[s/N]` fuera del reloj del comando.
     let decision = confirm(&plan, options)?;
     if decision == Decision::Cancelled {
+        if progress {
+            avi_term::line::special_closing(Kind::Destructive.cancelled_closing());
+        }
         // Recibo del plan aunque se cancele: lo que se habría borrado.
         let planned: Vec<String> = plan
             .paths()
@@ -806,21 +849,45 @@ pub async fn run_with_progress(
 
     // La frontera: el indicador nace **después** de la confirmación, porque el
     // prompt no puede quedar pegado a una fase. La cancelación ya salió, así que
-    // desde aquí el barrido siempre ocurre. Es la única etapa del comando: no
-    // deja su línea y queda solo el cierre.
-    let indicator = progress.then(|| avi_term::progress::PhaseProgress::new().single_stage());
-    if let Some(indicator) = indicator.as_ref() {
-        indicator.phase(&avi_term::stage::CLEANING);
-    }
+    // desde aquí el barrido siempre ocurre. Con una sola etapa no deja su línea
+    // y queda solo el cierre.
+    let indicator = progress.then(|| {
+        let indicator = avi_term::progress::PhaseProgress::new();
+        if stage_count == 1 {
+            indicator.single_stage()
+        } else {
+            indicator
+        }
+    });
 
     // Antes de borrar recursos que el daemon usa, se detiene el daemon. Si no
-    // se detiene, `daemon_stop_failed` y nada del plan se borra.
+    // se detiene, `daemon_stop_failed` y nada del plan se borra. La etapa solo
+    // existe si había un daemon activo.
+    if daemon_active {
+        if let Some(indicator) = indicator.as_ref() {
+            indicator.phase(&avi_term::stage::STOPPING);
+        }
+    }
     let daemon = daemon_stop::stop(&roots.data_dir, &daemon_stop::default_addr(), control).await;
     if let Err(failure) = daemon_stop::require_stopped(&daemon) {
-        if let Some(indicator) = indicator.as_ref() {
-            indicator.yield_line();
+        if let Some(indicator) = indicator {
+            indicator.fail();
         }
         return Err(failure.into());
+    }
+    if daemon_active {
+        if let Some(indicator) = indicator.as_ref() {
+            indicator.end_stage();
+        }
+    }
+    if daemon.was_running && progress {
+        avi_term::line::warn(
+            "El daemon estaba en marcha y se detuvo; vuelve a iniciarlo con \
+             `ai-voice-interconnector daemon start`",
+        );
+    }
+    if let Some(indicator) = indicator.as_ref() {
+        indicator.phase(&avi_term::stage::CLEANING);
     }
 
     // El borrado puede tardar: el contador avanza mientras dura.
@@ -830,7 +897,9 @@ pub async fn run_with_progress(
         None => delete(),
     };
     let mut removed = Vec::new();
-    let mut failed = Vec::new();
+    // Rutas que no se pudieron borrar, con su causa: se avisa de cada una tras
+    // cerrar la etapa para que el aviso salga debajo de su línea.
+    let mut failures: Vec<(PathBuf, String)> = Vec::new();
     // Destinos del plan que se borraron: la cifra del cierre, la misma unidad
     // que cuenta el plan (los contenedores vacíos que se podan no cuentan).
     let mut deleted_targets: u64 = 0;
@@ -841,10 +910,8 @@ pub async fn run_with_progress(
         removed.push(path.display().to_string());
     }
     removed.extend(report.pruned.iter().map(|p| p.display().to_string()));
-    // El plan ya enumeró las rutas: solo se escribe la que no se pudo borrar.
     for (path, e) in &report.failed {
-        avi_term::line::warn(format!("No se pudo borrar {}: {e}", path.display()));
-        failed.push(path.display().to_string());
+        failures.push((path.clone(), e.to_string()));
     }
 
     // Último paso con efectos: los ficheros de bloqueo, con el bloqueo aún tomado.
@@ -853,8 +920,7 @@ pub async fn run_with_progress(
     } else {
         let lock_failures = lock.remove_files();
         for (path, error) in &lock_failures {
-            avi_term::line::warn(format!("No se pudo borrar {}: {error}", path.display()));
-            failed.push(path.display().to_string());
+            failures.push((path.clone(), error.to_string()));
         }
         removed.extend(
             plan.lock_files
@@ -875,18 +941,31 @@ pub async fn run_with_progress(
         .iter()
         .map(|p| p.display().to_string())
         .collect();
-    // La línea de cierre lleva la duración del barrido, la del reloj que
-    // mostró las fases.
+    // Sin fallos, la línea de cierre lleva la duración del barrido, la del reloj
+    // que mostró las fases. Con fallos, la etapa queda `✗`, cada ruta lleva su
+    // aviso debajo y el cierre lo escribe quien convierte el desenlace en error.
     if let Some(indicator) = indicator {
-        indicator.finish(
-            "Limpieza completada",
-            &[avi_term::fmt::count(
-                deleted_targets,
-                "ruta borrada",
-                "rutas borradas",
-            )],
-        );
+        if failures.is_empty() {
+            indicator.finish(
+                "Limpieza completada",
+                &[avi_term::fmt::count(
+                    deleted_targets,
+                    "ruta borrada",
+                    "rutas borradas",
+                )],
+            );
+        } else {
+            indicator.fail_current();
+            for (path, cause) in &failures {
+                avi_term::line::warn(format!("No se pudo borrar {}: {cause}", path.display()));
+            }
+            indicator.close();
+        }
     }
+    let failed = failures
+        .iter()
+        .map(|(path, _)| path.display().to_string())
+        .collect();
     Ok(Outcome {
         status: "cleanup_complete",
         removed,
@@ -910,11 +989,13 @@ pub async fn run_with_progress(
         dry_run: false,
         daemon_was_running: daemon.was_running,
         failed,
+        plan_lines: Vec::new(),
     })
 }
 
-/// Simulación: imprime el plan, incluido el barrido que se haría, y no
-/// modifica el disco.
+/// Simulación: calcula el plan, incluido el barrido que se haría, y no modifica
+/// el disco ni escribe nada: el plan legible queda en `plan_lines` para que el
+/// binario lo escriba por stdout, y el cierre de la simulación lo escribe él.
 ///
 /// El barrido **no** se ejecuta aquí aunque la regla diga "cualquier invocación
 /// barre además…": lo que no puede coexistir con una simulación es modificar el disco.
@@ -923,17 +1004,7 @@ pub async fn run_with_progress(
 pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     let plan = plan(roots, options);
     let preview: SweepPreview = recovery::preview(roots.recovery_roots());
-    if plan.is_empty() && preview.all().is_empty() && preview.unreadable.is_empty() {
-        avi_term::line::ok(NOTHING_TO_CLEAN);
-    } else if !avi_term::line::machine_mode() {
-        // El plan es el resultado de la simulación y sale por stdout; el aviso
-        // de que no se modificó nada es el cierre y sale por stderr. Con
-        // `--json` los sustituye el envelope.
-        for line in plan_lines(&plan, Some(&preview)) {
-            println!("{line}");
-        }
-        eprintln!("{}", confirm::simulation_notice());
-    }
+    let plan_lines = plan_lines(&plan, Some(&preview));
     // `removed` son las categorías y `swept` el barrido transversal, **en las dos
     // ramas**: mezclar el barrido dentro de `removed` en la simulación y no en la
     // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
@@ -969,16 +1040,19 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
         dry_run: true,
         daemon_was_running: false,
         failed: Vec::new(),
+        plan_lines,
     }
 }
 
-/// Aplica la confirmación con el plan ya calculado. En la ejecución el barrido
-/// ya ocurrió, así que el plan no lo anuncia.
+/// Aplica la confirmación con el plan ya calculado, fuera del reloj del comando
+/// y sin escribir el texto de cancelación, que pinta quien llama tras el
+/// separador. En la ejecución el barrido ya ocurrió, así que el plan no lo
+/// anuncia.
 fn confirm(plan: &DeletionPlan, options: &Options) -> anyhow::Result<Decision> {
     let summary = plan_lines(plan, None);
     let stdin = std::io::stdin();
     let mut entry = stdin.lock();
-    confirm::confirm(
+    confirm::ask(
         &Confirmation {
             kind: Kind::Destructive,
             question: "¿Borrar lo indicado?",
@@ -1165,5 +1239,31 @@ mod plan_lines_tests {
                 "{literal}: {lines:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod outcome_tests {
+    use super::*;
+
+    /// Sin rutas fallidas no hay error de contrato; con ellas el `reason` es
+    /// `cleanup_incomplete` y el `status` sigue siendo `cleanup_complete`.
+    #[test]
+    fn lifecycle_error_reports_only_failed_paths() {
+        let clean = Outcome {
+            status: "cleanup_complete",
+            ..Outcome::default()
+        };
+        assert!(clean.lifecycle_error().is_none());
+
+        let partial = Outcome {
+            status: "cleanup_complete",
+            failed: vec!["a".to_string(), "b".to_string()],
+            ..Outcome::default()
+        };
+        let error = partial.lifecycle_error().expect("hay rutas sin borrar");
+        assert_eq!(error.reason, "cleanup_incomplete");
+        assert_eq!(error.message, "No se pudo borrar 2 rutas.");
+        assert_eq!(partial.status, "cleanup_complete");
     }
 }

@@ -159,6 +159,13 @@ impl LifecycleError {
         Self::new("program_dir_kept", message.into())
     }
 
+    /// `cleanup` borró lo que pudo y quedaron rutas sin borrar: **éxito parcial** con
+    /// código propio; cerrar los programas que las usan y repetir el comando lo
+    /// completa.
+    pub fn cleanup_incomplete(message: impl Into<String>) -> Self {
+        Self::new("cleanup_incomplete", message.into())
+    }
+
     /// El binario descargado no arranca o no informa la versión objetivo (paso 8
     /// de la actualización).
     pub fn binary_incompatible(message: impl Into<String>) -> Self {

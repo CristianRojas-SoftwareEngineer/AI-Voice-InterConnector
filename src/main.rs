@@ -1538,16 +1538,18 @@ async fn main() {
             all,
             dry_run,
             yes,
-        }) => ok(handle_cleanup(
-            json_mode,
-            voices,
-            synthetic_speech,
-            model,
-            all,
-            dry_run,
-            yes,
-        )
-        .await),
+        }) => {
+            handle_cleanup(
+                json_mode,
+                voices,
+                synthetic_speech,
+                model,
+                all,
+                dry_run,
+                yes,
+            )
+            .await
+        }
         Some(Commands::SelfCmd { action }) => handle_self(json_mode, action).await,
         Some(Commands::Doctor { repair }) => handle_doctor(json_mode, repair),
         None => {
@@ -5150,9 +5152,9 @@ async fn handle_daemon(
 /// de la CLI y el emisor no están en ese crate.
 ///
 /// Si el usuario rechaza la confirmación, el motor no toca el disco: en modo
-/// texto no se imprime nada más (el «Cancelado.» ya lo escribió la
-/// confirmación, y el estado se dice una sola vez) y en `--json` el envelope
-/// lleva `status:"cancelled"` sin modelos. En ambos casos sale con 0.
+/// texto no se imprime nada más (el motor ya pintó el «Cancelado.» tras el
+/// separador) y en `--json` el envelope lleva `status:"cancelled"` sin modelos y
+/// con `stages: []`. En ambos casos sale con 0.
 async fn handle_setup(json_mode: bool, force_update: bool, yes: bool) -> Result<(), CliError> {
     let model_store = open_model_store()?;
     let voice_store = open_voice_store()?;
@@ -5162,40 +5164,40 @@ async fn handle_setup(json_mode: bool, force_update: bool, yes: bool) -> Result<
         .ensure_initialized()
         .map_err(|e| CliError::new(ExitCode::Error, "voice_store_init_failed", e.to_string()))?;
 
+    // La cabecera va antes del plan y de cualquier pregunta.
+    let models = lifecycle::setup::selection().len();
+    avi_term::line::context_with(
+        &format!(
+            "Setup · {}{}",
+            avi_term::fmt::count(models as u64, "modelo", "modelos"),
+            if force_update {
+                " · descarga forzada"
+            } else {
+                ""
+            }
+        ),
+        &[
+            ("models", ContextValue::Int(models as u64)),
+            ("force_update", ContextValue::Bool(force_update)),
+        ],
+    );
+
     let options = lifecycle::setup::Options::user(force_update, yes);
     let outcome = lifecycle::setup::run(&model_store, &options)
         .await
         .map_err(lifecycle_error_to_cli)?;
 
-    if outcome.cancelled {
-        if json_mode {
-            emit_raw_json(json!({
-                "status": "cancelled",
-                "models_provisioned": []
-            }));
-        }
-    } else if json_mode {
-        emit_raw_json(json!({
-            "status": "completed",
+    // En texto no queda nada por escribir: la librería, dueña del indicador,
+    // pinta el cierre (o la cancelación) por stderr.
+    if json_mode {
+        let mut body = json!({
+            "status": outcome.status,
             "models_provisioned": outcome.provisioned
-        }));
-    } else if let Some(stats) = outcome.stats {
-        // El cierre sale por stderr; los resultados de `setup` son sus envelopes.
-        avi_term::line::ok(&format!(
-            "Setup completado en {} · {}, {} descargados",
-            avi_term::fmt::duration(stats.elapsed),
-            avi_term::fmt::count(outcome.downloaded as u64, "modelo", "modelos"),
-            avi_term::fmt::bytes(stats.bytes)
-        ));
-    } else {
-        avi_term::line::ok(&format!(
-            "Los {}.",
-            avi_term::fmt::count(
-                outcome.provisioned.len() as u64,
-                "modelo ya estaba descargado",
-                "modelos ya estaban descargados"
-            )
-        ));
+        });
+        if outcome.status == "cancelled" {
+            body["stages"] = json!([]);
+        }
+        emit_raw_json(body);
     }
     Ok(())
 }
@@ -5215,7 +5217,7 @@ async fn handle_cleanup(
     all: bool,
     dry_run: bool,
     yes: bool,
-) -> Result<(), CliError> {
+) -> Result<Outcome, CliError> {
     let roots = lifecycle::cleanup::Roots::resolve().map_err(lifecycle_error_to_cli)?;
     // Sin recibo (descarga manual, binario de desarrollo o Cask de Homebrew) `--all` deja el
     // estado en cero, porque ningún `self uninstall` lo retirará.
@@ -5236,27 +5238,100 @@ async fn handle_cleanup(
     // `cleanup::run`, y un indicador abierto antes de ella dejaría el prompt
     // pegado a la fase. La librería lo abre tras la confirmación —la frontera— y
     // lo cierra al terminar el barrido. La simulación no abre ninguna etapa.
+    //
+    // La cabecera va antes de cualquier plan o pregunta. Sin categoría no hay
+    // cabecera: el `usage_error` lo devuelve la librería como hasta ahora.
+    if options.any_category() {
+        let (label, categories) = cleanup_header_parts(&options);
+        avi_term::line::context_with(
+            &format!(
+                "Limpieza · {label}{}",
+                if dry_run { " · simulación" } else { "" }
+            ),
+            &[
+                ("categories", text_value(categories)),
+                ("dry_run", ContextValue::Bool(dry_run)),
+            ],
+        );
+    }
     let outcome = lifecycle::cleanup::run_with_progress(&roots, &options, &ProductProcesses, true)
         .await
         .map_err(lifecycle_error_to_cli)?;
 
+    // La simulación escribe su plan por stdout (en `--json` lo lleva el envelope)
+    // y cierra con el mismo texto en los dos modos, también sin nada que borrar.
+    if options.dry_run {
+        if !json_mode {
+            for line in &outcome.plan_lines {
+                println!("{line}");
+            }
+        }
+        avi_term::line::ok("Simulación completada · no se ha borrado nada");
+    }
+    let partial = outcome.lifecycle_error();
     if json_mode {
-        emit_raw_json(json!({
+        let mut body = json!({
             "status": outcome.status,
-            "reason": Value::Null,
+            "reason": match &partial {
+                Some(failure) => Value::String(failure.reason.to_string()),
+                None => Value::Null,
+            },
             "removed": outcome.removed,
             "planned": outcome.planned,
             "preserved": outcome.preserved.iter().map(|entry| json!({
                 "path": entry.path.display().to_string(),
                 "reason": entry.reason,
             })).collect::<Vec<_>>(),
-            "unreadable": outcome.unreadable
-        }));
+            "unreadable": outcome.unreadable,
+            "failed": outcome.failed,
+            "kept": outcome.kept
+        });
+        if outcome.status == "cancelled" {
+            body["stages"] = json!([]);
+        }
+        emit_raw_json(body);
     }
-    // En texto no queda nada por escribir: la librería, dueña del indicador,
-    // escribe el plan de la simulación por stdout y el cierre por stderr, y
-    // `confirm::confirm` ya escribió «Cancelado.» si el usuario canceló.
-    Ok(())
+    // Éxito parcial: el envelope ya salió por stdout y el texto del error va por
+    // stderr en los dos modos; solo queda fijar el código de salida.
+    match partial {
+        Some(failure) => {
+            print_error_text(&CliError::new(
+                ExitCode::from_reason(failure.reason),
+                failure.reason,
+                failure.message,
+            ));
+            Ok(Outcome::Verdict(
+                ExitCode::from_reason(failure.reason).code(),
+            ))
+        }
+        None => Ok(Outcome::Done),
+    }
+}
+
+/// Categorías de `cleanup` para la cabecera (`voces, audios sintetizados,
+/// modelos`, o `todo` con `--all`) y para el `context`
+/// (`voices,synthetic-speech,model` o `all`).
+fn cleanup_header_parts(options: &lifecycle::cleanup::Options) -> (String, String) {
+    if options.all {
+        return ("todo".to_string(), "all".to_string());
+    }
+    let mut labels = Vec::new();
+    let mut ids = Vec::new();
+    for (selected, label, id) in [
+        (options.voices, "voces", "voices"),
+        (
+            options.synthetic_speech,
+            "audios sintetizados",
+            "synthetic-speech",
+        ),
+        (options.model, "modelos", "model"),
+    ] {
+        if selected {
+            labels.push(label);
+            ids.push(id);
+        }
+    }
+    (labels.join(", "), ids.join(","))
 }
 
 /// Estado JSON de la parada a partir del veredicto del motor: sin ejecución

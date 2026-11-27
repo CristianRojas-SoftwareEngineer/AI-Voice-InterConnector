@@ -29,11 +29,18 @@
 //! raíz compartida más que lo atribuible a la aplicación— y la misma confirmación
 //! destructiva.
 
-use crate::progress::{ProvisionStats, ProvisionView};
+use crate::progress::{bytes_per_second, download_live_text, ModelTransfer, ProvisionStats};
 use crate::LifecycleError;
 use avi_store::TransferObserver;
+use avi_term::progress::PhaseProgress;
+use avi_term::report::{PhaseSpec, Pipeline};
+use avi_term::stage;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// Cada cuánto se refresca la línea viva de una descarga mientras espera.
+const LIVE_REFRESH: Duration = Duration::from_millis(250);
 
 /// Opciones de `setup` que el motor necesita conocer. El resto de la superficie
 /// (`--json`) se queda en el binario, que es quien parsea la CLI.
@@ -371,12 +378,16 @@ pub enum ProvisionError {
 /// Provisión compartida por `setup` y `self install`: descarga la selección no
 /// provisionada. No confirma nada ni escribe la selección.
 ///
-/// Es el único punto que conoce la selección pendiente, así que es quien abre
-/// la vista de progreso: solo si hay algo que descargar, numerando `[i/N]` sobre
-/// los pendientes, y devuelve el total descargado y su duración.
+/// Es el único punto que conoce la selección pendiente, así que es quien pinta
+/// las descargas en `progress`: una etapa `downloading` por modelo pendiente,
+/// con porcentaje y velocidad en su línea viva y, al terminar, el tamaño y la
+/// velocidad media como nota. Devuelve el total descargado y su duración. El
+/// llamador declaró en su recorrido una etapa `downloading` por cada modelo
+/// pendiente.
 pub async fn provision(
     store: &avi_store::ModelStore,
     provisioner: &impl Provisioner,
+    progress: &PhaseProgress,
 ) -> Result<Provisioned, ProvisionError> {
     let names = selection();
     let pending: Vec<&str> = names
@@ -392,25 +403,64 @@ pub async fn provision(
         return Ok(out);
     }
 
-    let view = ProvisionView::start(pending.len());
-    for (index, name) in pending.iter().enumerate() {
-        let bar = Arc::new(view.model(index + 1, name));
-        provisioner
-            .download(name, Arc::clone(&bar) as Arc<dyn TransferObserver>)
-            .await
-            .map_err(|cause| ProvisionError::Download {
+    // Los nombres se rellenan hasta el más largo para que las líneas terminadas
+    // alineen su columna.
+    let width = pending
+        .iter()
+        .map(|name| name.chars().count())
+        .max()
+        .unwrap_or(0);
+    let started = Instant::now();
+    let mut total_bytes = 0u64;
+    for name in &pending {
+        progress.phase_with(&stage::DOWNLOADING, &format!("Descargando {name}…"));
+        let transfer = Arc::new(ModelTransfer::new());
+        let model_started = Instant::now();
+        let download =
+            provisioner.download(name, Arc::clone(&transfer) as Arc<dyn TransferObserver>);
+        tokio::pin!(download);
+        // Mientras espera, refresca la línea viva (con terminal) o deja el latido
+        // del núcleo con el porcentaje (sin ella).
+        let result = loop {
+            match tokio::time::timeout(LIVE_REFRESH, &mut download).await {
+                Ok(result) => break result,
+                Err(_) => {
+                    let (completed, total) = transfer.snapshot();
+                    progress.live_text(
+                        &stage::DOWNLOADING,
+                        &download_live_text(name, completed, total, model_started.elapsed()),
+                    );
+                    progress.tick();
+                }
+            }
+        };
+        progress.done_as(&format!("{name:<width$}"));
+        if let Err(cause) = result {
+            progress.fail_current();
+            return Err(ProvisionError::Download {
                 name: name.to_string(),
                 cause,
-            })?;
-        bar.finish();
+            });
+        }
+        let (bytes, _) = transfer.snapshot();
+        total_bytes += bytes;
+        progress.note(&format!(
+            "{} · {}/s",
+            avi_term::fmt::bytes(bytes),
+            avi_term::fmt::bytes(bytes_per_second(bytes, model_started.elapsed()))
+        ));
+        progress.end_stage();
         out.downloaded.push(name.to_string());
     }
-    out.stats = Some(view.finish());
+    out.stats = Some(ProvisionStats {
+        bytes: total_bytes,
+        elapsed: started.elapsed(),
+    });
     Ok(out)
 }
 
 /// Desenlace de `setup`.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outcome {
     /// Qué borró la purga de `--force-update`. Vacío si no se pidió.
     pub purge: PurgeOutcome,
@@ -425,23 +475,42 @@ pub struct Outcome {
     pub downloaded: usize,
     /// Bytes y duración de lo descargado; `None` si no hubo nada que descargar.
     pub stats: Option<ProvisionStats>,
-    /// El usuario rechazó la confirmación; no se tocó el disco.
-    pub cancelled: bool,
+    /// Estado del contrato: `completed` si descargó algo, `already_provisioned` si
+    /// todo estaba ya descargado y `cancelled` si el usuario rechazó la
+    /// confirmación (entonces no se tocó el disco).
+    pub status: &'static str,
+}
+
+impl Default for Outcome {
+    fn default() -> Self {
+        Self {
+            purge: PurgeOutcome::default(),
+            pruned: PruneOutcome::default(),
+            provisioned: Vec::new(),
+            downloaded: 0,
+            stats: None,
+            status: "completed",
+        }
+    }
 }
 
 /// Ejecuta `setup` con la secuencia plan, confirmación única, purga, descarga y
 /// poda.
 ///
 /// Es el punto de entrada que el binario cablea. La descarga vive en
-/// [`provision`], compartida con `self install`; `run` añade el plan, la
-/// confirmación, la purga y la poda. Lo único que se
-/// queda en el binario es el envelope `--json` y la prosa, porque el parseo de la CLI y
-/// el emisor no viven en este crate.
+/// [`provision`], compartida con `self install`; `run` añade el plan, el
+/// recorrido declarado, la confirmación, la purga y la poda. El binario escribe
+/// antes la cabecera y después el envelope `--json`, porque el parseo de la CLI
+/// y el emisor no viven en este crate.
 ///
 /// El plan es la selección completa con `--force-update` y lo pendiente sin él.
-/// Una sola confirmación cubre purga y descarga, con el mismo módulo `confirm`
-/// que usan `cleanup` y `self uninstall`. Si se rechaza, devuelve un
-/// [`Outcome`] con `cancelled` y no purga, descarga ni poda nada.
+/// Sin `--force-update` y sin nada pendiente no hay recorrido ni pregunta: poda,
+/// escribe `✓ Los N modelos ya estaban descargados.` y devuelve
+/// `already_provisioned`. En otro caso declara una fase `Modelos` (la etapa
+/// `Purga` con `--force-update` y una etapa de descarga por modelo del plan) y
+/// una sola confirmación, fuera del reloj, cubre purga y descarga. Si se rechaza,
+/// pinta el cierre de cancelación y devuelve un [`Outcome`] `cancelled` sin
+/// purgar, descargar ni podar nada.
 pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Result<Outcome> {
     let mut outcome = Outcome::default();
 
@@ -455,45 +524,107 @@ pub async fn run(store: &avi_store::ModelStore, options: &Options) -> anyhow::Re
         pending(store)
     };
 
-    // 2. Confirmación única, antes de tocar el disco: rechazarla no deja nada
-    //    purgado ni descargado.
-    if !confirm_plan(&plan, options.force_update, options)? {
-        outcome.cancelled = true;
+    // 2. Nada que descargar y sin purga: no hay recorrido ni pregunta.
+    if !options.force_update && plan.is_empty() {
+        outcome.provisioned = selection().into_iter().map(String::from).collect();
+        outcome.pruned = prune_obsolete()?;
+        warn_prune_failures(&outcome.pruned);
+        avi_term::line::ok(&format!(
+            "Los {}.",
+            avi_term::fmt::count(
+                outcome.provisioned.len() as u64,
+                "modelo ya estaba descargado",
+                "modelos ya estaban descargados"
+            )
+        ));
+        outcome.status = "already_provisioned";
         return Ok(outcome);
     }
 
-    // 3. Purga de `--force-update`, que ya está confirmada.
+    // 3. Recorrido de una fase con N fijo: la purga (si se pide) y una descarga
+    //    por modelo del plan.
+    let mut stages: Vec<&'static stage::Stage> = Vec::new();
     if options.force_update {
+        stages.push(&stage::PURGING);
+    }
+    stages.extend(std::iter::repeat_n(&stage::DOWNLOADING, plan.models.len()));
+    let stage_count = stages.len();
+    avi_term::report::declare(Pipeline::new(vec![PhaseSpec {
+        id: "models",
+        title: "Modelos",
+        short: "Modelos",
+        stages,
+    }]));
+
+    // 4. Confirmación única, antes de tocar el disco: rechazarla no deja nada
+    //    purgado ni descargado.
+    if let Some(kind) = confirm_plan(&plan, options.force_update, options)? {
+        avi_term::line::special_closing(kind.cancelled_closing());
+        outcome.status = "cancelled";
+        return Ok(outcome);
+    }
+
+    let progress = if stage_count == 1 {
+        PhaseProgress::new().single_stage()
+    } else {
+        PhaseProgress::new()
+    };
+
+    // 5. Purga de `--force-update`, que ya está confirmada.
+    if options.force_update {
+        progress.phase(&stage::PURGING);
         outcome.purge = purge(store);
+        progress.end_stage();
         for (name, reason) in &outcome.purge.failures {
             avi_term::line::warn(format!("No se pudo purgar {name}: {reason}"));
         }
     }
 
-    // 4. Provisión compartida (descarga según el estado real).
-    let provisioned = provision(store, &HubProvisioner)
-        .await
-        .map_err(|e| match e {
-            ProvisionError::Download { name, cause } => {
-                anyhow::Error::from(map_download_failure(&name, &cause))
-            }
-        })?;
+    // 6. Provisión compartida (descarga según el estado real).
+    let provisioned = match provision(store, &HubProvisioner, &progress).await {
+        Ok(provisioned) => provisioned,
+        Err(ProvisionError::Download { name, cause }) => {
+            progress.fail();
+            return Err(anyhow::Error::from(map_download_failure(&name, &cause)));
+        }
+    };
     outcome.provisioned = provisioned.provisioned;
     outcome.downloaded = provisioned.downloaded.len();
     outcome.stats = provisioned.stats;
 
-    // 5. Poda tras éxito: las revisiones fuera del pin vigente.
+    // 7. Poda tras éxito: las revisiones fuera del pin vigente.
     //    Un fallo aquí no invalida lo provisionado: se informa y se sigue.
-    outcome.pruned = prune_obsolete()?;
-    for (name, reason) in &outcome.pruned.failures {
+    outcome.pruned = match prune_obsolete() {
+        Ok(pruned) => pruned,
+        Err(e) => {
+            progress.fail();
+            return Err(e.into());
+        }
+    };
+    warn_prune_failures(&outcome.pruned);
+
+    // 8. Cierre común.
+    let bytes = outcome.stats.map_or(0, |stats| stats.bytes);
+    progress.finish(
+        "Setup completado",
+        &[format!(
+            "{}, {} descargados",
+            avi_term::fmt::count(outcome.downloaded as u64, "modelo", "modelos"),
+            avi_term::fmt::bytes(bytes)
+        )],
+    );
+    Ok(outcome)
+}
+
+/// Avisa de cada revisión antigua que la poda no pudo borrar.
+fn warn_prune_failures(pruned: &PruneOutcome) {
+    for (name, reason) in &pruned.failures {
         // Se nombra el modelo, no la ruta de su revisión.
         let model = name.split("/snapshots/").next().unwrap_or(name);
         avi_term::line::warn(format!(
             "No se pudo podar una revisión antigua de {model}: {reason}"
         ));
     }
-
-    Ok(outcome)
 }
 
 /// Línea de la confirmación: cuántos modelos se descargan y su tamaño estimado.
@@ -544,18 +675,24 @@ fn confirmation_summary(
     Some((kind, summary))
 }
 
-/// Pide la confirmación única de `setup`. `false` es "el usuario dijo que no",
-/// que la tabla de `reason` no cuenta como error.
-fn confirm_plan(plan: &Pending, purges: bool, options: &Options) -> anyhow::Result<bool> {
+/// Pide la confirmación única de `setup`, fuera del reloj del comando. Devuelve
+/// `None` si se puede proceder y `Some(tipo)` si el usuario dijo que no, que la
+/// tabla de `reason` no cuenta como error; el tipo decide el texto de la
+/// cancelación.
+fn confirm_plan(
+    plan: &Pending,
+    purges: bool,
+    options: &Options,
+) -> anyhow::Result<Option<crate::confirm::Kind>> {
     let Some((kind, summary)) = confirmation_summary(plan, purges, options) else {
-        return Ok(true);
+        return Ok(None);
     };
     let question = if purges {
         "¿Borrar los modelos descargados y descargarlos de nuevo?"
     } else {
         "¿Descargar los modelos?"
     };
-    let decision = crate::confirm::confirm(
+    let decision = crate::confirm::ask(
         &crate::confirm::Confirmation {
             kind,
             question,
@@ -568,7 +705,7 @@ fn confirm_plan(plan: &Pending, purges: bool, options: &Options) -> anyhow::Resu
         &mut std::io::stdin().lock(),
         &mut std::io::stderr(),
     )?;
-    Ok(decision != crate::confirm::Decision::Cancelled)
+    Ok((decision == crate::confirm::Decision::Cancelled).then_some(kind))
 }
 
 #[cfg(test)]
@@ -643,25 +780,110 @@ pub(crate) mod tests {
     /// abre la vista ni devuelve estadísticas cuando todo estaba provisionado.
     #[test]
     fn provision_reports_stats_only_when_it_downloads() {
+        let _registry = avi_term::report::test_guard();
         let (_guard, _root) = cache_relocated("setup-provision-stats");
         let store = avi_store::ModelStore::new().unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime de la prueba");
+        let runtime = test_runtime();
 
         let first = runtime
-            .block_on(provision(&store, &FakeProvisioner))
+            .block_on(provision(&store, &FakeProvisioner, &PhaseProgress::new()))
             .expect("la provisión simulada se completa");
         assert_eq!(first.downloaded.len(), selection().len());
         let stats = first.stats.expect("hubo descarga, hay estadísticas");
         assert!(stats.bytes > 0, "{stats:?}");
 
         let second = runtime
-            .block_on(provision(&store, &FakeProvisioner))
+            .block_on(provision(&store, &FakeProvisioner, &PhaseProgress::new()))
             .expect("la segunda pasada se completa");
         assert!(second.downloaded.is_empty());
         assert_eq!(second.provisioned.len(), selection().len());
         assert_eq!(second.stats, None);
+    }
+
+    /// Runtime de las pruebas de provisión: la espera de cada descarga usa un
+    /// temporizador, así que necesita el controlador de tiempo.
+    pub(crate) fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime de la prueba")
+    }
+
+    /// Provisionador que descarga bien los modelos salvo `failing`, que falla.
+    struct FailingProvisioner {
+        failing: &'static str,
+    }
+
+    impl Provisioner for FailingProvisioner {
+        async fn download(
+            &self,
+            name: &str,
+            observer: Arc<dyn TransferObserver>,
+        ) -> anyhow::Result<()> {
+            if name == self.failing {
+                anyhow::bail!("sin red");
+            }
+            FakeProvisioner.download(name, observer).await
+        }
+    }
+
+    /// Siembra todos los modelos salvo `missing`, que quedan pendientes.
+    fn seed_all_except(missing: &[&str]) {
+        for pin in MODEL_REVISIONS {
+            if !missing.contains(&pin.name) {
+                fake_snapshot(&pin.repo.replace('/', "--"), pin.revision);
+            }
+        }
+    }
+
+    /// Cada modelo pendiente es una etapa `downloading` con su nombre.
+    #[test]
+    fn provision_opens_one_downloading_stage_per_model() {
+        let _registry = avi_term::report::test_guard();
+        let (_guard, _root) = cache_relocated("setup-provision-stages");
+        let pending_names = [MODEL_REVISIONS[0].name, MODEL_REVISIONS[1].name];
+        seed_all_except(&pending_names);
+        let store = avi_store::ModelStore::new().unwrap();
+        let runtime = test_runtime();
+
+        let progress = PhaseProgress::new();
+        runtime
+            .block_on(provision(&store, &FakeProvisioner, &progress))
+            .expect("la provisión simulada se completa");
+        progress.close();
+        let stages = avi_term::report::snapshot().stages;
+        assert_eq!(stages.len(), 2, "{stages:?}");
+        for (record, name) in stages.iter().zip(pending_names) {
+            assert_eq!(record.label, "downloading");
+            assert_eq!(record.name.trim_end(), name);
+            assert_eq!(record.outcome, avi_term::report::StageOutcome::Ok);
+            assert!(record.note.is_some(), "lleva tamaño y velocidad");
+        }
+    }
+
+    /// Si el segundo modelo falla, su etapa queda `Failed` y la primera `Ok`.
+    #[test]
+    fn provision_marks_the_failing_model_stage_as_failed() {
+        let _registry = avi_term::report::test_guard();
+        let (_guard, _root) = cache_relocated("setup-provision-failure");
+        let pending_names = [MODEL_REVISIONS[0].name, MODEL_REVISIONS[1].name];
+        seed_all_except(&pending_names);
+        let store = avi_store::ModelStore::new().unwrap();
+        let runtime = test_runtime();
+        let progress = PhaseProgress::new();
+        let result = runtime.block_on(provision(
+            &store,
+            &FailingProvisioner {
+                failing: pending_names[1],
+            },
+            &progress,
+        ));
+        assert!(matches!(result, Err(ProvisionError::Download { .. })));
+        progress.fail();
+        let stages = avi_term::report::snapshot().stages;
+        assert_eq!(stages.len(), 2, "{stages:?}");
+        assert_eq!(stages[0].outcome, avi_term::report::StageOutcome::Ok);
+        assert_eq!(stages[1].outcome, avi_term::report::StageOutcome::Failed);
     }
 
     /// Fija `AVI_CACHE_DIR` a un directorio de pruebas y devuelve el guard que lo
@@ -877,6 +1099,7 @@ pub(crate) mod tests {
     /// descargar nada.
     #[test]
     fn run_with_everything_provisioned_needs_no_network() {
+        let _registry = avi_term::report::test_guard();
         let (_guard, _root) = cache_relocated("setup-run-offline");
         let store = avi_store::ModelStore::new().unwrap();
         for name in selection() {
@@ -885,12 +1108,15 @@ pub(crate) mod tests {
             fake_snapshot(&repo.replace('/', "--"), revision);
         }
 
-        let outcome = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("runtime de la prueba")
+        let outcome = test_runtime()
             .block_on(run(&store, &Options::user(false, true)))
             .expect("el setup sin red se completa");
         assert_eq!(outcome.provisioned.len(), selection().len());
+        assert_eq!(outcome.status, "already_provisioned");
+        assert!(
+            avi_term::report::snapshot().stages.is_empty(),
+            "sin nada que descargar no se abre ninguna etapa"
+        );
     }
 
     /// La poda elimina justo las revisiones fuera del pin: la pinneada se

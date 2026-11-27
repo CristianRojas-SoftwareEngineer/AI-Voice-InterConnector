@@ -128,6 +128,7 @@ fn paths(plan: &cleanup::DeletionPlan) -> Vec<String> {
 /// ejecución real.
 #[test]
 fn cleanup_reports_unlistable_sweep_directories() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("unlistable");
     let temp_file = sandbox.root.join("temp-is-a-file");
     write(&temp_file, "no es un directorio");
@@ -156,6 +157,7 @@ fn cleanup_reports_unlistable_sweep_directories() {
 /// exclusiva borra el directorio entero con `xet` dentro.
 #[test]
 fn cleanup_categories_are_scoped() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("scoped");
     sandbox.seed_state();
     // El programa instalado existe: `cleanup` lo conserva y lo dice.
@@ -280,6 +282,7 @@ fn cleanup_categories_are_scoped() {
 /// El gate sin categoría: `usage_error`, sin borrar nada.
 #[test]
 fn cleanup_without_category_is_usage_error() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("gate");
     sandbox.seed_state();
     let before = sandbox.snapshot();
@@ -315,6 +318,7 @@ fn cleanup_without_category_is_usage_error() {
 /// que anuncia es la misma que ejecutaría.
 #[test]
 fn dry_run_lists_paths_without_touching_disk() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("dry-run");
     sandbox.seed_state();
     let before = sandbox.snapshot();
@@ -373,6 +377,7 @@ fn dry_run_lists_paths_without_touching_disk() {
 /// raíz compartida el plan y el ejecutor tienen que coincidir.
 #[test]
 fn shared_hf_cache_keeps_foreign_entries() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new_shared("shared");
     sandbox.seed_state();
     let hub = sandbox.models_dir.clone();
@@ -464,6 +469,7 @@ fn shared_hf_cache_keeps_foreign_entries() {
 /// interrumpida.
 #[test]
 fn orphan_scratch_of_a_dead_owner_is_swept() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("temp");
     // Un PID que el sistema no puede asignar: su dueño está muerto.
     let temp = sandbox.scratch_root.join("4294967000-1");
@@ -669,6 +675,7 @@ fn deferred_removal_targets_the_outermost_container_left_with_the_program() {
 /// `self uninstall` terminan con `lifecycle_locked` sin borrar nada.
 #[test]
 fn destructive_operations_refuse_while_a_usage_command_runs() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("usage-lock");
     let receipt = sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -1244,6 +1251,7 @@ fn uninstall_removes_every_container() {
 /// no se borra entera (conserva las voces de fábrica).
 #[test]
 fn cleanup_all_removes_the_cache_container() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("containers-cleanup");
     sandbox.install_registered(PathIntegration::none());
     sandbox.seed_state();
@@ -1285,6 +1293,7 @@ fn cleanup_all_removes_the_cache_container() {
 /// ejecución borra.
 #[test]
 fn cleanup_all_without_receipt_leaves_zero_state() {
+    let _registry = avi_term::report::test_guard();
     let sandbox = Sandbox::new("without-receipt");
     sandbox.seed_state();
     write(
@@ -1397,6 +1406,7 @@ fn foreign_file_keeps_its_container_and_is_reported() {
 /// `cleanup --all`. Los contenedores de la aplicación sí desaparecen.
 #[test]
 fn shared_hf_root_is_never_pruned() {
+    let _registry = avi_term::report::test_guard();
     for uninstalling in [true, false] {
         let sandbox = Sandbox::new_shared(if uninstalling {
             "containers-shared-uninstall"

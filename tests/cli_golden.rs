@@ -2661,6 +2661,15 @@ fn cleanup_dry_run_json_opens_no_phase_and_leaves_stdout_to_the_envelope() {
         !stderr.starts_with('\n'),
         "el indicador no escribe una línea en blanco inicial: {stderr:?}"
     );
+    assert_eq!(
+        stderr.lines().next(),
+        Some("Limpieza · todo · simulación"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("✓ Simulación completada · no se ha borrado nada"),
+        "{stderr}"
+    );
 
     // stdout: solo el envelope, sin una sola línea de progreso.
     assert!(
@@ -2674,10 +2683,16 @@ fn cleanup_dry_run_json_opens_no_phase_and_leaves_stdout_to_the_envelope() {
         avi_core::json_emitter::CLI_SCHEMA_VERSION
     );
     assert_eq!(envelope["status"], Value::String("planned".to_string()));
+    assert_eq!(envelope["context"]["categories"], "all", "{envelope}");
+    assert_eq!(envelope["context"]["dry_run"], true, "{envelope}");
+    assert!(
+        envelope.get("stages").is_none(),
+        "la simulación no lleva etapas: {envelope}"
+    );
 }
 
 /// `cleanup --all --dry-run` en texto escribe el plan por **stdout**, no abre
-/// ninguna etapa y cierra por stderr con el aviso de que no se modificó nada.
+/// ninguna etapa y cierra por stderr con `✓ Simulación completada`.
 #[test]
 fn cleanup_dry_run_writes_the_plan_on_stdout_and_opens_no_phase() {
     let (_sandbox, envs) = contract_sandbox("progress-dry-run-text");
@@ -2692,14 +2707,38 @@ fn cleanup_dry_run_writes_the_plan_on_stdout_and_opens_no_phase() {
         !stderr.contains("… ") && !stderr.contains("Borrando los datos"),
         "la simulación no abre ninguna etapa: {stderr}"
     );
+    assert_eq!(
+        stderr.lines().next(),
+        Some("Limpieza · todo · simulación"),
+        "{stderr}"
+    );
     assert!(
-        stderr.contains("Simulación: no se ha modificado nada."),
+        stderr.contains("✓ Simulación completada · no se ha borrado nada"),
         "el cierre de la simulación sale por stderr: {stderr}"
     );
     assert!(
         !stdout.contains("Simulación"),
         "el cierre no se mezcla con el plan: {stdout}"
     );
+}
+
+/// La simulación de `cleanup` tiene el mismo stderr con y sin `--json`, también
+/// cuando no hay nada que borrar, y siempre cierra con la simulación completada.
+#[test]
+fn cleanup_dry_run_has_the_same_stderr_with_and_without_json() {
+    for args in [
+        &["cleanup", "--all", "--dry-run"][..],
+        &["cleanup", "--model", "--dry-run"][..],
+    ] {
+        let (stderr, _stdout) = assert_same_stderr_with_and_without_json(0, args, |tag| {
+            let (sandbox, envs) = contract_sandbox(tag);
+            (sandbox, envs)
+        });
+        assert!(
+            stderr.contains("✓ Simulación completada · no se ha borrado nada"),
+            "{stderr}"
+        );
+    }
 }
 
 /// `AVI_NO_PROGRESS` con valor no vacío silencia las etapas: stderr se queda sin
@@ -2745,6 +2784,40 @@ fn the_cleanup_final_message_carries_the_duration_of_the_sweep() {
         stdout.trim().is_empty(),
         "cleanup no escribe resultados por stdout: {stdout}"
     );
+}
+
+/// `cleanup --model --yes` sin daemon activo abre con su cabecera, tiene una
+/// sola etapa (sin línea de etapa ni `[n/N]`, ni `Parada del daemon`) y cierra
+/// con `✓ Limpieza completada`; su stderr es el mismo con y sin `--json`.
+#[test]
+fn cleanup_model_yes_without_daemon_has_a_single_stage_and_the_same_stderr_with_json() {
+    let mut stderrs = Vec::new();
+    for (tag, json) in [
+        ("cleanup-single-text", false),
+        ("cleanup-single-json", true),
+    ] {
+        let (sandbox, envs) = contract_sandbox(tag);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let mut args = vec!["cleanup", "--model", "--yes"];
+        if json {
+            args.insert(0, "--json");
+        }
+        let (code, _stdout, stderr) = run_capture(&args, &envs);
+        assert_eq!(code, 0, "{stderr}");
+        let stderr = normalize_times(&stderr, sandbox.path());
+        assert_eq!(
+            stderr.lines().next(),
+            Some("Limpieza · modelos"),
+            "{stderr}"
+        );
+        assert!(stderr.contains("✓ Limpieza completada en "), "{stderr}");
+        assert!(
+            !stderr.contains("Parada del daemon") && !stderr.contains("[1/"),
+            "sin daemon no hay etapa de parada ni numeración: {stderr}"
+        );
+        stderrs.push(stderr);
+    }
+    assert_eq!(stderrs[0], stderrs[1], "--json no cambia stderr");
 }
 
 /// Sin recibo de instalación, `cleanup --all --yes` deja el estado en cero tras un comando
@@ -3010,6 +3083,10 @@ fn cleanup_model_real_run_reports_paths() {
     let _decoy_real = seed_decoy_daemon_pidfile(&data);
     let (code, real) = run_json_env(&["--json", "cleanup", "--model", "--yes"], &exclusive_envs);
     assert_eq!(code, 0, "{}", real);
+    assert_eq!(real["context"]["categories"], "model", "{real}");
+    assert_eq!(real["context"]["dry_run"], false, "{real}");
+    assert_eq!(real["failed"], serde_json::json!([]), "{real}");
+    assert_eq!(real["reason"], Value::Null, "{real}");
 
     let as_set = |v: &Value| -> std::collections::BTreeSet<String> {
         v["removed"]
@@ -6957,12 +7034,64 @@ mod tts {
         envs.push(("HTTP_PROXY", "http://127.0.0.1:9"));
         let (code, payload) = run_json_env(&["--json", "setup"], &envs);
         assert_eq!(code, 0, "setup --json debe completar, payload: {}", payload);
-        assert_eq!(payload["status"], "completed");
+        assert_eq!(payload["status"], "already_provisioned");
         assert!(
             payload.get("language").is_none(),
             "el payload de setup no debe contener la clave `language`, fue: {}",
             payload
         );
+    }
+
+    /// `setup` sin nada que descargar abre con su cabecera, cierra con
+    /// `✓ Los N modelos ya estaban descargados.` y no abre etapas; su stderr es el
+    /// mismo con y sin `--json`, y el envelope lleva el `context`.
+    #[test]
+    fn setup_already_provisioned_renders_header_and_keeps_stderr_with_json() {
+        let names: Vec<&str> = avi_shared::paths::MODEL_REVISIONS
+            .iter()
+            .map(|pin| pin.name)
+            .collect();
+        let mut stderrs = Vec::new();
+        for (tag, json) in [("setup_render_text", false), ("setup_render_json", true)] {
+            let inst = IsolatedInstance::new(tag);
+            seed_pinned_models(&inst.cache_dir(), &names);
+            let mut envs = inst.contract_args();
+            envs.push(("HTTPS_PROXY", "http://127.0.0.1:9"));
+            envs.push(("HTTP_PROXY", "http://127.0.0.1:9"));
+            let mut args = vec!["setup"];
+            if json {
+                args.insert(0, "--json");
+            }
+            let (code, stdout, stderr) = run_capture(&args, &envs);
+            assert_eq!(code, 0, "{stderr}");
+            let stderr = normalize_times(&stderr, &inst.dir);
+            let lines: Vec<&str> = stderr.lines().collect();
+            assert_eq!(
+                lines[0],
+                format!("Setup · {} modelos", names.len()),
+                "{stderr}"
+            );
+            assert!(
+                stderr.contains(&format!(
+                    "✓ Los {} modelos ya estaban descargados.",
+                    names.len()
+                )),
+                "falta el cierre:\n{stderr}"
+            );
+            if json {
+                let envelope: Value =
+                    serde_json::from_str(stdout.trim()).expect("un único envelope");
+                assert_eq!(envelope["status"], "already_provisioned", "{envelope}");
+                assert_eq!(envelope["context"]["models"], names.len(), "{envelope}");
+                assert_eq!(envelope["context"]["force_update"], false, "{envelope}");
+                assert!(
+                    envelope.get("stages").is_none(),
+                    "sin descargas no hay etapas: {envelope}"
+                );
+            }
+            stderrs.push(stderr);
+        }
+        assert_eq!(stderrs[0], stderrs[1], "--json no cambia stderr");
     }
 
     #[test]

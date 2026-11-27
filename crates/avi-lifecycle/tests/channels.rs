@@ -64,6 +64,7 @@ use support::Sandbox;
 #[test]
 fn channels_behave_per_spec() {
     let _guard = process_env::exclusively();
+    let _registry = avi_term::report::test_guard();
     let runtime = runtime::runtime();
 
     // ── 1. Cómo se origina cada canal ──────────────────────────────────────────

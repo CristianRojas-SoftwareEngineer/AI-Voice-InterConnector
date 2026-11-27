@@ -28,6 +28,8 @@ use thiserror::Error;
 ///   `binary_incompatible`, `network_error` (solo fallo de transporte o del
 ///   servidor, que reintentar puede resolver) y `checksum_mismatch`.
 /// - 22: `program_dir_kept`, de `self uninstall`.
+/// - 23: `cleanup_incomplete`, de `cleanup`: borró lo que pudo y quedaron rutas sin
+///   borrar.
 /// - 1 también para `speech_metadata_corrupt`: los metadatos de un audio
 ///   sintetizado guardado están dañados y no se pueden leer.
 /// - 2 también para `output_exists`: `speech denoise` no sobrescribe un archivo de
@@ -77,6 +79,8 @@ pub enum ExitCode {
     ChecksumMismatch = 21,
     #[error("El directorio de programa no se pudo borrar")]
     ProgramDirKept = 22,
+    #[error("La limpieza terminó con rutas sin borrar")]
+    CleanupIncomplete = 23,
     #[error("Interrupción por el usuario")]
     Interrupted = 130,
 }
@@ -152,6 +156,7 @@ pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("network_error", ExitCode::NetworkError),
     ("checksum_mismatch", ExitCode::ChecksumMismatch),
     ("program_dir_kept", ExitCode::ProgramDirKept),
+    ("cleanup_incomplete", ExitCode::CleanupIncomplete),
     ("io_error", ExitCode::Error),
     ("model_unavailable", ExitCode::Error),
     ("release_unavailable", ExitCode::Error),
@@ -332,6 +337,10 @@ pub const REASON_SOLUTIONS: &[(&str, Option<&str>)] = &[
         "program_dir_kept",
         Some("Cierra los programas que usen esa carpeta y bórrala a mano."),
     ),
+    (
+        "cleanup_incomplete",
+        Some("Cierra los programas que usan esas rutas y repite `{cmd}`."),
+    ),
     ("io_error", None),
     (
         "model_unavailable",
@@ -493,6 +502,7 @@ mod tests {
         ("network_error", 20),
         ("checksum_mismatch", 21),
         ("program_dir_kept", 22),
+        ("cleanup_incomplete", 23),
         ("io_error", 1),
         ("model_unavailable", 1),
         ("release_unavailable", 1),
