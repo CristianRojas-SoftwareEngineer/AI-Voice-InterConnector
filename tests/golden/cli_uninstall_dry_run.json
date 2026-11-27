@@ -2,8 +2,13 @@
   "schema_version": "7",
   "status": "planned",
   "reason": null,
+  "context": {
+    "dry_run": true,
+    "keep_data": false
+  },
   "removed": [],
   "planned": [],
+  "failed": [],
   "preserved": [],
   "path_reverted": false
 }

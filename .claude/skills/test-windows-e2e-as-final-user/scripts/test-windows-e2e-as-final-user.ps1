@@ -840,6 +840,7 @@ function Run-E2E {
                 $uninstallImpact='Operación uninstall después de cleanup. Espacio liberado: {3} bytes. Destinos (cifras solapadas, no sumables): {0}. Preservados: {1}. {2}' -f $uninstallSummary,$uninstallPreserved,$downloadImpact,$uninstallFreed
                 Save-Event @{type='impact';operation='uninstall';targets=$uninstallTargets;freed_bytes=$uninstallFreed;impact=$uninstallImpact};Write-Host ('IMPACTO: {0}' -f $uninstallImpact) -ForegroundColor Yellow
                 $uninstall=Invoke-Cli @('self','uninstall','--yes') 'uninstall' -Json -ExpectedExit @(0,22)
+                Assert-True (@($uninstall.Payload.failed).Count -eq 0) ('uninstall dejó rutas sin borrar: {0}' -f (@($uninstall.Payload.failed) -join ', '))
                 $uninstallPlan=@($uninstall.Payload.planned)
                 $expectedUninstall=$uninstallTargets
                 if($uninstall.Payload.status -eq 'not_installed' -and !$uninstallPlan.Count -and !$expectedUninstall.Count){$expectedUninstall=@()}

@@ -2,8 +2,14 @@
   "schema_version": "7",
   "status": "planned",
   "reason": null,
+  "context": {
+    "categories": "voices",
+    "dry_run": true
+  },
   "removed": [],
   "planned": [],
+  "failed": [],
+  "kept": [],
   "preserved": [],
   "unreadable": []
 }

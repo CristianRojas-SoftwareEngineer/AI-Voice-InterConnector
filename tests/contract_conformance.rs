@@ -67,7 +67,23 @@ const ENVELOPE_MARKERS: [&str; 3] = ["envelope", "--json", "CLI"];
 /// Vocabulario cerrado de `status` por comando, derivado del código que lo emite, con
 /// la fuente de la que se copió. Los simulacros se leen como planes (`planned`),
 /// la parada toma el veredicto del motor y `say`/`dub` solo emiten su desenlace.
-const STATUS_BY_COMMAND: [(&str, &[&str], &str); 15] = [
+const STATUS_BY_COMMAND: [(&str, &[&str], &str); 19] = [
+    (
+        "setup",
+        &["completed", "already_provisioned", "cancelled"],
+        "crates/avi-lifecycle/src/setup.rs",
+    ),
+    (
+        "self install",
+        &["installed", "repaired", "cancelled"],
+        "crates/avi-lifecycle/src/install.rs",
+    ),
+    (
+        "self update",
+        &["updated", "already_up_to_date", "cancelled"],
+        "src/main.rs",
+    ),
+    ("doctor --repair", &["repaired"], "src/main.rs"),
     (
         "daemon start",
         &["started", "already_running"],

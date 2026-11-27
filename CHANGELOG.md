@@ -164,6 +164,14 @@ Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué p
 - **Temperatura de síntesis 0,45:** la de producción pasa de 0,35 a 0,45, la nueva temperatura por defecto del motor `qwen-tts-engine` 1.4.0. Es la que menos voz crujiente añade al cierre de las frases y la que suena más natural a la escucha. Cambia el audio de toda síntesis sin `--temperature`.
 - **`denoise --json` emite un único envelope** con `status`, `files` y `summary`, en lugar de una línea JSON por archivo y un resumen. Cada archivo es una etapa numerada `[i/N]`.
 - **Ctrl+C:** durante una etapa deja `✗ <Etapa> <duración> · interrumpido`, el separador e `Interrumpido en <t>`; antes de cualquier etapa deja `Interrumpido; no se ha modificado nada.`. Sale con 130 y, con `--json`, emite el envelope de error con `reason` `interrupted`.
+- **Salida por fases de `setup`, `cleanup`, `self install`, `self update`, `self uninstall` y `doctor --repair`:** abren con una cabecera, recorren una fase con etapas `[n/N]` y cierran con el cierre común, sin nada después. Los datos del resumen de `self install` (PATH, modelos) pasan a ser notas de sus etapas, y `--no-modify-path` se indica en la cabecera y en el `context`. `doctor --repair` tiene una etapa única `Reparación`.
+- **Descargas de modelos como una etapa por modelo:** `setup`, `self install` y el hijo de `self update` muestran `Descarga` con porcentaje y velocidad en la línea viva, sin barras de progreso. Sin terminal, la etapa se anuncia una vez y deja un latido cada 10 s; `AVI_SETUP_HEARTBEAT` sigue saliendo con `AVI_SETUP_WATCHDOG`. `setup --force-update` añade la etapa `Purga` antes de las descargas.
+- **Simulaciones con cabecera, plan y cierre común:** `cleanup --dry-run`, `self uninstall --dry-run` y `speech denoise --dry-run` escriben la cabecera, el plan por stdout (o dentro del envelope `planned`, con `context` y sin `stages`) y `✓ Simulación completada · no se ha borrado nada`.
+- **Confirmaciones fuera del reloj:** la cabecera sale antes de preguntar, la pregunta no cuenta en el tiempo y la cancelación sale tras el separador, con `Cancelado; no se ha borrado nada.` en los comandos que borran y `Cancelado.` en el resto. El envelope `cancelled` lleva las claves comunes y `stages` vacío.
+- **`Parada del daemon` solo con un daemon activo:** `setup`, `cleanup`, `self install`, `self update` y `self uninstall` solo muestran la etapa si había un daemon en marcha; en `cleanup` deja de ser una etapa falsa.
+- **Hijo de `self update` anidado:** el binario nuevo pinta sus etapas sin numerar y sangradas dentro de `Reemplazo`, sin cabecera ni cierre. El padre solo lo corta si deja de emitir latidos, así que una descarga larga pero viva ya no se aborta.
+- **Veredicto de `doctor` también con `--json`:** se escribe siempre por stderr.
+- **Dependencias:** se retira `indicatif` de `avi-lifecycle`.
 
 ### Corregido
 
@@ -176,6 +184,13 @@ Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué p
 - **Error de una parada fallida con `pid Some(N)`:** el mensaje mostraba el formato de depuración de la opción en lugar del número.
 - **`daemon restart` dejaba sin daemon:** con el modelo ausente paraba el daemon y luego no podía arrancarlo. Ahora comprueba el modelo primero.
 - **Avisos de las consultas fuera del JSON:** los avisos de las consultas no llegaban a `warnings` del envelope.
+- **stderr distinto con `--json` en el ciclo de vida:** `cleanup`, `self uninstall`, `setup`, `self install`, `self update` y `doctor` escribían cosas distintas por stderr con y sin `--json`. Ahora es el mismo en ambos modos.
+- **`cleanup` cerraba con `✓` con rutas sin borrar:** ahora marca la etapa incompleta, avisa por cada ruta y sale con error.
+- **`self uninstall` salía con 0 con rutas sin borrar:** ahora sale con error y publica `failed`.
+- **La pregunta de `self update` contaba en el total:** ahora queda fuera del reloj.
+- **Avisos sueltos tras el cierre de `self install` y `self update`:** ahora cuelgan de su etapa.
+- **`self update` abortaba a los 60 s una descarga de modelos en curso:** el traspaso solo se corta si el binario nuevo deja de dar señales de vida.
+- **El error de `setup_failed` salía dos veces en `self update`:** ahora sale una vez.
 
 ### Notas de release
 
@@ -192,6 +207,13 @@ Cambios incompatibles de los envelopes y de la salida de los comandos `speech`.
 - **`DAEMON_SCHEMA_VERSION` pasa a `"8"`:** `/transcribe` es un stream NDJSON, no una respuesta JSON única. Tras actualizar hay que ejecutar `daemon restart`: la CLI rechaza un daemon de otra versión con `reason` `daemon_version_mismatch` (exit 5).
 - **`status` nuevos:** `voice clone` emite `cloned` y `cancelled`, `voice remove` emite `removed` y `cancelled`, `translate` emite `translated`, `daemon start` emite `started` y `already_running`, y `daemon restart` emite `restarted`. Un consumidor con vocabulario cerrado debe adoptarlos.
 - **Etiqueta `Traducción:` en el stdout de `translate` sin `--json`:** la salida es `Traducción: <texto>`, no el valor desnudo; la vía de máquina es `--json`.
+- **`setup` sin descargas responde `already_provisioned`:** con todos los modelos presentes ya no devuelve `completed`. Sus `status` son `completed`, `already_provisioned` y `cancelled`.
+- **`self update --check` no lleva `status`:** es una consulta; muestra `Versión instalada:` y `Versión disponible:` sin cabecera. `self update` ya al día responde `already_up_to_date`.
+- **`reason` nuevo `cleanup_incomplete` (exit 23):** `cleanup` con rutas sin borrar conserva `status: cleanup_complete` y el `reason` indica que el éxito es parcial. `cleanup --json` publica `failed` y `kept`.
+- **`reason` nuevo `uninstall_incomplete` (exit 24):** `self uninstall` con rutas sin borrar; `program_dir_kept` tiene prioridad. `self uninstall --json` publica `failed`.
+- **`doctor --repair --json` lleva `status: "repaired"`;** `doctor` a secas sigue sin `status`.
+- **`self install --json` lleva `modify_path` en `context`.**
+- **Cierre de simulación:** pasa a `Simulación completada · no se ha borrado nada`. Las operaciones que no borran cancelan con `Cancelado.`.
 
 ## [0.47.0] — 2026-11-26
 

@@ -12016,7 +12016,20 @@ mod parity {
 
     /// Nombre de columna y su identificador de catálogo, para las etapas que
     /// recorren los comandos de este módulo.
-    const STAGE_NAMES: [(&str, &str); 12] = [
+    const STAGE_NAMES: [(&str, &str); 25] = [
+        ("Limpieza de datos", "cleaning"),
+        ("Estado", "state"),
+        ("Reversión del PATH", "path"),
+        ("Integración en el PATH", "path"),
+        ("Programa", "program"),
+        ("Bloqueos", "locks"),
+        ("Reparación", "repairing"),
+        ("Purga", "purging"),
+        ("Descarga", "downloading"),
+        ("Verificación", "verifying"),
+        ("Reemplazo", "replacing"),
+        ("Copia", "copying"),
+        ("Recibo", "receipt"),
         ("Grabación", "capturing"),
         ("Clonación", "cloning"),
         ("Arranque", "starting"),
@@ -12212,6 +12225,36 @@ mod parity {
         assert_eq!(recorded[0].stage, "stopping", "{envelope}");
         assert_eq!(recorded[0].symbol, '✗', "{envelope}");
         assert_stage_parity(&stderr, &envelope);
+    }
+
+    /// `cleanup --model --yes` sin daemon es de etapa única: el JSON lleva exactamente
+    /// `cleaning` y stderr no pinta línea numerada.
+    #[test]
+    fn cleanup_model_yes_stderr_stages_match_the_json_stages() {
+        let (sandbox, envs) = contract_sandbox("parity-cleanup");
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, stdout, stderr) = run_capture(&["--json", "cleanup", "--model", "--yes"], &envs);
+        assert_eq!(code, 0, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        let recorded = recorded_stages(&envelope);
+        assert_eq!(recorded.len(), 1, "{envelope}");
+        assert_eq!(recorded[0].stage, "cleaning", "{envelope}");
+        assert_stage_parity(&stderr, &envelope);
+        drop(sandbox);
+    }
+
+    /// `doctor --repair` es de etapa única: el JSON lleva exactamente `repairing`.
+    #[test]
+    fn doctor_repair_stderr_stages_match_the_json_stages() {
+        let (sandbox, envs) = contract_sandbox("parity-doctor-repair");
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (_code, stdout, stderr) = run_capture(&["--json", "doctor", "--repair"], &envs);
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        let recorded = recorded_stages(&envelope);
+        assert_eq!(recorded.len(), 1, "{envelope}");
+        assert_eq!(recorded[0].stage, "repairing", "{envelope}");
+        assert_stage_parity(&stderr, &envelope);
+        drop(sandbox);
     }
 
     /// `speech denoise --dry-run` no abre etapas: ni stderr las pinta ni el JSON las lleva.
