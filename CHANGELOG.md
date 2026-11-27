@@ -7,6 +7,7 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 
 ## Tabla de contenidos
 
+- [No publicado](#no-publicado)
 - [0.47.0 — 2026-11-26](#0470--2026-11-26)
 - [0.46.1 — 2026-11-25](#0461--2026-11-25)
 - [0.46.0 — 2026-11-24](#0460--2026-11-24)
@@ -141,6 +142,40 @@ y el proyecto adhiere a [Versionado Semántico](https://semver.org/lang/es/).
 - [0.2.0 — 2026-07-08](#020--2026-07-08)
 - [0.1.1 — 2026-07-07](#011--2026-07-07)
 - [0.1.0 — 2026-07-03](#010--2026-07-03)
+
+## [No publicado]
+
+Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué paso iba el comando ni dónde se iba el tiempo, `--json` cambiaba lo que se veía por stderr, el JSON sabía menos que el texto, la síntesis se daba por terminada con el primer audio aunque siguiera sintetizando y Ctrl+C detenía el daemon del usuario. Ahora los ocho comandos `speech` muestran su recorrido por fases con una duración por etapa, el texto y el JSON salen de un mismo registro de ejecución y Ctrl+C deja la salida honesta sin tocar un daemon ajeno.
+
+### Cambiado
+
+- **Salida por fases de los comandos `speech`:** `say`, `synthesize`, `transcribe`, `dub`, `denoise`, `play`, `list` y `remove` abren con una cabecera y, cuando el recorrido tiene varias fases, un mapa de fases (`Texto → Voz → Guardado`). Cada fase lleva su título y cada etapa su número `[n/N]`, su duración y su dato; los resultados cuelgan bajo su etapa con `│`, las etapas omitidas se marcan `○` y las fallidas `✗`. Tras un separador, el cierre da el total y el desglose por fase.
+- **`--json` solo cambia stdout:** la cabecera, las etapas, los avisos y el cierre salen por stderr igual con y sin `--json`, y también el `Error:` y la `Solución:` de un error. Con stdout redirigido, `transcribe` y `synthesize` escriben su resultado etiquetado (`Transcripción: …`, `Audio: …`).
+- **Envelope JSON común:** todo envelope añade `context`, `total_ms`, `stages` (identificador, fase, inicio y fin de cada etapa, y si falló, se interrumpió, se omitió o fue transitoria) y `warnings`, y sale exactamente uno por proceso. El envelope de error conserva `error` y `reason` y suma lo mismo, de modo que una etapa fallida queda registrada.
+- **Etapa `Síntesis` con su duración real:** se cierra cuando la síntesis termina de verdad, no con el primer audio. `Reproducción` se abre en paralelo en cuanto suena la primera muestra, anota los cortes en vivo y se cierra al terminar el audio.
+- **`/synthesize` del daemon emite el evento `translation`:** justo después de traducir y antes de sintetizar, solo si los idiomas difieren, con las mismas claves que en `/dub`. El resto del protocolo no cambia.
+- **`denoise --json` emite un único envelope** con `status`, `files` y `summary`, en lugar de una línea JSON por archivo y un resumen. Cada archivo es una etapa numerada `[i/N]`.
+- **Ctrl+C:** durante una etapa deja `✗ <Etapa> <duración> · interrumpido`, el separador e `Interrumpido en <t>`; antes de cualquier etapa deja `Interrumpido; no se ha modificado nada.`. Sale con 130 y, con `--json`, emite el envelope de error con `reason` `interrupted`.
+
+### Corregido
+
+- **Línea viva congelada con `--json`:** con `--json` y terminal, la línea `● Grabando` quedaba pegada en pantalla al pulsar Enter. Ahora se borra igual que sin `--json`.
+- **Dos medidas del primer audio:** la etapa de síntesis medía un fragmento más que el `first_audio_ms` del JSON. Ahora es una sola medida, desde que abre `Síntesis` hasta la primera muestra en el dispositivo, igual en la terminal y en el JSON.
+- **`Guardando…` pegado al JSON:** `speech synthesize --json` con terminal dejaba `Guardando… 0,0 s` en la misma línea que el envelope. Ahora `Guardado` se cierra antes de emitirlo.
+- **Ctrl+C que mataba el daemon del usuario:** interrumpir un comando cliente terminaba el daemon registrado, aunque lo hubiera arrancado otro, y la salida quedaba entre el código 130 y el 5. Ahora solo se detiene el daemon que lanzó el propio proceso, y la salida es siempre 130.
+
+### Notas de release
+
+Cambios incompatibles de los envelopes y de la salida de los comandos `speech`.
+
+- **`CLI_SCHEMA_VERSION` pasa a `"7"`:** el envelope de la CLI gana las claves comunes y los `status` nuevos descritos arriba.
+- **`status` de `synthesize` y de `transcribe`:** `success` pasa a `synthesized`, y `transcribe` emite `transcribed`. El plugin EvolutiveX-Agents debe adoptar `synthesized`.
+- **Etiqueta obligatoria en el stdout de `transcribe` y `synthesize` sin `--json`:** la salida es `Transcripción: <texto>` y `Audio: <ruta>`, no el valor desnudo. Un pipe que lea el valor sin etiqueta deja de funcionar; la vía de máquina es `--json`.
+- **`denoise --json` pasa de JSONL a un envelope único.**
+- **`--json` ya no suprime la cabecera ni el cierre en stderr.**
+- **`--json` con `2>&1` no está soportado:** el stderr de texto y el envelope se mezclarían en el mismo flujo.
+- **PowerShell 5.1 trata las líneas de stderr como errores** cuando se redirigen o se capturan; use `--json` y lea solo stdout.
+- **`reason` nuevo `interrupted`** (exit 130), emitido en el envelope de error cuando Ctrl+C interrumpe un comando.
 
 ## [0.47.0] — 2026-11-26
 
