@@ -856,6 +856,16 @@ async fn synthesize_handler(
             }
         };
 
+        // Solo si los idiomas difieren hay una traducción que mostrar: el evento
+        // sale en cuanto traduce y antes de empezar a sintetizar.
+        if source_iso != target_iso {
+            emit_ndjson(
+                &tx,
+                json!({"event": "translation", "text": text_final.as_str()}),
+            )
+            .await;
+        }
+
         // Perfil de voz: referencia con su identidad si la voz la tiene; sin ella,
         // el motor falla como `voice_not_found`.
         let reference = match state.voice_store.resolve(&voice_owned) {

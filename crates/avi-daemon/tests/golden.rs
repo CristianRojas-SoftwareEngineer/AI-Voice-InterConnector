@@ -2105,6 +2105,64 @@ async fn synthesize_events_without_engine(
         .collect()
 }
 
+/// Con idiomas iguales no hay traducción: `/synthesize` no emite `translation`.
+#[tokio::test]
+async fn synthesize_without_translation_emits_no_translation_event() {
+    let events =
+        synthesize_events_without_engine("avi_golden_no_translation", "default", true).await;
+    assert!(
+        events.iter().all(|e| e["event"] != "translation"),
+        "{events:?}"
+    );
+}
+
+/// `/synthesize` con idiomas distintos emite `translation` justo después de
+/// traducir y antes del primer `audio`. El motor de síntesis apunta a un
+/// binario inexistente, así que el stream termina con error tras el texto y la
+/// prueba no necesita sintetizar nada.
+#[cfg(feature = "native-translation")]
+#[tokio::test]
+#[ignore = "requiere los modelos de traducción"]
+async fn synthesize_emits_translation_before_audio() {
+    let mut state = DaemonState::with_stores(
+        VoiceStore::at(process_root().join("synthesize-translation/voices")),
+        SpeechStore::at(process_root().join("synthesize-translation/speech")),
+    )
+    .expect("requiere modelos provisionados para cargar los motores del daemon");
+    #[allow(clippy::disallowed_methods)]
+    let missing = std::env::temp_dir().join("avi_golden_nonexistent_engine");
+    state.tts_engine.binary_path = Some(missing.clone());
+    state.tts_engine.base_model_dir = Some(missing);
+    prepare_shared_env();
+    let (status, bytes) = send_to(
+        Arc::new(state),
+        post_json(
+            "/synthesize",
+            serde_json::json!({
+                "text": "Hola, mi nombre es Cristian.", "voice": "default",
+                "source_language": "es", "target_language": "en"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = ndjson_events(&bytes);
+    assert_events_carry_no_human_text(&events);
+    let translation = events
+        .iter()
+        .position(|e| e["event"] == "translation")
+        .expect("evento translation");
+    assert!(
+        events[translation]["text"]
+            .as_str()
+            .is_some_and(|t| !t.is_empty()),
+        "{events:?}"
+    );
+    if let Some(first_audio) = events.iter().position(|e| e["event"] == "audio") {
+        assert!(translation < first_audio, "{events:?}");
+    }
+}
+
 /// Una voz sin el modelo Base provisionado responde `model_missing`: el motor
 /// falla antes de lanzar nada porque toda síntesis exige el Base.
 #[tokio::test]
