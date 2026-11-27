@@ -2227,14 +2227,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             // El indicador nace antes de las validaciones, y el patrón de
             // bloque externo garantiza que se cierra en cualquier camino de
             // salida: éxito, error o cancelación.
-            // Con archivo y sin limpieza de ruido la clonación es la única etapa
-            // de trabajo: no deja su línea y queda solo el cierre. Con micrófono
-            // o con limpieza hay más de una etapa y cada una queda fija.
-            let progress = if mic || denoise {
-                PhaseProgress::new()
-            } else {
-                PhaseProgress::new().single_stage()
-            };
+            let progress = PhaseProgress::new();
             // Patrón de bloque externo: el trabajo que puede fallar vive en un
             // bloque async y el cierre del indicador —que consume el indicador—
             // se hace fuera, sobre el resultado ya obtenido. Así ningún `?`
@@ -2330,14 +2323,28 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                         format!("La voz '{}' ya existe.", name),
                     ));
                 }
+                // La etapa transitoria de validación no pertenece al recorrido:
+                // se descarta antes de declararlo, para que una cancelación
+                // posterior no arrastre etapas.
+                progress.discard_stage();
+                avi_term::report::declare(Pipeline::new(vec![
+                    input_phase(mic, denoise),
+                    phase_spec("voice", "Voz", "Voz", vec![&stage::CLONING, &stage::SAVING]),
+                ]));
                 // La cabecera va tras validar la invocación y el almacén, y
                 // antes de la confirmación y de cualquier recurso.
-                avi_term::line::context(&format!(
-                    "Clonación de la voz {} · {} · {}",
-                    name,
-                    audio_source_label(speech_reference.as_deref(), mic_max),
-                    route_label(use_daemon)
-                ));
+                let mut pairs = vec![("voice", text_value(name.as_str()))];
+                pairs.extend(audio_source_context(speech_reference.as_deref(), mic_max));
+                pairs.push(("route", text_value(route_label(use_daemon))));
+                avi_term::line::context_with(
+                    &format!(
+                        "Clonación de la voz {} · {} · {}",
+                        name,
+                        audio_source_label(speech_reference.as_deref(), mic_max),
+                        route_label(use_daemon)
+                    ),
+                    &pairs,
+                );
                 // Sobrescribir la voz se lleva también sus locuciones, grabadas
                 // con el contenido anterior: si las hay, se pide la confirmación
                 // destructiva antes de capturar o clonar, en las dos rutas.
@@ -2371,6 +2378,11 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     )
                     .await?;
                     truncate_clone_pcm(&mut pcm, capture_rate);
+                    if let Some(warning) =
+                        short_reference_warning(pcm.len() as f64 / f64::from(capture_rate))
+                    {
+                        avi_term::line::warn(warning);
+                    }
                     let wav = avi_audio::encode_pcm_mono_wav(&pcm, capture_rate)
                         .map_err(|e| CliError::new(ExitCode::Error, "io_error", e.to_string()))?;
                     if use_daemon {
@@ -2391,25 +2403,30 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                     }
                 } else {
                     let reference = speech_reference.as_deref().expect("clap exige una fuente");
-                    (Some(PathBuf::from(reference)), None, None)
+                    // `Lectura` mide la duración de la referencia con la cabecera
+                    // del WAV y, por daemon, lee también sus bytes. La etapa se
+                    // cierra antes del aviso para que su línea salga primero.
+                    progress.phase(&stage::READING);
+                    let secs = avi_audio::wav_duration_secs(std::path::Path::new(reference));
+                    let bytes = if use_daemon {
+                        Some(std::fs::read(reference).map_err(|e| {
+                            CliError::new(
+                                ExitCode::NotFound,
+                                "audio_not_found",
+                                format!("El audio de referencia '{}' no existe: {}", reference, e),
+                            )
+                        })?)
+                    } else {
+                        None
+                    };
+                    progress.end_stage();
+                    if let Some(warning) = secs.and_then(short_reference_warning) {
+                        avi_term::line::warn(warning);
+                    }
+                    (Some(PathBuf::from(reference)), bytes, None)
                 };
                 if use_daemon {
-                    let audio_bytes = match daemon_audio {
-                        Some(bytes) => bytes,
-                        None => {
-                            let reference = speech_reference.as_deref().expect("fuente WAV");
-                            std::fs::read(reference).map_err(|e| {
-                                CliError::new(
-                                    ExitCode::NotFound,
-                                    "audio_not_found",
-                                    format!(
-                                        "El audio de referencia '{}' no existe: {}",
-                                        reference, e
-                                    ),
-                                )
-                            })?
-                        }
-                    };
+                    let audio_bytes = daemon_audio.expect("la ruta daemon siempre tiene el WAV");
                     let (cloned_name, cloned_speech, precomputed, removed_speech) =
                         clone_via_daemon(
                             &client,
@@ -2524,15 +2541,17 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                 }
             };
             let Some((cloned_name, saved_qvoice, precomputed, removed_speech)) = outcome else {
-                progress.fail();
-                // `confirm::confirm` ya escribió «Cancelado.» por stderr.
-                if json_mode {
-                    emit_raw_json(json!({
+                // La pregunta va antes de abrir ninguna etapa: no hay nada que
+                // registrar como fallido y la cancelación sale sin cuerpo.
+                progress.close();
+                finish_cancelled(
+                    json_mode,
+                    json!({
                         "status": "cancelled",
                         "name": name.to_lowercase(),
                         "removed_speech": Vec::<String>::new(),
-                    }));
-                }
+                    }),
+                );
                 return Ok(());
             };
             let mut extras = Vec::new();
@@ -2552,6 +2571,7 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
             // persistente, así que `precomputed` es `false` en esa vía.
             if json_mode {
                 emit_raw_json(json!({
+                    "status": "cloned",
                     "name": cloned_name,
                     "speech": saved_qvoice.to_string_lossy().to_string(),
                     "precomputed": precomputed,
@@ -2836,6 +2856,20 @@ fn ensure_pcm_within_limit(
 }
 
 /// Limita el PCM del micrófono a 30 segundos a `sample_rate` Hz sin rellenar las capturas cortas.
+/// Aviso de referencia de clonado más corta que el mínimo recomendado, o `None`
+/// si alcanza el mínimo. La duración se trunca a una décima, con coma decimal,
+/// para no redondear hacia arriba una referencia que no llega al mínimo.
+fn short_reference_warning(secs: f64) -> Option<String> {
+    if secs >= avi_core::RECOMMENDED_CLONE_REFERENCE_SECS as f64 {
+        return None;
+    }
+    let shown = format!("{:.1}", (secs * 10.0).floor() / 10.0).replace('.', ",");
+    Some(format!(
+        "La referencia dura {shown} s; se recomienda al menos {} s de habla continua para una huella de voz fiable",
+        avi_core::RECOMMENDED_CLONE_REFERENCE_SECS
+    ))
+}
+
 fn truncate_clone_pcm(pcm: &mut Vec<i16>, sample_rate: u32) {
     pcm.truncate((avi_core::MAX_CLONE_REFERENCE_SECS * u64::from(sample_rate)) as usize);
 }
@@ -7283,7 +7317,7 @@ fn process_stream_line(line: &str) -> Result<Option<Value>, CliError> {
 /// `SYNTHESIZING` con distinto texto activo (esperar turno, calentar el motor,
 /// cargar la voz o sintetizar), de modo que la espera comparte el reloj de la
 /// síntesis; `denoise_queue` se conserva; `denoise` → `DENOISING`, `clone` →
-/// `CLONING`, `transcribe` → `TRANSCRIBING`, `translate` → `TRANSLATING`; el
+/// `CLONING`, `save` → `SAVING`, `transcribe` → `TRANSCRIBING`, `translate` → `TRANSLATING`; el
 /// evento `started` → `STARTED`.
 fn stream_event_phase(ev: &Value) -> Option<(&'static Stage, &'static str)> {
     let with_active = |stage: &'static Stage| Some((stage, stage.active));
@@ -7299,6 +7333,7 @@ fn stream_event_phase(ev: &Value) -> Option<(&'static Stage, &'static str)> {
             Some("denoise_queue") => with_active(&stage::DENOISE_QUEUE),
             Some("denoise") => with_active(&stage::DENOISING),
             Some("clone") => with_active(&stage::CLONING),
+            Some("save") => with_active(&stage::SAVING),
             Some("transcribe") => with_active(&stage::TRANSCRIBING),
             Some("translate") => with_active(&stage::TRANSLATING),
             _ => None,
@@ -7520,7 +7555,9 @@ fn confirm_voice_replacement(
     let mut input = stdin.lock();
     // La espera de la respuesta no cuenta como trabajo del comando.
     avi_term::report::begin_question();
-    let decision = lifecycle::confirm::confirm(
+    // La cancelación la pinta el cierre especial del llamador, detrás del
+    // separador, no el texto de `confirm`.
+    let decision = lifecycle::confirm::confirm_without_cancel_notice(
         &lifecycle::confirm::Confirmation {
             kind: lifecycle::confirm::Kind::Destructive,
             question: &question,
@@ -7988,6 +8025,29 @@ mod tests {
         avi_term::report::end_question(false);
         finish_cancelled(false, json!({ "status": "cancelled" }));
         assert!(avi_term::report::snapshot().stages.is_empty());
+    }
+
+    /// El aviso de referencia corta trunca a una décima con coma decimal y no
+    /// aparece desde el mínimo recomendado; la medida del micrófono es
+    /// muestras entre tasa de captura.
+    #[test]
+    fn short_reference_warning_truncates_and_respects_the_minimum() {
+        let text = |shown: &str| {
+            format!("La referencia dura {shown} s; se recomienda al menos 5 s de habla continua para una huella de voz fiable")
+        };
+        assert_eq!(short_reference_warning(2.96), Some(text("2,9")));
+        assert_eq!(short_reference_warning(4.96), Some(text("4,9")));
+        assert_eq!(short_reference_warning(5.0), None);
+        assert_eq!(short_reference_warning(6.0), None);
+        // Micrófono: 3 s a 48 kHz y 5 s a 24 kHz.
+        assert_eq!(
+            short_reference_warning(144_000_f64 / f64::from(48_000u32)),
+            Some(text("3,0"))
+        );
+        assert_eq!(
+            short_reference_warning(120_000_f64 / f64::from(24_000u32)),
+            None
+        );
     }
 
     #[test]
@@ -9187,6 +9247,7 @@ mod tests {
             ),
             ("denoise", &stage::DENOISING, stage::DENOISING.active),
             ("clone", &stage::CLONING, stage::CLONING.active),
+            ("save", &stage::SAVING, stage::SAVING.active),
             (
                 "transcribe",
                 &stage::TRANSCRIBING,

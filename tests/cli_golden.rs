@@ -5897,10 +5897,21 @@ mod tts {
     }
 
     /// El envelope de `voice clone` es idéntico en la vía local y en la del
-    /// daemon: las claves propias del comando (`name`, `speech`, `precomputed` y
-    /// `removed_speech`) más `schema_version` y las comunes del envelope (`context`,
-    /// `stages`, `total_ms` y `warnings`).
+    /// daemon: las claves propias del comando (`status`, `name`, `speech`,
+    /// `precomputed` y `removed_speech`) más `schema_version` y las comunes del
+    /// envelope (`context`, `stages`, `total_ms` y `warnings`). Las pruebas de
+    /// recursos clonan `parakeet_sample_16k.wav` (2,96 s), que es más corta que el
+    /// mínimo recomendado: `warnings` lleva el aviso de referencia corta.
     fn assert_clone_envelope_keys(actual: &Value) {
+        assert_eq!(actual["status"], "cloned", "{actual}");
+        let warnings = actual["warnings"].as_array().expect("warnings es lista");
+        assert_eq!(warnings.len(), 1, "{actual}");
+        assert!(
+            warnings[0]
+                .as_str()
+                .is_some_and(|w| w.starts_with("La referencia dura 2,9 s")),
+            "{actual}"
+        );
         let mut keys: Vec<&str> = actual
             .as_object()
             .expect("el envelope de clone es un objeto")
@@ -5918,6 +5929,7 @@ mod tts {
                 "schema_version",
                 "speech",
                 "stages",
+                "status",
                 "total_ms",
                 "warnings"
             ],
@@ -10891,6 +10903,223 @@ fn transcribe_daemon_empty_transcript_leaves_a_failed_stage() {
         .find(|stage| stage["stage"] == "transcribing")
         .unwrap_or_else(|| panic!("falta la etapa de transcripción: {envelope}"));
     assert_eq!(transcribing["failed"], true, "{envelope}");
+}
+
+/// Eventos de un `/voices/clone` que termina bien: el stream anuncia el clonado
+/// y el guardado y cierra con el `result`.
+fn clone_ok_events() -> Vec<Value> {
+    vec![
+        serde_json::json!({ "event": "started", "voice": "t028-clone" }),
+        serde_json::json!({ "event": "progress", "stage": "clone" }),
+        serde_json::json!({ "event": "progress", "stage": "save" }),
+        serde_json::json!({
+            "event": "result",
+            "name": "t028-clone",
+            "speech": "voices/t028-clone/reference.qvoice",
+            "precomputed": true,
+            "removed_speech": [],
+        }),
+    ]
+}
+
+/// Ejecuta `voice clone --daemon` sobre un WAV de silencio de `secs` segundos
+/// contra un daemon falso que emite `events` como stream NDJSON, con stdout
+/// redirigido, y devuelve (código, stdout, stderr normalizado). Con `json`
+/// añade `--json`.
+fn clone_against_fake_daemon(
+    tag: &str,
+    json: bool,
+    secs: u32,
+    events: Vec<Value>,
+    extra: &[&str],
+) -> (i32, String, String) {
+    let (sandbox, envs) = contract_sandbox(tag);
+    let dir = sandbox.path();
+    let fake = FakeDaemon::start_events(events);
+    fake.publish_in(&dir.join("data"));
+    let wav = dir.join("referencia.wav");
+    write_silent_wav(&wav, secs);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let mut args = vec![
+        "voice",
+        "clone",
+        "--daemon",
+        "--name",
+        "t028-clone",
+        "--speech-reference",
+        wav.to_str().expect("ruta UTF-8"),
+    ];
+    args.extend_from_slice(extra);
+    if json {
+        args.insert(0, "--json");
+    }
+    let (code, stdout, stderr) = run_capture(&args, &envs);
+    (code, stdout, normalize_times(&stderr, dir))
+}
+
+/// `voice clone` por daemon con una referencia de 3 s pinta `Entrada → Voz`,
+/// avisa de la referencia corta bajo `Lectura` y emite `status: "cloned"` con
+/// el contexto y las etapas; su stderr es el mismo con y sin `--json`.
+#[test]
+fn voice_clone_daemon_renders_phases_and_warns_on_a_short_reference() {
+    let events = clone_ok_events();
+    let (code, stdout, text_stderr) =
+        clone_against_fake_daemon("clone-phases-text", false, 3, events.clone(), &[]);
+    assert_eq!(code, 0, "{text_stderr}");
+    eprintln!("stderr de voice clone --daemon con 3 s:\n{text_stderr}");
+    let lines: Vec<&str> = text_stderr.lines().collect();
+    assert_eq!(
+        lines[0], "Clonación de la voz t028-clone · archivo referencia.wav · daemon",
+        "{text_stderr}"
+    );
+    assert_eq!(lines[1], "Entrada → Voz", "{text_stderr}");
+    assert_eq!(lines[2], "", "{text_stderr}");
+    for expected in [
+        "Entrada",
+        "  [1/3] ✓ Lectura",
+        "Voz",
+        "  [2/3] ✓ Clonación",
+        "  [3/3] ✓ Guardado",
+        "✓ Voz t028-clone clonada en <t>",
+        "  Entrada <t> · Voz <t>",
+    ] {
+        assert!(
+            lines.iter().any(|line| line.starts_with(expected)),
+            "falta `{expected}` en:\n{text_stderr}"
+        );
+    }
+    // El aviso sale debajo de la línea terminada de `Lectura`; la normalización
+    // de tiempos sustituye por `<t>` las duraciones `3,0 s` y `5 s`.
+    let reading = lines
+        .iter()
+        .position(|line| line.starts_with("  [1/3] ✓ Lectura"))
+        .expect("etapa Lectura");
+    assert!(
+        lines[reading + 1].contains("⚠ La referencia dura <t>; se recomienda al menos <t> de habla continua para una huella de voz fiable."),
+        "{text_stderr}"
+    );
+    assert!(stdout.is_empty(), "sin --json no hay stdout: {stdout}");
+
+    let (code, json_stdout, json_stderr) =
+        clone_against_fake_daemon("clone-phases-json", true, 3, events, &[]);
+    assert_eq!(code, 0, "{json_stderr}");
+    assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
+    let envelope: Value = serde_json::from_str(json_stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{json_stdout}"));
+    assert_eq!(envelope["status"], "cloned", "{envelope}");
+    assert_eq!(envelope["name"], "t028-clone", "{envelope}");
+    assert_eq!(envelope["precomputed"], true, "{envelope}");
+    assert_eq!(envelope["context"]["voice"], "t028-clone", "{envelope}");
+    assert_eq!(envelope["context"]["input"], "file", "{envelope}");
+    assert_eq!(envelope["context"]["file"], "referencia.wav", "{envelope}");
+    assert_eq!(envelope["context"]["route"], "daemon", "{envelope}");
+    assert!(envelope["total_ms"].is_u64(), "{envelope}");
+    let warnings = envelope["warnings"].as_array().expect("warnings es lista");
+    assert_eq!(warnings.len(), 1, "{envelope}");
+    assert!(
+        warnings[0]
+            .as_str()
+            .is_some_and(|w| w.starts_with("La referencia dura 3,0 s")),
+        "{envelope}"
+    );
+    let stages: Vec<(&str, &str)> = envelope["stages"]
+        .as_array()
+        .expect("stages es una lista")
+        .iter()
+        .filter(|stage| stage["transient"] != true)
+        .map(|stage| {
+            (
+                stage["stage"].as_str().expect("stage"),
+                stage["phase"].as_str().expect("phase"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        stages,
+        [
+            ("reading", "input"),
+            ("cloning", "voice"),
+            ("saving", "voice")
+        ],
+        "{envelope}"
+    );
+}
+
+/// Una referencia de 6 s alcanza el mínimo recomendado: no hay aviso ni en
+/// stderr ni en `warnings`.
+#[test]
+fn voice_clone_daemon_does_not_warn_with_a_long_enough_reference() {
+    let (code, stdout, stderr) =
+        clone_against_fake_daemon("clone-long-ref", true, 6, clone_ok_events(), &[]);
+    assert_eq!(code, 0, "{stderr}");
+    assert!(!stderr.contains("⚠"), "{stderr}");
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("envelope");
+    assert_eq!(envelope["warnings"], serde_json::json!([]), "{envelope}");
+}
+
+/// Con `--denoise`, `voice clone` por daemon declara y pinta `Limpieza` como
+/// segunda etapa de `Entrada`, igual que en la vía local.
+#[cfg(feature = "native-denoise")]
+#[test]
+fn voice_clone_daemon_with_denoise_renders_the_cleaning_stage() {
+    let events = vec![
+        serde_json::json!({ "event": "started", "voice": "t028-clone" }),
+        serde_json::json!({ "event": "progress", "stage": "denoise" }),
+        serde_json::json!({ "event": "progress", "stage": "clone" }),
+        serde_json::json!({ "event": "progress", "stage": "save" }),
+        serde_json::json!({
+            "event": "result",
+            "name": "t028-clone",
+            "speech": "voices/t028-clone/reference.qvoice",
+            "precomputed": true,
+            "removed_speech": [],
+        }),
+    ];
+    let (code, _stdout, stderr) =
+        clone_against_fake_daemon("clone-denoise", false, 6, events, &["--denoise"]);
+    assert_eq!(code, 0, "{stderr}");
+    for expected in [
+        "  [1/4] ✓ Lectura",
+        "  [2/4] ✓ Limpieza",
+        "  [3/4] ✓ Clonación",
+        "  [4/4] ✓ Guardado",
+    ] {
+        assert!(
+            stderr.lines().any(|line| line.starts_with(expected)),
+            "falta `{expected}` en:\n{stderr}"
+        );
+    }
+}
+
+/// Un error dentro del stream deja `✗` en la etapa viva, el separador y el
+/// error, y el stderr es el mismo con y sin `--json`.
+#[test]
+fn voice_clone_daemon_stream_error_leaves_a_failed_stage() {
+    let events = vec![
+        serde_json::json!({ "event": "started", "voice": "t028-clone" }),
+        serde_json::json!({ "event": "progress", "stage": "clone" }),
+        serde_json::json!({
+            "event": "error",
+            "reason": "voice_clone_failed",
+            "message": "No se pudo clonar la voz.",
+        }),
+    ];
+    let (code, _stdout, text_stderr) =
+        clone_against_fake_daemon("clone-error-text", false, 6, events.clone(), &[]);
+    assert_eq!(code, 1, "{text_stderr}");
+    let failed = text_stderr
+        .find("✗ Clonación")
+        .unwrap_or_else(|| panic!("falta `✗ Clonación`:\n{text_stderr}"));
+    let rule = text_stderr.find(&"─".repeat(50)).expect("separador");
+    let error = text_stderr.find("Error:").expect("error");
+    assert!(failed < rule && rule < error, "{text_stderr}");
+
+    let (code, json_stdout, json_stderr) =
+        clone_against_fake_daemon("clone-error-json", true, 6, events, &[]);
+    assert_eq!(code, 1, "{json_stderr}");
+    assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
+    let envelope: Value = serde_json::from_str(json_stdout.trim()).expect("envelope");
+    assert_eq!(envelope["reason"], "voice_clone_failed", "{envelope}");
 }
 
 /// Ejecuta `speech say --daemon` contra un daemon falso que traduce y sintetiza
