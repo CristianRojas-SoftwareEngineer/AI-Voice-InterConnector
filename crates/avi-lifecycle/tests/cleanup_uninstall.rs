@@ -342,10 +342,11 @@ fn dry_run_lists_paths_without_touching_disk() {
     let planned_removed = paths(&plan);
     for path in &planned_removed {
         assert!(
-            simulated.removed.contains(path),
+            simulated.planned.contains(path),
             "la simulación anuncia {path}, que el plan tiene"
         );
     }
+    assert!(simulated.removed.is_empty(), "una simulación no borra nada");
     // Y los tamaños son los de la operación, no cero.
     assert!(
         plan.targets.iter().all(|t| t.size > 0),
@@ -437,10 +438,11 @@ fn shared_hf_cache_keeps_foreign_entries() {
     let simulated = cleanup::simulate(&roots, &options);
     for path in &planned_removed {
         assert!(
-            simulated.removed.contains(path),
+            simulated.planned.contains(path),
             "la simulación dice {path}"
         );
     }
+    assert!(simulated.removed.is_empty(), "una simulación no borra nada");
 
     // Y la ejecución coincide con el plan bajo raíz compartida.
     let real = runtime()
@@ -1082,12 +1084,13 @@ fn uninstall_dry_run_touches_nothing() {
     assert_eq!(sandbox.snapshot(), before, "no se modifica el disco");
     assert!(
         outcome
-            .removed
+            .planned
             .iter()
             .any(|r| r == &sandbox.program_dir.display().to_string()),
         "y el programa aparece en el plan: {:?}",
-        outcome.removed
+        outcome.planned
     );
+    assert!(outcome.removed.is_empty(), "una simulación no borra nada");
 }
 
 /// La reversión del `PATH` sale del recibo, no de donde esté el ejecutable (paso 7
@@ -1347,7 +1350,7 @@ fn cleanup_all_without_receipt_leaves_zero_state() {
     assert_eq!(plan.lock_files, vec![lock.clone(), gate.clone()]);
 
     let simulated = cleanup::simulate(&roots, &options);
-    assert_eq!(simulated.planned, simulated.removed);
+    assert!(simulated.removed.is_empty());
     assert_eq!(simulated.planned, listed);
 
     let outcome = runtime()

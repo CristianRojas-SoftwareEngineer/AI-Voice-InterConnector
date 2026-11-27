@@ -7,7 +7,9 @@
     "dry_run": true
   },
   "removed": [],
-  "planned": [],
+  "planned": [
+    "<sandbox>/data/voices/muestra"
+  ],
   "failed": [],
   "kept": [],
   "preserved": [],

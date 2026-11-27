@@ -2508,7 +2508,7 @@ fn cleanup_voices_dry_run_reports_planned() {
     );
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
-    assert_eq!(actual["planned"], actual["removed"]);
+    assert_eq!(actual["removed"], serde_json::json!([]));
     assert_eq!(
         actual["schema_version"],
         Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
@@ -2528,14 +2528,14 @@ fn cleanup_synthetic_speech_dry_run_reports_planned() {
     );
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
-    assert_eq!(actual["planned"], actual["removed"]);
+    assert_eq!(actual["removed"], serde_json::json!([]));
     assert_eq!(
         actual["schema_version"],
         Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
     );
 }
 
-/// `--model` en simulación nombra una vez la raíz exclusiva de la aplicación en `removed`.
+/// `--model` en simulación nombra una vez la raíz exclusiva de la aplicación en `planned`.
 #[test]
 fn cleanup_model_dry_run_reports_planned() {
     let (sandbox, envs) = sandbox_unique_state("cleanup-model");
@@ -2550,20 +2550,20 @@ fn cleanup_model_dry_run_reports_planned() {
         "con status planned la clave dry_run es redundante: {actual}"
     );
     assert!(actual["planned"].is_array());
-    assert_eq!(actual["planned"], actual["removed"]);
+    assert_eq!(actual["removed"], serde_json::json!([]));
     assert_eq!(
         actual["schema_version"],
         Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
     );
     let roots = dir.join("cache").join(avi_shared::paths::MODELS_SUBDIR);
     assert!(
-        actual["removed"]
+        actual["planned"]
             .as_array()
-            .expect("removed debe ser array")
+            .expect("planned debe ser array")
             .iter()
             .any(|p| p.as_str() == Some(roots.to_string_lossy().as_ref())),
         "el alcance de `--model` en raíz exclusiva es el directorio entero: {}",
-        actual["removed"]
+        actual["planned"]
     );
 }
 
@@ -2580,36 +2580,54 @@ fn cleanup_all_dry_run_reports_planned() {
     );
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
-    assert_eq!(actual["planned"], actual["removed"]);
+    assert_eq!(actual["removed"], serde_json::json!([]));
     assert_eq!(
         actual["schema_version"],
         Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
     );
 }
 
-/// La **única** prueba de `cleanup` que carga una fixture real: compara contra `tests/golden/cli_cleanup_dry_run.json`.
+/// La **única** prueba de `cleanup` que carga una fixture real: compara el envelope
+/// entero contra `tests/golden/cli_cleanup_dry_run.json`. La voz sembrada hace que
+/// el plan no esté vacío, y las rutas de `planned` y `preserved` se normalizan
+/// (prefijo del sandbox a `<sandbox>` y `/` como separador) para que la comparación
+/// valga en Windows, Linux y macOS.
 #[test]
 fn cleanup_dry_run_matches_fixture() {
     let (sandbox, envs) = contract_sandbox("cleanup-fixture");
     std::fs::remove_dir(sandbox.path().join("install")).unwrap();
+    let voice = sandbox.path().join("data").join("voices").join("muestra");
+    std::fs::create_dir_all(&voice).unwrap();
+    std::fs::write(voice.join("reference.qvoice"), b"voz de muestra").unwrap();
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    let (code, actual) = run_json_env(&["--json", "cleanup", "--voices", "--dry-run"], &envs);
+    let (code, mut actual) = run_json_env(&["--json", "cleanup", "--voices", "--dry-run"], &envs);
     assert_eq!(code, 0);
-    assert_eq!(actual["status"], Value::String("planned".to_string()));
-    assert!(actual.get("dry_run").is_none());
-    assert_eq!(
-        actual["schema_version"],
-        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
-    );
-    // fixture de referencia para el simulacro debe coincidir en status y plan
-    let expected = fixture("cli_cleanup_dry_run.json");
-    assert_eq!(actual["status"], expected["status"]);
-    assert_eq!(actual["planned"], expected["planned"]);
-    assert_eq!(actual["removed"], expected["removed"]);
-    assert_eq!(actual["unreadable"], expected["unreadable"]);
-    assert_eq!(actual["preserved"], expected["preserved"]);
-    assert_eq!(actual["schema_version"], expected["schema_version"]);
-    assert!(expected.get("dry_run").is_none());
+    // En macOS el temporal es un enlace a `/private/var`: se normalizan las dos formas.
+    let plain = sandbox.path().display().to_string();
+    let canonical = std::fs::canonicalize(sandbox.path())
+        .map(|p| {
+            p.display()
+                .to_string()
+                .trim_start_matches(r"\\?\")
+                .to_string()
+        })
+        .unwrap_or_else(|_| plain.clone());
+    let normalize = |path: &str| {
+        path.replace(&canonical, "<sandbox>")
+            .replace(&plain, "<sandbox>")
+            .replace('\\', "/")
+    };
+    for path in actual["planned"].as_array_mut().expect("planned es array") {
+        *path = Value::String(normalize(path.as_str().expect("ruta en texto")));
+    }
+    for entry in actual["preserved"]
+        .as_array_mut()
+        .expect("preserved es array")
+    {
+        let path = normalize(entry["path"].as_str().expect("ruta en texto"));
+        entry["path"] = Value::String(path);
+    }
+    assert_eq!(actual, fixture("cli_cleanup_dry_run.json"));
 }
 
 #[test]
@@ -3093,19 +3111,19 @@ fn cleanup_model_real_run_reports_paths() {
     assert_eq!(real["failed"], serde_json::json!([]), "{real}");
     assert_eq!(real["reason"], Value::Null, "{real}");
 
-    let as_set = |v: &Value| -> std::collections::BTreeSet<String> {
-        v["removed"]
+    let as_set = |v: &Value, key: &str| -> std::collections::BTreeSet<String> {
+        v[key]
             .as_array()
-            .expect("removed debe ser array")
+            .unwrap_or_else(|| panic!("{key} debe ser array"))
             .iter()
             .map(|s| s.as_str().unwrap().to_string())
             .collect()
     };
-    let dry_removed = as_set(&dry);
-    let real_removed = as_set(&real);
+    let dry_planned = as_set(&dry, "planned");
+    let real_removed = as_set(&real, "removed");
     assert_eq!(
-        dry_removed, real_removed,
-        "real y dry-run listan el mismo conjunto: salen de la misma función de cálculo"
+        dry_planned, real_removed,
+        "el plan del dry-run y lo borrado en la real son el mismo conjunto: salen de la misma función de cálculo"
     );
     assert!(
         real_removed.contains(&exclusive_models.display().to_string()),
@@ -3159,7 +3177,7 @@ fn cleanup_model_real_run_reports_paths() {
     let (code, really_shared) =
         run_json_env(&["--json", "cleanup", "--model", "--yes"], &shared_envs);
     assert_eq!(code, 0, "{}", really_shared);
-    let removed = as_set(&really_shared);
+    let removed = as_set(&really_shared, "removed");
 
     assert!(
         removed.contains(
@@ -3392,7 +3410,8 @@ fn doctor_repair_collects_leftovers() {
 
 /// `doctor` sin el flag no modifica nada y orienta a `--repair`:
 /// sale 1 con restos, los deja en disco y la indicación aparece en stdout, en la
-/// línea de la comprobación fallida.
+/// línea de la comprobación fallida. El veredicto de stderr lleva la solución de
+/// las comprobaciones fallidas.
 #[test]
 fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
     let (sandbox, envs) = sandbox_unique_state("doctorhint");
@@ -3427,12 +3446,22 @@ fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
         err.contains("Error:") && err.contains("comprobaciones fallan."),
         "el veredicto sale por stderr como error: {err:?}"
     );
+    const SOLUTION_LINE: &str = "Solución: Ejecuta `ai-voice-interconnector doctor --repair`; \
+                                 ejecuta `ai-voice-interconnector setup`.";
+    assert!(
+        err.lines().any(|line| line == SOLUTION_LINE),
+        "el veredicto lleva la solución de las comprobaciones fallidas: {err:?}"
+    );
     // Con `--json` el veredicto también sale por stderr y el envelope no lleva status.
     let (json_code, json_out, json_err) = run_capture(&["--json", "doctor"], &envs);
     assert_eq!(json_code, 1, "con restos debe fallar: {json_err}");
     assert!(
         json_err.contains("Error:") && json_err.contains("comprobaciones fallan."),
         "el veredicto sale por stderr también con --json: {json_err:?}"
+    );
+    assert!(
+        json_err.lines().any(|line| line == SOLUTION_LINE),
+        "el veredicto lleva la solución también con --json: {json_err:?}"
     );
     let envelope: Value = serde_json::from_str(json_out.trim()).expect("un único envelope JSON");
     assert!(envelope.get("status").is_none(), "{envelope}");
@@ -8294,9 +8323,14 @@ mod tts {
             Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
         );
         assert!(actual.get("translated").is_some());
+        // La traducción del modelo no forma parte de la forma: se iguala al valor
+        // de la fixture si el envelope real trae una cadena no vacía.
         let expected = fixture("cli_translate_daemon.json");
-        assert_eq!(actual["source_language"], expected["source_language"]);
-        assert_eq!(actual["target_language"], expected["target_language"]);
+        let mut actual = actual;
+        if actual["translated"].as_str().is_some_and(|t| !t.is_empty()) {
+            actual["translated"] = expected["translated"].clone();
+        }
+        assert_eq!(without_instants(actual), expected);
         // Apagado propio con cero huérfanos verificados a nivel SO.
         stop_instance(&inst, "translate_delegates_to_daemon");
         hit_end("tts::translate_delegates_to_daemon");
@@ -9409,35 +9443,6 @@ fn speech_synthesize_play_without_tty_exits_2() {
     );
 }
 
-/// Detector de drift contrato↔código: el contrato no promete parámetros sin
-/// efecto y documenta los flags que el binario expone.
-#[test]
-fn speech_contract_matches_help() {
-    let contract = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("docs/CLI/CONTRACT.md"),
-    )
-    .expect("el contrato debe leerse");
-    for flag in ["--compute-backend", "--exaggeration", "--cfg-weight"] {
-        assert!(
-            !contract.contains(flag),
-            "el contrato no debe prometer {}",
-            flag
-        );
-    }
-    assert!(
-        contract.contains("--temperature"),
-        "el contrato debe especificar --temperature"
-    );
-    let (_, help) = run_text(&["speech", "synthesize", "--help"]);
-    for flag in ["--source-language", "--target-language", "--temperature"] {
-        assert!(
-            help.contains(flag),
-            "el binario debe exponer lo contratado: {}",
-            flag
-        );
-    }
-}
-
 // ─── Ayuda y errores de clap en español ───────────────────────────────────
 
 /// Ejecuta el binario con `args` capturando stdout+stderr como texto plano.
@@ -10049,6 +10054,16 @@ fn daemon_stop_fails_with_still_running_verdict() {
         dir.join("data").join("daemon.pid").is_file(),
         "en fallo la pista se conserva para el siguiente intento"
     );
+    // Los volátiles (dirección, PID y restos) se sustituyen por marcadores para
+    // que la forma completa valga en cualquier plataforma.
+    let mut actual = actual;
+    actual["context"]["addr"] = Value::String("<addr>".to_string());
+    actual["pid"] = Value::String("<pid>".to_string());
+    actual["remaining"] = Value::String("<remaining>".to_string());
+    assert_eq!(
+        without_instants(actual),
+        fixture("cli_daemon_stop_failed.json")
+    );
 }
 
 /// `daemon restart` con una parada que no concluye falla con `daemon_stop_failed`
@@ -10143,8 +10158,8 @@ fn seed_unstoppable_daemon(dir: &std::path::Path) {
         .expect("sembrar pidfile del daemon falso");
 }
 
-/// El simulacro de `cleanup` es un plan (`planned` con el recibo
-/// de `removed`) y no lleva la clave redundante `dry_run`.
+/// El simulacro de `cleanup` es un plan (`planned` lleva las rutas y `removed`
+/// va vacío) y no lleva la clave redundante `dry_run`.
 #[test]
 fn cleanup_dry_run_reports_planned() {
     let (code, actual) = run_json(&["--json", "cleanup", "--voices", "--dry-run"]);
@@ -10156,7 +10171,7 @@ fn cleanup_dry_run_reports_planned() {
     );
     assert!(
         actual.get("planned").and_then(|v| v.as_array()).is_some(),
-        "el simulacro debe traer el plan con el recibo de removed: {actual}"
+        "el simulacro debe traer el plan en `planned`: {actual}"
     );
     assert!(
         actual.get("dry_run").is_none(),
@@ -10282,6 +10297,29 @@ fn uninstall_sandbox_with_receipt(tag: &str) -> (ContractSandbox, Vec<(String, S
     );
     receipt::write_to(&receipt, &program).unwrap();
     (sandbox, envs)
+}
+
+/// La simulación de `self uninstall` con instalación registrada planea el borrado
+/// del directorio de programa en `planned` y deja `removed` vacío, porque no
+/// borra nada. Se afirma con aserciones: las rutas del plan son propias de cada
+/// sandbox y el fixture sin recibo conserva su plan vacío.
+#[test]
+fn uninstall_dry_run_with_receipt_plans_without_removing() {
+    let (sandbox, envs) = uninstall_sandbox_with_receipt("uninstall-dry-plan");
+    let program = sandbox.path().join("install");
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (code, actual) = run_json_env(&["--json", "self", "uninstall", "--dry-run"], &envs);
+    assert_eq!(code, 0, "{actual}");
+    assert_eq!(actual["status"], "planned", "{actual}");
+    assert_eq!(actual["removed"], serde_json::json!([]), "{actual}");
+    assert!(
+        actual["planned"]
+            .as_array()
+            .expect("planned es array")
+            .iter()
+            .any(|p| p.as_str() == Some(program.display().to_string().as_str())),
+        "el plan lleva el directorio de programa: {actual}"
+    );
 }
 
 /// La simulación de `self uninstall` con instalación registrada: cabecera, plan

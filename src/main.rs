@@ -1604,16 +1604,22 @@ fn invocation_line() -> String {
 
 /// Escribe un error en texto por stderr: `Error:` y, si el `reason` tiene
 /// solución en la tabla, `Solución:` con `{cmd}` sustituido por la invocación
-/// real. El detalle técnico, si lo hay, va al registro de trazas. Es el único
-/// camino de escritura de `Error:` de los comandos.
+/// real. El detalle técnico, si lo hay, va al registro de trazas.
 fn print_error_text(err: &CliError) {
+    let solution = avi_core::exit_codes::solution_for(&err.reason)
+        .map(|solution| solution.replace("{cmd}", &invocation_line()));
+    print_error_text_with(err, solution.as_deref());
+}
+
+/// Escribe un error en texto por stderr con la solución dada. Es el único
+/// camino de escritura de `Error:` de los comandos; la solución explícita
+/// prevalece sobre la de la tabla de `reason`.
+fn print_error_text_with(err: &CliError, solution: Option<&str>) {
     // Tras una etapa no transitoria, el texto de error va detrás del separador.
     if avi_term::report::snapshot().has_permanent_stage() {
         avi_term::line::separator();
     }
-    let solution = avi_core::exit_codes::solution_for(&err.reason)
-        .map(|solution| solution.replace("{cmd}", &invocation_line()));
-    avi_term::line::error(&err.message, solution.as_deref());
+    avi_term::line::error(&err.message, solution);
     if let Some(detail) = &err.detail {
         tracing::debug!(reason = %err.reason, detail = %detail, "detalle técnico del error");
     }
@@ -6118,11 +6124,12 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
         println!("{}", doctor_checks_text(&report));
     }
     // El veredicto sale por stderr en los dos modos. El reporte ya está en
-    // stdout: el error se escribe sin segundo documento y se sale por veredicto.
-    // Con `--repair` el cierre de la reparación ya salió, así que un diagnóstico
-    // sin problemas no escribe nada más.
+    // stdout: el error se escribe sin segundo documento, lleva la solución de
+    // las comprobaciones fallidas y se sale por veredicto. Con `--repair` el
+    // cierre de la reparación ya salió, así que un diagnóstico sin problemas no
+    // escribe nada más.
     if failed {
-        print_error_text(&CliError::new(
+        let error = CliError::new(
             ExitCode::Error,
             "doctor_failed",
             format!(
@@ -6133,7 +6140,8 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
                     "comprobaciones fallan"
                 )
             ),
-        ));
+        );
+        print_error_text_with(&error, Some(&doctor_solution(&report)));
     } else if !repair {
         avi_term::line::ok("Diagnóstico sin problemas.");
     }
@@ -6166,6 +6174,29 @@ fn doctor_check_hint(name: &str) -> Option<&'static str> {
         "models_provisioned" => Some("ejecuta `ai-voice-interconnector setup`"),
         "pending_artifacts" => Some("ejecuta `ai-voice-interconnector doctor --repair`"),
         _ => None,
+    }
+}
+
+/// Solución del veredicto de `doctor`: las órdenes distintas de las
+/// comprobaciones fallidas que tienen indicación, en el orden del informe y
+/// unidas por «; », o la indicación genérica si ninguna la tiene.
+fn doctor_solution(report: &lifecycle::doctor::Report) -> String {
+    let mut hints: Vec<&str> = Vec::new();
+    for check in report.checks.iter().filter(|check| !check.ok) {
+        if let Some(hint) = doctor_check_hint(&check.name) {
+            if !hints.contains(&hint) {
+                hints.push(hint);
+            }
+        }
+    }
+    if hints.is_empty() {
+        return "Revisa las comprobaciones marcadas con ✗ en el diagnóstico".to_string();
+    }
+    let joined = hints.join("; ");
+    let mut chars = joined.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => joined,
     }
 }
 

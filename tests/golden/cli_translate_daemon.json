@@ -1,6 +1,19 @@
 {
   "schema_version": "7",
+  "status": "translated",
   "translated": "Hello",
   "source_language": "es",
-  "target_language": "en"
+  "target_language": "en",
+  "context": {
+    "source_language": "es",
+    "target_language": "en",
+    "route": "daemon"
+  },
+  "stages": [
+    {
+      "stage": "translating",
+      "phase": null
+    }
+  ],
+  "warnings": []
 }

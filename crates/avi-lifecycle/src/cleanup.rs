@@ -669,7 +669,7 @@ fn program_dir_exists(program_dir: &Path) -> bool {
 pub struct Outcome {
     /// `cleanup_complete`, `planned` o `cancelled`.
     pub status: &'static str,
-    /// Rutas borradas en esta ejecución, en el orden del plan.
+    /// Rutas borradas en esta ejecución, en el orden del plan; vacío en la simulación.
     pub removed: Vec<String>,
     /// Recibo del plan: lo que se borraría, en el orden del plan.
     pub planned: Vec<String>,
@@ -1005,21 +1005,18 @@ pub fn simulate(roots: &Roots, options: &Options) -> Outcome {
     let plan = plan(roots, options);
     let preview: SweepPreview = recovery::preview(roots.recovery_roots());
     let plan_lines = plan_lines(&plan, Some(&preview));
-    // `removed` son las categorías y `swept` el barrido transversal, **en las dos
-    // ramas**: mezclar el barrido dentro de `removed` en la simulación y no en la
-    // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
-    // justamente la propiedad que el planificador único garantiza.
-    // `planned` es el recibo de `removed` en el simulacro, para que el envelope se
-    // lea como un plan.
-    let removed: Vec<String> = plan
+    // `planned` es el plan: las categorías, en el orden del plan; `swept` es el
+    // barrido transversal previsto, separado en las dos ramas para que la
+    // simulación y la ejecución real se puedan comparar. Una simulación no borra
+    // nada, así que `removed` va vacío.
+    let planned: Vec<String> = plan
         .paths()
         .iter()
         .map(|p| p.display().to_string())
         .collect();
-    let planned = removed.clone();
     Outcome {
         status: "planned",
-        removed,
+        removed: Vec::new(),
         planned,
         swept: preview
             .all()

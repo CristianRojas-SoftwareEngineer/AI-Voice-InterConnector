@@ -1119,6 +1119,9 @@ mod tests {
 
     #[test]
     fn stage_line_formats_every_outcome() {
+        // La guarda serializa con las pruebas que activan el modo anidado, que es
+        // estado global y antepondría su sangría a las líneas de esta prueba.
+        let _g = report::test_guard();
         let layout = Layout {
             total: 5,
             phases: 3,

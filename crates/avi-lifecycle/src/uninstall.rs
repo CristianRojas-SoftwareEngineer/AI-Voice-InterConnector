@@ -221,11 +221,11 @@ pub struct Outcome {
     /// `uninstalled`, `removal_scheduled`, `not_installed`, `cancelled` o `planned`
     /// (simulacro).
     pub status: &'static str,
-    /// Rutas borradas en esta ejecución, incluido el directorio de programa. En el
-    /// simulacro, las entradas del plan, sin el barrido.
+    /// Rutas borradas en esta ejecución, incluido el directorio de programa; vacío
+    /// en el simulacro.
     pub removed: Vec<String>,
-    /// Recibo del plan anunciado: el mismo que `removed` en el simulacro y el plan
-    /// ejecutado en la real. Es lo que permite compararlas.
+    /// Recibo del plan anunciado: lo que la simulación y la ejecución real
+    /// borrarían, salido de [`compose_plan`].
     pub planned: Vec<String>,
     /// Del barrido transversal.
     pub swept: Vec<String>,
@@ -799,8 +799,8 @@ fn describe_path_integration(receipt: &InstallReceipt) -> Vec<PathRevert> {
 /// Paso 3: la simulación.
 ///
 /// Es el mismo plan que la ejecución real, serializado con `status: "planned"`: el
-/// recibo (`planned` y `removed`) sale de [`compose_plan`], el barrido va separado
-/// en `swept` como en la ejecución, y `path_reverted` es lo que
+/// recibo (`planned`) sale de [`compose_plan`] y `removed` va vacío porque no se
+/// borra nada, el barrido va separado en `swept` como en la ejecución, y `path_reverted` es lo que
 /// [`path_would_be_reverted`] prevé que se revertiría —el mismo predicado que gobierna
 /// ese valor en la ejecución real—, sin tocar el disco. Nunca pide confirmación: es de
 /// solo lectura y `cancelled` no existe en el simulacro.
@@ -821,10 +821,10 @@ pub fn simulate(
     // el desenlace para que el binario lo imprima por stdout o lo meta en el
     // envelope.
     let plan_lines = plan_lines(&plan, options, Some(&preview));
-    // `removed` son las entradas del plan y `swept` el barrido previsto, en las dos
-    // ramas: mezclar el barrido dentro de `removed` en la simulación y no en la
-    // ejecución haría que `--dry-run` y la real no se pudieran comparar, que es
-    // justamente la propiedad que el plan único garantiza.
+    // `planned` es el plan: las entradas, en el orden del plan; `swept` es el
+    // barrido transversal previsto, separado en las dos ramas para que la
+    // simulación y la ejecución real se puedan comparar. Una simulación no borra
+    // nada, así que `removed` va vacío.
     let planned: Vec<String> = plan
         .entries()
         .iter()
@@ -832,7 +832,7 @@ pub fn simulate(
         .collect();
     Outcome {
         status: "planned",
-        removed: planned.clone(),
+        removed: Vec::new(),
         planned,
         swept: preview
             .all()

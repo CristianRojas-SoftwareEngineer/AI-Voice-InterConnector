@@ -5,6 +5,17 @@
   "was_running": true,
   "daemon_fully_stopped": false,
   "resident_alive": false,
-  "pid": 1234,
-  "remaining": "el daemon en 127.0.0.1:9999 responde"
+  "pid": "<pid>",
+  "remaining": "<remaining>",
+  "context": {
+    "addr": "<addr>"
+  },
+  "stages": [
+    {
+      "stage": "stopping",
+      "phase": "stop",
+      "failed": true
+    }
+  ],
+  "warnings": []
 }

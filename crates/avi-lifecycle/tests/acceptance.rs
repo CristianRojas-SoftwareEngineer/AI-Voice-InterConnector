@@ -1330,10 +1330,14 @@ fn dry_run_does_not_touch_disk() {
     let planned_removed: Vec<String> = entry_paths(&entries);
     for path in &planned_removed {
         assert!(
-            simulation.removed.contains(path),
+            simulation.planned.contains(path),
             "la simulación anuncia {path}"
         );
     }
+    assert!(
+        simulation.removed.is_empty(),
+        "una simulación no borra nada"
+    );
     assert_eq!(
         sandbox.snapshot(),
         before,
@@ -1363,10 +1367,11 @@ fn dry_run_does_not_touch_disk() {
     assert!(simulated.dry_run);
     for path in &announced {
         assert!(
-            simulated.removed.contains(path),
+            simulated.planned.contains(path),
             "la simulación de `cleanup` anuncia {path}"
         );
     }
+    assert!(simulated.removed.is_empty(), "una simulación no borra nada");
     assert_eq!(
         sandbox.snapshot(),
         before,
@@ -2037,12 +2042,9 @@ fn uninstall_dry_run_needs_no_confirmation() {
         outcome.status, "planned",
         "el simulacro se lee como un plan"
     );
-    assert_eq!(
-        outcome.planned, outcome.removed,
-        "el recibo del plan es el que se anuncia"
-    );
+    assert!(outcome.removed.is_empty(), "una simulación no borra nada");
     assert!(
-        !outcome.removed.is_empty(),
+        !outcome.planned.is_empty(),
         "el plan no está vacío: hay instalación registrada"
     );
     assert!(
@@ -2076,10 +2078,7 @@ fn uninstall_dry_run_needs_no_confirmation() {
         "sin artefactos de integración la ejecución real no tocaría nada, y el \
          simulacro no dice lo contrario"
     );
-    assert_eq!(
-        preview.planned, preview.removed,
-        "el recibo del plan es el que se anuncia"
-    );
+    assert!(preview.removed.is_empty(), "una simulación no borra nada");
     assert_eq!(
         sandbox.snapshot(),
         before,
@@ -2353,10 +2352,10 @@ fn uninstall_plan_does_not_promise_a_program_dir_it_refuses_to_delete() {
         &sandbox.home,
         &options,
     );
-    assert_eq!(preview.planned, preview.removed, "el simulacro es el plan");
+    assert!(preview.removed.is_empty(), "una simulación no borra nada");
     assert!(
         !preview
-            .removed
+            .planned
             .iter()
             .any(|p| p == &program_dir.display().to_string()),
         "y no anuncia el borrado que no ocurriría"
