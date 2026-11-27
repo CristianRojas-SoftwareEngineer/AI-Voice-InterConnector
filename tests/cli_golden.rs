@@ -2010,7 +2010,7 @@ impl FakeDaemon {
     /// `delay` antes de responder: simula una inferencia lenta tras una
     /// conexión inmediata.
     fn start_with_delay(status: u16, body: Value, delay: Duration) -> Self {
-        Self::start_rendered(status, move || body.to_string(), delay, None)
+        Self::start_rendered(status, move || body.to_string(), delay, None, None)
     }
 
     /// Como [`FakeDaemon::start`], pero la ruta de trabajo responde un flujo
@@ -2026,6 +2026,26 @@ impl FakeDaemon {
             },
             Duration::ZERO,
             None,
+            None,
+        )
+    }
+
+    /// Como [`FakeDaemon::start_events`], pero envía `events` de inmediato y
+    /// `last` tras `pause`, como un daemon real que sigue sintetizando mientras
+    /// el cliente ya reproduce el primer audio. `pause` debe quedar por debajo
+    /// del plazo de inactividad del cliente (1,5 s).
+    fn start_events_then(events: Vec<Value>, pause: Duration, last: Value) -> Self {
+        Self::start_rendered(
+            200,
+            move || {
+                events
+                    .iter()
+                    .map(|event| format!("{event}\n"))
+                    .collect::<String>()
+            },
+            Duration::ZERO,
+            None,
+            Some((pause, format!("{last}\n"))),
         )
     }
 
@@ -2034,17 +2054,20 @@ impl FakeDaemon {
     /// `every` sin terminar nunca con `result`: simula una síntesis larga que
     /// solo acaba cuando el cliente se desconecta.
     fn start_heartbeats(every: Duration) -> Self {
-        Self::start_rendered(200, String::new, Duration::ZERO, Some(every))
+        Self::start_rendered(200, String::new, Duration::ZERO, Some(every), None)
     }
 
     /// Base de los constructores: `render` produce el cuerpo de la respuesta de
     /// toda ruta distinta de `/health`; con `heartbeat`, esas rutas emiten en su
-    /// lugar un flujo que no termina hasta que el cliente se va.
+    /// lugar un flujo que no termina hasta que el cliente se va. Con `tail`,
+    /// esas rutas envían el cuerpo sin longitud, esperan la pausa y terminan
+    /// con la línea final antes de cerrar la conexión.
     fn start_rendered(
         status: u16,
         render: impl Fn() -> String + Send + 'static,
         delay: Duration,
         heartbeat: Option<Duration>,
+        tail: Option<(Duration, String)>,
     ) -> Self {
         use std::io::Read;
         use std::sync::atomic::Ordering;
@@ -2122,6 +2145,20 @@ impl FakeDaemon {
                             line = beat.clone();
                             std::thread::sleep(every);
                         }
+                    }
+                    continue;
+                }
+                if let (Some((pause, last)), true) = (tail.as_ref(), path != "/health") {
+                    // Respuesta sin longitud, delimitada por el cierre de la
+                    // conexión, para que el cliente reciba el cuerpo antes de la
+                    // línea final.
+                    let head = format!("HTTP/1.1 {status} X\r\ncontent-type: application/x-ndjson\r\n{version_header}connection: close\r\n\r\n");
+                    if sock.write_all(head.as_bytes()).is_ok()
+                        && sock.write_all(render().as_bytes()).is_ok()
+                        && sock.flush().is_ok()
+                    {
+                        std::thread::sleep(*pause);
+                        let _ = sock.write_all(last.as_bytes());
                     }
                     continue;
                 }
@@ -11333,15 +11370,20 @@ fn say_against_fake_daemon(tag: &str, json: bool) -> (i32, String, String) {
     require_output_device();
     let (sandbox, envs) = contract_sandbox(tag);
     let dir = sandbox.path();
-    let fake = FakeDaemon::start_events(vec![
-        serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
-        serde_json::json!({ "event": "progress", "stage": "translate" }),
-        serde_json::json!({ "event": "translation", "text": "Hello" }),
-        serde_json::json!({ "event": "progress", "stage": "synthesis" }),
-        silent_audio_event(1),
-        silent_audio_event(1),
+    // El `result` llega tras una pausa: la síntesis sigue abierta cuando suena
+    // el primer audio, así que la reproducción se solapa con ella.
+    let fake = FakeDaemon::start_events_then(
+        vec![
+            serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
+            serde_json::json!({ "event": "progress", "stage": "translate" }),
+            serde_json::json!({ "event": "translation", "text": "Hello" }),
+            serde_json::json!({ "event": "progress", "stage": "synthesis" }),
+            silent_audio_event(1),
+            silent_audio_event(1),
+        ],
+        Duration::from_millis(700),
         serde_json::json!({ "event": "result", "translated": "Hello" }),
-    ]);
+    );
     fake.publish_in(&dir.join("data"));
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let mut args = vec![
