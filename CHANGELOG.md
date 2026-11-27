@@ -161,6 +161,7 @@ Los comandos `speech` mostraban un bloque plano de líneas: no decían en qué p
 - **`daemon restart` comprueba el modelo antes de parar:** si falta el modelo de síntesis falla con `model_missing` sin tocar el daemon en marcha ni su pidfile.
 - **Hasta 1000 caracteres por síntesis:** el máximo de texto pasa de 500 a 1000 caracteres. Medido con la voz de fábrica en español y en inglés, el motor actual sintetiza textos de hasta 1000 caracteres completos y sin degradación del habla.
 - **Doblaje de hasta 30 s:** el audio de entrada de `speech dub` pasa de 40 a 30 s, igual que la referencia de `voice clone`. Treinta segundos de habla son unos 500 caracteres, así que el texto traducido queda con margen bajo el máximo de síntesis.
+- **Temperatura de síntesis 0,45:** la de producción pasa de 0,35 a 0,45, la nueva temperatura por defecto del motor `qwen-tts-engine` 1.4.0. Es la que menos voz crujiente añade al cierre de las frases y la que suena más natural a la escucha. Cambia el audio de toda síntesis sin `--temperature`.
 - **`denoise --json` emite un único envelope** con `status`, `files` y `summary`, en lugar de una línea JSON por archivo y un resumen. Cada archivo es una etapa numerada `[i/N]`.
 - **Ctrl+C:** durante una etapa deja `✗ <Etapa> <duración> · interrumpido`, el separador e `Interrumpido en <t>`; antes de cualquier etapa deja `Interrumpido; no se ha modificado nada.`. Sale con 130 y, con `--json`, emite el envelope de error con `reason` `interrupted`.
 

@@ -910,7 +910,7 @@ Parámetros: `--text`/`-t` **requerido** · `--source-language` (default `es`, s
 
 `--source-language`/`--target-language` (§3) insertan una etapa de traducción **antes** de la síntesis cuando declaran idiomas distintos; el motor de síntesis no cambia, solo recibe el texto ya traducido. Ambos son opcionales en `say`/`synthesize`: `--target-language` vale `es` por defecto y `--source-language` vale lo mismo que `--target-language` cuando se omite, por lo que sin flags no se traduce. Solo se admite `es` o `en`; cualquier otro valor sale con **2**. Ese mismo token es el idioma de la síntesis: el motor lo recibe traducido a su nombre (`es` → `Spanish`, `en` → `English`), y `POST /synthesize` del daemon rechaza un `source_language`/`target_language` que no sea `es` o `en` con `usage_error`. El modelo de traducción ausente reutiliza el exit **4** (`ExitCode::ModelMissing`), con la solución `setup` en la línea `Solución:`, en vez de un código propio: es la misma precondición de entorno que el modelo TTS. Un fallo de la inferencia de traducción, con el modelo ya cargado, sale con **9** (`ExitCode::TranslationFailed`, §9) — código distinto del **1** genérico de síntesis, porque distingue en qué etapa falló la invocación.
 
-`--temperature` es un override opcional del muestreo en `say`/`synthesize`/`dub`: sin el flag se usa la temperatura de producción (`0.35`); con el flag debe cumplirse `0 < t <= 2.0`, y fuera de ese rango sale con **2**.
+`--temperature` es un override opcional del muestreo en `say`/`synthesize`/`dub`: sin el flag se usa la temperatura de producción (`0.45`, la temperatura por defecto del motor); con el flag debe cumplirse `0 < t <= 2.0`, y fuera de ese rango sale con **2**.
 
 ### El flag `--target-language`
 

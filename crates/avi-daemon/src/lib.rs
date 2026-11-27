@@ -887,9 +887,9 @@ async fn synthesize_handler(
             name: voice_owned.to_string(),
             reference,
         };
-        // Sin campos se usa la config de producción (temperature=0.35, seed de
-        // producción); con ellos se sobrescriben la temperatura y el seed ya
-        // validados.
+        // Sin campos se usa la config de producción (la temperatura por defecto
+        // del motor y el seed de producción); con ellos se sobrescriben la
+        // temperatura y el seed ya validados.
         let options = GenerationOptions::with_temperature(temperature, &target_owned)
             .with_seed_override(seed);
         // Texto realmente sintetizado, que el resultado devuelve al cliente.

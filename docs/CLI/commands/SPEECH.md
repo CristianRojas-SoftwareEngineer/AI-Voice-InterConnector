@@ -237,7 +237,7 @@ ai-voice-interconnector speech synthesize --text <texto> --label <etiqueta> [--v
 | `--play` | flag | `false` | Reproduce la toma y abre el menú interactivo; solo persiste al aceptar |
 | `--source-language` | `es`\|`en` | = `target-language` | Idioma del texto de entrada |
 | `--target-language` | `es`\|`en` | `es` | Idioma/modelo de síntesis; si difiere del origen, el texto se traduce antes de sintetizar |
-| `--temperature` | f32 | producción (`0.35`) | Override de muestreo; rango `0 < t <= 2.0` |
+| `--temperature` | f32 | producción (`0.45`, la del motor) | Override de muestreo; rango `0 < t <= 2.0` |
 
 **`--play` ofrece el bucle interactivo de 4 opciones** (reproducir de nuevo /
 aceptar y guardar / rechazar y regenerar / rechazar y descartar), con menú y
@@ -426,7 +426,7 @@ reproduce. Informa la transcripción y el texto sintetizado (ver «Contrato
 | `--voice`, `-v` | string | `default` | Voz destino de la síntesis |
 | `--source-language` | `es`\|`en` | — | Obligatorio. Idioma hablado en el audio de entrada |
 | `--target-language` | `es`\|`en` | `es` | Idioma/modelo de síntesis; dispara traducción si difiere del origen |
-| `--temperature` | f32 | producción (`0.35`) | Override de muestreo |
+| `--temperature` | f32 | producción (`0.45`, la del motor) | Override de muestreo |
 | `--mic` | flag | `false` | Captura desde micrófono. Mutuamente excluyente con `--audio` |
 | `--duration` | u64 | — | Duración fija de grabación; solo válido con `--mic` (el parser lo declara incompatible con `--audio`) |
 | `--denoise` | flag | `false` | Limpia el audio antes de doblar; en ruta local alimenta el PCM limpio a STT, y en daemon transmite WAV limpio. Requiere `native-denoise` y DPDFNet provisionado |

@@ -15,10 +15,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Defaults de muestreo del motor Qwen3-TTS, tomados de su código fuente; los
-/// defaults del host deben coincidir para que la omisión de flags HTTP/CLI sea
-/// idéntica a pasarlos explícitos.
-pub const DEFAULT_TEMPERATURE: f32 = 0.5;
+/// Defaults de muestreo del motor `qwen-tts-engine` en la versión fijada en
+/// `packaging/pins.json`; deben coincidir con los suyos para que omitir un campo
+/// en la petición sea idéntico a enviarlo. La temperatura 0,45 es la que menos
+/// voz crujiente añade al cierre de las frases.
+pub const DEFAULT_TEMPERATURE: f32 = 0.45;
 pub const DEFAULT_TOP_K: u32 = 50;
 pub const DEFAULT_TOP_P: f32 = 1.0;
 pub const DEFAULT_REP_PENALTY: f32 = 1.05;
@@ -160,16 +161,12 @@ impl GenerationOptions {
         }
     }
 
-    /// Config de producción: `temperature=0.35` y `seed=4` fijos, resto de
-    /// campos igual a `new`. Con temperatura 0 el Talker decodifica en greedy
-    /// argmax sobre un clon x-vector-only sin plantilla de prosodia y la
-    /// prosodia sale plana; 0.35 mantiene el muestreo estocástico (con lo que
-    /// el `seed` es efectivo) sin soltarse como el default del motor (0.9). El
-    /// `seed 4` se eligió por escucha: iguala la prosodia de referencia con una
-    /// similitud de hablante alta y sin errores de transcripción.
+    /// Config de producción: los defaults de muestreo del motor con el `seed=4`
+    /// fijo, que hace reproducible el audio. El `seed 4` se eligió por escucha:
+    /// iguala la prosodia de referencia con una similitud de hablante alta y sin
+    /// errores de transcripción.
     pub fn production(language: &str) -> Self {
         Self {
-            temperature: 0.35,
             seed: Some(PRODUCTION_SEED),
             ..Self::new(language)
         }
@@ -1954,7 +1951,7 @@ mod tests {
     #[test]
     fn new_generation_options_matches_engine_defaults() {
         let d = GenerationOptions::new("en");
-        assert_eq!(d.temperature, 0.5);
+        assert_eq!(d.temperature, 0.45);
         assert_eq!(d.top_k, 50);
         assert_eq!(d.top_p, 1.0);
         assert_eq!(d.rep_penalty, 1.05);
@@ -1962,12 +1959,12 @@ mod tests {
         assert_eq!(d.seed, None);
     }
 
-    /// `production()` fija temperatura y seed a la config validada por oído,
-    /// sin alterar el resto de campos respecto a `new`, y conserva el idioma.
+    /// `production()` fija el seed de producción, conserva los defaults de
+    /// muestreo del motor (temperatura incluida) y el idioma.
     #[test]
     fn generation_options_production_sets_temperature_and_seed() {
         let p = GenerationOptions::production("es");
-        assert_eq!(p.temperature, 0.35);
+        assert_eq!(p.temperature, DEFAULT_TEMPERATURE);
         assert_eq!(p.seed, Some(4));
         assert_eq!(p.top_k, DEFAULT_TOP_K);
         assert_eq!(p.top_p, DEFAULT_TOP_P);
@@ -1983,7 +1980,7 @@ mod tests {
         assert_eq!(kept.seed, Some(PRODUCTION_SEED));
         let o = GenerationOptions::production("es").with_seed_override(Some(123));
         assert_eq!(o.seed, Some(123));
-        assert_eq!(o.temperature, 0.35);
+        assert_eq!(o.temperature, DEFAULT_TEMPERATURE);
         assert_eq!(o.top_k, DEFAULT_TOP_K);
         assert_eq!(o.top_p, DEFAULT_TOP_P);
         assert_eq!(o.rep_penalty, DEFAULT_REP_PENALTY);
@@ -2003,7 +2000,7 @@ mod tests {
     #[test]
     fn generation_options_with_temperature_resolves_override() {
         let p = GenerationOptions::with_temperature(None, "en");
-        assert_eq!(p.temperature, 0.35);
+        assert_eq!(p.temperature, DEFAULT_TEMPERATURE);
         assert_eq!(p.seed, Some(4));
         assert_eq!(p.language, "en");
         let o = GenerationOptions::with_temperature(Some(0.9), "en");
@@ -2645,7 +2642,8 @@ fn main() {
             obj.get("language").and_then(|v| v.as_str()),
             Some("Spanish")
         );
-        assert_eq!(obj.get("temperature").and_then(|v| v.as_f64()), Some(0.5));
+        // f32 0.45 → f64 0.44999998807907104: comparación con tolerancia.
+        assert!((obj.get("temperature").and_then(|v| v.as_f64()).unwrap() - 0.45).abs() < 1e-6);
         assert_eq!(obj.get("top_k").and_then(|v| v.as_u64()), Some(50));
         assert_eq!(obj.get("top_p").and_then(|v| v.as_f64()), Some(1.0));
         // f32 1.05 → f64 1.0499999523162842: comparación con tolerancia.

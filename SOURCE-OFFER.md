@@ -51,17 +51,17 @@ mismo release:
 - `ffmpeg-9.0.2-buildconf-x86_64-pc-windows-msvc.txt`: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.47.0/ffmpeg-9.0.2-buildconf-x86_64-pc-windows-msvc.txt>
 - `ffmpeg-9.0.2-buildconf-x86_64-unknown-linux-gnu.txt`: <https://github.com/CristianRojas-SoftwareEngineer/AI-Voice-InterConnector/releases/download/v0.47.0/ffmpeg-9.0.2-buildconf-x86_64-unknown-linux-gnu.txt>
 
-## qwen-tts-engine 1.3.0
+## qwen-tts-engine 1.4.0
 
 El paquete incluye el motor de síntesis de voz **qwen-tts-engine
-1.3.0** (`qwen_tts`) como ejecutable independiente bajo **MPL-2.0**:
+1.4.0** (`qwen_tts`) como ejecutable independiente bajo **MPL-2.0**:
 la aplicación lo invoca como proceso. Su código fuente correspondiente está
 disponible en:
 
-- **Tag del repositorio:** <https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/tree/v1.3.0>
+- **Tag del repositorio:** <https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/tree/v1.4.0>
 - **Archivo de fuentes de la release:**
-  <https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/releases/download/v1.3.0/qwen-tts-engine-v1.3.0-src.tar.gz>,
-  con SHA-256 `38bdc6dcdf72e21978364f3b74ab144e9e929a9f98e583e32fbec63a628e06ae` (fijado en `packaging/pins.json`)
+  <https://github.com/CristianRojas-SoftwareEngineer/qwen-tts-engine/releases/download/v1.4.0/qwen-tts-engine-v1.4.0-src.tar.gz>,
+  con SHA-256 `89bec7a810d5a1643978e79c2833ad651426904d196c398346f35f80270e5209` (fijado en `packaging/pins.json`)
 
 Su `LICENSE`, su `NOTICE` y su `THIRD-PARTY-LICENSES.md` se reproducen en
 `THIRD-PARTY-LICENSES.md`.
