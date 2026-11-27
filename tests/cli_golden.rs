@@ -3238,6 +3238,10 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
         "el veredicto de `doctor` no lleva objeto `error`: {}",
         value
     );
+    assert!(
+        value.get("status").is_none(),
+        "`doctor` a secas no lleva status: {value}"
+    );
     for key in [
         "version", "target", "channel", "install", "path", "pending", "models", "checks", "failed",
     ] {
@@ -3318,10 +3322,54 @@ fn doctor_repair_collects_leftovers() {
     std::fs::create_dir_all(&scratch).expect("crear scratch");
     std::fs::write(scratch.join("clip.wav"), "temporal").expect("rellenar scratch");
 
-    let (code, _out, _err) = run_text_env(&["doctor", "--repair"], &envs);
+    let (code, _out, err) = run_capture(&["doctor", "--repair"], &envs);
     assert!(
         code == 0 || code == 1,
         "`doctor --repair` debe ejecutar el barrido, no rechazar el flag con 2"
+    );
+    // Cabecera, cierre de la reparación y, tras él, el error del diagnóstico
+    // (el sandbox no tiene modelos).
+    let lines: Vec<&str> = err.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("Reparación de los restos pendientes"),
+        "{err}"
+    );
+    let closing = lines
+        .iter()
+        .position(|line| line.starts_with("✓ Reparación completada"))
+        .unwrap_or_else(|| panic!("falta el cierre de la reparación: {err}"));
+    let error = lines
+        .iter()
+        .position(|line| line.starts_with("Error:"))
+        .unwrap_or_else(|| panic!("falta el error del diagnóstico: {err}"));
+    assert!(closing < error, "el error va tras el cierre: {err}");
+    // Mismo stderr con `--json`, normalizando las duraciones; el envelope lleva
+    // `status: "repaired"`. La reparación es idempotente, así que repetirla en el
+    // mismo sandbox deja la misma salida.
+    let (json_code, json_out, json_err) = run_capture(&["--json", "doctor", "--repair"], &envs);
+    assert_eq!(json_code, code, "{json_err}");
+    let normalize = |text: &str| -> Vec<String> {
+        text.lines()
+            .map(|line| {
+                line.split_whitespace()
+                    .filter(|word| !word.chars().next().is_some_and(|c| c.is_ascii_digit()))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect()
+    };
+    assert_eq!(
+        normalize(&err),
+        normalize(&json_err),
+        "--json no cambia stderr"
+    );
+    let envelope: Value = serde_json::from_str(json_out.trim()).expect("un único envelope JSON");
+    assert_eq!(envelope["status"], "repaired", "{envelope}");
+    assert_eq!(
+        envelope["stages"].as_array().map(Vec::len),
+        Some(1),
+        "etapa única: {envelope}"
     );
     assert!(!parked.exists(), "el aparcado debe haberse recogido");
     assert!(
@@ -3379,6 +3427,15 @@ fn doctor_without_flag_leaves_leftovers_and_hints_repair() {
         err.contains("Error:") && err.contains("comprobaciones fallan."),
         "el veredicto sale por stderr como error: {err:?}"
     );
+    // Con `--json` el veredicto también sale por stderr y el envelope no lleva status.
+    let (json_code, json_out, json_err) = run_capture(&["--json", "doctor"], &envs);
+    assert_eq!(json_code, 1, "con restos debe fallar: {json_err}");
+    assert!(
+        json_err.contains("Error:") && json_err.contains("comprobaciones fallan."),
+        "el veredicto sale por stderr también con --json: {json_err:?}"
+    );
+    let envelope: Value = serde_json::from_str(json_out.trim()).expect("un único envelope JSON");
+    assert!(envelope.get("status").is_none(), "{envelope}");
 }
 
 #[test]
@@ -8689,14 +8746,25 @@ fn speech_denoise_route_matches_feature_and_rejects_root_alias() {
     }
 }
 
-/// `self update --check` compone el envelope de proceso sin descargar el asset.
-#[test]
-fn self_update_check_emits_positive_cli_contract_without_asset_download() {
+/// Sandbox con una instalación registrada en la versión `installed` y un servidor
+/// de releases falso que sirve la versión `served`. Devuelve el servidor (que
+/// debe vivir mientras dura la prueba), el sandbox, su variable de entorno y el
+/// directorio de la instalación.
+fn self_update_sandbox(
+    tag: &str,
+    installed: &str,
+    served: &str,
+) -> (
+    FakeReleaseServer,
+    ContractSandbox,
+    Vec<(String, String)>,
+    std::path::PathBuf,
+) {
     use avi_lifecycle::channel::Channel;
     use avi_lifecycle::receipt::{self, InstallReceipt, PathIntegration};
 
-    let server = FakeReleaseServer::serve("0.38.0");
-    let (sandbox, envs) = contract_sandbox("self_update_check_positive");
+    let server = FakeReleaseServer::serve(served);
+    let (sandbox, envs) = contract_sandbox(tag);
     let install_dir = sandbox.path().join("install");
     std::fs::create_dir_all(&install_dir).expect("crear directorio registrado");
     let mut extra = envs;
@@ -8708,7 +8776,7 @@ fn self_update_check_emits_positive_cli_contract_without_asset_download() {
         server.base_url().to_string(),
     ));
     let receipt_value = InstallReceipt::new(
-        "0.37.0",
+        installed,
         avi_lifecycle::target::host_triple(),
         Channel::Script,
         &install_dir,
@@ -8720,6 +8788,17 @@ fn self_update_check_emits_positive_cli_contract_without_asset_download() {
         },
     );
     receipt::write_to(&receipt_value, &install_dir).expect("escribir recibo sintético");
+    (server, sandbox, extra, install_dir)
+}
+
+/// `self update --check` es una consulta: sin cabecera, sin `status` y sin
+/// descargar el asset; el texto lleva las dos versiones por stdout.
+#[test]
+fn self_update_check_emits_positive_cli_contract_without_asset_download() {
+    use avi_lifecycle::receipt;
+
+    let (server, _sandbox, extra, install_dir) =
+        self_update_sandbox("self_update_check_positive", "0.37.0", "0.38.0");
     let before = receipt::read_from(&install_dir).unwrap().unwrap().version;
     let envs: Vec<(&str, &str)> = extra
         .iter()
@@ -8728,16 +8807,61 @@ fn self_update_check_emits_positive_cli_contract_without_asset_download() {
     let (code, stdout, stderr) = run_capture(&["--json", "self", "update", "--check"], &envs);
     assert_eq!(code, 0, "{stderr}");
     let result: Value = serde_json::from_str(stdout.trim()).expect("un único envelope JSON");
-    assert_eq!(result["status"], "check");
+    assert!(result.get("status").is_none(), "{result}");
     assert_eq!(result["current"], "0.37.0");
     assert_eq!(result["latest"], "0.38.0");
     assert_eq!(result["update_available"], true);
     assert_eq!(result["channel"], "script");
+    assert!(
+        !stderr.contains("Actualización desde la versión"),
+        "la consulta no lleva cabecera: {stderr}"
+    );
+    let (code, stdout, stderr) = run_capture(&["self", "update", "--check"], &envs);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        ["Versión instalada: 0.37.0", "Versión disponible: 0.38.0"],
+        "{stdout}"
+    );
+    assert!(
+        !stderr.contains("Actualización desde la versión"),
+        "la consulta no lleva cabecera: {stderr}"
+    );
     assert_eq!(
         receipt::read_from(&install_dir).unwrap().unwrap().version,
         before
     );
     assert_eq!(server.download_counts(), (0, 0));
+}
+
+/// `self update` con la última versión ya instalada: cabecera y
+/// `✓ Ya tienes la última versión (X)` sin etapas, con el mismo stderr con y sin
+/// `--json` y un envelope `already_up_to_date` con `context` y sin `stages`.
+#[test]
+fn self_update_already_up_to_date_has_header_and_closing_without_stages() {
+    let (stderr, stdout) =
+        assert_same_stderr_with_and_without_json(0, &["self", "update"], |tag| {
+            let (server, sandbox, envs, _install_dir) =
+                self_update_sandbox(tag, "0.38.0", "0.38.0");
+            ((server, sandbox), envs)
+        });
+    let lines: Vec<&str> = stderr.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("Actualización desde la versión 0.38.0"),
+        "{stderr}"
+    );
+    assert_eq!(
+        lines.last().copied(),
+        Some("✓ Ya tienes la última versión (0.38.0)"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("[1/"), "sin etapas numeradas: {stderr}");
+    let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope JSON");
+    assert_eq!(envelope["status"], "already_up_to_date", "{envelope}");
+    assert_eq!(envelope["context"]["current"], "0.38.0", "{envelope}");
+    assert_eq!(envelope["context"]["channel"], "script", "{envelope}");
+    assert!(envelope.get("stages").is_none(), "{envelope}");
 }
 
 /// La simulación JSON de `speech denoise` emite un único envelope `planned` con `files` y
@@ -8766,13 +8890,24 @@ fn speech_denoise_dry_run_emits_a_single_envelope_without_model() {
     );
     assert_eq!(envelope["summary"]["ok"], 1, "{envelope}");
     assert_eq!(envelope["summary"]["failed"], 0, "{envelope}");
+    assert_eq!(envelope["context"]["files"], 1, "{envelope}");
+    assert!(envelope.get("stages").is_none(), "sin etapas: {envelope}");
 
     let (code, text_stdout, text_stderr) =
         run_capture(&["speech", "denoise", input.as_str(), "--dry-run"], &envs);
     assert_eq!(code, 0, "{text_stderr}");
+    // Los tiempos pueden diferir entre ejecuciones; la simulación no lleva
+    // ninguno, así que el stderr es idéntico.
     assert_eq!(text_stderr, stderr, "--json no cambia stderr");
-    assert!(
-        text_stderr.contains("Simulación: no se ha modificado nada."),
+    let lines: Vec<&str> = text_stderr.lines().collect();
+    assert_eq!(
+        lines.first().copied(),
+        Some("Limpieza de ruido · 1 archivo"),
+        "{text_stderr}"
+    );
+    assert_eq!(
+        lines.last().copied(),
+        Some("✓ Simulación completada · no se ha borrado nada"),
         "{text_stderr}"
     );
     assert!(text_stdout.contains("se procesaría"), "{text_stdout}");

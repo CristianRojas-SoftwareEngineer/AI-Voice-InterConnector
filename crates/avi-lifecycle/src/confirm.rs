@@ -4,7 +4,7 @@
 // Copyright (c) 2026 Cristián Rojas Arredondo.
 // SPDX-License-Identifier: MPL-2.0
 
-//! Confirmación y simulación de las operaciones de ciclo de vida.
+//! Confirmación de las operaciones de ciclo de vida.
 //!
 //! La tabla de confirmaciones tiene cuatro celdas, y las cuatro importan porque el
 //! defecto que corrigen es que **sin terminal se borra en silencio**: hoy la
@@ -19,12 +19,14 @@
 //! | Destructiva | Rutas con tamaños y `[s/N]`; `--yes` la omite | Exige `--yes`; sin él, `confirmation_required` y 2 |
 //!
 //! **El plan se imprime siempre** —en las cuatro celdas— porque sin terminal la
-//! operación no destructiva también necesita que el usuario sepa qué va a pasar,
-//! y `--dry-run` es exactamente "imprime el plan sin modificar el disco".
+//! operación no destructiva también necesita que el usuario sepa qué va a pasar.
+//! La simulación (`--dry-run`) no pasa por la confirmación: quien la ofrece
+//! imprime su plan y se detiene antes de preguntar.
 //!
-//! **Lo que el usuario no confirma no es un error de contrato.** El producto
-//! actual responde `Cancelado.` y sale con éxito, y así sigue: `Cancelled` es
-//! una decisión, no un `reason`. Los `reason` que sí son contrato son
+//! **Lo que el usuario no confirma no es un error de contrato.** `Cancelled` es
+//! una decisión, no un `reason`: el módulo no escribe el texto de cancelación,
+//! lo pinta el llamador detrás del separador con [`Kind::cancelled_closing`] y
+//! la operación sale con éxito. Los `reason` que sí son contrato son
 //! `confirmation_required` y `usage_error`.
 //!
 //! La lectura de la respuesta y la escritura del prompt son parámetros, no
@@ -55,22 +57,14 @@ impl Kind {
         }
     }
 
-    /// Línea con la que se cancela, distinta porque la consecuencia no es la
-    /// misma: una destructiva aclara que no se ha borrado nada.
-    fn cancellation(self) -> &'static str {
-        match self {
-            Self::NonDestructive => "Cancelado.",
-            Self::Destructive => "Cancelado; no se ha borrado nada.",
-        }
-    }
-
     /// `true` si la operación borra o reemplaza algo.
     pub fn is_destructive(self) -> bool {
         matches!(self, Self::Destructive)
     }
 
-    /// Cierre que pinta el llamador detrás del separador al cancelar: el mismo
-    /// texto que `cancellation`, como cierre especial del indicador.
+    /// Cierre que pinta el llamador detrás del separador al cancelar: una
+    /// operación destructiva aclara que no se ha borrado nada; la que no borra
+    /// dice solo `Cancelado.`.
     pub fn cancelled_closing(self) -> avi_term::line::SpecialClosing {
         match self {
             Self::NonDestructive => avi_term::line::SpecialClosing::CancelledNonDestructive,
@@ -116,8 +110,6 @@ pub struct Confirmation<'a> {
     pub entries: &'a [PlanEntry],
     /// `--yes`: omite la pregunta.
     pub assume_yes: bool,
-    /// `--dry-run`: imprime el plan y no modifica el disco.
-    pub dry_run: bool,
     /// Si stdin es una TTY. Se inyecta (`std::io::IsTerminal` en producción) para
     /// que las pruebas alcancen las cuatro celdas de la tabla.
     pub stdin_is_terminal: bool,
@@ -128,64 +120,24 @@ pub struct Confirmation<'a> {
 pub enum Decision {
     /// El usuario confirmó (o no hacía falta preguntar): seguir.
     Proceed,
-    /// `--dry-run`: el plan está impreso y no se toca el disco.
-    DryRun,
     /// El usuario dijo que no. No es un error (la tabla de `reason` no lo
-    /// lista): el producto responde `Cancelado.` y sale con éxito.
+    /// lista): el llamador pinta el cierre de cancelación y sale con éxito.
     Cancelled,
 }
 
-/// Aplica la tabla de confirmaciones y devuelve la decisión.
+/// Aplica la tabla de confirmaciones y devuelve la decisión. Al cancelar no
+/// escribe el texto de cancelación: lo pinta el llamador detrás del separador,
+/// con el cierre especial de cancelación del indicador de etapas.
 ///
 /// `input` es stdin y `out` es stderr, para que el prompt no contamine la salida
 /// que el contrato del CLI declara. Ninguna rama escribe en el disco: el módulo
 /// solo decide, y quien borra lo hace después de obtener `Proceed`.
-pub fn confirm<R: BufRead>(
-    request: &Confirmation<'_>,
-    input: &mut R,
-    out: &mut dyn Write,
-) -> anyhow::Result<Decision> {
-    confirm_with(request, input, out, true)
-}
-
-/// Como [`confirm`], pero al cancelar no escribe el texto de cancelación: lo
-/// pinta el llamador detrás del separador, con el cierre especial de
-/// cancelación del indicador de etapas.
 pub fn confirm_without_cancel_notice<R: BufRead>(
     request: &Confirmation<'_>,
     input: &mut R,
     out: &mut dyn Write,
 ) -> anyhow::Result<Decision> {
-    confirm_with(request, input, out, false)
-}
-
-/// Pregunta fuera del reloj del comando: abre la pausa del registro, aplica la
-/// tabla de confirmaciones sin escribir el texto de cancelación y cierra la
-/// pausa; si se confirmó, el reloj arranca al responder. Con error, cierra la
-/// pausa sin confirmar y lo propaga.
-pub fn ask<R: BufRead>(
-    request: &Confirmation<'_>,
-    input: &mut R,
-    out: &mut dyn Write,
-) -> anyhow::Result<Decision> {
-    avi_term::report::begin_question();
-    let decision = confirm_without_cancel_notice(request, input, out);
-    avi_term::report::end_question(matches!(decision, Ok(Decision::Proceed)));
-    decision
-}
-
-fn confirm_with<R: BufRead>(
-    request: &Confirmation<'_>,
-    input: &mut R,
-    out: &mut dyn Write,
-    announce_cancellation: bool,
-) -> anyhow::Result<Decision> {
     print_plan(request, out)?;
-
-    if request.dry_run {
-        writeln!(out, "{}", simulation_notice())?;
-        return Ok(Decision::DryRun);
-    }
 
     if request.assume_yes {
         return Ok(Decision::Proceed);
@@ -216,17 +168,23 @@ fn confirm_with<R: BufRead>(
     if affirmative(&line, request.kind) {
         Ok(Decision::Proceed)
     } else {
-        if announce_cancellation {
-            writeln!(out, "{}", request.kind.cancellation())?;
-        }
         Ok(Decision::Cancelled)
     }
 }
 
-/// Aviso único de toda simulación (`--dry-run`), que se imprime una sola vez y
-/// después del plan, sea cual sea la operación.
-pub fn simulation_notice() -> &'static str {
-    "Simulación: no se ha modificado nada."
+/// Pregunta fuera del reloj del comando: abre la pausa del registro, aplica la
+/// tabla de confirmaciones sin escribir el texto de cancelación y cierra la
+/// pausa; si se confirmó, el reloj arranca al responder. Con error, cierra la
+/// pausa sin confirmar y lo propaga.
+pub fn ask<R: BufRead>(
+    request: &Confirmation<'_>,
+    input: &mut R,
+    out: &mut dyn Write,
+) -> anyhow::Result<Decision> {
+    avi_term::report::begin_question();
+    let decision = confirm_without_cancel_notice(request, input, out);
+    avi_term::report::end_question(matches!(decision, Ok(Decision::Proceed)));
+    decision
 }
 
 /// Interpreta la respuesta. El valor por defecto de cada celda manda cuando la
@@ -291,7 +249,6 @@ mod tests {
         summary: &'a [String],
         entries: &'a [PlanEntry],
         assume_yes: bool,
-        dry_run: bool,
         stdin_is_terminal: bool,
     ) -> Confirmation<'a> {
         Confirmation {
@@ -300,7 +257,6 @@ mod tests {
             summary,
             entries,
             assume_yes,
-            dry_run,
             stdin_is_terminal,
         }
     }
@@ -325,7 +281,7 @@ mod tests {
         let summary = vec!["Se borrará algo:".to_string()];
         let mut out = Vec::new();
         let decision = confirm_without_cancel_notice(
-            &request(Kind::Destructive, &summary, &[], false, false, true),
+            &request(Kind::Destructive, &summary, &[], false, true),
             &mut Cursor::new("n\n"),
             &mut out,
         )
@@ -345,7 +301,7 @@ mod tests {
         for (answer, expected) in [("s\n", Decision::Proceed), ("n\n", Decision::Cancelled)] {
             let mut out = Vec::new();
             let decision = ask(
-                &request(Kind::Destructive, &summary, &[], false, false, true),
+                &request(Kind::Destructive, &summary, &[], false, true),
                 &mut Cursor::new(answer),
                 &mut out,
             )
@@ -387,8 +343,8 @@ mod tests {
         // Columna "con terminal", fila no destructiva: se pregunta con `[S/n]` y
         // `Enter` acepta.
         let mut out = Vec::new();
-        let decision = confirm(
-            &request(Kind::NonDestructive, &summary, &[], false, false, true),
+        let decision = confirm_without_cancel_notice(
+            &request(Kind::NonDestructive, &summary, &[], false, true),
             &mut Cursor::new("\n"),
             &mut out,
         )
@@ -405,8 +361,8 @@ mod tests {
         // Columna "con terminal", fila destructiva: se pregunta con `[s/N]`,
         // `Enter` rechaza y una `s` explícita acepta.
         let mut out = Vec::new();
-        let decision = confirm(
-            &request(Kind::Destructive, &summary, &entries, false, false, true),
+        let decision = confirm_without_cancel_notice(
+            &request(Kind::Destructive, &summary, &entries, false, true),
             &mut Cursor::new("\n"),
             &mut out,
         )
@@ -415,24 +371,22 @@ mod tests {
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains("[s/N]"), "literal de la celda: {out}");
         assert!(
-            out.ends_with("¿Hacer la prueba? [s/N] Cancelado; no se ha borrado nada.\n"),
-            "el prompt termina con espacio y la cancelación aclara que no se borró: {out:?}"
+            out.ends_with("¿Hacer la prueba? [s/N] "),
+            "el prompt termina con espacio y no escribe la cancelación: {out:?}"
         );
-        // La cancelación de una operación no destructiva es la corta.
+        // La cancelación de una operación no destructiva tampoco se escribe aquí.
         let mut out = Vec::new();
-        let decision = confirm(
-            &request(Kind::NonDestructive, &summary, &[], false, false, true),
+        let decision = confirm_without_cancel_notice(
+            &request(Kind::NonDestructive, &summary, &[], false, true),
             &mut Cursor::new("n\n"),
             &mut out,
         )
         .unwrap();
         assert_eq!(decision, Decision::Cancelled);
-        assert!(String::from_utf8(out)
-            .unwrap()
-            .ends_with("[S/n] Cancelado.\n"));
+        assert!(String::from_utf8(out).unwrap().ends_with("[S/n] "));
         let mut out = Vec::new();
-        confirm(
-            &request(Kind::Destructive, &summary, &entries, false, false, true),
+        confirm_without_cancel_notice(
+            &request(Kind::Destructive, &summary, &entries, false, true),
             &mut Cursor::new("\n"),
             &mut out,
         )
@@ -444,8 +398,8 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        let decision = confirm(
-            &request(Kind::Destructive, &summary, &entries, false, false, true),
+        let decision = confirm_without_cancel_notice(
+            &request(Kind::Destructive, &summary, &entries, false, true),
             &mut Cursor::new("s\n"),
             &mut out,
         )
@@ -455,8 +409,8 @@ mod tests {
         // Columna "sin terminal", fila no destructiva: procede sin preguntar, y
         // no lee stdin.
         let mut out = Vec::new();
-        let decision = confirm(
-            &request(Kind::NonDestructive, &summary, &[], false, false, false),
+        let decision = confirm_without_cancel_notice(
+            &request(Kind::NonDestructive, &summary, &[], false, false),
             &mut Cursor::new(""),
             &mut out,
         )
@@ -470,8 +424,8 @@ mod tests {
         // `confirmation_required`, y con `--yes` procede. Es la cuarta celda de la
         // matriz y la razón de que el predicado sea inyectable.
         let mut out = Vec::new();
-        let err = confirm(
-            &request(Kind::Destructive, &summary, &entries, false, false, false),
+        let err = confirm_without_cancel_notice(
+            &request(Kind::Destructive, &summary, &entries, false, false),
             &mut Cursor::new(""),
             &mut out,
         )
@@ -483,8 +437,8 @@ mod tests {
         assert_eq!(ExitCode::from_reason(failure.reason).code(), 2);
         let mut out = Vec::new();
         assert_eq!(
-            confirm(
-                &request(Kind::Destructive, &summary, &entries, true, false, false),
+            confirm_without_cancel_notice(
+                &request(Kind::Destructive, &summary, &entries, true, false),
                 &mut Cursor::new(""),
                 &mut out,
             )
@@ -533,14 +487,13 @@ mod tests {
 
         let entries = vec![PlanEntry::of(&data), PlanEntry::of(&model)];
         let mut out = Vec::new();
-        let err = confirm(
+        let err = confirm_without_cancel_notice(
             &Confirmation {
                 kind: Kind::Destructive,
                 question: "¿Borrar lo indicado?",
                 summary: &["cleanup borrará modelos y audios sintetizados".to_string()],
                 entries: &entries,
                 assume_yes: false,
-                dry_run: false,
                 stdin_is_terminal: false,
             },
             &mut Cursor::new("y\n"),
@@ -571,14 +524,13 @@ mod tests {
         // Con `--yes` la misma operación procede, y tampoco borra: el borrado lo
         // hace quien ejecuta, después de la decisión.
         assert_eq!(
-            confirm(
+            confirm_without_cancel_notice(
                 &Confirmation {
                     kind: Kind::Destructive,
                     question: "¿Borrar lo indicado?",
                     summary: &[],
                     entries: &entries,
                     assume_yes: true,
-                    dry_run: false,
                     stdin_is_terminal: false,
                 },
                 &mut Cursor::new(""),
@@ -588,83 +540,5 @@ mod tests {
             Decision::Proceed
         );
         assert_eq!(snapshot(&dir), before);
-    }
-
-    /// `--dry-run` imprime el plan y no modifica el disco: mismo árbol, mismos
-    /// tamaños, antes y después.
-    #[test]
-    fn dry_run_does_not_touch_disk() {
-        let dir = scratch("confirm-dry-run");
-        let dest = dir.join("ai-voice-interconnector");
-        let model = dir.join("models").join("revision.bin");
-        write_file(&dest, "contenido");
-        write_file(&model, &"x".repeat(2048));
-        let before = snapshot(&dir);
-
-        let entries = vec![PlanEntry::of(&dest), PlanEntry::of(&model)];
-        let summary = vec!["Se eliminará lo siguiente:".to_string()];
-        let mut out = Vec::new();
-        let decision = confirm(
-            &Confirmation {
-                kind: Kind::Destructive,
-                question: "¿Borrar lo indicado?",
-                summary: &summary,
-                entries: &entries,
-                assume_yes: false,
-                dry_run: true,
-                stdin_is_terminal: true,
-            },
-            &mut Cursor::new(""),
-            &mut out,
-        )
-        .unwrap();
-        assert_eq!(decision, Decision::DryRun);
-        assert_eq!(snapshot(&dir), before, "el disco no se toca");
-
-        let printed = String::from_utf8(out.clone()).unwrap();
-        assert_eq!(
-            printed.matches(simulation_notice()).count(),
-            1,
-            "la simulación se anuncia una sola vez: {printed}"
-        );
-        assert!(
-            printed.ends_with(&format!("2,0 KB)\n{}\n", simulation_notice())),
-            "el aviso va después de la última línea del plan: {printed}"
-        );
-        assert!(
-            printed.contains(&model.display().to_string()) && printed.contains("2,0 KB)"),
-            "el plan se imprime con rutas y tamaños: {printed}"
-        );
-        assert!(
-            !printed.contains('?'),
-            "en simulación no se pregunta, no hay nada que confirmar: {printed}"
-        );
-
-        // La simulación gana a `--yes` y a la terminal: en las cuatro celdas el
-        // resultado es el mismo, porque no se toca el disco en ninguna.
-        for (yes, terminal) in [(true, true), (false, false), (true, false)] {
-            assert_eq!(
-                confirm(
-                    &Confirmation {
-                        kind: Kind::Destructive,
-                        question: "¿Borrar lo indicado?",
-                        summary: &summary,
-                        entries: &entries,
-                        assume_yes: yes,
-                        dry_run: true,
-                        stdin_is_terminal: terminal,
-                    },
-                    &mut Cursor::new(""),
-                    &mut out,
-                )
-                .unwrap(),
-                Decision::DryRun
-            );
-        }
-        assert_eq!(
-            snapshot(&dir),
-            before,
-            "tampoco al combinarla con otras banderas"
-        );
     }
 }

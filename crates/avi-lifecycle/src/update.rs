@@ -9,7 +9,12 @@
 //!
 //! El reemplazo lo ejecuta el binario nuevo: este módulo lanza
 //! `<staging>/ai-voice-interconnector --json self install --yes`, captura stdout
-//! estructurado y mantiene stderr separado. Valida la causa del resultado parcial
+//! estructurado y deja que el hijo herede stderr: el hijo pinta sus etapas en
+//! vivo, anidadas dentro de la etapa `Reemplazo` del padre y sin cabecera ni
+//! cierre propios. Como stderr no puede llevar señales de vida, el hijo las deja
+//! en un fichero (`AVI_HANDOVER_HEARTBEAT_FILE`): el padre solo lo mata si ese
+//! fichero no cambia durante diez minutos, de modo que una descarga larga pero
+//! viva no se corta. Valida la causa del resultado parcial
 //! y propaga el resultado. Las preferencias del recibo mandan: si la
 //! instalación registrada no tocaba el `PATH` (`modify_path: false`), el
 //! traspaso pasa `--no-modify-path`; `--no-setup` se hereda si se pidió, y
@@ -32,6 +37,7 @@ use crate::{setup, LifecycleError};
 use avi_process::{spawn_with_allowlist_env, RestrictedSpawnRequest, Scheduling, StdinSpec};
 use avi_term::progress::PhaseProgress;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Variable interna con el PID del `self update` que lanza el traspaso.
 ///
@@ -40,6 +46,26 @@ use std::path::{Path, PathBuf};
 /// ejecutable aparcado.
 /// Interna: no figura en ninguna ayuda ni contrato.
 pub const HANDOVER_PARENT_PID_ENV: &str = "AVI_HANDOVER_PARENT_PID";
+
+/// Variable interna con la ruta del fichero donde el `self install` del
+/// traspaso deja sus latidos: el padre los vigila para distinguir un hijo vivo
+/// (descargando o avanzando de etapa) de uno colgado.
+/// Interna: no figura en ninguna ayuda ni contrato.
+pub const HANDOVER_HEARTBEAT_FILE_ENV: &str = "AVI_HANDOVER_HEARTBEAT_FILE";
+
+/// Silencio máximo del hijo del traspaso antes de matarlo: mismo criterio que el
+/// vigilante de `xtask bootstrap`, que solo corta tras un silencio prolongado.
+const HANDOVER_SILENCE_LIMIT: Duration = Duration::from_secs(600);
+
+/// Cadencia con la que el padre lee el fichero de latidos del hijo.
+const HANDOVER_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// ¿Lleva el hijo callado `limit` o más desde su último cambio en el fichero de
+/// latidos (o desde su lanzamiento)? Función pura para fijar la decisión sin
+/// lanzar procesos.
+fn heartbeat_silent(last_change: Instant, now: Instant, limit: Duration) -> bool {
+    now.saturating_duration_since(last_change) >= limit
+}
 
 /// Código que el `self install` del traspaso devuelve cuando la provisión
 /// falló: éxito parcial (`setup_failed`, código de salida 11).
@@ -141,6 +167,10 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
         let stderr_file = inherited_stdio_file(StdioEnd::Stderr)
             .map_err(|e| anyhow::anyhow!("no se pudo preparar stderr del traspaso: {e}"))?;
         let parent_pid = std::ffi::OsString::from(std::process::id().to_string());
+        // Canal de latidos: un fichero, porque el hijo hereda la consola del
+        // padre para pintar sus etapas en vivo y stderr no puede llevarlos.
+        let heartbeat_file = avi_process::scratch::tempfile("avi_handover_beat_", ".txt")
+            .map_err(|e| anyhow::anyhow!("no se pudo crear el fichero de latidos: {e:#}"))?;
         let mut child = spawn_with_allowlist_env(
             RestrictedSpawnRequest {
                 program: staging_exe.clone(),
@@ -151,7 +181,13 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
                 creation_flags: 0,
                 extra_allowed: Vec::new(),
             },
-            &[(HANDOVER_PARENT_PID_ENV, parent_pid.as_os_str())],
+            &[
+                (HANDOVER_PARENT_PID_ENV, parent_pid.as_os_str()),
+                (
+                    HANDOVER_HEARTBEAT_FILE_ENV,
+                    heartbeat_file.path().as_os_str(),
+                ),
+            ],
             &[],
         )
         .map_err(|e| {
@@ -160,15 +196,50 @@ pub async fn handover(request: &HandoverRequest) -> anyhow::Result<HandoverOutco
                 staging_exe.display()
             )
         })?;
-        let status = child
-            .wait_timeout(std::time::Duration::from_secs(60))
-            .map_err(|e| anyhow::anyhow!("la espera del binario nuevo falló: {e}"))?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "el binario nuevo no terminó en 60 s y se terminó: la instalación \
-                     anterior sigue en su sitio"
-                )
-            })?;
+        // Vigilante de latidos: el hijo solo se mata si deja de dar señales de
+        // vida durante `HANDOVER_SILENCE_LIMIT`. El estado del hijo se sondea con
+        // frecuencia para no retrasar el traspaso; el fichero de latidos, cada
+        // `HANDOVER_POLL_INTERVAL`.
+        let launched = Instant::now();
+        let mut last_change = launched;
+        let mut last_beat = std::fs::read(heartbeat_file.path()).unwrap_or_default();
+        let mut last_check = launched;
+        let status = loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|e| anyhow::anyhow!("la espera del binario nuevo falló: {e}"))?
+            {
+                break status;
+            }
+            let now = Instant::now();
+            if now.duration_since(last_check) >= HANDOVER_POLL_INTERVAL {
+                last_check = now;
+                let beat = std::fs::read(heartbeat_file.path()).unwrap_or_default();
+                if beat != last_beat {
+                    last_beat = beat;
+                    last_change = now;
+                } else if heartbeat_silent(last_change, now, HANDOVER_SILENCE_LIMIT) {
+                    // El hijo puede terminar entre el sondeo y la señal: la
+                    // recolección acotada cubre ambos casos.
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "el hijo puede haber terminado ya; la recolección siguiente cubre ambos casos"
+                    )]
+                    let _ = child.kill();
+                    #[expect(
+                        clippy::let_underscore_must_use,
+                        reason = "el desenlace del hijo muerto no cambia el error que se informa"
+                    )]
+                    let _ = child.wait_timeout(Duration::from_secs(5));
+                    anyhow::bail!(
+                        "el binario nuevo dejó de dar señales de vida durante {} s y se \
+                         terminó: la instalación anterior sigue en su sitio",
+                        HANDOVER_SILENCE_LIMIT.as_secs()
+                    );
+                }
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
         Ok::<_, anyhow::Error>((status, stdout_capture))
     })
     .await
@@ -524,6 +595,28 @@ mod tests {
         let attached = scheduled_staging_message(staging, Scheduling::Attached);
         assert!(attached.starts_with(&detached));
         assert!(attached.contains("recuperación de la siguiente operación"));
+    }
+
+    /// El vigilante solo declara silencio cuando el último cambio es tan antiguo
+    /// como el límite: un hijo que dio señales hace poco sigue vivo.
+    #[test]
+    fn heartbeat_silent_only_after_the_limit() {
+        let start = Instant::now();
+        let limit = Duration::from_secs(600);
+        assert!(!heartbeat_silent(start, start, limit));
+        assert!(!heartbeat_silent(
+            start,
+            start + Duration::from_secs(599),
+            limit
+        ));
+        assert!(heartbeat_silent(start, start + limit, limit));
+        assert!(heartbeat_silent(
+            start,
+            start + Duration::from_secs(601),
+            limit
+        ));
+        // Un instante anterior al último cambio nunca cuenta como silencio.
+        assert!(!heartbeat_silent(start + limit, start, limit));
     }
 
     /// Los puntos del traspaso tienen nombre estable para las pruebas de

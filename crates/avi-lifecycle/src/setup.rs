@@ -413,6 +413,7 @@ pub async fn provision(
     let started = Instant::now();
     let mut total_bytes = 0u64;
     for name in &pending {
+        crate::progress::beat_stage();
         progress.phase_with(&stage::DOWNLOADING, &format!("Descargando {name}…"));
         let transfer = Arc::new(ModelTransfer::new());
         let model_started = Instant::now();
@@ -699,7 +700,6 @@ fn confirm_plan(
             summary: &summary,
             entries: &[],
             assume_yes: options.assume_yes,
-            dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&std::io::stdin()),
         },
         &mut std::io::stdin().lock(),

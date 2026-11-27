@@ -901,14 +901,13 @@ fn update_no_terminal_refuses_destructive() {
 fn child_destructive_without_terminal() {
     let stdin = std::io::stdin();
     let summary = vec!["actualización 0.23.1 → 0.24.0".to_string()];
-    let error = confirm::confirm(
+    let error = confirm::confirm_without_cancel_notice(
         &confirm::Confirmation {
             kind: confirm::Kind::Destructive,
             question: "¿Instalar la versión 0.23.1, anterior a la instalada?",
             summary: &summary,
             entries: &[],
             assume_yes: false,
-            dry_run: false,
             stdin_is_terminal: stdin.is_terminal(),
         },
         &mut stdin.lock(),

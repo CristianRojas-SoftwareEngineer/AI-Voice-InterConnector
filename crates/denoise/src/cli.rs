@@ -545,14 +545,22 @@ pub fn resolve_outputs(
 
 /// Ejecuta el modo `--dry-run` puro sin I/O ni ffmpeg. Sin `--json` escribe el
 /// plan por stdout, una línea por archivo; con `--json` emite un único
-/// envelope `planned` con `files` y `summary`. El aviso de simulación sale por
-/// stderr en los dos modos.
+/// envelope `planned` con `files`, `summary` y `context`, sin etapas. La
+/// cabecera y el cierre `Simulación completada` salen por stderr en los dos
+/// modos.
 pub fn run_dry_run(
     items: &[ResolvedItem],
     overwrite: bool,
     skip_existing: bool,
     json_mode: bool,
 ) -> Result<(), E> {
+    line::context_with(
+        &format!(
+            "Limpieza de ruido · {}",
+            fmt::count(items.len() as u64, "archivo", "archivos")
+        ),
+        &[("files", ContextValue::Int(items.len() as u64))],
+    );
     let mut summary = BatchSummary::default();
     let mut files = Vec::with_capacity(items.len());
 
@@ -596,7 +604,7 @@ pub fn run_dry_run(
         }
     }
 
-    eprintln!("Simulación: no se ha modificado nada.");
+    line::ok("Simulación completada · no se ha borrado nada");
     if json_mode {
         emit_raw_json(json!({ "status": "planned", "files": files, "summary": summary }));
     }

@@ -749,6 +749,7 @@ pub async fn install(
         // ── Paso 5. Parar el daemon; si no se detiene, nada modificado ─────────
         // La etapa solo existe si había un daemon activo; la parada se hace igual.
         if daemon_active {
+            crate::progress::beat_stage();
             progress.phase(&stage::STOPPING);
         }
         let daemon = daemon_stop::stop(&env.data_dir, &env.daemon_addr, control).await;
@@ -772,6 +773,7 @@ pub async fn install(
         if mode == Mode::Install {
             // Una instalación nueva copia el programa; sobre una existente lo
             // reemplaza.
+            crate::progress::beat_stage();
             progress.phase(if replaces.is_some() {
                 &stage::REPLACING
             } else {
@@ -820,6 +822,7 @@ pub async fn install(
         // Con `--no-modify-path` no hay etapa: `apply_path` no toca nada.
         crate::faults::trip(crate::faults::FaultPoint::BeforePathIntegration)?;
         if !options.no_modify_path {
+            crate::progress::beat_stage();
             progress.phase(&stage::PATH_ADD);
         }
         let program_exe = env.program_dir.join(&executable);
@@ -840,6 +843,7 @@ pub async fn install(
 
         // ── Paso 9. Recibo atómico ─────────────────────────────────────────────
         crate::faults::trip(crate::faults::FaultPoint::BeforeReceipt)?;
+        crate::progress::beat_stage();
         progress.phase(&stage::RECEIPT);
         let receipt = InstallReceipt::new(
             &env.version,
@@ -947,7 +951,6 @@ fn confirm(
             summary,
             entries,
             assume_yes: options.assume_yes,
-            dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
         },
         &mut entry,

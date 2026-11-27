@@ -2662,7 +2662,6 @@ async fn handle_voice(json_mode: bool, action: VoiceCommands) -> Result<(), CliE
                         summary: &summary,
                         entries: &entries,
                         assume_yes: yes,
-                        dry_run: false,
                         stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
                     },
                     &mut input,
@@ -4704,7 +4703,6 @@ async fn handle_speech(json_mode: bool, action: SpeechCommands) -> Result<(), Cl
                             summary: &summary,
                             entries: &entries,
                             assume_yes: yes,
-                            dry_run: false,
                             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
                         },
                         &mut input,
@@ -5703,6 +5701,18 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             lifecycle::target::ensure_supported(target)
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
 
+            // La consulta (`--check`) no lleva cabecera; el resto de casos la
+            // escriben antes de tomar el bloqueo.
+            if !check {
+                avi_term::line::context_with(
+                    &format!("Actualización desde la versión {}", receipt.version),
+                    &[
+                        ("current", text_value(receipt.version.as_str())),
+                        ("channel", text_value(channel.as_str())),
+                    ],
+                );
+            }
+
             // ── Paso 1. Recuperación y bloqueo ────────────────────────────────
             // El staging que cree la descarga aún no existe; y cuando exista llevará el
             // token de este proceso, vivo, así que el barrido nunca lo toca.
@@ -5712,6 +5722,13 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
             let recovery = lifecycle::recovery::recover(roots.recovery_roots())
                 .map_err(lifecycle_error_to_cli)?;
+            if !check && !recovery.kept.is_empty() {
+                avi_term::line::warn(format!(
+                    "No se pudo limpiar {} de una operación anterior; \
+                     `ai-voice-interconnector doctor` informa de ello",
+                    avi_term::fmt::count(recovery.kept.len() as u64, "recurso", "recursos")
+                ));
+            }
 
             // ── Paso 3. Resolución de la versión objetivo ────────────────────
             // Con `--version` explícito no se toca la red: la resolución lo usa
@@ -5721,12 +5738,6 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // comando: un solo reloj hasta el cierre. El patrón de bloque
             // externo garantiza que se cierra en cualquier camino: los `?` de
             // la resolución no pueden dejar la fase `checking` abierta.
-            if !check {
-                avi_term::line::context(&format!(
-                    "Actualización desde la versión {}",
-                    receipt.version
-                ));
-            }
             let progress = PhaseProgress::new();
             let result = async {
                 progress.phase(&stage::CHECKING);
@@ -5756,38 +5767,28 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 }
             };
 
-            // ── `--check`: informa sin cambios de actualización ──────────────
+            // La comprobación terminó: su etapa es transitoria y no deja línea.
+            progress.discard_stage();
+
+            // ── `--check`: consulta, sin cambios de actualización ────────────
             // La recuperación del paso 1 ya pudo barrer huérfanos pendientes;
-            // "sin cambios" no incluye ese barrido.
+            // "sin cambios" no incluye ese barrido. Es una consulta: sin
+            // cabecera, sin cierre y sin `status`.
             if check {
                 let available = resolution.verdict != lifecycle::update_resolve::Verdict::UpToDate;
                 drop(lock);
-                // El resultado sale por stdout; en `--json` el envelope lo
-                // sustituye y `result` no escribe nada.
-                if available {
-                    progress.result(
-                        None,
-                        &format!(
-                            "Hay una versión nueva: {} → {}.",
-                            receipt.version, resolution.target
-                        ),
-                    );
-                } else {
-                    progress.result(
-                        None,
-                        &format!("Ya tienes la última versión ({}).", receipt.version),
-                    );
-                }
                 progress.close();
                 if json_mode {
                     emit_raw_json(json!({
-                        "status": "check",
                         "reason": Value::Null,
                         "current": receipt.version,
                         "latest": resolution.target,
                         "update_available": available,
                         "channel": channel.as_str(),
                     }));
+                } else {
+                    println!("Versión instalada: {}", receipt.version);
+                    println!("Versión disponible: {}", resolution.target);
                 }
                 return Ok(Outcome::Done);
             }
@@ -5795,11 +5796,11 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // Iguales sin `--force`: `already_up_to_date`, éxito con 0.
             if resolution.verdict == lifecycle::update_resolve::Verdict::UpToDate {
                 drop(lock);
-                progress.result(
-                    None,
-                    &format!("Ya tienes la última versión ({}).", receipt.version),
-                );
                 progress.close();
+                avi_term::line::ok(&format!(
+                    "Ya tienes la última versión ({})",
+                    receipt.version
+                ));
                 if json_mode {
                     emit_raw_json(compose_update_status_envelope(
                         "already_up_to_date",
@@ -5838,21 +5839,37 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             } else {
                 format!("¿Actualizar a la versión {}?", resolution.target)
             };
-            // La comprobación ya terminó: se cierra su etapa antes de preguntar,
-            // y la pregunta no queda pegada a ninguna línea de fase.
-            progress.end_stage();
-            progress.yield_line();
+            // Recorrido de una fase con N fijo: se mira el daemon antes de
+            // declarar, y la etapa de parada solo existe si hay uno activo.
+            let daemon_active = lifecycle::daemon_stop::is_active(
+                &roots.data_dir,
+                &lifecycle::daemon_stop::default_addr(),
+                &ProductProcesses,
+            )
+            .await;
+            let mut stages = vec![&stage::DOWNLOADING, &stage::VERIFYING];
+            if daemon_active {
+                stages.push(&stage::STOPPING);
+            }
+            stages.push(&stage::REPLACING);
+            avi_term::report::declare(Pipeline::new(vec![phase_spec(
+                "update",
+                "Actualización",
+                "Actualización",
+                stages,
+            )]));
+            // La pregunta queda fuera del reloj del comando y la cancelación la
+            // pinta el cierre especial detrás del separador.
             let decision = {
                 let stdin = std::io::stdin();
                 let mut entry = stdin.lock();
-                lifecycle::confirm::confirm(
+                lifecycle::confirm::ask(
                     &lifecycle::confirm::Confirmation {
                         kind,
                         question: &question,
                         summary: &summary,
                         entries: &entries,
                         assume_yes: yes,
-                        dry_run: false,
                         stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
                     },
                     &mut entry,
@@ -5860,20 +5877,20 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 )
                 .map_err(lifecycle_error_to_cli)?
             };
-            progress.reclaim();
             if decision == lifecycle::confirm::Decision::Cancelled {
                 progress.close();
                 drop(lock);
+                avi_term::line::special_closing(kind.cancelled_closing());
                 if json_mode {
-                    emit_raw_json(compose_update_status_envelope(
+                    let mut body = compose_update_status_envelope(
                         "cancelled",
                         &receipt.version,
                         &resolution.target,
                         channel,
-                    ));
+                    );
+                    body["stages"] = json!([]);
+                    emit_raw_json(body);
                 }
-                // `confirm::confirm` ya escribió «Cancelado.» por stderr: el
-                // handler no lo repite.
                 return Ok(Outcome::Done);
             }
 
@@ -5903,7 +5920,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 )
                 .await
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
-                progress.done_as(&format!("Versión {} descargada", resolution.target));
+                progress.end_stage();
 
                 progress.phase(&stage::VERIFYING);
                 await_with_progress(
@@ -5916,6 +5933,7 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 )
                 .await
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+                progress.end_stage();
                 Ok(staged)
             }
             .await;
@@ -5930,7 +5948,10 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // ── Paso 8. Parar el daemon con el binario actual ────────────────
             // Si no se detiene, `daemon_stop_failed` sin tocar nada: la
             // instalación sigue intacta y el staging se retira.
-            progress.phase(&stage::STOPPING);
+            // La etapa solo existe si había un daemon activo; la parada se hace igual.
+            if daemon_active {
+                progress.phase(&stage::STOPPING);
+            }
             let daemon = lifecycle::daemon_stop::stop(
                 &roots.data_dir,
                 &lifecycle::daemon_stop::default_addr(),
@@ -5945,6 +5966,15 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                 );
                 return Err(lifecycle_error_to_cli(failure.into()));
             }
+            if daemon_active {
+                progress.end_stage();
+            }
+            if daemon.was_running {
+                avi_term::line::warn(
+                    "El daemon estaba en marcha y se detuvo; vuelve a iniciarlo con \
+                     `ai-voice-interconnector daemon start`",
+                );
+            }
 
             // ── Paso 9. Traspaso al binario nuevo ────────────────────────────
             // Se suelta solo el bloqueo principal antes de lanzar: el `self install`
@@ -5953,14 +5983,12 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             // comando de uso se cuela entre la parada del daemon y el reemplazo; el
             // hijo, reconocido por `AVI_HANDOVER_PARENT_PID`, no la toma.
             lock.release_main();
-            // La etapa de parada solo deja línea terminada si había un daemon
-            // que detener.
-            if daemon.was_running {
-                progress.done_as("Daemon detenido");
-            }
             progress.phase(&stage::REPLACING);
             let section = lifecycle::manifest::target_section(target)
                 .map_err(|e| lifecycle_error_to_cli(e.into()))?;
+            // El hijo pinta sus etapas en vivo sobre la misma consola: la línea
+            // viva del padre se cede y no se repinta mientras el hijo escribe.
+            progress.yield_line();
             let handover = lifecycle::update::handover(&lifecycle::update::HandoverRequest {
                 staging_exe: staged.staging.join(section.executable_path()),
                 no_setup,
@@ -5970,19 +5998,25 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
             .await
             .map_err(lifecycle_error_to_cli)?;
             lifecycle::update::cleanup_staging(&staged.staging, &PlatformRemoval, &progress);
-            progress.finish(
-                &format!("Actualizado de {} a {}", receipt.version, resolution.target),
-                &[],
-            );
-
-            // ── Resultado `anterior → nueva` ─────────────────────────────────
             // Sin reinicio automático del daemon: el resultado indica cómo
             // relanzarlo. `setup_failed` es éxito parcial con el mecanismo de
-            // veredicto del brazo `Install`.
+            // veredicto del brazo `Install`: `Reemplazo` queda `✗` y el error
+            // sale tras el cierre.
             let partial = matches!(
                 &handover,
                 lifecycle::update::HandoverOutcome::PartialSetupFailed { .. }
             );
+            if partial {
+                progress.fail_current();
+                progress.close();
+            } else {
+                progress.finish(
+                    &format!("Actualizado de {} a {}", receipt.version, resolution.target),
+                    &[],
+                );
+            }
+
+            // ── Resultado `anterior → nueva` ─────────────────────────────────
             if json_mode {
                 let mut on = json!({
                     "status": "updated",
@@ -5999,24 +6033,14 @@ async fn handle_self(json_mode: bool, action: SelfSub) -> Result<Outcome, CliErr
                     });
                 }
                 emit_raw_json(on);
-            } else {
-                if let lifecycle::update::HandoverOutcome::PartialSetupFailed { cause } = &handover
-                {
-                    avi_term::line::warn(lifecycle::update::partial_setup_message(cause));
-                }
-                if !recovery.kept.is_empty() {
-                    avi_term::line::warn(format!(
-                        "No se pudo limpiar {} de una operación anterior; \
-                         `ai-voice-interconnector doctor` informa de ello",
-                        avi_term::fmt::count(recovery.kept.len() as u64, "recurso", "recursos")
-                    ));
-                }
-                if daemon.was_running {
-                    avi_term::line::warn(
-                        "El daemon estaba en marcha y se detuvo; vuelve a iniciarlo con \
-                         `ai-voice-interconnector daemon start`",
-                    );
-                }
+            }
+            // El error de `setup_failed` lo escribe solo el padre, en los dos modos.
+            if let lifecycle::update::HandoverOutcome::PartialSetupFailed { cause } = &handover {
+                print_error_text(&CliError::new(
+                    ExitCode::from_reason("setup_failed"),
+                    "setup_failed",
+                    lifecycle::update::partial_setup_message(cause),
+                ));
             }
             if partial {
                 Ok(Outcome::Verdict(
@@ -6046,6 +6070,8 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
     // existente —solo lo que el barrido recoge— y reevalúa el informe sobre
     // lo que quedó. Sin el flag, `doctor` solo informa.
     if repair {
+        // La cabecera va antes de tomar el bloqueo.
+        avi_term::line::context_with("Reparación de los restos pendientes", &[]);
         let lock = lifecycle::lock::acquire_exclusive(&env.roots.program_dir)
             .map_err(|e| lifecycle_error_to_cli(e.into()))?;
         // Única etapa del comando: no deja su línea y queda solo el cierre.
@@ -6080,30 +6106,36 @@ fn handle_doctor(json_mode: bool, repair: bool) -> Result<Outcome, CliError> {
         // El motor devuelve el reporte ya serializable y con las nueve claves del
         // contrato
         // más las del contrato: aquí solo se estampa la versión del envelope.
-        let value = serde_json::to_value(&report)
+        let mut value = serde_json::to_value(&report)
             .map_err(|e| CliError::new(ExitCode::Error, "doctor_failed", e.to_string()))?;
+        // Solo `--repair` lleva status: `doctor` a secas es una consulta.
+        if repair {
+            value["status"] = json!("repaired");
+        }
         emit_raw_json(value);
     } else {
-        // Todas las comprobaciones salen por stdout; el veredicto, por stderr.
+        // Todas las comprobaciones salen por stdout.
         println!("{}", doctor_checks_text(&report));
-        if failed {
-            // El reporte ya está en stdout: el error se escribe sin segundo
-            // documento y se sale por veredicto.
-            print_error_text(&CliError::new(
-                ExitCode::Error,
-                "doctor_failed",
-                format!(
-                    "{}.",
-                    avi_term::fmt::count(
-                        report.failed.len() as u64,
-                        "comprobación falla",
-                        "comprobaciones fallan"
-                    )
-                ),
-            ));
-        } else if !repair {
-            avi_term::line::ok("Diagnóstico sin problemas.");
-        }
+    }
+    // El veredicto sale por stderr en los dos modos. El reporte ya está en
+    // stdout: el error se escribe sin segundo documento y se sale por veredicto.
+    // Con `--repair` el cierre de la reparación ya salió, así que un diagnóstico
+    // sin problemas no escribe nada más.
+    if failed {
+        print_error_text(&CliError::new(
+            ExitCode::Error,
+            "doctor_failed",
+            format!(
+                "{}.",
+                avi_term::fmt::count(
+                    report.failed.len() as u64,
+                    "comprobación falla",
+                    "comprobaciones fallan"
+                )
+            ),
+        ));
+    } else if !repair {
+        avi_term::line::ok("Diagnóstico sin problemas.");
     }
 
     if failed {
@@ -7734,7 +7766,6 @@ fn confirm_voice_replacement(
             summary: &summary,
             entries: &entries,
             assume_yes: yes,
-            dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
         },
         &mut input,

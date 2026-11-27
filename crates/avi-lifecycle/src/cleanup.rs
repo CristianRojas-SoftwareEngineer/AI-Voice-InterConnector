@@ -1059,7 +1059,6 @@ fn confirm(plan: &DeletionPlan, options: &Options) -> anyhow::Result<Decision> {
             summary: &summary,
             entries: &[],
             assume_yes: options.assume_yes,
-            dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
         },
         &mut entry,

@@ -941,7 +941,6 @@ fn confirm(summary: &[String], options: &Options) -> anyhow::Result<Decision> {
             summary,
             entries: &[],
             assume_yes: options.assume_yes,
-            dry_run: false,
             stdin_is_terminal: std::io::IsTerminal::is_terminal(&stdin),
         },
         &mut entry,
