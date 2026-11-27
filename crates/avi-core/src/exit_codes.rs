@@ -132,6 +132,7 @@ pub const REASON_CODES: &[(&str, ExitCode)] = &[
     ("audio_backend_unavailable", ExitCode::NotFound),
     ("model_missing", ExitCode::ModelMissing),
     ("daemon_unreachable", ExitCode::DaemonUnreachable),
+    ("daemon_version_mismatch", ExitCode::DaemonUnreachable),
     ("voice_exists", ExitCode::StateConflict),
     ("label_exists", ExitCode::StateConflict),
     ("voice_changed", ExitCode::StateConflict),
@@ -253,6 +254,10 @@ pub const REASON_SOLUTIONS: &[(&str, Option<&str>)] = &[
     (
         "daemon_unreachable",
         Some("Inicia el daemon con `ai-voice-interconnector daemon start` o repite la orden con `--no-daemon`."),
+    ),
+    (
+        "daemon_version_mismatch",
+        Some("Reinícialo con `ai-voice-interconnector daemon restart`."),
     ),
     (
         "voice_exists",
@@ -468,6 +473,7 @@ mod tests {
         ("audio_backend_unavailable", 3),
         ("model_missing", 4),
         ("daemon_unreachable", 5),
+        ("daemon_version_mismatch", 5),
         ("voice_exists", 6),
         ("label_exists", 6),
         ("voice_changed", 6),

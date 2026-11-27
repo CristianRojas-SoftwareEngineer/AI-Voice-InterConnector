@@ -6739,6 +6739,7 @@ async fn transcribe_via_daemon(
     )
     .await
     .map_err(|e| daemon_connect_error(&client_addr, &e))?;
+    check_daemon_version(&resp)?;
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
@@ -6787,6 +6788,7 @@ async fn translate_via_daemon(
     let resp = await_with_progress(progress, fut)
         .await
         .map_err(|e| daemon_connect_error(&client_addr, &e))?;
+    check_daemon_version(&resp)?;
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
@@ -6878,6 +6880,7 @@ async fn daemon_synthesize_streaming(
         )
         .await
         .map_err(|e| daemon_connect_error(&client_addr, &e))?;
+        check_daemon_version(&resp)?;
         if !resp.status().is_success() {
             return Err(daemon_error_from_response(resp).await);
         }
@@ -7124,6 +7127,29 @@ fn decode_audio_event(ev: &Value) -> Result<Vec<i16>, CliError> {
         .chunks_exact(2)
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect())
+}
+
+/// Comprueba que la respuesta del daemon declare la versión del protocolo que
+/// habla esta CLI. Un daemon anterior al binario sigue en marcha tras una
+/// actualización y respondería con formas que la CLI ya no entiende; la cabecera
+/// ausente o distinta se rechaza con un error que nombra la causa y la solución.
+fn check_daemon_version(resp: &reqwest::Response) -> Result<(), CliError> {
+    let expected = avi_core::json_emitter::DAEMON_SCHEMA_VERSION;
+    let received = resp
+        .headers()
+        .get("x-schema-version")
+        .and_then(|value| value.to_str().ok());
+    if received == Some(expected) {
+        return Ok(());
+    }
+    Err(CliError::new(
+        ExitCode::DaemonUnreachable,
+        "daemon_version_mismatch",
+        format!(
+            "El daemon en marcha usa otra versión del protocolo ({}; se esperaba {expected}).",
+            received.unwrap_or("desconocida")
+        ),
+    ))
 }
 
 /// Traduce una respuesta no 2xx del daemon a `CliError`: el `reason` sale del cuerpo
@@ -7524,6 +7550,7 @@ async fn clone_via_daemon(
         )
     })?
     .map_err(|e| daemon_connect_error(&client_addr, &e))?;
+    check_daemon_version(&resp)?;
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }
@@ -7734,6 +7761,7 @@ async fn dub_via_daemon(
         )
     })?
     .map_err(|e| daemon_connect_error(&client_addr, &e))?;
+    check_daemon_version(&resp)?;
     if !resp.status().is_success() {
         return Err(daemon_error_from_response(resp).await);
     }

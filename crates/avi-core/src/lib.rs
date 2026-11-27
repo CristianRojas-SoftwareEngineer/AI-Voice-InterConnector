@@ -13,7 +13,8 @@ pub mod limits;
 
 pub use limits::{
     body_limit_for, synthesis_budget, validate_synthesis_text, MAX_CLONE_REFERENCE_SECS,
-    MAX_DUB_AUDIO_SECS, MAX_TEXT_LENGTH, MAX_TRANSCRIBE_AUDIO_SECS, REQUEST_FAILSAFE,
+    MAX_DUB_AUDIO_SECS, MAX_TEXT_LENGTH, MAX_TRANSCRIBE_AUDIO_SECS,
+    RECOMMENDED_CLONE_REFERENCE_SECS, REQUEST_FAILSAFE,
 };
 
 #[cfg(test)]
@@ -161,7 +162,7 @@ mod tests {
         // Las dos versiones se afirman por separado y con su valor: la de la CLI y
         // la del protocolo del daemon son contratos independientes.
         assert_eq!(CLI_SCHEMA_VERSION, "7");
-        assert_eq!(DAEMON_SCHEMA_VERSION, "7");
+        assert_eq!(DAEMON_SCHEMA_VERSION, "8");
         let rendered = render_envelope(json!({ "status": "ok" }), CLI_SCHEMA_VERSION);
         let parsed: Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(

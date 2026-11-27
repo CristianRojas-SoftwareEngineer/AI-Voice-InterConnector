@@ -71,8 +71,7 @@ pub const CLONING: Stage = permanent(
 );
 pub const WARMING: Stage = permanent("warming", "Calentando el motor…", "Calentamiento");
 pub const REMOVING: Stage = permanent("removing", "Borrando…", "Borrado");
-/// Transitoria: el llamador la hace permanente con `done_as("Daemon detenido")`
-/// solo si se detuvo un daemon.
+/// Transitoria: los recorridos de `daemon` la declaran; `self update` la renombra con `done_as`.
 pub const STOPPING: Stage = transient("stopping", "Deteniendo el daemon…", "Parada del daemon");
 pub const STARTING: Stage = permanent("starting", "Iniciando el daemon…", "Arranque");
 pub const DOWNLOADING: Stage = permanent("downloading", "Descargando…", "Descarga");

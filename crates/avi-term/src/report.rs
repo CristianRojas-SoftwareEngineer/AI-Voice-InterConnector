@@ -41,6 +41,8 @@ pub enum ContextValue {
     Text(String),
     /// Entero sin signo.
     Int(u64),
+    /// Booleano.
+    Bool(bool),
 }
 
 /// Cabecera del comando: el texto que se pinta y los pares del `context`.

@@ -955,15 +955,16 @@ async fn synthesize_handler(
 
     Response::builder()
         .header("content-type", "application/x-ndjson")
-        .header("x-schema-version", json_emitter::DAEMON_SCHEMA_VERSION)
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// POST /transcribe — transcripción de audio (PCM int16 base64)
 ///
-/// El campo es `audio_b64`; el audio es PCM i16 little-endian 16 kHz mono; la
-/// respuesta exitosa es `TranscribeResponse{text}`.
+/// El campo es `audio_b64`; el audio es PCM i16 little-endian 16 kHz mono. Las
+/// validaciones baratas responden en JSON plano; el resto es un stream NDJSON
+/// (`started`, `progress`/`heartbeat` y un `result` con `text` y
+/// `source_language`, o un `error`).
 #[cfg(feature = "native-stt")]
 async fn transcribe_handler(
     State(state): State<SharedState>,
@@ -986,17 +987,20 @@ async fn transcribe_handler(
 
     // El idioma de origen es obligatorio y válido aunque el motor no lo use:
     // Parakeet autodetecta el idioma del audio.
-    if let Err(e) = required_language(&payload, "source_language") {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(with_sv(json!({
-                "status": "error",
-                "reason": e.reason,
-                "message": e.message,
-            }))),
-        )
-            .into_response();
-    }
+    let source_language = match required_language(&payload, "source_language") {
+        Ok(language) => language.to_string(),
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(with_sv(json!({
+                    "status": "error",
+                    "reason": e.reason,
+                    "message": e.message,
+                }))),
+            )
+                .into_response();
+        }
+    };
 
     let denoise = match optional_denoise(&payload) {
         Ok(denoise) => denoise,
@@ -1009,90 +1013,176 @@ async fn transcribe_handler(
 
     // Parakeet no necesita chunking VAD (no degrada con la duración de audio);
     // se transcribe de una sola pasada.
-    let Some(engines) = state.inference_engines.as_ref() else {
+    if state.inference_engines.is_none() {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(with_sv(json!({
             "status": "error", "reason": "daemon_error", "message": "El estado de contrato no puede transcribir."
         })))).into_response();
-    };
+    }
 
+    // Admisión de la limpieza antes de convertir a 48 kHz o reservar buffers
+    // grandes: un turno libre pasa directo, el único esperador espera como
+    // máximo `DENOISE_QUEUE_TIMEOUT` y el resto recibe 503 sin iniciar DSP.
     #[cfg(feature = "native-denoise")]
-    let pcm = if denoise {
-        // Turno antes de convertir a 48 kHz y de reservar buffers grandes.
-        let permit = match state.denoise_gate.begin() {
-            GateBegin::Acquired(permit) => permit,
-            GateBegin::Waiting(waiter) => match waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await {
-                Ok(permit) => permit,
-                Err(_) => return denoise_busy_response(),
-            },
+    let denoise_admission = if denoise {
+        match state.denoise_gate.begin() {
             GateBegin::Busy => return denoise_busy_response(),
-        };
-        let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i16>> {
-            let dir = avi_process::scratch::tempdir("avi_daemon_stt_denoise_")?;
-            let models = denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
-            let cleaned = models
-                .denoise_pcm16_mono(&pcm, 16_000, dir.path())
-                .map_err(anyhow::Error::from)?;
-            drop(permit);
-            Ok(cleaned)
-        });
-        match work.await {
-            Ok(Ok(cleaned)) => cleaned,
-            Ok(Err(e)) => {
-                if let Some(e) = e.downcast_ref::<denoise::errors::E>() {
-                    return denoise_error_response(e);
-                }
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(with_sv(json!({
-                        "status": "error",
-                        "reason": "io_error",
-                        "message": e.to_string(),
-                    }))),
-                )
-                    .into_response();
-            }
-            Err(join_err) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(with_sv(json!({
-                        "status": "error",
-                        "reason": "denoise_failed",
-                        "message": format!("El hilo de limpieza falló: {}", join_err),
-                    }))),
-                )
-                    .into_response();
-            }
+            other => Some(other),
         }
     } else {
-        pcm
+        None
     };
 
-    match avi_core::engine::transcribe_speech(&engines.stt_engine, &pcm) {
-        Ok(text) => {
-            let body = with_sv(json!({ "text": text }));
-            Json(body).into_response()
-        }
-        Err(err) => {
-            // El detalle es texto de biblioteca: va al registro del daemon y
-            // nunca a la respuesta.
-            if let Some(detail) = &err.detail {
-                eprintln!("[daemon] {}: {}", err.reason, detail);
+    // Stream NDJSON: las validaciones baratas ya pasaron en JSON plano;
+    // `started` inmediato, latidos durante la limpieza y la inferencia, y un
+    // evento final `result` o `error`.
+    let (tx, rx) = tokio::sync::mpsc::channel::<String>(32);
+    tokio::spawn(async move {
+        emit_ndjson(&tx, json!({ "event": "started" })).await;
+        #[cfg(feature = "native-denoise")]
+        let pcm = match denoise_admission {
+            None => pcm,
+            Some(admission) => {
+                let permit = match admission {
+                    GateBegin::Acquired(permit) => permit,
+                    GateBegin::Waiting(waiter) => {
+                        let wait = tokio::spawn(async move {
+                            waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await
+                        });
+                        match with_heartbeats(&tx, "denoise_queue", wait).await {
+                            None => return,
+                            Some(Ok(Ok(permit))) => permit,
+                            Some(Ok(Err(_))) | Some(Err(_)) => {
+                                emit_ndjson(
+                                    &tx,
+                                    json!({
+                                        "event": "error",
+                                        "reason": "denoise_busy",
+                                        "message": "La limpieza de ruido está ocupada; reintenta cuando termine la solicitud en curso.",
+                                    }),
+                                )
+                                .await;
+                                return;
+                            }
+                        }
+                    }
+                    GateBegin::Busy => {
+                        unreachable!("la saturación se respondió antes del stream")
+                    }
+                };
+                let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<i16>> {
+                    let dir = avi_process::scratch::tempdir("avi_daemon_stt_denoise_")?;
+                    let models =
+                        denoise::service::ServiceModels::resolve().map_err(anyhow::Error::from)?;
+                    let cleaned = models
+                        .denoise_pcm16_mono(&pcm, 16_000, dir.path())
+                        .map_err(anyhow::Error::from)?;
+                    drop(permit);
+                    Ok(cleaned)
+                });
+                match with_heartbeats(&tx, "denoise", work).await {
+                    None => return,
+                    Some(Ok(Ok(cleaned))) => cleaned,
+                    Some(Ok(Err(e))) => {
+                        let reason = e
+                            .downcast_ref::<denoise::errors::E>()
+                            .map_or("io_error", |e| denoise_failure(e).0);
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": reason,
+                                "message": e.to_string(),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                    Some(Err(join_err)) => {
+                        emit_ndjson(
+                            &tx,
+                            json!({
+                                "event": "error",
+                                "reason": "denoise_failed",
+                                "message": format!("El hilo de limpieza falló: {}", join_err),
+                            }),
+                        )
+                        .await;
+                        return;
+                    }
+                }
             }
-            // Un audio sin voz es entrada inválida (400); cualquier otro
-            // fallo es del motor (500).
-            let status = if err.code == avi_core::exit_codes::ExitCode::InvalidInput {
-                StatusCode::BAD_REQUEST
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            let body = with_sv(json!({
-                "status": "error",
-                "reason": err.reason,
-                "message": err.message,
-            }));
-            (status, Json(body)).into_response()
+        };
+
+        let stt_state = state.clone();
+        let stt_work = tokio::task::spawn_blocking(move || {
+            stt_state
+                .inference_engines
+                .as_ref()
+                .map(|engines| avi_core::engine::transcribe_speech(&engines.stt_engine, &pcm))
+        });
+        match with_heartbeats(&tx, "transcribe", stt_work).await {
+            None => {}
+            Some(Ok(Some(Ok(text)))) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "result",
+                        "text": text,
+                        "source_language": source_language,
+                    }),
+                )
+                .await;
+            }
+            Some(Ok(None)) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "daemon_error",
+                        "message": "El estado de contrato no puede transcribir.",
+                    }),
+                )
+                .await;
+            }
+            Some(Ok(Some(Err(err)))) => {
+                // El detalle es texto de biblioteca: va al registro del daemon
+                // y nunca al evento.
+                if let Some(detail) = &err.detail {
+                    eprintln!("[daemon] {}: {}", err.reason, detail);
+                }
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": err.reason,
+                        "message": err.message,
+                    }),
+                )
+                .await;
+            }
+            Some(Err(join_err)) => {
+                emit_ndjson(
+                    &tx,
+                    json!({
+                        "event": "error",
+                        "reason": "transcription_failed",
+                        "message": format!("El hilo de transcripción falló: {}", join_err),
+                    }),
+                )
+                .await;
+            }
         }
-    }
+    });
+
+    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
+    let body = Body::from_stream(tokio_stream::StreamExt::map(stream, |line| {
+        Ok::<_, std::convert::Infallible>(format!("{}\n", line))
+    }));
+
+    Response::builder()
+        .header("content-type", "application/x-ndjson")
+        .body(body)
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Error de validación de una petición: `reason` es el código del contrato y
@@ -1164,20 +1254,6 @@ fn denoise_failure(e: &denoise::errors::E) -> (&'static str, StatusCode) {
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     (reason, status)
-}
-
-#[cfg(all(feature = "native-denoise", feature = "native-stt"))]
-fn denoise_error_response(e: &denoise::errors::E) -> Response {
-    let (reason, status) = denoise_failure(e);
-    (
-        status,
-        Json(with_sv(json!({
-            "status": "error",
-            "reason": reason,
-            "message": e.to_string(),
-        }))),
-    )
-        .into_response()
 }
 
 /// Clasifica errores tipados de Denoise y WAV; los demás fallos usan el contrato genérico.
@@ -1697,25 +1773,66 @@ async fn voices_clone_handler(
         }
         let event_name = name.clone();
         let clone_qvoice = tmp_qvoice.clone();
-        let clone_work = tokio::task::spawn_blocking(move || {
-            #[cfg(feature = "native-denoise")]
-            let source = if let Some(permit) = permit.take() {
+        // Etapa `denoise`: la limpieza corre aparte del clonado para que el
+        // cliente vea cada etapa. Devuelve el directorio de trabajo (que debe
+        // seguir vivo) y la ruta de la referencia limpia.
+        #[cfg(feature = "native-denoise")]
+        let (work_dir, source) = if let Some(permit) = permit.take() {
+            let denoise_input = tmp_wav.clone();
+            let denoise_work = tokio::task::spawn_blocking(move || {
                 // Modelo resuelto y verificado antes de convertir: un fallo de
                 // modelo no deja audio sin limpiar ni lanza el clonado.
                 let clean = work_dir.path().join("reference_clean.wav");
                 let models = denoise::service::ServiceModels::resolve()?;
                 models
-                    .denoise_wav_file(&tmp_wav, &clean, 24_000, work_dir.path())
+                    .denoise_wav_file(&denoise_input, &clean, 24_000, work_dir.path())
                     .map_err(anyhow::Error::from)?;
                 // El turno cubre solo la inferencia DSP; el clonado TTS puede
                 // durar minutos y no debe bloquear la limpieza de otras rutas.
                 drop(permit);
-                clean
-            } else {
-                tmp_wav.clone()
-            };
-            #[cfg(not(feature = "native-denoise"))]
-            let source = tmp_wav.clone();
+                anyhow::Ok((work_dir, clean))
+            });
+            match with_heartbeats(&tx, "denoise", denoise_work).await {
+                // Cliente desconectado: el hilo bloqueante conserva el
+                // directorio de trabajo y lo borra al retornar.
+                None => return,
+                Some(Ok(Ok(v))) => v,
+                Some(Ok(Err(e))) => {
+                    // Un fallo de DPDFNet (modelo ausente, audio inválido, E/S)
+                    // se clasifica con su propio reason; una referencia
+                    // ilegible se clasifica igual que en transcripción.
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "name": event_name,
+                            "reason": classify_denoise_or_wav_error(&e),
+                            "message": e.to_string(),
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+                Some(Err(join_err)) => {
+                    emit_ndjson(
+                        &tx,
+                        json!({
+                            "event": "error",
+                            "name": event_name,
+                            "reason": "denoise_failed",
+                            "message": format!("El hilo de limpieza falló: {}", join_err),
+                        }),
+                    )
+                    .await;
+                    return;
+                }
+            }
+        } else {
+            (work_dir, tmp_wav.clone())
+        };
+        #[cfg(not(feature = "native-denoise"))]
+        let source = tmp_wav.clone();
+        let clone_work = tokio::task::spawn_blocking(move || {
             avi_tts::clone_voice(&base_model_dir, &source, &clone_qvoice).map(|()| (work_dir, name))
         });
         // `_work_dir` mantiene vivo el directorio hasta el final de la tarea.
@@ -1727,9 +1844,8 @@ async fn voices_clone_handler(
             }
             Some(Ok(Ok(v))) => v,
             Some(Ok(Err(e))) => {
-                // Un fallo de DPDFNet (modelo ausente, audio inválido, E/S) se
-                // clasifica con su propio reason; una referencia ilegible se
-                // clasifica igual que en transcripción.
+                // Un fallo del clonado o de una referencia ilegible se clasifica
+                // igual que en transcripción.
                 let reason = classify_denoise_or_wav_error(&e);
                 emit_ndjson(
                     &tx,
@@ -1761,6 +1877,7 @@ async fn voices_clone_handler(
         if tx.is_closed() {
             return;
         }
+        emit_ndjson(&tx, json!({ "event": "progress", "stage": "save" })).await;
         // Reemplaza la voz y sus locuciones: las del contenido anterior se
         // borran antes de publicar el nuevo, de modo que ninguna locución queda
         // grabada con un timbre que la voz ya no tiene.
@@ -1820,7 +1937,6 @@ async fn voices_clone_handler(
 
     Response::builder()
         .header("content-type", "application/x-ndjson")
-        .header("x-schema-version", json_emitter::DAEMON_SCHEMA_VERSION)
         .body(body)
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -2047,9 +2163,15 @@ async fn dub_handler(
                 let permit = match state.denoise_gate.begin() {
                     GateBegin::Acquired(permit) => permit,
                     GateBegin::Waiting(waiter) => {
-                        match waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await {
-                            Ok(permit) => permit,
-                            Err(_) => {
+                        // La espera del turno emite latidos para que el cliente
+                        // no la confunda con un atasco.
+                        let wait = tokio::spawn(async move {
+                            waiter.wait_timeout(DENOISE_QUEUE_TIMEOUT).await
+                        });
+                        match with_heartbeats(&tx, "denoise_queue", wait).await {
+                            None => return,
+                            Some(Ok(Ok(permit))) => permit,
+                            Some(Ok(Err(_))) | Some(Err(_)) => {
                                 emit_ndjson(
                                 &tx,
                                 json!({
@@ -2352,7 +2474,6 @@ async fn dub_handler(
 
         Response::builder()
             .header("content-type", "application/x-ndjson")
-            .header("x-schema-version", json_emitter::DAEMON_SCHEMA_VERSION)
             .body(body)
             .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
     }
@@ -2430,7 +2551,21 @@ pub fn build_router_with_state(state: Arc<DaemonState>) -> Router {
     );
     #[cfg(feature = "native-translation")]
     let router = router.route("/translate", post(translate_handler));
-    router.with_state(state)
+    // Toda respuesta, en stream o en JSON plano, incluidos los rechazos del
+    // propio framework (413 por cuerpo, 404, 405), lleva la versión del protocolo
+    // para que la CLI detecte un daemon de otra versión.
+    router
+        .with_state(state)
+        .layer(axum::middleware::map_response(stamp_schema_version))
+}
+
+/// Añade a la respuesta la cabecera `x-schema-version` con la versión del protocolo.
+async fn stamp_schema_version(mut response: Response) -> Response {
+    response.headers_mut().insert(
+        "x-schema-version",
+        axum::http::HeaderValue::from_static(json_emitter::DAEMON_SCHEMA_VERSION),
+    );
+    response
 }
 
 /// Punto de entrada de producción. Construye el estado con las rutas de modelo de

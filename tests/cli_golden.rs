@@ -1987,10 +1987,20 @@ struct FakeDaemon {
     addr: std::net::SocketAddr,
     paths: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Valor de la cabecera `x-schema-version` que envía en cada respuesta; por
+    /// defecto, la versión vigente del protocolo. `None` la omite.
+    schema_header: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl FakeDaemon {
+    /// Cambia la cabecera `x-schema-version` que envía (`None` la omite): simula
+    /// un daemon de otra versión del protocolo.
+    fn with_schema_header(self, header: Option<&str>) -> Self {
+        *self.schema_header.lock().unwrap() = header.map(str::to_string);
+        self
+    }
+
     /// Arranca el servidor; toda ruta distinta de `/health` responde `status` con `body`.
     fn start(status: u16, body: Value) -> Self {
         Self::start_with_delay(status, body, Duration::ZERO)
@@ -2043,7 +2053,10 @@ impl FakeDaemon {
         let addr = listener.local_addr().expect("dirección del servidor falso");
         let paths = Arc::new(Mutex::new(Vec::<String>::new()));
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (paths_t, stop_t) = (paths.clone(), stop.clone());
+        let schema_header = Arc::new(Mutex::new(Some(
+            avi_core::json_emitter::DAEMON_SCHEMA_VERSION.to_string(),
+        )));
+        let (paths_t, stop_t, schema_t) = (paths.clone(), stop.clone(), schema_header.clone());
         let handle = std::thread::spawn(move || {
             for conn in listener.incoming() {
                 if stop_t.load(Ordering::SeqCst) {
@@ -2082,11 +2095,17 @@ impl FakeDaemon {
                     .unwrap_or("")
                     .to_string();
                 paths_t.lock().unwrap().push(path.clone());
+                let version_header = schema_t
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(|version| format!("x-schema-version: {version}\r\n"))
+                    .unwrap_or_default();
                 if let (Some(every), true) = (heartbeat, path != "/health") {
                     // Respuesta sin longitud, delimitada por el cierre de la
                     // conexión: termina en cuanto una escritura falla porque el
                     // cliente se fue.
-                    let head = "HTTP/1.1 200 X\r\ncontent-type: application/x-ndjson\r\nconnection: close\r\n\r\n";
+                    let head = format!("HTTP/1.1 200 X\r\ncontent-type: application/x-ndjson\r\n{version_header}connection: close\r\n\r\n");
                     let mut line = format!(
                         "{}\n{}\n",
                         serde_json::json!({ "event": "started", "voice": "default", "text_length": 4 }),
@@ -2122,7 +2141,7 @@ impl FakeDaemon {
                     (status, render())
                 };
                 let response = format!(
-                    "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                    "HTTP/1.1 {code} X\r\ncontent-type: application/json\r\n{version_header}content-length: {}\r\nconnection: close\r\n\r\n{payload}",
                     payload.len()
                 );
                 let _ = sock.write_all(response.as_bytes());
@@ -2132,6 +2151,7 @@ impl FakeDaemon {
             addr,
             paths,
             stop,
+            schema_header,
             handle: Some(handle),
         }
     }
@@ -2287,6 +2307,71 @@ fn dub_daemon_bare_404_exits_1_with_restart_hint_without_transcribe() {
         solution.contains("daemon restart"),
         "la solución debe indicar `daemon restart`: {solution}"
     );
+}
+
+/// Un daemon que no declara la versión del protocolo, o declara otra, se
+/// rechaza con `daemon_version_mismatch` (exit 5) y la solución `daemon restart`,
+/// en texto y con `--json`.
+#[test]
+fn daemon_of_another_protocol_version_is_rejected() {
+    for (tag, header, received) in [
+        ("version_missing", None, "desconocida"),
+        ("version_old", Some("7"), "7"),
+    ] {
+        let fake = FakeDaemon::start(200, serde_json::json!({ "text": "hola" }))
+            .with_schema_header(header);
+        let (sandbox, envs) = contract_sandbox(tag);
+        let dir = sandbox.path();
+        fake.publish_in(&dir.join("data"));
+        let wav = dir.join("input_1s.wav");
+        write_silent_wav(&wav, 1);
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let wav_arg = wav.to_str().expect("ruta UTF-8");
+        let expected_message = format!(
+            "El daemon en marcha usa otra versión del protocolo ({received}; se esperaba {}).",
+            avi_core::json_emitter::DAEMON_SCHEMA_VERSION
+        );
+
+        let (code, actual) = run_json_env(
+            &[
+                "--json",
+                "speech",
+                "transcribe",
+                "--daemon",
+                "--audio",
+                wav_arg,
+                "--source-language",
+                "es",
+            ],
+            &envs,
+        );
+        assert_eq!(code, 5, "{tag}: {actual}");
+        assert_eq!(
+            actual["reason"], "daemon_version_mismatch",
+            "{tag}: {actual}"
+        );
+        assert_eq!(actual["error"], expected_message, "{tag}: {actual}");
+
+        let (code, _stdout, stderr) = run_text_env(
+            &[
+                "speech",
+                "transcribe",
+                "--daemon",
+                "--audio",
+                wav_arg,
+                "--source-language",
+                "es",
+            ],
+            &envs,
+        );
+        assert_eq!(code, 5, "{tag}: {stderr}");
+        assert!(stderr.contains(&expected_message), "{tag}: {stderr}");
+        let solution = stderr
+            .lines()
+            .find(|l| l.starts_with("Solución:"))
+            .unwrap_or_else(|| panic!("{tag}: falta la línea Solución: {stderr}"));
+        assert!(solution.contains("daemon restart"), "{tag}: {solution}");
+    }
 }
 
 /// Un 400 `empty_transcript` de `/transcribe` sale con exit 2, en texto con la

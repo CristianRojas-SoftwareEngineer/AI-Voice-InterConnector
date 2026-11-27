@@ -23,12 +23,15 @@ use std::sync::atomic::Ordering;
 pub const CLI_SCHEMA_VERSION: &str = "7";
 
 /// Versión del **protocolo del daemon** (NDJSON y cabecera `x-schema-version`); el
-/// valor vigente es `"7"`.
+/// valor vigente es `"8"`.
 ///
 /// Es un contrato independiente del envelope de la CLI y sube por sus propios
 /// cambios incompatibles, con la misma regla: retirar o renombrar una clave, o
 /// cambiar su significado, obliga a subirla; añadir una clave nueva no.
-pub const DAEMON_SCHEMA_VERSION: &str = "7";
+///
+/// La versión 8 es un cambio incompatible: `/transcribe` responde con un stream
+/// NDJSON (`started`, `progress`, `result` o `error`) en vez de un JSON único.
+pub const DAEMON_SCHEMA_VERSION: &str = "8";
 
 /// Inserta `schema_version` en un objeto JSON sin imprimirlo.
 ///
@@ -101,8 +104,9 @@ fn stage_object(snapshot: &Snapshot, record: &report::StageRecord) -> Value {
 /// propias del comando:
 /// - `context`: los pares tipados de la cabecera (`{}` si hay cabecera sin
 ///   pares; se omite si no hay cabecera);
-/// - `total_ms`, `stages` y `warnings` (aunque sea `[]`): solo si el registro
-///   tiene al menos una etapa.
+/// - `total_ms` y `stages`: solo si el registro tiene al menos una etapa;
+/// - `warnings`: siempre que haya etapas (aunque sea `[]`) y, sin etapas, solo si
+///   hay al menos un aviso registrado.
 fn merge_report(val: Value, snapshot: &Snapshot) -> Value {
     let mut map = envelope_object(val);
     let mut add = |key: &str, value: Value| {
@@ -116,6 +120,7 @@ fn merge_report(val: Value, snapshot: &Snapshot) -> Value {
                 let value = match value {
                     ContextValue::Text(text) => json!(text),
                     ContextValue::Int(number) => json!(number),
+                    ContextValue::Bool(flag) => json!(flag),
                 };
                 (key.clone(), value)
             })
@@ -134,6 +139,8 @@ fn merge_report(val: Value, snapshot: &Snapshot) -> Value {
                     .collect(),
             ),
         );
+    }
+    if !snapshot.stages.is_empty() || !snapshot.warnings.is_empty() {
         add(
             "warnings",
             Value::Array(
@@ -199,6 +206,37 @@ mod tests {
         line::context("Cabecera sin pares");
         let merged = merge_report(json!({ "status": "ok" }), &report::snapshot());
         assert_eq!(merged, json!({ "status": "ok", "context": {} }));
+    }
+
+    /// Sin etapas, un aviso registrado sí llega a `warnings`; `stages` y
+    /// `total_ms` siguen ausentes.
+    #[test]
+    fn warnings_are_merged_even_without_stages() {
+        let _g = report::test_guard();
+        line::warn("pidfile descartado");
+        let merged = merge_report(json!({ "status": "ok" }), &report::snapshot());
+        assert_eq!(
+            merged,
+            json!({ "status": "ok", "warnings": ["pidfile descartado."] })
+        );
+    }
+
+    /// Un `ContextValue::Bool` se serializa como booleano JSON.
+    #[test]
+    fn boolean_context_values_serialize_as_json_booleans() {
+        let _g = report::test_guard();
+        line::context_with(
+            "Daemon",
+            &[
+                ("auto_restart", ContextValue::Bool(true)),
+                ("warm_voice", ContextValue::Bool(false)),
+            ],
+        );
+        let merged = merge_report(json!({}), &report::snapshot());
+        assert_eq!(
+            merged["context"],
+            json!({ "auto_restart": true, "warm_voice": false })
+        );
     }
 
     /// Con etapas se funden `context` (tipado), `total_ms`, `stages` y

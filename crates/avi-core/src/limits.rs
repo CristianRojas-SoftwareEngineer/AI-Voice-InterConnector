@@ -22,6 +22,12 @@ pub const MAX_TRANSCRIBE_AUDIO_SECS: u64 = 300;
 /// Duración máxima, en segundos, de la referencia de voz de `voice clone`.
 pub const MAX_CLONE_REFERENCE_SECS: u64 = 30;
 
+/// Duración mínima recomendada, en segundos, de la referencia de voz de
+/// `voice clone`. Es una recomendación medida (por debajo de ella la huella de la
+/// voz deja de ser estable) y no un límite: una referencia más corta se acepta y
+/// solo produce un aviso.
+pub const RECOMMENDED_CLONE_REFERENCE_SECS: u64 = 5;
+
 /// Límite de cuerpo, en bytes, de una ruta que recibe audio: el tamaño de
 /// `secs` segundos a `bytes_per_sec` codificado en base64 (factor 4/3, redondeado
 /// hacia arriba) más 1 MiB de holgura para el resto del JSON.

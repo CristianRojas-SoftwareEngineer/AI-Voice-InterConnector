@@ -383,7 +383,10 @@ async fn health_matches_fixture() {
     let fixture_val = fixture("daemon_health.json");
     assert_eq!(actual["status"], fixture_val["status"]);
     assert_eq!(actual["warm"], fixture_val["warm"]);
-    assert_eq!(actual["schema_version"], Value::String("7".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::DAEMON_SCHEMA_VERSION.to_string())
+    );
     // Las claves aditivas `ct2` y `stt` no cambian `schema_version`.
     assert_eq!(actual["engine"], fixture_val["engine"]);
 }
@@ -505,7 +508,7 @@ async fn synthesize_emits_contract_ndjson_stream() {
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("7".to_string()),
+            Value::String(avi_core::json_emitter::DAEMON_SCHEMA_VERSION.to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -576,8 +579,11 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
-    let text = actual["text"].as_str().unwrap_or("");
+    let events = ndjson_events(&bytes);
+    let result = events.last().expect("el stream no está vacío");
+    assert_eq!(result["event"], "result", "stream: {events:?}");
+    assert_eq!(result["source_language"], "es");
+    let text = result["text"].as_str().unwrap_or("");
     let norm = text.to_lowercase();
     // Frases de cada corpus que el modelo transcribe bien (el sintético
     // `sintesis` tiene pronunciación defectuosa → se usan palabras estables).
@@ -598,8 +604,8 @@ async fn transcribe_long_audio_transcribes_in_one_pass() {
 /// Audio de ~80 s de voz real (PCM 16 kHz mono, ~3,4 MB de cuerpo en base64):
 /// supera el límite de cuerpo por defecto de 2 MiB pero cabe en el tope de
 /// transcripción de 300 s, así que `/transcribe` debe procesarlo y responder 200
-/// con texto. Se usa voz y no silencio porque un audio sin voz es 400
-/// `empty_transcript`.
+/// con texto. Se usa voz y no silencio porque un audio sin voz emite el evento
+/// `error` `empty_transcript`.
 #[cfg(feature = "native-stt")]
 #[tokio::test]
 #[ignore = "requiere Parakeet"]
@@ -633,19 +639,98 @@ async fn transcribe_audio_over_default_body_limit_is_accepted() {
         "cuerpo: {}",
         String::from_utf8_lossy(&bytes)
     );
-    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
+    let events = ndjson_events(&bytes);
+    let result = events.last().expect("el stream no está vacío");
+    assert_eq!(result["event"], "result", "stream: {events:?}");
     assert!(
-        !actual["text"].as_str().unwrap_or("").is_empty(),
-        "`text` no debe estar vacío: {actual}"
+        !result["text"].as_str().unwrap_or("").is_empty(),
+        "`text` no debe estar vacío: {result}"
     );
 }
 
-/// Un audio sin voz (3 s de ceros) responde 400 `empty_transcript` con el
-/// mensaje común, no un 200 con texto vacío.
+/// El orden de eventos de `/transcribe` sin limpieza: `started`, `progress`
+/// de `transcribe` (con latidos del mismo `stage`) y `result` con el texto y el
+/// idioma de origen.
 #[cfg(feature = "native-stt")]
 #[tokio::test]
 #[ignore = "requiere Parakeet"]
-async fn transcribe_silence_is_400_empty_transcript() {
+async fn transcribe_emits_started_transcribe_result_in_order() {
+    let state = resource_state();
+    let pcm = avi_audio::load_wav_16k_mono_pcm(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../avi-stt/tests/assets/parakeet_sample_16k.wav"),
+    )
+    .expect("el WAV de muestra debe cargarse");
+    let audio_bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let (status, bytes) = send_to(
+        state,
+        post_json(
+            "/transcribe",
+            serde_json::json!({
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
+                "source_language": "es",
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = ndjson_events(&bytes);
+    assert_eq!(events.first().unwrap()["event"], "started");
+    assert_eq!(events[1]["event"], "progress");
+    assert_eq!(events[1]["stage"], "transcribe");
+    for middle in &events[2..events.len() - 1] {
+        assert_eq!(middle["event"], "heartbeat", "stream: {events:?}");
+        assert_eq!(middle["stage"], "transcribe");
+    }
+    let result = events.last().unwrap();
+    assert_eq!(result["event"], "result");
+    assert_eq!(result["source_language"], "es");
+    assert!(result["text"].is_string());
+}
+
+/// Con limpieza, `denoise` precede a `transcribe`: `started`, `progress`
+/// `denoise` y luego `progress` `transcribe` y `result`.
+#[cfg(all(feature = "native-stt", feature = "native-denoise"))]
+#[tokio::test]
+#[ignore = "requiere Parakeet y el modelo de limpieza"]
+async fn transcribe_with_denoise_emits_denoise_before_transcribe() {
+    let state = resource_state();
+    let pcm = avi_audio::load_wav_16k_mono_pcm(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../avi-stt/tests/assets/parakeet_sample_16k.wav"),
+    )
+    .expect("el WAV de muestra debe cargarse");
+    let audio_bytes: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let (status, bytes) = send_to(
+        state,
+        post_json(
+            "/transcribe",
+            serde_json::json!({
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
+                "source_language": "es",
+                "denoise": true,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = ndjson_events(&bytes);
+    let stages: Vec<&str> = events
+        .iter()
+        .filter(|e| e["event"] == "progress")
+        .map(|e| e["stage"].as_str().unwrap())
+        .collect();
+    assert_eq!(stages, ["denoise", "transcribe"], "stream: {events:?}");
+    assert_eq!(events.last().unwrap()["event"], "result");
+}
+
+/// Un audio sin voz (3 s de ceros) emite un evento `error` con
+/// `empty_transcript` y el mensaje común dentro del stream (HTTP 200), no un
+/// resultado con texto vacío.
+#[cfg(feature = "native-stt")]
+#[tokio::test]
+#[ignore = "requiere Parakeet"]
+async fn transcribe_silence_emits_empty_transcript_event() {
     let state = resource_state();
     let silence = vec![0u8; 3 * 16_000 * 2];
     let (status, bytes) = send_to(
@@ -661,13 +746,15 @@ async fn transcribe_silence_is_400_empty_transcript() {
     .await;
     assert_eq!(
         status,
-        StatusCode::BAD_REQUEST,
+        StatusCode::OK,
         "cuerpo: {}",
         String::from_utf8_lossy(&bytes)
     );
-    let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON");
-    assert_eq!(actual["reason"], "empty_transcript");
-    assert_eq!(actual["message"], "No se reconoció voz en el audio.");
+    let events = ndjson_events(&bytes);
+    let error = events.last().expect("el stream no está vacío");
+    assert_eq!(error["event"], "error", "stream: {events:?}");
+    assert_eq!(error["reason"], "empty_transcript");
+    assert_eq!(error["message"], "No se reconoció voz en el audio.");
 }
 
 /// WAV PCM 16-bit mono 16 kHz de silencio con la duración indicada.
@@ -823,6 +910,111 @@ async fn voices_clone_started_event_names_the_voice_without_human_text() {
         Value::String("viva_clonacion".to_string()),
         "`started` nombra la voz"
     );
+}
+
+/// Sin limpieza, un clonado que falla emite `started`, el `progress` de
+/// `clone` y el `error` final; nunca `denoise` ni `save`, que solo se anuncian
+/// cuando esa etapa empieza.
+#[tokio::test]
+async fn voices_clone_without_denoise_emits_started_clone_then_error() {
+    let tmp = tempfile::Builder::new()
+        .prefix("avi_daemon_clone_order_")
+        .tempdir()
+        .expect("directorio temporal del estado");
+    let mut state = DaemonState::for_contract_tests(
+        VoiceStore::at(tmp.path().join("voices")),
+        SpeechStore::at(tmp.path().join("speech")),
+    )
+    .expect("daemon state");
+    // El modelo Base solo tiene que estar presente: el clonado falla después.
+    state.tts_engine.base_model_dir = Some(tmp.path().join("base-model"));
+    let (status, bytes) = send_to(
+        Arc::new(state),
+        post_json(
+            "/voices/clone",
+            serde_json::json!({
+                "name": "orden_clonacion",
+                "force": true,
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(minimal_wav()),
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = ndjson_events(&bytes);
+    let sequence: Vec<(&str, Option<&str>)> = events
+        .iter()
+        .filter(|e| e["event"] != "heartbeat")
+        .map(|e| (e["event"].as_str().unwrap(), e["stage"].as_str()))
+        .collect();
+    assert_eq!(
+        sequence,
+        [
+            ("started", None),
+            ("progress", Some("clone")),
+            ("error", None)
+        ],
+        "stream: {events:?}"
+    );
+}
+
+/// Las validaciones baratas de `/transcribe` responden en JSON plano y con el
+/// HTTP de siempre, antes de abrir el stream.
+#[cfg(feature = "native-stt")]
+#[tokio::test]
+async fn transcribe_cheap_validations_answer_before_the_stream() {
+    let audio = base64::engine::general_purpose::STANDARD.encode([0u8, 0u8]);
+    let too_long = base64::engine::general_purpose::STANDARD.encode(vec![
+        0u8;
+        (avi_core::MAX_TRANSCRIBE_AUDIO_SECS
+            as usize
+            + 1)
+            * 16_000
+            * 2
+    ]);
+    for (body, reason) in [
+        (
+            serde_json::json!({ "audio_b64": "no es base64!", "source_language": "es" }),
+            "invalid_audio",
+        ),
+        (
+            serde_json::json!({ "audio_b64": audio, "source_language": "fr" }),
+            "usage_error",
+        ),
+        (
+            serde_json::json!({ "audio_b64": too_long, "source_language": "es" }),
+            "audio_too_long",
+        ),
+    ] {
+        let (status, bytes) = send(post_json("/transcribe", body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "razón esperada: {reason}");
+        let actual: Value = serde_json::from_slice(&bytes).expect("respuesta JSON plana");
+        assert_eq!(actual["reason"], reason);
+    }
+}
+
+/// Toda respuesta del daemon, de error o de `/health`, lleva la cabecera
+/// `x-schema-version` con la versión del protocolo.
+#[tokio::test]
+async fn every_response_carries_the_schema_version_header() {
+    let expected = avi_core::json_emitter::DAEMON_SCHEMA_VERSION;
+    for request in [
+        get("/health"),
+        get("/ruta-inexistente"),
+        post_json("/synthesize", serde_json::json!({})),
+    ] {
+        let response = build_router_with_state(test_state())
+            .oneshot(request)
+            .await
+            .expect("el router debe responder");
+        assert_eq!(
+            response
+                .headers()
+                .get("x-schema-version")
+                .and_then(|v| v.to_str().ok()),
+            Some(expected)
+        );
+    }
 }
 
 /// Invariante del protocolo: los eventos del stream no llevan texto humano. El
@@ -981,7 +1173,7 @@ async fn voices_clone_daemon_precomputed_true() {
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("7".to_string()),
+            Value::String(avi_core::json_emitter::DAEMON_SCHEMA_VERSION.to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -1027,7 +1219,64 @@ async fn voices_clone_daemon_precomputed_true() {
             );
         }
     }
+    // Sin limpieza solo se anuncian el clonado y el guardado, en ese orden.
+    let stages: Vec<&str> = events
+        .iter()
+        .filter(|e| e["event"] == "progress")
+        .map(|e| e["stage"].as_str().unwrap())
+        .collect();
+    assert_eq!(stages, ["clone", "save"], "stream: {events:?}");
     let state = clone_state();
+    let _ = avi_store::remove_voice(&state.voice_store, &state.speech_store, &vn(&name));
+}
+
+/// Con `denoise`, el clonado anuncia sus etapas en el orden `denoise`, `clone`,
+/// `save` y termina en `result`.
+#[cfg(feature = "native-denoise")]
+#[tokio::test]
+#[ignore = "requiere el modelo Base de clonado, el modelo de limpieza y el binario del motor"]
+async fn voices_clone_with_denoise_emits_denoise_clone_save_result_in_order() {
+    require_base_model();
+    let _engine = engine_exclusive().await;
+    require_clone_binary();
+    let wav = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../avi-stt/tests/assets/parakeet_sample_16k.wav");
+    let audio_bytes = std::fs::read(&wav).expect("el WAV de muestra debe leerse");
+    let name = format!("clone_denoise_{}", std::process::id());
+    let (status, bytes) = send_to(
+        clone_state(),
+        post_json(
+            "/voices/clone",
+            serde_json::json!({
+                "name": name,
+                "force": true,
+                "denoise": true,
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio_bytes),
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let events = ndjson_events(&bytes);
+    // La precarga en segundo plano arranca el motor residente: se espera y se
+    // detiene antes de las aserciones para que no sobreviva a la prueba.
+    let state = clone_state();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while matches!(*state.warm.read().unwrap(), WarmState::Warming) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "la precarga del clon no terminó en 300 s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    state.tts_engine.shutdown();
+    let stages: Vec<&str> = events
+        .iter()
+        .filter(|e| e["event"] == "progress")
+        .map(|e| e["stage"].as_str().unwrap())
+        .collect();
+    assert_eq!(stages, ["denoise", "clone", "save"], "stream: {events:?}");
+    assert_eq!(events.last().unwrap()["event"], "result");
     let _ = avi_store::remove_voice(&state.voice_store, &state.speech_store, &vn(&name));
 }
 
@@ -1492,7 +1741,7 @@ async fn dub_emits_contract_ndjson_stream_without_human_text() {
     for e in &events {
         assert_eq!(
             e["schema_version"],
-            Value::String("7".to_string()),
+            Value::String(avi_core::json_emitter::DAEMON_SCHEMA_VERSION.to_string()),
             "todo evento NDJSON lleva schema_version"
         );
     }
@@ -1579,6 +1828,58 @@ async fn dub_control_and_denoise_deliver_audio_events() {
         }
         let pcm = delivered_pcm(&events);
         assert!(!pcm.is_empty(), "el doblaje no debe estar vacío");
+    }
+}
+
+/// Con dos doblajes con limpieza a la vez, el que espera su turno anuncia
+/// `progress` de `denoise_queue` (con latidos mientras espera) y termina en
+/// `result`, igual que el que tomó el turno.
+#[cfg(all(
+    feature = "native-stt",
+    feature = "native-translation",
+    feature = "native-denoise"
+))]
+#[tokio::test]
+#[ignore = "requiere Parakeet, DPDFNet y el binario del motor Qwen3-TTS"]
+async fn dub_waiting_for_the_denoise_turn_announces_denoise_queue() {
+    let _registry = lock_registry().await;
+    let _engine = engine_exclusive().await;
+    require_clone_binary();
+    let state = resource_state();
+    let input =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../denoise/tests/data/voz_noisy.wav");
+    let pcm = avi_audio::load_wav_16k_mono_pcm(input).expect("WAV ruidoso válido");
+    let audio: Vec<u8> = pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let request = || {
+        post_json(
+            "/dub",
+            serde_json::json!({
+                "audio_b64": base64::engine::general_purpose::STANDARD.encode(&audio),
+                "source_language": "es",
+                "target_language": "es",
+                "voice": "default",
+                "denoise": true,
+            }),
+        )
+    };
+    let ((status_a, bytes_a), (status_b, bytes_b)) = tokio::join!(
+        send_to(state.clone(), request()),
+        send_to(state.clone(), request())
+    );
+    assert_eq!(status_a, StatusCode::OK);
+    assert_eq!(status_b, StatusCode::OK);
+    let streams = [ndjson_events(&bytes_a), ndjson_events(&bytes_b)];
+    let queued = streams
+        .iter()
+        .filter(|events| {
+            events
+                .iter()
+                .any(|e| e["event"] == "progress" && e["stage"] == "denoise_queue")
+        })
+        .count();
+    assert_eq!(queued, 1, "solo el segundo doblaje espera turno");
+    for events in &streams {
+        assert_eq!(events.last().unwrap()["event"], "result", "{events:?}");
     }
 }
 
