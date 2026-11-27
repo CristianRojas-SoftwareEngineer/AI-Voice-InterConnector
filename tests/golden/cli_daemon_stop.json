@@ -1,7 +1,16 @@
 {
-  "schema_version": "6",
+  "schema_version": "7",
   "status": "not_running",
   "daemon": "stopped",
   "was_running": false,
-  "daemon_fully_stopped": true
+  "daemon_fully_stopped": true,
+  "context": {},
+  "stages": [
+    {
+      "stage": "stopping",
+      "phase": null,
+      "transient": true
+    }
+  ],
+  "warnings": []
 }

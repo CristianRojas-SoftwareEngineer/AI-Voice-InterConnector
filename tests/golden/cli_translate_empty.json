@@ -1,5 +1,5 @@
 {
-  "schema_version": "6",
+  "schema_version": "7",
   "error": "El texto a traducir está vacío.",
   "reason": "empty_text"
 }

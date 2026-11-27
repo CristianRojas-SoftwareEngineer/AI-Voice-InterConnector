@@ -67,7 +67,7 @@ const ENVELOPE_MARKERS: [&str; 3] = ["envelope", "--json", "CLI"];
 /// Vocabulario cerrado de `status` por comando, derivado del código que lo emite, con
 /// la fuente de la que se copió. Los simulacros se leen como planes (`planned`),
 /// la parada toma el veredicto del motor y `say`/`dub` solo emiten su desenlace.
-const STATUS_BY_COMMAND: [(&str, &[&str], &str); 6] = [
+const STATUS_BY_COMMAND: [(&str, &[&str], &str); 10] = [
     (
         "daemon stop",
         &["not_running", "shutdown_sent", "still_running"],
@@ -91,9 +91,17 @@ const STATUS_BY_COMMAND: [(&str, &[&str], &str); 6] = [
     ),
     (
         "speech synthesize",
-        &["success", "skipped", "discarded"],
+        &["synthesized", "skipped", "discarded"],
         "src/main.rs",
     ),
+    ("speech transcribe", &["transcribed"], "src/main.rs"),
+    (
+        "speech denoise",
+        &["completed", "planned"],
+        "crates/denoise/src/cli.rs",
+    ),
+    ("speech play", &["played"], "src/main.rs"),
+    ("speech remove", &["removed", "cancelled"], "src/main.rs"),
     ("speech say", &["reproduced"], "src/main.rs"),
     ("speech dub", &["dubbed"], "src/main.rs"),
 ];

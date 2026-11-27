@@ -8,7 +8,7 @@
 //!
 //! Invoca el binario compilado con argumentos fijos y compara `stdout` (JSON) y el
 //! código de salida contra fixtures en `tests/golden/`, verificando el contrato de
-//! la CLI: `schema_version == "6"` (vía
+//! la CLI: `schema_version == "7"` (vía
 //! `avi_core::json_emitter`) y los códigos de salida de `avi_core::exit_codes`.
 //!
 //! Se ubica como test de integración del paquete raíz (y no dentro de `src/main.rs`)
@@ -430,6 +430,25 @@ fn fixture(name: &str) -> Value {
         .unwrap_or_else(|e| panic!("no se pudo leer la fixture {}: {}", path.display(), e));
     serde_json::from_str(&content)
         .unwrap_or_else(|e| panic!("fixture {} no es JSON válido: {}", name, e))
+}
+
+/// Quita del envelope los instantes (`total_ms` y los `start_ms`/`end_ms` de cada
+/// etapa), que cambian en cada ejecución, y conserva la forma: identificadores de
+/// etapa, fases y desenlaces. Es lo que se compara contra una fixture cuyo comando
+/// lleva etapas.
+fn without_instants(mut envelope: Value) -> Value {
+    if let Some(object) = envelope.as_object_mut() {
+        object.remove("total_ms");
+        if let Some(stages) = object.get_mut("stages").and_then(Value::as_array_mut) {
+            for stage in stages {
+                if let Some(stage) = stage.as_object_mut() {
+                    stage.remove("start_ms");
+                    stage.remove("end_ms");
+                }
+            }
+        }
+    }
+    envelope
 }
 
 /// El lock envenenado se propaga como fallo visible sin tolerancia al
@@ -1452,7 +1471,10 @@ fn speech_transcribe_with_audio_matches_contract() {
         &inst.args(),
     );
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
     assert_eq!(actual["source_language"], Value::String("es".to_string()));
     let text = actual["text"].as_str().expect("`text` debe ser un string");
     assert!(!text.is_empty(), "`text` no debe estar vacío");
@@ -2343,7 +2365,10 @@ fn cleanup_without_category_exits_2_with_usage_error() {
     let (code, actual) = run_json(&["--json", "cleanup"]);
     assert_eq!(code, 2, "cleanup sin flags debe ser InvalidInput");
     assert_eq!(actual["reason"], Value::String("usage_error".to_string()));
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
 }
 
 /// El mismo gate, afirmado por su salida y su `reason` y nada más: es lo que la puerta
@@ -2369,7 +2394,10 @@ fn cleanup_voices_dry_run_reports_planned() {
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
 }
 
 /// `--synthetic-speech` en simulación emite el mismo envelope y el alcance de la categoría.
@@ -2386,7 +2414,10 @@ fn cleanup_synthetic_speech_dry_run_reports_planned() {
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
 }
 
 /// `--model` en simulación nombra una vez la raíz exclusiva de la aplicación en `removed`.
@@ -2405,7 +2436,10 @@ fn cleanup_model_dry_run_reports_planned() {
     );
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
     let roots = dir.join("cache").join(avi_shared::paths::MODELS_SUBDIR);
     assert!(
         actual["removed"]
@@ -2432,7 +2466,10 @@ fn cleanup_all_dry_run_reports_planned() {
     assert!(actual["removed"].is_array());
     assert!(actual["planned"].is_array());
     assert_eq!(actual["planned"], actual["removed"]);
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
 }
 
 /// La **única** prueba de `cleanup` que carga una fixture real: compara contra `tests/golden/cli_cleanup_dry_run.json`.
@@ -2445,7 +2482,10 @@ fn cleanup_dry_run_matches_fixture() {
     assert_eq!(code, 0);
     assert_eq!(actual["status"], Value::String("planned".to_string()));
     assert!(actual.get("dry_run").is_none());
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
     // fixture de referencia para el simulacro debe coincidir en status y plan
     let expected = fixture("cli_cleanup_dry_run.json");
     assert_eq!(actual["status"], expected["status"]);
@@ -2465,7 +2505,10 @@ fn cleanup_dry_run_reports_preserved_program() {
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "cleanup", "--voices", "--dry-run"], &envs);
     assert_eq!(code, 0, "{actual}");
-    assert_eq!(actual["schema_version"], "6");
+    assert_eq!(
+        actual["schema_version"],
+        avi_core::json_emitter::CLI_SCHEMA_VERSION
+    );
     assert!(
         actual["preserved"].as_array().unwrap().iter().any(|entry| {
             entry["path"] == program.display().to_string()
@@ -2494,7 +2537,7 @@ fn cleanup_dry_run_json_opens_no_phase_and_leaves_stdout_to_the_envelope() {
     assert_eq!(code, 0, "el simulacro de cleanup sale 0");
 
     // stderr: la simulación no abre ninguna etapa, porque no borra nada.
-    let fases: Vec<&str> = stderr.lines().filter(|l| l.starts_with("… ")).collect();
+    let fases: Vec<&str> = stderr.lines().filter(|l| l.contains("● ")).collect();
     assert!(
         fases.is_empty(),
         "una simulación no anuncia la etapa de borrado: {stderr}"
@@ -2506,12 +2549,15 @@ fn cleanup_dry_run_json_opens_no_phase_and_leaves_stdout_to_the_envelope() {
 
     // stdout: solo el envelope, sin una sola línea de progreso.
     assert!(
-        !stdout.contains("… "),
+        !stdout.contains("● "),
         "el progreso no puede aparecer en stdout: {stdout}"
     );
     let envelope: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("stdout no es JSON válido ({}): {:?}", e, stdout));
-    assert_eq!(envelope["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        envelope["schema_version"],
+        avi_core::json_emitter::CLI_SCHEMA_VERSION
+    );
     assert_eq!(envelope["status"], Value::String("planned".to_string()));
 }
 
@@ -3024,8 +3070,8 @@ fn doctor_json_emits_exactly_one_object_even_on_failure() {
     );
     assert_eq!(
         value["schema_version"],
-        Value::String("6".to_string()),
-        "el envelope de la CLI sube a \"6\""
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string()),
+        "el envelope de la CLI lleva la versión de esquema vigente"
     );
     // Unmanaged carece de receipt e integración PATH: doctor integral debe fallar.
     assert_eq!(value["channel"], "unmanaged");
@@ -3144,7 +3190,10 @@ fn voice_list_respects_envelope_contract() {
     // invariantes de contrato (envelope + presencia de `default`).
     let (code, actual) = run_json(&["--json", "voice", "list"]);
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
     let voices = actual["voices"]
         .as_array()
         .expect("`voices` debe ser un array");
@@ -3193,7 +3242,10 @@ fn translate_es_to_en_produces_translation() {
         &inst.args(),
     );
     assert_eq!(code, 0);
-    assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+    assert_eq!(
+        actual["schema_version"],
+        Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+    );
     assert_eq!(actual["source_language"], Value::String("es".to_string()));
     assert_eq!(actual["target_language"], Value::String("en".to_string()));
     let translated = actual["translated"]
@@ -4566,6 +4618,30 @@ mod tts {
         assert_eq!(removing.len(), 1, "{envelope}");
     }
 
+    /// `speech remove --yes` es de etapa única: stderr no pinta línea de etapa (la deja el
+    /// cierre) y el JSON lleva exactamente esa etapa, `removing`, sin fallo ni omisión.
+    #[test]
+    fn speech_remove_yes_stderr_stages_match_the_json_stages() {
+        let inst = IsolatedInstance::new("speech_remove_parity");
+        avi_store::VoiceStore::at(inst.dir.join("voices"))
+            .ensure_initialized()
+            .expect("voces de fábrica inicializadas");
+        let label = unique_label("parity");
+        create_utterance(&inst, "default", &label);
+        let (code, stdout, stderr) = run_capture(
+            &["--json", "speech", "remove", "--label", &label, "--yes"],
+            &inst.contract_args(),
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        super::parity::assert_stage_parity(&stderr, &envelope);
+        let stages = envelope["stages"].as_array().expect("stages es una lista");
+        assert_eq!(stages.len(), 1, "{envelope}");
+        assert_eq!(stages[0]["stage"], "removing", "{envelope}");
+        assert!(stages[0].get("failed").is_none(), "{envelope}");
+        assert!(stages[0].get("skipped").is_none(), "{envelope}");
+    }
+
     /// `speech remove` sin terminal y sin `--yes` deja la cabecera y el error detrás del
     /// separador solo si hubo etapas; aquí, ninguna: cabecera, plan y error, sin borrar.
     #[test]
@@ -4680,7 +4756,10 @@ mod tts {
             &inst.contract_args(),
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         let entries = actual["speech"]
             .as_array()
             .expect("`speech` debe ser un array");
@@ -4750,7 +4829,10 @@ mod tts {
         create_utterance(&inst, "otra", &label_other);
         let (code, actual) = run_json_env(&["--json", "speech", "list"], &inst.contract_args());
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         let entries = actual["speech"]
             .as_array()
             .expect("`speech` debe ser un array");
@@ -5262,7 +5344,11 @@ mod tts {
             assert_eq!(output.status.code(), Some(2), "{args:?}");
             let actual: Value = serde_json::from_slice(&output.stdout).expect("envelope JSON");
             assert_eq!(actual["reason"], "usage_error", "{args:?}: {actual}");
-            assert_eq!(actual["schema_version"], "6", "{args:?}: {actual}");
+            assert_eq!(
+                actual["schema_version"],
+                avi_core::json_emitter::CLI_SCHEMA_VERSION,
+                "{args:?}: {actual}"
+            );
         }
     }
 
@@ -5303,7 +5389,11 @@ mod tts {
             let actual: Value = serde_json::from_slice(&output.stdout).expect("envelope JSON");
             assert_eq!(code, 2, "{args:?}: {actual}");
             assert_eq!(actual["reason"], expected_reason, "{args:?}: {actual}");
-            assert_eq!(actual["schema_version"], "6", "{args:?}: {actual}");
+            assert_eq!(
+                actual["schema_version"],
+                avi_core::json_emitter::CLI_SCHEMA_VERSION,
+                "{args:?}: {actual}"
+            );
         }
     }
 
@@ -5590,7 +5680,10 @@ mod tts {
             &inst.args(),
         );
         assert_eq!(code, 0);
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(actual["precomputed"], Value::Bool(false));
         assert_clone_envelope_keys(&actual);
@@ -5664,7 +5757,9 @@ mod tts {
     }
 
     /// El envelope de `voice clone` es idéntico en la vía local y en la del
-    /// daemon: exactamente `name`, `speech`, `precomputed` y `schema_version`.
+    /// daemon: las claves propias del comando (`name`, `speech`, `precomputed` y
+    /// `removed_speech`) más `schema_version` y las comunes del envelope (`context`,
+    /// `stages`, `total_ms` y `warnings`).
     fn assert_clone_envelope_keys(actual: &Value) {
         let mut keys: Vec<&str> = actual
             .as_object()
@@ -5676,11 +5771,15 @@ mod tts {
         assert_eq!(
             keys,
             [
+                "context",
                 "name",
                 "precomputed",
                 "removed_speech",
                 "schema_version",
-                "speech"
+                "speech",
+                "stages",
+                "total_ms",
+                "warnings"
             ],
             "{actual}"
         );
@@ -6509,8 +6608,11 @@ mod tts {
             pid.map(u64::from),
             "status informa el PID del daemon registrado: {actual}"
         );
-        // Cuando está running, el fixture running debe coincidir (schema_version 6)
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        // Cuando está running, el fixture running debe coincidir (schema_version 7)
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         let expected = fixture("cli_daemon_status_running.json");
         // Comparar daemon y engine
         assert_eq!(actual["daemon"], expected["daemon"]);
@@ -6533,7 +6635,10 @@ mod tts {
         let (code, actual) = run_json_env(&["--json", "daemon", "status"], &a);
         assert_eq!(code, 0, "daemon status con daemon debe salir 0: {actual}");
         assert_eq!(actual["daemon"], Value::String("running".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         stop_instance(&inst, "daemon_status_with_isolated_daemon_reports_running");
         hit_end("tts::daemon_status_with_isolated_daemon_reports_running");
     }
@@ -7193,7 +7298,7 @@ mod tts {
 
     /// Cuerpo de `/health` de un daemon en servicio y ya caliente.
     const HEALTH_WARM: &str =
-        r#"{"status":"ready","warm":"warm","engine":"rust_native","schema_version":"6"}"#;
+        r#"{"status":"ready","warm":"warm","engine":"rust_native","schema_version":"7"}"#;
 
     /// Un daemon propio que responde a `/health` sale `running` con su PID, el
     /// mismo que `daemon start` informa al lanzarlo.
@@ -7674,7 +7779,10 @@ mod tts {
             &a,
         );
         assert_eq!(code, 0, "translate --daemon debe delegar con exit 0");
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         assert!(actual.get("translated").is_some());
         let expected = fixture("cli_translate_daemon.json");
         assert_eq!(actual["source_language"], expected["source_language"]);
@@ -7771,7 +7879,10 @@ mod tts {
             t0.elapsed().as_millis()
         ));
         assert_eq!(code, 0, "voice clone --daemon debe delegar con exit 0");
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         assert_eq!(actual["name"], Value::String(name.clone()));
         assert_eq!(
             actual["precomputed"],
@@ -7961,7 +8072,10 @@ mod tts {
         );
         assert_eq!(code, 0, "dub passthrough --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         // el envelope no lleva `audio_path`; quedan la transcripción (`text`) y el
         // texto sintetizado (`translated`), iguales en passthrough.
         assert!(
@@ -8017,7 +8131,10 @@ mod tts {
         );
         assert_eq!(code, 0, "dub con traducción --daemon debe salir 0");
         assert_eq!(actual["status"], Value::String("dubbed".to_string()));
-        assert_eq!(actual["schema_version"], Value::String("6".to_string()));
+        assert_eq!(
+            actual["schema_version"],
+            Value::String(avi_core::json_emitter::CLI_SCHEMA_VERSION.to_string())
+        );
         // el envelope no lleva `audio_path`; `text` es la transcripción y
         // `translated` el texto traducido que se sintetiza, distintos entre sí.
         assert!(
@@ -8905,7 +9022,10 @@ fn root_help_shows_package_description() {
 fn jsonroot_help_is_payload() {
     let (code, bare) = run_json(&["--json"]);
     assert_eq!(code, 0);
-    assert_eq!(bare["schema_version"], "6");
+    assert_eq!(
+        bare["schema_version"],
+        avi_core::json_emitter::CLI_SCHEMA_VERSION
+    );
     let text = bare["help"].as_str().expect("`help` es texto");
     assert!(text.contains("Uso:"), "la ayuda lleva `Uso:`: {text}");
     for args in [["--json", "--help"], ["--json", "-h"]] {
@@ -9226,7 +9346,7 @@ fn daemon_stop_without_daemon_matches_fixture() {
     let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let (code, actual) = run_json_env(&["--json", "daemon", "stop"], &envs);
     assert_eq!(code, 0, "daemon stop sin daemon debe salir 0: {actual}");
-    assert_eq!(actual, fixture("cli_daemon_stop.json"));
+    assert_eq!(without_instants(actual), fixture("cli_daemon_stop.json"));
 }
 
 /// `daemon stop` con el sondeo vivo tras el plazo emite el veredicto completo
@@ -9459,7 +9579,10 @@ fn uninstall_dry_run_keep_data_reports_preserved_models() {
         &envs,
     );
     assert_eq!(code, 0, "{actual}");
-    assert_eq!(actual["schema_version"], "6");
+    assert_eq!(
+        actual["schema_version"],
+        avi_core::json_emitter::CLI_SCHEMA_VERSION
+    );
     assert!(
         actual["preserved"].as_array().unwrap().iter().any(|entry| {
             entry["path"] == models.display().to_string()
@@ -9581,6 +9704,9 @@ fn dub_daemon_success_reports_first_audio_and_stalls() {
     let dir = sandbox.path();
     let fake = FakeDaemon::start_events(vec![
         serde_json::json!({ "event": "started", "text_length": 4 }),
+        // El daemon real anuncia la síntesis antes de entregar audio; sin este
+        // evento la etapa `Síntesis` no se abre y no hay origen del primer audio.
+        serde_json::json!({ "event": "progress", "stage": "synthesis" }),
         silent_audio_event(1),
         silent_audio_event(1),
         serde_json::json!({
@@ -10688,7 +10814,28 @@ fn dub_daemon_renders_phases_and_keeps_stderr_with_json() {
 
     let (code, json_stdout, json_stderr) = dub_against_fake_daemon_events("dub-phases-json", true);
     assert_eq!(code, 0, "{json_stderr}");
-    assert_eq!(text_stderr, json_stderr, "--json no cambia stderr");
+    // `Síntesis` y `Reproducción` se solapan y el orden en que terminan sus líneas
+    // depende de si la primera muestra suena antes o después del `result`, que el
+    // daemon falso envía sin pausa: se comparan las líneas sin los datos y el orden
+    // que esa carrera cambia.
+    let without_overlap_race = |stderr: &str| {
+        let mut lines: Vec<String> = stderr
+            .lines()
+            .map(|line| {
+                line.replace(" · primer audio <t>", "")
+                    .replace(" · en paralelo con la síntesis", "")
+                    .trim_end()
+                    .to_string()
+            })
+            .collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(
+        without_overlap_race(&text_stderr),
+        without_overlap_race(&json_stderr),
+        "--json no cambia stderr"
+    );
     let envelope: Value = serde_json::from_str(json_stdout.trim())
         .unwrap_or_else(|e| panic!("stdout debe ser un único envelope: {e}\n{json_stdout}"));
     assert_eq!(envelope["status"], "dubbed", "{envelope}");
@@ -10716,4 +10863,171 @@ fn dub_daemon_renders_phases_and_keeps_stderr_with_json() {
         ],
         "{envelope}"
     );
+}
+
+/// Paridad entre lo que stderr pinta y lo que el envelope JSON registra: cada etapa
+/// numerada que se ve en la terminal aparece en `stages` con el mismo identificador,
+/// la misma fase y el mismo desenlace, y el JSON no lleva etapas que la terminal no
+/// muestre. Son dos vistas del mismo registro de ejecución y no pueden divergir.
+mod parity {
+    use super::*;
+
+    /// Una etapa numerada tal como se ve en stderr.
+    #[derive(Debug, PartialEq, Eq)]
+    struct PaintedStage {
+        /// Identificador de catálogo de la etapa.
+        stage: &'static str,
+        /// Posición de su fase entre las que muestran título (0 si no hay títulos).
+        phase_index: usize,
+        /// `✓`, `✗` o `○`.
+        symbol: char,
+    }
+
+    /// Nombre de columna y su identificador de catálogo, para las etapas que
+    /// recorren los comandos de este módulo.
+    const STAGE_NAMES: [(&str, &str); 7] = [
+        ("Lectura", "reading"),
+        ("Transcripción", "transcribing"),
+        ("Traducción", "translating"),
+        ("Síntesis", "synthesizing"),
+        ("Guardado", "saving"),
+        ("Borrado", "removing"),
+        ("Limpieza", "denoising"),
+    ];
+
+    /// Etapas numeradas (`  [n/N] <símbolo> <Nombre> …`) de un stderr, con el índice
+    /// de la fase bajo cuyo título se pintan.
+    fn painted_stages(stderr: &str) -> Vec<PaintedStage> {
+        let lines: Vec<&str> = stderr.lines().collect();
+        let mut titles: usize = 0;
+        let mut painted = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let numbered = line.trim_start().starts_with('[');
+            // Un título de fase es una línea sin sangría seguida de una etapa numerada.
+            if !line.starts_with(' ')
+                && !line.is_empty()
+                && lines.get(i + 1).is_some_and(|next| next.starts_with("  ["))
+            {
+                titles += 1;
+            }
+            if !numbered {
+                continue;
+            }
+            let after_number = line.split_once("] ").expect("`[n/N] ` cierra con `] `").1;
+            let mut chars = after_number.chars();
+            let symbol = chars.next().expect("símbolo de la etapa");
+            // Sin terminal, cada etapa se anuncia con `●` antes de terminar: no es su línea final.
+            if symbol == '●' {
+                continue;
+            }
+            let name = chars.as_str().trim_start();
+            let (_, stage) = STAGE_NAMES
+                .iter()
+                .find(|(column, _)| name.starts_with(column))
+                .unwrap_or_else(|| panic!("etapa pintada sin catalogar: {line}"));
+            painted.push(PaintedStage {
+                stage,
+                phase_index: titles.saturating_sub(1),
+                symbol,
+            });
+        }
+        painted
+    }
+
+    /// Las etapas del JSON que la terminal también muestra (las no transitorias),
+    /// con el índice de su fase por orden de aparición y su símbolo de desenlace.
+    fn recorded_stages(envelope: &Value) -> Vec<PaintedStage> {
+        let mut phases: Vec<String> = Vec::new();
+        envelope["stages"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter(|stage| stage["transient"] != true)
+            .map(|stage| {
+                let id = stage["stage"].as_str().expect("stage");
+                let phase = stage["phase"].as_str().unwrap_or_default().to_string();
+                let phase_index = phases.iter().position(|p| *p == phase).unwrap_or_else(|| {
+                    phases.push(phase);
+                    phases.len() - 1
+                });
+                let symbol = if stage["skipped"] == true {
+                    '○'
+                } else if stage["failed"] == true {
+                    '✗'
+                } else {
+                    '✓'
+                };
+                let (_, stage) = STAGE_NAMES
+                    .iter()
+                    .find(|(_, label)| *label == id)
+                    .unwrap_or_else(|| panic!("etapa del JSON sin catalogar: {id}"));
+                PaintedStage {
+                    stage,
+                    phase_index,
+                    symbol,
+                }
+            })
+            .collect()
+    }
+
+    /// Exige que las etapas numeradas de `stderr` y las de `envelope` coincidan en
+    /// identificador, fase y desenlace. Con una sola etapa no hay línea de etapa (la
+    /// deja el cierre), así que el JSON debe llevar exactamente una.
+    pub fn assert_stage_parity(stderr: &str, envelope: &Value) {
+        let painted = painted_stages(stderr);
+        let recorded = recorded_stages(envelope);
+        if painted.is_empty() {
+            assert!(
+                recorded.len() <= 1,
+                "sin etapas numeradas en stderr, el JSON lleva a lo sumo la única: {envelope}"
+            );
+        } else {
+            assert_eq!(painted, recorded, "stderr:\n{stderr}\nenvelope: {envelope}");
+        }
+    }
+
+    /// `speech synthesize` por daemon: etapas, fases y desenlaces idénticos.
+    #[test]
+    fn synthesize_stderr_stages_match_the_json_stages() {
+        let (code, stdout, stderr) =
+            synthesize_against_fake_daemon("parity-synthesize", true, "paridad");
+        assert_eq!(code, 0, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        assert_eq!(painted_stages(&stderr).len(), 3, "{stderr}");
+        assert_stage_parity(&stderr, &envelope);
+    }
+
+    /// `speech transcribe` por daemon: etapas, fases y desenlaces idénticos.
+    #[test]
+    fn transcribe_stderr_stages_match_the_json_stages() {
+        let body = serde_json::json!({ "text": "Hola, mi nombre es Cristian." });
+        let (code, stdout, stderr) =
+            transcribe_against_fake_daemon("parity-transcribe", true, 200, body);
+        assert_eq!(code, 0, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        assert_eq!(painted_stages(&stderr).len(), 2, "{stderr}");
+        assert_stage_parity(&stderr, &envelope);
+    }
+
+    /// `speech denoise --dry-run` no abre etapas: ni stderr las pinta ni el JSON las lleva.
+    #[cfg(feature = "native-denoise")]
+    #[test]
+    fn denoise_dry_run_has_no_stages_in_stderr_nor_in_the_json() {
+        let (sandbox, envs) = contract_sandbox("parity-denoise");
+        let input = sandbox.path().join("voz.wav");
+        std::fs::write(&input, b"sin necesidad de un WAV valido en dry-run")
+            .expect("crear entrada");
+        let input = input.to_string_lossy().into_owned();
+        let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let (code, stdout, stderr) = run_capture(
+            &["--json", "speech", "denoise", input.as_str(), "--dry-run"],
+            &envs,
+        );
+        assert_eq!(code, 0, "{stderr}");
+        let envelope: Value = serde_json::from_str(stdout.trim()).expect("un único envelope");
+        assert!(painted_stages(&stderr).is_empty(), "{stderr}");
+        assert!(recorded_stages(&envelope).is_empty(), "{envelope}");
+        assert_stage_parity(&stderr, &envelope);
+    }
 }

@@ -75,7 +75,7 @@ Al final, sin fallos escribe `✓ Diagnóstico sin problemas.` por stderr; con f
 
 ```json
 {
-  "schema_version": "6",
+  "schema_version": "7",
   "version": "X.Y.Z",
   "target": "x86_64-pc-windows-msvc",
   "channel": "script",

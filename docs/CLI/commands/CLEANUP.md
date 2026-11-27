@@ -84,7 +84,7 @@ Las tres operaciones destructivas del producto (`cleanup`, `self uninstall` y la
 
 ```json
 {
-  "schema_version": "6",
+  "schema_version": "7",
   "status": "cleanup_complete",
   "reason": null,
   "removed": ["…/data/voices/mi_voz", "…/speech/mi_voz"],

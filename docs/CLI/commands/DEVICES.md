@@ -106,7 +106,7 @@ objeto antes de serializar (`with_schema_version`,
     { "id": 0, "name": "Altavoces (Realtek Audio)", "latency": 0.0116 },
     { "id": 1, "name": "Auriculares (USB)", "latency": 0.0102 }
   ],
-  "schema_version": "6"
+  "schema_version": "7"
 }
 ```
 
@@ -165,7 +165,7 @@ backend no lo expone o `ninguna` si el sistema no tiene ese dispositivo.
 | `audio_enumeration_failed` | 1 (`ExitCode::Error`) | El host `cpal` no pudo enumerar los dispositivos de salida. La ausencia de dispositivos por sí sola NO es un error: produce lista vacía y predeterminados `null` |
 
 El error se envuelve en `main` (`src/main.rs`): con `--json` emite
-`{"error": <mensaje>, "reason": <reason>, "schema_version": "6"}` a stdout;
+`{"error": <mensaje>, "reason": <reason>, "schema_version": "7"}` a stdout;
 sin `--json`, `Error: <mensaje>` y, si el `reason` tiene remedio, `Solución: <orden>` a stderr. El proceso termina con el código
 de la tabla.
 
