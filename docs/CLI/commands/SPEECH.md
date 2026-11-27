@@ -394,9 +394,9 @@ Despacho: `say_via_daemon` si aplica, o rama directa con
 milisegundos desde que se abre la etapa de síntesis hasta la primera muestra
 que suena, e incluyen la espera de turno, el calentamiento del motor y la carga
 de la voz (`Esperando turno para sintetizar…`, `Calentando el motor…` y
-`Cargando la voz…` son textos vivos de esa misma etapa, con un solo reloj). La
-etapa `Primer audio` y el extra `primer audio` del cierre parten de la misma
-referencia y pueden diferir unos milisegundos. `stalls` el número de veces que la cola de reproducción se vació con la entrega en
+`Cargando la voz…` son textos vivos de esa misma etapa, con un solo reloj). Es
+una sola medida: el dato `· primer audio` de la etapa `Síntesis`, el extra
+`primer audio` del cierre y `first_audio_ms` dan el mismo valor. `stalls` el número de veces que la cola de reproducción se vació con la entrega en
 curso.
 
 **No hay `audio_path`.** El audio no pasa por ningún archivo: suena según llega.
